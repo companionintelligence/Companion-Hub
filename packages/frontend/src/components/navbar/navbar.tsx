@@ -39,7 +39,6 @@ export const NavBar: React.FC<IProps> = ({ isUpdateAvailable }) => {
           {renderItem(t('HEADER_APP_STORE'), 'app-store', IconBrandAppstore)}
           {renderItem(t('HEADER_SETTINGS'), 'settings', IconSettings)}
         </ul>
-        {Boolean(isUpdateAvailable) && <span className="ms-2 badge text-white bg-green d-none d-lg-block">{t('HEADER_UPDATE_AVAILABLE')}</span>}
       </div>
     </div>
   );

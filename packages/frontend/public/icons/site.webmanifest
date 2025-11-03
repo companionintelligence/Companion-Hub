@@ -1,6 +1,6 @@
 {
-  "name": "Runtipi",
-  "short_name": "Runtipi",
+  "name": "CI Hub",
+  "short_name": "CI Hub",
   "icons": [
     {
       "src": "/web-app-manifest-192x192.png",

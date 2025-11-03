@@ -17,7 +17,7 @@ export const AuthLayout = ({ children }: PropsWithChildren) => {
       <div className="container container-tight py-4">
         <div className="text-center mb-4">
           <img
-            alt="Runtipi logo"
+            alt="CI Hub logo"
             src={getLogo(allowAutoThemes)}
             height={64}
             width={64}
