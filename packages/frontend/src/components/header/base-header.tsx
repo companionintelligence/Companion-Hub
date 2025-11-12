@@ -47,7 +47,7 @@ export const BaseHeader = (props: BaseHeaderProps) => {
         )}
         <Link to="/dashboard">
           <h1 className="navbar-brand d-none-navbar-horizontal pe-0 pe-md-3">
-            CI Hub
+            Companion Hub
           </h1>
         </Link>
         <div className="navbar-nav flex-row order-md-last">

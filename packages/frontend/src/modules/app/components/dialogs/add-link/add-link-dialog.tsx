@@ -105,7 +105,7 @@ export const AddLinkDialog: React.FC<AddLinkDialogProps> = ({ isOpen, onClose, l
               {...register('title')}
               maxLength={20}
               label={t('LINKS_FORM_LINK_TITLE')}
-              placeholder="CI Hub demo"
+              placeholder="Companion Hub demo"
               error={errors.title?.message}
             />
             <Input
