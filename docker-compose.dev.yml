@@ -57,7 +57,7 @@ services:
       runtipi-db:
         condition: service_healthy
       runtipi-queue:
-        condition: service_started
+        condition: service_healthy
     container_name: runtipi
     restart: unless-stopped
     healthcheck:
