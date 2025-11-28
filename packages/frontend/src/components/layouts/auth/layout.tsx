@@ -19,8 +19,8 @@ export const AuthLayout = ({ children }: PropsWithChildren) => {
           <img
             alt="Companion Hub logo"
             src={getLogo(allowAutoThemes)}
-            height={64}
-            width={64}
+            height={128}
+            width={128}
             style={{
               maxWidth: '100%',
               height: 'auto',
