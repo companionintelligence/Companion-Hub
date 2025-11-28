@@ -43,6 +43,12 @@ services:
     container_name: runtipi-queue
     image: rabbitmq:4-alpine
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     environment:
       RABBITMQ_DEFAULT_USER: tipi
       RABBITMQ_DEFAULT_PASS: tipi
@@ -61,11 +67,11 @@ services:
     container_name: runtipi
     restart: unless-stopped
     healthcheck:
-      start_period: 10s
+      start_period: 30s
       test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
+      interval: 10s
+      timeout: 5s
+      retries: 10
     ports:
       - 3000:8080
     volumes:
