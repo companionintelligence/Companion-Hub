@@ -120,7 +120,7 @@ describe('DockerComposeBuilder', () => {
       name: 'service1',
       image: 'image1',
       internalPort: 80,
-      addPorts: [{ containerPort: 8080, hostPort: 3400 }],
+      addPorts: [{ containerPort: 9091, hostPort: 3400 }],
       extraHosts: ['host1', 'host2'],
       ulimits: { nproc: 1024, nofile: 65536 },
       command: 'node index.js',

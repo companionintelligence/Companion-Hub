@@ -9,8 +9,8 @@ services:
     ports:
       - 80:80
       - 443:443
-      - 8080:8080
-    command: --providers.docker
+      - 9091:9091
+    command: --providers.docker --entryPoints.traefik.address=:9091
     volumes:
       - ./.internal/traefik:/etc/traefik
       - ./.internal/traefik/shared:/shared
@@ -25,14 +25,15 @@ services:
     stop_grace_period: 1m
     volumes:
       - pgdata:/var/lib/postgresql/data
+    command: -p 6543
     ports:
-      - 5432:5432
+      - 6543:6543
     environment:
       POSTGRES_PASSWORD: postgres
       POSTGRES_USER: tipi
       POSTGRES_DB: tipi
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -d tipi -U tipi"]
+      test: ["CMD-SHELL", "pg_isready -d tipi -U tipi -p 6543"]
       interval: 5s
       timeout: 10s
       retries: 120

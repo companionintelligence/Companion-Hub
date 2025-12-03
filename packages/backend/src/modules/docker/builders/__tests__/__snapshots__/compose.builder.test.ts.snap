@@ -173,7 +173,7 @@ exports[`DockerComposeBuilder > should correctly format a complex docker-compose
       PORT: 80
       SOME_VAR: value
     ports:
-      - 3400:8080
+      - 3400:9091
     volumes:
       - /host/path:/container/path:ro
       - /host/path2:/container/path2

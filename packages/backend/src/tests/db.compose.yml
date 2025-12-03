@@ -3,8 +3,9 @@ services:
     container_name: test-db
     image: postgres:14
     restart: no
+    command: -p 6543
     ports:
-      - 5433:5432
+      - 5433:6543
     environment:
       POSTGRES_PASSWORD: postgres
       POSTGRES_USER: postgres

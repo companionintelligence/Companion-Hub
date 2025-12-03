@@ -39,7 +39,7 @@ describe('AppHelpers', () => {
       urn: testAppUrn,
       name: 'Test App',
       author: 'Test Author',
-      port: 8080,
+      port: 9091,
       https: false,
       no_gui: false,
       available: true,
@@ -98,7 +98,7 @@ describe('AppHelpers', () => {
       await appHelpers.generateEnvFile(testAppUrn, {});
 
       // Assert
-      expect(envMap.get('APP_PORT')).toBe('8080');
+      expect(envMap.get('APP_PORT')).toBe('9091');
       expect(envMap.get('APP_ID')).toBe('test-app-test-store');
       expect(envMap.get('ROOT_FOLDER_HOST')).toBe('/opt/runtipi');
       expect(envMap.get('APP_DATA_DIR')).toBe('/opt/runtipi/app-data/test-store/test-app');
@@ -200,13 +200,13 @@ describe('AppHelpers', () => {
       // Arrange
       const envMap = new Map<string, string>();
       envUtils.envStringToMap.mockReturnValue(envMap);
-      const port = 8080;
+      const port = 9091;
 
       // Act
       await appHelpers.generateEnvFile(testAppUrn, { port });
 
       // Assert
-      expect(envMap.get('APP_DOMAIN')).toBe('127.0.0.1:8080');
+      expect(envMap.get('APP_DOMAIN')).toBe('127.0.0.1:9091');
       expect(envMap.get('APP_HOST')).toBe('127.0.0.1');
       expect(envMap.get('APP_PROTOCOL')).toBe('http');
     });
