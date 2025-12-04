@@ -51,6 +51,7 @@ logs
 .pnpm-debug.log
 .env*
 !.env.example
+!.env.backup
 !.env.test
 github.secrets
 node_modules/

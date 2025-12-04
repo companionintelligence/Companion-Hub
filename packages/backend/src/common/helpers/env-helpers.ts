@@ -148,7 +148,16 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   envMap.set('THEME_BASE', settings.themeBase || envMap.get('THEME_BASE') || 'gray');
   envMap.set('THEME_COLOR', settings.themeColor || envMap.get('THEME_COLOR') || 'blue');
 
-  await fs.promises.writeFile(envFilePath, envUtils.envMapToString(envMap));
+  // Try to write the env file, but continue if it's read-only (e.g., mounted as read-only)
+  try {
+    await fs.promises.writeFile(envFilePath, envUtils.envMapToString(envMap));
+  } catch (error: unknown) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'EROFS') {
+      logger.warn('Cannot write to .env file (read-only mount). Continuing with existing values.');
+    } else {
+      throw error;
+    }
+  }
 
   dotenv.config({ path: envFilePath, override: true, quiet: true });
 

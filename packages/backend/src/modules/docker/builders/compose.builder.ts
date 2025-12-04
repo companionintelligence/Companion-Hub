@@ -108,7 +108,7 @@ export class DockerComposeBuilder {
       .setNetwork(`${appName}_${appStoreId}_network`);
 
     if (params.isMain || params.addToMainNetwork) {
-      service.setNetwork('tipi_main_network', 1);
+      service.setNetwork('ci_os_hub_network', 1);
     }
 
     if (params.isMain) {
@@ -149,8 +149,8 @@ export class DockerComposeBuilder {
 
     const dockerCompose = this.addServices(myServices)
       .addNetwork({
-        key: 'tipi_main_network',
-        name: 'runtipi_tipi_main_network',
+        key: 'ci_os_hub_network',
+        name: 'ci_os_hub_network',
         external: true,
       })
       .addNetwork({

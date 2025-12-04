@@ -48,7 +48,8 @@ COPY ./packages/common/package.json ./packages/common/package.json
 COPY ./packages/frontend/scripts ./packages/frontend/scripts
 COPY ./packages/frontend/public ./packages/frontend/public
 
-RUN bun install --frozen-lockfile --verbose
+# Install dependencies
+RUN bun install --frozen-lockfile
 
 COPY ./turbo.json ./turbo.json
 COPY ./packages ./packages
@@ -58,9 +59,13 @@ RUN echo "TIPI_VERSION: ${SENTRY_RELEASE}"
 RUN echo "LOCAL: ${LOCAL}"
 
 RUN bun run bundle
-RUN --mount=type=secret,id=sentry_token,env=SENTRY_AUTH_TOKEN if [ "${LOCAL}" != "true" ]; then \
-  cd ./packages/backend && \
-  bun run sentry:sourcemaps; \
+# Upload sourcemaps to Sentry if token is provided (non-blocking - won't fail build)
+RUN --mount=type=secret,id=sentry_token,env=SENTRY_AUTH_TOKEN \
+  if [ "${LOCAL}" != "true" ] && [ -n "${SENTRY_AUTH_TOKEN:-}" ]; then \
+    cd ./packages/backend && \
+    bun run sentry:sourcemaps || echo "Warning: Sentry sourcemap upload failed, continuing build..."; \
+  else \
+    echo "Skipping Sentry sourcemap upload (LOCAL=${LOCAL:-false}, token not provided)"; \
   fi
 
 # ---- RUNNER ----
@@ -70,7 +75,9 @@ ENV NODE_ENV="production"
 
 WORKDIR /app
 
-RUN npm install --no-save --omit=dev argon2 class-transformer
+# Use build cache for npm install
+RUN --mount=type=cache,target=/root/.npm \
+    npm install --no-save --omit=dev argon2 class-transformer
 
 COPY --from=builder_base /deps/docker-binary /usr/local/bin/docker-compose
 COPY --from=builder /app/package.json ./

@@ -7,16 +7,14 @@ services:
     image: traefik:v3.5
     restart: unless-stopped
     ports:
-      - 80:80
-      - 443:443
-      - 8080:8080
+      - "5003:80"
     command: --providers.docker
     volumes:
       - ./.internal/traefik:/etc/traefik
       - ./.internal/traefik/shared:/shared
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
-      - tipi_main_network
+      - ci_os_hub_network
 
   runtipi-db:
     container_name: runtipi-db
@@ -24,45 +22,65 @@ services:
     restart: unless-stopped
     stop_grace_period: 1m
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - ci_os_hub_pgdata:/var/lib/postgresql/data
     ports:
-      - 5432:5432
+      - "5433:5432"
     environment:
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_USER: tipi
-      POSTGRES_DB: tipi
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_USER: ${POSTGRES_USERNAME:-tipi}
+      POSTGRES_DB: ${POSTGRES_DBNAME:-tipi}
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -d tipi -U tipi"]
+      test: ["CMD-SHELL", "pg_isready -d ${POSTGRES_DBNAME:-tipi} -U ${POSTGRES_USERNAME:-tipi}"]
       interval: 5s
       timeout: 10s
       retries: 120
     networks:
-      - tipi_main_network
+      - ci_os_hub_network
 
   runtipi-queue:
     container_name: runtipi-queue
     image: rabbitmq:4-alpine
     restart: unless-stopped
+    ports:
+      - "5001:5672"
     environment:
-      RABBITMQ_DEFAULT_USER: tipi
-      RABBITMQ_DEFAULT_PASS: tipi
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USERNAME:-tipi}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-tipi}
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     networks:
-      - tipi_main_network
+      - ci_os_hub_network
 
   runtipi:
+    # Platform selection based on DOCKER_PLATFORM env variable
+    # Set DOCKER_PLATFORM=linux/arm64 for Mac development (native ARM64 build, faster)
+    # Set DOCKER_PLATFORM=linux/amd64 for Linux production (AMD64 build, slower on Mac due to emulation)
+    platform: ${DOCKER_PLATFORM:-linux/amd64}
     build:
       context: .
       dockerfile: Dockerfile
       args:
-        TIPI_VERSION: 4.5.0
-        LOCAL: true
+        TIPI_VERSION: ${TIPI_VERSION:-4.5.0}
+        LOCAL: ${LOCAL:-false}
+        TARGETARCH: ${TARGETARCH:-amd64}
+      # Enable BuildKit cache for faster rebuilds
+      cache_from:
+        - type=local,src=/tmp/.buildx-cache
+      cache_to:
+        - type=local,dest=/tmp/.buildx-cache,mode=max
     depends_on:
       runtipi-db:
         condition: service_healthy
       runtipi-queue:
-        condition: service_started
+        condition: service_healthy
     container_name: runtipi
     restart: unless-stopped
+    ports:
+      - "5002:3000"
     healthcheck:
       start_period: 10s
       test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
@@ -81,7 +99,7 @@ services:
       - ${RUNTIPI_APP_DATA_PATH:-.internal}/app-data:/app-data
       - ${RUNTIPI_BACKUPS_PATH:-.internal}/backups:/data/backups
       # Static
-      - ./.env:/data/.env
+      - ./.env:/data/.env:ro
       - ./.internal/cache:/cache
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /proc/meminfo:/host/proc/meminfo:ro
@@ -89,18 +107,22 @@ services:
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
     networks:
-      - tipi_main_network
+      - ci_os_hub_network
     environment:
-      LOCAL: true
-      NODE_ENV: production
-      ROOT_FOLDER_HOST: ${PWD}/.internal
-      POSTGRES_PASSWORD: postgres
-      RABBITMQ_USERNAME: tipi
-      RABBITMQ_PASSWORD: tipi
-      RABBITMQ_HOST: runtipi-queue
-      INTERNAL_IP: 127.0.0.1
-      TIPI_VERSION: 4.5.0
-      LOG_LEVEL: debug
+      LOCAL: ${LOCAL:-false}
+      NODE_ENV: ${NODE_ENV:-production}
+      ROOT_FOLDER_HOST: ${ROOT_FOLDER_HOST:-.internal}
+      POSTGRES_HOST: ${POSTGRES_HOST:-runtipi-db}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_USERNAME: ${POSTGRES_USERNAME:-tipi}
+      POSTGRES_DBNAME: ${POSTGRES_DBNAME:-tipi}
+      POSTGRES_PORT: 5432
+      RABBITMQ_USERNAME: ${RABBITMQ_USERNAME:-tipi}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-tipi}
+      RABBITMQ_HOST: ${RABBITMQ_HOST:-runtipi-queue}
+      INTERNAL_IP: ${INTERNAL_IP:-127.0.0.1}
+      TIPI_VERSION: ${TIPI_VERSION:-4.5.0}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
     env_file:
       - .env
     labels:
@@ -137,9 +159,14 @@ services:
       traefik.http.middlewares.runtipi.forwardauth.address: ${RUNTIPI_FORWARD_AUTH_URL:-http://runtipi:3000/api/auth/traefik}
 
 networks:
-  tipi_main_network:
+  ci_os_hub_network:
     driver: bridge
-    name: runtipi_tipi_main_network
+    name: ci_os_hub_network
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.28.0.0/16
 
 volumes:
-  pgdata:
+  ci_os_hub_pgdata:
+    name: ci_os_hub_pgdata

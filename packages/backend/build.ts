@@ -21,5 +21,6 @@ await Bun.build({
     '@fastify/static',
     '@nestjs/microservices',
     '@nestjs/websockets',
+    'cpu-features',
   ],
 });

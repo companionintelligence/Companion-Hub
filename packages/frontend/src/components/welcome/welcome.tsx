@@ -25,7 +25,16 @@ export const Welcome = ({ allowErrorMonitoring }: Props) => {
     <div className="page page-center">
       <div className="container container-tight py-4">
         <div className="text-center mb-4">
-          <img alt="Companion Hub logo" src={getLogo(true)} height={50} width={50} style={{ maxWidth: '100%', height: 'auto' }} />
+          <img
+            alt="Companion Hub logo"
+            src={getLogo(true)}
+            height={128}
+            width={128}
+            style={{
+              maxWidth: '100%',
+              height: 'auto',
+            }}
+          />
         </div>
         <div className="card card-md">
           <div className="card-body">
