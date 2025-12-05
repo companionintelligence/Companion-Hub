@@ -25,12 +25,13 @@ export const processX402PaymentSchema = type({
 
 export type ProcessX402PaymentDto = typeof processX402PaymentSchema.infer;
 
+// Response schemas - amount is string because database stores as numeric(10,2)
 export const paymentResponseSchema = type({
   id: 'number',
   appUrn: 'string',
   userId: 'number',
   paymentMethod: type.enumerated('stripe', 'x402'),
-  amount: 'number',
+  amount: 'string', // Database numeric type returns as string
   currency: 'string',
   status: type.enumerated('pending', 'completed', 'failed', 'refunded'),
   createdAt: 'string',
@@ -44,7 +45,7 @@ export const subscriptionResponseSchema = type({
   appUrn: 'string',
   userId: 'number',
   paymentMethod: type.enumerated('stripe', 'x402'),
-  amount: 'number',
+  amount: 'string', // Database numeric type returns as string
   currency: 'string',
   interval: type.enumerated('monthly', 'yearly'),
   status: type.enumerated('active', 'cancelled', 'expired'),
