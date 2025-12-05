@@ -81,6 +81,7 @@ export type AppContextDto = {
             version: string;
         }>;
     };
+    isProduction: boolean;
 };
 
 export type UserSettingsBody = {

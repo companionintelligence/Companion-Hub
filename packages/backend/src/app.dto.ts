@@ -46,6 +46,7 @@ const appContextSchema = type({
   user: UserDto.schema,
   apps: AppInfoSimpleDto.schema.array(),
   updatesAvailable: 'number',
+  isProduction: 'boolean',
 });
 
 export class UserSettingsDto extends createArkDto(settingsSchema, { name: 'UserSettingsDto' }) {}

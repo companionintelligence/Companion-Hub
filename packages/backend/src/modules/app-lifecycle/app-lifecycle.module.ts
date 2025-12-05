@@ -2,6 +2,7 @@ import { SSEModule } from '@/core/sse/sse.module';
 import { Module, forwardRef } from '@nestjs/common';
 import { AppsModule } from '../apps/apps.module';
 import { BackupsModule } from '../backups/backups.module';
+import { CloudflareModule } from '../cloudflare/cloudflare.module';
 import { DockerModule } from '../docker/docker.module';
 import { EnvModule } from '../env/env.module';
 import { MarketplaceModule } from '../marketplace/marketplace.module';
@@ -12,7 +13,7 @@ import { AppLifecycleService } from './app-lifecycle.service';
 import { AppStatusSyncService } from './app-status-sync.service';
 
 @Module({
-  imports: [QueueModule, AppsModule, EnvModule, DockerModule, MarketplaceModule, forwardRef(() => BackupsModule), SSEModule],
+  imports: [QueueModule, AppsModule, EnvModule, DockerModule, MarketplaceModule, forwardRef(() => BackupsModule), SSEModule, CloudflareModule],
   providers: [AppLifecycleService, AppLifecycleCommandFactory, AppStatusSyncService],
   controllers: [AppLifecycleController],
   exports: [AppLifecycleService, AppStatusSyncService],

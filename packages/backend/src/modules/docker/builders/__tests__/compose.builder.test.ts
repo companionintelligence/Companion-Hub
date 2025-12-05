@@ -171,7 +171,7 @@ describe('DockerComposeBuilder', () => {
     expect(compose).toMatchSnapshot();
   });
 
-  it('should add correct traefik labels to the main service', () => {
+  it('should add port mapping when exposedLocal is enabled with port', () => {
     const service: ServiceInput = {
       name: 'service',
       image: 'image',
@@ -179,28 +179,29 @@ describe('DockerComposeBuilder', () => {
       isMain: true,
     };
 
-    const compose = composeBuilder.getDockerCompose([service], { exposed: true, exposedLocal: true, openPort: true }, urn, subnet);
-
-    expect(compose).toMatchSnapshot();
-  });
-
-  it('should add traefik labels when service is exposed and has internalPort', () => {
-    const service: ServiceInput = {
-      name: 'service',
-      image: 'image',
-      internalPort: 440,
-      isMain: true,
-    };
-
-    const compose = composeBuilder.getDockerCompose([service], { exposed: true }, urn, subnet);
+    const compose = composeBuilder.getDockerCompose([service], { exposedLocal: true, port: 8080 }, urn, subnet);
     const yamlObject = yaml.parse(compose);
 
-    expect(yamlObject.services.service.labels).toBeDefined();
-    expect(yamlObject.services.service.labels['traefik.enable']).toBe(true);
-    expect(yamlObject.services.service.labels['traefik.http.routers.nginx-store-id.rule']).toBeDefined();
+    expect(yamlObject.services.service.ports).toBeDefined();
+    expect(yamlObject.services.service.ports[0]).toBe('${APP_PORT}:440');
   });
 
-  it('should not add traefik labels when service is not exposed', () => {
+  it('should add port mapping when openPort is enabled', () => {
+    const service: ServiceInput = {
+      name: 'service',
+      image: 'image',
+      internalPort: 440,
+      isMain: true,
+    };
+
+    const compose = composeBuilder.getDockerCompose([service], { openPort: true }, urn, subnet);
+    const yamlObject = yaml.parse(compose);
+
+    expect(yamlObject.services.service.ports).toBeDefined();
+    expect(yamlObject.services.service.ports[0]).toBe('${APP_PORT}:440');
+  });
+
+  it('should only add default labels when service is not exposed', () => {
     const service: ServiceInput = {
       name: 'service',
       image: 'image',
@@ -244,8 +245,6 @@ describe('DockerComposeBuilder', () => {
             '{{RUNTIPI_APP_ID}}.service': true,
             'com.docker.compose.service': '{{RUNTIPI_APP_ID}}',
             '{{ RUNTIPI_APP_ID }}': '{{ RUNTIPI_APP_ID }}',
-            // Example of overriding
-            'traefik.http.middlewares.ctfd-web-redirect.redirectscheme.scheme': 'wrongscheme',
           },
         },
         {

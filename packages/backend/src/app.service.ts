@@ -1,7 +1,6 @@
 import path from 'node:path';
 import { Inject, Injectable } from '@nestjs/common';
 import * as Sentry from '@sentry/nestjs';
-import { execAsync } from './common/helpers/exec-helpers';
 import { CacheService, ONE_DAY_IN_SECONDS } from './core/cache/cache.service';
 import { ConfigurationService } from './core/config/configuration.service';
 import { DatabaseService } from './core/database/database.service';
@@ -97,29 +96,8 @@ export class AppService {
   }
 
   public async copyAssets() {
-    const { directories, userSettings } = this.configuration.getConfig();
-    const { appDir, dataDir, appDataDir } = directories;
-
-    const assetsFolder = path.join(appDir, 'assets');
-
-    this.logger.info('Creating traefik folders');
-
-    await this.filesystem.createDirectories([
-      path.join(dataDir, 'traefik', 'dynamic'),
-      path.join(dataDir, 'traefik', 'shared'),
-      path.join(dataDir, 'traefik', 'tls'),
-    ]);
-
-    if (userSettings.persistTraefikConfig) {
-      this.logger.warn('Skipping the copy of traefik files because persistTraefikConfig is set to true');
-    } else {
-      this.logger.info('Copying traefik files');
-      await this.filesystem.copyFile(path.join(assetsFolder, 'traefik', 'traefik.yml'), path.join(dataDir, 'traefik', 'traefik.yml'));
-      await this.filesystem.copyFile(
-        path.join(assetsFolder, 'traefik', 'dynamic', 'dynamic.yml'),
-        path.join(dataDir, 'traefik', 'dynamic', 'dynamic.yml'),
-      );
-    }
+    const { directories } = this.configuration.getConfig();
+    const { dataDir, appDataDir } = directories;
 
     // Create base folders
     this.logger.info('Creating base folders');
@@ -155,64 +133,10 @@ export class AppService {
   }
 
   /**
-   * Given a domain, generates the TLS certificates for it to be used with Traefik
-   *
-   * @param {string} data.domain The domain to generate the certificates for
+   * TLS certificate generation - no longer needed as Cloudflare handles TLS
+   * Kept as a no-op for backwards compatibility
    */
-  public generateTlsCertificates = async (data: { localDomain?: string }) => {
-    if (!data.localDomain) {
-      return;
-    }
-
-    const { dataDir } = this.configuration.get('directories');
-
-    const tlsFolder = path.join(dataDir, 'traefik', 'tls');
-
-    // If the certificate already exists, don't generate it again
-    if (
-      (await this.filesystem.pathExists(path.join(tlsFolder, `${data.localDomain}.txt`))) &&
-      (await this.filesystem.pathExists(path.join(tlsFolder, 'cert.pem'))) &&
-      (await this.filesystem.pathExists(path.join(tlsFolder, 'key.pem')))
-    ) {
-      // Check if the certificate is still valid
-      const { stdout } = await execAsync(`openssl x509 -checkend 86400 -noout -in ${tlsFolder}/cert.pem`);
-      if (stdout.includes('Certificate will not expire')) {
-        this.logger.info(`TLS certificate for ${data.localDomain} already exists`);
-        return;
-      }
-
-      this.logger.warn(`TLS certificate for ${data.localDomain} is expired or will expire soon. Regenerating a new one...`);
-    }
-
-    // Empty out the folder
-    const files = await this.filesystem.listFiles(tlsFolder);
-    await Promise.all(
-      files.map(async (file) => {
-        this.logger.info(`Removing file ${file}`);
-        await this.filesystem.removeFile(path.join(tlsFolder, file));
-      }),
-    );
-
-    const subject = `/O=runtipi.io/OU=IT/CN=*.${data.localDomain}/emailAddress=webmaster@${data.localDomain}`;
-    const subjectAltName = `DNS:*.${data.localDomain},DNS:${data.localDomain}`;
-
-    try {
-      this.logger.info(`Generating TLS certificate for ${data.localDomain}`);
-      const { stderr } = await execAsync(
-        `openssl req -x509 -newkey rsa:4096 -keyout ${dataDir}/traefik/tls/key.pem -out ${dataDir}/traefik/tls/cert.pem -days 365 -subj "${subject}" -addext "subjectAltName = ${subjectAltName}" -nodes`,
-      );
-      if (
-        !(await this.filesystem.pathExists(path.join(tlsFolder, 'cert.pem'))) ||
-        !(await this.filesystem.pathExists(path.join(tlsFolder, 'key.pem')))
-      ) {
-        this.logger.error(`Failed to generate TLS certificate for ${data.localDomain}`);
-        this.logger.error(stderr);
-      } else {
-        this.logger.info(`Writing txt file for ${data.localDomain}`);
-      }
-      await this.filesystem.writeTextFile(path.join(tlsFolder, `${data.localDomain}.txt`), '');
-    } catch (error) {
-      this.logger.error(error);
-    }
+  public generateTlsCertificates = async (_data: { localDomain?: string }) => {
+    // TLS is handled by Cloudflare Tunnel - no local certificate generation needed
   };
 }

@@ -4,7 +4,6 @@ import { type Service, type ServiceInput, serviceSchema } from '@runtipi/common/
 import type { AppUrn } from '@runtipi/common/types';
 import * as yaml from 'yaml';
 import { type BuiltService, ServiceBuilder } from './service.builder';
-import { TraefikLabelsBuilder } from './traefik-labels.builder';
 import { z } from 'zod';
 
 interface Network {
@@ -107,42 +106,43 @@ export class DockerComposeBuilder {
       .setDNS(params.dns)
       .setNetwork(`${appName}_${appStoreId}_network`);
 
+    // Add main service to ci_os_hub_network for inter-app communication
+    // This allows apps to communicate with each other when needed
     if (params.isMain || params.addToMainNetwork) {
       service.setNetwork('ci_os_hub_network', 1);
     }
 
     if (params.isMain) {
-      if (form.openPort && params.internalPort) {
+      // When publishing to internet (exposedLocal), open the port for Cloudflare Tunnel
+      if (form.exposedLocal && params.internalPort && form.port) {
+        service.setPort({
+          containerPort: params.internalPort,
+          // biome-ignore lint/suspicious/noTemplateCurlyInString: intended
+          hostPort: '${APP_PORT}',
+        });
+      } else if (form.openPort && params.internalPort) {
+        // Legacy: open port for local network access only
         service.setPort({
           containerPort: params.internalPort,
           // biome-ignore lint/suspicious/noTemplateCurlyInString: intended
           hostPort: '${APP_PORT}',
         });
       }
-
-      if (params.internalPort && params.networkMode === undefined && (form.exposed || form.exposedLocal)) {
-        const traefikLabels = new TraefikLabelsBuilder({
-          storeId: appStoreId,
-          appId: appName,
-          internalPort: params.internalPort,
-          exposedLocal: form.exposedLocal,
-          exposed: form.exposed,
-          enableAuth: form.enableAuth,
-          localSubdomain: form.localSubdomain,
-        })
-          .addExposedLabels()
-          .addExposedLocalLabels();
-
-        service.setLabels(traefikLabels.build());
-      }
     }
 
-    service.setLabels({ 'runtipi.managed': true, 'runtipi.appurn': appUrn, ...params.extraLabels }).interpolateVariables(`${appName}-${appStoreId}`);
+    // Set default labels
+    const defaultLabels: Record<string, string | boolean> = {
+      'runtipi.managed': true,
+      'runtipi.appurn': appUrn,
+    };
+
+    // Merge default labels with extra labels from app config
+    service.setLabels({ ...defaultLabels, ...params.extraLabels }).interpolateVariables(`${appName}-${appStoreId}`);
 
     return service.build();
   };
 
-  public getDockerCompose = (services: ServiceInput[], form: AppEventFormInput, appUrn: AppUrn, subnet: string) => {
+  public getDockerCompose(services: ServiceInput[], form: AppEventFormInput, appUrn: AppUrn, subnet: string) {
     const { appName, appStoreId } = extractAppUrn(appUrn);
 
     const myServices = services.map((service) => this.buildService(service, form, appUrn));
@@ -161,5 +161,5 @@ export class DockerComposeBuilder {
       });
 
     return dockerCompose.build();
-  };
+  }
 }

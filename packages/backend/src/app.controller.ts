@@ -51,7 +51,7 @@ export class AppController {
   async appContext(@Req() req: Request) {
     const version = await this.appService.getVersion();
 
-    const { userSettings } = this.configuration.getConfig();
+    const { userSettings, isProduction } = this.configuration.getConfig();
 
     const apps = await this.marketplaceService.getAvailableApps();
 
@@ -61,7 +61,7 @@ export class AppController {
     });
 
     return AppContextDto.parse(
-      { version, userSettings, user: req.user as UserDto, apps, updatesAvailable: updatesAvailable.length },
+      { version, userSettings, user: req.user as UserDto, apps, updatesAvailable: updatesAvailable.length, isProduction },
       { reportOnly: true },
     );
   }

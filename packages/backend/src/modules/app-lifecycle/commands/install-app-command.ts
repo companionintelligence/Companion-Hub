@@ -1,17 +1,21 @@
 import { LoggerService } from '@/core/logger/logger.service';
+import { ConfigurationService } from '@/core/config/configuration.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppHelpers } from '@/modules/apps/app.helpers';
+import { CloudflareTunnelService } from '@/modules/cloudflare/cloudflare-tunnel.service';
 import { DockerService } from '@/modules/docker/docker.service';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import type { AppUrn } from '@runtipi/common/types';
+import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { AppLifecycleCommand } from './command';
 import { parseComposeJson } from '@runtipi/common/schemas';
 
 export class InstallAppCommand extends AppLifecycleCommand {
   public async execute(appUrn: AppUrn, form: AppEventFormInput): Promise<{ success: boolean; message: string }> {
     const logger = this.moduleRef.get(LoggerService, { strict: false });
+    const config = this.moduleRef.get(ConfigurationService, { strict: false });
     const appFilesManager = this.moduleRef.get(AppFilesManager, { strict: false });
     const marketplaceService = this.moduleRef.get(MarketplaceService, { strict: false });
     const dockerService = this.moduleRef.get(DockerService, { strict: false });
@@ -54,14 +58,14 @@ export class InstallAppCommand extends AppLifecycleCommand {
         logger.warn(`No prior containers to remove for app ${appUrn}`);
       }
 
-      const config = await appFilesManager.getInstalledAppInfo(appUrn);
+      const appInfo = await appFilesManager.getInstalledAppInfo(appUrn);
 
-      if (!config) {
+      if (!appInfo) {
         return { success: true, message: 'App config not found. Skipping...' };
       }
 
       // run docker-compose up
-      const forcePull = config.force_pull ?? false;
+      const forcePull = appInfo.force_pull ?? false;
 
       if (form.skipRun) {
         logger.info(`Skipping docker-compose up for app ${appUrn} as per request`);
@@ -70,6 +74,31 @@ export class InstallAppCommand extends AppLifecycleCommand {
 
       await dockerService.composeApp(appUrn, `up --detach --force-recreate --remove-orphans ${forcePull ? '--pull always' : ''}`);
       await appFilesManager.setAppDataDirPermissions(appUrn);
+
+      // Create Cloudflare Tunnel route if enabled and app is published to internet
+      // Routes directly to the app's port - no Traefik middleman
+      try {
+        const cloudflareService = this.moduleRef.get(CloudflareTunnelService, { strict: false });
+        if (!cloudflareService) {
+          logger.debug(`CloudflareTunnelService not available for ${appUrn}`);
+        } else if (!cloudflareService.isEnabled()) {
+          logger.debug(`Cloudflare Tunnel integration is not enabled for ${appUrn}`);
+        } else {
+          const { appName, appStoreId } = extractAppUrn(appUrn);
+          const { isProduction } = config?.getConfig() || { isProduction: false };
+          
+          // In production, when exposedLocal is enabled, create a direct route to the app's port
+          if (form.exposedLocal && isProduction && form.port) {
+            const subdomain = form.localSubdomain ? form.localSubdomain : `${appName}-${appStoreId}`;
+            
+            logger.info(`Creating Cloudflare Tunnel route for ${appUrn} -> localhost:${form.port} (subdomain: ${subdomain})`);
+            await cloudflareService.createAppRoute(subdomain, form.port);
+          }
+        }
+      } catch (error) {
+        logger.warn(`Failed to create Cloudflare Tunnel route for ${appUrn}: ${error}`);
+        // Don't fail the installation if Cloudflare route creation fails
+      }
 
       return { success: true, message: `App ${appUrn} installed successfully` };
     } catch (err) {

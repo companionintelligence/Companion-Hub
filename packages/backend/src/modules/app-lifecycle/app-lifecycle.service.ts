@@ -13,6 +13,7 @@ import { AppFilesManager } from '../apps/app-files-manager';
 import { AppsRepository } from '../apps/apps.repository';
 import { AppsService } from '../apps/apps.service';
 import { BackupManager } from '../backups/backup.manager';
+import { CloudflareTunnelService } from '../cloudflare/cloudflare-tunnel.service';
 import { MarketplaceService } from '../marketplace/marketplace.service';
 import { AppEventsQueue, appEventResultSchema, appEventSchema } from '../queue/entities/app-events';
 import { AppLifecycleCommandFactory } from './app-lifecycle-command.factory';
@@ -34,6 +35,7 @@ export class AppLifecycleService {
     private readonly appFilesManager: AppFilesManager,
     private readonly sseService: SSEService,
     private readonly backupManager: BackupManager,
+    private readonly cloudflareTunnelService: CloudflareTunnelService,
     @Inject(APP_ASYNC_MUTEX) private mutex: AsyncMutex,
   ) {
     this.logger.debug('Subscribing to app events...');
@@ -115,6 +117,14 @@ export class AppLifecycleService {
 
     if (demoMode && apps.length >= 6) {
       throw new TranslatableError('SYSTEM_ERROR_DEMO_MODE_LIMIT');
+    }
+
+    // Prevent exposing to internet in production - use exposedLocal with Cloudflare tunnel instead
+    const { isProduction } = this.config.getConfig();
+    if (isProduction && exposed) {
+      this.logger.warn(`App ${appUrn} attempted to use exposed=true in production, disabling`);
+      parsedForm.exposed = false;
+      parsedForm.domain = undefined;
     }
 
     if (exposed && !domain) {
@@ -357,6 +367,14 @@ export class AppLifecycleService {
 
     const { exposed, domain, exposedLocal, enableAuth, openPort, port } = parsedForm;
 
+    // Prevent exposing to internet in production - use exposedLocal with Cloudflare tunnel instead
+    const { isProduction } = this.config.getConfig();
+    if (isProduction && exposed) {
+      this.logger.warn(`App ${appUrn} attempted to use exposed=true in production, disabling`);
+      parsedForm.exposed = false;
+      parsedForm.domain = undefined;
+    }
+
     if (exposed && !domain) {
       throw new TranslatableError('APP_ERROR_DOMAIN_REQUIRED_IF_EXPOSE_APP');
     }
@@ -443,6 +461,42 @@ export class AppLifecycleService {
       enableAuth: parsedForm.enableAuth ?? false,
       maxBackups: parsedForm.maxBackups ?? null,
     });
+
+    // Update Cloudflare Tunnel routes if exposedLocal status, subdomain, or port changed (production only)
+    // Routes directly to the app's port - no Traefik middleman
+    const { appName, appStoreId } = extractAppUrn(appUrn);
+    const { isProduction: isProdEnv } = this.config.getConfig();
+    const oldSubdomain = app.localSubdomain || `${appName}-${appStoreId}`;
+    const newSubdomain = parsedForm.localSubdomain || `${appName}-${appStoreId}`;
+    const wasExposedLocal = app.exposedLocal;
+    const isNowExposedLocal = parsedForm.exposedLocal ?? false;
+    const oldPort = app.port;
+    const newPort = parsedForm.port ?? appInfo.port;
+    const subdomainChanged = oldSubdomain !== newSubdomain;
+    const exposedLocalChanged = wasExposedLocal !== isNowExposedLocal;
+    const portChanged = oldPort !== newPort;
+    
+    // In production, route directly to the app's port via Cloudflare Tunnel
+    if (isProdEnv && this.cloudflareTunnelService?.isEnabled() && (exposedLocalChanged || subdomainChanged || portChanged) && newPort) {
+      try {
+        // Delete old routes if they existed
+        if (wasExposedLocal && (!isNowExposedLocal || subdomainChanged)) {
+          await this.cloudflareTunnelService.deleteAppRoute(oldSubdomain).catch((err) => {
+            this.logger.warn(`Failed to delete old Cloudflare Tunnel route: ${err}`);
+          });
+        }
+        
+        // Create new route directly to the app's port
+        if (isNowExposedLocal && (!wasExposedLocal || subdomainChanged || portChanged)) {
+          await this.cloudflareTunnelService.createAppRoute(newSubdomain, newPort).catch((err) => {
+            this.logger.warn(`Failed to create Cloudflare Tunnel route: ${err}`);
+          });
+        }
+      } catch (error) {
+        // Cloudflare module might not be available, that's okay
+        this.logger.debug(`Cloudflare Tunnel route update skipped: ${error}`);
+      }
+    }
 
     if (!changed?.pendingRestart) {
       const pendingRestart = this.hasConfigChanged(app.config, changed?.config || {});
@@ -576,3 +630,4 @@ export class AppLifecycleService {
     })();
   }
 }
+
