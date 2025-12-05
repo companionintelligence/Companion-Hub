@@ -177,14 +177,29 @@ describe('X402Service', () => {
         userId: 1,
       };
 
+      // Mock Date.now to ensure different timestamps
+      const originalDateNow = Date.now;
+      let callCount = 0;
+      vi.spyOn(Date, 'now').mockImplementation(() => {
+        callCount++;
+        return 1000000000000 + callCount; // Increment by 1ms each call
+      });
+
       const result1 = await x402Service.createPaymentRequest(params);
-      // Small delay to ensure different timestamp
-      await new Promise((resolve) => setTimeout(resolve, 10));
       const result2 = await x402Service.createPaymentRequest(params);
 
+      // Restore original Date.now
+      vi.restoreAllMocks();
+
+      // Verify IDs are different and follow expected pattern
       expect(result1.id).not.toBe(result2.id);
       expect(result1.id).toMatch(/^x402_\d+_1$/);
       expect(result2.id).toMatch(/^x402_\d+_1$/);
+
+      // Extract timestamps and verify they're different
+      const timestamp1 = Number.parseInt(result1.id.split('_')[1]);
+      const timestamp2 = Number.parseInt(result2.id.split('_')[1]);
+      expect(timestamp2).toBeGreaterThan(timestamp1);
     });
   });
 
