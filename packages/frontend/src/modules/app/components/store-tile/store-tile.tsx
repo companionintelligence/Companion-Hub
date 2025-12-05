@@ -3,6 +3,7 @@ import type React from 'react';
 import './store-tile.css';
 import { AppLogo } from '@/components/app-logo/app-logo';
 import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
+import { PricingBadge, type Pricing } from '@/components/pricing-badge';
 import type { AppInfoSimple } from '@/types/app.types';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
@@ -14,6 +15,9 @@ export const StoreTile: React.FC<{ app: AppInfoSimple; isLoading: boolean }> = (
   const isNew = (app.created_at ?? 0) + 14 * 24 * 60 * 60 * 1000 > Date.now();
 
   const [appId, storeId] = app.urn.split(':');
+
+  // Get pricing from app info (if available)
+  const pricing = (app as AppInfoSimple & { pricing?: Pricing }).pricing;
 
   return (
     <Link aria-label={app.name} className="app-tile" to={`/app-store/${storeId}/${appId}`}>
@@ -27,6 +31,9 @@ export const StoreTile: React.FC<{ app: AppInfoSimple; isLoading: boolean }> = (
               <Skeleton loading={isLoading}>{limitText(app.name, 20)}</Skeleton>
             </h3>
             {isNew ? <div className="text-white badge me-1 bg-green">{t('APP_NEW')}</div> : null}
+            <Skeleton loading={isLoading}>
+              <PricingBadge pricing={pricing} size="sm" />
+            </Skeleton>
           </div>
           <p className="text-muted mb-2 store-tile-description">
             <Skeleton loading={isLoading}>{app.short_desc}</Skeleton>

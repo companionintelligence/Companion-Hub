@@ -1,0 +1,73 @@
+.payment-dialog-content {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.payment-app-info {
+  text-align: center;
+  padding: 1rem;
+  background-color: var(--bs-light);
+  border-radius: 0.5rem;
+}
+
+.payment-app-info h4 {
+  margin-bottom: 0.5rem;
+}
+
+.payment-price-display {
+  margin-top: 0.5rem;
+}
+
+.payment-methods-section h5 {
+  margin-bottom: 1rem;
+  font-size: 1rem;
+}
+
+.payment-method-options {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.payment-method-option {
+  flex: 1;
+  min-width: 140px;
+  padding: 1rem;
+  border: 2px solid var(--bs-border-color);
+  border-radius: 0.5rem;
+  background: white;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.payment-method-option:hover {
+  border-color: var(--bs-primary);
+  background-color: var(--bs-light);
+}
+
+.payment-method-option.selected {
+  border-color: var(--bs-primary);
+  background-color: rgba(var(--bs-primary-rgb), 0.1);
+}
+
+.payment-method-option .payment-method-icon {
+  font-size: 2rem;
+}
+
+.x402-info {
+  padding: 1rem;
+  background-color: var(--bs-info-bg-subtle);
+  border-radius: 0.5rem;
+  border-left: 4px solid var(--bs-info);
+}
+
+.x402-info p {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--bs-info-text-emphasis);
+}

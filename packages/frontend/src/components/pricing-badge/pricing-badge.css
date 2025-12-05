@@ -1,0 +1,54 @@
+.pricing-container {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.pricing-badge {
+  display: inline-block;
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.375rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.pricing-badge-sm {
+  font-size: 0.75rem;
+  padding: 0.125rem 0.375rem;
+}
+
+.pricing-badge-md {
+  font-size: 0.875rem;
+  padding: 0.25rem 0.5rem;
+}
+
+.pricing-badge-lg {
+  font-size: 1rem;
+  padding: 0.375rem 0.75rem;
+}
+
+.pricing-badge-free {
+  background-color: var(--bs-success);
+  color: white;
+}
+
+.pricing-badge-paid {
+  background-color: var(--bs-primary);
+  color: white;
+}
+
+.pricing-badge-subscription {
+  background-color: var(--bs-purple);
+  color: white;
+}
+
+.payment-methods {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.payment-method-icon {
+  font-size: 1rem;
+  cursor: help;
+}
