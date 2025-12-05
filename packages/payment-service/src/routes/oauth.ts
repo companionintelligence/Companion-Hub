@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { getDatabase } from '../database.js';
 import { OAuthService } from '../services/oauth.js';
 import { AccountService } from '../services/account.js';
+import { oauthRateLimit, authRateLimit } from '../middleware/rate-limit.js';
 
 export const oauthRouter = Router();
 
@@ -41,7 +42,7 @@ const registerClientSchema = z.object({
  * In a full implementation, this would render a login/consent page.
  * For API usage, the user should be pre-authenticated.
  */
-oauthRouter.get('/authorize', async (req: Request, res: Response) => {
+oauthRouter.get('/authorize', oauthRateLimit, async (req: Request, res: Response) => {
   try {
     const query = authorizeQuerySchema.parse(req.query);
     const db = getDatabase();
@@ -115,7 +116,7 @@ oauthRouter.get('/authorize', async (req: Request, res: Response) => {
  * 
  * Exchange authorization code for access token, or refresh access token.
  */
-oauthRouter.post('/token', async (req: Request, res: Response) => {
+oauthRouter.post('/token', authRateLimit, async (req: Request, res: Response) => {
   try {
     const body = tokenBodySchema.parse(req.body);
     const db = getDatabase();

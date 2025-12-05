@@ -11,6 +11,7 @@ import { appStoreRouter } from './routes/app-store.js';
 import { accountRouter } from './routes/account.js';
 import { oauthRouter } from './routes/oauth.js';
 import { apiRateLimit, webhookRateLimit } from './middleware/rate-limit.js';
+import { csrfProtection, csrfTokenEndpoint } from './middleware/csrf.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -35,6 +36,15 @@ app.use(express.urlencoded({ extended: true })); // For OAuth form submissions
 
 // Initialize SQLite database
 initializeDatabase();
+
+// CSRF protection for cookie-based authentication
+// Skips webhooks (signature-verified) and OAuth token endpoints (client-authenticated)
+app.use(csrfProtection({
+  skipRoutes: ['/api/webhooks', '/oauth/token', '/oauth/introspect', '/api/health', '/.well-known'],
+}));
+
+// CSRF token endpoint
+app.get('/api/csrf-token', csrfTokenEndpoint);
 
 // Routes with rate limiting
 app.use('/api/health', healthRouter);

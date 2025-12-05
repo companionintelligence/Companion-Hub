@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { getDatabase } from '../database.js';
 import { AccountService } from '../services/account.js';
 import { OAuthService } from '../services/oauth.js';
+import { authRateLimit } from '../middleware/rate-limit.js';
 
 export const accountRouter = Router();
 
@@ -62,8 +63,8 @@ async function authenticateUser(req: Request, res: Response, next: Function) {
   res.status(401).json({ error: 'Authentication required' });
 }
 
-// Register new account
-accountRouter.post('/register', async (req: Request, res: Response) => {
+// Register new account - apply strict rate limiting
+accountRouter.post('/register', authRateLimit, async (req: Request, res: Response) => {
   try {
     const body = registerSchema.parse(req.body);
     const db = getDatabase();
@@ -108,8 +109,8 @@ accountRouter.post('/register', async (req: Request, res: Response) => {
   }
 });
 
-// Login
-accountRouter.post('/login', async (req: Request, res: Response) => {
+// Login - apply strict rate limiting
+accountRouter.post('/login', authRateLimit, async (req: Request, res: Response) => {
   try {
     const body = loginSchema.parse(req.body);
     const db = getDatabase();

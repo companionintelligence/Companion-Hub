@@ -4,6 +4,7 @@ import { getDatabase } from '../database.js';
 import { StripeService } from '../services/stripe.js';
 import { X402Service } from '../services/x402.js';
 import { authenticateRequest } from '../middleware/auth.js';
+import { dbRateLimit } from '../middleware/rate-limit.js';
 
 export const paymentsRouter = Router();
 
@@ -180,8 +181,8 @@ paymentsRouter.get('/app/:appUrn', (req: Request, res: Response) => {
   }
 });
 
-// Check payment status for app
-paymentsRouter.get('/check/:appUrn/:userId', (req: Request, res: Response) => {
+// Check payment status for app - rate limited for database access
+paymentsRouter.get('/check/:appUrn/:userId', dbRateLimit, (req: Request, res: Response) => {
   try {
     const { appUrn, userId } = req.params;
     const db = getDatabase();

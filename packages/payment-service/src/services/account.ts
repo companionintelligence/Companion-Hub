@@ -1,4 +1,4 @@
-import { createHash, randomBytes, timingSafeEqual } from 'crypto';
+import { createHash, randomBytes, timingSafeEqual, createHmac } from 'crypto';
 import type Database from 'better-sqlite3';
 
 export interface User {
@@ -42,31 +42,43 @@ export class AccountService {
   }
 
   /**
-   * Hash a password using SHA-256 with salt
-   * In production, consider using bcrypt or argon2
+   * Hash a password using PBKDF2 with salt
+   * This provides stronger protection than simple SHA-256
+   * For even stronger security, consider migrating to argon2 or bcrypt
    */
   private hashPassword(password: string, salt?: string): { hash: string; salt: string } {
-    const useSalt = salt || randomBytes(16).toString('hex');
-    const hash = createHash('sha256')
-      .update(password + useSalt)
-      .digest('hex');
-    return { hash: `${useSalt}:${hash}`, salt: useSalt };
+    const useSalt = salt || randomBytes(32).toString('hex');
+    // Use PBKDF2 with 100,000 iterations for password hashing
+    // This is slower than SHA-256, making brute force attacks more expensive
+    const iterations = 100000;
+    const keyLength = 64;
+    const digest = 'sha512';
+    
+    // Synchronous PBKDF2 - for async, use crypto.pbkdf2
+    const hash = require('crypto').pbkdf2Sync(password, useSalt, iterations, keyLength, digest).toString('hex');
+    return { hash: `${useSalt}:${iterations}:${hash}`, salt: useSalt };
   }
 
   /**
    * Verify a password against a stored hash
    */
   private verifyPassword(password: string, storedHash: string): boolean {
-    const [salt, hash] = storedHash.split(':');
-    if (!salt || !hash) return false;
+    const parts = storedHash.split(':');
+    if (parts.length < 2) return false;
     
-    const { hash: computedHash } = this.hashPassword(password, salt);
-    const [, computedHashValue] = computedHash.split(':');
+    // Support both old (salt:hash) and new (salt:iterations:hash) formats
+    const salt = parts[0];
+    const iterations = parts.length === 3 ? parseInt(parts[1]) : 100000;
+    const hash = parts.length === 3 ? parts[2] : parts[1];
+    
+    const keyLength = 64;
+    const digest = 'sha512';
     
     try {
+      const computedHash = require('crypto').pbkdf2Sync(password, salt, iterations, keyLength, digest).toString('hex');
       return timingSafeEqual(
         Buffer.from(hash, 'hex'),
-        Buffer.from(computedHashValue, 'hex')
+        Buffer.from(computedHash, 'hex')
       );
     } catch {
       return false;

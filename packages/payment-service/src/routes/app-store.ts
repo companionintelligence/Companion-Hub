@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { getDatabase } from '../database.js';
 import { AppStoreService } from '../services/app-store.js';
 import { authenticateRequest } from '../middleware/auth.js';
+import { dbRateLimit } from '../middleware/rate-limit.js';
 
 export const appStoreRouter = Router();
 
@@ -67,7 +68,7 @@ appStoreRouter.get('/apps/:appUrn/access/:userId', authenticateRequest, async (r
 });
 
 // Protected endpoint - get docker-compose for paid apps (requires payment verification)
-appStoreRouter.get('/apps/:appUrn/docker-compose', authenticateRequest, async (req: Request, res: Response) => {
+appStoreRouter.get('/apps/:appUrn/docker-compose', authenticateRequest, dbRateLimit, async (req: Request, res: Response) => {
   try {
     const { appUrn } = req.params;
     const userId = parseInt(req.query.userId as string);

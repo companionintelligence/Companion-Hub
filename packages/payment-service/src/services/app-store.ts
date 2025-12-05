@@ -5,6 +5,8 @@
  * based on payment status.
  */
 
+import { createHmac, randomBytes } from 'crypto';
+
 interface AppConfig {
   id: string;
   name: string;
@@ -33,11 +35,13 @@ export class AppStoreService {
   private githubBranch: string;
   private appCache: Map<string, { config: AppConfig; cachedAt: number }> = new Map();
   private cacheTtl: number = 5 * 60 * 1000; // 5 minutes
+  private paymentKeySecret: string | undefined;
 
   constructor() {
     this.githubToken = process.env.GITHUB_APP_STORE_TOKEN;
     this.githubRepo = process.env.GITHUB_APP_STORE_REPO || 'companionintelligence/CI-App-Store';
     this.githubBranch = process.env.GITHUB_APP_STORE_BRANCH || 'main';
+    this.paymentKeySecret = process.env.PAYMENT_KEY_SECRET;
   }
 
   /**
@@ -159,24 +163,42 @@ export class AppStoreService {
   }
 
   /**
+   * Get the payment key secret, failing securely if not configured
+   */
+  private getPaymentKeySecret(): string {
+    if (!this.paymentKeySecret) {
+      throw new Error('PAYMENT_KEY_SECRET is not configured. Cannot generate secure payment keys.');
+    }
+    return this.paymentKeySecret;
+  }
+
+  /**
+   * Generate HMAC-SHA256 signature for payment key
+   */
+  private signPaymentKey(data: string): string {
+    const secret = this.getPaymentKeySecret();
+    return createHmac('sha256', secret).update(data).digest('base64url');
+  }
+
+  /**
    * Generate a signed payment key for accessing paid app resources
    * This key is short-lived and tied to the user and app
+   * Uses HMAC-SHA256 for cryptographically secure signatures
    */
   generatePaymentKey(appUrn: string, userId: number): string {
     const timestamp = Date.now();
     const expiresAt = timestamp + (24 * 60 * 60 * 1000); // 24 hours
+    const nonce = randomBytes(8).toString('hex'); // Add nonce for uniqueness
     const payload = {
       appUrn,
       userId,
       timestamp,
       expiresAt,
+      nonce,
     };
     
-    // In production, this should use proper JWT signing with a secret
-    // For now, we use base64 encoding with a simple hash
-    const secret = process.env.PAYMENT_KEY_SECRET || 'default-secret-change-in-production';
     const data = JSON.stringify(payload);
-    const signature = this.simpleHash(`${data}${secret}`);
+    const signature = this.signPaymentKey(data);
     
     return Buffer.from(JSON.stringify({ ...payload, signature })).toString('base64url');
   }
@@ -187,38 +209,28 @@ export class AppStoreService {
   verifyPaymentKey(key: string): { valid: boolean; appUrn?: string; userId?: number; reason?: string } {
     try {
       const decoded = JSON.parse(Buffer.from(key, 'base64url').toString());
-      const { appUrn, userId, timestamp, expiresAt, signature } = decoded;
+      const { appUrn, userId, timestamp, expiresAt, nonce, signature } = decoded;
       
       // Check expiration
       if (Date.now() > expiresAt) {
         return { valid: false, reason: 'Payment key expired' };
       }
       
-      // Verify signature
-      const secret = process.env.PAYMENT_KEY_SECRET || 'default-secret-change-in-production';
-      const expectedSignature = this.simpleHash(`${JSON.stringify({ appUrn, userId, timestamp, expiresAt })}${secret}`);
+      // Verify signature using HMAC-SHA256
+      const payloadData = JSON.stringify({ appUrn, userId, timestamp, expiresAt, nonce });
+      const expectedSignature = this.signPaymentKey(payloadData);
       
       if (signature !== expectedSignature) {
         return { valid: false, reason: 'Invalid payment key signature' };
       }
       
       return { valid: true, appUrn, userId };
-    } catch {
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('PAYMENT_KEY_SECRET')) {
+        return { valid: false, reason: 'Payment key verification not configured' };
+      }
       return { valid: false, reason: 'Malformed payment key' };
     }
-  }
-
-  /**
-   * Simple hash function for signing (use crypto in production)
-   */
-  private simpleHash(str: string): string {
-    let hash = 0;
-    for (let i = 0; i < str.length; i++) {
-      const char = str.charCodeAt(i);
-      hash = ((hash << 5) - hash) + char;
-      hash = hash & hash; // Convert to 32bit integer
-    }
-    return Math.abs(hash).toString(36);
   }
 
   /**

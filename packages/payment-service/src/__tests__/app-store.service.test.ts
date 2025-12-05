@@ -36,7 +36,7 @@ describe('AppStoreService', () => {
 
   describe('generatePaymentKey', () => {
     it('should generate a valid payment key', async () => {
-      process.env.PAYMENT_KEY_SECRET = 'test-secret';
+      process.env.PAYMENT_KEY_SECRET = 'test-secret-key-32-chars-minimum!';
       
       const { AppStoreService } = await import('../services/app-store.js');
       const service = new AppStoreService();
@@ -49,7 +49,7 @@ describe('AppStoreService', () => {
     });
 
     it('should generate different keys for different apps', async () => {
-      process.env.PAYMENT_KEY_SECRET = 'test-secret';
+      process.env.PAYMENT_KEY_SECRET = 'test-secret-key-32-chars-minimum!';
       
       const { AppStoreService } = await import('../services/app-store.js');
       const service = new AppStoreService();
@@ -61,7 +61,7 @@ describe('AppStoreService', () => {
     });
 
     it('should generate different keys for different users', async () => {
-      process.env.PAYMENT_KEY_SECRET = 'test-secret';
+      process.env.PAYMENT_KEY_SECRET = 'test-secret-key-32-chars-minimum!';
       
       const { AppStoreService } = await import('../services/app-store.js');
       const service = new AppStoreService();
@@ -71,11 +71,20 @@ describe('AppStoreService', () => {
       
       expect(key1).not.toBe(key2);
     });
+
+    it('should throw error when PAYMENT_KEY_SECRET is not set', async () => {
+      delete process.env.PAYMENT_KEY_SECRET;
+      
+      const { AppStoreService } = await import('../services/app-store.js');
+      const service = new AppStoreService();
+      
+      expect(() => service.generatePaymentKey('test-app', 123)).toThrow('PAYMENT_KEY_SECRET is not configured');
+    });
   });
 
   describe('verifyPaymentKey', () => {
     it('should verify a valid payment key', async () => {
-      process.env.PAYMENT_KEY_SECRET = 'test-secret';
+      process.env.PAYMENT_KEY_SECRET = 'test-secret-key-32-chars-minimum!';
       
       const { AppStoreService } = await import('../services/app-store.js');
       const service = new AppStoreService();
@@ -89,6 +98,8 @@ describe('AppStoreService', () => {
     });
 
     it('should reject a malformed payment key', async () => {
+      process.env.PAYMENT_KEY_SECRET = 'test-secret-key-32-chars-minimum!';
+      
       const { AppStoreService } = await import('../services/app-store.js');
       const service = new AppStoreService();
       
@@ -99,7 +110,7 @@ describe('AppStoreService', () => {
     });
 
     it('should reject a payment key with wrong signature', async () => {
-      process.env.PAYMENT_KEY_SECRET = 'secret1';
+      process.env.PAYMENT_KEY_SECRET = 'secret1-must-be-long-enough-32ch!';
       
       const { AppStoreService } = await import('../services/app-store.js');
       const service1 = new AppStoreService();
@@ -107,7 +118,7 @@ describe('AppStoreService', () => {
       
       // Change secret and try to verify
       vi.resetModules();
-      process.env.PAYMENT_KEY_SECRET = 'secret2';
+      process.env.PAYMENT_KEY_SECRET = 'secret2-must-be-long-enough-32ch!';
       
       const { AppStoreService: AppStoreService2 } = await import('../services/app-store.js');
       const service2 = new AppStoreService2();
@@ -115,6 +126,28 @@ describe('AppStoreService', () => {
       
       expect(result.valid).toBe(false);
       expect(result.reason).toBe('Invalid payment key signature');
+    });
+
+    it('should return error when PAYMENT_KEY_SECRET is not set during verification', async () => {
+      delete process.env.PAYMENT_KEY_SECRET;
+      
+      const { AppStoreService } = await import('../services/app-store.js');
+      const service = new AppStoreService();
+      
+      // Create a fake key (base64url encoded JSON)
+      const fakeKey = Buffer.from(JSON.stringify({
+        appUrn: 'test',
+        userId: 1,
+        timestamp: Date.now(),
+        expiresAt: Date.now() + 1000,
+        nonce: 'abc',
+        signature: 'fake',
+      })).toString('base64url');
+      
+      const result = service.verifyPaymentKey(fakeKey);
+      
+      expect(result.valid).toBe(false);
+      expect(result.reason).toBe('Payment key verification not configured');
     });
   });
 
