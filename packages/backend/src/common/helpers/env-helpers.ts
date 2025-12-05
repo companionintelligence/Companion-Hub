@@ -118,6 +118,10 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   envMap.set('POSTGRES_PORT', String(5432));
   envMap.set('DEMO_MODE', typeof settings.demoMode === 'boolean' ? String(settings.demoMode) : envMap.get('DEMO_MODE') || 'false');
   envMap.set(
+    'DISABLE_PASSWORD_RESET',
+    typeof settings.disablePasswordReset === 'boolean' ? String(settings.disablePasswordReset) : envMap.get('DISABLE_PASSWORD_RESET') || 'true',
+  );
+  envMap.set(
     'GUEST_DASHBOARD',
     typeof settings.guestDashboard === 'boolean' ? String(settings.guestDashboard) : envMap.get('GUEST_DASHBOARD') || 'false',
   );

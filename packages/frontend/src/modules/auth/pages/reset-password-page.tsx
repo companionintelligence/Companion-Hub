@@ -1,5 +1,6 @@
 import { cancelResetPasswordMutation, checkResetPasswordRequestOptions, resetPasswordMutation } from '@/api-client/@tanstack/react-query.gen';
 import { Button } from '@/components/ui/Button';
+import { useUserContext } from '@/context/user-context';
 import type { TranslatableError } from '@/types/error.types';
 import { useMutation, useSuspenseQuery } from '@tanstack/react-query';
 import { toast } from 'react-hot-toast';
@@ -10,6 +11,7 @@ import { ResetPasswordForm } from '../components/reset-password-form/reset-passw
 export default () => {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const { isPasswordResetDisabled } = useUserContext();
 
   const { data } = useSuspenseQuery({
     ...checkResetPasswordRequestOptions(),
@@ -53,16 +55,8 @@ export default () => {
   }
 
   if (!data.isRequestPending) {
-    return (
-      <>
-        {/* Original instructions - commented out for demo purposes */}
-        {/* <h2 className="h2 text-center mb-4">{t('AUTH_RESET_PASSWORD_TITLE')}</h2>
-        <p className="text-secondary mb-4">{t('AUTH_RESET_PASSWORD_INSTRUCTIONS')}</p>
-        <pre>
-          <code>./runtipi-cli reset-password</code>
-        </pre> */}
-
-        {/* Demo credentials message */}
+    if (isPasswordResetDisabled) {
+      return (
         <div className="text-center">
           <div className="mb-4">
             <div className="mb-3">
@@ -136,6 +130,16 @@ export default () => {
             <Link to="/login">Back to Login</Link>
           </Button>
         </div>
+      );
+    }
+
+    return (
+      <>
+        <h2 className="h2 text-center mb-4">{t('AUTH_RESET_PASSWORD_TITLE')}</h2>
+        <p className="text-secondary mb-4">{t('AUTH_RESET_PASSWORD_INSTRUCTIONS')}</p>
+        <pre>
+          <code>./runtipi-cli reset-password</code>
+        </pre>
       </>
     );
   }

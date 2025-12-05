@@ -23,7 +23,7 @@ export class AppController {
   @Get('/user-context')
   @ApiResponse({ type: UserContextDto })
   async userContext(@Req() req: Request) {
-    const { guestDashboard, allowAutoThemes, themeColor, themeBase, allowErrorMonitoring, localDomain, sslPort } =
+    const { guestDashboard, disablePasswordReset, allowAutoThemes, themeColor, themeBase, allowErrorMonitoring, localDomain, sslPort } =
       this.configuration.get('userSettings');
     const version = await this.appService.getVersion();
     const operator = await this.userRepository.getFirstOperator();
@@ -33,6 +33,7 @@ export class AppController {
         isLoggedIn: Boolean(req.user),
         isConfigured: Boolean(operator),
         isGuestDashboardEnabled: guestDashboard,
+        isPasswordResetDisabled: disablePasswordReset,
         allowAutoThemes,
         allowErrorMonitoring,
         themeColor,
