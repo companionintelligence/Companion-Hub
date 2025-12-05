@@ -14,10 +14,20 @@ export class X402Service {
 
   /**
    * Verify an X402 crypto payment transaction
+   * 
+   * IMPORTANT: This is a placeholder implementation.
+   * In production, this must verify the transaction on the blockchain
+   * before returning true. Returning true without verification would
+   * allow users to bypass payment.
    */
   async verifyPayment(transactionHash: string): Promise<boolean> {
     if (!this.x402Enabled) {
       console.warn('X402 payments not enabled');
+      return false;
+    }
+
+    if (!transactionHash || transactionHash.length < 10) {
+      console.warn('Invalid transaction hash format');
       return false;
     }
 
@@ -32,9 +42,9 @@ export class X402Service {
 
       console.log(`Verifying X402 transaction: ${transactionHash}`);
 
-      // Placeholder for actual blockchain verification
-      // This would integrate with the X402 protocol
-      return true;
+      // SECURITY: Throw error to prevent unauthorized access
+      // This placeholder must be replaced with actual blockchain verification
+      throw new Error('X402 payment verification not implemented. Blockchain integration required.');
     } catch (error) {
       console.error('Failed to verify X402 payment:', error);
       return false;

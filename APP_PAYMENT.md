@@ -4,53 +4,153 @@ This document describes how to add payment support to app store listings in CI-O
 
 ## Architecture Overview
 
-CI-OS-Hub uses a **fully isolated payment architecture** where the payment service runs in a separate Docker container from the main application:
+CI-OS-Hub uses a **fully isolated payment architecture** where the payment service runs in a separate Docker container and serves as the **source of truth** for:
+
+- **User accounts and authentication** (OAuth 2.0 server)
+- **Payments and subscriptions**
+- **App entitlements and access control**
+- **App store catalog** (proxied from private GitHub repository)
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                           User Browser                                   │
-└────────────────────────────────┬────────────────────────────────────────┘
-                                 │
-              ┌──────────────────┴──────────────────┐
-              │                                     │
-              ▼                                     ▼
-┌───────────────────────────────┐   ┌───────────────────────────────────┐
-│     Main Application          │   │      Payment Service               │
-│     (your-domain.com)         │   │      (payment.your-domain.com)     │
-│                               │   │                                    │
-│  ┌─────────────────────────┐  │   │  ┌──────────────────────────────┐ │
-│  │   packages/backend/     │──┼───┼─▶│  packages/payment-service/   │ │
-│  │                         │  │   │  │                              │ │
-│  │  - App Store UI         │  │   │  │  - Stripe API Integration    │ │
-│  │  - User Authentication  │  │   │  │  - X402 Crypto Protocol      │ │
-│  │  - App Management       │  │   │  │  - SQLite Payment Database   │ │
-│  │  - PostgreSQL Database  │  │   │  │  - Secret Key Storage        │ │
-│  └─────────────────────────┘  │   │  │  - Rate Limiting             │ │
-│                               │   │  │  - Webhook Handlers          │ │
-│  ┌─────────────────────────┐  │   │  └──────────────────────────────┘ │
-│  │   packages/frontend/    │  │   │                                    │
-│  │                         │  │   │  Environment Variables:            │
-│  │  - PricingBadge         │  │   │  - STRIPE_SECRET_KEY              │
-│  │  - PaymentDialog        │  │   │  - STRIPE_PUBLISHABLE_KEY         │
-│  │  - Store Tiles          │  │   │  - STRIPE_WEBHOOK_SECRET          │
-│  └─────────────────────────┘  │   │  - X402_ENABLED                   │
-│                               │   │  - X402_PAYMENT_ADDRESS           │
-└───────────────────────────────┘   └───────────────────────────────────┘
-        │                                         │
-        │  PAYMENT_SERVICE_URL                    │
-        │  PAYMENT_API_KEY                        │
-        └─────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              User Browser                                    │
+└──────────────────────────────────┬──────────────────────────────────────────┘
+                                   │
+                ┌──────────────────┴──────────────────┐
+                │                                     │
+                ▼                                     ▼
+┌─────────────────────────────────┐   ┌─────────────────────────────────────┐
+│      Main Application           │   │        Payment Service               │
+│      (your-domain.com)          │   │        (payment.your-domain.com)     │
+│                                 │   │                                      │
+│  ┌───────────────────────────┐  │   │  ┌────────────────────────────────┐ │
+│  │    packages/backend/      │──┼───┼─▶│   packages/payment-service/    │ │
+│  │                           │  │   │  │                                │ │
+│  │  - App Store UI Proxy     │  │   │  │  SOURCE OF TRUTH FOR:          │ │
+│  │  - OAuth Client           │  │   │  │  - User Accounts (SQLite)      │ │
+│  │  - App Runtime            │  │   │  │  - Payments & Subscriptions    │ │
+│  └───────────────────────────┘  │   │  │  - App Entitlements            │ │
+│                                 │   │  │  - OAuth 2.0 Sessions          │ │
+│  ┌───────────────────────────┐  │   │  │                                │ │
+│  │    packages/frontend/     │  │   │  │  INTEGRATIONS:                 │ │
+│  │                           │  │   │  │  - Stripe API                  │ │
+│  │  - PricingBadge           │  │   │  │  - X402 Crypto Protocol        │ │
+│  │  - PaymentDialog          │  │   │  │  - GitHub Private Repo (Apps)  │ │
+│  │  - OAuth Login Flow       │  │   │  │                                │ │
+│  └───────────────────────────┘  │   │  │  SECURITY:                     │ │
+│                                 │   │  │  - Secret Key Isolation        │ │
+└─────────────────────────────────┘   │  │  - Rate Limiting               │ │
+                                      │  │  - PKCE for OAuth              │ │
+         ┌────────────────────────────┤  └────────────────────────────────┘ │
+         │                            │                                      │
+         │                            │  ┌────────────────────────────────┐ │
+         │     OAuth 2.0 Flow         │  │  Private GitHub Repository     │ │
+         │  (Authorization Code +     │  │  companionintelligence/        │ │
+         │   PKCE)                    │  │       CI-App-Store             │ │
+         │                            │  │                                │ │
+         └────────────────────────────┤  │  - App docker-compose.json     │ │
+                                      │  │  - App config.json (pricing)   │ │
+                                      │  │  - App assets                  │ │
+                                      │  └────────────────────────────────┘ │
+                                      └──────────────────────────────────────┘
 ```
+
+### Data Flow
+
+1. **User Authentication**: Users log in via the Payment Service's OAuth 2.0 server
+2. **App Discovery**: Main app proxies app store catalog from Payment Service
+3. **Payment**: Payment Service handles Stripe/X402 transactions
+4. **Entitlement**: Payment Service grants app access upon successful payment
+5. **App Download**: Payment Service provides docker-compose + payment key for verified users
 
 ### Security Benefits
 
 | Feature | Description |
 |---------|-------------|
-| **Secret Key Isolation** | Stripe and X402 API keys are stored only in the payment service container |
-| **Separate Database** | Payment data stored in isolated SQLite database, separate from main PostgreSQL |
-| **Minimal Attack Surface** | Payment service has minimal dependencies and limited exposed endpoints |
-| **Service-to-Service Auth** | Main app authenticates with payment service using API secret key |
-| **Rate Limiting** | All payment endpoints are rate-limited to prevent abuse |
+| **Central Auth** | Single source of truth for user accounts and sessions |
+| **Secret Key Isolation** | Stripe, X402, and GitHub keys stored only in payment service |
+| **OAuth 2.0 + PKCE** | Secure authorization code flow with proof key for code exchange |
+| **Separate Database** | SQLite database isolated from main PostgreSQL |
+| **App Catalog DRM** | Paid apps require valid payment key to download |
+| **Rate Limiting** | All endpoints are rate-limited to prevent abuse |
+
+## Account Management & OAuth
+
+### OAuth 2.0 Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /oauth/authorize` | Authorization endpoint (with PKCE support) |
+| `POST /oauth/token` | Token endpoint |
+| `POST /oauth/revoke` | Token revocation |
+| `POST /oauth/introspect` | Token introspection |
+| `GET /oauth/userinfo` | OpenID Connect userinfo |
+| `GET /.well-known/openid-configuration` | OpenID Connect discovery |
+
+### Account Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/account/register` | Create new account |
+| POST | `/api/account/login` | Login with email/password |
+| POST | `/api/account/logout` | Logout current session |
+| GET | `/api/account/me` | Get current user profile |
+| PATCH | `/api/account/me` | Update user profile |
+| POST | `/api/account/me/password` | Change password |
+| GET | `/api/account/me/entitlements` | Get user's app entitlements |
+| GET | `/api/account/me/entitlements/:appUrn` | Check specific app access |
+| DELETE | `/api/account/me` | Delete account |
+| POST | `/api/account/me/logout-all` | Logout all devices |
+
+### Registering an OAuth Client
+
+To connect your CI-OS-Hub instance to the Payment Service:
+
+```bash
+curl -X POST https://payment.yourdomain.com/oauth/clients \
+  -H "Authorization: Bearer YOUR_ADMIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "CI-OS-Hub Main App",
+    "redirect_uris": ["https://yourdomain.com/oauth/callback"],
+    "scopes": ["read", "write", "profile", "email"]
+  }'
+```
+
+Response:
+```json
+{
+  "client_id": "abc123...",
+  "client_secret": "xyz789...",
+  "message": "Store the client_secret securely. It cannot be retrieved again."
+}
+```
+
+## App Store Proxy
+
+The Payment Service acts as a secure proxy to the private GitHub app store repository.
+
+### App Store Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/store/apps` | List all available apps |
+| GET | `/api/store/apps/:appUrn/config` | Get app config (pricing visible to all) |
+| GET | `/api/store/apps/:appUrn/access/:userId` | Check user's access to app |
+| GET | `/api/store/apps/:appUrn/docker-compose` | Get docker-compose (requires payment) |
+| POST | `/api/store/verify-key` | Verify a payment key |
+| GET | `/api/store/status` | Check app store service status |
+
+### Payment Key System
+
+When a user pays for an app:
+
+1. Payment Service records the payment in SQLite
+2. Grants entitlement to the user for that app
+3. Generates a time-limited payment key (24 hours)
+4. Returns payment key with docker-compose file
+
+The payment key can be verified by the main app to confirm access.
 
 ## Pricing Types
 
@@ -71,7 +171,7 @@ CI-OS-Hub supports three types of app pricing:
 
 ### Step 1: Update Your App's config.json
 
-Add a `pricing` field to your app's `config.json` file:
+Add a `pricing` field to your app's `config.json` file in the CI-App-Store repository:
 
 #### Free App (Default)
 
@@ -155,14 +255,6 @@ Or simply omit the `pricing` field entirely - apps are free by default.
 
 ## Server Configuration
 
-### Main Application (.env)
-
-```bash
-# Payment Service Connection
-PAYMENT_SERVICE_URL=http://runtipi-payment:3001
-PAYMENT_API_KEY=your-api-key-here
-```
-
 ### Payment Service (packages/payment-service/.env)
 
 ```bash
@@ -170,7 +262,7 @@ PAYMENT_API_KEY=your-api-key-here
 PORT=3001
 NODE_ENV=production
 
-# Payment Service Domain
+# Payment Service Domain (OAuth issuer)
 PAYMENT_SERVICE_URL=https://payment.yourdomain.com
 
 # Stripe Configuration
@@ -182,14 +274,38 @@ STRIPE_WEBHOOK_SECRET=whsec_xxxxxxxxxxxxxxxxxxxxx
 X402_ENABLED=true
 X402_PAYMENT_ADDRESS=0x1234567890abcdef...
 
-# API Authentication (shared with main app)
+# Service-to-Service API Key
 API_SECRET_KEY=your-random-secret-key-here
 
-# Database
+# Admin API Key (for registering OAuth clients)
+ADMIN_API_KEY=your-admin-secret-key-here
+
+# Database (source of truth)
 DATABASE_PATH=/data/payments.db
 
 # CORS
 CORS_ORIGINS=https://yourdomain.com
+
+# GitHub App Store Integration
+GITHUB_APP_STORE_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxx
+GITHUB_APP_STORE_REPO=companionintelligence/CI-App-Store
+GITHUB_APP_STORE_BRANCH=main
+
+# Payment Key Signing Secret
+PAYMENT_KEY_SECRET=your-random-payment-key-secret
+```
+
+### Main Application (.env)
+
+```bash
+# Payment Service OAuth Connection
+PAYMENT_SERVICE_URL=https://payment.yourdomain.com
+OAUTH_CLIENT_ID=your-oauth-client-id
+OAUTH_CLIENT_SECRET=your-oauth-client-secret
+OAUTH_REDIRECT_URI=https://yourdomain.com/oauth/callback
+
+# Payment Service API Key (for service-to-service calls)
+PAYMENT_API_KEY=your-api-key-here
 ```
 
 ## Docker Deployment
@@ -257,7 +373,9 @@ Configure these events in your Stripe webhook:
 - USD Coin (USDC)
 - Tether (USDT)
 
-## Payment Service API Endpoints
+## Payment Service API Reference
+
+### Payment Endpoints
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -266,6 +384,7 @@ Configure these events in your Stripe webhook:
 | POST | `/api/payments/:id/stripe/process` | Process Stripe payment |
 | POST | `/api/payments/:id/x402/process` | Process X402 payment |
 | GET | `/api/payments/user/:userId` | Get user's payment history |
+| GET | `/api/payments/app/:appUrn` | Get all payments for an app |
 | GET | `/api/payments/check/:appUrn/:userId` | Check payment status |
 | POST | `/api/payments/subscriptions/:id/cancel` | Cancel subscription |
 | POST | `/api/payments/stripe/checkout` | Create Stripe checkout session |
@@ -293,6 +412,32 @@ Handles the payment flow:
 2. Redirects to Stripe checkout or displays X402 payment info
 3. Handles payment confirmation
 
+## Security Considerations & DRM
+
+### Additional Security Measures to Consider
+
+1. **Payment Key Rotation**: Payment keys expire after 24 hours
+2. **Rate Limiting**: All endpoints are rate-limited
+3. **Webhook Signature Verification**: Stripe webhooks are cryptographically verified
+4. **Token Cleanup**: Expired OAuth tokens are automatically cleaned up
+5. **PKCE for OAuth**: Prevents authorization code interception attacks
+
+### DRM Enforcement
+
+- Apps are hosted in a private GitHub repository
+- Docker-compose files are only provided after payment verification
+- Payment keys are time-limited and user/app specific
+- Entitlements are tracked in the SQLite database
+- Subscription expiration is checked in real-time
+
+### Recommended Additional Security
+
+1. **IP-based restrictions** for payment key usage
+2. **Device fingerprinting** for paid app installations
+3. **License file injection** into docker-compose for app-level verification
+4. **Periodic entitlement verification** for long-running apps
+5. **Audit logging** for all payment and access events
+
 ## Best Practices
 
 1. **Test Mode**: Always test with Stripe test keys before going live
@@ -301,6 +446,8 @@ Handles the payment flow:
 4. **Refund Policy**: Clearly communicate refund policies in your app description
 5. **Currency**: Use consistent ISO 4217 currency codes
 6. **Subscriptions**: Handle subscription lifecycle events (cancellation, expiration)
+7. **OAuth Security**: Always use PKCE in the authorization code flow
+8. **Session Management**: Implement proper session timeout and logout
 
 ## Troubleshooting
 
@@ -308,6 +455,16 @@ Handles the payment flow:
 - Check environment variables are set correctly
 - Verify SQLite database path is writable
 - Check Docker logs: `docker logs runtipi-payment`
+
+### OAuth Login Failing
+- Verify OAuth client credentials are correct
+- Check redirect URI matches exactly (including trailing slashes)
+- Review CORS origins configuration
+
+### App Store Not Loading
+- Check GitHub token has read access to the repository
+- Verify repository name and branch are correct
+- Check GitHub API rate limits
 
 ### Stripe Payments Failing
 - Verify Stripe API keys are correct

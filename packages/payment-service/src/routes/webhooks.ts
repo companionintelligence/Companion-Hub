@@ -83,9 +83,9 @@ webhooksRouter.post('/stripe', async (req: Request, res: Response) => {
             );
           } else {
             const item = subscription.items.data[0];
-            // Convert cents to dollars using string manipulation to avoid floating point issues
+            // Store amount in cents (integer) to avoid floating point precision issues
+            // Convert to string for SQLite storage
             const amountInCents = item.price.unit_amount || 0;
-            const amountInDollars = (amountInCents / 100).toFixed(2);
             
             db.prepare(`
               INSERT INTO subscriptions 
@@ -94,7 +94,7 @@ webhooksRouter.post('/stripe', async (req: Request, res: Response) => {
             `).run(
               metadata.appUrn,
               parseInt(metadata.userId),
-              amountInDollars,
+              amountInCents.toString(), // Store as cents (integer string) for precision
               item.price.currency.toUpperCase(),
               item.price.recurring?.interval === 'year' ? 'yearly' : 'monthly',
               subscription.status === 'active' ? 'active' : 'cancelled',

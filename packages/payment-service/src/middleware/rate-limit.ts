@@ -9,6 +9,14 @@ interface RateLimitStore {
 
 const store: RateLimitStore = {};
 
+// Warn about in-memory rate limiting in production
+if (process.env.NODE_ENV === 'production') {
+  console.warn(
+    '⚠️ Warning: Using in-memory rate limiting. For multi-instance deployments, ' +
+    'consider using Redis or another shared store for rate limiting.'
+  );
+}
+
 // Clean up expired entries periodically
 setInterval(() => {
   const now = Date.now();

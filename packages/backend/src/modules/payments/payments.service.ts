@@ -111,6 +111,13 @@ export class PaymentsService {
   }
 
   /**
+   * Get all payments for an app (admin use)
+   */
+  async getAppPayments(appUrn: string) {
+    return this.fetchFromPaymentService(`/api/payments/app/${encodeURIComponent(appUrn)}`);
+  }
+
+  /**
    * Cancel a subscription
    */
   async cancelSubscription(subscriptionId: number) {

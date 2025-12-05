@@ -161,6 +161,25 @@ paymentsRouter.get('/user/:userId', (req: Request, res: Response) => {
   }
 });
 
+// Get all payments for an app (admin endpoint)
+paymentsRouter.get('/app/:appUrn', (req: Request, res: Response) => {
+  try {
+    const { appUrn } = req.params;
+    const db = getDatabase();
+
+    const payments = db.prepare(`
+      SELECT * FROM payments 
+      WHERE app_urn = ?
+      ORDER BY created_at DESC
+    `).all(appUrn);
+
+    res.json(payments);
+  } catch (error) {
+    console.error('Error fetching app payments:', error);
+    res.status(500).json({ error: 'Failed to fetch payments' });
+  }
+});
+
 // Check payment status for app
 paymentsRouter.get('/check/:appUrn/:userId', (req: Request, res: Response) => {
   try {
