@@ -393,8 +393,12 @@ export class CloudflareTunnelService {
       return false;
     }
 
-    // Get LOCAL_DOMAIN from config (e.g., "companionintel.com")
-    const localDomain = this.config.get('userSettings').localDomain || process.env.LOCAL_DOMAIN || 'companionintel.com';
+    // Get LOCAL_DOMAIN from config
+    const localDomain = this.config.get('userSettings').localDomain || process.env.LOCAL_DOMAIN;
+    if (!localDomain) {
+      this.logger.error('No local domain configured. Please set userSettings.localDomain or LOCAL_DOMAIN environment variable.');
+      return false;
+    }
     const hostname = `${subdomain}.${localDomain}`;
     
     // Route directly to the app's port - no Traefik middleman
