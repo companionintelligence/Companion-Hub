@@ -35,8 +35,9 @@ export class PaymentsService {
     });
 
     if (!response.ok) {
-      const error = await response.json().catch(() => ({ error: 'Unknown error' }));
-      throw new Error(error.error || `Payment service error: ${response.status}`);
+      const errorResponse = await response.json().catch(() => ({}));
+      const errorMessage = errorResponse.error || errorResponse.message || `Payment service error: ${response.status}`;
+      throw new Error(errorMessage);
     }
 
     return response.json();

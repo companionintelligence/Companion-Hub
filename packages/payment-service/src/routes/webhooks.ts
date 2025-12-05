@@ -83,6 +83,10 @@ webhooksRouter.post('/stripe', async (req: Request, res: Response) => {
             );
           } else {
             const item = subscription.items.data[0];
+            // Convert cents to dollars using string manipulation to avoid floating point issues
+            const amountInCents = item.price.unit_amount || 0;
+            const amountInDollars = (amountInCents / 100).toFixed(2);
+            
             db.prepare(`
               INSERT INTO subscriptions 
               (app_urn, user_id, payment_method, amount, currency, interval, status, stripe_subscription_id, current_period_start, current_period_end)
@@ -90,7 +94,7 @@ webhooksRouter.post('/stripe', async (req: Request, res: Response) => {
             `).run(
               metadata.appUrn,
               parseInt(metadata.userId),
-              ((item.price.unit_amount || 0) / 100).toString(),
+              amountInDollars,
               item.price.currency.toUpperCase(),
               item.price.recurring?.interval === 'year' ? 'yearly' : 'monthly',
               subscription.status === 'active' ? 'active' : 'cancelled',

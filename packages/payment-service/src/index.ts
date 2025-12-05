@@ -6,6 +6,7 @@ import { initializeDatabase } from './database.js';
 import { paymentsRouter } from './routes/payments.js';
 import { webhooksRouter } from './routes/webhooks.js';
 import { healthRouter } from './routes/health.js';
+import { apiRateLimit, webhookRateLimit } from './middleware/rate-limit.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -27,10 +28,10 @@ app.use(express.json());
 // Initialize SQLite database
 initializeDatabase();
 
-// Routes
+// Routes with rate limiting
 app.use('/api/health', healthRouter);
-app.use('/api/payments', paymentsRouter);
-app.use('/api/webhooks', webhooksRouter);
+app.use('/api/payments', apiRateLimit, paymentsRouter);
+app.use('/api/webhooks', webhookRateLimit, webhooksRouter);
 
 // Error handling middleware
 app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {

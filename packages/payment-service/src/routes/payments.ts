@@ -10,6 +10,24 @@ export const paymentsRouter = Router();
 // Apply authentication to all payment routes
 paymentsRouter.use(authenticateRequest);
 
+// Types for database records
+interface SubscriptionRecord {
+  id: number;
+  app_urn: string;
+  user_id: number;
+  payment_method: 'stripe' | 'x402';
+  amount: string;
+  currency: string;
+  interval: 'monthly' | 'yearly';
+  status: 'active' | 'cancelled' | 'expired';
+  stripe_subscription_id: string | null;
+  current_period_start: string | null;
+  current_period_end: string | null;
+  cancelled_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 // Validation schemas
 const createPaymentSchema = z.object({
   appUrn: z.string(),
@@ -178,7 +196,7 @@ paymentsRouter.post('/subscriptions/:id/cancel', async (req: Request, res: Respo
     const subscriptionId = parseInt(req.params.id);
     const db = getDatabase();
 
-    const subscription = db.prepare('SELECT * FROM subscriptions WHERE id = ?').get(subscriptionId) as any;
+    const subscription = db.prepare('SELECT * FROM subscriptions WHERE id = ?').get(subscriptionId) as SubscriptionRecord | undefined;
     if (!subscription) {
       return res.status(404).json({ error: 'Subscription not found' });
     }

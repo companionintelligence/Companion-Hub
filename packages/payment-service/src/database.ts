@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3';
 import path from 'path';
+import fs from 'fs';
 
 const DATABASE_PATH = process.env.DATABASE_PATH || './data/payments.db';
 
@@ -15,6 +16,10 @@ export function getDatabase(): Database.Database {
 export function initializeDatabase(): void {
   // Ensure data directory exists
   const dbDir = path.dirname(DATABASE_PATH);
+  if (!fs.existsSync(dbDir)) {
+    fs.mkdirSync(dbDir, { recursive: true });
+    console.log('Created database directory:', dbDir);
+  }
   
   db = new Database(DATABASE_PATH);
   
