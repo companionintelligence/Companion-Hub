@@ -42,14 +42,6 @@ export const PaymentDialog: React.FC<PaymentDialogProps> = ({ appName, appUrn, p
     }
   };
 
-  const formatPrice = (price: number, currency: string): string => {
-    return new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency,
-      minimumFractionDigits: price % 1 === 0 ? 0 : 2,
-    }).format(price);
-  };
-
   const paymentMethods = pricing.payment_methods || [];
   const hasStripe = paymentMethods.includes('stripe');
   const hasX402 = paymentMethods.includes('x402');
@@ -100,9 +92,7 @@ export const PaymentDialog: React.FC<PaymentDialogProps> = ({ appName, appUrn, p
 
                 {selectedMethod === 'x402' && (
                   <div className="x402-info">
-                    <p>
-                      X402 is a cryptocurrency payment protocol. You will be redirected to complete the payment.
-                    </p>
+                    <p>{t('PAYMENT_X402_INFO')}</p>
                   </div>
                 )}
               </>

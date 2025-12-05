@@ -649,5 +649,6 @@
   "PAYMENT_SUBSCRIPTION_EXPIRED": "Subscription Expired",
   "PAYMENT_ERROR_PROCESSING": "Failed to process payment",
   "PAYMENT_SUCCESS": "Payment successful",
-  "PAYMENT_REQUIRED": "Payment required to install this app"
+  "PAYMENT_REQUIRED": "Payment required to install this app",
+  "PAYMENT_X402_INFO": "X402 is a cryptocurrency payment protocol. You will be redirected to complete the payment."
 }

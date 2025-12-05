@@ -1,5 +1,6 @@
 import type React from 'react';
 import { useTranslation } from 'react-i18next';
+import { formatPrice } from '@/lib/helpers/price-helpers';
 import './pricing-badge.css';
 
 export interface Pricing {
@@ -15,14 +16,6 @@ interface PricingBadgeProps {
   showPaymentMethods?: boolean;
   size?: 'sm' | 'md' | 'lg';
 }
-
-const formatPrice = (price: number, currency: string): string => {
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency,
-    minimumFractionDigits: price % 1 === 0 ? 0 : 2,
-  }).format(price);
-};
 
 export const PricingBadge: React.FC<PricingBadgeProps> = ({ pricing, showPaymentMethods = false, size = 'md' }) => {
   const { t } = useTranslation();
