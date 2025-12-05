@@ -2,6 +2,42 @@ import { z } from 'zod';
 import { type } from 'arktype';
 import { arkAppUrn, zodAppUrn } from '../types/app-urn.js';
 
+// Pricing types for apps
+export const PRICING_TYPES = ['free', 'one_time', 'subscription'] as const;
+export type PricingType = (typeof PRICING_TYPES)[number];
+
+// Subscription intervals
+export const SUBSCRIPTION_INTERVALS = ['monthly', 'yearly'] as const;
+export type SubscriptionInterval = (typeof SUBSCRIPTION_INTERVALS)[number];
+
+// Payment methods supported
+export const PAYMENT_METHODS = ['stripe', 'x402'] as const;
+export type PaymentMethod = (typeof PAYMENT_METHODS)[number];
+
+// Pricing schema for apps
+export const pricingSchema = z.object({
+  type: z.enum(PRICING_TYPES).default('free'),
+  price: z.number().min(0).optional(),
+  currency: z.string().default('USD'),
+  interval: z.enum(SUBSCRIPTION_INTERVALS).optional(),
+  stripe_price_id: z.string().optional(),
+  x402_resource: z.string().optional(),
+  payment_methods: z.enum(PAYMENT_METHODS).array().optional().default([]),
+});
+
+export const pricingSchemaArk = type({
+  type: type.enumerated(...PRICING_TYPES).default('free'),
+  price: 'number >= 0?',
+  currency: "string = 'USD'",
+  interval: type.enumerated(...SUBSCRIPTION_INTERVALS).optional(),
+  stripe_price_id: 'string?',
+  x402_resource: 'string?',
+  payment_methods: type.enumerated(...PAYMENT_METHODS).array().default(() => []),
+});
+
+export type Pricing = typeof pricingSchemaArk.infer;
+export type PricingInput = typeof pricingSchemaArk.inferIn;
+
 export const APP_CATEGORIES = [
   'network',
   'media',
@@ -86,6 +122,7 @@ export const appInfoSchema = z.object({
     .optional()
     .default(0),
   force_pull: z.boolean().optional().default(false),
+  pricing: pricingSchema.optional(),
 });
 
 // ArkType equivalent schemas
@@ -145,6 +182,7 @@ export const appInfoSchemaArk = type({
     .narrow((v, ctx) => (v < Date.now() ? true : ctx.mustBe('a timestamp before now')))
     .default(0),
   force_pull: 'boolean = false',
+  pricing: pricingSchemaArk.optional(),
 });
 
 export const frontmatterSchema = z
@@ -159,6 +197,7 @@ export const frontmatterSchema = z
     version: appInfoSchema.shape.version.optional(),
     port: appInfoSchema.shape.port.optional(),
     supported_architectures: appInfoSchema.shape.supported_architectures.optional().default(['amd64', 'arm64']),
+    pricing: appInfoSchema.shape.pricing.optional(),
   })
   .optional();
 

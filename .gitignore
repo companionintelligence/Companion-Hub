@@ -96,3 +96,8 @@ docs/jira/
 .internal/media/*
 .internal/traefik/*
 !.internal/cache/.gitkeep
+
+# pnpm
+.pnpm-store/
+pnpm-lock.yaml
+pnpm-workspace.yaml
