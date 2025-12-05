@@ -137,6 +137,40 @@ services:
       # Middlewares
       traefik.http.middlewares.runtipi.forwardauth.address: ${RUNTIPI_FORWARD_AUTH_URL:-http://runtipi:3000/api/auth/traefik}
 
+  # Payment Service - Isolated payment processing
+  runtipi-payment:
+    build:
+      context: ./packages/payment-service
+      dockerfile: Dockerfile
+    container_name: runtipi-payment
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3001/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    volumes:
+      # SQLite database persistence
+      - payment-data:/data
+    networks:
+      - tipi_main_network
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      DATABASE_PATH: /data/payments.db
+    env_file:
+      - ./packages/payment-service/.env
+    labels:
+      runtipi.managed: true
+      traefik.enable: true
+      traefik.http.services.payment.loadbalancer.server.port: 3001
+      # Payment service routing (payment.domain.com)
+      traefik.http.routers.payment-secure.rule: Host(`payment.${DOMAIN}`)
+      traefik.http.routers.payment-secure.service: payment
+      traefik.http.routers.payment-secure.entrypoints: websecure
+      traefik.http.routers.payment-secure.tls.certresolver: myresolver
+
 networks:
   tipi_main_network:
     driver: bridge
@@ -144,3 +178,4 @@ networks:
 
 volumes:
   pgdata:
+  payment-data:

@@ -1,7 +1,4 @@
 import { Injectable } from '@nestjs/common';
-import type { PaymentsRepository } from './payments.repository';
-import type { StripeService } from './stripe.service';
-import type { X402Service } from './x402.service';
 import type { CreatePaymentDto } from './dto/payments.dto';
 import { LoggerService } from '@/core/logger/logger.service';
 
@@ -9,14 +6,41 @@ interface CreatePaymentParams extends Omit<CreatePaymentDto, 'userId'> {
   userId: number;
 }
 
+/**
+ * PaymentsService acts as a client to the isolated payment service
+ * The actual payment processing happens in the separate payment-service container
+ */
 @Injectable()
 export class PaymentsService {
-  constructor(
-    private readonly paymentsRepository: PaymentsRepository,
-    private readonly stripeService: StripeService,
-    private readonly x402Service: X402Service,
-    private readonly logger: LoggerService,
-  ) {}
+  private paymentServiceUrl: string;
+  private paymentApiKey: string | undefined;
+
+  constructor(private readonly logger: LoggerService) {
+    this.paymentServiceUrl = process.env.PAYMENT_SERVICE_URL || 'http://runtipi-payment:3001';
+    this.paymentApiKey = process.env.PAYMENT_API_KEY;
+  }
+
+  private async fetchFromPaymentService<T>(
+    endpoint: string,
+    options: RequestInit = {},
+  ): Promise<T> {
+    const headers: HeadersInit = {
+      'Content-Type': 'application/json',
+      ...(this.paymentApiKey ? { Authorization: `Bearer ${this.paymentApiKey}` } : {}),
+    };
+
+    const response = await fetch(`${this.paymentServiceUrl}${endpoint}`, {
+      ...options,
+      headers: { ...headers, ...options.headers },
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Unknown error' }));
+      throw new Error(error.error || `Payment service error: ${response.status}`);
+    }
+
+    return response.json();
+  }
 
   /**
    * Create a new payment for an app
@@ -26,111 +50,134 @@ export class PaymentsService {
 
     this.logger.info(`Creating payment for app ${appUrn} by user ${userId}`);
 
-    // Create payment record
-    const payment = await this.paymentsRepository.createPayment({
-      appUrn,
-      userId,
-      paymentMethod,
-      amount: String(amount),
-      currency,
-      status: 'pending',
+    return this.fetchFromPaymentService('/api/payments', {
+      method: 'POST',
+      body: JSON.stringify({
+        appUrn,
+        userId,
+        paymentMethod,
+        amount,
+        currency,
+      }),
     });
-
-    return payment;
   }
 
   /**
    * Process a Stripe payment
    */
   async processStripePayment(paymentId: number, stripePaymentIntentId: string) {
-    const payment = await this.paymentsRepository.getPaymentById(paymentId);
-
-    if (!payment) {
-      throw new Error('Payment not found');
-    }
-
-    // Verify payment with Stripe
-    const verified = await this.stripeService.verifyPayment(stripePaymentIntentId);
-
-    if (verified) {
-      await this.paymentsRepository.updatePaymentStatus(paymentId, 'completed', {
-        stripePaymentIntentId,
-      });
-      return { success: true };
-    }
-
-    await this.paymentsRepository.updatePaymentStatus(paymentId, 'failed');
-    return { success: false };
+    return this.fetchFromPaymentService(`/api/payments/${paymentId}/stripe/process`, {
+      method: 'POST',
+      body: JSON.stringify({ stripePaymentIntentId }),
+    });
   }
 
   /**
    * Process an X402 crypto payment
    */
   async processX402Payment(paymentId: number, transactionHash: string) {
-    const payment = await this.paymentsRepository.getPaymentById(paymentId);
-
-    if (!payment) {
-      throw new Error('Payment not found');
-    }
-
-    // Verify payment with X402 protocol
-    const verified = await this.x402Service.verifyPayment(transactionHash);
-
-    if (verified) {
-      await this.paymentsRepository.updatePaymentStatus(paymentId, 'completed', {
-        x402TransactionHash: transactionHash,
-      });
-      return { success: true };
-    }
-
-    await this.paymentsRepository.updatePaymentStatus(paymentId, 'failed');
-    return { success: false };
+    return this.fetchFromPaymentService(`/api/payments/${paymentId}/x402/process`, {
+      method: 'POST',
+      body: JSON.stringify({ transactionHash }),
+    });
   }
 
   /**
    * Get payment history for a user
    */
   async getUserPayments(userId: number) {
-    return this.paymentsRepository.getPaymentsByUserId(userId);
-  }
-
-  /**
-   * Get payment history for an app
-   */
-  async getAppPayments(appUrn: string) {
-    return this.paymentsRepository.getPaymentsByAppUrn(appUrn);
+    return this.fetchFromPaymentService(`/api/payments/user/${userId}`);
   }
 
   /**
    * Check if user has paid for an app
    */
   async hasUserPaidForApp(userId: number, appUrn: string) {
-    const payments = await this.paymentsRepository.getPaymentsByUserAndApp(userId, appUrn);
-    return payments.some((p) => p.status === 'completed');
+    const result = await this.fetchFromPaymentService<{ hasPaid: boolean }>(
+      `/api/payments/check/${encodeURIComponent(appUrn)}/${userId}`,
+    );
+    return result.hasPaid;
   }
 
   /**
    * Get active subscription for a user and app
    */
   async getActiveSubscription(userId: number, appUrn: string) {
-    return this.paymentsRepository.getActiveSubscription(userId, appUrn);
+    const result = await this.fetchFromPaymentService<{ activeSubscription: any }>(
+      `/api/payments/check/${encodeURIComponent(appUrn)}/${userId}`,
+    );
+    return result.activeSubscription;
   }
 
   /**
    * Cancel a subscription
    */
   async cancelSubscription(subscriptionId: number) {
-    const subscription = await this.paymentsRepository.getSubscriptionById(subscriptionId);
+    return this.fetchFromPaymentService(`/api/payments/subscriptions/${subscriptionId}/cancel`, {
+      method: 'POST',
+    });
+  }
 
-    if (!subscription) {
-      throw new Error('Subscription not found');
-    }
+  /**
+   * Create Stripe checkout session
+   */
+  async createStripeCheckoutSession(params: {
+    priceId: string;
+    appUrn: string;
+    userId: number;
+    successUrl: string;
+    cancelUrl: string;
+  }) {
+    return this.fetchFromPaymentService('/api/payments/stripe/checkout', {
+      method: 'POST',
+      body: JSON.stringify(params),
+    });
+  }
 
-    if (subscription.paymentMethod === 'stripe' && subscription.stripeSubscriptionId) {
-      await this.stripeService.cancelSubscription(subscription.stripeSubscriptionId);
-    }
+  /**
+   * Create Stripe payment intent
+   */
+  async createStripePaymentIntent(params: {
+    amount: number;
+    currency: string;
+    appUrn: string;
+    userId: number;
+  }) {
+    return this.fetchFromPaymentService('/api/payments/stripe/payment-intent', {
+      method: 'POST',
+      body: JSON.stringify(params),
+    });
+  }
 
-    await this.paymentsRepository.cancelSubscription(subscriptionId);
-    return { success: true };
+  /**
+   * Create X402 payment request
+   */
+  async createX402PaymentRequest(params: {
+    amount: number;
+    currency: string;
+    appUrn: string;
+    userId: number;
+  }) {
+    return this.fetchFromPaymentService('/api/payments/x402/payment-request', {
+      method: 'POST',
+      body: JSON.stringify(params),
+    });
+  }
+
+  /**
+   * Get X402 supported currencies
+   */
+  async getX402Currencies() {
+    return this.fetchFromPaymentService('/api/payments/x402/currencies');
+  }
+
+  /**
+   * Check if X402 is enabled
+   */
+  async isX402Enabled() {
+    const result = await this.fetchFromPaymentService<{ enabled: boolean }>(
+      '/api/payments/x402/status',
+    );
+    return result.enabled;
   }
 }
