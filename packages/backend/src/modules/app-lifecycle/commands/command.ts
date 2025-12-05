@@ -29,7 +29,7 @@ export class AppLifecycleCommand {
     const configService = this.moduleRef.get(ConfigurationService, { strict: false });
 
     const pruned = await this.docker
-      .pruneContainers({ filters: { label: [`runtipi.appurn=${appUrn}`] } })
+      .pruneContainers({ filters: { label: [`ci-os-hub.appurn=${appUrn}`] } })
       .catch(() => ({ ContainersDeleted: [], SpaceReclaimed: 0 }));
 
     logger.info('Pruned containers:', pruned.ContainersDeleted, 'Space reclaimed:', pruned.SpaceReclaimed / 1024 / 1024, 'MB');

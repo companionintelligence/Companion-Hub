@@ -3,7 +3,7 @@
 import { $ } from 'bun';
 import { existsSync } from 'fs';
 
-console.log('🧹 Starting cleanup of runtipi network, containers, volumes, and caches...\n');
+console.log('🧹 Starting cleanup of CI-OS-Hub network, containers, volumes, and caches...\n');
 
 // Step 1: Stop and remove all containers in the network
 console.log('1️⃣ Stopping and removing containers...');
@@ -11,8 +11,9 @@ try {
   // Get containers by network
   const containersByNetwork = await $`docker ps -a --filter network=ci_os_hub_network --format {{.Names}}`.quiet();
   
-  // Also get containers by project name
-  const containersByProject = await $`docker ps -a --filter label=com.docker.compose.project=runtipi --format {{.Names}}`.quiet();
+  // Also get containers by project name (ci-os-hub or legacy runtipi)
+  const containersByProject = await $`docker ps -a --filter label=com.docker.compose.project=ci-os-hub --format {{.Names}}`.quiet();
+  const containersByLegacyProject = await $`docker ps -a --filter label=com.docker.compose.project=runtipi --format {{.Names}}`.quiet();
   
   const allContainers = new Set<string>();
   
@@ -24,6 +25,12 @@ try {
   
   if (containersByProject.stdout.toString().trim()) {
     containersByProject.stdout.toString().trim().split('\n').forEach(name => {
+      if (name) allContainers.add(name);
+    });
+  }
+
+  if (containersByLegacyProject.stdout.toString().trim()) {
+    containersByLegacyProject.stdout.toString().trim().split('\n').forEach(name => {
       if (name) allContainers.add(name);
     });
   }
@@ -42,17 +49,18 @@ try {
   console.log('   No containers to remove');
 }
 
-// Step 2: Remove all volumes associated with the network or runtipi
+// Step 2: Remove all volumes associated with the network or ci-os-hub
 console.log('\n2️⃣ Removing volumes...');
 try {
   // Get all volumes
   const volumes = await $`docker volume ls --format {{.Name}}`.quiet();
   const volumeNames = volumes.stdout.toString().trim().split('\n').filter(Boolean);
   
-  // Filter volumes related to runtipi/ci_os_hub/apps
+  // Filter volumes related to ci-os-hub/ci_os_hub/apps (include legacy runtipi volumes)
   const relatedVolumes = volumeNames.filter(
     (vol) => 
       vol.includes('ci_os_hub') || 
+      vol.includes('ci-os-hub') ||
       vol.includes('runtipi') || 
       vol.includes('runtipi_') ||
       vol.match(/^[a-z]+_[a-z]+-.*_data$/) // App volumes pattern like "grist_migrated-grist-1_data"
@@ -86,6 +94,8 @@ try {
 // Step 4: Clean up docker compose
 console.log('\n4️⃣ Cleaning up docker compose...');
 try {
+  // Clean up both new and legacy project names
+  await $`docker compose --project-name ci-os-hub -f docker-compose.prod.yml down -v`.quiet();
   await $`docker compose --project-name runtipi -f docker-compose.prod.yml down -v`.quiet();
   console.log('   ✅ Docker compose cleaned');
 } catch (error) {

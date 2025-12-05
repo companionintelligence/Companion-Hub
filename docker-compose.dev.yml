@@ -1,6 +1,6 @@
 services:
-  runtipi-db:
-    container_name: runtipi-db
+  ci-os-hub-db:
+    container_name: ci-os-hub-db
     image: postgres:14
     restart: unless-stopped
     stop_grace_period: 1m
@@ -18,10 +18,10 @@ services:
       timeout: 10s
       retries: 120
     networks:
-      - tipi_main_network
+      - ci_os_hub_network
 
-  runtipi-queue:
-    container_name: runtipi-queue
+  ci-os-hub-queue:
+    container_name: ci-os-hub-queue
     image: rabbitmq:4-alpine
     restart: unless-stopped
     healthcheck:
@@ -34,18 +34,18 @@ services:
       RABBITMQ_DEFAULT_USER: tipi
       RABBITMQ_DEFAULT_PASS: tipi
     networks:
-      - tipi_main_network
+      - ci_os_hub_network
 
-  runtipi:
+  ci-os-hub:
     build:
       context: .
       dockerfile: Dockerfile.dev
     depends_on:
-      runtipi-db:
+      ci-os-hub-db:
         condition: service_healthy
-      runtipi-queue:
+      ci-os-hub-queue:
         condition: service_healthy
-    container_name: runtipi
+    container_name: ci-os-hub
     restart: unless-stopped
     healthcheck:
       start_period: 30s
@@ -78,7 +78,7 @@ services:
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
     networks:
-      - tipi_main_network
+      - ci_os_hub_network
     environment:
       LOCAL: true
       NODE_ENV: development
@@ -86,7 +86,7 @@ services:
       POSTGRES_PASSWORD: postgres
       RABBITMQ_USERNAME: tipi
       RABBITMQ_PASSWORD: tipi
-      RABBITMQ_HOST: runtipi-queue
+      RABBITMQ_HOST: ci-os-hub-queue
       INTERNAL_IP: 127.0.0.1
       TIPI_VERSION: 4.5.0
       LOG_LEVEL: debug
@@ -94,12 +94,12 @@ services:
       - path: .env
         required: false
     labels:
-      runtipi.managed: true
+      ci-os-hub.managed: true
 
 networks:
-  tipi_main_network:
+  ci_os_hub_network:
     driver: bridge
-    name: runtipi_tipi_main_network
+    name: ci_os_hub_network
 
 volumes:
   pgdata:

@@ -111,8 +111,8 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   envMap.set('JWT_SECRET', jwtSecret);
   envMap.set('DOMAIN', settings.domain || envMap.get('DOMAIN') || 'example.com');
   envMap.set('RUNTIPI_APP_DATA_PATH', appDataPath || rootFolderHost);
-  envMap.set('RUNTIPI_FORWARD_AUTH_URL', settings.forwardAuthUrl || envMap.get('RUNTIPI_FORWARD_AUTH_URL') || 'http://runtipi:3000/api/auth/traefik');
-  envMap.set('POSTGRES_HOST', 'runtipi-db');
+  envMap.set('RUNTIPI_FORWARD_AUTH_URL', settings.forwardAuthUrl || envMap.get('RUNTIPI_FORWARD_AUTH_URL') || 'http://ci-os-hub:3000/api/auth/traefik');
+  envMap.set('POSTGRES_HOST', 'ci-os-hub-db');
   envMap.set('POSTGRES_DBNAME', 'tipi');
   envMap.set('POSTGRES_USERNAME', 'tipi');
   envMap.set('POSTGRES_PORT', String(5432));

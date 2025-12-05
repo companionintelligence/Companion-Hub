@@ -26,7 +26,7 @@ interface DnsRecord {
   proxied: boolean;
 }
 
-// Dashboard port where the main runtipi application runs
+// Dashboard port where the main CI-OS-Hub application runs
 const DASHBOARD_PORT = 5002;
 
 @Injectable()

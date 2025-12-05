@@ -212,7 +212,7 @@ describe('DockerComposeBuilder', () => {
     const compose = composeBuilder.getDockerCompose([service], { exposed: false, exposedLocal: false }, urn, subnet);
     const yamlObject = yaml.parse(compose);
 
-    expect(yamlObject.services.service.labels).toEqual({ 'runtipi.managed': true, 'runtipi.appurn': urn });
+    expect(yamlObject.services.service.labels).toEqual({ 'ci-os-hub.managed': true, 'ci-os-hub.appurn': urn });
   });
 
   it('should be able to parse a compose.json file', async () => {

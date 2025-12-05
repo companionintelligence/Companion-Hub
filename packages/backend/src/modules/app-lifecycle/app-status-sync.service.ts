@@ -53,13 +53,13 @@ export class AppStatusSyncService {
       const apps = await this.appRepository.getApps();
       const containers = await this.docker.listContainers({
         all: true,
-        filters: { label: ['runtipi.managed=true'] },
+        filters: { label: ['ci-os-hub.managed=true'] },
       });
 
       const dockerStatusMap = new Map<string, { running: number; total: number }>();
 
       for (const container of containers) {
-        const appUrn = container.Labels?.['runtipi.appurn'];
+        const appUrn = container.Labels?.['ci-os-hub.appurn'];
         if (!appUrn) continue;
 
         if (!dockerStatusMap.has(appUrn)) {

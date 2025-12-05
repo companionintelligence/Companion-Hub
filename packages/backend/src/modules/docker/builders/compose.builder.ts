@@ -132,8 +132,8 @@ export class DockerComposeBuilder {
 
     // Set default labels
     const defaultLabels: Record<string, string | boolean> = {
-      'runtipi.managed': true,
-      'runtipi.appurn': appUrn,
+      'ci-os-hub.managed': true,
+      'ci-os-hub.appurn': appUrn,
     };
 
     // Merge default labels with extra labels from app config
