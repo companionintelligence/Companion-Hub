@@ -154,32 +154,18 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
             {/* Hide "Publish to internet" switch - always set to true */}
             {/* Always set exposedLocal to true and use recommended port */}
             {/* Hide port input - always use recommended port (info.port) */}
-            {isProduction && info.dynamic_config && (
-              <div className="mb-3">
-                <InputGroup
-                  groupPrefix="https://"
-                  groupSuffix={`.${localDomain}`}
-                  {...register('localSubdomain')}
-                  label={t('APP_INSTALL_FORM_LOCAL_SUBDOMAIN')}
-                  error={errors.localSubdomain?.message}
-                  disabled={loading}
-                  placeholder={info.urn.split(':').join('-')}
-                />
-              </div>
-            )}
-            {!isProduction && (
-              <div className="mb-3">
-                <InputGroup
-                  groupPrefix="https://"
-                  groupSuffix={`.${localDomain}`}
-                  {...register('localSubdomain')}
-                  label={t('APP_INSTALL_FORM_LOCAL_SUBDOMAIN')}
-                  error={errors.localSubdomain?.message}
-                  disabled={loading}
-                  placeholder={info.urn.split(':').join('-')}
-                />
-              </div>
-            )}
+            {/* Always show subdomain input as if "Publish to internet" is enabled */}
+            <div className="mb-3">
+              <InputGroup
+                groupPrefix="https://"
+                groupSuffix={`.${localDomain}`}
+                {...register('localSubdomain')}
+                label={t('APP_INSTALL_FORM_LOCAL_SUBDOMAIN')}
+                error={errors.localSubdomain?.message}
+                disabled={loading}
+                placeholder={info.urn.split(':').join('-')}
+              />
+            </div>
             <Controller
               control={control}
               name="enableAuth"
