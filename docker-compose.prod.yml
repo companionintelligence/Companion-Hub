@@ -1,6 +1,6 @@
 services:
-  runtipi-db:
-    container_name: runtipi-db
+  ci-os-hub-db:
+    container_name: ci-os-hub-db
     image: postgres:14
     restart: unless-stopped
     stop_grace_period: 120s
@@ -20,8 +20,8 @@ services:
     networks:
       - ci_os_hub_network
 
-  runtipi-queue:
-    container_name: runtipi-queue
+  ci-os-hub-queue:
+    container_name: ci-os-hub-queue
     image: rabbitmq:4-alpine
     restart: unless-stopped
     ports:
@@ -40,7 +40,7 @@ services:
     networks:
       - ci_os_hub_network
 
-  runtipi:
+  ci-os-hub:
     # Platform selection based on DOCKER_PLATFORM env variable
     # Set DOCKER_PLATFORM=linux/arm64 for Mac development (native ARM64 build, faster)
     # Set DOCKER_PLATFORM=linux/amd64 for Linux production (AMD64 build, slower on Mac due to emulation)
@@ -58,11 +58,11 @@ services:
       cache_to:
         - type=local,dest=/tmp/.buildx-cache,mode=max
     depends_on:
-      runtipi-db:
+      ci-os-hub-db:
         condition: service_healthy
-      runtipi-queue:
+      ci-os-hub-queue:
         condition: service_healthy
-    container_name: runtipi
+    container_name: ci-os-hub
     restart: unless-stopped
     ports:
       - "5002:3000"
@@ -96,21 +96,21 @@ services:
       LOCAL: ${LOCAL:-false}
       NODE_ENV: ${NODE_ENV:-production}
       ROOT_FOLDER_HOST: ${ROOT_FOLDER_HOST:-.internal}
-      POSTGRES_HOST: ${POSTGRES_HOST:-runtipi-db}
+      POSTGRES_HOST: ${POSTGRES_HOST:-ci-os-hub-db}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_USERNAME: ${POSTGRES_USERNAME:-tipi}
       POSTGRES_DBNAME: ${POSTGRES_DBNAME:-tipi}
       POSTGRES_PORT: 5432
       RABBITMQ_USERNAME: ${RABBITMQ_USERNAME:-tipi}
       RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-tipi}
-      RABBITMQ_HOST: ${RABBITMQ_HOST:-runtipi-queue}
+      RABBITMQ_HOST: ${RABBITMQ_HOST:-ci-os-hub-queue}
       INTERNAL_IP: ${INTERNAL_IP:-127.0.0.1}
       TIPI_VERSION: ${TIPI_VERSION:-4.5.0}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     env_file:
       - .env
     labels:
-      runtipi.managed: true
+      ci-os-hub.managed: true
 
 networks:
   ci_os_hub_network:
