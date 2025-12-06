@@ -53,10 +53,12 @@ services:
         LOCAL: ${LOCAL:-false}
         TARGETARCH: ${TARGETARCH:-amd64}
       # Enable BuildKit cache for faster rebuilds
-      cache_from:
-        - type=local,src=/tmp/.buildx-cache
-      cache_to:
-        - type=local,dest=/tmp/.buildx-cache,mode=max
+      # Note: Requires BuildKit with docker-container driver or containerd image store
+      # Uncomment below if you have BuildKit configured with a compatible driver:
+      # cache_from:
+      #   - type=local,src=/tmp/.buildx-cache
+      # cache_to:
+      #   - type=local,dest=/tmp/.buildx-cache,mode=max
     depends_on:
       ci-os-hub-db:
         condition: service_healthy
