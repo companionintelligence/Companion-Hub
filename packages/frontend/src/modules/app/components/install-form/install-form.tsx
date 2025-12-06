@@ -11,7 +11,7 @@ import type { AppUrn } from '@runtipi/common/types';
 import { useMutation } from '@tanstack/react-query';
 import clsx from 'clsx';
 import type React from 'react';
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { Controller, useForm } from 'react-hook-form';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
@@ -60,8 +60,10 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
   const watchExposed = watch('exposed', false);
   const watchOpenPort = watch('openPort', !info.force_expose);
   const watchExposedLocal = watch('exposedLocal', false);
+  const watchLocalSubdomain = watch('localSubdomain', '');
 
   const { appName } = extractAppUrn(info.urn as AppUrn);
+  const dnsCheckTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     if (initialValues && !isDirty) {
@@ -91,6 +93,54 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
       setValue('port', data.port.toString(), { shouldDirty: true });
     },
   });
+
+  // Check DNS availability when localSubdomain changes
+  useEffect(() => {
+    // Clear any existing timeout
+    if (dnsCheckTimeoutRef.current) {
+      clearTimeout(dnsCheckTimeoutRef.current);
+    }
+
+    // Only check if the app is exposable and we're in production
+    if (!info.exposable || !isProduction) {
+      return;
+    }
+
+    // Determine which subdomain to check
+    // If localSubdomain is empty, use the default (appName-appStoreId format)
+    const subdomainToCheck = watchLocalSubdomain || info.urn.split(':').join('-');
+
+    // Debounce the DNS check
+    dnsCheckTimeoutRef.current = setTimeout(async () => {
+      try {
+        const response = await fetch(`/api/cloudflare/check-dns-availability?subdomain=${encodeURIComponent(subdomainToCheck)}`, {
+          credentials: 'include',
+        });
+        
+        if (response.ok) {
+          const data = await response.json();
+          if (!data.available) {
+            setError('localSubdomain', {
+              type: 'manual',
+              message: t('APP_INSTALL_FORM_ERROR_DNS_NOT_AVAILABLE', { name: subdomainToCheck }),
+            });
+          } else {
+            // Clear error if DNS is available
+            setError('localSubdomain', {});
+          }
+        }
+      } catch (error) {
+        // Silently fail - don't block form submission if DNS check fails
+        console.error('Failed to check DNS availability:', error);
+      }
+    }, 500); // 500ms debounce
+
+    return () => {
+      if (dnsCheckTimeoutRef.current) {
+        clearTimeout(dnsCheckTimeoutRef.current);
+      }
+    };
+  }, [watchLocalSubdomain, info.exposable, info.urn, isProduction, setError, t]);
 
   const renderField = (field: FormField) => {
     return (

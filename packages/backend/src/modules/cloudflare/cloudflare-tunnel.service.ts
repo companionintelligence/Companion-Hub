@@ -324,6 +324,33 @@ export class CloudflareTunnelService {
   }
 
   /**
+   * Check if a DNS record exists for a given subdomain
+   * @param subdomain - The subdomain to check (e.g., "ghost")
+   * @returns true if the DNS record exists (not available), false if available
+   */
+  public async checkDnsAvailability(subdomain: string): Promise<{ available: boolean; hostname?: string }> {
+    if (!this.isDnsEnabled()) {
+      // If DNS management is not enabled, assume it's available
+      return { available: true };
+    }
+
+    // Get LOCAL_DOMAIN from config
+    const localDomain = this.config.get('userSettings').localDomain || process.env.LOCAL_DOMAIN;
+    if (!localDomain) {
+      this.logger.debug('No local domain configured, cannot check DNS availability');
+      return { available: true };
+    }
+
+    const hostname = `${subdomain}.${localDomain}`;
+    const existingRecord = await this.getDnsRecord(hostname);
+    
+    return {
+      available: !existingRecord,
+      hostname: hostname,
+    };
+  }
+
+  /**
    * Delete a DNS record by hostname
    */
   private async deleteDnsRecord(hostname: string): Promise<boolean> {
