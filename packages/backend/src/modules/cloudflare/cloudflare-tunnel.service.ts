@@ -210,8 +210,12 @@ export class CloudflareTunnelService {
    */
   private async createDnsRecord(hostname: string): Promise<boolean> {
     const credentials = this.getApiCredentials();
-    if (!credentials || !credentials.zoneId) {
-      this.logger.debug('DNS management not enabled (CLOUDFLARE_ZONE_ID not set)');
+    if (!credentials) {
+      this.logger.debug('DNS management not available (Cloudflare credentials not configured)');
+      return false;
+    }
+    if (!credentials.zoneId) {
+      this.logger.debug(`DNS management not enabled for ${hostname} (CLOUDFLARE_ZONE_ID not set)`);
       return false;
     }
 
@@ -445,7 +449,21 @@ export class CloudflareTunnelService {
       }
       this.logger.debug(`Route for hostname ${hostname} already exists with same port`);
       // Still try to create DNS record in case it's missing
-      await this.createDnsRecord(hostname);
+      const dnsCreated = await this.createDnsRecord(hostname);
+      if (!dnsCreated) {
+        const credentials = this.getApiCredentials();
+        if (!credentials?.zoneId) {
+          this.logger.warn(
+            `⚠️  DNS record not created for ${hostname}. ` +
+            `Set CLOUDFLARE_ZONE_ID environment variable to enable automatic DNS management.`
+          );
+        } else {
+          this.logger.warn(
+            `⚠️  Failed to create DNS CNAME record for ${hostname}. ` +
+            `The tunnel route exists, but the app may not be accessible until the DNS record is created.`
+          );
+        }
+      }
       return true;
     }
 
@@ -477,7 +495,25 @@ export class CloudflareTunnelService {
       this.logger.info(`Created Cloudflare Tunnel route for ${hostname} -> ${serviceUrl}`);
       
       // Also create DNS CNAME record pointing to the tunnel
-      await this.createDnsRecord(hostname);
+      // This is critical for the app to be accessible via the domain
+      const dnsCreated = await this.createDnsRecord(hostname);
+      if (!dnsCreated) {
+        const credentials = this.getApiCredentials();
+        if (!credentials?.zoneId) {
+          this.logger.warn(
+            `⚠️  DNS record not created for ${hostname}. ` +
+            `Set CLOUDFLARE_ZONE_ID environment variable to enable automatic DNS management. ` +
+            `You may need to manually create a CNAME record: ${hostname} -> ${credentials?.tunnelId || '<tunnel-id>'}.cfargotunnel.com`
+          );
+        } else {
+          this.logger.error(
+            `❌ Failed to create DNS CNAME record for ${hostname}. ` +
+            `The tunnel route was created, but the app may not be accessible until the DNS record is created manually.`
+          );
+        }
+      } else {
+        this.logger.info(`✅ DNS CNAME record created successfully for ${hostname}`);
+      }
     } else {
       this.logger.error(`Failed to create Cloudflare Tunnel route for ${hostname}`);
     }
@@ -506,7 +542,10 @@ export class CloudflareTunnelService {
       // If tunnel has no configuration, there's nothing to delete
       this.logger.debug(`Tunnel has no configuration, nothing to delete for ${hostname}`);
       // Still try to delete DNS record
-      await this.deleteDnsRecord(hostname);
+      const dnsDeleted = await this.deleteDnsRecord(hostname);
+      if (dnsDeleted) {
+        this.logger.info(`✅ DNS CNAME record deleted successfully for ${hostname}`);
+      }
       return true;
     }
 
@@ -534,7 +573,17 @@ export class CloudflareTunnelService {
       this.logger.info(`Deleted Cloudflare Tunnel route for ${hostname}`);
       
       // Also delete DNS CNAME record
-      await this.deleteDnsRecord(hostname);
+      const dnsDeleted = await this.deleteDnsRecord(hostname);
+      if (!dnsDeleted) {
+        const credentials = this.getApiCredentials();
+        if (!credentials?.zoneId) {
+          this.logger.debug(`DNS record deletion skipped for ${hostname} (CLOUDFLARE_ZONE_ID not set)`);
+        } else {
+          this.logger.warn(`⚠️  Failed to delete DNS CNAME record for ${hostname}. You may need to delete it manually.`);
+        }
+      } else {
+        this.logger.info(`✅ DNS CNAME record deleted successfully for ${hostname}`);
+      }
     } else {
       this.logger.error(`Failed to delete Cloudflare Tunnel route for ${hostname}`);
     }
