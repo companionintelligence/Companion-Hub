@@ -34,8 +34,12 @@ export class AppService {
 
   public async bootstrap() {
     try {
+      this.logger.info('Starting bootstrap...');
       await this.databaseService.migrate();
+      this.logger.info('Database migration completed');
+      
       await this.docker.pruneNetworks();
+      this.logger.info('Docker networks pruned');
 
       const { version, userSettings, __prod__ } = this.configuration.getConfig();
       const config = this.configuration.getConfig();
@@ -43,8 +47,10 @@ export class AppService {
       this.logger.debug('Starting with configuration', config);
 
       this.configuration.initSentry({ release: version, allowSentry: userSettings.allowErrorMonitoring });
+      this.logger.info('Sentry initialized');
 
       await this.logger.flush();
+      this.logger.info('Logger flushed');
 
       this.logger.info(`Running version: ${process.env.TIPI_VERSION}`);
 
@@ -53,29 +59,48 @@ export class AppService {
         this.logger.info('Clearing cache...');
         this.cache.clear();
         this.cache.set('buster', version, ONE_DAY_IN_SECONDS * 365);
+        this.logger.info('Cache cleared');
       }
 
+      this.logger.info('Migrating legacy repo...');
       await this.appStoreService.migrateLegacyRepo();
+      this.logger.info('Legacy repo migration completed');
 
+      this.logger.info('Publishing clone_all command...');
       this.repoQueue.publish({ command: 'clone_all' });
+      this.logger.info('Clone command published');
 
+      this.logger.info('Initializing marketplace...');
       await this.marketplaceService.initialize();
+      this.logger.info('Marketplace initialized');
 
       // Every 15 minutes, check for updates to the apps repo
       if (__prod__) {
+        this.logger.info('Setting up repeatable repo update job...');
         this.repoQueue.publishRepeatable({ command: 'update_all' }, '*/15 * * * *');
+        this.logger.info('Repo update job scheduled');
       }
+      this.logger.info('Setting up repeatable app status sync job...');
       this.systemEventsQueue.publishRepeatable({ command: 'sync_app_statuses' }, '*/5 * * * *');
+      this.logger.info('App status sync job scheduled');
 
+      this.logger.info('Copying assets...');
       await this.copyAssets();
+      this.logger.info('Assets copied, generating TLS certificates...');
       await this.generateTlsCertificates({ localDomain: userSettings.localDomain });
+      this.logger.info('TLS certificates generated');
 
       if (__prod__ && (buster !== version || version === 'nightly')) {
-        this.appLifecycleService.restartRunningApps();
+        this.logger.info('Restarting running apps...');
+        await this.appLifecycleService.restartRunningApps();
+        this.logger.info('Finished restarting running apps');
       }
+      
+      this.logger.info('Bootstrap completed successfully');
     } catch (e) {
-      this.logger.error(e);
+      this.logger.error('Bootstrap error:', e);
       Sentry.captureException(e, { tags: { source: 'bootstrap' } });
+      throw e; // Re-throw to ensure startup fails if bootstrap fails
     }
   }
 
@@ -109,27 +134,39 @@ export class AppService {
       path.join(appDataDir),
     ]);
 
-    // Create media folders
+    // Create media folders (with timeout to prevent hanging)
     this.logger.info('Creating media folders');
-    await this.filesystem.createDirectories([
-      path.join(dataDir, 'media', 'torrents', 'watch'),
-      path.join(dataDir, 'media', 'torrents', 'complete'),
-      path.join(dataDir, 'media', 'torrents', 'incomplete'),
-      path.join(dataDir, 'media', 'usenet', 'watch'),
-      path.join(dataDir, 'media', 'usenet', 'complete'),
-      path.join(dataDir, 'media', 'usenet', 'incomplete'),
-      path.join(dataDir, 'media', 'downloads', 'watch'),
-      path.join(dataDir, 'media', 'downloads', 'complete'),
-      path.join(dataDir, 'media', 'downloads', 'incomplete'),
-      path.join(dataDir, 'media', 'data', 'books'),
-      path.join(dataDir, 'media', 'data', 'comics'),
-      path.join(dataDir, 'media', 'data', 'movies'),
-      path.join(dataDir, 'media', 'data', 'music'),
-      path.join(dataDir, 'media', 'data', 'tv'),
-      path.join(dataDir, 'media', 'data', 'podcasts'),
-      path.join(dataDir, 'media', 'data', 'images'),
-      path.join(dataDir, 'media', 'data', 'roms'),
-    ]);
+    try {
+      await Promise.race([
+        this.filesystem.createDirectories([
+          path.join(dataDir, 'media', 'torrents', 'watch'),
+          path.join(dataDir, 'media', 'torrents', 'complete'),
+          path.join(dataDir, 'media', 'torrents', 'incomplete'),
+          path.join(dataDir, 'media', 'usenet', 'watch'),
+          path.join(dataDir, 'media', 'usenet', 'complete'),
+          path.join(dataDir, 'media', 'usenet', 'incomplete'),
+          path.join(dataDir, 'media', 'downloads', 'watch'),
+          path.join(dataDir, 'media', 'downloads', 'complete'),
+          path.join(dataDir, 'media', 'downloads', 'incomplete'),
+          path.join(dataDir, 'media', 'data', 'books'),
+          path.join(dataDir, 'media', 'data', 'comics'),
+          path.join(dataDir, 'media', 'data', 'movies'),
+          path.join(dataDir, 'media', 'data', 'music'),
+          path.join(dataDir, 'media', 'data', 'tv'),
+          path.join(dataDir, 'media', 'data', 'podcasts'),
+          path.join(dataDir, 'media', 'data', 'images'),
+          path.join(dataDir, 'media', 'data', 'roms'),
+        ]),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Media folder creation timed out after 10 seconds')), 10000)
+        ),
+      ]);
+      this.logger.info('Media folders created successfully');
+    } catch (error) {
+      // Don't fail startup if media folder creation times out or fails
+      // They'll be created on-demand when needed
+      this.logger.warn(`Media folder creation failed or timed out: ${error instanceof Error ? error.message : error}. Continuing startup...`);
+    }
   }
 
   /**

@@ -75,8 +75,8 @@ export class InstallAppCommand extends AppLifecycleCommand {
       await dockerService.composeApp(appUrn, `up --detach --force-recreate --remove-orphans ${forcePull ? '--pull always' : ''}`);
       await appFilesManager.setAppDataDirPermissions(appUrn);
 
-      // Create Cloudflare Tunnel route if enabled and app is published to internet
-      // Routes directly to the app's port - no Traefik middleman
+      // Create Cloudflare Tunnel route if exposedLocal is enabled (app is published to internet)
+      // Routes directly to the app's host port - makes app available at subdomain.companionintel.com
       try {
         const cloudflareService = this.moduleRef.get(CloudflareTunnelService, { strict: false });
         if (!cloudflareService) {
@@ -87,7 +87,8 @@ export class InstallAppCommand extends AppLifecycleCommand {
           const { appName, appStoreId } = extractAppUrn(appUrn);
           const { isProduction } = config?.getConfig() || { isProduction: false };
           
-          // In production, when exposedLocal is enabled, create a direct route to the app's port
+          // In production, when exposedLocal is enabled, create a direct route to the app's host port
+          // This publishes the app to the internet via Cloudflare Tunnel
           if (form.exposedLocal && isProduction && form.port) {
             const subdomain = form.localSubdomain ? form.localSubdomain : `${appName}-${appStoreId}`;
             

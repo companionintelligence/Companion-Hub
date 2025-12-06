@@ -13,7 +13,7 @@ import {
   IconTrash,
 } from '@tabler/icons-react';
 import type React from 'react';
-import { createElement } from 'react';
+import { createElement, useState, useEffect } from 'react';
 import { Button, type ButtonProps } from '@/components/ui/Button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/DropdownMenu';
 import { useDisclosure } from '@/lib/hooks/use-disclosure';
@@ -209,17 +209,93 @@ export const AppActions = ({ app, info, localDomain, metadata, sslPort }: IProps
   );
   const InstallButton = <ActionButton key="install" onClick={installDisclosure.open} title={t('APP_ACTION_INSTALL')} intent="success" />;
 
+  // Check if the app URL is available before showing Open button
+  const [urlAvailable, setUrlAvailable] = useState<boolean | null>(null);
+  const [isCheckingUrl, setIsCheckingUrl] = useState(false);
+  
+  const subdomain = metadata.localSubdomain || app?.localSubdomain || info.urn.split(':').join('-');
+  const appUrl = `https://${subdomain}.companionintel.com${info.url_suffix || ''}`;
+  
+  useEffect(() => {
+    // Only check if app is running and exposed
+    if (app?.status === 'running' && (app?.exposedLocal || app?.openPort || app?.exposed) && !info.no_gui) {
+      setIsCheckingUrl(true);
+      setUrlAvailable(null);
+      
+      let isMounted = true;
+      let isAvailableRef = false; // Track availability to stop polling
+      let pollInterval: ReturnType<typeof setInterval> | null = null;
+      
+      // Check if URL is reachable using backend endpoint (more reliable)
+      const checkUrl = async () => {
+        if (!isMounted || isAvailableRef) return;
+        
+        try {
+          const response = await fetch(`/api/cloudflare/check-url-availability?url=${encodeURIComponent(appUrl)}`, {
+            credentials: 'include',
+          });
+          
+          if (!response.ok) {
+            if (isMounted) setUrlAvailable(false);
+            return;
+          }
+          
+          const data = await response.json();
+          const isAvailable = data.available === true;
+          
+          if (isMounted) {
+            setUrlAvailable(isAvailable);
+            setIsCheckingUrl(!isAvailable); // Keep showing loading if not available yet
+            
+            // If available, stop polling
+            if (isAvailable) {
+              isAvailableRef = true;
+              if (pollInterval) {
+                clearInterval(pollInterval);
+                pollInterval = null;
+              }
+            }
+          }
+        } catch (error) {
+          // If check fails, assume URL is not available yet (keep polling)
+          if (isMounted) {
+            setUrlAvailable(false);
+          }
+        }
+      };
+      
+      // Initial check after short delay
+      const initialTimeout = setTimeout(() => {
+        checkUrl();
+        
+        // Start polling every 5 seconds until available
+        pollInterval = setInterval(checkUrl, 5000);
+      }, 1000);
+      
+      return () => {
+        isMounted = false;
+        clearTimeout(initialTimeout);
+        if (pollInterval) {
+          clearInterval(pollInterval);
+        }
+      };
+    } else {
+      setUrlAvailable(null);
+      setIsCheckingUrl(false);
+    }
+  }, [app?.status, app?.exposedLocal, app?.openPort, app?.exposed, app?.localSubdomain, metadata.localSubdomain, info.urn, info.no_gui, info.url_suffix, appUrl]);
+
   const OpenButton = (
     <ActionButton
       key="open"
       IconComponent={IconExternalLink}
       onClick={() => {
         // Directly open the app at ${name}.companionintel.com
-        const subdomain = metadata.localSubdomain || app?.localSubdomain || info.urn.split(':').join('-');
-        const url = `https://${subdomain}.companionintel.com${info.url_suffix || ''}`;
-        window.open(url, '_blank', 'noreferrer');
+        window.open(appUrl, '_blank', 'noreferrer');
       }}
       title={t('APP_ACTION_OPEN')}
+      disabled={isCheckingUrl || urlAvailable === false}
+      loading={isCheckingUrl}
     />
   );
 
@@ -251,6 +327,7 @@ export const AppActions = ({ app, info, localDomain, metadata, sslPort }: IProps
       listItemsDestructive.push(ResetListItem);
       listItemsDestructive.push(RemoveListItem);
 
+      // Show Open button if app is exposed (will be disabled while checking availability)
       if (!info.no_gui && (app?.exposedLocal || app?.openPort || app?.exposed)) {
         buttons.push(OpenButton);
       }

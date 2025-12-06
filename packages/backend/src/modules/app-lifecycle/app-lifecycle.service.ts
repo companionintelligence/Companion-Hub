@@ -462,8 +462,8 @@ export class AppLifecycleService {
       maxBackups: parsedForm.maxBackups ?? null,
     });
 
-    // Update Cloudflare Tunnel routes if exposedLocal status, subdomain, or port changed (production only)
-    // Routes directly to the app's port - no Traefik middleman
+    // Update Cloudflare Tunnel routes if exposedLocal is enabled (production only)
+    // exposedLocal means "published to internet via Cloudflare Tunnel" - routes directly to the app's host port
     const { appName, appStoreId } = extractAppUrn(appUrn);
     const { isProduction: isProdEnv } = this.config.getConfig();
     const oldSubdomain = app.localSubdomain || `${appName}-${appStoreId}`;
@@ -471,30 +471,46 @@ export class AppLifecycleService {
     const wasExposedLocal = app.exposedLocal;
     const isNowExposedLocal = parsedForm.exposedLocal ?? false;
     const oldPort = app.port;
-    const newPort = parsedForm.port ?? appInfo.port;
+    // Prioritize parsedForm.port (user-specified port) > app.port (saved host port) > appInfo.port (container port)
+    // parsedForm.port is the port being set in this update, so it's the most authoritative
+    const newPort = parsedForm.port ? Number(parsedForm.port) : (app.port ? Number(app.port) : appInfo.port);
     const subdomainChanged = oldSubdomain !== newSubdomain;
-    const exposedLocalChanged = wasExposedLocal !== isNowExposedLocal;
     const portChanged = oldPort !== newPort;
     
-    // In production, route directly to the app's port via Cloudflare Tunnel
-    if (isProdEnv && this.cloudflareTunnelService?.isEnabled() && (exposedLocalChanged || subdomainChanged || portChanged) && newPort) {
+    // In production, create/update Cloudflare Tunnel route whenever exposedLocal is enabled
+    // This makes the app available on the internet at subdomain.companionintel.com
+    if (isProdEnv && this.cloudflareTunnelService?.isEnabled() && isNowExposedLocal && newPort) {
       try {
-        // Delete old routes if they existed
-        if (wasExposedLocal && (!isNowExposedLocal || subdomainChanged)) {
+        this.logger.info(
+          `Creating Cloudflare Tunnel route for ${appUrn}: ` +
+          `${newSubdomain}.companionintel.com -> http://localhost:${newPort} ` +
+          `(port source: ${parsedForm.port ? 'form' : app.port ? 'database' : 'app config'})`
+        );
+        
+        // Delete old route if subdomain changed
+        if (wasExposedLocal && subdomainChanged) {
           await this.cloudflareTunnelService.deleteAppRoute(oldSubdomain).catch((err) => {
             this.logger.warn(`Failed to delete old Cloudflare Tunnel route: ${err}`);
           });
         }
         
-        // Create new route directly to the app's port
-        if (isNowExposedLocal && (!wasExposedLocal || subdomainChanged || portChanged)) {
-          await this.cloudflareTunnelService.createAppRoute(newSubdomain, newPort).catch((err) => {
-            this.logger.warn(`Failed to create Cloudflare Tunnel route: ${err}`);
-          });
-        }
+        // Always create/update route if exposedLocal is enabled
+        // createAppRoute will update existing route if it already exists
+        await this.cloudflareTunnelService.createAppRoute(newSubdomain, newPort).catch((err) => {
+          this.logger.warn(`Failed to create Cloudflare Tunnel route: ${err}`);
+        });
       } catch (error) {
         // Cloudflare module might not be available, that's okay
         this.logger.debug(`Cloudflare Tunnel route update skipped: ${error}`);
+      }
+    } else if (isProdEnv && this.cloudflareTunnelService?.isEnabled() && wasExposedLocal && !isNowExposedLocal) {
+      // Delete route if exposedLocal is being disabled
+      try {
+        await this.cloudflareTunnelService.deleteAppRoute(oldSubdomain).catch((err) => {
+          this.logger.warn(`Failed to delete Cloudflare Tunnel route: ${err}`);
+        });
+      } catch (error) {
+        this.logger.debug(`Cloudflare Tunnel route deletion skipped: ${error}`);
       }
     }
 

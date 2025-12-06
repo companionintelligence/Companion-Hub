@@ -113,7 +113,7 @@ export class DockerComposeBuilder {
     }
 
     if (params.isMain) {
-      // When publishing to internet (exposedLocal), open the port for Cloudflare Tunnel
+      // When publishing to internet via Cloudflare Tunnel (exposedLocal), open the host port
       if (form.exposedLocal && params.internalPort && form.port) {
         service.setPort({
           containerPort: params.internalPort,

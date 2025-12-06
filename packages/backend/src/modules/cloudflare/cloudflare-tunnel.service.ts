@@ -6,6 +6,12 @@ interface TunnelIngressRule {
   hostname?: string;
   path?: string;
   service: string;
+  originRequest?: {
+    httpHostHeader?: string;
+    noHappyEyeballs?: boolean;
+    connectTimeout?: number;
+    tcpKeepAlive?: number;
+  };
 }
 
 interface TunnelConfig {
@@ -204,11 +210,12 @@ export class CloudflareTunnelService {
   }
 
   /**
-   * Create a DNS CNAME record pointing to the tunnel
+   * Create a DNS CNAME record pointing to the tunnel with retry logic
    * @param hostname - Full hostname (e.g., "app.companionintel.com")
+   * @param retries - Number of retry attempts (default: 3)
    * @returns true if successful, false otherwise
    */
-  private async createDnsRecord(hostname: string): Promise<boolean> {
+  private async createDnsRecord(hostname: string, retries = 3): Promise<boolean> {
     const credentials = this.getApiCredentials();
     if (!credentials) {
       this.logger.debug('DNS management not available (Cloudflare credentials not configured)');
@@ -222,61 +229,96 @@ export class CloudflareTunnelService {
     // The CNAME target for Cloudflare Tunnel is <tunnel-id>.cfargotunnel.com
     const cnameTarget = `${credentials.tunnelId}.cfargotunnel.com`;
 
-    try {
-      // First, check if the record already exists
-      const existingRecord = await this.getDnsRecord(hostname);
-      if (existingRecord) {
-        this.logger.debug(`DNS record for ${hostname} already exists`);
-        return true;
-      }
+    for (let attempt = 1; attempt <= retries; attempt++) {
+      try {
+        // First, check if the record already exists
+        const existingRecord = await this.getDnsRecord(hostname);
+        if (existingRecord) {
+          // Verify it points to the correct tunnel
+          if (existingRecord.content === cnameTarget) {
+            this.logger.debug(`DNS record for ${hostname} already exists and is correct`);
+            return true;
+          }
+          // Record exists but points to wrong target - this shouldn't happen normally
+          this.logger.warn(`DNS record for ${hostname} exists but points to ${existingRecord.content} instead of ${cnameTarget}`);
+          return true; // Still consider it success since DNS record exists
+        }
 
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 10000);
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 15000); // Increased timeout
 
-      const response = await fetch(
-        `${this.apiBaseUrl}/zones/${credentials.zoneId}/dns_records`,
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${credentials.apiToken}`,
-            'Content-Type': 'application/json',
+        const response = await fetch(
+          `${this.apiBaseUrl}/zones/${credentials.zoneId}/dns_records`,
+          {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${credentials.apiToken}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              type: 'CNAME',
+              name: hostname,
+              content: cnameTarget,
+              proxied: true, // Enable Cloudflare proxy (orange cloud)
+              ttl: 1, // Auto TTL when proxied
+            }),
+            signal: controller.signal,
           },
-          body: JSON.stringify({
-            type: 'CNAME',
-            name: hostname,
-            content: cnameTarget,
-            proxied: true, // Enable Cloudflare proxy (orange cloud)
-            ttl: 1, // Auto TTL when proxied
-          }),
-          signal: controller.signal,
-        },
-      );
+        );
 
-      clearTimeout(timeoutId);
+        clearTimeout(timeoutId);
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        this.logger.error(`Failed to create DNS record: ${response.status} ${errorText}`);
+        if (!response.ok) {
+          const errorText = await response.text();
+          this.logger.error(`Failed to create DNS record (attempt ${attempt}/${retries}): ${response.status} ${errorText}`);
+          if (attempt < retries) {
+            await new Promise(resolve => setTimeout(resolve, 1000 * attempt)); // Exponential backoff
+            continue;
+          }
+          return false;
+        }
+
+        const data: CloudflareApiResponse<DnsRecord> = await response.json();
+
+        if (!data.success) {
+          // Check if error is "record already exists" - that's actually okay
+          const alreadyExists = data.errors?.some(e => e.code === 81057 || e.message?.includes('already exists'));
+          if (alreadyExists) {
+            this.logger.debug(`DNS record for ${hostname} already exists (confirmed by API)`);
+            return true;
+          }
+          this.logger.error(`Cloudflare DNS API error (attempt ${attempt}/${retries}): ${JSON.stringify(data.errors)}`);
+          if (attempt < retries) {
+            await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+            continue;
+          }
+          return false;
+        }
+
+        this.logger.info(`Created DNS CNAME record: ${hostname} -> ${cnameTarget}`);
+        
+        // Verify the record was created by fetching it back
+        await new Promise(resolve => setTimeout(resolve, 500)); // Brief delay for propagation
+        const verifyRecord = await this.getDnsRecord(hostname);
+        if (!verifyRecord) {
+          this.logger.warn(`DNS record created but verification failed for ${hostname} - may need time to propagate`);
+        }
+        
+        return true;
+      } catch (error) {
+        if (error instanceof Error && error.name === 'AbortError') {
+          this.logger.warn(`Cloudflare DNS API request timed out (attempt ${attempt}/${retries})`);
+        } else {
+          this.logger.error(`Error creating DNS record (attempt ${attempt}/${retries}): ${error}`);
+        }
+        if (attempt < retries) {
+          await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+          continue;
+        }
         return false;
       }
-
-      const data: CloudflareApiResponse<DnsRecord> = await response.json();
-
-      if (!data.success) {
-        this.logger.error(`Cloudflare DNS API error: ${JSON.stringify(data.errors)}`);
-        return false;
-      }
-
-      this.logger.info(`Created DNS CNAME record: ${hostname} -> ${cnameTarget}`);
-      return true;
-    } catch (error) {
-      if (error instanceof Error && error.name === 'AbortError') {
-        this.logger.warn('Cloudflare DNS API request timed out');
-      } else {
-        this.logger.error(`Error creating DNS record: ${error}`);
-      }
-      return false;
     }
+    return false;
   }
 
   /**
@@ -463,9 +505,20 @@ export class CloudflareTunnelService {
     );
 
     if (existingRoute) {
-      // Update existing route if port changed
-      if (existingRoute.service !== serviceUrl) {
+      // Update existing route if port changed or originRequest is missing
+      const needsUpdate = existingRoute.service !== serviceUrl || !existingRoute.originRequest;
+      
+      if (needsUpdate) {
         existingRoute.service = serviceUrl;
+        // Ensure originRequest is set for proper Cloudflare proxy behavior
+        if (!existingRoute.originRequest) {
+          existingRoute.originRequest = {
+            httpHostHeader: hostname,
+            noHappyEyeballs: false,
+            connectTimeout: 30,
+            tcpKeepAlive: 30,
+          };
+        }
         const success = await this.updateTunnelConfig(currentConfig);
         if (success) {
           this.logger.info(`Updated Cloudflare Tunnel route for ${hostname} -> ${serviceUrl}`);
@@ -474,7 +527,7 @@ export class CloudflareTunnelService {
         }
         return success;
       }
-      this.logger.debug(`Route for hostname ${hostname} already exists with same port`);
+      this.logger.debug(`Route for hostname ${hostname} already exists with same port and originRequest`);
       // Still try to create DNS record in case it's missing
       const dnsCreated = await this.createDnsRecord(hostname);
       if (!dnsCreated) {
@@ -494,10 +547,20 @@ export class CloudflareTunnelService {
       return true;
     }
 
-    // Create new ingress rule
+    // Create new ingress rule with originRequest to ensure proper Cloudflare proxy behavior
     const newRule: TunnelIngressRule = {
       hostname: hostname,
       service: serviceUrl,
+      originRequest: {
+        // Set the Host header to the original hostname so apps know their public domain
+        httpHostHeader: hostname,
+        // Disable happy eyeballs for faster connections
+        noHappyEyeballs: false,
+        // Connection timeout (in seconds)
+        connectTimeout: 30,
+        // TCP keep-alive (in seconds)
+        tcpKeepAlive: 30,
+      },
     };
 
     // Add the new rule before the catch-all
@@ -521,8 +584,8 @@ export class CloudflareTunnelService {
     if (success) {
       this.logger.info(`Created Cloudflare Tunnel route for ${hostname} -> ${serviceUrl}`);
       
-      // Also create DNS CNAME record pointing to the tunnel
-      // This is critical for the app to be accessible via the domain
+      // Create DNS CNAME record - this is CRITICAL for the app to be accessible
+      // We treat DNS creation as a required step, not optional
       const dnsCreated = await this.createDnsRecord(hostname);
       if (!dnsCreated) {
         const credentials = this.getApiCredentials();
@@ -533,9 +596,11 @@ export class CloudflareTunnelService {
             `You may need to manually create a CNAME record: ${hostname} -> ${credentials?.tunnelId || '<tunnel-id>'}.cfargotunnel.com`
           );
         } else {
+          // DNS creation failed even though zone ID is set - this is a problem
           this.logger.error(
-            `❌ Failed to create DNS CNAME record for ${hostname}. ` +
-            `The tunnel route was created, but the app may not be accessible until the DNS record is created manually.`
+            `❌ Failed to create DNS CNAME record for ${hostname} after multiple retries. ` +
+            `The tunnel route was created, but the app will NOT be accessible until the DNS record is created. ` +
+            `Try calling syncMissingDnsRecords() to retry DNS creation.`
           );
         }
       } else {
@@ -549,11 +614,135 @@ export class CloudflareTunnelService {
   }
 
   /**
+   * Sync missing DNS records for all tunnel routes
+   * This is useful when DNS records were not created during initial setup
+   * or when migrating from a system without DNS management
+   * @returns Object with results for each hostname
+   */
+  public async syncMissingDnsRecords(): Promise<{ synced: string[]; failed: string[]; skipped: string[] }> {
+    const result = { synced: [] as string[], failed: [] as string[], skipped: [] as string[] };
+    
+    if (!this.isDnsEnabled()) {
+      this.logger.warn('DNS management not enabled (CLOUDFLARE_ZONE_ID not set)');
+      return result;
+    }
+
+    const credentials = this.getApiCredentials();
+    if (!credentials) {
+      this.logger.error('Cloudflare credentials not available');
+      return result;
+    }
+
+    // Get current tunnel config
+    const tunnelConfig = await this.getTunnelConfig();
+    if (!tunnelConfig) {
+      this.logger.warn('No tunnel configuration found');
+      return result;
+    }
+
+    // Check each route and create DNS if missing
+    for (const rule of tunnelConfig.ingress) {
+      if (!rule.hostname) {
+        continue; // Skip catch-all route
+      }
+
+      const existingRecord = await this.getDnsRecord(rule.hostname);
+      if (existingRecord) {
+        result.skipped.push(rule.hostname);
+        this.logger.debug(`DNS record already exists for ${rule.hostname}`);
+        continue;
+      }
+
+      this.logger.info(`Creating missing DNS record for ${rule.hostname}`);
+      const created = await this.createDnsRecord(rule.hostname);
+      if (created) {
+        result.synced.push(rule.hostname);
+        this.logger.info(`✅ Created DNS record for ${rule.hostname}`);
+      } else {
+        result.failed.push(rule.hostname);
+        this.logger.error(`❌ Failed to create DNS record for ${rule.hostname}`);
+      }
+
+      // Small delay between API calls to avoid rate limiting
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+
+    this.logger.info(`DNS sync complete: ${result.synced.length} created, ${result.failed.length} failed, ${result.skipped.length} already existed`);
+    return result;
+  }
+
+  /**
    * Delete a tunnel route for an app
    * Also deletes the DNS CNAME record if CLOUDFLARE_ZONE_ID is set
    * @param subdomain - The subdomain (e.g., "ghost")
    * @returns true if successful, false otherwise
    */
+  /**
+   * Update all existing tunnel routes to include originRequest configuration
+   * This ensures apps work properly behind Cloudflare Tunnel by setting proper Host headers
+   * @returns Object with updated routes, skipped routes, and any errors
+   */
+  public async updateAllRoutesWithOriginRequest(): Promise<{
+    updated: string[];
+    skipped: string[];
+    failed: string[];
+  }> {
+    if (!this.isEnabled()) {
+      this.logger.debug('Cloudflare Tunnel integration is not enabled');
+      return { updated: [], skipped: [], failed: [] };
+    }
+
+    const currentConfig = await this.getTunnelConfig();
+    if (!currentConfig) {
+      this.logger.warn('No tunnel configuration found');
+      return { updated: [], skipped: [], failed: [] };
+    }
+
+    const updated: string[] = [];
+    const skipped: string[] = [];
+    let needsUpdate = false;
+
+    // Update all routes that have hostnames (skip catch-all routes)
+    for (const rule of currentConfig.ingress) {
+      if (!rule.hostname) {
+        continue; // Skip catch-all routes
+      }
+
+      // Check if originRequest is missing or incomplete
+      if (!rule.originRequest || !rule.originRequest.httpHostHeader) {
+        rule.originRequest = {
+          httpHostHeader: rule.hostname,
+          noHappyEyeballs: false,
+          connectTimeout: 30,
+          tcpKeepAlive: 30,
+        };
+        updated.push(rule.hostname);
+        needsUpdate = true;
+      } else {
+        skipped.push(rule.hostname);
+      }
+    }
+
+    if (!needsUpdate) {
+      this.logger.info('All routes already have originRequest configuration');
+      return { updated: [], skipped, failed: [] };
+    }
+
+    // Update the tunnel configuration
+    const success = await this.updateTunnelConfig(currentConfig);
+    if (!success) {
+      this.logger.error('Failed to update tunnel configuration with originRequest settings');
+      return { updated: [], skipped, failed: updated };
+    }
+
+    this.logger.info(
+      `Updated ${updated.length} routes with originRequest configuration. ` +
+      `${skipped.length} routes already had proper configuration.`
+    );
+
+    return { updated, skipped, failed: [] };
+  }
+
   public async deleteAppRoute(subdomain: string): Promise<boolean> {
     if (!this.isEnabled()) {
       this.logger.debug('Cloudflare Tunnel integration is not enabled');
