@@ -10,6 +10,7 @@ export type UserContextDto = {
     isConfigured: boolean;
     isGuestDashboardEnabled: boolean;
     isLoggedIn: boolean;
+    isPasswordResetDisabled: boolean;
     localDomain: string;
     sslPort: number;
     themeBase: string;
@@ -53,6 +54,7 @@ export type AppContextDto = {
         appDataPath: string;
         appsRepoUrl: string;
         demoMode: boolean;
+        disablePasswordReset: boolean;
         dnsIp: string;
         domain: string;
         eventsTimeout: number;
@@ -91,6 +93,7 @@ export type UserSettingsBody = {
     appDataPath?: string;
     appsRepoUrl?: string;
     demoMode?: boolean;
+    disablePasswordReset?: boolean;
     dnsIp?: string;
     domain?: string;
     eventsTimeout?: number | string;
