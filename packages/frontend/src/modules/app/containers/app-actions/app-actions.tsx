@@ -290,8 +290,8 @@ export const AppActions = ({ app, info, localDomain, metadata, sslPort }: IProps
       key="open"
       IconComponent={IconExternalLink}
       onClick={() => {
-        // Directly open the app at ${name}.companionintel.com
-        window.open(appUrl, '_blank', 'noreferrer');
+        // Navigate to the app at ${name}.companionintel.com in the same tab
+        window.location.href = appUrl;
       }}
       title={t('APP_ACTION_OPEN')}
       disabled={isCheckingUrl || urlAvailable === false}
