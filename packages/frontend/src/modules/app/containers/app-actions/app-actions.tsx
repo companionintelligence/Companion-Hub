@@ -6,8 +6,6 @@ import {
   IconEdit,
   IconEraser,
   IconExternalLink,
-  IconLock,
-  IconLockOff,
   IconPlayerPause,
   IconPlayerPlay,
   IconRotateClockwise,
@@ -63,8 +61,6 @@ const ActionButton: React.FC<BtnProps> = (props) => {
   );
 };
 
-type OpenType = 'local' | 'domain' | 'local_domain';
-
 export const AppActions = ({ app, info, localDomain, metadata, sslPort }: IProps) => {
   const installDisclosure = useDisclosure();
   const stopDisclosure = useDisclosure();
@@ -78,11 +74,8 @@ export const AppActions = ({ app, info, localDomain, metadata, sslPort }: IProps
   const location = useLocation();
   const navigate = useNavigate();
 
-  const hostname = typeof window !== 'undefined' ? window.location.hostname : '';
   const versionIsIgnored = app?.ignoredVersion === metadata.latestVersion;
   const updateAvailable = Number(app?.version ?? 0) < Number(metadata?.latestVersion || 0);
-
-  const appLocalDomain = `${metadata.localSubdomain}.${localDomain}${sslPort !== 443 ? `:${sslPort}` : ''}`;
 
   const startMutation = useMutation({
     ...startAppMutation(),
@@ -217,37 +210,17 @@ export const AppActions = ({ app, info, localDomain, metadata, sslPort }: IProps
   const InstallButton = <ActionButton key="install" onClick={installDisclosure.open} title={t('APP_ACTION_INSTALL')} intent="success" />;
 
   const OpenButton = (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button className="action-button">
-          {t('APP_ACTION_OPEN')}
-          <IconExternalLink className="ms-1" size={14} />
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent>
-        <DropdownMenuGroup>
-          {app?.exposed && app.domain && (
-            <DropdownMenuItem onClick={() => handleOpen('domain')}>
-              <IconLock className="text-green me-2" size={16} />
-              {app.domain}
-              {sslPort !== 443 ? `:${sslPort}` : ''}
-            </DropdownMenuItem>
-          )}
-          {app?.exposedLocal && (
-            <DropdownMenuItem onClick={() => handleOpen('local_domain')}>
-              <IconLock className="text-muted me-2" size={16} />
-              {appLocalDomain}
-            </DropdownMenuItem>
-          )}
-          {(app?.openPort || !info.dynamic_config) && (
-            <DropdownMenuItem onClick={() => handleOpen('local')}>
-              <IconLockOff className="text-muted me-2" size={16} />
-              {hostname}:{app?.port ?? info.port}
-            </DropdownMenuItem>
-          )}
-        </DropdownMenuGroup>
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <ActionButton
+      key="open"
+      IconComponent={IconExternalLink}
+      onClick={() => {
+        // Directly open the app at ${name}.companionintel.com
+        const subdomain = metadata.localSubdomain || app?.localSubdomain || info.urn.split(':').join('-');
+        const url = `https://${subdomain}.companionintel.com${info.url_suffix || ''}`;
+        window.open(url, '_blank', 'noreferrer');
+      }}
+      title={t('APP_ACTION_OPEN')}
+    />
   );
 
   const buttons: React.JSX.Element[] = [];
@@ -311,27 +284,6 @@ export const AppActions = ({ app, info, localDomain, metadata, sslPort }: IProps
       break;
   }
 
-  const handleOpen = (type: OpenType) => {
-    let url = '';
-    const { https } = info;
-    const protocol = https ? 'https' : 'http';
-
-    if (typeof window !== 'undefined') {
-      // Current domain
-      const domain = window.location.hostname;
-      url = `${protocol}://${domain}:${app?.port ?? info.port}${info.url_suffix || ''}`;
-    }
-
-    if (type === 'domain' && app?.domain) {
-      url = `https://${app.domain}${sslPort !== 443 ? `:${sslPort}` : ''}${info.url_suffix || ''}`;
-    }
-
-    if (type === 'local_domain') {
-      url = `https://${appLocalDomain}${info.url_suffix || ''}`;
-    }
-
-    window.open(url, '_blank', 'noreferrer');
-  };
 
   return (
     <>
