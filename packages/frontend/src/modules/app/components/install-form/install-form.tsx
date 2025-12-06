@@ -73,7 +73,14 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
       setValue('exposed', true);
       setValue('openPort', false);
     }
-  }, [initialValues, isDirty, setValue, info.force_expose]);
+    // Always set exposedLocal to true and use recommended port
+    if (info.exposable && info.dynamic_config) {
+      setValue('exposedLocal', true);
+      if (info.port) {
+        setValue('port', info.port.toString());
+      }
+    }
+  }, [initialValues, isDirty, setValue, info.force_expose, info.exposable, info.dynamic_config, info.port]);
 
   const randomPortMutation = useMutation({
     ...getRandomPortMutation(),
@@ -144,83 +151,34 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
       <>
         {info.exposable && (
           <>
-            <Controller
-              control={control}
-              name="exposedLocal"
-              render={({ field: { onChange, value, ref, ...props } }) => (
-                <Switch
-                  {...props}
-                  className="mb-3"
-                  ref={ref}
-                  checked={value}
-                  onCheckedChange={onChange}
-                  label={
-                    <>
-                      {isProduction ? t('APP_INSTALL_FORM_PUBLISH_TO_INTERNET') : t('APP_INSTALL_FORM_EXPOSE_LOCAL')}
-                      <Tooltip className="tooltip" anchorSelect=".expose-local-hint">
-                        {t('APP_INSTALL_FORM_EXPOSE_LOCAL_HINT', {
-                          domain: localDomain,
-                          appId: info.urn.split(':').join('-'),
-                        })}
-                      </Tooltip>
-                      <span className={clsx('ms-1 form-help expose-local-hint')}>?</span>
-                    </>
-                  }
+            {/* Hide "Publish to internet" switch - always set to true */}
+            {/* Always set exposedLocal to true and use recommended port */}
+            {/* Hide port input - always use recommended port (info.port) */}
+            {isProduction && info.dynamic_config && (
+              <div className="mb-3">
+                <InputGroup
+                  groupPrefix="https://"
+                  groupSuffix={`.${localDomain}`}
+                  {...register('localSubdomain')}
+                  label={t('APP_INSTALL_FORM_LOCAL_SUBDOMAIN')}
+                  error={errors.localSubdomain?.message}
+                  disabled={loading}
+                  placeholder={info.urn.split(':').join('-')}
                 />
-              )}
-            />
-            {watchExposedLocal && (
-              <>
-                {isProduction && info.dynamic_config && (
-                  <>
-                    <div className="mb-3">
-                      <InputGroup
-                        type="number"
-                        defaultValue={info.port}
-                        groupSuffix={
-                          <Button type="button" onClick={() => randomPortMutation.mutate({})} loading={loading || randomPortMutation.isPending}>
-                            {t('APP_INSTALL_FORM_RANDOM')}
-                          </Button>
-                        }
-                        max={65535}
-                        {...register('port', {
-                          valueAsNumber: true,
-                        })}
-                        error={errors.port?.message}
-                        disabled={loading || randomPortMutation.isPending}
-                        placeholder="8484"
-                        className="flex-grow-1 input-group"
-                        label={t('APP_INSTALL_FORM_PORT')}
-                      />
-                      <span className="text-muted">{t('APP_INSTALL_FORM_PORT_HINT')}</span>
-                    </div>
-                    <div className="mb-3">
-                      <InputGroup
-                        groupPrefix="https://"
-                        groupSuffix={`.${localDomain}`}
-                        {...register('localSubdomain')}
-                        label={t('APP_INSTALL_FORM_LOCAL_SUBDOMAIN')}
-                        error={errors.localSubdomain?.message}
-                        disabled={loading}
-                        placeholder={info.urn.split(':').join('-')}
-                      />
-                    </div>
-                  </>
-                )}
-                {!isProduction && (
-                  <div className="mb-3">
-                    <InputGroup
-                      groupPrefix="https://"
-                      groupSuffix={`.${localDomain}`}
-                      {...register('localSubdomain')}
-                      label={t('APP_INSTALL_FORM_LOCAL_SUBDOMAIN')}
-                      error={errors.localSubdomain?.message}
-                      disabled={loading}
-                      placeholder={info.urn.split(':').join('-')}
-                    />
-                  </div>
-                )}
-              </>
+              </div>
+            )}
+            {!isProduction && (
+              <div className="mb-3">
+                <InputGroup
+                  groupPrefix="https://"
+                  groupSuffix={`.${localDomain}`}
+                  {...register('localSubdomain')}
+                  label={t('APP_INSTALL_FORM_LOCAL_SUBDOMAIN')}
+                  error={errors.localSubdomain?.message}
+                  disabled={loading}
+                  placeholder={info.urn.split(':').join('-')}
+                />
+              </div>
             )}
             <Controller
               control={control}
@@ -251,10 +209,17 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
   };
 
   const validate = (values: FormValues) => {
-    const validationErrors = validateAppConfig(values, formFields);
+    // Always set exposedLocal to true and use recommended port
+    const formValues = {
+      ...values,
+      exposedLocal: true,
+      port: values.port || (info.port ? info.port.toString() : undefined),
+    };
+    
+    const validationErrors = validateAppConfig(formValues, formFields);
     
     // In production, require port when publishing to internet
-    if (isProduction && values.exposedLocal && info.dynamic_config && !values.port) {
+    if (isProduction && formValues.exposedLocal && info.dynamic_config && !formValues.port) {
       validationErrors.port = { messageKey: 'APP_INSTALL_FORM_ERROR_REQUIRED', params: { label: t('APP_INSTALL_FORM_PORT') } };
     }
 
@@ -265,7 +230,7 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
     }
 
     if (Object.keys(validationErrors).length === 0) {
-      onSubmit(values);
+      onSubmit(formValues);
     }
   };
 
