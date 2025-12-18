@@ -30,11 +30,10 @@ Once you have forked the repository and cloned it on your local machine you can 
 
 ## Install dependencies
 
-runtipi uses `pnpm` as a package manager and monorepo orchestrator. Install it with
-`npm i -g pnpm`
+runtipi uses [`bun`](https://bun.com/) as its JavaScript runtime and package manager, and `turbo.js` as its monorepo orchestrator. Install Bun using the instructions from the [official Bun website](https://bun.com/).
 
 Install the project dependencies
-`pnpm i`
+`bun install`
 
 ## Edit the environment variables
 
@@ -42,5 +41,5 @@ You need to copy `.env.example` to `.env`
 
 ## Run runtipi
 
-1. Start the app with `npm run start:dev` from the root folder
+1. Start the app with `bun run start:dev` from the root folder
 2. Visit `localhost:3000` in your browser
