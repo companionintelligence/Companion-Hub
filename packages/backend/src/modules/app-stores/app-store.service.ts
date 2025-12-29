@@ -24,7 +24,7 @@ export class AppStoreService {
         case 'update_all': {
           const stores = await this.appStoreRepository.getEnabledAppStores();
           for (const store of stores) {
-            await this.repoHelpers.pullRepo(store.url, store.slug);
+            await this.repoHelpers.pullRepo(store.url, store.slug, store.type ?? 'git', store.authorizationKey ?? undefined);
           }
           await reply({ success: true, message: 'All repos updated' });
           break;
@@ -32,18 +32,20 @@ export class AppStoreService {
         case 'clone_all': {
           const stores = await this.appStoreRepository.getEnabledAppStores();
           for (const store of stores) {
-            await this.repoHelpers.cloneRepo(store.url, store.slug);
+            await this.repoHelpers.cloneRepo(store.url, store.slug, store.type ?? 'git', store.authorizationKey ?? undefined);
           }
           await reply({ success: true, message: 'All repos cloned' });
           break;
         }
         case 'clone': {
-          const { success, message } = await this.repoHelpers.cloneRepo(data.url, data.id);
+          const store = await this.appStoreRepository.getAppStoreBySlug(data.id);
+          const { success, message } = await this.repoHelpers.cloneRepo(data.url, data.id, store?.type ?? 'git', store?.authorizationKey ?? undefined);
           await reply({ success, message });
           break;
         }
         case 'update': {
-          const { success, message } = await this.repoHelpers.pullRepo(data.url, data.id);
+          const store = await this.appStoreRepository.getAppStoreBySlug(data.id);
+          const { success, message } = await this.repoHelpers.pullRepo(data.url, data.id, store?.type ?? 'git', store?.authorizationKey ?? undefined);
           await reply({ success, message });
           break;
         }
@@ -56,7 +58,7 @@ export class AppStoreService {
 
     for (const repo of repositories) {
       this.logger.debug(`Pulling repo ${repo.url}`);
-      await this.repoHelpers.pullRepo(repo.url, repo.slug);
+      await this.repoHelpers.pullRepo(repo.url, repo.slug, repo.type ?? 'git', repo.authorizationKey ?? undefined);
     }
 
     return { success: true };
