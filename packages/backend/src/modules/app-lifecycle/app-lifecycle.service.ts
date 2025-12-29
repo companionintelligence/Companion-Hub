@@ -3,7 +3,7 @@ import { createAppUrn, extractAppUrn } from '@/common/helpers/app-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { SSEService } from '@/core/sse/sse.service';
-import { HttpStatus, Inject, Injectable } from '@nestjs/common';
+import { HttpStatus, Inject, Injectable, InternalServerErrorException } from '@nestjs/common';
 import type { AppUrn } from '@runtipi/common/types';
 import { lt, valid } from 'semver';
 import semver from 'semver';
@@ -20,6 +20,7 @@ import { appFormSchema } from './dto/app-lifecycle.dto';
 import { APP_ASYNC_MUTEX } from '@/utils/mutex/mutex.module';
 import type { AsyncMutex } from '@/utils/mutex/async-mutex';
 import type { z } from 'zod';
+import { HostsFileService } from '../system/hosts-file.service';
 
 @Injectable()
 export class AppLifecycleService {
@@ -34,6 +35,7 @@ export class AppLifecycleService {
     private readonly appFilesManager: AppFilesManager,
     private readonly sseService: SSEService,
     private readonly backupManager: BackupManager,
+    private readonly hostsFileService: HostsFileService,
     @Inject(APP_ASYNC_MUTEX) private mutex: AsyncMutex,
   ) {
     this.logger.debug('Subscribing to app events...');
@@ -82,6 +84,13 @@ export class AppLifecycleService {
         this.logger.info(`App ${appUrn} started successfully`);
         this.sseService.emit('app', { event: 'start_success', appUrn, appStatus: 'running' });
         await this.appRepository.updateAppById(app.id, { status: 'running', pendingRestart: false });
+
+        const config = app.config;
+        if (config?.localSubdomain) {
+          const localDomain = this.config.get('userSettings').localDomain;
+          const fullDomain = `${config.localSubdomain}.${localDomain}`;
+          await this.hostsFileService.addDomain(fullDomain);
+        }
       } else {
         this.logger.error(`Failed to start app ${appUrn}: ${message}`);
         this.sseService.emit('app', { event: 'start_error', appUrn, appStatus: 'stopped', error: message });
@@ -93,6 +102,7 @@ export class AppLifecycleService {
   }
 
   async installApp(params: { appUrn: AppUrn; form: unknown; skipRun?: boolean }) {
+    try {
     const { appUrn, form, skipRun } = params;
     const { demoMode, version, architecture } = this.config.getConfig();
 
@@ -103,6 +113,24 @@ export class AppLifecycleService {
     const parsedForm = appFormSchema(form);
     if (parsedForm instanceof type.errors) {
       throw new TranslatableError('SYSTEM_ERROR_INVALID_BODY', undefined, HttpStatus.BAD_REQUEST, { cause: parsedForm });
+    }
+
+    const appInfo = await this.marketplaceService.getAppInfoFromAppStoreOrInstalled(appUrn);
+
+    if (!appInfo) {
+      throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn }, HttpStatus.NOT_FOUND);
+    }
+
+    if (parsedForm.exposedLocal === undefined) {
+      parsedForm.exposedLocal = true;
+    }
+
+    if (!parsedForm.localSubdomain) {
+      parsedForm.localSubdomain = appUrn.replace(':', '-');
+    }
+
+    if (!parsedForm.port && appInfo.port) {
+      parsedForm.port = await this.appsService.getRandomPort();
     }
 
     if (app) {
@@ -123,12 +151,6 @@ export class AppLifecycleService {
 
     if (domain && !validator.isFQDN(domain)) {
       throw new TranslatableError('APP_ERROR_DOMAIN_NOT_VALID', { domain });
-    }
-
-    const appInfo = await this.marketplaceService.getAppInfoFromAppStoreOrInstalled(appUrn);
-
-    if (!appInfo) {
-      throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn }, HttpStatus.NOT_FOUND);
     }
 
     if (appInfo.supported_architectures?.length && !appInfo.supported_architectures.includes(architecture)) {
@@ -205,6 +227,12 @@ export class AppLifecycleService {
         this.logger.info(`App ${appUrn} installed successfully`);
         this.sseService.emit('app', { event: 'install_success', appUrn, appStatus: 'running' });
         await this.appRepository.updateAppById(createdApp.id, { status: 'running' });
+
+        if (parsedForm.localSubdomain) {
+          const localDomain = this.config.get('userSettings').localDomain;
+          const fullDomain = `${parsedForm.localSubdomain}.${localDomain}`;
+          await this.hostsFileService.addDomain(fullDomain);
+        }
       } else {
         this.sseService.emit('app', { event: 'install_error', appUrn, appStatus: 'missing', error: message });
         this.logger.error(`Failed to install app ${appUrn}: ${message}`);
@@ -213,6 +241,11 @@ export class AppLifecycleService {
     });
 
     return { requestId };
+    } catch (e) {
+      console.error(e);
+      const message = e instanceof Error ? e.message : String(e);
+      throw new InternalServerErrorException(message);
+    }
   }
 
   /**
@@ -301,6 +334,12 @@ export class AppLifecycleService {
         this.logger.info(`App ${appUrn} uninstalled successfully`);
         await this.appRepository.deleteAppById(app.id);
         this.sseService.emit('app', { event: 'uninstall_success', appUrn, appStatus: 'missing' });
+
+        if (app.localSubdomain) {
+          const localDomain = this.config.get('userSettings').localDomain;
+          const fullDomain = `${app.localSubdomain}.${localDomain}`;
+          await this.hostsFileService.removeDomain(fullDomain);
+        }
       } else {
         this.logger.error(`Failed to uninstall app ${appUrn}: ${message}`);
         this.sseService.emit('app', { event: 'uninstall_error', appUrn, appStatus: 'stopped', error: message });

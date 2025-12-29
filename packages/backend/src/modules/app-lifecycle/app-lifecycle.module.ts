@@ -10,9 +10,10 @@ import { AppLifecycleCommandFactory } from './app-lifecycle-command.factory';
 import { AppLifecycleController } from './app-lifecycle.controller';
 import { AppLifecycleService } from './app-lifecycle.service';
 import { AppStatusSyncService } from './app-status-sync.service';
+import { SystemModule } from '../system/system.module';
 
 @Module({
-  imports: [QueueModule, AppsModule, EnvModule, DockerModule, MarketplaceModule, forwardRef(() => BackupsModule), SSEModule],
+  imports: [QueueModule, AppsModule, EnvModule, DockerModule, MarketplaceModule, forwardRef(() => BackupsModule), SSEModule, SystemModule],
   providers: [AppLifecycleService, AppLifecycleCommandFactory, AppStatusSyncService],
   controllers: [AppLifecycleController],
   exports: [AppLifecycleService, AppStatusSyncService],
