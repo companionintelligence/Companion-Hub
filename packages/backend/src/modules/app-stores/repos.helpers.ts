@@ -127,10 +127,22 @@ export class ReposHelpers {
 
   private async downloadZipRepo(url: string, repoPath: string, authKey?: string) {
     try {
+      // Force URL for debugging if needed in dev mode
+      if (process.env.NODE_ENV !== 'production' && url.includes('localhost:3001')) {
+        this.logger.warn('Detected localhost:3001, rewriting to host.docker.internal:3001');
+        url = url.replace('localhost:3001', 'host.docker.internal:3001');
+      }
+
       this.logger.debug(`Downloading zip repo from ${url} to ${repoPath}`);
       await this.ensureDirectoryWithPermissions(path.dirname(repoPath));
 
-      const uuid = (await si.uuid()).hardware;
+      let uuid = (await si.uuid()).hardware;
+
+      // In dev mode, use a mock UUID if the real one isn't valid for the mock server
+      if (process.env.NODE_ENV !== 'production') {
+        this.logger.debug(`Dev mode detected. Original UUID: ${uuid}. Using mock UUID: test-uuid-1234`);
+        uuid = 'test-uuid-1234';
+      }
       
       const response = await fetch(url, {
         headers: {
