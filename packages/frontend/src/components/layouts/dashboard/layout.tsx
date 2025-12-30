@@ -1,5 +1,5 @@
 import { Header } from '@/components/header/header';
-import { type PropsWithChildren } from 'react';
+import { type PropsWithChildren, useEffect, useRef } from 'react';
 import semver from 'semver';
 import './layout.css';
 import { PageTitle } from '@/components/page-title/page-title';
@@ -30,6 +30,7 @@ export const DashboardLayoutSuspense = ({ children }: PropsWithChildren) => {
 export const DashboardLayout = ({ children }: PropsWithChildren) => {
   const { userSettings, user, apps, version } = useAppContext();
   const location = useLocation();
+  const prevPathRef = useRef(location.pathname);
 
   const { isLoggedIn } = useUserContext();
 
@@ -43,19 +44,54 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
     return <Welcome allowErrorMonitoring={userSettings.allowErrorMonitoring} />;
   }
 
+  const getDepth = (path: string) => {
+    if (path === '/dashboard') return 0;
+    if (path.startsWith('/apps') || path.startsWith('/app-store') || path.startsWith('/settings')) {
+      const parts = path.split('/').filter(Boolean);
+      if (parts.length > 1 && (parts[0] === 'apps' || parts[0] === 'app-store')) return 2;
+      return 1;
+    }
+    return 1;
+  };
+
+  const currentDepth = getDepth(location.pathname);
+  const prevDepth = getDepth(prevPathRef.current);
+  let direction = 0;
+
+  if (currentDepth > prevDepth) direction = 1;
+  else if (currentDepth < prevDepth) direction = -1;
+
+  useEffect(() => {
+    prevPathRef.current = location.pathname;
+  }, [location.pathname]);
+
+  const variants = {
+    enter: (direction: number) => ({
+      y: direction > 0 ? '100%' : 0,
+      opacity: direction > 0 ? 1 : 0,
+      zIndex: direction > 0 ? 10 : 0,
+    }),
+    center: {
+      y: 0,
+      opacity: 1,
+      zIndex: 1,
+    },
+    exit: (direction: number) => ({
+      y: direction < 0 ? '100%' : 0,
+      opacity: direction < 0 ? 1 : 0,
+      zIndex: direction < 0 ? 10 : 0,
+    }),
+  };
+
   const isAppStore = location.pathname.startsWith('/app-store');
   const shouldShowTitle = !['/dashboard', '/apps', '/settings', '/app-store'].includes(location.pathname);
 
   return (
-    <div className="page">
-      <Header 
-        isLoggedIn={isLoggedIn} 
-        isUpdateAvailable={!isLatest} 
-        allowAutoThemes={userSettings.allowAutoThemes} 
-      />
-      <div className="page-wrapper">
+    <div className="page h-screen overflow-hidden flex flex-col">
+      <Header isLoggedIn={isLoggedIn} isUpdateAvailable={!isLatest} allowAutoThemes={userSettings.allowAutoThemes} />
+      <div className="page-wrapper flex-1 flex flex-col relative overflow-hidden">
         {shouldShowTitle && (
-          <div className="page-header d-print-none">
+          <div className="page-header d-print-none z-20 relative">
             <div className="container-xl">
               <div className="text-reset title">
                 <PageTitle apps={apps} />
@@ -63,16 +99,18 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
             </div>
           </div>
         )}
-        <div className="page-body">
-          <div className="container-xl">
-            <AnimatePresence mode="wait">
+        <div className="page-body flex-1 relative overflow-hidden">
+          <div className="container-xl h-full relative">
+            <AnimatePresence mode="popLayout" custom={direction}>
               <motion.div
                 key={location.pathname}
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -20 }}
-                transition={{ duration: 0.2 }}
-                className={isAppStore ? 'h-100' : ''}
+                custom={direction}
+                variants={variants}
+                initial="enter"
+                animate="center"
+                exit="exit"
+                transition={{ duration: 0.6, ease: 'easeInOut' }}
+                className={`absolute inset-0 w-full h-full overflow-y-auto ${isAppStore ? '' : ''}`}
               >
                 {children}
               </motion.div>
