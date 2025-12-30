@@ -1,5 +1,5 @@
-import { IconArrowLeft, IconCertificate, IconLogin, IconSettings } from '@tabler/icons-react';
-import type { ReactNode } from 'react';
+import { IconArrowLeft, IconCertificate, IconLogin, IconMaximize, IconMinimize, IconSettings } from '@tabler/icons-react';
+import { type ReactNode, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useLocation } from 'react-router';
 import { Tooltip } from 'react-tooltip';
@@ -18,6 +18,26 @@ export const BaseHeader = (props: BaseHeaderProps) => {
   const { isLoggedIn, showNav = false, showCertificateButton = false, onLogin, navbarContent } = props;
   const location = useLocation();
   const { t } = useTranslation();
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(!!document.fullscreenElement);
+    };
+
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+    };
+  }, []);
+
+  const toggleFullscreen = () => {
+    if (document.fullscreenElement) {
+      document.exitFullscreen();
+    } else {
+      document.documentElement.requestFullscreen();
+    }
+  };
 
   const downloadCertificate = () => {
     window.open('/api/system/certificate');
@@ -66,6 +86,12 @@ export const BaseHeader = (props: BaseHeaderProps) => {
 
             {isLoggedIn ? (
               <>
+                <Tooltip className="tooltip" anchorSelect=".fullscreen">
+                  {isFullscreen ? t('HEADER_EXIT_FULLSCREEN') : t('HEADER_ENTER_FULLSCREEN')}
+                </Tooltip>
+                <button type="button" onClick={toggleFullscreen} className="fullscreen nav-link px-0 cursor-pointer" data-testid="fullscreen-button">
+                  {isFullscreen ? <IconMinimize size={20} /> : <IconMaximize size={20} />}
+                </button>
                 <Tooltip className="tooltip" anchorSelect=".settings">
                   {t('HEADER_SETTINGS')}
                 </Tooltip>
