@@ -65,7 +65,7 @@ export default () => {
 
         {/* App Store Button */}
         <div className="d-flex justify-content-center mt-2">
-          <button className="btn btn-primary btn-lg d-flex align-items-center gap-2" onClick={() => navigate('/app-store')}>
+          <button type="button" className="btn btn-primary btn-lg d-flex align-items-center gap-2" onClick={() => navigate('/app-store')}>
             <IconBrandAppstore size={24} />
             {t('HEADER_APP_STORE')}
           </button>

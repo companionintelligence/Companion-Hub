@@ -2,16 +2,27 @@
   --skeleton-radius: var(--skeleton-radius-override);
   --skeleton-height: var(--skeleton-height-override);
   border-radius: 4px;
+  /* biome-ignore lint/complexity/noImportantStyles: Override */
   animation: rt-skeleton-pulse 1000ms infinite alternate-reverse !important;
+  /* biome-ignore lint/complexity/noImportantStyles: Override */
   background-image: none !important;
+  /* biome-ignore lint/complexity/noImportantStyles: Override */
   background-clip: border-box !important;
+  /* biome-ignore lint/complexity/noImportantStyles: Override */
   border: none !important;
+  /* biome-ignore lint/complexity/noImportantStyles: Override */
   box-shadow: none !important;
+  /* biome-ignore lint/complexity/noImportantStyles: Override */
   box-decoration-break: clone !important;
+  /* biome-ignore lint/complexity/noImportantStyles: Override */
   color: transparent !important;
+  /* biome-ignore lint/complexity/noImportantStyles: Override */
   outline: none !important;
+  /* biome-ignore lint/complexity/noImportantStyles: Override */
   pointer-events: none !important;
+  /* biome-ignore lint/complexity/noImportantStyles: Override */
   user-select: none !important;
+  /* biome-ignore lint/complexity/noImportantStyles: Override */
   cursor: default !important;
 }
 
@@ -31,6 +42,7 @@
 .rt-Skeleton:where([data-inline-skeleton]) {
   line-height: 0;
   /* Font metrics on Arial yield much nicer height for the text background bounding box */
+  /* biome-ignore lint/complexity/noImportantStyles: Override */
   font-family: Arial, sans-serif !important;
 }
 
@@ -42,6 +54,7 @@
 .rt-Skeleton > *,
 .rt-Skeleton::after,
 .rt-Skeleton::before {
+  /* biome-ignore lint/complexity/noImportantStyles: Override */
   visibility: hidden !important;
 }
 

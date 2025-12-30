@@ -4,7 +4,7 @@ import type { AppInfo, AppStatus } from '@/types/app.types';
 
 interface InstalledApp {
   info: Pick<AppInfo, 'urn' | 'name'>;
-  app: { id: string; status: AppStatus };
+  app: { id: number; status: AppStatus };
 }
 
 interface HorizontalAppListProps {
@@ -14,7 +14,7 @@ interface HorizontalAppListProps {
 export const HorizontalAppList = ({ apps }: HorizontalAppListProps) => {
   return (
     <div className="d-flex flex-column gap-2">
-      <div 
+      <div
         className="d-grid gap-3 py-2 px-1"
         style={{
           gridTemplateRows: 'repeat(3, min-content)',
@@ -28,12 +28,12 @@ export const HorizontalAppList = ({ apps }: HorizontalAppListProps) => {
         }}
       >
         {apps.map(({ info, app }) => {
-           const [appName, storeId] = info.urn.split(':');
-           return (
-             <Link key={app.id} to={`/apps/${storeId}/${appName}`} className="text-decoration-none text-reset">
-               <SimpleAppTile name={info.name} urn={info.urn} />
-             </Link>
-           );
+          const [appName, storeId] = info.urn.split(':');
+          return (
+            <Link key={app.id} to={`/apps/${storeId}/${appName}`} className="text-decoration-none text-reset">
+              <SimpleAppTile name={info.name} urn={info.urn} />
+            </Link>
+          );
         })}
       </div>
     </div>

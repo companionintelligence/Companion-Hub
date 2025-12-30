@@ -1,11 +1,11 @@
-import type { TablerIconsProps } from '@tabler/icons-react';
+import type { IconProps } from '@tabler/icons-react';
 import clsx from 'clsx';
 import type { FunctionComponent } from 'react';
 
 interface CompactSystemStatProps {
   title: string;
   metric: string;
-  icon: FunctionComponent<TablerIconsProps>;
+  icon: FunctionComponent<IconProps>;
   progress: number;
   isLoading?: boolean;
   color?: string;

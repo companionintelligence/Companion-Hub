@@ -113,8 +113,10 @@ export default () => {
             <div className="row row-cards">
               {isLoading && !apps.length
                 ? Array.from({ length: 12 }).map((_, i) => (
+                    // biome-ignore lint/suspicious/noArrayIndexKey: Skeletons order doesn't change
                     <div key={`skeleton-${i}`} className="col-sm-6 col-lg-4">
                       <StoreTile
+                        // biome-ignore lint/suspicious/noExplicitAny: Mock data for skeleton
                         app={{ urn: 'loading:loading', name: '', short_desc: '', categories: [] } as any}
                         isLoading={true}
                       />
@@ -123,18 +125,14 @@ export default () => {
                 : apps.map((app, i) => {
                     const isLastElement = apps.length === i + 1;
                     return (
-                      <div
-                        ref={isLastElement ? lastElementRef : null}
-                        key={`${app.id}-${app.storeId}`}
-                        className="col-sm-6 col-lg-4 p-2 mt-4"
-                      >
+                      <div ref={isLastElement ? lastElementRef : null} key={app.urn} className="col-sm-6 col-lg-4 p-2 mt-4">
                         <StoreTile app={app} isLoading={false} />
                       </div>
                     );
                   })}
               {isFetchingNextPage && (
                 <div className="col-12 text-center p-4">
-                  <div className="spinner-border text-primary" role="status" />
+                  <output className="spinner-border text-primary" />
                 </div>
               )}
             </div>

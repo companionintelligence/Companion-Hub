@@ -41,7 +41,7 @@ export default () => {
                     <Suspense
                       fallback={
                         <div className="d-flex justify-content-center align-items-center p-5">
-                          <div className="spinner-border text-secondary" role="status" />
+                          <output className="spinner-border text-secondary" />
                         </div>
                       }
                     >

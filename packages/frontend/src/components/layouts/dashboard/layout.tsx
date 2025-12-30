@@ -34,6 +34,10 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
 
   const { isLoggedIn } = useUserContext();
 
+  useEffect(() => {
+    prevPathRef.current = location.pathname;
+  }, [location.pathname]);
+
   let isLatest = semver.valid(version.current) && semver.valid(version.latest) && semver.gte(version.current, version.latest);
 
   if (version.current === 'nightly') {
@@ -61,10 +65,6 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
   if (currentDepth > prevDepth) direction = 1;
   else if (currentDepth < prevDepth) direction = -1;
 
-  useEffect(() => {
-    prevPathRef.current = location.pathname;
-  }, [location.pathname]);
-
   const variants = {
     enter: (direction: number) => ({
       y: direction > 0 ? '100%' : 0,
@@ -85,7 +85,7 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
     }),
   };
 
-  const isAppStore = location.pathname.startsWith('/app-store');
+  const _isAppStore = location.pathname.startsWith('/app-store');
   const shouldShowTitle = !['/dashboard', '/apps', '/settings', '/app-store'].includes(location.pathname);
 
   return (

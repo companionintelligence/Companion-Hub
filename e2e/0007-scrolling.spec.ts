@@ -3,9 +3,9 @@ import { user } from '../packages/backend/src/core/database/drizzle/schema';
 import { testUser } from './helpers/constants';
 import { db, clearDatabase } from './helpers/db';
 
-test.beforeEach(async ({ page, context }) => {
+test.beforeEach(async ({ page }) => {
   await clearDatabase();
-  
+
   // Create user in database
   await db.insert(user).values({ password: testUser.hashedPassword, username: testUser.email, operator: true, hasSeenWelcome: true });
 
@@ -31,7 +31,7 @@ test('app store page is scrollable', async ({ page }) => {
       icon: 'https://example.com/icon.png',
       versions: [],
     }));
-    
+
     await route.fulfill({
       json: {
         data: apps,
@@ -41,7 +41,7 @@ test('app store page is scrollable', async ({ page }) => {
   });
 
   await page.goto('/app-store');
-  
+
   const scrollContainer = page.getByTestId('app-store-scroll-container');
   await expect(scrollContainer).toBeVisible();
 
@@ -54,7 +54,7 @@ test('app store page is scrollable', async ({ page }) => {
 
   // Scroll down
   await scrollContainer.evaluate((el) => el.scrollTo(0, 100));
-  
+
   // Check new scroll position
   const newScrollTop = await scrollContainer.evaluate((el) => el.scrollTop);
   expect(newScrollTop).toBe(100);
@@ -62,7 +62,7 @@ test('app store page is scrollable', async ({ page }) => {
 
 test('settings page is scrollable', async ({ page }) => {
   await page.goto('/settings');
-  
+
   // Force a small viewport height to ensure scrolling is needed
   await page.setViewportSize({ width: 1280, height: 400 });
 
@@ -83,7 +83,7 @@ test('settings page is scrollable', async ({ page }) => {
 
   // Scroll down
   await scrollContainer.evaluate((el) => el.scrollTo(0, 100));
-  
+
   const newScrollTop = await scrollContainer.evaluate((el) => el.scrollTop);
   expect(newScrollTop).toBe(100);
 });

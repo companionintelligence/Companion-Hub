@@ -2,7 +2,6 @@ import { acknowledgeWelcomeMutation } from '@/api-client/@tanstack/react-query.g
 import { Button } from '@/components/ui/Button';
 import { Switch } from '@/components/ui/Switch';
 import { getLogo } from '@/lib/theme/theme';
-import { IconBrandDiscord, IconBrandGithub } from '@tabler/icons-react';
 import { useMutation } from '@tanstack/react-query';
 import { useState } from 'react';
 
@@ -12,10 +11,6 @@ type Props = {
 
 export const Welcome = ({ allowErrorMonitoring }: Props) => {
   const [errorMonitoring, setErrorMonitoring] = useState(allowErrorMonitoring);
-
-  const openLink = (url: string) => {
-    window.open(url, '_blank', 'noopener noreferrer');
-  };
 
   const acknowledge = useMutation({
     ...acknowledgeWelcomeMutation(),

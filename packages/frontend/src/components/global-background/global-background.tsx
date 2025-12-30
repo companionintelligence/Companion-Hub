@@ -19,23 +19,18 @@ const generateRandomColor = () => {
 export const GlobalBackground = ({ backgroundImage }: GlobalBackgroundProps) => {
   const gradientStyle = useMemo(() => {
     if (backgroundImage) return {};
-    
+
     const color1 = generateRandomColor();
     const color2 = generateRandomColor();
     const color3 = generateRandomColor();
-    
+
     return {
-      backgroundImage: `linear-gradient(90deg, ${color1}, ${color2}, ${color3})`
+      backgroundImage: `linear-gradient(90deg, ${color1}, ${color2}, ${color3})`,
     };
   }, [backgroundImage]);
 
   if (backgroundImage) {
-    return (
-      <div 
-        className="background--image" 
-        style={{ backgroundImage: `url(${backgroundImage})` }} 
-      />
-    );
+    return <div className="background--image" style={{ backgroundImage: `url(${backgroundImage})` }} />;
   }
 
   return <div className="background--custom" style={gradientStyle} />;

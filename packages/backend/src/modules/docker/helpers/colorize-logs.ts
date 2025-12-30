@@ -7,7 +7,7 @@ export const colorizeLogs = async (lines: string[]) =>
     lines.map(async (line: string) => {
       try {
         return convert.toHtml(line);
-      } catch (e) {
+      } catch (_e) {
         return line;
       }
     }),

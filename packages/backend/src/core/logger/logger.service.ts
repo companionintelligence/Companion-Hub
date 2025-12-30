@@ -28,7 +28,7 @@ type Transports = transports.ConsoleTransportInstance | transports.FileTransport
  * @param {string} id - The id of the logger, used to identify the logger in the logs
  * @param {string} logsFolder - The folder where the logs will be stored
  */
-export const newLogger = (id: string, logsFolder: string, logLevel: LogLevel = LOG_LEVEL_ENUM.info) => {
+export const newLogger = (_id: string, logsFolder: string, logLevel: LogLevel = LOG_LEVEL_ENUM.info) => {
   const tr: Transports[] = [];
   const exceptionHandlers: Transports[] = [new transports.Console()];
 
@@ -49,7 +49,7 @@ export const newLogger = (id: string, logsFolder: string, logLevel: LogLevel = L
     );
 
     tr.push(new transports.Console({ level: logLevel, format: consoleFormat }));
-  } catch (error) {
+  } catch (_error) {
     // no-op
   }
 

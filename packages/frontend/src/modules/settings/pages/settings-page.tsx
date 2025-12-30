@@ -22,7 +22,7 @@ export default () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const tab = searchParams.get('tab');
   const { userSettings, user } = useAppContext();
-  
+
   const setDarkMode = useUIStore((state) => state.setDarkMode);
   const theme = useUIStore((state) => state.theme);
 
@@ -71,20 +71,10 @@ export default () => {
           >
             <IconSun size={24} />
           </button>
-          <button
-            type="button"
-            onClick={handleLogout}
-            className="btn btn-icon"
-            title={t('HEADER_LOGOUT')}
-          >
+          <button type="button" onClick={handleLogout} className="btn btn-icon" title={t('HEADER_LOGOUT')}>
             <IconLogout size={24} />
           </button>
-          <button
-            type="button"
-            className="btn btn-icon btn-ghost-secondary"
-            onClick={onClose}
-            aria-label="Close"
-          >
+          <button type="button" className="btn btn-icon btn-ghost-secondary" onClick={onClose} aria-label="Close">
             <IconX size={32} />
           </button>
         </div>
@@ -93,15 +83,9 @@ export default () => {
       <div className="d-flex flex-column flex-grow-1 overflow-hidden">
         <Tabs value={currentTab} onValueChange={handleTabChange} className="flex-grow-1 d-flex flex-column h-100 overflow-hidden">
           <TabsList>
-            <TabsTrigger value="actions">
-              {t('SETTINGS_ACTIONS_TAB_TITLE')}
-            </TabsTrigger>
-            <TabsTrigger value="settings">
-              {t('SETTINGS_GENERAL_TAB_TITLE')}
-            </TabsTrigger>
-            <TabsTrigger value="security">
-              {t('SETTINGS_SECURITY_TAB_TITLE')}
-            </TabsTrigger>
+            <TabsTrigger value="actions">{t('SETTINGS_ACTIONS_TAB_TITLE')}</TabsTrigger>
+            <TabsTrigger value="settings">{t('SETTINGS_GENERAL_TAB_TITLE')}</TabsTrigger>
+            <TabsTrigger value="security">{t('SETTINGS_SECURITY_TAB_TITLE')}</TabsTrigger>
             <TabsTrigger value="appstores" className="d-none d-md-block">
               {t('SETTINGS_APPSTORES_TAB_TITLE')}
             </TabsTrigger>

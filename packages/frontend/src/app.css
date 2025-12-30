@@ -18,10 +18,12 @@ main {
 
 body {
   overflow: hidden;
+  /* biome-ignore lint/complexity/noImportantStyles: Override */
   background-color: transparent !important;
 }
 
 .page {
+  /* biome-ignore lint/complexity/noImportantStyles: Override */
   background-color: transparent !important;
 }
 
@@ -31,18 +33,48 @@ body {
 }
 
 /* Utility classes */
-.fixed { position: fixed; }
-.inset-0 { top: 0; right: 0; bottom: 0; left: 0; }
-.overflow-hidden { overflow: hidden; }
-.flex { display: flex; }
-.flex-col { flex-direction: column; }
-.flex-1 { flex: 1; }
-.relative { position: relative; }
-.absolute { position: absolute; }
-.w-full { width: 100%; }
-.h-full { height: 100%; }
-.min-h-0 { min-height: 0; }
-.overflow-y-auto { overflow-y: auto; }
-.z-20 { z-index: 20; }
-.flex-shrink-0 { flex-shrink: 0; }
-
+.fixed {
+  position: fixed;
+}
+.inset-0 {
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+}
+.overflow-hidden {
+  overflow: hidden;
+}
+.flex {
+  display: flex;
+}
+.flex-col {
+  flex-direction: column;
+}
+.flex-1 {
+  flex: 1;
+}
+.relative {
+  position: relative;
+}
+.absolute {
+  position: absolute;
+}
+.w-full {
+  width: 100%;
+}
+.h-full {
+  height: 100%;
+}
+.min-h-0 {
+  min-height: 0;
+}
+.overflow-y-auto {
+  overflow-y: auto;
+}
+.z-20 {
+  z-index: 20;
+}
+.flex-shrink-0 {
+  flex-shrink: 0;
+}

@@ -1,5 +1,5 @@
 .background--custom {
-  background: linear-gradient(90deg, #038B6F, #DAAB46, #05B2F0);
+  background: linear-gradient(90deg, #038b6f, #daab46, #05b2f0);
   background-size: 300% 300%;
   animation: gradient 4s alternate infinite;
   position: fixed;
@@ -12,7 +12,7 @@
 
 .background--custom::after,
 .background--image::after {
-  content: '';
+  content: "";
   position: absolute;
   top: 0;
   left: 0;

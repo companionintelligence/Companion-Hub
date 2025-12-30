@@ -25,10 +25,12 @@ export class TraefikLabelsBuilder {
     if (this.params.exposed) {
       Object.assign(this.labels, {
         'traefik.enable': true,
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: Traefik label requires literal ${APP_DOMAIN}
         [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-insecure.rule`]: 'Host(`${APP_DOMAIN}`)',
         [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-insecure.entrypoints`]: 'web',
         [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-insecure.service`]: `${this.params.appId}-${this.params.storeId}`,
         [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-insecure.middlewares`]: `${this.params.appId}-${this.params.storeId}-web-redirect`,
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: Traefik label requires literal ${APP_DOMAIN}
         [`traefik.http.routers.${this.params.appId}-${this.params.storeId}.rule`]: 'Host(`${APP_DOMAIN}`)',
         [`traefik.http.routers.${this.params.appId}-${this.params.storeId}.entrypoints`]: 'websecure',
         [`traefik.http.routers.${this.params.appId}-${this.params.storeId}.service`]: `${this.params.appId}-${this.params.storeId}`,

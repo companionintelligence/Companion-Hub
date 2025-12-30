@@ -9,12 +9,5 @@ type HeaderProps = {
 export const Header = (props: HeaderProps) => {
   const { allowAutoThemes, isLoggedIn } = props;
 
-  return (
-    <BaseHeader
-      isLoggedIn={isLoggedIn}
-      allowAutoThemes={allowAutoThemes}
-      showNav={false}
-      navbarContent={null}
-    />
-  );
+  return <BaseHeader isLoggedIn={isLoggedIn} allowAutoThemes={allowAutoThemes} showNav={false} navbarContent={null} />;
 };

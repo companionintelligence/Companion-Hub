@@ -1,4 +1,3 @@
-import { useUIStore } from '@/stores/ui-store';
 import { IconArrowLeft, IconCertificate, IconLogin, IconSettings } from '@tabler/icons-react';
 import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
