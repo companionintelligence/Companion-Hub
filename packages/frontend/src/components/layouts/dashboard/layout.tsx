@@ -75,11 +75,13 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
       y: 0,
       opacity: 1,
       zIndex: 1,
+      pointerEvents: 'auto',
     },
     exit: (direction: number) => ({
       y: direction < 0 ? '100%' : 0,
       opacity: direction < 0 ? 1 : 0,
       zIndex: direction < 0 ? 10 : 0,
+      pointerEvents: 'none',
     }),
   };
 
@@ -87,9 +89,9 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
   const shouldShowTitle = !['/dashboard', '/apps', '/settings', '/app-store'].includes(location.pathname);
 
   return (
-    <div className="page h-screen overflow-hidden flex flex-col">
+    <div className="page fixed inset-0 overflow-hidden flex flex-col">
       <Header isLoggedIn={isLoggedIn} isUpdateAvailable={!isLatest} allowAutoThemes={userSettings.allowAutoThemes} />
-      <div className="page-wrapper flex-1 flex flex-col relative overflow-hidden">
+      <div className="page-wrapper flex-1 flex flex-col relative overflow-hidden min-h-0">
         {shouldShowTitle && (
           <div className="page-header d-print-none z-20 relative">
             <div className="container-xl">
@@ -99,7 +101,7 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
             </div>
           </div>
         )}
-        <div className="page-body flex-1 relative overflow-hidden">
+        <div className="page-body flex-1 relative overflow-hidden min-h-0">
           <div className="container-xl h-full relative">
             <AnimatePresence mode="popLayout" custom={direction}>
               <motion.div
@@ -110,7 +112,7 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
                 animate="center"
                 exit="exit"
                 transition={{ duration: 0.6, ease: 'easeInOut' }}
-                className={`absolute inset-0 w-full h-full overflow-y-auto ${isAppStore ? '' : ''}`}
+                className="absolute inset-0 w-full h-full overflow-hidden"
               >
                 {children}
               </motion.div>

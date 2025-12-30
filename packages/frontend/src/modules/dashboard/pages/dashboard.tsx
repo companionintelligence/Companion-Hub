@@ -22,52 +22,54 @@ export default () => {
   const isLoading = !systemData;
 
   return (
-    <div className="d-flex flex-column gap-4">
-      {/* Usage Section */}
-      <div className="row row-deck row-cards align-self-center" style={{ width: '50%' }}>
-        <div className="col-4">
-          <CompactSystemStat
-            isLoading={isLoading}
-            title={t('DASHBOARD_DISK_SPACE_TITLE')}
-            metric={`${systemData.diskUsed} GB`}
-            icon={IconDatabase}
-            progress={systemData.percentUsed}
-            color="blue"
-          />
+    <div className="h-full overflow-y-auto">
+      <div className="d-flex flex-column gap-4">
+        {/* Usage Section */}
+        <div className="row row-deck row-cards align-self-center" style={{ width: '50%' }}>
+          <div className="col-4">
+            <CompactSystemStat
+              isLoading={isLoading}
+              title={t('DASHBOARD_DISK_SPACE_TITLE')}
+              metric={`${systemData.diskUsed} GB`}
+              icon={IconDatabase}
+              progress={systemData.percentUsed}
+              color="blue"
+            />
+          </div>
+          <div className="col-4">
+            <CompactSystemStat
+              isLoading={isLoading}
+              title={t('DASHBOARD_CPU_TITLE')}
+              metric={`${systemData.cpuLoad.toFixed(2)}%`}
+              icon={IconCpu}
+              progress={systemData.cpuLoad}
+              color="red"
+            />
+          </div>
+          <div className="col-4">
+            <CompactSystemStat
+              isLoading={isLoading}
+              title={t('DASHBOARD_MEMORY_TITLE')}
+              metric={`${systemData.percentUsedMemory}%`}
+              icon={IconCircuitResistor}
+              progress={systemData.percentUsedMemory}
+              color="green"
+            />
+          </div>
         </div>
-        <div className="col-4">
-          <CompactSystemStat
-            isLoading={isLoading}
-            title={t('DASHBOARD_CPU_TITLE')}
-            metric={`${systemData.cpuLoad.toFixed(2)}%`}
-            icon={IconCpu}
-            progress={systemData.cpuLoad}
-            color="red"
-          />
-        </div>
-        <div className="col-4">
-          <CompactSystemStat
-            isLoading={isLoading}
-            title={t('DASHBOARD_MEMORY_TITLE')}
-            metric={`${systemData.percentUsedMemory}%`}
-            icon={IconCircuitResistor}
-            progress={systemData.percentUsedMemory}
-            color="green"
-          />
-        </div>
-      </div>
 
-      {/* Apps Section */}
-      <div>
-        <HorizontalAppList apps={appsData.installed} />
-      </div>
+        {/* Apps Section */}
+        <div>
+          <HorizontalAppList apps={appsData.installed} />
+        </div>
 
-      {/* App Store Button */}
-      <div className="d-flex justify-content-center mt-2">
-        <button className="btn btn-primary btn-lg d-flex align-items-center gap-2" onClick={() => navigate('/app-store')}>
-          <IconBrandAppstore size={24} />
-          {t('HEADER_APP_STORE')}
-        </button>
+        {/* App Store Button */}
+        <div className="d-flex justify-content-center mt-2">
+          <button className="btn btn-primary btn-lg d-flex align-items-center gap-2" onClick={() => navigate('/app-store')}>
+            <IconBrandAppstore size={24} />
+            {t('HEADER_APP_STORE')}
+          </button>
+        </div>
       </div>
     </div>
   );

@@ -31,22 +31,24 @@ export default () => {
   const { info, app, metadata } = getApp.data;
 
   return (
-    <div className="card" data-testid="app-details">
-      <div className="card-header d-flex flex-column flex-md-row border-0">
-        <AppLogo urn={info?.urn} size={130} alt={info?.name} />
-        <div className="w-100 d-flex flex-column ms-md-3 align-items-center align-items-md-start">
-          <div>
-            <span className="mt-1 me-1">{t('APP_DETAILS_VERSION')}: </span>
-            <span className="badge bg-muted mt-2 text-white">{info?.version}</span>
+    <div className="h-full overflow-y-auto">
+      <div className="card" data-testid="app-details">
+        <div className="card-header d-flex flex-column flex-md-row border-0">
+          <AppLogo urn={info?.urn} size={130} alt={info?.name} />
+          <div className="w-100 d-flex flex-column ms-md-3 align-items-center align-items-md-start">
+            <div>
+              <span className="mt-1 me-1">{t('APP_DETAILS_VERSION')}: </span>
+              <span className="badge bg-muted mt-2 text-white">{info?.version}</span>
+            </div>
+            <span className="mt-1 text-muted text-center text-md-start mb-2">{info?.short_desc}</span>
+            <div className="mb-1">
+              <AppStatus status={app?.status ?? 'missing'} />
+            </div>
+            <AppActions app={app} metadata={metadata} info={info} localDomain={userSettings.localDomain} sslPort={userSettings.sslPort} />
           </div>
-          <span className="mt-1 text-muted text-center text-md-start mb-2">{info?.short_desc}</span>
-          <div className="mb-1">
-            <AppStatus status={app?.status ?? 'missing'} />
-          </div>
-          <AppActions app={app} metadata={metadata} info={info} localDomain={userSettings.localDomain} sslPort={userSettings.sslPort} />
         </div>
+        <AppDetailsTabs info={info} app={app} metadata={metadata} />
       </div>
-      <AppDetailsTabs info={info} app={app} metadata={metadata} />
     </div>
   );
 };

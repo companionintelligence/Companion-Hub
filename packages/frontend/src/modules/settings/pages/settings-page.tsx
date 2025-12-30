@@ -90,8 +90,8 @@ export default () => {
         </div>
       </div>
 
-      <div className="d-flex flex-column flex-grow-1">
-        <Tabs value={currentTab} onValueChange={handleTabChange} className="flex-grow-1">
+      <div className="d-flex flex-column flex-grow-1 overflow-hidden">
+        <Tabs value={currentTab} onValueChange={handleTabChange} className="flex-grow-1 d-flex flex-column h-100 overflow-hidden">
           <TabsList>
             <TabsTrigger value="actions">
               {t('SETTINGS_ACTIONS_TAB_TITLE')}
@@ -116,7 +116,7 @@ export default () => {
               </DropdownMenuContent>
             </DropdownMenu>
           </TabsList>
-          <div className="p-3">
+          <div className="p-3 flex-grow-1 overflow-y-auto min-h-0" data-testid="settings-scroll-container">
             <TabsContent value="actions">
               <Suspense fallback={<div>Loading...</div>}>
                 <GeneralActionsContainer />
