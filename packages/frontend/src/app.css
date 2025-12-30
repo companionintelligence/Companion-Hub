@@ -18,6 +18,11 @@ main {
 
 body {
   overflow-y: scroll;
+  background-color: transparent !important;
+}
+
+.page {
+  background-color: transparent !important;
 }
 
 .tooltip {

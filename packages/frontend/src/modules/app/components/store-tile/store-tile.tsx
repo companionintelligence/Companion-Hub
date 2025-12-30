@@ -21,7 +21,7 @@ export const StoreTile: React.FC<{ app: AppInfoSimple; isLoading: boolean }> = (
         <Skeleton loading={isLoading}>
           <AppLogo className="logo" urn={app.urn} placeholder={isLoading} />
         </Skeleton>
-        <div className="card-body">
+        <div className="card-body p-2">
           <div className="d-flex align-items-center" style={{ columnGap: '0.75rem' }}>
             <h3 className="text-bold h-3 mb-2">
               <Skeleton loading={isLoading}>{limitText(app.name, 20)}</Skeleton>

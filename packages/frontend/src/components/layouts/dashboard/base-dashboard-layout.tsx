@@ -17,7 +17,7 @@ export const BaseDashboardLayout = ({ header, pageTitle, layoutActions, showPage
           <div className="page-header d-print-none">
             <div className="container-xl">
               <div className="row g-2 align-items-center">
-                <div className="col text-white">{pageTitle}</div>
+                <div className="col text-reset">{pageTitle}</div>
                 {layoutActions && <div className="col-auto ms-auto">{layoutActions}</div>}
               </div>
             </div>
