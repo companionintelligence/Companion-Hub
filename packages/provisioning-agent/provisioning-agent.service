@@ -1,0 +1,20 @@
+[Unit]
+Description=Headless BLE Provisioning Agent
+After=network.target bluetooth.target dbus.service
+Requires=bluetooth.target
+
+[Service]
+Type=simple
+# Adjust the path to python and the script location as needed
+ExecStart=/usr/bin/python3 /opt/ci-os-hub/packages/provisioning-agent/provisioning_agent.py
+WorkingDirectory=/opt/ci-os-hub/packages/provisioning-agent
+Restart=on-failure
+RestartSec=5s
+Environment=PYTHONUNBUFFERED=1
+Environment=DEVICE_IDENTITY_FILE=/etc/device_identity.json
+# Ensure the service has permissions to access DBus and NetworkManager
+# Typically requires running as root or a user with specific polkit privileges
+User=root
+
+[Install]
+WantedBy=multi-user.target
