@@ -10,7 +10,7 @@ interface IProps {
   isUpdateAvailable?: boolean;
 }
 
-export const NavBar: React.FC<IProps> = ({ isUpdateAvailable }) => {
+export const NavBar: React.FC<IProps> = ({ isUpdateAvailable: _isUpdateAvailable }) => {
   const { t } = useTranslation();
   const activeRoute = useUIStore((state) => state.activeRoute);
 

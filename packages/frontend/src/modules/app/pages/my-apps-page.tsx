@@ -60,7 +60,7 @@ export default () => {
   };
 
   return (
-    <>
+    <div className="h-full flex flex-col">
       <ActionBar className={clsx({ 'd-none': installed.length <= 1 })}>
         <ActionBar.Left>
           <StartAllButton availableUpdates={updatesAvailable} />
@@ -72,50 +72,52 @@ export default () => {
           <RestartAllButton availableUpdates={updatesAvailable} />
         </ActionBar.Right>
       </ActionBar>
-      {installed.length === 0 && customLinks.length === 0 ? (
-        <EmptyPage
-          title="MY_APPS_EMPTY_TITLE"
-          subtitle="MY_APPS_EMPTY_SUBTITLE"
-          redirectPath="/app-store"
-          actionLabel="MY_APPS_EMPTY_ACTION"
-          extraContent={
-            <div className="d-flex flex-column flex-sm-row gap-2 justify-content-center">
-              <ButtonTile
-                title={t('CUSTOM_APP_ADD_TITLE')}
-                subtitle={t('CUSTOM_APP_ADD_SUBTITLE')}
-                action={() => navigate('/apps/create')}
-                icon={<IconLayoutGridAdd size={50} stroke={1.5} color="#A4A4A4" />}
-                className="col-12 col-sm-6 col-lg-6 col-lg-6"
-              />
-              <ButtonTile
-                title={t('LINKS_ADD_TITLE')}
-                subtitle={t('LINKS_ADD_SUBTITLE')}
-                action={() => addLinkDisclosure.open()}
-                icon={<IconLinkPlus size={50} stroke={1.5} color="#A4A4A4" />}
-                className="col-12 col-sm-6 col-md-6 col-lg-6"
-              />
-            </div>
-          }
-        />
-      ) : (
-        <div className="row row-cards" data-testid="apps-list">
-          {installed.map(renderApp)}
-          {customLinks.map(renderLink)}
-          <ButtonTile
-            title={t('CUSTOM_APP_ADD_TITLE')}
-            subtitle={t('CUSTOM_APP_ADD_SUBTITLE')}
-            action={() => navigate('/apps/create')}
-            icon={<IconLayoutGridAdd size={50} stroke={1.5} />}
+      <div className="flex-1 overflow-y-auto min-h-0" data-testid="my-apps-scroll-container">
+        {installed.length === 0 && customLinks.length === 0 ? (
+          <EmptyPage
+            title="MY_APPS_EMPTY_TITLE"
+            subtitle="MY_APPS_EMPTY_SUBTITLE"
+            redirectPath="/app-store"
+            actionLabel="MY_APPS_EMPTY_ACTION"
+            extraContent={
+              <div className="d-flex flex-column flex-sm-row gap-2 justify-content-center">
+                <ButtonTile
+                  title={t('CUSTOM_APP_ADD_TITLE')}
+                  subtitle={t('CUSTOM_APP_ADD_SUBTITLE')}
+                  action={() => navigate('/apps/create')}
+                  icon={<IconLayoutGridAdd size={50} stroke={1.5} color="#A4A4A4" />}
+                  className="col-12 col-sm-6 col-lg-6 col-lg-6"
+                />
+                <ButtonTile
+                  title={t('LINKS_ADD_TITLE')}
+                  subtitle={t('LINKS_ADD_SUBTITLE')}
+                  action={() => addLinkDisclosure.open()}
+                  icon={<IconLinkPlus size={50} stroke={1.5} color="#A4A4A4" />}
+                  className="col-12 col-sm-6 col-md-6 col-lg-6"
+                />
+              </div>
+            }
           />
-          <ButtonTile
-            title={t('LINKS_ADD_TITLE')}
-            subtitle={t('LINKS_ADD_SUBTITLE')}
-            action={() => addLinkDisclosure.open()}
-            icon={<IconLinkPlus size={50} stroke={1.5} />}
-          />
-        </div>
-      )}
+        ) : (
+          <div className="row row-cards" data-testid="apps-list">
+            {installed.map(renderApp)}
+            {customLinks.map(renderLink)}
+            <ButtonTile
+              title={t('CUSTOM_APP_ADD_TITLE')}
+              subtitle={t('CUSTOM_APP_ADD_SUBTITLE')}
+              action={() => navigate('/apps/create')}
+              icon={<IconLayoutGridAdd size={50} stroke={1.5} />}
+            />
+            <ButtonTile
+              title={t('LINKS_ADD_TITLE')}
+              subtitle={t('LINKS_ADD_SUBTITLE')}
+              action={() => addLinkDisclosure.open()}
+              icon={<IconLinkPlus size={50} stroke={1.5} />}
+            />
+          </div>
+        )}
+      </div>
       <AddLinkDialog isOpen={addLinkDisclosure.isOpen} onClose={() => addLinkDisclosure.close()} />
-    </>
+    </div>
   );
 };

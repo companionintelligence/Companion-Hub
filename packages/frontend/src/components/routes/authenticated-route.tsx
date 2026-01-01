@@ -4,7 +4,7 @@ import { GuestDashboard } from '@/modules/dashboard/pages/guest-dashboard';
 import { QueryErrorResetBoundary } from '@tanstack/react-query';
 import { Suspense } from 'react';
 import { ErrorBoundary } from 'react-error-boundary';
-import { Navigate, Outlet } from 'react-router';
+import { Navigate, useOutlet } from 'react-router';
 import { ErrorPage } from '../error/error-page';
 import { DashboardLayout, DashboardLayoutSuspense } from '../layouts/dashboard/layout';
 import { SSEProvider } from '../providers/sse/sse-provider';
@@ -12,6 +12,7 @@ import { RouteWrapper } from './route-wrapper';
 
 export default () => {
   const { isLoggedIn, isGuestDashboardEnabled } = useUserContext();
+  const outlet = useOutlet();
 
   if (!isLoggedIn && !isGuestDashboardEnabled) {
     return <Navigate to="/login" replace />;
@@ -36,11 +37,17 @@ export default () => {
             <Suspense fallback={null}>
               <AppContextProvider>
                 <SSEProvider>
-                  <Suspense fallback={<DashboardLayout />}>
-                    <DashboardLayout>
-                      <Outlet />
-                    </DashboardLayout>
-                  </Suspense>
+                  <DashboardLayout>
+                    <Suspense
+                      fallback={
+                        <div className="d-flex justify-content-center align-items-center p-5">
+                          <output className="spinner-border text-secondary" />
+                        </div>
+                      }
+                    >
+                      {outlet}
+                    </Suspense>
+                  </DashboardLayout>
                 </SSEProvider>
               </AppContextProvider>
             </Suspense>
