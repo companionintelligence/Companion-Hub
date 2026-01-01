@@ -91,6 +91,21 @@
         ]
       }
     },
+    "/api/registration/status": {
+      "get": {
+        "operationId": "getStatus",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Returns the registration status"
+          }
+        },
+        "summary": "Get device registration status",
+        "tags": [
+          "Registration"
+        ]
+      }
+    },
     "/api/system/load": {
       "get": {
         "operationId": "systemLoad",

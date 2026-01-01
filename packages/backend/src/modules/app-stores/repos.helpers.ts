@@ -10,7 +10,7 @@ import * as Sentry from '@sentry/nestjs';
 import git from 'isomorphic-git';
 import http from 'isomorphic-git/http/node';
 import AdmZip from 'adm-zip';
-import si from 'systeminformation';
+import { RegistrationService } from '../registration/registration.service';
 
 @Injectable()
 export class ReposHelpers {
@@ -18,6 +18,7 @@ export class ReposHelpers {
     private readonly logger: LoggerService,
     private readonly configuration: ConfigurationService,
     private readonly filesystem: FilesystemService,
+    private readonly registrationService: RegistrationService,
   ) {}
 
   /**
@@ -129,7 +130,7 @@ export class ReposHelpers {
     try {
       await this.ensureDirectoryWithPermissions(path.dirname(repoPath));
 
-      const uuid = process.env.NODE_ENV === 'development' ? 'test-device-id' : (await si.uuid()).hardware;
+      const uuid = await this.registrationService.getDeviceId();
       this.logger.debug(`Downloading zip repo from ${url} to ${repoPath} with \`UUID: ${uuid}\` (Env: ${process.env.NODE_ENV})`);
 
       const response = await fetch(url, {

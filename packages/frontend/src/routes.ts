@@ -6,6 +6,7 @@ export default [
     route('login', './modules/auth/pages/login-page.tsx', { id: 'login' }),
     route('register', './modules/auth/pages/register-page.tsx', { id: 'register' }),
     route('reset-password', './modules/auth/pages/reset-password-page.tsx', { id: 'reset-password' }),
+    route('device-registration', './modules/auth/pages/device-registration-page.tsx', { id: 'device-registration' }),
   ]),
   route('playground', './modules/playground/pages/playground-page.tsx', { id: 'playground' }),
   // Authenticated routes
