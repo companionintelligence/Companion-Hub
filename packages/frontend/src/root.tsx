@@ -49,9 +49,32 @@ export const links: Route.LinksFunction = () => [
 ];
 
 export async function clientLoader({ request }: Route.ActionArgs) {
+  const url = new URL(request.url);
+
+  // Check device registration status
+  try {
+    // We use the internal API URL if server-side rendering, or relative path if client-side
+    // Since this is clientLoader, it runs on client (mostly) or server?
+    // React Router v7 loaders run on server if configured?
+    // Assuming client-side fetch for now or proxy.
+    const regRes = await fetch('/api/registration/status');
+    if (regRes.ok) {
+      const regData = await regRes.json();
+      if (!regData.registered) {
+        if (url.pathname !== '/device-registration') {
+          return redirect('/device-registration');
+        }
+        return null;
+      } else if (url.pathname === '/device-registration') {
+        return redirect('/');
+      }
+    }
+  } catch (e) {
+    console.error('Failed to check registration status', e);
+  }
+
   const user = await userContext();
 
-  const url = new URL(request.url);
   if (url.pathname !== '/') {
     return user;
   }

@@ -3,9 +3,10 @@ import { QueueModule } from '../queue/queue.module';
 import { AppStoreRepository } from './app-store.repository';
 import { AppStoreService } from './app-store.service';
 import { ReposHelpers } from './repos.helpers';
+import { RegistrationModule } from '../registration/registration.module';
 
 @Module({
-  imports: [QueueModule],
+  imports: [QueueModule, RegistrationModule],
   controllers: [],
   providers: [AppStoreService, AppStoreRepository, ReposHelpers],
   exports: [AppStoreService, ReposHelpers, AppStoreRepository],

@@ -9,6 +9,8 @@ import { Injectable } from '@nestjs/common';
 import * as Sentry from '@sentry/nestjs';
 import git from 'isomorphic-git';
 import http from 'isomorphic-git/http/node';
+import AdmZip from 'adm-zip';
+import { RegistrationService } from '../registration/registration.service';
 
 @Injectable()
 export class ReposHelpers {
@@ -16,6 +18,7 @@ export class ReposHelpers {
     private readonly logger: LoggerService,
     private readonly configuration: ConfigurationService,
     private readonly filesystem: FilesystemService,
+    private readonly registrationService: RegistrationService,
   ) {}
 
   /**
@@ -81,7 +84,7 @@ export class ReposHelpers {
    *
    * @param {string} url
    */
-  public async cloneRepo(url: string, id: string) {
+  public async cloneRepo(url: string, id: string, type: string = 'git') {
     try {
       const { dataDir } = this.configuration.get('directories');
       const repoPath = path.join(dataDir, 'repos', id);
@@ -90,6 +93,10 @@ export class ReposHelpers {
         await this.ensureDirectoryWithPermissions(path.dirname(repoPath));
         this.logger.debug(`Repo ${url} already exists`);
         return { success: true, message: '' };
+      }
+
+      if (type === 'http_zip') {
+        return this.downloadZipRepo(url, repoPath);
       }
 
       const [repoUrl, branch] = this.getRepoBaseUrlAndBranch(url);
@@ -119,14 +126,71 @@ export class ReposHelpers {
     }
   }
 
+  private async downloadZipRepo(url: string, repoPath: string) {
+    try {
+      await this.ensureDirectoryWithPermissions(path.dirname(repoPath));
+
+      const uuid = await this.registrationService.getDeviceId();
+      this.logger.debug(`Downloading zip repo from ${url} to ${repoPath} with \`UUID: ${uuid}\` (Env: ${process.env.NODE_ENV})`);
+
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ device_id: uuid }),
+      });
+
+      if (response.url && response.url !== url) {
+        this.logger.warn(`Request redirected from ${url} to ${response.url}. Headers may have been lost.`);
+      }
+
+      this.logger.debug(`Response status: ${response.status}, Content-Type: ${response.headers.get('content-type')}`);
+
+      if (!response.ok) {
+        this.logger.error(`Failed to download repo: ${response.statusText} ${response.status}`);
+        throw new Error(`Failed to download repo: ${response.statusText}`);
+      }
+
+      const buffer = await response.arrayBuffer();
+      const zip = new AdmZip(Buffer.from(buffer));
+
+      // Create directory if it doesn't exist
+      if (!fs.existsSync(repoPath)) {
+        fs.mkdirSync(repoPath, { recursive: true });
+      }
+
+      zip.extractAllTo(repoPath, true);
+
+      this.logger.info(`Downloaded and extracted zip repo from ${url}`);
+      return { success: true, message: '' };
+    } catch (err) {
+      this.logger.error(`Error downloading zip repo from ${url}:`, err);
+      return this.handleRepoError(err);
+    }
+  }
+
   /**
    * Given a repo url, pull it to the repos folder if it exists
    *
    * @param {string} repoUrl
    */
-  public async pullRepo(repoUrl: string, slug: string) {
+  public async pullRepo(repoUrl: string, slug: string, type: string = 'git') {
     try {
-      await this.cloneRepo(repoUrl, slug);
+      if (type === 'http_zip') {
+        // For zip repos, we just re-download and overwrite
+        const { dataDir } = this.configuration.get('directories');
+        const repoPath = path.join(dataDir, 'repos', slug);
+
+        // Clean existing directory first to ensure clean state
+        if (await this.filesystem.pathExists(repoPath)) {
+          await this.filesystem.removeDirectory(repoPath);
+        }
+
+        return this.downloadZipRepo(repoUrl, repoPath);
+      }
+
+      await this.cloneRepo(repoUrl, slug, type);
 
       const [remoteUrl] = this.getRepoBaseUrlAndBranch(repoUrl);
 
