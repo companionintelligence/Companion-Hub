@@ -57,6 +57,7 @@ export class AppService {
       }
 
       await this.appStoreService.migrateLegacyRepo();
+      await this.appStoreService.registerCloudAppStore();
 
       this.repoQueue.publish({ command: 'clone_all' });
 

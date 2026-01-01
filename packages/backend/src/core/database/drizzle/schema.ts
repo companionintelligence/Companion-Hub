@@ -95,5 +95,4 @@ export const appStore = pgTable('app_store', {
   createdAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
   updatedAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
   type: text().default('git'),
-  authorizationKey: text('authorization_key'),
 });
