@@ -32,9 +32,11 @@ import { StopDialog } from '../../components/dialogs/stop-dialog/stop-dialog';
 import { UninstallDialog } from '../../components/dialogs/uninstall-dialog/uninstall-dialog';
 import { UpdateSettingsDialog } from '../../components/dialogs/update-settings-dialog/update-settings-dialog';
 import { useAppStatus } from '../../helpers/use-app-status';
+import { useInstallationProgress } from '../../helpers/use-installation-progress';
 import { Tooltip } from 'react-tooltip';
 import { DropdownMenuSeparator } from '@/components/ui/DropdownMenu/DropdownMenu';
 import { useLocation, useNavigate } from 'react-router';
+import type { AppUrn } from '@runtipi/common/types';
 
 interface IProps {
   app?: AppDetails | null;
@@ -71,6 +73,7 @@ export const AppActions = ({ app, info, localDomain, metadata, sslPort }: IProps
 
   const { t } = useTranslation();
   const { setOptimisticStatus } = useAppStatus();
+  const installationProgress = useInstallationProgress(app?.status === 'installing' ? (info.urn as AppUrn) : undefined);
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -116,7 +119,20 @@ export const AppActions = ({ app, info, localDomain, metadata, sslPort }: IProps
       intent="success"
     />
   );
-  const LoadingButton = <ActionButton key="loading" loading intent="success" title={t('APP_ACTION_LOADING')} />;
+  const LoadingButton = (() => {
+    const progress = app?.status === 'installing' ? installationProgress : null;
+    const progressText = progress !== null ? ` ${progress}%` : '';
+    return (
+      <ActionButton
+        key="loading"
+        loading
+        intent="success"
+        title={`${t('APP_ACTION_LOADING')}${progressText}`}
+        size="lg"
+        className="installation-progress-button"
+      />
+    );
+  })();
 
   const RemoveListItem = (
     <DropdownMenuItem onClick={uninstallDisclosure.open} key="remove" className="text-danger">

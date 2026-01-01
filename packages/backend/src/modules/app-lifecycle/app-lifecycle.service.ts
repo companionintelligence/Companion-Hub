@@ -479,12 +479,12 @@ export class AppLifecycleService {
     
     // In production, create/update Cloudflare Tunnel route whenever exposedLocal is enabled
     // This makes the app available on the internet at subdomain.companionintel.com
-    if (isProdEnv && this.cloudflareTunnelService?.isEnabled() && isNowExposedLocal && newPort) {
+    // Route goes: Cloudflare Tunnel -> Traefik -> App Container
+    if (isProdEnv && this.cloudflareTunnelService?.isEnabled() && isNowExposedLocal) {
       try {
         this.logger.info(
           `Creating Cloudflare Tunnel route for ${appUrn}: ` +
-          `${newSubdomain}.companionintel.com -> http://localhost:${newPort} ` +
-          `(port source: ${parsedForm.port ? 'form' : app.port ? 'database' : 'app config'})`
+          `${newSubdomain}.companionintel.com -> Traefik -> App Container`
         );
         
         // Delete old route if subdomain changed
@@ -496,7 +496,8 @@ export class AppLifecycleService {
         
         // Always create/update route if exposedLocal is enabled
         // createAppRoute will update existing route if it already exists
-        await this.cloudflareTunnelService.createAppRoute(newSubdomain, newPort).catch((err) => {
+        // Port is no longer needed as apps go through Traefik
+        await this.cloudflareTunnelService.createAppRoute(newSubdomain).catch((err) => {
           this.logger.warn(`Failed to create Cloudflare Tunnel route: ${err}`);
         });
       } catch (error) {

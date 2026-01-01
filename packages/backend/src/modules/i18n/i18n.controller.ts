@@ -7,7 +7,13 @@ export class I18nController {
 
   @Get('/locales/:ns/:lng.json')
   async getTranslation(@Param('ns') ns: string, @Param('lng') lng: string) {
-    const translations = await this.i18nService.getTranslation(lng, ns);
-    return translations || {};
+    try {
+      const translations = await this.i18nService.getTranslation(lng, ns);
+      return translations || {};
+    } catch (error) {
+      // Return empty object if translation loading fails
+      console.error(`Failed to load translation for ${lng}/${ns}:`, error);
+      return {};
+    }
   }
 }

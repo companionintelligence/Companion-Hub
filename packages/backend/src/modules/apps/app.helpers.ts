@@ -1,7 +1,9 @@
 import path from 'node:path';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
+import { APP_DATA_DIR } from '@/common/constants';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
+import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable } from '@nestjs/common';
 import type { AppUrn } from '@runtipi/common/types';
 import { EnvUtils } from '../env/env.utils';
@@ -15,6 +17,7 @@ export class AppHelpers {
     private readonly config: ConfigurationService,
     private readonly filesytem: FilesystemService,
     private readonly envUtils: EnvUtils,
+    private readonly logger: LoggerService,
   ) {}
 
   /**
@@ -52,7 +55,93 @@ export class AppHelpers {
     envMap.set('APP_NAME', appName);
     envMap.set('APP_STORE_ID', appStoreId);
     envMap.set('ROOT_FOLDER_HOST', rootFolderHost);
-    envMap.set('APP_DATA_DIR', path.join(`${userSettings.appDataPath}/app-data`, appStoreId, appName));
+    
+    // APP_DATA_DIR must be the host absolute path for Docker volume mounts
+    // Docker Compose runs from inside the ci-os-hub container but connects to the host Docker daemon
+    // So it needs the host path, not the container path
+    // The volume is mounted as: ${RUNTIPI_APP_DATA_PATH:-.internal}/app-data:/app-data
+    // We need to construct the absolute host path that matches this mount
+    
+    // Get the base path (without /app-data suffix)
+    let baseAppDataPath = envMap.get('RUNTIPI_APP_DATA_PATH') || userSettings.appDataPath || rootFolderHost;
+    
+    this.logger.debug(
+      `Constructing APP_DATA_DIR for ${appUrn}: ` +
+      `RUNTIPI_APP_DATA_PATH=${envMap.get('RUNTIPI_APP_DATA_PATH')}, ` +
+      `userSettings.appDataPath=${userSettings.appDataPath}, ` +
+      `rootFolderHost=${rootFolderHost}, ` +
+      `baseAppDataPath=${baseAppDataPath}`
+    );
+    
+    // Ensure absolute path - resolve relative paths
+    let appDataHostBase: string;
+    if (path.isAbsolute(baseAppDataPath)) {
+      appDataHostBase = baseAppDataPath;
+      this.logger.debug(`Using absolute baseAppDataPath: ${appDataHostBase}`);
+    } else {
+      // Resolve relative path - try multiple strategies
+      if (path.isAbsolute(rootFolderHost)) {
+        appDataHostBase = path.resolve(rootFolderHost, baseAppDataPath);
+        this.logger.debug(`Resolved relative baseAppDataPath against rootFolderHost: ${appDataHostBase}`);
+      } else {
+        // Try environment variable
+        const envRoot = process.env.ROOT_FOLDER_HOST;
+        if (envRoot && path.isAbsolute(envRoot)) {
+          appDataHostBase = path.resolve(envRoot, baseAppDataPath);
+          this.logger.debug(`Resolved relative baseAppDataPath against process.env.ROOT_FOLDER_HOST: ${appDataHostBase}`);
+        } else {
+          // Both paths are relative - this is a problem
+          this.logger.error(
+            `Both ROOT_FOLDER_HOST (${rootFolderHost}) and RUNTIPI_APP_DATA_PATH (${baseAppDataPath}) are relative. ` +
+            `APP_DATA_DIR will not resolve correctly. Please set ROOT_FOLDER_HOST to an absolute path.`
+          );
+          throw new Error(
+            `Cannot resolve APP_DATA_DIR: Both ROOT_FOLDER_HOST and RUNTIPI_APP_DATA_PATH are relative paths. ` +
+            `ROOT_FOLDER_HOST must be an absolute path.`
+          );
+        }
+      }
+    }
+    
+    // Ensure the base path doesn't already end with /app-data
+    // If RUNTIPI_APP_DATA_PATH already includes /app-data, remove it
+    if (appDataHostBase.endsWith('/app-data') || appDataHostBase.endsWith('\\app-data')) {
+      appDataHostBase = appDataHostBase.slice(0, -9); // Remove '/app-data'
+      this.logger.debug(`Removed /app-data suffix from base path: ${appDataHostBase}`);
+    }
+    
+    // Add /app-data suffix if not present
+    const appDataHostPath = path.join(appDataHostBase, 'app-data');
+    
+    // Final path: {hostPath}/app-data/{appStoreId}/{appName}
+    // This will be used in the app's docker-compose.yml as ${APP_DATA_DIR}
+    const finalAppDataDir = path.join(appDataHostPath, appStoreId, appName);
+    
+    // CRITICAL: Verify this is an absolute host path, not a container path
+    if (!path.isAbsolute(finalAppDataDir)) {
+      this.logger.error(
+        `APP_DATA_DIR is not absolute: ${finalAppDataDir}. ` +
+        `This will cause Docker mount errors.`
+      );
+      throw new Error(`APP_DATA_DIR must be an absolute path, got: ${finalAppDataDir}`);
+    }
+    
+    if (finalAppDataDir.startsWith('/app-data') || finalAppDataDir.startsWith('/data/')) {
+      this.logger.error(
+        `APP_DATA_DIR appears to be a container path: ${finalAppDataDir}. ` +
+        `This will cause Docker mount errors. Using fallback path construction.`
+      );
+      // Fallback: construct path from ROOT_FOLDER_HOST
+      const fallbackBase = path.isAbsolute(rootFolderHost) 
+        ? rootFolderHost 
+        : (process.env.ROOT_FOLDER_HOST || '/tmp');
+      const fallbackPath = path.join(fallbackBase, 'app-data', appStoreId, appName);
+      envMap.set('APP_DATA_DIR', fallbackPath);
+      this.logger.warn(`Using fallback APP_DATA_DIR: ${fallbackPath}`);
+    } else {
+      envMap.set('APP_DATA_DIR', finalAppDataDir);
+      this.logger.info(`Set APP_DATA_DIR for ${appUrn}: ${finalAppDataDir}`);
+    }
     envMap.set('APP_IMAGE_TAG', config.version);
 
     const appEnv = await this.appFilesManager.getAppEnv(appUrn);

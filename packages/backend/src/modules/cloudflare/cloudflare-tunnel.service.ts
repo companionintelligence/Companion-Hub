@@ -376,14 +376,15 @@ export class CloudflareTunnelService {
       return { available: true };
     }
 
-    // Get LOCAL_DOMAIN from config
-    const localDomain = this.config.get('userSettings').localDomain || process.env.LOCAL_DOMAIN;
-    if (!localDomain) {
-      this.logger.debug('No local domain configured, cannot check DNS availability');
+    // Get DOMAIN from config (public domain like companionintel.com)
+    // Cloudflare DNS records should use the public domain, not localDomain
+    const domain = this.config.get('userSettings').domain || process.env.DOMAIN;
+    if (!domain) {
+      this.logger.debug('No public domain configured, cannot check DNS availability');
       return { available: true };
     }
 
-    const hostname = `${subdomain}.${localDomain}`;
+    const hostname = `${subdomain}.${domain}`;
     const existingRecord = await this.getDnsRecord(hostname);
     
     return {
@@ -454,40 +455,49 @@ export class CloudflareTunnelService {
 
   /**
    * Create a tunnel route for an app
-   * Routes directly to the app's localhost port via Cloudflare Tunnel
+   * Routes to Traefik reverse proxy which then routes to the app container
    * Also creates DNS CNAME record if CLOUDFLARE_ZONE_ID is set
    * @param subdomain - The subdomain (e.g., "ghost")
-   * @param port - The local port where the app is running
+   * @param port - Unused (kept for compatibility, apps now go through Traefik)
    * @returns true if successful, false otherwise
    */
-  public async createAppRoute(subdomain: string, port: number): Promise<boolean> {
+  public async createAppRoute(subdomain: string, port?: number): Promise<boolean> {
     if (!this.isEnabled()) {
       this.logger.debug('Cloudflare Tunnel integration is not enabled');
       return false;
     }
 
-    // Get LOCAL_DOMAIN from config
-    const localDomain = this.config.get('userSettings').localDomain || process.env.LOCAL_DOMAIN;
-    if (!localDomain) {
-      this.logger.error('No local domain configured. Please set userSettings.localDomain or LOCAL_DOMAIN environment variable.');
+    // Get DOMAIN from config (public domain like companionintel.com)
+    // Cloudflare Tunnel routes should use the public domain for internet access
+    // localDomain is for local network access only
+    const domain = this.config.get('userSettings').domain || process.env.DOMAIN;
+    if (!domain) {
+      this.logger.error('No public domain configured. Please set userSettings.domain or DOMAIN environment variable.');
       return false;
     }
-    const hostname = `${subdomain}.${localDomain}`;
+    const hostname = `${subdomain}.${domain}`;
     
-    // Route directly to the app's port - no Traefik middleman
-    const serviceUrl = `http://localhost:${port}`;
+    // Route to Traefik reverse proxy (port 80 for HTTP, Traefik handles HTTPS internally)
+    // Traefik will route to the app container based on the Host header
+    // Use localhost since the Cloudflare tunnel runs on the host and Traefik is exposed on host port 80
+    const serviceUrl = `http://localhost:80`;
 
     let currentConfig = await this.getTunnelConfig();
     
-    // If tunnel has no configuration, create an initial one with catch-all route to dashboard
+    // If tunnel has no configuration, create an initial one with catch-all route to dashboard via Traefik
     if (!currentConfig) {
-      this.logger.info('Creating initial tunnel configuration with catch-all route to dashboard');
+      this.logger.info('Creating initial tunnel configuration with catch-all route to dashboard via Traefik');
       
       currentConfig = {
         ingress: [
-          // Catch-all route - routes all unmatched requests to the dashboard
+          // Catch-all route - routes all unmatched requests to Traefik (which routes to dashboard)
+          // Traefik will handle routing based on Host header
           {
-            service: `http://localhost:${DASHBOARD_PORT}`,
+            service: `http://localhost:80`,
+            originRequest: {
+              // Set Host header so Traefik can route correctly
+              httpHostHeader: domain,
+            },
           },
         ],
       };
@@ -505,12 +515,13 @@ export class CloudflareTunnelService {
     );
 
     if (existingRoute) {
-      // Update existing route if port changed or originRequest is missing
+      // Update existing route if service URL changed or originRequest is missing
       const needsUpdate = existingRoute.service !== serviceUrl || !existingRoute.originRequest;
       
       if (needsUpdate) {
         existingRoute.service = serviceUrl;
         // Ensure originRequest is set for proper Cloudflare proxy behavior
+        // Set httpHostHeader to the local domain hostname so Traefik can route correctly
         if (!existingRoute.originRequest) {
           existingRoute.originRequest = {
             httpHostHeader: hostname,
@@ -518,16 +529,19 @@ export class CloudflareTunnelService {
             connectTimeout: 30,
             tcpKeepAlive: 30,
           };
+        } else {
+          // Update httpHostHeader to ensure Traefik routing works
+          existingRoute.originRequest.httpHostHeader = hostname;
         }
         const success = await this.updateTunnelConfig(currentConfig);
         if (success) {
-          this.logger.info(`Updated Cloudflare Tunnel route for ${hostname} -> ${serviceUrl}`);
+          this.logger.info(`Updated Cloudflare Tunnel route for ${hostname} -> ${serviceUrl} (via Traefik)`);
         } else {
           this.logger.error(`Failed to update Cloudflare Tunnel route for ${hostname}`);
         }
         return success;
       }
-      this.logger.debug(`Route for hostname ${hostname} already exists with same port and originRequest`);
+      this.logger.debug(`Route for hostname ${hostname} already exists with same configuration`);
       // Still try to create DNS record in case it's missing
       const dnsCreated = await this.createDnsRecord(hostname);
       if (!dnsCreated) {
@@ -572,17 +586,21 @@ export class CloudflareTunnelService {
     if (catchAllIndex >= 0) {
       currentConfig.ingress.splice(catchAllIndex, 0, newRule);
     } else {
-      // No catch-all, add the new rule and ensure there's a catch-all pointing to dashboard
+      // No catch-all, add the new rule and ensure there's a catch-all pointing to Traefik
       currentConfig.ingress.push(newRule);
       currentConfig.ingress.push({
-        service: `http://localhost:${DASHBOARD_PORT}`,
+        service: `http://localhost:80`,
+        originRequest: {
+          // Set Host header so Traefik can route correctly
+          httpHostHeader: domain,
+        },
       });
     }
 
     const success = await this.updateTunnelConfig(currentConfig);
 
     if (success) {
-      this.logger.info(`Created Cloudflare Tunnel route for ${hostname} -> ${serviceUrl}`);
+      this.logger.info(`Created Cloudflare Tunnel route for ${hostname} -> ${serviceUrl} (via Traefik)`);
       
       // Create DNS CNAME record - this is CRITICAL for the app to be accessible
       // We treat DNS creation as a required step, not optional
@@ -749,9 +767,9 @@ export class CloudflareTunnelService {
       return false;
     }
 
-    // Get LOCAL_DOMAIN from config (e.g., "companionintel.com")
-    const localDomain = this.config.get('userSettings').localDomain || process.env.LOCAL_DOMAIN || 'companionintel.com';
-    const hostname = `${subdomain}.${localDomain}`;
+    // Get DOMAIN from config (public domain like "companionintel.com")
+    const domain = this.config.get('userSettings').domain || process.env.DOMAIN || 'companionintel.com';
+    const hostname = `${subdomain}.${domain}`;
 
     const currentConfig = await this.getTunnelConfig();
     if (!currentConfig) {
@@ -776,8 +794,14 @@ export class CloudflareTunnelService {
     );
 
     if (!hasCatchAll) {
+      // Add catch-all route to Traefik (which routes to dashboard)
+      const domain = this.config.get('userSettings').domain || process.env.DOMAIN || 'companionintel.com';
       filteredIngress.push({
-        service: `http://localhost:${DASHBOARD_PORT}`,
+        service: `http://localhost:80`,
+        originRequest: {
+          // Set Host header so Traefik can route correctly
+          httpHostHeader: domain,
+        },
       });
     }
 

@@ -10,8 +10,20 @@ import { TranslatableError } from './types/error.types';
 
 client.interceptors.response.use(async (res) => {
   if (res.status >= 400) {
-    const data = await res.json();
-    const error = new TranslatableError(data.message);
+    let data: { message?: string; intlParams?: Record<string, string> } = {};
+    
+    // Try to parse JSON, but handle empty or invalid responses gracefully
+    try {
+      const text = await res.text();
+      if (text) {
+        data = JSON.parse(text);
+      }
+    } catch (e) {
+      // If JSON parsing fails, use a default error message
+      data = { message: res.statusText || 'An error occurred' };
+    }
+    
+    const error = new TranslatableError(data.message || `HTTP ${res.status}: ${res.statusText}`);
     error.intlParams = data.intlParams ?? {};
 
     throw error;

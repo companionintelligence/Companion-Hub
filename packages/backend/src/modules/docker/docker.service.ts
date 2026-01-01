@@ -82,9 +82,16 @@ export class DockerService {
     args.push(...command.split(' '));
     args = args.filter(Boolean);
 
-    this.logger.info(`Running docker compose with args ${args.join(' ')}`);
+    // Get the compose file path to set as working directory
+    // This ensures docker-compose resolves relative paths correctly
+    const composeFile = await this.appFilesManager.getDockerComposeYaml(appUrn);
+    const composeDir = path.dirname(composeFile.path);
 
-    const cmd = spawn('docker-compose', args);
+    this.logger.info(`Running docker compose with args ${args.join(' ')} from directory ${composeDir}`);
+
+    const cmd = spawn('docker-compose', args, {
+      cwd: composeDir, // Set working directory to compose file's directory
+    });
     const stdout: string[] = [];
     const stderr: string[] = [];
 

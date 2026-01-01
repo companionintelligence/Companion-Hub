@@ -47,6 +47,7 @@ export const sseSchema = z.union([
         ])
         .optional(),
       error: z.string().optional(),
+      progress: z.number().min(0).max(99).optional(),
     }),
   }),
   z.object({

@@ -3,6 +3,13 @@
   min-width: 120px;
 }
 
+.installation-progress-button {
+  min-width: 180px;
+  font-size: 1.1rem;
+  padding: 0.75rem 1.5rem;
+  font-weight: 600;
+}
+
 .more-button {
   width: 100%;
 

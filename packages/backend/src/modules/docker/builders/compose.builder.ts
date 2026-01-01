@@ -113,15 +113,9 @@ export class DockerComposeBuilder {
     }
 
     if (params.isMain) {
-      // When publishing to internet via Cloudflare Tunnel (exposedLocal), open the host port
-      if (form.exposedLocal && params.internalPort && form.port) {
-        service.setPort({
-          containerPort: params.internalPort,
-          // biome-ignore lint/suspicious/noTemplateCurlyInString: intended
-          hostPort: '${APP_PORT}',
-        });
-      } else if (form.openPort && params.internalPort) {
-        // Legacy: open port for local network access only
+      // When exposedLocal is true, apps go through Traefik - no port mapping needed
+      // Only open ports for legacy openPort mode (local network access only)
+      if (form.openPort && !form.exposedLocal && params.internalPort) {
         service.setPort({
           containerPort: params.internalPort,
           // biome-ignore lint/suspicious/noTemplateCurlyInString: intended
@@ -135,6 +129,58 @@ export class DockerComposeBuilder {
       'ci-os-hub.managed': true,
       'ci-os-hub.appurn': appUrn,
     };
+
+    // Add Traefik labels when exposedLocal is enabled (app published to internet via Traefik)
+    if (params.isMain && form.exposedLocal && params.internalPort) {
+      const serviceId = `${appName}-${appStoreId}`;
+      const subdomain = form.localSubdomain || serviceId;
+      
+      // Traefik configuration for the app
+      defaultLabels['traefik.enable'] = true;
+      defaultLabels['traefik.docker.network'] = 'ci_os_hub_network';
+      
+      // Service configuration
+      defaultLabels[`traefik.http.services.${serviceId}.loadbalancer.server.port`] = String(params.internalPort);
+      
+      // HTTPS redirect middleware
+      defaultLabels[`traefik.http.middlewares.${serviceId}-web-redirect.redirectscheme.scheme`] = 'https';
+      
+      // Router for public domain (insecure - redirects to HTTPS)
+      // This is used by Cloudflare Tunnel for internet access
+      defaultLabels[`traefik.http.routers.${serviceId}-insecure.rule`] = `Host(\`${subdomain}.\${DOMAIN}\`)`;
+      defaultLabels[`traefik.http.routers.${serviceId}-insecure.entrypoints`] = 'web';
+      defaultLabels[`traefik.http.routers.${serviceId}-insecure.service`] = serviceId;
+      defaultLabels[`traefik.http.routers.${serviceId}-insecure.middlewares`] = `${serviceId}-web-redirect`;
+      
+      // Router for public domain (secure)
+      // This is used by Cloudflare Tunnel for internet access (HTTPS)
+      defaultLabels[`traefik.http.routers.${serviceId}.rule`] = `Host(\`${subdomain}.\${DOMAIN}\`)`;
+      defaultLabels[`traefik.http.routers.${serviceId}.entrypoints`] = 'websecure';
+      defaultLabels[`traefik.http.routers.${serviceId}.service`] = serviceId;
+      defaultLabels[`traefik.http.routers.${serviceId}.tls.certresolver`] = 'myresolver';
+      
+      // Router for local domain (insecure - redirects to HTTPS)
+      // This is for local network access
+      defaultLabels[`traefik.http.routers.${serviceId}-local-insecure.rule`] = `Host(\`${subdomain}.\${LOCAL_DOMAIN}\`)`;
+      defaultLabels[`traefik.http.routers.${serviceId}-local-insecure.entrypoints`] = 'web';
+      defaultLabels[`traefik.http.routers.${serviceId}-local-insecure.service`] = serviceId;
+      defaultLabels[`traefik.http.routers.${serviceId}-local-insecure.middlewares`] = `${serviceId}-web-redirect`;
+      
+      // Router for local domain (secure)
+      // This is for local network access (HTTPS)
+      defaultLabels[`traefik.http.routers.${serviceId}-local.rule`] = `Host(\`${subdomain}.\${LOCAL_DOMAIN}\`)`;
+      defaultLabels[`traefik.http.routers.${serviceId}-local.entrypoints`] = 'websecure';
+      defaultLabels[`traefik.http.routers.${serviceId}-local.service`] = serviceId;
+      defaultLabels[`traefik.http.routers.${serviceId}-local.tls`] = true;
+      
+      // Optional: Add auth middleware if enableAuth is true
+      // Apply to both public and local routes
+      if (form.enableAuth) {
+        const authMiddleware = 'ci-hub';
+        defaultLabels[`traefik.http.routers.${serviceId}.middlewares`] = authMiddleware;
+        defaultLabels[`traefik.http.routers.${serviceId}-local.middlewares`] = authMiddleware;
+      }
+    }
 
     // Merge default labels with extra labels from app config
     service.setLabels({ ...defaultLabels, ...params.extraLabels }).interpolateVariables(`${appName}-${appStoreId}`);

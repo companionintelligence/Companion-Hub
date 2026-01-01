@@ -15,7 +15,7 @@ export class MainExceptionFilter implements ExceptionFilter {
     const request = ctx.getRequest<Request>();
     const status = exception instanceof HttpException ? exception.getStatus() : HttpStatus.INTERNAL_SERVER_ERROR;
 
-    let message = 'Internal server error';
+    let message: string | undefined = undefined;
     let cause: unknown;
 
     if (status === HttpStatus.INTERNAL_SERVER_ERROR) {
@@ -45,6 +45,11 @@ export class MainExceptionFilter implements ExceptionFilter {
         // @ts-expect-error
         intlParams = response.intlParams;
       }
+    }
+
+    // If no message was set and it's a 500 error, use the translation key
+    if (!message && status === HttpStatus.INTERNAL_SERVER_ERROR) {
+      message = 'INTERNAL_SERVER_ERROR';
     }
 
     if (status >= 500 && !(exception instanceof TranslatableError)) {

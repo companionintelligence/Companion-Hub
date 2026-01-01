@@ -1,30 +1,29 @@
 services:
-  runtipi-reverse-proxy:
-    container_name: runtipi-reverse-proxy
-    depends_on:
-      runtipi:
-        condition: service_healthy
+  ci-hub-reverse-proxy:
+    container_name: ci-hub-reverse-proxy
+    # In dev mode, Traefik can start independently and discover services as they come up
+    # No need to wait for ci-os-hub - Traefik will automatically discover it via Docker provider
     image: traefik:v3.5
     restart: unless-stopped
     ports:
       - 80:80
       - 443:443
       - 9091:9091
-    command: --providers.docker --log.level=DEBUG --entryPoints.traefik.address=:9091
+    command: --providers.docker --providers.docker.useBindPortIP=false --log.level=WARN --entryPoints.traefik.address=:9091
     volumes:
       - ./.internal/traefik:/etc/traefik
       - ./.internal/traefik/shared:/shared
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
-      - tipi_main_network
+      - ci_os_hub_network
 
-  runtipi-db:
-    container_name: runtipi-db
+  ci-hub-db:
+    container_name: ci-hub-db
     image: postgres:14
     restart: unless-stopped
     stop_grace_period: 1m
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - ci_hub_pgdata:/var/lib/postgresql/data
     command: -p 6543
     ports:
       - 6543:6543
@@ -61,7 +60,7 @@ services:
       context: .
       dockerfile: Dockerfile.dev
     depends_on:
-      ci-os-hub-db:
+      ci-hub-db:
         condition: service_healthy
       ci-os-hub-queue:
         condition: service_healthy
@@ -115,11 +114,16 @@ services:
         required: false
     labels:
       # ---- General ----- #
-      runtipi.managed: true
+      ci-hub.managed: true
       traefik.enable: true
       traefik.http.middlewares.redirect-to-https.redirectscheme.scheme: https
       # ---- Dashboard ----- #
       traefik.http.services.dashboard.loadbalancer.server.port: 9091
+      # Add longer timeouts for Vite dev server (HMR and dependency optimization can be slow)
+      # Timeouts are configured at entrypoint level in traefik.yml (300s)
+      traefik.http.services.dashboard.loadbalancer.healthCheck.interval: 10s
+      traefik.http.services.dashboard.loadbalancer.healthCheck.timeout: 5s
+      traefik.http.services.dashboard.loadbalancer.healthCheck.path: /
       # Local ip
       traefik.http.routers.dashboard.rule: PathPrefix("/")
       traefik.http.routers.dashboard.service: dashboard
@@ -144,7 +148,7 @@ services:
       traefik.http.routers.dashboard-local.tls: true
       traefik.http.routers.dashboard-local.service: dashboard
       # Middlewares
-      traefik.http.middlewares.runtipi.forwardauth.address: ${RUNTIPI_FORWARD_AUTH_URL:-http://runtipi:3000/api/auth/traefik}
+      traefik.http.middlewares.ci-hub.forwardauth.address: ${RUNTIPI_FORWARD_AUTH_URL:-http://ci-os-hub:3000/api/auth/traefik}
 
 networks:
   ci_os_hub_network:
@@ -152,4 +156,4 @@ networks:
     name: ci_os_hub_network
 
 volumes:
-  pgdata:
+  ci_hub_pgdata:

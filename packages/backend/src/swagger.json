@@ -1545,6 +1545,129 @@
         ]
       }
     },
+    "/api/cloudflare/check-dns-availability": {
+      "get": {
+        "operationId": "checkDnsAvailability",
+        "parameters": [
+          {
+            "name": "subdomain",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Cloudflare"
+        ]
+      }
+    },
+    "/api/cloudflare/status": {
+      "get": {
+        "operationId": "getStatus",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Cloudflare"
+        ]
+      }
+    },
+    "/api/cloudflare/check-url-availability": {
+      "get": {
+        "operationId": "checkUrlAvailability",
+        "parameters": [
+          {
+            "name": "url",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Cloudflare"
+        ]
+      }
+    },
+    "/api/cloudflare/sync-dns": {
+      "post": {
+        "operationId": "syncMissingDnsRecords",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Cloudflare"
+        ]
+      }
+    },
+    "/api/cloudflare/update-routes-origin-request": {
+      "post": {
+        "operationId": "updateAllRoutesWithOriginRequest",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Cloudflare"
+        ]
+      }
+    },
     "/api/links/guest": {
       "get": {
         "operationId": "getGuestLinks",
@@ -2205,6 +2328,9 @@
           "isLoggedIn": {
             "type": "boolean"
           },
+          "isPasswordResetDisabled": {
+            "type": "boolean"
+          },
           "localDomain": {
             "type": "string"
           },
@@ -2262,6 +2388,7 @@
           "isConfigured",
           "isGuestDashboardEnabled",
           "isLoggedIn",
+          "isPasswordResetDisabled",
           "localDomain",
           "sslPort",
           "themeBase",
@@ -2344,6 +2471,9 @@
               ]
             }
           },
+          "isProduction": {
+            "type": "boolean"
+          },
           "updatesAvailable": {
             "type": "number"
           },
@@ -2401,6 +2531,9 @@
                 "format": "uri"
               },
               "demoMode": {
+                "type": "boolean"
+              },
+              "disablePasswordReset": {
                 "type": "boolean"
               },
               "dnsIp": {
@@ -2490,6 +2623,7 @@
               "appDataPath",
               "appsRepoUrl",
               "demoMode",
+              "disablePasswordReset",
               "dnsIp",
               "domain",
               "eventsTimeout",
@@ -2548,6 +2682,7 @@
         },
         "required": [
           "apps",
+          "isProduction",
           "updatesAvailable",
           "user",
           "userSettings",
@@ -2574,6 +2709,9 @@
             "format": "uri"
           },
           "demoMode": {
+            "type": "boolean"
+          },
+          "disablePasswordReset": {
             "type": "boolean"
           },
           "dnsIp": {
