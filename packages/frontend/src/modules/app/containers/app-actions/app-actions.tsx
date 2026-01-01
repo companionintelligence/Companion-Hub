@@ -128,7 +128,6 @@ export const AppActions = ({ app, info, localDomain, metadata, sslPort }: IProps
         loading
         intent="success"
         title={`${t('APP_ACTION_LOADING')}${progressText}`}
-        size="lg"
         className="installation-progress-button"
       />
     );
