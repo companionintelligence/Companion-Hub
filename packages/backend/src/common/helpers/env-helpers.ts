@@ -115,7 +115,7 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   envMap.set('POSTGRES_HOST', 'ci-os-hub-db');
   envMap.set('POSTGRES_DBNAME', 'tipi');
   envMap.set('POSTGRES_USERNAME', 'tipi');
-  envMap.set('POSTGRES_PORT', String(5432));
+  envMap.set('POSTGRES_PORT', String(6543));
   envMap.set('DEMO_MODE', typeof settings.demoMode === 'boolean' ? String(settings.demoMode) : envMap.get('DEMO_MODE') || 'false');
   envMap.set(
     'DISABLE_PASSWORD_RESET',

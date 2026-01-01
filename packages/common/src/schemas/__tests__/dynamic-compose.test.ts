@@ -85,7 +85,7 @@ schemas.forEach(({ name, serviceSchema, dynamicComposeSchema, safeParse }) => {
 
       describe('Port Validation', () => {
         it('should validate port range 1-65535', () => {
-          const validPorts = [1, 80, 443, 8080, 65535];
+          const validPorts = [1, 80, 443, 9091, 65535];
 
           for (const port of validPorts) {
             const service = {
@@ -123,7 +123,7 @@ schemas.forEach(({ name, serviceSchema, dynamicComposeSchema, safeParse }) => {
             internalPort: 80,
             environment: [
               { key: 'NODE_ENV', value: 'production' },
-              { key: 'PORT', value: '8080' },
+              { key: 'PORT', value: '9091' },
               { key: 'DB_HOST', value: 'localhost' },
             ],
           };
@@ -374,8 +374,8 @@ schemas.forEach(({ name, serviceSchema, dynamicComposeSchema, safeParse }) => {
                 // Ports configuration
                 addPorts: [
                   {
-                    containerPort: 8080,
-                    hostPort: 8080,
+                    containerPort: 9091,
+                    hostPort: 9091,
                     tcp: true,
                     interface: '0.0.0.0',
                   },
@@ -409,7 +409,7 @@ schemas.forEach(({ name, serviceSchema, dynamicComposeSchema, safeParse }) => {
                 // Environment variables
                 environment: [
                   { key: 'NODE_ENV', value: 'production' },
-                  { key: 'PORT', value: 8080 },
+                  { key: 'PORT', value: 9091 },
                   { key: 'DEBUG', value: true },
                   { key: 'MAX_CONNECTIONS', value: 1000 },
                 ],
@@ -490,7 +490,7 @@ schemas.forEach(({ name, serviceSchema, dynamicComposeSchema, safeParse }) => {
                 // Secondary service with minimal configuration
                 image: 'postgres:14',
                 name: 'database',
-                internalPort: 5432,
+                internalPort: 6543,
                 environment: [
                   { key: 'POSTGRES_DB', value: 'myapp' },
                   { key: 'POSTGRES_USER', value: 'dbuser' },
@@ -593,8 +593,8 @@ schemas.forEach(({ name, serviceSchema, dynamicComposeSchema, safeParse }) => {
                   {
                     "addPorts": [
                       {
-                        "containerPort": 8080,
-                        "hostPort": 8080,
+                        "containerPort": 9091,
+                        "hostPort": 9091,
                         "interface": "0.0.0.0",
                         "tcp": true,
                       },
@@ -668,7 +668,7 @@ schemas.forEach(({ name, serviceSchema, dynamicComposeSchema, safeParse }) => {
                       },
                       {
                         "key": "PORT",
-                        "value": 8080,
+                        "value": 9091,
                       },
                       {
                         "key": "DEBUG",
@@ -776,7 +776,7 @@ schemas.forEach(({ name, serviceSchema, dynamicComposeSchema, safeParse }) => {
                       "timeout": "5s",
                     },
                     "image": "postgres:14",
-                    "internalPort": 5432,
+                    "internalPort": 6543,
                     "name": "database",
                     "volumes": [
                       {
@@ -843,7 +843,7 @@ schemas.forEach(({ name, serviceSchema, dynamicComposeSchema, safeParse }) => {
               {
                 image: 'postgres:14',
                 name: 'database',
-                internalPort: 5432,
+                internalPort: 6543,
               },
             ],
           };

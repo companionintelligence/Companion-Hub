@@ -56,7 +56,7 @@ export const EssentialConfig = ({ register, errors, serviceIndex }: Props) => {
               {t('MULTI_SERVICE_ESSENTIALS_INTERNAL_PORT')} <span className="ms-1 form-help my-internal-port">?</span>
             </>
           }
-          placeholder="8080"
+          placeholder="9091"
         />
       </div>
     </div>

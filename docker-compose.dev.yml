@@ -1,19 +1,39 @@
 services:
-  ci-os-hub-db:
-    container_name: ci-os-hub-db
+  runtipi-reverse-proxy:
+    container_name: runtipi-reverse-proxy
+    depends_on:
+      runtipi:
+        condition: service_healthy
+    image: traefik:v3.5
+    restart: unless-stopped
+    ports:
+      - 80:80
+      - 443:443
+      - 9091:9091
+    command: --providers.docker --log.level=DEBUG --entryPoints.traefik.address=:9091
+    volumes:
+      - ./.internal/traefik:/etc/traefik
+      - ./.internal/traefik/shared:/shared
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - tipi_main_network
+
+  runtipi-db:
+    container_name: runtipi-db
     image: postgres:14
     restart: unless-stopped
     stop_grace_period: 1m
     volumes:
       - pgdata:/var/lib/postgresql/data
+    command: -p 6543
     ports:
-      - 5433:5432
+      - 6543:6543
     environment:
       POSTGRES_PASSWORD: postgres
       POSTGRES_USER: tipi
       POSTGRES_DB: tipi
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -d tipi -U tipi"]
+      test: ["CMD-SHELL", "pg_isready -d tipi -U tipi -p 6543"]
       interval: 5s
       timeout: 10s
       retries: 120
@@ -54,7 +74,7 @@ services:
       timeout: 5s
       retries: 10
     ports:
-      - 3000:8080
+      - 3000:9091
     volumes:
       # Hot reload
       - ./packages/backend/src:/app/packages/backend/src
@@ -94,7 +114,37 @@ services:
       - path: .env
         required: false
     labels:
-      ci-os-hub.managed: true
+      # ---- General ----- #
+      runtipi.managed: true
+      traefik.enable: true
+      traefik.http.middlewares.redirect-to-https.redirectscheme.scheme: https
+      # ---- Dashboard ----- #
+      traefik.http.services.dashboard.loadbalancer.server.port: 9091
+      # Local ip
+      traefik.http.routers.dashboard.rule: PathPrefix("/")
+      traefik.http.routers.dashboard.service: dashboard
+      traefik.http.routers.dashboard.entrypoints: web
+      # Websecure
+      traefik.http.routers.dashboard-insecure.rule: Host(`${DOMAIN}`) && PathPrefix(`/`)
+      traefik.http.routers.dashboard-insecure.service: dashboard
+      traefik.http.routers.dashboard-insecure.entrypoints: web
+      traefik.http.routers.dashboard-insecure.middlewares: redirect-to-https
+      traefik.http.routers.dashboard-secure.rule: Host(`${DOMAIN}`) && PathPrefix(`/`)
+      traefik.http.routers.dashboard-secure.service: dashboard
+      traefik.http.routers.dashboard-secure.entrypoints: websecure
+      traefik.http.routers.dashboard-secure.tls.certresolver: myresolver
+      # Local domain
+      traefik.http.routers.dashboard-local-insecure.rule: Host(`${LOCAL_DOMAIN}`)
+      traefik.http.routers.dashboard-local-insecure.entrypoints: web
+      traefik.http.routers.dashboard-local-insecure.service: dashboard
+      traefik.http.routers.dashboard-local-insecure.middlewares: redirect-to-https
+      # Secure
+      traefik.http.routers.dashboard-local.rule: Host(`${LOCAL_DOMAIN}`)
+      traefik.http.routers.dashboard-local.entrypoints: websecure
+      traefik.http.routers.dashboard-local.tls: true
+      traefik.http.routers.dashboard-local.service: dashboard
+      # Middlewares
+      traefik.http.middlewares.runtipi.forwardauth.address: ${RUNTIPI_FORWARD_AUTH_URL:-http://runtipi:3000/api/auth/traefik}
 
 networks:
   ci_os_hub_network:

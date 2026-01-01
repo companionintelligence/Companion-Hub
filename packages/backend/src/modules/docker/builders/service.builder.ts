@@ -186,7 +186,7 @@ export class ServiceBuilder {
    * @example
    * ```typescript
    * const service = new ServiceBuilder();
-   * service.addPort({ containerPort: 80, hostPort: 8080 });
+  * service.addPort({ containerPort: 80, hostPort: 9091 });
    */
   setPort(port?: ServicePort) {
     if (!port) {
@@ -227,7 +227,7 @@ export class ServiceBuilder {
    * ```typescript
    * const service = new ServiceBuilder();
    * service.addPorts([
-   *   { containerPort: 80, hostPort: 8080 },
+  *   { containerPort: 80, hostPort: 9091 },
    *   { containerPort: 443, hostPort: 8443, tcp: true },
    * ]);
    */

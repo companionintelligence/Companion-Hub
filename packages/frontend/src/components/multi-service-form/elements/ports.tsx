@@ -34,7 +34,7 @@ export const PortsConfig = ({ errors, serviceIndex, control, register }: Props) 
             </Tooltip>
             {t('MULTI_SERVICE_PORTS_TITLE')} <span className="ms-1 form-help my-ports">?</span>
           </div>
-          <Button type="button" onClick={() => append({ containerPort: 8080, hostPort: 8080 })} size="sm">
+          <Button type="button" onClick={() => append({ containerPort: 9091, hostPort: 9091 })} size="sm">
             {t('MULTI_SERVICE_PORTS_ADD_PORT')}
           </Button>
         </div>
@@ -56,7 +56,7 @@ export const PortsConfig = ({ errors, serviceIndex, control, register }: Props) 
                   <Input
                     {...register(`services.${serviceIndex}.addPorts.${index}.hostPort`)}
                     error={t(errors?.services?.[serviceIndex]?.addPorts?.[index]?.hostPort?.message as string)}
-                    placeholder="8080"
+                    placeholder="9091"
                     className="table-row-input"
                   />
                 </TableCell>
@@ -64,7 +64,7 @@ export const PortsConfig = ({ errors, serviceIndex, control, register }: Props) 
                   <Input
                     {...register(`services.${serviceIndex}.addPorts.${index}.containerPort`)}
                     error={t(errors?.services?.[serviceIndex]?.addPorts?.[index]?.containerPort?.message as string)}
-                    placeholder="8080"
+                    placeholder="9091"
                     className="table-row-input"
                   />
                 </TableCell>

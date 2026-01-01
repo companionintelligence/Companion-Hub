@@ -1,19 +1,39 @@
 services:
-  ci-os-hub-db:
-    container_name: ci-os-hub-db
+  runtipi-reverse-proxy:
+    container_name: runtipi-reverse-proxy
+    depends_on:
+      runtipi:
+        condition: service_healthy
+    image: traefik:v3.5
+    restart: unless-stopped
+    ports:
+      - 80:80
+      - 443:443
+      - 9091:9091
+    command: --providers.docker --entryPoints.traefik.address=:9091
+    volumes:
+      - ./.internal/traefik:/etc/traefik
+      - ./.internal/traefik/shared:/shared
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - tipi_main_network
+
+  runtipi-db:
+    container_name: runtipi-db
     image: postgres:14
     restart: unless-stopped
     stop_grace_period: 120s
     volumes:
-      - ci_os_hub_pgdata:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql/data
+    command: -p 6543
     ports:
-      - "5433:5432"
+      - 6543:6543
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_USER: ${POSTGRES_USERNAME:-tipi}
       POSTGRES_DB: ${POSTGRES_DBNAME:-tipi}
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -d ${POSTGRES_DBNAME:-tipi} -U ${POSTGRES_USERNAME:-tipi}"]
+      test: ["CMD-SHELL", "pg_isready -d tipi -U tipi -p 6543"]
       interval: 5s
       timeout: 20s
       retries: 120

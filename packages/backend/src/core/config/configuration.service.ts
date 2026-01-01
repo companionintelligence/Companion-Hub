@@ -16,7 +16,7 @@ const envSchema = z.object({
   POSTGRES_DBNAME: z.string(),
   POSTGRES_USERNAME: z.string(),
   POSTGRES_PASSWORD: z.string(),
-  POSTGRES_PORT: z.coerce.number().default(5432),
+  POSTGRES_PORT: z.coerce.number().default(6543),
   RABBITMQ_HOST: z.string(),
   RABBITMQ_USERNAME: z.string(),
   RABBITMQ_PASSWORD: z.string(),
