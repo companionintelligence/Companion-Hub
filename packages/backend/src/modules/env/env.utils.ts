@@ -90,11 +90,20 @@ export class EnvUtils {
     const envArray = envString.split('\n');
 
     for (const env of envArray) {
-      if (env.startsWith('#')) continue;
+      // Skip empty lines and comments
+      const trimmed = env.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
 
-      const [key, ...rest] = env.split('=');
+      const [key, ...rest] = trimmed.split('=');
 
-      if (key && rest.length) envMap.set(key, rest.join('='));
+      // Trim the key to handle any whitespace, and only set if we have both key and value
+      if (key && rest.length) {
+        const trimmedKey = key.trim();
+        const value = rest.join('=').trim();
+        if (trimmedKey && value) {
+          envMap.set(trimmedKey, value);
+        }
+      }
     }
 
     return envMap;

@@ -216,6 +216,8 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   
   // CI Cloud integration settings
   envMap.set('CI_CLOUD_API_URL', envMap.get('CI_CLOUD_API_URL') || '');
+  envMap.set('CI_CLOUD_FRONTEND_URL', envMap.get('CI_CLOUD_FRONTEND_URL') || '');
+  envMap.set('CI_CLOUD_APP_STORE_URL', envMap.get('CI_CLOUD_APP_STORE_URL') || '');
   envMap.set('CI_HUB_ORGANIZATION_ID', envMap.get('CI_HUB_ORGANIZATION_ID') || '');
   envMap.set('CI_HUB_API_KEY', envMap.get('CI_HUB_API_KEY') || '');
 

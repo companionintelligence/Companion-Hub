@@ -496,4 +496,67 @@ export class RegistrationService implements OnApplicationBootstrap {
       };
     }
   }
+
+  /**
+   * Complete registration from CI Cloud callback
+   * Called when CI Cloud redirects back to OS Hub after registration
+   * CI Cloud provides: device_id, organization_id, organization_name, subdomain, tunnel_id (optional)
+   */
+  public async completeRegistrationFromCallback(data: {
+    deviceId: string;
+    organizationId: string;
+    organizationName: string;
+    subdomain: string;
+    tunnelId?: string;
+  }): Promise<{ success: boolean; message: string }> {
+    try {
+      // Verify device ID matches
+      const currentDeviceId = await this.getDeviceId();
+      if (data.deviceId !== currentDeviceId) {
+        this.logger.warn(`Device ID mismatch: expected ${currentDeviceId}, got ${data.deviceId}`);
+        return {
+          success: false,
+          message: 'Device ID mismatch. Registration failed.',
+        };
+      }
+
+      // Use the subdomain provided by CI Cloud (already validated on CI Cloud side)
+      // The subdomain is the organization name part (e.g., "acme-corp" from "acme-corp.companionintel.com")
+      const orgName = data.subdomain.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+      
+      if (!orgName) {
+        return {
+          success: false,
+          message: 'Invalid subdomain received from CI Cloud.',
+        };
+      }
+
+      // Setup organization infrastructure (Cloudflare tunnel and DNS)
+      // Use the tunnel_id if provided by CI Cloud, otherwise create a new one
+      await this.setupOrganizationInfrastructure(data.organizationId, {
+        organization_name: orgName,
+        tunnel_id: data.tunnelId,
+      });
+
+      // Mark as registered
+      this._isRegistered = true;
+      if (this.checkInterval) {
+        clearInterval(this.checkInterval);
+        this.checkInterval = null;
+      }
+
+      this.logger.info(`Device registration completed via callback: organization=${data.organizationId}, subdomain=${data.subdomain}`);
+
+      return {
+        success: true,
+        message: 'Device registered successfully',
+      };
+    } catch (error) {
+      this.logger.error('Registration callback error:', error);
+      return {
+        success: false,
+        message: `Registration error: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      };
+    }
+  }
 }

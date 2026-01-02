@@ -28,6 +28,7 @@ const envSchema = z.object({
   APPS_REPO_URL: z.string(),
   CI_CLOUD_APP_STORE_URL: z.string().optional(),
   CI_CLOUD_API_URL: z.string().optional(),
+  CI_CLOUD_FRONTEND_URL: z.string().optional(), // Frontend URL for registration redirects
   CI_HUB_ORGANIZATION_ID: z.string().optional(),
   CI_HUB_API_KEY: z.string().optional(),
   DOMAIN: z.string(),
@@ -148,6 +149,7 @@ export class ConfigurationService {
       deprecatedAppsRepoUrl: env.data.APPS_REPO_URL, // @deprecated
       ciCloudAppStoreUrl: env.data.CI_CLOUD_APP_STORE_URL,
       ciCloudApiUrl: env.data.CI_CLOUD_API_URL,
+      ciCloudFrontendUrl: env.data.CI_CLOUD_FRONTEND_URL,
       ciHubOrganizationId: env.data.CI_HUB_ORGANIZATION_ID,
       ciHubApiKey: env.data.CI_HUB_API_KEY,
       architecture: env.data.ARCHITECTURE,

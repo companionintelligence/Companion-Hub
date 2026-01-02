@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, Post, Query, Req } from '@nestjs/common';
+import { Request } from 'express';
 import { RegistrationService } from './registration.service';
 import { CloudflareTunnelService } from '../cloudflare/cloudflare-tunnel.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -28,20 +29,98 @@ export class RegistrationController {
     return { registered };
   }
 
+  @Get('device-id')
+  @ApiOperation({ summary: 'Get device ID for registration redirect' })
+  @ApiResponse({ status: 200, description: 'Returns the device ID and registration URL' })
+  async getDeviceId(@Req() req: Request) {
+    const deviceId = await this.registrationService.getDeviceId();
+    const { ciCloudFrontendUrl } = this.config.getConfig();
+    
+    // Build callback URL (where CI Cloud should redirect back to)
+    // Use the request origin to construct the callback URL
+    const protocol = req.protocol || 'http';
+    const host = req.get('host') || 'localhost:3000';
+    const callbackUrl = `${protocol}://${host}/device-registration`;
+    
+    // Build registration URL with callback parameter
+    // Handle empty string as well as null/undefined
+    const registrationUrl = (ciCloudFrontendUrl && ciCloudFrontendUrl.trim())
+      ? `${ciCloudFrontendUrl.trim()}/device/register?device_id=${encodeURIComponent(deviceId)}&callback_url=${encodeURIComponent(callbackUrl)}`
+      : null;
+    
+    return { 
+      device_id: deviceId,
+      registration_url: registrationUrl,
+      callback_url: callbackUrl,
+      ci_cloud_frontend_url: ciCloudFrontendUrl || null, // For debugging
+    };
+  }
+
+  @Get('callback')
+  @ApiOperation({ summary: 'Handle registration callback from CI Cloud' })
+  @ApiResponse({ status: 200, description: 'Registration completed successfully' })
+  @ApiResponse({ status: 400, description: 'Invalid callback data' })
+  async handleCallback(
+    @Query('device_id') deviceId: string,
+    @Query('organization_id') organizationId: string,
+    @Query('organization_name') organizationName: string,
+    @Query('subdomain') subdomain: string,
+    @Query('tunnel_id') tunnelId?: string,
+  ) {
+    if (!deviceId || !organizationId || !organizationName || !subdomain) {
+      return {
+        success: false,
+        message: 'Missing required parameters: device_id, organization_id, organization_name, subdomain',
+      };
+    }
+
+    const result = await this.registrationService.completeRegistrationFromCallback({
+      deviceId,
+      organizationId,
+      organizationName,
+      subdomain,
+      tunnelId,
+    });
+
+    return result;
+  }
+
   @Get('config')
   @ApiOperation({ summary: 'Get CI Cloud configuration (debug endpoint)' })
   @ApiResponse({ status: 200, description: 'Returns the CI Cloud configuration' })
   async getConfig() {
     const config = this.config.getConfig();
+    const fs = await import('fs');
+    const path = await import('path');
+    
+    // Try to read the .env file directly to debug
+    let envFileContent = null;
+    let envFileLines: string[] = [];
+    try {
+      const envPath = config.envFilePath;
+      if (fs.existsSync(envPath)) {
+        envFileContent = fs.readFileSync(envPath, 'utf-8');
+        envFileLines = envFileContent.split('\n').filter(line => 
+          line.includes('CI_CLOUD') && !line.trim().startsWith('#')
+        );
+      }
+    } catch (e) {
+      // Ignore errors reading file
+    }
+    
     return {
       ciCloudApiUrl: config.ciCloudApiUrl || null,
+      ciCloudFrontendUrl: config.ciCloudFrontendUrl || null,
       ciHubApiKey: config.ciHubApiKey ? '***configured***' : null,
       ciHubOrganizationId: config.ciHubOrganizationId || null,
       ciCloudAppStoreUrl: config.ciCloudAppStoreUrl || null,
       envFilePath: config.envFilePath,
+      // Debug: show what's in the .env file
+      envFileLines: envFileLines.length > 0 ? envFileLines : null,
       // Also check process.env directly
       processEnv: {
         CI_CLOUD_API_URL: process.env.CI_CLOUD_API_URL || null,
+        CI_CLOUD_FRONTEND_URL: process.env.CI_CLOUD_FRONTEND_URL || null,
         CI_HUB_API_KEY: process.env.CI_HUB_API_KEY ? '***configured***' : null,
         CI_HUB_ORGANIZATION_ID: process.env.CI_HUB_ORGANIZATION_ID || null,
       },

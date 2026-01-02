@@ -15,15 +15,16 @@ export class RegistrationGuard implements CanActivate {
   async canActivate(context: ExecutionContext) {
     const request = context.switchToHttp().getRequest() as Request;
 
-    const { ciCloudApiUrl } = this.config.getConfig();
+    const { ciCloudApiUrl, ciCloudFrontendUrl } = this.config.getConfig();
 
-    // If CI Cloud API is not configured, allow access (backward compatibility)
-    if (!ciCloudApiUrl) {
-      this.logger.debug('CI Cloud API not configured, allowing access without registration check');
+    // If neither CI Cloud API nor Frontend URL is configured, allow access (backward compatibility)
+    // This means CI Cloud integration is not enabled
+    if (!ciCloudApiUrl && !ciCloudFrontendUrl) {
+      this.logger.debug('CI Cloud integration not configured, allowing access without registration check');
       return true;
     }
 
-    // Check if device is registered (either via config or database)
+    // Check if device is registered (checks database for organization)
     const isRegistered = await this.registrationService.isRegistered();
 
     if (!isRegistered) {

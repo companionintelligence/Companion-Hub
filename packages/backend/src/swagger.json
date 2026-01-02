@@ -106,6 +106,80 @@
         ]
       }
     },
+    "/api/registration/device-id": {
+      "get": {
+        "operationId": "getDeviceId",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Returns the device ID and registration URL"
+          }
+        },
+        "summary": "Get device ID for registration redirect",
+        "tags": [
+          "Registration"
+        ]
+      }
+    },
+    "/api/registration/callback": {
+      "get": {
+        "operationId": "handleCallback",
+        "parameters": [
+          {
+            "name": "device_id",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "organization_id",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "organization_name",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "subdomain",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tunnel_id",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Registration completed successfully"
+          },
+          "400": {
+            "description": "Invalid callback data"
+          }
+        },
+        "summary": "Handle registration callback from CI Cloud",
+        "tags": [
+          "Registration"
+        ]
+      }
+    },
     "/api/registration/config": {
       "get": {
         "operationId": "getConfig",
