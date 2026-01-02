@@ -62,5 +62,11 @@ export class OrganizationRepository {
 
     return result[0] || null;
   }
+
+  async deleteOrganization(orgId: string) {
+    await this.databaseService.db
+      .delete(organization)
+      .where(eq(organization.id, orgId));
+  }
 }
 

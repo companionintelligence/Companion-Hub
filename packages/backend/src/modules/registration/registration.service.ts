@@ -18,13 +18,25 @@ export class RegistrationService implements OnApplicationBootstrap {
   ) {}
 
   async onApplicationBootstrap() {
-    // Only start polling if organization ID is already configured
-    const { ciHubOrganizationId } = this.config.getConfig();
-    if (ciHubOrganizationId) {
-      // Start polling for registration
-      this.pollRegistration();
-    } else {
-      this.logger.debug('No organization ID configured, waiting for manual registration');
+    // Check if we are already registered
+    let isRegistered = await this.isRegistered();
+
+    if (isRegistered) {
+      // If registered, verify license with cloud
+      await this.verifyLicense();
+      // Re-check registration status in case license check failed and wiped it
+      isRegistered = this._isRegistered;
+    }
+
+    if (!isRegistered) {
+      // Only start polling if organization ID is already configured
+      const { ciHubOrganizationId } = this.config.getConfig();
+      if (ciHubOrganizationId) {
+        // Start polling for registration
+        this.pollRegistration();
+      } else {
+        this.logger.debug('No organization ID configured, waiting for manual registration');
+      }
     }
   }
 
@@ -54,6 +66,84 @@ export class RegistrationService implements OnApplicationBootstrap {
     }
     
     return this._isRegistered;
+  }
+
+  private async verifyLicense() {
+    const { ciCloudApiUrl } = this.config.getConfig();
+    if (!ciCloudApiUrl) {
+      this.logger.warn('CI Cloud API URL not configured, skipping license check.');
+      return;
+    }
+
+    try {
+      const deviceId = await this.getDeviceId();
+      // Step 3b: OS hub pings <CI_CLOUD_DOMAIN>/device/license-check with device_id in a http header
+      const licenseCheckUrl = `${ciCloudApiUrl}/device/license-check`;
+
+      this.logger.debug(`Checking license at ${licenseCheckUrl} for device ${deviceId}`);
+
+      const response = await fetch(licenseCheckUrl, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-device-id': deviceId,
+        },
+      });
+
+      if (!response.ok) {
+        this.logger.warn(`License check failed: ${response.status} - ${response.statusText}`);
+        // If 404 or 403, it means not registered or invalid.
+        await this.handleLicenseCheckFailure();
+        return;
+      }
+
+      // Step 4b: CI Cloud verifies... returns device_registration.id and subdomain
+      const data = await response.json();
+      const registration = data.device_registration || data;
+
+      // Step 5b: OS Hub compares returned subdomain and device_registration.id to it's own database
+      const cloudOrgId = registration.id || registration.organization_id;
+      const cloudSubdomain = registration.subdomain;
+
+      if (!cloudOrgId || !cloudSubdomain) {
+        this.logger.warn('Invalid license check response: missing id or subdomain', registration);
+        return;
+      }
+
+      const localOrg = await this.organizationRepository.getFirstOrganization();
+
+      if (!localOrg) {
+        this.logger.warn('Local organization not found during license check');
+        await this.handleLicenseCheckFailure();
+        return;
+      }
+
+      // Compare
+      this.logger.debug(`License check comparison: Local[${localOrg.id}, ${localOrg.name}] vs Cloud[${cloudOrgId}, ${cloudSubdomain}]`);
+      
+      if (localOrg.id !== cloudOrgId || localOrg.name !== cloudSubdomain) {
+        this.logger.warn(`License mismatch! Local: ${localOrg.id}/${localOrg.name}, Cloud: ${cloudOrgId}/${cloudSubdomain}`);
+        await this.handleLicenseCheckFailure(localOrg.id);
+      } else {
+        this.logger.info('License verified successfully.');
+      }
+
+    } catch (error) {
+      this.logger.error('Error verifying license:', error);
+    }
+  }
+
+  private async handleLicenseCheckFailure(orgId?: string) {
+    this.logger.warn('Resetting registration due to license check failure.');
+    if (orgId) {
+      await this.organizationRepository.deleteOrganization(orgId);
+    } else {
+      const org = await this.organizationRepository.getFirstOrganization();
+      if (org) {
+        await this.organizationRepository.deleteOrganization(org.id);
+      }
+    }
+    this._isRegistered = false;
   }
 
   private async pollRegistration() {

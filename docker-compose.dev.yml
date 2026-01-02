@@ -79,6 +79,8 @@ services:
       - ./packages/backend/src:/app/packages/backend/src
       - ./packages/frontend/src:/app/packages/frontend/src
       - ./packages/common/src:/app/packages/common/src
+      # Migrations
+      - ./packages/backend/src/core/database/drizzle:/app/assets/migrations
       # Data
       - ${RUNTIPI_MEDIA_PATH:-.internal}/media:/data/media
       - ${RUNTIPI_STATE_PATH:-.internal}/state:/data/state

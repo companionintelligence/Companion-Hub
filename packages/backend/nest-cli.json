@@ -9,7 +9,7 @@
     "builder": "swc",
     "assets": [
       {
-        "include": "./src/core/database/migrations/*.sql",
+        "include": "src/core/database/drizzle/*.sql",
         "outDir": "./dist/assets/migrations",
         "watchAssets": true
       }
