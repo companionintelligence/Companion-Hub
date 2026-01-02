@@ -1,4 +1,4 @@
-import path from 'path';
+import path from 'node:path';
 import { reactRouter } from '@react-router/dev/vite';
 import { sentryVitePlugin } from '@sentry/vite-plugin';
 import { defineConfig, type PluginOption } from 'vite';
@@ -34,13 +34,57 @@ export default defineConfig({
   server: {
     host: true,
     port: 9091,
+    hmr: {
+      timeout: 60000, // 60 seconds - give Vite more time for HMR
+    },
+    watch: {
+      // Ignore directories that shouldn't trigger reloads
+      ignored: [
+        '**/.internal/**',
+        '**/node_modules/**',
+        '**/.git/**',
+        '**/dist/**',
+        '**/build/**',
+        '**/.turbo/**',
+        '**/app-data/**',
+        '**/data/**',
+        '**/repos/**',
+        '**/apps/**',
+        '**/traefik/**',
+        '**/backups/**',
+        '**/state/**',
+        '**/cache/**',
+        '**/media/**',
+        '**/user-config/**',
+      ],
+    },
     proxy: {
       '/api': {
         target: 'http://localhost:3000',
         changeOrigin: true,
+        configure: (proxy, _options) => {
+          proxy.on('error', (err, _req, res) => {
+            // Log connection errors as warnings instead of crashing
+            console.warn('[vite] http proxy error:', err.message);
+          });
+        },
       },
     },
     allowedHosts: true,
+  },
+  optimizeDeps: {
+    // Force re-optimization when dependencies change
+    // Set to true to force re-optimization, or false to use cache
+    force: false,
+    // Include these dependencies in optimization
+    include: [
+      'i18next',
+      'react-i18next',
+      'i18next-http-backend',
+      'i18next-browser-languagedetector',
+      '@sentry/react',
+      'js-cookie',
+    ],
   },
   build: {
     sourcemap: true,

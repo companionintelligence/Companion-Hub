@@ -125,7 +125,9 @@ export class FilesystemService {
 
   async createDirectory(dirPath: string): Promise<boolean> {
     try {
-      await fs.promises.mkdir(this.getSafeFilePath(dirPath), { recursive: true });
+      // Always validate the path for safety
+      const safePath = this.getSafeFilePath(dirPath);
+      await fs.promises.mkdir(safePath, { recursive: true });
       return true;
     } catch (error) {
       this.logger.error(`Error creating directory ${dirPath}:`, error);
@@ -134,12 +136,30 @@ export class FilesystemService {
   }
 
   async createDirectories(dirPaths: string[]): Promise<boolean> {
-    for (const dirPath of dirPaths) {
-      if (!(await this.createDirectory(this.getSafeFilePath(dirPath)))) {
-        return false;
-      }
+    try {
+      // Create directories in parallel for better performance
+      const createPromises = dirPaths.map(async (dirPath, index) => {
+        try {
+          const safePath = this.getSafeFilePath(dirPath);
+          this.logger.debug(`Creating directory ${index + 1}/${dirPaths.length}: ${safePath}`);
+          await fs.promises.mkdir(safePath, { recursive: true });
+          this.logger.debug(`Successfully created directory: ${safePath}`);
+          return true;
+        } catch (error) {
+          this.logger.error(`Failed to create directory ${dirPath}:`, error);
+          return false;
+        }
+      });
+      
+      this.logger.debug(`Starting creation of ${dirPaths.length} directories in parallel`);
+      const results = await Promise.all(createPromises);
+      const successCount = results.filter((r) => r === true).length;
+      this.logger.debug(`Created ${successCount}/${dirPaths.length} directories successfully`);
+      return results.every((result) => result === true);
+    } catch (error) {
+      this.logger.error(`Error in createDirectories: ${error}`);
+      return false;
     }
-    return true;
   }
 
   async copyDirectory(src: string, dest: string, options: fs.CopyOptions = {}): Promise<boolean> {

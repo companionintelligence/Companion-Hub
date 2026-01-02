@@ -6,8 +6,6 @@ import {
   IconEdit,
   IconEraser,
   IconExternalLink,
-  IconLock,
-  IconLockOff,
   IconPlayerPause,
   IconPlayerPlay,
   IconRotateClockwise,
@@ -15,7 +13,7 @@ import {
   IconTrash,
 } from '@tabler/icons-react';
 import type React from 'react';
-import { createElement } from 'react';
+import { createElement, useState, useEffect } from 'react';
 import { Button, type ButtonProps } from '@/components/ui/Button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/DropdownMenu';
 import { useDisclosure } from '@/lib/hooks/use-disclosure';
@@ -34,9 +32,11 @@ import { StopDialog } from '../../components/dialogs/stop-dialog/stop-dialog';
 import { UninstallDialog } from '../../components/dialogs/uninstall-dialog/uninstall-dialog';
 import { UpdateSettingsDialog } from '../../components/dialogs/update-settings-dialog/update-settings-dialog';
 import { useAppStatus } from '../../helpers/use-app-status';
+import { useInstallationProgress } from '../../helpers/use-installation-progress';
 import { Tooltip } from 'react-tooltip';
 import { DropdownMenuSeparator } from '@/components/ui/DropdownMenu/DropdownMenu';
 import { useLocation, useNavigate } from 'react-router';
+import type { AppUrn } from '@runtipi/common/types';
 
 interface IProps {
   app?: AppDetails | null;
@@ -63,8 +63,6 @@ const ActionButton: React.FC<BtnProps> = (props) => {
   );
 };
 
-type OpenType = 'local' | 'domain' | 'local_domain';
-
 export const AppActions = ({ app, info, localDomain, metadata, sslPort }: IProps) => {
   const installDisclosure = useDisclosure();
   const stopDisclosure = useDisclosure();
@@ -75,14 +73,12 @@ export const AppActions = ({ app, info, localDomain, metadata, sslPort }: IProps
 
   const { t } = useTranslation();
   const { setOptimisticStatus } = useAppStatus();
+  const installationProgress = useInstallationProgress(app?.status === 'installing' ? (info.urn as AppUrn) : undefined);
   const location = useLocation();
   const navigate = useNavigate();
 
-  const hostname = typeof window !== 'undefined' ? window.location.hostname : '';
   const versionIsIgnored = app?.ignoredVersion === metadata.latestVersion;
   const updateAvailable = Number(app?.version ?? 0) < Number(metadata?.latestVersion || 0);
-
-  const appLocalDomain = `${metadata.localSubdomain}.${localDomain}${sslPort !== 443 ? `:${sslPort}` : ''}`;
 
   const startMutation = useMutation({
     ...startAppMutation(),
@@ -123,7 +119,19 @@ export const AppActions = ({ app, info, localDomain, metadata, sslPort }: IProps
       intent="success"
     />
   );
-  const LoadingButton = <ActionButton key="loading" loading intent="success" title={t('APP_ACTION_LOADING')} />;
+  const LoadingButton = (() => {
+    const progress = app?.status === 'installing' ? installationProgress : null;
+    const progressText = progress !== null ? ` ${progress}%` : '';
+    return (
+      <ActionButton
+        key="loading"
+        loading
+        intent="success"
+        title={`${t('APP_ACTION_LOADING')}${progressText}`}
+        className="installation-progress-button"
+      />
+    );
+  })();
 
   const RemoveListItem = (
     <DropdownMenuItem onClick={uninstallDisclosure.open} key="remove" className="text-danger">
@@ -216,38 +224,94 @@ export const AppActions = ({ app, info, localDomain, metadata, sslPort }: IProps
   );
   const InstallButton = <ActionButton key="install" onClick={installDisclosure.open} title={t('APP_ACTION_INSTALL')} intent="success" />;
 
+  // Check if the app URL is available before showing Open button
+  const [urlAvailable, setUrlAvailable] = useState<boolean | null>(null);
+  const [isCheckingUrl, setIsCheckingUrl] = useState(false);
+  
+  const subdomain = metadata.localSubdomain || app?.localSubdomain || info.urn.split(':').join('-');
+  const appUrl = `https://${subdomain}.companionintel.com${info.url_suffix || ''}`;
+  
+  useEffect(() => {
+    // Only check if app is running and exposed
+    if (app?.status === 'running' && (app?.exposedLocal || app?.openPort || app?.exposed) && !info.no_gui) {
+      setIsCheckingUrl(true);
+      setUrlAvailable(null);
+      
+      let isMounted = true;
+      let isAvailableRef = false; // Track availability to stop polling
+      let pollInterval: ReturnType<typeof setInterval> | null = null;
+      
+      // Check if URL is reachable using backend endpoint (more reliable)
+      const checkUrl = async () => {
+        if (!isMounted || isAvailableRef) return;
+        
+        try {
+          const response = await fetch(`/api/cloudflare/check-url-availability?url=${encodeURIComponent(appUrl)}`, {
+            credentials: 'include',
+          });
+          
+          if (!response.ok) {
+            if (isMounted) setUrlAvailable(false);
+            return;
+          }
+          
+          const data = await response.json();
+          const isAvailable = data.available === true;
+          
+          if (isMounted) {
+            setUrlAvailable(isAvailable);
+            setIsCheckingUrl(!isAvailable); // Keep showing loading if not available yet
+            
+            // If available, stop polling
+            if (isAvailable) {
+              isAvailableRef = true;
+              if (pollInterval) {
+                clearInterval(pollInterval);
+                pollInterval = null;
+              }
+            }
+          }
+        } catch (error) {
+          // If check fails, assume URL is not available yet (keep polling)
+          if (isMounted) {
+            setUrlAvailable(false);
+          }
+        }
+      };
+      
+      // Initial check after short delay
+      const initialTimeout = setTimeout(() => {
+        checkUrl();
+        
+        // Start polling every 5 seconds until available
+        pollInterval = setInterval(checkUrl, 5000);
+      }, 1000);
+      
+      return () => {
+        isMounted = false;
+        clearTimeout(initialTimeout);
+        if (pollInterval) {
+          clearInterval(pollInterval);
+        }
+      };
+    } else {
+      setUrlAvailable(null);
+      setIsCheckingUrl(false);
+    }
+  }, [app?.status, app?.exposedLocal, app?.openPort, app?.exposed, app?.localSubdomain, metadata.localSubdomain, info.urn, info.no_gui, info.url_suffix, appUrl]);
+
   const OpenButton = (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button className="action-button">
-          {t('APP_ACTION_OPEN')}
-          <IconExternalLink className="ms-1" size={14} />
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent>
-        <DropdownMenuGroup>
-          {app?.exposed && app.domain && (
-            <DropdownMenuItem onClick={() => handleOpen('domain')}>
-              <IconLock className="text-green me-2" size={16} />
-              {app.domain}
-              {sslPort !== 443 ? `:${sslPort}` : ''}
-            </DropdownMenuItem>
-          )}
-          {app?.exposedLocal && (
-            <DropdownMenuItem onClick={() => handleOpen('local_domain')}>
-              <IconLock className="text-muted me-2" size={16} />
-              {appLocalDomain}
-            </DropdownMenuItem>
-          )}
-          {(app?.openPort || !info.dynamic_config) && (
-            <DropdownMenuItem onClick={() => handleOpen('local')}>
-              <IconLockOff className="text-muted me-2" size={16} />
-              {hostname}:{app?.port ?? info.port}
-            </DropdownMenuItem>
-          )}
-        </DropdownMenuGroup>
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <ActionButton
+      key="open"
+      IconComponent={IconExternalLink}
+      onClick={() => {
+        // Navigate to the app at ${name}.companionintel.com in the same tab
+        window.location.href = appUrl;
+      }}
+      title={t('APP_ACTION_OPEN')}
+      disabled={isCheckingUrl || urlAvailable === false}
+      loading={isCheckingUrl}
+    />
   );
 
   const buttons: React.JSX.Element[] = [];
@@ -278,6 +342,7 @@ export const AppActions = ({ app, info, localDomain, metadata, sslPort }: IProps
       listItemsDestructive.push(ResetListItem);
       listItemsDestructive.push(RemoveListItem);
 
+      // Show Open button if app is exposed (will be disabled while checking availability)
       if (!info.no_gui && (app?.exposedLocal || app?.openPort || app?.exposed)) {
         buttons.push(OpenButton);
       }
@@ -311,27 +376,6 @@ export const AppActions = ({ app, info, localDomain, metadata, sslPort }: IProps
       break;
   }
 
-  const handleOpen = (type: OpenType) => {
-    let url = '';
-    const { https } = info;
-    const protocol = https ? 'https' : 'http';
-
-    if (typeof window !== 'undefined') {
-      // Current domain
-      const domain = window.location.hostname;
-      url = `${protocol}://${domain}:${app?.port ?? info.port}${info.url_suffix || ''}`;
-    }
-
-    if (type === 'domain' && app?.domain) {
-      url = `https://${app.domain}${sslPort !== 443 ? `:${sslPort}` : ''}${info.url_suffix || ''}`;
-    }
-
-    if (type === 'local_domain') {
-      url = `https://${appLocalDomain}${info.url_suffix || ''}`;
-    }
-
-    window.open(url, '_blank', 'noreferrer');
-  };
 
   return (
     <>

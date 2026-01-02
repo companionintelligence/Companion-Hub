@@ -1,8 +1,12 @@
+import { logoutMutation } from '@/api-client/@tanstack/react-query.gen';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/DropdownMenu';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useAppContext } from '@/context/app-context';
+import { useUIStore } from '@/stores/ui-store';
+import { IconLogout, IconMoon, IconSun, IconX } from '@tabler/icons-react';
+import { useMutation } from '@tanstack/react-query';
+import clsx from 'clsx';
 import { Suspense, lazy } from 'react';
-import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router';
 import { AppStoresContainer } from '../containers/app-stores-container';
@@ -15,69 +19,116 @@ const LogsContainer = lazy(() => import('../containers/logs').then((module) => (
 export default () => {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const tab = searchParams.get('tab');
   const { userSettings, user } = useAppContext();
-  const [currentTab, setCurrentTab] = React.useState(tab || 'actions');
+
+  const setDarkMode = useUIStore((state) => state.setDarkMode);
+  const theme = useUIStore((state) => state.theme);
+
+  const currentTab = tab || 'actions';
 
   const handleTabChange = (newTab: string) => {
-    setCurrentTab(newTab);
-    navigate(`?tab=${newTab}`, { replace: true });
+    setSearchParams({ tab: newTab });
+  };
+
+  const logout = useMutation({
+    ...logoutMutation(),
+    onSuccess: () => {
+      window.location.reload();
+    },
+  });
+
+  const handleLogout = () => {
+    logout.mutate({});
+  };
+
+  const onClose = () => {
+    navigate('/dashboard');
   };
 
   return (
-    <div className="card d-flex">
-      <Tabs value={currentTab}>
-        <TabsList>
-          <TabsTrigger onClick={() => handleTabChange('actions')} value="actions">
-            {t('SETTINGS_ACTIONS_TAB_TITLE')}
-          </TabsTrigger>
-          <TabsTrigger onClick={() => handleTabChange('settings')} value="settings">
-            {t('SETTINGS_GENERAL_TAB_TITLE')}
-          </TabsTrigger>
-          <TabsTrigger onClick={() => handleTabChange('security')} value="security">
-            {t('SETTINGS_SECURITY_TAB_TITLE')}
-          </TabsTrigger>
-          <TabsTrigger onClick={() => handleTabChange('appstores')} value="appstores" className="d-none d-md-block">
-            {t('SETTINGS_APPSTORES_TAB_TITLE')}
-          </TabsTrigger>
-          <TabsTrigger onClick={() => handleTabChange('logs')} value="logs" className="d-none d-md-block">
-            {t('SETTINGS_LOGS_TAB_TITLE')}
-          </TabsTrigger>
-          <DropdownMenu>
-            <DropdownMenuTrigger className="nav-link dropdown-toggle d-block d-md-none">{t('MORE')}</DropdownMenuTrigger>
-            <DropdownMenuContent>
-              <DropdownMenuItem onClick={() => handleTabChange('appstores')}>{t('SETTINGS_APPSTORES_TAB_TITLE')}</DropdownMenuItem>
-              <DropdownMenuItem onClick={() => handleTabChange('logs')}>{t('SETTINGS_LOGS_TAB_TITLE')}</DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </TabsList>
-        <TabsContent value="actions">
-          <Suspense>
-            <GeneralActionsContainer />
-          </Suspense>
-        </TabsContent>
-        <TabsContent value="settings">
-          <Suspense>
-            <UserSettingsContainer initialValues={userSettings} />
-          </Suspense>
-        </TabsContent>
-        <TabsContent value="security">
-          <Suspense>
-            <SecurityContainer totpEnabled={Boolean(user.totpEnabled)} username={user.username} />
-          </Suspense>
-        </TabsContent>
-        <TabsContent value="appstores">
-          <Suspense>
-            <AppStoresContainer />
-          </Suspense>
-        </TabsContent>
-        <TabsContent value="logs">
-          <Suspense>
-            <LogsContainer />
-          </Suspense>
-        </TabsContent>
-      </Tabs>
+    <div className="d-flex flex-column h-100">
+      <div className="d-flex justify-content-end align-items-center mb-4">
+        <div className="d-flex gap-2">
+          <button
+            type="button"
+            onClick={() => setDarkMode(true)}
+            className={clsx('btn btn-icon', {
+              'd-none': theme === 'dark',
+            })}
+            title={t('HEADER_DARK_MODE')}
+          >
+            <IconMoon size={24} />
+          </button>
+          <button
+            type="button"
+            onClick={() => setDarkMode(false)}
+            className={clsx('btn btn-icon', {
+              'd-none': theme === 'light',
+            })}
+            title={t('HEADER_LIGHT_MODE')}
+          >
+            <IconSun size={24} />
+          </button>
+          <button type="button" onClick={handleLogout} className="btn btn-icon" title={t('HEADER_LOGOUT')}>
+            <IconLogout size={24} />
+          </button>
+          <button type="button" className="btn btn-icon btn-ghost-secondary" onClick={onClose} aria-label="Close">
+            <IconX size={32} />
+          </button>
+        </div>
+      </div>
+
+      <div className="d-flex flex-column flex-grow-1 overflow-hidden">
+        <Tabs value={currentTab} onValueChange={handleTabChange} className="flex-grow-1 d-flex flex-column h-100 overflow-hidden">
+          <TabsList>
+            <TabsTrigger value="actions">{t('SETTINGS_ACTIONS_TAB_TITLE')}</TabsTrigger>
+            <TabsTrigger value="settings">{t('SETTINGS_GENERAL_TAB_TITLE')}</TabsTrigger>
+            <TabsTrigger value="security">{t('SETTINGS_SECURITY_TAB_TITLE')}</TabsTrigger>
+            <TabsTrigger value="appstores" className="d-none d-md-block">
+              {t('SETTINGS_APPSTORES_TAB_TITLE')}
+            </TabsTrigger>
+            <TabsTrigger value="logs" className="d-none d-md-block">
+              {t('SETTINGS_LOGS_TAB_TITLE')}
+            </TabsTrigger>
+            <DropdownMenu>
+              <DropdownMenuTrigger className="nav-link dropdown-toggle d-block d-md-none">{t('MORE')}</DropdownMenuTrigger>
+              <DropdownMenuContent>
+                <DropdownMenuItem onClick={() => handleTabChange('appstores')}>{t('SETTINGS_APPSTORES_TAB_TITLE')}</DropdownMenuItem>
+                <DropdownMenuItem onClick={() => handleTabChange('logs')}>{t('SETTINGS_LOGS_TAB_TITLE')}</DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </TabsList>
+          <div className="p-3 flex-grow-1 overflow-y-auto min-h-0" data-testid="settings-scroll-container">
+            <TabsContent value="actions">
+              <Suspense fallback={<div>Loading...</div>}>
+                <GeneralActionsContainer />
+              </Suspense>
+            </TabsContent>
+            <TabsContent value="settings">
+              <Suspense fallback={<div>Loading...</div>}>
+                <UserSettingsContainer initialValues={userSettings} />
+              </Suspense>
+            </TabsContent>
+            <TabsContent value="security">
+              <Suspense fallback={<div>Loading...</div>}>
+                <SecurityContainer totpEnabled={Boolean(user.totpEnabled)} username={user.username} />
+              </Suspense>
+            </TabsContent>
+            <TabsContent value="appstores">
+              <Suspense fallback={<div>Loading...</div>}>
+                <AppStoresContainer />
+              </Suspense>
+            </TabsContent>
+            <TabsContent value="logs">
+              <Suspense fallback={<div>Loading...</div>}>
+                <LogsContainer />
+              </Suspense>
+            </TabsContent>
+          </div>
+        </Tabs>
+      </div>
     </div>
   );
 };

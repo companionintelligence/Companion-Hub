@@ -51,6 +51,7 @@ logs
 .pnpm-debug.log
 .env*
 !.env.example
+!.env.backup
 !.env.test
 github.secrets
 node_modules/
@@ -96,3 +97,5 @@ docs/jira/
 .internal/media/*
 .internal/traefik/*
 !.internal/cache/.gitkeep
+packages/backend/mock-auth-server/repo.zip
+temp_ci_store

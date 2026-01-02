@@ -2,7 +2,6 @@ import { acknowledgeWelcomeMutation } from '@/api-client/@tanstack/react-query.g
 import { Button } from '@/components/ui/Button';
 import { Switch } from '@/components/ui/Switch';
 import { getLogo } from '@/lib/theme/theme';
-import { IconBrandDiscord, IconBrandGithub } from '@tabler/icons-react';
 import { useMutation } from '@tanstack/react-query';
 import { useState } from 'react';
 
@@ -13,10 +12,6 @@ type Props = {
 export const Welcome = ({ allowErrorMonitoring }: Props) => {
   const [errorMonitoring, setErrorMonitoring] = useState(allowErrorMonitoring);
 
-  const openLink = (url: string) => {
-    window.open(url, '_blank', 'noopener noreferrer');
-  };
-
   const acknowledge = useMutation({
     ...acknowledgeWelcomeMutation(),
   });
@@ -25,7 +20,16 @@ export const Welcome = ({ allowErrorMonitoring }: Props) => {
     <div className="page page-center">
       <div className="container container-tight py-4">
         <div className="text-center mb-4">
-          <img alt="Companion Hub logo" src={getLogo(true)} height={50} width={50} style={{ maxWidth: '100%', height: 'auto' }} />
+          <img
+            alt="Companion Hub logo"
+            src={getLogo(true)}
+            height={128}
+            width={128}
+            style={{
+              maxWidth: '100%',
+              height: 'auto',
+            }}
+          />
         </div>
         <div className="card card-md">
           <div className="card-body">

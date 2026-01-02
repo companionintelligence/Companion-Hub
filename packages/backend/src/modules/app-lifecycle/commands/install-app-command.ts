@@ -1,22 +1,37 @@
 import { LoggerService } from '@/core/logger/logger.service';
+import { ConfigurationService } from '@/core/config/configuration.service';
+import { SSEService } from '@/core/sse/sse.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppHelpers } from '@/modules/apps/app.helpers';
+import { CloudflareTunnelService } from '@/modules/cloudflare/cloudflare-tunnel.service';
 import { DockerService } from '@/modules/docker/docker.service';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
+import { RegistrationService } from '@/modules/registration/registration.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import type { AppUrn } from '@runtipi/common/types';
+import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { AppLifecycleCommand } from './command';
 import { parseComposeJson } from '@runtipi/common/schemas';
+import fs from 'node:fs';
+import path from 'node:path';
 
 export class InstallAppCommand extends AppLifecycleCommand {
   public async execute(appUrn: AppUrn, form: AppEventFormInput): Promise<{ success: boolean; message: string }> {
     const logger = this.moduleRef.get(LoggerService, { strict: false });
+    const config = this.moduleRef.get(ConfigurationService, { strict: false });
     const appFilesManager = this.moduleRef.get(AppFilesManager, { strict: false });
     const marketplaceService = this.moduleRef.get(MarketplaceService, { strict: false });
     const dockerService = this.moduleRef.get(DockerService, { strict: false });
     const appHelpers = this.moduleRef.get(AppHelpers, { strict: false });
     const envUtils = this.moduleRef.get(EnvUtils, { strict: false });
+    const sseService = this.moduleRef.get(SSEService, { strict: false });
+
+    const emitProgress = (progress: number) => {
+      if (sseService) {
+        sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'installing', progress }, appUrn);
+      }
+    };
 
     try {
       const composeToInstall = await marketplaceService.getDockerComposeJson(appUrn);
@@ -27,50 +42,133 @@ export class InstallAppCommand extends AppLifecycleCommand {
     }
 
     try {
+      emitProgress(5);
       if (process.getuid && process.getgid) {
         logger.info(`Installing app ${appUrn} as User ID: ${process.getuid()}, Group ID: ${process.getgid()}`);
       } else {
         logger.info(`Installing app ${appUrn}. No User ID or Group ID found.`);
       }
 
+      emitProgress(15);
       await marketplaceService.copyAppFromRepoToInstalled(appUrn);
 
       // Create app.env file
+      emitProgress(25);
       logger.info(`Creating app.env file for app ${appUrn}`);
       await appHelpers.generateEnvFile(appUrn, form);
 
+      // Ensure app directory exists before we try to use APP_DATA_DIR
+      emitProgress(30);
+      await this.ensureAppDir(appUrn, form);
+
       // Copy data dir
+      emitProgress(35);
       const appEnv = await appFilesManager.getAppEnv(appUrn);
       const envMap = envUtils.envStringToMap(appEnv.content);
+
+      // Ensure APP_DATA_DIR exists on the host before docker-compose tries to mount it
+      // We need to create it using the container path since we're inside the container
+      // The container path /app-data maps to the host path via the volume mount
+      const { appStoreId, appName } = extractAppUrn(appUrn);
+      const containerAppDataPath = `/app-data/${appStoreId}/${appName}`;
+      const hostAppDataDir = envMap.get('APP_DATA_DIR');
+      
+      if (hostAppDataDir) {
+        logger.info(`Ensuring APP_DATA_DIR exists (host: ${hostAppDataDir}, container: ${containerAppDataPath})`);
+        try {
+          // Create using container path - this will create on host via volume mount
+          await fs.promises.mkdir(containerAppDataPath, { recursive: true });
+          logger.debug(`APP_DATA_DIR created/verified via container path: ${containerAppDataPath}`);
+        } catch (error) {
+          logger.warn(`Failed to create APP_DATA_DIR via container path ${containerAppDataPath}: ${error}`);
+          // Try to create subdirectories that might be needed
+          try {
+            const dataSubdirs = ['data', 'redis', 'postgres', 'db'];
+            for (const subdir of dataSubdirs) {
+              const subdirPath = path.join(containerAppDataPath, subdir);
+              await fs.promises.mkdir(subdirPath, { recursive: true }).catch(() => {
+                // Ignore errors for subdirectories
+              });
+            }
+          } catch (subdirError) {
+            // Ignore subdirectory creation errors
+          }
+        }
+      }
 
       logger.info(`Copying data dir for app ${appUrn}`);
       await marketplaceService.copyDataDir(appUrn, envMap);
 
-      await this.ensureAppDir(appUrn, form);
+      emitProgress(45);
 
+      emitProgress(50);
       try {
         await dockerService.composeApp(appUrn, 'down --rmi all --remove-orphans');
       } catch (_) {
         logger.warn(`No prior containers to remove for app ${appUrn}`);
       }
 
-      const config = await appFilesManager.getInstalledAppInfo(appUrn);
+      const appInfo = await appFilesManager.getInstalledAppInfo(appUrn);
 
-      if (!config) {
+      if (!appInfo) {
         return { success: true, message: 'App config not found. Skipping...' };
       }
 
       // run docker-compose up
-      const forcePull = config.force_pull ?? false;
+      const forcePull = appInfo.force_pull ?? false;
 
       if (form.skipRun) {
         logger.info(`Skipping docker-compose up for app ${appUrn} as per request`);
+        emitProgress(99);
         return { success: true, message: `App ${appUrn} installed successfully (skipped run)` };
       }
 
+      emitProgress(60);
       await dockerService.composeApp(appUrn, `up --detach --force-recreate --remove-orphans ${forcePull ? '--pull always' : ''}`);
+      emitProgress(85);
       await appFilesManager.setAppDataDirPermissions(appUrn);
 
+      // Create Cloudflare Tunnel route if exposedLocal is enabled (app is published to internet)
+      // Routes directly to the app's host port - makes app available at subdomain.companionintel.com
+      // Or subdomain.orgDomain.companionintel.com if organization is registered
+      try {
+        const cloudflareService = this.moduleRef.get(CloudflareTunnelService, { strict: false });
+        if (!cloudflareService) {
+          logger.debug(`CloudflareTunnelService not available for ${appUrn}`);
+        } else if (!cloudflareService.isEnabled()) {
+          logger.debug(`Cloudflare Tunnel integration is not enabled for ${appUrn}`);
+        } else {
+          const { appName, appStoreId } = extractAppUrn(appUrn);
+          const { isProduction } = config?.getConfig() || { isProduction: false };
+          
+          // In production, when exposedLocal is enabled, create a route to Traefik
+          // Traefik will route to the app container based on the subdomain
+          // This publishes the app to the internet via Cloudflare Tunnel -> Traefik -> App
+          if (form.exposedLocal && isProduction) {
+            const subdomain = form.localSubdomain ? form.localSubdomain : `${appName}-${appStoreId}`;
+            
+            // Get organization info if available
+            const registrationService = this.moduleRef.get(RegistrationService, { strict: false });
+            const orgInfo = await registrationService?.getOrganizationInfo();
+            const organizationInfo = orgInfo
+              ? { tunnelId: orgInfo.tunnelId, domain: orgInfo.domain }
+              : null;
+            
+            emitProgress(90);
+            const domain = organizationInfo ? organizationInfo.domain : 'companionintel.com';
+            logger.info(
+              `Creating Cloudflare Tunnel route for ${appUrn} via Traefik ` +
+              `(subdomain: ${subdomain}, domain: ${domain})`
+            );
+            await cloudflareService.createAppRoute(subdomain, undefined, organizationInfo);
+          }
+        }
+      } catch (error) {
+        logger.warn(`Failed to create Cloudflare Tunnel route for ${appUrn}: ${error}`);
+        // Don't fail the installation if Cloudflare route creation fails
+      }
+
+      emitProgress(99);
       return { success: true, message: `App ${appUrn} installed successfully` };
     } catch (err) {
       return this.handleAppError(err, appUrn, 'install');

@@ -1,0 +1,208 @@
+/* biome-ignore lint/complexity/noImportantStyles: Theme override */
+:root, [data-bs-theme="light"] {
+  --glass-bg: rgba(255, 255, 255, 0.6);
+  --glass-text: #000000;
+  --glass-border: rgba(0, 0, 0, 0.1);
+  --glass-muted: rgba(0, 0, 0, 0.6);
+  --glass-hover: rgba(0, 0, 0, 0.05);
+  --glass-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
+  --glass-bevel: inset 0 1px 0 0 rgba(255, 255, 255, 0.5);
+  --text-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+[data-bs-theme="dark"] {
+  --glass-bg: rgba(30, 30, 30, 0.6);
+  --glass-text: #ffffff;
+  --glass-border: rgba(255, 255, 255, 0.1);
+  --glass-muted: rgba(255, 255, 255, 0.7);
+  --glass-hover: rgba(255, 255, 255, 0.1);
+  --glass-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.15);
+  --glass-bevel: inset 0 1px 0 0 rgba(255, 255, 255, 0.1);
+  --text-shadow: 0 2px 4px rgba(0, 0, 0, 0.25);
+}
+
+body {
+  text-shadow: var(--text-shadow);
+}
+
+.icon, .btn-icon svg, .navbar-brand, .page-title, .nav-link {
+  filter: drop-shadow(var(--text-shadow));
+}
+
+.navbar {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.card {
+  background-color: var(--glass-bg) !important;
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--glass-border) !important;
+  color: var(--glass-text) !important;
+  box-shadow: var(--glass-shadow), var(--glass-bevel) !important;
+  text-shadow: none !important;
+}
+
+.card .icon, .card .btn-icon svg, .card .nav-link {
+  filter: none !important;
+}
+
+.card .subheader,
+.card .text-muted {
+  color: var(--glass-muted) !important;
+}
+
+.card .h1 {
+  color: var(--glass-text) !important;
+}
+
+.hover-effect {
+  transition: background-color 0.2s;
+  border-radius: 8px;
+}
+
+.hover-effect:hover {
+  background-color: var(--glass-hover);
+}
+
+.text-reset {
+  color: var(--glass-text) !important;
+}
+
+/* Ensure modal content also respects the dark theme */
+.modal-content,
+.dropdown-menu {
+  background-color: var(--glass-bg) !important;
+  backdrop-filter: blur(10px);
+  color: var(--glass-text) !important;
+  border: 1px solid var(--glass-border) !important;
+  box-shadow: var(--glass-shadow), var(--glass-bevel) !important;
+  text-shadow: none !important;
+}
+
+.modal-content .icon, .modal-content .btn-icon svg,
+.dropdown-menu .icon, .dropdown-menu .btn-icon svg {
+  filter: none !important;
+}
+
+.dropdown-item {
+  color: var(--glass-text) !important;
+}
+
+.dropdown-item:hover {
+  background-color: var(--glass-hover) !important;
+}
+
+.btn-ghost-secondary {
+  color: var(--glass-text) !important;
+}
+
+.btn-ghost-secondary:hover {
+  background-color: var(--glass-hover) !important;
+  color: var(--glass-text) !important;
+}
+
+.btn-icon {
+  color: var(--glass-text) !important;
+}
+
+.card-header {
+  background-color: transparent !important;
+  border-bottom: 1px solid var(--glass-border) !important;
+}
+
+.nav-tabs .nav-link {
+  color: var(--glass-muted) !important;
+}
+
+.nav-tabs .nav-link:hover {
+  color: var(--glass-text) !important;
+  border-color: transparent transparent var(--glass-border) !important;
+}
+
+.nav-tabs .nav-link.active {
+  color: var(--glass-text) !important;
+  background-color: var(--glass-hover) !important;
+  border-color: var(--glass-border) var(--glass-border) transparent !important;
+}
+
+.alert {
+  background-color: var(--glass-bg) !important;
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--glass-border) !important;
+  color: var(--glass-text) !important;
+  box-shadow: var(--glass-shadow), var(--glass-bevel) !important;
+  text-shadow: none !important;
+}
+
+.alert .icon, .alert .btn-icon svg {
+  filter: none !important;
+}
+
+.alert-warning {
+  background-color: rgba(255, 193, 7, 0.2) !important;
+  border-color: rgba(255, 193, 7, 0.3) !important;
+}
+
+.alert-success {
+  background-color: rgba(40, 167, 69, 0.2) !important;
+  border-color: rgba(40, 167, 69, 0.3) !important;
+}
+
+.alert-danger {
+  background-color: rgba(220, 53, 69, 0.2) !important;
+  border-color: rgba(220, 53, 69, 0.3) !important;
+}
+
+.alert-info {
+  background-color: rgba(23, 162, 184, 0.2) !important;
+  border-color: rgba(23, 162, 184, 0.3) !important;
+}
+
+.table {
+  color: var(--glass-text) !important;
+  --bs-table-bg: transparent !important;
+  --bs-table-color: var(--glass-text) !important;
+  --bs-table-border-color: var(--glass-border) !important;
+}
+
+.table > :not(caption) > * > * {
+  background-color: transparent !important;
+  color: var(--glass-text) !important;
+  border-bottom-color: var(--glass-border) !important;
+}
+
+.log-terminal {
+  background-color: rgba(0, 0, 0, 0.5) !important;
+  color: #f8f9fa !important;
+  border: 1px solid var(--glass-border) !important;
+  border-radius: 8px;
+  padding: 1rem;
+  box-shadow: var(--glass-shadow), var(--glass-bevel) !important;
+  text-shadow: none !important;
+}
+
+.form-control, .form-select {
+  background-color: var(--glass-hover) !important;
+  border: 1px solid var(--glass-border) !important;
+  color: var(--glass-text) !important;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.1) !important;
+  text-shadow: none !important;
+}
+
+.form-control:focus, .form-select:focus {
+  background-color: var(--glass-hover) !important;
+  border-color: var(--glass-text) !important;
+  color: var(--glass-text) !important;
+  box-shadow: none !important;
+}
+
+.form-label {
+  color: var(--glass-text) !important;
+}
+
+.input-group-text {
+  background-color: var(--glass-hover) !important;
+  border: 1px solid var(--glass-border) !important;
+  color: var(--glass-text) !important;
+}

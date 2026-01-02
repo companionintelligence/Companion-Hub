@@ -1,7 +1,6 @@
 import path from 'node:path';
 import { Inject, Injectable } from '@nestjs/common';
 import * as Sentry from '@sentry/nestjs';
-import { execAsync } from './common/helpers/exec-helpers';
 import { CacheService, ONE_DAY_IN_SECONDS } from './core/cache/cache.service';
 import { ConfigurationService } from './core/config/configuration.service';
 import { DatabaseService } from './core/database/database.service';
@@ -35,8 +34,12 @@ export class AppService {
 
   public async bootstrap() {
     try {
+      this.logger.info('Starting bootstrap...');
       await this.databaseService.migrate();
+      this.logger.info('Database migration completed');
+      
       await this.docker.pruneNetworks();
+      this.logger.info('Docker networks pruned');
 
       const { version, userSettings, __prod__ } = this.configuration.getConfig();
       const config = this.configuration.getConfig();
@@ -44,8 +47,10 @@ export class AppService {
       this.logger.debug('Starting with configuration', config);
 
       this.configuration.initSentry({ release: version, allowSentry: userSettings.allowErrorMonitoring });
+      this.logger.info('Sentry initialized');
 
       await this.logger.flush();
+      this.logger.info('Logger flushed');
 
       this.logger.info(`Running version: ${process.env.TIPI_VERSION}`);
 
@@ -54,29 +59,48 @@ export class AppService {
         this.logger.info('Clearing cache...');
         this.cache.clear();
         this.cache.set('buster', version, ONE_DAY_IN_SECONDS * 365);
+        this.logger.info('Cache cleared');
       }
 
+      this.logger.info('Migrating legacy repo...');
       await this.appStoreService.migrateLegacyRepo();
+      await this.appStoreService.registerCloudAppStore();
 
+      this.logger.info('Publishing clone_all command...');
       this.repoQueue.publish({ command: 'clone_all' });
+      this.logger.info('Clone command published');
 
+      this.logger.info('Initializing marketplace...');
       await this.marketplaceService.initialize();
+      this.logger.info('Marketplace initialized');
 
       // Every 15 minutes, check for updates to the apps repo
       if (__prod__) {
+        this.logger.info('Setting up repeatable repo update job...');
         this.repoQueue.publishRepeatable({ command: 'update_all' }, '*/15 * * * *');
+        this.logger.info('Repo update job scheduled');
       }
+      this.logger.info('Setting up repeatable app status sync job...');
       this.systemEventsQueue.publishRepeatable({ command: 'sync_app_statuses' }, '*/5 * * * *');
+      this.logger.info('App status sync job scheduled');
 
+      this.logger.info('Copying assets...');
       await this.copyAssets();
+      this.logger.info('Assets copied, generating TLS certificates...');
       await this.generateTlsCertificates({ localDomain: userSettings.localDomain });
+      this.logger.info('TLS certificates generated');
 
       if (__prod__ && (buster !== version || version === 'nightly')) {
-        this.appLifecycleService.restartRunningApps();
+        this.logger.info('Restarting running apps...');
+        await this.appLifecycleService.restartRunningApps();
+        this.logger.info('Finished restarting running apps');
       }
+      
+      this.logger.info('Bootstrap completed successfully');
     } catch (e) {
-      this.logger.error(e);
+      this.logger.error('Bootstrap error:', e);
       Sentry.captureException(e, { tags: { source: 'bootstrap' } });
+      throw e; // Re-throw to ensure startup fails if bootstrap fails
     }
   }
 
@@ -97,29 +121,8 @@ export class AppService {
   }
 
   public async copyAssets() {
-    const { directories, userSettings } = this.configuration.getConfig();
-    const { appDir, dataDir, appDataDir } = directories;
-
-    const assetsFolder = path.join(appDir, 'assets');
-
-    this.logger.info('Creating traefik folders');
-
-    await this.filesystem.createDirectories([
-      path.join(dataDir, 'traefik', 'dynamic'),
-      path.join(dataDir, 'traefik', 'shared'),
-      path.join(dataDir, 'traefik', 'tls'),
-    ]);
-
-    if (userSettings.persistTraefikConfig) {
-      this.logger.warn('Skipping the copy of traefik files because persistTraefikConfig is set to true');
-    } else {
-      this.logger.info('Copying traefik files');
-      await this.filesystem.copyFile(path.join(assetsFolder, 'traefik', 'traefik.yml'), path.join(dataDir, 'traefik', 'traefik.yml'));
-      await this.filesystem.copyFile(
-        path.join(assetsFolder, 'traefik', 'dynamic', 'dynamic.yml'),
-        path.join(dataDir, 'traefik', 'dynamic', 'dynamic.yml'),
-      );
-    }
+    const { directories } = this.configuration.getConfig();
+    const { dataDir, appDataDir } = directories;
 
     // Create base folders
     this.logger.info('Creating base folders');
@@ -131,88 +134,46 @@ export class AppService {
       path.join(appDataDir),
     ]);
 
-    // Create media folders
+    // Create media folders (with timeout to prevent hanging)
     this.logger.info('Creating media folders');
-    await this.filesystem.createDirectories([
-      path.join(dataDir, 'media', 'torrents', 'watch'),
-      path.join(dataDir, 'media', 'torrents', 'complete'),
-      path.join(dataDir, 'media', 'torrents', 'incomplete'),
-      path.join(dataDir, 'media', 'usenet', 'watch'),
-      path.join(dataDir, 'media', 'usenet', 'complete'),
-      path.join(dataDir, 'media', 'usenet', 'incomplete'),
-      path.join(dataDir, 'media', 'downloads', 'watch'),
-      path.join(dataDir, 'media', 'downloads', 'complete'),
-      path.join(dataDir, 'media', 'downloads', 'incomplete'),
-      path.join(dataDir, 'media', 'data', 'books'),
-      path.join(dataDir, 'media', 'data', 'comics'),
-      path.join(dataDir, 'media', 'data', 'movies'),
-      path.join(dataDir, 'media', 'data', 'music'),
-      path.join(dataDir, 'media', 'data', 'tv'),
-      path.join(dataDir, 'media', 'data', 'podcasts'),
-      path.join(dataDir, 'media', 'data', 'images'),
-      path.join(dataDir, 'media', 'data', 'roms'),
-    ]);
+    try {
+      await Promise.race([
+        this.filesystem.createDirectories([
+          path.join(dataDir, 'media', 'torrents', 'watch'),
+          path.join(dataDir, 'media', 'torrents', 'complete'),
+          path.join(dataDir, 'media', 'torrents', 'incomplete'),
+          path.join(dataDir, 'media', 'usenet', 'watch'),
+          path.join(dataDir, 'media', 'usenet', 'complete'),
+          path.join(dataDir, 'media', 'usenet', 'incomplete'),
+          path.join(dataDir, 'media', 'downloads', 'watch'),
+          path.join(dataDir, 'media', 'downloads', 'complete'),
+          path.join(dataDir, 'media', 'downloads', 'incomplete'),
+          path.join(dataDir, 'media', 'data', 'books'),
+          path.join(dataDir, 'media', 'data', 'comics'),
+          path.join(dataDir, 'media', 'data', 'movies'),
+          path.join(dataDir, 'media', 'data', 'music'),
+          path.join(dataDir, 'media', 'data', 'tv'),
+          path.join(dataDir, 'media', 'data', 'podcasts'),
+          path.join(dataDir, 'media', 'data', 'images'),
+          path.join(dataDir, 'media', 'data', 'roms'),
+        ]),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Media folder creation timed out after 10 seconds')), 10000)
+        ),
+      ]);
+      this.logger.info('Media folders created successfully');
+    } catch (error) {
+      // Don't fail startup if media folder creation times out or fails
+      // They'll be created on-demand when needed
+      this.logger.warn(`Media folder creation failed or timed out: ${error instanceof Error ? error.message : error}. Continuing startup...`);
+    }
   }
 
   /**
-   * Given a domain, generates the TLS certificates for it to be used with Traefik
-   *
-   * @param {string} data.domain The domain to generate the certificates for
+   * TLS certificate generation - no longer needed as Cloudflare handles TLS
+   * Kept as a no-op for backwards compatibility
    */
-  public generateTlsCertificates = async (data: { localDomain?: string }) => {
-    if (!data.localDomain) {
-      return;
-    }
-
-    const { dataDir } = this.configuration.get('directories');
-
-    const tlsFolder = path.join(dataDir, 'traefik', 'tls');
-
-    // If the certificate already exists, don't generate it again
-    if (
-      (await this.filesystem.pathExists(path.join(tlsFolder, `${data.localDomain}.txt`))) &&
-      (await this.filesystem.pathExists(path.join(tlsFolder, 'cert.pem'))) &&
-      (await this.filesystem.pathExists(path.join(tlsFolder, 'key.pem')))
-    ) {
-      // Check if the certificate is still valid
-      const { stdout } = await execAsync(`openssl x509 -checkend 86400 -noout -in ${tlsFolder}/cert.pem`);
-      if (stdout.includes('Certificate will not expire')) {
-        this.logger.info(`TLS certificate for ${data.localDomain} already exists`);
-        return;
-      }
-
-      this.logger.warn(`TLS certificate for ${data.localDomain} is expired or will expire soon. Regenerating a new one...`);
-    }
-
-    // Empty out the folder
-    const files = await this.filesystem.listFiles(tlsFolder);
-    await Promise.all(
-      files.map(async (file) => {
-        this.logger.info(`Removing file ${file}`);
-        await this.filesystem.removeFile(path.join(tlsFolder, file));
-      }),
-    );
-
-    const subject = `/O=runtipi.io/OU=IT/CN=*.${data.localDomain}/emailAddress=webmaster@${data.localDomain}`;
-    const subjectAltName = `DNS:*.${data.localDomain},DNS:${data.localDomain}`;
-
-    try {
-      this.logger.info(`Generating TLS certificate for ${data.localDomain}`);
-      const { stderr } = await execAsync(
-        `openssl req -x509 -newkey rsa:4096 -keyout ${dataDir}/traefik/tls/key.pem -out ${dataDir}/traefik/tls/cert.pem -days 365 -subj "${subject}" -addext "subjectAltName = ${subjectAltName}" -nodes`,
-      );
-      if (
-        !(await this.filesystem.pathExists(path.join(tlsFolder, 'cert.pem'))) ||
-        !(await this.filesystem.pathExists(path.join(tlsFolder, 'key.pem')))
-      ) {
-        this.logger.error(`Failed to generate TLS certificate for ${data.localDomain}`);
-        this.logger.error(stderr);
-      } else {
-        this.logger.info(`Writing txt file for ${data.localDomain}`);
-      }
-      await this.filesystem.writeTextFile(path.join(tlsFolder, `${data.localDomain}.txt`), '');
-    } catch (error) {
-      this.logger.error(error);
-    }
+  public generateTlsCertificates = async (_data: { localDomain?: string }) => {
+    // TLS is handled by Cloudflare Tunnel - no local certificate generation needed
   };
 }

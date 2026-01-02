@@ -1,8 +1,8 @@
 services:
-  runtipi-reverse-proxy:
-    container_name: runtipi-reverse-proxy
+  ci-hub-reverse-proxy:
+    container_name: ci-hub-reverse-proxy
     depends_on:
-      runtipi:
+      ci-os-hub:
         condition: service_healthy
     image: traefik:v3.5
     restart: unless-stopped
@@ -10,66 +10,90 @@ services:
       - 80:80
       - 443:443
       - 9091:9091
-    command: --providers.docker --entryPoints.traefik.address=:9091
+    command: --providers.docker --providers.docker.useBindPortIP=false --entryPoints.traefik.address=:9091
     volumes:
       - ./.internal/traefik:/etc/traefik
       - ./.internal/traefik/shared:/shared
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
-      - tipi_main_network
+      - ci_os_hub_network
 
-  runtipi-db:
-    container_name: runtipi-db
+  ci-hub-db:
+    container_name: ci-hub-db
     image: postgres:14
     restart: unless-stopped
-    stop_grace_period: 1m
+    stop_grace_period: 120s
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - ci_hub_pgdata:/var/lib/postgresql/data
     command: -p 6543
     ports:
       - 6543:6543
     environment:
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_USER: tipi
-      POSTGRES_DB: tipi
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_USER: ${POSTGRES_USERNAME:-tipi}
+      POSTGRES_DB: ${POSTGRES_DBNAME:-tipi}
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -d tipi -U tipi -p 6543"]
       interval: 5s
-      timeout: 10s
+      timeout: 20s
       retries: 120
     networks:
-      - tipi_main_network
+      - ci_os_hub_network
 
-  runtipi-queue:
-    container_name: runtipi-queue
+  ci-os-hub-queue:
+    container_name: ci-os-hub-queue
     image: rabbitmq:4-alpine
     restart: unless-stopped
+    ports:
+      - "5001:5672"
     environment:
-      RABBITMQ_DEFAULT_USER: tipi
-      RABBITMQ_DEFAULT_PASS: tipi
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USERNAME:-tipi}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-tipi}
+      # Disable khepri_db to speed up startup (uses classic Mnesia instead)
+      RABBITMQ_FEATURE_FLAGS: ""
+    healthcheck:
+      test: ["CMD-SHELL", "rabbitmq-diagnostics -q check_running"]
+      interval: 15s
+      timeout: 30s
+      retries: 20
+      start_period: 180s
     networks:
-      - tipi_main_network
+      - ci_os_hub_network
 
-  runtipi:
+  ci-os-hub:
+    # Platform selection based on DOCKER_PLATFORM env variable
+    # Set DOCKER_PLATFORM=linux/arm64 for Mac development (native ARM64 build, faster)
+    # Set DOCKER_PLATFORM=linux/amd64 for Linux production (AMD64 build, slower on Mac due to emulation)
+    platform: ${DOCKER_PLATFORM:-linux/amd64}
     build:
       context: .
       dockerfile: Dockerfile
       args:
-        TIPI_VERSION: 4.5.0
-        LOCAL: true
+        TIPI_VERSION: ${TIPI_VERSION:-4.5.0}
+        LOCAL: ${LOCAL:-false}
+        TARGETARCH: ${TARGETARCH:-amd64}
+      # Enable BuildKit cache for faster rebuilds
+      # Note: Requires BuildKit with docker-container driver or containerd image store
+      # Uncomment below if you have BuildKit configured with a compatible driver:
+      # cache_from:
+      #   - type=local,src=/tmp/.buildx-cache
+      # cache_to:
+      #   - type=local,dest=/tmp/.buildx-cache,mode=max
     depends_on:
-      runtipi-db:
+      ci-hub-db:
         condition: service_healthy
-      runtipi-queue:
-        condition: service_started
-    container_name: runtipi
+      ci-os-hub-queue:
+        condition: service_healthy
+    container_name: ci-os-hub
     restart: unless-stopped
+    ports:
+      - "5002:3000"
     healthcheck:
-      start_period: 10s
+      start_period: 90s
       test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
+      interval: 10s
+      timeout: 5s
+      retries: 15
     volumes:
       # Data
       - ${RUNTIPI_MEDIA_PATH:-.internal}/media:/data/media
@@ -77,12 +101,11 @@ services:
       - ${RUNTIPI_REPOS_PATH:-.internal}/repos:/data/repos
       - ${RUNTIPI_APPS_PATH:-.internal}/apps:/data/apps
       - ${RUNTIPI_LOGS_PATH:-.internal}/logs:/data/logs
-      - ${RUNTIPI_TRAEFIK_PATH:-.internal}/traefik:/data/traefik
       - ${RUNTIPI_USER_CONFIG_PATH:-.internal}/user-config:/data/user-config
       - ${RUNTIPI_APP_DATA_PATH:-.internal}/app-data:/app-data
       - ${RUNTIPI_BACKUPS_PATH:-.internal}/backups:/data/backups
       # Static
-      - ./.env:/data/.env
+      - ./.env:/data/.env:ro
       - ./.internal/cache:/cache
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /proc/meminfo:/host/proc/meminfo:ro
@@ -90,57 +113,36 @@ services:
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
     networks:
-      - tipi_main_network
+      - ci_os_hub_network
     environment:
-      LOCAL: true
-      NODE_ENV: production
-      ROOT_FOLDER_HOST: ${PWD}/.internal
-      POSTGRES_PASSWORD: postgres
-      RABBITMQ_USERNAME: tipi
-      RABBITMQ_PASSWORD: tipi
-      RABBITMQ_HOST: runtipi-queue
-      INTERNAL_IP: 127.0.0.1
-      TIPI_VERSION: 4.5.0
-      LOG_LEVEL: debug
+      LOCAL: ${LOCAL:-false}
+      NODE_ENV: ${NODE_ENV:-production}
+      ROOT_FOLDER_HOST: ${ROOT_FOLDER_HOST:-.internal}
+      POSTGRES_HOST: ${POSTGRES_HOST:-ci-hub-db}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_USERNAME: ${POSTGRES_USERNAME:-tipi}
+      POSTGRES_DBNAME: ${POSTGRES_DBNAME:-tipi}
+      POSTGRES_PORT: ${POSTGRES_PORT:-6543}
+      RABBITMQ_USERNAME: ${RABBITMQ_USERNAME:-tipi}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-tipi}
+      RABBITMQ_HOST: ${RABBITMQ_HOST:-ci-os-hub-queue}
+      INTERNAL_IP: ${INTERNAL_IP:-127.0.0.1}
+      TIPI_VERSION: ${TIPI_VERSION:-4.5.0}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
     env_file:
       - .env
     labels:
-      # ---- General ----- #
-      runtipi.managed: true
-      traefik.enable: true
-      traefik.http.middlewares.redirect-to-https.redirectscheme.scheme: https
-      # ---- Dashboard ----- #
-      traefik.http.services.dashboard.loadbalancer.server.port: 3000
-      # Local ip
-      traefik.http.routers.dashboard.rule: PathPrefix("/")
-      traefik.http.routers.dashboard.service: dashboard
-      traefik.http.routers.dashboard.entrypoints: web
-      # Websecure
-      traefik.http.routers.dashboard-insecure.rule: Host(`${DOMAIN}`) && PathPrefix(`/`)
-      traefik.http.routers.dashboard-insecure.service: dashboard
-      traefik.http.routers.dashboard-insecure.entrypoints: web
-      traefik.http.routers.dashboard-insecure.middlewares: redirect-to-https
-      traefik.http.routers.dashboard-secure.rule: Host(`${DOMAIN}`) && PathPrefix(`/`)
-      traefik.http.routers.dashboard-secure.service: dashboard
-      traefik.http.routers.dashboard-secure.entrypoints: websecure
-      traefik.http.routers.dashboard-secure.tls.certresolver: myresolver
-      # Local domain
-      traefik.http.routers.dashboard-local-insecure.rule: Host(`${LOCAL_DOMAIN}`)
-      traefik.http.routers.dashboard-local-insecure.entrypoints: web
-      traefik.http.routers.dashboard-local-insecure.service: dashboard
-      traefik.http.routers.dashboard-local-insecure.middlewares: redirect-to-https
-      # Secure
-      traefik.http.routers.dashboard-local.rule: Host(`${LOCAL_DOMAIN}`)
-      traefik.http.routers.dashboard-local.entrypoints: websecure
-      traefik.http.routers.dashboard-local.tls: true
-      traefik.http.routers.dashboard-local.service: dashboard
-      # Middlewares
-      traefik.http.middlewares.runtipi.forwardauth.address: ${RUNTIPI_FORWARD_AUTH_URL:-http://runtipi:3000/api/auth/traefik}
+      ci-os-hub.managed: true
 
 networks:
-  tipi_main_network:
+  ci_os_hub_network:
     driver: bridge
-    name: runtipi_tipi_main_network
+    name: ci_os_hub_network
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.28.0.0/16
 
 volumes:
-  pgdata:
+  ci_hub_pgdata:
+    name: ci_hub_pgdata

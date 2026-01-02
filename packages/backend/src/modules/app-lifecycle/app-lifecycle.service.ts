@@ -13,7 +13,9 @@ import { AppFilesManager } from '../apps/app-files-manager';
 import { AppsRepository } from '../apps/apps.repository';
 import { AppsService } from '../apps/apps.service';
 import { BackupManager } from '../backups/backup.manager';
+import { CloudflareTunnelService } from '../cloudflare/cloudflare-tunnel.service';
 import { MarketplaceService } from '../marketplace/marketplace.service';
+import { RegistrationService } from '../registration/registration.service';
 import { AppEventsQueue, appEventResultSchema, appEventSchema } from '../queue/entities/app-events';
 import { AppLifecycleCommandFactory } from './app-lifecycle-command.factory';
 import { appFormSchema } from './dto/app-lifecycle.dto';
@@ -34,6 +36,8 @@ export class AppLifecycleService {
     private readonly appFilesManager: AppFilesManager,
     private readonly sseService: SSEService,
     private readonly backupManager: BackupManager,
+    private readonly cloudflareTunnelService: CloudflareTunnelService,
+    private readonly registrationService: RegistrationService,
     @Inject(APP_ASYNC_MUTEX) private mutex: AsyncMutex,
   ) {
     this.logger.debug('Subscribing to app events...');
@@ -115,6 +119,14 @@ export class AppLifecycleService {
 
     if (demoMode && apps.length >= 6) {
       throw new TranslatableError('SYSTEM_ERROR_DEMO_MODE_LIMIT');
+    }
+
+    // Prevent exposing to internet in production - use exposedLocal with Cloudflare tunnel instead
+    const { isProduction } = this.config.getConfig();
+    if (isProduction && exposed) {
+      this.logger.warn(`App ${appUrn} attempted to use exposed=true in production, disabling`);
+      parsedForm.exposed = false;
+      parsedForm.domain = undefined;
     }
 
     if (exposed && !domain) {
@@ -357,6 +369,14 @@ export class AppLifecycleService {
 
     const { exposed, domain, exposedLocal, enableAuth, openPort, port } = parsedForm;
 
+    // Prevent exposing to internet in production - use exposedLocal with Cloudflare tunnel instead
+    const { isProduction } = this.config.getConfig();
+    if (isProduction && exposed) {
+      this.logger.warn(`App ${appUrn} attempted to use exposed=true in production, disabling`);
+      parsedForm.exposed = false;
+      parsedForm.domain = undefined;
+    }
+
     if (exposed && !domain) {
       throw new TranslatableError('APP_ERROR_DOMAIN_REQUIRED_IF_EXPOSE_APP');
     }
@@ -443,6 +463,73 @@ export class AppLifecycleService {
       enableAuth: parsedForm.enableAuth ?? false,
       maxBackups: parsedForm.maxBackups ?? null,
     });
+
+    // Update Cloudflare Tunnel routes if exposedLocal is enabled (production only)
+    // exposedLocal means "published to internet via Cloudflare Tunnel" - routes directly to the app's host port
+    const { appName, appStoreId } = extractAppUrn(appUrn);
+    const { isProduction: isProdEnv } = this.config.getConfig();
+    const oldSubdomain = app.localSubdomain || `${appName}-${appStoreId}`;
+    const newSubdomain = parsedForm.localSubdomain || `${appName}-${appStoreId}`;
+    const wasExposedLocal = app.exposedLocal;
+    const isNowExposedLocal = parsedForm.exposedLocal ?? false;
+    const oldPort = app.port;
+    // Prioritize parsedForm.port (user-specified port) > app.port (saved host port) > appInfo.port (container port)
+    // parsedForm.port is the port being set in this update, so it's the most authoritative
+    const newPort = parsedForm.port ? Number(parsedForm.port) : (app.port ? Number(app.port) : appInfo.port);
+    const subdomainChanged = oldSubdomain !== newSubdomain;
+    const portChanged = oldPort !== newPort;
+    
+    // In production, create/update Cloudflare Tunnel route whenever exposedLocal is enabled
+    // This makes the app available on the internet at subdomain.companionintel.com
+    // Or subdomain.orgDomain.companionintel.com if organization is registered
+    // Route goes: Cloudflare Tunnel -> Traefik -> App Container
+    if (isProdEnv && this.cloudflareTunnelService?.isEnabled() && isNowExposedLocal) {
+      try {
+        // Get organization info if available
+        const orgInfo = await this.registrationService.getOrganizationInfo();
+        const organizationInfo = orgInfo
+          ? { tunnelId: orgInfo.tunnelId, domain: orgInfo.domain }
+          : null;
+        
+        const domain = organizationInfo ? organizationInfo.domain : 'companionintel.com';
+        this.logger.info(
+          `Creating Cloudflare Tunnel route for ${appUrn}: ` +
+          `${newSubdomain}.${domain} -> Traefik -> App Container`
+        );
+        
+        // Delete old route if subdomain changed
+        if (wasExposedLocal && subdomainChanged) {
+          await this.cloudflareTunnelService.deleteAppRoute(oldSubdomain, organizationInfo).catch((err) => {
+            this.logger.warn(`Failed to delete old Cloudflare Tunnel route: ${err}`);
+          });
+        }
+        
+        // Always create/update route if exposedLocal is enabled
+        // createAppRoute will update existing route if it already exists
+        // Port is no longer needed as apps go through Traefik
+        await this.cloudflareTunnelService.createAppRoute(newSubdomain, undefined, organizationInfo).catch((err) => {
+          this.logger.warn(`Failed to create Cloudflare Tunnel route: ${err}`);
+        });
+      } catch (error) {
+        // Cloudflare module might not be available, that's okay
+        this.logger.debug(`Cloudflare Tunnel route update skipped: ${error}`);
+      }
+    } else if (isProdEnv && this.cloudflareTunnelService?.isEnabled() && wasExposedLocal && !isNowExposedLocal) {
+      // Delete route if exposedLocal is being disabled
+      try {
+        // Get organization info if available
+        const orgInfo = await this.registrationService.getOrganizationInfo();
+        const organizationInfo = orgInfo
+          ? { tunnelId: orgInfo.tunnelId, domain: orgInfo.domain }
+          : null;
+        
+        await this.cloudflareTunnelService.deleteAppRoute(oldSubdomain, organizationInfo).catch((err) => {
+          this.logger.warn(`Failed to delete Cloudflare Tunnel route: ${err}`);
+        });
+      } catch (error) {
+        this.logger.debug(`Cloudflare Tunnel route deletion skipped: ${error}`);
+      }
+    }
 
     if (!changed?.pendingRestart) {
       const pendingRestart = this.hasConfigChanged(app.config, changed?.config || {});
@@ -576,3 +663,4 @@ export class AppLifecycleService {
     })();
   }
 }
+

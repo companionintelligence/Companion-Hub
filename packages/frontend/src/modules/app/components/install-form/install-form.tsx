@@ -11,7 +11,7 @@ import type { AppUrn } from '@runtipi/common/types';
 import { useMutation } from '@tanstack/react-query';
 import clsx from 'clsx';
 import type React from 'react';
-import { useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Controller, useForm } from 'react-hook-form';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
@@ -45,7 +45,7 @@ const typeFilter = (field: FormField) => !hiddenTypes.includes(field.type);
 
 export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit, initialValues, loading, formId }) => {
   const { t } = useTranslation();
-  const { userSettings } = useAppContext();
+  const { userSettings, isProduction } = useAppContext();
   const { guestDashboard, localDomain, internalIp, domain, maxBackups: globalMaxBackups } = userSettings;
 
   const {
@@ -60,8 +60,12 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
   const watchExposed = watch('exposed', false);
   const watchOpenPort = watch('openPort', !info.force_expose);
   const watchExposedLocal = watch('exposedLocal', false);
+  const watchLocalSubdomain = watch('localSubdomain', '');
 
   const { appName } = extractAppUrn(info.urn as AppUrn);
+  const dnsCheckTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const [isCheckingDns, setIsCheckingDns] = useState(false);
+  const [dnsAvailabilityError, setDnsAvailabilityError] = useState<string | null>(null);
 
   useEffect(() => {
     if (initialValues && !isDirty) {
@@ -73,7 +77,22 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
       setValue('exposed', true);
       setValue('openPort', false);
     }
-  }, [initialValues, isDirty, setValue, info.force_expose]);
+    // Always set exposedLocal to true and use recommended port
+    // openPort is always false since we route through Traefik
+    if (info.exposable && info.dynamic_config) {
+      setValue('exposedLocal', true);
+      setValue('openPort', false); // Always false - apps route through Traefik
+      setValue('enableAuth', true); // Enable authentication by default
+      if (info.port) {
+        setValue('port', info.port.toString());
+      }
+      // Set default subdomain if not provided
+      const defaultSubdomain = info.urn.split(':').join('-');
+      if (!watchLocalSubdomain) {
+        setValue('localSubdomain', defaultSubdomain);
+      }
+    }
+  }, [initialValues, isDirty, setValue, info.force_expose, info.exposable, info.dynamic_config, info.port, watchLocalSubdomain]);
 
   const randomPortMutation = useMutation({
     ...getRandomPortMutation(),
@@ -84,6 +103,73 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
       setValue('port', data.port.toString(), { shouldDirty: true });
     },
   });
+
+  // Check DNS availability when localSubdomain changes
+  useEffect(() => {
+    // Clear any existing timeout
+    if (dnsCheckTimeoutRef.current) {
+      clearTimeout(dnsCheckTimeoutRef.current);
+    }
+
+    // Only check if the app is exposable and we're in production
+    if (!info.exposable || !isProduction) {
+      setDnsAvailabilityError(null);
+      setIsCheckingDns(false);
+      return;
+    }
+
+    // Determine which subdomain to check
+    // If localSubdomain is empty, use the default (appName-appStoreId format)
+    const subdomainToCheck = watchLocalSubdomain || info.urn.split(':').join('-');
+
+    if (!subdomainToCheck) {
+      setDnsAvailabilityError(null);
+      setIsCheckingDns(false);
+      return;
+    }
+
+    setIsCheckingDns(true);
+    setDnsAvailabilityError(null);
+
+    // Debounce the DNS check
+    dnsCheckTimeoutRef.current = setTimeout(async () => {
+      try {
+        const response = await fetch(`/api/cloudflare/check-dns-availability?subdomain=${encodeURIComponent(subdomainToCheck)}`, {
+          credentials: 'include',
+        });
+        
+        if (response.ok) {
+          const data = await response.json();
+          if (!data.available) {
+            const errorMessage = t('APP_INSTALL_FORM_ERROR_DNS_NOT_AVAILABLE', { name: subdomainToCheck });
+            setDnsAvailabilityError(errorMessage);
+            setError('localSubdomain', {
+              type: 'manual',
+              message: errorMessage,
+            });
+          } else {
+            // Clear error if DNS is available
+            setDnsAvailabilityError(null);
+            setError('localSubdomain', {});
+          }
+        } else {
+          // If API call fails, don't block - just log
+          console.warn('DNS availability check failed:', response.status);
+        }
+      } catch (error) {
+        // Silently fail - don't block form submission if DNS check fails
+        console.error('Failed to check DNS availability:', error);
+      } finally {
+        setIsCheckingDns(false);
+      }
+    }, 500); // 500ms debounce
+
+    return () => {
+      if (dnsCheckTimeoutRef.current) {
+        clearTimeout(dnsCheckTimeoutRef.current);
+      }
+    };
+  }, [watchLocalSubdomain, info.exposable, info.urn, isProduction, setError, t]);
 
   const renderField = (field: FormField) => {
     return (
@@ -99,91 +185,41 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
     );
   };
 
-  const renderExposeForm = () => (
-    <>
-      <Controller
-        control={control}
-        name="exposed"
-        defaultValue={false}
-        render={({ field: { onChange, value, ref, ...props } }) => (
-          <Switch
-            {...props}
-            className="mb-3"
-            ref={ref}
-            checked={value}
-            onCheckedChange={onChange}
-            disabled={info.force_expose}
-            label={t('APP_INSTALL_FORM_EXPOSE_APP')}
-          />
-        )}
-      />
-      {watchExposed && (
-        <div className="mb-3">
-          <Input
-            {...register('domain')}
-            label={t('APP_INSTALL_FORM_DOMAIN_NAME')}
-            error={errors.domain?.message}
-            disabled={loading}
-            placeholder={domain ? `${appName}.${domain}` : `${appName}.example.com`}
-          />
-          <span className="text-muted">{t('APP_INSTALL_FORM_DOMAIN_NAME_HINT')}</span>
-        </div>
-      )}
-    </>
-  );
+  const renderExposeForm = () => {
+    // Hide "expose to internet" option - all apps are published via Traefik + Cloudflare Tunnel
+    return null;
+  };
 
   const renderDynamicConfigProxyForm = () => {
     return (
       <>
         {info.exposable && (
           <>
-            <Controller
-              control={control}
-              name="exposedLocal"
-              render={({ field: { onChange, value, ref, ...props } }) => (
-                <Switch
-                  {...props}
-                  className="mb-3"
-                  ref={ref}
-                  checked={value}
-                  onCheckedChange={onChange}
-                  label={
-                    <>
-                      {t('APP_INSTALL_FORM_EXPOSE_LOCAL')}
-                      <Tooltip className="tooltip" anchorSelect=".expose-local-hint">
-                        {t('APP_INSTALL_FORM_EXPOSE_LOCAL_HINT', {
-                          domain: localDomain,
-                          appId: info.urn.split(':').join('-'),
-                        })}
-                      </Tooltip>
-                      <span className={clsx('ms-1 form-help expose-local-hint')}>?</span>
-                    </>
-                  }
-                />
-              )}
-            />
-            {watchExposedLocal && (
-              <div className="mb-3">
-                <InputGroup
-                  groupPrefix="https://"
-                  groupSuffix={`.${localDomain}`}
-                  {...register('localSubdomain')}
-                  label={t('APP_INSTALL_FORM_LOCAL_SUBDOMAIN')}
-                  error={errors.localSubdomain?.message}
-                  disabled={loading}
-                  placeholder={info.urn.split(':').join('-')}
-                />
-              </div>
-            )}
+            {/* Hide "Publish to internet" switch - always set to true */}
+            {/* Always set exposedLocal to true and use recommended port */}
+            {/* Hide port input - always use recommended port (info.port) */}
+            {/* Always show subdomain input as if "Publish to internet" is enabled */}
+            <div className="mb-3">
+              <InputGroup
+                groupPrefix="https://"
+                groupSuffix={`.${localDomain}${isCheckingDns ? ' (checking...)' : ''}`}
+                {...register('localSubdomain')}
+                label={t('APP_INSTALL_FORM_LOCAL_SUBDOMAIN')}
+                error={errors.localSubdomain?.message || dnsAvailabilityError || undefined}
+                disabled={loading || isCheckingDns}
+                placeholder={info.urn.split(':').join('-')}
+              />
+            </div>
             <Controller
               control={control}
               name="enableAuth"
+              defaultValue={true}
               render={({ field: { onChange, value, ref, ...props } }) => (
                 <Switch
                   {...props}
                   className="mb-3"
                   ref={ref}
-                  checked={value}
+                  checked={value ?? true}
                   onCheckedChange={onChange}
                   label={
                     <>
@@ -203,8 +239,63 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
     );
   };
 
-  const validate = (values: FormValues) => {
-    const validationErrors = validateAppConfig(values, formFields);
+  const validate = async (values: FormValues) => {
+    // Always set exposedLocal to true and use recommended port
+    // Enable authentication by default
+    const formValues = {
+      ...values,
+      exposedLocal: true,
+      enableAuth: values.enableAuth ?? true,
+      port: values.port || (info.port ? info.port.toString() : undefined),
+    };
+    
+    // Set default subdomain if not provided and app is exposable
+    if (info.exposable && !formValues.localSubdomain) {
+      formValues.localSubdomain = info.urn.split(':').join('-');
+    }
+    
+    const validationErrors = validateAppConfig(formValues, formFields);
+    
+    // In production, require port when publishing to internet
+    if (isProduction && formValues.exposedLocal && info.dynamic_config && !formValues.port) {
+      validationErrors.port = { messageKey: 'APP_INSTALL_FORM_ERROR_REQUIRED', params: { label: t('APP_INSTALL_FORM_PORT') } };
+    }
+
+    // Check DNS availability synchronously if in production and exposable
+    if (isProduction && info.exposable && formValues.exposedLocal && formValues.localSubdomain) {
+      if (isCheckingDns) {
+        // Wait a bit for DNS check to complete
+        await new Promise(resolve => setTimeout(resolve, 600));
+      }
+      
+      // If DNS check found an error, prevent submission
+      if (dnsAvailabilityError) {
+        validationErrors.localSubdomain = {
+          messageKey: 'APP_INSTALL_FORM_ERROR_DNS_NOT_AVAILABLE',
+          params: { name: formValues.localSubdomain },
+        };
+      } else if (isProduction) {
+        // Perform a final DNS check before submission
+        try {
+          const response = await fetch(`/api/cloudflare/check-dns-availability?subdomain=${encodeURIComponent(formValues.localSubdomain)}`, {
+            credentials: 'include',
+          });
+          
+          if (response.ok) {
+            const data = await response.json();
+            if (!data.available) {
+              validationErrors.localSubdomain = {
+                messageKey: 'APP_INSTALL_FORM_ERROR_DNS_NOT_AVAILABLE',
+                params: { name: formValues.localSubdomain },
+              };
+            }
+          }
+        } catch (error) {
+          // If DNS check fails, allow submission (graceful degradation)
+          console.warn('DNS check failed during validation, allowing submission:', error);
+        }
+      }
+    }
 
     for (const [key, value] of Object.entries(validationErrors)) {
       if (value) {
@@ -213,7 +304,7 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
     }
 
     if (Object.keys(validationErrors).length === 0) {
-      onSubmit(values);
+      onSubmit(formValues);
     }
   };
 
@@ -238,60 +329,7 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
           )}
         />
       )}
-      {info.dynamic_config && (
-        <div className="mb-3">
-          <h3>{t('APP_DETAILS_PORT')}</h3>
-          <Controller
-            control={control}
-            name="openPort"
-            defaultValue={!info.force_expose}
-            render={({ field: { onChange, value, ref, ...props } }) => (
-              <Switch
-                {...props}
-                className="mb-3"
-                ref={ref}
-                checked={value}
-                onCheckedChange={onChange}
-                disabled={info.force_expose}
-                label={
-                  <>
-                    {t('APP_INSTALL_FORM_OPEN_PORT')}
-                    <Tooltip className="tooltip" anchorSelect=".open-port-hint">
-                      {t('APP_INSTALL_FORM_OPEN_PORT_HINT', {
-                        port: info.port,
-                        internalIp,
-                      })}
-                    </Tooltip>
-                    <span className={clsx('ms-1 form-help open-port-hint')}>?</span>
-                  </>
-                }
-              />
-            )}
-          />
-          {watchOpenPort && (
-            <div>
-              <InputGroup
-                type="number"
-                defaultValue={info.port}
-                groupSuffix={
-                  <Button type="button" onClick={() => randomPortMutation.mutate({})} loading={loading || randomPortMutation.isPending}>
-                    {t('APP_INSTALL_FORM_RANDOM')}
-                  </Button>
-                }
-                max={65535}
-                {...register('port', {
-                  valueAsNumber: true,
-                })}
-                error={errors.port?.message}
-                disabled={loading || randomPortMutation.isPending}
-                placeholder="8484"
-                className="flex-grow-1 input-group"
-              />
-              <span className="text-muted">{t('APP_INSTALL_FORM_PORT_HINT')}</span>
-            </div>
-          )}
-        </div>
-      )}
+      {/* Port section hidden - always use default port and route through Traefik */}
       {info.exposable && (
         <>
           {info.dynamic_config && (

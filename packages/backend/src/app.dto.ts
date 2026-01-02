@@ -13,6 +13,7 @@ export const settingsSchema = type({
   appDataPath: 'string.trim',
   appsRepoUrl: 'string.url',
   demoMode: 'boolean',
+  disablePasswordReset: 'boolean',
   dnsIp: 'string.ip.v4',
   domain: 'string.trim',
   eventsTimeout: type('number.integer | string.integer.parse').to('1 <= number <= 120'),
@@ -46,6 +47,7 @@ const appContextSchema = type({
   user: UserDto.schema,
   apps: AppInfoSimpleDto.schema.array(),
   updatesAvailable: 'number',
+  isProduction: 'boolean',
 });
 
 export class UserSettingsDto extends createArkDto(settingsSchema, { name: 'UserSettingsDto' }) {}
@@ -64,6 +66,7 @@ const userContextDto = type({
   isLoggedIn: 'boolean',
   isConfigured: 'boolean',
   isGuestDashboardEnabled: 'boolean',
+  isPasswordResetDisabled: 'boolean',
   allowAutoThemes: 'boolean',
   allowErrorMonitoring: 'boolean',
   themeColor: 'string',

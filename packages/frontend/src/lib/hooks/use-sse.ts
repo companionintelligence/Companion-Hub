@@ -68,7 +68,10 @@ export const useSSE = <T extends Topic>(props: Props<T>) => {
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: This hook should only run once on mount
   useEffect(() => {
-    initializeSSE();
+    // Only initialize if not already connected
+    if (!eventSourceRef.current || eventSourceRef.current.readyState === EventSource.CLOSED) {
+      initializeSSE();
+    }
 
     const handleFocus = () => {
       if (!eventSourceRef.current || eventSourceRef.current.readyState === EventSource.CLOSED) {
@@ -79,10 +82,10 @@ export const useSSE = <T extends Topic>(props: Props<T>) => {
     window.addEventListener('focus', handleFocus);
 
     return () => {
-      console.info('Cleaning up SSE connection');
       window.removeEventListener('focus', handleFocus);
       if (eventSourceRef.current) {
         eventSourceRef.current.close();
+        eventSourceRef.current = null;
       }
     };
   }, []);

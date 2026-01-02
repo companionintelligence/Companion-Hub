@@ -1,20 +1,54 @@
-*
+# Git
+.git
+.gitignore
+.github
 
-### Includes ###
-!packages/**/src/**
-!packages/**/public/**
-!packages/**/assets/**
-!packages/**/scripts/**
-!bun.lock
-!package.json
-!turbo.json
-!patches/**
+# Dependencies
+node_modules
+.pnp
+.pnp.js
 
-!**/package.json
-!**/tsconfig.json
-!**/vite.config.ts
-!**/index.html
-!**/build.ts
-!**/react-router.config.ts
-!**/nest-cli.json
-!**/.swcrc
+# Testing
+coverage
+*.log
+.nyc_output
+
+# Build outputs
+dist
+build
+*.tsbuildinfo
+
+# Environment
+.env.local
+.env.*.local
+.env.e2e
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+docker-compose*.yml
+Dockerfile*
+.dockerignore
+
+# Documentation
+*.md
+docs
+PRODUCTION_SETUP.md
+
+# CI/CD
+.github
+.gitlab-ci.yml
+
+# Misc
+*.snap
+screenshots
+e2e
