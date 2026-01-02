@@ -5,12 +5,13 @@ import type React from 'react';
 interface IProps extends React.InputHTMLAttributes<HTMLInputElement> {
   error?: string;
   label?: string | React.ReactNode;
+  helpText?: string | React.ReactNode;
   isInvalid?: boolean;
   children?: React.ReactNode;
   ref?: React.Ref<HTMLInputElement>;
 }
 
-export const Input = ({ name, label, error, type = 'text', className, isInvalid, children, ...rest }: IProps) => (
+export const Input = ({ name, label, error, helpText, type = 'text', className, isInvalid, children, ...rest }: IProps) => (
   <div className={clsx(className)}>
     {label && (
       <label htmlFor={name} className="form-label">
@@ -28,6 +29,7 @@ export const Input = ({ name, label, error, type = 'text', className, isInvalid,
       })}
       {...rest}
     />
+    {helpText && <div className="form-text">{helpText}</div>}
     {children}
     {error && <div className="invalid-feedback">{error}</div>}
   </div>

@@ -349,10 +349,19 @@ export class RegistrationService implements OnApplicationBootstrap {
   /**
    * Manually initiate device registration with organization
    * Called from the registration form
+   * 
+   * This method performs the complete registration flow:
+   * 1. Registers device with CI Cloud (/api/devices/hub/register)
+   * 2. Activates device (/api/web/register)
+   * 3. Validates organization subdomain availability
+   * 4. Creates Cloudflare tunnel and DNS records
+   * 5. Stores organization info in database
    */
   public async initiateRegistration(
     organizationId: string,
     organizationName: string,
+    customDeviceId?: string,
+    customDescription?: string,
   ): Promise<{ success: boolean; message: string }> {
     const { ciCloudApiUrl, ciHubApiKey } = this.config.getConfig();
 
@@ -381,11 +390,14 @@ export class RegistrationService implements OnApplicationBootstrap {
     }
 
     try {
-      // Temporarily set organization ID for this registration attempt
-      // We'll store it in the database after successful registration
-      const deviceId = await this.getDeviceId();
+      // Get device ID (use custom if provided, otherwise auto-generate)
+      const deviceId = customDeviceId?.trim() || await this.getDeviceId();
+      const description = customDescription?.trim() || `CI OS Hub Device - ${deviceId}`;
 
-      // Step 1: Register device
+      this.logger.info(`Starting device registration: device_id=${deviceId}, organization_id=${organizationId}, organization_name=${sanitizedName}`);
+
+      // Step 1: Register device with CI Cloud
+      // POST http://localhost:8001/api/devices/hub/register
       const registerUrl = `${ciCloudApiUrl}/api/devices/hub/register`;
       const registerHeaders: Record<string, string> = {
         'Content-Type': 'application/json',
@@ -395,26 +407,33 @@ export class RegistrationService implements OnApplicationBootstrap {
         registerHeaders['Authorization'] = `Bearer ${ciHubApiKey}`;
       }
 
+      this.logger.debug(`Registering device at ${registerUrl}`);
       const registerResponse = await fetch(registerUrl, {
         method: 'POST',
         headers: registerHeaders,
         body: JSON.stringify({
           device_id: deviceId,
           organization_id: organizationId,
-          description: `CI OS Hub Device - ${deviceId}`,
+          description: description,
         }),
       });
 
       if (!registerResponse.ok) {
         const errorData = await registerResponse.json().catch(() => ({ error: 'Unknown error' }));
+        this.logger.error(`Device registration failed: ${registerResponse.status} - ${JSON.stringify(errorData)}`);
         return {
           success: false,
           message: `Registration failed: ${errorData.error || registerResponse.statusText}`,
         };
       }
 
+      const registerResult = await registerResponse.json().catch(() => ({}));
+      this.logger.info(`Device registered successfully: ${JSON.stringify(registerResult)}`);
+
       // Step 2: Activate device
+      // POST http://localhost:8001/api/web/register
       const activateUrl = `${ciCloudApiUrl}/api/web/register`;
+      this.logger.debug(`Activating device at ${activateUrl}`);
       const activateResponse = await fetch(activateUrl, {
         method: 'POST',
         headers: {
@@ -424,13 +443,16 @@ export class RegistrationService implements OnApplicationBootstrap {
       });
 
       if (activateResponse.status !== 200) {
+        const errorData = await activateResponse.json().catch(() => ({ error: activateResponse.statusText }));
+        this.logger.error(`Device activation failed: ${activateResponse.status} - ${JSON.stringify(errorData)}`);
         return {
           success: false,
-          message: `Activation failed: ${activateResponse.statusText}`,
+          message: `Activation failed: ${errorData.error || activateResponse.statusText}`,
         };
       }
 
       const activateResult = await activateResponse.json().catch(() => ({}));
+      this.logger.info(`Device activated successfully: ${JSON.stringify(activateResult)}`);
 
       // Step 3: Validate organization name/subdomain availability before setup
       // Use provided organization name (already sanitized)

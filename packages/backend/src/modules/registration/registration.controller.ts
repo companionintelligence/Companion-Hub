@@ -7,6 +7,8 @@ import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 interface RegisterDeviceDto {
   organization_id: string;
   organization_name: string;
+  device_id?: string; // Optional: custom device ID (auto-generated if not provided)
+  description?: string; // Optional: custom description (auto-generated if not provided)
 }
 
 @ApiTags('Registration')
@@ -107,6 +109,8 @@ export class RegistrationController {
     const result = await this.registrationService.initiateRegistration(
       body.organization_id,
       body.organization_name,
+      body.device_id,
+      body.description,
     );
     return result;
   }

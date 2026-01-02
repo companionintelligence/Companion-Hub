@@ -225,6 +225,7 @@ export default function DeviceRegistrationPage() {
           
           <form onSubmit={handleSubmit} className="space-y-4">
             <Input
+              name="organization_id"
               label="Organization ID"
               value={organizationId}
               onChange={(e) => setOrganizationId(e.target.value)}
@@ -235,6 +236,7 @@ export default function DeviceRegistrationPage() {
             />
             
             <Input
+              name="organization_name"
               label="Organization Name"
               value={organizationName}
               onChange={(e) => setOrganizationName(e.target.value)}
