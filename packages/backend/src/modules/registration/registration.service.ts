@@ -98,7 +98,7 @@ export class RegistrationService implements OnApplicationBootstrap {
       }
 
       // Step 4b: CI Cloud verifies... returns device_registration.id and subdomain
-      const data = await response.json();
+      const data = (await response.json()) as any;
       const registration = data.device_registration || data;
 
       // Step 5b: OS Hub compares returned subdomain and device_registration.id to it's own database
@@ -225,7 +225,7 @@ export class RegistrationService implements OnApplicationBootstrap {
       });
 
       if (!registerResponse.ok) {
-        const errorData = await registerResponse.json().catch(() => ({ error: 'Unknown error' }));
+        const errorData = (await registerResponse.json().catch(() => ({ error: 'Unknown error' }))) as any;
         this.logger.warn(`Device registration failed: ${registerResponse.status} - ${errorData.error || registerResponse.statusText}`);
         
         // If device already exists (409 or similar), try to activate it
@@ -235,7 +235,7 @@ export class RegistrationService implements OnApplicationBootstrap {
           return false;
         }
       } else {
-        const result = await registerResponse.json();
+        const result = (await registerResponse.json()) as any;
         this.logger.info(`Device registered successfully: ${result.device_id} (status: ${result.status})`);
       }
 
@@ -263,7 +263,7 @@ export class RegistrationService implements OnApplicationBootstrap {
         this.logger.info('Device activated successfully!');
         
         // Step 3: Fetch organization details and setup infrastructure
-        const activateResult = await activateResponse.json().catch(() => ({}));
+        const activateResult = (await activateResponse.json().catch(() => ({}))) as any;
         await this.setupOrganizationInfrastructure(ciHubOrganizationId, activateResult);
         
         return true;
@@ -336,7 +336,7 @@ export class RegistrationService implements OnApplicationBootstrap {
           });
 
           if (orgResponse.ok) {
-            const orgData = await orgResponse.json();
+            const orgData = (await orgResponse.json()) as any;
             orgName = orgData.name || orgData.organization_name || null;
             tunnelId = orgData.tunnel_id || null;
             this.logger.debug(`Fetched organization details: name=${orgName}, tunnelId=${tunnelId}`);
@@ -509,7 +509,7 @@ export class RegistrationService implements OnApplicationBootstrap {
       });
 
       if (!registerResponse.ok) {
-        const errorData = await registerResponse.json().catch(() => ({ error: 'Unknown error' }));
+        const errorData = (await registerResponse.json().catch(() => ({ error: 'Unknown error' }))) as any;
         this.logger.error(`Device registration failed: ${registerResponse.status} - ${JSON.stringify(errorData)}`);
         return {
           success: false,
@@ -533,7 +533,7 @@ export class RegistrationService implements OnApplicationBootstrap {
       });
 
       if (activateResponse.status !== 200) {
-        const errorData = await activateResponse.json().catch(() => ({ error: activateResponse.statusText }));
+        const errorData = (await activateResponse.json().catch(() => ({ error: activateResponse.statusText }))) as any;
         this.logger.error(`Device activation failed: ${activateResponse.status} - ${JSON.stringify(errorData)}`);
         return {
           success: false,
@@ -559,7 +559,7 @@ export class RegistrationService implements OnApplicationBootstrap {
 
       // Step 4: Setup organization infrastructure
       await this.setupOrganizationInfrastructure(organizationId, {
-        ...activateResult,
+        ...(activateResult as any),
         organization_name: finalOrgName,
       });
 

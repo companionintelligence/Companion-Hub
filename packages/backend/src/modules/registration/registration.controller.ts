@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Post, Query, Req } from '@nestjs/common';
-import { Request } from 'express';
+import type { Request } from 'express';
 import { RegistrationService } from './registration.service';
 import { CloudflareTunnelService } from '../cloudflare/cloudflare-tunnel.service';
 import { ConfigurationService } from '@/core/config/configuration.service';

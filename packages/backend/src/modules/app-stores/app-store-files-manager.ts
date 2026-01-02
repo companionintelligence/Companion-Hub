@@ -64,6 +64,8 @@ export class AppStoreFilesManager {
           const description = (await this.filesystem.readTextFile(path.join(appRepoDir, 'metadata', 'description.md'))) ?? '';
           return { ...parsedConfig, description };
         }
+      } else {
+        this.logger.warn(`[DEBUG] config.json not found for ${appUrn} at ${appRepoDir}`);
       }
     } catch (error) {
       this.logger.error(`Error getting app info from app store for ${appUrn}:`, error);
@@ -182,6 +184,10 @@ export class AppStoreFilesManager {
    */
   public async getAvailableAppUrns() {
     const appsRepoFolder = this.getAppStoreFolder();
+    this.logger.warn(`[DEBUG] Checking if apps repo folder exists: "${appsRepoFolder}"`);
+    const config = this.configuration.getConfig();
+    this.logger.warn(`[DEBUG] Data dir: "${config.directories.dataDir}"`);
+    this.logger.warn(`[DEBUG] Store slug: "${this.storeConfig.slug}"`);
 
     if (!(await this.filesystem.pathExists(appsRepoFolder))) {
       this.logger.error(`Apps repo ${this.storeConfig.slug} not found. Make sure your repo is configured correctly.`);
@@ -191,7 +197,9 @@ export class AppStoreFilesManager {
     const appsDir = await this.filesystem.listFiles(appsRepoFolder);
     const skippedFiles = ['__tests__', 'docker-compose.common.yml', 'schema.json', '.DS_Store'];
 
-    return appsDir.filter((app) => !skippedFiles.includes(app)).map((app) => `${app}:${this.storeConfig.slug}` as AppUrn);
+    const urns = appsDir.filter((app) => !skippedFiles.includes(app)).map((app) => `${app}:${this.storeConfig.slug}` as AppUrn);
+    this.logger.warn(`[DEBUG] Found ${urns.length} apps in ${this.storeConfig.slug}`);
+    return urns;
   }
 
   /**

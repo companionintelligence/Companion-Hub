@@ -41,13 +41,13 @@ export class AppController {
         current: '0.0.0',
         latest: '0.0.0',
         body: '',
-        releases: [],
+        releases: [] as { version: string; body: string }[],
       },
     };
 
     try {
       // Try to get user settings
-      let userSettings;
+      let userSettings: any;
       try {
         userSettings = this.configuration.get('userSettings');
       } catch (error) {
@@ -118,7 +118,7 @@ export class AppController {
       
       // Try to get minimal config, but don't fail if it doesn't work
       let currentVersion = defaults.version.current;
-      let defaultSettings = {};
+      let defaultSettings: any = {};
       
       try {
         const config = this.configuration.getConfig();

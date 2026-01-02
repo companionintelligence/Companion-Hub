@@ -70,7 +70,7 @@ export class I18nService {
       if (namespace === 'translation') {
         // Try to get from i18next cache first
         const bundle = i18n.getResourceBundle(language, namespace) || 
-                      i18n.getResourceBundle(normalizedLang, namespace);
+                      i18n.getResourceBundle(normalizedLang!, namespace);
         
         if (bundle) {
           return bundle;

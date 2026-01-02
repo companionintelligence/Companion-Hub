@@ -8,15 +8,15 @@
     "resolveJsonModule": true,
     "moduleDetection": "force",
     "isolatedModules": true,
-    "verbatimModuleSyntax": true,
+    "verbatimModuleSyntax": false,
     /* Strictness */
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
     "strictNullChecks": true,
-    "module": "preserve",
+    "module": "commonjs",
     "outDir": "./dist",
-    "noEmit": true,
+    "noEmit": false,
     "lib": ["es2022"],
     "emitDecoratorMetadata": true,
     "experimentalDecorators": true,
@@ -24,5 +24,6 @@
     "paths": {
       "@/*": ["./src/*"]
     }
-  }
+  },
+  "exclude": ["node_modules", "dist", "build.ts", "src/tests"]
 }

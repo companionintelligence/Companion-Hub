@@ -7,7 +7,9 @@ import tsconfigPaths from 'vite-tsconfig-paths';
 const alias = {
   '@': path.resolve(__dirname, './src'),
 };
-const plugins: PluginOption[] = [reactRouter(), tsconfigPaths()];
+const isTest = process.env.NODE_ENV === 'test';
+const isVitest = process.env.VITEST === 'true';
+const plugins: PluginOption[] = [!isVitest && reactRouter(), tsconfigPaths()];
 
 const { NODE_ENV } = process.env;
 if (NODE_ENV === 'production') {
@@ -88,5 +90,14 @@ export default defineConfig({
   },
   build: {
     sourcemap: true,
+  },
+  esbuild: {
+    jsxInject: isVitest ? `import React from 'react'` : undefined,
+  },
+  test: {
+    globals: true,
+    environment: 'jsdom',
+    setupFiles: ['./src/tests/setup.ts'],
+    include: ['src/**/*.test.{ts,tsx}'],
   },
 });

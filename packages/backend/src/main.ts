@@ -1,5 +1,8 @@
 import './instrument';
 
+console.log('Main.ts starting...');
+console.log('SKIP_REPO_PULL:', process.env.SKIP_REPO_PULL);
+
 import fs from 'node:fs';
 import path from 'node:path';
 import { type INestApplication, type LogLevel, ValidationPipe } from '@nestjs/common';
@@ -49,7 +52,7 @@ async function bootstrap() {
 
   await setupSwagger(app);
 
-  await app.listen(3000);
+  await app.listen(3000, '0.0.0.0');
 }
 
 bootstrap().catch((err) => {

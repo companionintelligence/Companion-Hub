@@ -1,5 +1,8 @@
 import { DatabaseSync } from 'node:sqlite';
+import fs from 'node:fs';
+import path from 'node:path';
 import { Injectable } from '@nestjs/common';
+import { DATA_DIR } from '@/common/constants';
 
 export const ONE_DAY_IN_SECONDS = 60 * 60 * 24;
 
@@ -8,7 +11,11 @@ export class CacheService {
   private db: DatabaseSync;
 
   constructor() {
-    this.db = new DatabaseSync('/cache/cache.sqlite');
+    const cacheDir = path.join(DATA_DIR, 'cache');
+    if (!fs.existsSync(cacheDir)) {
+      fs.mkdirSync(cacheDir, { recursive: true });
+    }
+    this.db = new DatabaseSync(path.join(cacheDir, 'cache.sqlite'));
 
     const tableCheck = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table'").get();
 

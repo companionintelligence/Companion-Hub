@@ -149,7 +149,7 @@ export class CloudflareTunnelService {
         return null;
       }
 
-      const data: CloudflareApiResponse<{ config: TunnelConfig }> = await response.json();
+      const data = (await response.json()) as CloudflareApiResponse<{ config: TunnelConfig }>;
 
       if (!data.success) {
         // Check if it's the "configuration not found" error
@@ -207,7 +207,7 @@ export class CloudflareTunnelService {
         return false;
       }
 
-      const data: CloudflareApiResponse<{ config: TunnelConfig }> = await response.json();
+      const data = (await response.json()) as CloudflareApiResponse<{ config: TunnelConfig }>;
 
       if (!data.success) {
         this.logger.error(`Cloudflare API error: ${JSON.stringify(data.errors)}`);
@@ -294,7 +294,7 @@ export class CloudflareTunnelService {
           return false;
         }
 
-        const data: CloudflareApiResponse<DnsRecord> = await response.json();
+        const data = (await response.json()) as CloudflareApiResponse<DnsRecord>;
 
         if (!data.success) {
           // Check if error is "record already exists" - that's actually okay
@@ -368,13 +368,13 @@ export class CloudflareTunnelService {
         return null;
       }
 
-      const data: CloudflareApiResponse<DnsRecord[]> = await response.json();
+      const data = (await response.json()) as CloudflareApiResponse<DnsRecord[]>;
 
       if (!data.success || !data.result || data.result.length === 0) {
         return null;
       }
 
-      return data.result[0];
+      return data.result[0] ?? null;
     } catch (error) {
       this.logger.error(`Error getting DNS record: ${error}`);
       return null;
@@ -442,7 +442,7 @@ export class CloudflareTunnelService {
         return false;
       }
 
-      const data: CloudflareApiResponse<Array<{ id: string; name: string }>> = await response.json();
+      const data = (await response.json()) as CloudflareApiResponse<Array<{ id: string; name: string }>>;
 
       if (!data.success) {
         return false;
@@ -581,7 +581,7 @@ export class CloudflareTunnelService {
         return false;
       }
 
-      const data: CloudflareApiResponse<{ id: string }> = await response.json();
+      const data = (await response.json()) as CloudflareApiResponse<{ id: string }>;
 
       if (!data.success) {
         this.logger.error(`Cloudflare DNS API error: ${JSON.stringify(data.errors)}`);
@@ -1045,7 +1045,7 @@ export class CloudflareTunnelService {
         return null;
       }
 
-      const data: CloudflareApiResponse<{ id: string; name: string }> = await response.json();
+      const data = (await response.json()) as CloudflareApiResponse<{ id: string; name: string }>;
 
       if (!data.success) {
         this.logger.error(`Cloudflare API error: ${JSON.stringify(data.errors)}`);
@@ -1167,7 +1167,7 @@ export class CloudflareTunnelService {
         return false;
       }
 
-      const data: CloudflareApiResponse<DnsRecord> = await response.json();
+      const data = (await response.json()) as CloudflareApiResponse<DnsRecord>;
 
       if (!data.success) {
         const alreadyExists = data.errors?.some(e => e.code === 81057 || e.message?.includes('already exists'));
@@ -1228,7 +1228,7 @@ export class CloudflareTunnelService {
         return null;
       }
 
-      const data: CloudflareApiResponse<{ config: TunnelConfig }> = await response.json();
+      const data = (await response.json()) as CloudflareApiResponse<{ config: TunnelConfig }>;
 
       if (!data.success) {
         if (data.errors?.some((err) => err.code === 1055)) {
@@ -1283,7 +1283,7 @@ export class CloudflareTunnelService {
         return false;
       }
 
-      const data: CloudflareApiResponse<{ config: TunnelConfig }> = await response.json();
+      const data = (await response.json()) as CloudflareApiResponse<{ config: TunnelConfig }>;
 
       if (!data.success) {
         this.logger.error(`Cloudflare API error: ${JSON.stringify(data.errors)}`);

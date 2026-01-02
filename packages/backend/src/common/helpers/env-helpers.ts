@@ -164,13 +164,14 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   envMap.set('JWT_SECRET', jwtSecret);
   envMap.set('DOMAIN', settings.domain || envMap.get('DOMAIN') || 'example.com');
   envMap.set('RUNTIPI_APP_DATA_PATH', finalAppDataPath);
-  envMap.set('RUNTIPI_FORWARD_AUTH_URL', settings.forwardAuthUrl || envMap.get('RUNTIPI_FORWARD_AUTH_URL') || 'http://ci-os-hub:3000/api/auth/traefik');
-  envMap.set('POSTGRES_HOST', 'ci-hub-db');
-  envMap.set('POSTGRES_DBNAME', 'tipi');
-  envMap.set('POSTGRES_USERNAME', 'tipi');
-  envMap.set('POSTGRES_PORT', String(6543));
+  envMap.set('RUNTIPI_FORWARD_AUTH_URL', settings.forwardAuthUrl || process.env.RUNTIPI_FORWARD_AUTH_URL || envMap.get('RUNTIPI_FORWARD_AUTH_URL') || 'http://ci-os-hub:3000/api/auth/traefik');
+  
+  envMap.set('POSTGRES_HOST', process.env.POSTGRES_HOST || envMap.get('POSTGRES_HOST') || 'ci-hub-db');
+  envMap.set('POSTGRES_DBNAME', process.env.POSTGRES_DBNAME || envMap.get('POSTGRES_DBNAME') || 'tipi');
+  envMap.set('POSTGRES_USERNAME', process.env.POSTGRES_USERNAME || envMap.get('POSTGRES_USERNAME') || 'tipi');
+  envMap.set('POSTGRES_PORT', process.env.POSTGRES_PORT || envMap.get('POSTGRES_PORT') || String(6543));
   // Override old runtipi-queue hostname if present
-  const currentRabbitmqHost = envMap.get('RABBITMQ_HOST');
+  const currentRabbitmqHost = process.env.RABBITMQ_HOST || envMap.get('RABBITMQ_HOST');
   if (currentRabbitmqHost === 'runtipi-queue') {
     envMap.set('RABBITMQ_HOST', 'ci-os-hub-queue');
   } else {

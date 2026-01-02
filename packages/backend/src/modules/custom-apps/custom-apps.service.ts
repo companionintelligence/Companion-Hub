@@ -116,7 +116,7 @@ export class CustomAppService {
 
     const infoPath = path.join(dataDir, 'apps', appStoreId, appName, 'config.json');
 
-    const main = config.services.find((s) => s.isMain) ?? config.services[0];
+    const main = config.services.find((s: any) => s.isMain) ?? config.services[0];
     const inferredPort = typeof main?.internalPort === 'number' ? main.internalPort : undefined;
 
     // Create a minimal app.info file for custom apps

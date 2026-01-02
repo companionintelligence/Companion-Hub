@@ -43,11 +43,15 @@ export class MarketplaceService {
   ) {}
 
   async initialize() {
+    this.logger.info('Marketplace initialize start');
     this.stores.clear();
 
+    this.logger.info('Fetching stores...');
     const stores = await this.appStoreService.getAllAppStores();
+    this.logger.info(`Fetched ${stores.length} stores`);
 
     for (const config of stores) {
+      this.logger.info(`Initializing store ${config.slug}`);
       const store = new AppStoreFilesManager(this.configuration, this.filesystem, this.logger, config);
       this.stores.set(config.slug, store);
     }
@@ -55,6 +59,7 @@ export class MarketplaceService {
     // TODO: This is a temporary fix to ensure that internal app stores are always present.
     for (const reservedSlug of RESERVED_APP_STORE_SLUGS) {
       if (!this.stores.has(reservedSlug)) {
+        this.logger.info(`Initializing reserved store ${reservedSlug}`);
         const store = new AppStoreFilesManager(this.configuration, this.filesystem, this.logger, {
           branch: 'main',
           createdAt: '',
@@ -64,12 +69,20 @@ export class MarketplaceService {
           slug: reservedSlug,
           url: 'https://example.com',
           updatedAt: '',
+          type: 'git',
         });
         this.stores.set(reservedSlug, store);
       }
     }
 
-    await this.appStoreService.pullRepositories();
+    this.logger.info('Checking SKIP_REPO_PULL');
+    if (process.env.SKIP_REPO_PULL !== 'true') {
+      this.logger.info('Pulling repositories...');
+      await this.appStoreService.pullRepositories();
+      this.logger.info('Repositories pulled');
+    } else {
+      this.logger.warn('Skipping repo pull due to SKIP_REPO_PULL env var');
+    }
     this.invalidateCache();
 
     this.logger.debug('Marketplace service initialized with stores', Array.from(this.stores.keys()).join(', '));
@@ -80,7 +93,8 @@ export class MarketplaceService {
 
     const store = this.stores.get(appStoreId);
     if (!store) {
-      throw new Error(`Store ${appStoreId} not found`);
+      this.logger.warn(`Store ${appStoreId} not found. Available stores: ${Array.from(this.stores.keys()).join(', ')}`);
+      return { store: null };
     }
 
     return { store };
@@ -88,13 +102,13 @@ export class MarketplaceService {
 
   async getAppInfoFromAppStore(appUrn: AppUrn) {
     const { store } = this.getStoreFromUrn(appUrn);
-
+    if (!store) throw new Error(`Store not found for ${appUrn}`);
     return store.getAppInfoFromAppStore(appUrn);
   }
 
   async getAppInfoFromAppStoreOrInstalled(appUrn: AppUrn) {
     const { store } = this.getStoreFromUrn(appUrn);
-
+    if (!store) throw new Error(`Store not found for ${appUrn}`);
     return store.getAppInfoFromAppStoreOrInstalled(appUrn);
   }
 
@@ -119,8 +133,9 @@ export class MarketplaceService {
     const limit = pLimit(10);
     const apps = await Promise.all(
       appUrns.map(async (appUrn) => {
-        return limit(() => {
+        return limit(async () => {
           const { store } = this.getStoreFromUrn(appUrn);
+          if (!store) return null;
           return store.getAppInfoFromAppStore(appUrn);
         });
       }),
@@ -199,7 +214,7 @@ export class MarketplaceService {
     }
 
     if (category) {
-      filteredApps = filteredApps.filter((app) => app.categories.some((c) => c === category));
+      filteredApps = filteredApps.filter((app) => app.categories.some((c: string) => c === category));
     }
 
     if (search && this.miniSearch) {
@@ -225,32 +240,43 @@ export class MarketplaceService {
    * @returns The image of the app
    */
   public async getAppImage(appUrn: AppUrn) {
-    const { store } = this.getStoreFromUrn(appUrn);
-    return store.getAppImage(appUrn);
+    try {
+      const { store } = this.getStoreFromUrn(appUrn);
+      if (!store) return { image: null, etag: '' };
+      return store.getAppImage(appUrn);
+    } catch (e: any) {
+      this.logger.warn(`Failed to get image for ${appUrn}: ${e.message}`);
+      return { image: null, etag: '' };
+    }
   }
 
   public async getAppUpdateInfo(appUrn: AppUrn) {
     const { store } = this.getStoreFromUrn(appUrn);
+    if (!store) throw new Error(`Store not found for ${appUrn}`);
     return store.getAppUpdateInfo(appUrn);
   }
 
   public async copyAppFromRepoToInstalled(appUrn: AppUrn) {
     const { store } = this.getStoreFromUrn(appUrn);
+    if (!store) throw new Error(`Store not found for ${appUrn}`);
     return store.copyAppFromRepoToInstalled(appUrn);
   }
 
   public async copyDataDir(appUrn: AppUrn, envMap: Map<string, string>) {
     const { store } = this.getStoreFromUrn(appUrn);
+    if (!store) throw new Error(`Store not found for ${appUrn}`);
     return store.copyDataDir(appUrn, envMap);
   }
 
   public async getDockerComposeJson(appUrn: AppUrn) {
     const { store } = this.getStoreFromUrn(appUrn);
+    if (!store) throw new Error(`Store not found for ${appUrn}`);
     return store.getDockerComposeJson(appUrn);
   }
 
   public async getConfigJson(appUrn: AppUrn) {
     const { store } = this.getStoreFromUrn(appUrn);
+    if (!store) throw new Error(`Store not found for ${appUrn}`);
     return store.getConfigJson(appUrn);
   }
 }

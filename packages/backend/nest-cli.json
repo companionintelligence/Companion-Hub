@@ -6,7 +6,6 @@
   "compilerOptions": {
     "deleteOutDir": true,
     "typeCheck": false,
-    "builder": "swc",
     "assets": [
       {
         "include": "src/core/database/drizzle/*.sql",

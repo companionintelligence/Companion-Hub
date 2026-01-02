@@ -13,7 +13,7 @@ const getClient = () => {
     host: 'localhost',
     database: 'postgres',
     password: 'postgres',
-    port: 5433,
+    port: Number(process.env.POSTGRES_PORT) || 5433,
   });
 };
 
@@ -26,7 +26,7 @@ export const createTestDatabase = async (testsuite: string) => {
 
   await client.end();
 
-  const connectionString = `postgresql://postgres:postgres@localhost:5433/${testsuite}?connect_timeout=300`;
+  const connectionString = `postgresql://postgres:postgres@localhost:${Number(process.env.POSTGRES_PORT) || 5433}/${testsuite}?connect_timeout=300`;
   const drizzleClient = drizzle(connectionString, { schema });
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
