@@ -18,6 +18,7 @@ import { ApiResponse } from '@nestjs/swagger';
 import type { Request, Response } from 'express';
 import { AppStoreService } from '../app-stores/app-store.service';
 import { AuthGuard } from '../auth/auth.guard';
+import { RegistrationGuard } from '../registration/registration.guard';
 import {
   AllAppStoresDto,
   AppStoreDto,
@@ -38,7 +39,7 @@ export class MarketplaceController {
   ) {}
 
   @Get('apps/search')
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, RegistrationGuard)
   @ApiResponse({ type: SearchAppsDto })
   async searchApps(@Query() query: SearchAppsQueryDto) {
     const { search, pageSize, cursor, category, storeId } = query;
@@ -107,7 +108,7 @@ export class MarketplaceController {
   }
 
   @Get('enabled')
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, RegistrationGuard)
   @ApiResponse({ type: AllAppStoresDto })
   async getEnabledAppStores() {
     const appStores = await this.appStoreService.getEnabledAppStores();

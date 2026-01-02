@@ -106,6 +106,186 @@
         ]
       }
     },
+    "/api/registration/config": {
+      "get": {
+        "operationId": "getConfig",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Returns the CI Cloud configuration"
+          }
+        },
+        "summary": "Get CI Cloud configuration (debug endpoint)",
+        "tags": [
+          "Registration"
+        ]
+      }
+    },
+    "/api/registration/validate": {
+      "get": {
+        "operationId": "validateOrganizationName",
+        "parameters": [
+          {
+            "name": "name",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Returns validation result"
+          }
+        },
+        "summary": "Validate organization name/subdomain availability",
+        "tags": [
+          "Registration"
+        ]
+      }
+    },
+    "/api/registration/register": {
+      "post": {
+        "operationId": "registerDevice",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Registration initiated successfully"
+          },
+          "400": {
+            "description": "Invalid request"
+          }
+        },
+        "summary": "Initiate device registration with organization",
+        "tags": [
+          "Registration"
+        ]
+      }
+    },
+    "/api/cloudflare/check-dns-availability": {
+      "get": {
+        "operationId": "checkDnsAvailability",
+        "parameters": [
+          {
+            "name": "subdomain",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Cloudflare"
+        ]
+      }
+    },
+    "/api/cloudflare/status": {
+      "get": {
+        "operationId": "getStatus",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Cloudflare"
+        ]
+      }
+    },
+    "/api/cloudflare/check-url-availability": {
+      "get": {
+        "operationId": "checkUrlAvailability",
+        "parameters": [
+          {
+            "name": "url",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Cloudflare"
+        ]
+      }
+    },
+    "/api/cloudflare/sync-dns": {
+      "post": {
+        "operationId": "syncMissingDnsRecords",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Cloudflare"
+        ]
+      }
+    },
+    "/api/cloudflare/update-routes-origin-request": {
+      "post": {
+        "operationId": "updateAllRoutesWithOriginRequest",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Cloudflare"
+        ]
+      }
+    },
     "/api/system/load": {
       "get": {
         "operationId": "systemLoad",
@@ -1557,129 +1737,6 @@
         },
         "tags": [
           "SSE"
-        ]
-      }
-    },
-    "/api/cloudflare/check-dns-availability": {
-      "get": {
-        "operationId": "checkDnsAvailability",
-        "parameters": [
-          {
-            "name": "subdomain",
-            "required": true,
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Cloudflare"
-        ]
-      }
-    },
-    "/api/cloudflare/status": {
-      "get": {
-        "operationId": "getStatus",
-        "parameters": [],
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Cloudflare"
-        ]
-      }
-    },
-    "/api/cloudflare/check-url-availability": {
-      "get": {
-        "operationId": "checkUrlAvailability",
-        "parameters": [
-          {
-            "name": "url",
-            "required": true,
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Cloudflare"
-        ]
-      }
-    },
-    "/api/cloudflare/sync-dns": {
-      "post": {
-        "operationId": "syncMissingDnsRecords",
-        "parameters": [],
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Cloudflare"
-        ]
-      }
-    },
-    "/api/cloudflare/update-routes-origin-request": {
-      "post": {
-        "operationId": "updateAllRoutesWithOriginRequest",
-        "parameters": [],
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Cloudflare"
         ]
       }
     },

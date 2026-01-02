@@ -1,7 +1,9 @@
 import { LoggerService } from '@/core/logger/logger.service';
+import { ConfigurationService } from '@/core/config/configuration.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { CloudflareTunnelService } from '@/modules/cloudflare/cloudflare-tunnel.service';
+import { RegistrationService } from '@/modules/registration/registration.service';
 import { DockerService } from '@/modules/docker/docker.service';
 import type { AppUrn } from '@runtipi/common/types';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
@@ -36,7 +38,16 @@ export class UninstallAppCommand extends AppLifecycleCommand {
             // Use the same subdomain logic: app.localSubdomain ?? `${appName}-${appStoreId}`
             const { appName, appStoreId } = extractAppUrn(appUrn);
             const subdomain = app.localSubdomain || `${appName}-${appStoreId}`;
-            await cloudflareService.deleteAppRoute(subdomain);
+            
+            // Get organization info if available (for organization-specific tunnel)
+            const registrationService = this.moduleRef.get(RegistrationService, { strict: false });
+            const orgInfo = await registrationService?.getOrganizationInfo();
+            const organizationInfo = orgInfo
+              ? { tunnelId: orgInfo.tunnelId, domain: orgInfo.domain }
+              : null;
+            
+            // deleteAppRoute handles both organization and default tunnels
+            await cloudflareService.deleteAppRoute(subdomain, organizationInfo);
           }
         }
       } catch (error) {

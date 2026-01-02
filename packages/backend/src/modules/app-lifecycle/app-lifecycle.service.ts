@@ -15,6 +15,7 @@ import { AppsService } from '../apps/apps.service';
 import { BackupManager } from '../backups/backup.manager';
 import { CloudflareTunnelService } from '../cloudflare/cloudflare-tunnel.service';
 import { MarketplaceService } from '../marketplace/marketplace.service';
+import { RegistrationService } from '../registration/registration.service';
 import { AppEventsQueue, appEventResultSchema, appEventSchema } from '../queue/entities/app-events';
 import { AppLifecycleCommandFactory } from './app-lifecycle-command.factory';
 import { appFormSchema } from './dto/app-lifecycle.dto';
@@ -36,6 +37,7 @@ export class AppLifecycleService {
     private readonly sseService: SSEService,
     private readonly backupManager: BackupManager,
     private readonly cloudflareTunnelService: CloudflareTunnelService,
+    private readonly registrationService: RegistrationService,
     @Inject(APP_ASYNC_MUTEX) private mutex: AsyncMutex,
   ) {
     this.logger.debug('Subscribing to app events...');
@@ -479,17 +481,25 @@ export class AppLifecycleService {
     
     // In production, create/update Cloudflare Tunnel route whenever exposedLocal is enabled
     // This makes the app available on the internet at subdomain.companionintel.com
+    // Or subdomain.orgDomain.companionintel.com if organization is registered
     // Route goes: Cloudflare Tunnel -> Traefik -> App Container
     if (isProdEnv && this.cloudflareTunnelService?.isEnabled() && isNowExposedLocal) {
       try {
+        // Get organization info if available
+        const orgInfo = await this.registrationService.getOrganizationInfo();
+        const organizationInfo = orgInfo
+          ? { tunnelId: orgInfo.tunnelId, domain: orgInfo.domain }
+          : null;
+        
+        const domain = organizationInfo ? organizationInfo.domain : 'companionintel.com';
         this.logger.info(
           `Creating Cloudflare Tunnel route for ${appUrn}: ` +
-          `${newSubdomain}.companionintel.com -> Traefik -> App Container`
+          `${newSubdomain}.${domain} -> Traefik -> App Container`
         );
         
         // Delete old route if subdomain changed
         if (wasExposedLocal && subdomainChanged) {
-          await this.cloudflareTunnelService.deleteAppRoute(oldSubdomain).catch((err) => {
+          await this.cloudflareTunnelService.deleteAppRoute(oldSubdomain, organizationInfo).catch((err) => {
             this.logger.warn(`Failed to delete old Cloudflare Tunnel route: ${err}`);
           });
         }
@@ -497,7 +507,7 @@ export class AppLifecycleService {
         // Always create/update route if exposedLocal is enabled
         // createAppRoute will update existing route if it already exists
         // Port is no longer needed as apps go through Traefik
-        await this.cloudflareTunnelService.createAppRoute(newSubdomain).catch((err) => {
+        await this.cloudflareTunnelService.createAppRoute(newSubdomain, undefined, organizationInfo).catch((err) => {
           this.logger.warn(`Failed to create Cloudflare Tunnel route: ${err}`);
         });
       } catch (error) {
@@ -507,7 +517,13 @@ export class AppLifecycleService {
     } else if (isProdEnv && this.cloudflareTunnelService?.isEnabled() && wasExposedLocal && !isNowExposedLocal) {
       // Delete route if exposedLocal is being disabled
       try {
-        await this.cloudflareTunnelService.deleteAppRoute(oldSubdomain).catch((err) => {
+        // Get organization info if available
+        const orgInfo = await this.registrationService.getOrganizationInfo();
+        const organizationInfo = orgInfo
+          ? { tunnelId: orgInfo.tunnelId, domain: orgInfo.domain }
+          : null;
+        
+        await this.cloudflareTunnelService.deleteAppRoute(oldSubdomain, organizationInfo).catch((err) => {
           this.logger.warn(`Failed to delete Cloudflare Tunnel route: ${err}`);
         });
       } catch (error) {

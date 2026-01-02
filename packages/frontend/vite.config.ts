@@ -73,7 +73,18 @@ export default defineConfig({
     allowedHosts: true,
   },
   optimizeDeps: {
-    force: false, // Disable pre-bundling in dev mode, allow on-demand optimization
+    // Force re-optimization when dependencies change
+    // Set to true to force re-optimization, or false to use cache
+    force: false,
+    // Include these dependencies in optimization
+    include: [
+      'i18next',
+      'react-i18next',
+      'i18next-http-backend',
+      'i18next-browser-languagedetector',
+      '@sentry/react',
+      'js-cookie',
+    ],
   },
   build: {
     sourcemap: true,

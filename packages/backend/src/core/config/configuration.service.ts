@@ -27,6 +27,9 @@ const envSchema = z.object({
   APPS_REPO_ID: z.string(),
   APPS_REPO_URL: z.string(),
   CI_CLOUD_APP_STORE_URL: z.string().optional(),
+  CI_CLOUD_API_URL: z.string().optional(),
+  CI_HUB_ORGANIZATION_ID: z.string().optional(),
+  CI_HUB_API_KEY: z.string().optional(),
   DOMAIN: z.string(),
   LOCAL_DOMAIN: z.string(),
   DNS_IP: z.string().default('9.9.9.9'),
@@ -144,6 +147,9 @@ export class ConfigurationService {
       deprecatedAppsRepoId: env.data.APPS_REPO_ID, // @deprecated
       deprecatedAppsRepoUrl: env.data.APPS_REPO_URL, // @deprecated
       ciCloudAppStoreUrl: env.data.CI_CLOUD_APP_STORE_URL,
+      ciCloudApiUrl: env.data.CI_CLOUD_API_URL,
+      ciHubOrganizationId: env.data.CI_HUB_ORGANIZATION_ID,
+      ciHubApiKey: env.data.CI_HUB_API_KEY,
       architecture: env.data.ARCHITECTURE,
       demoMode: env.data.DEMO_MODE,
       rootFolderHost: env.data.ROOT_FOLDER_HOST,

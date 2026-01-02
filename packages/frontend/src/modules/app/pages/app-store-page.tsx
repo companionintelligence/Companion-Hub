@@ -1,6 +1,7 @@
 import { getEnabledAppStoresOptions, searchAppsInfiniteOptions } from '@/api-client/@tanstack/react-query.gen';
 import { EmptyPage } from '@/components/empty-page/empty-page';
 import { useInfiniteScroll } from '@/lib/hooks/use-infinite-scroll';
+import { useRegistrationStatus } from '@/lib/hooks/use-registration-status';
 import { useAppStoreState } from '@/stores/app-store';
 import { keepPreviousData, useInfiniteQuery, useSuspenseQuery } from '@tanstack/react-query';
 import { StoreTile } from '@/modules/app/components/store-tile/store-tile';
@@ -33,6 +34,16 @@ export default () => {
   const { setCategory, category, storeId, setStoreId, search: initialSearch, setSearch } = useAppStoreState();
   const [search, setLocalSearch] = useState(initialSearch);
   const { t } = useTranslation();
+  const { data: registrationStatus, isLoading: isCheckingRegistration, error: registrationError } = useRegistrationStatus();
+
+  // Redirect to device registration if not registered or if API returns forbidden
+  useEffect(() => {
+    if (!isCheckingRegistration) {
+      if (registrationError || (registrationStatus && !registrationStatus.registered)) {
+        window.location.href = '/device-registration';
+      }
+    }
+  }, [registrationStatus, isCheckingRegistration, registrationError]);
 
   useEffect(() => {
     if (selectedStore !== storeId) {
@@ -81,6 +92,11 @@ export default () => {
 
   if (params.storeId) {
     return <Navigate to={`/app-store?store=${params.storeId}`} />;
+  }
+
+  // Show loading while checking registration or if not registered
+  if (isCheckingRegistration || (registrationStatus && !registrationStatus.registered)) {
+    return <AppStorePageSuspense />;
   }
 
   if (isLoading) {

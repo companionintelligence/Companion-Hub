@@ -213,6 +213,11 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   envMap.set('EXPERIMENTAL_INSECURE_COOKIE', settings.experimental_insecureCookie ? 'true' : 'false');
   envMap.set('THEME_BASE', settings.themeBase || envMap.get('THEME_BASE') || 'gray');
   envMap.set('THEME_COLOR', settings.themeColor || envMap.get('THEME_COLOR') || 'blue');
+  
+  // CI Cloud integration settings
+  envMap.set('CI_CLOUD_API_URL', envMap.get('CI_CLOUD_API_URL') || '');
+  envMap.set('CI_HUB_ORGANIZATION_ID', envMap.get('CI_HUB_ORGANIZATION_ID') || '');
+  envMap.set('CI_HUB_API_KEY', envMap.get('CI_HUB_API_KEY') || '');
 
   // Only write the env file if values have actually changed to avoid unnecessary overwrites
   // This preserves manual edits to .env while still syncing settings.json changes
