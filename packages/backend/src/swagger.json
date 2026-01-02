@@ -106,6 +106,21 @@
         ]
       }
     },
+    "/api/registration/complete": {
+      "post": {
+        "operationId": "completeRegistration",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "summary": "Complete device registration",
+        "tags": [
+          "Registration"
+        ]
+      }
+    },
     "/api/system/load": {
       "get": {
         "operationId": "systemLoad",
@@ -2220,7 +2235,13 @@
           "isLoggedIn": {
             "type": "boolean"
           },
+          "isRegistered": {
+            "type": "boolean"
+          },
           "localDomain": {
+            "type": "string"
+          },
+          "registrationUrl": {
             "type": "string"
           },
           "sslPort": {
@@ -2277,7 +2298,9 @@
           "isConfigured",
           "isGuestDashboardEnabled",
           "isLoggedIn",
+          "isRegistered",
           "localDomain",
+          "registrationUrl",
           "sslPort",
           "themeBase",
           "themeColor",

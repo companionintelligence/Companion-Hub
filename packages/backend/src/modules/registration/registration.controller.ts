@@ -1,4 +1,4 @@
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, Post, Body } from '@nestjs/common';
 import { RegistrationService } from './registration.service';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 
@@ -12,6 +12,14 @@ export class RegistrationController {
   @ApiResponse({ status: 200, description: 'Returns the registration status' })
   async getStatus() {
     const registered = await this.registrationService.isRegistered();
-    return { registered };
+    const registrationUrl = this.registrationService.getRegistrationUrl();
+    return { registered, registrationUrl };
+  }
+
+  @Post('complete')
+  @ApiOperation({ summary: 'Complete device registration' })
+  async completeRegistration(@Body() body: { subdomain: string; registrationId: string }) {
+    await this.registrationService.completeRegistration(body.subdomain, body.registrationId);
+    return { success: true };
   }
 }

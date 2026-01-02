@@ -42,6 +42,9 @@ export default defineConfig({
     },
     allowedHosts: true,
   },
+  optimizeDeps: {
+    force: true,
+  },
   build: {
     sourcemap: true,
   },

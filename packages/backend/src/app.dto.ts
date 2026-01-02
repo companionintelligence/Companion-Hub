@@ -63,6 +63,8 @@ const userContextDto = type({
   },
   isLoggedIn: 'boolean',
   isConfigured: 'boolean',
+  isRegistered: 'boolean',
+  registrationUrl: 'string',
   isGuestDashboardEnabled: 'boolean',
   allowAutoThemes: 'boolean',
   allowErrorMonitoring: 'boolean',

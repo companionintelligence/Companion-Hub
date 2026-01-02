@@ -96,3 +96,11 @@ export const appStore = pgTable('app_store', {
   updatedAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
   type: text().default('git'),
 });
+
+export const deviceRegistration = pgTable('device_registration', {
+  id: serial().primaryKey().notNull(),
+  deviceId: varchar('device_id').notNull().unique(),
+  subdomain: varchar().notNull(),
+  registrationId: varchar('registration_id').notNull(),
+  registeredAt: timestamp('registered_at', { mode: 'string' }).defaultNow().notNull(),
+});

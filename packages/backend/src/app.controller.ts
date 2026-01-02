@@ -2,11 +2,12 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { UserRepository } from '@/modules/user/user.repository';
 import { Body, Controller, Get, Patch, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
-import { AcknowledgeWelcomeBody, AppContextDto, UserSettingsBody, UserContextDto } from './app.dto';
+import { AppContextDto, UserSettingsBody, UserContextDto, AcknowledgeWelcomeBody } from './app.dto';
 import { AppService } from './app.service';
 import { AppsService } from './modules/apps/apps.service';
 import { AuthGuard } from './modules/auth/auth.guard';
 import { MarketplaceService } from './modules/marketplace/marketplace.service';
+import { RegistrationService } from './modules/registration/registration.service';
 import type { UserDto } from './modules/user/dto/user.dto';
 import { ApiResponse } from '@nestjs/swagger';
 
@@ -18,6 +19,7 @@ export class AppController {
     private readonly configuration: ConfigurationService,
     private readonly appsService: AppsService,
     private readonly marketplaceService: MarketplaceService,
+    private readonly registrationService: RegistrationService,
   ) {}
 
   @Get('/user-context')
@@ -27,11 +29,15 @@ export class AppController {
       this.configuration.get('userSettings');
     const version = await this.appService.getVersion();
     const operator = await this.userRepository.getFirstOperator();
+    const isRegistered = await this.registrationService.isRegistered();
+    const registrationUrl = this.registrationService.getRegistrationUrl();
 
     return UserContextDto.parse(
       {
         isLoggedIn: Boolean(req.user),
         isConfigured: Boolean(operator),
+        isRegistered,
+        registrationUrl,
         isGuestDashboardEnabled: guestDashboard,
         allowAutoThemes,
         allowErrorMonitoring,

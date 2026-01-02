@@ -2,20 +2,22 @@ import { Injectable, type OnApplicationBootstrap } from '@nestjs/common';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import si from 'systeminformation';
+import { RegistrationRepository } from './registration.repository';
 
 @Injectable()
 export class RegistrationService implements OnApplicationBootstrap {
   private _isRegistered = false;
+  private _registrationUrl = '';
   private checkInterval: NodeJS.Timeout | null = null;
 
   constructor(
     private readonly config: ConfigurationService,
     private readonly logger: LoggerService,
+    private readonly registrationRepository: RegistrationRepository,
   ) {}
 
   async onApplicationBootstrap() {
-    // Start polling for registration
-    this.pollRegistration();
+    await this.checkRegistrationStatus();
   }
 
   public async getDeviceId(): Promise<string> {
@@ -26,97 +28,117 @@ export class RegistrationService implements OnApplicationBootstrap {
   }
 
   public async isRegistered(): Promise<boolean> {
-    // If already registered, return true immediately
-    if (this._isRegistered) {
-      return true;
-    }
-    // Otherwise, perform a check (optional, or just rely on the poller)
-    // For now, we rely on the poller to update the state, but we can also trigger a check here if needed.
     return this._isRegistered;
   }
+  
+  public getRegistrationUrl(): string {
+      return this._registrationUrl;
+  }
 
-  private async pollRegistration() {
-    this.logger.info('Starting registration check loop...');
+  private async checkRegistrationStatus() {
+    this.logger.info('Checking registration status...');
+    const registration = await this.registrationRepository.getRegistration();
+    const deviceId = await this.getDeviceId();
+    const { ciCloudAppStoreUrl } = this.config.getConfig();
+    
+    let cloudBaseUrl = '';
+    try {
+        const urlObj = new URL(ciCloudAppStoreUrl!);
+        cloudBaseUrl = urlObj.origin;
+    } catch (e) {
+        this.logger.warn('Invalid CI Cloud URL, cannot construct registration URL');
+    }
+    
+    this._registrationUrl = `${cloudBaseUrl}/device/register?device_id=${deviceId}`;
 
-    const check = async () => {
-      if (this._isRegistered) {
-        if (this.checkInterval) {
-          clearInterval(this.checkInterval);
-          this.checkInterval = null;
+    if (!registration) {
+      this.logger.info('Device is not registered locally.');
+      this._isRegistered = false;
+      return;
+    }
+
+    this.logger.info(`Device found in local DB. Verifying with cloud...`);
+    
+    try {
+        const response = await fetch(`${cloudBaseUrl}/api/web/license-check`, {
+            headers: {
+                'X-Device-ID': deviceId
+            }
+        });
+        
+        if (!response.ok) {
+             if (response.status === 404 || response.status === 403) {
+                 this.logger.warn('Cloud says device is not registered.');
+                 this._isRegistered = false;
+                 await this.registrationRepository.deleteRegistration(registration.id);
+                 return;
+             }
+             throw new Error(`Cloud returned ${response.status}`);
         }
-        return;
-      }
 
-      try {
-        const registered = await this.checkRegistrationWithCloud();
-        if (registered) {
-          this._isRegistered = true;
-          this.logger.info('Device successfully registered!');
-          if (this.checkInterval) {
-            clearInterval(this.checkInterval);
-            this.checkInterval = null;
-          }
+        const data = await response.json() as { registrationId: string, subdomain: string };
+        const { registrationId, subdomain } = data;
+        
+        if (registration.registrationId !== registrationId || registration.subdomain !== subdomain) {
+            this.logger.warn('Local registration does not match cloud record. Resetting registration.');
+            this._isRegistered = false;
+            await this.registrationRepository.deleteRegistration(registration.id);
         } else {
-          this.logger.debug('Device not yet registered, retrying in 1s...');
+            this.logger.info('Device registration verified successfully.');
+            this._isRegistered = true;
+            this.startHeartbeat(cloudBaseUrl, deviceId);
         }
-      } catch (error) {
-        this.logger.error('Error checking registration status:', error);
-      }
-    };
-
-    // Initial check
-    await check();
-
-    // Start interval if not registered
-    if (!this._isRegistered) {
-      this.checkInterval = setInterval(check, 1000);
+        
+    } catch (error) {
+        this.logger.error('Error verifying registration with cloud:', error);
+        this.logger.warn('Could not verify with cloud, assuming local registration is valid for now.');
+        this._isRegistered = true;
+        // Still start heartbeat in case it comes back online? 
+        // Or maybe retry verification later?
+        // For now, let's try to start heartbeat, it might fail but that's fine.
+        this.startHeartbeat(cloudBaseUrl, deviceId);
     }
   }
 
-  private async checkRegistrationWithCloud(): Promise<boolean> {
-    const { ciCloudAppStoreUrl } = this.config.getConfig();
-
-    if (!ciCloudAppStoreUrl) {
-      this.logger.warn('CI Cloud App Store URL not configured, skipping registration check.');
-      return true; // Assume registered if no URL to check against? Or false?
-      // For now, let's assume true to not block if not configured,
-      // but the requirement implies strict gating.
-      // However, if the URL is missing, we can't check.
-    }
-
-    // Construct the register URL.
-    // The base URL is like http://host.docker.internal:8001/api/web/download-app-store
-    // We need to replace /download-app-store with /register
-    // Or assume the base URL is the root API?
-    // The config says `CI_CLOUD_APP_STORE_URL`.
-    // Let's parse it to get the base.
-
-    try {
-      const urlObj = new URL(ciCloudAppStoreUrl);
-      // Assuming the structure is /api/web/...
-      // We want /api/web/register
-      const registerUrl = new URL('/api/web/register', urlObj.origin).toString();
-
-      const deviceId = await this.getDeviceId();
-
-      this.logger.debug(`Checking registration at ${registerUrl} for device ${deviceId}`);
-
-      const response = await fetch(registerUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ device_id: deviceId }),
-      });
-
-      if (response.status === 200) {
-        return true;
+  private startHeartbeat(cloudBaseUrl: string, deviceId: string) {
+      if (this.checkInterval) {
+          clearInterval(this.checkInterval);
       }
-
-      return false;
-    } catch (error) {
-      this.logger.error('Failed to contact cloud server for registration check:', error);
-      return false;
-    }
+      
+      const heartbeat = async () => {
+          try {
+              await fetch(`${cloudBaseUrl}/api/devices/check-in`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ device_id: deviceId })
+              });
+          } catch (e) {
+              this.logger.debug('Heartbeat failed', e);
+          }
+      };
+      
+      // Run immediately then every 5 minutes
+      heartbeat();
+      this.checkInterval = setInterval(heartbeat, 5 * 60 * 1000);
+  }
+  
+  public async completeRegistration(subdomain: string, registrationId: string) {
+      const deviceId = await this.getDeviceId();
+      const existing = await this.registrationRepository.getRegistration();
+      if (existing) {
+          await this.registrationRepository.updateRegistration(existing.id, {
+              subdomain,
+              registrationId,
+              deviceId
+          });
+      } else {
+          await this.registrationRepository.createRegistration({
+              deviceId,
+              subdomain,
+              registrationId
+          });
+      }
+      this._isRegistered = true;
+      await this.checkRegistrationStatus();
   }
 }
