@@ -97,3 +97,5 @@ docs/jira/
 .internal/media/*
 .internal/traefik/*
 !.internal/cache/.gitkeep
+packages/backend/mock-auth-server/repo.zip
+temp_ci_store

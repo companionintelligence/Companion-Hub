@@ -79,6 +79,8 @@ services:
       - ./packages/backend/src:/app/packages/backend/src
       - ./packages/frontend/src:/app/packages/frontend/src
       - ./packages/common/src:/app/packages/common/src
+      # Migrations
+      - ./packages/backend/src/core/database/drizzle:/app/assets/migrations
       # Data
       - ${RUNTIPI_MEDIA_PATH:-.internal}/media:/data/media
       - ${RUNTIPI_STATE_PATH:-.internal}/state:/data/state
@@ -109,6 +111,8 @@ services:
       INTERNAL_IP: 127.0.0.1
       TIPI_VERSION: 4.5.0
       LOG_LEVEL: debug
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     env_file:
       - path: .env
         required: false

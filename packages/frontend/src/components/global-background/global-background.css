@@ -1,0 +1,53 @@
+.background--custom {
+  background: linear-gradient(90deg, #038b6f, #daab46, #05b2f0);
+  background-size: 300% 300%;
+  animation: gradient 4s alternate infinite;
+  position: fixed;
+  top: 0;
+  left: 0;
+  height: 100%;
+  width: 100%;
+  z-index: -1;
+}
+
+.background--custom::after,
+.background--image::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  transition: background-color 0.3s ease;
+}
+
+[data-bs-theme="light"] .background--custom::after,
+[data-bs-theme="light"] .background--image::after {
+  background-color: rgba(255, 255, 255, 0.5);
+}
+
+[data-bs-theme="dark"] .background--custom::after,
+[data-bs-theme="dark"] .background--image::after {
+  background-color: rgba(0, 0, 0, 0.5);
+}
+
+.background--image {
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  position: fixed;
+  top: 0;
+  left: 0;
+  height: 100%;
+  width: 100%;
+  z-index: -1;
+}
+
+@keyframes gradient {
+  0% {
+    background-position: 0%;
+  }
+  100% {
+    background-position: 100%;
+  }
+}

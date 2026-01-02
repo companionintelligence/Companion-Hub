@@ -35,9 +35,11 @@ import { DockerModule } from './modules/docker/docker.module';
 import { GithubModule } from './utils/github/github.module';
 import { ArkValidationPipe } from 'nestjs-arktype';
 import { CustomAppsModule } from './modules/custom-apps/custom-apps.module';
+import { RegistrationModule } from './modules/registration/registration.module';
 
 const imports: (DynamicModule | typeof I18nModule)[] = [
   SentryModule.forRoot(),
+  RegistrationModule,
   SystemModule,
   I18nModule,
   AuthModule,

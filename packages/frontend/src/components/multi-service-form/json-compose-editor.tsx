@@ -51,7 +51,7 @@ export const JsonComposeEditor = ({ onChange }: Props) => {
       setIsDirty(true);
     }
 
-    let currentError: string | undefined = undefined;
+    let currentError: string | undefined;
 
     if (!newValue) {
       setError(undefined);

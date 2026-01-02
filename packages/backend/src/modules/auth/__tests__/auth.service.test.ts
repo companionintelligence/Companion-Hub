@@ -6,7 +6,7 @@ import { AuthService } from '../auth.service';
 
 describe('AuthService', () => {
   let authService: AuthService;
-  let cacheService = mock<CacheService>();
+  let _cacheService = mock<CacheService>();
 
   beforeEach(async () => {
     const moduleRef = await Test.createTestingModule({
@@ -16,7 +16,7 @@ describe('AuthService', () => {
       .compile();
 
     authService = moduleRef.get(AuthService);
-    cacheService = moduleRef.get(CacheService);
+    _cacheService = moduleRef.get(CacheService);
   });
 
   it('should be defined', () => {

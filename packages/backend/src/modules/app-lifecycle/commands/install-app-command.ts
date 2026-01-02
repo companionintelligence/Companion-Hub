@@ -7,6 +7,7 @@ import { CloudflareTunnelService } from '@/modules/cloudflare/cloudflare-tunnel.
 import { DockerService } from '@/modules/docker/docker.service';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
+import { RegistrationService } from '@/modules/registration/registration.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import type { AppUrn } from '@runtipi/common/types';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
@@ -129,6 +130,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
 
       // Create Cloudflare Tunnel route if exposedLocal is enabled (app is published to internet)
       // Routes directly to the app's host port - makes app available at subdomain.companionintel.com
+      // Or subdomain.orgDomain.companionintel.com if organization is registered
       try {
         const cloudflareService = this.moduleRef.get(CloudflareTunnelService, { strict: false });
         if (!cloudflareService) {
@@ -145,9 +147,20 @@ export class InstallAppCommand extends AppLifecycleCommand {
           if (form.exposedLocal && isProduction) {
             const subdomain = form.localSubdomain ? form.localSubdomain : `${appName}-${appStoreId}`;
             
+            // Get organization info if available
+            const registrationService = this.moduleRef.get(RegistrationService, { strict: false });
+            const orgInfo = await registrationService?.getOrganizationInfo();
+            const organizationInfo = orgInfo
+              ? { tunnelId: orgInfo.tunnelId, domain: orgInfo.domain }
+              : null;
+            
             emitProgress(90);
-            logger.info(`Creating Cloudflare Tunnel route for ${appUrn} via Traefik (subdomain: ${subdomain})`);
-            await cloudflareService.createAppRoute(subdomain);
+            const domain = organizationInfo ? organizationInfo.domain : 'companionintel.com';
+            logger.info(
+              `Creating Cloudflare Tunnel route for ${appUrn} via Traefik ` +
+              `(subdomain: ${subdomain}, domain: ${domain})`
+            );
+            await cloudflareService.createAppRoute(subdomain, undefined, organizationInfo);
           }
         }
       } catch (error) {

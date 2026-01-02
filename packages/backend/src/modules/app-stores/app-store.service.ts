@@ -24,7 +24,7 @@ export class AppStoreService {
         case 'update_all': {
           const stores = await this.appStoreRepository.getEnabledAppStores();
           for (const store of stores) {
-            await this.repoHelpers.pullRepo(store.url, store.slug);
+            await this.repoHelpers.pullRepo(store.url, store.slug, store.type ?? 'git');
           }
           await reply({ success: true, message: 'All repos updated' });
           break;
@@ -32,18 +32,20 @@ export class AppStoreService {
         case 'clone_all': {
           const stores = await this.appStoreRepository.getEnabledAppStores();
           for (const store of stores) {
-            await this.repoHelpers.cloneRepo(store.url, store.slug);
+            await this.repoHelpers.cloneRepo(store.url, store.slug, store.type ?? 'git');
           }
           await reply({ success: true, message: 'All repos cloned' });
           break;
         }
         case 'clone': {
-          const { success, message } = await this.repoHelpers.cloneRepo(data.url, data.id);
+          const store = await this.appStoreRepository.getAppStoreBySlug(data.id);
+          const { success, message } = await this.repoHelpers.cloneRepo(data.url, data.id, store?.type ?? 'git');
           await reply({ success, message });
           break;
         }
         case 'update': {
-          const { success, message } = await this.repoHelpers.pullRepo(data.url, data.id);
+          const store = await this.appStoreRepository.getAppStoreBySlug(data.id);
+          const { success, message } = await this.repoHelpers.pullRepo(data.url, data.id, store?.type ?? 'git');
           await reply({ success, message });
           break;
         }
@@ -56,7 +58,7 @@ export class AppStoreService {
 
     for (const repo of repositories) {
       this.logger.debug(`Pulling repo ${repo.url}`);
-      await this.repoHelpers.pullRepo(repo.url, repo.slug);
+      await this.repoHelpers.pullRepo(repo.url, repo.slug, repo.type ?? 'git');
     }
 
     return { success: true };
@@ -80,6 +82,38 @@ export class AppStoreService {
       this.logger.info('Migrating default repo');
       await this.appStoreRepository.updateAppStoreHashAndUrl(existing.slug, { url: deprecatedAppsRepoUrl, hash: deprecatedAppsRepoId });
     }
+  }
+
+  public async registerCloudAppStore() {
+    const { ciCloudAppStoreUrl } = this.config.getConfig();
+
+    if (!ciCloudAppStoreUrl) {
+      this.logger.debug('Skipping cloud app store registration, no URL configured');
+      return;
+    }
+
+    const slug = 'ci-cloud';
+    const existing = await this.appStoreRepository.getAppStoreBySlug(slug);
+
+    if (existing) {
+      if (existing.url !== ciCloudAppStoreUrl) {
+        this.logger.info(`Updating cloud app store URL to ${ciCloudAppStoreUrl}`);
+        await this.appStoreRepository.updateAppStoreHashAndUrl(slug, {
+          url: ciCloudAppStoreUrl,
+          hash: this.repoHelpers.getRepoHash(ciCloudAppStoreUrl),
+        });
+      }
+      return;
+    }
+
+    this.logger.info(`Registering cloud app store: ${ciCloudAppStoreUrl}`);
+    await this.appStoreRepository.createAppStore({
+      name: 'CI Cloud',
+      url: ciCloudAppStoreUrl,
+      slug,
+      enabled: true,
+      type: 'http_zip',
+    });
   }
 
   public async getEnabledAppStores() {

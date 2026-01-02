@@ -64,7 +64,7 @@ export class AppService {
 
       this.logger.info('Migrating legacy repo...');
       await this.appStoreService.migrateLegacyRepo();
-      this.logger.info('Legacy repo migration completed');
+      await this.appStoreService.registerCloudAppStore();
 
       this.logger.info('Publishing clone_all command...');
       this.repoQueue.publish({ command: 'clone_all' });

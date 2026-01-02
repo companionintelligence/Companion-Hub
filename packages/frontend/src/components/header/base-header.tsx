@@ -1,10 +1,7 @@
-import { getLogo } from '@/lib/theme/theme';
-import { useUIStore } from '@/stores/ui-store';
-import { IconBrandGithub, IconCertificate, IconHeart, IconLogin, IconLogout, IconMoon, IconSun } from '@tabler/icons-react';
-import clsx from 'clsx';
-import type { ReactNode } from 'react';
+import { IconArrowLeft, IconCertificate, IconLogin, IconMaximize, IconMinimize, IconSettings } from '@tabler/icons-react';
+import { type ReactNode, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Link } from 'react-router';
+import { Link, useLocation } from 'react-router';
 import { Tooltip } from 'react-tooltip';
 
 type BaseHeaderProps = {
@@ -18,40 +15,59 @@ type BaseHeaderProps = {
 };
 
 export const BaseHeader = (props: BaseHeaderProps) => {
-  const { isLoggedIn, allowAutoThemes, showNav = false, showCertificateButton = false, onLogout, onLogin, navbarContent } = props;
-
-  const setDarkMode = useUIStore((state) => state.setDarkMode);
-  const theme = useUIStore((state) => state.theme);
-
+  const { isLoggedIn, showNav = false, showCertificateButton = false, onLogin, navbarContent } = props;
+  const location = useLocation();
   const { t } = useTranslation();
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(!!document.fullscreenElement);
+    };
+
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+    };
+  }, []);
+
+  const toggleFullscreen = () => {
+    if (document.fullscreenElement) {
+      document.exitFullscreen();
+    } else {
+      document.documentElement.requestFullscreen();
+    }
+  };
 
   const downloadCertificate = () => {
     window.open('/api/system/certificate');
   };
 
-  const handleLogoutClick = () => {
-    if (isLoggedIn && onLogout) {
-      onLogout();
-    } else if (!isLoggedIn && onLogin) {
+  const handleLoginClick = () => {
+    if (onLogin) {
       onLogin();
     }
   };
 
+  const isDashboard = location.pathname === '/dashboard';
+
   return (
-    <header className="text-white navbar navbar-expand-md navbar-dark navbar-overlap d-print-none" data-bs-theme="dark">
+    <header className="navbar navbar-expand-md navbar-overlap d-print-none">
       <div className="container-xl">
         {showNav && (
           <button className="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar-menu">
             <span className="navbar-toggler-icon" />
           </button>
         )}
-        <Link to="/dashboard">
-          <h1 className="navbar-brand d-none-navbar-horizontal pe-0 pe-md-3">
-            Companion Hub
-          </h1>
-        </Link>
+        {isDashboard ? (
+          <div />
+        ) : (
+          <Link to="/dashboard" className="nav-link px-0 cursor-pointer me-3" aria-label="Back">
+            <IconArrowLeft size={20} />
+          </Link>
+        )}
         <div className="navbar-nav flex-row order-md-last">
-          <div style={{ zIndex: 1 }} className="d-flex">
+          <div style={{ zIndex: 1 }} className="d-flex gap-2">
             {showCertificateButton && (
               <>
                 <Tooltip className="tooltip" anchorSelect=".downloadCert">
@@ -67,44 +83,38 @@ export const BaseHeader = (props: BaseHeaderProps) => {
                 </button>
               </>
             )}
-            <Tooltip className="tooltip" anchorSelect=".darkMode">
-              {t('HEADER_DARK_MODE')}
-            </Tooltip>
-            <button
-              type="button"
-              onClick={() => setDarkMode(true)}
-              className={clsx('darkMode nav-link px-0 cursor-pointer', {
-                'visually-hidden': theme === 'dark',
-              })}
-              data-testid="dark-mode-toggle"
-            >
-              <IconMoon data-testid="icon-moon" size={20} />
-            </button>
-            <Tooltip className="tooltip" anchorSelect=".lightMode">
-              {t('HEADER_LIGHT_MODE')}
-            </Tooltip>
-            <button
-              type="button"
-              onClick={() => setDarkMode(false)}
-              className={clsx('lightMode nav-link px-0 cursor-pointer ', {
-                'visually-hidden': theme === 'light',
-              })}
-              data-testid="light-mode-toggle"
-            >
-              <IconSun data-testid="icon-sun" size={20} />
-            </button>
-            <Tooltip className="tooltip" anchorSelect=".logOut">
-              {isLoggedIn ? t('HEADER_LOGOUT') : t('HEADER_LOGIN')}
-            </Tooltip>
-            <button
-              type="button"
-              onClick={handleLogoutClick}
-              tabIndex={0}
-              className="logOut nav-link px-0 cursor-pointer"
-              data-testid="logout-button"
-            >
-              {isLoggedIn ? <IconLogout size={20} /> : <IconLogin size={20} />}
-            </button>
+
+            {isLoggedIn ? (
+              <>
+                <Tooltip className="tooltip" anchorSelect=".fullscreen">
+                  {isFullscreen ? t('HEADER_EXIT_FULLSCREEN') : t('HEADER_ENTER_FULLSCREEN')}
+                </Tooltip>
+                <button type="button" onClick={toggleFullscreen} className="fullscreen nav-link px-0 cursor-pointer" data-testid="fullscreen-button">
+                  {isFullscreen ? <IconMinimize size={20} /> : <IconMaximize size={20} />}
+                </button>
+                <Tooltip className="tooltip" anchorSelect=".settings">
+                  {t('HEADER_SETTINGS')}
+                </Tooltip>
+                <Link to="/settings" className="settings nav-link px-0 cursor-pointer" data-testid="settings-button">
+                  <IconSettings size={20} />
+                </Link>
+              </>
+            ) : (
+              <>
+                <Tooltip className="tooltip" anchorSelect=".logIn">
+                  {t('HEADER_LOGIN')}
+                </Tooltip>
+                <button
+                  type="button"
+                  onClick={handleLoginClick}
+                  tabIndex={0}
+                  className="logIn nav-link px-0 cursor-pointer"
+                  data-testid="login-button"
+                >
+                  <IconLogin size={20} />
+                </button>
+              </>
+            )}
           </div>
         </div>
         {navbarContent}

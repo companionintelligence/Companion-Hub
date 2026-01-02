@@ -5,8 +5,10 @@ import type { Route } from './+types/root';
 import { userContext } from './api-client';
 import { client } from './api-client/client.gen';
 import stylesheet from './app.css?url';
+import transparentTheme from './styles/transparent-theme.css?url';
 import { Providers } from './components/providers/providers';
 import { TranslatableError } from './types/error.types';
+import { GlobalBackground } from './components/global-background/global-background';
 
 client.interceptors.response.use(async (res) => {
   if (res.status >= 400) {
@@ -38,6 +40,7 @@ client.setConfig({
 
 export const links: Route.LinksFunction = () => [
   { rel: 'stylesheet', href: stylesheet },
+  { rel: 'stylesheet', href: transparentTheme },
   { rel: 'apple-touch-icon', sizes: '180x180', href: '/icons/apple-touch-icon.png' },
   { rel: 'icon', type: 'image/png', sizes: '32x32', href: '/icons/favicon-96x96.png' },
   { rel: 'icon', type: 'image/svg+xml', href: '/icons/favicon.svg' },
@@ -46,9 +49,32 @@ export const links: Route.LinksFunction = () => [
 ];
 
 export async function clientLoader({ request }: Route.ActionArgs) {
+  const url = new URL(request.url);
+
+  // Check device registration status
+  try {
+    // We use the internal API URL if server-side rendering, or relative path if client-side
+    // Since this is clientLoader, it runs on client (mostly) or server?
+    // React Router v7 loaders run on server if configured?
+    // Assuming client-side fetch for now or proxy.
+    const regRes = await fetch('/api/registration/status');
+    if (regRes.ok) {
+      const regData = await regRes.json();
+      if (!regData.registered) {
+        if (url.pathname !== '/device-registration') {
+          return redirect('/device-registration');
+        }
+        return null;
+      } else if (url.pathname === '/device-registration') {
+        return redirect('/');
+      }
+    }
+  } catch (e) {
+    console.error('Failed to check registration status', e);
+  }
+
   const user = await userContext();
 
-  const url = new URL(request.url);
   if (url.pathname !== '/') {
     return user;
   }
@@ -97,9 +123,13 @@ export function Layout({ children }: { children: React.ReactNode }) {
   );
 }
 
-export default function App({ loaderData }: Route.ComponentProps) {
+export default function App({ loaderData: _loaderData }: Route.ComponentProps) {
+  // Placeholder for user background image setting
+  const userBackgroundImage = null;
+
   return (
     <Providers>
+      <GlobalBackground backgroundImage={userBackgroundImage} />
       <Outlet />
       <Toaster />
     </Providers>

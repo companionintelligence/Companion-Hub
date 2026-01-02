@@ -48,7 +48,7 @@ export const fsMock = {
       vol.fromJSON(newMockFiles, 'utf8');
     },
     __printVol: () => {
-      // biome-ignore lint/suspicious/noConsoleLog: <explanation>
+      // biome-ignore lint/suspicious/noConsole: Debugging helper
       console.log(vol.toTree());
     },
     tree: () => {

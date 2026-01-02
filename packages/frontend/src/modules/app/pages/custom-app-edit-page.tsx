@@ -83,7 +83,7 @@ export default function EditPageContent({ loaderData }: Route.ComponentProps) {
   }
 
   return (
-    <>
+    <div className="h-full overflow-y-auto">
       <div className="card">
         <div className="card-body">
           <div className="row">
@@ -105,6 +105,6 @@ export default function EditPageContent({ loaderData }: Route.ComponentProps) {
         </div>
       </div>
       <MultiServiceForm onSubmit={onSubmit} />
-    </>
+    </div>
   );
 }

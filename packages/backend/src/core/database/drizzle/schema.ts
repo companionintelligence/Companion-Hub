@@ -94,4 +94,14 @@ export const appStore = pgTable('app_store', {
   branch: varchar().default('main').notNull(),
   createdAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
   updatedAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
+  type: text().default('git'),
+});
+
+export const organization = pgTable('organization', {
+  id: varchar().notNull().primaryKey(), // organization_id from CI Cloud
+  name: varchar().notNull(), // organization name/slug for subdomain
+  tunnelId: varchar('tunnel_id').notNull(), // Cloudflare Tunnel ID
+  domain: varchar().notNull(), // Full domain: {name}.companionintel.com
+  createdAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
+  updatedAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
 });

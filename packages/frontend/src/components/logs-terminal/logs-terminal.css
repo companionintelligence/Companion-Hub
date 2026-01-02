@@ -1,5 +1,6 @@
 .log-terminal {
   height: 300px;
+  /* biome-ignore lint/complexity/noImportantStyles: Override */
   overflow-y: scroll !important;
 }
 

@@ -12,7 +12,7 @@ interface Props {
 
 export const StoreSelector = ({ onSelect, className, initialValue, stores }: Props) => {
   const { t } = useTranslation();
-  const [key, setKey] = useState(new Date().getTime().toString());
+  const [key, setKey] = useState(Date.now().toString());
 
   const options = stores.map((store) => ({
     value: store.slug,
@@ -33,7 +33,7 @@ export const StoreSelector = ({ onSelect, className, initialValue, stores }: Pro
   const handleReset = () => {
     setValue(undefined);
     onSelect(undefined);
-    setKey(new Date().getTime().toString());
+    setKey(Date.now().toString());
   };
 
   return (

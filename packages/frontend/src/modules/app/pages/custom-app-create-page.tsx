@@ -49,7 +49,7 @@ export default () => {
   };
 
   return (
-    <>
+    <div className="h-full overflow-y-auto">
       <div className="card">
         <div className="card-body">
           <div className="row">
@@ -72,6 +72,6 @@ export default () => {
         </div>
       </div>
       <MultiServiceForm onSubmit={onSubmit} />
-    </>
+    </div>
   );
 };
