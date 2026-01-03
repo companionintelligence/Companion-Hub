@@ -1,5 +1,4 @@
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { Client } from 'pg';
@@ -13,7 +12,7 @@ const getClient = () => {
     host: 'localhost',
     database: 'postgres',
     password: 'postgres',
-    port: 5433,
+    port: Number(process.env.POSTGRES_PORT) || 5433,
   });
 };
 
@@ -26,10 +25,8 @@ export const createTestDatabase = async (testsuite: string) => {
 
   await client.end();
 
-  const connectionString = `postgresql://postgres:postgres@localhost:5433/${testsuite}?connect_timeout=300`;
+  const connectionString = `postgresql://postgres:postgres@localhost:${Number(process.env.POSTGRES_PORT) || 5433}/${testsuite}?connect_timeout=300`;
   const drizzleClient = drizzle(connectionString, { schema });
-
-  const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
   await migrate(drizzleClient, { migrationsFolder: path.join(__dirname, '..', '..', 'core', 'database', 'drizzle') }).catch((e) => {
     console.error('Failed to run migrations', e);

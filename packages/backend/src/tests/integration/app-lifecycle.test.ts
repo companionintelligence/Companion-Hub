@@ -50,18 +50,20 @@ describe('App lifecycle', () => {
     host: 'localhost',
     password: 'guest',
     username: 'guest',
+    port: Number(process.env.RABBITMQ_PORT) || 5672,
   });
   dockerService.composeApp.mockResolvedValue({ success: true, stdout: '', stderr: '' });
 
   const queueFactory = new QueueFactory(loggerService, configurationService);
-  const appEventsQueue = queueFactory.createQueue({
-    queueName: 'app-events-queue',
-    workers: 1,
-    eventSchema: appEventSchema,
-  });
+  let appEventsQueue: AppEventsQueue;
 
   beforeAll(async () => {
     db = await createTestDatabase(DB_NAME);
+    appEventsQueue = await queueFactory.createQueue({
+      queueName: 'app-events-queue',
+      workers: 1,
+      eventSchema: appEventSchema,
+    });
   });
 
   beforeEach(async () => {

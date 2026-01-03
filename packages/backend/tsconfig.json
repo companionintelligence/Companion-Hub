@@ -1,28 +1,20 @@
 {
+  "extends": "../../tsconfig.json",
   "compilerOptions": {
-    /* Base Options: */
-    "esModuleInterop": true,
-    "skipLibCheck": true,
     "target": "es2022",
-    "allowJs": true,
+    "module": "commonjs",
+    "moduleResolution": "node",
     "resolveJsonModule": true,
-    "moduleDetection": "force",
-    "isolatedModules": true,
-    "verbatimModuleSyntax": true,
-    /* Strictness */
-    "strict": true,
-    "noUncheckedIndexedAccess": true,
-    "noImplicitOverride": true,
-    "strictNullChecks": true,
-    "module": "preserve",
     "outDir": "./dist",
-    "noEmit": true,
-    "lib": ["es2022"],
+    "noEmit": false,
+    "allowImportingTsExtensions": false,
     "emitDecoratorMetadata": true,
     "experimentalDecorators": true,
     "strictPropertyInitialization": false,
+    "verbatimModuleSyntax": false,
     "paths": {
       "@/*": ["./src/*"]
     }
-  }
+  },
+  "exclude": ["node_modules", "dist", "build.ts"]
 }

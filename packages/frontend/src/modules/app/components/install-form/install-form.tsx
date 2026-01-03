@@ -1,13 +1,10 @@
 import type { GetRandomPortResponse } from '@/api-client';
 import { getRandomPortMutation } from '@/api-client/@tanstack/react-query.gen';
-import { Button } from '@/components/ui/Button';
 import { Input, InputGroup } from '@/components/ui/Input';
 import { Switch } from '@/components/ui/Switch';
 import { useAppContext } from '@/context/app-context';
 import type { AppInfo, FormField } from '@/types/app.types';
 import type { TranslatableError } from '@/types/error.types';
-import { extractAppUrn } from '@/utils/app-helpers';
-import type { AppUrn } from '@runtipi/common/types';
 import { useMutation } from '@tanstack/react-query';
 import clsx from 'clsx';
 import type React from 'react';
@@ -46,7 +43,7 @@ const typeFilter = (field: FormField) => !hiddenTypes.includes(field.type);
 export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit, initialValues, loading, formId }) => {
   const { t } = useTranslation();
   const { userSettings, isProduction } = useAppContext();
-  const { guestDashboard, localDomain, internalIp, domain, maxBackups: globalMaxBackups } = userSettings;
+  const { guestDashboard, localDomain, maxBackups: globalMaxBackups } = userSettings;
 
   const {
     register,
@@ -57,12 +54,11 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
     setError,
     control,
   } = useForm<FormValues>({});
-  const watchExposed = watch('exposed', false);
-  const watchOpenPort = watch('openPort', !info.force_expose);
-  const watchExposedLocal = watch('exposedLocal', false);
+  const _watchExposed = watch('exposed', false);
+  const _watchOpenPort = watch('openPort', !info.force_expose);
+  const _watchExposedLocal = watch('exposedLocal', false);
   const watchLocalSubdomain = watch('localSubdomain', '');
 
-  const { appName } = extractAppUrn(info.urn as AppUrn);
   const dnsCheckTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const [isCheckingDns, setIsCheckingDns] = useState(false);
   const [dnsAvailabilityError, setDnsAvailabilityError] = useState<string | null>(null);
@@ -92,9 +88,9 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
         setValue('localSubdomain', defaultSubdomain);
       }
     }
-  }, [initialValues, isDirty, setValue, info.force_expose, info.exposable, info.dynamic_config, info.port, watchLocalSubdomain]);
+  }, [initialValues, isDirty, setValue, info.force_expose, info.exposable, info.dynamic_config, info.port, watchLocalSubdomain, info.urn.split]);
 
-  const randomPortMutation = useMutation({
+  const _randomPortMutation = useMutation({
     ...getRandomPortMutation(),
     onError: (e: TranslatableError) => {
       toast.error(t(e.message, e.intlParams));
@@ -137,20 +133,20 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
         const response = await fetch(`/api/cloudflare/check-dns-availability?subdomain=${encodeURIComponent(subdomainToCheck)}`, {
           credentials: 'include',
         });
-        
+
         if (response.ok) {
           const data = await response.json();
-          if (!data.available) {
+          if (data.available) {
+            // Clear error if DNS is available
+            setDnsAvailabilityError(null);
+            setError('localSubdomain', {});
+          } else {
             const errorMessage = t('APP_INSTALL_FORM_ERROR_DNS_NOT_AVAILABLE', { name: subdomainToCheck });
             setDnsAvailabilityError(errorMessage);
             setError('localSubdomain', {
               type: 'manual',
               message: errorMessage,
             });
-          } else {
-            // Clear error if DNS is available
-            setDnsAvailabilityError(null);
-            setError('localSubdomain', {});
           }
         } else {
           // If API call fails, don't block - just log
@@ -248,14 +244,14 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
       enableAuth: values.enableAuth ?? true,
       port: values.port || (info.port ? info.port.toString() : undefined),
     };
-    
+
     // Set default subdomain if not provided and app is exposable
     if (info.exposable && !formValues.localSubdomain) {
       formValues.localSubdomain = info.urn.split(':').join('-');
     }
-    
+
     const validationErrors = validateAppConfig(formValues, formFields);
-    
+
     // In production, require port when publishing to internet
     if (isProduction && formValues.exposedLocal && info.dynamic_config && !formValues.port) {
       validationErrors.port = { messageKey: 'APP_INSTALL_FORM_ERROR_REQUIRED', params: { label: t('APP_INSTALL_FORM_PORT') } };
@@ -265,9 +261,9 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
     if (isProduction && info.exposable && formValues.exposedLocal && formValues.localSubdomain) {
       if (isCheckingDns) {
         // Wait a bit for DNS check to complete
-        await new Promise(resolve => setTimeout(resolve, 600));
+        await new Promise((resolve) => setTimeout(resolve, 600));
       }
-      
+
       // If DNS check found an error, prevent submission
       if (dnsAvailabilityError) {
         validationErrors.localSubdomain = {
@@ -280,7 +276,7 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
           const response = await fetch(`/api/cloudflare/check-dns-availability?subdomain=${encodeURIComponent(formValues.localSubdomain)}`, {
             credentials: 'include',
           });
-          
+
           if (response.ok) {
             const data = await response.json();
             if (!data.available) {

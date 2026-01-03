@@ -3,12 +3,10 @@ import { useNavigate, useSearchParams } from 'react-router';
 import { Button } from '@/components/ui/Button';
 import { Alert, AlertDescription } from '@/components/ui/Alert/Alert';
 import { IconAlertCircle, IconExternalLink } from '@tabler/icons-react';
-import { useTranslation } from 'react-i18next';
 import toast from 'react-hot-toast';
 
 export default function DeviceRegistrationPage() {
   const navigate = useNavigate();
-  const { t } = useTranslation();
   const [searchParams] = useSearchParams();
   const [isRegistered, setIsRegistered] = useState(false);
   const [deviceId, setDeviceId] = useState<string | null>(null);
@@ -17,23 +15,24 @@ export default function DeviceRegistrationPage() {
   const [error, setError] = useState<string | null>(null);
 
   // Check if this is a callback from CI Cloud
-  const isCallback = searchParams.has('device_id') && 
-                     searchParams.has('organization_id') && 
-                     searchParams.has('organization_name') && 
-                     searchParams.has('subdomain');
+  const isCallback =
+    searchParams.has('device_id') && searchParams.has('organization_id') && searchParams.has('organization_name') && searchParams.has('subdomain');
 
   // Handle callback from CI Cloud
   useEffect(() => {
     if (isCallback) {
       const handleCallback = async () => {
         try {
-          const params = {
-            device_id: searchParams.get('device_id')!,
-            organization_id: searchParams.get('organization_id')!,
-            organization_name: searchParams.get('organization_name')!,
-            subdomain: searchParams.get('subdomain')!,
-            tunnel_id: searchParams.get('tunnel_id') || undefined,
+          const params: Record<string, string> = {
+            device_id: searchParams.get('device_id') ?? '',
+            organization_id: searchParams.get('organization_id') ?? '',
+            organization_name: searchParams.get('organization_name') ?? '',
+            subdomain: searchParams.get('subdomain') ?? '',
           };
+          const tunnelId = searchParams.get('tunnel_id');
+          if (tunnelId) {
+            params.tunnel_id = tunnelId;
+          }
 
           const res = await fetch(`/api/registration/callback?${new URLSearchParams(params).toString()}`);
           const data = await res.json();
@@ -81,13 +80,13 @@ export default function DeviceRegistrationPage() {
           const deviceData = await deviceRes.json();
           setDeviceId(deviceData.device_id);
           setRegistrationUrl(deviceData.registration_url);
-          
+
           // If no registration URL, show helpful error
           if (!deviceData.registration_url) {
             setError(
-              `CI Cloud frontend URL not configured. ` +
-              `Please set CI_CLOUD_FRONTEND_URL environment variable. ` +
-              `Current value: ${deviceData.ci_cloud_frontend_url || 'not set'}`
+              'CI Cloud frontend URL not configured. ' +
+                'Please set CI_CLOUD_FRONTEND_URL environment variable. ' +
+                `Current value: ${deviceData.ci_cloud_frontend_url || 'not set'}`,
             );
           }
         } else {
@@ -116,11 +115,9 @@ export default function DeviceRegistrationPage() {
   if (isLoading) {
     return (
       <div className="flex flex-col items-center justify-center min-h-[50vh] gap-6 text-center">
-        <div className="animate-spin rounded-full h-12 w-12 border-4 border-primary border-t-transparent"></div>
+        <div className="animate-spin rounded-full h-12 w-12 border-4 border-primary border-t-transparent" />
         <h1 className="text-2xl font-bold text-foreground">Checking Registration Status...</h1>
-        <p className="text-muted-foreground max-w-md">
-          Please wait while we check if your device is registered.
-        </p>
+        <p className="text-muted-foreground max-w-md">Please wait while we check if your device is registered.</p>
       </div>
     );
   }
@@ -129,11 +126,9 @@ export default function DeviceRegistrationPage() {
   if (isCallback) {
     return (
       <div className="flex flex-col items-center justify-center min-h-[50vh] gap-6 text-center">
-        <div className="animate-spin rounded-full h-12 w-12 border-4 border-primary border-t-transparent"></div>
+        <div className="animate-spin rounded-full h-12 w-12 border-4 border-primary border-t-transparent" />
         <h1 className="text-2xl font-bold text-foreground">Completing Registration...</h1>
-        <p className="text-muted-foreground max-w-md">
-          Please wait while we complete your device registration.
-        </p>
+        <p className="text-muted-foreground max-w-md">Please wait while we complete your device registration.</p>
         {error && (
           <Alert variant="danger" className="max-w-md">
             <AlertDescription>
@@ -183,11 +178,7 @@ export default function DeviceRegistrationPage() {
 
           {registrationUrl && (
             <>
-              <Button
-                intent="primary"
-                className="w-full"
-                onClick={handleRedirectToCICloud}
-              >
+              <Button intent="primary" className="w-full" onClick={handleRedirectToCICloud}>
                 Register Device on CI Cloud
                 <IconExternalLink className="ml-2 h-4 w-4" />
               </Button>

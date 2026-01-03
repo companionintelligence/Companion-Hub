@@ -37,7 +37,7 @@ export class AppService {
       this.logger.info('Starting bootstrap...');
       await this.databaseService.migrate();
       this.logger.info('Database migration completed');
-      
+
       await this.docker.pruneNetworks();
       this.logger.info('Docker networks pruned');
 
@@ -95,7 +95,7 @@ export class AppService {
         await this.appLifecycleService.restartRunningApps();
         this.logger.info('Finished restarting running apps');
       }
-      
+
       this.logger.info('Bootstrap completed successfully');
     } catch (e) {
       this.logger.error('Bootstrap error:', e);
@@ -157,9 +157,7 @@ export class AppService {
           path.join(dataDir, 'media', 'data', 'images'),
           path.join(dataDir, 'media', 'data', 'roms'),
         ]),
-        new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('Media folder creation timed out after 10 seconds')), 10000)
-        ),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Media folder creation timed out after 10 seconds')), 10000)),
       ]);
       this.logger.info('Media folders created successfully');
     } catch (error) {

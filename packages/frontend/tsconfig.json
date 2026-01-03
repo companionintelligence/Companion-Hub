@@ -1,27 +1,16 @@
 {
+  "extends": "../../tsconfig.json",
   "compilerOptions": {
-    /* Base Options: */
-    "esModuleInterop": true,
-    "skipLibCheck": true,
-    "target": "es2022",
-    "allowJs": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
     "resolveJsonModule": true,
-    "moduleDetection": "force",
-    "isolatedModules": true,
-    "verbatimModuleSyntax": true,
-    /* Strictness */
-    "strict": true,
-    "noUncheckedIndexedAccess": true,
-    "noImplicitOverride": true,
-    "module": "preserve",
-    "noEmit": true,
-    "jsx": "preserve",
-    "lib": ["es2022", "dom", "dom.iterable"],
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
     "paths": {
       "@/*": ["./src/*"]
     },
     "types": ["@testing-library/jest-dom"],
     "rootDirs": [".", "./.react-router/types"]
   },
-  "exclude": ["./src/api-client/**/*"]
+  "exclude": ["./src/api-client/**/*", "vite.config.ts"]
 }

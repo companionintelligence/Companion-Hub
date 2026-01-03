@@ -9,7 +9,7 @@ import path from 'node:path';
 import { AppsRepository } from '../apps/apps.repository';
 import type { CreateCustomAppDto, UpdateCustomAppDto } from './dto/custom-apps.dto';
 import { getFrontmatter } from '@/utils/frontmatter/frontmatter';
-import { frontmatterSchema, type AppInfo } from '@runtipi/common/schemas';
+import { frontmatterSchema, type AppInfo, serviceSchemaArk } from '@runtipi/common/schemas';
 
 const APPS_FOLDER = '_user';
 
@@ -116,7 +116,7 @@ export class CustomAppService {
 
     const infoPath = path.join(dataDir, 'apps', appStoreId, appName, 'config.json');
 
-    const main = config.services.find((s) => s.isMain) ?? config.services[0];
+    const main = config.services.find((s: typeof serviceSchemaArk.infer) => s.isMain) ?? config.services[0];
     const inferredPort = typeof main?.internalPort === 'number' ? main.internalPort : undefined;
 
     // Create a minimal app.info file for custom apps

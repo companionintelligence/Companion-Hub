@@ -1,7 +1,18 @@
-import { type BrowserContext, type Page, expect } from '@playwright/test';
+import { type BrowserContext, type Page, expect, test as base } from '@playwright/test';
 import { user } from '../../packages/backend/src/core/database/drizzle/schema';
 import { testUser } from '../helpers/constants';
-import { db } from '../helpers/db';
+import { clearDatabase, db, seedOrganization } from '../helpers/db';
+
+export const test = base.extend({
+  page: async ({ page }, use) => {
+    await clearDatabase();
+    await seedOrganization();
+    await use(page);
+  },
+});
+
+// biome-ignore lint/performance/noBarrelFile: Re-exporting for convenience
+export { expect } from '@playwright/test';
 
 export const createTestUser = async () => {
   // Create user in database
@@ -20,10 +31,10 @@ export const loginUser = async (page: Page, _: BrowserContext) => {
   await page.goto('/login');
 
   await page.getByPlaceholder('you@example.com').fill(testUser.email);
-  await page.getByPlaceholder('Your password').fill(testUser.password);
+  await page.getByPlaceholder('Enter your password').fill(testUser.password);
   await page.getByRole('button', { name: 'Login' }).click();
 
-  await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible();
+  await expect(page.getByText('Disk space')).toBeVisible();
 };
 
 type InstallAppOpts = {

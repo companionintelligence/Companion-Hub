@@ -7,7 +7,9 @@ import tsconfigPaths from 'vite-tsconfig-paths';
 const alias = {
   '@': path.resolve(__dirname, './src'),
 };
-const plugins: PluginOption[] = [reactRouter(), tsconfigPaths()];
+const _isTest = process.env.NODE_ENV === 'test';
+const isVitest = process.env.VITEST === 'true';
+const plugins: PluginOption[] = [!isVitest && reactRouter(), tsconfigPaths()];
 
 const { NODE_ENV } = process.env;
 if (NODE_ENV === 'production') {
@@ -63,7 +65,7 @@ export default defineConfig({
         target: 'http://localhost:3000',
         changeOrigin: true,
         configure: (proxy, _options) => {
-          proxy.on('error', (err, _req, res) => {
+          proxy.on('error', (err, _req, _res) => {
             // Log connection errors as warnings instead of crashing
             console.warn('[vite] http proxy error:', err.message);
           });
@@ -77,16 +79,19 @@ export default defineConfig({
     // Set to true to force re-optimization, or false to use cache
     force: false,
     // Include these dependencies in optimization
-    include: [
-      'i18next',
-      'react-i18next',
-      'i18next-http-backend',
-      'i18next-browser-languagedetector',
-      '@sentry/react',
-      'js-cookie',
-    ],
+    include: ['i18next', 'react-i18next', 'i18next-http-backend', 'i18next-browser-languagedetector', '@sentry/react', 'js-cookie'],
   },
   build: {
     sourcemap: true,
+  },
+  esbuild: {
+    jsxInject: isVitest ? `import React from 'react'` : undefined,
+  },
+  // @ts-expect-error - Vitest config
+  test: {
+    globals: true,
+    environment: 'jsdom',
+    setupFiles: ['./src/tests/setup.ts'],
+    include: ['src/**/*.test.{ts,tsx}'],
   },
 });

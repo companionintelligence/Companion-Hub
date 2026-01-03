@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { $ } from 'bun';
-import { existsSync } from 'fs';
+import { existsSync } from 'node:fs';
 
 console.log('🧹 Starting cleanup of CI-OS-Hub network, containers, volumes, and caches...\n');
 
@@ -10,31 +10,43 @@ console.log('1️⃣ Stopping and removing containers...');
 try {
   // Get containers by network
   const containersByNetwork = await $`docker ps -a --filter network=ci_os_hub_network --format {{.Names}}`.quiet();
-  
+
   // Also get containers by project name (ci-os-hub or legacy runtipi)
   const containersByProject = await $`docker ps -a --filter label=com.docker.compose.project=ci-os-hub --format {{.Names}}`.quiet();
   const containersByLegacyProject = await $`docker ps -a --filter label=com.docker.compose.project=runtipi --format {{.Names}}`.quiet();
-  
+
   const allContainers = new Set<string>();
-  
+
   if (containersByNetwork.stdout.toString().trim()) {
-    containersByNetwork.stdout.toString().trim().split('\n').forEach(name => {
-      if (name) allContainers.add(name);
-    });
+    containersByNetwork.stdout
+      .toString()
+      .trim()
+      .split('\n')
+      .forEach((name) => {
+        if (name) allContainers.add(name);
+      });
   }
-  
+
   if (containersByProject.stdout.toString().trim()) {
-    containersByProject.stdout.toString().trim().split('\n').forEach(name => {
-      if (name) allContainers.add(name);
-    });
+    containersByProject.stdout
+      .toString()
+      .trim()
+      .split('\n')
+      .forEach((name) => {
+        if (name) allContainers.add(name);
+      });
   }
 
   if (containersByLegacyProject.stdout.toString().trim()) {
-    containersByLegacyProject.stdout.toString().trim().split('\n').forEach(name => {
-      if (name) allContainers.add(name);
-    });
+    containersByLegacyProject.stdout
+      .toString()
+      .trim()
+      .split('\n')
+      .forEach((name) => {
+        if (name) allContainers.add(name);
+      });
   }
-  
+
   if (allContainers.size > 0) {
     for (const name of allContainers) {
       console.log(`   Removing container: ${name}`);
@@ -45,7 +57,7 @@ try {
   } else {
     console.log('   No containers found');
   }
-} catch (error) {
+} catch (_error) {
   console.log('   No containers to remove');
 }
 
@@ -55,17 +67,17 @@ try {
   // Get all volumes
   const volumes = await $`docker volume ls --format {{.Name}}`.quiet();
   const volumeNames = volumes.stdout.toString().trim().split('\n').filter(Boolean);
-  
+
   // Filter volumes related to ci-os-hub/ci_os_hub/apps (include legacy runtipi volumes)
   const relatedVolumes = volumeNames.filter(
-    (vol) => 
-      vol.includes('ci_os_hub') || 
+    (vol) =>
+      vol.includes('ci_os_hub') ||
       vol.includes('ci-os-hub') ||
-      vol.includes('runtipi') || 
+      vol.includes('runtipi') ||
       vol.includes('runtipi_') ||
-      vol.match(/^[a-z]+_[a-z]+-.*_data$/) // App volumes pattern like "grist_migrated-grist-1_data"
+      vol.match(/^[a-z]+_[a-z]+-.*_data$/), // App volumes pattern like "grist_migrated-grist-1_data"
   );
-  
+
   if (relatedVolumes.length > 0) {
     for (const vol of relatedVolumes) {
       console.log(`   Removing volume: ${vol}`);
@@ -87,7 +99,7 @@ try {
     console.log('   ⚠️  Network may already be removed or in use');
   });
   console.log('   ✅ Network removed');
-} catch (error) {
+} catch (_error) {
   console.log('   Network removal skipped');
 }
 
@@ -98,7 +110,7 @@ try {
   await $`docker compose --project-name ci-os-hub -f docker-compose.prod.yml down -v`.quiet();
   await $`docker compose --project-name runtipi -f docker-compose.prod.yml down -v`.quiet();
   console.log('   ✅ Docker compose cleaned');
-} catch (error) {
+} catch (_error) {
   console.log('   Docker compose cleanup skipped');
 }
 
@@ -108,7 +120,7 @@ try {
   await $`docker builder prune -af --filter type=exec.cachemount`.quiet();
   await $`docker builder prune -af`.quiet();
   console.log('   ✅ Build cache pruned');
-} catch (error) {
+} catch (_error) {
   console.log('   Build cache prune skipped');
 }
 
@@ -121,13 +133,13 @@ try {
   } else {
     console.log('   No buildx cache found');
   }
-} catch (error) {
+} catch (_error) {
   console.log('   Buildx cache removal skipped');
 }
 
 // Step 7: Optional - Clean up .internal directories (commented out by default)
 console.log('\n7️⃣ Checking .internal directories...');
-const internalDirs = [
+const _internalDirs = [
   '.internal/media',
   '.internal/state',
   '.internal/repos',
@@ -156,4 +168,3 @@ console.log('   - Network removed');
 console.log('   - Docker build cache pruned');
 console.log('   - Buildx cache removed');
 console.log('\n💡 Note: .internal directories were preserved. Uncomment in script to remove them.');
-

@@ -43,12 +43,12 @@
 
 /* Override primary button hover color to deep deep teal */
 .btn-primary:hover {
-  background-color: #115e59 !important;
-  border-color: #115e59 !important;
+  background-color: #115e59;
+  border-color: #115e59;
 }
 
 .btn-primary:focus-visible {
-  background-color: #115e59 !important;
-  border-color: #115e59 !important;
-  box-shadow: 0 0 0 0.25rem rgba(17, 94, 89, 0.25) !important;
+  background-color: #115e59;
+  border-color: #115e59;
+  box-shadow: 0 0 0 0.25rem rgba(17, 94, 89, 0.25);
 }

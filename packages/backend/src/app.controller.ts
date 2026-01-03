@@ -41,13 +41,14 @@ export class AppController {
         current: '0.0.0',
         latest: '0.0.0',
         body: '',
-        releases: [],
+        releases: [] as { version: string; body: string }[],
       },
     };
 
     try {
       // Try to get user settings
-      let userSettings;
+      // biome-ignore lint/suspicious/noExplicitAny: Configuration service returns untyped data
+      let userSettings: any;
       try {
         userSettings = this.configuration.get('userSettings');
       } catch (error) {
@@ -56,16 +57,16 @@ export class AppController {
       }
 
       const { guestDashboard, disablePasswordReset, allowAutoThemes, themeColor, themeBase, allowErrorMonitoring } = userSettings || {};
-      
+
       // Ensure required fields have defaults
       const localDomain = userSettings?.localDomain || defaults.localDomain;
       const sslPort = userSettings?.sslPort ?? defaults.sslPort;
-      
+
       // Get version with error handling (GitHub API might be unavailable)
       let version = defaults.version;
       try {
         version = await this.appService.getVersion();
-      } catch (error) {
+      } catch (_error) {
         // Fallback to current version if GitHub API fails
         try {
           const { version: currentVersion } = this.configuration.getConfig();
@@ -115,24 +116,25 @@ export class AppController {
     } catch (error) {
       // If everything fails, return minimal context to allow app to load
       this.logger.error('Error in userContext endpoint:', error);
-      
+
       // Try to get minimal config, but don't fail if it doesn't work
       let currentVersion = defaults.version.current;
-      let defaultSettings = {};
-      
+      // biome-ignore lint/suspicious/noExplicitAny: Fallback object
+      let defaultSettings: any = {};
+
       try {
         const config = this.configuration.getConfig();
         currentVersion = config.version || defaults.version.current;
       } catch (configError) {
         this.logger.error('Failed to get config:', configError);
       }
-      
+
       try {
         defaultSettings = this.configuration.get('userSettings') || {};
       } catch (settingsError) {
         this.logger.error('Failed to get userSettings:', settingsError);
       }
-      
+
       const fallbackData = {
         isLoggedIn: Boolean(req.user),
         isConfigured: false,

@@ -475,10 +475,10 @@ export class AppLifecycleService {
     const oldPort = app.port;
     // Prioritize parsedForm.port (user-specified port) > app.port (saved host port) > appInfo.port (container port)
     // parsedForm.port is the port being set in this update, so it's the most authoritative
-    const newPort = parsedForm.port ? Number(parsedForm.port) : (app.port ? Number(app.port) : appInfo.port);
+    const newPort = parsedForm.port ? Number(parsedForm.port) : app.port ? Number(app.port) : appInfo.port;
     const subdomainChanged = oldSubdomain !== newSubdomain;
-    const portChanged = oldPort !== newPort;
-    
+    const _portChanged = oldPort !== newPort;
+
     // In production, create/update Cloudflare Tunnel route whenever exposedLocal is enabled
     // This makes the app available on the internet at subdomain.companionintel.com
     // Or subdomain.orgDomain.companionintel.com if organization is registered
@@ -487,23 +487,18 @@ export class AppLifecycleService {
       try {
         // Get organization info if available
         const orgInfo = await this.registrationService.getOrganizationInfo();
-        const organizationInfo = orgInfo
-          ? { tunnelId: orgInfo.tunnelId, domain: orgInfo.domain }
-          : null;
-        
+        const organizationInfo = orgInfo ? { tunnelId: orgInfo.tunnelId, domain: orgInfo.domain } : null;
+
         const domain = organizationInfo ? organizationInfo.domain : 'companionintel.com';
-        this.logger.info(
-          `Creating Cloudflare Tunnel route for ${appUrn}: ` +
-          `${newSubdomain}.${domain} -> Traefik -> App Container`
-        );
-        
+        this.logger.info(`Creating Cloudflare Tunnel route for ${appUrn}: ` + `${newSubdomain}.${domain} -> Traefik -> App Container`);
+
         // Delete old route if subdomain changed
         if (wasExposedLocal && subdomainChanged) {
           await this.cloudflareTunnelService.deleteAppRoute(oldSubdomain, organizationInfo).catch((err) => {
             this.logger.warn(`Failed to delete old Cloudflare Tunnel route: ${err}`);
           });
         }
-        
+
         // Always create/update route if exposedLocal is enabled
         // createAppRoute will update existing route if it already exists
         // Port is no longer needed as apps go through Traefik
@@ -519,10 +514,8 @@ export class AppLifecycleService {
       try {
         // Get organization info if available
         const orgInfo = await this.registrationService.getOrganizationInfo();
-        const organizationInfo = orgInfo
-          ? { tunnelId: orgInfo.tunnelId, domain: orgInfo.domain }
-          : null;
-        
+        const organizationInfo = orgInfo ? { tunnelId: orgInfo.tunnelId, domain: orgInfo.domain } : null;
+
         await this.cloudflareTunnelService.deleteAppRoute(oldSubdomain, organizationInfo).catch((err) => {
           this.logger.warn(`Failed to delete Cloudflare Tunnel route: ${err}`);
         });
@@ -663,4 +656,3 @@ export class AppLifecycleService {
     })();
   }
 }
-

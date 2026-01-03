@@ -43,7 +43,8 @@ export class GithubService {
           owner,
           repo,
         })
-        .then((res) => {
+        // biome-ignore lint/suspicious/noExplicitAny: External API response
+        .then((res: any) => {
           version = res.data.tag_name;
           body = res.data.body ?? '';
 
@@ -52,7 +53,8 @@ export class GithubService {
             body: res.data.body ?? '',
           });
         })
-        .catch((err) => {
+        // biome-ignore lint/suspicious/noExplicitAny: External API response
+        .catch((err: any) => {
           this.logger.debug('GitHub API call failed, will use empty cache', err);
           resolve(null);
         });
@@ -79,11 +81,14 @@ export class GithubService {
               repo,
               per_page: 100,
             })
-            .then((res) => {
-              const fetchedReleases = res.data.map((release) => ({ ...release, body: release.body ?? '' }));
+            // biome-ignore lint/suspicious/noExplicitAny: External API response
+            .then((res: any) => {
+              // biome-ignore lint/suspicious/noExplicitAny: External API response
+              const fetchedReleases = res.data.map((release: any) => ({ ...release, body: release.body ?? '' }));
               resolve(fetchedReleases);
             })
-            .catch((err) => {
+            // biome-ignore lint/suspicious/noExplicitAny: External API response
+            .catch((err: any) => {
               this.logger.debug('GitHub API call failed, will use empty releases', err);
               resolve([]);
             });

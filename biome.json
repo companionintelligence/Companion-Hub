@@ -120,6 +120,16 @@
           }
         }
       }
+    },
+    {
+      "includes": ["scripts/**", "**/scripts/**"],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noConsole": "off"
+          }
+        }
+      }
     }
   ],
   "javascript": {

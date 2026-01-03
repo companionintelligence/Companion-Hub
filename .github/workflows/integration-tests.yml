@@ -14,12 +14,10 @@ jobs:
         image: postgres:14
         env:
           POSTGRES_PASSWORD: postgres
-          PGPORT: 6543
-          POSTGRES_INITDB_ARGS: '--pgport=6543'
         ports:
-          - 5433:6543
+          - 5433:5432
         options: >-
-          --health-cmd "pg_isready -p 6543"
+          --health-cmd "pg_isready"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -34,7 +32,7 @@ jobs:
           --health-retries 5
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Install dependencies
         uses: "./.github/actions/install-dependencies"

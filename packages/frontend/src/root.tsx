@@ -13,18 +13,18 @@ import { GlobalBackground } from './components/global-background/global-backgrou
 client.interceptors.response.use(async (res) => {
   if (res.status >= 400) {
     let data: { message?: string; intlParams?: Record<string, string> } = {};
-    
+
     // Try to parse JSON, but handle empty or invalid responses gracefully
     try {
       const text = await res.text();
       if (text) {
         data = JSON.parse(text);
       }
-    } catch (e) {
+    } catch (_e) {
       // If JSON parsing fails, use a default error message
       data = { message: res.statusText || 'An error occurred' };
     }
-    
+
     const error = new TranslatableError(data.message || `HTTP ${res.status}: ${res.statusText}`);
     error.intlParams = data.intlParams ?? {};
 
@@ -65,7 +65,8 @@ export async function clientLoader({ request }: Route.ActionArgs) {
           return redirect('/device-registration');
         }
         return null;
-      } else if (url.pathname === '/device-registration') {
+      }
+      if (url.pathname === '/device-registration') {
         return redirect('/');
       }
     }
@@ -80,6 +81,10 @@ export async function clientLoader({ request }: Route.ActionArgs) {
   }
 
   if (!user.data) {
+    return redirect('/register');
+  }
+
+  if (!user.data.isConfigured) {
     return redirect('/register');
   }
 

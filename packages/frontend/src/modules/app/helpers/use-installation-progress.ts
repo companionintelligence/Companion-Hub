@@ -18,9 +18,11 @@ export const updateInstallationProgress = (appUrn: AppUrn, progress: number | nu
   } else {
     installationProgressMap.delete(appUrn);
   }
-  
+
   // Notify all subscribers
-  progressSubscribers.forEach(callback => callback(appUrn, progress));
+  progressSubscribers.forEach((callback) => {
+    callback(appUrn, progress);
+  });
 };
 
 export const useInstallationProgress = (appUrn?: AppUrn) => {
@@ -54,4 +56,3 @@ export const useInstallationProgress = (appUrn?: AppUrn) => {
 
   return progress;
 };
-

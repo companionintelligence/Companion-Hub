@@ -84,7 +84,7 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   hash.update(repoUrl);
   const repoId = hash.digest('hex');
 
-  let rootFolderHost = envMap.get('ROOT_FOLDER_HOST') || process.env.ROOT_FOLDER_HOST;
+  const rootFolderHost = envMap.get('ROOT_FOLDER_HOST') || process.env.ROOT_FOLDER_HOST;
   const internalIp = envMap.get('INTERNAL_IP') || '127.0.0.1';
 
   if (!rootFolderHost) {
@@ -99,14 +99,13 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   // If it's still relative or contains variables, we cannot resolve it from inside the container
   if (!path.isAbsolute(rootFolderHost)) {
     logger.warn(
-      `ROOT_FOLDER_HOST is relative (${rootFolderHost}). ` +
-      `This should be an absolute host path. If running in Docker, check docker-compose.yml.`
+      `ROOT_FOLDER_HOST is relative (${rootFolderHost}). This should be an absolute host path. If running in Docker, check docker-compose.yml.`,
     );
     // In development, if we're in a container and ROOT_FOLDER_HOST is relative,
     // we cannot determine the host path. This is a configuration error.
     throw new Error(
       `ROOT_FOLDER_HOST must be an absolute host path, got: ${rootFolderHost}. ` +
-      `Please set ROOT_FOLDER_HOST to an absolute path in docker-compose.yml or .env file.`
+        'Please set ROOT_FOLDER_HOST to an absolute path in docker-compose.yml or .env file.',
     );
   }
 
@@ -128,29 +127,25 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   }
 
   // Final fallback to rootFolderHost if appDataPath is still not set
-  let finalAppDataPath = appDataPath || rootFolderHost;
-  
+  const finalAppDataPath = appDataPath || rootFolderHost;
+
   // Final validation - should be absolute at this point
   if (!path.isAbsolute(finalAppDataPath)) {
     logger.error(
-      `RUNTIPI_APP_DATA_PATH is not absolute: ${finalAppDataPath}. ` +
-      `This will cause Docker mount errors. Please set it to an absolute path.`
+      `RUNTIPI_APP_DATA_PATH is not absolute: ${finalAppDataPath}. This will cause Docker mount errors. Please set it to an absolute path.`,
     );
     throw new Error(
       `RUNTIPI_APP_DATA_PATH must be an absolute path, got: ${finalAppDataPath}. ` +
-      `Please set ROOT_FOLDER_HOST to an absolute path or set RUNTIPI_APP_DATA_PATH to an absolute path.`
+        'Please set ROOT_FOLDER_HOST to an absolute path or set RUNTIPI_APP_DATA_PATH to an absolute path.',
     );
   }
-  
+
   // Additional validation: ensure it's not a container path
   if (finalAppDataPath.startsWith('/app') || finalAppDataPath.startsWith('/data/')) {
-    logger.error(
-      `RUNTIPI_APP_DATA_PATH appears to be a container path: ${finalAppDataPath}. ` +
-      `This must be a host path for Docker mounts to work.`
-    );
+    logger.error(`RUNTIPI_APP_DATA_PATH appears to be a container path: ${finalAppDataPath}. This must be a host path for Docker mounts to work.`);
     throw new Error(
       `RUNTIPI_APP_DATA_PATH must be a host path, not a container path. Got: ${finalAppDataPath}. ` +
-      `Please ensure ROOT_FOLDER_HOST is set to an absolute host path.`
+        'Please ensure ROOT_FOLDER_HOST is set to an absolute host path.',
     );
   }
 
@@ -164,13 +159,20 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   envMap.set('JWT_SECRET', jwtSecret);
   envMap.set('DOMAIN', settings.domain || envMap.get('DOMAIN') || 'example.com');
   envMap.set('RUNTIPI_APP_DATA_PATH', finalAppDataPath);
-  envMap.set('RUNTIPI_FORWARD_AUTH_URL', settings.forwardAuthUrl || envMap.get('RUNTIPI_FORWARD_AUTH_URL') || 'http://ci-os-hub:3000/api/auth/traefik');
-  envMap.set('POSTGRES_HOST', 'ci-hub-db');
-  envMap.set('POSTGRES_DBNAME', 'tipi');
-  envMap.set('POSTGRES_USERNAME', 'tipi');
-  envMap.set('POSTGRES_PORT', String(6543));
+  envMap.set(
+    'RUNTIPI_FORWARD_AUTH_URL',
+    settings.forwardAuthUrl ||
+      process.env.RUNTIPI_FORWARD_AUTH_URL ||
+      envMap.get('RUNTIPI_FORWARD_AUTH_URL') ||
+      'http://ci-os-hub:3000/api/auth/traefik',
+  );
+
+  envMap.set('POSTGRES_HOST', process.env.POSTGRES_HOST || envMap.get('POSTGRES_HOST') || 'ci-hub-db');
+  envMap.set('POSTGRES_DBNAME', process.env.POSTGRES_DBNAME || envMap.get('POSTGRES_DBNAME') || 'tipi');
+  envMap.set('POSTGRES_USERNAME', process.env.POSTGRES_USERNAME || envMap.get('POSTGRES_USERNAME') || 'tipi');
+  envMap.set('POSTGRES_PORT', process.env.POSTGRES_PORT || envMap.get('POSTGRES_PORT') || String(6543));
   // Override old runtipi-queue hostname if present
-  const currentRabbitmqHost = envMap.get('RABBITMQ_HOST');
+  const currentRabbitmqHost = process.env.RABBITMQ_HOST || envMap.get('RABBITMQ_HOST');
   if (currentRabbitmqHost === 'runtipi-queue') {
     envMap.set('RABBITMQ_HOST', 'ci-os-hub-queue');
   } else {
@@ -213,7 +215,7 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   envMap.set('EXPERIMENTAL_INSECURE_COOKIE', settings.experimental_insecureCookie ? 'true' : 'false');
   envMap.set('THEME_BASE', settings.themeBase || envMap.get('THEME_BASE') || 'gray');
   envMap.set('THEME_COLOR', settings.themeColor || envMap.get('THEME_COLOR') || 'blue');
-  
+
   // CI Cloud integration settings
   envMap.set('CI_CLOUD_API_URL', envMap.get('CI_CLOUD_API_URL') || '');
   envMap.set('CI_CLOUD_FRONTEND_URL', envMap.get('CI_CLOUD_FRONTEND_URL') || '');
@@ -225,7 +227,7 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   // This preserves manual edits to .env while still syncing settings.json changes
   const newEnvContent = envUtils.envMapToString(envMap);
   const currentEnvMap = envUtils.envStringToMap(envFile);
-  
+
   // Check if any values have changed
   let hasChanges = false;
   const changedVars: string[] = [];
@@ -237,7 +239,7 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
       logger.debug(`Environment variable ${key} changed: ${currentValue || '(missing)'} -> ${newValue}`);
     }
   }
-  
+
   // Also check for removed variables
   if (!hasChanges) {
     for (const [key] of currentEnvMap.entries()) {
@@ -248,7 +250,7 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
       }
     }
   }
-  
+
   if (hasChanges) {
     logger.info(`Environment file has changes (${changedVars.length} variables: ${changedVars.join(', ')}), updating...`);
     // Try to write the env file, but continue if it's read-only (e.g., mounted as read-only)

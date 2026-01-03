@@ -10,4 +10,3 @@ import { ConfigurationModule } from '@/core/config/configuration.module';
   exports: [CloudflareTunnelService],
 })
 export class CloudflareModule {}
-

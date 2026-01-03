@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Post, Query, Req } from '@nestjs/common';
-import { Request } from 'express';
+import type { Request } from 'express';
 import { RegistrationService } from './registration.service';
 import { CloudflareTunnelService } from '../cloudflare/cloudflare-tunnel.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -35,20 +35,20 @@ export class RegistrationController {
   async getDeviceId(@Req() req: Request) {
     const deviceId = await this.registrationService.getDeviceId();
     const { ciCloudFrontendUrl } = this.config.getConfig();
-    
+
     // Build callback URL (where CI Cloud should redirect back to)
     // Use the request origin to construct the callback URL
     const protocol = req.protocol || 'http';
     const host = req.get('host') || 'localhost:3000';
     const callbackUrl = `${protocol}://${host}/device-registration`;
-    
+
     // Build registration URL with callback parameter
     // Handle empty string as well as null/undefined
-    const registrationUrl = (ciCloudFrontendUrl && ciCloudFrontendUrl.trim())
+    const registrationUrl = ciCloudFrontendUrl?.trim()
       ? `${ciCloudFrontendUrl.trim()}/device/register?device_id=${encodeURIComponent(deviceId)}&callback_url=${encodeURIComponent(callbackUrl)}`
       : null;
-    
-    return { 
+
+    return {
       device_id: deviceId,
       registration_url: registrationUrl,
       callback_url: callbackUrl,
@@ -90,9 +90,9 @@ export class RegistrationController {
   @ApiResponse({ status: 200, description: 'Returns the CI Cloud configuration' })
   async getConfig() {
     const config = this.config.getConfig();
-    const fs = await import('fs');
-    const path = await import('path');
-    
+    const fs = await import('node:fs');
+    const _path = await import('node:path');
+
     // Try to read the .env file directly to debug
     let envFileContent = null;
     let envFileLines: string[] = [];
@@ -100,14 +100,12 @@ export class RegistrationController {
       const envPath = config.envFilePath;
       if (fs.existsSync(envPath)) {
         envFileContent = fs.readFileSync(envPath, 'utf-8');
-        envFileLines = envFileContent.split('\n').filter(line => 
-          line.includes('CI_CLOUD') && !line.trim().startsWith('#')
-        );
+        envFileLines = envFileContent.split('\n').filter((line) => line.includes('CI_CLOUD') && !line.trim().startsWith('#'));
       }
-    } catch (e) {
+    } catch (_e) {
       // Ignore errors reading file
     }
-    
+
     return {
       ciCloudApiUrl: config.ciCloudApiUrl || null,
       ciCloudFrontendUrl: config.ciCloudFrontendUrl || null,
@@ -141,8 +139,13 @@ export class RegistrationController {
     }
 
     // Sanitize the name
-    const sanitizedName = name.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
-    
+    const sanitizedName = name
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9-]/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '');
+
     if (!sanitizedName) {
       return {
         available: false,

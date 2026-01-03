@@ -21,13 +21,13 @@ export default () => {
   });
 
   const isLoading = !systemData;
-  
+
   // Freeze CPU load at the initial value when it first loads
   const frozenCpuLoad = useRef<number | null>(null);
   if (frozenCpuLoad.current === null && systemData) {
     frozenCpuLoad.current = systemData.cpuLoad;
   }
-  const cpuLoad = frozenCpuLoad.current ?? systemData?.cpuLoad ?? 0;
+  const _cpuLoad = frozenCpuLoad.current ?? systemData?.cpuLoad ?? 0;
 
   return (
     <div className="h-full overflow-y-auto">

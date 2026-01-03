@@ -1,0 +1,62 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:14
+    command: -p 6543
+    ports:
+      - 6543
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: tipi
+      POSTGRES_DB: tipi
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d tipi -U tipi -p 6543"]
+      interval: 5s
+      timeout: 10s
+      retries: 120
+
+  queue:
+    image: rabbitmq:4-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: tipi
+      RABBITMQ_DEFAULT_PASS: tipi
+    ports:
+      - 5672
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 10s
+      retries: 120
+
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+      queue:
+        condition: service_healthy
+    ports:
+      - 9091
+      - 3000
+    environment:
+      NODE_ENV: production
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 6543
+      POSTGRES_USERNAME: tipi
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DBNAME: tipi
+      RABBITMQ_HOST: queue
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USERNAME: tipi
+      RABBITMQ_PASSWORD: tipi
+      TIPI_DATA_DIR: /data
+      ROOT_FOLDER_HOST: /tmp/runtipi-e2e
+      JWT_SECRET: test-secret
+      CI_CLOUD_API_URL: http://non-existent-service:3000
+      TIPI_VERSION: 0.0.0-test
+    volumes:
+      - /data
+      - /var/run/docker.sock:/var/run/docker.sock

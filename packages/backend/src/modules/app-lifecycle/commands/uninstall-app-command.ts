@@ -1,5 +1,4 @@
 import { LoggerService } from '@/core/logger/logger.service';
-import { ConfigurationService } from '@/core/config/configuration.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { CloudflareTunnelService } from '@/modules/cloudflare/cloudflare-tunnel.service';
@@ -32,20 +31,18 @@ export class UninstallAppCommand extends AppLifecycleCommand {
           // Get the app to retrieve the localSubdomain and exposedLocal status
           const appsRepository = this.moduleRef.get(AppsRepository, { strict: false });
           const app = await appsRepository?.getAppByUrn(appUrn);
-          
+
           // Only delete Cloudflare route if the app was exposed locally
           if (app?.exposedLocal) {
             // Use the same subdomain logic: app.localSubdomain ?? `${appName}-${appStoreId}`
             const { appName, appStoreId } = extractAppUrn(appUrn);
             const subdomain = app.localSubdomain || `${appName}-${appStoreId}`;
-            
+
             // Get organization info if available (for organization-specific tunnel)
             const registrationService = this.moduleRef.get(RegistrationService, { strict: false });
             const orgInfo = await registrationService?.getOrganizationInfo();
-            const organizationInfo = orgInfo
-              ? { tunnelId: orgInfo.tunnelId, domain: orgInfo.domain }
-              : null;
-            
+            const organizationInfo = orgInfo ? { tunnelId: orgInfo.tunnelId, domain: orgInfo.domain } : null;
+
             // deleteAppRoute handles both organization and default tunnels
             await cloudflareService.deleteAppRoute(subdomain, organizationInfo);
           }

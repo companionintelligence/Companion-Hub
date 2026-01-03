@@ -64,6 +64,7 @@ export class MarketplaceService {
           slug: reservedSlug,
           url: 'https://example.com',
           updatedAt: '',
+          type: 'git',
         });
         this.stores.set(reservedSlug, store);
       }
@@ -80,7 +81,8 @@ export class MarketplaceService {
 
     const store = this.stores.get(appStoreId);
     if (!store) {
-      throw new Error(`Store ${appStoreId} not found`);
+      this.logger.warn(`Store ${appStoreId} not found. Available stores: ${Array.from(this.stores.keys()).join(', ')}`);
+      return { store: null };
     }
 
     return { store };
@@ -88,13 +90,13 @@ export class MarketplaceService {
 
   async getAppInfoFromAppStore(appUrn: AppUrn) {
     const { store } = this.getStoreFromUrn(appUrn);
-
+    if (!store) throw new Error(`Store not found for ${appUrn}`);
     return store.getAppInfoFromAppStore(appUrn);
   }
 
   async getAppInfoFromAppStoreOrInstalled(appUrn: AppUrn) {
     const { store } = this.getStoreFromUrn(appUrn);
-
+    if (!store) throw new Error(`Store not found for ${appUrn}`);
     return store.getAppInfoFromAppStoreOrInstalled(appUrn);
   }
 
@@ -119,8 +121,9 @@ export class MarketplaceService {
     const limit = pLimit(10);
     const apps = await Promise.all(
       appUrns.map(async (appUrn) => {
-        return limit(() => {
+        return limit(async () => {
           const { store } = this.getStoreFromUrn(appUrn);
+          if (!store) return null;
           return store.getAppInfoFromAppStore(appUrn);
         });
       }),
@@ -199,7 +202,7 @@ export class MarketplaceService {
     }
 
     if (category) {
-      filteredApps = filteredApps.filter((app) => app.categories.some((c) => c === category));
+      filteredApps = filteredApps.filter((app) => app.categories.some((c: string) => c === category));
     }
 
     if (search && this.miniSearch) {
@@ -225,32 +228,44 @@ export class MarketplaceService {
    * @returns The image of the app
    */
   public async getAppImage(appUrn: AppUrn) {
-    const { store } = this.getStoreFromUrn(appUrn);
-    return store.getAppImage(appUrn);
+    try {
+      const { store } = this.getStoreFromUrn(appUrn);
+      if (!store) return { image: null, etag: '' };
+      return store.getAppImage(appUrn);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      this.logger.warn(`Failed to get image for ${appUrn}: ${message}`);
+      return { image: null, etag: '' };
+    }
   }
 
   public async getAppUpdateInfo(appUrn: AppUrn) {
     const { store } = this.getStoreFromUrn(appUrn);
+    if (!store) throw new Error(`Store not found for ${appUrn}`);
     return store.getAppUpdateInfo(appUrn);
   }
 
   public async copyAppFromRepoToInstalled(appUrn: AppUrn) {
     const { store } = this.getStoreFromUrn(appUrn);
+    if (!store) throw new Error(`Store not found for ${appUrn}`);
     return store.copyAppFromRepoToInstalled(appUrn);
   }
 
   public async copyDataDir(appUrn: AppUrn, envMap: Map<string, string>) {
     const { store } = this.getStoreFromUrn(appUrn);
+    if (!store) throw new Error(`Store not found for ${appUrn}`);
     return store.copyDataDir(appUrn, envMap);
   }
 
   public async getDockerComposeJson(appUrn: AppUrn) {
     const { store } = this.getStoreFromUrn(appUrn);
+    if (!store) throw new Error(`Store not found for ${appUrn}`);
     return store.getDockerComposeJson(appUrn);
   }
 
   public async getConfigJson(appUrn: AppUrn) {
     const { store } = this.getStoreFromUrn(appUrn);
+    if (!store) throw new Error(`Store not found for ${appUrn}`);
     return store.getConfigJson(appUrn);
   }
 }

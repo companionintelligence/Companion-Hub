@@ -33,12 +33,13 @@ export class QueueFactory {
   }
 
   private async doInitialize() {
-    const { host, password, username } = this.config.get('queue');
+    const { host, password, username, port } = this.config.get('queue');
 
     this.rabbit = new Connection({
       hostname: host,
       username,
       password,
+      port,
       connectionTimeout: 30000,
       heartbeat: 60,
     });
