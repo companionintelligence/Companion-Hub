@@ -10,7 +10,11 @@ test('should register a new user', async ({ page }) => {
 
   await page.getByRole('button', { name: 'Register' }).click();
 
-  await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible();
+  // Welcome screen
+  await expect(page.getByRole('heading', { name: 'Thanks for using Companion Hub' })).toBeVisible();
+  await page.getByRole('button', { name: 'Save and enter' }).click();
+
+  await expect(page.getByText('Disk space')).toBeVisible();
 });
 
 test('should login with existing user', async ({ page }) => {
@@ -29,5 +33,5 @@ test('should login with existing user', async ({ page }) => {
   await page.getByPlaceholder('Enter your password').fill(testUser.password);
   await page.getByRole('button', { name: 'Login' }).click();
 
-  await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible();
+  await expect(page.getByText('Disk space')).toBeVisible();
 });

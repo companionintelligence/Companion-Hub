@@ -22,11 +22,6 @@ export class AppStoreService {
     this.repoQueue.onEvent(async (data, reply) => {
       switch (data.command) {
         case 'update_all': {
-          if (process.env.SKIP_REPO_PULL === 'true') {
-            this.logger.warn('Skipping update_all due to SKIP_REPO_PULL');
-            await reply({ success: true, message: 'Skipped' });
-            break;
-          }
           const stores = await this.appStoreRepository.getEnabledAppStores();
           for (const store of stores) {
             await this.repoHelpers.pullRepo(store.url, store.slug, store.type ?? 'git');
@@ -35,11 +30,6 @@ export class AppStoreService {
           break;
         }
         case 'clone_all': {
-          if (process.env.SKIP_REPO_PULL === 'true') {
-            this.logger.warn('Skipping clone_all due to SKIP_REPO_PULL');
-            await reply({ success: true, message: 'Skipped' });
-            break;
-          }
           const stores = await this.appStoreRepository.getEnabledAppStores();
           for (const store of stores) {
             await this.repoHelpers.cloneRepo(store.url, store.slug, store.type ?? 'git');

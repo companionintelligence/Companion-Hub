@@ -1,7 +1,6 @@
 import './instrument';
 
 console.log('Main.ts starting...');
-console.log('SKIP_REPO_PULL:', process.env.SKIP_REPO_PULL);
 
 import fs from 'node:fs';
 import path from 'node:path';

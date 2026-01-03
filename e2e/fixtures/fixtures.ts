@@ -33,7 +33,7 @@ export const loginUser = async (page: Page, _: BrowserContext) => {
   await page.getByPlaceholder('Enter your password').fill(testUser.password);
   await page.getByRole('button', { name: 'Login' }).click();
 
-  await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible();
+  await expect(page.getByText('Disk space')).toBeVisible();
 };
 
 type InstallAppOpts = {

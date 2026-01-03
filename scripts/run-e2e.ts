@@ -101,6 +101,29 @@ async function waitForFrontend(port: string) {
   throw new Error('Frontend failed to start within timeout');
 }
 
+async function waitForBootstrap() {
+  const maxRetries = 120; // 2 minutes
+  const interval = 1000;
+
+  console.log('Waiting for bootstrap to complete...');
+
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      const logs = await getCommandOutput('docker', ['compose', '-p', projectName, '-f', composeFile, 'logs', 'app']);
+      if (logs.includes('Bootstrap completed successfully')) {
+        console.log('\nBootstrap completed!');
+        return;
+      }
+    } catch (e) {
+      // ignore
+    }
+    await new Promise((resolve) => setTimeout(resolve, interval));
+    process.stdout.write('.');
+  }
+  console.log('');
+  throw new Error('Bootstrap failed to complete within timeout');
+}
+
 async function main() {
   try {
     console.log('Starting E2E environment...');
@@ -117,6 +140,8 @@ async function main() {
     // Wait for backend to be ready (migrations run)
     console.log('Waiting for backend to be ready...');
     await waitForBackend(backendPort);
+
+    await waitForBootstrap();
 
     console.log('Waiting for frontend to be ready...');
     await waitForFrontend(backendPort);

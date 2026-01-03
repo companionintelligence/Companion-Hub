@@ -43,15 +43,11 @@ export class MarketplaceService {
   ) {}
 
   async initialize() {
-    this.logger.info('Marketplace initialize start');
     this.stores.clear();
 
-    this.logger.info('Fetching stores...');
     const stores = await this.appStoreService.getAllAppStores();
-    this.logger.info(`Fetched ${stores.length} stores`);
 
     for (const config of stores) {
-      this.logger.info(`Initializing store ${config.slug}`);
       const store = new AppStoreFilesManager(this.configuration, this.filesystem, this.logger, config);
       this.stores.set(config.slug, store);
     }
@@ -59,7 +55,6 @@ export class MarketplaceService {
     // TODO: This is a temporary fix to ensure that internal app stores are always present.
     for (const reservedSlug of RESERVED_APP_STORE_SLUGS) {
       if (!this.stores.has(reservedSlug)) {
-        this.logger.info(`Initializing reserved store ${reservedSlug}`);
         const store = new AppStoreFilesManager(this.configuration, this.filesystem, this.logger, {
           branch: 'main',
           createdAt: '',
@@ -75,14 +70,7 @@ export class MarketplaceService {
       }
     }
 
-    this.logger.info('Checking SKIP_REPO_PULL');
-    if (process.env.SKIP_REPO_PULL !== 'true') {
-      this.logger.info('Pulling repositories...');
-      await this.appStoreService.pullRepositories();
-      this.logger.info('Repositories pulled');
-    } else {
-      this.logger.warn('Skipping repo pull due to SKIP_REPO_PULL env var');
-    }
+    await this.appStoreService.pullRepositories();
     this.invalidateCache();
 
     this.logger.debug('Marketplace service initialized with stores', Array.from(this.stores.keys()).join(', '));

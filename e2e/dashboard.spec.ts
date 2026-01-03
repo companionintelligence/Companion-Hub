@@ -2,8 +2,8 @@ import { expect, loginUser, test } from './fixtures/fixtures';
 
 test('should display dashboard for logged in user', async ({ page, context }) => {
   await loginUser(page, context);
-  await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible();
-  await expect(page.getByText('System Status')).toBeVisible();
+  await expect(page.getByText('Disk space')).toBeVisible();
+  await expect(page.getByText('CPU load')).toBeVisible();
 });
 
 test('should display guest dashboard', async ({ page }) => {
