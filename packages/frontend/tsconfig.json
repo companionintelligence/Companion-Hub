@@ -12,5 +12,5 @@
     "types": ["@testing-library/jest-dom"],
     "rootDirs": [".", "./.react-router/types"]
   },
-  "exclude": ["./src/api-client/**/*"]
+  "exclude": ["./src/api-client/**/*", "vite.config.ts"]
 }
