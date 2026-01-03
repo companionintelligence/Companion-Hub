@@ -37,6 +37,7 @@ COPY ./packages/frontend/public ./packages/frontend/public
 RUN bun install --frozen-lockfile --verbose
 
 COPY ./turbo.json ./turbo.json
+COPY ./tsconfig.json ./tsconfig.json
 COPY ./packages ./packages
 COPY ./packages/backend/assets ./assets
 COPY ./packages/backend/src/core/database/drizzle ./assets/migrations

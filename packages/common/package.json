@@ -32,7 +32,7 @@
   },
   "scripts": {
     "prepublishOnly": "npm run ci",
-    "dev": "echo 'Skipping common dev'",
+    "dev": "tsc --noEmit --watch --preserveWatchOutput",
     "build": "rm -rf dist && tsc && cp package.json dist/",
     "build:schemas": "bun run ./script/gen-json-schema.ts",
     "ci": "npm run build && npm run check-exports",
