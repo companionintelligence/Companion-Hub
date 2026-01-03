@@ -98,6 +98,7 @@ export class RegistrationService implements OnApplicationBootstrap {
       }
 
       // Step 4b: CI Cloud verifies... returns device_registration.id and subdomain
+      // biome-ignore lint/suspicious/noExplicitAny: External API response
       const data = (await response.json()) as any;
       const registration = data.device_registration || data;
 
@@ -224,9 +225,11 @@ export class RegistrationService implements OnApplicationBootstrap {
       });
 
       if (registerResponse.ok) {
+        // biome-ignore lint/suspicious/noExplicitAny: External API response
         const result = (await registerResponse.json()) as any;
         this.logger.info(`Device registered successfully: ${result.device_id} (status: ${result.status})`);
       } else {
+        // biome-ignore lint/suspicious/noExplicitAny: External API response
         const errorData = (await registerResponse.json().catch(() => ({ error: 'Unknown error' }))) as any;
         this.logger.warn(`Device registration failed: ${registerResponse.status} - ${errorData.error || registerResponse.statusText}`);
 
@@ -262,6 +265,7 @@ export class RegistrationService implements OnApplicationBootstrap {
         this.logger.info('Device activated successfully!');
 
         // Step 3: Fetch organization details and setup infrastructure
+        // biome-ignore lint/suspicious/noExplicitAny: External API response
         const activateResult = (await activateResponse.json().catch(() => ({}))) as any;
         await this.setupOrganizationInfrastructure(ciHubOrganizationId, activateResult);
 
@@ -335,6 +339,7 @@ export class RegistrationService implements OnApplicationBootstrap {
           });
 
           if (orgResponse.ok) {
+            // biome-ignore lint/suspicious/noExplicitAny: External API response
             const orgData = (await orgResponse.json()) as any;
             orgName = orgData.name || orgData.organization_name || null;
             tunnelId = orgData.tunnel_id || null;
@@ -513,6 +518,7 @@ export class RegistrationService implements OnApplicationBootstrap {
       });
 
       if (!registerResponse.ok) {
+        // biome-ignore lint/suspicious/noExplicitAny: External API response
         const errorData = (await registerResponse.json().catch(() => ({ error: 'Unknown error' }))) as any;
         this.logger.error(`Device registration failed: ${registerResponse.status} - ${JSON.stringify(errorData)}`);
         return {
@@ -537,6 +543,7 @@ export class RegistrationService implements OnApplicationBootstrap {
       });
 
       if (activateResponse.status !== 200) {
+        // biome-ignore lint/suspicious/noExplicitAny: External API response
         const errorData = (await activateResponse.json().catch(() => ({ error: activateResponse.statusText }))) as any;
         this.logger.error(`Device activation failed: ${activateResponse.status} - ${JSON.stringify(errorData)}`);
         return {
@@ -563,6 +570,7 @@ export class RegistrationService implements OnApplicationBootstrap {
 
       // Step 4: Setup organization infrastructure
       await this.setupOrganizationInfrastructure(organizationId, {
+        // biome-ignore lint/suspicious/noExplicitAny: External API response
         ...(activateResult as any),
         organization_name: finalOrgName,
       });

@@ -63,7 +63,7 @@ const ActionButton: React.FC<BtnProps> = (props) => {
   );
 };
 
-export const AppActions = ({ app, info, localDomain, metadata, sslPort }: IProps) => {
+export const AppActions = ({ app, info, metadata }: IProps) => {
   const installDisclosure = useDisclosure();
   const stopDisclosure = useDisclosure();
   const restartDisclosure = useDisclosure();

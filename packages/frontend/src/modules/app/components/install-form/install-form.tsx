@@ -5,8 +5,6 @@ import { Switch } from '@/components/ui/Switch';
 import { useAppContext } from '@/context/app-context';
 import type { AppInfo, FormField } from '@/types/app.types';
 import type { TranslatableError } from '@/types/error.types';
-import { extractAppUrn } from '@/utils/app-helpers';
-import type { AppUrn } from '@runtipi/common/types';
 import { useMutation } from '@tanstack/react-query';
 import clsx from 'clsx';
 import type React from 'react';
@@ -45,7 +43,7 @@ const typeFilter = (field: FormField) => !hiddenTypes.includes(field.type);
 export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit, initialValues, loading, formId }) => {
   const { t } = useTranslation();
   const { userSettings, isProduction } = useAppContext();
-  const { guestDashboard, localDomain, internalIp, domain, maxBackups: globalMaxBackups } = userSettings;
+  const { guestDashboard, localDomain, maxBackups: globalMaxBackups } = userSettings;
 
   const {
     register,
@@ -61,7 +59,6 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
   const _watchExposedLocal = watch('exposedLocal', false);
   const watchLocalSubdomain = watch('localSubdomain', '');
 
-  const { appName } = extractAppUrn(info.urn as AppUrn);
   const dnsCheckTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const [isCheckingDns, setIsCheckingDns] = useState(false);
   const [dnsAvailabilityError, setDnsAvailabilityError] = useState<string | null>(null);

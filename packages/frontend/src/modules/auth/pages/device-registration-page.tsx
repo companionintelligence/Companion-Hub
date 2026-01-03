@@ -3,7 +3,6 @@ import { useNavigate, useSearchParams } from 'react-router';
 import { Button } from '@/components/ui/Button';
 import { Alert, AlertDescription } from '@/components/ui/Alert/Alert';
 import { IconAlertCircle, IconExternalLink } from '@tabler/icons-react';
-import { useTranslation } from 'react-i18next';
 import toast from 'react-hot-toast';
 
 export default function DeviceRegistrationPage() {
