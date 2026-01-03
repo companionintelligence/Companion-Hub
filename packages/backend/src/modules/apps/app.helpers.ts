@@ -77,28 +77,26 @@ export class AppHelpers {
     if (path.isAbsolute(baseAppDataPath)) {
       appDataHostBase = baseAppDataPath;
       this.logger.debug(`Using absolute baseAppDataPath: ${appDataHostBase}`);
-    } else {
+    } else if (path.isAbsolute(rootFolderHost)) {
       // Resolve relative path - try multiple strategies
-      if (path.isAbsolute(rootFolderHost)) {
-        appDataHostBase = path.resolve(rootFolderHost, baseAppDataPath);
-        this.logger.debug(`Resolved relative baseAppDataPath against rootFolderHost: ${appDataHostBase}`);
+      appDataHostBase = path.resolve(rootFolderHost, baseAppDataPath);
+      this.logger.debug(`Resolved relative baseAppDataPath against rootFolderHost: ${appDataHostBase}`);
+    } else {
+      // Try environment variable
+      const envRoot = process.env.ROOT_FOLDER_HOST;
+      if (envRoot && path.isAbsolute(envRoot)) {
+        appDataHostBase = path.resolve(envRoot, baseAppDataPath);
+        this.logger.debug(`Resolved relative baseAppDataPath against process.env.ROOT_FOLDER_HOST: ${appDataHostBase}`);
       } else {
-        // Try environment variable
-        const envRoot = process.env.ROOT_FOLDER_HOST;
-        if (envRoot && path.isAbsolute(envRoot)) {
-          appDataHostBase = path.resolve(envRoot, baseAppDataPath);
-          this.logger.debug(`Resolved relative baseAppDataPath against process.env.ROOT_FOLDER_HOST: ${appDataHostBase}`);
-        } else {
-          // Both paths are relative - this is a problem
-          this.logger.error(
-            `Both ROOT_FOLDER_HOST (${rootFolderHost}) and RUNTIPI_APP_DATA_PATH (${baseAppDataPath}) are relative. ` +
-              'APP_DATA_DIR will not resolve correctly. Please set ROOT_FOLDER_HOST to an absolute path.',
-          );
-          throw new Error(
-            'Cannot resolve APP_DATA_DIR: Both ROOT_FOLDER_HOST and RUNTIPI_APP_DATA_PATH are relative paths. ' +
-              'ROOT_FOLDER_HOST must be an absolute path.',
-          );
-        }
+        // Both paths are relative - this is a problem
+        this.logger.error(
+          `Both ROOT_FOLDER_HOST (${rootFolderHost}) and RUNTIPI_APP_DATA_PATH (${baseAppDataPath}) are relative. ` +
+            'APP_DATA_DIR will not resolve correctly. Please set ROOT_FOLDER_HOST to an absolute path.',
+        );
+        throw new Error(
+          'Cannot resolve APP_DATA_DIR: Both ROOT_FOLDER_HOST and RUNTIPI_APP_DATA_PATH are relative paths. ' +
+            'ROOT_FOLDER_HOST must be an absolute path.',
+        );
       }
     }
 

@@ -8,7 +8,6 @@ import toast from 'react-hot-toast';
 
 export default function DeviceRegistrationPage() {
   const navigate = useNavigate();
-  const { t } = useTranslation();
   const [searchParams] = useSearchParams();
   const [isRegistered, setIsRegistered] = useState(false);
   const [deviceId, setDeviceId] = useState<string | null>(null);
@@ -26,10 +25,10 @@ export default function DeviceRegistrationPage() {
       const handleCallback = async () => {
         try {
           const params: Record<string, string> = {
-            device_id: searchParams.get('device_id')!,
-            organization_id: searchParams.get('organization_id')!,
-            organization_name: searchParams.get('organization_name')!,
-            subdomain: searchParams.get('subdomain')!,
+            device_id: searchParams.get('device_id') ?? '',
+            organization_id: searchParams.get('organization_id') ?? '',
+            organization_name: searchParams.get('organization_name') ?? '',
+            subdomain: searchParams.get('subdomain') ?? '',
           };
           const tunnelId = searchParams.get('tunnel_id');
           if (tunnelId) {

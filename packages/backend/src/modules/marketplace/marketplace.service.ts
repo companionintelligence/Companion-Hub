@@ -232,8 +232,9 @@ export class MarketplaceService {
       const { store } = this.getStoreFromUrn(appUrn);
       if (!store) return { image: null, etag: '' };
       return store.getAppImage(appUrn);
-    } catch (e: any) {
-      this.logger.warn(`Failed to get image for ${appUrn}: ${e.message}`);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      this.logger.warn(`Failed to get image for ${appUrn}: ${message}`);
       return { image: null, etag: '' };
     }
   }
