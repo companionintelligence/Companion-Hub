@@ -5,17 +5,20 @@
     "build": {
       "dependsOn": ["^build"],
       "inputs": ["$TURBO_DEFAULT$", ".env*"],
-      "outputs": ["dist/"]
+      "outputs": ["dist/"],
+      "cache": false
     },
     "bundle": {
       "dependsOn": ["build", "^bundle"],
       "inputs": ["$TURBO_DEFAULT$", ".env*"],
-      "outputs": ["dist/"]
+      "outputs": ["dist/"],
+      "cache": false
     },
     "tsc": {
       "dependsOn": ["^tsc"],
       "inputs": ["$TURBO_DEFAULT$", ".env*"],
-      "outputs": ["dist/"]
+      "outputs": ["dist/"],
+      "cache": false
     },
     "dev": {
       "dependsOn": ["build"],
