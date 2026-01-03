@@ -1,5 +1,5 @@
-import { spawn } from 'child_process';
-import { resolve } from 'path';
+import { spawn } from 'node:child_process';
+import { resolve } from 'node:path';
 
 const composeFile = resolve(__dirname, '../e2e/docker-compose.e2e.yml');
 const projectName = `test-e2e-${Date.now()}`;
@@ -48,7 +48,7 @@ async function checkUrl(url: string) {
   try {
     const res = await fetch(url);
     return res.status === 200;
-  } catch (e) {
+  } catch (_e) {
     // console.log(`Fetch failed for ${url}:`, e.message);
     return false;
   }
@@ -65,13 +65,13 @@ async function waitForBackend(port: string) {
       console.log('\nBackend is ready!');
       return;
     }
-    
+
     if (i > 0 && i % 30 === 0) {
       console.log(`\n--- Logs at ${i}s ---`);
       try {
         const logs = await getCommandOutput('docker', ['compose', '-p', projectName, '-f', composeFile, 'logs', '--tail', '20', 'app']);
         console.log(logs);
-      } catch (e) {
+      } catch (_e) {
         console.log('Failed to fetch logs');
       }
       console.log('---------------------');
@@ -114,7 +114,7 @@ async function waitForBootstrap() {
         console.log('\nBootstrap completed!');
         return;
       }
-    } catch (e) {
+    } catch (_e) {
       // ignore
     }
     await new Promise((resolve) => setTimeout(resolve, interval));
@@ -157,7 +157,6 @@ async function main() {
 
     console.log('Running Playwright tests...');
     await runCommand('bun', ['playwright', 'test', '--workers=1'], env);
-
   } catch (error) {
     console.error('E2E test run failed:', error);
     console.log('Fetching app logs...');

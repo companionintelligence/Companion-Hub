@@ -19,7 +19,7 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
       const { event, appUrn, error, appStatus } = data;
       // Type guard: progress is only available on status_change events
       const progress = 'progress' in data ? data.progress : undefined;
-      
+
       if (error) {
         console.error(error);
       }

@@ -61,6 +61,7 @@ export default () => {
           <div className="mb-4">
             <div className="mb-3">
               <svg
+                aria-hidden="true"
                 xmlns="http://www.w3.org/2000/svg"
                 className="icon icon-lg text-muted mb-2"
                 width="48"
@@ -79,9 +80,7 @@ export default () => {
               </svg>
             </div>
             <h2 className="h2 text-center mb-3">Demo Account Credentials</h2>
-            <p className="text-muted mb-4">
-              For demo purposes, please use the following credentials to access the application.
-            </p>
+            <p className="text-muted mb-4">For demo purposes, please use the following credentials to access the application.</p>
           </div>
 
           <div className="card bg-light mb-4">
@@ -105,6 +104,7 @@ export default () => {
 
           <div className="alert alert-info d-flex align-items-start mb-4" role="alert">
             <svg
+              aria-hidden="true"
               xmlns="http://www.w3.org/2000/svg"
               className="icon alert-icon me-2"
               width="24"

@@ -11,6 +11,8 @@ const customRender = (ui: ReactElement, options?: Omit<RenderOptions, 'wrapper'>
 const customRenderHook = <Props, Result>(callback: (props: Props) => Result, options?: Omit<RenderOptions, 'wrapper'>) =>
   renderHook(callback, { wrapper: AllTheProviders, ...options });
 
+// biome-ignore lint/performance/noBarrelFile: Test utils
+// biome-ignore lint/performance/noReExportAll: Test utils
 export * from '@testing-library/react';
 export { customRender as render };
 export { customRenderHook as renderHook };

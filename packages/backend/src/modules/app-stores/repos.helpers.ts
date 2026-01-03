@@ -84,7 +84,7 @@ export class ReposHelpers {
    *
    * @param {string} url
    */
-  public async cloneRepo(url: string, id: string, type: string = 'git') {
+  public async cloneRepo(url: string, id: string, type = 'git') {
     try {
       const { dataDir } = this.configuration.get('directories');
       const repoPath = path.join(dataDir, 'repos', id);
@@ -175,7 +175,7 @@ export class ReposHelpers {
    *
    * @param {string} repoUrl
    */
-  public async pullRepo(repoUrl: string, slug: string, type: string = 'git') {
+  public async pullRepo(repoUrl: string, slug: string, type = 'git') {
     try {
       if (type === 'http_zip') {
         // For zip repos, we just re-download and overwrite

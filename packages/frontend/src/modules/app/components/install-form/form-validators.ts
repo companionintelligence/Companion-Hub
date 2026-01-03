@@ -124,7 +124,7 @@ export const validateAppConfig = (values: Record<string, unknown>, fields: FormF
     if (error) {
       errors.localSubdomain = error;
     }
-    
+
     // In production, port is required when publishing to internet
     // Check if we're in production by checking if port is required but missing
     // We'll validate this in the form component itself since we have access to isProduction there

@@ -14,7 +14,17 @@ import { AppLifecycleService } from './app-lifecycle.service';
 import { AppStatusSyncService } from './app-status-sync.service';
 
 @Module({
-  imports: [QueueModule, AppsModule, EnvModule, DockerModule, MarketplaceModule, forwardRef(() => BackupsModule), SSEModule, CloudflareModule, RegistrationModule],
+  imports: [
+    QueueModule,
+    AppsModule,
+    EnvModule,
+    DockerModule,
+    MarketplaceModule,
+    forwardRef(() => BackupsModule),
+    SSEModule,
+    CloudflareModule,
+    RegistrationModule,
+  ],
   providers: [AppLifecycleService, AppLifecycleCommandFactory, AppStatusSyncService],
   controllers: [AppLifecycleController],
   exports: [AppLifecycleService, AppStatusSyncService],

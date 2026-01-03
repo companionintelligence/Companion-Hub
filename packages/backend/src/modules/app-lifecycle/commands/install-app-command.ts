@@ -72,7 +72,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
       const { appStoreId, appName } = extractAppUrn(appUrn);
       const containerAppDataPath = `/app-data/${appStoreId}/${appName}`;
       const hostAppDataDir = envMap.get('APP_DATA_DIR');
-      
+
       if (hostAppDataDir) {
         logger.info(`Ensuring APP_DATA_DIR exists (host: ${hostAppDataDir}, container: ${containerAppDataPath})`);
         try {
@@ -90,7 +90,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
                 // Ignore errors for subdirectories
               });
             }
-          } catch (subdirError) {
+          } catch (_subdirError) {
             // Ignore subdirectory creation errors
           }
         }
@@ -135,33 +135,28 @@ export class InstallAppCommand extends AppLifecycleCommand {
         const cloudflareService = this.moduleRef.get(CloudflareTunnelService, { strict: false });
         if (!cloudflareService) {
           logger.debug(`CloudflareTunnelService not available for ${appUrn}`);
-        } else if (!cloudflareService.isEnabled()) {
-          logger.debug(`Cloudflare Tunnel integration is not enabled for ${appUrn}`);
-        } else {
+        } else if (cloudflareService.isEnabled()) {
           const { appName, appStoreId } = extractAppUrn(appUrn);
           const { isProduction } = config?.getConfig() || { isProduction: false };
-          
+
           // In production, when exposedLocal is enabled, create a route to Traefik
           // Traefik will route to the app container based on the subdomain
           // This publishes the app to the internet via Cloudflare Tunnel -> Traefik -> App
           if (form.exposedLocal && isProduction) {
             const subdomain = form.localSubdomain ? form.localSubdomain : `${appName}-${appStoreId}`;
-            
+
             // Get organization info if available
             const registrationService = this.moduleRef.get(RegistrationService, { strict: false });
             const orgInfo = await registrationService?.getOrganizationInfo();
-            const organizationInfo = orgInfo
-              ? { tunnelId: orgInfo.tunnelId, domain: orgInfo.domain }
-              : null;
-            
+            const organizationInfo = orgInfo ? { tunnelId: orgInfo.tunnelId, domain: orgInfo.domain } : null;
+
             emitProgress(90);
             const domain = organizationInfo ? organizationInfo.domain : 'companionintel.com';
-            logger.info(
-              `Creating Cloudflare Tunnel route for ${appUrn} via Traefik ` +
-              `(subdomain: ${subdomain}, domain: ${domain})`
-            );
+            logger.info(`Creating Cloudflare Tunnel route for ${appUrn} via Traefik ` + `(subdomain: ${subdomain}, domain: ${domain})`);
             await cloudflareService.createAppRoute(subdomain, undefined, organizationInfo);
           }
+        } else {
+          logger.debug(`Cloudflare Tunnel integration is not enabled for ${appUrn}`);
         }
       } catch (error) {
         logger.warn(`Failed to create Cloudflare Tunnel route for ${appUrn}: ${error}`);

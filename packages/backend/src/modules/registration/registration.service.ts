@@ -52,7 +52,7 @@ export class RegistrationService implements OnApplicationBootstrap {
     if (this._isRegistered) {
       return true;
     }
-    
+
     // Check if we have any organization in the database (indicates successful registration)
     try {
       const hasOrg = await this.organizationRepository.hasAnyOrganization();
@@ -64,7 +64,7 @@ export class RegistrationService implements OnApplicationBootstrap {
       // Database might not be ready, ignore error
       this.logger.debug('Could not check organization in database:', error);
     }
-    
+
     return this._isRegistered;
   }
 
@@ -120,14 +120,13 @@ export class RegistrationService implements OnApplicationBootstrap {
 
       // Compare
       this.logger.debug(`License check comparison: Local[${localOrg.id}, ${localOrg.name}] vs Cloud[${cloudOrgId}, ${cloudSubdomain}]`);
-      
+
       if (localOrg.id !== cloudOrgId || localOrg.name !== cloudSubdomain) {
         this.logger.warn(`License mismatch! Local: ${localOrg.id}/${localOrg.name}, Cloud: ${cloudOrgId}/${cloudSubdomain}`);
         await this.handleLicenseCheckFailure(localOrg.id);
       } else {
         this.logger.info('License verified successfully.');
       }
-
     } catch (error) {
       this.logger.error('Error verifying license:', error);
     }
@@ -192,7 +191,7 @@ export class RegistrationService implements OnApplicationBootstrap {
       this.logger.debug('CI Cloud API not configured, skipping registration check.');
       return true;
     }
-    
+
     // If organization ID is not configured, don't try to register
     if (!ciHubOrganizationId) {
       return false;
@@ -200,10 +199,10 @@ export class RegistrationService implements OnApplicationBootstrap {
 
     try {
       const deviceId = await this.getDeviceId();
-      
+
       // Step 1: Register device with CI Cloud Hub API
       const registerUrl = `${ciCloudApiUrl}/api/devices/hub/register`;
-      
+
       this.logger.debug(`Registering device at ${registerUrl} for device ${deviceId}`);
 
       const registerHeaders: Record<string, string> = {
@@ -211,7 +210,7 @@ export class RegistrationService implements OnApplicationBootstrap {
       };
 
       if (ciHubApiKey) {
-        registerHeaders['Authorization'] = `Bearer ${ciHubApiKey}`;
+        registerHeaders.Authorization = `Bearer ${ciHubApiKey}`;
       }
 
       const registerResponse = await fetch(registerUrl, {
@@ -224,19 +223,19 @@ export class RegistrationService implements OnApplicationBootstrap {
         }),
       });
 
-      if (!registerResponse.ok) {
+      if (registerResponse.ok) {
+        const result = (await registerResponse.json()) as any;
+        this.logger.info(`Device registered successfully: ${result.device_id} (status: ${result.status})`);
+      } else {
         const errorData = (await registerResponse.json().catch(() => ({ error: 'Unknown error' }))) as any;
         this.logger.warn(`Device registration failed: ${registerResponse.status} - ${errorData.error || registerResponse.statusText}`);
-        
+
         // If device already exists (409 or similar), try to activate it
         if (registerResponse.status === 409 || registerResponse.status === 400) {
           this.logger.debug('Device may already be registered, attempting activation...');
         } else {
           return false;
         }
-      } else {
-        const result = (await registerResponse.json()) as any;
-        this.logger.info(`Device registered successfully: ${result.device_id} (status: ${result.status})`);
       }
 
       // Step 2: Activate device by calling /api/web/register
@@ -261,11 +260,11 @@ export class RegistrationService implements OnApplicationBootstrap {
 
       if (activateResponse.status === 200) {
         this.logger.info('Device activated successfully!');
-        
+
         // Step 3: Fetch organization details and setup infrastructure
         const activateResult = (await activateResponse.json().catch(() => ({}))) as any;
         await this.setupOrganizationInfrastructure(ciHubOrganizationId, activateResult);
-        
+
         return true;
       }
 
@@ -327,7 +326,7 @@ export class RegistrationService implements OnApplicationBootstrap {
           };
 
           if (ciHubApiKey) {
-            orgHeaders['Authorization'] = `Bearer ${ciHubApiKey}`;
+            orgHeaders.Authorization = `Bearer ${ciHubApiKey}`;
           }
 
           const orgResponse = await fetch(orgUrl, {
@@ -357,14 +356,7 @@ export class RegistrationService implements OnApplicationBootstrap {
       const orgDomain = `${orgName}.companionintel.com`;
 
       // Create tunnel if not provided
-      if (!tunnelId) {
-        this.logger.info(`Creating Cloudflare Tunnel for organization: ${orgDomain}`);
-        tunnelId = await this.cloudflareTunnelService.createOrganizationTunnel(orgName);
-        if (!tunnelId) {
-          this.logger.error(`Failed to create Cloudflare Tunnel for organization ${organizationId}`);
-          return;
-        }
-      } else {
+      if (tunnelId) {
         this.logger.info(`Using existing tunnel ID for organization: ${tunnelId}`);
         // Verify tunnel exists and configure it if needed
         const tunnelConfig = await this.cloudflareTunnelService.getTunnelConfigForTunnel(tunnelId);
@@ -381,6 +373,13 @@ export class RegistrationService implements OnApplicationBootstrap {
             ],
           };
           await this.cloudflareTunnelService.updateTunnelConfigForTunnel(tunnelId, config);
+        }
+      } else {
+        this.logger.info(`Creating Cloudflare Tunnel for organization: ${orgDomain}`);
+        tunnelId = await this.cloudflareTunnelService.createOrganizationTunnel(orgName);
+        if (!tunnelId) {
+          this.logger.error(`Failed to create Cloudflare Tunnel for organization ${organizationId}`);
+          return;
         }
       }
 
@@ -430,7 +429,7 @@ export class RegistrationService implements OnApplicationBootstrap {
         return org;
       }
     }
-    
+
     // If not found, get the first organization (from manual registration)
     // Since we only support one organization per hub, return the first one
     return this.organizationRepository.getFirstOrganization();
@@ -439,7 +438,7 @@ export class RegistrationService implements OnApplicationBootstrap {
   /**
    * Manually initiate device registration with organization
    * Called from the registration form
-   * 
+   *
    * This method performs the complete registration flow:
    * 1. Registers device with CI Cloud (/api/devices/hub/register)
    * 2. Activates device (/api/web/register)
@@ -470,8 +469,13 @@ export class RegistrationService implements OnApplicationBootstrap {
     }
 
     // Sanitize organization name
-    const sanitizedName = organizationName.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
-    
+    const sanitizedName = organizationName
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9-]/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '');
+
     if (!sanitizedName) {
       return {
         success: false,
@@ -481,7 +485,7 @@ export class RegistrationService implements OnApplicationBootstrap {
 
     try {
       // Get device ID (use custom if provided, otherwise auto-generate)
-      const deviceId = customDeviceId?.trim() || await this.getDeviceId();
+      const deviceId = customDeviceId?.trim() || (await this.getDeviceId());
       const description = customDescription?.trim() || `CI OS Hub Device - ${deviceId}`;
 
       this.logger.info(`Starting device registration: device_id=${deviceId}, organization_id=${organizationId}, organization_name=${sanitizedName}`);
@@ -494,7 +498,7 @@ export class RegistrationService implements OnApplicationBootstrap {
       };
 
       if (ciHubApiKey) {
-        registerHeaders['Authorization'] = `Bearer ${ciHubApiKey}`;
+        registerHeaders.Authorization = `Bearer ${ciHubApiKey}`;
       }
 
       this.logger.debug(`Registering device at ${registerUrl}`);
@@ -547,7 +551,7 @@ export class RegistrationService implements OnApplicationBootstrap {
       // Step 3: Validate organization name/subdomain availability before setup
       // Use provided organization name (already sanitized)
       const finalOrgName = sanitizedName;
-      
+
       // Validate subdomain and tunnel name availability
       const validation = await this.cloudflareTunnelService.validateOrganizationSubdomain(finalOrgName);
       if (!validation.available) {
@@ -612,8 +616,13 @@ export class RegistrationService implements OnApplicationBootstrap {
 
       // Use the subdomain provided by CI Cloud (already validated on CI Cloud side)
       // The subdomain is the organization name part (e.g., "acme-corp" from "acme-corp.companionintel.com")
-      const orgName = data.subdomain.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
-      
+      const orgName = data.subdomain
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9-]/g, '-')
+        .replace(/-+/g, '-')
+        .replace(/^-|-$/g, '');
+
       if (!orgName) {
         return {
           success: false,

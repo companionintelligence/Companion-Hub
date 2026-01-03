@@ -38,7 +38,10 @@ const envSchema = z.object({
   RUNTIPI_APP_DATA_PATH: z.string(),
   RUNTIPI_FORWARD_AUTH_URL: z.string(),
   DEMO_MODE: z.string().transform((val) => val.toLowerCase() === 'true'),
-  DISABLE_PASSWORD_RESET: z.string().transform((val) => val.toLowerCase() === 'true').default(true),
+  DISABLE_PASSWORD_RESET: z
+    .string()
+    .transform((val) => val.toLowerCase() === 'true')
+    .default(true),
   GUEST_DASHBOARD: z.string().transform((val) => val.toLowerCase() === 'true'),
   ALLOW_ERROR_MONITORING: z.string().transform((val) => val.toLowerCase() === 'true'),
   ALLOW_AUTO_THEMES: z.string().transform((val) => val.toLowerCase() === 'true'),

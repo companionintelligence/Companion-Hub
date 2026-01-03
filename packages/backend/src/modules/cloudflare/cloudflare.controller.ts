@@ -14,7 +14,7 @@ export class CloudflareController {
     if (!subdomain) {
       return { available: true };
     }
-    
+
     const result = await this.cloudflareTunnelService.checkDnsAvailability(subdomain);
     return result;
   }
@@ -116,10 +116,10 @@ export class CloudflareController {
     const result = await this.cloudflareTunnelService.updateAllRoutesWithOriginRequest();
     return {
       success: result.failed.length === 0,
-      message: `Updated ${result.updated.length} routes with originRequest configuration. ` +
+      message:
+        `Updated ${result.updated.length} routes with originRequest configuration. ` +
         `${result.skipped.length} routes already had proper configuration.`,
       ...result,
     };
   }
 }
-

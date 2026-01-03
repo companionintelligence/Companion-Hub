@@ -33,7 +33,7 @@ interface DnsRecord {
 }
 
 // Dashboard port where the main CI-OS-Hub application runs
-const DASHBOARD_PORT = 5002;
+const _DASHBOARD_PORT = 5002;
 
 @Injectable()
 export class CloudflareTunnelService {
@@ -88,7 +88,7 @@ export class CloudflareTunnelService {
     // But cache the result to avoid repeated checks within the same request cycle
     const credentials = this.getApiCredentials();
     const enabled = credentials !== null;
-    
+
     // Update cache if it's null or if the state changed
     if (this._isEnabled === null || this._isEnabled !== enabled) {
       this._isEnabled = enabled;
@@ -96,7 +96,7 @@ export class CloudflareTunnelService {
         this.logger.debug('Cloudflare Tunnel integration is enabled');
       }
     }
-    
+
     return this._isEnabled;
   }
 
@@ -123,17 +123,14 @@ export class CloudflareTunnelService {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
 
-      const response = await fetch(
-        `${this.apiBaseUrl}/accounts/${credentials.accountId}/cfd_tunnel/${credentials.tunnelId}/configurations`,
-        {
-          method: 'GET',
-          headers: {
-            Authorization: `Bearer ${credentials.apiToken}`,
-            'Content-Type': 'application/json',
-          },
-          signal: controller.signal,
+      const response = await fetch(`${this.apiBaseUrl}/accounts/${credentials.accountId}/cfd_tunnel/${credentials.tunnelId}/configurations`, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${credentials.apiToken}`,
+          'Content-Type': 'application/json',
         },
-      );
+        signal: controller.signal,
+      });
 
       clearTimeout(timeoutId);
 
@@ -186,18 +183,15 @@ export class CloudflareTunnelService {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
 
-      const response = await fetch(
-        `${this.apiBaseUrl}/accounts/${credentials.accountId}/cfd_tunnel/${credentials.tunnelId}/configurations`,
-        {
-          method: 'PUT',
-          headers: {
-            Authorization: `Bearer ${credentials.apiToken}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ config }),
-          signal: controller.signal,
+      const response = await fetch(`${this.apiBaseUrl}/accounts/${credentials.accountId}/cfd_tunnel/${credentials.tunnelId}/configurations`, {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${credentials.apiToken}`,
+          'Content-Type': 'application/json',
         },
-      );
+        body: JSON.stringify({ config }),
+        signal: controller.signal,
+      });
 
       clearTimeout(timeoutId);
 
@@ -263,24 +257,21 @@ export class CloudflareTunnelService {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 15000); // Increased timeout
 
-        const response = await fetch(
-          `${this.apiBaseUrl}/zones/${credentials.zoneId}/dns_records`,
-          {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${credentials.apiToken}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              type: 'CNAME',
-              name: hostname,
-              content: cnameTarget,
-              proxied: true, // Enable Cloudflare proxy (orange cloud)
-              ttl: 1, // Auto TTL when proxied
-            }),
-            signal: controller.signal,
+        const response = await fetch(`${this.apiBaseUrl}/zones/${credentials.zoneId}/dns_records`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${credentials.apiToken}`,
+            'Content-Type': 'application/json',
           },
-        );
+          body: JSON.stringify({
+            type: 'CNAME',
+            name: hostname,
+            content: cnameTarget,
+            proxied: true, // Enable Cloudflare proxy (orange cloud)
+            ttl: 1, // Auto TTL when proxied
+          }),
+          signal: controller.signal,
+        });
 
         clearTimeout(timeoutId);
 
@@ -288,7 +279,7 @@ export class CloudflareTunnelService {
           const errorText = await response.text();
           this.logger.error(`Failed to create DNS record (attempt ${attempt}/${retries}): ${response.status} ${errorText}`);
           if (attempt < retries) {
-            await new Promise(resolve => setTimeout(resolve, 1000 * attempt)); // Exponential backoff
+            await new Promise((resolve) => setTimeout(resolve, 1000 * attempt)); // Exponential backoff
             continue;
           }
           return false;
@@ -298,28 +289,28 @@ export class CloudflareTunnelService {
 
         if (!data.success) {
           // Check if error is "record already exists" - that's actually okay
-          const alreadyExists = data.errors?.some(e => e.code === 81057 || e.message?.includes('already exists'));
+          const alreadyExists = data.errors?.some((e) => e.code === 81057 || e.message?.includes('already exists'));
           if (alreadyExists) {
             this.logger.debug(`DNS record for ${hostname} already exists (confirmed by API)`);
             return true;
           }
           this.logger.error(`Cloudflare DNS API error (attempt ${attempt}/${retries}): ${JSON.stringify(data.errors)}`);
           if (attempt < retries) {
-            await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+            await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
             continue;
           }
           return false;
         }
 
         this.logger.info(`Created DNS CNAME record: ${hostname} -> ${cnameTarget}`);
-        
+
         // Verify the record was created by fetching it back
-        await new Promise(resolve => setTimeout(resolve, 500)); // Brief delay for propagation
+        await new Promise((resolve) => setTimeout(resolve, 500)); // Brief delay for propagation
         const verifyRecord = await this.getDnsRecord(hostname);
         if (!verifyRecord) {
           this.logger.warn(`DNS record created but verification failed for ${hostname} - may need time to propagate`);
         }
-        
+
         return true;
       } catch (error) {
         if (error instanceof Error && error.name === 'AbortError') {
@@ -328,7 +319,7 @@ export class CloudflareTunnelService {
           this.logger.error(`Error creating DNS record (attempt ${attempt}/${retries}): ${error}`);
         }
         if (attempt < retries) {
-          await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+          await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
           continue;
         }
         return false;
@@ -350,17 +341,14 @@ export class CloudflareTunnelService {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 10000);
 
-      const response = await fetch(
-        `${this.apiBaseUrl}/zones/${credentials.zoneId}/dns_records?name=${encodeURIComponent(hostname)}&type=CNAME`,
-        {
-          method: 'GET',
-          headers: {
-            Authorization: `Bearer ${credentials.apiToken}`,
-            'Content-Type': 'application/json',
-          },
-          signal: controller.signal,
+      const response = await fetch(`${this.apiBaseUrl}/zones/${credentials.zoneId}/dns_records?name=${encodeURIComponent(hostname)}&type=CNAME`, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${credentials.apiToken}`,
+          'Content-Type': 'application/json',
         },
-      );
+        signal: controller.signal,
+      });
 
       clearTimeout(timeoutId);
 
@@ -402,7 +390,7 @@ export class CloudflareTunnelService {
 
     const hostname = `${subdomain}.${domain}`;
     const existingRecord = await this.getDnsRecord(hostname);
-    
+
     return {
       available: !existingRecord,
       hostname: hostname,
@@ -424,17 +412,14 @@ export class CloudflareTunnelService {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 10000);
 
-      const response = await fetch(
-        `${this.apiBaseUrl}/accounts/${credentials.accountId}/cfd_tunnel?name=${encodeURIComponent(tunnelName)}`,
-        {
-          method: 'GET',
-          headers: {
-            Authorization: `Bearer ${credentials.apiToken}`,
-            'Content-Type': 'application/json',
-          },
-          signal: controller.signal,
+      const response = await fetch(`${this.apiBaseUrl}/accounts/${credentials.accountId}/cfd_tunnel?name=${encodeURIComponent(tunnelName)}`, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${credentials.apiToken}`,
+          'Content-Type': 'application/json',
         },
-      );
+        signal: controller.signal,
+      });
 
       clearTimeout(timeoutId);
 
@@ -515,17 +500,16 @@ export class CloudflareTunnelService {
           tunnelName,
           errors,
         };
-      } else {
-        // DNS not enabled, only check tunnel name
-        return {
-          available: tunnelNameAvailable,
-          dnsAvailable: true, // Assume available if DNS not managed
-          tunnelNameAvailable,
-          hostname,
-          tunnelName,
-          errors,
-        };
       }
+      // DNS not enabled, only check tunnel name
+      return {
+        available: tunnelNameAvailable,
+        dnsAvailable: true, // Assume available if DNS not managed
+        tunnelNameAvailable,
+        hostname,
+        tunnelName,
+        errors,
+      };
     } catch (error) {
       this.logger.error(`Error validating organization subdomain: ${error}`);
       return {
@@ -561,17 +545,14 @@ export class CloudflareTunnelService {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 10000);
 
-      const response = await fetch(
-        `${this.apiBaseUrl}/zones/${credentials.zoneId}/dns_records/${record.id}`,
-        {
-          method: 'DELETE',
-          headers: {
-            Authorization: `Bearer ${credentials.apiToken}`,
-            'Content-Type': 'application/json',
-          },
-          signal: controller.signal,
+      const response = await fetch(`${this.apiBaseUrl}/zones/${credentials.zoneId}/dns_records/${record.id}`, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${credentials.apiToken}`,
+          'Content-Type': 'application/json',
         },
-      );
+        signal: controller.signal,
+      });
 
       clearTimeout(timeoutId);
 
@@ -610,11 +591,7 @@ export class CloudflareTunnelService {
    * @param organizationInfo - Optional organization info (if provided, uses org-specific tunnel)
    * @returns true if successful, false otherwise
    */
-  public async createAppRoute(
-    subdomain: string,
-    port?: number,
-    organizationInfo?: { tunnelId: string; domain: string } | null,
-  ): Promise<boolean> {
+  public async createAppRoute(subdomain: string, _port?: number, organizationInfo?: { tunnelId: string; domain: string } | null): Promise<boolean> {
     if (!this.isEnabled()) {
       this.logger.debug('Cloudflare Tunnel integration is not enabled');
       return false;
@@ -622,11 +599,7 @@ export class CloudflareTunnelService {
 
     // If organization info is provided, use organization-specific tunnel
     if (organizationInfo) {
-      return this.createAppRouteForOrganization(
-        subdomain,
-        organizationInfo.domain,
-        organizationInfo.tunnelId,
-      );
+      return this.createAppRouteForOrganization(subdomain, organizationInfo.domain, organizationInfo.tunnelId);
     }
 
     // Get DOMAIN from config (public domain like companionintel.com)
@@ -638,24 +611,24 @@ export class CloudflareTunnelService {
       return false;
     }
     const hostname = `${subdomain}.${domain}`;
-    
+
     // Route to Traefik reverse proxy (port 80 for HTTP, Traefik handles HTTPS internally)
     // Traefik will route to the app container based on the Host header
     // Use localhost since the Cloudflare tunnel runs on the host and Traefik is exposed on host port 80
-    const serviceUrl = `http://localhost:80`;
+    const serviceUrl = 'http://localhost:80';
 
     let currentConfig = await this.getTunnelConfig();
-    
+
     // If tunnel has no configuration, create an initial one with catch-all route to dashboard via Traefik
     if (!currentConfig) {
       this.logger.info('Creating initial tunnel configuration with catch-all route to dashboard via Traefik');
-      
+
       currentConfig = {
         ingress: [
           // Catch-all route - routes all unmatched requests to Traefik (which routes to dashboard)
           // Traefik will handle routing based on Host header
           {
-            service: `http://localhost:80`,
+            service: 'http://localhost:80',
             originRequest: {
               // Set Host header so Traefik can route correctly
               httpHostHeader: domain,
@@ -672,28 +645,26 @@ export class CloudflareTunnelService {
     }
 
     // Check if route already exists (matching hostname)
-    const existingRoute = currentConfig.ingress.find(
-      (rule) => rule.hostname === hostname,
-    );
+    const existingRoute = currentConfig.ingress.find((rule) => rule.hostname === hostname);
 
     if (existingRoute) {
       // Update existing route if service URL changed or originRequest is missing
       const needsUpdate = existingRoute.service !== serviceUrl || !existingRoute.originRequest;
-      
+
       if (needsUpdate) {
         existingRoute.service = serviceUrl;
         // Ensure originRequest is set for proper Cloudflare proxy behavior
         // Set httpHostHeader to the local domain hostname so Traefik can route correctly
-        if (!existingRoute.originRequest) {
+        if (existingRoute.originRequest) {
+          // Update httpHostHeader to ensure Traefik routing works
+          existingRoute.originRequest.httpHostHeader = hostname;
+        } else {
           existingRoute.originRequest = {
             httpHostHeader: hostname,
             noHappyEyeballs: false,
             connectTimeout: 30,
             tcpKeepAlive: 30,
           };
-        } else {
-          // Update httpHostHeader to ensure Traefik routing works
-          existingRoute.originRequest.httpHostHeader = hostname;
         }
         const success = await this.updateTunnelConfig(currentConfig);
         if (success) {
@@ -708,15 +679,14 @@ export class CloudflareTunnelService {
       const dnsCreated = await this.createDnsRecord(hostname);
       if (!dnsCreated) {
         const credentials = this.getApiCredentials();
-        if (!credentials?.zoneId) {
+        if (credentials?.zoneId) {
           this.logger.warn(
-            `⚠️  DNS record not created for ${hostname}. ` +
-            `Set CLOUDFLARE_ZONE_ID environment variable to enable automatic DNS management.`
+            `⚠️  Failed to create DNS CNAME record for ${hostname}. ` +
+              'The tunnel route exists, but the app may not be accessible until the DNS record is created.',
           );
         } else {
           this.logger.warn(
-            `⚠️  Failed to create DNS CNAME record for ${hostname}. ` +
-            `The tunnel route exists, but the app may not be accessible until the DNS record is created.`
+            `⚠️  DNS record not created for ${hostname}. Set CLOUDFLARE_ZONE_ID environment variable to enable automatic DNS management.`,
           );
         }
       }
@@ -741,9 +711,7 @@ export class CloudflareTunnelService {
 
     // Add the new rule before the catch-all
     // The catch-all rule should remain last
-    const catchAllIndex = currentConfig.ingress.findIndex(
-      (rule) => !rule.hostname,
-    );
+    const catchAllIndex = currentConfig.ingress.findIndex((rule) => !rule.hostname);
 
     if (catchAllIndex >= 0) {
       currentConfig.ingress.splice(catchAllIndex, 0, newRule);
@@ -751,7 +719,7 @@ export class CloudflareTunnelService {
       // No catch-all, add the new rule and ensure there's a catch-all pointing to Traefik
       currentConfig.ingress.push(newRule);
       currentConfig.ingress.push({
-        service: `http://localhost:80`,
+        service: 'http://localhost:80',
         originRequest: {
           // Set Host header so Traefik can route correctly
           httpHostHeader: domain,
@@ -763,28 +731,28 @@ export class CloudflareTunnelService {
 
     if (success) {
       this.logger.info(`Created Cloudflare Tunnel route for ${hostname} -> ${serviceUrl} (via Traefik)`);
-      
+
       // Create DNS CNAME record - this is CRITICAL for the app to be accessible
       // We treat DNS creation as a required step, not optional
       const dnsCreated = await this.createDnsRecord(hostname);
-      if (!dnsCreated) {
+      if (dnsCreated) {
+        this.logger.info(`✅ DNS CNAME record created successfully for ${hostname}`);
+      } else {
         const credentials = this.getApiCredentials();
-        if (!credentials?.zoneId) {
-          this.logger.warn(
-            `⚠️  DNS record not created for ${hostname}. ` +
-            `Set CLOUDFLARE_ZONE_ID environment variable to enable automatic DNS management. ` +
-            `You may need to manually create a CNAME record: ${hostname} -> ${credentials?.tunnelId || '<tunnel-id>'}.cfargotunnel.com`
-          );
-        } else {
+        if (credentials?.zoneId) {
           // DNS creation failed even though zone ID is set - this is a problem
           this.logger.error(
             `❌ Failed to create DNS CNAME record for ${hostname} after multiple retries. ` +
-            `The tunnel route was created, but the app will NOT be accessible until the DNS record is created. ` +
-            `Try calling syncMissingDnsRecords() to retry DNS creation.`
+              'The tunnel route was created, but the app will NOT be accessible until the DNS record is created. ' +
+              'Try calling syncMissingDnsRecords() to retry DNS creation.',
+          );
+        } else {
+          this.logger.warn(
+            `⚠️  DNS record not created for ${hostname}. ` +
+              'Set CLOUDFLARE_ZONE_ID environment variable to enable automatic DNS management. ' +
+              `You may need to manually create a CNAME record: ${hostname} -> ${credentials?.tunnelId || '<tunnel-id>'}.cfargotunnel.com`,
           );
         }
-      } else {
-        this.logger.info(`✅ DNS CNAME record created successfully for ${hostname}`);
       }
     } else {
       this.logger.error(`Failed to create Cloudflare Tunnel route for ${hostname}`);
@@ -801,7 +769,7 @@ export class CloudflareTunnelService {
    */
   public async syncMissingDnsRecords(): Promise<{ synced: string[]; failed: string[]; skipped: string[] }> {
     const result = { synced: [] as string[], failed: [] as string[], skipped: [] as string[] };
-    
+
     if (!this.isDnsEnabled()) {
       this.logger.warn('DNS management not enabled (CLOUDFLARE_ZONE_ID not set)');
       return result;
@@ -844,7 +812,7 @@ export class CloudflareTunnelService {
       }
 
       // Small delay between API calls to avoid rate limiting
-      await new Promise(resolve => setTimeout(resolve, 500));
+      await new Promise((resolve) => setTimeout(resolve, 500));
     }
 
     this.logger.info(`DNS sync complete: ${result.synced.length} created, ${result.failed.length} failed, ${result.skipped.length} already existed`);
@@ -916,17 +884,13 @@ export class CloudflareTunnelService {
     }
 
     this.logger.info(
-      `Updated ${updated.length} routes with originRequest configuration. ` +
-      `${skipped.length} routes already had proper configuration.`
+      `Updated ${updated.length} routes with originRequest configuration. ` + `${skipped.length} routes already had proper configuration.`,
     );
 
     return { updated, skipped, failed: [] };
   }
 
-  public async deleteAppRoute(
-    subdomain: string,
-    organizationInfo?: { tunnelId: string; domain: string } | null,
-  ): Promise<boolean> {
+  public async deleteAppRoute(subdomain: string, organizationInfo?: { tunnelId: string; domain: string } | null): Promise<boolean> {
     if (!this.isEnabled()) {
       this.logger.debug('Cloudflare Tunnel integration is not enabled');
       return false;
@@ -934,11 +898,7 @@ export class CloudflareTunnelService {
 
     // If organization info is provided, use organization-specific tunnel
     if (organizationInfo) {
-      return this.deleteAppRouteForOrganization(
-        subdomain,
-        organizationInfo.domain,
-        organizationInfo.tunnelId,
-      );
+      return this.deleteAppRouteForOrganization(subdomain, organizationInfo.domain, organizationInfo.tunnelId);
     }
 
     // Get DOMAIN from config (public domain like "companionintel.com")
@@ -958,20 +918,16 @@ export class CloudflareTunnelService {
     }
 
     // Remove routes matching the hostname
-    const filteredIngress = currentConfig.ingress.filter(
-      (rule) => rule.hostname !== hostname,
-    );
+    const filteredIngress = currentConfig.ingress.filter((rule) => rule.hostname !== hostname);
 
     // Ensure we still have at least a catch-all rule pointing to dashboard
-    const hasCatchAll = filteredIngress.some(
-      (rule) => !rule.hostname,
-    );
+    const hasCatchAll = filteredIngress.some((rule) => !rule.hostname);
 
     if (!hasCatchAll) {
       // Add catch-all route to Traefik (which routes to dashboard)
       const domain = this.config.get('userSettings').domain || process.env.DOMAIN || 'companionintel.com';
       filteredIngress.push({
-        service: `http://localhost:80`,
+        service: 'http://localhost:80',
         originRequest: {
           // Set Host header so Traefik can route correctly
           httpHostHeader: domain,
@@ -985,18 +941,18 @@ export class CloudflareTunnelService {
 
     if (success) {
       this.logger.info(`Deleted Cloudflare Tunnel route for ${hostname}`);
-      
+
       // Also delete DNS CNAME record
       const dnsDeleted = await this.deleteDnsRecord(hostname);
-      if (!dnsDeleted) {
-        const credentials = this.getApiCredentials();
-        if (!credentials?.zoneId) {
-          this.logger.debug(`DNS record deletion skipped for ${hostname} (CLOUDFLARE_ZONE_ID not set)`);
-        } else {
-          this.logger.warn(`⚠️  Failed to delete DNS CNAME record for ${hostname}. You may need to delete it manually.`);
-        }
-      } else {
+      if (dnsDeleted) {
         this.logger.info(`✅ DNS CNAME record deleted successfully for ${hostname}`);
+      } else {
+        const credentials = this.getApiCredentials();
+        if (credentials?.zoneId) {
+          this.logger.warn(`⚠️  Failed to delete DNS CNAME record for ${hostname}. You may need to delete it manually.`);
+        } else {
+          this.logger.debug(`DNS record deletion skipped for ${hostname} (CLOUDFLARE_ZONE_ID not set)`);
+        }
       }
     } else {
       this.logger.error(`Failed to delete Cloudflare Tunnel route for ${hostname}`);
@@ -1022,20 +978,17 @@ export class CloudflareTunnelService {
       const timeoutId = setTimeout(() => controller.abort(), 15000);
 
       // Create tunnel (tunnel creation doesn't include config - that's set separately)
-      const response = await fetch(
-        `${this.apiBaseUrl}/accounts/${credentials.accountId}/cfd_tunnel`,
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${credentials.apiToken}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            name: `hub-${orgName}`,
-          }),
-          signal: controller.signal,
+      const response = await fetch(`${this.apiBaseUrl}/accounts/${credentials.accountId}/cfd_tunnel`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${credentials.apiToken}`,
+          'Content-Type': 'application/json',
         },
-      );
+        body: JSON.stringify({
+          name: `hub-${orgName}`,
+        }),
+        signal: controller.signal,
+      });
 
       clearTimeout(timeoutId);
 
@@ -1112,38 +1065,8 @@ export class CloudflareTunnelService {
           return true;
         }
         // Update existing record if it points to wrong target
-        const updateResponse = await fetch(
-          `${this.apiBaseUrl}/zones/${credentials.zoneId}/dns_records/${existingRecord.id}`,
-          {
-            method: 'PUT',
-            headers: {
-              Authorization: `Bearer ${credentials.apiToken}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              type: 'CNAME',
-              name: orgDomain,
-              content: cnameTarget,
-              proxied: true,
-              ttl: 1,
-            }),
-            signal: controller.signal,
-          },
-        );
-
-        clearTimeout(timeoutId);
-
-        if (updateResponse.ok) {
-          this.logger.info(`Updated DNS CNAME record: ${orgDomain} -> ${cnameTarget}`);
-          return true;
-        }
-      }
-
-      // Create new DNS record
-      const response = await fetch(
-        `${this.apiBaseUrl}/zones/${credentials.zoneId}/dns_records`,
-        {
-          method: 'POST',
+        const updateResponse = await fetch(`${this.apiBaseUrl}/zones/${credentials.zoneId}/dns_records/${existingRecord.id}`, {
+          method: 'PUT',
           headers: {
             Authorization: `Bearer ${credentials.apiToken}`,
             'Content-Type': 'application/json',
@@ -1156,8 +1079,32 @@ export class CloudflareTunnelService {
             ttl: 1,
           }),
           signal: controller.signal,
+        });
+
+        clearTimeout(timeoutId);
+
+        if (updateResponse.ok) {
+          this.logger.info(`Updated DNS CNAME record: ${orgDomain} -> ${cnameTarget}`);
+          return true;
+        }
+      }
+
+      // Create new DNS record
+      const response = await fetch(`${this.apiBaseUrl}/zones/${credentials.zoneId}/dns_records`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${credentials.apiToken}`,
+          'Content-Type': 'application/json',
         },
-      );
+        body: JSON.stringify({
+          type: 'CNAME',
+          name: orgDomain,
+          content: cnameTarget,
+          proxied: true,
+          ttl: 1,
+        }),
+        signal: controller.signal,
+      });
 
       clearTimeout(timeoutId);
 
@@ -1170,7 +1117,7 @@ export class CloudflareTunnelService {
       const data = (await response.json()) as CloudflareApiResponse<DnsRecord>;
 
       if (!data.success) {
-        const alreadyExists = data.errors?.some(e => e.code === 81057 || e.message?.includes('already exists'));
+        const alreadyExists = data.errors?.some((e) => e.code === 81057 || e.message?.includes('already exists'));
         if (alreadyExists) {
           this.logger.debug(`DNS record for ${orgDomain} already exists`);
           return true;
@@ -1204,17 +1151,14 @@ export class CloudflareTunnelService {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 10000);
 
-      const response = await fetch(
-        `${this.apiBaseUrl}/accounts/${credentials.accountId}/cfd_tunnel/${tunnelId}/configurations`,
-        {
-          method: 'GET',
-          headers: {
-            Authorization: `Bearer ${credentials.apiToken}`,
-            'Content-Type': 'application/json',
-          },
-          signal: controller.signal,
+      const response = await fetch(`${this.apiBaseUrl}/accounts/${credentials.accountId}/cfd_tunnel/${tunnelId}/configurations`, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${credentials.apiToken}`,
+          'Content-Type': 'application/json',
         },
-      );
+        signal: controller.signal,
+      });
 
       clearTimeout(timeoutId);
 
@@ -1262,18 +1206,15 @@ export class CloudflareTunnelService {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 10000);
 
-      const response = await fetch(
-        `${this.apiBaseUrl}/accounts/${credentials.accountId}/cfd_tunnel/${tunnelId}/configurations`,
-        {
-          method: 'PUT',
-          headers: {
-            Authorization: `Bearer ${credentials.apiToken}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ config }),
-          signal: controller.signal,
+      const response = await fetch(`${this.apiBaseUrl}/accounts/${credentials.accountId}/cfd_tunnel/${tunnelId}/configurations`, {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${credentials.apiToken}`,
+          'Content-Type': 'application/json',
         },
-      );
+        body: JSON.stringify({ config }),
+        signal: controller.signal,
+      });
 
       clearTimeout(timeoutId);
 
@@ -1308,18 +1249,14 @@ export class CloudflareTunnelService {
    * @param tunnelId - Organization tunnel ID
    * @returns true if successful, false otherwise
    */
-  public async createAppRouteForOrganization(
-    subdomain: string,
-    orgDomain: string,
-    tunnelId: string,
-  ): Promise<boolean> {
+  public async createAppRouteForOrganization(subdomain: string, orgDomain: string, tunnelId: string): Promise<boolean> {
     if (!this.isEnabled()) {
       this.logger.debug('Cloudflare Tunnel integration is not enabled');
       return false;
     }
 
     const hostname = `${subdomain}.${orgDomain}`;
-    const serviceUrl = `http://localhost:80`;
+    const serviceUrl = 'http://localhost:80';
 
     let currentConfig = await this.getTunnelConfigForTunnel(tunnelId);
 
@@ -1349,15 +1286,15 @@ export class CloudflareTunnelService {
       const needsUpdate = existingRoute.service !== serviceUrl || !existingRoute.originRequest;
       if (needsUpdate) {
         existingRoute.service = serviceUrl;
-        if (!existingRoute.originRequest) {
+        if (existingRoute.originRequest) {
+          existingRoute.originRequest.httpHostHeader = hostname;
+        } else {
           existingRoute.originRequest = {
             httpHostHeader: hostname,
             noHappyEyeballs: false,
             connectTimeout: 30,
             tcpKeepAlive: 30,
           };
-        } else {
-          existingRoute.originRequest.httpHostHeader = hostname;
         }
         const success = await this.updateTunnelConfigForTunnel(tunnelId, currentConfig);
         if (success) {
@@ -1418,11 +1355,7 @@ export class CloudflareTunnelService {
    * @param tunnelId - Organization tunnel ID
    * @returns true if successful, false otherwise
    */
-  public async deleteAppRouteForOrganization(
-    subdomain: string,
-    orgDomain: string,
-    tunnelId: string,
-  ): Promise<boolean> {
+  public async deleteAppRouteForOrganization(subdomain: string, orgDomain: string, tunnelId: string): Promise<boolean> {
     if (!this.isEnabled()) {
       this.logger.debug('Cloudflare Tunnel integration is not enabled');
       return false;
@@ -1443,18 +1376,14 @@ export class CloudflareTunnelService {
     }
 
     // Remove routes matching the hostname
-    const filteredIngress = currentConfig.ingress.filter(
-      (rule) => rule.hostname !== hostname,
-    );
+    const filteredIngress = currentConfig.ingress.filter((rule) => rule.hostname !== hostname);
 
     // Ensure we still have at least a catch-all rule
-    const hasCatchAll = filteredIngress.some(
-      (rule) => !rule.hostname,
-    );
+    const hasCatchAll = filteredIngress.some((rule) => !rule.hostname);
 
     if (!hasCatchAll) {
       filteredIngress.push({
-        service: `http://localhost:80`,
+        service: 'http://localhost:80',
         originRequest: {
           httpHostHeader: orgDomain,
         },
@@ -1467,18 +1396,18 @@ export class CloudflareTunnelService {
 
     if (success) {
       this.logger.info(`Deleted Cloudflare Tunnel route for ${hostname} from organization tunnel`);
-      
+
       // Also delete DNS CNAME record
       const dnsDeleted = await this.deleteDnsRecord(hostname);
-      if (!dnsDeleted) {
-        const credentials = this.getApiCredentials();
-        if (!credentials?.zoneId) {
-          this.logger.debug(`DNS record deletion skipped for ${hostname} (CLOUDFLARE_ZONE_ID not set)`);
-        } else {
-          this.logger.warn(`⚠️  Failed to delete DNS CNAME record for ${hostname}. You may need to delete it manually.`);
-        }
-      } else {
+      if (dnsDeleted) {
         this.logger.info(`✅ DNS CNAME record deleted successfully for ${hostname}`);
+      } else {
+        const credentials = this.getApiCredentials();
+        if (credentials?.zoneId) {
+          this.logger.warn(`⚠️  Failed to delete DNS CNAME record for ${hostname}. You may need to delete it manually.`);
+        } else {
+          this.logger.debug(`DNS record deletion skipped for ${hostname} (CLOUDFLARE_ZONE_ID not set)`);
+        }
       }
     } else {
       this.logger.error(`Failed to delete Cloudflare Tunnel route for ${hostname}`);

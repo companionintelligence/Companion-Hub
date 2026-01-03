@@ -3,7 +3,6 @@ import { AppStoreRepository } from './app-store.repository';
 import { ReposHelpers } from './repos.helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import { RepoEventsQueue } from '../queue/entities/repo-events';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mock, mockDeep } from 'vitest-mock-extended';
 import { fromPartial } from '@total-typescript/shoehorn';
@@ -14,6 +13,7 @@ describe('AppStoreService', () => {
   let repoHelpers: ReturnType<typeof mock<ReposHelpers>>;
   let configService: ReturnType<typeof mock<ConfigurationService>>;
   let logger: ReturnType<typeof mockDeep<LoggerService>>;
+  // biome-ignore lint/suspicious/noExplicitAny: Mocking queue
   let repoQueue: any;
 
   beforeEach(async () => {
@@ -43,7 +43,8 @@ describe('AppStoreService', () => {
     it('should create new store if not exists', async () => {
       const url = 'https://example.com/store.zip';
       configService.getConfig.mockReturnValue(fromPartial({ ciCloudAppStoreUrl: url }));
-      appStoreRepository.getAppStoreBySlug.mockResolvedValue(null!);
+      // biome-ignore lint/suspicious/noExplicitAny: Mocking null return
+      appStoreRepository.getAppStoreBySlug.mockResolvedValue(null as any);
 
       await service.registerCloudAppStore();
 

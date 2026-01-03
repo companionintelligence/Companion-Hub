@@ -35,4 +35,3 @@ export class RegistrationGuard implements CanActivate {
     return true;
   }
 }
-

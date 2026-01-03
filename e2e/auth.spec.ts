@@ -22,7 +22,7 @@ test('should login with existing user', async ({ page }) => {
   // Since we clear DB before each test, we need to seed here.
   // But wait, `loginUser` helper does that.
   // Let's test the login flow manually to be sure.
-  
+
   // Seed user
   const { createTestUser } = await import('./fixtures/fixtures');
   await createTestUser();

@@ -134,45 +134,45 @@ export class DockerComposeBuilder {
     if (params.isMain && form.exposedLocal && params.internalPort) {
       const serviceId = `${appName}-${appStoreId}`;
       const subdomain = form.localSubdomain || serviceId;
-      
+
       // Traefik configuration for the app
       defaultLabels['traefik.enable'] = true;
       defaultLabels['traefik.docker.network'] = 'ci_os_hub_network';
-      
+
       // Service configuration
       defaultLabels[`traefik.http.services.${serviceId}.loadbalancer.server.port`] = String(params.internalPort);
-      
+
       // HTTPS redirect middleware
       defaultLabels[`traefik.http.middlewares.${serviceId}-web-redirect.redirectscheme.scheme`] = 'https';
-      
+
       // Router for public domain (insecure - redirects to HTTPS)
       // This is used by Cloudflare Tunnel for internet access
       defaultLabels[`traefik.http.routers.${serviceId}-insecure.rule`] = `Host(\`${subdomain}.\${DOMAIN}\`)`;
       defaultLabels[`traefik.http.routers.${serviceId}-insecure.entrypoints`] = 'web';
       defaultLabels[`traefik.http.routers.${serviceId}-insecure.service`] = serviceId;
       defaultLabels[`traefik.http.routers.${serviceId}-insecure.middlewares`] = `${serviceId}-web-redirect`;
-      
+
       // Router for public domain (secure)
       // This is used by Cloudflare Tunnel for internet access (HTTPS)
       defaultLabels[`traefik.http.routers.${serviceId}.rule`] = `Host(\`${subdomain}.\${DOMAIN}\`)`;
       defaultLabels[`traefik.http.routers.${serviceId}.entrypoints`] = 'websecure';
       defaultLabels[`traefik.http.routers.${serviceId}.service`] = serviceId;
       defaultLabels[`traefik.http.routers.${serviceId}.tls.certresolver`] = 'myresolver';
-      
+
       // Router for local domain (insecure - redirects to HTTPS)
       // This is for local network access
       defaultLabels[`traefik.http.routers.${serviceId}-local-insecure.rule`] = `Host(\`${subdomain}.\${LOCAL_DOMAIN}\`)`;
       defaultLabels[`traefik.http.routers.${serviceId}-local-insecure.entrypoints`] = 'web';
       defaultLabels[`traefik.http.routers.${serviceId}-local-insecure.service`] = serviceId;
       defaultLabels[`traefik.http.routers.${serviceId}-local-insecure.middlewares`] = `${serviceId}-web-redirect`;
-      
+
       // Router for local domain (secure)
       // This is for local network access (HTTPS)
       defaultLabels[`traefik.http.routers.${serviceId}-local.rule`] = `Host(\`${subdomain}.\${LOCAL_DOMAIN}\`)`;
       defaultLabels[`traefik.http.routers.${serviceId}-local.entrypoints`] = 'websecure';
       defaultLabels[`traefik.http.routers.${serviceId}-local.service`] = serviceId;
       defaultLabels[`traefik.http.routers.${serviceId}-local.tls`] = true;
-      
+
       // Optional: Add auth middleware if enableAuth is true
       // Apply to both public and local routes
       if (form.enableAuth) {

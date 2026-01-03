@@ -227,41 +227,41 @@ export const AppActions = ({ app, info, localDomain, metadata, sslPort }: IProps
   // Check if the app URL is available before showing Open button
   const [urlAvailable, setUrlAvailable] = useState<boolean | null>(null);
   const [isCheckingUrl, setIsCheckingUrl] = useState(false);
-  
+
   const subdomain = metadata.localSubdomain || app?.localSubdomain || info.urn.split(':').join('-');
   const appUrl = `https://${subdomain}.companionintel.com${info.url_suffix || ''}`;
-  
+
   useEffect(() => {
     // Only check if app is running and exposed
     if (app?.status === 'running' && (app?.exposedLocal || app?.openPort || app?.exposed) && !info.no_gui) {
       setIsCheckingUrl(true);
       setUrlAvailable(null);
-      
+
       let isMounted = true;
       let isAvailableRef = false; // Track availability to stop polling
       let pollInterval: ReturnType<typeof setInterval> | null = null;
-      
+
       // Check if URL is reachable using backend endpoint (more reliable)
       const checkUrl = async () => {
         if (!isMounted || isAvailableRef) return;
-        
+
         try {
           const response = await fetch(`/api/cloudflare/check-url-availability?url=${encodeURIComponent(appUrl)}`, {
             credentials: 'include',
           });
-          
+
           if (!response.ok) {
             if (isMounted) setUrlAvailable(false);
             return;
           }
-          
+
           const data = await response.json();
           const isAvailable = data.available === true;
-          
+
           if (isMounted) {
             setUrlAvailable(isAvailable);
             setIsCheckingUrl(!isAvailable); // Keep showing loading if not available yet
-            
+
             // If available, stop polling
             if (isAvailable) {
               isAvailableRef = true;
@@ -271,22 +271,22 @@ export const AppActions = ({ app, info, localDomain, metadata, sslPort }: IProps
               }
             }
           }
-        } catch (error) {
+        } catch (_error) {
           // If check fails, assume URL is not available yet (keep polling)
           if (isMounted) {
             setUrlAvailable(false);
           }
         }
       };
-      
+
       // Initial check after short delay
       const initialTimeout = setTimeout(() => {
         checkUrl();
-        
+
         // Start polling every 5 seconds until available
         pollInterval = setInterval(checkUrl, 5000);
       }, 1000);
-      
+
       return () => {
         isMounted = false;
         clearTimeout(initialTimeout);
@@ -294,11 +294,10 @@ export const AppActions = ({ app, info, localDomain, metadata, sslPort }: IProps
           clearInterval(pollInterval);
         }
       };
-    } else {
-      setUrlAvailable(null);
-      setIsCheckingUrl(false);
     }
-  }, [app?.status, app?.exposedLocal, app?.openPort, app?.exposed, app?.localSubdomain, metadata.localSubdomain, info.urn, info.no_gui, info.url_suffix, appUrl]);
+    setUrlAvailable(null);
+    setIsCheckingUrl(false);
+  }, [app?.status, app?.exposedLocal, app?.openPort, app?.exposed, info.no_gui, appUrl]);
 
   const OpenButton = (
     <ActionButton
@@ -375,7 +374,6 @@ export const AppActions = ({ app, info, localDomain, metadata, sslPort }: IProps
     default:
       break;
   }
-
 
   return (
     <>

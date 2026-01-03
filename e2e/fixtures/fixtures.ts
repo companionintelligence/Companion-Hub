@@ -11,6 +11,7 @@ export const test = base.extend({
   },
 });
 
+// biome-ignore lint/performance/noBarrelFile: Re-exporting for convenience
 export { expect } from '@playwright/test';
 
 export const createTestUser = async () => {

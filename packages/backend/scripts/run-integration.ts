@@ -1,5 +1,5 @@
-import { spawn } from 'child_process';
-import { resolve } from 'path';
+import { spawn } from 'node:child_process';
+import { resolve } from 'node:path';
 
 const composeFile = resolve(__dirname, '../src/tests/db.compose.yml');
 const projectName = `test-backend-${Date.now()}`;
@@ -64,7 +64,6 @@ async function main() {
 
     console.log('Running tests...');
     await runCommand('bun', ['vitest', '--watch=false', '--config', './vitest.integration.config.mts'], env);
-
   } catch (error) {
     console.error('Test run failed:', error);
     process.exit(1);

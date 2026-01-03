@@ -17,7 +17,7 @@ test('should display guest dashboard', async ({ page }) => {
   // If no user exists, it redirects to register.
   // If user exists but not logged in, it redirects to login.
   // Unless guest dashboard is enabled.
-  
+
   // Let's assume it redirects to login for now as we haven't configured guest dashboard.
   await expect(page).toHaveURL(/\/login/);
 });

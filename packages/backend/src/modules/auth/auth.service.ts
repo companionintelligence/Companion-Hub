@@ -32,7 +32,7 @@ export class AuthService {
     }
 
     const parsed = psl.parse(domain);
-    if ('error' in parsed) {
+    if (parsed.error) {
       return undefined;
     }
 

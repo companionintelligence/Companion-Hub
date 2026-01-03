@@ -150,7 +150,7 @@ export class FilesystemService {
           return false;
         }
       });
-      
+
       this.logger.debug(`Starting creation of ${dirPaths.length} directories in parallel`);
       const results = await Promise.all(createPromises);
       const successCount = results.filter((r) => r === true).length;
