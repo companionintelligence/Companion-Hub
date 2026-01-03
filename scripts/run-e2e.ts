@@ -137,6 +137,10 @@ async function main() {
 
     console.log(`App Port: ${appPort}, Backend Port: ${backendPort}, DB Port: ${dbPort}`);
 
+    if (!backendPort) {
+      throw new Error('Backend port not found');
+    }
+
     // Wait for backend to be ready (migrations run)
     console.log('Waiting for backend to be ready...');
     await waitForBackend(backendPort);

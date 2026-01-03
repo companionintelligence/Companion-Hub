@@ -43,7 +43,7 @@ export class GithubService {
           owner,
           repo,
         })
-        .then((res) => {
+        .then((res: any) => {
           version = res.data.tag_name;
           body = res.data.body ?? '';
 
@@ -52,7 +52,7 @@ export class GithubService {
             body: res.data.body ?? '',
           });
         })
-        .catch((err) => {
+        .catch((err: any) => {
           this.logger.debug('GitHub API call failed, will use empty cache', err);
           resolve(null);
         });
@@ -79,11 +79,11 @@ export class GithubService {
               repo,
               per_page: 100,
             })
-            .then((res) => {
-              const fetchedReleases = res.data.map((release) => ({ ...release, body: release.body ?? '' }));
+            .then((res: any) => {
+              const fetchedReleases = res.data.map((release: any) => ({ ...release, body: release.body ?? '' }));
               resolve(fetchedReleases);
             })
-            .catch((err) => {
+            .catch((err: any) => {
               this.logger.debug('GitHub API call failed, will use empty releases', err);
               resolve([]);
             });
