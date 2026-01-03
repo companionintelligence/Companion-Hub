@@ -32,11 +32,13 @@ export class AuthService {
     }
 
     const parsed = psl.parse(domain);
-    if ('error' in parsed) {
+    // biome-ignore lint/suspicious/noExplicitAny: PSL types are tricky
+    if ((parsed as any).error) {
       return undefined;
     }
 
-    return `.${parsed.input}`;
+    // biome-ignore lint/suspicious/noExplicitAny: PSL types are tricky
+    return `.${(parsed as any).input}`;
   }
 
   /**
