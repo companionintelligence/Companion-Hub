@@ -171,7 +171,7 @@ describe('DockerComposeBuilder', () => {
     expect(compose).toMatchSnapshot();
   });
 
-  it('should add port mapping when exposedLocal is enabled with port', () => {
+  it('should NOT add port mapping when exposedLocal is enabled', () => {
     const service: ServiceInput = {
       name: 'service',
       image: 'image',
@@ -182,8 +182,7 @@ describe('DockerComposeBuilder', () => {
     const compose = composeBuilder.getDockerCompose([service], { exposedLocal: true, port: 8080 }, urn, subnet);
     const yamlObject = yaml.parse(compose);
 
-    expect(yamlObject.services.service.ports).toBeDefined();
-    expect(yamlObject.services.service.ports[0]).toBe('${APP_PORT}:440');
+    expect(yamlObject.services.service.ports).toBeUndefined();
   });
 
   it('should add port mapping when openPort is enabled', () => {

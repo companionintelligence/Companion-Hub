@@ -1,54 +1,5 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
-exports[`DockerComposeBuilder > should add correct traefik labels to the main service 1`] = `
-"services:
-  service:
-    image: image
-    restart: unless-stopped
-    networks:
-      nginx_store-id_network:
-        gw_priority: 0
-      tipi_main_network:
-        gw_priority: 1
-    ports:
-      - \${APP_PORT}:440
-    labels:
-      generated: true
-      traefik.enable: true
-      traefik.docker.network: runtipi_tipi_main_network
-      traefik.http.middlewares.nginx-store-id-web-redirect.redirectscheme.scheme: https
-      traefik.http.services.nginx-store-id.loadbalancer.server.port: "440"
-      traefik.http.routers.nginx-store-id-insecure.rule: Host(\`\${APP_DOMAIN}\`)
-      traefik.http.routers.nginx-store-id-insecure.entrypoints: web
-      traefik.http.routers.nginx-store-id-insecure.service: nginx-store-id
-      traefik.http.routers.nginx-store-id-insecure.middlewares: nginx-store-id-web-redirect
-      traefik.http.routers.nginx-store-id.rule: Host(\`\${APP_DOMAIN}\`)
-      traefik.http.routers.nginx-store-id.entrypoints: websecure
-      traefik.http.routers.nginx-store-id.service: nginx-store-id
-      traefik.http.routers.nginx-store-id.tls.certresolver: myresolver
-      traefik.http.routers.nginx-store-id-local-insecure.rule: Host(\`nginx-store-id.\${LOCAL_DOMAIN}\`)
-      traefik.http.routers.nginx-store-id-local-insecure.entrypoints: web
-      traefik.http.routers.nginx-store-id-local-insecure.service: nginx-store-id
-      traefik.http.routers.nginx-store-id-local-insecure.middlewares: nginx-store-id-web-redirect
-      traefik.http.routers.nginx-store-id-local.rule: Host(\`nginx-store-id.\${LOCAL_DOMAIN}\`)
-      traefik.http.routers.nginx-store-id-local.entrypoints: websecure
-      traefik.http.routers.nginx-store-id-local.service: nginx-store-id
-      traefik.http.routers.nginx-store-id-local.tls: true
-      runtipi.managed: true
-      runtipi.appurn: nginx:store-id
-networks:
-  tipi_main_network:
-    name: runtipi_tipi_main_network
-    external: true
-  nginx_store-id_network:
-    name: nginx_store-id_network
-    external: false
-    ipam:
-      config:
-        - subnet: 10.128.1.0/24
-"
-`;
-
 exports[`DockerComposeBuilder > should be able to parse a compose.json file 1`] = `
 "services:
   ctfd:
@@ -57,7 +8,7 @@ exports[`DockerComposeBuilder > should be able to parse a compose.json file 1`] 
     networks:
       nginx_store-id_network:
         gw_priority: 0
-      tipi_main_network:
+      ci_os_hub_network:
         gw_priority: 1
     environment:
       UPLOAD_FOLDER: /var/uploads
@@ -70,13 +21,12 @@ exports[`DockerComposeBuilder > should be able to parse a compose.json file 1`] 
     depends_on:
       - ctfd-db
     labels:
-      runtipi.managed: true
-      runtipi.appurn: nginx:store-id
+      ci-os-hub.managed: true
+      ci-os-hub.appurn: nginx:store-id
       some-label: some-value
       nginx-store-id.service: true
       com.docker.compose.service: nginx-store-id
       nginx-store-id: nginx-store-id
-      traefik.http.middlewares.ctfd-web-redirect.redirectscheme.scheme: wrongscheme
   ctfd-db:
     image: mariadb:10.4.12
     command:
@@ -97,8 +47,8 @@ exports[`DockerComposeBuilder > should be able to parse a compose.json file 1`] 
     volumes:
       - \${APP_DATA_DIR}/data/db:/var/lib/mysql
     labels:
-      runtipi.managed: true
-      runtipi.appurn: nginx:store-id
+      ci-os-hub.managed: true
+      ci-os-hub.appurn: nginx:store-id
   ctfd-redis:
     image: redis:4
     restart: unless-stopped
@@ -108,11 +58,11 @@ exports[`DockerComposeBuilder > should be able to parse a compose.json file 1`] 
     volumes:
       - \${APP_DATA_DIR}/data/redis:/data
     labels:
-      runtipi.managed: true
-      runtipi.appurn: nginx:store-id
+      ci-os-hub.managed: true
+      ci-os-hub.appurn: nginx:store-id
 networks:
-  tipi_main_network:
-    name: runtipi_tipi_main_network
+  ci_os_hub_network:
+    name: ci_os_hub_network
     external: true
   nginx_store-id_network:
     name: nginx_store-id_network
@@ -132,11 +82,11 @@ exports[`DockerComposeBuilder > should build a docker-compose file 1`] = `
       nginx_store-id_network:
         gw_priority: 0
     labels:
-      runtipi.managed: true
-      runtipi.appurn: nginx:store-id
+      ci-os-hub.managed: true
+      ci-os-hub.appurn: nginx:store-id
 networks:
-  tipi_main_network:
-    name: runtipi_tipi_main_network
+  ci_os_hub_network:
+    name: ci_os_hub_network
     external: true
   nginx_store-id_network:
     name: nginx_store-id_network
@@ -180,8 +130,8 @@ exports[`DockerComposeBuilder > should correctly format a complex docker-compose
     depends_on:
       - service2
     labels:
-      runtipi.managed: true
-      runtipi.appurn: nginx:store-id
+      ci-os-hub.managed: true
+      ci-os-hub.appurn: nginx:store-id
     cap_add:
       - SYS_ADMIN
       - NET_ADMIN
@@ -234,11 +184,11 @@ exports[`DockerComposeBuilder > should correctly format a complex docker-compose
       nginx_store-id_network:
         gw_priority: 0
     labels:
-      runtipi.managed: true
-      runtipi.appurn: nginx:store-id
+      ci-os-hub.managed: true
+      ci-os-hub.appurn: nginx:store-id
 networks:
-  tipi_main_network:
-    name: runtipi_tipi_main_network
+  ci_os_hub_network:
+    name: ci_os_hub_network
     external: true
   nginx_store-id_network:
     name: nginx_store-id_network
@@ -258,8 +208,8 @@ exports[`DockerComposeBuilder > should correctly format deploy resources 1`] = `
       nginx_store-id_network:
         gw_priority: 0
     labels:
-      runtipi.managed: true
-      runtipi.appurn: nginx:store-id
+      ci-os-hub.managed: true
+      ci-os-hub.appurn: nginx:store-id
     deploy:
       resources:
         limits:
@@ -275,8 +225,8 @@ exports[`DockerComposeBuilder > should correctly format deploy resources 1`] = `
               driver: nvidia
               count: all
 networks:
-  tipi_main_network:
-    name: runtipi_tipi_main_network
+  ci_os_hub_network:
+    name: ci_os_hub_network
     external: true
   nginx_store-id_network:
     name: nginx_store-id_network
@@ -296,14 +246,14 @@ exports[`DockerComposeBuilder > should correctly format devices 1`] = `
       nginx_store-id_network:
         gw_priority: 0
     labels:
-      runtipi.managed: true
-      runtipi.appurn: nginx:store-id
+      ci-os-hub.managed: true
+      ci-os-hub.appurn: nginx:store-id
     devices:
       - /dev/ttyUSB0:/dev/ttyUSB0
       - /dev/sda:/dev/xvda:rwm
 networks:
-  tipi_main_network:
-    name: runtipi_tipi_main_network
+  ci_os_hub_network:
+    name: ci_os_hub_network
     external: true
   nginx_store-id_network:
     name: nginx_store-id_network
@@ -323,15 +273,15 @@ exports[`DockerComposeBuilder > should correctly format entrypoint as array 1`] 
       nginx_store-id_network:
         gw_priority: 0
     labels:
-      runtipi.managed: true
-      runtipi.appurn: nginx:store-id
+      ci-os-hub.managed: true
+      ci-os-hub.appurn: nginx:store-id
     entrypoint:
       - entrypoint
       - arg1
       - arg2
 networks:
-  tipi_main_network:
-    name: runtipi_tipi_main_network
+  ci_os_hub_network:
+    name: ci_os_hub_network
     external: true
   nginx_store-id_network:
     name: nginx_store-id_network
@@ -351,12 +301,12 @@ exports[`DockerComposeBuilder > should correctly format entrypoint as string 1`]
       nginx_store-id_network:
         gw_priority: 0
     labels:
-      runtipi.managed: true
-      runtipi.appurn: nginx:store-id
+      ci-os-hub.managed: true
+      ci-os-hub.appurn: nginx:store-id
     entrypoint: entrypoint
 networks:
-  tipi_main_network:
-    name: runtipi_tipi_main_network
+  ci_os_hub_network:
+    name: ci_os_hub_network
     external: true
   nginx_store-id_network:
     name: nginx_store-id_network
@@ -376,15 +326,15 @@ exports[`DockerComposeBuilder > should correctly format logging 1`] = `
       nginx_store-id_network:
         gw_priority: 0
     labels:
-      runtipi.managed: true
-      runtipi.appurn: nginx:store-id
+      ci-os-hub.managed: true
+      ci-os-hub.appurn: nginx:store-id
     logging:
       driver: json-file
       options:
         syslog-address: tcp://192.168.0.42:123
 networks:
-  tipi_main_network:
-    name: runtipi_tipi_main_network
+  ci_os_hub_network:
+    name: ci_os_hub_network
     external: true
   nginx_store-id_network:
     name: nginx_store-id_network

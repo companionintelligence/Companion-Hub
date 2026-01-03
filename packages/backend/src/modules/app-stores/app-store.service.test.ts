@@ -54,7 +54,6 @@ describe('AppStoreService', () => {
         slug: 'ci-cloud',
         enabled: true,
         type: 'http_zip',
-        authorizationKey: null,
       });
     });
 

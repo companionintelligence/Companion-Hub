@@ -1,3 +1,4 @@
+import path from 'node:path';
 import swc from 'unplugin-swc';
 import viteTsconfigPaths from 'vite-tsconfig-paths';
 import { type Plugin, defineConfig } from 'vitest/config';
@@ -14,5 +15,9 @@ export default defineConfig({
       NODE_OPTIONS: '--experimental-sqlite',
     },
   },
-  resolve: {},
+  resolve: {
+    alias: {
+      '@': path.resolve(__dirname, './src'),
+    },
+  },
 });
