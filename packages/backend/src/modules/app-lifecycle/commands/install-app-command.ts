@@ -131,35 +131,55 @@ export class InstallAppCommand extends AppLifecycleCommand {
       // Create Cloudflare Tunnel route if exposedLocal is enabled (app is published to internet)
       // Routes directly to the app's host port - makes app available at subdomain.companionintel.com
       // Or subdomain.orgDomain.companionintel.com if organization is registered
+      logger.info(`[Cloudflare] Checking route creation for ${appUrn}, exposedLocal: ${form.exposedLocal}`);
       try {
         const cloudflareService = this.moduleRef.get(CloudflareTunnelService, { strict: false });
         if (!cloudflareService) {
-          logger.debug(`CloudflareTunnelService not available for ${appUrn}`);
-        } else if (cloudflareService.isEnabled()) {
-          const { appName, appStoreId } = extractAppUrn(appUrn);
-          const { isProduction } = config?.getConfig() || { isProduction: false };
-
-          // In production, when exposedLocal is enabled, create a route to Traefik
-          // Traefik will route to the app container based on the subdomain
-          // This publishes the app to the internet via Cloudflare Tunnel -> Traefik -> App
-          if (form.exposedLocal && isProduction) {
-            const subdomain = form.localSubdomain ? form.localSubdomain : `${appName}-${appStoreId}`;
-
-            // Get organization info if available
-            const registrationService = this.moduleRef.get(RegistrationService, { strict: false });
-            const orgInfo = await registrationService?.getOrganizationInfo();
-            const organizationInfo = orgInfo ? { tunnelId: orgInfo.tunnelId, domain: orgInfo.domain } : null;
-
-            emitProgress(90);
-            const domain = organizationInfo ? organizationInfo.domain : 'companionintel.com';
-            logger.info(`Creating Cloudflare Tunnel route for ${appUrn} via Traefik ` + `(subdomain: ${subdomain}, domain: ${domain})`);
-            await cloudflareService.createAppRoute(subdomain, undefined, organizationInfo);
-          }
+          logger.warn(`[Cloudflare] CloudflareTunnelService not available for ${appUrn}`);
         } else {
-          logger.debug(`Cloudflare Tunnel integration is not enabled for ${appUrn}`);
+          const isEnabled = cloudflareService.isEnabled();
+          logger.info(`[Cloudflare] Service available for ${appUrn}, enabled: ${isEnabled}, exposedLocal: ${form.exposedLocal}`);
+          
+          if (isEnabled) {
+            const { appName, appStoreId } = extractAppUrn(appUrn);
+
+            // When exposedLocal is enabled, create a route directly to the app's exposed port
+            // This publishes the app to the internet via Cloudflare Tunnel -> App Container
+            if (form.exposedLocal) {
+              const subdomain = form.localSubdomain ? form.localSubdomain : `${appName}-${appStoreId}`;
+
+              // Always use base domain (companionintel.com) for app routes, not organization domain
+              // Apps should be accessible at appname.companionintel.com, not appname.orgname.companionintel.com
+              emitProgress(90);
+              const domain = 'companionintel.com';
+              const hostname = `${subdomain}.${domain}`;
+              
+              // Get the app's port from form or appInfo
+              const appPort = form.port || appInfo.port;
+              if (!appPort) {
+                logger.error(`[Cloudflare] Cannot create route for ${appUrn} - no port specified`);
+              } else {
+                logger.info(`[Cloudflare] Creating route and DNS for ${appUrn} -> localhost:${appPort} (hostname: ${hostname})`);
+                // Don't pass organizationInfo - always use base domain
+                const routeCreated = await cloudflareService.createAppRoute(subdomain, appPort, null);
+                if (routeCreated) {
+                  logger.info(`[Cloudflare] ✅ Successfully created route and DNS for ${hostname}`);
+                } else {
+                  logger.error(`[Cloudflare] ❌ Failed to create route for ${hostname}. Check Cloudflare service logs for details.`);
+                }
+              }
+            } else {
+              logger.info(`[Cloudflare] Skipping route creation for ${appUrn} - exposedLocal is false`);
+            }
+          } else {
+            logger.warn(`[Cloudflare] Service is not enabled. Check CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, and CLOUDFLARE_TUNNEL_ID environment variables.`);
+          }
         }
       } catch (error) {
-        logger.warn(`Failed to create Cloudflare Tunnel route for ${appUrn}: ${error}`);
+        logger.error(`[Cloudflare] Exception creating route for ${appUrn}: ${error}`);
+        if (error instanceof Error) {
+          logger.error(`[Cloudflare] Error stack: ${error.stack}`);
+        }
         // Don't fail the installation if Cloudflare route creation fails
       }
 

@@ -360,30 +360,27 @@ export class RegistrationService implements OnApplicationBootstrap {
 
       const orgDomain = `${orgName}.companionintel.com`;
 
-      // Create tunnel if not provided
+      // Use default tunnel instead of creating organization-specific tunnels
+      // All apps will use the same tunnel (CLOUDFLARE_TUNNEL_ID)
       if (tunnelId) {
-        this.logger.info(`Using existing tunnel ID for organization: ${tunnelId}`);
+        this.logger.info(`Using provided tunnel ID for organization: ${tunnelId}`);
         // Verify tunnel exists and configure it if needed
         const tunnelConfig = await this.cloudflareTunnelService.getTunnelConfigForTunnel(tunnelId);
         if (!tunnelConfig) {
-          // Tunnel exists but has no config, set it up
+          // Tunnel exists but has no config, set up empty initial config
           const config = {
-            ingress: [
-              {
-                service: 'http://localhost:80',
-                originRequest: {
-                  httpHostHeader: orgDomain,
-                },
-              },
-            ],
+            ingress: [],
           };
           await this.cloudflareTunnelService.updateTunnelConfigForTunnel(tunnelId, config);
         }
       } else {
-        this.logger.info(`Creating Cloudflare Tunnel for organization: ${orgDomain}`);
-        tunnelId = await this.cloudflareTunnelService.createOrganizationTunnel(orgName);
-        if (!tunnelId) {
-          this.logger.error(`Failed to create Cloudflare Tunnel for organization ${organizationId}`);
+        // Use default tunnel ID from environment instead of creating a new tunnel
+        const credentials = this.cloudflareTunnelService.getApiCredentials();
+        if (credentials?.tunnelId) {
+          tunnelId = credentials.tunnelId;
+          this.logger.info(`Using default tunnel ID for organization: ${tunnelId} (no organization-specific tunnel needed)`);
+        } else {
+          this.logger.error(`No tunnel ID available. Set CLOUDFLARE_TUNNEL_ID environment variable.`);
           return;
         }
       }

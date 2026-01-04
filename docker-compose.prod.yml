@@ -1,23 +1,4 @@
 services:
-  ci-hub-reverse-proxy:
-    container_name: ci-hub-reverse-proxy
-    depends_on:
-      ci-os-hub:
-        condition: service_healthy
-    image: traefik:v3.5
-    restart: unless-stopped
-    ports:
-      - 80:80
-      - 443:443
-      - 9091:9091
-    command: --providers.docker --providers.docker.useBindPortIP=false --entryPoints.traefik.address=:9091
-    volumes:
-      - ./.internal/traefik:/etc/traefik
-      - ./.internal/traefik/shared:/shared
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    networks:
-      - ci_os_hub_network
-
   ci-hub-db:
     container_name: ci-hub-db
     image: postgres:14

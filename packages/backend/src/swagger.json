@@ -339,10 +339,40 @@
         ]
       }
     },
-    "/api/cloudflare/update-routes-origin-request": {
+    "/api/cloudflare/remove-origin-request": {
       "post": {
-        "operationId": "updateAllRoutesWithOriginRequest",
+        "operationId": "removeOriginRequestFromAllRoutes",
         "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Cloudflare"
+        ]
+      }
+    },
+    "/api/cloudflare/remove-catch-all-routes": {
+      "post": {
+        "operationId": "removeCatchAllRoutes",
+        "parameters": [
+          {
+            "name": "tunnelId",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "",

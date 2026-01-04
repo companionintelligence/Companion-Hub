@@ -45,6 +45,15 @@ export class AppHelpers {
 
     const { appName, appStoreId } = extractAppUrn(appUrn);
 
+    // Ensure DOMAIN and LOCAL_DOMAIN are set (required for Traefik label interpolation)
+    // These come from the base env file, but ensure they're present with defaults
+    if (!envMap.has('DOMAIN')) {
+      envMap.set('DOMAIN', userSettings.domain || 'companionintel.com');
+    }
+    if (!envMap.has('LOCAL_DOMAIN')) {
+      envMap.set('LOCAL_DOMAIN', userSettings.localDomain || 'tipi.lan');
+    }
+
     // Default always present env variables
     if (config.port || form.port) {
       envMap.set('APP_PORT', form.port ? String(form.port) : String(config.port));
@@ -193,12 +202,19 @@ export class AppHelpers {
 
     if (form.exposedLocal) {
       const subdomain = form.localSubdomain ? form.localSubdomain : `${appName}-${appStoreId}`;
-      envMap.set('APP_LOCAL_DOMAIN', `${subdomain}.${envMap.get('LOCAL_DOMAIN')}`);
+      // exposedLocal means "publish to internet via Cloudflare"
+      // Container should think it's public and HTTPS (even though Traefik receives HTTP from Cloudflare)
+      const publicDomain = envMap.get('DOMAIN') || 'companionintel.com';
+      envMap.set('APP_LOCAL_DOMAIN', `${subdomain}.${envMap.get('LOCAL_DOMAIN') || 'tipi.lan'}`);
 
       if (!form.openPort) {
+        // App thinks it's public HTTPS (for proper URL generation and SSL handling)
+        // Traefik will set X-Forwarded-Proto: https header so apps know they're behind HTTPS
+        envMap.set('APP_EXPOSED', 'true');
+        envMap.set('APP_EXPOSED_DOMAIN', `${subdomain}.${publicDomain}`);
         envMap.set('APP_PROTOCOL', 'https');
-        envMap.set('APP_DOMAIN', `${subdomain}.${envMap.get('LOCAL_DOMAIN')}`);
-        envMap.set('APP_HOST', `${subdomain}.${envMap.get('LOCAL_DOMAIN')}`);
+        envMap.set('APP_DOMAIN', `${subdomain}.${publicDomain}`);
+        envMap.set('APP_HOST', `${subdomain}.${publicDomain}`);
       }
     }
 

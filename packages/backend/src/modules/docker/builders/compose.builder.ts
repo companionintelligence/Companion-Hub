@@ -21,6 +21,8 @@ interface Network {
 export class DockerComposeBuilder {
   private services: Record<string, BuiltService> = {};
   private networks: Record<string, Omit<Network, 'key'>> = {};
+  private domain: string = 'companionintel.com';
+  private localDomain: string = 'tipi.lan';
 
   addService(service: BuiltService) {
     const { name: _, ...rest } = service;
@@ -62,6 +64,10 @@ export class DockerComposeBuilder {
 
   private buildService = (params: Service, form: AppEventFormInput, appUrn: AppUrn) => {
     const { appName, appStoreId } = extractAppUrn(appUrn);
+    
+    // Use domain values set in getDockerCompose (from app env file or defaults)
+    const domain = this.domain;
+    const localDomain = this.localDomain;
     const result = serviceSchema.safeParse(params);
 
     if (!result.success) {
@@ -113,9 +119,9 @@ export class DockerComposeBuilder {
     }
 
     if (params.isMain) {
-      // When exposedLocal is true, apps go through Traefik - no port mapping needed
-      // Only open ports for legacy openPort mode (local network access only)
-      if (form.openPort && !form.exposedLocal && params.internalPort) {
+      // When exposedLocal is true, expose the port directly for Cloudflare tunnel routing
+      // When openPort is true, also expose the port for local network access
+      if ((form.exposedLocal || form.openPort) && params.internalPort) {
         service.setPort({
           containerPort: params.internalPort,
           // biome-ignore lint/suspicious/noTemplateCurlyInString: intended
@@ -130,66 +136,18 @@ export class DockerComposeBuilder {
       'ci-os-hub.appurn': appUrn,
     };
 
-    // Add Traefik labels when exposedLocal is enabled (app published to internet via Traefik)
-    if (params.isMain && form.exposedLocal && params.internalPort) {
-      const serviceId = `${appName}-${appStoreId}`;
-      const subdomain = form.localSubdomain || serviceId;
-
-      // Traefik configuration for the app
-      defaultLabels['traefik.enable'] = true;
-      defaultLabels['traefik.docker.network'] = 'ci_os_hub_network';
-
-      // Service configuration
-      defaultLabels[`traefik.http.services.${serviceId}.loadbalancer.server.port`] = String(params.internalPort);
-
-      // HTTPS redirect middleware
-      defaultLabels[`traefik.http.middlewares.${serviceId}-web-redirect.redirectscheme.scheme`] = 'https';
-
-      // Router for public domain (insecure - redirects to HTTPS)
-      // This is used by Cloudflare Tunnel for internet access
-      defaultLabels[`traefik.http.routers.${serviceId}-insecure.rule`] = `Host(\`${subdomain}.\${DOMAIN}\`)`;
-      defaultLabels[`traefik.http.routers.${serviceId}-insecure.entrypoints`] = 'web';
-      defaultLabels[`traefik.http.routers.${serviceId}-insecure.service`] = serviceId;
-      defaultLabels[`traefik.http.routers.${serviceId}-insecure.middlewares`] = `${serviceId}-web-redirect`;
-
-      // Router for public domain (secure)
-      // This is used by Cloudflare Tunnel for internet access (HTTPS)
-      defaultLabels[`traefik.http.routers.${serviceId}.rule`] = `Host(\`${subdomain}.\${DOMAIN}\`)`;
-      defaultLabels[`traefik.http.routers.${serviceId}.entrypoints`] = 'websecure';
-      defaultLabels[`traefik.http.routers.${serviceId}.service`] = serviceId;
-      defaultLabels[`traefik.http.routers.${serviceId}.tls.certresolver`] = 'myresolver';
-
-      // Router for local domain (insecure - redirects to HTTPS)
-      // This is for local network access
-      defaultLabels[`traefik.http.routers.${serviceId}-local-insecure.rule`] = `Host(\`${subdomain}.\${LOCAL_DOMAIN}\`)`;
-      defaultLabels[`traefik.http.routers.${serviceId}-local-insecure.entrypoints`] = 'web';
-      defaultLabels[`traefik.http.routers.${serviceId}-local-insecure.service`] = serviceId;
-      defaultLabels[`traefik.http.routers.${serviceId}-local-insecure.middlewares`] = `${serviceId}-web-redirect`;
-
-      // Router for local domain (secure)
-      // This is for local network access (HTTPS)
-      defaultLabels[`traefik.http.routers.${serviceId}-local.rule`] = `Host(\`${subdomain}.\${LOCAL_DOMAIN}\`)`;
-      defaultLabels[`traefik.http.routers.${serviceId}-local.entrypoints`] = 'websecure';
-      defaultLabels[`traefik.http.routers.${serviceId}-local.service`] = serviceId;
-      defaultLabels[`traefik.http.routers.${serviceId}-local.tls`] = true;
-
-      // Optional: Add auth middleware if enableAuth is true
-      // Apply to both public and local routes
-      if (form.enableAuth) {
-        const authMiddleware = 'ci-hub';
-        defaultLabels[`traefik.http.routers.${serviceId}.middlewares`] = authMiddleware;
-        defaultLabels[`traefik.http.routers.${serviceId}-local.middlewares`] = authMiddleware;
-      }
-    }
-
     // Merge default labels with extra labels from app config
     service.setLabels({ ...defaultLabels, ...params.extraLabels }).interpolateVariables(`${appName}-${appStoreId}`);
 
     return service.build();
   };
 
-  public getDockerCompose(services: ServiceInput[], form: AppEventFormInput, appUrn: AppUrn, subnet: string) {
+  public getDockerCompose(services: ServiceInput[], form: AppEventFormInput, appUrn: AppUrn, subnet: string, domain?: string, localDomain?: string) {
     const { appName, appStoreId } = extractAppUrn(appUrn);
+
+    // Store domain values for use in buildService
+    this.domain = domain || process.env.DOMAIN || 'companionintel.com';
+    this.localDomain = localDomain || process.env.LOCAL_DOMAIN || 'tipi.lan';
 
     const myServices = services.map((service) => this.buildService(service, form, appUrn));
 

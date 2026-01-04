@@ -25,9 +25,22 @@ export class CloudflareController {
   @Get('status')
   @ApiResponse({ type: Object })
   async getStatus() {
+    const credentials = this.cloudflareTunnelService.getApiCredentials();
+    const tunnelConfig = credentials ? await this.cloudflareTunnelService.getTunnelConfig() : null;
+    
     return {
       tunnelEnabled: this.cloudflareTunnelService.isEnabled(),
       dnsEnabled: this.cloudflareTunnelService.isDnsEnabled(),
+      tunnelId: credentials?.tunnelId || null,
+      accountId: credentials?.accountId || null,
+      zoneId: credentials?.zoneId || null,
+      routes: tunnelConfig?.ingress?.map((rule) => ({
+        hostname: rule.hostname || '(no hostname)',
+        service: rule.service,
+        httpHostHeader: rule.originRequest?.httpHostHeader || null,
+      })) || [],
+      // Note: This doesn't check if the tunnel daemon (cloudflared) is actually running
+      // The daemon must be started separately: cloudflared tunnel run <tunnel-id>
     };
   }
 
@@ -43,7 +56,7 @@ export class CloudflareController {
 
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+      const timeoutId = setTimeout(() => controller.abort(), 10000); // Increased to 10 seconds for DNS resolution
 
       const response = await fetch(url, {
         method: 'HEAD',
@@ -62,10 +75,15 @@ export class CloudflareController {
         statusText: response.statusText,
       };
     } catch (error) {
-      // Network errors, timeouts, etc. mean unavailable
+      // Network errors, timeouts, DNS errors, etc. mean unavailable
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      const isDnsError = errorMessage.includes('ENOTFOUND') || errorMessage.includes('getaddrinfo') || errorMessage.includes('DNS');
+      
       return {
         available: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: errorMessage,
+        isDnsError,
+        suggestion: isDnsError ? 'DNS record may not exist or may not have propagated yet. Check Cloudflare dashboard or try syncing DNS records.' : undefined,
       };
     }
   }
@@ -96,13 +114,12 @@ export class CloudflareController {
   }
 
   /**
-   * Update all existing tunnel routes with originRequest configuration
-   * This ensures apps work properly behind Cloudflare Tunnel by setting proper Host headers
-   * and connection settings for external access
+   * Remove originRequest configuration from all existing tunnel routes
+   * We don't want any origin request headers or settings
    */
-  @Post('update-routes-origin-request')
+  @Post('remove-origin-request')
   @ApiResponse({ type: Object })
-  async updateAllRoutesWithOriginRequest() {
+  async removeOriginRequestFromAllRoutes() {
     if (!this.cloudflareTunnelService.isEnabled()) {
       return {
         success: false,
@@ -113,13 +130,34 @@ export class CloudflareController {
       };
     }
 
-    const result = await this.cloudflareTunnelService.updateAllRoutesWithOriginRequest();
+    const result = await this.cloudflareTunnelService.removeOriginRequestFromAllRoutes();
     return {
       success: result.failed.length === 0,
       message:
-        `Updated ${result.updated.length} routes with originRequest configuration. ` +
-        `${result.skipped.length} routes already had proper configuration.`,
+        `Removed originRequest from ${result.updated.length} routes. ` +
+        `${result.skipped.length} routes already had no originRequest configuration.`,
       ...result,
     };
+  }
+
+  /**
+   * Remove all catch-all routes from tunnel configuration
+   * Catch-all routes (routes without hostnames) can cause routing issues
+   * and are no longer needed with direct app routing
+   */
+  @Post('remove-catch-all-routes')
+  @ApiResponse({ type: Object })
+  async removeCatchAllRoutes(@Query('tunnelId') tunnelId?: string) {
+    if (!this.cloudflareTunnelService.isEnabled()) {
+      return {
+        success: false,
+        message: 'Cloudflare Tunnel integration is not enabled',
+        removed: 0,
+        remainingRoutes: 0,
+      };
+    }
+
+    const result = await this.cloudflareTunnelService.removeCatchAllRoutes(tunnelId || undefined);
+    return result;
   }
 }

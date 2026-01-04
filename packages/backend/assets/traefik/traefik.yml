@@ -1,6 +1,9 @@
 api:
   dashboard: true
   insecure: true
+  # In Traefik v3, when insecure is true, dashboard listens on port 8080 by default
+  # Access at http://localhost:9091/dashboard/ (note the trailing slash)
+  # The API is available at http://localhost:9091/api/
 
 providers:
   docker:
@@ -41,4 +44,6 @@ certificatesResolvers:
         entryPoint: web
 
 log:
-  level: ERROR
+  level: INFO
+  # Suppress Docker provider errors about host information retrieval
+  format: json
