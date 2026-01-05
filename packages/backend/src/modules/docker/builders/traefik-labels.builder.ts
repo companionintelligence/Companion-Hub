@@ -16,7 +16,8 @@ export class TraefikLabelsBuilder {
       generated: true,
       'traefik.enable': false,
       'traefik.docker.network': 'runtipi_tipi_main_network',
-      [`traefik.http.middlewares.${params.appId}-${params.storeId}-web-redirect.redirectscheme.scheme`]: 'https',
+      // REMOVED: HTTPS redirect middleware - Cloudflare Tunnel needs plain HTTP
+      // [`traefik.http.middlewares.${params.appId}-${params.storeId}-web-redirect.redirectscheme.scheme`]: 'https',
       [`traefik.http.services.${params.appId}-${params.storeId}.loadbalancer.server.port`]: `${params.internalPort}`,
     };
   }
@@ -29,7 +30,8 @@ export class TraefikLabelsBuilder {
         [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-insecure.rule`]: 'Host(`${APP_DOMAIN}`)',
         [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-insecure.entrypoints`]: 'web',
         [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-insecure.service`]: `${this.params.appId}-${this.params.storeId}`,
-        [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-insecure.middlewares`]: `${this.params.appId}-${this.params.storeId}-web-redirect`,
+        // REMOVED: No HTTPS redirect middleware - Cloudflare Tunnel handles SSL
+        // [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-insecure.middlewares`]: `${this.params.appId}-${this.params.storeId}-web-redirect`,
         // biome-ignore lint/suspicious/noTemplateCurlyInString: Traefik label requires literal ${APP_DOMAIN}
         [`traefik.http.routers.${this.params.appId}-${this.params.storeId}.rule`]: 'Host(`${APP_DOMAIN}`)',
         [`traefik.http.routers.${this.params.appId}-${this.params.storeId}.entrypoints`]: 'websecure',
@@ -55,7 +57,8 @@ export class TraefikLabelsBuilder {
         [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-local-insecure.rule`]: `Host(\`${subdomain}.\${LOCAL_DOMAIN}\`)`,
         [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-local-insecure.entrypoints`]: 'web',
         [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-local-insecure.service`]: `${this.params.appId}-${this.params.storeId}`,
-        [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-local-insecure.middlewares`]: `${this.params.appId}-${this.params.storeId}-web-redirect`,
+        // REMOVED: No HTTPS redirect middleware - Cloudflare Tunnel handles SSL
+        // [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-local-insecure.middlewares`]: `${this.params.appId}-${this.params.storeId}-web-redirect`,
         [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-local.rule`]: `Host(\`${subdomain}.\${LOCAL_DOMAIN}\`)`,
         [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-local.entrypoints`]: 'websecure',
         [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-local.service`]: `${this.params.appId}-${this.params.storeId}`,

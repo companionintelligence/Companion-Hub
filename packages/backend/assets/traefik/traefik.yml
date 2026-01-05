@@ -19,6 +19,8 @@ providers:
 entryPoints:
   web:
     address: ":80"
+    # Allow plain HTTP - no automatic redirect to HTTPS
+    # Cloudflare Tunnel connects via plain HTTP
     transport:
       respondingTimeouts:
         readTimeout: 300s
