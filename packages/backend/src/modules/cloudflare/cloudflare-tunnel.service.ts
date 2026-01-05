@@ -913,7 +913,7 @@ export class CloudflareTunnelService {
     }
 
     this.logger.info(`✅ Created Cloudflare Tunnel route for ${hostname} -> ${serviceUrl}`);
-    this.logger.info(`   Route details: hostname=${hostname}, service=${serviceUrl}, httpHostHeader=${hostname}`);
+    this.logger.info(`   Direct HTTP routing - NO headers, NO SSL (Cloudflare Tunnel handles SSL at edge)`);
     this.logger.info(`   ⚠️  IMPORTANT: Ensure the tunnel daemon (cloudflared) is running and has reloaded the configuration`);
     this.logger.info(`   ⚠️  IMPORTANT: Verify port ${port} is exposed on localhost (check docker-compose ports mapping)`);
 
