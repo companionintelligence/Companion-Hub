@@ -143,7 +143,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
           if (isEnabled) {
             const { appName, appStoreId } = extractAppUrn(appUrn);
 
-            // When exposedLocal is enabled, create a route directly to the app's exposed port
+            // When exposedLocal is enabled, create routes for all exposed ports
             // This publishes the app to the internet via Cloudflare Tunnel -> App Container
             if (form.exposedLocal) {
               const subdomain = form.localSubdomain ? form.localSubdomain : `${appName}-${appStoreId}`;
@@ -152,21 +152,55 @@ export class InstallAppCommand extends AppLifecycleCommand {
               // Apps should be accessible at appname.companionintel.com, not appname.orgname.companionintel.com
               emitProgress(90);
               const domain = 'companionintel.com';
-              const hostname = `${subdomain}.${domain}`;
               
-              // Get the app's port from form or appInfo
-              const appPort = form.port || appInfo.port;
-              if (!appPort) {
+              // Get all exposed ports from containers
+              const dockerService = this.moduleRef.get(DockerService, { strict: false });
+              let exposedPorts: number[] = [];
+              
+              if (dockerService) {
+                try {
+                  exposedPorts = await dockerService.getExposedPorts(appUrn);
+                  logger.info(`[Cloudflare] Found ${exposedPorts.length} exposed port(s) for ${appUrn}: ${exposedPorts.join(', ')}`);
+                } catch (error) {
+                  logger.warn(`[Cloudflare] Could not get exposed ports for ${appUrn}: ${error}`);
+                }
+              }
+              
+              // Fallback to form/appInfo port if no exposed ports found
+              if (exposedPorts.length === 0) {
+                const appPort = form.port || appInfo.port;
+                if (appPort) {
+                  exposedPorts = [Number(appPort)];
+                  logger.info(`[Cloudflare] Using fallback port ${appPort} for ${appUrn}`);
+                }
+              }
+              
+              if (exposedPorts.length === 0) {
                 logger.error(`[Cloudflare] Cannot create route for ${appUrn} - no port specified`);
               } else {
-                logger.info(`[Cloudflare] Creating route and DNS for ${appUrn} -> localhost:${appPort} (hostname: ${hostname})`);
-                // Don't pass organizationInfo - always use base domain
-                const routeCreated = await cloudflareService.createAppRoute(subdomain, appPort, null);
-                if (routeCreated) {
-                  logger.info(`[Cloudflare] ✅ Successfully created route and DNS for ${hostname}`);
-                } else {
-                  logger.error(`[Cloudflare] ❌ Failed to create route for ${hostname}. Check Cloudflare service logs for details.`);
-                }
+                // Create routes for all exposed ports
+                // For multiple ports, use subdomain-port format (e.g., ghost-8080, ghost-9091)
+                // For single port, use base subdomain
+                const routePromises = exposedPorts.map(async (port) => {
+                  const routeSubdomain = exposedPorts.length > 1 ? `${subdomain}-${port}` : subdomain;
+                  const hostname = `${routeSubdomain}.${domain}`;
+                  
+                  logger.info(`[Cloudflare] Creating route and DNS for ${appUrn} -> localhost:${port} (hostname: ${hostname})`);
+                  // Don't pass organizationInfo - always use base domain
+                  const routeCreated = await cloudflareService.createAppRoute(routeSubdomain, port, null);
+                  
+                  if (routeCreated) {
+                    logger.info(`[Cloudflare] ✅ Successfully created route and DNS for ${hostname}`);
+                  } else {
+                    logger.error(`[Cloudflare] ❌ Failed to create route for ${hostname}. Check Cloudflare service logs for details.`);
+                  }
+                  
+                  return { port, hostname, success: routeCreated };
+                });
+                
+                const results = await Promise.all(routePromises);
+                const successCount = results.filter((r) => r.success).length;
+                logger.info(`[Cloudflare] Created ${successCount}/${exposedPorts.length} route(s) for ${appUrn}`);
               }
             } else {
               logger.info(`[Cloudflare] Skipping route creation for ${appUrn} - exposedLocal is false`);
