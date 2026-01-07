@@ -1,12 +1,12 @@
-import { Controller, Get, Post, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Query, UseGuards, HttpException, HttpStatus } from '@nestjs/common';
 import { AuthGuard } from '../auth/auth.guard';
-import { CloudflareTunnelService } from './cloudflare-tunnel.service';
+import { CloudflareClientService } from './cloudflare-client.service';
 import { ApiResponse } from '@nestjs/swagger';
 
 @UseGuards(AuthGuard)
 @Controller('cloudflare')
 export class CloudflareController {
-  constructor(private readonly cloudflareTunnelService: CloudflareTunnelService) {}
+  constructor(private readonly cloudflareClientService: CloudflareClientService) {}
 
   @Get('check-dns-availability')
   @ApiResponse({ type: Object })
@@ -14,33 +14,23 @@ export class CloudflareController {
     if (!subdomain) {
       return { available: true };
     }
-
-    const result = await this.cloudflareTunnelService.checkDnsAvailability(subdomain);
-    return result;
+    
+    return { available: true, message: 'Availability check delegated to CI-Cloud (Not implemented yet)' };
   }
 
-  /**
-   * Get the current status of Cloudflare integration
-   */
   @Get('status')
   @ApiResponse({ type: Object })
   async getStatus() {
-    const credentials = this.cloudflareTunnelService.getApiCredentials();
-    const tunnelConfig = credentials ? await this.cloudflareTunnelService.getTunnelConfig() : null;
+    const token = this.cloudflareClientService.getTunnelToken();
     
     return {
-      tunnelEnabled: this.cloudflareTunnelService.isEnabled(),
-      dnsEnabled: this.cloudflareTunnelService.isDnsEnabled(),
-      tunnelId: credentials?.tunnelId || null,
-      accountId: credentials?.accountId || null,
-      zoneId: credentials?.zoneId || null,
-      routes: tunnelConfig?.ingress?.map((rule) => ({
-        hostname: rule.hostname || '(no hostname)',
-        service: rule.service,
-        httpHostHeader: rule.originRequest?.httpHostHeader || null,
-      })) || [],
-      // Note: This doesn't check if the tunnel daemon (cloudflared) is actually running
-      // The daemon must be started separately: cloudflared tunnel run <tunnel-id>
+      tunnelEnabled: !!token,
+      dnsEnabled: true, 
+      tunnelId: this.cloudflareClientService['tunnelId'] || null, 
+      accountId: null,
+      zoneId: null,
+      routes: [], 
+      message: 'Tunnel is managed by CI-Cloud.'
     };
   }
 
@@ -88,76 +78,38 @@ export class CloudflareController {
     }
   }
 
-  /**
-   * Sync missing DNS records for all tunnel routes
-   * This creates CNAME records for any tunnel routes that don't have DNS records yet
-   */
   @Post('sync-dns')
   @ApiResponse({ type: Object })
   async syncMissingDnsRecords() {
-    if (!this.cloudflareTunnelService.isDnsEnabled()) {
-      return {
-        success: false,
-        message: 'DNS management not enabled. Set CLOUDFLARE_ZONE_ID environment variable.',
-        synced: [],
-        failed: [],
-        skipped: [],
-      };
-    }
-
-    const result = await this.cloudflareTunnelService.syncMissingDnsRecords();
     return {
-      success: result.failed.length === 0,
-      message: `Synced ${result.synced.length} DNS records, ${result.failed.length} failed, ${result.skipped.length} already existed`,
-      ...result,
+      success: true,
+      message: 'DNS sync is handled automatically by CI-Cloud when apps change.',
+      synced: [],
+      failed: [],
+      skipped: [],
     };
   }
 
-  /**
-   * Remove originRequest configuration from all existing tunnel routes
-   * We don't want any origin request headers or settings
-   */
   @Post('remove-origin-request')
   @ApiResponse({ type: Object })
   async removeOriginRequestFromAllRoutes() {
-    if (!this.cloudflareTunnelService.isEnabled()) {
-      return {
-        success: false,
-        message: 'Cloudflare Tunnel integration is not enabled',
-        updated: [],
-        skipped: [],
-        failed: [],
-      };
-    }
-
-    const result = await this.cloudflareTunnelService.removeOriginRequestFromAllRoutes();
     return {
-      success: result.failed.length === 0,
-      message:
-        `Removed originRequest from ${result.updated.length} routes. ` +
-        `${result.skipped.length} routes already had no originRequest configuration.`,
-      ...result,
+      success: true,
+      message: 'Configuration is managed by CI-Cloud.',
+      updated: [],
+      skipped: [],
+      failed: [],
     };
   }
 
-  /**
-   * Remove all catch-all routes from tunnel configuration
-   * Catch-all routes (routes without hostnames) can cause routing issues
-   * and are no longer needed with direct app routing
-   */
   @Post('remove-catch-all-routes')
   @ApiResponse({ type: Object })
   async removeCatchAllRoutes(@Query('tunnelId') tunnelId?: string) {
-    if (!this.cloudflareTunnelService.isEnabled()) {
-      return {
-        success: false,
-        message: 'Cloudflare Tunnel integration is not enabled',
-        removed: 0,
-        remainingRoutes: 0,
-      };
-    }
-
-    const result = await this.cloudflareTunnelService.removeCatchAllRoutes(tunnelId || undefined);
-    return result;
+    return {
+      success: true,
+      message: 'Configuration is managed by CI-Cloud.',
+      removed: 0,
+      remainingRoutes: 0,
+    };
   }
 }

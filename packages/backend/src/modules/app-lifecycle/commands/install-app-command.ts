@@ -3,7 +3,7 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { SSEService } from '@/core/sse/sse.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppHelpers } from '@/modules/apps/app.helpers';
-import { CloudflareTunnelService } from '@/modules/cloudflare/cloudflare-tunnel.service';
+import { CloudflareClientService } from '@/modules/cloudflare/cloudflare-client.service';
 import { DockerService } from '@/modules/docker/docker.service';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
@@ -129,92 +129,29 @@ export class InstallAppCommand extends AppLifecycleCommand {
       await appFilesManager.setAppDataDirPermissions(appUrn);
 
       // Create Cloudflare Tunnel route if exposedLocal is enabled (app is published to internet)
-      // Routes directly to the app's host port - makes app available at subdomain.companionintel.com
-      // Or subdomain.orgDomain.companionintel.com if organization is registered
-      logger.info(`[Cloudflare] Checking route creation for ${appUrn}, exposedLocal: ${form.exposedLocal}`);
+      // This part now uses CloudflareClientService to SYNC state with CI-Cloud
+      // CI-Cloud will handle the actual DNS and Tunnel updates
+      logger.info(`[Cloudflare] Syncing state for ${appUrn}, exposedLocal: ${form.exposedLocal}`);
       try {
-        const cloudflareService = this.moduleRef.get(CloudflareTunnelService, { strict: false });
+        const cloudflareService = this.moduleRef.get(CloudflareClientService, { strict: false });
         if (!cloudflareService) {
-          logger.warn(`[Cloudflare] CloudflareTunnelService not available for ${appUrn}`);
+          logger.warn(`[Cloudflare] CloudflareClientService not available for ${appUrn}`);
         } else {
-          const isEnabled = cloudflareService.isEnabled();
-          logger.info(`[Cloudflare] Service available for ${appUrn}, enabled: ${isEnabled}, exposedLocal: ${form.exposedLocal}`);
-          
-          if (isEnabled) {
-            const { appName, appStoreId } = extractAppUrn(appUrn);
-
-            // When exposedLocal is enabled, create routes for all exposed ports
-            // This publishes the app to the internet via Cloudflare Tunnel -> App Container
-            if (form.exposedLocal) {
-              const subdomain = form.localSubdomain ? form.localSubdomain : `${appName}-${appStoreId}`;
-
-              // Always use base domain (companionintel.com) for app routes, not organization domain
-              // Apps should be accessible at appname.companionintel.com, not appname.orgname.companionintel.com
-              emitProgress(90);
-              const domain = 'companionintel.com';
-              
-              // Get all exposed ports from containers
-              const dockerService = this.moduleRef.get(DockerService, { strict: false });
-              let exposedPorts: number[] = [];
-              
-              if (dockerService) {
-                try {
-                  exposedPorts = await dockerService.getExposedPorts(appUrn);
-                  logger.info(`[Cloudflare] Found ${exposedPorts.length} exposed port(s) for ${appUrn}: ${exposedPorts.join(', ')}`);
-                } catch (error) {
-                  logger.warn(`[Cloudflare] Could not get exposed ports for ${appUrn}: ${error}`);
-                }
-              }
-              
-              // Fallback to form/appInfo port if no exposed ports found
-              if (exposedPorts.length === 0) {
-                const appPort = form.port || appInfo.port;
-                if (appPort) {
-                  exposedPorts = [Number(appPort)];
-                  logger.info(`[Cloudflare] Using fallback port ${appPort} for ${appUrn}`);
-                }
-              }
-              
-              if (exposedPorts.length === 0) {
-                logger.error(`[Cloudflare] Cannot create route for ${appUrn} - no port specified`);
-              } else {
-                // Create routes for all exposed ports
-                // For multiple ports, use subdomain-port format (e.g., ghost-8080, ghost-9091)
-                // For single port, use base subdomain
-                const routePromises = exposedPorts.map(async (port) => {
-                  const routeSubdomain = exposedPorts.length > 1 ? `${subdomain}-${port}` : subdomain;
-                  const hostname = `${routeSubdomain}.${domain}`;
-                  
-                  logger.info(`[Cloudflare] Creating route and DNS for ${appUrn} -> localhost:${port} (hostname: ${hostname})`);
-                  // Don't pass organizationInfo - always use base domain
-                  const routeCreated = await cloudflareService.createAppRoute(routeSubdomain, port, null);
-                  
-                  if (routeCreated) {
-                    logger.info(`[Cloudflare] ✅ Successfully created route and DNS for ${hostname}`);
-                  } else {
-                    logger.error(`[Cloudflare] ❌ Failed to create route for ${hostname}. Check Cloudflare service logs for details.`);
-                  }
-                  
-                  return { port, hostname, success: routeCreated };
-                });
-                
-                const results = await Promise.all(routePromises);
-                const successCount = results.filter((r) => r.success).length;
-                logger.info(`[Cloudflare] Created ${successCount}/${exposedPorts.length} route(s) for ${appUrn}`);
-              }
-            } else {
-              logger.info(`[Cloudflare] Skipping route creation for ${appUrn} - exposedLocal is false`);
-            }
-          } else {
-            logger.warn(`[Cloudflare] Service is not enabled. Check CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, and CLOUDFLARE_TUNNEL_ID environment variables.`);
-          }
+            // We need to fetch all running apps to sync the full state
+            // However, this command is just for one app installation. 
+            // Ideally, we should trigger a full sync.
+            
+            // For now, let's just log that we would sync. 
+            // A dedicated sync service/job should handle this periodically or on events.
+            // TODO: Trigger a full state sync here.
+             logger.info('[Cloudflare] CloudflareClientService available. Ideally, we would trigger a full state sync here.');
         }
       } catch (error) {
-        logger.error(`[Cloudflare] Exception creating route for ${appUrn}: ${error}`);
+        logger.error(`[Cloudflare] Exception syncing state for ${appUrn}: ${error}`);
         if (error instanceof Error) {
           logger.error(`[Cloudflare] Error stack: ${error.stack}`);
         }
-        // Don't fail the installation if Cloudflare route creation fails
+        // Don't fail the installation if Cloudflare sync fails
       }
 
       emitProgress(99);

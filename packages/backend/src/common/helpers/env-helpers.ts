@@ -220,8 +220,8 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   envMap.set('CI_CLOUD_API_URL', envMap.get('CI_CLOUD_API_URL') || '');
   envMap.set('CI_CLOUD_FRONTEND_URL', envMap.get('CI_CLOUD_FRONTEND_URL') || '');
   envMap.set('CI_CLOUD_APP_STORE_URL', envMap.get('CI_CLOUD_APP_STORE_URL') || '');
-  envMap.set('CI_HUB_ORGANIZATION_ID', envMap.get('CI_HUB_ORGANIZATION_ID') || '');
-  envMap.set('CI_HUB_API_KEY', envMap.get('CI_HUB_API_KEY') || '');
+  envMap.set('CI_HUB_ORGANIZATION_ID', settings.ciHubOrganizationId || envMap.get('CI_HUB_ORGANIZATION_ID') || '');
+  envMap.set('CI_HUB_API_KEY', settings.ciHubApiKey || envMap.get('CI_HUB_API_KEY') || '');
 
   // Only write the env file if values have actually changed to avoid unnecessary overwrites
   // This preserves manual edits to .env while still syncing settings.json changes

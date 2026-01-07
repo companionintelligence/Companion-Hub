@@ -1,7 +1,7 @@
 import { Injectable, type OnApplicationBootstrap } from '@nestjs/common';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import { CloudflareTunnelService } from '../cloudflare/cloudflare-tunnel.service';
+import { CloudflareClientService } from '../cloudflare/cloudflare-client.service';
 import { OrganizationRepository } from './organization.repository';
 import si from 'systeminformation';
 
@@ -13,7 +13,7 @@ export class RegistrationService implements OnApplicationBootstrap {
   constructor(
     private readonly config: ConfigurationService,
     private readonly logger: LoggerService,
-    private readonly cloudflareTunnelService: CloudflareTunnelService,
+    private readonly cloudflareClientService: CloudflareClientService,
     private readonly organizationRepository: OrganizationRepository,
   ) {}
 
@@ -228,6 +228,11 @@ export class RegistrationService implements OnApplicationBootstrap {
         // biome-ignore lint/suspicious/noExplicitAny: External API response
         const result = (await registerResponse.json()) as any;
         this.logger.info(`Device registered successfully: ${result.device_id} (status: ${result.status})`);
+
+        if (result.api_key) {
+           await this.config.setUserSettings({ ciHubApiKey: result.api_key });
+           this.logger.info('Saved Hub API Key from registration response');
+        }
       } else {
         // biome-ignore lint/suspicious/noExplicitAny: External API response
         const errorData = (await registerResponse.json().catch(() => ({ error: 'Unknown error' }))) as any;
@@ -297,12 +302,6 @@ export class RegistrationService implements OnApplicationBootstrap {
       return;
     }
 
-    // Check if Cloudflare is enabled
-    if (!this.cloudflareTunnelService.isEnabled() || !this.cloudflareTunnelService.isDnsEnabled()) {
-      this.logger.warn('Cloudflare Tunnel or DNS management not enabled, skipping organization infrastructure setup');
-      return;
-    }
-
     try {
       const { ciCloudApiUrl, ciHubApiKey } = this.config.getConfig();
 
@@ -360,36 +359,17 @@ export class RegistrationService implements OnApplicationBootstrap {
 
       const orgDomain = `${orgName}.companionintel.com`;
 
-      // Use default tunnel instead of creating organization-specific tunnels
-      // All apps will use the same tunnel (CLOUDFLARE_TUNNEL_ID)
-      if (tunnelId) {
-        this.logger.info(`Using provided tunnel ID for organization: ${tunnelId}`);
-        // Verify tunnel exists and configure it if needed
-        const tunnelConfig = await this.cloudflareTunnelService.getTunnelConfigForTunnel(tunnelId);
-        if (!tunnelConfig) {
-          // Tunnel exists but has no config, set up empty initial config
-          const config = {
-            ingress: [],
-          };
-          await this.cloudflareTunnelService.updateTunnelConfigForTunnel(tunnelId, config);
-        }
-      } else {
-        // Use default tunnel ID from environment instead of creating a new tunnel
-        const credentials = this.cloudflareTunnelService.getApiCredentials();
-        if (credentials?.tunnelId) {
-          tunnelId = credentials.tunnelId;
-          this.logger.info(`Using default tunnel ID for organization: ${tunnelId} (no organization-specific tunnel needed)`);
-        } else {
-          this.logger.error(`No tunnel ID available. Set CLOUDFLARE_TUNNEL_ID environment variable.`);
-          return;
-        }
-      }
+      // Provision new tunnel or get existing credentials from CI-Cloud
+      this.logger.info(`Initializing tunnel for organization: ${organizationId}`);
+      const tunnelCredentials = await this.cloudflareClientService.initializeTunnel(organizationId);
 
-      // Create DNS record for organization domain
-      const dnsCreated = await this.cloudflareTunnelService.createOrganizationDnsRecord(orgDomain, tunnelId);
-      if (!dnsCreated) {
-        this.logger.error(`Failed to create DNS record for ${orgDomain}`);
-        // Continue anyway - tunnel is created, DNS can be retried later
+      if (tunnelCredentials) {
+         tunnelId = tunnelCredentials.tunnelId;
+         this.logger.info(`Successfully initialized tunnel: ${tunnelId}`);
+      } else {
+         this.logger.error(`Failed to initialize tunnel for organization ${organizationId}`);
+         // We might want to abort here, but for now we'll continue and try to create the org record
+         // so at least the local state is consistent, even if cloud sync failed.
       }
 
       // Store organization info in database
@@ -556,15 +536,10 @@ export class RegistrationService implements OnApplicationBootstrap {
       // Use provided organization name (already sanitized)
       const finalOrgName = sanitizedName;
 
-      // Validate subdomain and tunnel name availability
-      const validation = await this.cloudflareTunnelService.validateOrganizationSubdomain(finalOrgName);
-      if (!validation.available) {
-        return {
-          success: false,
-          message: `Registration failed: ${validation.errors.join(' ')}`,
-        };
-      }
-
+      // Note: We used to validate against local Cloudflare service, now we rely on CI-Cloud provisioning
+      // which will happen in setupOrganizationInfrastructure. 
+      // If validation is needed before setup, we should add a validate endpoint to CI-Cloud.
+      
       // Step 4: Setup organization infrastructure
       await this.setupOrganizationInfrastructure(organizationId, {
         // biome-ignore lint/suspicious/noExplicitAny: External API response

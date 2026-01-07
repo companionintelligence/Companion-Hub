@@ -32,6 +32,8 @@ export const settingsSchema = type({
   experimental_insecureCookie: 'boolean?',
   themeBase: 'string?',
   themeColor: 'string?',
+  ciHubApiKey: 'string.trim?',
+  ciHubOrganizationId: 'string.trim?',
 });
 
 const versionSchema = type({
