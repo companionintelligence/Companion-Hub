@@ -17,7 +17,7 @@ export class CloudflareClientService {
   private tunnelId: string | null = null;
 
   constructor(private configService: ConfigService) {
-    this.cloudApiUrl = this.configService.get<string>('CI_CLOUD_API_URL') || 'https://api.companionintel.com/api';
+    this.cloudApiUrl = this.configService.get<string>('CI_CLOUD_API_URL') || 'https://api.ci.computer/api';
     const authToken = this.configService.get<string>('CI_CLOUD_AUTH_TOKEN'); 
 
     this.client = axios.create({

@@ -24,7 +24,7 @@ export const seedOrganization = async () => {
       id: 'test-org-id',
       name: 'test-org',
       tunnelId: 'test-tunnel-id',
-      domain: 'test-org.companionintel.com',
+      domain: 'test-org.ci.computer',
     });
   } catch (error) {
     console.error('Failed to seed organization:', error);

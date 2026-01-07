@@ -287,7 +287,7 @@ export class RegistrationService implements OnApplicationBootstrap {
 
   /**
    * Setup Cloudflare tunnel and DNS for the organization
-   * Creates organization subdomain: {orgName}.companionintel.com
+   * Creates organization subdomain: {orgName}.ci.computer
    * @param organizationId - Organization ID from CI Cloud
    * @param activationResult - Result from device activation (may contain org details)
    */
@@ -357,7 +357,7 @@ export class RegistrationService implements OnApplicationBootstrap {
         this.logger.debug(`Using slugified organization ID as name: ${orgName}`);
       }
 
-      const orgDomain = `${orgName}.companionintel.com`;
+      const orgDomain = `${orgName}.ci.computer`;
 
       // Provision new tunnel or get existing credentials from CI-Cloud
       this.logger.info(`Initializing tunnel for organization: ${organizationId}`);
@@ -595,7 +595,7 @@ export class RegistrationService implements OnApplicationBootstrap {
       }
 
       // Use the subdomain provided by CI Cloud (already validated on CI Cloud side)
-      // The subdomain is the organization name part (e.g., "acme-corp" from "acme-corp.companionintel.com")
+      // The subdomain is the organization name part (e.g., "acme-corp" from "acme-corp.ci.computer")
       const orgName = data.subdomain
         .trim()
         .toLowerCase()

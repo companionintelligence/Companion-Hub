@@ -52,7 +52,7 @@ export class AppLifecycleCommand {
       const appEnv = await appFilesManager.getAppEnv(appUrn);
       const envUtils = new EnvUtils();
       const envMap = envUtils.envStringToMap(appEnv.content || '');
-      const domain = envMap.get('DOMAIN') || configService.get('userSettings').domain || 'companionintel.com';
+      const domain = envMap.get('DOMAIN') || configService.get('userSettings').domain || 'ci.computer';
       const localDomain = envMap.get('LOCAL_DOMAIN') || configService.get('userSettings').localDomain || 'tipi.lan';
 
       const dockerComposeBuilder = new DockerComposeBuilder();

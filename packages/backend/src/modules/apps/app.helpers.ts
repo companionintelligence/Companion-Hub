@@ -48,7 +48,7 @@ export class AppHelpers {
     // Ensure DOMAIN and LOCAL_DOMAIN are set (required for Traefik label interpolation)
     // These come from the base env file, but ensure they're present with defaults
     if (!envMap.has('DOMAIN')) {
-      envMap.set('DOMAIN', userSettings.domain || 'companionintel.com');
+      envMap.set('DOMAIN', userSettings.domain || 'ci.computer');
     }
     if (!envMap.has('LOCAL_DOMAIN')) {
       envMap.set('LOCAL_DOMAIN', userSettings.localDomain || 'tipi.lan');
@@ -204,7 +204,7 @@ export class AppHelpers {
       const subdomain = form.localSubdomain ? form.localSubdomain : `${appName}-${appStoreId}`;
       // exposedLocal means "publish to internet via Cloudflare"
       // Container should think it's public and HTTPS (even though Traefik receives HTTP from Cloudflare)
-      const publicDomain = envMap.get('DOMAIN') || 'companionintel.com';
+      const publicDomain = envMap.get('DOMAIN') || 'ci.computer';
       envMap.set('APP_LOCAL_DOMAIN', `${subdomain}.${envMap.get('LOCAL_DOMAIN') || 'tipi.lan'}`);
 
       if (!form.openPort) {

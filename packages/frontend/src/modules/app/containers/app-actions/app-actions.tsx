@@ -229,7 +229,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
   const [isCheckingUrl, setIsCheckingUrl] = useState(false);
 
   const subdomain = metadata.localSubdomain || app?.localSubdomain || info.urn.split(':').join('-');
-  const appUrl = `https://${subdomain}.companionintel.com${info.url_suffix || ''}`;
+  const appUrl = `https://${subdomain}.ci.computer${info.url_suffix || ''}`;
 
   useEffect(() => {
     // Only check if app is running and exposed
@@ -304,7 +304,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
       key="open"
       IconComponent={IconExternalLink}
       onClick={() => {
-        // Navigate to the app at ${name}.companionintel.com in the same tab
+        // Navigate to the app at ${name}.ci.computer in the same tab
         window.location.href = appUrl;
       }}
       title={t('APP_ACTION_OPEN')}

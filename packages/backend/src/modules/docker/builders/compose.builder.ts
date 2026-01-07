@@ -21,7 +21,7 @@ interface Network {
 export class DockerComposeBuilder {
   private services: Record<string, BuiltService> = {};
   private networks: Record<string, Omit<Network, 'key'>> = {};
-  private domain: string = 'companionintel.com';
+  private domain: string = 'ci.computer';
   private localDomain: string = 'tipi.lan';
 
   addService(service: BuiltService) {
@@ -146,7 +146,7 @@ export class DockerComposeBuilder {
     const { appName, appStoreId } = extractAppUrn(appUrn);
 
     // Store domain values for use in buildService
-    this.domain = domain || process.env.DOMAIN || 'companionintel.com';
+    this.domain = domain || process.env.DOMAIN || 'ci.computer';
     this.localDomain = localDomain || process.env.LOCAL_DOMAIN || 'tipi.lan';
 
     const myServices = services.map((service) => this.buildService(service, form, appUrn));
