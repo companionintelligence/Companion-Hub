@@ -164,6 +164,14 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "api_key",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -2782,6 +2790,14 @@
                 "type": "string",
                 "pattern": "^\\S.*\\S$|^\\S?$"
               },
+              "ciHubApiKey": {
+                "type": "string",
+                "pattern": "^\\S.*\\S$|^\\S?$"
+              },
+              "ciHubOrganizationId": {
+                "type": "string",
+                "pattern": "^\\S.*\\S$|^\\S?$"
+              },
               "experimental_insecureCookie": {
                 "type": "boolean"
               },
@@ -2883,6 +2899,12 @@
           "appsRepoUrl": {
             "type": "string",
             "format": "uri"
+          },
+          "ciHubApiKey": {
+            "type": "string"
+          },
+          "ciHubOrganizationId": {
+            "type": "string"
           },
           "demoMode": {
             "type": "boolean"

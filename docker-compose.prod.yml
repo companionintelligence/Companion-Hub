@@ -86,7 +86,7 @@ services:
       - ${RUNTIPI_APP_DATA_PATH:-.internal}/app-data:/app-data
       - ${RUNTIPI_BACKUPS_PATH:-.internal}/backups:/data/backups
       # Static
-      - ./.env:/data/.env:ro
+      - ${ENV_FILE:-.env}:/data/.env:ro
       - ./.internal/cache:/cache
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /proc/meminfo:/host/proc/meminfo:ro
@@ -110,8 +110,9 @@ services:
       INTERNAL_IP: ${INTERNAL_IP:-127.0.0.1}
       TIPI_VERSION: ${TIPI_VERSION:-4.5.0}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      CI_CLOUD_API_URL: ${CI_CLOUD_API_URL}
     env_file:
-      - .env
+      - ${ENV_FILE:-.env}
     labels:
       ci-os-hub.managed: true
 

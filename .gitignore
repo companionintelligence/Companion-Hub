@@ -99,3 +99,6 @@ docs/jira/
 !.internal/cache/.gitkeep
 packages/backend/mock-auth-server/repo.zip
 temp_ci_store
+
+.env.*
+!.env.example

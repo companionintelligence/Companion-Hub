@@ -28,6 +28,7 @@ export default function DeviceRegistrationPage() {
             organization_id: searchParams.get('organization_id') ?? '',
             organization_name: searchParams.get('organization_name') ?? '',
             subdomain: searchParams.get('subdomain') ?? '',
+            api_key: searchParams.get('api_key') ?? '',
           };
           const tunnelId = searchParams.get('tunnel_id');
           if (tunnelId) {

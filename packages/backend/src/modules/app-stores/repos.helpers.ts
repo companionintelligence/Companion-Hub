@@ -132,6 +132,7 @@ export class ReposHelpers {
 
       const uuid = await this.registrationService.getDeviceId();
       this.logger.debug(`Downloading zip repo from ${url} to ${repoPath} with \`UUID: ${uuid}\` (Env: ${process.env.NODE_ENV})`);
+      console.log(`Downloading zip repo from ${url} to ${repoPath} with \`UUID: ${uuid}\` (Env: ${process.env.NODE_ENV})`);
 
       const response = await fetch(url, {
         method: 'POST',
@@ -149,7 +150,8 @@ export class ReposHelpers {
 
       if (!response.ok) {
         this.logger.error(`Failed to download repo: ${response.statusText} ${response.status}`);
-        throw new Error(`Failed to download repo: ${response.statusText}`);
+        // throw new Error(`Failed to download repo: ${response.statusText}`);
+        return
       }
 
       const buffer = await response.arrayBuffer();

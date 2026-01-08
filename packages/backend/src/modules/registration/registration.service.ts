@@ -582,6 +582,7 @@ export class RegistrationService implements OnApplicationBootstrap {
     organizationName: string;
     subdomain: string;
     tunnelId?: string;
+    apiKey?: string;
   }): Promise<{ success: boolean; message: string }> {
     try {
       // Verify device ID matches
@@ -592,6 +593,12 @@ export class RegistrationService implements OnApplicationBootstrap {
           success: false,
           message: 'Device ID mismatch. Registration failed.',
         };
+      }
+
+      // Save API Key if provided
+      if (data.apiKey) {
+        this.logger.info('Saving CI Hub API Key from registration callback');
+        await this.config.setUserSettings({ ciHubApiKey: data.apiKey });
       }
 
       // Use the subdomain provided by CI Cloud (already validated on CI Cloud side)

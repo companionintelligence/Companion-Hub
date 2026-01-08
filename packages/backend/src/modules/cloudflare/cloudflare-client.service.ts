@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
+import { ConfigurationService } from '@/core/config/configuration.service';
 import axios, { AxiosInstance } from 'axios';
 
 export interface AppInfo {
@@ -16,9 +16,9 @@ export class CloudflareClientService {
   private tunnelToken: string | null = null;
   private tunnelId: string | null = null;
 
-  constructor(private configService: ConfigService) {
-    this.cloudApiUrl = this.configService.get<string>('CI_CLOUD_API_URL') || 'https://api.ci.computer/api';
-    const authToken = this.configService.get<string>('CI_CLOUD_AUTH_TOKEN'); 
+  constructor(private configService: ConfigurationService) {
+    this.cloudApiUrl = this.configService.get('ciCloudApiUrl') || 'https://app.ci.computer/api';
+    const authToken = this.configService.get('ciHubApiKey'); 
 
     this.client = axios.create({
       baseURL: this.cloudApiUrl,

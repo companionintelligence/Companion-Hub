@@ -52,6 +52,7 @@ COPY ./packages/frontend/public ./packages/frontend/public
 RUN bun install --frozen-lockfile
 
 COPY ./turbo.json ./turbo.json
+COPY ./tsconfig.json ./
 COPY ./packages ./packages
 RUN bun run build
 
