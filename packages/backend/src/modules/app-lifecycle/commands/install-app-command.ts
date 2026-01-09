@@ -130,21 +130,14 @@ export class InstallAppCommand extends AppLifecycleCommand {
 
       // Create Cloudflare Tunnel route if exposedLocal is enabled (app is published to internet)
       // This part now uses CloudflareClientService to SYNC state with CI-Cloud
-      // CI-Cloud will handle the actual DNS and Tunnel updates
+      // CI-Cloud will handle the actual DNS and Tunnel updates via the trigger in AppLifecycleService
       logger.info(`[Cloudflare] Syncing state for ${appUrn}, exposedLocal: ${form.exposedLocal}`);
       try {
         const cloudflareService = this.moduleRef.get(CloudflareClientService, { strict: false });
         if (!cloudflareService) {
           logger.warn(`[Cloudflare] CloudflareClientService not available for ${appUrn}`);
         } else {
-            // We need to fetch all running apps to sync the full state
-            // However, this command is just for one app installation. 
-            // Ideally, we should trigger a full sync.
-            
-            // For now, let's just log that we would sync. 
-            // A dedicated sync service/job should handle this periodically or on events.
-            // TODO: Trigger a full state sync here.
-             logger.info('[Cloudflare] CloudflareClientService available. Ideally, we would trigger a full state sync here.');
+             logger.info('[Cloudflare] CloudflareClientService available. State sync will be triggered by AppLifecycleService.');
         }
       } catch (error) {
         logger.error(`[Cloudflare] Exception syncing state for ${appUrn}: ${error}`);

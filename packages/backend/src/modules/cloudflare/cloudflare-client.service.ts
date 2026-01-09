@@ -86,6 +86,8 @@ export class CloudflareClientService {
         apps
       }, this.getRequestConfig());
 
+      this.logger.log(`Sync Response: ${JSON.stringify(response.data)}`);
+
       if (response.data.success) {
         this.logger.log('State sync successful');
         return true;
@@ -93,6 +95,9 @@ export class CloudflareClientService {
       return false;
     } catch (error: any) {
       this.logger.error(`Failed to sync state: ${error.message}`);
+      if (error.response) {
+         this.logger.error(`Error Response: ${JSON.stringify(error.response.data)}`);
+      }
       return false;
     }
   }

@@ -50,6 +50,13 @@ export class AppLifecycleService {
     try {
       const command = this.commandFactory.createCommand(data);
       const { success, message } = await command.execute(data.appUrn, data.form);
+      
+      if (success) {
+          this.logger.debug('Command executed successfully, triggering Cloudflare sync...');
+          // Trigger sync to ensure cloud state matches local state (exposed apps)
+          await this.triggerCloudflareSync(); 
+      }
+
       await reply({ success, message });
     } catch (err) {
       this.logger.error('Error invoking command:', err);
@@ -526,14 +533,18 @@ export class AppLifecycleService {
   private async triggerCloudflareSync() {
     try {
         const orgInfo = await this.registrationService.getOrganizationInfo();
+        
         if (!orgInfo) {
             this.logger.debug('[Cloudflare] Skipping sync: Organization not registered');
             return;
         }
 
         const apps = await this.appRepository.getApps();
+        
         const exposedApps: AppInfo[] = apps
-            .filter(app => app.exposedLocal && app.status === 'running' && app.port !== null)
+            .filter(app => {
+                return app.exposedLocal && app.status === 'running' && app.port !== null;
+            })
             .map(app => ({
                 name: app.appName,
                 subdomain: app.localSubdomain || app.appStoreSlug,
