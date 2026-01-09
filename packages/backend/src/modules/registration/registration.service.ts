@@ -41,6 +41,10 @@ export class RegistrationService implements OnApplicationBootstrap {
   }
 
   public async getDeviceId(): Promise<string> {
+    this.logger.debug(`NODE_ENV is: ${process.env.NODE_ENV}`);
+    if (process.env.DEVICE_ID) {
+      return process.env.DEVICE_ID;
+    }
     if (process.env.NODE_ENV === 'development') {
       return 'test-device-id';
     }
@@ -69,68 +73,8 @@ export class RegistrationService implements OnApplicationBootstrap {
   }
 
   private async verifyLicense() {
-    const { ciCloudApiUrl } = this.config.getConfig();
-    if (!ciCloudApiUrl) {
-      this.logger.warn('CI Cloud API URL not configured, skipping license check.');
-      return;
-    }
-
-    try {
-      const deviceId = await this.getDeviceId();
-      // Step 3b: OS hub pings <CI_CLOUD_DOMAIN>/device/license-check with device_id in a http header
-      const licenseCheckUrl = `${ciCloudApiUrl}/device/license-check`;
-
-      this.logger.debug(`Checking license at ${licenseCheckUrl} for device ${deviceId}`);
-
-      const response = await fetch(licenseCheckUrl, {
-        method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-device-id': deviceId,
-        },
-      });
-
-      if (!response.ok) {
-        this.logger.warn(`License check failed: ${response.status} - ${response.statusText}`);
-        // If 404 or 403, it means not registered or invalid.
-        await this.handleLicenseCheckFailure();
-        return;
-      }
-
-      // Step 4b: CI Cloud verifies... returns device_registration.id and subdomain
-      // biome-ignore lint/suspicious/noExplicitAny: External API response
-      const data = (await response.json()) as any;
-      const registration = data.device_registration || data;
-
-      // Step 5b: OS Hub compares returned subdomain and device_registration.id to it's own database
-      const cloudOrgId = registration.id || registration.organization_id;
-      const cloudSubdomain = registration.subdomain;
-
-      if (!cloudOrgId || !cloudSubdomain) {
-        this.logger.warn('Invalid license check response: missing id or subdomain', registration);
-        return;
-      }
-
-      const localOrg = await this.organizationRepository.getFirstOrganization();
-
-      if (!localOrg) {
-        this.logger.warn('Local organization not found during license check');
-        await this.handleLicenseCheckFailure();
-        return;
-      }
-
-      // Compare
-      this.logger.debug(`License check comparison: Local[${localOrg.id}, ${localOrg.name}] vs Cloud[${cloudOrgId}, ${cloudSubdomain}]`);
-
-      if (localOrg.id !== cloudOrgId || localOrg.name !== cloudSubdomain) {
-        this.logger.warn(`License mismatch! Local: ${localOrg.id}/${localOrg.name}, Cloud: ${cloudOrgId}/${cloudSubdomain}`);
-        await this.handleLicenseCheckFailure(localOrg.id);
-      } else {
-        this.logger.info('License verified successfully.');
-      }
-    } catch (error) {
-      this.logger.error('Error verifying license:', error);
-    }
+    this.logger.info('License verification skipped (deprecated). Assuming valid registration.');
+    return;
   }
 
   private async handleLicenseCheckFailure(orgId?: string) {
@@ -202,7 +146,7 @@ export class RegistrationService implements OnApplicationBootstrap {
       const deviceId = await this.getDeviceId();
 
       // Step 1: Register device with CI Cloud Hub API
-      const registerUrl = `${ciCloudApiUrl}/api/devices/hub/register`;
+      const registerUrl = `${ciCloudApiUrl}/devices/hub/register`;
 
       this.logger.debug(`Registering device at ${registerUrl} for device ${deviceId}`);
 
@@ -233,51 +177,15 @@ export class RegistrationService implements OnApplicationBootstrap {
            await this.config.setUserSettings({ ciHubApiKey: result.api_key });
            this.logger.info('Saved Hub API Key from registration response');
         }
-      } else {
-        // biome-ignore lint/suspicious/noExplicitAny: External API response
-        const errorData = (await registerResponse.json().catch(() => ({ error: 'Unknown error' }))) as any;
-        this.logger.warn(`Device registration failed: ${registerResponse.status} - ${errorData.error || registerResponse.statusText}`);
 
-        // If device already exists (409 or similar), try to activate it
-        if (registerResponse.status === 409 || registerResponse.status === 400) {
-          this.logger.debug('Device may already be registered, attempting activation...');
-        } else {
-          return false;
-        }
-      }
-
-      // Step 2: Activate device by calling /api/web/register
-      // Use ciCloudAppStoreUrl if available, otherwise derive from ciCloudApiUrl
-      let activateUrl: string;
-      if (ciCloudAppStoreUrl) {
-        const urlObj = new URL(ciCloudAppStoreUrl);
-        activateUrl = new URL('/api/web/register', urlObj.origin).toString();
-      } else {
-        activateUrl = `${ciCloudApiUrl}/api/web/register`;
-      }
-
-      this.logger.debug(`Activating device at ${activateUrl} for device ${deviceId}`);
-
-      const activateResponse = await fetch(activateUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ device_id: deviceId }),
-      });
-
-      if (activateResponse.status === 200) {
-        this.logger.info('Device activated successfully!');
-
-        // Step 3: Fetch organization details and setup infrastructure
-        // biome-ignore lint/suspicious/noExplicitAny: External API response
-        const activateResult = (await activateResponse.json().catch(() => ({}))) as any;
-        await this.setupOrganizationInfrastructure(ciHubOrganizationId, activateResult);
-
+        // Setup infrastructure using the response
+        await this.setupOrganizationInfrastructure(ciHubOrganizationId, result);
         return true;
-      }
-
-      this.logger.warn(`Device activation failed: ${activateResponse.status} - ${activateResponse.statusText}`);
+      } 
+      
+      // biome-ignore lint/suspicious/noExplicitAny: External API response
+      const errorData = (await registerResponse.json().catch(() => ({ error: 'Unknown error' }))) as any;
+      this.logger.warn(`Device registration failed: ${registerResponse.status} - ${errorData.error || registerResponse.statusText}`);
       return false;
     } catch (error) {
       this.logger.error('Failed to contact cloud server for registration:', error);
@@ -308,11 +216,17 @@ export class RegistrationService implements OnApplicationBootstrap {
       // Try to fetch organization details from CI Cloud API
       let orgName: string | null = null;
       let tunnelId: string | null = null;
+      let orgSlug: string | null = null;
 
       // First, check if activation result contains organization info
       if (activationResult?.organization_name) {
         orgName = activationResult.organization_name;
         this.logger.debug(`Using organization name from activation result: ${orgName}`);
+      }
+
+      if (activationResult?.slug) {
+        orgSlug = activationResult.slug as string;
+        this.logger.debug(`Using organization slug from activation result: ${orgSlug}`);
       }
 
       if (activationResult?.tunnel_id) {
@@ -323,7 +237,7 @@ export class RegistrationService implements OnApplicationBootstrap {
       // If not in activation result, try to fetch from CI Cloud API
       if (!orgName && ciCloudApiUrl) {
         try {
-          const orgUrl = `${ciCloudApiUrl}/api/organizations/${organizationId}`;
+          const orgUrl = `${ciCloudApiUrl}/organizations/${organizationId}`;
           const orgHeaders: Record<string, string> = {
             'Content-Type': 'application/json',
           };
@@ -357,14 +271,20 @@ export class RegistrationService implements OnApplicationBootstrap {
         this.logger.debug(`Using slugified organization ID as name: ${orgName}`);
       }
 
-      const orgDomain = `${orgName}.ci.computer`;
+      if (!orgSlug) {
+        orgSlug = this.slugifyOrganizationId(orgName);
+      }
+      const orgDomain = `${orgSlug}.ci.computer`;
 
       // Provision new tunnel or get existing credentials from CI-Cloud
       this.logger.info(`Initializing tunnel for organization: ${organizationId}`);
       const tunnelCredentials = await this.cloudflareClientService.initializeTunnel(organizationId);
 
+      let tunnelToken: string | null = null;
+
       if (tunnelCredentials) {
          tunnelId = tunnelCredentials.tunnelId;
+         tunnelToken = tunnelCredentials.token;
          this.logger.info(`Successfully initialized tunnel: ${tunnelId}`);
       } else {
          this.logger.error(`Failed to initialize tunnel for organization ${organizationId}`);
@@ -377,6 +297,7 @@ export class RegistrationService implements OnApplicationBootstrap {
         id: organizationId,
         name: orgName,
         tunnelId: tunnelId,
+        tunnelToken: tunnelToken,
         domain: orgDomain,
       });
 
@@ -474,7 +395,7 @@ export class RegistrationService implements OnApplicationBootstrap {
 
       // Step 1: Register device with CI Cloud
       // POST http://localhost:8001/api/devices/hub/register
-      const registerUrl = `${ciCloudApiUrl}/api/devices/hub/register`;
+      const registerUrl = `${ciCloudApiUrl}/devices/hub/register`;
       const registerHeaders: Record<string, string> = {
         'Content-Type': 'application/json',
       };
@@ -507,30 +428,11 @@ export class RegistrationService implements OnApplicationBootstrap {
       const registerResult = await registerResponse.json().catch(() => ({}));
       this.logger.info(`Device registered successfully: ${JSON.stringify(registerResult)}`);
 
-      // Step 2: Activate device
-      // POST http://localhost:8001/api/web/register
-      const activateUrl = `${ciCloudApiUrl}/api/web/register`;
-      this.logger.debug(`Activating device at ${activateUrl}`);
-      const activateResponse = await fetch(activateUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ device_id: deviceId }),
-      });
-
-      if (activateResponse.status !== 200) {
-        // biome-ignore lint/suspicious/noExplicitAny: External API response
-        const errorData = (await activateResponse.json().catch(() => ({ error: activateResponse.statusText }))) as any;
-        this.logger.error(`Device activation failed: ${activateResponse.status} - ${JSON.stringify(errorData)}`);
-        return {
-          success: false,
-          message: `Activation failed: ${errorData.error || activateResponse.statusText}`,
-        };
-      }
-
-      const activateResult = await activateResponse.json().catch(() => ({}));
-      this.logger.info(`Device activated successfully: ${JSON.stringify(activateResult)}`);
+      // Step 2: Activate device - REMOVED (Merged into Step 1)
+      // The register endpoint now returns the organization details directly.
+      
+      const activateResult = registerResult; // Use register result as activation result
+      this.logger.info(`Device activated successfully (merged): ${JSON.stringify(activateResult)}`);
 
       // Step 3: Validate organization name/subdomain availability before setup
       // Use provided organization name (already sanitized)
@@ -599,6 +501,12 @@ export class RegistrationService implements OnApplicationBootstrap {
       if (data.apiKey) {
         this.logger.info('Saving CI Hub API Key from registration callback');
         await this.config.setUserSettings({ ciHubApiKey: data.apiKey });
+      }
+      
+      // Save Organization ID
+      if (data.organizationId) {
+         this.logger.info('Saving CI Hub Organization ID from registration callback');
+         await this.config.setUserSettings({ ciHubOrganizationId: data.organizationId });
       }
 
       // Use the subdomain provided by CI Cloud (already validated on CI Cloud side)

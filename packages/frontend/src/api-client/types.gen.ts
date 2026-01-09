@@ -73,6 +73,7 @@ export type AppContextDto = {
         experimental_insecureCookie?: boolean;
         themeBase?: string;
         themeColor?: string;
+        ciHubOrganizationSlug?: string;
     };
     version: {
         body: string;

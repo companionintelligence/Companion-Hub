@@ -3,6 +3,7 @@ import { Module } from '@nestjs/common';
 import { EnvModule } from '../env/env.module';
 import { MarketplaceModule } from '../marketplace/marketplace.module';
 import { QueueModule } from '../queue/queue.module';
+import { RegistrationModule } from '../registration/registration.module';
 import { AppFilesManager } from './app-files-manager';
 import { AppHelpers } from './app.helpers';
 import { AppsController } from './apps.controller';
@@ -10,7 +11,7 @@ import { AppsRepository } from './apps.repository';
 import { AppsService } from './apps.service';
 
 @Module({
-  imports: [QueueModule, EnvModule, MarketplaceModule],
+  imports: [QueueModule, EnvModule, MarketplaceModule, RegistrationModule],
   controllers: [AppsController],
   providers: [AppFilesManager, AppsRepository, AppHelpers, AppsService, ConfigurationService],
   exports: [AppsRepository, AppFilesManager, AppHelpers, AppsService],

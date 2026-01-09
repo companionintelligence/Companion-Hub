@@ -34,6 +34,7 @@ export const settingsSchema = type({
   themeColor: 'string?',
   ciHubApiKey: 'string.trim?',
   ciHubOrganizationId: 'string.trim?',
+  ciHubOrganizationSlug: 'string.trim?',
 });
 
 const versionSchema = type({

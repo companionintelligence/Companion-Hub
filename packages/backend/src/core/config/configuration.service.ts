@@ -195,6 +195,16 @@ export class ConfigurationService {
 
       await fs.promises.writeFile(settingsPath, `${JSON.stringify({ ...currentSettings, ...settings }, null, 2)}`, 'utf8');
       this.config.userSettings = { ...this.config.userSettings, ...settings };
+
+      // Update in-memory config for runtime changes
+      if (settings.ciHubApiKey) {
+        // @ts-ignore
+        this.config.ciHubApiKey = settings.ciHubApiKey;
+      }
+      if (settings.ciHubOrganizationId) {
+        // @ts-ignore
+        this.config.ciHubOrganizationId = settings.ciHubOrganizationId;
+      }
     } catch (error) {
       this.logger.error('Failed to set user settings', error);
       throw new InternalServerErrorException('Failed to set user settings');

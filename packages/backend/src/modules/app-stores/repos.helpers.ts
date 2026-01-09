@@ -150,8 +150,7 @@ export class ReposHelpers {
 
       if (!response.ok) {
         this.logger.error(`Failed to download repo: ${response.statusText} ${response.status}`);
-        // throw new Error(`Failed to download repo: ${response.statusText}`);
-        return
+        return { success: false, message: `Failed to download repo: ${response.statusText} ${response.status}` };
       }
 
       const buffer = await response.arrayBuffer();
@@ -163,6 +162,21 @@ export class ReposHelpers {
       }
 
       zip.extractAllTo(repoPath, true);
+
+      // Handle GitHub-style zip (single root directory)
+      const entries = fs.readdirSync(repoPath);
+      if (entries.length === 1) {
+        const rootItemPath = path.join(repoPath, entries[0]);
+        if (fs.statSync(rootItemPath).isDirectory()) {
+             // It's a directory, move content up
+             this.logger.debug(`Detected single root folder in ZIP: ${entries[0]}. Flattening...`);
+             const children = fs.readdirSync(rootItemPath);
+             for (const child of children) {
+                 fs.renameSync(path.join(rootItemPath, child), path.join(repoPath, child));
+             }
+             fs.rmdirSync(rootItemPath);
+        }
+      }
 
       this.logger.info(`Downloaded and extracted zip repo from ${url}`);
       return { success: true, message: '' };

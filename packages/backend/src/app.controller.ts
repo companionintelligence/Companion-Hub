@@ -7,6 +7,7 @@ import { AppService } from './app.service';
 import { AppsService } from './modules/apps/apps.service';
 import { AuthGuard } from './modules/auth/auth.guard';
 import { MarketplaceService } from './modules/marketplace/marketplace.service';
+import { RegistrationService } from '@/modules/registration/registration.service';
 import type { UserDto } from './modules/user/dto/user.dto';
 import { ApiResponse } from '@nestjs/swagger';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -20,6 +21,7 @@ export class AppController {
     private readonly appsService: AppsService,
     private readonly marketplaceService: MarketplaceService,
     private readonly logger: LoggerService,
+    private readonly registrationService: RegistrationService,
   ) {}
 
   @Get('/user-context')
@@ -169,6 +171,7 @@ export class AppController {
   @ApiResponse({ type: AppContextDto })
   async appContext(@Req() req: Request) {
     const version = await this.appService.getVersion();
+    const org = await this.registrationService.getOrganizationInfo();
 
     const { userSettings, isProduction } = this.configuration.getConfig();
 
@@ -179,8 +182,28 @@ export class AppController {
       return Number(app.version) < Number(metadata?.latestVersion ?? 0) && app.status !== 'updating';
     });
 
+    // Extract slug from domain (e.g. "slug.ci.computer" -> "slug")
+    let orgSlug = org?.name;
+    if (org?.domain) {
+      orgSlug = org.domain.split('.')[0];
+    } else if (org?.name) {
+      // Simple slugify if domain is missing
+      orgSlug = org.name
+        .toLowerCase()
+        .replace(/[^a-z0-9-]/g, '-')
+        .replace(/-+/g, '-')
+        .replace(/^-|-$/g, '');
+    }
+
     return AppContextDto.parse(
-      { version, userSettings, user: req.user as UserDto, apps, updatesAvailable: updatesAvailable.length, isProduction },
+      {
+        version,
+        userSettings: { ...userSettings, ciHubOrganizationSlug: orgSlug },
+        user: req.user as UserDto,
+        apps,
+        updatesAvailable: updatesAvailable.length,
+        isProduction,
+      },
       { reportOnly: true },
     );
   }

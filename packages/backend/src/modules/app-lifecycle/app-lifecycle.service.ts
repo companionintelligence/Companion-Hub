@@ -211,7 +211,7 @@ export class AppLifecycleService {
       domain: domain ?? null,
       localSubdomain: parsedForm.localSubdomain ?? null,
       openPort: openPort ?? false,
-      exposedLocal: exposedLocal ?? false,
+      exposedLocal: exposedLocal ?? (appInfo.exposable ? true : false),
       appStoreSlug: appStoreId,
       isVisibleOnGuestDashboard,
       enableAuth: enableAuth ?? false,
@@ -225,9 +225,13 @@ export class AppLifecycleService {
         this.sseService.emit('app', { event: 'install_success', appUrn, appStatus: 'running' });
         await this.appRepository.updateAppById(createdApp.id, { status: 'running' });
 
-        // Check if we need to sync Cloudflare state (if app is exposedLocal and production)
-        const { isProduction: isProdEnv } = this.config.getConfig();
-        if (isProdEnv && createdApp.exposedLocal) {
+        // Check if we need to sync Cloudflare state (if app is exposedLocal)
+        if (createdApp.exposedLocal || (appInfo.exposable && !exposedLocal)) {
+            // Note: We check if it *is* exposedLocal (from DB which we just created).
+            // We need to re-fetch or trust the value we passed to create. 
+            // We passed the fallback above.
+            // Let's rely on the createdApp property if create returns it correctly, or use our logic.
+            // But strictness: create returns the Db/Entity.
             this.logger.info(`[Cloudflare] App ${appUrn} installed and is exposedLocal. Triggering sync.`);
             await this.triggerCloudflareSync();
         }
@@ -264,8 +268,7 @@ export class AppLifecycleService {
         await this.appRepository.updateAppById(app.id, { status: 'stopped' });
         
         // Trigger sync to remove route if exposedLocal
-        const { isProduction: isProdEnv } = this.config.getConfig();
-        if (isProdEnv && app.exposedLocal) {
+        if (app.exposedLocal) {
              this.logger.info(`[Cloudflare] App ${appUrn} stopped and was exposedLocal. Triggering sync.`);
              await this.triggerCloudflareSync();
         }
@@ -336,8 +339,7 @@ export class AppLifecycleService {
         this.sseService.emit('app', { event: 'uninstall_success', appUrn, appStatus: 'missing' });
         
         // Trigger sync to remove route if it was exposedLocal
-        const { isProduction: isProdEnv } = this.config.getConfig();
-        if (isProdEnv && app.exposedLocal) {
+        if (app.exposedLocal) {
             this.logger.info(`[Cloudflare] App ${appUrn} uninstalled and was exposedLocal. Triggering sync.`);
             await this.triggerCloudflareSync();
         }
@@ -511,11 +513,9 @@ export class AppLifecycleService {
       await this.appRepository.updateAppById(app.id, { pendingRestart });
     }
 
-    // In production, sync state with Cloudflare whenever exposedLocal is enabled or changed
-    if (isProdEnv) {
-         this.logger.info(`[Cloudflare] Config updated for ${appUrn}. Triggering state sync.`);
-         await this.triggerCloudflareSync();
-    }
+    // Sync state with Cloudflare whenever exposedLocal is enabled or changed
+    this.logger.info(`[Cloudflare] Config updated for ${appUrn}. Triggering state sync.`);
+    await this.triggerCloudflareSync();
 
     return { requestId };
   }
@@ -536,8 +536,9 @@ export class AppLifecycleService {
             .filter(app => app.exposedLocal && app.status === 'running' && app.port !== null)
             .map(app => ({
                 name: app.appName,
-                subdomain: app.localSubdomain || `${app.appName}-${app.appStoreSlug}`,
-                localPort: app.port as number
+                subdomain: app.localSubdomain || app.appStoreSlug,
+                localPort: app.port as number,
+                enableAuth: app.enableAuth
             }));
 
         await this.cloudflareClientService.syncState(orgInfo.id, exposedApps, orgInfo.tunnelId || undefined);

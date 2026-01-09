@@ -37,6 +37,7 @@ import { Tooltip } from 'react-tooltip';
 import { DropdownMenuSeparator } from '@/components/ui/DropdownMenu/DropdownMenu';
 import { useLocation, useNavigate } from 'react-router';
 import type { AppUrn } from '@runtipi/common/types';
+import { useAppContext } from '@/context/app-context';
 
 interface IProps {
   app?: AppDetails | null;
@@ -64,6 +65,7 @@ const ActionButton: React.FC<BtnProps> = (props) => {
 };
 
 export const AppActions = ({ app, info, metadata }: IProps) => {
+  const { userSettings } = useAppContext();
   const installDisclosure = useDisclosure();
   const stopDisclosure = useDisclosure();
   const restartDisclosure = useDisclosure();
@@ -229,7 +231,9 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
   const [isCheckingUrl, setIsCheckingUrl] = useState(false);
 
   const subdomain = metadata.localSubdomain || app?.localSubdomain || info.urn.split(':').join('-');
-  const appUrl = `https://${subdomain}.ci.computer${info.url_suffix || ''}`;
+  const organizationSlug = userSettings.ciHubOrganizationSlug;
+  const domainSuffix = organizationSlug ? `-${organizationSlug}.ci.computer` : '.ci.computer';
+  const appUrl = `https://${subdomain}${domainSuffix}${info.url_suffix || ''}`;
 
   useEffect(() => {
     // Only check if app is running and exposed

@@ -18,15 +18,23 @@ export class CloudflareClientService {
 
   constructor(private configService: ConfigurationService) {
     this.cloudApiUrl = this.configService.get('ciCloudApiUrl') || 'https://app.ci.computer/api';
-    const authToken = this.configService.get('ciHubApiKey'); 
-
+    
     this.client = axios.create({
       baseURL: this.cloudApiUrl,
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${authToken}`
       },
     });
+  }
+
+  private getRequestConfig() {
+    const authToken = this.configService.get('ciHubApiKey');
+    return {
+      headers: {
+        'Authorization': `Bearer ${authToken}`,
+        'x-device-key': authToken
+      }
+    };
   }
 
   /**
@@ -37,7 +45,7 @@ export class CloudflareClientService {
       this.logger.log(`Requesting tunnel provision for org: ${organizationId}...`);
       const response = await this.client.post('/tunnels/provision', {
         organizationId
-      });
+      }, this.getRequestConfig());
 
       if (response.data && response.data.token) {
         this.tunnelId = response.data.tunnelId as string;
@@ -76,7 +84,7 @@ export class CloudflareClientService {
         organizationId,
         tunnelId: this.tunnelId,
         apps
-      });
+      }, this.getRequestConfig());
 
       if (response.data.success) {
         this.logger.log('State sync successful');

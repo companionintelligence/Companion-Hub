@@ -13,7 +13,7 @@ export class OrganizationRepository {
     return result[0] || null;
   }
 
-  async createOrganization(data: { id: string; name: string; tunnelId: string | null; domain: string }) {
+  async createOrganization(data: { id: string; name: string; tunnelId: string | null; tunnelToken?: string | null; domain: string }) {
     const result = await this.databaseService.db.insert(organization).values(data).returning();
 
     return result[0];
@@ -24,6 +24,7 @@ export class OrganizationRepository {
     data: Partial<{
       name: string;
       tunnelId: string;
+      tunnelToken: string;
       domain: string;
     }>,
   ) {

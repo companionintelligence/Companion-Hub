@@ -8,6 +8,7 @@ import type { AppUrn } from '@runtipi/common/types';
 import { EnvUtils } from '../env/env.utils';
 import type { AppEventFormInput } from '../queue/entities/app-events';
 import { AppFilesManager } from './app-files-manager';
+import { OrganizationRepository } from '../registration/organization.repository';
 
 @Injectable()
 export class AppHelpers {
@@ -17,6 +18,7 @@ export class AppHelpers {
     private readonly filesytem: FilesystemService,
     private readonly envUtils: EnvUtils,
     private readonly logger: LoggerService,
+    private readonly organizationRepository: OrganizationRepository,
   ) {}
 
   /**
@@ -224,6 +226,16 @@ export class AppHelpers {
       envMap.set('APP_HOST', form.domain);
       envMap.set('APP_EXPOSED_DOMAIN', form.domain);
       envMap.set('APP_PROTOCOL', 'https');
+    }
+
+    if (appName === 'cloudflared') {
+      const org = await this.organizationRepository.getFirstOrganization();
+      if (org && org.tunnelToken && org.tunnelId) {
+        envMap.set('TUNNEL_TOKEN', org.tunnelToken);
+        envMap.set('TUNNEL_ID', org.tunnelId);
+      } else {
+        this.logger.warn('cloudflared app installation requested, but no organization/tunnel information found.');
+      }
     }
 
     await this.appFilesManager.writeAppEnv(appUrn, this.envUtils.envMapToString(envMap));

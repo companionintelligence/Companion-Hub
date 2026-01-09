@@ -225,6 +225,13 @@
       "when": 1767328130729,
       "tag": "0031_majestic_nico_minoru",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1767953381937,
+      "tag": "0032_cloudy_tyrannus",
+      "breakpoints": true
     }
   ]
 }

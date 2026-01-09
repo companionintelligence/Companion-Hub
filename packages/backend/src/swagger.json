@@ -2798,6 +2798,10 @@
                 "type": "string",
                 "pattern": "^\\S.*\\S$|^\\S?$"
               },
+              "ciHubOrganizationSlug": {
+                "type": "string",
+                "pattern": "^\\S.*\\S$|^\\S?$"
+              },
               "experimental_insecureCookie": {
                 "type": "boolean"
               },
@@ -2904,6 +2908,9 @@
             "type": "string"
           },
           "ciHubOrganizationId": {
+            "type": "string"
+          },
+          "ciHubOrganizationSlug": {
             "type": "string"
           },
           "demoMode": {
