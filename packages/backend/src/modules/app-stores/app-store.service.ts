@@ -96,12 +96,13 @@ export class AppStoreService {
     const existing = await this.appStoreRepository.getAppStoreBySlug(slug);
 
     if (existing) {
-      if (existing.url !== ciCloudAppStoreUrl) {
-        this.logger.info(`Updating cloud app store URL to ${ciCloudAppStoreUrl}`);
+      if (existing.url !== ciCloudAppStoreUrl || existing.type !== 'http_zip') {
+        this.logger.info(`Updating cloud app store URL to ${ciCloudAppStoreUrl} and type to http_zip`);
         await this.appStoreRepository.updateAppStoreHashAndUrl(slug, {
           url: ciCloudAppStoreUrl,
           hash: this.repoHelpers.getRepoHash(ciCloudAppStoreUrl),
         });
+        await this.appStoreRepository.updateAppStoreType(slug, 'http_zip');
       }
       return;
     }

@@ -26,6 +26,28 @@ export class RegistrationService implements OnApplicationBootstrap {
       await this.verifyLicense();
       // Re-check registration status in case license check failed and wiped it
       isRegistered = this._isRegistered;
+
+      // Check for missing Tunnel ID and recover if needed
+      if (isRegistered) {
+        const org = await this.organizationRepository.getFirstOrganization();
+        if (org && !org.tunnelId) {
+           this.logger.warn(`Organization ${org.id} exists but Tunnel ID is missing. Attempting to recover...`);
+           try {
+             const tunnelCredentials = await this.cloudflareClientService.initializeTunnel(org.id);
+             if (tunnelCredentials) {
+               await this.organizationRepository.updateOrganization(org.id, {
+                 tunnelId: tunnelCredentials.tunnelId,
+                 tunnelToken: tunnelCredentials.token,
+               });
+               this.logger.info(`Tunnel ID recovered successfully: ${tunnelCredentials.tunnelId}`);
+             } else {
+               this.logger.error('Failed to recover Tunnel ID.');
+             }
+           } catch (err) {
+             this.logger.error(`Error during tunnel recovery: ${err}`);
+           }
+        }
+      }
     }
 
     if (!isRegistered) {

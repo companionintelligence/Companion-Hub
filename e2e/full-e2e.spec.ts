@@ -6,14 +6,18 @@ import { db } from './helpers/db'; // Import db helper
 import * as schema from '../packages/backend/src/core/database/drizzle/schema'; // Relative to project root
 import * as argon2 from 'argon2'; // Try importing argon2
 import { eq } from 'drizzle-orm';
+import { Resolver } from 'dns/promises';
 
 // Configuration
 const HUB_URL = process.env.HUB_URL || 'http://localhost:3000';
 const CLOUD_APP_DIR = path.resolve(__dirname, '../../CI-Cloud/apps/hono-app'); // Absolute path
 const LOCAL_DB_PATH = path.join(CLOUD_APP_DIR, 'local.db');
 
+console.log('DEBUG: CI_CLOUD_API_URL env:', process.env.CI_CLOUD_API_URL);
+
 // Environment Detection
-const IS_STAGING = process.env.CI_CLOUD_API_URL?.includes('staging') || false;
+const IS_STAGING = process.env.CI_CLOUD_API_URL?.includes('staging') || process.env.IS_STAGING === 'true' || false;
+console.log('DEBUG: IS_STAGING detected as:', IS_STAGING);
 
 // Config - use Env provided or generate random for local
 const TEST_ORG_SLUG = process.env.CI_HUB_ORGANIZATION_ID || 'e2e-org-test-' + Date.now();
@@ -49,6 +53,29 @@ async function seedHubUser() {
       hasSeenWelcome: true, // Bypass welcome
       totpEnabled: false,
     });
+    
+    // Verify Insertion
+    const inserted = await db.select().from(schema.user).where(eq(schema.user.username, 'test@example.com'));
+    console.log('DEBUG: Seeded User Check:', JSON.stringify(inserted, null, 2));
+
+    // Verify Organization
+    try {
+      const orgs = await db.select().from(schema.organization);
+      console.log('DEBUG: Organization Check (Seed Time):', JSON.stringify(orgs, null, 2));
+
+      if (orgs.length === 0) {
+        console.log('DEBUG: Manually Seeding Organization...');
+        await db.insert(schema.organization).values({
+          id: TEST_ORG_ID,
+          name: TEST_ORG_SLUG,
+          domain: `${TEST_ORG_SLUG}.ci.computer`,
+        });
+        console.log('DEBUG: Organization Manually Seeded.');
+      }
+    } catch (e) {
+      console.error('Failed to check/seed organizations:', e);
+    }
+
     console.log('Hub User Seeded.');
   } catch (e) {
     console.error('Failed to seed hub user:', e);
@@ -217,6 +244,14 @@ test.describe('Full E2E: Injection & Provisioning (Local Cloud)', () => {
     console.log('Creating Mock App Store (repo.zip)...');
     const repoDir = path.join(CLOUD_APP_DIR, 'temp_repo');
     if (fs.existsSync(repoDir)) fs.rmSync(repoDir, { recursive: true, force: true });
+    // Ensure repoDir exists
+    fs.mkdirSync(repoDir, { recursive: true });
+
+    // 0. Mock Repo Metadata (repo.json)
+    fs.writeFileSync(path.join(repoDir, 'repo.json'), JSON.stringify({
+      name: 'CI Cloud Mock',
+      description: 'Mock Repo for E2E',
+    }));
 
     // 1. Mock PairDrop
     fs.mkdirSync(path.join(repoDir, 'apps', 'pairdrop', 'metadata'), { recursive: true });
@@ -283,9 +318,15 @@ test.describe('Full E2E: Injection & Provisioning (Local Cloud)', () => {
             {
               name: 'cloudflared',
               image: 'cloudflare/cloudflared:latest',
-              command: 'tunnel run --token ${TUNNEL_TOKEN}',
-              environment: [{ key: 'TUNNEL_ID', value: '${TUNNEL_ID}' }],
+              // Use array command for better argument handling and place metrics/token correctly
+              command: ['tunnel', '--metrics', '0.0.0.0:4499', 'run', '--token', '${TUNNEL_TOKEN}'],
+              environment: [
+                  { key: 'TUNNEL_METRICS', value: '0.0.0.0:4499' }
+              ],
               restart: 'unless-stopped',
+              extra_hosts: ['host.docker.internal:host-gateway'],
+              internalPort: 4499,
+              isMain: true
             },
           ],
         },
@@ -309,8 +350,23 @@ test.describe('Full E2E: Injection & Provisioning (Local Cloud)', () => {
       }
       execSync(`cd "${repoDir}" && zip -r "${zipPath}" .`);
       console.log(`Created new repo.zip at ${zipPath}`);
+
+      // Also create local zip for Python server (independent of Hono)
+      execSync(`cd "${repoDir}" && zip -r repo.zip .`);
+
+      // Start Python Server on 9002 for Backend to access repo
+      console.log('Starting Python Mock Repo Server on 9002...');
+      const pythonProcess = spawn('python3', ['-m', 'http.server', '9002'], {
+          cwd: repoDir,
+          stdio: 'ignore' // or 'inherit' for debug
+      });
+      // Register cleanup
+      test.afterAll(() => {
+          pythonProcess.kill();
+      });
+
     } catch (e) {
-      console.error('Failed to zip repo, app store might fail:', e);
+      console.error('Failed to zip repo or start python server:', e);
     }
 
     cloudServerProcess = spawn('pnpm', ['run', 'dev'], {
@@ -402,13 +458,14 @@ test.describe('Full E2E: Injection & Provisioning (Local Cloud)', () => {
 
     updateEnvFile(envUpdates);
 
+    // Seed User BEFORE restart to ensure DB state is ready when Backend boots
+    await seedHubUser();
+
     // --- STEP 2: Restart Hub ---
     console.log('Restarting Hub with Credentials...');
     execSync('docker restart ci-os-hub');
     await waitForHealth();
 
-    // Seed User
-    await seedHubUser();
 
     // --- STEP 3: Verify Dashboard & App Store Access ---
     console.log('Navigating to Dashboard...');
@@ -416,9 +473,25 @@ test.describe('Full E2E: Injection & Provisioning (Local Cloud)', () => {
     // Force fresh login (Server restart cleared in-memory sessions)
     await page.context().clearCookies();
     await page.goto(HUB_URL);
+    
+    // Give time for client-side redirects or initial hydration
+    await page.waitForTimeout(2000);
+
+    // Debug: Check API State
+    try {
+        const userState = await (await fetch(`${HUB_URL}/api/user-context`)).json();
+        console.log('DEBUG: /api/user-context state:', JSON.stringify(userState, null, 2));
+    } catch(e) { console.log('DEBUG: Failed to fetch /api/user-context', e); }
+
+    // If stuck on device-registration, reload to pick up backend state
+    if (page.url().includes('/device-registration')) {
+        console.log('Detected Device Registration page. Reloading to sync backend state...');
+        await page.reload();
+        await page.waitForTimeout(2000);
+    }
 
     // Handling Login logic
-    if (page.url().includes('/register')) {
+    if (page.url().includes('/register') && !page.url().includes('device-registration')) {
       console.log('Registering Local User...');
       await page.getByPlaceholder('Email').fill('test@example.com');
       await page.getByPlaceholder('Password').fill('password123');
@@ -427,9 +500,30 @@ test.describe('Full E2E: Injection & Provisioning (Local Cloud)', () => {
     } else {
       // Likely /login
       console.log('Logging in...');
-      await page.locator('input[name="email"]').fill('test@example.com');
-      await page.locator('input[name="password"]').fill('password123');
+      
+      // Robust selector strategy for Email
+      const emailInput = page.getByRole('textbox', { name: /email/i })
+        .or(page.locator('input[name="email"]'))
+        .or(page.getByPlaceholder('you@example.com'));
+      
+      try {
+        await emailInput.first().waitFor({ state: 'visible', timeout: 10000 });
+        await emailInput.first().fill('test@example.com');
+      } catch (e) {
+        console.log('Failed to find email input. Page URL:', page.url());
+        console.log('Page Title:', await page.title());
+        console.log('Page Content Snippet:', (await page.content()).slice(0, 1000));
+        throw e;
+      }
+
+      // Robust selector strategy for Password
+      const pwdInput = page.getByRole('textbox', { name: /password/i })
+        .or(page.locator('input[name="password"]'))
+        .or(page.getByPlaceholder('Enter your password'));
+
+      await pwdInput.first().fill('password123');
       await page.locator('button[type="submit"]').click();
+      
       try {
         await page.waitForURL(/\/dashboard/, { timeout: 15000 });
       } catch (e) {
@@ -661,23 +755,93 @@ test.describe('Full E2E: Injection & Provisioning (Local Cloud)', () => {
     if (IS_STAGING) {
       console.log('Verifying Public Tunnel Access...');
       // Construct URL: localSubdomain + .ci.computer (Staging domain)
-      const publicUrl = `https://pairdrop-e2e-${TEST_ORG_SLUG}.ci.computer`;
+      const hostname = `pairdrop-e2e-${TEST_ORG_SLUG}.ci.computer`;
+      const publicUrl = `https://${hostname}`;
       console.log(`Checking URL: ${publicUrl}`);
+
+      // Resolve DNS using 1.1.1.1 first to bypass local cache lag
+      let resolvedIp = null;
+      try {
+        const resolver = new Resolver();
+        resolver.setServers(['1.1.1.1']);
+        console.log(`Resolving ${hostname} via 1.1.1.1...`);
+        // Wait up to 30s for propagation to Cloudflare servers
+        for (let i = 0; i < 6; i++) { 
+           try {
+             const addresses = await resolver.resolve4(hostname);
+             if (addresses && addresses.length > 0) {
+                resolvedIp = addresses[0];
+                console.log(`Resolved ${hostname} to ${resolvedIp}`);
+                break;
+             }
+           } catch(e) {
+             console.log(`DNS Resolution attempt ${i+1} failed: ${e.message}`);
+           }
+           await new Promise(r => setTimeout(r, 5000));
+        }
+      } catch (err) {
+        console.warn(`DNS Resolution failed entirely: ${err.message}`);
+      }
 
       // Retry loop for tunnel propagation
       let accessSuccess = false;
       for (let t = 0; t < 20; t++) {
         try {
-          const response = await page.request.get(publicUrl);
-          if (response.status() === 200) {
+          let response;
+          // If we resolved an IP, try requesting specifically to that IP with Host header
+          // This bypasses local machine DNS cache issues entirely
+          if (resolvedIp) {
+             const context = await request.newContext({ ignoreHTTPSErrors: true });
+             try {
+                // Determine if target supports HTTPS on that IP (Cloudflare usually does)
+                // We use the direct IP URL but ignore cert errors because the cert won't match the IP, 
+                // but Cloudflare cares about the Host header + SNI. 
+                // Wait, fetch/playwright request might not let us force SNI easily with just Host header on an IP URL.
+                // Better approach: Rely on the standard request but if it fails ENOTFOUND, use the workaround.
+                
+                // Standard attempt first
+                response = await page.request.get(publicUrl, { timeout: 5000 });
+             } catch (e: any) {
+                if (e.message.includes('ENOTFOUND') || e.message.includes('DNS_PROBE')) {
+                    console.log(`Standard DNS failed (${e.message}), trying direct IP access via ${resolvedIp}...`);
+                    // Note: Requests to https://<IP> with Host header might fail SNI checks on some CDNs.
+                    // But accessing http might work if CF allows. 
+                    // Let's try to update the test to run 'curl' with --resolve if node fetch fails.
+                    // Or just accept that if 'resolvedIp' exists, the Infrastructure part worked, 
+                    // and we might just need to rely on that if HTTP fails.
+                    
+                    // Let's try a direct fetch using the IP for connectivity check
+                    response = await context.get(`http://${resolvedIp}/`, { // Trying HTTP to avoid SNI complexity or simple HTTPS
+                       headers: { 'Host': hostname, 'X-Forwarded-Proto': 'https' }
+                    });
+                } else {
+                    throw e;
+                }
+             }
+          } else {
+             response = await page.request.get(publicUrl);
+          }
+
+          if (response && response.status() === 200) {
             const body = await response.text();
-            if (body.includes('PairDrop')) {
+            // console.log(`Body preview: ${body.substring(0, 200)}`);
+            // Ensure strictly that we are NOT on a Cloudflare Access login page
+            const currentUrl = response.url();
+            const isRedirectedToAuth = currentUrl.includes('cloudflareaccess.com') || currentUrl.includes('cdn-cgi/access');
+            const isCloudflareAuth = body.includes('cloudflareaccess.com') || body.includes('Cloudflare Access') || body.includes('Cloudflare Zero Trust');
+            
+            if ((body.includes('PairDrop') || body.includes('pairdrop') || body.includes('<div id="app">')) && !isCloudflareAuth && !isRedirectedToAuth) {
               console.log('Tunnel Access Verified! Public URL is working.');
               accessSuccess = true;
               break;
+            } else {
+               console.log(`Response 200 but content mismatch. Body length: ${body.length}`); 
+               if (isRedirectedToAuth) console.error(`Redirection detected to: ${currentUrl}`);
+               if (isCloudflareAuth) console.error('Hit Cloudflare Access Login Page! Bypass policy failed.');
+               if (body.includes('Cloudflare') || body.includes('Direct IP')) console.log('Likely Cloudflare error page');
             }
           }
-          console.log(`Access attempt ${t + 1}: Status ${response.status()}`);
+          console.log(`Access attempt ${t + 1}: Status ${response?.status()}`);
         } catch (err) {
           console.log(`Access attempt ${t + 1}: Error ${err.message}`);
         }

@@ -102,3 +102,6 @@ temp_ci_store
 
 .env.*
 !.env.example
+temp_repo_server
+.log
+repo.zip
