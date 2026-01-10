@@ -549,7 +549,6 @@ export class AppLifecycleService {
                 name: app.appName,
                 subdomain: app.localSubdomain || app.appStoreSlug,
                 localPort: app.port as number,
-                enableAuth: app.enableAuth
             }));
 
         await this.cloudflareClientService.syncState(orgInfo.id, exposedApps, orgInfo.tunnelId || undefined);

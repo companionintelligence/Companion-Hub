@@ -7,9 +7,10 @@ import { ConfigurationModule } from '@/core/config/configuration.module';
 import { LoggerModule } from '@/core/logger/logger.module';
 import { DatabaseModule } from '@/core/database/database.module';
 import { CloudflareModule } from '../cloudflare/cloudflare.module';
+import { QueueModule } from '../queue/queue.module';
 
 @Module({
-  imports: [ConfigurationModule, LoggerModule, DatabaseModule, CloudflareModule],
+  imports: [ConfigurationModule, LoggerModule, DatabaseModule, CloudflareModule, QueueModule],
   controllers: [RegistrationController],
   providers: [RegistrationService, RegistrationGuard, OrganizationRepository],
   exports: [RegistrationService, RegistrationGuard, OrganizationRepository],

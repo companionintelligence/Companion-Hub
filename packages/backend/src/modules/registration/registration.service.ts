@@ -3,6 +3,7 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { CloudflareClientService } from '../cloudflare/cloudflare-client.service';
 import { OrganizationRepository } from './organization.repository';
+import { RepoEventsQueue } from '../queue/entities/repo-events';
 import si from 'systeminformation';
 
 @Injectable()
@@ -15,6 +16,7 @@ export class RegistrationService implements OnApplicationBootstrap {
     private readonly logger: LoggerService,
     private readonly cloudflareClientService: CloudflareClientService,
     private readonly organizationRepository: OrganizationRepository,
+    private readonly repoQueue: RepoEventsQueue,
   ) {}
 
   async onApplicationBootstrap() {
@@ -64,6 +66,7 @@ export class RegistrationService implements OnApplicationBootstrap {
 
   public async getDeviceId(): Promise<string> {
     this.logger.debug(`NODE_ENV is: ${process.env.NODE_ENV}`);
+    this.logger.debug(`process.env.DEVICE_ID is: ${process.env.DEVICE_ID}`);
     if (process.env.DEVICE_ID) {
       return process.env.DEVICE_ID;
     }
@@ -199,6 +202,10 @@ export class RegistrationService implements OnApplicationBootstrap {
            await this.config.setUserSettings({ ciHubApiKey: result.api_key });
            this.logger.info('Saved Hub API Key from registration response');
         }
+
+        // Trigger repo update now that we are registered
+        this.logger.debug('Triggering repository update after successful registration');
+        await this.repoQueue.publish({ command: 'update_all' });
 
         // Setup infrastructure using the response
         await this.setupOrganizationInfrastructure(ciHubOrganizationId, result);

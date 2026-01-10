@@ -52,6 +52,7 @@ RUN bun install --frozen-lockfile
 
 COPY ./turbo.json ./turbo.json
 COPY ./tsconfig.json ./
+ARG CACHE_BUST=1
 COPY ./packages ./packages
 RUN bun run build
 

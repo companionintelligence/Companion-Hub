@@ -33,10 +33,27 @@ fi
 
 # Overrides for Test Execution
 export ENV_FILE=.env.staging
+# Generate unique IDs for this run to avoid Cloudflare tunnel conflicts
+TIMESTAMP=$(node -e 'console.log(Date.now())')
+export CI_HUB_ORGANIZATION_ID="e2e-org-test-${TIMESTAMP}"
+export DEVICE_ID="e2e-device-test-${TIMESTAMP}"
+
+echo "Generated CI_HUB_ORGANIZATION_ID: $CI_HUB_ORGANIZATION_ID"
+echo "Generated DEVICE_ID: $DEVICE_ID"
+
+# Seeding Cloud Staging DB with the new Organization
+echo "Seeding Cloud Staging DB (D1)..."
+pushd ../CI-Cloud/apps/hono-app
+# Ensure Organization Exists
+echo "Creating Remote Organization: $CI_HUB_ORGANIZATION_ID"
+pnpm wrangler d1 execute ci-cloud-db-staging --remote --command "INSERT INTO organization (id, slug, name, created_at) VALUES ('${CI_HUB_ORGANIZATION_ID}', '${CI_HUB_ORGANIZATION_ID}', 'Auto E2E Org ${TIMESTAMP}', ${TIMESTAMP});" || true
+popd
+
+
 # Ensure these are set if not in .env.staging
 export CI_CLOUD_API_URL="${CI_CLOUD_API_URL:-https://app-staging.ci.computer/api}"
 export CI_CLOUD_FRONTEND_URL="${CI_CLOUD_FRONTEND_URL:-https://app-staging.ci.computer}"
-export CI_HUB_ORGANIZATION_ID="${CI_HUB_ORGANIZATION_ID:-test-org-e2e}"
+
 export POSTGRES_PASSWORD=postgres
 export JWT_SECRET=secret
 export RUNTIPI_APP_DATA_PATH=./app-data
@@ -55,22 +72,24 @@ echo "Using Docker Platform: $DOCKER_PLATFORM"
 
 # Cleanup any existing containers and volumes
 echo "Cleaning up..."
-docker compose --project-name runtipi --env-file .env.staging -f docker-compose.prod.yml -f docker-compose.staging.yml down -v || true
+docker compose --project-name runtipi -f docker-compose.prod.yml -f docker-compose.staging.yml down -v || true
 
 # --- TEST: Full End-to-End User Flow ---
 echo "---------------------------------------------------"
 echo "Running FULL E2E Test: Boot -> Register -> Install -> Tunnel"
 echo "---------------------------------------------------"
 # Restore Org ID for Test 2 behavior (reusing existing staging org)
-export CI_HUB_ORGANIZATION_ID="test-org-e2e"
+# export CI_HUB_ORGANIZATION_ID="test-org-e2e"
 
 # Use KNOWN Device ID that is already registered in Cloud Staging for Stability
 # But verify the "New Device" UI flow by clearing local DB (handled in spec)
-export DEVICE_ID="test-device-id"
+# export DEVICE_ID="test-device-id"
 echo "Using Device ID: $DEVICE_ID"
 
 echo "Starting CI-OS-Hub containers..."
-docker compose --project-name runtipi --env-file .env.staging -f docker-compose.prod.yml -f docker-compose.staging.yml up -d
+docker compose --project-name runtipi -f docker-compose.prod.yml -f docker-compose.staging.yml config
+docker compose --project-name runtipi -f docker-compose.prod.yml -f docker-compose.staging.yml build --build-arg CACHE_BUST="${TIMESTAMP}"
+docker compose --project-name runtipi -f docker-compose.prod.yml -f docker-compose.staging.yml up -d
 
 # Wait for Health
 echo "Waiting for DB and Backend to initialize..."
@@ -95,13 +114,16 @@ export SERVER_IP=localhost
 export SERVER_PORT=3000
 
 set +e
-bun run playwright test e2e/full-e2e.spec.ts
+# Use local binary to bypass package manager checks if bun is missing/enforced
+./node_modules/.bin/playwright test e2e/full-e2e.spec.ts
 TEST_EXIT_CODE=$?
 set -e
 
 if [ $TEST_EXIT_CODE -ne 0 ]; then
   echo "Test Failed. Capturing Logs..."
   docker logs ci-os-hub
+  echo "--- CLOUDFLARED LOGS ---"
+  docker logs cloudflared_ci-cloud-cloudflared-1 || echo "Cloudflared container not found or named differently"
   echo "---------------------------------------------------"
   # Check if we can reach Google (DNS check)
   echo "Checking DNS..."

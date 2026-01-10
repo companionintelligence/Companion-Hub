@@ -80,6 +80,7 @@ export class CloudflareClientService {
 
     try {
       this.logger.log(`Syncing ${apps.length} apps to CI-Cloud (Tunnel: ${this.tunnelId})...`);
+      this.logger.log(`Sync Payload: ${JSON.stringify({ organizationId, tunnelId: this.tunnelId, apps }, null, 2)}`);
       const response = await this.client.post('/tunnels/state', {
         organizationId,
         tunnelId: this.tunnelId,
