@@ -166,10 +166,15 @@ export class ReposHelpers {
       // Handle GitHub-style zip (single root directory)
       const entries = fs.readdirSync(repoPath);
       if (entries.length === 1) {
-        const rootItemPath = path.join(repoPath, entries[0]);
+        const firstEntry = entries[0];
+        if (!firstEntry) {
+          this.logger.warn('Unexpected: entries array has length 1 but first entry is undefined');
+          return { success: false, message: 'Failed to process repository structure' };
+        }
+        const rootItemPath = path.join(repoPath, firstEntry);
         if (fs.statSync(rootItemPath).isDirectory()) {
              // It's a directory, move content up
-             this.logger.debug(`Detected single root folder in ZIP: ${entries[0]}. Flattening...`);
+             this.logger.debug(`Detected single root folder in ZIP: ${firstEntry}. Flattening...`);
              const children = fs.readdirSync(rootItemPath);
              for (const child of children) {
                  fs.renameSync(path.join(rootItemPath, child), path.join(repoPath, child));
