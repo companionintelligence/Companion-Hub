@@ -107,4 +107,4 @@ temp_repo_server
 .log
 repo.zip
 # Tunnel Certs
-tunnel/certs/
+tunnel/*
