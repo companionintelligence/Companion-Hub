@@ -551,6 +551,14 @@ export class AppLifecycleService {
                 localPort: app.port as number,
             }));
 
+        // Add Dashboard
+        exposedApps.push({
+            name: 'Dashboard',
+            subdomain: '@',
+            localPort: 5002, // Default Hub Port
+            protocol: 'http'
+        });
+
         await this.cloudflareClientService.syncState(orgInfo.id, exposedApps, orgInfo.tunnelId || undefined);
     } catch (error: any) {
         this.logger.error(`[Cloudflare] Sync failed: ${error.message}`);
