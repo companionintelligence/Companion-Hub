@@ -136,7 +136,7 @@ services:
 networks:
   ci_os_hub_network:
     driver: bridge
-    name: ${NETWORK_NAME:-ci_os_hub_network}
+    name: ${NETWORK_NAME:-ci-os-hub_network}
     # ipam:
     #   driver: default
     #   config:

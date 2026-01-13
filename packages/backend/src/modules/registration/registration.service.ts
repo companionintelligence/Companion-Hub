@@ -33,21 +33,30 @@ export class RegistrationService implements OnApplicationBootstrap {
       if (isRegistered) {
         const org = await this.organizationRepository.getFirstOrganization();
         if (org && !org.tunnelId) {
-           this.logger.warn(`Organization ${org.id} exists but Tunnel ID is missing. Attempting to recover...`);
-           try {
-             const tunnelCredentials = await this.cloudflareClientService.initializeTunnel(org.id);
-             if (tunnelCredentials) {
-               await this.organizationRepository.updateOrganization(org.id, {
-                 tunnelId: tunnelCredentials.tunnelId,
-                 tunnelToken: tunnelCredentials.token,
-               });
-               this.logger.info(`Tunnel ID recovered successfully: ${tunnelCredentials.tunnelId}`);
-             } else {
-               this.logger.error('Failed to recover Tunnel ID.');
-             }
-           } catch (err) {
-             this.logger.error(`Error during tunnel recovery: ${err}`);
-           }
+          const { cloudflareTunnelId } = this.config.getConfig();
+          
+          if (cloudflareTunnelId) {
+            this.logger.info(`Recovering Tunnel ID from environment: ${cloudflareTunnelId}`);
+            await this.organizationRepository.updateOrganization(org.id, {
+              tunnelId: cloudflareTunnelId,
+            });
+          } else {
+            this.logger.warn(`Organization ${org.id} exists but Tunnel ID is missing. Attempting to recover...`);
+            try {
+              const tunnelCredentials = await this.cloudflareClientService.initializeTunnel(org.id);
+              if (tunnelCredentials) {
+                await this.organizationRepository.updateOrganization(org.id, {
+                  tunnelId: tunnelCredentials.tunnelId,
+                  tunnelToken: tunnelCredentials.token,
+                });
+                this.logger.info(`Tunnel ID recovered successfully: ${tunnelCredentials.tunnelId}`);
+              } else {
+                this.logger.error('Failed to recover Tunnel ID.');
+              }
+            } catch (err) {
+              this.logger.error(`Error during tunnel recovery: ${err}`);
+            }
+          }
         }
       }
     }
@@ -240,12 +249,16 @@ export class RegistrationService implements OnApplicationBootstrap {
     }
 
     try {
-      const { ciCloudApiUrl, ciHubApiKey } = this.config.getConfig();
+      const { ciCloudApiUrl, ciHubApiKey, cloudflareTunnelId } = this.config.getConfig();
 
       // Try to fetch organization details from CI Cloud API
       let orgName: string | null = null;
-      let tunnelId: string | null = null;
+      let tunnelId: string | null = cloudflareTunnelId || null;
       let orgSlug: string | null = null;
+
+      if (tunnelId) {
+        this.logger.debug(`Using tunnel ID from environment: ${tunnelId}`);
+      }
 
       // First, check if activation result contains organization info
       if (activationResult?.organization_name) {

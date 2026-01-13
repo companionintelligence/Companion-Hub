@@ -190,7 +190,7 @@ done
 echo "Backend is healthy."
 
 # Run the FULL E2E Test
-export STAGING_TUNNEL_ID=$CF_TUNNEL_ID
+export STAGING_TUNNEL_ID=$CLOUDFLARE_TUNNEL_ID
 export STAGING_ORG_SLUG=$CI_HUB_ORGANIZATION_ID
 export SERVER_IP=localhost
 export SERVER_PORT=3000
