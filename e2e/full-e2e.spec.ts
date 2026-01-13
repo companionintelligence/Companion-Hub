@@ -1,5 +1,5 @@
-import { test, expect, request } from '@playwright/test';
-import { execSync, spawn } from 'child_process';
+import { test, expect } from '@playwright/test';
+import { ChildProcess, execSync, spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { db } from './helpers/db'; // Import db helper
@@ -25,11 +25,12 @@ const TEST_ORG_SLUG = process.env.CI_HUB_ORGANIZATION_ID || 'e2e-org-test-' + Da
 let TEST_API_KEY = process.env.CI_HUB_API_KEY || 'test-api-key-e2e-' + Date.now();
 const TEST_ORG_ID = process.env.CI_HUB_ORGANIZATION_ID ? process.env.CI_HUB_ORGANIZATION_ID : 'org_' + Date.now(); // Org ID often matches slug in some setups, but here we keep distinct if needed
 const TARGET_DEVICE_ID = process.env.DEVICE_ID || 'test-device-id';
+const HUB_CONTAINER_NAME = process.env.HUB_CONTAINER_NAME || 'ci-os-hub';
+console.log('DEBUG: HUB_CONTAINER_NAME resolved to:', HUB_CONTAINER_NAME);
+console.log('DEBUG: ENV HUB_CONTAINER_NAME:', process.env.HUB_CONTAINER_NAME);
 
 // Paths
-const ENV_PATH = process.env.ENV_FILE 
-  ? path.resolve(__dirname, '..', process.env.ENV_FILE)
-  : path.join(__dirname, '../.env');
+const ENV_PATH = process.env.ENV_FILE ? path.resolve(__dirname, '..', process.env.ENV_FILE) : path.join(__dirname, '../.env');
 
 // Helpers
 async function seedHubUser() {
@@ -53,7 +54,7 @@ async function seedHubUser() {
       hasSeenWelcome: true, // Bypass welcome
       totpEnabled: false,
     });
-    
+
     // Verify Insertion
     const inserted = await db.select().from(schema.user).where(eq(schema.user.username, 'test@example.com'));
     console.log('DEBUG: Seeded User Check:', JSON.stringify(inserted, null, 2));
@@ -102,38 +103,38 @@ function runRemoteD1(query: string) {
     // use execSync to run command
     const output = execSync(cmd, { cwd: CLOUD_APP_DIR, encoding: 'utf-8' });
     console.log('Remote D1 Raw Output:', output.substring(0, 500) + '...');
-        
+
     // Find all potential JSON arrays (Bracket Balancing)
     const candidates: string[] = [];
     let depth = 0;
     let start = -1;
-    
+
     for (let i = 0; i < output.length; i++) {
-        if (output[i] === '[') {
-            if (depth === 0) start = i;
-            depth++;
-        } else if (output[i] === ']') {
-            depth--;
-            if (depth === 0 && start !== -1) {
-                candidates.push(output.substring(start, i + 1));
-                start = -1;
-            }
+      if (output[i] === '[') {
+        if (depth === 0) start = i;
+        depth++;
+      } else if (output[i] === ']') {
+        depth--;
+        if (depth === 0 && start !== -1) {
+          candidates.push(output.substring(start, i + 1));
+          start = -1;
         }
+      }
     }
-    
+
     // Check candidates (reversed preference - check last one first as logs come before output usually)
     for (let i = candidates.length - 1; i >= 0; i--) {
-        try {
-            const parsed = JSON.parse(candidates[i]);
-            if (Array.isArray(parsed) && parsed.length > 0 && parsed[0] && typeof parsed[0] === 'object') {
-                 // Check if it looks like D1 output
-                 if ('results' in parsed[0] || 'success' in parsed[0]) {
-                     return parsed[0].results || [];
-                 }
-            }
-        } catch (e) {}
+      try {
+        const parsed = JSON.parse(candidates[i]);
+        if (Array.isArray(parsed) && parsed.length > 0 && parsed[0] && typeof parsed[0] === 'object') {
+          // Check if it looks like D1 output
+          if ('results' in parsed[0] || 'success' in parsed[0]) {
+            return parsed[0].results || [];
+          }
+        }
+      } catch (e) {}
     }
-    
+
     console.warn('Remote D1: No valid JSON result found in output.');
     return [];
   } catch (error) {
@@ -176,7 +177,7 @@ function updateEnvFile(updates: Record<string, string | undefined>) {
   fs.writeFileSync(ENV_PATH, newLines.join('\n'));
 }
 
-let cloudServerProcess;
+let cloudServerProcess: ChildProcess | null = null;
 
 test.describe('Full E2E: Injection & Provisioning (Local Cloud)', () => {
   test.setTimeout(300000); // 5 minutes
@@ -206,28 +207,34 @@ test.describe('Full E2E: Injection & Provisioning (Local Cloud)', () => {
       console.log('Ensuring Staging Organization Exists...');
       const orgCheck = runRemoteD1(`SELECT id FROM organization WHERE id = '${TEST_ORG_ID}'`);
       if (orgCheck.length === 0) {
-          console.log(`Creating Org: ${TEST_ORG_ID}`);
-          runRemoteD1(`INSERT INTO organization (id, slug, name, created_at) VALUES ('${TEST_ORG_ID}', '${TEST_ORG_SLUG}', 'E2E Test Org', 1700000000000)`);
+        console.log(`Creating Org: ${TEST_ORG_ID}`);
+        runRemoteD1(
+          `INSERT INTO organization (id, slug, name, created_at) VALUES ('${TEST_ORG_ID}', '${TEST_ORG_SLUG}', 'E2E Test Org', 1700000000000)`,
+        );
       }
 
       // 2. Ensure Device Exists
       console.log('Ensuring Staging Device Exists...');
       const devCheck = runRemoteD1(`SELECT device_id, api_key FROM device WHERE device_id = '${TARGET_DEVICE_ID}'`);
       if (devCheck.length === 0) {
-          console.log(`Creating Device: ${TARGET_DEVICE_ID}`);
-          runRemoteD1(`INSERT INTO device (device_id, api_key, status, created_at) VALUES ('${TARGET_DEVICE_ID}', '${TEST_API_KEY}', 'active', 1700000000000)`);
+        console.log(`Creating Device: ${TARGET_DEVICE_ID}`);
+        runRemoteD1(
+          `INSERT INTO device (device_id, api_key, status, created_at) VALUES ('${TARGET_DEVICE_ID}', '${TEST_API_KEY}', 'active', 1700000000000)`,
+        );
       } else {
-          TEST_API_KEY = devCheck[0].api_key;
-          console.log(`Using existing API Key for device: ${TEST_API_KEY}`);
+        TEST_API_KEY = devCheck[0].api_key;
+        console.log(`Using existing API Key for device: ${TEST_API_KEY}`);
       }
-      
+
       // 3. Ensure Registration Exists
       console.log('Ensuring Device Registration Exists...');
-      const regCheck = runRemoteD1(`SELECT id FROM device_registration WHERE device_id = '${TARGET_DEVICE_ID}' AND organization_id = '${TEST_ORG_ID}'`);
+      const regCheck = runRemoteD1(
+        `SELECT id FROM device_registration WHERE device_id = '${TARGET_DEVICE_ID}' AND organization_id = '${TEST_ORG_ID}'`,
+      );
       if (regCheck.length === 0) {
-          const regId = 'reg_' + Date.now();
-          console.log(`Creating Registration: ${regId}`);
-          runRemoteD1(`INSERT INTO device_registration (id, device_id, organization_id) VALUES ('${regId}', '${TARGET_DEVICE_ID}', '${TEST_ORG_ID}')`);
+        const regId = 'reg_' + Date.now();
+        console.log(`Creating Registration: ${regId}`);
+        runRemoteD1(`INSERT INTO device_registration (id, device_id, organization_id) VALUES ('${regId}', '${TARGET_DEVICE_ID}', '${TEST_ORG_ID}')`);
       }
 
       // 4. Clear existing Applications for this device in Staging to ensure clean state
@@ -248,10 +255,13 @@ test.describe('Full E2E: Injection & Provisioning (Local Cloud)', () => {
     fs.mkdirSync(repoDir, { recursive: true });
 
     // 0. Mock Repo Metadata (repo.json)
-    fs.writeFileSync(path.join(repoDir, 'repo.json'), JSON.stringify({
-      name: 'CI Cloud Mock',
-      description: 'Mock Repo for E2E',
-    }));
+    fs.writeFileSync(
+      path.join(repoDir, 'repo.json'),
+      JSON.stringify({
+        name: 'CI Cloud Mock',
+        description: 'Mock Repo for E2E',
+      }),
+    );
 
     // 1. Mock PairDrop
     fs.mkdirSync(path.join(repoDir, 'apps', 'pairdrop', 'metadata'), { recursive: true });
@@ -320,13 +330,11 @@ test.describe('Full E2E: Injection & Provisioning (Local Cloud)', () => {
               image: 'cloudflare/cloudflared:latest',
               // Use array command for better argument handling and place metrics/token correctly
               command: ['tunnel', '--metrics', '0.0.0.0:4499', 'run', '--token', '${TUNNEL_TOKEN}'],
-              environment: [
-                  { key: 'TUNNEL_METRICS', value: '0.0.0.0:4499' }
-              ],
+              environment: [{ key: 'TUNNEL_METRICS', value: '0.0.0.0:4499' }],
               restart: 'unless-stopped',
               extra_hosts: ['host.docker.internal:host-gateway'],
               internalPort: 4499,
-              isMain: true
+              isMain: true,
             },
           ],
         },
@@ -357,28 +365,26 @@ test.describe('Full E2E: Injection & Provisioning (Local Cloud)', () => {
       // Start Python Server on 9002 for Backend to access repo
       console.log('Starting Python Mock Repo Server on 9002...');
       const pythonProcess = spawn('python3', ['-m', 'http.server', '9002'], {
-          cwd: repoDir,
-          stdio: 'ignore' // or 'inherit' for debug
+        cwd: repoDir,
+        stdio: 'ignore', // or 'inherit' for debug
       });
       // Register cleanup
       test.afterAll(() => {
-          pythonProcess.kill();
+        pythonProcess.kill();
       });
 
       // Wait for Mock Repo Server to be ready
       console.log('Waiting for Mock Repo Server (9002) to be ready...');
       for (let i = 0; i < 30; i++) {
-          try {
-              const res = await fetch('http://localhost:9002/repo.json');
-              if (res.ok) {
-                  console.log('Mock Repo Server start verified.');
-                  break;
-              }
-          } catch(e) {}
-          await new Promise(r => setTimeout(r, 500));
+        try {
+          const res = await fetch('http://localhost:9002/repo.json');
+          if (res.ok) {
+            console.log('Mock Repo Server start verified.');
+            break;
+          }
+        } catch (e) {}
+        await new Promise((r) => setTimeout(r, 500));
       }
-
-
     } catch (e) {
       console.error('Failed to zip repo or start python server:', e);
     }
@@ -442,7 +448,7 @@ test.describe('Full E2E: Injection & Provisioning (Local Cloud)', () => {
     }
 
     console.log('Restarting Hub (Clean)...');
-    execSync('docker restart ci-os-hub');
+    execSync(`docker restart ${HUB_CONTAINER_NAME}`);
 
     // Wait for health
     console.log('Waiting for Hub Health...');
@@ -477,9 +483,8 @@ test.describe('Full E2E: Injection & Provisioning (Local Cloud)', () => {
 
     // --- STEP 2: Restart Hub ---
     console.log('Restarting Hub with Credentials...');
-    execSync('docker restart ci-os-hub');
+    execSync(`docker restart ${HUB_CONTAINER_NAME}`);
     await waitForHealth();
-
 
     // --- STEP 3: Verify Dashboard & App Store Access ---
     console.log('Navigating to Dashboard...');
@@ -487,21 +492,23 @@ test.describe('Full E2E: Injection & Provisioning (Local Cloud)', () => {
     // Force fresh login (Server restart cleared in-memory sessions)
     await page.context().clearCookies();
     await page.goto(HUB_URL);
-    
+
     // Give time for client-side redirects or initial hydration
     await page.waitForTimeout(2000);
 
     // Debug: Check API State
     try {
-        const userState = await (await fetch(`${HUB_URL}/api/user-context`)).json();
-        console.log('DEBUG: /api/user-context state:', JSON.stringify(userState, null, 2));
-    } catch(e) { console.log('DEBUG: Failed to fetch /api/user-context', e); }
+      const userState = await (await fetch(`${HUB_URL}/api/user-context`)).json();
+      console.log('DEBUG: /api/user-context state:', JSON.stringify(userState, null, 2));
+    } catch (e) {
+      console.log('DEBUG: Failed to fetch /api/user-context', e);
+    }
 
     // If stuck on device-registration, reload to pick up backend state
     if (page.url().includes('/device-registration')) {
-        console.log('Detected Device Registration page. Reloading to sync backend state...');
-        await page.reload();
-        await page.waitForTimeout(2000);
+      console.log('Detected Device Registration page. Reloading to sync backend state...');
+      await page.reload();
+      await page.waitForTimeout(2000);
     }
 
     // Handling Login logic
@@ -514,12 +521,13 @@ test.describe('Full E2E: Injection & Provisioning (Local Cloud)', () => {
     } else {
       // Likely /login
       console.log('Logging in...');
-      
+
       // Robust selector strategy for Email
-      const emailInput = page.getByRole('textbox', { name: /email/i })
+      const emailInput = page
+        .getByRole('textbox', { name: /email/i })
         .or(page.locator('input[name="email"]'))
         .or(page.getByPlaceholder('you@example.com'));
-      
+
       try {
         await emailInput.first().waitFor({ state: 'visible', timeout: 10000 });
         await emailInput.first().fill('test@example.com');
@@ -531,13 +539,14 @@ test.describe('Full E2E: Injection & Provisioning (Local Cloud)', () => {
       }
 
       // Robust selector strategy for Password
-      const pwdInput = page.getByRole('textbox', { name: /password/i })
+      const pwdInput = page
+        .getByRole('textbox', { name: /password/i })
         .or(page.locator('input[name="password"]'))
         .or(page.getByPlaceholder('Enter your password'));
 
       await pwdInput.first().fill('password123');
       await page.locator('button[type="submit"]').click();
-      
+
       try {
         await page.waitForURL(/\/dashboard/, { timeout: 15000 });
       } catch (e) {
@@ -698,23 +707,21 @@ test.describe('Full E2E: Injection & Provisioning (Local Cloud)', () => {
 
     // 1. Search/Find PairDrop
     let pairdropUrn = 'pairdrop:ci-cloud';
-    try {
-      const searchRes = await page.request.get(`${HUB_URL}/api/marketplace/apps/search?search=pairdrop`);
-      if (searchRes.ok()) {
-        const searchJson = await searchRes.json();
-        const foundApp = Array.isArray(searchJson) ? searchJson[0] : searchJson.apps ? searchJson.apps[0] : null;
-        if (foundApp && foundApp.id) {
-          pairdropUrn = foundApp.id;
-          console.log(`Resolved PairDrop URN: ${pairdropUrn}`);
-        }
+    const searchRes = await page.request.get(`${HUB_URL}/api/marketplace/apps/search?search=pairdrop`);
+    if (searchRes.ok()) {
+      const searchJson = await searchRes.json();
+      const foundApp = Array.isArray(searchJson) ? searchJson[0] : searchJson.apps ? searchJson.apps[0] : null;
+      if (foundApp && foundApp.id) {
+        pairdropUrn = foundApp.id;
+        console.log(`Resolved PairDrop URN: ${pairdropUrn}`);
       }
-    } catch (e) {}
+    }
 
     // 2. Install PairDrop with exposedLocal=true
     const installRes = await page.request.post(`${HUB_URL}/api/app-lifecycle/${pairdropUrn}/install`, {
       data: {
         exposedLocal: true, // This should trigger cloud sync
-        localSubdomain: `pairdrop-e2e-${TEST_ORG_SLUG}`,
+        localSubdomain: `pairdrop`,
         port: 3005, // Avoid port 3000 which is used by Hub
       },
     });
@@ -749,14 +756,20 @@ test.describe('Full E2E: Injection & Provisioning (Local Cloud)', () => {
         let count = 0;
         if (IS_STAGING) {
           try {
-            const results = runRemoteD1(`SELECT count(*) as count FROM application WHERE slug = 'pairdrop-e2e-${TEST_ORG_SLUG}' AND device_id = '${TARGET_DEVICE_ID}'`);
+            const results = runRemoteD1(
+              `SELECT count(*) as count FROM application WHERE slug = 'pairdrop-e2e-${TEST_ORG_SLUG}' AND device_id = '${TARGET_DEVICE_ID}'`,
+            );
             count = results[0]?.count || 0;
-          } catch (e) { console.warn('Remote D1 check failed', e); }
+          } catch (e) {
+            console.warn('Remote D1 check failed', e);
+          }
         } else {
           try {
-            const results = execSync(`sqlite3 "${LOCAL_DB_PATH}" "SELECT count(*) FROM application WHERE slug = 'pairdrop-e2e-${TEST_ORG_SLUG}'"`).toString().trim();
+            const results = execSync(`sqlite3 "${LOCAL_DB_PATH}" "SELECT count(*) FROM application WHERE slug = 'pairdrop-e2e-${TEST_ORG_SLUG}'"`)
+              .toString()
+              .trim();
             count = parseInt(results);
-          } catch(e) {}
+          } catch (e) {}
         }
 
         if (count > 0) {
@@ -769,14 +782,14 @@ test.describe('Full E2E: Injection & Provisioning (Local Cloud)', () => {
       if (!verified) console.warn('WARNING: Cloud DB Verification timed out - continuing anyway for debugging.');
     } catch (e) {
       console.error('Cloud DB Verification Failed', e);
-      // throw e; // Allow continuing
+      throw e;
     }
 
     // 5. STAGING ONLY: Verify Tunnel Public Access
     if (IS_STAGING) {
       console.log('Verifying Public Tunnel Access...');
-      // Construct URL: localSubdomain + .ci.computer (Staging domain)
-      const hostname = `pairdrop-e2e-${TEST_ORG_SLUG}.ci.computer`;
+      // Construct URL: localSubdomain + .orgSlug + .ci.computer (Staging domain)
+      const hostname = `pairdrop.${TEST_ORG_SLUG}.ci.computer`;
       const publicUrl = `https://${hostname}`;
       console.log(`Checking URL: ${publicUrl}`);
 
@@ -787,18 +800,18 @@ test.describe('Full E2E: Injection & Provisioning (Local Cloud)', () => {
         resolver.setServers(['1.1.1.1']);
         console.log(`Resolving ${hostname} via 1.1.1.1...`);
         // Wait up to 30s for propagation to Cloudflare servers
-        for (let i = 0; i < 6; i++) { 
-           try {
-             const addresses = await resolver.resolve4(hostname);
-             if (addresses && addresses.length > 0) {
-                resolvedIp = addresses[0];
-                console.log(`Resolved ${hostname} to ${resolvedIp}`);
-                break;
-             }
-           } catch(e) {
-             console.log(`DNS Resolution attempt ${i+1} failed: ${e.message}`);
-           }
-           await new Promise(r => setTimeout(r, 5000));
+        for (let i = 0; i < 6; i++) {
+          try {
+            const addresses = await resolver.resolve4(hostname);
+            if (addresses && addresses.length > 0) {
+              resolvedIp = addresses[0];
+              console.log(`Resolved ${hostname} to ${resolvedIp}`);
+              break;
+            }
+          } catch (e) {
+            console.log(`DNS Resolution attempt ${i + 1} failed: ${e.message}`);
+          }
+          await new Promise((r) => setTimeout(r, 5000));
         }
       } catch (err) {
         console.warn(`DNS Resolution failed entirely: ${err.message}`);
@@ -806,20 +819,20 @@ test.describe('Full E2E: Injection & Provisioning (Local Cloud)', () => {
 
       // Retry loop for tunnel propagation
       try {
-        for(let j=0; j<10; j++) {
-            const tunnelRes = await apiRequest.get(publicUrl, { ignoreHTTPSErrors: true });
-            if (tunnelRes.ok()) {
-                console.log('Tunnel Access Verified!');
-                return;
-            }
-            await new Promise(r => setTimeout(r, 5000));
+        for (let j = 0; j < 10; j++) {
+          const tunnelRes = await apiRequest.get(publicUrl, { ignoreHTTPSErrors: true });
+          if (tunnelRes.ok()) {
+            console.log('Tunnel Access Verified!');
+            return;
+          }
+          await new Promise((r) => setTimeout(r, 5000));
         }
         console.warn('WARNING: Tunnel Access Verification timed out.');
-      } catch(e) {
-          console.warn('WARNING: Tunnel Access Check failed', e);
+      } catch (e) {
+        console.warn('WARNING: Tunnel Access Check failed', e);
+        throw e;
       }
     }
-
   });
 
   test.afterAll(async () => {

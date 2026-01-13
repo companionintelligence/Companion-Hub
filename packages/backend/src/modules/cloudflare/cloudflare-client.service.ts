@@ -1,6 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import axios, { AxiosInstance } from 'axios';
+import * as fs from 'fs/promises';
+import * as path from 'path';
 
 export interface AppInfo {
   name: string;
@@ -37,6 +39,31 @@ export class CloudflareClientService {
     };
   }
 
+  private async updateTunnelFiles(token: string, caCert?: string) {
+    // /app/tunnel is mounted to ./tunnel on the host
+    const tunnelDir = path.resolve('/app/tunnel'); 
+    const certsDir = path.join(tunnelDir, 'certs');
+    
+    try {
+        await fs.mkdir(certsDir, { recursive: true });
+        
+        if (caCert) {
+            await fs.writeFile(path.join(certsDir, 'custom-ca.pem'), caCert);
+            this.logger.log('Wrote custom CA certificate');
+        }
+        
+        // Write the token to a file that can be sourced or read
+        // Note: For automatic startup without restart, we might depend on cloudflared reading checks.
+        // But realistically, we update the .env file for the next restart.
+        // Since we don't know where the .env file IS relative to /app/tunnel easily (it's in root), 
+        // we'll leave the .env update to the Registration Service or user.
+        // However, we CAN write a credentials.json for cloudflared usage if we wanted.
+        
+    } catch (e) {
+        this.logger.error(`Failed to write tunnel files: ${e}`);
+    }
+  }
+
   /**
    * Initialize tunnel by requesting credentials from CI-Cloud
    */
@@ -50,6 +77,10 @@ export class CloudflareClientService {
       if (response.data && response.data.token) {
         this.tunnelId = response.data.tunnelId as string;
         this.tunnelToken = response.data.token as string;
+        const caCert = response.data.caCert as string;
+
+        await this.updateTunnelFiles(this.tunnelToken, caCert);
+
         this.logger.log(`Tunnel provisioned successfully: ${this.tunnelId}`);
         return { tunnelId: this.tunnelId, token: this.tunnelToken };
       }

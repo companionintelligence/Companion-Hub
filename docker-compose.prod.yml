@@ -1,6 +1,6 @@
 services:
   ci-hub-db:
-    container_name: ci-hub-db
+    container_name: ${DB_CONTAINER_NAME:-ci-hub-db}
     image: postgres:14
     restart: unless-stopped
     stop_grace_period: 120s
@@ -22,7 +22,7 @@ services:
       - ci_os_hub_network
 
   ci-os-hub-queue:
-    container_name: ci-os-hub-queue
+    container_name: ${QUEUE_CONTAINER_NAME:-ci-os-hub-queue}
     image: rabbitmq:4-alpine
     restart: unless-stopped
     ports:
@@ -65,7 +65,7 @@ services:
         condition: service_healthy
       ci-os-hub-queue:
         condition: service_healthy
-    container_name: ci-os-hub
+    container_name: ${HUB_CONTAINER_NAME:-ci-os-hub}
     restart: unless-stopped
     ports:
       - "5002:3000"
@@ -78,6 +78,8 @@ services:
     volumes:
       # Data
       - ${RUNTIPI_MEDIA_PATH:-.internal}/media:/data/media
+      # Allow Hub to configure Tunnel
+      - ./tunnel:/app/tunnel
       - ${RUNTIPI_STATE_PATH:-.internal}/state:/data/state
       - ${RUNTIPI_REPOS_PATH:-.internal}/repos:/data/repos
       - ${RUNTIPI_APPS_PATH:-.internal}/apps:/data/apps
@@ -116,15 +118,30 @@ services:
     labels:
       ci-os-hub.managed: true
 
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: ${CLOUDFLARED_CONTAINER_NAME:-cloudflared}
+    restart: unless-stopped
+    command: tunnel run
+    environment:
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN}
+    volumes:
+      - ./tunnel/config.yml:/home/nonroot/.cloudflared/config.yml:ro
+      - ./tunnel/certs:/etc/cloudflared/certs:ro
+    networks:
+      - ci_os_hub_network
+    depends_on:
+      - ci-os-hub
+
 networks:
   ci_os_hub_network:
     driver: bridge
-    name: ci_os_hub_network
-    ipam:
-      driver: default
-      config:
-        - subnet: 172.28.0.0/16
+    name: ${NETWORK_NAME:-ci_os_hub_network}
+    # ipam:
+    #   driver: default
+    #   config:
+    #     - subnet: 172.28.0.0/16
 
 volumes:
   ci_hub_pgdata:
-    name: ci_hub_pgdata
+    name: ${DB_VOLUME_NAME:-ci_hub_pgdata}

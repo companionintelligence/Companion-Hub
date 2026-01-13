@@ -232,7 +232,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
 
   const subdomain = metadata.localSubdomain || app?.localSubdomain || info.urn.split(':').join('-');
   const organizationSlug = userSettings.ciHubOrganizationSlug;
-  const domainSuffix = organizationSlug ? `-${organizationSlug}.ci.computer` : '.ci.computer';
+  const domainSuffix = organizationSlug ? `.${organizationSlug}.ci.computer` : '.ci.computer';
   const appUrl = `https://${subdomain}${domainSuffix}${info.url_suffix || ''}`;
 
   useEffect(() => {

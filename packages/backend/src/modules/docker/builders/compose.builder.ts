@@ -114,8 +114,9 @@ export class DockerComposeBuilder {
 
     // Add main service to ci_os_hub_network for inter-app communication
     // This allows apps to communicate with each other when needed
+    const mainNetworkName = (process.env.HUB_CONTAINER_NAME || 'ci-os-hub') + '_network';
     if (params.isMain || params.addToMainNetwork) {
-      service.setNetwork('ci_os_hub_network', 1);
+      service.setNetwork(mainNetworkName, 1);
     }
 
     if (params.isMain) {
@@ -151,10 +152,12 @@ export class DockerComposeBuilder {
 
     const myServices = services.map((service) => this.buildService(service, form, appUrn));
 
+    const mainNetworkName = (process.env.HUB_CONTAINER_NAME || 'ci-os-hub') + '_network';
+
     const dockerCompose = this.addServices(myServices)
       .addNetwork({
-        key: 'ci_os_hub_network',
-        name: 'ci_os_hub_network',
+        key: mainNetworkName,
+        name: mainNetworkName,
         external: true,
       })
       .addNetwork({
