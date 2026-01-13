@@ -43,29 +43,53 @@ export class RegistrationService implements OnApplicationBootstrap {
           } else {
             this.logger.warn(`Organization ${org.id} exists but Tunnel ID is missing. Attempting to recover...`);
             try {
-              // Attempt to fetch credentials from Cloud
+              // Attempt to recover by re-registering/check-in with Cloud
               const { ciCloudApiUrl, ciHubApiKey } = this.config.getConfig();
-              if (ciCloudApiUrl && ciHubApiKey) {
-                // biome-ignore lint/suspicious/noExplicitAny: External API response
-                const items = await fetch(`${ciCloudApiUrl}/organizations/${org.id}`, {
-                    headers: { Authorization: `Bearer ${ciHubApiKey}` }
-                }).then(r => r.ok ? r.json() : null) as any;
+              const deviceId = await this.getDeviceId();
 
-                if (items && items.tunnel_id && items.tunnel_token) {
-                    const tunnelCredentials = await this.cloudflareClientService.initializeTunnel(org.id, {
-                        tunnelId: items.tunnel_id,
-                        token: items.tunnel_token
-                    });
-                    
-                    if (tunnelCredentials) {
-                      await this.organizationRepository.updateOrganization(org.id, {
-                        tunnelId: tunnelCredentials.tunnelId,
-                        tunnelToken: tunnelCredentials.token,
+              if (ciCloudApiUrl) {
+                this.logger.info(`Attempting to recover tunnel credentials via registration endpoint for device ${deviceId}`);
+                
+                const registerUrl = `${ciCloudApiUrl}/devices/hub/register`;
+                const headers: Record<string, string> = {
+                   'Content-Type': 'application/json'
+                };
+                if (ciHubApiKey) {
+                   headers.Authorization = `Bearer ${ciHubApiKey}`;
+                }
+
+                const registerResponse = await fetch(registerUrl, {
+                    method: 'POST',
+                    headers,
+                    body: JSON.stringify({
+                      device_id: deviceId,
+                      organization_id: org.id,
+                      description: `CI OS Hub Device - ${deviceId} (Recovery)`,
+                    }),
+                });
+
+                if (registerResponse.ok) {
+                   // biome-ignore lint/suspicious/noExplicitAny: External API response
+                   const data = await registerResponse.json() as any;
+                   
+                   if (data.tunnel_id && data.tunnel_token) {
+                      const tunnelCredentials = await this.cloudflareClientService.initializeTunnel(org.id, {
+                          tunnelId: data.tunnel_id,
+                          token: data.tunnel_token
                       });
-                      this.logger.info(`Tunnel ID recovered successfully: ${tunnelCredentials.tunnelId}`);
-                    }
+                      
+                      if (tunnelCredentials) {
+                        await this.organizationRepository.updateOrganization(org.id, {
+                          tunnelId: tunnelCredentials.tunnelId,
+                          tunnelToken: tunnelCredentials.token,
+                        });
+                        this.logger.info(`Tunnel ID recovered successfully: ${tunnelCredentials.tunnelId}`);
+                      }
+                   } else {
+                       this.logger.error('Failed to recover Tunnel ID: API returned success but no credentials');
+                   }
                 } else {
-                    this.logger.error('Failed to recover Tunnel ID: Could not fetch credentials from Cloud');
+                    this.logger.error(`Failed to recover Tunnel ID: API returned ${registerResponse.status}`);
                 }
               }
             } catch (err) {
@@ -356,6 +380,7 @@ export class RegistrationService implements OnApplicationBootstrap {
          this.logger.info(`Successfully initialized tunnel: ${tunnelId}`);
       } else {
          this.logger.error(`Failed to initialize tunnel for organization ${organizationId} - missing credentials`);
+         this.logger.error('tunnelCredentials', tunnelCredentials);
          // We might want to abort here, but for now we'll continue and try to create the org record
          // so at least the local state is consistent, even if cloud sync failed.
       }

@@ -31,11 +31,12 @@ else
   exit 1
 fi
 
-# Overrides for Test Execution
-export ENV_FILE=.env.staging
 # Generate unique IDs for this run to avoid Cloudflare tunnel conflicts
 TIMESTAMP=$(node -e 'console.log(Date.now())')
 export TEST_ID="${TIMESTAMP}"
+
+# Overrides for Test Execution - Use isolated env file
+export ENV_FILE=".env.staging.${TIMESTAMP}"
 export CI_HUB_ORGANIZATION_ID="e2e-org-test-${TIMESTAMP}"
 export DEVICE_ID="e2e-device-test-${TIMESTAMP}"
 export CI_HUB_API_KEY="e2e-api-key-${TIMESTAMP}"
@@ -55,19 +56,24 @@ export CLOUDFLARED_CONTAINER_NAME="${COMPOSE_PROJECT_NAME}-cloudflared"
 export DB_VOLUME_NAME="${COMPOSE_PROJECT_NAME}_ci_hub_pgdata"
 export NETWORK_NAME="${HUB_CONTAINER_NAME}_network"
 
-# Update .env.staging to ensure container sees the new IDs (avoid stale config)
-# This is critical because the container mounts .env.staging as .env, 
+# Update temp ENV_FILE to ensure container sees the new IDs (avoid stale config)
+# This is critical because the container mounts ENV_FILE as .env, 
 # and Runtipi backend might prioritize .env file over OS env vars.
 if [ -f .env.staging ]; then
+  cp .env.staging "$ENV_FILE"
   # Remove lines if they exist to avoid duplication/sed complexity
-  sed -i.bak '/^CI_HUB_ORGANIZATION_ID=/d' .env.staging
-  sed -i.bak '/^DEVICE_ID=/d' .env.staging
-  sed -i.bak '/^CI_HUB_API_KEY=/d' .env.staging
+  sed -i.bak '/^CI_HUB_ORGANIZATION_ID=/d' "$ENV_FILE"
+  sed -i.bak '/^DEVICE_ID=/d' "$ENV_FILE"
+  sed -i.bak '/^CI_HUB_API_KEY=/d' "$ENV_FILE"
+  sed -i.bak '/^CLOUDFLARE_TUNNEL_ID=/d' "$ENV_FILE"
   
   # Append new values
-  echo "CI_HUB_ORGANIZATION_ID=${CI_HUB_ORGANIZATION_ID}" >> .env.staging
-  echo "DEVICE_ID=${DEVICE_ID}" >> .env.staging
-  echo "CI_HUB_API_KEY=${CI_HUB_API_KEY}" >> .env.staging
+  echo "CI_HUB_ORGANIZATION_ID=${CI_HUB_ORGANIZATION_ID}" >> "$ENV_FILE"
+  echo "DEVICE_ID=${DEVICE_ID}" >> "$ENV_FILE"
+  echo "CI_HUB_API_KEY=${CI_HUB_API_KEY}" >> "$ENV_FILE"
+  echo "CLOUDFLARE_TUNNEL_ID=tunnel-${TIMESTAMP}" >> "$ENV_FILE"
+else
+  echo ".env.staging not found"
 fi
 
 echo "running test with ID: ${TEST_ID}"
@@ -101,6 +107,15 @@ pnpm wrangler d1 execute ci-cloud-db-staging --remote --command "INSERT INTO dev
 # Ensure Registration Exists
 echo "Creating Remote Registration"
 pnpm wrangler d1 execute ci-cloud-db-staging --remote --command "INSERT INTO device_registration (id, device_id, organization_id) VALUES ('${REG_ID}', '${DEVICE_ID}', '${CI_HUB_ORGANIZATION_ID}');" || true
+# Ensure Tunnel Exists
+export TUNNEL_ID="tunnel-${TIMESTAMP}"
+export TUNNEL_TOKEN="token-${TIMESTAMP}"
+echo "Creating Remote Tunnel: $TUNNEL_ID"
+pnpm wrangler d1 execute ci-cloud-db-staging --remote --command "INSERT INTO tunnels (id, organization_id, device_id, name, token, created_at, updated_at) VALUES ('${TUNNEL_ID}', '${CI_HUB_ORGANIZATION_ID}', '${DEVICE_ID}', 'hub-${DEVICE_ID}', '${TUNNEL_TOKEN}', ${TIMESTAMP}, ${TIMESTAMP});"
+
+# Verify Tunnel
+echo "Verifying Tunnel Seed:"
+pnpm wrangler d1 execute ci-cloud-db-staging --remote --command "SELECT id, organization_id FROM tunnels WHERE id='${TUNNEL_ID}';"
 popd
 
 
@@ -243,4 +258,6 @@ docker compose --project-name "${COMPOSE_PROJECT_NAME}" -f docker-compose.prod.y
 rm -rf ./tunnel
 # Clean up data dir
 rm -rf "${DATA_DIR}"
+# Clean up temp env file
+rm -f "$ENV_FILE" "$ENV_FILE.bak"
 
