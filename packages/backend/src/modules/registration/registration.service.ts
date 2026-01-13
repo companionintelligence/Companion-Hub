@@ -295,6 +295,7 @@ export class RegistrationService implements OnApplicationBootstrap {
       let tunnelId: string | null = cloudflareTunnelId || null;
       let tunnelToken: string | null = null;
       let orgSlug: string | null = null;
+      let caCert: string | null = null;
 
       if (tunnelId) {
         this.logger.debug(`Using tunnel ID from environment: ${tunnelId}`);
@@ -318,6 +319,10 @@ export class RegistrationService implements OnApplicationBootstrap {
 
       if (activationResult?.tunnel_token) {
         tunnelToken = activationResult.tunnel_token as string;
+      }
+
+      if (activationResult?.ca_cert) {
+        caCert = activationResult.ca_cert as string;
       }
 
       // If not in activation result, try to fetch from CI Cloud API
@@ -370,7 +375,8 @@ export class RegistrationService implements OnApplicationBootstrap {
       if (tunnelId && tunnelToken) {
         tunnelCredentials = await this.cloudflareClientService.initializeTunnel(organizationId, {
           tunnelId,
-          token: tunnelToken
+          token: tunnelToken,
+          caCert: caCert || undefined
         });
       }
 
@@ -579,6 +585,7 @@ export class RegistrationService implements OnApplicationBootstrap {
     tunnelId?: string;
     tunnelToken?: string;
     apiKey?: string;
+    caCert?: string;
   }): Promise<{ success: boolean; message: string }> {
     try {
       // Verify device ID matches
@@ -625,6 +632,7 @@ export class RegistrationService implements OnApplicationBootstrap {
         organization_name: orgName,
         tunnel_id: data.tunnelId,
         tunnel_token: data.tunnelToken,
+        ca_cert: data.caCert,
       });
 
       // Mark as registered

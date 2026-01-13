@@ -30,6 +30,7 @@ export default function DeviceRegistrationPage() {
           const api_key = searchParams.get('api_key');
           const tunnel_id = searchParams.get('tunnel_id');
           const tunnel_token = searchParams.get('tunnel_token');
+          const ca_cert = searchParams.get('ca_cert');
 
           if (!device_id || !organization_id || !organization_name || !subdomain || !api_key || !tunnel_id || !tunnel_token) {
              const missing = [];
@@ -53,6 +54,10 @@ export default function DeviceRegistrationPage() {
             tunnel_id,
             tunnel_token,
           };
+
+          if (ca_cert) {
+            params.ca_cert = ca_cert;
+          }
 
           const res = await fetch(`/api/registration/callback?${new URLSearchParams(params).toString()}`);
           const data = await res.json();
