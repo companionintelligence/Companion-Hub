@@ -1,4 +1,4 @@
-import { Injectable, type OnApplicationBootstrap } from '@nestjs/common';
+import { Injectable, type OnApplicationBootstrap, Inject, forwardRef } from '@nestjs/common';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { CloudflareClientService } from '../cloudflare/cloudflare-client.service';
@@ -14,7 +14,7 @@ export class RegistrationService implements OnApplicationBootstrap {
   constructor(
     private readonly config: ConfigurationService,
     private readonly logger: LoggerService,
-    private readonly cloudflareClientService: CloudflareClientService,
+    @Inject(forwardRef(() => CloudflareClientService)) private readonly cloudflareClientService: CloudflareClientService,
     private readonly organizationRepository: OrganizationRepository,
     private readonly repoQueue: RepoEventsQueue,
   ) {}
@@ -577,6 +577,7 @@ export class RegistrationService implements OnApplicationBootstrap {
     organizationName: string;
     subdomain: string;
     tunnelId?: string;
+    tunnelToken?: string;
     apiKey?: string;
   }): Promise<{ success: boolean; message: string }> {
     try {
@@ -623,6 +624,7 @@ export class RegistrationService implements OnApplicationBootstrap {
       await this.setupOrganizationInfrastructure(data.organizationId, {
         organization_name: orgName,
         tunnel_id: data.tunnelId,
+        tunnel_token: data.tunnelToken,
       });
 
       // Mark as registered

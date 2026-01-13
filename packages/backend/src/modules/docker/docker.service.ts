@@ -3,7 +3,7 @@ import path from 'node:path';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import { Injectable, InternalServerErrorException } from '@nestjs/common';
+import { Injectable, InternalServerErrorException, Inject, forwardRef } from '@nestjs/common';
 import type { AppUrn } from '@runtipi/common/types';
 import * as Sentry from '@sentry/nestjs';
 import { AppFilesManager } from '../apps/app-files-manager';
@@ -14,13 +14,14 @@ export class DockerService {
   constructor(
     private readonly logger: LoggerService,
     private readonly config: ConfigurationService,
-    private readonly appFilesManager: AppFilesManager,
+    @Inject(forwardRef(() => AppFilesManager)) private readonly appFilesManager: AppFilesManager,
     private readonly filesystem: FilesystemService,
-    private readonly appsService: AppsService,
+    @Inject(forwardRef(() => AppsService)) private readonly appsService: AppsService,
   ) {}
 
   /**
    * Get the base compose args for an app
+
    * @param {string} appUrn - App name
    */
   public getBaseComposeArgsApp = async (appUrn: AppUrn) => {
@@ -245,4 +246,31 @@ export class DockerService {
       return [];
     }
   }
+
+  /**
+   * Restart a specific container by name using system docker command
+   */
+  public async restartContainer(containerName: string): Promise<void> {
+    this.logger.info(`Restarting container: ${containerName}`);
+    
+    return new Promise((resolve, reject) => {
+      const cmd = spawn('docker', ['restart', containerName]);
+      
+      cmd.on('close', (code) => {
+        if (code === 0) {
+          this.logger.info(`Container ${containerName} restarted successfully`);
+          resolve();
+        } else {
+          this.logger.error(`Failed to restart container ${containerName}, exit code: ${code}`);
+          reject(new Error(`Failed to restart container ${containerName}`));
+        }
+      });
+      
+      cmd.on('error', (err) => {
+        this.logger.error(`Error spawning docker restart command: ${err}`);
+        reject(err);
+      });
+    });
+  }
 }
+

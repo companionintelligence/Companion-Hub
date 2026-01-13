@@ -63,13 +63,14 @@ export class RegistrationController {
     @Query('organization_id') organizationId: string,
     @Query('organization_name') organizationName: string,
     @Query('subdomain') subdomain: string,
-    @Query('tunnel_id') tunnelId?: string,
-    @Query('api_key') apiKey?: string,
+    @Query('tunnel_id') tunnelId: string,
+    @Query('tunnel_token') tunnelToken: string,
+    @Query('api_key') apiKey: string,
   ) {
-    if (!deviceId || !organizationId || !organizationName || !subdomain) {
+    if (!deviceId || !organizationId || !organizationName || !subdomain || !tunnelId || !tunnelToken || !apiKey) {
       return {
         success: false,
-        message: 'Missing required parameters: device_id, organization_id, organization_name, subdomain',
+        message: 'Missing required parameters: device_id, organization_id, organization_name, subdomain, tunnel_id, tunnel_token, api_key',
       };
     }
 
@@ -79,6 +80,7 @@ export class RegistrationController {
       organizationName,
       subdomain,
       tunnelId,
+      tunnelToken,
       apiKey,
     });
 

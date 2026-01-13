@@ -122,12 +122,13 @@ services:
     image: cloudflare/cloudflared:latest
     container_name: ${CLOUDFLARED_CONTAINER_NAME:-cloudflared}
     restart: unless-stopped
-    command: tunnel run
-    environment:
-      - TUNNEL_TOKEN=${TUNNEL_TOKEN}
+    command: tunnel run --token-file /home/nonroot/.cloudflared/token
+    # environment:
+    #   - TUNNEL_TOKEN=${TUNNEL_TOKEN}
     volumes:
-      - ./tunnel/config.yml:/home/nonroot/.cloudflared/config.yml:ro
-      - ./tunnel/certs:/etc/cloudflared/certs:ro
+      - ./tunnel:/home/nonroot/.cloudflared:ro
+      # - ./tunnel/config.yml:/home/nonroot/.cloudflared/config.yml:ro
+      # - ./tunnel/certs:/etc/cloudflared/certs:ro
     networks:
       - ci_os_hub_network
     depends_on:

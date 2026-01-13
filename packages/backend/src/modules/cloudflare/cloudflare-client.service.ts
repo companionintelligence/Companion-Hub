@@ -1,5 +1,7 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 import { ConfigurationService } from '@/core/config/configuration.service';
+import { DockerService } from '../docker/docker.service';
 import axios, { AxiosInstance } from 'axios';
 import * as fs from 'fs/promises';
 import * as path from 'path';
@@ -18,7 +20,10 @@ export class CloudflareClientService {
   private tunnelToken: string | null = null;
   private tunnelId: string | null = null;
 
-  constructor(private configService: ConfigurationService) {
+  constructor(
+    private configService: ConfigurationService,
+    private moduleRef: ModuleRef,
+  ) {
     this.cloudApiUrl = this.configService.get('ciCloudApiUrl') || 'https://app.ci.computer/api';
     
     this.client = axios.create({
@@ -45,6 +50,7 @@ export class CloudflareClientService {
     const certsDir = path.join(tunnelDir, 'certs');
     
     try {
+        await fs.mkdir(tunnelDir, { recursive: true });
         await fs.mkdir(certsDir, { recursive: true });
         
         if (caCert) {
@@ -52,15 +58,13 @@ export class CloudflareClientService {
             this.logger.log('Wrote custom CA certificate');
         }
         
-        // Write the token to a file that can be sourced or read
-        // Note: For automatic startup without restart, we might depend on cloudflared reading checks.
-        // But realistically, we update the .env file for the next restart.
-        // Since we don't know where the .env file IS relative to /app/tunnel easily (it's in root), 
-        // we'll leave the .env update to the Registration Service or user.
-        // However, we CAN write a credentials.json for cloudflared usage if we wanted.
+        // Write the token to a file that cloudflared will read (configured in docker-compose)
+        await fs.writeFile(path.join(tunnelDir, 'token'), token);
+        this.logger.log('Wrote tunnel token to file');
         
     } catch (e) {
         this.logger.error(`Failed to write tunnel files: ${e}`);
+        throw e;
     }
   }
 
@@ -77,6 +81,11 @@ export class CloudflareClientService {
         const caCert = credentials.caCert;
 
         await this.updateTunnelFiles(this.tunnelToken, caCert);
+        
+        this.logger.log('Restarting cloudflared container to apply new token...');
+        const dockerService = this.moduleRef.get(DockerService, { strict: false });
+        await dockerService.restartContainer('cloudflared');
+        this.logger.log('Cloudflared container restarted.');
 
         this.logger.log(`Tunnel configured successfully: ${this.tunnelId}`);
         return { tunnelId: this.tunnelId, token: this.tunnelToken };
@@ -88,6 +97,7 @@ export class CloudflareClientService {
       this.logger.error(`Failed to configure tunnel: ${error.message}`);
       return null;
     }
+
   }
 
   /**
