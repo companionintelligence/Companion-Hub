@@ -43,15 +43,30 @@ export class RegistrationService implements OnApplicationBootstrap {
           } else {
             this.logger.warn(`Organization ${org.id} exists but Tunnel ID is missing. Attempting to recover...`);
             try {
-              const tunnelCredentials = await this.cloudflareClientService.initializeTunnel(org.id);
-              if (tunnelCredentials) {
-                await this.organizationRepository.updateOrganization(org.id, {
-                  tunnelId: tunnelCredentials.tunnelId,
-                  tunnelToken: tunnelCredentials.token,
-                });
-                this.logger.info(`Tunnel ID recovered successfully: ${tunnelCredentials.tunnelId}`);
-              } else {
-                this.logger.error('Failed to recover Tunnel ID.');
+              // Attempt to fetch credentials from Cloud
+              const { ciCloudApiUrl, ciHubApiKey } = this.config.getConfig();
+              if (ciCloudApiUrl && ciHubApiKey) {
+                // biome-ignore lint/suspicious/noExplicitAny: External API response
+                const items = await fetch(`${ciCloudApiUrl}/organizations/${org.id}`, {
+                    headers: { Authorization: `Bearer ${ciHubApiKey}` }
+                }).then(r => r.ok ? r.json() : null) as any;
+
+                if (items && items.tunnel_id && items.tunnel_token) {
+                    const tunnelCredentials = await this.cloudflareClientService.initializeTunnel(org.id, {
+                        tunnelId: items.tunnel_id,
+                        token: items.tunnel_token
+                    });
+                    
+                    if (tunnelCredentials) {
+                      await this.organizationRepository.updateOrganization(org.id, {
+                        tunnelId: tunnelCredentials.tunnelId,
+                        tunnelToken: tunnelCredentials.token,
+                      });
+                      this.logger.info(`Tunnel ID recovered successfully: ${tunnelCredentials.tunnelId}`);
+                    }
+                } else {
+                    this.logger.error('Failed to recover Tunnel ID: Could not fetch credentials from Cloud');
+                }
               }
             } catch (err) {
               this.logger.error(`Error during tunnel recovery: ${err}`);
@@ -254,6 +269,7 @@ export class RegistrationService implements OnApplicationBootstrap {
       // Try to fetch organization details from CI Cloud API
       let orgName: string | null = null;
       let tunnelId: string | null = cloudflareTunnelId || null;
+      let tunnelToken: string | null = null;
       let orgSlug: string | null = null;
 
       if (tunnelId) {
@@ -276,8 +292,12 @@ export class RegistrationService implements OnApplicationBootstrap {
         this.logger.debug(`Using tunnel ID from activation result: ${tunnelId}`);
       }
 
+      if (activationResult?.tunnel_token) {
+        tunnelToken = activationResult.tunnel_token as string;
+      }
+
       // If not in activation result, try to fetch from CI Cloud API
-      if (!orgName && ciCloudApiUrl) {
+      if ((!orgName || !tunnelToken) && ciCloudApiUrl) {
         try {
           const orgUrl = `${ciCloudApiUrl}/organizations/${organizationId}`;
           const orgHeaders: Record<string, string> = {
@@ -296,8 +316,9 @@ export class RegistrationService implements OnApplicationBootstrap {
           if (orgResponse.ok) {
             // biome-ignore lint/suspicious/noExplicitAny: External API response
             const orgData = (await orgResponse.json()) as any;
-            orgName = orgData.name || orgData.organization_name || null;
-            tunnelId = orgData.tunnel_id || null;
+            if (!orgName) orgName = orgData.name || orgData.organization_name || null;
+            if (!tunnelId) tunnelId = orgData.tunnel_id || null;
+            if (!tunnelToken) tunnelToken = orgData.tunnel_token || null;
             this.logger.debug(`Fetched organization details: name=${orgName}, tunnelId=${tunnelId}`);
           } else {
             this.logger.debug(`Could not fetch organization details (${orgResponse.status}), will use slugified ID`);
@@ -318,18 +339,23 @@ export class RegistrationService implements OnApplicationBootstrap {
       }
       const orgDomain = `${orgSlug}.ci.computer`;
 
-      // Provision new tunnel or get existing credentials from CI-Cloud
+      // Configure tunnel using credentials from CI-Cloud
       this.logger.info(`Initializing tunnel for organization: ${organizationId}`);
-      const tunnelCredentials = await this.cloudflareClientService.initializeTunnel(organizationId);
-
-      let tunnelToken: string | null = null;
+      
+      let tunnelCredentials = null;
+      if (tunnelId && tunnelToken) {
+        tunnelCredentials = await this.cloudflareClientService.initializeTunnel(organizationId, {
+          tunnelId,
+          token: tunnelToken
+        });
+      }
 
       if (tunnelCredentials) {
          tunnelId = tunnelCredentials.tunnelId;
          tunnelToken = tunnelCredentials.token;
          this.logger.info(`Successfully initialized tunnel: ${tunnelId}`);
       } else {
-         this.logger.error(`Failed to initialize tunnel for organization ${organizationId}`);
+         this.logger.error(`Failed to initialize tunnel for organization ${organizationId} - missing credentials`);
          // We might want to abort here, but for now we'll continue and try to create the org record
          // so at least the local state is consistent, even if cloud sync failed.
       }

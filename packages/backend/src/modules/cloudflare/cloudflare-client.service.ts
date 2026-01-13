@@ -65,32 +65,27 @@ export class CloudflareClientService {
   }
 
   /**
-   * Initialize tunnel by requesting credentials from CI-Cloud
+   * Initialize tunnel by saving credentials provided by CI-Cloud during registration
    */
-  async initializeTunnel(organizationId: string): Promise<{ tunnelId: string; token: string } | null> {
+  async initializeTunnel(organizationId: string, credentials: { tunnelId: string; token: string; caCert?: string }): Promise<{ tunnelId: string; token: string } | null> {
     try {
-      this.logger.log(`Requesting tunnel provision for org: ${organizationId}...`);
-      const response = await this.client.post('/tunnels/provision', {
-        organizationId
-      }, this.getRequestConfig());
+      this.logger.log(`Configuring tunnel for org: ${organizationId}...`);
 
-      if (response.data && response.data.token) {
-        this.tunnelId = response.data.tunnelId as string;
-        this.tunnelToken = response.data.token as string;
-        const caCert = response.data.caCert as string;
+      if (credentials?.token) {
+        this.tunnelId = credentials.tunnelId;
+        this.tunnelToken = credentials.token;
+        const caCert = credentials.caCert;
 
         await this.updateTunnelFiles(this.tunnelToken, caCert);
 
-        this.logger.log(`Tunnel provisioned successfully: ${this.tunnelId}`);
+        this.logger.log(`Tunnel configured successfully: ${this.tunnelId}`);
         return { tunnelId: this.tunnelId, token: this.tunnelToken };
       }
       
+      this.logger.error(`No credentials provided for tunnel initialization for org ${organizationId}`);
       return null;
     } catch (error: any) {
-      this.logger.error(`Failed to provision tunnel: ${error.message}`);
-      if (error.response) {
-        this.logger.error(`Response: ${JSON.stringify(error.response.data)}`);
-      }
+      this.logger.error(`Failed to configure tunnel: ${error.message}`);
       return null;
     }
   }
