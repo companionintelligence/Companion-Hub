@@ -66,7 +66,6 @@ export class RegistrationController {
     @Query('tunnel_id') tunnelId: string,
     @Query('tunnel_token') tunnelToken: string,
     @Query('api_key') apiKey: string,
-    @Query('ca_cert') caCert?: string,
   ) {
     if (!deviceId || !organizationId || !organizationName || !subdomain || !tunnelId || !tunnelToken || !apiKey) {
       return {
@@ -83,7 +82,6 @@ export class RegistrationController {
       tunnelId,
       tunnelToken,
       apiKey,
-      caCert,
     });
 
     return result;

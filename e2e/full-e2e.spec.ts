@@ -788,8 +788,8 @@ test.describe('Full E2E: Injection & Provisioning (Local Cloud)', () => {
     // 5. STAGING ONLY: Verify Tunnel Public Access
     if (IS_STAGING) {
       console.log('Verifying Public Tunnel Access...');
-      // Construct URL: localSubdomain + .orgSlug + .ci.computer (Staging domain)
-      const hostname = `pairdrop.${TEST_ORG_SLUG}.ci.computer`;
+      // Construct URL: localSubdomain + -orgSlug + .ci.computer (Staging domain)
+      const hostname = `pairdrop-${TEST_ORG_SLUG}.ci.computer`;
       const publicUrl = `https://${hostname}`;
       console.log(`Checking URL: ${publicUrl}`);
 

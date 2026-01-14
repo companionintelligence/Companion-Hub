@@ -45,7 +45,7 @@ export class CloudflareClientService {
     };
   }
 
-  private async updateTunnelFiles(token: string, caCert?: string) {
+  private async updateTunnelFiles(token: string) {
     // /app/tunnel is mounted to ./tunnel on the host
     const tunnelDir = path.resolve('/app/tunnel'); 
     const certsDir = path.join(tunnelDir, 'certs');
@@ -53,11 +53,6 @@ export class CloudflareClientService {
     try {
         await fs.mkdir(tunnelDir, { recursive: true });
         await fs.mkdir(certsDir, { recursive: true });
-        
-        if (caCert) {
-            await fs.writeFile(path.join(certsDir, 'custom-ca.pem'), caCert);
-            this.logger.log('Wrote custom CA certificate');
-        }
         
         // Write the token to a file that cloudflared will read (configured in docker-compose)
         await fs.writeFile(path.join(tunnelDir, 'token'), token);
@@ -72,16 +67,15 @@ export class CloudflareClientService {
   /**
    * Initialize tunnel by saving credentials provided by CI-Cloud during registration
    */
-  async initializeTunnel(organizationId: string, credentials: { tunnelId: string; token: string; caCert?: string }): Promise<{ tunnelId: string; token: string } | null> {
+  async initializeTunnel(organizationId: string, credentials: { tunnelId: string; token: string }): Promise<{ tunnelId: string; token: string } | null> {
     try {
       this.logger.log(`Configuring tunnel for org: ${organizationId}...`);
 
       if (credentials?.token) {
         this.tunnelId = credentials.tunnelId;
         this.tunnelToken = credentials.token;
-        const caCert = credentials.caCert;
 
-        await this.updateTunnelFiles(this.tunnelToken, caCert);
+        await this.updateTunnelFiles(this.tunnelToken);
         
         this.logger.log('Restarting cloudflared container to apply new token...');
         const dockerService = this.moduleRef.get(DockerService, { strict: false });
