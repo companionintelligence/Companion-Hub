@@ -9,4 +9,5 @@ services:
       - CI_HUB_ORGANIZATION_ID=${CI_HUB_ORGANIZATION_ID}
       - CI_HUB_API_KEY=${CI_HUB_API_KEY}
       - HUB_CONTAINER_NAME=${HUB_CONTAINER_NAME}
+      - NODE_ENV=production
 

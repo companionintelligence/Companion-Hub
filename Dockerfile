@@ -88,6 +88,7 @@ COPY --from=builder /app/packages/backend/dist ./
 COPY --from=builder /app/packages/backend/assets ./assets
 COPY --from=builder /app/packages/backend/src/core/database/drizzle ./assets/migrations
 COPY --from=builder /app/packages/backend/src/modules/i18n/translations ./assets/translations
+COPY --from=builder /app/packages/backend/src/swagger.json ./packages/backend/src/swagger.json
 COPY --from=builder /app/packages/frontend/dist/client ./assets/frontend
 
 EXPOSE 3000

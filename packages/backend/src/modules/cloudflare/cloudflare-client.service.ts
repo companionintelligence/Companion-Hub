@@ -11,6 +11,8 @@ export interface AppInfo {
   subdomain: string;
   localPort: number;
   protocol?: 'http' | 'https';
+  hostname?: string;
+  publicHostname?: string;
 }
 
 @Injectable()

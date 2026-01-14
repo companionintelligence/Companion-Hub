@@ -3,7 +3,7 @@ import { createAppUrn, extractAppUrn } from '@/common/helpers/app-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { SSEService } from '@/core/sse/sse.service';
-import { HttpStatus, Inject, Injectable } from '@nestjs/common';
+import { HttpStatus, Inject, Injectable, OnApplicationBootstrap } from '@nestjs/common';
 import type { AppUrn } from '@runtipi/common/types';
 import { lt, valid } from 'semver';
 import semver from 'semver';
@@ -24,7 +24,7 @@ import type { AsyncMutex } from '@/utils/mutex/async-mutex';
 import type { z } from 'zod';
 
 @Injectable()
-export class AppLifecycleService {
+export class AppLifecycleService implements OnApplicationBootstrap {
   constructor(
     private readonly logger: LoggerService,
     private readonly appEventsQueue: AppEventsQueue,
@@ -42,6 +42,13 @@ export class AppLifecycleService {
   ) {
     this.logger.debug('Subscribing to app events...');
     this.appEventsQueue.onEvent((data, reply) => this.invokeCommand(data, reply));
+  }
+
+  async onApplicationBootstrap() {
+    this.logger.info('Triggering initial Cloudflare sync in 5s...');
+    setTimeout(() => {
+        this.triggerCloudflareSync().catch(e => this.logger.error(`Startup sync failed: ${e.message}`));
+    }, 5000);
   }
 
   async invokeCommand(data: z.infer<typeof appEventSchema>, reply: (response: z.output<typeof appEventResultSchema>) => Promise<void>) {
@@ -556,8 +563,10 @@ export class AppLifecycleService {
         exposedApps.push({
             name: 'Dashboard',
             subdomain: '@',
-            localPort: 5002, // Default Hub Port
-            protocol: 'http'
+            localPort: 3000,
+            protocol: 'http',
+            hostname: process.env.HUB_CONTAINER_NAME || 'ci-os-hub',
+            publicHostname: orgInfo.domain,
         });
 
         await this.cloudflareClientService.syncState(orgInfo.id, exposedApps, orgInfo.tunnelId || undefined);
