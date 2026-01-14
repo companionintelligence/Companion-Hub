@@ -549,6 +549,7 @@ export class AppLifecycleService {
                 name: app.appName,
                 subdomain: app.localSubdomain || app.appStoreSlug,
                 localPort: app.port as number,
+                protocol: 'http',
             }));
 
         // Add Dashboard
