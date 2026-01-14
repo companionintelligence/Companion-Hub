@@ -47,11 +47,28 @@ export class AppHelpers {
 
     const { appName, appStoreId } = extractAppUrn(appUrn);
 
-    // Ensure DOMAIN and LOCAL_DOMAIN are set (required for Traefik label interpolation)
-    // These come from the base env file, but ensure they're present with defaults
-    if (!envMap.has('DOMAIN')) {
-      envMap.set('DOMAIN', userSettings.domain || 'ci.computer');
+    // Fetch organization info to get the correct domain
+    // This fixes the issue where apps are generated with the default ci.computer domain instead of the user's specific subdomain
+    const org = await this.organizationRepository.getFirstOrganization();
+
+    // Determine the authoritative domain
+    // Priority: Organization DB -> User Settings -> Default
+    let authoritativeDomain = userSettings.domain;
+    if (org && org.domain) {
+      authoritativeDomain = org.domain;
     }
+    if (!authoritativeDomain) {
+      authoritativeDomain = 'ci.computer';
+    }
+
+    // Ensure DOMAIN and LOCAL_DOMAIN are set (required for Traefik label interpolation)
+    // We overwrite the value from the .env file if it's the default "ci.computer" but we have a better one from the DB or settings
+    const currentEnvDomain = envMap.get('DOMAIN');
+    if (!currentEnvDomain || (currentEnvDomain === 'ci.computer' && authoritativeDomain !== 'ci.computer')) {
+      envMap.set('DOMAIN', authoritativeDomain);
+      this.logger.debug(`Overriding DOMAIN with authoritative domain: ${authoritativeDomain}`);
+    }
+
     if (!envMap.has('LOCAL_DOMAIN')) {
       envMap.set('LOCAL_DOMAIN', userSettings.localDomain || 'tipi.lan');
     }

@@ -241,12 +241,8 @@ export class AppLifecycleService implements OnApplicationBootstrap {
 
         // Check if we need to sync Cloudflare state (if app is exposedLocal)
         if (createdApp.exposedLocal || (appInfo.exposable && !exposedLocal)) {
-            // Note: We check if it *is* exposedLocal (from DB which we just created).
-            // We need to re-fetch or trust the value we passed to create. 
-            // We passed the fallback above.
-            // Let's rely on the createdApp property if create returns it correctly, or use our logic.
-            // But strictness: create returns the Db/Entity.
-            this.logger.info(`[Cloudflare] App ${appUrn} installed and is exposedLocal. Triggering sync.`);
+            // Wait for DB consistency/propagation
+            await new Promise(r => setTimeout(r, 2000));
             await this.triggerCloudflareSync();
         }
       } else {
@@ -283,7 +279,6 @@ export class AppLifecycleService implements OnApplicationBootstrap {
         
         // Trigger sync to remove route if exposedLocal
         if (app.exposedLocal) {
-             this.logger.info(`[Cloudflare] App ${appUrn} stopped and was exposedLocal. Triggering sync.`);
              await this.triggerCloudflareSync();
         }
       } else {
@@ -354,7 +349,6 @@ export class AppLifecycleService implements OnApplicationBootstrap {
         
         // Trigger sync to remove route if it was exposedLocal
         if (app.exposedLocal) {
-            this.logger.info(`[Cloudflare] App ${appUrn} uninstalled and was exposedLocal. Triggering sync.`);
             await this.triggerCloudflareSync();
         }
       } else {
@@ -547,14 +541,14 @@ export class AppLifecycleService implements OnApplicationBootstrap {
         }
 
         const apps = await this.appRepository.getApps();
-        
+
         const exposedApps: AppInfo[] = apps
             .filter(app => {
                 return app.exposedLocal && app.status === 'running' && app.port !== null;
             })
             .map(app => ({
                 name: app.appName,
-                subdomain: app.localSubdomain || app.appStoreSlug,
+                subdomain: app.localSubdomain || `${app.appName}-${app.appStoreSlug}`,
                 localPort: app.port as number,
                 protocol: 'http',
             }));

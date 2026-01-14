@@ -366,6 +366,14 @@ export class RegistrationService implements OnApplicationBootstrap {
         domain: domain,
       });
 
+      // Update system settings to reflect the new domain so that app generation works correctly
+      try {
+        await this.config.setUserSettings({ domain });
+        this.logger.info(`Updated system settings with domain: ${domain}`);
+      } catch (e) {
+        this.logger.warn(`Failed to update system settings with domain: ${e}`);
+      }
+
       this.logger.info(`Successfully setup organization infrastructure: ${domain} (tunnel: ${tunnelId})`);
 
       // Wait for DNS resolution before returning
