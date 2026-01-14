@@ -119,7 +119,7 @@ export class RegistrationService implements OnApplicationBootstrap {
       return process.env.DEVICE_ID;
     }
     if (process.env.NODE_ENV === 'development') {
-      return 'test-device-id';
+      return 'test-device-id2';
     }
     return (await si.uuid()).hardware;
   }
