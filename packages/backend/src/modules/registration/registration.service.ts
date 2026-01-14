@@ -371,7 +371,7 @@ export class RegistrationService implements OnApplicationBootstrap {
       // Wait for DNS resolution before returning
       // This ensures that when the user is redirected, the domain is likely working
       this.logger.info(`Waiting for DNS resolution on https://${domain}...`);
-      const maxRetries = 60; // 60 seconds
+      const maxRetries = 60 * 10; // 10 minutes
       for (let i = 0; i < maxRetries; i++) {
         try {
           const controller = new AbortController();
@@ -389,12 +389,16 @@ export class RegistrationService implements OnApplicationBootstrap {
           if (response.ok) {
             this.logger.info(`DNS resolved and Hub is reachable at https://${domain}`);
             break;
+          } else {
+            this.logger.debug(`Hub reachable but returned status ${response.status}`);
           }
         } catch (e) {
-          // ignore connection errors
+          if (i % 10 === 0) {
+            this.logger.debug(`Waiting for DNS/SSL propagation... Error: ${e instanceof Error ? e.message : String(e)}`);
+          }
         }
         await new Promise((resolve) => setTimeout(resolve, 1000));
-        if (i > 0 && i % 5 === 0) this.logger.debug(`Still waiting for DNS resolution... attempt ${i}/${maxRetries}`);
+        if (i > 0 && i % 10 === 0) this.logger.info(`Still waiting for DNS resolution... attempt ${i}/${maxRetries}`);
       }
     } catch (error) {
       this.logger.error(`Error setting up organization infrastructure: ${error}`);

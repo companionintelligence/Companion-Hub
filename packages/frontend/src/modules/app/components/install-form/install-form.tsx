@@ -200,8 +200,8 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
                 groupPrefix="https://"
                 groupSuffix={
                   ciHubOrganizationSlug
-                    ? `.${ciHubOrganizationSlug}.ci.computer${isCheckingDns ? ' (checking...)' : ''}`
-                    : `.${localDomain}${isCheckingDns ? ' (checking...)' : ''}`
+                    ? `-${ciHubOrganizationSlug}.ci.computer${isCheckingDns ? ' (checking...)' : ''}`
+                    : `-${localDomain}${isCheckingDns ? ' (checking...)' : ''}`
                 }
                 {...register('localSubdomain')}
                 label={t('APP_INSTALL_FORM_LOCAL_SUBDOMAIN')}

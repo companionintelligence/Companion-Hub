@@ -183,17 +183,7 @@ export class AppController {
     });
 
     // Extract slug from domain (e.g. "slug.ci.computer" -> "slug")
-    let orgSlug = org?.name;
-    if (org?.domain) {
-      orgSlug = org.domain.split('.')[0];
-    } else if (org?.name) {
-      // Simple slugify if domain is missing
-      orgSlug = org.name
-        .toLowerCase()
-        .replace(/[^a-z0-9-]/g, '-')
-        .replace(/-+/g, '-')
-        .replace(/^-|-$/g, '');
-    }
+    const orgSlug = org?.name;
 
     return AppContextDto.parse(
       {
