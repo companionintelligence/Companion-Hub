@@ -33,8 +33,6 @@ const envSchema = z.object({
   CLOUDFLARE_ACCOUNT_ID: z.string().optional(),
   CLOUDFLARE_TUNNEL_ID: z.string().optional(),
   CLOUDFLARE_ZONE_ID: z.string().optional(),
-  CI_HUB_ORGANIZATION_ID: z.string().optional(),
-  CI_HUB_API_KEY: z.string().optional(),
   DOMAIN: z.string(),
   LOCAL_DOMAIN: z.string(),
   DNS_IP: z.string().default('9.9.9.9'),
@@ -89,6 +87,7 @@ export class ConfigurationService {
 
   private configure() {
     const envMap = this.getEnvMap();
+
     const conf = { ...Object.fromEntries(envMap), ...process.env } as Record<string, string>;
 
     const env = envSchema.safeParse(conf);
@@ -101,6 +100,21 @@ export class ConfigurationService {
     this.logger = new LoggerService('backend', path.join(DATA_DIR, 'logs'), env.data.LOG_LEVEL);
 
     const { NODE_ENV } = process.env;
+
+    // Load settings.json manually to get credentials, bypassing .env
+    let settingsCreds = { ciHubApiKey: null, ciHubOrganizationId: null };
+    try {
+      const settingsPath = path.join(DATA_DIR, 'state', 'settings.json');
+      if (fs.existsSync(settingsPath)) {
+        const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+        settingsCreds = {
+          ciHubApiKey: settings.ciHubApiKey || null,
+          ciHubOrganizationId: settings.ciHubOrganizationId || null,
+        };
+      }
+    } catch (e) {
+      // ignore
+    }
 
     return {
       database: {
@@ -158,8 +172,8 @@ export class ConfigurationService {
       ciCloudAppStoreUrl: env.data.CI_CLOUD_APP_STORE_URL,
       ciCloudApiUrl: env.data.CI_CLOUD_API_URL,
       ciCloudFrontendUrl: env.data.CI_CLOUD_FRONTEND_URL,
-      ciHubOrganizationId: env.data.CI_HUB_ORGANIZATION_ID,
-      ciHubApiKey: env.data.CI_HUB_API_KEY,
+      ciHubOrganizationId: settingsCreds.ciHubOrganizationId,
+      ciHubApiKey: settingsCreds.ciHubApiKey,
       cloudflareAccountId: env.data.CLOUDFLARE_ACCOUNT_ID,
       cloudflareTunnelId: env.data.CLOUDFLARE_TUNNEL_ID,
       cloudflareZoneId: env.data.CLOUDFLARE_ZONE_ID,
@@ -200,6 +214,7 @@ export class ConfigurationService {
       const currentSettings = currentSettingsResult;
 
       await fs.promises.writeFile(settingsPath, `${JSON.stringify({ ...currentSettings, ...settings }, null, 2)}`, 'utf8');
+
       this.config.userSettings = { ...this.config.userSettings, ...settings };
 
       // Update in-memory config for runtime changes
