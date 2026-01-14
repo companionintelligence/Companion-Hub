@@ -1,12 +1,12 @@
-import { Controller, Get, Post, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Query, UseGuards, HttpException, HttpStatus } from '@nestjs/common';
 import { AuthGuard } from '../auth/auth.guard';
-import { CloudflareTunnelService } from './cloudflare-tunnel.service';
+import { CloudflareClientService } from './cloudflare-client.service';
 import { ApiResponse } from '@nestjs/swagger';
 
 @UseGuards(AuthGuard)
 @Controller('cloudflare')
 export class CloudflareController {
-  constructor(private readonly cloudflareTunnelService: CloudflareTunnelService) {}
+  constructor(private readonly cloudflareClientService: CloudflareClientService) {}
 
   @Get('check-dns-availability')
   @ApiResponse({ type: Object })
@@ -14,20 +14,23 @@ export class CloudflareController {
     if (!subdomain) {
       return { available: true };
     }
-
-    const result = await this.cloudflareTunnelService.checkDnsAvailability(subdomain);
-    return result;
+    
+    return { available: true, message: 'Availability check delegated to CI-Cloud (Not implemented yet)' };
   }
 
-  /**
-   * Get the current status of Cloudflare integration
-   */
   @Get('status')
   @ApiResponse({ type: Object })
   async getStatus() {
+    const token = this.cloudflareClientService.getTunnelToken();
+    
     return {
-      tunnelEnabled: this.cloudflareTunnelService.isEnabled(),
-      dnsEnabled: this.cloudflareTunnelService.isDnsEnabled(),
+      tunnelEnabled: !!token,
+      dnsEnabled: true, 
+      tunnelId: this.cloudflareClientService['tunnelId'] || null, 
+      accountId: null,
+      zoneId: null,
+      routes: [], 
+      message: 'Tunnel is managed by CI-Cloud.'
     };
   }
 
@@ -43,7 +46,7 @@ export class CloudflareController {
 
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+      const timeoutId = setTimeout(() => controller.abort(), 10000); // Increased to 10 seconds for DNS resolution
 
       const response = await fetch(url, {
         method: 'HEAD',
@@ -62,64 +65,51 @@ export class CloudflareController {
         statusText: response.statusText,
       };
     } catch (error) {
-      // Network errors, timeouts, etc. mean unavailable
+      // Network errors, timeouts, DNS errors, etc. mean unavailable
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      const isDnsError = errorMessage.includes('ENOTFOUND') || errorMessage.includes('getaddrinfo') || errorMessage.includes('DNS');
+      
       return {
         available: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: errorMessage,
+        isDnsError,
+        suggestion: isDnsError ? 'DNS record may not exist or may not have propagated yet. Check Cloudflare dashboard or try syncing DNS records.' : undefined,
       };
     }
   }
 
-  /**
-   * Sync missing DNS records for all tunnel routes
-   * This creates CNAME records for any tunnel routes that don't have DNS records yet
-   */
   @Post('sync-dns')
   @ApiResponse({ type: Object })
   async syncMissingDnsRecords() {
-    if (!this.cloudflareTunnelService.isDnsEnabled()) {
-      return {
-        success: false,
-        message: 'DNS management not enabled. Set CLOUDFLARE_ZONE_ID environment variable.',
-        synced: [],
-        failed: [],
-        skipped: [],
-      };
-    }
-
-    const result = await this.cloudflareTunnelService.syncMissingDnsRecords();
     return {
-      success: result.failed.length === 0,
-      message: `Synced ${result.synced.length} DNS records, ${result.failed.length} failed, ${result.skipped.length} already existed`,
-      ...result,
+      success: true,
+      message: 'DNS sync is handled automatically by CI-Cloud when apps change.',
+      synced: [],
+      failed: [],
+      skipped: [],
     };
   }
 
-  /**
-   * Update all existing tunnel routes with originRequest configuration
-   * This ensures apps work properly behind Cloudflare Tunnel by setting proper Host headers
-   * and connection settings for external access
-   */
-  @Post('update-routes-origin-request')
+  @Post('remove-origin-request')
   @ApiResponse({ type: Object })
-  async updateAllRoutesWithOriginRequest() {
-    if (!this.cloudflareTunnelService.isEnabled()) {
-      return {
-        success: false,
-        message: 'Cloudflare Tunnel integration is not enabled',
-        updated: [],
-        skipped: [],
-        failed: [],
-      };
-    }
-
-    const result = await this.cloudflareTunnelService.updateAllRoutesWithOriginRequest();
+  async removeOriginRequestFromAllRoutes() {
     return {
-      success: result.failed.length === 0,
-      message:
-        `Updated ${result.updated.length} routes with originRequest configuration. ` +
-        `${result.skipped.length} routes already had proper configuration.`,
-      ...result,
+      success: true,
+      message: 'Configuration is managed by CI-Cloud.',
+      updated: [],
+      skipped: [],
+      failed: [],
+    };
+  }
+
+  @Post('remove-catch-all-routes')
+  @ApiResponse({ type: Object })
+  async removeCatchAllRoutes(@Query('tunnelId') tunnelId?: string) {
+    return {
+      success: true,
+      message: 'Configuration is managed by CI-Cloud.',
+      removed: 0,
+      remainingRoutes: 0,
     };
   }
 }

@@ -147,6 +147,23 @@ export class AppStoreFilesManager {
     // Copy app folder from repo
     this.logger.info(`Copying app ${appUrn} from repo ${this.storeConfig.slug}`);
     await this.filesystem.copyDirectory(appRepoDir, appInstalledDir);
+
+    // Patch cloudflared for Linux/Docker environment (add host.docker.internal)
+    const { appName } = extractAppUrn(appUrn);
+    if (appName === 'cloudflared') {
+      this.logger.info(`[Patch] Injecting extra_hosts helper for cloudflared...`);
+      const composePath = path.join(appInstalledDir, 'docker-compose.yml');
+      if (await this.filesystem.pathExists(composePath)) {
+        let content = await this.filesystem.readTextFile(composePath);
+        if (content && !content.includes('extra_hosts')) {
+          content = content.replace(
+            'restart: unless-stopped',
+            'restart: unless-stopped\n    extra_hosts:\n      - "host.docker.internal:host-gateway"',
+          );
+          await this.filesystem.writeTextFile(composePath, content);
+        }
+      }
+    }
   }
 
   /**

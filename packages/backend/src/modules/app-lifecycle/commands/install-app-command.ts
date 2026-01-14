@@ -3,7 +3,7 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { SSEService } from '@/core/sse/sse.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppHelpers } from '@/modules/apps/app.helpers';
-import { CloudflareTunnelService } from '@/modules/cloudflare/cloudflare-tunnel.service';
+import { CloudflareClientService } from '@/modules/cloudflare/cloudflare-client.service';
 import { DockerService } from '@/modules/docker/docker.service';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
@@ -129,38 +129,22 @@ export class InstallAppCommand extends AppLifecycleCommand {
       await appFilesManager.setAppDataDirPermissions(appUrn);
 
       // Create Cloudflare Tunnel route if exposedLocal is enabled (app is published to internet)
-      // Routes directly to the app's host port - makes app available at subdomain.companionintel.com
-      // Or subdomain.orgDomain.companionintel.com if organization is registered
+      // This part now uses CloudflareClientService to SYNC state with CI-Cloud
+      // CI-Cloud will handle the actual DNS and Tunnel updates via the trigger in AppLifecycleService
+      logger.info(`[Cloudflare] Syncing state for ${appUrn}, exposedLocal: ${form.exposedLocal}`);
       try {
-        const cloudflareService = this.moduleRef.get(CloudflareTunnelService, { strict: false });
+        const cloudflareService = this.moduleRef.get(CloudflareClientService, { strict: false });
         if (!cloudflareService) {
-          logger.debug(`CloudflareTunnelService not available for ${appUrn}`);
-        } else if (cloudflareService.isEnabled()) {
-          const { appName, appStoreId } = extractAppUrn(appUrn);
-          const { isProduction } = config?.getConfig() || { isProduction: false };
-
-          // In production, when exposedLocal is enabled, create a route to Traefik
-          // Traefik will route to the app container based on the subdomain
-          // This publishes the app to the internet via Cloudflare Tunnel -> Traefik -> App
-          if (form.exposedLocal && isProduction) {
-            const subdomain = form.localSubdomain ? form.localSubdomain : `${appName}-${appStoreId}`;
-
-            // Get organization info if available
-            const registrationService = this.moduleRef.get(RegistrationService, { strict: false });
-            const orgInfo = await registrationService?.getOrganizationInfo();
-            const organizationInfo = orgInfo ? { tunnelId: orgInfo.tunnelId, domain: orgInfo.domain } : null;
-
-            emitProgress(90);
-            const domain = organizationInfo ? organizationInfo.domain : 'companionintel.com';
-            logger.info(`Creating Cloudflare Tunnel route for ${appUrn} via Traefik ` + `(subdomain: ${subdomain}, domain: ${domain})`);
-            await cloudflareService.createAppRoute(subdomain, undefined, organizationInfo);
-          }
+          logger.warn(`[Cloudflare] CloudflareClientService not available for ${appUrn}`);
         } else {
-          logger.debug(`Cloudflare Tunnel integration is not enabled for ${appUrn}`);
+             logger.info('[Cloudflare] CloudflareClientService available. State sync will be triggered by AppLifecycleService.');
         }
       } catch (error) {
-        logger.warn(`Failed to create Cloudflare Tunnel route for ${appUrn}: ${error}`);
-        // Don't fail the installation if Cloudflare route creation fails
+        logger.error(`[Cloudflare] Exception syncing state for ${appUrn}: ${error}`);
+        if (error instanceof Error) {
+          logger.error(`[Cloudflare] Error stack: ${error.stack}`);
+        }
+        // Don't fail the installation if Cloudflare sync fails
       }
 
       emitProgress(99);

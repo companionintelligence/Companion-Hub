@@ -61,6 +61,10 @@ export class AppStoreRepository {
     return this.databaseService.db.delete(appStore).where(eq(appStore.slug, slug));
   }
 
+  public async updateAppStoreType(slug: string, type: string) {
+    return this.databaseService.db.update(appStore).set({ type }).where(eq(appStore.slug, slug));
+  }
+
   public async updateAppStoreHashAndUrl(slug: string, data: Pick<NewAppStore, 'hash' | 'url'>) {
     return this.databaseService.db.update(appStore).set({ hash: data.hash, url: data.url }).where(eq(appStore.slug, slug));
   }

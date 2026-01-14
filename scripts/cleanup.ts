@@ -10,15 +10,29 @@ console.log('1️⃣ Stopping and removing containers...');
 try {
   // Get containers by network
   const containersByNetwork = await $`docker ps -a --filter network=ci_os_hub_network --format {{.Names}}`.quiet();
+  const containersByNewNetwork = await $`docker ps -a --filter network=ci-os-hub_network --format {{.Names}}`.quiet();
 
-  // Also get containers by project name (ci-os-hub or legacy runtipi)
+  // Also get containers by project name (ci-os-hub, legacy runtipi, or e2e tests)
   const containersByProject = await $`docker ps -a --filter label=com.docker.compose.project=ci-os-hub --format {{.Names}}`.quiet();
   const containersByLegacyProject = await $`docker ps -a --filter label=com.docker.compose.project=runtipi --format {{.Names}}`.quiet();
+  
+  // Get any stray e2e containers that might use dynamic project names
+  const containersByE2E = await $`docker ps -a --filter "name=e2e-" --format {{.Names}}`.quiet();
 
   const allContainers = new Set<string>();
 
   if (containersByNetwork.stdout.toString().trim()) {
     containersByNetwork.stdout
+      .toString()
+      .trim()
+      .split('\n')
+      .forEach((name) => {
+        if (name) allContainers.add(name);
+      });
+  }
+
+  if (containersByNewNetwork.stdout.toString().trim()) {
+    containersByNewNetwork.stdout
       .toString()
       .trim()
       .split('\n')
@@ -39,6 +53,16 @@ try {
 
   if (containersByLegacyProject.stdout.toString().trim()) {
     containersByLegacyProject.stdout
+      .toString()
+      .trim()
+      .split('\n')
+      .forEach((name) => {
+        if (name) allContainers.add(name);
+      });
+  }
+  
+  if (containersByE2E.stdout.toString().trim()) {
+    containersByE2E.stdout
       .toString()
       .trim()
       .split('\n')
@@ -75,6 +99,8 @@ try {
       vol.includes('ci-os-hub') ||
       vol.includes('runtipi') ||
       vol.includes('runtipi_') ||
+      vol.startsWith('e2e-') ||
+      vol.startsWith('test-e2e-') ||
       vol.match(/^[a-z]+_[a-z]+-.*_data$/), // App volumes pattern like "grist_migrated-grist-1_data"
   );
 
@@ -95,10 +121,23 @@ try {
 // Step 3: Remove the network
 console.log('\n3️⃣ Removing network...');
 try {
-  await $`docker network rm ci_os_hub_network`.quiet().catch(() => {
-    console.log('   ⚠️  Network may already be removed or in use');
-  });
-  console.log('   ✅ Network removed');
+  await $`docker network rm ci_os_hub_network`.quiet().catch(() => {});
+  await $`docker network rm ci-os-hub_network`.quiet().catch(() => {});
+
+  // Also remove potential e2e networks
+  const networks = await $`docker network ls --format {{.Name}}`.quiet();
+  const e2eNetworks = networks.stdout.toString().trim().split('\n').filter(n => n.includes('e2e'));
+  
+  if (e2eNetworks.length > 0) {
+    for (const net of e2eNetworks) {
+      console.log(`   Removing network: ${net}`);
+      await $`docker network rm ${net}`.quiet().catch(() => {
+        console.log(`   ⚠️  Could not remove network ${net}`);
+      });
+    }
+  }
+
+  console.log('   ✅ Networks cleaned');
 } catch (_error) {
   console.log('   Network removal skipped');
 }
@@ -162,7 +201,7 @@ console.log('   💡 To remove .internal directories, uncomment the cleanup sect
 
 console.log('\n✅ Cleanup complete!');
 console.log('\n📝 Summary:');
-console.log('   - All containers in ci_os_hub_network removed');
+console.log('   - All containers in ci-os-hub_network removed');
 console.log('   - All related volumes removed');
 console.log('   - Network removed');
 console.log('   - Docker build cache pruned');

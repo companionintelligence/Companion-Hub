@@ -43,7 +43,7 @@ const typeFilter = (field: FormField) => !hiddenTypes.includes(field.type);
 export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit, initialValues, loading, formId }) => {
   const { t } = useTranslation();
   const { userSettings, isProduction } = useAppContext();
-  const { guestDashboard, localDomain, maxBackups: globalMaxBackups } = userSettings;
+  const { guestDashboard, localDomain, maxBackups: globalMaxBackups, ciHubOrganizationSlug } = userSettings;
 
   const {
     register,
@@ -198,7 +198,11 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
             <div className="mb-3">
               <InputGroup
                 groupPrefix="https://"
-                groupSuffix={`.${localDomain}${isCheckingDns ? ' (checking...)' : ''}`}
+                groupSuffix={
+                  ciHubOrganizationSlug
+                    ? `-${ciHubOrganizationSlug}.ci.computer${isCheckingDns ? ' (checking...)' : ''}`
+                    : `-${localDomain}${isCheckingDns ? ' (checking...)' : ''}`
+                }
                 {...register('localSubdomain')}
                 label={t('APP_INSTALL_FORM_LOCAL_SUBDOMAIN')}
                 error={errors.localSubdomain?.message || dnsAvailabilityError || undefined}

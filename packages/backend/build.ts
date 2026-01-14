@@ -5,12 +5,7 @@ await Bun.build({
   target: 'node',
   env: 'disable',
   sourcemap: true,
-  minify: {
-    keepNames: true,
-    whitespace: true,
-    identifiers: true,
-    syntax: true,
-  },
+  minify: false,
   external: [
     'argon2',
     'class-transformer',

@@ -34,6 +34,7 @@ export default defineConfig({
     alias,
   },
   server: {
+    open: true,
     host: true,
     port: 9091,
     hmr: {

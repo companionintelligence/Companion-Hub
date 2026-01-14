@@ -1,5 +1,6 @@
 import { mergeArchitectureOverrides } from '@/common/helpers/compose-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
+import { EnvUtils } from '@/modules/env/env.utils';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { DockerComposeBuilder } from '@/modules/docker/builders/compose.builder';
@@ -47,10 +48,17 @@ export class AppLifecycleCommand {
       // Merge architecture-specific overrides with base services
       const mergedServices = mergeArchitectureOverrides(services, overrides, architecture);
 
+      // Read app env file to get DOMAIN and LOCAL_DOMAIN for Traefik label interpolation
+      const appEnv = await appFilesManager.getAppEnv(appUrn);
+      const envUtils = new EnvUtils();
+      const envMap = envUtils.envStringToMap(appEnv.content || '');
+      const domain = envMap.get('DOMAIN') || configService.get('userSettings').domain || 'ci.computer';
+      const localDomain = envMap.get('LOCAL_DOMAIN') || configService.get('userSettings').localDomain || 'tipi.lan';
+
       const dockerComposeBuilder = new DockerComposeBuilder();
       const subnet = await subnetManager.allocateSubnet(appUrn);
 
-      const composeFile = dockerComposeBuilder.getDockerCompose(mergedServices, form, appUrn, subnet);
+      const composeFile = dockerComposeBuilder.getDockerCompose(mergedServices, form, appUrn, subnet, domain, localDomain);
 
       await appFilesManager.writeDockerComposeYml(appUrn, composeFile);
     } catch (err) {

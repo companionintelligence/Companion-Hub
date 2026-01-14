@@ -23,15 +23,40 @@ export default function DeviceRegistrationPage() {
     if (isCallback) {
       const handleCallback = async () => {
         try {
+          const device_id = searchParams.get('device_id');
+          const organization_id = searchParams.get('organization_id');
+          const organization_name = searchParams.get('organization_name');
+          const subdomain = searchParams.get('subdomain');
+          const api_key = searchParams.get('api_key');
+          const tunnel_id = searchParams.get('tunnel_id');
+          const tunnel_token = searchParams.get('tunnel_token');
+          const ca_cert = searchParams.get('ca_cert');
+
+          if (!device_id || !organization_id || !organization_name || !subdomain || !api_key || !tunnel_id || !tunnel_token) {
+             const missing = [];
+             if (!device_id) missing.push('device_id');
+             if (!organization_id) missing.push('organization_id');
+             if (!organization_name) missing.push('organization_name');
+             if (!subdomain) missing.push('subdomain');
+             if (!api_key) missing.push('api_key');
+             if (!tunnel_id) missing.push('tunnel_id');
+             if (!tunnel_token) missing.push('tunnel_token');
+             
+             throw new Error(`Missing required registration parameters: ${missing.join(', ')}`);
+          }
+
           const params: Record<string, string> = {
-            device_id: searchParams.get('device_id') ?? '',
-            organization_id: searchParams.get('organization_id') ?? '',
-            organization_name: searchParams.get('organization_name') ?? '',
-            subdomain: searchParams.get('subdomain') ?? '',
+            device_id,
+            organization_id,
+            organization_name,
+            subdomain,
+            api_key,
+            tunnel_id,
+            tunnel_token,
           };
-          const tunnelId = searchParams.get('tunnel_id');
-          if (tunnelId) {
-            params.tunnel_id = tunnelId;
+
+          if (ca_cert) {
+            params.ca_cert = ca_cert;
           }
 
           const res = await fetch(`/api/registration/callback?${new URLSearchParams(params).toString()}`);
@@ -40,10 +65,21 @@ export default function DeviceRegistrationPage() {
           if (res.ok && data.success) {
             toast.success('Device registered successfully!');
             setIsRegistered(true);
-            // Small delay to show success message
-            setTimeout(() => {
-              navigate('/');
-            }, 1500);
+
+            // Redirect to the new subdomain
+            // Default to ci.computer base if not provided in config
+            // Note: In production this should align with the cloud domain
+            const subdomain = params.subdomain;
+            if (subdomain) {
+              const targetUrl = `https://${subdomain}.ci.computer`;
+              setTimeout(() => {
+                window.location.href = targetUrl;
+              }, 1500);
+            } else {
+              setTimeout(() => {
+                navigate('/');
+              }, 1500);
+            }
           } else {
             setError(data.message || 'Registration failed');
             toast.error(data.message || 'Registration failed');
@@ -127,8 +163,8 @@ export default function DeviceRegistrationPage() {
     return (
       <div className="flex flex-col items-center justify-center min-h-[50vh] gap-6 text-center">
         <div className="animate-spin rounded-full h-12 w-12 border-4 border-primary border-t-transparent" />
-        <h1 className="text-2xl font-bold text-foreground">Completing Registration...</h1>
-        <p className="text-muted-foreground max-w-md">Please wait while we complete your device registration.</p>
+        <h1 className="text-2xl font-bold text-foreground">Setting up device...</h1>
+        <p className="text-muted-foreground max-w-md">Starting Cloudflare tunnel and configuring access...</p>
         {error && (
           <Alert variant="danger" className="max-w-md">
             <AlertDescription>

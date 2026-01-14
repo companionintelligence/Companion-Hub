@@ -1,8 +1,9 @@
-import { Injectable, type OnApplicationBootstrap } from '@nestjs/common';
+import { Injectable, type OnApplicationBootstrap, Inject, forwardRef } from '@nestjs/common';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import { CloudflareTunnelService } from '../cloudflare/cloudflare-tunnel.service';
+import { CloudflareClientService } from '../cloudflare/cloudflare-client.service';
 import { OrganizationRepository } from './organization.repository';
+import { RepoEventsQueue } from '../queue/entities/repo-events';
 import si from 'systeminformation';
 
 @Injectable()
@@ -13,8 +14,9 @@ export class RegistrationService implements OnApplicationBootstrap {
   constructor(
     private readonly config: ConfigurationService,
     private readonly logger: LoggerService,
-    private readonly cloudflareTunnelService: CloudflareTunnelService,
+    @Inject(forwardRef(() => CloudflareClientService)) private readonly cloudflareClientService: CloudflareClientService,
     private readonly organizationRepository: OrganizationRepository,
+    private readonly repoQueue: RepoEventsQueue,
   ) {}
 
   async onApplicationBootstrap() {
@@ -26,6 +28,76 @@ export class RegistrationService implements OnApplicationBootstrap {
       await this.verifyLicense();
       // Re-check registration status in case license check failed and wiped it
       isRegistered = this._isRegistered;
+
+      // Check for missing Tunnel ID and recover if needed
+      if (isRegistered) {
+        const org = await this.organizationRepository.getFirstOrganization();
+        if (org && !org.tunnelId) {
+          const { cloudflareTunnelId } = this.config.getConfig();
+
+          if (cloudflareTunnelId) {
+            this.logger.info(`Recovering Tunnel ID from environment: ${cloudflareTunnelId}`);
+            await this.organizationRepository.updateOrganization(org.id, {
+              tunnelId: cloudflareTunnelId,
+            });
+          } else {
+            this.logger.warn(`Organization ${org.id} exists but Tunnel ID is missing. Attempting to recover...`);
+            try {
+              // Attempt to recover by re-registering/check-in with Cloud
+              const { ciCloudApiUrl, ciHubApiKey } = this.config.getConfig();
+              const deviceId = await this.getDeviceId();
+
+              if (ciCloudApiUrl) {
+                this.logger.info(`Attempting to recover tunnel credentials via registration endpoint for device ${deviceId}`);
+
+                const registerUrl = `${ciCloudApiUrl}/devices/hub/register`;
+                const headers: Record<string, string> = {
+                  'Content-Type': 'application/json',
+                };
+                if (ciHubApiKey) {
+                  headers.Authorization = `Bearer ${ciHubApiKey}`;
+                }
+
+                const registerResponse = await fetch(registerUrl, {
+                  method: 'POST',
+                  headers,
+                  body: JSON.stringify({
+                    device_id: deviceId,
+                    organization_id: org.id,
+                    description: `CI OS Hub Device - ${deviceId} (Recovery)`,
+                  }),
+                });
+
+                if (registerResponse.ok) {
+                  // biome-ignore lint/suspicious/noExplicitAny: External API response
+                  const data = (await registerResponse.json()) as any;
+
+                  if (data.tunnel_id && data.tunnel_token) {
+                    const tunnelCredentials = await this.cloudflareClientService.initializeTunnel(org.id, {
+                      tunnelId: data.tunnel_id,
+                      token: data.tunnel_token,
+                    });
+
+                    if (tunnelCredentials) {
+                      await this.organizationRepository.updateOrganization(org.id, {
+                        tunnelId: tunnelCredentials.tunnelId,
+                        tunnelToken: tunnelCredentials.token,
+                      });
+                      this.logger.info(`Tunnel ID recovered successfully: ${tunnelCredentials.tunnelId}`);
+                    }
+                  } else {
+                    this.logger.error('Failed to recover Tunnel ID: API returned success but no credentials');
+                  }
+                } else {
+                  this.logger.error(`Failed to recover Tunnel ID: API returned ${registerResponse.status}`);
+                }
+              }
+            } catch (err) {
+              this.logger.error(`Error during tunnel recovery: ${err}`);
+            }
+          }
+        }
+      }
     }
 
     if (!isRegistered) {
@@ -41,6 +113,11 @@ export class RegistrationService implements OnApplicationBootstrap {
   }
 
   public async getDeviceId(): Promise<string> {
+    this.logger.debug(`NODE_ENV is: ${process.env.NODE_ENV}`);
+    this.logger.debug(`process.env.DEVICE_ID is: ${process.env.DEVICE_ID}`);
+    if (process.env.DEVICE_ID) {
+      return process.env.DEVICE_ID;
+    }
     if (process.env.NODE_ENV === 'development') {
       return 'test-device-id';
     }
@@ -69,68 +146,8 @@ export class RegistrationService implements OnApplicationBootstrap {
   }
 
   private async verifyLicense() {
-    const { ciCloudApiUrl } = this.config.getConfig();
-    if (!ciCloudApiUrl) {
-      this.logger.warn('CI Cloud API URL not configured, skipping license check.');
-      return;
-    }
-
-    try {
-      const deviceId = await this.getDeviceId();
-      // Step 3b: OS hub pings <CI_CLOUD_DOMAIN>/device/license-check with device_id in a http header
-      const licenseCheckUrl = `${ciCloudApiUrl}/device/license-check`;
-
-      this.logger.debug(`Checking license at ${licenseCheckUrl} for device ${deviceId}`);
-
-      const response = await fetch(licenseCheckUrl, {
-        method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-device-id': deviceId,
-        },
-      });
-
-      if (!response.ok) {
-        this.logger.warn(`License check failed: ${response.status} - ${response.statusText}`);
-        // If 404 or 403, it means not registered or invalid.
-        await this.handleLicenseCheckFailure();
-        return;
-      }
-
-      // Step 4b: CI Cloud verifies... returns device_registration.id and subdomain
-      // biome-ignore lint/suspicious/noExplicitAny: External API response
-      const data = (await response.json()) as any;
-      const registration = data.device_registration || data;
-
-      // Step 5b: OS Hub compares returned subdomain and device_registration.id to it's own database
-      const cloudOrgId = registration.id || registration.organization_id;
-      const cloudSubdomain = registration.subdomain;
-
-      if (!cloudOrgId || !cloudSubdomain) {
-        this.logger.warn('Invalid license check response: missing id or subdomain', registration);
-        return;
-      }
-
-      const localOrg = await this.organizationRepository.getFirstOrganization();
-
-      if (!localOrg) {
-        this.logger.warn('Local organization not found during license check');
-        await this.handleLicenseCheckFailure();
-        return;
-      }
-
-      // Compare
-      this.logger.debug(`License check comparison: Local[${localOrg.id}, ${localOrg.name}] vs Cloud[${cloudOrgId}, ${cloudSubdomain}]`);
-
-      if (localOrg.id !== cloudOrgId || localOrg.name !== cloudSubdomain) {
-        this.logger.warn(`License mismatch! Local: ${localOrg.id}/${localOrg.name}, Cloud: ${cloudOrgId}/${cloudSubdomain}`);
-        await this.handleLicenseCheckFailure(localOrg.id);
-      } else {
-        this.logger.info('License verified successfully.');
-      }
-    } catch (error) {
-      this.logger.error('Error verifying license:', error);
-    }
+    this.logger.info('License verification skipped (deprecated). Assuming valid registration.');
+    return;
   }
 
   private async handleLicenseCheckFailure(orgId?: string) {
@@ -202,7 +219,7 @@ export class RegistrationService implements OnApplicationBootstrap {
       const deviceId = await this.getDeviceId();
 
       // Step 1: Register device with CI Cloud Hub API
-      const registerUrl = `${ciCloudApiUrl}/api/devices/hub/register`;
+      const registerUrl = `${ciCloudApiUrl}/devices/hub/register`;
 
       this.logger.debug(`Registering device at ${registerUrl} for device ${deviceId}`);
 
@@ -228,51 +245,24 @@ export class RegistrationService implements OnApplicationBootstrap {
         // biome-ignore lint/suspicious/noExplicitAny: External API response
         const result = (await registerResponse.json()) as any;
         this.logger.info(`Device registered successfully: ${result.device_id} (status: ${result.status})`);
-      } else {
-        // biome-ignore lint/suspicious/noExplicitAny: External API response
-        const errorData = (await registerResponse.json().catch(() => ({ error: 'Unknown error' }))) as any;
-        this.logger.warn(`Device registration failed: ${registerResponse.status} - ${errorData.error || registerResponse.statusText}`);
 
-        // If device already exists (409 or similar), try to activate it
-        if (registerResponse.status === 409 || registerResponse.status === 400) {
-          this.logger.debug('Device may already be registered, attempting activation...');
-        } else {
-          return false;
+        if (result.api_key) {
+          await this.config.setUserSettings({ ciHubApiKey: result.api_key });
+          this.logger.info('Saved Hub API Key from registration response');
         }
-      }
 
-      // Step 2: Activate device by calling /api/web/register
-      // Use ciCloudAppStoreUrl if available, otherwise derive from ciCloudApiUrl
-      let activateUrl: string;
-      if (ciCloudAppStoreUrl) {
-        const urlObj = new URL(ciCloudAppStoreUrl);
-        activateUrl = new URL('/api/web/register', urlObj.origin).toString();
-      } else {
-        activateUrl = `${ciCloudApiUrl}/api/web/register`;
-      }
+        // Trigger repo update now that we are registered
+        this.logger.debug('Triggering repository update after successful registration');
+        await this.repoQueue.publish({ command: 'update_all' });
 
-      this.logger.debug(`Activating device at ${activateUrl} for device ${deviceId}`);
-
-      const activateResponse = await fetch(activateUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ device_id: deviceId }),
-      });
-
-      if (activateResponse.status === 200) {
-        this.logger.info('Device activated successfully!');
-
-        // Step 3: Fetch organization details and setup infrastructure
-        // biome-ignore lint/suspicious/noExplicitAny: External API response
-        const activateResult = (await activateResponse.json().catch(() => ({}))) as any;
-        await this.setupOrganizationInfrastructure(ciHubOrganizationId, activateResult);
-
+        // Setup infrastructure using the response
+        await this.setupOrganizationInfrastructure(ciHubOrganizationId, result);
         return true;
       }
 
-      this.logger.warn(`Device activation failed: ${activateResponse.status} - ${activateResponse.statusText}`);
+      // biome-ignore lint/suspicious/noExplicitAny: External API response
+      const errorData = (await registerResponse.json().catch(() => ({ error: 'Unknown error' }))) as any;
+      this.logger.warn(`Device registration failed: ${registerResponse.status} - ${errorData.error || registerResponse.statusText}`);
       return false;
     } catch (error) {
       this.logger.error('Failed to contact cloud server for registration:', error);
@@ -282,13 +272,13 @@ export class RegistrationService implements OnApplicationBootstrap {
 
   /**
    * Setup Cloudflare tunnel and DNS for the organization
-   * Creates organization subdomain: {orgName}.companionintel.com
+   * Creates organization subdomain: {orgName}.ci.computer
    * @param organizationId - Organization ID from CI Cloud
    * @param activationResult - Result from device activation (may contain org details)
    */
   private async setupOrganizationInfrastructure(
     organizationId: string,
-    activationResult?: { organization_name?: string; tunnel_id?: string; [key: string]: unknown },
+    activationResult: { organization_name: string; tunnel_id: string; tunnel_token: string; slug: string; subdomain: string },
   ): Promise<void> {
     // Check if organization infrastructure already exists
     const existingOrg = await this.organizationRepository.getOrganizationById(organizationId);
@@ -297,113 +287,127 @@ export class RegistrationService implements OnApplicationBootstrap {
       return;
     }
 
-    // Check if Cloudflare is enabled
-    if (!this.cloudflareTunnelService.isEnabled() || !this.cloudflareTunnelService.isDnsEnabled()) {
-      this.logger.warn('Cloudflare Tunnel or DNS management not enabled, skipping organization infrastructure setup');
-      return;
-    }
-
     try {
-      const { ciCloudApiUrl, ciHubApiKey } = this.config.getConfig();
+      const { ciCloudApiUrl, ciHubApiKey, cloudflareTunnelId } = this.config.getConfig();
 
       // Try to fetch organization details from CI Cloud API
       let orgName: string | null = null;
-      let tunnelId: string | null = null;
+      let tunnelId: string | null = cloudflareTunnelId || null;
+      let tunnelToken: string | null = null;
+      let orgSlug: string | null = null;
+      let subdomain: string | null = null;
+
+      if (tunnelId) {
+        this.logger.debug(`Using tunnel ID from environment: ${tunnelId}`);
+      }
 
       // First, check if activation result contains organization info
-      if (activationResult?.organization_name) {
+      if (activationResult) {
+        if (!activationResult.organization_name) {
+          throw new Error('Missing organization_name in activation result');
+        }
         orgName = activationResult.organization_name;
         this.logger.debug(`Using organization name from activation result: ${orgName}`);
-      }
 
-      if (activationResult?.tunnel_id) {
+        if (!activationResult.slug) {
+          throw new Error('Missing slug in activation result');
+        }
+        orgSlug = activationResult.slug as string;
+        this.logger.debug(`Using organization slug from activation result: ${orgSlug}`);
+
+        if (!activationResult.tunnel_id) {
+          throw new Error('Missing tunnel_id in activation result');
+        }
         tunnelId = activationResult.tunnel_id;
         this.logger.debug(`Using tunnel ID from activation result: ${tunnelId}`);
-      }
 
-      // If not in activation result, try to fetch from CI Cloud API
-      if (!orgName && ciCloudApiUrl) {
-        try {
-          const orgUrl = `${ciCloudApiUrl}/api/organizations/${organizationId}`;
-          const orgHeaders: Record<string, string> = {
-            'Content-Type': 'application/json',
-          };
-
-          if (ciHubApiKey) {
-            orgHeaders.Authorization = `Bearer ${ciHubApiKey}`;
-          }
-
-          const orgResponse = await fetch(orgUrl, {
-            method: 'GET',
-            headers: orgHeaders,
-          });
-
-          if (orgResponse.ok) {
-            // biome-ignore lint/suspicious/noExplicitAny: External API response
-            const orgData = (await orgResponse.json()) as any;
-            orgName = orgData.name || orgData.organization_name || null;
-            tunnelId = orgData.tunnel_id || null;
-            this.logger.debug(`Fetched organization details: name=${orgName}, tunnelId=${tunnelId}`);
-          } else {
-            this.logger.debug(`Could not fetch organization details (${orgResponse.status}), will use slugified ID`);
-          }
-        } catch (error) {
-          this.logger.debug(`Error fetching organization details: ${error}`);
+        if (!activationResult.tunnel_token) {
+          throw new Error('Missing tunnel_token in activation result');
         }
-      }
+        tunnelToken = activationResult.tunnel_token as string;
 
-      // Fallback to slugified organization ID if name not available
-      if (!orgName) {
-        orgName = this.slugifyOrganizationId(organizationId);
-        this.logger.debug(`Using slugified organization ID as name: ${orgName}`);
-      }
-
-      const orgDomain = `${orgName}.companionintel.com`;
-
-      // Create tunnel if not provided
-      if (tunnelId) {
-        this.logger.info(`Using existing tunnel ID for organization: ${tunnelId}`);
-        // Verify tunnel exists and configure it if needed
-        const tunnelConfig = await this.cloudflareTunnelService.getTunnelConfigForTunnel(tunnelId);
-        if (!tunnelConfig) {
-          // Tunnel exists but has no config, set it up
-          const config = {
-            ingress: [
-              {
-                service: 'http://localhost:80',
-                originRequest: {
-                  httpHostHeader: orgDomain,
-                },
-              },
-            ],
-          };
-          await this.cloudflareTunnelService.updateTunnelConfigForTunnel(tunnelId, config);
+        if (!activationResult.subdomain) {
+          throw new Error('Missing subdomain in activation result');
         }
+        subdomain = activationResult.subdomain as string;
+        this.logger.debug(`Using subdomain from activation result: ${subdomain}`);
+      }
+
+      const domain = `${subdomain}.ci.computer`;
+
+      // Configure tunnel using credentials from CI-Cloud
+      this.logger.info(`Initializing tunnel for organization: ${organizationId}`);
+
+      let tunnelCredentials = null;
+      if (tunnelId && tunnelToken) {
+        tunnelCredentials = await this.cloudflareClientService.initializeTunnel(organizationId, {
+          tunnelId,
+          token: tunnelToken,
+        });
+      }
+
+      if (tunnelCredentials) {
+        tunnelId = tunnelCredentials.tunnelId;
+        tunnelToken = tunnelCredentials.token;
+        this.logger.info(`Successfully initialized tunnel: ${tunnelId}`);
       } else {
-        this.logger.info(`Creating Cloudflare Tunnel for organization: ${orgDomain}`);
-        tunnelId = await this.cloudflareTunnelService.createOrganizationTunnel(orgName);
-        if (!tunnelId) {
-          this.logger.error(`Failed to create Cloudflare Tunnel for organization ${organizationId}`);
-          return;
-        }
-      }
-
-      // Create DNS record for organization domain
-      const dnsCreated = await this.cloudflareTunnelService.createOrganizationDnsRecord(orgDomain, tunnelId);
-      if (!dnsCreated) {
-        this.logger.error(`Failed to create DNS record for ${orgDomain}`);
-        // Continue anyway - tunnel is created, DNS can be retried later
+        this.logger.error(`Failed to initialize tunnel for organization ${organizationId} - missing credentials`);
+        this.logger.error('tunnelCredentials', tunnelCredentials);
+        // We might want to abort here, but for now we'll continue and try to create the org record
+        // so at least the local state is consistent, even if cloud sync failed.
       }
 
       // Store organization info in database
       await this.organizationRepository.createOrganization({
         id: organizationId,
-        name: orgName,
+        name: orgName!,
         tunnelId: tunnelId,
-        domain: orgDomain,
+        tunnelToken: tunnelToken,
+        domain: domain,
       });
 
-      this.logger.info(`Successfully setup organization infrastructure: ${orgDomain} (tunnel: ${tunnelId})`);
+      // Update system settings to reflect the new domain so that app generation works correctly
+      try {
+        await this.config.setUserSettings({ domain });
+        this.logger.info(`Updated system settings with domain: ${domain}`);
+      } catch (e) {
+        this.logger.warn(`Failed to update system settings with domain: ${e}`);
+      }
+
+      this.logger.info(`Successfully setup organization infrastructure: ${domain} (tunnel: ${tunnelId})`);
+
+      // Wait for DNS resolution before returning
+      // This ensures that when the user is redirected, the domain is likely working
+      this.logger.info(`Waiting for DNS resolution on https://${domain}...`);
+      const maxRetries = 60 * 10; // 10 minutes
+      for (let i = 0; i < maxRetries; i++) {
+        try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 2000);
+          /* 
+            We fetch /api/health to verify the hub itself is reachable through the tunnel.
+            Using HEAD might return 404 if the route doesn't support HEAD, so we use GET.
+          */
+          const response = await fetch(`https://${domain}/api/health`, {
+            method: 'GET',
+            signal: controller.signal,
+          });
+          clearTimeout(timeoutId);
+
+          if (response.ok) {
+            this.logger.info(`DNS resolved and Hub is reachable at https://${domain}`);
+            break;
+          } else {
+            this.logger.debug(`Hub reachable but returned status ${response.status}`);
+          }
+        } catch (e) {
+          if (i % 10 === 0) {
+            this.logger.debug(`Waiting for DNS/SSL propagation... Error: ${e instanceof Error ? e.message : String(e)}`);
+          }
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        if (i > 0 && i % 10 === 0) this.logger.info(`Still waiting for DNS resolution... attempt ${i}/${maxRetries}`);
+      }
     } catch (error) {
       this.logger.error(`Error setting up organization infrastructure: ${error}`);
     }
@@ -497,7 +501,7 @@ export class RegistrationService implements OnApplicationBootstrap {
 
       // Step 1: Register device with CI Cloud
       // POST http://localhost:8001/api/devices/hub/register
-      const registerUrl = `${ciCloudApiUrl}/api/devices/hub/register`;
+      const registerUrl = `${ciCloudApiUrl}/devices/hub/register`;
       const registerHeaders: Record<string, string> = {
         'Content-Type': 'application/json',
       };
@@ -530,43 +534,19 @@ export class RegistrationService implements OnApplicationBootstrap {
       const registerResult = await registerResponse.json().catch(() => ({}));
       this.logger.info(`Device registered successfully: ${JSON.stringify(registerResult)}`);
 
-      // Step 2: Activate device
-      // POST http://localhost:8001/api/web/register
-      const activateUrl = `${ciCloudApiUrl}/api/web/register`;
-      this.logger.debug(`Activating device at ${activateUrl}`);
-      const activateResponse = await fetch(activateUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ device_id: deviceId }),
-      });
+      // Step 2: Activate device - REMOVED (Merged into Step 1)
+      // The register endpoint now returns the organization details directly.
 
-      if (activateResponse.status !== 200) {
-        // biome-ignore lint/suspicious/noExplicitAny: External API response
-        const errorData = (await activateResponse.json().catch(() => ({ error: activateResponse.statusText }))) as any;
-        this.logger.error(`Device activation failed: ${activateResponse.status} - ${JSON.stringify(errorData)}`);
-        return {
-          success: false,
-          message: `Activation failed: ${errorData.error || activateResponse.statusText}`,
-        };
-      }
-
-      const activateResult = await activateResponse.json().catch(() => ({}));
-      this.logger.info(`Device activated successfully: ${JSON.stringify(activateResult)}`);
+      const activateResult = registerResult; // Use register result as activation result
+      this.logger.info(`Device activated successfully (merged): ${JSON.stringify(activateResult)}`);
 
       // Step 3: Validate organization name/subdomain availability before setup
       // Use provided organization name (already sanitized)
       const finalOrgName = sanitizedName;
 
-      // Validate subdomain and tunnel name availability
-      const validation = await this.cloudflareTunnelService.validateOrganizationSubdomain(finalOrgName);
-      if (!validation.available) {
-        return {
-          success: false,
-          message: `Registration failed: ${validation.errors.join(' ')}`,
-        };
-      }
+      // Note: We used to validate against local Cloudflare service, now we rely on CI-Cloud provisioning
+      // which will happen in setupOrganizationInfrastructure.
+      // If validation is needed before setup, we should add a validate endpoint to CI-Cloud.
 
       // Step 4: Setup organization infrastructure
       await this.setupOrganizationInfrastructure(organizationId, {
@@ -609,7 +589,9 @@ export class RegistrationService implements OnApplicationBootstrap {
     organizationId: string;
     organizationName: string;
     subdomain: string;
-    tunnelId?: string;
+    tunnelId: string;
+    tunnelToken: string;
+    apiKey?: string;
   }): Promise<{ success: boolean; message: string }> {
     try {
       // Verify device ID matches
@@ -622,16 +604,24 @@ export class RegistrationService implements OnApplicationBootstrap {
         };
       }
 
-      // Use the subdomain provided by CI Cloud (already validated on CI Cloud side)
-      // The subdomain is the organization name part (e.g., "acme-corp" from "acme-corp.companionintel.com")
-      const orgName = data.subdomain
-        .trim()
-        .toLowerCase()
-        .replace(/[^a-z0-9-]/g, '-')
-        .replace(/-+/g, '-')
-        .replace(/^-|-$/g, '');
+      // Save API Key if provided
+      if (data.apiKey) {
+        this.logger.info('Saving CI Hub API Key from registration callback');
+        await this.config.setUserSettings({ ciHubApiKey: data.apiKey });
+      }
 
-      if (!orgName) {
+      // Save Organization ID
+      if (data.organizationId) {
+        this.logger.info('Saving CI Hub Organization ID from registration callback');
+        await this.config.setUserSettings({ ciHubOrganizationId: data.organizationId });
+      }
+
+      // Use the subdomain provided by CI Cloud (already validated on CI Cloud side)
+      // The subdomain is the organization name part (e.g., "acme-corp" from "acme-corp.ci.computer")
+      // OR device-org slug (e.g. "device-org" from "device-org.ci.computer")
+      const incomingSubdomain = data.subdomain.trim();
+
+      if (!incomingSubdomain) {
         return {
           success: false,
           message: 'Invalid subdomain received from CI Cloud.',
@@ -641,10 +631,12 @@ export class RegistrationService implements OnApplicationBootstrap {
       // Setup organization infrastructure (Cloudflare tunnel and DNS)
       // Use the tunnel_id if provided by CI Cloud, otherwise create a new one
       await this.setupOrganizationInfrastructure(data.organizationId, {
-        organization_name: orgName,
+        organization_name: data.organizationName,
         tunnel_id: data.tunnelId,
+        tunnel_token: data.tunnelToken,
+        subdomain: incomingSubdomain,
+        slug: incomingSubdomain,
       });
-
       // Mark as registered
       this._isRegistered = true;
       if (this.checkInterval) {

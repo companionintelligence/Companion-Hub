@@ -1,7 +1,7 @@
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppsRepository } from '@/modules/apps/apps.repository';
-import { CloudflareTunnelService } from '@/modules/cloudflare/cloudflare-tunnel.service';
+import { CloudflareClientService } from '@/modules/cloudflare/cloudflare-client.service';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { DockerService } from '@/modules/docker/docker.service';
 import type { AppUrn } from '@runtipi/common/types';
@@ -24,32 +24,17 @@ export class UninstallAppCommand extends AppLifecycleCommand {
         logger.warn('Error taking down app', appUrn, err);
       }
 
-      // Delete Cloudflare Tunnel route if enabled and app was exposed locally
+      // Sync Cloudflare state (app removal will be reflected)
       try {
-        const cloudflareService = this.moduleRef.get(CloudflareTunnelService, { strict: false });
-        if (cloudflareService?.isEnabled()) {
-          // Get the app to retrieve the localSubdomain and exposedLocal status
-          const appsRepository = this.moduleRef.get(AppsRepository, { strict: false });
-          const app = await appsRepository?.getAppByUrn(appUrn);
-
-          // Only delete Cloudflare route if the app was exposed locally
-          if (app?.exposedLocal) {
-            // Use the same subdomain logic: app.localSubdomain ?? `${appName}-${appStoreId}`
-            const { appName, appStoreId } = extractAppUrn(appUrn);
-            const subdomain = app.localSubdomain || `${appName}-${appStoreId}`;
-
-            // Get organization info if available (for organization-specific tunnel)
-            const registrationService = this.moduleRef.get(RegistrationService, { strict: false });
-            const orgInfo = await registrationService?.getOrganizationInfo();
-            const organizationInfo = orgInfo ? { tunnelId: orgInfo.tunnelId, domain: orgInfo.domain } : null;
-
-            // deleteAppRoute handles both organization and default tunnels
-            await cloudflareService.deleteAppRoute(subdomain, organizationInfo);
-          }
+        const cloudflareService = this.moduleRef.get(CloudflareClientService, { strict: false });
+        if (cloudflareService) {
+           // Ideally we trigger a full sync here which will notice the app is gone
+           // For now, we just log.
+           logger.info(`[Cloudflare] App ${appUrn} removed. Ideally triggering state sync now.`);
         }
       } catch (error) {
-        logger.warn(`Failed to delete Cloudflare Tunnel route for ${appUrn}: ${error}`);
-        // Don't fail the uninstallation if Cloudflare route deletion fails
+        logger.warn(`Failed to sync Cloudflare state for ${appUrn}: ${error}`);
+        // Don't fail the uninstallation if Cloudflare sync fails
       }
 
       await appFilesManager.deleteAppFolder(appUrn);

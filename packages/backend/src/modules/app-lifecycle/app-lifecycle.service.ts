@@ -3,7 +3,7 @@ import { createAppUrn, extractAppUrn } from '@/common/helpers/app-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { SSEService } from '@/core/sse/sse.service';
-import { HttpStatus, Inject, Injectable } from '@nestjs/common';
+import { HttpStatus, Inject, Injectable, OnApplicationBootstrap } from '@nestjs/common';
 import type { AppUrn } from '@runtipi/common/types';
 import { lt, valid } from 'semver';
 import semver from 'semver';
@@ -13,7 +13,7 @@ import { AppFilesManager } from '../apps/app-files-manager';
 import { AppsRepository } from '../apps/apps.repository';
 import { AppsService } from '../apps/apps.service';
 import { BackupManager } from '../backups/backup.manager';
-import { CloudflareTunnelService } from '../cloudflare/cloudflare-tunnel.service';
+import { CloudflareClientService, AppInfo } from '../cloudflare/cloudflare-client.service';
 import { MarketplaceService } from '../marketplace/marketplace.service';
 import { RegistrationService } from '../registration/registration.service';
 import { AppEventsQueue, appEventResultSchema, appEventSchema } from '../queue/entities/app-events';
@@ -24,7 +24,7 @@ import type { AsyncMutex } from '@/utils/mutex/async-mutex';
 import type { z } from 'zod';
 
 @Injectable()
-export class AppLifecycleService {
+export class AppLifecycleService implements OnApplicationBootstrap {
   constructor(
     private readonly logger: LoggerService,
     private readonly appEventsQueue: AppEventsQueue,
@@ -36,12 +36,19 @@ export class AppLifecycleService {
     private readonly appFilesManager: AppFilesManager,
     private readonly sseService: SSEService,
     private readonly backupManager: BackupManager,
-    private readonly cloudflareTunnelService: CloudflareTunnelService,
+    private readonly cloudflareClientService: CloudflareClientService,
     private readonly registrationService: RegistrationService,
     @Inject(APP_ASYNC_MUTEX) private mutex: AsyncMutex,
   ) {
     this.logger.debug('Subscribing to app events...');
     this.appEventsQueue.onEvent((data, reply) => this.invokeCommand(data, reply));
+  }
+
+  async onApplicationBootstrap() {
+    this.logger.info('Triggering initial Cloudflare sync in 5s...');
+    setTimeout(() => {
+        this.triggerCloudflareSync().catch(e => this.logger.error(`Startup sync failed: ${e.message}`));
+    }, 5000);
   }
 
   async invokeCommand(data: z.infer<typeof appEventSchema>, reply: (response: z.output<typeof appEventResultSchema>) => Promise<void>) {
@@ -50,6 +57,13 @@ export class AppLifecycleService {
     try {
       const command = this.commandFactory.createCommand(data);
       const { success, message } = await command.execute(data.appUrn, data.form);
+      
+      if (success) {
+          this.logger.debug('Command executed successfully, triggering Cloudflare sync...');
+          // Trigger sync to ensure cloud state matches local state (exposed apps)
+          await this.triggerCloudflareSync(); 
+      }
+
       await reply({ success, message });
     } catch (err) {
       this.logger.error('Error invoking command:', err);
@@ -86,6 +100,13 @@ export class AppLifecycleService {
         this.logger.info(`App ${appUrn} started successfully`);
         this.sseService.emit('app', { event: 'start_success', appUrn, appStatus: 'running' });
         await this.appRepository.updateAppById(app.id, { status: 'running', pendingRestart: false });
+        
+        // Check if we need to sync Cloudflare state (if app is exposedLocal and production)
+        const { isProduction: isProdEnv } = this.config.getConfig();
+        if (isProdEnv && app.exposedLocal) {
+            this.logger.info(`[Cloudflare] App ${appUrn} started and is exposedLocal. Triggering sync.`);
+            await this.triggerCloudflareSync();
+        }
       } else {
         this.logger.error(`Failed to start app ${appUrn}: ${message}`);
         this.sseService.emit('app', { event: 'start_error', appUrn, appStatus: 'stopped', error: message });
@@ -204,7 +225,7 @@ export class AppLifecycleService {
       domain: domain ?? null,
       localSubdomain: parsedForm.localSubdomain ?? null,
       openPort: openPort ?? false,
-      exposedLocal: exposedLocal ?? false,
+      exposedLocal: exposedLocal ?? (appInfo.exposable ? true : false),
       appStoreSlug: appStoreId,
       isVisibleOnGuestDashboard,
       enableAuth: enableAuth ?? false,
@@ -217,6 +238,13 @@ export class AppLifecycleService {
         this.logger.info(`App ${appUrn} installed successfully`);
         this.sseService.emit('app', { event: 'install_success', appUrn, appStatus: 'running' });
         await this.appRepository.updateAppById(createdApp.id, { status: 'running' });
+
+        // Check if we need to sync Cloudflare state (if app is exposedLocal)
+        if (createdApp.exposedLocal || (appInfo.exposable && !exposedLocal)) {
+            // Wait for DB consistency/propagation
+            await new Promise(r => setTimeout(r, 2000));
+            await this.triggerCloudflareSync();
+        }
       } else {
         this.sseService.emit('app', { event: 'install_error', appUrn, appStatus: 'missing', error: message });
         this.logger.error(`Failed to install app ${appUrn}: ${message}`);
@@ -248,6 +276,11 @@ export class AppLifecycleService {
         this.sseService.emit('app', { event: 'stop_success', appUrn, appStatus: 'stopped' });
         this.logger.info(`App ${appUrn} stopped successfully`);
         await this.appRepository.updateAppById(app.id, { status: 'stopped' });
+        
+        // Trigger sync to remove route if exposedLocal
+        if (app.exposedLocal) {
+             await this.triggerCloudflareSync();
+        }
       } else {
         this.sseService.emit('app', { event: 'stop_error', appUrn, appStatus: 'running', error: message });
         this.logger.error(`Failed to stop app ${appUrn}: ${message}`);
@@ -313,6 +346,11 @@ export class AppLifecycleService {
         this.logger.info(`App ${appUrn} uninstalled successfully`);
         await this.appRepository.deleteAppById(app.id);
         this.sseService.emit('app', { event: 'uninstall_success', appUrn, appStatus: 'missing' });
+        
+        // Trigger sync to remove route if it was exposedLocal
+        if (app.exposedLocal) {
+            await this.triggerCloudflareSync();
+        }
       } else {
         this.logger.error(`Failed to uninstall app ${appUrn}: ${message}`);
         this.sseService.emit('app', { event: 'uninstall_error', appUrn, appStatus: 'stopped', error: message });
@@ -465,7 +503,6 @@ export class AppLifecycleService {
     });
 
     // Update Cloudflare Tunnel routes if exposedLocal is enabled (production only)
-    // exposedLocal means "published to internet via Cloudflare Tunnel" - routes directly to the app's host port
     const { appName, appStoreId } = extractAppUrn(appUrn);
     const { isProduction: isProdEnv } = this.config.getConfig();
     const oldSubdomain = app.localSubdomain || `${appName}-${appStoreId}`;
@@ -479,57 +516,57 @@ export class AppLifecycleService {
     const subdomainChanged = oldSubdomain !== newSubdomain;
     const _portChanged = oldPort !== newPort;
 
-    // In production, create/update Cloudflare Tunnel route whenever exposedLocal is enabled
-    // This makes the app available on the internet at subdomain.companionintel.com
-    // Or subdomain.orgDomain.companionintel.com if organization is registered
-    // Route goes: Cloudflare Tunnel -> Traefik -> App Container
-    if (isProdEnv && this.cloudflareTunnelService?.isEnabled() && isNowExposedLocal) {
-      try {
-        // Get organization info if available
-        const orgInfo = await this.registrationService.getOrganizationInfo();
-        const organizationInfo = orgInfo ? { tunnelId: orgInfo.tunnelId, domain: orgInfo.domain } : null;
-
-        const domain = organizationInfo ? organizationInfo.domain : 'companionintel.com';
-        this.logger.info(`Creating Cloudflare Tunnel route for ${appUrn}: ` + `${newSubdomain}.${domain} -> Traefik -> App Container`);
-
-        // Delete old route if subdomain changed
-        if (wasExposedLocal && subdomainChanged) {
-          await this.cloudflareTunnelService.deleteAppRoute(oldSubdomain, organizationInfo).catch((err) => {
-            this.logger.warn(`Failed to delete old Cloudflare Tunnel route: ${err}`);
-          });
-        }
-
-        // Always create/update route if exposedLocal is enabled
-        // createAppRoute will update existing route if it already exists
-        // Port is no longer needed as apps go through Traefik
-        await this.cloudflareTunnelService.createAppRoute(newSubdomain, undefined, organizationInfo).catch((err) => {
-          this.logger.warn(`Failed to create Cloudflare Tunnel route: ${err}`);
-        });
-      } catch (error) {
-        // Cloudflare module might not be available, that's okay
-        this.logger.debug(`Cloudflare Tunnel route update skipped: ${error}`);
-      }
-    } else if (isProdEnv && this.cloudflareTunnelService?.isEnabled() && wasExposedLocal && !isNowExposedLocal) {
-      // Delete route if exposedLocal is being disabled
-      try {
-        // Get organization info if available
-        const orgInfo = await this.registrationService.getOrganizationInfo();
-        const organizationInfo = orgInfo ? { tunnelId: orgInfo.tunnelId, domain: orgInfo.domain } : null;
-
-        await this.cloudflareTunnelService.deleteAppRoute(oldSubdomain, organizationInfo).catch((err) => {
-          this.logger.warn(`Failed to delete Cloudflare Tunnel route: ${err}`);
-        });
-      } catch (error) {
-        this.logger.debug(`Cloudflare Tunnel route deletion skipped: ${error}`);
-      }
-    }
-
     if (!changed?.pendingRestart) {
       const pendingRestart = this.hasConfigChanged(app.config, changed?.config || {});
       await this.appRepository.updateAppById(app.id, { pendingRestart });
     }
 
+    // Sync state with Cloudflare whenever exposedLocal is enabled or changed
+    this.logger.info(`[Cloudflare] Config updated for ${appUrn}. Triggering state sync.`);
+    await this.triggerCloudflareSync();
+
     return { requestId };
+  }
+
+  /**
+   * Triggers a full sync of all exposed apps to Cloudflare via CI-Cloud
+   */
+  private async triggerCloudflareSync() {
+    try {
+        const orgInfo = await this.registrationService.getOrganizationInfo();
+        
+        if (!orgInfo) {
+            this.logger.debug('[Cloudflare] Skipping sync: Organization not registered');
+            return;
+        }
+
+        const apps = await this.appRepository.getApps();
+
+        const exposedApps: AppInfo[] = apps
+            .filter(app => {
+                return app.exposedLocal && app.status === 'running' && app.port !== null;
+            })
+            .map(app => ({
+                name: app.appName,
+                subdomain: app.localSubdomain || `${app.appName}-${app.appStoreSlug}`,
+                localPort: app.port as number,
+                protocol: 'http',
+            }));
+
+        // Add Dashboard
+        exposedApps.push({
+            name: 'Dashboard',
+            subdomain: '@',
+            localPort: 3000,
+            protocol: 'http',
+            hostname: process.env.HUB_CONTAINER_NAME || 'ci-os-hub',
+            publicHostname: orgInfo.domain,
+        });
+
+        await this.cloudflareClientService.syncState(orgInfo.id, exposedApps, orgInfo.tunnelId || undefined);
+    } catch (error: any) {
+        this.logger.error(`[Cloudflare] Sync failed: ${error.message}`);
+    }
   }
 
   public async updateApp(params: { appUrn: AppUrn; performBackup: boolean }) {

@@ -35,8 +35,8 @@ build
 Thumbs.db
 
 # Docker
-docker-compose*.yml
-Dockerfile*
+# docker-compose*.yml
+# Dockerfile*
 .dockerignore
 
 # Documentation
@@ -51,4 +51,4 @@ PRODUCTION_SETUP.md
 # Misc
 *.snap
 screenshots
-e2e
+# e2e

@@ -11,7 +11,7 @@
   "forwardPorts": [80, 3000],
   "portsAttributes": {
     "3000": {
-      "label": "Runtipi"
+      "label": "CI-OS-Hub"
     },
     "80": {
       "label": "WebSocket"

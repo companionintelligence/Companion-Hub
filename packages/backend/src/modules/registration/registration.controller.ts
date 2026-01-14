@@ -1,7 +1,6 @@
 import { Body, Controller, Get, Post, Query, Req } from '@nestjs/common';
 import type { Request } from 'express';
 import { RegistrationService } from './registration.service';
-import { CloudflareTunnelService } from '../cloudflare/cloudflare-tunnel.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 
@@ -17,7 +16,6 @@ interface RegisterDeviceDto {
 export class RegistrationController {
   constructor(
     private readonly registrationService: RegistrationService,
-    private readonly cloudflareTunnelService: CloudflareTunnelService,
     private readonly config: ConfigurationService,
   ) {}
 
@@ -65,12 +63,14 @@ export class RegistrationController {
     @Query('organization_id') organizationId: string,
     @Query('organization_name') organizationName: string,
     @Query('subdomain') subdomain: string,
-    @Query('tunnel_id') tunnelId?: string,
+    @Query('tunnel_id') tunnelId: string,
+    @Query('tunnel_token') tunnelToken: string,
+    @Query('api_key') apiKey: string,
   ) {
-    if (!deviceId || !organizationId || !organizationName || !subdomain) {
+    if (!deviceId || !organizationId || !organizationName || !subdomain || !tunnelId || !tunnelToken || !apiKey) {
       return {
         success: false,
-        message: 'Missing required parameters: device_id, organization_id, organization_name, subdomain',
+        message: 'Missing required parameters: device_id, organization_id, organization_name, subdomain, tunnel_id, tunnel_token, api_key',
       };
     }
 
@@ -80,6 +80,8 @@ export class RegistrationController {
       organizationName,
       subdomain,
       tunnelId,
+      tunnelToken,
+      apiKey,
     });
 
     return result;
@@ -129,6 +131,9 @@ export class RegistrationController {
   @ApiOperation({ summary: 'Validate organization name/subdomain availability' })
   @ApiResponse({ status: 200, description: 'Returns validation result' })
   async validateOrganizationName(@Query('name') name: string) {
+    // This used to check locally against Cloudflare but now that logic is centralized in CI-Cloud.
+    // We should ideally proxy this request to CI-Cloud, but for now we'll do basic local validation.
+    
     if (!name || !name.trim()) {
       return {
         available: false,
@@ -155,18 +160,14 @@ export class RegistrationController {
       };
     }
 
-    try {
-      const result = await this.cloudflareTunnelService.validateOrganizationSubdomain(sanitizedName);
-      return result;
-    } catch (error) {
-      return {
-        available: false,
-        dnsAvailable: false,
-        tunnelNameAvailable: false,
-        errors: ['Failed to validate organization name. Please try again.'],
-        error: error instanceof Error ? error.message : 'Unknown error',
-      };
-    }
+    // Since we can't easily check remote availability without an authenticated API call to CI-Cloud (which requires an org token we don't have yet),
+    // we'll optimistically return true for valid formats. The real check happens during registration.
+    return {
+        available: true,
+        dnsAvailable: true,
+        tunnelNameAvailable: true,
+        message: "Format is valid. Availability will be confirmed during registration."
+    };
   }
 
   @Post('register')

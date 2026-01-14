@@ -28,7 +28,7 @@ RUN chmod +x docker-binary
 # ---- RUNNER BASE ----
 FROM node_base AS runner_base
 
-RUN apk add --no-cache curl openssl git
+RUN apk add --no-cache curl openssl git docker-cli
 
 # ---- BUILDER ----
 FROM builder_base AS builder
@@ -45,13 +45,14 @@ COPY ./package.json ./
 COPY ./packages/backend/package.json ./packages/backend/package.json
 COPY ./packages/frontend/package.json ./packages/frontend/package.json
 COPY ./packages/common/package.json ./packages/common/package.json
-COPY ./packages/frontend/scripts ./packages/frontend/scripts
 COPY ./packages/frontend/public ./packages/frontend/public
 
 # Install dependencies
 RUN bun install --frozen-lockfile
 
 COPY ./turbo.json ./turbo.json
+COPY ./tsconfig.json ./
+ARG CACHE_BUST=1
 COPY ./packages ./packages
 RUN bun run build
 
@@ -87,6 +88,7 @@ COPY --from=builder /app/packages/backend/dist ./
 COPY --from=builder /app/packages/backend/assets ./assets
 COPY --from=builder /app/packages/backend/src/core/database/drizzle ./assets/migrations
 COPY --from=builder /app/packages/backend/src/modules/i18n/translations ./assets/translations
+COPY --from=builder /app/packages/backend/src/swagger.json ./packages/backend/src/swagger.json
 COPY --from=builder /app/packages/frontend/dist/client ./assets/frontend
 
 EXPOSE 3000

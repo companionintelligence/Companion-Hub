@@ -8,6 +8,7 @@ import type { AppUrn } from '@runtipi/common/types';
 import { EnvUtils } from '../env/env.utils';
 import type { AppEventFormInput } from '../queue/entities/app-events';
 import { AppFilesManager } from './app-files-manager';
+import { OrganizationRepository } from '../registration/organization.repository';
 
 @Injectable()
 export class AppHelpers {
@@ -17,6 +18,7 @@ export class AppHelpers {
     private readonly filesytem: FilesystemService,
     private readonly envUtils: EnvUtils,
     private readonly logger: LoggerService,
+    private readonly organizationRepository: OrganizationRepository,
   ) {}
 
   /**
@@ -44,6 +46,32 @@ export class AppHelpers {
     const envMap = this.envUtils.envStringToMap(baseEnvFile?.toString() ?? '');
 
     const { appName, appStoreId } = extractAppUrn(appUrn);
+
+    // Fetch organization info to get the correct domain
+    // This fixes the issue where apps are generated with the default ci.computer domain instead of the user's specific subdomain
+    const org = await this.organizationRepository.getFirstOrganization();
+
+    // Determine the authoritative domain
+    // Priority: Organization DB -> User Settings -> Default
+    let authoritativeDomain = userSettings.domain;
+    if (org && org.domain) {
+      authoritativeDomain = org.domain;
+    }
+    if (!authoritativeDomain) {
+      authoritativeDomain = 'ci.computer';
+    }
+
+    // Ensure DOMAIN and LOCAL_DOMAIN are set (required for Traefik label interpolation)
+    // We overwrite the value from the .env file if it's the default "ci.computer" but we have a better one from the DB or settings
+    const currentEnvDomain = envMap.get('DOMAIN');
+    if (!currentEnvDomain || (currentEnvDomain === 'ci.computer' && authoritativeDomain !== 'ci.computer')) {
+      envMap.set('DOMAIN', authoritativeDomain);
+      this.logger.debug(`Overriding DOMAIN with authoritative domain: ${authoritativeDomain}`);
+    }
+
+    if (!envMap.has('LOCAL_DOMAIN')) {
+      envMap.set('LOCAL_DOMAIN', userSettings.localDomain || 'tipi.lan');
+    }
 
     // Default always present env variables
     if (config.port || form.port) {
@@ -193,12 +221,19 @@ export class AppHelpers {
 
     if (form.exposedLocal) {
       const subdomain = form.localSubdomain ? form.localSubdomain : `${appName}-${appStoreId}`;
-      envMap.set('APP_LOCAL_DOMAIN', `${subdomain}.${envMap.get('LOCAL_DOMAIN')}`);
+      // exposedLocal means "publish to internet via Cloudflare"
+      // Container should think it's public and HTTPS (even though Traefik receives HTTP from Cloudflare)
+      const publicDomain = envMap.get('DOMAIN') || 'ci.computer';
+      envMap.set('APP_LOCAL_DOMAIN', `${subdomain}.${envMap.get('LOCAL_DOMAIN') || 'tipi.lan'}`);
 
       if (!form.openPort) {
+        // App thinks it's public HTTPS (for proper URL generation and SSL handling)
+        // Traefik will set X-Forwarded-Proto: https header so apps know they're behind HTTPS
+        envMap.set('APP_EXPOSED', 'true');
+        envMap.set('APP_EXPOSED_DOMAIN', `${subdomain}.${publicDomain}`);
         envMap.set('APP_PROTOCOL', 'https');
-        envMap.set('APP_DOMAIN', `${subdomain}.${envMap.get('LOCAL_DOMAIN')}`);
-        envMap.set('APP_HOST', `${subdomain}.${envMap.get('LOCAL_DOMAIN')}`);
+        envMap.set('APP_DOMAIN', `${subdomain}.${publicDomain}`);
+        envMap.set('APP_HOST', `${subdomain}.${publicDomain}`);
       }
     }
 
@@ -208,6 +243,16 @@ export class AppHelpers {
       envMap.set('APP_HOST', form.domain);
       envMap.set('APP_EXPOSED_DOMAIN', form.domain);
       envMap.set('APP_PROTOCOL', 'https');
+    }
+
+    if (appName === 'cloudflared') {
+      const org = await this.organizationRepository.getFirstOrganization();
+      if (org && org.tunnelToken && org.tunnelId) {
+        envMap.set('TUNNEL_TOKEN', org.tunnelToken);
+        envMap.set('TUNNEL_ID', org.tunnelId);
+      } else {
+        this.logger.warn('cloudflared app installation requested, but no organization/tunnel information found.');
+      }
     }
 
     await this.appFilesManager.writeAppEnv(appUrn, this.envUtils.envMapToString(envMap));
