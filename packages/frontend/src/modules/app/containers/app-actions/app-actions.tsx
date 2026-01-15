@@ -232,7 +232,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
 
   const subdomain = metadata.localSubdomain || app?.localSubdomain || info.urn.split(':').join('-');
   const organizationSlug = userSettings.ciHubOrganizationSlug;
-  const domainSuffix = organizationSlug ? `.${organizationSlug}.ci.computer` : '.ci.computer';
+  const domainSuffix = `-${organizationSlug}.ci.computer`;
   const appUrl = `https://${subdomain}${domainSuffix}${info.url_suffix || ''}`;
 
   useEffect(() => {
@@ -255,7 +255,11 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
           });
 
           if (!response.ok) {
-            if (isMounted) setUrlAvailable(false);
+            // If check fails, stop loading and allow user to try
+            if (isMounted) {
+              setUrlAvailable(null);
+              setIsCheckingUrl(false);
+            }
             return;
           }
 
@@ -276,9 +280,10 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
             }
           }
         } catch (_error) {
-          // If check fails, assume URL is not available yet (keep polling)
+          // If check request fails (network error calling backend), stop loading and allow user to try
           if (isMounted) {
-            setUrlAvailable(false);
+            setUrlAvailable(null);
+            setIsCheckingUrl(false);
           }
         }
       };
