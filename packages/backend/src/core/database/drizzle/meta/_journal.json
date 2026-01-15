@@ -232,6 +232,13 @@
       "when": 1767953381937,
       "tag": "0032_cloudy_tyrannus",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1768516908692,
+      "tag": "0033_known_quasar",
+      "breakpoints": true
     }
   ]
 }

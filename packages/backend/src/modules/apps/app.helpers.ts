@@ -8,7 +8,7 @@ import type { AppUrn } from '@runtipi/common/types';
 import { EnvUtils } from '../env/env.utils';
 import type { AppEventFormInput } from '../queue/entities/app-events';
 import { AppFilesManager } from './app-files-manager';
-import { OrganizationRepository } from '../registration/organization.repository';
+import { DeviceRegistrationRepository } from '../registration/device-registration.repository';
 
 @Injectable()
 export class AppHelpers {
@@ -18,7 +18,7 @@ export class AppHelpers {
     private readonly filesytem: FilesystemService,
     private readonly envUtils: EnvUtils,
     private readonly logger: LoggerService,
-    private readonly organizationRepository: OrganizationRepository,
+    private readonly deviceRegistrationRepository: DeviceRegistrationRepository,
   ) {}
 
   /**
@@ -49,7 +49,7 @@ export class AppHelpers {
 
     // Fetch organization info to get the correct domain
     // This fixes the issue where apps are generated with the default ci.computer domain instead of the user's specific subdomain
-    const org = await this.organizationRepository.getFirstOrganization();
+    const org = await this.deviceRegistrationRepository.getFirstDeviceRegistration();
 
     // Determine the authoritative domain
     // Priority: Organization DB -> User Settings -> Default
@@ -246,7 +246,7 @@ export class AppHelpers {
     }
 
     if (appName === 'cloudflared') {
-      const org = await this.organizationRepository.getFirstOrganization();
+      const org = await this.deviceRegistrationRepository.getFirstDeviceRegistration();
       if (org && org.tunnelToken && org.tunnelId) {
         envMap.set('TUNNEL_TOKEN', org.tunnelToken);
         envMap.set('TUNNEL_ID', org.tunnelId);

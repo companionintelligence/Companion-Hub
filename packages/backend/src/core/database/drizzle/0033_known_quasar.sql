@@ -1,0 +1,1 @@
+ALTER TABLE "organization" RENAME TO "device_registration";

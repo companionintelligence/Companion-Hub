@@ -7,19 +7,19 @@ import { eq } from 'drizzle-orm';
 export class DeviceRegistrationRepository {
   constructor(private readonly databaseService: DatabaseService) {}
 
-  async getOrganizationById(orgId: string) {
+  async getDeviceRegistrationById(orgId: string) {
     const result = await this.databaseService.db.select().from(deviceRegistration).where(eq(deviceRegistration.id, orgId)).limit(1);
 
     return result[0] || null;
   }
 
-  async createOrganization(data: { id: string; name: string; tunnelId: string | null; tunnelToken?: string | null; domain: string }) {
+  async createDeviceRegistration(data: { id: string; name: string; tunnelId: string | null; tunnelToken?: string | null; domain: string }) {
     const result = await this.databaseService.db.insert(deviceRegistration).values(data).returning();
 
     return result[0];
   }
 
-  async updateOrganization(
+  async updateDeviceRegistration(
     orgId: string,
     data: Partial<{
       name: string;
@@ -37,19 +37,19 @@ export class DeviceRegistrationRepository {
     return result[0] || null;
   }
 
-  async hasAnyOrganization(): Promise<boolean> {
+  async hasAnyDeviceRegistration(): Promise<boolean> {
     const result = await this.databaseService.db.select().from(deviceRegistration).limit(1);
 
     return result.length > 0;
   }
 
-  async getFirstOrganization() {
+  async getFirstDeviceRegistration() {
     const result = await this.databaseService.db.select().from(deviceRegistration).limit(1);
 
     return result[0] || null;
   }
 
-  async deleteOrganization(orgId: string) {
-    await this.databaseService.db.delete(organization).where(eq(organization.id, orgId));
+  async deleteDeviceRegistration(orgId: string) {
+    await this.databaseService.db.delete(deviceRegistration).where(eq(deviceRegistration.id, orgId));
   }
 }
