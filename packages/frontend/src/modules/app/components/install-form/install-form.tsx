@@ -206,7 +206,7 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
                 {...register('localSubdomain')}
                 label={t('APP_INSTALL_FORM_LOCAL_SUBDOMAIN')}
                 error={errors.localSubdomain?.message || dnsAvailabilityError || undefined}
-                disabled={loading || isCheckingDns}
+                disabled={loading}
                 placeholder={info.urn.split(':').join('-')}
               />
             </div>

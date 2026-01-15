@@ -2,7 +2,7 @@ import { Injectable, type OnApplicationBootstrap, Inject, forwardRef } from '@ne
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { CloudflareClientService } from '../cloudflare/cloudflare-client.service';
-import { OrganizationRepository } from './organization.repository';
+import { DeviceRegistrationRepository } from './device-registration.repository';
 import { RepoEventsQueue } from '../queue/entities/repo-events';
 import si from 'systeminformation';
 
@@ -15,7 +15,7 @@ export class RegistrationService implements OnApplicationBootstrap {
     private readonly config: ConfigurationService,
     private readonly logger: LoggerService,
     @Inject(forwardRef(() => CloudflareClientService)) private readonly cloudflareClientService: CloudflareClientService,
-    private readonly organizationRepository: OrganizationRepository,
+    private readonly deviceRegistrationRepository: DeviceRegistrationRepository,
     private readonly repoQueue: RepoEventsQueue,
   ) {}
 
@@ -31,13 +31,13 @@ export class RegistrationService implements OnApplicationBootstrap {
 
       // Check for missing Tunnel ID and recover if needed
       if (isRegistered) {
-        const org = await this.organizationRepository.getFirstOrganization();
+        const org = await this.deviceRegistrationRepository.getFirstDeviceRegistration();
         if (org && !org.tunnelId) {
           const { cloudflareTunnelId } = this.config.getConfig();
 
           if (cloudflareTunnelId) {
             this.logger.info(`Recovering Tunnel ID from environment: ${cloudflareTunnelId}`);
-            await this.organizationRepository.updateOrganization(org.id, {
+            await this.deviceRegistrationRepository.updateDeviceRegistration(org.id, {
               tunnelId: cloudflareTunnelId,
             });
           } else {
@@ -79,7 +79,7 @@ export class RegistrationService implements OnApplicationBootstrap {
                     });
 
                     if (tunnelCredentials) {
-                      await this.organizationRepository.updateOrganization(org.id, {
+                      await this.deviceRegistrationRepository.updateDeviceRegistration(org.id, {
                         tunnelId: tunnelCredentials.tunnelId,
                         tunnelToken: tunnelCredentials.token,
                       });
@@ -132,7 +132,7 @@ export class RegistrationService implements OnApplicationBootstrap {
 
     // Check if we have any organization in the database (indicates successful registration)
     try {
-      const hasOrg = await this.organizationRepository.hasAnyOrganization();
+      const hasOrg = await this.deviceRegistrationRepository.hasAnyDeviceRegistration();
       if (hasOrg) {
         this._isRegistered = true;
         return true;
@@ -153,11 +153,11 @@ export class RegistrationService implements OnApplicationBootstrap {
   private async handleLicenseCheckFailure(orgId?: string) {
     this.logger.warn('Resetting registration due to license check failure.');
     if (orgId) {
-      await this.organizationRepository.deleteOrganization(orgId);
+      await this.deviceRegistrationRepository.deleteDeviceRegistration(orgId);
     } else {
-      const org = await this.organizationRepository.getFirstOrganization();
+      const org = await this.deviceRegistrationRepository.getFirstDeviceRegistration();
       if (org) {
-        await this.organizationRepository.deleteOrganization(org.id);
+        await this.deviceRegistrationRepository.deleteDeviceRegistration(org.id);
       }
     }
     this._isRegistered = false;
@@ -281,14 +281,14 @@ export class RegistrationService implements OnApplicationBootstrap {
     activationResult: { organization_name: string; tunnel_id: string; tunnel_token: string; slug: string; subdomain: string },
   ): Promise<void> {
     // Check if organization infrastructure already exists
-    const existingOrg = await this.organizationRepository.getOrganizationById(organizationId);
+    const existingOrg = await this.deviceRegistrationRepository.getDeviceRegistrationById(organizationId);
     if (existingOrg) {
       this.logger.debug(`Organization infrastructure already exists for ${organizationId}`);
       
       // Update tunnel credentials if provided (from device registration)
       if (activationResult?.tunnel_id && activationResult?.tunnel_token) {
         this.logger.info(`Updating organization ${organizationId} with tunnel credentials from registration`);
-        await this.organizationRepository.updateOrganization(organizationId, {
+        await this.deviceRegistrationRepository.updateDeviceRegistration(organizationId, {
           tunnelId: activationResult.tunnel_id,
           tunnelToken: activationResult.tunnel_token,
         });
@@ -373,7 +373,7 @@ export class RegistrationService implements OnApplicationBootstrap {
       }
 
       // Store organization info in database
-      await this.organizationRepository.createOrganization({
+      await this.deviceRegistrationRepository.createDeviceRegistration({
         id: organizationId,
         name: orgName!,
         tunnelId: tunnelId,
@@ -448,7 +448,7 @@ export class RegistrationService implements OnApplicationBootstrap {
     // First try to get by configured organization ID
     const { ciHubOrganizationId } = this.config.getConfig();
     if (ciHubOrganizationId) {
-      const org = await this.organizationRepository.getOrganizationById(ciHubOrganizationId);
+      const org = await this.deviceRegistrationRepository.getDeviceRegistrationById(ciHubOrganizationId);
       if (org) {
         return org;
       }
@@ -456,7 +456,7 @@ export class RegistrationService implements OnApplicationBootstrap {
 
     // If not found, get the first organization (from manual registration)
     // Since we only support one organization per hub, return the first one
-    return this.organizationRepository.getFirstOrganization();
+    return this.deviceRegistrationRepository.getFirstDeviceRegistration();
   }
 
   /**
