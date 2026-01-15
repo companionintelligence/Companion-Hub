@@ -1,5 +1,6 @@
 import { TranslatableError } from '@/common/error/translatable-error';
 import { createAppUrn, extractAppUrn } from '@/common/helpers/app-helpers';
+import { parseComposeJson } from '@runtipi/common/schemas';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { SSEService } from '@/core/sse/sse.service';
@@ -540,29 +541,44 @@ export class AppLifecycleService implements OnApplicationBootstrap {
             return;
         }
 
+        if (!orgInfo.tunnelId) {
+            this.logger.warn(`[Cloudflare] Skipping sync: Organization ${orgInfo.id} exists but has no tunnelId. Please complete device registration to provision tunnel.`);
+            return;
+        }
+
         const apps = await this.appRepository.getApps();
+        const userSettings = this.config.getConfig().userSettings;
+        const localDomain = userSettings.localDomain || 'tipi.lan';
 
         const exposedApps: AppInfo[] = apps
             .filter(app => {
                 return app.exposedLocal && app.status === 'running' && app.port !== null;
             })
-            .map(app => ({
-                name: app.appName,
-                subdomain: app.localSubdomain || `${app.appName}-${app.appStoreSlug}`,
-                localPort: app.port as number,
-                protocol: 'http',
-                publicHostname: `${app.localSubdomain || `${app.appName}-${app.appStoreSlug}`}.${orgInfo.domain}`,
-            }));
+            .map(app => {
+                // Construct URN for this app
+                const appUrn = createAppUrn(app.appName, app.appStoreSlug);
+                const subdomain = app.localSubdomain || `${app.appName}-${app.appStoreSlug}`;
+                
+                // For exposedLocal apps, they go through Traefik on port 80
+                // Traefik routes based on Host header matching: ${subdomain}.${LOCAL_DOMAIN}
+                // So we need to send the LOCAL_DOMAIN hostname, not the public domain
+                const traefikHostname = `${subdomain}.${localDomain}`;
+                
+                return {
+                    name: app.appName,
+                    subdomain: subdomain,
+                    localPort: 80, // Traefik port - Traefik routes to the app based on Host header
+                    protocol: 'http' as const,
+                    hostname: 'host.docker.internal', // Always use host.docker.internal to reach Traefik
+                    originServerName: traefikHostname, // This sets the Host header that Traefik expects
+                    // Don't set publicHostname - let CI-Cloud construct it from subdomain + org slug
+                    // This ensures consistent format without device subdomain contamination
+                };
+            });
 
-        // Add Dashboard
-        exposedApps.push({
-            name: 'Dashboard',
-            subdomain: '@',
-            localPort: 3000,
-            protocol: 'http',
-            hostname: process.env.HUB_CONTAINER_NAME || 'ci-os-hub',
-            publicHostname: orgInfo.domain,
-        });
+        // Don't add Dashboard here - it's already registered during device registration
+        // Adding it here would overwrite the Hub's domain (devicename-orgname.ci.computer)
+        // The Dashboard/Hub is accessible at the device subdomain registered during setup
 
         await this.cloudflareClientService.syncState(orgInfo.id, exposedApps, orgInfo.tunnelId || undefined);
     } catch (error: any) {

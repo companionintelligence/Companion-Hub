@@ -132,7 +132,46 @@ export class AppService {
       path.join(dataDir, 'repos'),
       path.join(dataDir, 'backups'),
       path.join(appDataDir),
+      path.join(dataDir, 'state', 'traefik', 'config'),
+      path.join(dataDir, 'state', 'traefik', 'dynamic'),
+      path.join(dataDir, 'state', 'traefik', 'tls'),
     ]);
+
+    // Copy Traefik config files from assets to shared location
+    try {
+      this.logger.info('Copying Traefik config files...');
+      const assetsTraefikDir = path.join(process.cwd(), 'assets', 'traefik');
+      const traefikConfigDest = path.join(dataDir, 'state', 'traefik', 'config');
+      
+      // Ensure config directory exists
+      await this.filesystem.createDirectory(traefikConfigDest);
+      
+      // Copy traefik.yml
+      const traefikYmlSrc = path.join(assetsTraefikDir, 'traefik.yml');
+      const traefikYmlDest = path.join(traefikConfigDest, 'traefik.yml');
+      if (await this.filesystem.pathExists(traefikYmlSrc)) {
+        const content = await this.filesystem.readTextFile(traefikYmlSrc);
+        await this.filesystem.writeTextFile(traefikYmlDest, content);
+        this.logger.info('Copied traefik.yml');
+      } else {
+        this.logger.warn(`Traefik config file not found at ${traefikYmlSrc}`);
+      }
+
+      // Copy dynamic config
+      const dynamicSrc = path.join(assetsTraefikDir, 'dynamic', 'dynamic.yml');
+      const dynamicDestDir = path.join(dataDir, 'state', 'traefik', 'dynamic');
+      await this.filesystem.createDirectory(dynamicDestDir);
+      const dynamicDest = path.join(dynamicDestDir, 'dynamic.yml');
+      if (await this.filesystem.pathExists(dynamicSrc)) {
+        const content = await this.filesystem.readTextFile(dynamicSrc);
+        await this.filesystem.writeTextFile(dynamicDest, content);
+        this.logger.info('Copied dynamic.yml');
+      } else {
+        this.logger.warn(`Traefik dynamic config file not found at ${dynamicSrc}`);
+      }
+    } catch (error) {
+      this.logger.warn(`Failed to copy Traefik config files: ${error instanceof Error ? error.message : error}. Traefik may not start correctly.`);
+    }
 
     // Create media folders (with timeout to prevent hanging)
     this.logger.info('Creating media folders');

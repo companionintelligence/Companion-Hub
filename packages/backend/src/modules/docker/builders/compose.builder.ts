@@ -4,6 +4,7 @@ import { type Service, type ServiceInput, serviceSchema } from '@runtipi/common/
 import type { AppUrn } from '@runtipi/common/types';
 import * as yaml from 'yaml';
 import { type BuiltService, ServiceBuilder } from './service.builder';
+import { TraefikLabelsBuilder } from './traefik-labels.builder';
 import { z } from 'zod';
 
 interface Network {
@@ -137,8 +138,25 @@ export class DockerComposeBuilder {
       'ci-os-hub.appurn': appUrn,
     };
 
-    // Merge default labels with extra labels from app config
-    service.setLabels({ ...defaultLabels, ...params.extraLabels }).interpolateVariables(`${appName}-${appStoreId}`);
+    // Generate Traefik labels if exposedLocal is true
+    let traefikLabels: Record<string, string | boolean> = {};
+    if (form.exposedLocal && params.isMain && params.internalPort) {
+      const traefikBuilder = new TraefikLabelsBuilder({
+        internalPort: params.internalPort,
+        appId: appName,
+        storeId: appStoreId,
+        exposedLocal: form.exposedLocal,
+        enableAuth: form.enableAuth,
+        localSubdomain: form.localSubdomain,
+      });
+      traefikBuilder.addExposedLocalLabels();
+      traefikLabels = traefikBuilder.build();
+    }
+
+    // Merge default labels, Traefik labels, and extra labels from app config
+    // Pass localDomain to interpolateVariables to replace ${LOCAL_DOMAIN} with actual value
+    service.setLabels({ ...defaultLabels, ...traefikLabels, ...params.extraLabels })
+      .interpolateVariables(`${appName}-${appStoreId}`, localDomain);
 
     return service.build();
   };

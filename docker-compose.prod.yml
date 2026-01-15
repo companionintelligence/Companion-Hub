@@ -53,6 +53,7 @@ services:
         TIPI_VERSION: ${TIPI_VERSION:-4.5.0}
         LOCAL: ${LOCAL:-false}
         TARGETARCH: ${TARGETARCH:-amd64}
+        DOCKER_PLATFORM: ${DOCKER_PLATFORM:-linux/amd64}
       # Enable BuildKit cache for faster rebuilds
       # Note: Requires BuildKit with docker-container driver or containerd image store
       # Uncomment below if you have BuildKit configured with a compatible driver:
@@ -118,6 +119,30 @@ services:
     labels:
       ci-os-hub.managed: true
 
+  traefik:
+    image: traefik:v3.0
+    container_name: ${TRAEFIK_CONTAINER_NAME:-traefik}
+    restart: unless-stopped
+    command:
+      - --configfile=/etc/traefik/traefik.yml
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:8080"  # Dashboard
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Mount Traefik config files individually to avoid mount conflicts
+      - ${RUNTIPI_STATE_PATH:-.internal}/state/traefik/config/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ${RUNTIPI_STATE_PATH:-.internal}/state/traefik/dynamic:/etc/traefik/dynamic:ro
+      - ${RUNTIPI_STATE_PATH:-.internal}/state/traefik/acme.json:/shared/acme.json:ro
+      - ${RUNTIPI_STATE_PATH:-.internal}/state/traefik/tls:/etc/traefik/tls:ro
+    networks:
+      - ci_os_hub_network
+    depends_on:
+      - ci-os-hub
+    labels:
+      ci-os-hub.managed: true
+
   cloudflared:
     image: cloudflare/cloudflared:latest
     container_name: ${CLOUDFLARED_CONTAINER_NAME:-cloudflared}
@@ -135,6 +160,7 @@ services:
       - ci_os_hub_network
     depends_on:
       - ci-os-hub
+      - traefik
 
 networks:
   ci_os_hub_network:

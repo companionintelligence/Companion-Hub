@@ -1,9 +1,14 @@
 ARG NODE_VERSION="jod"
 ARG ALPINE_VERSION="3.21"
 ARG BUN_VERSION="1.3.0"
+ARG BUILDPLATFORM
+ARG TARGETPLATFORM
+ARG TARGETARCH=amd64
+ARG DOCKER_PLATFORM=linux/amd64
 
-FROM oven/bun:${BUN_VERSION}-alpine AS bun_base
-FROM node:${NODE_VERSION}-alpine${ALPINE_VERSION} AS node_base
+# Use BUILDPLATFORM if set (BuildKit), otherwise use DOCKER_PLATFORM, fallback to linux/amd64
+FROM --platform=${BUILDPLATFORM:-${DOCKER_PLATFORM:-linux/amd64}} oven/bun:${BUN_VERSION}-alpine AS bun_base
+FROM --platform=${BUILDPLATFORM:-${DOCKER_PLATFORM:-linux/amd64}} node:${NODE_VERSION}-alpine${ALPINE_VERSION} AS node_base
 
 # ---- BUILDER BASE ----
 FROM bun_base AS builder_base
@@ -16,14 +21,19 @@ ENV TARGETARCH=${TARGETARCH}
 
 RUN apk add --no-cache curl python3 make g++ git
 
-RUN echo "Building for ${TARGETARCH}"
+RUN echo "Building for ${TARGETARCH:-amd64}"
 RUN if [ "${TARGETARCH}" = "arm64" ]; then \
       curl -L -o docker-binary "https://github.com/docker/compose/releases/download/$DOCKER_COMPOSE_VERSION/docker-compose-linux-aarch64"; \
-      elif [ "${TARGETARCH}" = "amd64" ]; then \
+    elif [ "${TARGETARCH}" = "amd64" ] || [ -z "${TARGETARCH}" ]; then \
       curl -L -o docker-binary "https://github.com/docker/compose/releases/download/$DOCKER_COMPOSE_VERSION/docker-compose-linux-x86_64"; \
-      fi
+    else \
+      echo "ERROR: Unsupported TARGETARCH: ${TARGETARCH}" && exit 1; \
+    fi
 
-RUN chmod +x docker-binary
+RUN chmod +x docker-binary && \
+    ls -lh docker-binary && \
+    echo "Binary downloaded successfully for ${TARGETARCH:-amd64}" && \
+    (./docker-binary version > /dev/null 2>&1 && echo "Binary verification passed" || echo "Warning: Binary verification failed, but continuing...")
 
 # ---- RUNNER BASE ----
 FROM node_base AS runner_base
@@ -81,6 +91,8 @@ RUN --mount=type=cache,target=/root/.npm \
     npm install --no-save --omit=dev argon2 class-transformer
 
 COPY --from=builder_base /deps/docker-binary /usr/local/bin/docker-compose
+RUN chmod +x /usr/local/bin/docker-compose && \
+    ls -lh /usr/local/bin/docker-compose
 COPY --from=builder /app/package.json ./
 COPY --from=builder /app/packages/backend/dist ./
 

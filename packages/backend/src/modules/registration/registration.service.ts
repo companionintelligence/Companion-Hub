@@ -284,6 +284,21 @@ export class RegistrationService implements OnApplicationBootstrap {
     const existingOrg = await this.organizationRepository.getOrganizationById(organizationId);
     if (existingOrg) {
       this.logger.debug(`Organization infrastructure already exists for ${organizationId}`);
+      
+      // Update tunnel credentials if provided (from device registration)
+      if (activationResult?.tunnel_id && activationResult?.tunnel_token) {
+        this.logger.info(`Updating organization ${organizationId} with tunnel credentials from registration`);
+        await this.organizationRepository.updateOrganization(organizationId, {
+          tunnelId: activationResult.tunnel_id,
+          tunnelToken: activationResult.tunnel_token,
+        });
+        
+        // Initialize tunnel with new credentials
+        await this.cloudflareClientService.initializeTunnel(organizationId, {
+          tunnelId: activationResult.tunnel_id,
+          token: activationResult.tunnel_token,
+        });
+      }
       return;
     }
 

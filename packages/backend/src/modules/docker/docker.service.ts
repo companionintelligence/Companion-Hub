@@ -90,26 +90,69 @@ export class DockerService {
 
     this.logger.info(`Running docker compose with args ${args.join(' ')} from directory ${composeDir}`);
 
-    const cmd = spawn('docker-compose', args, {
-      cwd: composeDir, // Set working directory to compose file's directory
+    // Try docker-compose first, fallback to docker compose plugin if binary is corrupted
+    return this.runDockerCompose(['docker-compose', ...args], composeDir, isCustomConfig).catch(async (error: any) => {
+      // Check for ENOEXEC or any spawn error
+      if (error?.code === 'ENOEXEC' || error?.message?.includes('ENOEXEC') || error?.message?.includes('spawn')) {
+        this.logger.warn(`docker-compose binary failed (${error?.code || error?.message}), falling back to docker compose plugin`);
+        
+        // Verify docker compose is available before using it
+        try {
+          const testCmd = spawn('docker', ['compose', 'version'], { stdio: 'pipe' });
+          await new Promise<void>((resolve, reject) => {
+            testCmd.on('close', (code) => {
+              if (code === 0) {
+                resolve();
+              } else {
+                reject(new Error(`docker compose not available (exit code: ${code})`));
+              }
+            });
+            testCmd.on('error', reject);
+          });
+          
+          this.logger.info('docker compose plugin is available, using fallback');
+          // Use docker compose plugin instead (docker-cli is installed in the container)
+          return this.runDockerCompose(['docker', 'compose', ...args], composeDir, isCustomConfig);
+        } catch (fallbackError) {
+          this.logger.error('docker compose plugin is not available, cannot fallback', fallbackError);
+          throw new Error(`docker-compose binary failed and docker compose plugin is not available: ${error.message}`);
+        }
+      }
+      throw error;
+    });
+  }
+
+  private async runDockerCompose(command: string[], cwd: string, isCustomConfig: boolean) {
+    // Log the full command for debugging
+    this.logger.debug(`Executing: ${command[0]} ${command.slice(1).join(' ')}`);
+    
+    const cmd = spawn(command[0], command.slice(1), {
+      cwd, // Set working directory to compose file's directory
     });
     const stdout: string[] = [];
     const stderr: string[] = [];
 
-    const exitCode = await new Promise((resolve) => {
+    const exitCode = await new Promise<number>((resolve, reject) => {
+      cmd.on('error', (error: NodeJS.ErrnoException) => {
+        this.logger.error(`Failed to spawn ${command[0]}: ${error.message}`);
+        if (error.code === 'ENOEXEC') {
+          this.logger.error(`${command[0]} binary cannot be executed. This usually means the binary is corrupted or for the wrong architecture.`);
+        }
+        reject(error);
+      });
       cmd.stdout.on('data', (data) => {
-        this.logger.debug(`docker-compose: ${String(data).trim()}`);
+        this.logger.debug(`${command[0]}: ${String(data).trim()}`);
         stdout.push(String(data).trim());
       });
       cmd.stderr.on('data', (data) => {
-        this.logger.debug(`docker-compose: ${String(data).trim()}`);
+        this.logger.debug(`${command[0]}: ${String(data).trim()}`);
         stderr.push(String(data).trim());
       });
       cmd.on('close', resolve);
     });
 
     if (exitCode !== 0) {
-      this.logger.info(`Docker-compose exited with code ${exitCode}`);
+      this.logger.info(`${command[0]} exited with code ${exitCode}`);
       if (isCustomConfig) {
         this.logger.warn('User-config detected, please make sure your configuration is correct before opening an issue');
       }
@@ -127,6 +170,13 @@ export class DockerService {
       args.push('logs', '--follow', '-n', maxLines.toString());
 
       const logs = spawn('docker-compose', args, { stdio: 'pipe' });
+      
+      logs.on('error', (error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOEXEC') {
+          this.logger.error('docker-compose binary cannot be executed. Falling back to docker compose plugin.');
+          // Note: For streams, we can't easily fallback, but the error will be caught below
+        }
+      });
 
       logs.on('error', () => {
         logs.kill('SIGINT');
