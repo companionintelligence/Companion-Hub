@@ -551,6 +551,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
                 subdomain: app.localSubdomain || `${app.appName}-${app.appStoreSlug}`,
                 localPort: app.port as number,
                 protocol: 'http',
+                publicHostname: `${app.localSubdomain || `${app.appName}-${app.appStoreSlug}`}.${orgInfo.domain}`,
             }));
 
         // Add Dashboard
