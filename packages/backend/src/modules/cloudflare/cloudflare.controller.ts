@@ -2,6 +2,8 @@ import { Controller, Get, Post, Query, UseGuards, HttpException, HttpStatus } fr
 import { AuthGuard } from '../auth/auth.guard';
 import { CloudflareClientService } from './cloudflare-client.service';
 import { ApiResponse } from '@nestjs/swagger';
+import axios from 'axios';
+import * as https from 'https';
 
 @UseGuards(AuthGuard)
 @Controller('cloudflare')
@@ -45,22 +47,19 @@ export class CloudflareController {
     }
 
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 10000); // Increased to 10 seconds for DNS resolution
-
-      const response = await fetch(url, {
-        method: 'HEAD',
-        signal: controller.signal,
-        redirect: 'follow',
+      // Use axios with relaxed SSL verification to handle self-signed certs or local dev environments
+      const agent = new https.Agent({
+        rejectUnauthorized: false,
       });
 
-      clearTimeout(timeoutId);
+      const response = await axios.head(url, {
+        httpsAgent: agent,
+        timeout: 10000,
+        validateStatus: (status) => status < 500, // resolved for status < 500
+      });
 
-      // Consider 2xx, 3xx, and 4xx as "available" (server is responding)
-      // Only 5xx or network errors mean unavailable
-      const available = response.status < 500;
       return {
-        available,
+        available: true,
         status: response.status,
         statusText: response.statusText,
       };
@@ -68,12 +67,14 @@ export class CloudflareController {
       // Network errors, timeouts, DNS errors, etc. mean unavailable
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       const isDnsError = errorMessage.includes('ENOTFOUND') || errorMessage.includes('getaddrinfo') || errorMessage.includes('DNS');
-      
+
       return {
         available: false,
         error: errorMessage,
         isDnsError,
-        suggestion: isDnsError ? 'DNS record may not exist or may not have propagated yet. Check Cloudflare dashboard or try syncing DNS records.' : undefined,
+        suggestion: isDnsError
+          ? 'DNS record may not exist or may not have propagated yet. Check Cloudflare dashboard or try syncing DNS records.'
+          : undefined,
       };
     }
   }
