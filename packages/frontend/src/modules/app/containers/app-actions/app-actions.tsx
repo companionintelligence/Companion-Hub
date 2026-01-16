@@ -231,7 +231,8 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
   const [isCheckingUrl, setIsCheckingUrl] = useState(false);
 
   const subdomain = metadata.localSubdomain || app?.localSubdomain || info.urn.split(':').join('-');
-  const organizationSlug = userSettings.ciHubOrganizationSlug;
+  // Ensure slug is actually a slug (lowercase, dashes) in case it contains the Org Name
+  const organizationSlug = (userSettings.ciHubOrganizationSlug || '').toLowerCase().replace(/\s+/g, '-');
   const domainSuffix = `-${organizationSlug}.ci.computer`;
   const appUrl = `https://${subdomain}${domainSuffix}${info.url_suffix || ''}`;
 

@@ -84,6 +84,7 @@ export default defineConfig({
   },
   build: {
     sourcemap: true,
+    assetsDir: '',
   },
   esbuild: {
     jsxInject: isVitest ? `import React from 'react'` : undefined,

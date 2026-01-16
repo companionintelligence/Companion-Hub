@@ -66,8 +66,9 @@ const imports: (DynamicModule | typeof I18nModule)[] = [
   CustomAppsModule,
 ];
 
-const { NODE_ENV } = process.env;
-if (NODE_ENV === 'production') {
+const { NODE_ENV, SERVE_STATIC } = process.env;
+
+if (NODE_ENV === 'production' || SERVE_STATIC === 'true') {
   imports.push(
     ServeStaticModule.forRoot({
       rootPath: path.join(APP_DIR, 'assets', 'frontend'),

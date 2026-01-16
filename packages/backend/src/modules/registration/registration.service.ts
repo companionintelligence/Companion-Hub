@@ -394,6 +394,7 @@ export class RegistrationService implements OnApplicationBootstrap {
       // Wait for DNS resolution before returning
       // This ensures that when the user is redirected, the domain is likely working
       this.logger.info(`Waiting for DNS resolution on https://${domain}...`);
+
       const maxRetries = 60 * 10; // 10 minutes
       for (let i = 0; i < maxRetries; i++) {
         try {
@@ -415,9 +416,9 @@ export class RegistrationService implements OnApplicationBootstrap {
           } else {
             this.logger.debug(`Hub reachable but returned status ${response.status}`);
           }
-        } catch (e) {
+        } catch (e: any) {
           if (i % 10 === 0) {
-            this.logger.debug(`Waiting for DNS/SSL propagation... Error: ${e instanceof Error ? e.message : String(e)}`);
+            this.logger.debug(`Waiting for DNS/SSL propagation... Error: ${e.message} Cause: ${e.cause}`);
           }
         }
         await new Promise((resolve) => setTimeout(resolve, 1000));

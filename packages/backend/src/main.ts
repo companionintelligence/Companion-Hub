@@ -32,6 +32,8 @@ async function setupSwagger(app: INestApplication) {
 }
 
 async function bootstrap() {
+
+
   await generateSystemEnvFile();
 
   const app = await NestFactory.create(AppModule, {
