@@ -9,7 +9,6 @@ import { Injectable, Inject, forwardRef } from '@nestjs/common';
 import * as Sentry from '@sentry/nestjs';
 import git from 'isomorphic-git';
 import http from 'isomorphic-git/http/node';
-import AdmZip from 'adm-zip';
 import { RegistrationService } from '../registration/registration.service';
 
 @Injectable()
@@ -95,8 +94,8 @@ export class ReposHelpers {
         return { success: true, message: '' };
       }
 
-      if (type === 'http_zip') {
-        return this.downloadZipRepo(url, repoPath);
+      if (type === 'ci_cloud_api') {
+        return this.fetchCiCloudRepo(url, id, repoPath);
       }
 
       const [repoUrl, branch] = this.getRepoBaseUrlAndBranch(url);
@@ -126,66 +125,77 @@ export class ReposHelpers {
     }
   }
 
-  private async downloadZipRepo(url: string, repoPath: string) {
+  private async fetchCiCloudRepo(url: string, _id: string, repoPath: string) {
     try {
-      await this.ensureDirectoryWithPermissions(path.dirname(repoPath));
+      this.logger.debug(`Fetching CI Cloud Repo from ${url} to ${repoPath}`);
 
-      const uuid = await this.registrationService.getDeviceId();
-      this.logger.debug(`Downloading zip repo from ${url} to ${repoPath} with \`UUID: ${uuid}\` (Env: ${process.env.NODE_ENV})`);
-
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ device_id: uuid }),
-      });
-
-      if (response.url && response.url !== url) {
-        this.logger.warn(`Request redirected from ${url} to ${response.url}. Headers may have been lost.`);
+      if (!(await this.filesystem.pathExists(repoPath))) {
+        await this.ensureDirectoryWithPermissions(repoPath);
       }
 
-      this.logger.debug(`Response status: ${response.status}, Content-Type: ${response.headers.get('content-type')}`);
+      const appsPath = path.join(repoPath, 'apps');
+      await this.ensureDirectoryWithPermissions(appsPath);
 
+      // Fetch metadata list
+      const response = await fetch(`${url}/store`); // Assuming url is base API url
       if (!response.ok) {
-        this.logger.error(`Failed to download repo: ${response.statusText} ${response.status}`);
-        return { success: false, message: `Failed to download repo: ${response.statusText} ${response.status}` };
+        throw new Error(`Failed to fetch store metadata: ${response.statusText}`);
       }
 
-      const buffer = await response.arrayBuffer();
-      const zip = new AdmZip(Buffer.from(buffer));
+      const apps = (await response.json()) as Array<{ id: string; slug?: string; [key: string]: unknown }>;
 
-      // Create directory if it doesn't exist
-      if (!fs.existsSync(repoPath)) {
-        fs.mkdirSync(repoPath, { recursive: true });
+      for (const app of apps) {
+        const appSlug = app.slug || app.id;
+        const appDir = path.join(appsPath, appSlug);
+        await this.ensureDirectoryWithPermissions(appDir);
+
+        await fs.promises.writeFile(path.join(appDir, 'config.json'), JSON.stringify(app, null, 2));
       }
 
-      zip.extractAllTo(repoPath, true);
+      // Also write a repo.json or config.json so Tipi sees it as a valid repo?
+      // Tipi (CI-OS-Hub) expects `repo.json` in root of repo?
+      // Existing `downloadZipRepo` unzips a file.
+      // Let's check `downloadZipRepo` implementation to see what files are expected.
 
-      // Handle GitHub-style zip (single root directory)
-      const entries = fs.readdirSync(repoPath);
-      if (entries.length === 1) {
-        const firstEntry = entries[0];
-        if (!firstEntry) {
-          this.logger.warn('Unexpected: entries array has length 1 but first entry is undefined');
-          return { success: false, message: 'Failed to process repository structure' };
-        }
-        const rootItemPath = path.join(repoPath, firstEntry);
-        if (fs.statSync(rootItemPath).isDirectory()) {
-          // It's a directory, move content up
-          this.logger.debug(`Detected single root folder in ZIP: ${firstEntry}. Flattening...`);
-          const children = fs.readdirSync(rootItemPath);
-          for (const child of children) {
-            fs.renameSync(path.join(rootItemPath, child), path.join(repoPath, child));
-          }
-          fs.rmdirSync(rootItemPath);
-        }
-      }
-
-      this.logger.info(`Downloaded and extracted zip repo from ${url}`);
-      return { success: true, message: '' };
+      return { success: true, message: 'CI Cloud Repo updated' };
     } catch (err) {
-      this.logger.error(`Error downloading zip repo from ${url}:`, err);
+      return this.handleRepoError(err);
+    }
+  }
+
+  public async downloadAppFiles(repoUrl: string, repoSlug: string, appSlug: string) {
+    try {
+      const { dataDir } = this.configuration.get('directories');
+      const repoPath = path.join(dataDir, 'repos', repoSlug);
+      const appPath = path.join(repoPath, 'apps', appSlug);
+
+      this.logger.debug(`Downloading app files for ${appSlug} from ${repoUrl}`);
+
+      // Fetch full install data
+      const deviceId = await this.registrationService.getDeviceId();
+      const response = await fetch(`${repoUrl}/store/${appSlug}/install`, {
+        headers: {
+          'x-device-id': deviceId,
+        },
+      });
+      if (!response.ok) {
+        if (response.status === 402) {
+          return { success: false, message: 'Payment Required' };
+        }
+        throw new Error(`Failed to fetch app files: ${response.statusText}`);
+      }
+
+      const data = (await response.json()) as { files?: Record<string, string> };
+      const files = data.files || {};
+
+      await this.ensureDirectoryWithPermissions(appPath);
+
+      for (const [filename, content] of Object.entries(files)) {
+        await fs.promises.writeFile(path.join(appPath, filename), content);
+      }
+
+      return { success: true, message: 'App files downloaded' };
+    } catch (err) {
       return this.handleRepoError(err);
     }
   }
@@ -197,17 +207,10 @@ export class ReposHelpers {
    */
   public async pullRepo(repoUrl: string, slug: string, type = 'git') {
     try {
-      if (type === 'http_zip') {
-        // For zip repos, we just re-download and overwrite
+      if (type === 'ci_cloud_api') {
         const { dataDir } = this.configuration.get('directories');
         const repoPath = path.join(dataDir, 'repos', slug);
-
-        // Clean existing directory first to ensure clean state
-        if (await this.filesystem.pathExists(repoPath)) {
-          await this.filesystem.removeDirectory(repoPath);
-        }
-
-        return this.downloadZipRepo(repoUrl, repoPath);
+        return this.fetchCiCloudRepo(repoUrl, slug, repoPath);
       }
 
       await this.cloneRepo(repoUrl, slug, type);
