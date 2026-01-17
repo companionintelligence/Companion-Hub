@@ -59,7 +59,7 @@ describe('App lifecycle', () => {
   const backupManager = mock<BackupManager>();
   const cloudflareClientService = mock<CloudflareClientService>();
   const registrationService = mock<RegistrationService>();
-  
+
   // Create AppStoreRepository manually to ensure we use the real implementation with the correct databaseService reference
   const appStoreRepository = new AppStoreRepository(databaseService, reposHelpers);
 
@@ -169,8 +169,7 @@ describe('App lifecycle', () => {
           useValue: loggerService,
         },
       ],
-    })
-      .compile();
+    }).compile();
 
     appLifecycleService = moduleRef.get(AppLifecycleService);
     databaseService = moduleRef.get(DatabaseService);

@@ -24,6 +24,7 @@
     "gen:api-client": "openapi-ts",
     "lint:ci": "biome ci . --error-on-warnings --no-errors-on-unmatched",
     "lint": "biome check",
+    "lint:fix": "biome format",
     "version": "echo $npm_package_version"
   },
   "keywords": [],
