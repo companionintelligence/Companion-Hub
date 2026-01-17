@@ -91,10 +91,13 @@ export class DockerService {
     this.logger.info(`Running docker compose with args ${args.join(' ')} from directory ${composeDir}`);
 
     // Try docker-compose first, fallback to docker compose plugin if binary is corrupted
-    return this.runDockerCompose(['docker-compose', ...args], composeDir, isCustomConfig).catch(async (error: any) => {
+    return this.runDockerCompose(['docker-compose', ...args], composeDir, isCustomConfig).catch(async (error: unknown) => {
       // Check for ENOEXEC or any spawn error
-      if (error?.code === 'ENOEXEC' || error?.message?.includes('ENOEXEC') || error?.message?.includes('spawn')) {
-        this.logger.warn(`docker-compose binary failed (${error?.code || error?.message}), falling back to docker compose plugin`);
+      const err = error as Error & { code?: string };
+      const isSpawnError = err.code === 'ENOEXEC' || err.message?.includes('ENOEXEC') || err.message?.includes('spawn');
+
+      if (isSpawnError) {
+        this.logger.warn(`docker-compose binary failed (${err.code || err.message}), falling back to docker compose plugin`);
 
         // Verify docker compose is available before using it
         try {
@@ -115,7 +118,7 @@ export class DockerService {
           return this.runDockerCompose(['docker', 'compose', ...args], composeDir, isCustomConfig);
         } catch (fallbackError) {
           this.logger.error('docker compose plugin is not available, cannot fallback', fallbackError);
-          throw new Error(`docker-compose binary failed and docker compose plugin is not available: ${error.message}`);
+          throw new Error(`docker-compose binary failed and docker compose plugin is not available: ${err.message}`);
         }
       }
       throw error;
@@ -126,7 +129,11 @@ export class DockerService {
     // Log the full command for debugging
     this.logger.debug(`Executing: ${command[0]} ${command.slice(1).join(' ')}`);
 
-    const cmd = spawn(command[0]!, command.slice(1), {
+    if (!command[0]) {
+      throw new Error('Command is empty');
+    }
+
+    const cmd = spawn(command[0], command.slice(1), {
       cwd, // Set working directory to compose file's directory
     });
     const stdout: string[] = [];
@@ -140,11 +147,11 @@ export class DockerService {
         }
         reject(error);
       });
-      cmd.stdout.on('data', (data: any) => {
+      cmd.stdout.on('data', (data: Buffer | string) => {
         this.logger.debug(`${command[0]}: ${String(data).trim()}`);
         stdout.push(String(data).trim());
       });
-      cmd.stderr.on('data', (data: any) => {
+      cmd.stderr.on('data', (data: Buffer | string) => {
         this.logger.debug(`${command[0]}: ${String(data).trim()}`);
         stderr.push(String(data).trim());
       });
@@ -201,7 +208,11 @@ export class DockerService {
    */
   public async getExposedPorts(appUrn: AppUrn): Promise<number[]> {
     try {
-      const { args } = await this.getBaseComposeArgsApp(appUrn);
+      // args is not used here but required to destructure if getBaseComposeArgsApp returns it
+      // However, check what getBaseComposeArgsApp does. If it's just getting args, maybe we don't need to call it if we don't use args.
+      // But maybe it has side effects or validates something?
+      // Assuming we can just ignore it for now.
+      await this.getBaseComposeArgsApp(appUrn);
       const composeFile = await this.appFilesManager.getDockerComposeYaml(appUrn);
       const _composeDir = path.dirname(composeFile.path);
 

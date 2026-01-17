@@ -1,5 +1,6 @@
 import { render, screen } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
+import type { AppInfo } from '@/types/app.types';
 import { InstallForm } from './install-form';
 import { useAppContext } from '@/context/app-context';
 
@@ -35,7 +36,7 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
 
 describe('InstallForm', () => {
   it('should display organization slug in subdomain suffix when present', () => {
-    (useAppContext as any).mockReturnValue({
+    vi.mocked(useAppContext).mockReturnValue({
       userSettings: {
         ciHubOrganizationSlug: 'Josh', // Case insensitive check
         localDomain: 'tipi.lan',
@@ -43,14 +44,14 @@ describe('InstallForm', () => {
         guestDashboard: false,
       },
       isProduction: true,
-    });
+    } as unknown as ReturnType<typeof useAppContext>);
 
-    const mockInfo: any = {
+    const mockInfo = {
       urn: 'app:store',
       form_fields: [],
       exposable: true,
       dynamic_config: true,
-    };
+    } as unknown as AppInfo;
 
     render(<InstallForm info={mockInfo} onSubmit={vi.fn()} formId="test-form" formFields={[]} />);
 
@@ -59,7 +60,7 @@ describe('InstallForm', () => {
   });
 
   it('should fallback to local domain when organization slug is missing', () => {
-    (useAppContext as any).mockReturnValue({
+    vi.mocked(useAppContext).mockReturnValue({
       userSettings: {
         ciHubOrganizationSlug: undefined,
         localDomain: 'tipi.lan',
@@ -67,14 +68,14 @@ describe('InstallForm', () => {
         guestDashboard: false,
       },
       isProduction: true,
-    });
+    } as unknown as ReturnType<typeof useAppContext>);
 
-    const mockInfo: any = {
+    const mockInfo = {
       urn: 'app:store',
       form_fields: [],
       exposable: true,
       dynamic_config: true,
-    };
+    } as unknown as AppInfo;
 
     render(<InstallForm info={mockInfo} onSubmit={vi.fn()} formId="test-form" formFields={[]} />);
 

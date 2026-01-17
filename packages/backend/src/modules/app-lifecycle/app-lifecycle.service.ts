@@ -504,7 +504,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
 
     // Update Cloudflare Tunnel routes if exposedLocal is enabled (production only)
     const { appName, appStoreId } = extractAppUrn(appUrn);
-    const { isProduction: isProdEnv } = this.config.getConfig();
+    const { isProduction: _isProdEnv } = this.config.getConfig();
     const oldSubdomain = app.localSubdomain || `${appName}-${appStoreId}`;
     const newSubdomain = parsedForm.localSubdomain || `${appName}-${appStoreId}`;
     const _wasExposedLocal = app.exposedLocal;
@@ -582,8 +582,12 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       // The Dashboard/Hub is accessible at the device subdomain registered during setup
 
       await this.cloudflareClientService.syncState(orgInfo.id, exposedApps, orgInfo.tunnelId || undefined);
-    } catch (error: any) {
-      this.logger.error(`[Cloudflare] Sync failed: ${error.message}`);
+    } catch (error) {
+      if (error instanceof Error) {
+        this.logger.error(`[Cloudflare] Sync failed: ${error.message}`);
+      } else {
+        this.logger.error(`[Cloudflare] Sync failed: ${String(error)}`);
+      }
     }
   }
 

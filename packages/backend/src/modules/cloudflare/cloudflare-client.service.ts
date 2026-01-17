@@ -92,8 +92,12 @@ export class CloudflareClientService {
 
       this.logger.error(`No credentials provided for tunnel initialization for org ${organizationId}`);
       return null;
-    } catch (error: any) {
-      this.logger.error(`Failed to configure tunnel: ${error.message}`);
+    } catch (error) {
+      if (error instanceof Error) {
+        this.logger.error(`Failed to configure tunnel: ${error.message}`);
+      } else {
+        this.logger.error(`Failed to configure tunnel: ${String(error)}`);
+      }
       return null;
     }
   }
@@ -132,9 +136,13 @@ export class CloudflareClientService {
         return true;
       }
       return false;
-    } catch (error: any) {
-      this.logger.error(`Failed to sync state: ${error.message}`);
-      if (error.response) {
+    } catch (error) {
+      if (error instanceof Error) {
+        this.logger.error(`Failed to sync state: ${error.message}`);
+      } else {
+        this.logger.error(`Failed to sync state: ${String(error)}`);
+      }
+      if (axios.isAxiosError(error) && error.response) {
         this.logger.error(`Error Response: ${JSON.stringify(error.response.data)}`);
       }
       return false;

@@ -189,7 +189,7 @@ export class RegistrationService implements OnApplicationBootstrap {
   }
 
   private async checkRegistrationWithCloud(): Promise<boolean> {
-    const { ciCloudApiUrl, ciHubOrganizationId, ciHubApiKey, ciCloudAppStoreUrl } = this.config.getConfig();
+    const { ciCloudApiUrl, ciHubOrganizationId, ciHubApiKey } = this.config.getConfig();
 
     // If CI Cloud API is not configured, allow access (backward compatibility)
     if (!ciCloudApiUrl) {
@@ -290,7 +290,7 @@ export class RegistrationService implements OnApplicationBootstrap {
     }
 
     try {
-      const { ciCloudApiUrl, ciHubApiKey, cloudflareTunnelId } = this.config.getConfig();
+      const { cloudflareTunnelId } = this.config.getConfig();
 
       // Try to fetch organization details from CI Cloud API
       let orgName: string | null = null;
@@ -359,10 +359,14 @@ export class RegistrationService implements OnApplicationBootstrap {
         // so at least the local state is consistent, even if cloud sync failed.
       }
 
+      if (!orgName) {
+        throw new Error('Organization name is required to create device registration');
+      }
+
       // Store organization info in database
       await this.deviceRegistrationRepository.createDeviceRegistration({
         id: organizationId,
-        name: orgName!,
+        name: orgName,
         tunnelId: tunnelId,
         tunnelToken: tunnelToken,
         domain: domain,
