@@ -112,7 +112,7 @@ export class ConfigurationService {
           ciHubOrganizationId: settings.ciHubOrganizationId || null,
         };
       }
-    } catch (e) {
+    } catch (_e) {
       // ignore
     }
 
@@ -219,11 +219,11 @@ export class ConfigurationService {
 
       // Update in-memory config for runtime changes
       if (settings.ciHubApiKey) {
-        // @ts-ignore
+        // @ts-expect-error
         this.config.ciHubApiKey = settings.ciHubApiKey;
       }
       if (settings.ciHubOrganizationId) {
-        // @ts-ignore
+        // @ts-expect-error
         this.config.ciHubOrganizationId = settings.ciHubOrganizationId;
       }
     } catch (error) {

@@ -75,7 +75,7 @@ describe('AppStoreService', () => {
     it('should do nothing if existing store has same URL', async () => {
       const url = 'https://example.com/store.zip';
       configService.getConfig.mockReturnValue(fromPartial({ ciCloudAppStoreUrl: url }));
-      appStoreRepository.getAppStoreBySlug.mockResolvedValue(fromPartial({ slug: 'ci-cloud', url }));
+      appStoreRepository.getAppStoreBySlug.mockResolvedValue(fromPartial({ slug: 'ci-cloud', url, type: 'http_zip' }));
 
       await service.registerCloudAppStore();
 

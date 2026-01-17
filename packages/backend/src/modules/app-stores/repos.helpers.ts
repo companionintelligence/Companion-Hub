@@ -132,7 +132,6 @@ export class ReposHelpers {
 
       const uuid = await this.registrationService.getDeviceId();
       this.logger.debug(`Downloading zip repo from ${url} to ${repoPath} with \`UUID: ${uuid}\` (Env: ${process.env.NODE_ENV})`);
-      console.log(`Downloading zip repo from ${url} to ${repoPath} with \`UUID: ${uuid}\` (Env: ${process.env.NODE_ENV})`);
 
       const response = await fetch(url, {
         method: 'POST',
@@ -173,13 +172,13 @@ export class ReposHelpers {
         }
         const rootItemPath = path.join(repoPath, firstEntry);
         if (fs.statSync(rootItemPath).isDirectory()) {
-             // It's a directory, move content up
-             this.logger.debug(`Detected single root folder in ZIP: ${firstEntry}. Flattening...`);
-             const children = fs.readdirSync(rootItemPath);
-             for (const child of children) {
-                 fs.renameSync(path.join(rootItemPath, child), path.join(repoPath, child));
-             }
-             fs.rmdirSync(rootItemPath);
+          // It's a directory, move content up
+          this.logger.debug(`Detected single root folder in ZIP: ${firstEntry}. Flattening...`);
+          const children = fs.readdirSync(rootItemPath);
+          for (const child of children) {
+            fs.renameSync(path.join(rootItemPath, child), path.join(repoPath, child));
+          }
+          fs.rmdirSync(rootItemPath);
         }
       }
 

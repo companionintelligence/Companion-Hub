@@ -567,10 +567,8 @@ export class ServiceBuilder {
       const interpolatedLabels: Record<string, string | boolean> = {};
 
       for (const [key, value] of Object.entries(this.service.labels)) {
-        let interpolatedKey = key.replace(/\{\{\s*RUNTIPI_APP_ID\s*\}\}/g, appId);
-        let interpolatedValue = typeof value === 'string' 
-          ? value.replace(/\{\{\s*RUNTIPI_APP_ID\s*\}\}/g, appId)
-          : value;
+        const interpolatedKey = key.replace(/\{\{\s*RUNTIPI_APP_ID\s*\}\}/g, appId);
+        let interpolatedValue = typeof value === 'string' ? value.replace(/\{\{\s*RUNTIPI_APP_ID\s*\}\}/g, appId) : value;
 
         // Replace ${LOCAL_DOMAIN} with actual localDomain value if provided
         if (localDomain && typeof interpolatedValue === 'string') {

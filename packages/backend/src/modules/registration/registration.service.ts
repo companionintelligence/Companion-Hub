@@ -150,19 +150,6 @@ export class RegistrationService implements OnApplicationBootstrap {
     return;
   }
 
-  private async handleLicenseCheckFailure(orgId?: string) {
-    this.logger.warn('Resetting registration due to license check failure.');
-    if (orgId) {
-      await this.deviceRegistrationRepository.deleteDeviceRegistration(orgId);
-    } else {
-      const org = await this.deviceRegistrationRepository.getFirstDeviceRegistration();
-      if (org) {
-        await this.deviceRegistrationRepository.deleteDeviceRegistration(org.id);
-      }
-    }
-    this._isRegistered = false;
-  }
-
   private async pollRegistration() {
     this.logger.info('Starting registration check loop...');
 
@@ -202,7 +189,7 @@ export class RegistrationService implements OnApplicationBootstrap {
   }
 
   private async checkRegistrationWithCloud(): Promise<boolean> {
-    const { ciCloudApiUrl, ciHubOrganizationId, ciHubApiKey, ciCloudAppStoreUrl } = this.config.getConfig();
+    const { ciCloudApiUrl, ciHubOrganizationId, ciHubApiKey } = this.config.getConfig();
 
     // If CI Cloud API is not configured, allow access (backward compatibility)
     if (!ciCloudApiUrl) {
@@ -284,7 +271,7 @@ export class RegistrationService implements OnApplicationBootstrap {
     const existingOrg = await this.deviceRegistrationRepository.getDeviceRegistrationById(organizationId);
     if (existingOrg) {
       this.logger.debug(`Organization infrastructure already exists for ${organizationId}`);
-      
+
       // Update tunnel credentials if provided (from device registration)
       if (activationResult?.tunnel_id && activationResult?.tunnel_token) {
         this.logger.info(`Updating organization ${organizationId} with tunnel credentials from registration`);
@@ -292,7 +279,7 @@ export class RegistrationService implements OnApplicationBootstrap {
           tunnelId: activationResult.tunnel_id,
           tunnelToken: activationResult.tunnel_token,
         });
-        
+
         // Initialize tunnel with new credentials
         await this.cloudflareClientService.initializeTunnel(organizationId, {
           tunnelId: activationResult.tunnel_id,
@@ -303,7 +290,7 @@ export class RegistrationService implements OnApplicationBootstrap {
     }
 
     try {
-      const { ciCloudApiUrl, ciHubApiKey, cloudflareTunnelId } = this.config.getConfig();
+      const { cloudflareTunnelId } = this.config.getConfig();
 
       // Try to fetch organization details from CI Cloud API
       let orgName: string | null = null;
@@ -372,10 +359,14 @@ export class RegistrationService implements OnApplicationBootstrap {
         // so at least the local state is consistent, even if cloud sync failed.
       }
 
+      if (!orgName) {
+        throw new Error('Organization name is required to create device registration');
+      }
+
       // Store organization info in database
       await this.deviceRegistrationRepository.createDeviceRegistration({
         id: organizationId,
-        name: orgName!,
+        name: orgName,
         tunnelId: tunnelId,
         tunnelToken: tunnelToken,
         domain: domain,
@@ -412,9 +403,8 @@ export class RegistrationService implements OnApplicationBootstrap {
           if (response.ok) {
             this.logger.info(`DNS resolved and Hub is reachable at https://${domain}`);
             break;
-          } else {
-            this.logger.debug(`Hub reachable but returned status ${response.status}`);
           }
+          this.logger.debug(`Hub reachable but returned status ${response.status}`);
         } catch (e) {
           if (i % 10 === 0) {
             this.logger.debug(`Waiting for DNS/SSL propagation... Error: ${e instanceof Error ? e.message : String(e)}`);
@@ -426,18 +416,6 @@ export class RegistrationService implements OnApplicationBootstrap {
     } catch (error) {
       this.logger.error(`Error setting up organization infrastructure: ${error}`);
     }
-  }
-
-  /**
-   * Convert organization ID to a valid subdomain slug
-   * Removes special characters and converts to lowercase
-   */
-  private slugifyOrganizationId(orgId: string): string {
-    return orgId
-      .toLowerCase()
-      .replace(/[^a-z0-9-]/g, '-')
-      .replace(/-+/g, '-')
-      .replace(/^-|-$/g, '');
   }
 
   /**

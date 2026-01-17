@@ -133,7 +133,7 @@ export class RegistrationController {
   async validateOrganizationName(@Query('name') name: string) {
     // This used to check locally against Cloudflare but now that logic is centralized in CI-Cloud.
     // We should ideally proxy this request to CI-Cloud, but for now we'll do basic local validation.
-    
+
     if (!name || !name.trim()) {
       return {
         available: false,
@@ -163,10 +163,10 @@ export class RegistrationController {
     // Since we can't easily check remote availability without an authenticated API call to CI-Cloud (which requires an org token we don't have yet),
     // we'll optimistically return true for valid formats. The real check happens during registration.
     return {
-        available: true,
-        dnsAvailable: true,
-        tunnelNameAvailable: true,
-        message: "Format is valid. Availability will be confirmed during registration."
+      available: true,
+      dnsAvailable: true,
+      tunnelNameAvailable: true,
+      message: 'Format is valid. Availability will be confirmed during registration.',
     };
   }
 
