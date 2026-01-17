@@ -50,6 +50,6 @@ export class DeviceRegistrationRepository {
   }
 
   async deleteOrganization(orgId: string) {
-    await this.databaseService.db.delete(organization).where(eq(organization.id, orgId));
+    await this.databaseService.db.delete(deviceRegistration).where(eq(deviceRegistration.id, orgId));
   }
 }

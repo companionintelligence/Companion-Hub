@@ -1,6 +1,5 @@
 import { TranslatableError } from '@/common/error/translatable-error';
 import { createAppUrn, extractAppUrn } from '@/common/helpers/app-helpers';
-import { parseComposeJson } from '@runtipi/common/schemas';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { SSEService } from '@/core/sse/sse.service';
@@ -48,7 +47,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
   async onApplicationBootstrap() {
     this.logger.info('Triggering initial Cloudflare sync in 5s...');
     setTimeout(() => {
-        this.triggerCloudflareSync().catch(e => this.logger.error(`Startup sync failed: ${e.message}`));
+      this.triggerCloudflareSync().catch((e) => this.logger.error(`Startup sync failed: ${e.message}`));
     }, 5000);
   }
 
@@ -58,11 +57,11 @@ export class AppLifecycleService implements OnApplicationBootstrap {
     try {
       const command = this.commandFactory.createCommand(data);
       const { success, message } = await command.execute(data.appUrn, data.form);
-      
+
       if (success) {
-          this.logger.debug('Command executed successfully, triggering Cloudflare sync...');
-          // Trigger sync to ensure cloud state matches local state (exposed apps)
-          await this.triggerCloudflareSync(); 
+        this.logger.debug('Command executed successfully, triggering Cloudflare sync...');
+        // Trigger sync to ensure cloud state matches local state (exposed apps)
+        await this.triggerCloudflareSync();
       }
 
       await reply({ success, message });
@@ -101,12 +100,12 @@ export class AppLifecycleService implements OnApplicationBootstrap {
         this.logger.info(`App ${appUrn} started successfully`);
         this.sseService.emit('app', { event: 'start_success', appUrn, appStatus: 'running' });
         await this.appRepository.updateAppById(app.id, { status: 'running', pendingRestart: false });
-        
+
         // Check if we need to sync Cloudflare state (if app is exposedLocal and production)
         const { isProduction: isProdEnv } = this.config.getConfig();
         if (isProdEnv && app.exposedLocal) {
-            this.logger.info(`[Cloudflare] App ${appUrn} started and is exposedLocal. Triggering sync.`);
-            await this.triggerCloudflareSync();
+          this.logger.info(`[Cloudflare] App ${appUrn} started and is exposedLocal. Triggering sync.`);
+          await this.triggerCloudflareSync();
         }
       } else {
         this.logger.error(`Failed to start app ${appUrn}: ${message}`);
@@ -226,7 +225,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       domain: domain ?? null,
       localSubdomain: parsedForm.localSubdomain ?? null,
       openPort: openPort ?? false,
-      exposedLocal: exposedLocal ?? (appInfo.exposable ? true : false),
+      exposedLocal: exposedLocal ?? !!appInfo.exposable,
       appStoreSlug: appStoreId,
       isVisibleOnGuestDashboard,
       enableAuth: enableAuth ?? false,
@@ -242,9 +241,9 @@ export class AppLifecycleService implements OnApplicationBootstrap {
 
         // Check if we need to sync Cloudflare state (if app is exposedLocal)
         if (createdApp.exposedLocal || (appInfo.exposable && !exposedLocal)) {
-            // Wait for DB consistency/propagation
-            await new Promise(r => setTimeout(r, 2000));
-            await this.triggerCloudflareSync();
+          // Wait for DB consistency/propagation
+          await new Promise((r) => setTimeout(r, 2000));
+          await this.triggerCloudflareSync();
         }
       } else {
         this.sseService.emit('app', { event: 'install_error', appUrn, appStatus: 'missing', error: message });
@@ -277,10 +276,10 @@ export class AppLifecycleService implements OnApplicationBootstrap {
         this.sseService.emit('app', { event: 'stop_success', appUrn, appStatus: 'stopped' });
         this.logger.info(`App ${appUrn} stopped successfully`);
         await this.appRepository.updateAppById(app.id, { status: 'stopped' });
-        
+
         // Trigger sync to remove route if exposedLocal
         if (app.exposedLocal) {
-             await this.triggerCloudflareSync();
+          await this.triggerCloudflareSync();
         }
       } else {
         this.sseService.emit('app', { event: 'stop_error', appUrn, appStatus: 'running', error: message });
@@ -347,10 +346,10 @@ export class AppLifecycleService implements OnApplicationBootstrap {
         this.logger.info(`App ${appUrn} uninstalled successfully`);
         await this.appRepository.deleteAppById(app.id);
         this.sseService.emit('app', { event: 'uninstall_success', appUrn, appStatus: 'missing' });
-        
+
         // Trigger sync to remove route if it was exposedLocal
         if (app.exposedLocal) {
-            await this.triggerCloudflareSync();
+          await this.triggerCloudflareSync();
         }
       } else {
         this.logger.error(`Failed to uninstall app ${appUrn}: ${message}`);
@@ -505,16 +504,16 @@ export class AppLifecycleService implements OnApplicationBootstrap {
 
     // Update Cloudflare Tunnel routes if exposedLocal is enabled (production only)
     const { appName, appStoreId } = extractAppUrn(appUrn);
-    const { isProduction: isProdEnv } = this.config.getConfig();
+    const { isProduction: _isProdEnv } = this.config.getConfig();
     const oldSubdomain = app.localSubdomain || `${appName}-${appStoreId}`;
     const newSubdomain = parsedForm.localSubdomain || `${appName}-${appStoreId}`;
-    const wasExposedLocal = app.exposedLocal;
-    const isNowExposedLocal = parsedForm.exposedLocal ?? false;
+    const _wasExposedLocal = app.exposedLocal;
+    const _isNowExposedLocal = parsedForm.exposedLocal ?? false;
     const oldPort = app.port;
     // Prioritize parsedForm.port (user-specified port) > app.port (saved host port) > appInfo.port (container port)
     // parsedForm.port is the port being set in this update, so it's the most authoritative
     const newPort = parsedForm.port ? Number(parsedForm.port) : app.port ? Number(app.port) : appInfo.port;
-    const subdomainChanged = oldSubdomain !== newSubdomain;
+    const _subdomainChanged = oldSubdomain !== newSubdomain;
     const _portChanged = oldPort !== newPort;
 
     if (!changed?.pendingRestart) {
@@ -534,55 +533,61 @@ export class AppLifecycleService implements OnApplicationBootstrap {
    */
   private async triggerCloudflareSync() {
     try {
-        const orgInfo = await this.registrationService.getOrganizationInfo();
-        
-        if (!orgInfo) {
-            this.logger.debug('[Cloudflare] Skipping sync: Organization not registered');
-            return;
-        }
+      const orgInfo = await this.registrationService.getOrganizationInfo();
 
-        if (!orgInfo.tunnelId) {
-            this.logger.warn(`[Cloudflare] Skipping sync: Organization ${orgInfo.id} exists but has no tunnelId. Please complete device registration to provision tunnel.`);
-            return;
-        }
+      if (!orgInfo) {
+        this.logger.debug('[Cloudflare] Skipping sync: Organization not registered');
+        return;
+      }
 
-        const apps = await this.appRepository.getApps();
-        const userSettings = this.config.getConfig().userSettings;
-        const localDomain = userSettings.localDomain || 'tipi.lan';
+      if (!orgInfo.tunnelId) {
+        this.logger.warn(
+          `[Cloudflare] Skipping sync: Organization ${orgInfo.id} exists but has no tunnelId. Please complete device registration to provision tunnel.`,
+        );
+        return;
+      }
 
-        const exposedApps: AppInfo[] = apps
-            .filter(app => {
-                return app.exposedLocal && app.status === 'running' && app.port !== null;
-            })
-            .map(app => {
-                // Construct URN for this app
-                const appUrn = createAppUrn(app.appName, app.appStoreSlug);
-                const subdomain = app.localSubdomain || `${app.appName}-${app.appStoreSlug}`;
-                
-                // For exposedLocal apps, they go through Traefik on port 80
-                // Traefik routes based on Host header matching: ${subdomain}.${LOCAL_DOMAIN}
-                // So we need to send the LOCAL_DOMAIN hostname, not the public domain
-                const traefikHostname = `${subdomain}.${localDomain}`;
-                
-                return {
-                    name: app.appName,
-                    subdomain: subdomain,
-                    localPort: 80, // Traefik port - Traefik routes to the app based on Host header
-                    protocol: 'http' as const,
-                    hostname: 'host.docker.internal', // Always use host.docker.internal to reach Traefik
-                    originServerName: traefikHostname, // This sets the Host header that Traefik expects
-                    // Don't set publicHostname - let CI-Cloud construct it from subdomain + org slug
-                    // This ensures consistent format without device subdomain contamination
-                };
-            });
+      const apps = await this.appRepository.getApps();
+      const userSettings = this.config.getConfig().userSettings;
+      const localDomain = userSettings.localDomain || 'tipi.lan';
 
-        // Don't add Dashboard here - it's already registered during device registration
-        // Adding it here would overwrite the Hub's domain (devicename-orgname.ci.computer)
-        // The Dashboard/Hub is accessible at the device subdomain registered during setup
+      const exposedApps: AppInfo[] = apps
+        .filter((app) => {
+          return app.exposedLocal && app.status === 'running' && app.port !== null;
+        })
+        .map((app) => {
+          // Construct URN for this app
+          const _appUrn = createAppUrn(app.appName, app.appStoreSlug);
+          const subdomain = app.localSubdomain || `${app.appName}-${app.appStoreSlug}`;
 
-        await this.cloudflareClientService.syncState(orgInfo.id, exposedApps, orgInfo.tunnelId || undefined);
-    } catch (error: any) {
+          // For exposedLocal apps, they go through Traefik on port 80
+          // Traefik routes based on Host header matching: ${subdomain}.${LOCAL_DOMAIN}
+          // So we need to send the LOCAL_DOMAIN hostname, not the public domain
+          const traefikHostname = `${subdomain}.${localDomain}`;
+
+          return {
+            name: app.appName,
+            subdomain: subdomain,
+            localPort: 80, // Traefik port - Traefik routes to the app based on Host header
+            protocol: 'http' as const,
+            hostname: 'host.docker.internal', // Always use host.docker.internal to reach Traefik
+            originServerName: traefikHostname, // This sets the Host header that Traefik expects
+            // Don't set publicHostname - let CI-Cloud construct it from subdomain + org slug
+            // This ensures consistent format without device subdomain contamination
+          };
+        });
+
+      // Don't add Dashboard here - it's already registered during device registration
+      // Adding it here would overwrite the Hub's domain (devicename-orgname.ci.computer)
+      // The Dashboard/Hub is accessible at the device subdomain registered during setup
+
+      await this.cloudflareClientService.syncState(orgInfo.id, exposedApps, orgInfo.tunnelId || undefined);
+    } catch (error) {
+      if (error instanceof Error) {
         this.logger.error(`[Cloudflare] Sync failed: ${error.message}`);
+      } else {
+        this.logger.error(`[Cloudflare] Sync failed: ${String(error)}`);
+      }
     }
   }
 

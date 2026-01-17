@@ -33,16 +33,16 @@ export default function DeviceRegistrationPage() {
           const ca_cert = searchParams.get('ca_cert');
 
           if (!device_id || !organization_id || !organization_name || !subdomain || !api_key || !tunnel_id || !tunnel_token) {
-             const missing = [];
-             if (!device_id) missing.push('device_id');
-             if (!organization_id) missing.push('organization_id');
-             if (!organization_name) missing.push('organization_name');
-             if (!subdomain) missing.push('subdomain');
-             if (!api_key) missing.push('api_key');
-             if (!tunnel_id) missing.push('tunnel_id');
-             if (!tunnel_token) missing.push('tunnel_token');
-             
-             throw new Error(`Missing required registration parameters: ${missing.join(', ')}`);
+            const missing = [];
+            if (!device_id) missing.push('device_id');
+            if (!organization_id) missing.push('organization_id');
+            if (!organization_name) missing.push('organization_name');
+            if (!subdomain) missing.push('subdomain');
+            if (!api_key) missing.push('api_key');
+            if (!tunnel_id) missing.push('tunnel_id');
+            if (!tunnel_token) missing.push('tunnel_token');
+
+            throw new Error(`Missing required registration parameters: ${missing.join(', ')}`);
           }
 
           const params: Record<string, string> = {
@@ -152,8 +152,8 @@ export default function DeviceRegistrationPage() {
     return (
       <div className="flex flex-col items-center justify-center min-h-[50vh] gap-6 text-center">
         <div className="animate-spin rounded-full h-12 w-12 border-4 border-primary border-t-transparent" />
-        <h1 className="text-2xl font-bold text-foreground">Checking Registration Status...</h1>
-        <p className="text-muted-foreground max-w-md">Please wait while we check if your device is registered.</p>
+        <h1 className="text-2xl font-bold text-foreground">Registering Device...</h1>
+        <p className="text-muted-foreground max-w-md">Please wait while your device is registered.</p>
       </div>
     );
   }

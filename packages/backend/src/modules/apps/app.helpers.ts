@@ -54,7 +54,7 @@ export class AppHelpers {
     // Determine the authoritative domain
     // Priority: Organization DB -> User Settings -> Default
     let authoritativeDomain = userSettings.domain;
-    if (org && org.domain) {
+    if (org?.domain) {
       authoritativeDomain = org.domain;
     }
     if (!authoritativeDomain) {
@@ -220,10 +220,21 @@ export class AppHelpers {
     }
 
     if (form.exposedLocal) {
-      const subdomain = form.localSubdomain ? form.localSubdomain : `${appName}-${appStoreId}`;
+      let subdomain = form.localSubdomain ? form.localSubdomain : `${appName}-${appStoreId}`;
       // exposedLocal means "publish to internet via Cloudflare"
       // Container should think it's public and HTTPS (even though Traefik receives HTTP from Cloudflare)
-      const publicDomain = envMap.get('DOMAIN') || 'ci.computer';
+      let publicDomain = envMap.get('DOMAIN') || 'ci.computer';
+
+      // Fix for deep subdomains on ci.computer
+      // We must not use deep subdomains. Where it is installed is where it should be.
+      // The final form MUST be <appslug>-<orgname>.ci.computer where appSlug is specified by the user in the install app form
+      if (publicDomain.endsWith('.ci.computer')) {
+        publicDomain = 'ci.computer';
+        if (org?.name && !subdomain.endsWith(`-${org.name}`)) {
+          subdomain = `${subdomain}-${org.name}`;
+        }
+      }
+
       envMap.set('APP_LOCAL_DOMAIN', `${subdomain}.${envMap.get('LOCAL_DOMAIN') || 'tipi.lan'}`);
 
       if (!form.openPort) {
@@ -247,7 +258,7 @@ export class AppHelpers {
 
     if (appName === 'cloudflared') {
       const org = await this.deviceRegistrationRepository.getFirstDeviceRegistration();
-      if (org && org.tunnelToken && org.tunnelId) {
+      if (org?.tunnelToken && org.tunnelId) {
         envMap.set('TUNNEL_TOKEN', org.tunnelToken);
         envMap.set('TUNNEL_ID', org.tunnelId);
       } else {

@@ -1,11 +1,8 @@
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
-import { AppsRepository } from '@/modules/apps/apps.repository';
 import { CloudflareClientService } from '@/modules/cloudflare/cloudflare-client.service';
-import { RegistrationService } from '@/modules/registration/registration.service';
 import { DockerService } from '@/modules/docker/docker.service';
 import type { AppUrn } from '@runtipi/common/types';
-import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { AppLifecycleCommand } from './command';
 
 export class UninstallAppCommand extends AppLifecycleCommand {
@@ -28,9 +25,9 @@ export class UninstallAppCommand extends AppLifecycleCommand {
       try {
         const cloudflareService = this.moduleRef.get(CloudflareClientService, { strict: false });
         if (cloudflareService) {
-           // Ideally we trigger a full sync here which will notice the app is gone
-           // For now, we just log.
-           logger.info(`[Cloudflare] App ${appUrn} removed. Ideally triggering state sync now.`);
+          // Ideally we trigger a full sync here which will notice the app is gone
+          // For now, we just log.
+          logger.info(`[Cloudflare] App ${appUrn} removed. Ideally triggering state sync now.`);
         }
       } catch (error) {
         logger.warn(`Failed to sync Cloudflare state for ${appUrn}: ${error}`);

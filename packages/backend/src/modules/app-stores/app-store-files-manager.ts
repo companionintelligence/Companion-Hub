@@ -151,7 +151,7 @@ export class AppStoreFilesManager {
     // Patch cloudflared for Linux/Docker environment (add host.docker.internal)
     const { appName } = extractAppUrn(appUrn);
     if (appName === 'cloudflared') {
-      this.logger.info(`[Patch] Injecting extra_hosts helper for cloudflared...`);
+      this.logger.info('[Patch] Injecting extra_hosts helper for cloudflared...');
       const composePath = path.join(appInstalledDir, 'docker-compose.yml');
       if (await this.filesystem.pathExists(composePath)) {
         let content = await this.filesystem.readTextFile(composePath);

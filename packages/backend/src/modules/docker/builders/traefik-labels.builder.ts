@@ -12,7 +12,7 @@ export class TraefikLabelsBuilder {
   private labels: Record<string, string | boolean> = {};
 
   constructor(private params: TraefikLabelsArgs) {
-    const mainNetworkName = (process.env.HUB_CONTAINER_NAME || 'ci-os-hub') + '_network';
+    const mainNetworkName = `${process.env.HUB_CONTAINER_NAME || 'ci-os-hub'}_network`;
     this.labels = {
       generated: true,
       'traefik.enable': false,

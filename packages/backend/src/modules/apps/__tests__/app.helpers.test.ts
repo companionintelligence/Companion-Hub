@@ -10,6 +10,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { mock } from 'vitest-mock-extended';
 import { AppFilesManager } from '../app-files-manager';
 import { AppHelpers } from '../app.helpers';
+import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
 
 describe('AppHelpers', () => {
   let appHelpers: AppHelpers;
@@ -17,6 +18,7 @@ describe('AppHelpers', () => {
   let config = mock<ConfigurationService>();
   let filesystem = mock<FilesystemService>();
   let envUtils = mock<EnvUtils>();
+  let deviceRegistrationRepository = mock<DeviceRegistrationRepository>();
   const testAppUrn: AppUrn = createAppUrn('test-app', 'test-store');
 
   beforeEach(async () => {
@@ -31,6 +33,7 @@ describe('AppHelpers', () => {
     config = moduleRef.get(ConfigurationService);
     filesystem = moduleRef.get(FilesystemService);
     envUtils = moduleRef.get(EnvUtils);
+    deviceRegistrationRepository = moduleRef.get(DeviceRegistrationRepository);
   });
 
   describe('generateEnvFile', () => {
@@ -191,8 +194,8 @@ describe('AppHelpers', () => {
       });
 
       // Assert
-      expect(envMap.get('APP_DOMAIN')).toBe('test-app-test-store.local.test');
-      expect(envMap.get('APP_HOST')).toBe('test-app-test-store.local.test');
+      expect(envMap.get('APP_DOMAIN')).toBe('test-app-test-store.ci.computer');
+      expect(envMap.get('APP_HOST')).toBe('test-app-test-store.ci.computer');
       expect(envMap.get('APP_PROTOCOL')).toBe('https');
     });
 
@@ -436,6 +439,35 @@ describe('AppHelpers', () => {
 
       // Assert - should use false, not the default
       expect(envMap.get('BOOLEAN_WITH_DEFAULT')).toBe('false');
+    });
+
+    it('should correctly format APP_DOMAIN for ci.computer subdomains', async () => {
+      // Arrange
+      const envMap = new Map<string, string>();
+      envMap.set('DOMAIN', 'macbook3-josh.ci.computer');
+      envUtils.envStringToMap.mockReturnValue(envMap);
+
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({
+        id: '123',
+        name: 'josh',
+        domain: 'macbook3-josh.ci.computer',
+        tunnelId: 'tunnel-id',
+        tunnelToken: 'tunnel-token',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+
+      const form = {
+        exposedLocal: true,
+        localSubdomain: '2fauth',
+      };
+
+      // Act
+      await appHelpers.generateEnvFile(testAppUrn, form);
+
+      // Assert
+      expect(envMap.get('APP_DOMAIN')).toBe('2fauth-josh.ci.computer');
+      expect(envMap.get('APP_EXPOSED_DOMAIN')).toBe('2fauth-josh.ci.computer');
     });
   });
 });

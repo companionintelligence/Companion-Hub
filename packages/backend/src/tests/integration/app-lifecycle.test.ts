@@ -7,6 +7,12 @@ import { appStore } from '@/core/database/drizzle/schema';
 import { app as appTable } from '@/core/database/drizzle/schema';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
+// Import RegistrationService and ReposHelpers BEFORE AppStoreService to avoid circular dependency issues
+import { RegistrationService } from '@/modules/registration/registration.service';
+import { CloudflareClientService } from '@/modules/cloudflare/cloudflare-client.service';
+import { BackupManager } from '@/modules/backups/backup.manager';
+import { SSEService } from '@/core/sse/sse.service';
+import { ReposHelpers } from '@/modules/app-stores/repos.helpers';
 import { AppLifecycleCommandFactory } from '@/modules/app-lifecycle/app-lifecycle-command.factory';
 import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
 import { AppStoreRepository } from '@/modules/app-stores/app-store.repository';
@@ -21,7 +27,9 @@ import { EnvUtils } from '@/modules/env/env.utils';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import { SubnetManagerService } from '@/modules/network/subnet-manager.service';
 import { AppEventsQueue, appEventSchema } from '@/modules/queue/entities/app-events';
+import { RepoEventsQueue } from '@/modules/queue/entities/repo-events';
 import { QueueFactory } from '@/modules/queue/queue.factory';
+import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
 import { Test } from '@nestjs/testing';
 import { fromPartial } from '@total-typescript/shoehorn';
 import { eq } from 'drizzle-orm';
@@ -45,6 +53,15 @@ describe('App lifecycle', () => {
   let databaseService = mock<DatabaseService>();
   const dockerService = mock<DockerService>();
   const loggerService = mock<LoggerService>();
+  const reposHelpers = mock<ReposHelpers>();
+  const repoEventsQueue = mock<RepoEventsQueue>();
+  const sseService = mock<SSEService>();
+  const backupManager = mock<BackupManager>();
+  const cloudflareClientService = mock<CloudflareClientService>();
+  const registrationService = mock<RegistrationService>();
+
+  // Create AppStoreRepository manually to ensure we use the real implementation with the correct databaseService reference
+  const appStoreRepository = new AppStoreRepository(databaseService, reposHelpers);
 
   configurationService.get.calledWith('queue').mockReturnValue({
     host: 'localhost',
@@ -74,7 +91,10 @@ describe('App lifecycle', () => {
         AppLifecycleService,
         MarketplaceService,
         AppStoreService,
-        AppStoreRepository,
+        {
+          provide: AppStoreRepository,
+          useValue: appStoreRepository,
+        },
         FilesystemService,
         QueueFactory,
         AppLifecycleCommandFactory,
@@ -84,6 +104,34 @@ describe('App lifecycle', () => {
         AppHelpers,
         AppsService,
         SubnetManagerService,
+        {
+          provide: ReposHelpers,
+          useValue: reposHelpers,
+        },
+        {
+          provide: RepoEventsQueue,
+          useValue: repoEventsQueue,
+        },
+        {
+          provide: SSEService,
+          useValue: sseService,
+        },
+        {
+          provide: BackupManager,
+          useValue: backupManager,
+        },
+        {
+          provide: CloudflareClientService,
+          useValue: cloudflareClientService,
+        },
+        {
+          provide: RegistrationService,
+          useValue: registrationService,
+        },
+        {
+          provide: DeviceRegistrationRepository,
+          useClass: DeviceRegistrationRepository,
+        },
         {
           provide: APP_ASYNC_MUTEX,
           useValue: new AsyncMutex(),
@@ -121,9 +169,7 @@ describe('App lifecycle', () => {
           useValue: loggerService,
         },
       ],
-    })
-      .useMocker(mock)
-      .compile();
+    }).compile();
 
     appLifecycleService = moduleRef.get(AppLifecycleService);
     databaseService = moduleRef.get(DatabaseService);

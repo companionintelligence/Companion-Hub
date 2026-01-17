@@ -1,7 +1,7 @@
 import { TranslatableError } from '@/common/error/translatable-error';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import { HttpStatus, Injectable } from '@nestjs/common';
+import { HttpStatus, Injectable, Inject, forwardRef } from '@nestjs/common';
 import slugify from 'slugify';
 import type { UpdateAppStoreBodyDto } from '../marketplace/dto/marketplace.dto';
 import { RepoEventsQueue } from '../queue/entities/repo-events';
@@ -15,7 +15,7 @@ export class AppStoreService {
   constructor(
     private readonly logger: LoggerService,
     private readonly repoQueue: RepoEventsQueue,
-    private readonly repoHelpers: ReposHelpers,
+    @Inject(forwardRef(() => ReposHelpers)) private readonly repoHelpers: ReposHelpers,
     private readonly config: ConfigurationService,
     private readonly appStoreRepository: AppStoreRepository,
   ) {

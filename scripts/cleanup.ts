@@ -15,7 +15,7 @@ try {
   // Also get containers by project name (ci-os-hub, legacy runtipi, or e2e tests)
   const containersByProject = await $`docker ps -a --filter label=com.docker.compose.project=ci-os-hub --format {{.Names}}`.quiet();
   const containersByLegacyProject = await $`docker ps -a --filter label=com.docker.compose.project=runtipi --format {{.Names}}`.quiet();
-  
+
   // Get any stray e2e containers that might use dynamic project names
   const containersByE2E = await $`docker ps -a --filter "name=e2e-" --format {{.Names}}`.quiet();
 
@@ -60,7 +60,7 @@ try {
         if (name) allContainers.add(name);
       });
   }
-  
+
   if (containersByE2E.stdout.toString().trim()) {
     containersByE2E.stdout
       .toString()
@@ -121,13 +121,21 @@ try {
 // Step 3: Remove the network
 console.log('\n3️⃣ Removing network...');
 try {
-  await $`docker network rm ci_os_hub_network`.quiet().catch(() => {});
-  await $`docker network rm ci-os-hub_network`.quiet().catch(() => {});
+  await $`docker network rm ci_os_hub_network`.quiet().catch(() => {
+    // ignore
+  });
+  await $`docker network rm ci-os-hub_network`.quiet().catch(() => {
+    // ignore
+  });
 
   // Also remove potential e2e networks
   const networks = await $`docker network ls --format {{.Name}}`.quiet();
-  const e2eNetworks = networks.stdout.toString().trim().split('\n').filter(n => n.includes('e2e'));
-  
+  const e2eNetworks = networks.stdout
+    .toString()
+    .trim()
+    .split('\n')
+    .filter((n) => n.includes('e2e'));
+
   if (e2eNetworks.length > 0) {
     for (const net of e2eNetworks) {
       console.log(`   Removing network: ${net}`);
