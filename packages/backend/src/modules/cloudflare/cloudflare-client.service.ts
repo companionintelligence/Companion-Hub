@@ -1,10 +1,10 @@
-import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { DockerService } from '../docker/docker.service';
 import axios, { AxiosInstance } from 'axios';
-import * as fs from 'fs/promises';
-import * as path from 'path';
+import * as fs from 'node:fs/promises';
+import * as path from 'node:path';
 
 export interface AppInfo {
   name: string;
@@ -28,7 +28,7 @@ export class CloudflareClientService {
     private moduleRef: ModuleRef,
   ) {
     this.cloudApiUrl = this.configService.get('ciCloudApiUrl') || 'https://app.ci.computer/api';
-    
+
     this.client = axios.create({
       baseURL: this.cloudApiUrl,
       headers: {
@@ -41,35 +41,37 @@ export class CloudflareClientService {
     const authToken = this.configService.get('ciHubApiKey');
     return {
       headers: {
-        'Authorization': `Bearer ${authToken}`,
-        'x-device-key': authToken
-      }
+        Authorization: `Bearer ${authToken}`,
+        'x-device-key': authToken,
+      },
     };
   }
 
   private async updateTunnelFiles(token: string) {
     // /app/tunnel is mounted to ./tunnel on the host
-    const tunnelDir = path.resolve('/app/tunnel'); 
+    const tunnelDir = path.resolve('/app/tunnel');
     const certsDir = path.join(tunnelDir, 'certs');
-    
+
     try {
-        await fs.mkdir(tunnelDir, { recursive: true });
-        await fs.mkdir(certsDir, { recursive: true });
-        
-        // Write the token to a file that cloudflared will read (configured in docker-compose)
-        await fs.writeFile(path.join(tunnelDir, 'token'), token);
-        this.logger.log('Wrote tunnel token to file');
-        
+      await fs.mkdir(tunnelDir, { recursive: true });
+      await fs.mkdir(certsDir, { recursive: true });
+
+      // Write the token to a file that cloudflared will read (configured in docker-compose)
+      await fs.writeFile(path.join(tunnelDir, 'token'), token);
+      this.logger.log('Wrote tunnel token to file');
     } catch (e) {
-        this.logger.error(`Failed to write tunnel files: ${e}`);
-        throw e;
+      this.logger.error(`Failed to write tunnel files: ${e}`);
+      throw e;
     }
   }
 
   /**
    * Initialize tunnel by saving credentials provided by CI-Cloud during registration
    */
-  async initializeTunnel(organizationId: string, credentials: { tunnelId: string; token: string }): Promise<{ tunnelId: string; token: string } | null> {
+  async initializeTunnel(
+    organizationId: string,
+    credentials: { tunnelId: string; token: string },
+  ): Promise<{ tunnelId: string; token: string } | null> {
     try {
       this.logger.log(`Configuring tunnel for org: ${organizationId}...`);
 
@@ -78,7 +80,7 @@ export class CloudflareClientService {
         this.tunnelToken = credentials.token;
 
         await this.updateTunnelFiles(this.tunnelToken);
-        
+
         this.logger.log('Restarting cloudflared container to apply new token...');
         const dockerService = this.moduleRef.get(DockerService, { strict: false });
         await dockerService.restartContainer('cloudflared');
@@ -87,14 +89,13 @@ export class CloudflareClientService {
         this.logger.log(`Tunnel configured successfully: ${this.tunnelId}`);
         return { tunnelId: this.tunnelId, token: this.tunnelToken };
       }
-      
+
       this.logger.error(`No credentials provided for tunnel initialization for org ${organizationId}`);
       return null;
     } catch (error: any) {
       this.logger.error(`Failed to configure tunnel: ${error.message}`);
       return null;
     }
-
   }
 
   /**
@@ -114,11 +115,15 @@ export class CloudflareClientService {
     try {
       this.logger.log(`Syncing ${apps.length} apps to CI-Cloud (Tunnel: ${this.tunnelId})...`);
       this.logger.log(`Sync Payload: ${JSON.stringify({ organizationId, tunnelId: this.tunnelId, apps }, null, 2)}`);
-      const response = await this.client.post('/tunnels/state', {
-        organizationId,
-        tunnelId: this.tunnelId,
-        apps
-      }, this.getRequestConfig());
+      const response = await this.client.post(
+        '/tunnels/state',
+        {
+          organizationId,
+          tunnelId: this.tunnelId,
+          apps,
+        },
+        this.getRequestConfig(),
+      );
 
       this.logger.log(`Sync Response: ${JSON.stringify(response.data)}`);
 
@@ -130,10 +135,14 @@ export class CloudflareClientService {
     } catch (error: any) {
       this.logger.error(`Failed to sync state: ${error.message}`);
       if (error.response) {
-         this.logger.error(`Error Response: ${JSON.stringify(error.response.data)}`);
+        this.logger.error(`Error Response: ${JSON.stringify(error.response.data)}`);
       }
       return false;
     }
+  }
+
+  getTunnelId(): string | null {
+    return this.tunnelId;
   }
 
   getTunnelToken(): string | null {

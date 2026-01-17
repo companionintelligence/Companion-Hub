@@ -1,9 +1,9 @@
-import { Controller, Get, Post, Query, UseGuards, HttpException, HttpStatus } from '@nestjs/common';
+import { Controller, Get, Post, Query, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '../auth/auth.guard';
 import { CloudflareClientService } from './cloudflare-client.service';
 import { ApiResponse } from '@nestjs/swagger';
 import axios from 'axios';
-import * as https from 'https';
+import * as https from 'node:https';
 
 @UseGuards(AuthGuard)
 @Controller('cloudflare')
@@ -16,7 +16,7 @@ export class CloudflareController {
     if (!subdomain) {
       return { available: true };
     }
-    
+
     return { available: true, message: 'Availability check delegated to CI-Cloud (Not implemented yet)' };
   }
 
@@ -24,15 +24,15 @@ export class CloudflareController {
   @ApiResponse({ type: Object })
   async getStatus() {
     const token = this.cloudflareClientService.getTunnelToken();
-    
+
     return {
       tunnelEnabled: !!token,
-      dnsEnabled: true, 
-      tunnelId: this.cloudflareClientService['tunnelId'] || null, 
+      dnsEnabled: true,
+      tunnelId: this.cloudflareClientService.getTunnelId() || null,
       accountId: null,
       zoneId: null,
-      routes: [], 
-      message: 'Tunnel is managed by CI-Cloud.'
+      routes: [],
+      message: 'Tunnel is managed by CI-Cloud.',
     };
   }
 
@@ -105,7 +105,7 @@ export class CloudflareController {
 
   @Post('remove-catch-all-routes')
   @ApiResponse({ type: Object })
-  async removeCatchAllRoutes(@Query('tunnelId') tunnelId?: string) {
+  async removeCatchAllRoutes(@Query('tunnelId') _tunnelId?: string) {
     return {
       success: true,
       message: 'Configuration is managed by CI-Cloud.',

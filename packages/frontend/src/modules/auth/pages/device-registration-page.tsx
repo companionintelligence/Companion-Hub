@@ -33,16 +33,16 @@ export default function DeviceRegistrationPage() {
           const ca_cert = searchParams.get('ca_cert');
 
           if (!device_id || !organization_id || !organization_name || !subdomain || !api_key || !tunnel_id || !tunnel_token) {
-             const missing = [];
-             if (!device_id) missing.push('device_id');
-             if (!organization_id) missing.push('organization_id');
-             if (!organization_name) missing.push('organization_name');
-             if (!subdomain) missing.push('subdomain');
-             if (!api_key) missing.push('api_key');
-             if (!tunnel_id) missing.push('tunnel_id');
-             if (!tunnel_token) missing.push('tunnel_token');
-             
-             throw new Error(`Missing required registration parameters: ${missing.join(', ')}`);
+            const missing = [];
+            if (!device_id) missing.push('device_id');
+            if (!organization_id) missing.push('organization_id');
+            if (!organization_name) missing.push('organization_name');
+            if (!subdomain) missing.push('subdomain');
+            if (!api_key) missing.push('api_key');
+            if (!tunnel_id) missing.push('tunnel_id');
+            if (!tunnel_token) missing.push('tunnel_token');
+
+            throw new Error(`Missing required registration parameters: ${missing.join(', ')}`);
           }
 
           const params: Record<string, string> = {

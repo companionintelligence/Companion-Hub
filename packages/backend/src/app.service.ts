@@ -142,15 +142,15 @@ export class AppService {
       this.logger.info('Copying Traefik config files...');
       const assetsTraefikDir = path.join(process.cwd(), 'assets', 'traefik');
       const traefikConfigDest = path.join(dataDir, 'state', 'traefik', 'config');
-      
+
       // Ensure config directory exists
       await this.filesystem.createDirectory(traefikConfigDest);
-      
+
       // Copy traefik.yml
       const traefikYmlSrc = path.join(assetsTraefikDir, 'traefik.yml');
       const traefikYmlDest = path.join(traefikConfigDest, 'traefik.yml');
       if (await this.filesystem.pathExists(traefikYmlSrc)) {
-        const content = await this.filesystem.readTextFile(traefikYmlSrc);
+        const content = (await this.filesystem.readTextFile(traefikYmlSrc)) as string;
         await this.filesystem.writeTextFile(traefikYmlDest, content);
         this.logger.info('Copied traefik.yml');
       } else {
@@ -163,7 +163,7 @@ export class AppService {
       await this.filesystem.createDirectory(dynamicDestDir);
       const dynamicDest = path.join(dynamicDestDir, 'dynamic.yml');
       if (await this.filesystem.pathExists(dynamicSrc)) {
-        const content = await this.filesystem.readTextFile(dynamicSrc);
+        const content = (await this.filesystem.readTextFile(dynamicSrc)) as string;
         await this.filesystem.writeTextFile(dynamicDest, content);
         this.logger.info('Copied dynamic.yml');
       } else {

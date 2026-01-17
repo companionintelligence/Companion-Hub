@@ -150,19 +150,6 @@ export class RegistrationService implements OnApplicationBootstrap {
     return;
   }
 
-  private async handleLicenseCheckFailure(orgId?: string) {
-    this.logger.warn('Resetting registration due to license check failure.');
-    if (orgId) {
-      await this.deviceRegistrationRepository.deleteDeviceRegistration(orgId);
-    } else {
-      const org = await this.deviceRegistrationRepository.getFirstDeviceRegistration();
-      if (org) {
-        await this.deviceRegistrationRepository.deleteDeviceRegistration(org.id);
-      }
-    }
-    this._isRegistered = false;
-  }
-
   private async pollRegistration() {
     this.logger.info('Starting registration check loop...');
 
@@ -284,7 +271,7 @@ export class RegistrationService implements OnApplicationBootstrap {
     const existingOrg = await this.deviceRegistrationRepository.getDeviceRegistrationById(organizationId);
     if (existingOrg) {
       this.logger.debug(`Organization infrastructure already exists for ${organizationId}`);
-      
+
       // Update tunnel credentials if provided (from device registration)
       if (activationResult?.tunnel_id && activationResult?.tunnel_token) {
         this.logger.info(`Updating organization ${organizationId} with tunnel credentials from registration`);
@@ -292,7 +279,7 @@ export class RegistrationService implements OnApplicationBootstrap {
           tunnelId: activationResult.tunnel_id,
           tunnelToken: activationResult.tunnel_token,
         });
-        
+
         // Initialize tunnel with new credentials
         await this.cloudflareClientService.initializeTunnel(organizationId, {
           tunnelId: activationResult.tunnel_id,
@@ -412,9 +399,8 @@ export class RegistrationService implements OnApplicationBootstrap {
           if (response.ok) {
             this.logger.info(`DNS resolved and Hub is reachable at https://${domain}`);
             break;
-          } else {
-            this.logger.debug(`Hub reachable but returned status ${response.status}`);
           }
+          this.logger.debug(`Hub reachable but returned status ${response.status}`);
         } catch (e) {
           if (i % 10 === 0) {
             this.logger.debug(`Waiting for DNS/SSL propagation... Error: ${e instanceof Error ? e.message : String(e)}`);
@@ -426,18 +412,6 @@ export class RegistrationService implements OnApplicationBootstrap {
     } catch (error) {
       this.logger.error(`Error setting up organization infrastructure: ${error}`);
     }
-  }
-
-  /**
-   * Convert organization ID to a valid subdomain slug
-   * Removes special characters and converts to lowercase
-   */
-  private slugifyOrganizationId(orgId: string): string {
-    return orgId
-      .toLowerCase()
-      .replace(/[^a-z0-9-]/g, '-')
-      .replace(/-+/g, '-')
-      .replace(/^-|-$/g, '');
   }
 
   /**

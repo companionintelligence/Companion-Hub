@@ -22,8 +22,8 @@ interface Network {
 export class DockerComposeBuilder {
   private services: Record<string, BuiltService> = {};
   private networks: Record<string, Omit<Network, 'key'>> = {};
-  private domain: string = 'ci.computer';
-  private localDomain: string = 'tipi.lan';
+  private domain = 'ci.computer';
+  private localDomain = 'tipi.lan';
 
   addService(service: BuiltService) {
     const { name: _, ...rest } = service;
@@ -65,9 +65,9 @@ export class DockerComposeBuilder {
 
   private buildService = (params: Service, form: AppEventFormInput, appUrn: AppUrn) => {
     const { appName, appStoreId } = extractAppUrn(appUrn);
-    
+
     // Use domain values set in getDockerCompose (from app env file or defaults)
-    const domain = this.domain;
+    const _domain = this.domain;
     const localDomain = this.localDomain;
     const result = serviceSchema.safeParse(params);
 
@@ -115,7 +115,7 @@ export class DockerComposeBuilder {
 
     // Add main service to ci_os_hub_network for inter-app communication
     // This allows apps to communicate with each other when needed
-    const mainNetworkName = (process.env.HUB_CONTAINER_NAME || 'ci-os-hub') + '_network';
+    const mainNetworkName = `${process.env.HUB_CONTAINER_NAME || 'ci-os-hub'}_network`;
     if (params.isMain || params.addToMainNetwork) {
       service.setNetwork(mainNetworkName, 1);
     }
@@ -155,8 +155,7 @@ export class DockerComposeBuilder {
 
     // Merge default labels, Traefik labels, and extra labels from app config
     // Pass localDomain to interpolateVariables to replace ${LOCAL_DOMAIN} with actual value
-    service.setLabels({ ...defaultLabels, ...traefikLabels, ...params.extraLabels })
-      .interpolateVariables(`${appName}-${appStoreId}`, localDomain);
+    service.setLabels({ ...defaultLabels, ...traefikLabels, ...params.extraLabels }).interpolateVariables(`${appName}-${appStoreId}`, localDomain);
 
     return service.build();
   };
@@ -170,7 +169,7 @@ export class DockerComposeBuilder {
 
     const myServices = services.map((service) => this.buildService(service, form, appUrn));
 
-    const mainNetworkName = (process.env.HUB_CONTAINER_NAME || 'ci-os-hub') + '_network';
+    const mainNetworkName = `${process.env.HUB_CONTAINER_NAME || 'ci-os-hub'}_network`;
 
     const dockerCompose = this.addServices(myServices)
       .addNetwork({

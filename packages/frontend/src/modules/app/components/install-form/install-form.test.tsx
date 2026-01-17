@@ -52,14 +52,7 @@ describe('InstallForm', () => {
       dynamic_config: true,
     };
 
-    render(
-      <InstallForm 
-        info={mockInfo} 
-        onSubmit={vi.fn()} 
-        formId="test-form" 
-        formFields={[]}
-      />
-    );
+    render(<InstallForm info={mockInfo} onSubmit={vi.fn()} formId="test-form" formFields={[]} />);
 
     // Expect to see "-josh.ci.computer" (lowercased)
     expect(screen.getByText(/-josh.ci.computer/)).toBeInTheDocument();
@@ -83,14 +76,7 @@ describe('InstallForm', () => {
       dynamic_config: true,
     };
 
-    render(
-      <InstallForm 
-        info={mockInfo} 
-        onSubmit={vi.fn()} 
-        formId="test-form" 
-        formFields={[]}
-      />
-    );
+    render(<InstallForm info={mockInfo} onSubmit={vi.fn()} formId="test-form" formFields={[]} />);
 
     // Expect to see "-tipi.lan"
     expect(screen.getByText(/-tipi.lan/)).toBeInTheDocument();

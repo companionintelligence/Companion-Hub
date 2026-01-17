@@ -7,7 +7,6 @@ import { CloudflareClientService } from '@/modules/cloudflare/cloudflare-client.
 import { DockerService } from '@/modules/docker/docker.service';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
-import { RegistrationService } from '@/modules/registration/registration.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import type { AppUrn } from '@runtipi/common/types';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
@@ -19,7 +18,7 @@ import path from 'node:path';
 export class InstallAppCommand extends AppLifecycleCommand {
   public async execute(appUrn: AppUrn, form: AppEventFormInput): Promise<{ success: boolean; message: string }> {
     const logger = this.moduleRef.get(LoggerService, { strict: false });
-    const config = this.moduleRef.get(ConfigurationService, { strict: false });
+    const _config = this.moduleRef.get(ConfigurationService, { strict: false });
     const appFilesManager = this.moduleRef.get(AppFilesManager, { strict: false });
     const marketplaceService = this.moduleRef.get(MarketplaceService, { strict: false });
     const dockerService = this.moduleRef.get(DockerService, { strict: false });
@@ -134,10 +133,10 @@ export class InstallAppCommand extends AppLifecycleCommand {
       logger.info(`[Cloudflare] Syncing state for ${appUrn}, exposedLocal: ${form.exposedLocal}`);
       try {
         const cloudflareService = this.moduleRef.get(CloudflareClientService, { strict: false });
-        if (!cloudflareService) {
-          logger.warn(`[Cloudflare] CloudflareClientService not available for ${appUrn}`);
+        if (cloudflareService) {
+          logger.info('[Cloudflare] CloudflareClientService available. State sync will be triggered by AppLifecycleService.');
         } else {
-             logger.info('[Cloudflare] CloudflareClientService available. State sync will be triggered by AppLifecycleService.');
+          logger.warn(`[Cloudflare] CloudflareClientService not available for ${appUrn}`);
         }
       } catch (error) {
         logger.error(`[Cloudflare] Exception syncing state for ${appUrn}: ${error}`);

@@ -54,7 +54,7 @@ export class AppHelpers {
     // Determine the authoritative domain
     // Priority: Organization DB -> User Settings -> Default
     let authoritativeDomain = userSettings.domain;
-    if (org && org.domain) {
+    if (org?.domain) {
       authoritativeDomain = org.domain;
     }
     if (!authoritativeDomain) {
@@ -230,7 +230,7 @@ export class AppHelpers {
       // The final form MUST be <appslug>-<orgname>.ci.computer where appSlug is specified by the user in the install app form
       if (publicDomain.endsWith('.ci.computer')) {
         publicDomain = 'ci.computer';
-        if (org && org.name && !subdomain.endsWith(`-${org.name}`)) {
+        if (org?.name && !subdomain.endsWith(`-${org.name}`)) {
           subdomain = `${subdomain}-${org.name}`;
         }
       }
@@ -258,7 +258,7 @@ export class AppHelpers {
 
     if (appName === 'cloudflared') {
       const org = await this.deviceRegistrationRepository.getFirstDeviceRegistration();
-      if (org && org.tunnelToken && org.tunnelId) {
+      if (org?.tunnelToken && org.tunnelId) {
         envMap.set('TUNNEL_TOKEN', org.tunnelToken);
         envMap.set('TUNNEL_ID', org.tunnelId);
       } else {

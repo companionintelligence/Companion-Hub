@@ -95,7 +95,7 @@ export class DockerService {
       // Check for ENOEXEC or any spawn error
       if (error?.code === 'ENOEXEC' || error?.message?.includes('ENOEXEC') || error?.message?.includes('spawn')) {
         this.logger.warn(`docker-compose binary failed (${error?.code || error?.message}), falling back to docker compose plugin`);
-        
+
         // Verify docker compose is available before using it
         try {
           const testCmd = spawn('docker', ['compose', 'version'], { stdio: 'pipe' });
@@ -109,7 +109,7 @@ export class DockerService {
             });
             testCmd.on('error', reject);
           });
-          
+
           this.logger.info('docker compose plugin is available, using fallback');
           // Use docker compose plugin instead (docker-cli is installed in the container)
           return this.runDockerCompose(['docker', 'compose', ...args], composeDir, isCustomConfig);
@@ -125,8 +125,8 @@ export class DockerService {
   private async runDockerCompose(command: string[], cwd: string, isCustomConfig: boolean) {
     // Log the full command for debugging
     this.logger.debug(`Executing: ${command[0]} ${command.slice(1).join(' ')}`);
-    
-    const cmd = spawn(command[0], command.slice(1), {
+
+    const cmd = spawn(command[0]!, command.slice(1), {
       cwd, // Set working directory to compose file's directory
     });
     const stdout: string[] = [];
@@ -140,11 +140,11 @@ export class DockerService {
         }
         reject(error);
       });
-      cmd.stdout.on('data', (data) => {
+      cmd.stdout.on('data', (data: any) => {
         this.logger.debug(`${command[0]}: ${String(data).trim()}`);
         stdout.push(String(data).trim());
       });
-      cmd.stderr.on('data', (data) => {
+      cmd.stderr.on('data', (data: any) => {
         this.logger.debug(`${command[0]}: ${String(data).trim()}`);
         stderr.push(String(data).trim());
       });
@@ -170,7 +170,7 @@ export class DockerService {
       args.push('logs', '--follow', '-n', maxLines.toString());
 
       const logs = spawn('docker-compose', args, { stdio: 'pipe' });
-      
+
       logs.on('error', (error: NodeJS.ErrnoException) => {
         if (error.code === 'ENOEXEC') {
           this.logger.error('docker-compose binary cannot be executed. Falling back to docker compose plugin.');
@@ -203,7 +203,7 @@ export class DockerService {
     try {
       const { args } = await this.getBaseComposeArgsApp(appUrn);
       const composeFile = await this.appFilesManager.getDockerComposeYaml(appUrn);
-      const composeDir = path.dirname(composeFile.path);
+      const _composeDir = path.dirname(composeFile.path);
 
       // Get all services from compose file
       const composeJson = await this.appFilesManager.getDockerComposeJson(appUrn);
@@ -226,17 +226,17 @@ export class DockerService {
         // Parse port mappings (format: "hostPort:containerPort" or "${VAR}:containerPort")
         for (const portMapping of serviceConfig.ports) {
           const [hostPortStr, containerPort] = portMapping.split(':');
-          
+
           // Skip if hostPortStr is undefined or empty
           if (!hostPortStr) {
             continue;
           }
-          
+
           // Try to resolve host port (might be a variable like ${APP_PORT})
           let hostPort: number | null = null;
-          
+
           // If it's a number, use it directly
-          const parsedPort = parseInt(hostPortStr, 10);
+          const parsedPort = Number.parseInt(hostPortStr, 10);
           if (!Number.isNaN(parsedPort)) {
             hostPort = parsedPort;
           } else if (hostPortStr.startsWith('${') && hostPortStr.endsWith('}')) {
@@ -244,12 +244,12 @@ export class DockerService {
             const varName = hostPortStr.slice(2, -1);
             const appEnv = await this.appFilesManager.getAppEnv(appUrn);
             const envLines = appEnv.content?.split('\n') || [];
-            
+
             for (const line of envLines) {
               const match = line.match(new RegExp(`^${varName}=(.+)$`));
-              if (match && match[1]) {
+              if (match?.[1]) {
                 const value = match[1].trim();
-                const portValue = parseInt(value, 10);
+                const portValue = Number.parseInt(value, 10);
                 if (!Number.isNaN(portValue)) {
                   hostPort = portValue;
                   break;
@@ -264,14 +264,14 @@ export class DockerService {
               // Use docker compose port command to get actual mapped port
               const portResult = await this.composeApp(appUrn, `port ${serviceName} ${containerPort}`);
               const portOutput = portResult.stdout.trim();
-              
+
               // Parse output format: "0.0.0.0:32768" or "::1:32768"
               if (portOutput) {
                 const parts = portOutput.split(':');
                 if (parts.length > 0) {
                   const lastPart = parts[parts.length - 1];
                   if (lastPart) {
-                    const resolvedPort = parseInt(lastPart, 10);
+                    const resolvedPort = Number.parseInt(lastPart, 10);
                     if (!Number.isNaN(resolvedPort)) {
                       hostPort = resolvedPort;
                     }
@@ -302,10 +302,10 @@ export class DockerService {
    */
   public async restartContainer(containerName: string): Promise<void> {
     this.logger.info(`Restarting container: ${containerName}`);
-    
+
     return new Promise((resolve, reject) => {
       const cmd = spawn('docker', ['restart', containerName]);
-      
+
       cmd.on('close', (code) => {
         if (code === 0) {
           this.logger.info(`Container ${containerName} restarted successfully`);
@@ -315,7 +315,7 @@ export class DockerService {
           reject(new Error(`Failed to restart container ${containerName}`));
         }
       });
-      
+
       cmd.on('error', (err) => {
         this.logger.error(`Error spawning docker restart command: ${err}`);
         reject(err);
@@ -323,4 +323,3 @@ export class DockerService {
     });
   }
 }
-
