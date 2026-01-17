@@ -152,8 +152,8 @@ export default function DeviceRegistrationPage() {
     return (
       <div className="flex flex-col items-center justify-center min-h-[50vh] gap-6 text-center">
         <div className="animate-spin rounded-full h-12 w-12 border-4 border-primary border-t-transparent" />
-        <h1 className="text-2xl font-bold text-foreground">Checking Registration Status...</h1>
-        <p className="text-muted-foreground max-w-md">Please wait while we check if your device is registered.</p>
+        <h1 className="text-2xl font-bold text-foreground">Registering Device...</h1>
+        <p className="text-muted-foreground max-w-md">Please wait while your device is registered.</p>
       </div>
     );
   }

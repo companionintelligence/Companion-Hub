@@ -45,6 +45,8 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
   const { userSettings, isProduction } = useAppContext();
   const { guestDashboard, localDomain, maxBackups: globalMaxBackups, ciHubOrganizationSlug } = userSettings;
 
+  const orgSlug = ciHubOrganizationSlug ? ciHubOrganizationSlug.toLowerCase().replace(/\s+/g, '-') : undefined;
+
   const {
     register,
     handleSubmit,
@@ -199,8 +201,8 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
               <InputGroup
                 groupPrefix="https://"
                 groupSuffix={
-                  ciHubOrganizationSlug
-                    ? `-${ciHubOrganizationSlug}.ci.computer${isCheckingDns ? ' (checking...)' : ''}`
+                  orgSlug
+                    ? `-${orgSlug}.ci.computer${isCheckingDns ? ' (checking...)' : ''}`
                     : `-${localDomain}${isCheckingDns ? ' (checking...)' : ''}`
                 }
                 {...register('localSubdomain')}
