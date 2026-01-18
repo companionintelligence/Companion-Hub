@@ -39,6 +39,15 @@ Install the project dependencies
 
 You need to copy `.env.example` to `.env`
 
+## Generate Tunnel Certificates
+
+If you are working with the Cloudflare Tunnel integration (exposed apps), you need to generate a local Certificate Authority. This allows the `cloudflared` daemon to trust your local HTTPS services.
+
+Run the helper script:
+`./scripts/generate-tunnel-certs.sh`
+
+This will create `tunnel/certs/custom-ca.pem` and `custom-ca.key`.
+
 ## Run runtipi
 
 1. Start the app with `bun run start:dev` from the root folder
