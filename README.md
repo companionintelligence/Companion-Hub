@@ -39,6 +39,15 @@ Install the project dependencies
 
 You need to copy `.env.example` to `.env`
 
+## Cloudflare Tunnel Token
+
+To enable the Cloudflare Tunnel integration (exposed apps), you must have a valid tunnel token.
+Place your token in the `tunnel/token` file:
+
+`echo "YOUR_TUNNEL_TOKEN" > tunnel/token`
+
+This token allows the `cloudflared` daemon to authenticate with Cloudflare.
+
 ## Generate Tunnel Certificates
 
 If you are working with the Cloudflare Tunnel integration (exposed apps), you need to generate a local Certificate Authority. This allows the `cloudflared` daemon to trust your local HTTPS services.
