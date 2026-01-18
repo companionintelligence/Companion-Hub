@@ -196,6 +196,10 @@ export class AppStoreService {
     return this.appStoreRepository.getAppCountForStore(slug);
   }
 
+  public async getAppStoreBySlug(slug: string) {
+    return this.appStoreRepository.getAppStoreBySlug(slug);
+  }
+
   public async deleteAllRepos() {
     await this.repoHelpers.deleteAllRepos();
   }

@@ -43,7 +43,7 @@ describe('ReposHelpers', () => {
 
   // Mock fetch
   const fetchMock = vi.fn();
-  global.fetch = fetchMock;
+  global.fetch = fetchMock as any;
 
   beforeEach(async () => {
     configService = mock<ConfigurationService>();

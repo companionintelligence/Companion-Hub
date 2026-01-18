@@ -44,6 +44,7 @@ export const sseSchema = z.union([
           'restarting',
           'backing_up',
           'restoring',
+          'uninstalled',
         ])
         .optional(),
       error: z.string().optional(),

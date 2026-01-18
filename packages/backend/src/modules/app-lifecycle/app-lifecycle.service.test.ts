@@ -70,12 +70,9 @@ describe('AppLifecycleService', () => {
     } as any);
 
     // Mock generic repositories
-    // @ts-expect-error
     appEventsQueue.publish.mockResolvedValue({ success: true, message: 'ok' });
-    // @ts-expect-error
-    appsRepository.createApp.mockResolvedValue({ id: 'new-app-id', status: 'installing' });
-    // @ts-expect-error
-    appsRepository.updateAppById.mockResolvedValue({});
+    appsRepository.createApp.mockResolvedValue({ id: 'new-app-id', status: 'installing' } as any);
+    appsRepository.updateAppById.mockResolvedValue({} as any);
   });
 
   afterEach(() => {
@@ -89,28 +86,25 @@ describe('AppLifecycleService', () => {
 
       // Mock Command Factory to return a mock command execution
       const installCommand = { execute: vi.fn().mockResolvedValue(undefined) };
-      commandFactory.createInstallCommand.mockReturnValue(installCommand as any);
+      (commandFactory as any).createInstallCommand.mockReturnValue(installCommand as any);
 
-      // @ts-expect-error
       appStoreService.getAppStoreBySlug.mockResolvedValue({
         id: '1',
         slug: storeId,
         type: 'ci_cloud_api',
         url: 'http://cloud.api',
-      });
+      } as any);
 
       // Mock Marketplace Service (NOT appsService)
-      // @ts-expect-error
       marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue({
         id: appId,
-        slug: appId,
         repo: { slug: storeId },
         supported_architectures: ['amd64'],
         port: 8080,
         tipi_version: 1,
-      });
+      } as any);
 
-      reposHelpers.downloadAppFiles.mockResolvedValue({ success: true });
+      reposHelpers.downloadAppFiles.mockResolvedValue({ success: true, message: 'ok' });
 
       await service.installApp({
         appUrn: `${appId}:${storeId}`,
@@ -124,22 +118,19 @@ describe('AppLifecycleService', () => {
       const appId = 'paid-app';
       const storeId = 'ci-cloud';
 
-      // @ts-expect-error
       appStoreService.getAppStoreBySlug.mockResolvedValue({
         id: '1',
         slug: storeId,
         type: 'ci_cloud_api',
         url: 'http://cloud.api',
-      });
+      } as any);
 
       // Mock Marketplace Service
-      // @ts-expect-error
       marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue({
         id: appId,
-        slug: appId,
         repo: { slug: storeId },
         supported_architectures: ['amd64'],
-      });
+      } as any);
 
       reposHelpers.downloadAppFiles.mockResolvedValue({
         success: false,

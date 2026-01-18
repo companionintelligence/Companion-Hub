@@ -6,7 +6,7 @@ import { CloudflareModule } from '../cloudflare/cloudflare.module';
 import { DockerModule } from '../docker/docker.module';
 import { EnvModule } from '../env/env.module';
 import { MarketplaceModule } from '../marketplace/marketplace.module';
-import { AppStoresModule } from '../app-stores/app-stores.module';
+import { AppStoreModule } from '../app-stores/app-store.module';
 import { QueueModule } from '../queue/queue.module';
 import { RegistrationModule } from '../registration/registration.module';
 import { AppLifecycleCommandFactory } from './app-lifecycle-command.factory';
@@ -21,7 +21,7 @@ import { AppStatusSyncService } from './app-status-sync.service';
     EnvModule,
     DockerModule,
     MarketplaceModule,
-    AppStoresModule,
+    AppStoreModule,
     forwardRef(() => BackupsModule),
     SSEModule,
     CloudflareModule,
