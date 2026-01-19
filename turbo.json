@@ -23,6 +23,10 @@
       "cache": false,
       "persistent": true,
       "env": [
+        "API_PORT",
+        "TIPI_DATA_DIR",
+        "TIPI_APP_DATA_DIR",
+        "TIPI_APP_DIR",
         "NODE_ENV",
         "LOCAL",
         "ROOT_FOLDER_HOST",
@@ -41,7 +45,13 @@
         "LOG_LEVEL",
         "RABBITMQ_USERNAME",
         "RABBITMQ_PASSWORD",
-        "RABBITMQ_HOST"
+        "RABBITMQ_HOST",
+        "CI_CLOUD_API_URL",
+        "CI_CLOUD_FRONTEND_URL",
+        "CI_CLOUD_APP_STORE_URL",
+        "CLOUDFLARE_ACCOUNT_ID",
+        "CLOUDFLARE_TUNNEL_ID",
+        "CLOUDFLARE_ZONE_ID"
       ]
     },
     "test": {

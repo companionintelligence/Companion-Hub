@@ -31,6 +31,8 @@ services:
       timeout: 30s
       retries: 10
       start_period: 60s
+    ports:
+      - 5672:5672
     environment:
       RABBITMQ_DEFAULT_USER: tipi
       RABBITMQ_DEFAULT_PASS: tipi

@@ -217,9 +217,9 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   envMap.set('THEME_COLOR', settings.themeColor || envMap.get('THEME_COLOR') || 'blue');
 
   // CI Cloud integration settings
-  envMap.set('CI_CLOUD_API_URL', envMap.get('CI_CLOUD_API_URL') || '');
-  envMap.set('CI_CLOUD_FRONTEND_URL', envMap.get('CI_CLOUD_FRONTEND_URL') || '');
-  envMap.set('CI_CLOUD_APP_STORE_URL', envMap.get('CI_CLOUD_APP_STORE_URL') || '');
+  envMap.set('CI_CLOUD_API_URL', process.env.CI_CLOUD_API_URL || envMap.get('CI_CLOUD_API_URL') || '');
+  envMap.set('CI_CLOUD_FRONTEND_URL', process.env.CI_CLOUD_FRONTEND_URL || envMap.get('CI_CLOUD_FRONTEND_URL') || '');
+  envMap.set('CI_CLOUD_APP_STORE_URL', process.env.CI_CLOUD_APP_STORE_URL || envMap.get('CI_CLOUD_APP_STORE_URL') || '');
 
   // Only write the env file if values have actually changed to avoid unnecessary overwrites
   // This preserves manual edits to .env while still syncing settings.json changes
