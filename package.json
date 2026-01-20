@@ -7,7 +7,9 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "dotenv -e .env.dev -- turbo run dev",
+    "dev": "bun run dev:infra && dotenv -e .env.dev -- turbo run dev",
+    "dev:infra": "ENV_FILE=.env.dev docker compose --env-file .env.dev --project-name runtipi -f docker-compose.dev.yml up -d ci-os-hub-queue ci-hub-db",
+    "dev:cleanup": "bun run cleanup && rm -rf .internal && rm -rf tunnel/token tunnel/certs",
     "bundle": "turbo bundle",
     "build": "turbo run build",
     "tsc": "turbo run tsc",

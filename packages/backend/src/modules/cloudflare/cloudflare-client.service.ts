@@ -1,3 +1,4 @@
+import { APP_DIR } from '@/common/constants';
 import { Injectable, Logger } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -48,11 +49,12 @@ export class CloudflareClientService {
   }
 
   private async updateTunnelFiles(token: string) {
-    // /app/tunnel is mounted to ./tunnel on the host
-    const tunnelDir = path.resolve('/app/tunnel');
+    // APP_DIR is configured to be the repo root in dev, and /app in prod
+    const tunnelDir = path.join(APP_DIR, 'tunnel');
     const certsDir = path.join(tunnelDir, 'certs');
 
     try {
+      this.logger.debug(`Writing tunnel token to: ${tunnelDir}`);
       await fs.mkdir(tunnelDir, { recursive: true });
       await fs.mkdir(certsDir, { recursive: true });
 

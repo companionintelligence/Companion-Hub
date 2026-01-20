@@ -29,6 +29,22 @@ export class RegistrationService implements OnApplicationBootstrap {
       // Re-check registration status in case license check failed and wiped it
       isRegistered = this._isRegistered;
 
+      // Ensure tunnel token is written to disk in dev mode (since it might be missing or temp)
+      if (isRegistered && process.env.NODE_ENV === 'development') {
+        try {
+          const org = await this.deviceRegistrationRepository.getFirstDeviceRegistration();
+          if (org && org.tunnelToken && org.tunnelId) {
+            this.logger.debug('DevMode: Ensuring tunnel configuration exists...');
+            await this.cloudflareClientService.initializeTunnel(org.id, {
+              tunnelId: org.tunnelId,
+              token: org.tunnelToken,
+            });
+          }
+        } catch (e) {
+          this.logger.warn('DevMode: Seting up tunnel config failed (non-fatal)', e);
+        }
+      }
+
       // Check for missing Tunnel ID and recover if needed
       if (isRegistered) {
         const org = await this.deviceRegistrationRepository.getFirstDeviceRegistration();

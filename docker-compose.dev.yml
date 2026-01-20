@@ -58,6 +58,7 @@ services:
       retries: 10
     ports:
       - 3000:9091
+      - 9091:9091
     volumes:
       # Hot reload
       - ./packages/backend/src:/app/packages/backend/src
