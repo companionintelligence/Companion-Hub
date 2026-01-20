@@ -47,8 +47,9 @@ ARG TIPI_VERSION
 ARG LOCAL
 
 ENV SENTRY_RELEASE=${TIPI_VERSION}
-ENV NODE_ENV=production
 ENV TIPI_VERSION=${TIPI_VERSION}
+# Don't set NODE_ENV=production yet - we need devDependencies for the build
+# NODE_ENV=production will be set for the build step (needed for vite config)
 
 WORKDIR /app
 
@@ -59,14 +60,21 @@ COPY ./packages/frontend/package.json ./packages/frontend/package.json
 COPY ./packages/common/package.json ./packages/common/package.json
 COPY ./packages/frontend/public ./packages/frontend/public
 
-# Install dependencies
+# Install dependencies (including devDependencies needed for build)
 # Skip postinstall scripts (git hooks not needed in Docker)
-RUN bun install --frozen-lockfile --ignore-scripts
+RUN bun install --frozen-lockfile --ignore-scripts && \
+    echo "Verifying @react-router/dev is installed..." && \
+    ls -la node_modules/@react-router/dev/bin.js && \
+    ls -la node_modules/.bin/react-router || echo "WARNING: react-router binary not found"
 
 COPY ./turbo.json ./turbo.json
 COPY ./tsconfig.json ./
 ARG CACHE_BUST=1
 COPY ./packages ./packages
+
+# Set NODE_ENV=production for the build (needed for vite.config.ts)
+ENV NODE_ENV=production
+
 RUN bun run build
 
 RUN echo "TIPI_VERSION: ${SENTRY_RELEASE}"
