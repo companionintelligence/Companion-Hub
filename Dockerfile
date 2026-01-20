@@ -58,7 +58,8 @@ COPY ./packages/common/package.json ./packages/common/package.json
 COPY ./packages/frontend/public ./packages/frontend/public
 
 # Install dependencies
-RUN bun install --frozen-lockfile
+# Skip postinstall scripts (git hooks not needed in Docker)
+RUN bun install --frozen-lockfile --ignore-scripts
 
 COPY ./turbo.json ./turbo.json
 COPY ./tsconfig.json ./
