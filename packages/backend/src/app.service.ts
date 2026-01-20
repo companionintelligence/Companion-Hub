@@ -86,9 +86,7 @@ export class AppService {
 
       this.logger.info('Copying assets...');
       await this.copyAssets();
-      this.logger.info('Assets copied, generating TLS certificates...');
-      await this.generateTlsCertificates({ localDomain: userSettings.localDomain });
-      this.logger.info('TLS certificates generated');
+      this.logger.info('Assets copied');
 
       if (__prod__ && (buster !== version || version === 'nightly')) {
         this.logger.info('Restarting running apps...');
@@ -150,7 +148,8 @@ export class AppService {
       const traefikYmlSrc = path.join(assetsTraefikDir, 'traefik.yml');
       const traefikYmlDest = path.join(traefikConfigDest, 'traefik.yml');
       if (await this.filesystem.pathExists(traefikYmlSrc)) {
-        const content = (await this.filesystem.readTextFile(traefikYmlSrc)) as string;
+        let content = (await this.filesystem.readTextFile(traefikYmlSrc)) as string;
+        content = content.replace('{{ACME_EMAIL}}', 'admin@companionintelligence.com');
         await this.filesystem.writeTextFile(traefikYmlDest, content);
         this.logger.info('Copied traefik.yml');
       } else {
@@ -205,12 +204,4 @@ export class AppService {
       this.logger.warn(`Media folder creation failed or timed out: ${error instanceof Error ? error.message : error}. Continuing startup...`);
     }
   }
-
-  /**
-   * TLS certificate generation - no longer needed as Cloudflare handles TLS
-   * Kept as a no-op for backwards compatibility
-   */
-  public generateTlsCertificates = async (_data: { localDomain?: string }) => {
-    // TLS is handled by Cloudflare Tunnel - no local certificate generation needed
-  };
 }

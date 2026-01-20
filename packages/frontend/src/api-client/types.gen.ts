@@ -12,6 +12,7 @@ export type UserContextDto = {
     isLoggedIn: boolean;
     isPasswordResetDisabled: boolean;
     localDomain: string;
+    domain: string;
     sslPort: number;
     themeBase: string;
     themeColor: string;

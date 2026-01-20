@@ -4,10 +4,12 @@ import { Button } from '@/components/ui/Button';
 import { Alert, AlertDescription } from '@/components/ui/Alert/Alert';
 import { IconAlertCircle, IconExternalLink } from '@tabler/icons-react';
 import toast from 'react-hot-toast';
+import { useUserContext } from '@/context/user-context';
 
 export default function DeviceRegistrationPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+  const { domain } = useUserContext();
   const [isRegistered, setIsRegistered] = useState(false);
   const [deviceId, setDeviceId] = useState<string | null>(null);
   const [registrationUrl, setRegistrationUrl] = useState<string | null>(null);
@@ -67,11 +69,11 @@ export default function DeviceRegistrationPage() {
             setIsRegistered(true);
 
             // Redirect to the new subdomain
-            // Default to ci.computer base if not provided in config
+            // Default to domain from config if provided
             // Note: In production this should align with the cloud domain
             const subdomain = params.subdomain;
             if (subdomain) {
-              const targetUrl = `https://${subdomain}.ci.computer`;
+              const targetUrl = `https://${subdomain}.${domain}`;
               setTimeout(() => {
                 window.location.href = targetUrl;
               }, 1500);
@@ -137,7 +139,7 @@ export default function DeviceRegistrationPage() {
     };
 
     checkStatus();
-  }, [navigate, searchParams, isCallback]);
+  }, [navigate, searchParams, isCallback, domain]);
 
   const handleRedirectToCICloud = () => {
     if (registrationUrl) {

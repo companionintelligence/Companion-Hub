@@ -58,19 +58,20 @@ export class AppHelpers {
       authoritativeDomain = org.domain;
     }
     if (!authoritativeDomain) {
-      authoritativeDomain = 'ci.computer';
+      authoritativeDomain = this.config.getConfig().domain;
     }
 
     // Ensure DOMAIN and LOCAL_DOMAIN are set (required for Traefik label interpolation)
     // We overwrite the value from the .env file if it's the default "ci.computer" but we have a better one from the DB or settings
     const currentEnvDomain = envMap.get('DOMAIN');
-    if (!currentEnvDomain || (currentEnvDomain === 'ci.computer' && authoritativeDomain !== 'ci.computer')) {
+    // If the domain matches the config domain, but we found a better authoritative domain, override it.
+    if (!currentEnvDomain || (currentEnvDomain === this.config.getConfig().domain && authoritativeDomain !== this.config.getConfig().domain)) {
       envMap.set('DOMAIN', authoritativeDomain);
       this.logger.debug(`Overriding DOMAIN with authoritative domain: ${authoritativeDomain}`);
     }
 
     if (!envMap.has('LOCAL_DOMAIN')) {
-      envMap.set('LOCAL_DOMAIN', userSettings.localDomain || 'tipi.lan');
+      envMap.set('LOCAL_DOMAIN', userSettings.localDomain || this.config.getConfig().localDomain);
     }
 
     // Default always present env variables
@@ -223,19 +224,20 @@ export class AppHelpers {
       let subdomain = form.localSubdomain ? form.localSubdomain : `${appName}-${appStoreId}`;
       // exposedLocal means "publish to internet via Cloudflare"
       // Container should think it's public and HTTPS (even though Traefik receives HTTP from Cloudflare)
-      let publicDomain = envMap.get('DOMAIN') || 'ci.computer';
+      const configDomain = this.config.getConfig().domain;
+      let publicDomain = envMap.get('DOMAIN') || configDomain;
 
-      // Fix for deep subdomains on ci.computer
+      // Fix for deep subdomains
       // We must not use deep subdomains. Where it is installed is where it should be.
-      // The final form MUST be <appslug>-<orgname>.ci.computer where appSlug is specified by the user in the install app form
-      if (publicDomain.endsWith('.ci.computer')) {
-        publicDomain = 'ci.computer';
+      // The final form MUST be <appslug>-<orgname>.<domain> where appSlug is specified by the user in the install app form
+      if (publicDomain.endsWith(`.${configDomain}`)) {
+        publicDomain = configDomain;
         if (org?.name && !subdomain.endsWith(`-${org.name}`)) {
           subdomain = `${subdomain}-${org.name}`;
         }
       }
 
-      envMap.set('APP_LOCAL_DOMAIN', `${subdomain}.${envMap.get('LOCAL_DOMAIN') || 'tipi.lan'}`);
+      envMap.set('APP_LOCAL_DOMAIN', `${subdomain}.${envMap.get('LOCAL_DOMAIN') || this.config.getConfig().localDomain}`);
 
       if (!form.openPort) {
         // App thinks it's public HTTPS (for proper URL generation and SSL handling)

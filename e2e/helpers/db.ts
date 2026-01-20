@@ -17,16 +17,16 @@ export const clearDatabase = async () => {
   await db.delete(schema.link);
   await db.delete(schema.user);
   await db.delete(schema.app);
-  await db.delete(schema.organization);
+  await db.delete(schema.deviceRegistration);
 };
 
 export const seedOrganization = async () => {
   try {
-    await db.insert(schema.organization).values({
+    await db.insert(schema.deviceRegistration).values({
       id: 'test-org-id',
       name: 'test-org',
-      tunnelId: 'test-tunnel-id',
-      domain: 'test-org.ci.computer',
+      tunnelId: null,
+      domain: 'test-org.example.com',
     });
   } catch (error) {
     console.error('Failed to seed organization:', error);

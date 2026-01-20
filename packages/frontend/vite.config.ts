@@ -63,8 +63,8 @@ export default defineConfig({
     },
     proxy: {
       '/api': {
-        target: 'http://localhost:3000',
-        changeOrigin: true,
+        target: `http://localhost:${process.env.API_PORT || 3000}`,
+        changeOrigin: false,
         configure: (proxy, _options) => {
           proxy.on('error', (err, _req, _res) => {
             // Log connection errors as warnings instead of crashing

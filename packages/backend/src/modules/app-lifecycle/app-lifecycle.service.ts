@@ -16,6 +16,8 @@ import { BackupManager } from '../backups/backup.manager';
 import { CloudflareClientService, AppInfo } from '../cloudflare/cloudflare-client.service';
 import { MarketplaceService } from '../marketplace/marketplace.service';
 import { RegistrationService } from '../registration/registration.service';
+import { ReposHelpers } from '../app-stores/repos.helpers';
+import { AppStoreService } from '../app-stores/app-store.service';
 import { AppEventsQueue, appEventResultSchema, appEventSchema } from '../queue/entities/app-events';
 import { AppLifecycleCommandFactory } from './app-lifecycle-command.factory';
 import { appFormSchema } from './dto/app-lifecycle.dto';
@@ -38,6 +40,8 @@ export class AppLifecycleService implements OnApplicationBootstrap {
     private readonly backupManager: BackupManager,
     private readonly cloudflareClientService: CloudflareClientService,
     private readonly registrationService: RegistrationService,
+    private readonly repoHelpers: ReposHelpers,
+    private readonly appStoreService: AppStoreService,
     @Inject(APP_ASYNC_MUTEX) private mutex: AsyncMutex,
   ) {
     this.logger.debug('Subscribing to app events...');
@@ -122,6 +126,27 @@ export class AppLifecycleService implements OnApplicationBootstrap {
     const { demoMode, version, architecture } = this.config.getConfig();
 
     this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'installing' });
+
+    // Check if we need to download files from CI Cloud
+    const { appStoreId, appName } = extractAppUrn(appUrn);
+    const store = await this.appStoreService.getAppStoreBySlug(appStoreId);
+
+    if (store && store.type === 'ci_cloud_api') {
+      try {
+        const result = await this.repoHelpers.downloadAppFiles(store.url, store.slug, appName);
+        if (!result.success) {
+          throw new Error(result.message);
+        }
+      } catch (error) {
+        this.sseService.emit('app', {
+          event: 'install_error',
+          appUrn,
+          appStatus: 'uninstalled',
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
+    }
 
     const app = await this.appRepository.getAppByUrn(appUrn);
 
@@ -212,8 +237,6 @@ export class AppLifecycleService implements OnApplicationBootstrap {
     if (appInfo?.min_tipi_version && valid(version) && lt(version, appInfo.min_tipi_version)) {
       throw new TranslatableError('APP_UPDATE_ERROR_MIN_TIPI_VERSION', { id: appUrn, minVersion: appInfo.min_tipi_version });
     }
-
-    const { appName, appStoreId } = extractAppUrn(appUrn);
 
     const createdApp = await this.appRepository.createApp({
       appName,
@@ -553,7 +576,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
 
       const exposedApps: AppInfo[] = apps
         .filter((app) => {
-          return app.exposedLocal && app.status === 'running' && app.port !== null;
+          return app.exposedLocal && ['running', 'starting', 'restarting'].includes(app.status) && app.port !== null;
         })
         .map((app) => {
           // Construct URN for this app
@@ -570,10 +593,8 @@ export class AppLifecycleService implements OnApplicationBootstrap {
             subdomain: subdomain,
             localPort: 80, // Traefik port - Traefik routes to the app based on Host header
             protocol: 'http' as const,
-            hostname: 'host.docker.internal', // Always use host.docker.internal to reach Traefik
+            hostname: 'traefik', // Use container name to reach Traefik within the same network
             originServerName: traefikHostname, // This sets the Host header that Traefik expects
-            // Don't set publicHostname - let CI-Cloud construct it from subdomain + org slug
-            // This ensures consistent format without device subdomain contamination
           };
         });
 

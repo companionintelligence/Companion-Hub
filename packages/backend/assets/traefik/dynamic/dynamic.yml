@@ -3,12 +3,10 @@ http:
     insecuretransport:
       insecureSkipVerify: true
 
-tls:
-  stores:
-    default:
-      defaultCertificate:
-        certFile: /etc/traefik/tls/cert.pem
-        keyFile: /etc/traefik/tls/key.pem
-  certificates:
-    - certFile: /etc/traefik/tls/cert.pem
-      keyFile: /etc/traefik/tls/key.pem
+  middlewares:
+    runtipi:
+      forwardAuth:
+        address: "http://ci-os-hub:5002/api/auth/traefik"
+        trustForwardHeader: true
+        authResponseHeaders:
+          - "X-Runtipi-User"

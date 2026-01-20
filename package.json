@@ -7,16 +7,19 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "turbo run dev",
+    "local": "bun run local:infra && dotenv -e .env.local -- turbo run local",
+    "local:infra": "ENV_FILE=.env.local docker compose --env-file .env.local --project-name runtipi -f docker-compose.local.yml up -d ci-os-hub-queue ci-hub-db",
+    "local:cleanup": "bun run cleanup && rm -rf .internal && rm -rf tunnel/token tunnel/certs",
     "bundle": "turbo bundle",
     "build": "turbo run build",
     "tsc": "turbo run tsc",
     "test": "turbo test",
     "test:integration": "turbo run test:integration",
     "start": "node ./main.js",
-    "start:dev": "ENV_FILE=.env.dev docker compose --env-file .env.dev --project-name runtipi -f docker-compose.dev.yml up --build",
-    "start:prod": "ENV_FILE=.env.prod docker compose --env-file .env.prod --project-name runtipi -f docker-compose.prod.yml up --build",
-    "start:staging": "ENV_FILE=.env.staging CI_CLOUD_API_URL=https://app-staging.ci.computer/api docker compose --env-file .env.staging --project-name runtipi -f docker-compose.prod.yml up --build",
+    "start:local": "ENV_FILE=.env.local docker compose --env-file .env.local --project-name runtipi -f docker-compose.local.yml up --build",
+    "start:prod": "bun scripts/init-traefik.ts && ENV_FILE=.env.prod CI_CLOUD_API_URL=https://ci.computer/api docker compose --env-file .env.prod --project-name runtipi -f docker-compose.prod.yml up --build",
+    "start:staging": "bun scripts/init-traefik.ts && ENV_FILE=.env.staging CI_CLOUD_API_URL=https://companionintel.com/api docker compose --env-file .env.staging --project-name runtipi -f docker-compose.prod.yml up --build",
+    "start:dev": "bun scripts/init-traefik.ts && ENV_FILE=.env.dev CI_CLOUD_API_URL=https://setup.companionintelligence.com/api docker compose --env-file .env.dev --project-name runtipi -f docker-compose.prod.yml up --build",
     "cleanup": "bun run scripts/cleanup.ts",
     "test:e2e": "bun scripts/run-e2e.ts",
     "test:e2e:ui": "NODE_ENV=test dotenv -e .env -e .env.e2e -- playwright test --ui",
@@ -25,11 +28,8 @@
     "lint:ci": "biome ci . --error-on-warnings --no-errors-on-unmatched",
     "lint": "biome check",
     "lint:fix": "biome check --write --no-errors-on-unmatched",
-    "prepare": "test -n \"$CI\" || simple-git-hooks",
+    "prepare": "husky",
     "version": "echo $npm_package_version"
-  },
-  "simple-git-hooks": {
-    "pre-commit": "bun run lint-staged"
   },
   "lint-staged": {
     "*": [
@@ -48,8 +48,8 @@
     "@types/bun": "^1.2.22",
     "@types/pg": "^8.15.1",
     "dotenv-cli": "^10.0.0",
+    "husky": "^9.1.7",
     "lint-staged": "^16.2.7",
-    "simple-git-hooks": "^2.13.1",
     "turbo": "^2.5.6"
   },
   "dependencies": {

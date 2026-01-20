@@ -87,6 +87,7 @@ docs/jira/
 
 docs/jira/
 
+.internal/
 .internal-*/
 .internal/cache/*
 .internal/apps/*
@@ -108,3 +109,4 @@ temp_repo_server
 repo.zip
 # Tunnel Certs
 tunnel/*
+

@@ -31,6 +31,8 @@ services:
       timeout: 30s
       retries: 10
       start_period: 60s
+    ports:
+      - 5672:5672
     environment:
       RABBITMQ_DEFAULT_USER: tipi
       RABBITMQ_DEFAULT_PASS: tipi
@@ -56,6 +58,7 @@ services:
       retries: 10
     ports:
       - 3000:9091
+      - 9091:9091
     volumes:
       # Hot reload
       - ./packages/backend/src:/app/packages/backend/src
@@ -75,7 +78,7 @@ services:
       # Static
       - ${ENV_FILE:-.env}:/data/.env
       - ./.internal/cache:/cache
-      - ./docker-compose.dev.yml:/data/docker-compose.yml
+      - ./docker-compose.local.yml:/data/docker-compose.yml
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /proc/meminfo:/host/proc/meminfo:ro
       - /etc/localtime:/etc/localtime:ro

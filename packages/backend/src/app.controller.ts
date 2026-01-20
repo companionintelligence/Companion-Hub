@@ -37,7 +37,9 @@ export class AppController {
       allowErrorMonitoring: false,
       themeColor: 'blue',
       themeBase: 'gray',
-      localDomain: 'tipi.lan',
+      // No fallback for localDomain - it must be configured in .env
+      localDomain: '',
+      domain: '',
       sslPort: 443,
       version: {
         current: '0.0.0',
@@ -62,6 +64,7 @@ export class AppController {
 
       // Ensure required fields have defaults
       const localDomain = userSettings?.localDomain || defaults.localDomain;
+      const domain = userSettings?.domain || defaults.domain;
       const sslPort = userSettings?.sslPort ?? defaults.sslPort;
 
       // Get version with error handling (GitHub API might be unavailable)
@@ -104,6 +107,7 @@ export class AppController {
         themeBase: themeBase || defaults.themeBase,
         version,
         localDomain,
+        domain,
         sslPort,
       };
 
@@ -153,6 +157,7 @@ export class AppController {
           releases: [],
         },
         localDomain: defaultSettings?.localDomain || defaults.localDomain,
+        domain: defaultSettings?.domain || defaults.domain,
         sslPort: defaultSettings?.sslPort ?? defaults.sslPort,
       };
 
@@ -182,7 +187,7 @@ export class AppController {
       return Number(app.version) < Number(metadata?.latestVersion ?? 0) && app.status !== 'updating';
     });
 
-    // Extract slug from domain (e.g. "slug.ci.computer" -> "slug")
+    // Extract slug from domain
     const orgSlug = org?.name;
 
     return AppContextDto.parse(

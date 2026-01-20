@@ -336,7 +336,7 @@ export const UserSettingsForm = (props: IProps) => {
               </>
             }
             error={errors.localDomain?.message}
-            placeholder="tipi.lan"
+            placeholder="example.local"
             disabled={initialValues?.advancedSettings === false}
           />
           <Button className="mt-2 mb-2" onClick={downloadCertificate}>

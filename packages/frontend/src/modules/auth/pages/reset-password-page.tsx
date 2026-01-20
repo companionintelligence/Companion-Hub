@@ -11,7 +11,7 @@ import { ResetPasswordForm } from '../components/reset-password-form/reset-passw
 export default () => {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const { isPasswordResetDisabled } = useUserContext();
+  const { isPasswordResetDisabled, domain } = useUserContext();
 
   const { data } = useSuspenseQuery({
     ...checkResetPasswordRequestOptions(),
@@ -89,13 +89,13 @@ export default () => {
                 <div className="col-12">
                   <div className="d-flex align-items-center justify-content-between">
                     <span className="text-muted fw-semibold">Email:</span>
-                    <code className="fs-5 fw-bold text-primary">me@ci.computer</code>
+                    <code className="fs-5 fw-bold text-primary">me@{domain}</code>
                   </div>
                 </div>
                 <div className="col-12">
                   <div className="d-flex align-items-center justify-content-between">
                     <span className="text-muted fw-semibold">Password:</span>
-                    <code className="fs-5 fw-bold text-primary">ci.computer</code>
+                    <code className="fs-5 fw-bold text-primary">{domain}</code>
                   </div>
                 </div>
               </div>

@@ -1,4 +1,5 @@
 import path from 'node:path';
+import fs from 'node:fs';
 import { Injectable } from '@nestjs/common';
 import { type NodePgDatabase, drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
@@ -22,6 +23,14 @@ export class DatabaseService {
 
   private getMigrationsPath(): string {
     const { appDir } = this.configurationService.get('directories');
+
+    if (process.env.NODE_ENV === 'development') {
+      const devPath = path.resolve(process.cwd(), 'src/core/database/drizzle');
+      if (fs.existsSync(devPath)) {
+        return devPath;
+      }
+    }
+
     return path.join(appDir, 'assets', 'migrations');
   }
 

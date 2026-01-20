@@ -189,7 +189,12 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
     'GUEST_DASHBOARD',
     typeof settings.guestDashboard === 'boolean' ? String(settings.guestDashboard) : envMap.get('GUEST_DASHBOARD') || 'false',
   );
-  envMap.set('LOCAL_DOMAIN', settings.localDomain || envMap.get('LOCAL_DOMAIN') || 'tipi.lan');
+  if (settings.localDomain) {
+    envMap.set('LOCAL_DOMAIN', settings.localDomain);
+  }
+  // If not in settings, preserve existing env value. DO NOT default to tipi.lan.
+  // The value comes from .env on startup, which is strictly validated by configuration.service.ts
+
   envMap.set(
     'ALLOW_AUTO_THEMES',
     typeof settings.allowAutoThemes === 'boolean' ? String(settings.allowAutoThemes) : envMap.get('ALLOW_AUTO_THEMES') || 'true',
@@ -217,9 +222,16 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   envMap.set('THEME_COLOR', settings.themeColor || envMap.get('THEME_COLOR') || 'blue');
 
   // CI Cloud integration settings
-  envMap.set('CI_CLOUD_API_URL', envMap.get('CI_CLOUD_API_URL') || '');
-  envMap.set('CI_CLOUD_FRONTEND_URL', envMap.get('CI_CLOUD_FRONTEND_URL') || '');
-  envMap.set('CI_CLOUD_APP_STORE_URL', envMap.get('CI_CLOUD_APP_STORE_URL') || '');
+  const ciCloudApiUrl = process.env.CI_CLOUD_API_URL || envMap.get('CI_CLOUD_API_URL');
+  const ciCloudFrontendUrl = process.env.CI_CLOUD_FRONTEND_URL || envMap.get('CI_CLOUD_FRONTEND_URL');
+  const ciCloudAppStoreUrl = process.env.CI_CLOUD_APP_STORE_URL || envMap.get('CI_CLOUD_APP_STORE_URL');
+
+  // We do not modify these values from code without valid inputs.
+  // They should be provided via .env file or environment variables on start.
+  // We keep them in the envMap if they exist.
+  if (ciCloudApiUrl) envMap.set('CI_CLOUD_API_URL', ciCloudApiUrl);
+  if (ciCloudFrontendUrl) envMap.set('CI_CLOUD_FRONTEND_URL', ciCloudFrontendUrl);
+  if (ciCloudAppStoreUrl) envMap.set('CI_CLOUD_APP_STORE_URL', ciCloudAppStoreUrl);
 
   // Only write the env file if values have actually changed to avoid unnecessary overwrites
   // This preserves manual edits to .env while still syncing settings.json changes

@@ -40,6 +40,7 @@ describe('InstallForm', () => {
       userSettings: {
         ciHubOrganizationSlug: 'Josh', // Case insensitive check
         localDomain: 'tipi.lan',
+        domain: 'example.com',
         maxBackups: 5,
         guestDashboard: false,
       },
@@ -55,8 +56,8 @@ describe('InstallForm', () => {
 
     render(<InstallForm info={mockInfo} onSubmit={vi.fn()} formId="test-form" formFields={[]} />);
 
-    // Expect to see "-josh.ci.computer" (lowercased)
-    expect(screen.getByText(/-josh.ci.computer/)).toBeInTheDocument();
+    // Expect to see "-josh.example.com" (lowercased)
+    expect(screen.getByText(/-josh.example.com/)).toBeInTheDocument();
   });
 
   it('should fallback to local domain when organization slug is missing', () => {
@@ -64,6 +65,7 @@ describe('InstallForm', () => {
       userSettings: {
         ciHubOrganizationSlug: undefined,
         localDomain: 'tipi.lan',
+        domain: 'example.com',
         maxBackups: 5,
         guestDashboard: false,
       },

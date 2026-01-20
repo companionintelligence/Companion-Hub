@@ -29,6 +29,22 @@ export class RegistrationService implements OnApplicationBootstrap {
       // Re-check registration status in case license check failed and wiped it
       isRegistered = this._isRegistered;
 
+      // Ensure tunnel token is written to disk in dev mode (since it might be missing or temp)
+      if (isRegistered && process.env.NODE_ENV === 'development') {
+        try {
+          const org = await this.deviceRegistrationRepository.getFirstDeviceRegistration();
+          if (org?.tunnelToken && org.tunnelId) {
+            this.logger.debug('DevMode: Ensuring tunnel configuration exists...');
+            await this.cloudflareClientService.initializeTunnel(org.id, {
+              tunnelId: org.tunnelId,
+              token: org.tunnelToken,
+            });
+          }
+        } catch (e) {
+          this.logger.warn('DevMode: Seting up tunnel config failed (non-fatal)', e);
+        }
+      }
+
       // Check for missing Tunnel ID and recover if needed
       if (isRegistered) {
         const org = await this.deviceRegistrationRepository.getFirstDeviceRegistration();
@@ -259,7 +275,7 @@ export class RegistrationService implements OnApplicationBootstrap {
 
   /**
    * Setup Cloudflare tunnel and DNS for the organization
-   * Creates organization subdomain: {orgName}.ci.computer
+   * Creates organization subdomain: {orgName}.{domain}
    * @param organizationId - Organization ID from CI Cloud
    * @param activationResult - Result from device activation (may contain org details)
    */
@@ -290,7 +306,8 @@ export class RegistrationService implements OnApplicationBootstrap {
     }
 
     try {
-      const { cloudflareTunnelId } = this.config.getConfig();
+      const { cloudflareTunnelId, userSettings } = this.config.getConfig();
+      const rootDomain = userSettings.domain;
 
       // Try to fetch organization details from CI Cloud API
       let orgName: string | null = null;
@@ -335,7 +352,7 @@ export class RegistrationService implements OnApplicationBootstrap {
         this.logger.debug(`Using subdomain from activation result: ${subdomain}`);
       }
 
-      const domain = `${subdomain}.ci.computer`;
+      const domain = `${subdomain}.${rootDomain}`;
 
       // Configure tunnel using credentials from CI-Cloud
       this.logger.info(`Initializing tunnel for organization: ${organizationId}`);
@@ -610,8 +627,8 @@ export class RegistrationService implements OnApplicationBootstrap {
       }
 
       // Use the subdomain provided by CI Cloud (already validated on CI Cloud side)
-      // The subdomain is the organization name part (e.g., "acme-corp" from "acme-corp.ci.computer")
-      // OR device-org slug (e.g. "device-org" from "device-org.ci.computer")
+      // The subdomain is the organization name part (e.g., "acme-corp" from "acme-corp.{domain}")
+      // OR device-org slug (e.g. "device-org" from "device-org.{domain}")
       const incomingSubdomain = data.subdomain.trim();
 
       if (!incomingSubdomain) {

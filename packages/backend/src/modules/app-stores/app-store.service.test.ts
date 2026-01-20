@@ -53,7 +53,7 @@ describe('AppStoreService', () => {
         url,
         slug: 'ci-cloud',
         enabled: true,
-        type: 'http_zip',
+        type: 'ci_cloud_api',
       });
     });
 
@@ -75,7 +75,7 @@ describe('AppStoreService', () => {
     it('should do nothing if existing store has same URL', async () => {
       const url = 'https://example.com/store.zip';
       configService.getConfig.mockReturnValue(fromPartial({ ciCloudAppStoreUrl: url }));
-      appStoreRepository.getAppStoreBySlug.mockResolvedValue(fromPartial({ slug: 'ci-cloud', url, type: 'http_zip' }));
+      appStoreRepository.getAppStoreBySlug.mockResolvedValue(fromPartial({ slug: 'ci-cloud', url, type: 'ci_cloud_api' }));
 
       await service.registerCloudAppStore();
 
