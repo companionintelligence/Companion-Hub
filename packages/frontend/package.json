@@ -4,11 +4,11 @@
   "version": "0.0.5",
   "type": "module",
   "scripts": {
-    "dev": "cd ../.. && node node_modules/@react-router/dev/bin.js dev",
-    "bundle": "cd ../.. && node node_modules/@react-router/dev/bin.js build",
+    "dev": "bunx @react-router/dev dev",
+    "bundle": "node node_modules/@react-router/dev/bin.js build",
     "preview": "vite preview",
     "test": "vitest run",
-    "tsc": "cd ../.. && node node_modules/@react-router/dev/bin.js typegen && cd packages/frontend && npx tsgo --noEmit"
+    "tsc": "bunx @react-router/dev typegen && cd packages/frontend && npx tsgo --noEmit"
   },
   "dependencies": {
     "@codemirror/lang-json": "^6.0.2",
@@ -33,7 +33,7 @@
     "@sentry/vite-plugin": "^4.4.0",
     "@stepperize/core": "^1.2.6",
     "@tabler/core": "1.4.0",
-    "@tabler/icons-react": "^3.31.0",
+    "@tabler/icons-react": "3.31.0",
     "@tanstack/react-query": "^5.75.7",
     "@tanstack/react-query-devtools": "^5.75.7",
     "@uidotdev/usehooks": "^2.4.1",
