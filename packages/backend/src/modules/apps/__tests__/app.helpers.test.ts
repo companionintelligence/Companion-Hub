@@ -71,8 +71,10 @@ describe('AppHelpers', () => {
           internalIp: '127.0.0.1',
           envFilePath: '/data/.env',
           rootFolderHost: '/opt/runtipi',
+          domain: 'example.com',
           userSettings: {
             appDataPath: '/opt/runtipi',
+            domain: 'example.com',
           },
         }),
       );
@@ -194,8 +196,8 @@ describe('AppHelpers', () => {
       });
 
       // Assert
-      expect(envMap.get('APP_DOMAIN')).toBe('test-app-test-store.ci.computer');
-      expect(envMap.get('APP_HOST')).toBe('test-app-test-store.ci.computer');
+      expect(envMap.get('APP_DOMAIN')).toBe('test-app-test-store.example.com');
+      expect(envMap.get('APP_HOST')).toBe('test-app-test-store.example.com');
       expect(envMap.get('APP_PROTOCOL')).toBe('https');
     });
 
@@ -441,16 +443,16 @@ describe('AppHelpers', () => {
       expect(envMap.get('BOOLEAN_WITH_DEFAULT')).toBe('false');
     });
 
-    it('should correctly format APP_DOMAIN for ci.computer subdomains', async () => {
+    it('should correctly format APP_DOMAIN for subdomains', async () => {
       // Arrange
       const envMap = new Map<string, string>();
-      envMap.set('DOMAIN', 'macbook3-josh.ci.computer');
+      envMap.set('DOMAIN', 'macbook3-josh.example.com');
       envUtils.envStringToMap.mockReturnValue(envMap);
 
       deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({
         id: '123',
         name: 'josh',
-        domain: 'macbook3-josh.ci.computer',
+        domain: 'macbook3-josh.example.com',
         tunnelId: 'tunnel-id',
         tunnelToken: 'tunnel-token',
         createdAt: new Date().toISOString(),
@@ -466,8 +468,8 @@ describe('AppHelpers', () => {
       await appHelpers.generateEnvFile(testAppUrn, form);
 
       // Assert
-      expect(envMap.get('APP_DOMAIN')).toBe('2fauth-josh.ci.computer');
-      expect(envMap.get('APP_EXPOSED_DOMAIN')).toBe('2fauth-josh.ci.computer');
+      expect(envMap.get('APP_DOMAIN')).toBe('2fauth-josh.example.com');
+      expect(envMap.get('APP_EXPOSED_DOMAIN')).toBe('2fauth-josh.example.com');
     });
   });
 });

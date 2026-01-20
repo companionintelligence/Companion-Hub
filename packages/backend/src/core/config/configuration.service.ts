@@ -27,9 +27,9 @@ const envSchema = z.object({
   JWT_SECRET: z.string(),
   APPS_REPO_ID: z.string(),
   APPS_REPO_URL: z.string(),
-  CI_CLOUD_APP_STORE_URL: z.string().optional(),
+  CI_CLOUD_APP_STORE_URL: z.string(),
   CI_CLOUD_API_URL: z.string().optional(),
-  CI_CLOUD_FRONTEND_URL: z.string().optional(), // Frontend URL for registration redirects
+  CI_CLOUD_FRONTEND_URL: z.string(), // Frontend URL for registration redirects
   CLOUDFLARE_ACCOUNT_ID: z.string().optional(),
   CLOUDFLARE_TUNNEL_ID: z.string().optional(),
   CLOUDFLARE_ZONE_ID: z.string().optional(),
@@ -169,6 +169,8 @@ export class ConfigurationService {
       },
       deprecatedAppsRepoId: env.data.APPS_REPO_ID, // @deprecated
       deprecatedAppsRepoUrl: env.data.APPS_REPO_URL, // @deprecated
+      domain: env.data.DOMAIN,
+      localDomain: env.data.LOCAL_DOMAIN,
       ciCloudAppStoreUrl: env.data.CI_CLOUD_APP_STORE_URL,
       ciCloudApiUrl: env.data.CI_CLOUD_API_URL,
       ciCloudFrontendUrl: env.data.CI_CLOUD_FRONTEND_URL,

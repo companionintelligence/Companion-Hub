@@ -56,7 +56,14 @@ services:
       ROOT_FOLDER_HOST: /tmp/runtipi-e2e
       JWT_SECRET: test-secret
       CI_CLOUD_API_URL: http://non-existent-service:3000
-      TIPI_VERSION: 0.0.0-test
+      CI_CLOUD_FRONTEND_URL: http://non-existent-service:3000
+      CI_CLOUD_APP_STORE_URL: http://non-existent-service:3000/api
+      APPS_REPO_URL: https://github.com/runtipi/runtipi-appstore
+      APPS_REPO_ID: repo-id
+      DOMAIN: ci.computer
+      LOCAL_DOMAIN: tipi.lan
+      TIPI_VERSION: 9.9.9
+      E2E_TEST: true
     volumes:
       - /data
       - /var/run/docker.sock:/var/run/docker.sock

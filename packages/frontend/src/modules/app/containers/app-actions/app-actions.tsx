@@ -232,7 +232,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
 
   const subdomain = metadata.localSubdomain || app?.localSubdomain || info.urn.split(':').join('-');
   const organizationSlug = userSettings.ciHubOrganizationSlug;
-  const domainSuffix = `-${organizationSlug}.ci.computer`;
+  const domainSuffix = `-${organizationSlug}.${userSettings.domain}`;
   const appUrl = `https://${subdomain}${domainSuffix}${info.url_suffix || ''}`;
 
   useEffect(() => {
@@ -313,7 +313,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
       key="open"
       IconComponent={IconExternalLink}
       onClick={() => {
-        // Navigate to the app at ${name}.ci.computer in the same tab
+        // Navigate to the app at ${name}.${userSettings.domain} in the same tab
         window.location.href = appUrl;
       }}
       title={t('APP_ACTION_OPEN')}

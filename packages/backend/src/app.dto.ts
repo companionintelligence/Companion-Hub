@@ -75,6 +75,7 @@ const userContextDto = type({
   themeColor: 'string',
   themeBase: 'string',
   localDomain: 'string',
+  domain: 'string',
   sslPort: 'number',
 });
 

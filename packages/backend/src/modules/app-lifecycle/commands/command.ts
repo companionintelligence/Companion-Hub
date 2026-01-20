@@ -52,10 +52,11 @@ export class AppLifecycleCommand {
       const appEnv = await appFilesManager.getAppEnv(appUrn);
       const envUtils = new EnvUtils();
       const envMap = envUtils.envStringToMap(appEnv.content || '');
-      const domain = envMap.get('DOMAIN') || configService.get('userSettings').domain || 'ci.computer';
-      const localDomain = envMap.get('LOCAL_DOMAIN') || configService.get('userSettings').localDomain || 'tipi.lan';
 
-      const dockerComposeBuilder = new DockerComposeBuilder();
+      const domain = envMap.get('DOMAIN') || configService.get('userSettings').domain || configService.get('domain');
+      const localDomain = envMap.get('LOCAL_DOMAIN') || configService.get('userSettings').localDomain || configService.get('localDomain');
+
+      const dockerComposeBuilder = new DockerComposeBuilder(domain, localDomain);
       const subnet = await subnetManager.allocateSubnet(appUrn);
 
       const composeFile = dockerComposeBuilder.getDockerCompose(mergedServices, form, appUrn, subnet, domain, localDomain);

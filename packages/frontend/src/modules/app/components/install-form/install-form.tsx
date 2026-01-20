@@ -43,7 +43,7 @@ const typeFilter = (field: FormField) => !hiddenTypes.includes(field.type);
 export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit, initialValues, loading, formId }) => {
   const { t } = useTranslation();
   const { userSettings, isProduction } = useAppContext();
-  const { guestDashboard, localDomain, maxBackups: globalMaxBackups, ciHubOrganizationSlug } = userSettings;
+  const { guestDashboard, localDomain, maxBackups: globalMaxBackups, ciHubOrganizationSlug, domain } = userSettings;
 
   const orgSlug = ciHubOrganizationSlug ? ciHubOrganizationSlug.toLowerCase().replace(/\s+/g, '-') : undefined;
 
@@ -202,7 +202,7 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
                 groupPrefix="https://"
                 groupSuffix={
                   orgSlug
-                    ? `-${orgSlug}.ci.computer${isCheckingDns ? ' (checking...)' : ''}`
+                    ? `-${orgSlug}.${domain}${isCheckingDns ? ' (checking...)' : ''}`
                     : `-${localDomain}${isCheckingDns ? ' (checking...)' : ''}`
                 }
                 {...register('localSubdomain')}
