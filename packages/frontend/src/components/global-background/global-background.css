@@ -1,7 +1,7 @@
 .background--custom {
-  background: linear-gradient(90deg, #038b6f, #daab46, #05b2f0);
+  background: linear-gradient(90deg, #cde1ba, #bbd9b2, #A7cea9, #84bd9a, #61a98f, #409987, #1e7f7f, #1a737c, #106178, #134a73);
   background-size: 300% 300%;
-  animation: gradient 4s alternate infinite;
+  animation: gradient 10s alternate infinite;
   position: fixed;
   top: 0;
   left: 0;
