@@ -65,7 +65,10 @@ COPY ./packages/frontend/public ./packages/frontend/public
 RUN bun install --frozen-lockfile --ignore-scripts && \
     echo "Verifying @react-router/dev is installed..." && \
     ls -la node_modules/@react-router/dev/bin.js && \
-    ls -la node_modules/.bin/react-router || echo "WARNING: react-router binary not found"
+    ls -la node_modules/.bin/react-router && \
+    echo "Setting PATH to include node_modules/.bin" && \
+    export PATH="/app/node_modules/.bin:$PATH" && \
+    which react-router || echo "react-router not in PATH"
 
 COPY ./turbo.json ./turbo.json
 COPY ./tsconfig.json ./
@@ -73,7 +76,9 @@ ARG CACHE_BUST=1
 COPY ./packages ./packages
 
 # Set NODE_ENV=production for the build (needed for vite.config.ts)
+# Set PATH to include node_modules/.bin so scripts can find binaries
 ENV NODE_ENV=production
+ENV PATH="/app/node_modules/.bin:${PATH}"
 
 RUN bun run build
 

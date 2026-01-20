@@ -4,11 +4,11 @@
   "version": "0.0.5",
   "type": "module",
   "scripts": {
-    "dev": "bun ../../node_modules/@react-router/dev/bin.js dev",
-    "bundle": "bun ../../node_modules/@react-router/dev/bin.js build",
+    "dev": "cd ../.. && node node_modules/@react-router/dev/bin.js dev",
+    "bundle": "cd ../.. && node node_modules/@react-router/dev/bin.js build",
     "preview": "vite preview",
     "test": "vitest run",
-    "tsc": "bun ../../node_modules/@react-router/dev/bin.js typegen && npx tsgo --noEmit"
+    "tsc": "cd ../.. && node node_modules/@react-router/dev/bin.js typegen && cd packages/frontend && npx tsgo --noEmit"
   },
   "dependencies": {
     "@codemirror/lang-json": "^6.0.2",
