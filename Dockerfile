@@ -19,7 +19,7 @@ ARG TARGETARCH
 ARG DOCKER_COMPOSE_VERSION="v2.40.0"
 ENV TARGETARCH=${TARGETARCH}
 
-RUN apk add --no-cache curl python3 make g++ git
+RUN apk add --no-cache curl python3 make g++ git nodejs npm
 
 RUN echo "Building for ${TARGETARCH:-amd64}"
 RUN if [ "${TARGETARCH}" = "arm64" ]; then \
