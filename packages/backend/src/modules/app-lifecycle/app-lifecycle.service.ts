@@ -593,7 +593,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
             subdomain: subdomain,
             localPort: 80, // Traefik port - Traefik routes to the app based on Host header
             protocol: 'http' as const,
-            hostname: 'host.docker.internal', // Always use host.docker.internal to reach Traefik
+            hostname: 'traefik', // Use container name to reach Traefik within the same network
             originServerName: traefikHostname, // This sets the Host header that Traefik expects
             // Don't set publicHostname - let CI-Cloud construct it from subdomain + org slug
             // This ensures consistent format without device subdomain contamination

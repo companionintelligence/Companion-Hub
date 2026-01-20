@@ -69,10 +69,10 @@ services:
     container_name: ${HUB_CONTAINER_NAME:-ci-os-hub}
     restart: unless-stopped
     ports:
-      - "5002:3000"
+      - "5002:5002"
     healthcheck:
       start_period: 90s
-      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:5002/api/health"]
       interval: 10s
       timeout: 5s
       retries: 15
@@ -97,8 +97,11 @@ services:
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
     networks:
-      - ci_os_hub_network
+      ci_os_hub_network:
+        aliases:
+          - host.docker.internal
     environment:
+      API_PORT: 5002
       LOCAL: ${LOCAL:-false}
       NODE_ENV: ${NODE_ENV:-production}
       ROOT_FOLDER_HOST: ${ROOT_FOLDER_HOST:-.internal}
@@ -117,7 +120,14 @@ services:
     env_file:
       - ${ENV_FILE:-.env}
     labels:
+      traefik.enable: true
       ci-os-hub.managed: true
+      traefik.http.middlewares.runtipi.forwardauth.address: "http://ci-os-hub:5002/api/auth/traefik"
+      traefik.http.middlewares.runtipi.forwardauth.trustForwardHeader: "true"
+      traefik.http.middlewares.runtipi.forwardauth.authResponseHeaders: "X-Runtipi-User"
+      # Prevent Traefik from creating a default router on websecure (which triggers ACME)
+      traefik.http.routers.ci-os-hub.entrypoints: "web"
+      traefik.http.routers.ci-os-hub.rule: "Host(`ci-os-hub.local`)"
 
   traefik:
     image: traefik:v3.0
@@ -134,10 +144,12 @@ services:
       # Mount Traefik config files individually to avoid mount conflicts
       - ${RUNTIPI_STATE_PATH:-.internal}/state/traefik/config/traefik.yml:/etc/traefik/traefik.yml:ro
       - ${RUNTIPI_STATE_PATH:-.internal}/state/traefik/dynamic:/etc/traefik/dynamic:ro
-      - ${RUNTIPI_STATE_PATH:-.internal}/state/traefik/acme.json:/shared/acme.json:ro
+      - ${RUNTIPI_STATE_PATH:-.internal}/state/traefik/acme_storage.json:/etc/traefik/acme.json:rw
       - ${RUNTIPI_STATE_PATH:-.internal}/state/traefik/tls:/etc/traefik/tls:ro
     networks:
-      - ci_os_hub_network
+      ci_os_hub_network:
+        # aliases:
+        #   - host.docker.internal
     depends_on:
       - ci-os-hub
     labels:
@@ -154,8 +166,8 @@ services:
       - ./tunnel:/home/nonroot/.cloudflared:ro
       # - ./tunnel/config.yml:/home/nonroot/.cloudflared/config.yml:ro
       # - ./tunnel/certs:/etc/cloudflared/certs:ro
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    # extra_hosts:
+    #   - "host.docker.internal:host-gateway"
     networks:
       - ci_os_hub_network
     depends_on:

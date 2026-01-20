@@ -40,8 +40,8 @@ entryPoints:
 certificatesResolvers:
   myresolver:
     acme:
-      email: acme@thisprops.com
-      storage: /shared/acme.json
+      email: {{ACME_EMAIL}}
+      storage: /etc/traefik/acme.json
       httpChallenge:
         entryPoint: web
 
