@@ -1,4 +1,5 @@
 import {
+  IconAlertTriangle,
   IconBan,
   IconCircleCheck,
   IconDots,
@@ -227,6 +228,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
   const InstallButton = <ActionButton key="install" onClick={installDisclosure.open} title={t('APP_ACTION_INSTALL')} intent="success" />;
 
   // Check if the app URL is available before showing Open button
+  const [checkError, setCheckError] = useState<string | null>(null);
   const [urlAvailable, setUrlAvailable] = useState<boolean | null>(null);
   const [isCheckingUrl, setIsCheckingUrl] = useState(false);
 
@@ -245,44 +247,40 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
       let isAvailableRef = false; // Track availability to stop polling
       let pollInterval: ReturnType<typeof setInterval> | null = null;
 
-      // Check if URL is reachable using backend endpoint (more reliable)
+      // Check if URL is reachable directly from client
       const checkUrl = async () => {
         if (!isMounted || isAvailableRef) return;
 
         try {
-          const response = await fetch(`/api/cloudflare/check-url-availability?url=${encodeURIComponent(appUrl)}`, {
-            credentials: 'include',
-          });
-
-          if (!response.ok) {
-            // If check fails, stop loading and allow user to try
-            if (isMounted) {
-              setUrlAvailable(null);
-              setIsCheckingUrl(false);
-            }
-            return;
-          }
-
-          const data = await response.json();
-          const isAvailable = data.available === true;
+          const response = await fetch(appUrl);
+          const text = await response.text();
+          const isCloudflare = text.includes('Cloudflare Ray ID') || text.includes('cf-error-details');
+          const isAvailable = response.ok && !isCloudflare;
 
           if (isMounted) {
             setUrlAvailable(isAvailable);
-            setIsCheckingUrl(!isAvailable); // Keep showing loading if not available yet
 
-            // If available, stop polling
             if (isAvailable) {
+              setIsCheckingUrl(false);
+              setCheckError(null);
+              // If available, stop polling
               isAvailableRef = true;
               if (pollInterval) {
                 clearInterval(pollInterval);
                 pollInterval = null;
               }
+            } else {
+              // Page resolves but errors (e.g. Cloudflare error)
+              setIsCheckingUrl(false); // Stop spinner to show error button
+              setCheckError(isCloudflare ? 'Cloudflare Error' : 'Application Error');
             }
           }
         } catch (_error) {
-          // If check request fails (network error calling backend), stop loading and allow user to try
+          // If check request fails (e.g. CORS or network error/DNS not found), keep loading (DNS propagating)
           if (isMounted) {
             setUrlAvailable(null);
+            setCheckError(null);
+            setIsCheckingUrl(true);
             setIsCheckingUrl(false);
           }
         }
@@ -306,6 +304,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
     }
     setUrlAvailable(null);
     setIsCheckingUrl(false);
+    setCheckError(null);
   }, [app?.status, app?.exposedLocal, app?.openPort, app?.exposed, info.no_gui, appUrl]);
 
   const OpenButton = (
@@ -320,6 +319,15 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
       disabled={isCheckingUrl || urlAvailable === false}
       loading={isCheckingUrl}
     />
+  );
+
+  const ErrorButton = (
+    <div key="error">
+      <ActionButton IconComponent={IconAlertTriangle} title={t('APP_ACTION_OPEN')} className="app-error-button" intent="danger" disabled />
+      <Tooltip className="tooltip" anchorSelect=".app-error-button">
+        {checkError}
+      </Tooltip>
+    </div>
   );
 
   const buttons: React.JSX.Element[] = [];
@@ -352,7 +360,11 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
 
       // Show Open button if app is exposed (will be disabled while checking availability)
       if (!info.no_gui && (app?.exposedLocal || app?.openPort || app?.exposed)) {
-        buttons.push(OpenButton);
+        if (checkError) {
+          buttons.push(ErrorButton);
+        } else {
+          buttons.push(OpenButton);
+        }
       }
 
       if (updateAvailable && !versionIsIgnored) {

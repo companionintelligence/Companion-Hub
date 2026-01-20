@@ -576,7 +576,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
 
       const exposedApps: AppInfo[] = apps
         .filter((app) => {
-          return app.exposedLocal && app.status === 'running' && app.port !== null;
+          return app.exposedLocal && ['running', 'starting', 'restarting'].includes(app.status) && app.port !== null;
         })
         .map((app) => {
           // Construct URN for this app
@@ -595,8 +595,6 @@ export class AppLifecycleService implements OnApplicationBootstrap {
             protocol: 'http' as const,
             hostname: 'traefik', // Use container name to reach Traefik within the same network
             originServerName: traefikHostname, // This sets the Host header that Traefik expects
-            // Don't set publicHostname - let CI-Cloud construct it from subdomain + org slug
-            // This ensures consistent format without device subdomain contamination
           };
         });
 
