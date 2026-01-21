@@ -1,0 +1,1 @@
+ALTER TABLE "device_registration" DROP COLUMN "domain";

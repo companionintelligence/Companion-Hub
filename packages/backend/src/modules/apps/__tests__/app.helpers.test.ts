@@ -452,7 +452,6 @@ describe('AppHelpers', () => {
       deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({
         id: '123',
         name: 'myorg',
-        domain: 'mydevice-myorg.example.com',
         tunnelId: 'tunnel-id',
         tunnelToken: 'tunnel-token',
         createdAt: new Date().toISOString(),

@@ -176,7 +176,7 @@ export class AppController {
   @ApiResponse({ type: AppContextDto })
   async appContext(@Req() req: Request) {
     const version = await this.appService.getVersion();
-    const org = await this.registrationService.getOrganizationInfo();
+    const org = await this.registrationService.getDeviceRegistrationInfo();
 
     const { userSettings, isProduction } = this.configuration.getConfig();
 

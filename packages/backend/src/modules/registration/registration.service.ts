@@ -386,7 +386,6 @@ export class RegistrationService implements OnApplicationBootstrap {
         name: orgName,
         tunnelId: tunnelId,
         tunnelToken: tunnelToken,
-        domain: domain,
       });
 
       this.logger.info(`Successfully setup organization infrastructure: ${domain} (tunnel: ${tunnelId})`);
@@ -428,21 +427,20 @@ export class RegistrationService implements OnApplicationBootstrap {
   }
 
   /**
-   * Get organization info for the current hub instance
-   * Returns the first organization found (since we only support one organization per hub)
+   * Get device registration info for the current hub instance
    */
-  public async getOrganizationInfo() {
+  public async getDeviceRegistrationInfo() {
     // First try to get by configured organization ID
     const { ciHubOrganizationId } = this.config.getConfig();
     if (ciHubOrganizationId) {
-      const org = await this.deviceRegistrationRepository.getDeviceRegistrationById(ciHubOrganizationId);
-      if (org) {
-        return org;
+      const deviceRegistration = await this.deviceRegistrationRepository.getDeviceRegistrationById(ciHubOrganizationId);
+      if (deviceRegistration) {
+        return deviceRegistration;
       }
     }
 
-    // If not found, get the first organization (from manual registration)
-    // Since we only support one organization per hub, return the first one
+    // If not found, get the first device registration (from manual registration)
+    // Since we only support one device registration per hub, return the first one
     return this.deviceRegistrationRepository.getFirstDeviceRegistration();
   }
 
@@ -455,7 +453,7 @@ export class RegistrationService implements OnApplicationBootstrap {
    * 2. Activates device (/api/web/register)
    * 3. Validates organization subdomain availability
    * 4. Creates Cloudflare tunnel and DNS records
-   * 5. Stores organization info in database
+   * 5. Stores device registration info in database
    */
   public async initiateRegistration(
     organizationId: string,

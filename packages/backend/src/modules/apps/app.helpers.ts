@@ -51,23 +51,16 @@ export class AppHelpers {
     // This fixes the issue where apps are generated with the default ci.computer domain instead of the user's specific subdomain
     const org = await this.deviceRegistrationRepository.getFirstDeviceRegistration();
 
-    // Determine the authoritative domain
-    // Priority: Organization DB -> User Settings -> Default
-    let authoritativeDomain = userSettings.domain;
-    if (org?.domain) {
-      authoritativeDomain = org.domain;
-    }
-    if (!authoritativeDomain) {
-      authoritativeDomain = this.config.getConfig().domain;
-    }
+    // the domain is the root domain for the deployment
+    const domain = this.config.getConfig().domain;
 
     // Ensure DOMAIN and LOCAL_DOMAIN are set (required for Traefik label interpolation)
     // We overwrite the value from the .env file if it's the default "ci.computer" but we have a better one from the DB or settings
     const currentEnvDomain = envMap.get('DOMAIN');
     // If the domain matches the config domain, but we found a better authoritative domain, override it.
-    if (!currentEnvDomain || (currentEnvDomain === this.config.getConfig().domain && authoritativeDomain !== this.config.getConfig().domain)) {
-      envMap.set('DOMAIN', authoritativeDomain);
-      this.logger.debug(`Overriding DOMAIN with authoritative domain: ${authoritativeDomain}`);
+    if (!currentEnvDomain || (currentEnvDomain === this.config.getConfig().domain && domain !== this.config.getConfig().domain)) {
+      envMap.set('DOMAIN', domain);
+      this.logger.debug(`Overriding DOMAIN with authoritative domain: ${domain}`);
     }
 
     if (!envMap.has('LOCAL_DOMAIN')) {

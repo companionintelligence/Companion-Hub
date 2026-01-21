@@ -5,18 +5,7 @@ interface GlobalBackgroundProps {
   backgroundImage?: string | null;
 }
 
-const GRADIENT_COLORS = [
-  '#cde1ba',
-  '#bbd9b2',
-  '#A7cea9',
-  '#84bd9a',
-  '#61a98f',
-  '#409987',
-  '#1e7f7f',
-  '#1a737c',
-  '#106178',
-  '#134a73',
-];
+const GRADIENT_COLORS = ['#cde1ba', '#bbd9b2', '#A7cea9', '#84bd9a', '#61a98f', '#409987', '#1e7f7f', '#1a737c', '#106178', '#134a73'];
 
 export const GlobalBackground = ({ backgroundImage }: GlobalBackgroundProps) => {
   const gradientStyle = useMemo(() => {

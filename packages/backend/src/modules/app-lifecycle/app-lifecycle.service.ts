@@ -556,7 +556,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
    */
   private async triggerCloudflareSync() {
     try {
-      const orgInfo = await this.registrationService.getOrganizationInfo();
+      const orgInfo = await this.registrationService.getDeviceRegistrationInfo();
 
       if (!orgInfo) {
         this.logger.debug('[Cloudflare] Skipping sync: Organization not registered');

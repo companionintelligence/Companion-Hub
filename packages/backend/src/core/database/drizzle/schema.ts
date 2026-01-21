@@ -102,7 +102,6 @@ export const deviceRegistration = pgTable('device_registration', {
   name: varchar().notNull(), // organization name/slug for subdomain
   tunnelId: varchar('tunnel_id'), // Cloudflare Tunnel ID (nullable now)
   tunnelToken: varchar('tunnel_token'),
-  domain: varchar().notNull(), // Full domain: {name}.deploy.com
   createdAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
   updatedAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
 });
