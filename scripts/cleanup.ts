@@ -99,6 +99,7 @@ try {
       vol.includes('ci-os-hub') ||
       vol.includes('runtipi') ||
       vol.includes('runtipi_') ||
+      vol.includes('ci_hub_pgdata') ||
       vol.startsWith('e2e-') ||
       vol.startsWith('test-e2e-') ||
       vol.match(/^[a-z]+_[a-z]+-.*_data$/), // App volumes pattern like "grist_migrated-grist-1_data"
