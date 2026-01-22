@@ -83,4 +83,34 @@ describe('AppStoreService', () => {
       expect(appStoreRepository.createAppStore).not.toHaveBeenCalled();
     });
   });
+
+  describe('migrateLegacyRepo', () => {
+    it('should skip if no deprecated repo URL configured', async () => {
+      configService.getConfig.mockReturnValue(fromPartial({ deprecatedAppsRepoUrl: undefined }));
+
+      await service.migrateLegacyRepo();
+
+      expect(appStoreRepository.getAppStoreByHash).not.toHaveBeenCalled();
+    });
+
+    it('should update migrated repo if it exists', async () => {
+      const url = 'https://github.com/runtipi/runtipi-appstore';
+      configService.getConfig.mockReturnValue(fromPartial({ deprecatedAppsRepoUrl: url }));
+
+      // biome-ignore lint/suspicious/noExplicitAny: Mocking
+      const existingStore = fromPartial({ slug: 'old-store', url: 'old-url' }) as any;
+      appStoreRepository.getAppStoreByHash.mockResolvedValue(existingStore);
+
+      const crypto = await import('node:crypto');
+      const expectedHash = crypto.createHash('sha256').update(url).digest('hex');
+
+      await service.migrateLegacyRepo();
+
+      expect(appStoreRepository.getAppStoreByHash).toHaveBeenCalledWith('migrated');
+      expect(appStoreRepository.updateAppStoreHashAndUrl).toHaveBeenCalledWith('old-store', {
+        url,
+        hash: expectedHash,
+      });
+    });
+  });
 });
