@@ -225,9 +225,10 @@ export class AppHelpers {
       // The final form MUST be <appslug>-<orgname>.<domain> where appSlug is specified by the user in the install app form
       if (publicDomain.endsWith(`.${configDomain}`)) {
         publicDomain = configDomain;
-        if (org?.name && !subdomain.endsWith(`-${org.name}`)) {
-          subdomain = `${subdomain}-${org.name}`;
-        }
+      }
+
+      if (org?.name && !subdomain.endsWith(`-${org.name}`)) {
+        subdomain = `${subdomain}-${org.name}`;
       }
 
       envMap.set('APP_LOCAL_DOMAIN', `${subdomain}.${envMap.get('LOCAL_DOMAIN') || this.config.getConfig().localDomain}`);

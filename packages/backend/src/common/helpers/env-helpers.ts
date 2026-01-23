@@ -79,11 +79,6 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
 
   const jwtSecret = envMap.get('JWT_SECRET') || envUtils.deriveEntropy('jwt_secret');
 
-  const repoUrl = settings.appsRepoUrl || envMap.get('APPS_REPO_URL') || DEFAULT_REPO_URL;
-  const hash = crypto.createHash('sha256');
-  hash.update(repoUrl);
-  const repoId = hash.digest('hex');
-
   const rootFolderHost = envMap.get('ROOT_FOLDER_HOST') || process.env.ROOT_FOLDER_HOST;
   const internalIp = envMap.get('INTERNAL_IP') || '127.0.0.1';
 
@@ -150,7 +145,6 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   }
 
   envMap.set('ROOT_FOLDER_HOST', rootFolderHost);
-  envMap.set('APPS_REPO_ID', repoId);
   envMap.set('APPS_REPO_URL', settings.appsRepoUrl || envMap.get('APPS_REPO_URL') || DEFAULT_REPO_URL);
   envMap.set('TZ', settings.timeZone || envMap.get('TZ') || Intl.DateTimeFormat().resolvedOptions().timeZone);
   envMap.set('INTERNAL_IP', settings.listenIp || internalIp);
@@ -222,16 +216,8 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   envMap.set('THEME_COLOR', settings.themeColor || envMap.get('THEME_COLOR') || 'blue');
 
   // CI Cloud integration settings
-  const ciCloudApiUrl = process.env.CI_CLOUD_API_URL || envMap.get('CI_CLOUD_API_URL');
-  const ciCloudFrontendUrl = process.env.CI_CLOUD_FRONTEND_URL || envMap.get('CI_CLOUD_FRONTEND_URL');
-  const ciCloudAppStoreUrl = process.env.CI_CLOUD_APP_STORE_URL || envMap.get('CI_CLOUD_APP_STORE_URL');
-
-  // We do not modify these values from code without valid inputs.
-  // They should be provided via .env file or environment variables on start.
-  // We keep them in the envMap if they exist.
-  if (ciCloudApiUrl) envMap.set('CI_CLOUD_API_URL', ciCloudApiUrl);
-  if (ciCloudFrontendUrl) envMap.set('CI_CLOUD_FRONTEND_URL', ciCloudFrontendUrl);
-  if (ciCloudAppStoreUrl) envMap.set('CI_CLOUD_APP_STORE_URL', ciCloudAppStoreUrl);
+  const ciCloudUrl = process.env.CI_CLOUD_URL || envMap.get('CI_CLOUD_URL') || 'https://setup.ci.computer';
+  envMap.set('CI_CLOUD_URL', ciCloudUrl);
 
   // Only write the env file if values have actually changed to avoid unnecessary overwrites
   // This preserves manual edits to .env while still syncing settings.json changes

@@ -119,6 +119,7 @@ export class RegistrationController {
       envFileLines: envFileLines.length > 0 ? envFileLines : null,
       // Also check process.env directly
       processEnv: {
+        CI_CLOUD_URL: process.env.CI_CLOUD_URL || null,
         CI_CLOUD_API_URL: process.env.CI_CLOUD_API_URL || null,
         CI_CLOUD_FRONTEND_URL: process.env.CI_CLOUD_FRONTEND_URL || null,
         CI_HUB_API_KEY: process.env.CI_HUB_API_KEY ? '***configured***' : null,
