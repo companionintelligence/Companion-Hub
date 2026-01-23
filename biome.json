@@ -92,7 +92,8 @@
           "suspicious": {
             "noEmptyBlockStatements": {
               "level": "off"
-            }
+            },
+            "noExplicitAny": "off"
           }
         }
       }
