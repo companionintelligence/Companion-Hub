@@ -53,6 +53,23 @@ export class AppLifecycleService implements OnApplicationBootstrap {
     setTimeout(() => {
       this.triggerCloudflareSync().catch((e) => this.logger.error(`Startup sync failed: ${e.message}`));
     }, 5000);
+
+    // Regenerate Traefik file-based config on startup to sync existing running apps
+    // This is a workaround for Traefik Docker provider API version incompatibility
+    this.logger.info('Regenerating Traefik file-based configuration on startup...');
+    setTimeout(async () => {
+      try {
+        const { TraefikConfigService } = await import('../docker/traefik-config.service');
+        // Use the command factory's moduleRef to get the service
+        const traefikConfigService = (this.commandFactory as any).moduleRef?.get(TraefikConfigService, { strict: false });
+        if (traefikConfigService) {
+          await traefikConfigService.generateTraefikConfig();
+          this.logger.info('Traefik file-based configuration regenerated on startup');
+        }
+      } catch (e) {
+        this.logger.error(`Failed to regenerate Traefik config on startup: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }, 10000); // Wait 10s for all services to be ready
   }
 
   async invokeCommand(data: z.infer<typeof appEventSchema>, reply: (response: z.output<typeof appEventResultSchema>) => Promise<void>) {

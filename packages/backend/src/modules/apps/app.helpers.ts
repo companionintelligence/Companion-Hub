@@ -220,13 +220,14 @@ export class AppHelpers {
       const configDomain = this.config.getConfig().domain;
       let publicDomain = envMap.get('DOMAIN') || configDomain;
 
-      // Fix for deep subdomains
+      // Fix for deep subdomains - strip any subdomain prefix from publicDomain
       // We must not use deep subdomains. Where it is installed is where it should be.
-      // The final form MUST be <appslug>-<orgname>.<domain> where appSlug is specified by the user in the install app form
       if (publicDomain.endsWith(`.${configDomain}`)) {
         publicDomain = configDomain;
       }
 
+      // Always add organization suffix to subdomain if org exists and subdomain doesn't already have it
+      // The final form MUST be <appslug>-<orgname>.<domain> where appSlug is specified by the user in the install app form
       if (org?.name && !subdomain.endsWith(`-${org.name}`)) {
         subdomain = `${subdomain}-${org.name}`;
       }

@@ -5,6 +5,7 @@ import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppHelpers } from '@/modules/apps/app.helpers';
 import { CloudflareClientService } from '@/modules/cloudflare/cloudflare-client.service';
 import { DockerService } from '@/modules/docker/docker.service';
+import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
@@ -144,6 +145,16 @@ export class InstallAppCommand extends AppLifecycleCommand {
           logger.error(`[Cloudflare] Error stack: ${error.stack}`);
         }
         // Don't fail the installation if Cloudflare sync fails
+      }
+
+      // Regenerate Traefik file-based config after app is installed and started (workaround for Docker API version issue)
+      if (form.exposedLocal && !form.skipRun) {
+        const traefikConfigService = this.moduleRef.get(TraefikConfigService, { strict: false });
+        if (traefikConfigService) {
+          logger.debug(`Regenerating Traefik config for newly installed exposed app ${appUrn}`);
+          // Wait longer for container to fully start and network to be attached
+          await traefikConfigService.regenerateTraefikConfig(5000); // Wait 5s for container to fully start
+        }
       }
 
       emitProgress(99);

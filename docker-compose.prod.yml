@@ -130,7 +130,7 @@ services:
       traefik.http.routers.ci-os-hub.rule: "Host(`ci-os-hub.local`)"
 
   traefik:
-    image: traefik:v3.0
+    image: traefik:v3.3
     container_name: ${TRAEFIK_CONTAINER_NAME:-traefik}
     restart: unless-stopped
     command:
