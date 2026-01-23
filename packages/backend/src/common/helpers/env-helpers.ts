@@ -9,8 +9,7 @@ import dotenv from 'dotenv';
 import { DATA_DIR } from '../constants';
 import { type } from 'arktype';
 
-const OLD_DEFAULT_REPO_URL = 'https://github.com/meienberger/runtipi-appstore';
-export const DEFAULT_REPO_URL = 'https://github.com/runtipi/runtipi-appstore';
+export const DEFAULT_REPO_URL = '';
 
 /**
  * Generates a random seed if it does not exist yet
@@ -72,10 +71,6 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   }
 
   await generateSeed();
-
-  if (settings.appsRepoUrl === OLD_DEFAULT_REPO_URL) {
-    settings.appsRepoUrl = DEFAULT_REPO_URL;
-  }
 
   const jwtSecret = envMap.get('JWT_SECRET') || envUtils.deriveEntropy('jwt_secret');
 
