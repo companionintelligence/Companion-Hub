@@ -88,7 +88,7 @@ describe('AppHelpers', () => {
 
     it('should throw an error if app is not found', async () => {
       // Arrange
-      appFilesManager.getInstalledAppInfo.mockResolvedValue(null);
+      appFilesManager.getInstalledAppInfo.mockResolvedValue(null as any);
 
       // Act & Assert
       await expect(appHelpers.generateEnvFile(testAppUrn, {})).rejects.toThrow(`App ${testAppUrn} not found`);

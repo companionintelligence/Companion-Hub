@@ -8,7 +8,7 @@
     "bundle": "node node_modules/@react-router/dev/bin.js build",
     "preview": "vite preview",
     "test": "vitest run",
-    "tsc": "bunx @react-router/dev typegen && cd packages/frontend && npx tsgo --noEmit"
+    "tsc": "bunx @react-router/dev typegen && bun x tsgo --noEmit"
   },
   "dependencies": {
     "@codemirror/lang-json": "^6.0.2",

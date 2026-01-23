@@ -12,7 +12,6 @@ function safeParseZod<T>(schema: ZodAny, data: unknown): ValidationResult<T> {
   return result.success ? { success: true, data: result.data } : { success: false };
 }
 
-// biome-ignore lint/suspicious/noExplicitAny: excessive depth
 function safeParseArk<T>(schema: any, data: unknown): ValidationResult<T> {
   const result = schema(data);
 
