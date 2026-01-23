@@ -90,39 +90,33 @@ export class DockerService {
 
     this.logger.info(`Running docker compose with args ${args.join(' ')} from directory ${composeDir}`);
 
-    // Try docker-compose first, fallback to docker compose plugin if binary is corrupted
-    return this.runDockerCompose(['docker-compose', ...args], composeDir, isCustomConfig).catch(async (error: unknown) => {
-      // Check for ENOEXEC or any spawn error
-      const err = error as Error & { code?: string };
-      const isSpawnError = err.code === 'ENOEXEC' || err.message?.includes('ENOEXEC') || err.message?.includes('spawn');
+    // Prefer docker compose (v2 plugin) over docker-compose (v1 binary) for better compatibility
+    // Try docker compose first, fallback to docker-compose binary if needed
+    try {
+      // Verify docker compose is available before using it
+      const testCmd = spawn('docker', ['compose', 'version'], { stdio: 'pipe' });
+      await new Promise<void>((resolve, reject) => {
+        testCmd.on('close', (code) => {
+          if (code === 0) {
+            resolve();
+          } else {
+            reject(new Error(`docker compose not available (exit code: ${code})`));
+          }
+        });
+        testCmd.on('error', reject);
+      });
 
-      if (isSpawnError) {
-        this.logger.warn(`docker-compose binary failed (${err.code || err.message}), falling back to docker compose plugin`);
-
-        // Verify docker compose is available before using it
-        try {
-          const testCmd = spawn('docker', ['compose', 'version'], { stdio: 'pipe' });
-          await new Promise<void>((resolve, reject) => {
-            testCmd.on('close', (code) => {
-              if (code === 0) {
-                resolve();
-              } else {
-                reject(new Error(`docker compose not available (exit code: ${code})`));
-              }
-            });
-            testCmd.on('error', reject);
-          });
-
-          this.logger.info('docker compose plugin is available, using fallback');
-          // Use docker compose plugin instead (docker-cli is installed in the container)
-          return this.runDockerCompose(['docker', 'compose', ...args], composeDir, isCustomConfig);
-        } catch (fallbackError) {
-          this.logger.error('docker compose plugin is not available, cannot fallback', fallbackError);
-          throw new Error(`docker-compose binary failed and docker compose plugin is not available: ${err.message}`);
-        }
-      }
-      throw error;
-    });
+      this.logger.debug('docker compose plugin is available, using it');
+      // Use docker compose plugin (docker-cli is installed in the container)
+      return this.runDockerCompose(['docker', 'compose', ...args], composeDir, isCustomConfig);
+    } catch (error) {
+      // Fallback to docker-compose binary if docker compose plugin is not available
+      this.logger.warn('docker compose plugin not available, falling back to docker-compose binary');
+      return this.runDockerCompose(['docker-compose', ...args], composeDir, isCustomConfig).catch((fallbackError: unknown) => {
+        const err = fallbackError as Error & { code?: string };
+        throw new Error(`Both docker compose and docker-compose failed: ${err.message || String(fallbackError)}`);
+      });
+    }
   }
 
   private async runDockerCompose(command: string[], cwd: string, isCustomConfig: boolean) {
@@ -176,12 +170,20 @@ export class DockerService {
 
       args.push('logs', '--follow', '-n', maxLines.toString());
 
-      const logs = spawn('docker-compose', args, { stdio: 'pipe' });
+      // Prefer docker compose (v2 plugin) over docker-compose (v1 binary)
+      let logs: ReturnType<typeof spawn>;
+      try {
+        // Try docker compose first
+        logs = spawn('docker', ['compose', ...args], { stdio: 'pipe' });
+      } catch (error) {
+        // Fallback to docker-compose binary
+        this.logger.warn('docker compose plugin not available for logs, falling back to docker-compose binary');
+        logs = spawn('docker-compose', args, { stdio: 'pipe' });
+      }
 
       logs.on('error', (error: NodeJS.ErrnoException) => {
         if (error.code === 'ENOEXEC') {
-          this.logger.error('docker-compose binary cannot be executed. Falling back to docker compose plugin.');
-          // Note: For streams, we can't easily fallback, but the error will be caught below
+          this.logger.error('docker-compose binary cannot be executed. Please ensure docker compose plugin is available.');
         }
       });
 

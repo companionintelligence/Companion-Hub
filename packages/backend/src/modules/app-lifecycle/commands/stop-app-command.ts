@@ -2,6 +2,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppHelpers } from '@/modules/apps/app.helpers';
 import { DockerService } from '@/modules/docker/docker.service';
+import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import type { AppUrn } from '@runtipi/common/types';
 import { AppLifecycleCommand } from './command';
@@ -12,6 +13,7 @@ export class StopAppCommand extends AppLifecycleCommand {
     const appFilesManager = this.moduleRef.get(AppFilesManager, { strict: false });
     const dockerService = this.moduleRef.get(DockerService, { strict: false });
     const appHelpers = this.moduleRef.get(AppHelpers, { strict: false });
+    const traefikConfigService = this.moduleRef.get(TraefikConfigService, { strict: false });
 
     try {
       const config = await appFilesManager.getInstalledAppInfo(appUrn);
@@ -30,6 +32,12 @@ export class StopAppCommand extends AppLifecycleCommand {
       }
 
       await dockerService.composeApp(appUrn, 'down --remove-orphans');
+
+      // Regenerate Traefik file-based config after app stops to remove its routes
+      if (form.exposedLocal) {
+        logger.debug(`Regenerating Traefik config after stopping exposed app ${appUrn}`);
+        await traefikConfigService.regenerateTraefikConfig(1000); // Wait 1s for container to fully stop
+      }
 
       logger.info(`App ${appUrn} stopped successfully`);
 

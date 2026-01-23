@@ -10,7 +10,7 @@ providers:
     endpoint: "unix:///var/run/docker.sock"
     watch: true
     exposedByDefault: false
-    # Disable host information retrieval to avoid Docker API 400 errors
+    # Disable host information retrieval to avoid Docker API version errors
     useBindPortIP: false
   file:
     directory: /etc/traefik/dynamic

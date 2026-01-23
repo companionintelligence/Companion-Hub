@@ -2,6 +2,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppHelpers } from '@/modules/apps/app.helpers';
 import { DockerService } from '@/modules/docker/docker.service';
+import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import type { AppUrn } from '@runtipi/common/types';
 import { AppLifecycleCommand } from './command';
@@ -12,6 +13,7 @@ export class RestartAppCommand extends AppLifecycleCommand {
     const appFilesManager = this.moduleRef.get(AppFilesManager, { strict: false });
     const dockerService = this.moduleRef.get(DockerService, { strict: false });
     const appHelpers = this.moduleRef.get(AppHelpers, { strict: false });
+    const traefikConfigService = this.moduleRef.get(TraefikConfigService, { strict: false });
 
     try {
       const config = await appFilesManager.getInstalledAppInfo(appUrn);
@@ -36,6 +38,13 @@ export class RestartAppCommand extends AppLifecycleCommand {
 
       const forcePull = !form.skipPull && config.force_pull;
       await dockerService.composeApp(appUrn, `up --detach --force-recreate --remove-orphans ${forcePull ? '--pull always' : ''}`);
+
+      // Regenerate Traefik file-based config after app restarts (workaround for Docker API version issue)
+      if (form.exposedLocal) {
+        logger.debug(`Regenerating Traefik config for restarted exposed app ${appUrn}`);
+        // Wait longer for container to fully start and network to be attached
+        await traefikConfigService.regenerateTraefikConfig(5000); // Wait 5s for container to fully start
+      }
 
       logger.info(`App ${appUrn} restarted`);
 
