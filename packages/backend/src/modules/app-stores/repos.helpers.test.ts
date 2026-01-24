@@ -97,6 +97,38 @@ describe('ReposHelpers', () => {
       // We expect writes for each app's config.json
       expect(fs.promises.writeFile).toHaveBeenCalledWith(expect.stringContaining('app1/config.json'), expect.stringContaining('"slug": "app1"'));
     });
+
+    it('should enrich missing metadata for CI Cloud apps', async () => {
+      const minimalApp = {
+        id: 'app1',
+        slug: 'app1',
+        name: 'App 1',
+        // Missing author, urn, etc.
+      };
+
+      fetchMock.mockResolvedValue({
+        ok: true,
+        json: async () => [minimalApp],
+      });
+
+      await service.pullRepo('http://cloud.api', 'ci-cloud', 'ci_cloud_api');
+
+      expect(fetchMock).toHaveBeenCalledWith('http://cloud.api/store');
+
+      const calls = (fs.promises.writeFile as any).mock.calls;
+      const configCall = calls.find((call: any[]) => call[0].includes('app1/config.json'));
+      expect(configCall).toBeDefined();
+
+      const writtenConfig = JSON.parse(configCall[1]);
+
+      // Check enriched fields
+      expect(writtenConfig).toHaveProperty('urn', 'urn:app:app1');
+      expect(writtenConfig).toHaveProperty('author', 'Unknown Author');
+      expect(writtenConfig).toHaveProperty('available', true);
+      expect(writtenConfig).toHaveProperty('categories', ['utilities']);
+      expect(writtenConfig).toHaveProperty('port', 8080);
+      expect(writtenConfig).toHaveProperty('supported_architectures', ['amd64', 'arm64']);
+    });
   });
 
   describe('downloadAppFiles', () => {

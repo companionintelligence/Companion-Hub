@@ -1,10 +1,11 @@
 import { Module, forwardRef } from '@nestjs/common';
 import Dockerode from 'dockerode';
 import { AppsModule } from '../apps/apps.module';
+import { DOCKERODE } from './constants';
 import { DockerService } from './docker.service';
 import { TraefikConfigService } from './traefik-config.service';
 
-export const DOCKERODE = 'DOCKERODE_INSTANCE';
+export { DOCKERODE } from './constants';
 
 @Module({
   imports: [forwardRef(() => AppsModule)],

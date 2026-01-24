@@ -4,7 +4,7 @@
   "version": "0.0.5",
   "type": "module",
   "scripts": {
-    "dev": "bunx @react-router/dev dev",
+    "dev": "bun x @react-router/dev dev",
     "bundle": "node node_modules/@react-router/dev/bin.js build",
     "preview": "vite preview",
     "test": "vitest run",

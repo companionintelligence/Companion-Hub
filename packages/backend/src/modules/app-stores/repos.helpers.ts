@@ -149,7 +149,24 @@ export class ReposHelpers {
         const appDir = path.join(appsPath, appSlug);
         await this.ensureDirectoryWithPermissions(appDir);
 
-        await fs.promises.writeFile(path.join(appDir, 'config.json'), JSON.stringify(app, null, 2));
+        // Enrich app metadata with default required fields if missing
+        const enrichedApp = {
+          ...app,
+          urn: `urn:app:${appSlug}`,
+          author: typeof app.author === 'string' ? app.author : 'Unknown Author',
+          available: typeof app.available === 'boolean' ? app.available : true,
+          short_desc: typeof app.short_desc === 'string' ? app.short_desc : (app.description as string) || 'No description provided',
+          title: typeof app.title === 'string' ? app.title : (app.name as string) || appSlug,
+          description: typeof app.description === 'string' ? app.description : 'No full description.',
+          categories: Array.isArray(app.categories) ? app.categories : ['utilities'],
+          port: typeof app.port === 'number' ? app.port : 8080,
+          version: typeof app.version === 'string' ? app.version : '0.0.1',
+          tipi_version: typeof app.tipi_version === 'number' ? app.tipi_version : 1,
+          source: typeof app.source === 'string' ? app.source : 'https://github.com/example/repo',
+          supported_architectures: Array.isArray(app.supported_architectures) ? app.supported_architectures : ['amd64', 'arm64'],
+        };
+
+        await fs.promises.writeFile(path.join(appDir, 'config.json'), JSON.stringify(enrichedApp, null, 2));
       }
 
       // Also write a repo.json or config.json so Tipi sees it as a valid repo?

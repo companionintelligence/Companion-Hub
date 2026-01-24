@@ -36,7 +36,7 @@ export const Providers = ({ children }: PropsWithChildren) => {
           <ErrorBoundary
             fallbackRender={({ error, resetErrorBoundary }) => (
               <PageSuspense>
-                <ErrorPage error={error} onReset={resetErrorBoundary} />
+                <ErrorPage error={error as Error} onReset={resetErrorBoundary} />
               </PageSuspense>
             )}
             onReset={reset}

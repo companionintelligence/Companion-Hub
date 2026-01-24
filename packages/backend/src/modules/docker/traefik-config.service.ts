@@ -4,7 +4,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable, Inject } from '@nestjs/common';
 import Dockerode from 'dockerode';
 import * as yaml from 'yaml';
-import { DOCKERODE } from './docker.module';
+import { DOCKERODE } from './constants';
 
 interface TraefikRouter {
   rule: string;
@@ -91,6 +91,8 @@ export class TraefikConfigService {
             const routerName = key.replace('traefik.http.routers.', '').split('.')[0];
             const property = key.split('.').pop();
 
+            if (!routerName) continue;
+
             if (!routers[routerName]) {
               routers[routerName] = {
                 rule: '',
@@ -98,6 +100,9 @@ export class TraefikConfigService {
                 entryPoints: [],
               };
             }
+
+            // Ensure property exists
+            if (!property) continue;
 
             switch (property) {
               case 'rule':
@@ -113,7 +118,7 @@ export class TraefikConfigService {
                 routers[routerName].middlewares = String(value).split(',');
                 break;
               case 'tls':
-                routers[routerName].tls = value === 'true' || value === true;
+                routers[routerName].tls = String(value) === 'true';
                 break;
             }
           }
@@ -123,7 +128,7 @@ export class TraefikConfigService {
             const serviceName = key.replace('traefik.http.services.', '').replace('.loadbalancer.server.port', '');
             const port = Number.parseInt(String(value), 10);
 
-            if (!isNaN(port)) {
+            if (!Number.isNaN(port)) {
               services[serviceName] = {
                 loadBalancer: {
                   servers: [{ url: `http://${containerIP}:${port}` }],

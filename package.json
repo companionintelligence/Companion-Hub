@@ -8,6 +8,7 @@
   ],
   "scripts": {
     "local": "bun run local:infra && dotenv -e .env.local -- turbo run local",
+    "dev": "turbo run dev --parallel",
     "local:infra": "ENV_FILE=.env.local docker compose --env-file .env.local --project-name runtipi -f docker-compose.local.yml up -d ci-os-hub-queue ci-hub-db",
     "local:cleanup": "bun run cleanup && rm -rf .internal && rm -rf tunnel/token tunnel/certs",
     "bundle": "turbo bundle",
@@ -56,6 +57,7 @@
     "adm-zip": "^0.5.16",
     "drizzle-orm": "^0.44.7",
     "express": "^5.2.1",
+    "memfs": "^4.56.10",
     "zod": "^4.1.5"
   },
   "private": true,

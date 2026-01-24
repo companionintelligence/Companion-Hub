@@ -18,6 +18,10 @@
       "outputs": ["dist/"],
       "cache": true
     },
+    "dev": {
+      "cache": false,
+      "persistent": true
+    },
     "local": {
       "dependsOn": ["build"],
       "cache": false,

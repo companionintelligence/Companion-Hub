@@ -142,8 +142,8 @@ describe('DockerService', () => {
       await service.composeApp(appUrn, command);
 
       expect(child_process.spawn).toHaveBeenCalledWith(
-        'docker-compose',
-        expect.arrayContaining(['--project-name', 'test-app', 'up', '-d']),
+        'docker',
+        expect.arrayContaining(['compose', '--project-name', 'test-app', 'up', '-d']),
         expect.objectContaining({ cwd: '/apps/test-app' }),
       );
     });

@@ -10,7 +10,7 @@
     "bundle": "rm -rf dist && bun build.ts",
     "tsc": "npx tsgo --noEmit",
     "sentry:sourcemaps": "sentry-cli sourcemaps inject --org runtipi --project runtipi-backend ./dist && sentry-cli sourcemaps upload --org runtipi --project runtipi-backend ./dist",
-    "test": "vitest --coverage --watch=false",
+    "test": "vitest --coverage --watch=false run",
     "test:integration": "bun scripts/run-integration.ts",
     "test:watch": "vitest",
     "test:db": "docker compose -f ./src/tests/db.compose.yml up -d",
