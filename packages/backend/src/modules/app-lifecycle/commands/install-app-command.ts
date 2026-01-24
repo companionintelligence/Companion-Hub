@@ -70,7 +70,8 @@ export class InstallAppCommand extends AppLifecycleCommand {
       // We need to create it using the container path since we're inside the container
       // The container path /app-data maps to the host path via the volume mount
       const { appStoreId, appName } = extractAppUrn(appUrn);
-      const containerAppDataPath = `/app-data/${appStoreId}/${appName}`;
+      const { directories } = _config.getConfig();
+      const containerAppDataPath = path.join(directories.appDataDir, appStoreId, appName);
       const hostAppDataDir = envMap.get('APP_DATA_DIR');
 
       if (hostAppDataDir) {

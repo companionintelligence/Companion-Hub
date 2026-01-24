@@ -74,7 +74,16 @@ export class AppFilesManager {
    */
   public async getDockerComposeYaml(appUrn: AppUrn) {
     const { appInstalledDir } = this.getAppPaths(appUrn);
-    const dockerComposePath = path.join(appInstalledDir, 'docker-compose.yml');
+
+    // Check for both yml and json
+    let dockerComposePath = path.join(appInstalledDir, 'docker-compose.yml');
+
+    if (!(await this.filesystem.pathExists(dockerComposePath))) {
+      const jsonPath = path.join(appInstalledDir, 'docker-compose.json');
+      if (await this.filesystem.pathExists(jsonPath)) {
+        dockerComposePath = jsonPath;
+      }
+    }
 
     let content = null;
     try {
@@ -82,7 +91,7 @@ export class AppFilesManager {
         content = await this.filesystem.readTextFile(dockerComposePath);
       }
     } catch (error) {
-      this.logger.error(`Error getting docker-compose.yml for installed app ${appUrn}:`, error);
+      this.logger.error(`Error getting docker-compose file for installed app ${appUrn}:`, error);
     }
 
     return { path: dockerComposePath, content };

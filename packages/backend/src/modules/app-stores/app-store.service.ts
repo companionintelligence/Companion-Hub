@@ -1,7 +1,7 @@
 import { TranslatableError } from '@/common/error/translatable-error';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import { HttpStatus, Injectable, Inject, forwardRef } from '@nestjs/common';
+import { HttpStatus, Injectable, Inject, forwardRef, OnApplicationBootstrap } from '@nestjs/common';
 import slugify from 'slugify';
 import type { UpdateAppStoreBodyDto } from '../marketplace/dto/marketplace.dto';
 import { RepoEventsQueue } from '../queue/entities/repo-events';
@@ -11,7 +11,7 @@ import { ReposHelpers } from './repos.helpers';
 export const RESERVED_APP_STORE_SLUGS = ['_user'];
 
 @Injectable()
-export class AppStoreService {
+export class AppStoreService implements OnApplicationBootstrap {
   constructor(
     private readonly logger: LoggerService,
     private readonly repoQueue: RepoEventsQueue,
@@ -51,6 +51,16 @@ export class AppStoreService {
         }
       }
     });
+  }
+
+  onApplicationBootstrap() {
+    this.logger.info('Scheduling app store updates every 1 hour');
+    setInterval(
+      () => {
+        this.pullRepositories().catch((e) => this.logger.error('Failed to scheduled pull repositories', e));
+      },
+      1000 * 60 * 60,
+    ); // 1 hour
   }
 
   public async pullRepositories() {

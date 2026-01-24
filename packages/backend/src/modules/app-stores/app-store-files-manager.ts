@@ -61,7 +61,12 @@ export class AppStoreFilesManager {
         }
 
         if (parsedConfig.available) {
-          const description = (await this.filesystem.readTextFile(path.join(appRepoDir, 'metadata', 'description.md'))) ?? '';
+          const descriptionPath = path.join(appRepoDir, 'metadata', 'description.md');
+          let description = parsedConfig.description || '';
+          if (await this.filesystem.pathExists(descriptionPath)) {
+            const fileDesc = await this.filesystem.readTextFile(descriptionPath);
+            if (fileDesc) description = fileDesc;
+          }
           return { ...parsedConfig, description };
         }
       } else {
@@ -92,7 +97,12 @@ export class AppStoreFilesManager {
       }
 
       if (parsedConfig.success && parsedConfig.data.available) {
-        const description = (await this.filesystem.readTextFile(path.join(appInstalledDir, 'metadata', 'description.md'))) ?? '';
+        const descriptionPath = path.join(appInstalledDir, 'metadata', 'description.md');
+        let description = parsedConfig.data.description || '';
+        if (await this.filesystem.pathExists(descriptionPath)) {
+          const fileDesc = await this.filesystem.readTextFile(descriptionPath);
+          if (fileDesc) description = fileDesc;
+        }
         return { ...parsedConfig.data, description };
       }
     }
