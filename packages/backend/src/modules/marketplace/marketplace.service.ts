@@ -230,12 +230,12 @@ export class MarketplaceService {
   public async getAppImage(appUrn: AppUrn) {
     try {
       const { store } = this.getStoreFromUrn(appUrn);
-      if (!store) return { image: null, etag: '' };
-      return store.getAppImage(appUrn);
+      if (!store) return { image: null, etag: '', contentType: 'image/jpeg' };
+      return await store.getAppImage(appUrn);
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       this.logger.warn(`Failed to get image for ${appUrn}: ${message}`);
-      return { image: null, etag: '' };
+      return { image: null, etag: '', contentType: 'image/jpeg' };
     }
   }
 

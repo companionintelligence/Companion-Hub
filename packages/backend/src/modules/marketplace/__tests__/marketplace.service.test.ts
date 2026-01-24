@@ -143,11 +143,11 @@ describe('MarketplaceService', () => {
     it('should return app image', async () => {
       await service.initialize();
 
-      spies.getAppImage.mockResolvedValue({ image: 'buffer', etag: 'etag' });
+      spies.getAppImage.mockResolvedValue({ image: 'buffer', etag: 'etag', contentType: 'image/jpeg' });
 
       const result = await service.getAppImage('app-1:store-1' as any);
 
-      expect(result).toEqual({ image: 'buffer', etag: 'etag' });
+      expect(result).toEqual({ image: 'buffer', etag: 'etag', contentType: 'image/jpeg' });
     });
   });
 });

@@ -308,22 +308,36 @@ export class AppStoreFilesManager {
   public async getAppImage(appUrn: AppUrn) {
     const { appInstalledDir, appRepoDir } = this.getAppPaths(appUrn);
     const { appDir } = this.configuration.get('directories');
+    const extensions = ['jpg', 'jpeg', 'png', 'svg', 'webp'];
+    const searchPaths = [appInstalledDir, appRepoDir];
 
-    const defaultFilePath = path.join(appInstalledDir, 'metadata', 'logo.jpg');
-    const appRepoFilePath = path.join(appRepoDir, 'metadata', 'logo.jpg');
+    let filePath: string | null = null;
 
-    let filePath = path.join(appDir, 'assets', 'default-app-logo.jpg');
+    for (const dir of searchPaths) {
+      for (const ext of extensions) {
+        const p = path.join(dir, 'metadata', `logo.${ext}`);
+        if (await this.filesystem.pathExists(p)) {
+          filePath = p;
+          break;
+        }
+      }
+      if (filePath) break;
+    }
 
-    if (await this.filesystem.pathExists(defaultFilePath)) {
-      filePath = defaultFilePath;
-    } else if (await this.filesystem.pathExists(appRepoFilePath)) {
-      filePath = appRepoFilePath;
+    if (!filePath) {
+      filePath = path.join(appDir, 'assets', 'default-app-logo.jpg');
     }
 
     const file = await this.filesystem.readBinaryFile(filePath);
     const etag = await this.filesystem.getFileEtag(filePath);
+    const ext = path.extname(filePath).toLowerCase().substring(1);
 
-    return { image: file, etag };
+    let contentType = 'image/jpeg';
+    if (ext === 'png') contentType = 'image/png';
+    else if (ext === 'svg') contentType = 'image/svg+xml';
+    else if (ext === 'webp') contentType = 'image/webp';
+
+    return { image: file, etag, contentType };
   }
 
   public async getConfigJson(appUrn: AppUrn) {

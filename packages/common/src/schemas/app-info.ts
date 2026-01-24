@@ -64,12 +64,12 @@ export const appInfoSchema = z.object({
   url_suffix: z.string().optional(),
   form_fields: z.array(formFieldSchema).optional().default([]),
   https: z.boolean().optional().default(false),
-  exposable: z.boolean().optional().default(false),
+  exposable: z.boolean().optional().default(true),
   no_gui: z.boolean().optional().default(false),
   supported_architectures: z.enum(ARCHITECTURES).array().default(['amd64', 'arm64']),
   uid: z.number().optional(),
   gid: z.number().optional(),
-  dynamic_config: z.boolean().optional().default(false),
+  dynamic_config: z.boolean().optional().default(true),
   min_tipi_version: z.string().optional(),
   created_at: z
     .number()
@@ -128,7 +128,7 @@ export const appInfoSchemaArk = type({
   url_suffix: 'string?',
   form_fields: formFieldSchemaArk.array().default(() => []),
   https: 'boolean = false',
-  exposable: 'boolean = false',
+  exposable: 'boolean = true',
   no_gui: 'boolean = false',
   supported_architectures: type
     .enumerated(...ARCHITECTURES)
@@ -136,7 +136,7 @@ export const appInfoSchemaArk = type({
     .default(() => ['amd64', 'arm64']),
   uid: 'number?',
   gid: 'number?',
-  dynamic_config: 'boolean = false',
+  dynamic_config: 'boolean = true',
   min_tipi_version: 'string?',
   created_at: type('number.integer >= 0')
     .narrow((v, ctx) => (v < Date.now() ? true : ctx.mustBe('a timestamp before now')))
