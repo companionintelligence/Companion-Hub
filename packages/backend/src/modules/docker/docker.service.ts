@@ -109,7 +109,7 @@ export class DockerService {
       this.logger.debug('docker compose plugin is available, using it');
       // Use docker compose plugin (docker-cli is installed in the container)
       return this.runDockerCompose(['docker', 'compose', ...args], composeDir, isCustomConfig);
-    } catch (error) {
+    } catch (_error) {
       // Fallback to docker-compose binary if docker compose plugin is not available
       this.logger.warn('docker compose plugin not available, falling back to docker-compose binary');
       return this.runDockerCompose(['docker-compose', ...args], composeDir, isCustomConfig).catch((fallbackError: unknown) => {
@@ -175,7 +175,7 @@ export class DockerService {
       try {
         // Try docker compose first
         logs = spawn('docker', ['compose', ...args], { stdio: 'pipe' });
-      } catch (error) {
+      } catch (_error) {
         // Fallback to docker-compose binary
         this.logger.warn('docker compose plugin not available for logs, falling back to docker-compose binary');
         logs = spawn('docker-compose', args, { stdio: 'pipe' });
@@ -190,6 +190,10 @@ export class DockerService {
       logs.on('error', () => {
         logs.kill('SIGINT');
       });
+
+      if (!logs.stdout) {
+        throw new InternalServerErrorException('Docker output stream not available');
+      }
 
       return {
         on: logs.stdout.on.bind(logs.stdout),

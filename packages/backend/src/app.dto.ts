@@ -11,7 +11,7 @@ export const settingsSchema = type({
   allowAutoThemes: 'boolean',
   allowErrorMonitoring: 'boolean',
   appDataPath: 'string.trim',
-  appsRepoUrl: 'string.url',
+  appsRepoUrl: 'string.url?',
   demoMode: 'boolean',
   disablePasswordReset: 'boolean',
   dnsIp: 'string.ip.v4',

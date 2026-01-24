@@ -62,8 +62,6 @@ export class AppService {
         this.logger.info('Cache cleared');
       }
 
-      this.logger.info('Migrating legacy repo...');
-      await this.appStoreService.migrateLegacyRepo();
       await this.appStoreService.registerCloudAppStore();
 
       this.logger.info('Publishing clone_all command...');

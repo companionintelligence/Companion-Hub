@@ -2,7 +2,6 @@ import { TranslatableError } from '@/common/error/translatable-error';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { HttpStatus, Injectable, Inject, forwardRef } from '@nestjs/common';
-import crypto from 'node:crypto';
 import slugify from 'slugify';
 import type { UpdateAppStoreBodyDto } from '../marketplace/dto/marketplace.dto';
 import { RepoEventsQueue } from '../queue/entities/repo-events';
@@ -63,28 +62,6 @@ export class AppStoreService {
     }
 
     return { success: true };
-  }
-
-  /**
-   * Migrate the legacy repo to the new app store system
-   *
-   * @returns The ID of the migrated repo
-   */
-  public async migrateLegacyRepo() {
-    const { deprecatedAppsRepoUrl } = this.config.getConfig();
-
-    if (!deprecatedAppsRepoUrl) {
-      this.logger.debug('Skipping repo migration, no deprecated repo URL to migrate');
-      return;
-    }
-
-    const deprecatedAppsRepoId = crypto.createHash('sha256').update(deprecatedAppsRepoUrl).digest('hex');
-
-    const existing = await this.appStoreRepository.getAppStoreByHash('migrated');
-    if (existing) {
-      this.logger.info('Migrating default repo');
-      await this.appStoreRepository.updateAppStoreHashAndUrl(existing.slug, { url: deprecatedAppsRepoUrl, hash: deprecatedAppsRepoId });
-    }
   }
 
   public async registerCloudAppStore() {

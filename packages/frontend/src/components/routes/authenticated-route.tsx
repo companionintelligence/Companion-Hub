@@ -29,7 +29,7 @@ export default () => {
           <ErrorBoundary
             fallbackRender={({ error, resetErrorBoundary }) => (
               <DashboardLayoutSuspense>
-                <ErrorPage error={error} onReset={resetErrorBoundary} />
+                <ErrorPage error={error as Error} onReset={resetErrorBoundary} />
               </DashboardLayoutSuspense>
             )}
             onReset={reset}

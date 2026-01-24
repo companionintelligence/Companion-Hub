@@ -29,7 +29,7 @@ describe('AppStoreService', () => {
       return vi.fn() as any;
     });
 
-    configService.getConfig.mockReturnValue({ deprecatedAppsRepoUrl: 'old-url', ciCloudAppStoreUrl: 'cloud-url' } as any);
+    configService.getConfig.mockReturnValue({ ciCloudAppStoreUrl: 'cloud-url' } as any);
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -57,6 +57,7 @@ describe('AppStoreService', () => {
 
   it('should register cloud app store if configured', async () => {
     appStoreRepository.getAppStoreBySlug.mockResolvedValue(null as any);
+    appStoreRepository.getAllAppStores.mockResolvedValue([] as any); // Mock getAllAppStores
     await service.registerCloudAppStore();
     expect(appStoreRepository.createAppStore).toHaveBeenCalledWith(
       expect.objectContaining({
