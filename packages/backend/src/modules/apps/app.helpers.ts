@@ -211,6 +211,7 @@ export class AppHelpers {
 
     if (config.port && form.port) {
       envMap.set('APP_DOMAIN', `${internalIp}:${form.port}`);
+      envMap.set('APP_URL', `http://${internalIp}:${form.port}`);
     }
 
     if (form.exposedLocal) {
@@ -242,6 +243,7 @@ export class AppHelpers {
         envMap.set('APP_PROTOCOL', 'https');
         envMap.set('APP_DOMAIN', `${subdomain}.${publicDomain}`);
         envMap.set('APP_HOST', `${subdomain}.${publicDomain}`);
+        envMap.set('APP_URL', `https://${subdomain}.${publicDomain}`);
       }
     }
 
@@ -251,6 +253,7 @@ export class AppHelpers {
       envMap.set('APP_HOST', form.domain);
       envMap.set('APP_EXPOSED_DOMAIN', form.domain);
       envMap.set('APP_PROTOCOL', 'https');
+      envMap.set('APP_URL', `https://${form.domain}`);
     }
 
     if (appName === 'cloudflared') {
