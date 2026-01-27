@@ -227,9 +227,9 @@ export class AppHelpers {
       }
 
       // Always add organization suffix to subdomain if org exists and subdomain doesn't already have it
-      // The final form MUST be <appslug>-<orgname>.<domain> where appSlug is specified by the user in the install app form
-      if (org?.name && !subdomain.endsWith(`-${org.name}`)) {
-        subdomain = `${subdomain}-${org.name}`;
+      // The final form MUST be <appslug>-<orgslug>.<domain> where appSlug is specified by the user in the install app form
+      if (org?.slug && !subdomain.endsWith(`-${org.slug}`)) {
+        subdomain = `${subdomain}-${org.slug}`;
       }
 
       envMap.set('APP_LOCAL_DOMAIN', `${subdomain}.${envMap.get('LOCAL_DOMAIN') || this.config.getConfig().localDomain}`);

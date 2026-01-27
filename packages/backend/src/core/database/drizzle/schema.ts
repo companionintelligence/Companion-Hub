@@ -99,7 +99,8 @@ export const appStore = pgTable('app_store', {
 
 export const deviceRegistration = pgTable('device_registration', {
   id: varchar().notNull().primaryKey(), // organization_id from CI Cloud
-  name: varchar().notNull(), // organization name/slug for subdomain
+  slug: varchar().notNull(), // organization slug for subdomain
+  name: varchar().notNull(), // organization label for display
   tunnelId: varchar('tunnel_id'), // Cloudflare Tunnel ID (nullable now)
   tunnelToken: varchar('tunnel_token'),
   createdAt: timestamp({ mode: 'string' }).defaultNow().notNull(),

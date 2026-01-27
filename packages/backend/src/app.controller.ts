@@ -188,12 +188,13 @@ export class AppController {
     });
 
     // Extract slug from domain
-    const orgSlug = org?.name;
+    const orgSlug = org?.slug;
+    const orgLabel = org?.name;
 
     return AppContextDto.parse(
       {
         version,
-        userSettings: { ...userSettings, ciHubOrganizationSlug: orgSlug },
+        userSettings: { ...userSettings, ciHubOrganizationSlug: orgSlug, ciHubOrganizationLabel: orgLabel },
         user: req.user as UserDto,
         apps,
         updatesAvailable: updatesAvailable.length,
