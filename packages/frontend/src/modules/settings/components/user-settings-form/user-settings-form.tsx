@@ -295,7 +295,7 @@ export const UserSettingsForm = (props: IProps) => {
             )}
           />
         </div>
-        <div className="mb-3">
+        {/* <div className="mb-3">
           <Input
             {...register('appsRepoUrl')}
             label={
@@ -310,7 +310,7 @@ export const UserSettingsForm = (props: IProps) => {
             error={errors.appsRepoUrl?.message}
             placeholder="https://github.com/runtipi/runtipi-appstore"
           />
-        </div>
+        </div> */}
         <div>
           <Controller
             control={control}

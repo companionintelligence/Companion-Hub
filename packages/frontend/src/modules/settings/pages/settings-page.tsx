@@ -11,7 +11,6 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router';
 import { AppStoresContainer } from '../containers/app-stores-container';
 
-const GeneralActionsContainer = lazy(() => import('../containers/general-actions').then((module) => ({ default: module.GeneralActionsContainer })));
 const UserSettingsContainer = lazy(() => import('../containers/user-settings').then((module) => ({ default: module.UserSettingsContainer })));
 const SecurityContainer = lazy(() => import('../containers/security').then((module) => ({ default: module.SecurityContainer })));
 const LogsContainer = lazy(() => import('../containers/logs').then((module) => ({ default: module.LogsContainer })));
@@ -26,7 +25,7 @@ export default () => {
   const setDarkMode = useUIStore((state) => state.setDarkMode);
   const theme = useUIStore((state) => state.theme);
 
-  const currentTab = tab || 'actions';
+  const currentTab = tab || 'settings';
 
   const handleTabChange = (newTab: string) => {
     setSearchParams({ tab: newTab });
@@ -83,7 +82,6 @@ export default () => {
       <div className="d-flex flex-column flex-grow-1 overflow-hidden">
         <Tabs value={currentTab} onValueChange={handleTabChange} className="flex-grow-1 d-flex flex-column h-100 overflow-hidden">
           <TabsList>
-            <TabsTrigger value="actions">{t('SETTINGS_ACTIONS_TAB_TITLE')}</TabsTrigger>
             <TabsTrigger value="settings">{t('SETTINGS_GENERAL_TAB_TITLE')}</TabsTrigger>
             <TabsTrigger value="security">{t('SETTINGS_SECURITY_TAB_TITLE')}</TabsTrigger>
             <TabsTrigger value="appstores" className="d-none d-md-block">
@@ -101,11 +99,6 @@ export default () => {
             </DropdownMenu>
           </TabsList>
           <div className="p-3 flex-grow-1 overflow-y-auto min-h-0" data-testid="settings-scroll-container">
-            <TabsContent value="actions">
-              <Suspense fallback={<div>Loading...</div>}>
-                <GeneralActionsContainer />
-              </Suspense>
-            </TabsContent>
             <TabsContent value="settings">
               <Suspense fallback={<div>Loading...</div>}>
                 <UserSettingsContainer initialValues={userSettings} />
