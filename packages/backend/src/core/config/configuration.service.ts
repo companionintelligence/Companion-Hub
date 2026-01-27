@@ -26,7 +26,7 @@ const envSchema = z.object({
   TIPI_VERSION: z.string(),
   JWT_SECRET: z.string(),
   APPS_REPO_URL: z.string().optional(),
-  CI_CLOUD_URL: z.string().default('https://setup.ci.computer'),
+  CI_CLOUD_URL: z.string().default('https://app.ci.computer'),
   CLOUDFLARE_ACCOUNT_ID: z.string().optional(),
   CLOUDFLARE_TUNNEL_ID: z.string().optional(),
   CLOUDFLARE_ZONE_ID: z.string().optional(),
