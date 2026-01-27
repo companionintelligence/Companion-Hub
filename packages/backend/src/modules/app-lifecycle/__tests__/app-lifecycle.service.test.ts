@@ -99,7 +99,12 @@ describe('AppLifecycleService', () => {
 
       commandFactory.createCommand.mockReturnValue(command as any);
 
-      registrationService.getDeviceRegistrationInfo.mockResolvedValue({ id: 'org-id', tunnelId: 'tunnel-id' } as any);
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue({
+        id: 'org-id',
+        tunnelId: 'tunnel-id',
+        slug: 'org-slug',
+        name: 'Org Label',
+      } as any);
       appsRepository.getApps.mockResolvedValue([]);
       configService.getConfig.mockReturnValue({ userSettings: { localDomain: 'lan' } } as any);
 

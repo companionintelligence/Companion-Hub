@@ -18,7 +18,11 @@ export default function DeviceRegistrationPage() {
 
   // Check if this is a callback from CI Cloud
   const isCallback =
-    searchParams.has('device_id') && searchParams.has('organization_id') && searchParams.has('organization_name') && searchParams.has('subdomain');
+    searchParams.has('device_id') &&
+    searchParams.has('organization_id') &&
+    searchParams.has('organization_name') &&
+    searchParams.has('subdomain') &&
+    searchParams.has('slug');
 
   // Handle callback from CI Cloud
   useEffect(() => {
@@ -28,17 +32,19 @@ export default function DeviceRegistrationPage() {
           const device_id = searchParams.get('device_id');
           const organization_id = searchParams.get('organization_id');
           const organization_name = searchParams.get('organization_name');
+          const slug = searchParams.get('slug');
           const subdomain = searchParams.get('subdomain');
           const api_key = searchParams.get('api_key');
           const tunnel_id = searchParams.get('tunnel_id');
           const tunnel_token = searchParams.get('tunnel_token');
           const ca_cert = searchParams.get('ca_cert');
 
-          if (!device_id || !organization_id || !organization_name || !subdomain || !api_key || !tunnel_id || !tunnel_token) {
+          if (!device_id || !organization_id || !organization_name || !subdomain || !api_key || !tunnel_id || !tunnel_token || !slug) {
             const missing = [];
             if (!device_id) missing.push('device_id');
             if (!organization_id) missing.push('organization_id');
             if (!organization_name) missing.push('organization_name');
+            if (!slug) missing.push('slug');
             if (!subdomain) missing.push('subdomain');
             if (!api_key) missing.push('api_key');
             if (!tunnel_id) missing.push('tunnel_id');
@@ -51,6 +57,7 @@ export default function DeviceRegistrationPage() {
             device_id,
             organization_id,
             organization_name,
+            slug,
             subdomain,
             api_key,
             tunnel_id,

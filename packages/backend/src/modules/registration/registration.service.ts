@@ -380,9 +380,14 @@ export class RegistrationService implements OnApplicationBootstrap {
         throw new Error('Organization name is required to create device registration');
       }
 
+      if (!orgSlug) {
+        throw new Error('Organization slug is required to create device registration');
+      }
+
       // Store organization info in database
       await this.deviceRegistrationRepository.createDeviceRegistration({
         id: organizationId,
+        slug: orgSlug,
         name: orgName,
         tunnelId: tunnelId,
         tunnelToken: tunnelToken,
@@ -552,7 +557,8 @@ export class RegistrationService implements OnApplicationBootstrap {
       await this.setupOrganizationInfrastructure(organizationId, {
         // biome-ignore lint/suspicious/noExplicitAny: External API response
         ...(activateResult as any),
-        organization_name: finalOrgName,
+        organization_name: organizationName,
+        slug: sanitizedName,
       });
 
       // Mark as registered
@@ -588,6 +594,7 @@ export class RegistrationService implements OnApplicationBootstrap {
     deviceId: string;
     organizationId: string;
     organizationName: string;
+    slug: string;
     subdomain: string;
     tunnelId: string;
     tunnelToken: string;
@@ -635,7 +642,7 @@ export class RegistrationService implements OnApplicationBootstrap {
         tunnel_id: data.tunnelId,
         tunnel_token: data.tunnelToken,
         subdomain: incomingSubdomain,
-        slug: incomingSubdomain,
+        slug: data.slug,
       });
       // Mark as registered
       this._isRegistered = true;

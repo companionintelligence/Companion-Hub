@@ -59,7 +59,7 @@ export class AppLifecycleCommand {
       const dockerComposeBuilder = new DockerComposeBuilder(domain, localDomain);
       const subnet = await subnetManager.allocateSubnet(appUrn);
 
-      const composeFile = dockerComposeBuilder.getDockerCompose(mergedServices, form, appUrn, subnet, domain, localDomain);
+      const composeFile = dockerComposeBuilder.getDockerCompose(mergedServices, form, appUrn, subnet, domain, localDomain, appEnv.path);
 
       await appFilesManager.writeDockerComposeYml(appUrn, composeFile);
     } catch (err) {

@@ -211,6 +211,7 @@ export class AppHelpers {
 
     if (config.port && form.port) {
       envMap.set('APP_DOMAIN', `${internalIp}:${form.port}`);
+      envMap.set('APP_URL', `http://${internalIp}:${form.port}`);
     }
 
     if (form.exposedLocal) {
@@ -227,9 +228,9 @@ export class AppHelpers {
       }
 
       // Always add organization suffix to subdomain if org exists and subdomain doesn't already have it
-      // The final form MUST be <appslug>-<orgname>.<domain> where appSlug is specified by the user in the install app form
-      if (org?.name && !subdomain.endsWith(`-${org.name}`)) {
-        subdomain = `${subdomain}-${org.name}`;
+      // The final form MUST be <appslug>-<orgslug>.<domain> where appSlug is specified by the user in the install app form
+      if (org?.slug && !subdomain.endsWith(`-${org.slug}`)) {
+        subdomain = `${subdomain}-${org.slug}`;
       }
 
       envMap.set('APP_LOCAL_DOMAIN', `${subdomain}.${envMap.get('LOCAL_DOMAIN') || this.config.getConfig().localDomain}`);
@@ -242,6 +243,7 @@ export class AppHelpers {
         envMap.set('APP_PROTOCOL', 'https');
         envMap.set('APP_DOMAIN', `${subdomain}.${publicDomain}`);
         envMap.set('APP_HOST', `${subdomain}.${publicDomain}`);
+        envMap.set('APP_URL', `https://${subdomain}.${publicDomain}`);
       }
     }
 
@@ -251,6 +253,7 @@ export class AppHelpers {
       envMap.set('APP_HOST', form.domain);
       envMap.set('APP_EXPOSED_DOMAIN', form.domain);
       envMap.set('APP_PROTOCOL', 'https');
+      envMap.set('APP_URL', `https://${form.domain}`);
     }
 
     if (appName === 'cloudflared') {
