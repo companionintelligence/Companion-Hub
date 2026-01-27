@@ -68,7 +68,7 @@ export class DockerComposeBuilder {
     });
   }
 
-  private buildService = (params: Service, form: AppEventFormInput, appUrn: AppUrn) => {
+  private buildService = (params: Service, form: AppEventFormInput, appUrn: AppUrn, envFile?: string) => {
     const { appName, appStoreId } = extractAppUrn(appUrn);
 
     // Use domain values set in getDockerCompose (from app env file or defaults)
@@ -118,6 +118,10 @@ export class DockerComposeBuilder {
       .setDNS(params.dns)
       .setNetwork(`${appName}_${appStoreId}_network`);
 
+    if (envFile) {
+      service.setEnvFile([envFile]);
+    }
+
     // Add main service to ci_os_hub_network for inter-app communication
     // This allows apps to communicate with each other when needed
     const mainNetworkName = `${process.env.HUB_CONTAINER_NAME || 'ci-os-hub'}_network`;
@@ -165,14 +169,22 @@ export class DockerComposeBuilder {
     return service.build();
   };
 
-  public getDockerCompose(services: ServiceInput[], form: AppEventFormInput, appUrn: AppUrn, subnet: string, domain?: string, localDomain?: string) {
+  public getDockerCompose(
+    services: ServiceInput[],
+    form: AppEventFormInput,
+    appUrn: AppUrn,
+    subnet: string,
+    domain?: string,
+    localDomain?: string,
+    envFile?: string,
+  ) {
     const { appName, appStoreId } = extractAppUrn(appUrn);
 
     // Store domain values for use in buildService
     this.domain = domain || process.env.DOMAIN || 'example.com';
     this.localDomain = localDomain || process.env.LOCAL_DOMAIN || 'tipi.lan';
 
-    const myServices = services.map((service) => this.buildService(service, form, appUrn));
+    const myServices = services.map((service) => this.buildService(service, form, appUrn, envFile));
 
     const mainNetworkName = `${process.env.HUB_CONTAINER_NAME || 'ci-os-hub'}_network`;
 

@@ -106,6 +106,7 @@ export interface BuilderService {
   stdinOpen?: boolean;
   sysctls?: Record<string, number>;
   dns?: string | string[];
+  env_file?: string[];
 }
 
 export type BuiltService = ReturnType<typeof ServiceBuilder.prototype.build>;
@@ -553,6 +554,15 @@ export class ServiceBuilder {
     return this;
   }
 
+  /**
+   * Sets the env_file for the service.
+   * @param {string[]} envFiles The env files to use for the service.
+   */
+  setEnvFile(envFiles?: string[]) {
+    this.service.env_file = envFiles;
+    return this;
+  }
+
   /*
    * Search through the labels and replace any {{ RUNTIPI_APP_ID }} or {{RUNTIPI_APP_ID}} with the appId.
    * Also replaces ${LOCAL_DOMAIN} with the actual localDomain value if provided.
@@ -642,6 +652,7 @@ export class ServiceBuilder {
       stdin_open: this.service.stdinOpen,
       sysctls: this.service.sysctls,
       dns: this.service.dns,
+      env_file: this.service.env_file,
     };
 
     // Delete any undefined properties
