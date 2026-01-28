@@ -14,7 +14,14 @@ export class DeviceRegistrationRepository {
   }
 
   async createOrganization(data: { id: string; name: string; tunnelId: string | null; tunnelToken?: string | null; domain: string }) {
-    const result = await this.databaseService.db.insert(deviceRegistration).values(data).returning();
+    const { domain, ...rest } = data;
+    const result = await this.databaseService.db
+      .insert(deviceRegistration)
+      .values({
+        ...rest,
+        slug: domain,
+      })
+      .returning();
 
     return result[0];
   }
@@ -28,9 +35,15 @@ export class DeviceRegistrationRepository {
       domain: string;
     }>,
   ) {
+    const { domain, ...rest } = data;
+    const updateData: any = { ...rest };
+    if (domain) {
+      updateData.slug = domain;
+    }
+
     const result = await this.databaseService.db
       .update(deviceRegistration)
-      .set({ ...data, updatedAt: new Date().toISOString() })
+      .set({ ...updateData, updatedAt: new Date().toISOString() })
       .where(eq(deviceRegistration.id, orgId))
       .returning();
 

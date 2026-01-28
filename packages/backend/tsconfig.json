@@ -16,5 +16,5 @@
       "@/*": ["./src/*"]
     }
   },
-  "exclude": ["node_modules", "dist", "build.ts"]
+  "exclude": ["node_modules", "dist", "build.ts", "**/*.test.ts", "**/__tests__", "vitest*", "src/tests"]
 }

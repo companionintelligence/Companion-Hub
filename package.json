@@ -16,6 +16,8 @@
     "tsc": "turbo run tsc",
     "test": "turbo test",
     "test:integration": "turbo run test:integration",
+    "test:app": "bun scripts/verify-app.ts",
+    "test:alts": "bash scripts/verify-alts.sh",
     "start": "node ./main.js",
     "start:local": "ENV_FILE=.env.local docker compose --env-file .env.local --project-name runtipi -f docker-compose.local.yml up --build",
     "start:prod": "bun scripts/init-traefik.ts && ENV_FILE=.env.prod CI_CLOUD_API_URL=https://ci.computer/api docker compose --env-file .env.prod --project-name runtipi -f docker-compose.prod.yml up --build",
