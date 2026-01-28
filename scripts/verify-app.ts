@@ -72,7 +72,7 @@ async function getInstalledApps() {
 
 async function checkAppStatus(appId: string) {
   // Wait for app to be running
-  let retries = 30; // Increased retries since install can be slow
+  let retries = 90; // Increased retries since install can be slow (RocketChat needs >60s)
   while (retries > 0) {
     try {
       // biome-ignore lint/suspicious/noExplicitAny: response unknown
@@ -233,7 +233,7 @@ async function main() {
   }
 
   // 2. Verify Status
-  let installedId = appName;
+  let installedId = `${appName}:migrated`;
   await new Promise((r) => setTimeout(r, 2000));
 
   let success = false;
