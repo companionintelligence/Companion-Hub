@@ -27,9 +27,14 @@ const TabsTrigger = ({ className, children, ...props }: React.ComponentProps<typ
   );
 };
 
-const TabsContent = ({ className, children, ...props }: React.ComponentProps<typeof TabsPrimitive.Content>) => (
+const TabsContent = ({
+  className,
+  children,
+  contentClassName,
+  ...props
+}: React.ComponentProps<typeof TabsPrimitive.Content> & { contentClassName?: string }) => (
   <TabsPrimitive.Content className={clsx('', className)} {...props}>
-    <div className="card-body">{children}</div>
+    <div className={clsx('card-body', contentClassName)}>{children}</div>
   </TabsPrimitive.Content>
 );
 
