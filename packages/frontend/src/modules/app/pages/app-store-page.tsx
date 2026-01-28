@@ -144,7 +144,7 @@ export default () => {
         <div className="flex-shrink-0 mb-4">
           <TabsList>
             <TabsTrigger value="alternatives">Alternatives</TabsTrigger>
-            <TabsTrigger value="list">List</TabsTrigger>
+            <TabsTrigger value="browse">Browse</TabsTrigger>
           </TabsList>
         </div>
 
@@ -231,7 +231,7 @@ export default () => {
           })}
         </TabsContent>
 
-        <TabsContent value="list" className="flex-1 flex flex-col min-h-0">
+        <TabsContent value="browse" className="flex-1 flex flex-col min-h-0">
           <div className="flex-shrink-0">
             <ActionBar>
               <ActionBar.Left>

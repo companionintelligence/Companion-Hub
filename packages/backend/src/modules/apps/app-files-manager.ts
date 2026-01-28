@@ -55,12 +55,20 @@ export class AppFilesManager {
         }
 
         if (parsedConfig.available) {
-          const description = (await this.filesystem.readTextFile(path.join(appInstalledDir, 'metadata', 'description.md'))) ?? '';
+          let description = '';
+          try {
+            const fileExists = await this.filesystem.pathExists(path.join(appInstalledDir, 'metadata', 'description.md'));
+            if (fileExists) {
+              description = (await this.filesystem.readTextFile(path.join(appInstalledDir, 'metadata', 'description.md'))) ?? '';
+            }
+          } catch {
+            // Ignore missing description
+          }
 
           return { ...parsedConfig, description };
         }
       }
-    } catch (_) {
+    } catch {
       return null;
     }
 

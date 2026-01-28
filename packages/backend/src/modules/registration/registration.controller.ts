@@ -124,8 +124,6 @@ export class RegistrationController {
         CI_CLOUD_URL: process.env.CI_CLOUD_URL || null,
         CI_CLOUD_API_URL: process.env.CI_CLOUD_API_URL || null,
         CI_CLOUD_FRONTEND_URL: process.env.CI_CLOUD_FRONTEND_URL || null,
-        CI_HUB_API_KEY: process.env.CI_HUB_API_KEY ? '***configured***' : null,
-        CI_HUB_ORGANIZATION_ID: process.env.CI_HUB_ORGANIZATION_ID || null,
       },
     };
   }
