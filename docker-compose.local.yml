@@ -43,6 +43,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.dev
+    command: npx turbo run dev --filter backend --filter @runtipi/common
     depends_on:
       ci-hub-db:
         condition: service_healthy
@@ -57,7 +58,7 @@ services:
       timeout: 5s
       retries: 10
     ports:
-      - 3000:9091
+      - 3000:3000
       - 9091:9091
     volumes:
       # Hot reload
@@ -70,6 +71,7 @@ services:
       - ${RUNTIPI_MEDIA_PATH:-.internal}/media:/data/media
       - ${RUNTIPI_STATE_PATH:-.internal}/state:/data/state
       - ${RUNTIPI_REPOS_PATH:-.internal}/repos:/data/repos
+      - ../CI-App-Store:/data/repos/migrated
       - ${RUNTIPI_APPS_PATH:-.internal}/apps:/data/apps
       - ${RUNTIPI_LOGS_PATH:-.internal}/logs:/data/logs
       - ${RUNTIPI_USER_CONFIG_PATH:-.internal}/user-config:/data/user-config

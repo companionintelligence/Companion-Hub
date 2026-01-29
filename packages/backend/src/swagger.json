@@ -2511,6 +2511,9 @@
           "allowErrorMonitoring": {
             "type": "boolean"
           },
+          "domain": {
+            "type": "string"
+          },
           "isConfigured": {
             "type": "boolean"
           },
@@ -2577,6 +2580,7 @@
         "required": [
           "allowAutoThemes",
           "allowErrorMonitoring",
+          "domain",
           "isConfigured",
           "isGuestDashboardEnabled",
           "isLoggedIn",

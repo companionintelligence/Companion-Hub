@@ -25,6 +25,7 @@ export const seedOrganization = async () => {
     await db.insert(schema.deviceRegistration).values({
       id: 'test-org-id',
       name: 'test-org',
+      slug: 'test-org',
       tunnelId: null,
       domain: 'test-org.example.com',
     });
