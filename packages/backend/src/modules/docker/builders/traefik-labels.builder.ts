@@ -5,7 +5,9 @@ interface TraefikLabelsArgs {
   exposed?: boolean;
   storeId: string;
   enableAuth?: boolean;
-  localSubdomain?: string;
+  localSubdomain?: string; // Full subdomain including org slug (e.g., mattermost-bdc), extracted from APP_EXPOSED_DOMAIN
+  publicDomain?: string; // Public domain (e.g., companionintelligence.com)
+  localDomain?: string; // Local domain (e.g., tipi.lan)
 }
 
 export class TraefikLabelsBuilder {
@@ -42,7 +44,8 @@ export class TraefikLabelsBuilder {
 
       if (this.params.enableAuth) {
         Object.assign(this.labels, {
-          [`traefik.http.routers.${this.params.appId}-${this.params.storeId}.middlewares`]: 'runtipi',
+          // Reference middleware from Docker provider (defined on ci-os-hub container)
+          [`traefik.http.routers.${this.params.appId}-${this.params.storeId}.middlewares`]: 'runtipi@docker',
         });
       }
     }
@@ -51,16 +54,26 @@ export class TraefikLabelsBuilder {
 
   addExposedLocalLabels() {
     if (this.params.exposedLocal) {
-      const subdomain = this.params.localSubdomain ? this.params.localSubdomain : `${this.params.appId}-${this.params.storeId}`;
+      // localSubdomain is already the full subdomain (appname-orgslug) from APP_EXPOSED_DOMAIN
+      // No need to add org slug again - it's already included
+      const subdomain = this.params.localSubdomain || `${this.params.appId}-${this.params.storeId}`;
+
+      // When exposedLocal is true, we're using Cloudflare Tunnel to expose apps to the internet
+      // Cloudflare Tunnel sends requests with the public domain Host header (e.g., mattermost-bdc.companionintelligence.com)
+      // We only need to configure Traefik to accept the public domain, not the local domain
+      // Use publicDomain if provided, otherwise fall back to domain (should always be set via compose.builder.ts)
+      const domainToUse = this.params.publicDomain || 'example.com'; // Fallback should never be used in practice
+      const publicHost = `${subdomain}.${domainToUse}`;
+      const hostRule = `Host(\`${publicHost}\`)`;
 
       Object.assign(this.labels, {
         'traefik.enable': true,
-        [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-local-insecure.rule`]: `Host(\`${subdomain}.\${LOCAL_DOMAIN}\`)`,
+        [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-local-insecure.rule`]: hostRule,
         [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-local-insecure.entrypoints`]: 'web',
         [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-local-insecure.service`]: `${this.params.appId}-${this.params.storeId}`,
         // REMOVED: No HTTPS redirect middleware - Cloudflare Tunnel handles SSL
         // [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-local-insecure.middlewares`]: `${this.params.appId}-${this.params.storeId}-web-redirect`,
-        [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-local.rule`]: `Host(\`${subdomain}.\${LOCAL_DOMAIN}\`)`,
+        [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-local.rule`]: hostRule,
         [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-local.entrypoints`]: 'websecure',
         [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-local.service`]: `${this.params.appId}-${this.params.storeId}`,
         [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-local.tls`]: true,
@@ -68,7 +81,8 @@ export class TraefikLabelsBuilder {
 
       if (this.params.enableAuth) {
         Object.assign(this.labels, {
-          [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-local.middlewares`]: 'runtipi',
+          // Reference middleware from Docker provider (defined on ci-os-hub container)
+          [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-local.middlewares`]: 'runtipi@docker',
         });
       }
     }

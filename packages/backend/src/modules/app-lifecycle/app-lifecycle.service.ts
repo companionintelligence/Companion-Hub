@@ -259,6 +259,10 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       appName,
       status: 'installing',
       config: parsedForm,
+      // Port semantics:
+      // - When openPort=true: Host port (exposed on host, checked for conflicts)
+      // - When exposedLocal=true and openPort=false: Internal port (for APP_PORT env var, not used for host port mapping)
+      // - Traefik routing uses params.internalPort from service definition, not this database field
       port: parsedForm.port ?? appInfo.port,
       version: appInfo.tipi_version,
       exposed: exposed ?? false,
@@ -589,31 +593,78 @@ export class AppLifecycleService implements OnApplicationBootstrap {
 
       const apps = await this.appRepository.getApps();
       const userSettings = this.config.getConfig().userSettings;
-      const localDomain = userSettings.localDomain || 'tipi.lan';
+      const publicDomain = userSettings.domain || this.config.getConfig().domain;
 
-      const exposedApps: AppInfo[] = apps
-        .filter((app) => {
-          return app.exposedLocal && ['running', 'starting', 'restarting'].includes(app.status) && app.port !== null;
-        })
-        .map((app) => {
-          // Construct URN for this app
-          const _appUrn = createAppUrn(app.appName, app.appStoreSlug);
-          const subdomain = app.localSubdomain || `${app.appName}-${app.appStoreSlug}`;
+      type AppFromDb = Awaited<ReturnType<typeof this.appRepository.getApps>>[number];
 
-          // For exposedLocal apps, they go through Traefik on port 80
-          // Traefik routes based on Host header matching: ${subdomain}.${LOCAL_DOMAIN}
-          // So we need to send the LOCAL_DOMAIN hostname, not the public domain
-          const traefikHostname = `${subdomain}.${localDomain}`;
+      const exposedApps: AppInfo[] = await Promise.all(
+        apps
+          .filter((app: AppFromDb) => {
+            // Include apps that are exposedLocal and running/starting/restarting
+            // Port check removed - port value isn't used (always routes through Traefik on port 80)
+            // Traefik uses internal port from service definition, not the database port field
+            return app.exposedLocal && ['running', 'starting', 'restarting'].includes(app.status) && app.localSubdomain;
+          })
+          .map(async (app: AppFromDb) => {
+            // Construct URN for this app
+            const appUrn = createAppUrn(app.appName, app.appStoreSlug);
 
-          return {
-            name: app.appName,
-            subdomain: subdomain,
-            localPort: 80, // Traefik port - Traefik routes to the app based on Host header
-            protocol: 'http' as const,
-            hostname: 'traefik', // Use container name to reach Traefik within the same network
-            originServerName: traefikHostname, // This sets the Host header that Traefik expects
-          };
-        });
+            // Read APP_EXPOSED_DOMAIN directly from the app's env file
+            // APP_EXPOSED_DOMAIN already contains the full domain (e.g., n8n-bdc.companionintelligence.com)
+            // No need to parse or reconstruct - just use it directly
+            let appExposedDomain: string | undefined;
+
+            try {
+              const appEnv = await this.appFilesManager.getAppEnv(appUrn);
+              if (appEnv.content) {
+                const envLines = appEnv.content.split('\n');
+                for (const line of envLines) {
+                  if (line.startsWith('APP_EXPOSED_DOMAIN=')) {
+                    appExposedDomain = line.split('=')[1]?.trim();
+                    break;
+                  }
+                }
+              }
+            } catch (error) {
+              // If we can't read the env file, fall back to reconstructing from database
+              this.logger.debug(`[Cloudflare] Could not read APP_EXPOSED_DOMAIN for ${appUrn}, falling back to database value`);
+            }
+
+            // Use APP_EXPOSED_DOMAIN directly if available, otherwise reconstruct from database
+            let subdomain: string;
+            let publicHostname: string;
+
+            if (appExposedDomain) {
+              // Extract subdomain (everything before the first dot)
+              // e.g., "n8n-bdc.companionintelligence.com" -> "n8n-bdc"
+              const firstDotIndex = appExposedDomain.indexOf('.');
+              subdomain = firstDotIndex > 0 ? appExposedDomain.substring(0, firstDotIndex) : appExposedDomain;
+              publicHostname = appExposedDomain; // Use the full domain as-is
+            } else {
+              // Fallback: reconstruct from database (shouldn't happen in normal operation)
+              let sub = app.localSubdomain || `${app.appName}-${app.appStoreSlug}`;
+              // Add organization suffix if not already present
+              if (orgInfo?.slug && !sub.endsWith(`-${orgInfo.slug}`)) {
+                sub = `${sub}-${orgInfo.slug}`;
+              }
+              subdomain = sub;
+              publicHostname = `${sub}.${publicDomain}`;
+            }
+
+            // When exposedLocal is true, we use Cloudflare Tunnel to expose apps to the internet
+            // Traefik is configured to ONLY accept the public domain Host header (not local domain)
+            // We use the public domain as originServerName so Cloudflare Tunnel sends
+            // the public domain Host header, which matches our Traefik public domain Host rule
+            return {
+              name: app.appName,
+              subdomain: subdomain, // Subdomain part only (e.g., n8n-bdc)
+              localPort: 80, // Traefik port - Traefik routes to the app based on Host header
+              protocol: 'http' as const,
+              hostname: 'traefik', // Use container name to reach Traefik within the same network
+              originServerName: publicHostname, // Full domain from APP_EXPOSED_DOMAIN (e.g., n8n-bdc.companionintelligence.com)
+            };
+          }),
+      );
 
       // Don't add Dashboard here - it's already registered during device registration
       // Adding it here would overwrite the Hub's domain (devicename-orgname.ci.computer)
@@ -673,11 +724,13 @@ export class AppLifecycleService implements OnApplicationBootstrap {
     return { requestId };
   }
 
-  async updateAllApps() {
+  async updateAllApps(): Promise<void> {
     const installedApps = await this.appsService.getInstalledApps();
-    const availableUpdates = installedApps.filter(
-      ({ app, metadata }) => Number(app.version) < Number(metadata.latestVersion) && app.ignoredVersion !== metadata.latestVersion,
-    );
+    type InstalledApp = Awaited<ReturnType<typeof this.appsService.getInstalledApps>>[number];
+    const availableUpdates: InstalledApp[] = installedApps.filter((item: InstalledApp) => {
+      const { app, metadata } = item;
+      return Number(app.version) < Number(metadata.latestVersion) && app.ignoredVersion !== metadata.latestVersion;
+    });
 
     for (const { app } of availableUpdates) {
       try {
@@ -691,7 +744,8 @@ export class AppLifecycleService implements OnApplicationBootstrap {
 
   async restartRunningApps() {
     const apps = await this.appRepository.getApps();
-    const runningApps = apps.filter((app) => app.status === 'running');
+    type AppFromDb = Awaited<ReturnType<typeof this.appRepository.getApps>>[number];
+    const runningApps = apps.filter((app: AppFromDb) => app.status === 'running');
 
     (async () => {
       for (const app of runningApps) {
@@ -707,7 +761,8 @@ export class AppLifecycleService implements OnApplicationBootstrap {
 
   async startAllApps() {
     const apps = await this.appRepository.getApps();
-    const stoppedApps = apps.filter((app) => app.status === 'stopped');
+    type AppFromDb = Awaited<ReturnType<typeof this.appRepository.getApps>>[number];
+    const stoppedApps = apps.filter((app: AppFromDb) => app.status === 'stopped');
 
     (async () => {
       for (const app of stoppedApps) {
@@ -723,7 +778,8 @@ export class AppLifecycleService implements OnApplicationBootstrap {
 
   async stopAllApps() {
     const apps = await this.appRepository.getApps();
-    const runningApps = apps.filter((app) => app.status === 'running');
+    type AppFromDb = Awaited<ReturnType<typeof this.appRepository.getApps>>[number];
+    const runningApps = apps.filter((app: AppFromDb) => app.status === 'running');
 
     (async () => {
       for (const app of runningApps) {
@@ -739,7 +795,8 @@ export class AppLifecycleService implements OnApplicationBootstrap {
 
   async restartAllApps() {
     const apps = await this.appRepository.getApps();
-    const runningApps = apps.filter((app) => app.status === 'running');
+    type AppFromDb = Awaited<ReturnType<typeof this.appRepository.getApps>>[number];
+    const runningApps = apps.filter((app: AppFromDb) => app.status === 'running');
 
     (async () => {
       for (const app of runningApps) {

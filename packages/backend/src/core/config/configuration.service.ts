@@ -148,7 +148,6 @@ export class ConfigurationService {
         sslPort: env.data.NGINX_PORT_SSL || 443,
         listenIp: env.data.INTERNAL_IP, // TODO: Check if this is correct
         internalIp: env.data.INTERNAL_IP,
-        appsRepoUrl: env.data.APPS_REPO_URL,
         postgresPort: env.data.POSTGRES_PORT,
         dnsIp: env.data.DNS_IP,
         appDataPath: env.data.RUNTIPI_APP_DATA_PATH,

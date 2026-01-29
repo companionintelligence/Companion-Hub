@@ -23,17 +23,29 @@ export class AppStoreService implements OnApplicationBootstrap {
       switch (data.command) {
         case 'update_all': {
           const stores = await this.appStoreRepository.getEnabledAppStores();
-          for (const store of stores) {
-            await this.repoHelpers.pullRepo(store.url, store.slug, store.type ?? 'git');
-          }
+          const results = await Promise.allSettled(stores.map((store) => this.repoHelpers.pullRepo(store.url, store.slug, store.type ?? 'git')));
+          // Log failures but don't fail the entire operation
+          results.forEach((result, index) => {
+            if (result.status === 'rejected') {
+              this.logger.error(`Failed to update repo ${stores[index]?.slug}: ${result.reason}`);
+            } else if (result.value.success === false) {
+              this.logger.warn(`Skipped invalid repo ${stores[index]?.slug}: ${result.value.message}`);
+            }
+          });
           await reply({ success: true, message: 'All repos updated' });
           break;
         }
         case 'clone_all': {
           const stores = await this.appStoreRepository.getEnabledAppStores();
-          for (const store of stores) {
-            await this.repoHelpers.cloneRepo(store.url, store.slug, store.type ?? 'git');
-          }
+          const results = await Promise.allSettled(stores.map((store) => this.repoHelpers.cloneRepo(store.url, store.slug, store.type ?? 'git')));
+          // Log failures but don't fail the entire operation
+          results.forEach((result, index) => {
+            if (result.status === 'rejected') {
+              this.logger.error(`Failed to clone repo ${stores[index]?.slug}: ${result.reason}`);
+            } else if (result.value.success === false) {
+              this.logger.warn(`Skipped invalid repo ${stores[index]?.slug}: ${result.value.message}`);
+            }
+          });
           await reply({ success: true, message: 'All repos cloned' });
           break;
         }

@@ -48,6 +48,30 @@ export class TraefikConfigService {
     try {
       this.logger.debug('Generating Traefik file-based configuration from Docker containers...');
 
+      const { directories } = this.config.getConfig();
+      const configPath = `${directories.dataDir}/state/traefik/dynamic/apps.yml`;
+
+      // Check if there's an existing invalid config file and remove it first
+      // This prevents Traefik from trying to parse invalid YAML
+      if (await this.filesystem.pathExists(configPath)) {
+        try {
+          const existingContent = await this.filesystem.readTextFile(configPath);
+          if (existingContent) {
+            // Try to parse it to see if it's valid
+            try {
+              yaml.parse(existingContent);
+            } catch {
+              // Invalid YAML - delete it
+              this.logger.debug(`Removing invalid Traefik config file at ${configPath}`);
+              await this.filesystem.removeFile(configPath);
+            }
+          }
+        } catch {
+          // If we can't read it, try to remove it anyway
+          await this.filesystem.removeFile(configPath);
+        }
+      }
+
       const containers = await this.docker.listContainers({
         filters: {
           label: ['traefik.enable=true'],
@@ -155,9 +179,7 @@ export class TraefikConfigService {
       }
 
       // Write the configuration file
-      const { directories } = this.config.getConfig();
-      // Use dataDir/state since stateDir doesn't exist in the config
-      const configPath = `${directories.dataDir}/state/traefik/dynamic/apps.yml`;
+      // configPath already defined at the start of the function
 
       const routerCount = Object.keys(config.http.routers).length;
       const serviceCount = Object.keys(config.http.services).length;
@@ -167,7 +189,7 @@ export class TraefikConfigService {
         // Delete the file if it exists to avoid stale/invalid config
         if (await this.filesystem.pathExists(configPath)) {
           this.logger.debug(`No routers/services found, deleting stale Traefik config at ${configPath}`);
-          await this.filesystem.deleteFile(configPath);
+          await this.filesystem.removeFile(configPath);
         } else {
           this.logger.debug('No routers/services found, skipping Traefik config file write');
         }
