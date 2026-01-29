@@ -158,7 +158,35 @@ export class TraefikConfigService {
       const { directories } = this.config.getConfig();
       // Use dataDir/state since stateDir doesn't exist in the config
       const configPath = `${directories.dataDir}/state/traefik/dynamic/apps.yml`;
-      const yamlContent = yaml.stringify(config, { indent: 2 });
+
+      const routerCount = Object.keys(config.http.routers).length;
+      const serviceCount = Object.keys(config.http.services).length;
+
+      // Traefik doesn't accept empty routers/services objects - only write file if we have content
+      if (routerCount === 0 && serviceCount === 0) {
+        // Delete the file if it exists to avoid stale/invalid config
+        if (await this.filesystem.pathExists(configPath)) {
+          this.logger.debug(`No routers/services found, deleting stale Traefik config at ${configPath}`);
+          await this.filesystem.deleteFile(configPath);
+        } else {
+          this.logger.debug('No routers/services found, skipping Traefik config file write');
+        }
+        return;
+      }
+
+      // Only include non-empty sections in the config
+      const validConfig: Partial<TraefikConfig> = {
+        http: {},
+      };
+
+      if (routerCount > 0) {
+        validConfig.http!.routers = config.http.routers;
+      }
+      if (serviceCount > 0) {
+        validConfig.http!.services = config.http.services;
+      }
+
+      const yamlContent = yaml.stringify(validConfig, { indent: 2 });
 
       this.logger.debug(`Writing Traefik config to ${configPath}`);
       await this.filesystem.writeTextFile(configPath, yamlContent);
@@ -169,8 +197,6 @@ export class TraefikConfigService {
         throw new Error('Failed to write Traefik config: file is empty after write');
       }
 
-      const routerCount = Object.keys(config.http.routers).length;
-      const serviceCount = Object.keys(config.http.services).length;
       this.logger.info(`Generated Traefik config with ${routerCount} routers and ${serviceCount} services and wrote to ${configPath}`);
 
       // Log router names for debugging
