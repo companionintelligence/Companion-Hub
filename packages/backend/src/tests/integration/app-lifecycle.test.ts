@@ -23,6 +23,7 @@ import { AppsRepository } from '@/modules/apps/apps.repository';
 import { AppsService } from '@/modules/apps/apps.service';
 import { DOCKERODE } from '@/modules/docker/docker.module';
 import { DockerService } from '@/modules/docker/docker.service';
+import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import { SubnetManagerService } from '@/modules/network/subnet-manager.service';
@@ -30,6 +31,7 @@ import { AppEventsQueue, appEventSchema } from '@/modules/queue/entities/app-eve
 import { RepoEventsQueue } from '@/modules/queue/entities/repo-events';
 import { QueueFactory } from '@/modules/queue/queue.factory';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
+import { faker } from '@faker-js/faker';
 import { Test } from '@nestjs/testing';
 import { fromPartial } from '@total-typescript/shoehorn';
 import { eq } from 'drizzle-orm';
@@ -45,6 +47,28 @@ import { AsyncMutex } from '@/utils/mutex/async-mutex';
 let db: TestDatabase;
 const DB_NAME = 'applifecycletest';
 
+function cleanTree(tree: Record<string, string | null>) {
+  const newTree: Record<string, string | null> = {};
+  for (const [key, value] of Object.entries(tree)) {
+    if (value && (key.endsWith('config.json') || key.endsWith('app-data.json'))) {
+      try {
+        const json = JSON.parse(value);
+        if (json.created_at) json.created_at = 1769810550000;
+        if (json.updated_at) json.updated_at = 1769810550000;
+        newTree[key] = JSON.stringify(json, null, 2);
+      } catch (_e) {
+        newTree[key] = value;
+      }
+    } else if (value && (key.endsWith('docker-compose.yml') || key.endsWith('docker-compose.json'))) {
+      // Sanitize subnet to avoid non-determinism in parallel updates
+      newTree[key] = value.replace(/subnet: 10\.128\.\d+\.0\/24/g, 'subnet: 10.128.X.0/24');
+    } else {
+      newTree[key] = value;
+    }
+  }
+  return newTree;
+}
+
 describe('App lifecycle', () => {
   let appLifecycleService: AppLifecycleService;
   let marketplaceService: MarketplaceService;
@@ -58,6 +82,7 @@ describe('App lifecycle', () => {
   const sseService = mock<SSEService>();
   const backupManager = mock<BackupManager>();
   const cloudflareClientService = mock<CloudflareClientService>();
+  const traefikConfigService = mock<TraefikConfigService>();
   const registrationService = mock<RegistrationService>();
 
   // Create AppStoreRepository manually to ensure we use the real implementation with the correct databaseService reference
@@ -75,6 +100,7 @@ describe('App lifecycle', () => {
   let appEventsQueue: AppEventsQueue;
 
   beforeAll(async () => {
+    faker.seed(123);
     db = await createTestDatabase(DB_NAME);
     appEventsQueue = await queueFactory.createQueue({
       queueName: 'app-events-queue',
@@ -123,6 +149,10 @@ describe('App lifecycle', () => {
         {
           provide: CloudflareClientService,
           useValue: cloudflareClientService,
+        },
+        {
+          provide: TraefikConfigService,
+          useValue: traefikConfigService,
         },
         {
           provide: RegistrationService,
@@ -209,7 +239,7 @@ describe('App lifecycle', () => {
       });
 
       // assert
-      expect((fs as unknown as FsMock).tree()).toMatchSnapshot();
+      expect(cleanTree((fs as unknown as FsMock).tree())).toMatchSnapshot();
     });
 
     it('should not delete an existing app-data folder even if the app is reinstalled', async () => {
@@ -227,7 +257,7 @@ describe('App lifecycle', () => {
       });
 
       // assert
-      expect((fs as unknown as FsMock).tree()).toMatchSnapshot();
+      expect(cleanTree((fs as unknown as FsMock).tree())).toMatchSnapshot();
     });
   });
 
@@ -316,7 +346,7 @@ describe('App lifecycle', () => {
       expect(app1?.status).toBe('running');
       expect(app2?.status).toBe('running');
       expect(app3?.status).toBe('running');
-      expect((fs as unknown as FsMock).tree()).toMatchSnapshot();
+      expect(cleanTree((fs as unknown as FsMock).tree())).toMatchSnapshot();
     });
   });
 

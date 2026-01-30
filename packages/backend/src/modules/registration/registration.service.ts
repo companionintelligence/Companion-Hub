@@ -384,7 +384,7 @@ export class RegistrationService implements OnApplicationBootstrap {
 
       // Sync hub domain to CI-Cloud so it can create DNS and tunnel routes
       // The hub needs to be registered as an "app" so CI-Cloud knows to route the domain
-      if (tunnelId) {
+      if (tunnelId && subdomain) {
         try {
           const hubSubdomain = subdomain; // e.g., "1-grok"
           const hubAppInfo: AppInfo = {
@@ -561,7 +561,7 @@ export class RegistrationService implements OnApplicationBootstrap {
 
       // Step 3: Validate organization name/subdomain availability before setup
       // Use provided organization name (already sanitized)
-      const finalOrgName = sanitizedName;
+      const _finalOrgName = sanitizedName;
 
       // Note: We used to validate against local Cloudflare service, now we rely on CI-Cloud provisioning
       // which will happen in setupOrganizationInfrastructure.

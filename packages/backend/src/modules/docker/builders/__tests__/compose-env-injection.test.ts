@@ -20,7 +20,7 @@ describe('DockerComposeBuilder Env File', () => {
     composeBuilder = new DockerComposeBuilder('example.com', 'local.ci');
   });
 
-  it('should add env_file to services when envFile path is provided', () => {
+  it('should add env_file to services when envFile path is provided', async () => {
     const services: ServiceInput[] = [
       {
         name: 'test-service',
@@ -29,13 +29,13 @@ describe('DockerComposeBuilder Env File', () => {
       },
     ];
 
-    const compose = composeBuilder.getDockerCompose(services, dummyForm, appUrn, '10.0.0.0/24', 'example.com', 'local.ci', '/path/to/app.env');
+    const compose = await composeBuilder.getDockerCompose(services, dummyForm, appUrn, '10.0.0.0/24', 'example.com', 'local.ci', '/path/to/app.env');
 
     expect(compose).toContain('env_file:');
     expect(compose).toContain('- /path/to/app.env');
   });
 
-  it('should not add env_file when envFile path is not provided', () => {
+  it('should not add env_file when envFile path is not provided', async () => {
     const services: ServiceInput[] = [
       {
         name: 'test-service',
@@ -44,7 +44,7 @@ describe('DockerComposeBuilder Env File', () => {
       },
     ];
 
-    const compose = composeBuilder.getDockerCompose(services, dummyForm, appUrn, '10.0.0.0/24', 'example.com', 'local.ci');
+    const compose = await composeBuilder.getDockerCompose(services, dummyForm, appUrn, '10.0.0.0/24', 'example.com', 'local.ci');
 
     expect(compose).not.toContain('env_file:');
   });

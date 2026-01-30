@@ -36,6 +36,7 @@ export class DeviceRegistrationRepository {
     }>,
   ) {
     const { domain, ...rest } = data;
+    // biome-ignore lint/suspicious/noExplicitAny: Required for dynamic update
     const updateData: any = { ...rest };
     if (domain) {
       updateData.slug = domain;

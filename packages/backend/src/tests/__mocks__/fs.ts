@@ -53,7 +53,14 @@ export const fsMock = {
       console.log(vol.toTree());
     },
     tree: () => {
-      return vol.toTree();
+      const json = vol.toJSON();
+      const sorted: Record<string, string | null> = {};
+      Object.keys(json)
+        .sort()
+        .forEach((key) => {
+          sorted[key] = json[key];
+        });
+      return sorted;
     },
   },
 };
