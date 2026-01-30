@@ -92,7 +92,7 @@ networks:
     external: false
     ipam:
       config:
-        - subnet: 10.128.10.0/24
+        - subnet: 10.128.X.0/24
 
 ",
   "/data/apps/test/test2/metadata/description.md": "test",
@@ -236,7 +236,7 @@ networks:
     external: false
     ipam:
       config:
-        - subnet: 10.128.10.0/24
+        - subnet: 10.128.X.0/24
 
 ",
   "/data/apps/test/test/metadata/description.md": "test",
@@ -420,7 +420,7 @@ networks:
     external: false
     ipam:
       config:
-        - subnet: 10.128.13.0/24
+        - subnet: 10.128.X.0/24
 
 ",
   "/data/apps/test/app1/metadata/description.md": "test",
@@ -493,7 +493,7 @@ networks:
     external: false
     ipam:
       config:
-        - subnet: 10.128.12.0/24
+        - subnet: 10.128.X.0/24
 
 ",
   "/data/apps/test/app2/metadata/description.md": "test",
@@ -566,7 +566,7 @@ networks:
     external: false
     ipam:
       config:
-        - subnet: 10.128.10.0/24
+        - subnet: 10.128.X.0/24
 
 ",
   "/data/apps/test/app3/metadata/description.md": "test",

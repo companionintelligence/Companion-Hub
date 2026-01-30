@@ -59,6 +59,9 @@ function cleanTree(tree: Record<string, string | null>) {
       } catch (_e) {
         newTree[key] = value;
       }
+    } else if (value && (key.endsWith('docker-compose.yml') || key.endsWith('docker-compose.json'))) {
+      // Sanitize subnet to avoid non-determinism in parallel updates
+      newTree[key] = value.replace(/subnet: 10\.128\.\d+\.0\/24/g, 'subnet: 10.128.X.0/24');
     } else {
       newTree[key] = value;
     }
