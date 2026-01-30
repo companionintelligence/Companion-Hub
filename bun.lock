@@ -109,7 +109,7 @@
         "@vercel/ncc": "^0.38.4",
         "@vitest/coverage-v8": "^4.0.6",
         "drizzle-kit": "^0.31.1",
-        "memfs": "^4.17.1",
+        "memfs": "4.56.10",
         "msw": "^2.8.2",
         "source-map-support": "^0.5.21",
         "supertest": "^7.1.0",
@@ -3229,8 +3229,6 @@
 
     "babel-plugin-macros/cosmiconfig": ["cosmiconfig@7.1.0", "", { "dependencies": { "@types/parse-json": "^4.0.0", "import-fresh": "^3.2.1", "parse-json": "^5.0.0", "path-type": "^4.0.0", "yaml": "^1.10.0" } }, "sha512-AdmX6xUzdNASswsFtmwSt7Vj8po9IuqXm0UXz7QKPuEUmPB4XyjGfaAr2PSuELMwkRMVH1EpIkX5bTZGRB3eCA=="],
 
-    "backend/memfs": ["memfs@4.56.2", "", { "dependencies": { "@jsonjoy.com/fs-core": "4.56.2", "@jsonjoy.com/fs-fsa": "4.56.2", "@jsonjoy.com/fs-node": "4.56.2", "@jsonjoy.com/fs-node-builtins": "4.56.2", "@jsonjoy.com/fs-node-to-fsa": "4.56.2", "@jsonjoy.com/fs-node-utils": "4.56.2", "@jsonjoy.com/fs-print": "4.56.2", "@jsonjoy.com/fs-snapshot": "^4.56.2", "@jsonjoy.com/json-pack": "^1.11.0", "@jsonjoy.com/util": "^1.9.0", "glob-to-regex.js": "^1.0.1", "thingies": "^2.5.0", "tree-dump": "^1.0.3", "tslib": "^2.0.0" } }, "sha512-AEbdVTy4TZiugbnfA7d1z9IvwpHlaGh9Vlb/iteHDtUU/WhOKAwgbhy1f8dnX1SMbeKLIXdXf3lVWb55PuBQQw=="],
-
     "bl/buffer": ["buffer@5.7.1", "", { "dependencies": { "base64-js": "^1.3.1", "ieee754": "^1.1.13" } }, "sha512-EHcyIPBQ4BSGlvjB16k5KgAJ27CIsHY/2JBmCRReo48y9rQ3MaUzWX3KVlBa4U7MyX02HdVj0K7C3WaB3ju7FQ=="],
 
     "bl/readable-stream": ["readable-stream@3.6.2", "", { "dependencies": { "inherits": "^2.0.3", "string_decoder": "^1.1.1", "util-deprecate": "^1.0.1" } }, "sha512-9u/sniCrY3D5WdsERHzHE4G2YCXqoG5FTHUiCC4SIbr6XcLZBY05ya9EKjYek9O5xOAwjGq+1JdGBAS7Q9ScoA=="],
@@ -3485,22 +3483,6 @@
 
     "babel-plugin-macros/cosmiconfig/yaml": ["yaml@1.10.2", "", {}, "sha512-r3vXyErRCYJ7wg28yvBY5VSoAF8ZvlcW9/BwUzEtUsjvX/DKs24dIkuwjtuprwJJHsbyUbLApepYTR1BN4uHrg=="],
 
-    "backend/memfs/@jsonjoy.com/fs-core": ["@jsonjoy.com/fs-core@4.56.2", "", { "dependencies": { "@jsonjoy.com/fs-node-builtins": "4.56.2", "@jsonjoy.com/fs-node-utils": "4.56.2", "thingies": "^2.5.0" }, "peerDependencies": { "tslib": "2" } }, "sha512-5s3t0Lj/gDgPhhXEdSe9yNDB07iMrpIXN9OV9FTiwlLKP3EBFhsbOhhMMVoWuSJkPxaaiOFUpZcyZcKi7mOmUQ=="],
-
-    "backend/memfs/@jsonjoy.com/fs-fsa": ["@jsonjoy.com/fs-fsa@4.56.2", "", { "dependencies": { "@jsonjoy.com/fs-core": "4.56.2", "@jsonjoy.com/fs-node-builtins": "4.56.2", "@jsonjoy.com/fs-node-utils": "4.56.2", "thingies": "^2.5.0" }, "peerDependencies": { "tslib": "2" } }, "sha512-2lN4rdhcjFBf2Oji0rHR1aS+fW+GA0l9o9gXCMWFoC+YXqRO4N4xkSeJwm6a10SMuqlhoseCWRWlhaDYiNiI2A=="],
-
-    "backend/memfs/@jsonjoy.com/fs-node": ["@jsonjoy.com/fs-node@4.56.2", "", { "dependencies": { "@jsonjoy.com/fs-core": "4.56.2", "@jsonjoy.com/fs-node-builtins": "4.56.2", "@jsonjoy.com/fs-node-utils": "4.56.2", "@jsonjoy.com/fs-print": "4.56.2", "glob-to-regex.js": "^1.0.0", "thingies": "^2.5.0" }, "peerDependencies": { "tslib": "2" } }, "sha512-Ws4cwm9UQY0noP/Ee2KpPf2zJJukJywjTIl3lBTH/AdH7r5n5CyGPLgySxpAa7/isV0WD02bYV+XKhslF/Dtbg=="],
-
-    "backend/memfs/@jsonjoy.com/fs-node-builtins": ["@jsonjoy.com/fs-node-builtins@4.56.2", "", { "peerDependencies": { "tslib": "2" } }, "sha512-TB8rFES/4lygIudoTHSGp2fjHe7R229VRQ4IQCMds6uTKhBKuDLZAqOUBiS3hosfxTVrB/JpDrr46MvCSjPzog=="],
-
-    "backend/memfs/@jsonjoy.com/fs-node-to-fsa": ["@jsonjoy.com/fs-node-to-fsa@4.56.2", "", { "dependencies": { "@jsonjoy.com/fs-fsa": "4.56.2", "@jsonjoy.com/fs-node-builtins": "4.56.2", "@jsonjoy.com/fs-node-utils": "4.56.2" }, "peerDependencies": { "tslib": "2" } }, "sha512-Es62G93ychdl0VhQKVTIPq31QWabXveTEVJfi3gC/AIiehnXV3AMl38TWXLCS4fomBz5EaLqNhMkV7u/oW1p6g=="],
-
-    "backend/memfs/@jsonjoy.com/fs-node-utils": ["@jsonjoy.com/fs-node-utils@4.56.2", "", { "dependencies": { "@jsonjoy.com/fs-node-builtins": "4.56.2" }, "peerDependencies": { "tslib": "2" } }, "sha512-CIUSlhbnws7b9f3Z2r963/lSA+VLPJlJcy8fqjQ9lk1Z1y6Ca9qj2CWXlABkvDZE7sDX+6PEdEU1PsXlfkZVbg=="],
-
-    "backend/memfs/@jsonjoy.com/fs-print": ["@jsonjoy.com/fs-print@4.56.2", "", { "dependencies": { "@jsonjoy.com/fs-node-utils": "4.56.2", "tree-dump": "^1.1.0" }, "peerDependencies": { "tslib": "2" } }, "sha512-7e4hmCrfERuqdNu1shsj140F4uS4h8orBULhlXQJ0F3sT4lnCuWe32rwxAa8xPutb99jKpHcsxM76TaFzFgQTA=="],
-
-    "backend/memfs/@jsonjoy.com/fs-snapshot": ["@jsonjoy.com/fs-snapshot@4.56.2", "", { "dependencies": { "@jsonjoy.com/fs-node-utils": "4.56.2", "@jsonjoy.com/json-pack": "^17.65.0", "@jsonjoy.com/util": "^17.65.0" }, "peerDependencies": { "tslib": "2" } }, "sha512-Qh0lc8Ujnb2b1D4RQ7CD+BOzqzw2aUpJPIK9SDv+y9LTy3lZ/ydPU7m6qBIH2ePhBKZuBIyVwxOWSvHRaasETQ=="],
-
     "cli-highlight/yargs/cliui": ["cliui@7.0.4", "", { "dependencies": { "string-width": "^4.2.0", "strip-ansi": "^6.0.0", "wrap-ansi": "^7.0.0" } }, "sha512-OcRE68cOsVMXp1Yvonl/fzkQOyjLSu/8bhPDfQt0e0/Eb283TKP20Fs2MqoPsr9SwA595rRCA+QMzYc9nBP+JQ=="],
 
     "cli-highlight/yargs/yargs-parser": ["yargs-parser@20.2.9", "", {}, "sha512-y11nGElTIV+CT3Zv9t7VKl+Q3hTQoT9a1Qzezhhl6Rp21gJ/IVTW7Z3y9EWXhuUBC2Shnf+DX0antecpAwSP8w=="],
@@ -3661,10 +3643,6 @@
 
     "@sentry/vite-plugin/unplugin/chokidar/readdirp": ["readdirp@3.6.0", "", { "dependencies": { "picomatch": "^2.2.1" } }, "sha512-hOS089on8RduqdbhvQ5Z37A0ESjsqz6qnRcffsMU3495FuTdqSm+7bhJ29JvIOsBDEEnan5DPu9t3To9VRlMzA=="],
 
-    "backend/memfs/@jsonjoy.com/fs-snapshot/@jsonjoy.com/json-pack": ["@jsonjoy.com/json-pack@17.65.0", "", { "dependencies": { "@jsonjoy.com/base64": "17.65.0", "@jsonjoy.com/buffers": "17.65.0", "@jsonjoy.com/codegen": "17.65.0", "@jsonjoy.com/json-pointer": "17.65.0", "@jsonjoy.com/util": "17.65.0", "hyperdyperid": "^1.2.0", "thingies": "^2.5.0", "tree-dump": "^1.1.0" }, "peerDependencies": { "tslib": "2" } }, "sha512-e0SG/6qUCnVhHa0rjDJHgnXnbsacooHVqQHxspjvlYQSkHm+66wkHw6Gql+3u/WxI/b1VsOdUi0M+fOtkgKGdQ=="],
-
-    "backend/memfs/@jsonjoy.com/fs-snapshot/@jsonjoy.com/util": ["@jsonjoy.com/util@17.65.0", "", { "dependencies": { "@jsonjoy.com/buffers": "17.65.0", "@jsonjoy.com/codegen": "17.65.0" }, "peerDependencies": { "tslib": "2" } }, "sha512-cWiEHZccQORf96q2y6zU3wDeIVPeidmGqd9cNKJRYoVHTV0S1eHPy5JTbHpMnGfDvtvujQwQozOqgO9ABu6h0w=="],
-
     "cli-highlight/yargs/cliui/wrap-ansi": ["wrap-ansi@7.0.0", "", { "dependencies": { "ansi-styles": "^4.0.0", "string-width": "^4.1.0", "strip-ansi": "^6.0.0" } }, "sha512-YVGIj2kamLSTxw6NsZjoBxfSwsn0ycdesmc4p+Q21c5zPuZ1pl+NfxVdxPtdHvmNVOQ6XSYG4AUtyt/Fi7D16Q=="],
 
     "log-update/cli-cursor/restore-cursor/onetime": ["onetime@7.0.0", "", { "dependencies": { "mimic-function": "^5.0.0" } }, "sha512-VXJjc87FScF88uafS3JllDgvAm+c/Slfz06lorj2uAY34rlUu0Nt+v8wreiImcrgAjjIHp1rXpTDlLOGw29WwQ=="],
@@ -3674,13 +3652,5 @@
     "@sentry/bundler-plugin-core/unplugin/chokidar/readdirp/picomatch": ["picomatch@2.3.1", "", {}, "sha512-JU3teHTNjmE2VCGFzuY8EXzCDVwEqB2a8fsIvwaStHhAWJEeVd1o1QD80CU6+ZdEXXSLbSsuLwJjkCBWqRQUVA=="],
 
     "@sentry/vite-plugin/unplugin/chokidar/readdirp/picomatch": ["picomatch@2.3.1", "", {}, "sha512-JU3teHTNjmE2VCGFzuY8EXzCDVwEqB2a8fsIvwaStHhAWJEeVd1o1QD80CU6+ZdEXXSLbSsuLwJjkCBWqRQUVA=="],
-
-    "backend/memfs/@jsonjoy.com/fs-snapshot/@jsonjoy.com/json-pack/@jsonjoy.com/base64": ["@jsonjoy.com/base64@17.65.0", "", { "peerDependencies": { "tslib": "2" } }, "sha512-Xrh7Fm/M0QAYpekSgmskdZYnFdSGnsxJ/tHaolA4bNwWdG9i65S8m83Meh7FOxyJyQAdo4d4J97NOomBLEfkDQ=="],
-
-    "backend/memfs/@jsonjoy.com/fs-snapshot/@jsonjoy.com/json-pack/@jsonjoy.com/codegen": ["@jsonjoy.com/codegen@17.65.0", "", { "peerDependencies": { "tslib": "2" } }, "sha512-7MXcRYe7n3BG+fo3jicvjB0+6ypl2Y/bQp79Sp7KeSiiCgLqw4Oled6chVv07/xLVTdo3qa1CD0VCCnPaw+RGA=="],
-
-    "backend/memfs/@jsonjoy.com/fs-snapshot/@jsonjoy.com/json-pack/@jsonjoy.com/json-pointer": ["@jsonjoy.com/json-pointer@17.65.0", "", { "dependencies": { "@jsonjoy.com/util": "17.65.0" }, "peerDependencies": { "tslib": "2" } }, "sha512-uhTe+XhlIZpWOxgPcnO+iSCDgKKBpwkDVTyYiXX9VayGV8HSFVJM67M6pUE71zdnXF1W0Da21AvnhlmdwYPpow=="],
-
-    "backend/memfs/@jsonjoy.com/fs-snapshot/@jsonjoy.com/util/@jsonjoy.com/codegen": ["@jsonjoy.com/codegen@17.65.0", "", { "peerDependencies": { "tslib": "2" } }, "sha512-7MXcRYe7n3BG+fo3jicvjB0+6ypl2Y/bQp79Sp7KeSiiCgLqw4Oled6chVv07/xLVTdo3qa1CD0VCCnPaw+RGA=="],
   }
 }
