@@ -140,13 +140,14 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   }
 
   envMap.set('ROOT_FOLDER_HOST', rootFolderHost);
-  envMap.set('APPS_REPO_URL', settings.appsRepoUrl || envMap.get('APPS_REPO_URL') || DEFAULT_REPO_URL);
   envMap.set('TZ', settings.timeZone || envMap.get('TZ') || Intl.DateTimeFormat().resolvedOptions().timeZone);
   envMap.set('INTERNAL_IP', settings.listenIp || internalIp);
   envMap.set('DNS_IP', settings.dnsIp || envMap.get('DNS_IP') || '9.9.9.9');
   envMap.set('ARCHITECTURE', getArchitecture());
   envMap.set('JWT_SECRET', jwtSecret);
-  envMap.set('DOMAIN', settings.domain || envMap.get('DOMAIN') || 'example.com');
+  // Prioritize .env file value over settings.json for DOMAIN
+  // .env file is the authoritative source (read-only mount)
+  envMap.set('DOMAIN', envMap.get('DOMAIN') || 'example.com');
   envMap.set('RUNTIPI_APP_DATA_PATH', finalAppDataPath);
   envMap.set(
     'RUNTIPI_FORWARD_AUTH_URL',

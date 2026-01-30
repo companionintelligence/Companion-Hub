@@ -3,7 +3,6 @@ await Bun.build({
   outdir: './dist',
   format: 'esm',
   target: 'node',
-  env: 'disable',
   sourcemap: true,
   minify: false,
   external: [
@@ -17,5 +16,7 @@ await Bun.build({
     '@nestjs/microservices',
     '@nestjs/websockets',
     'cpu-features',
+    'drizzle-orm',
+    '@opentelemetry/api',
   ],
 });

@@ -131,8 +131,10 @@ ENV NODE_ENV="production"
 WORKDIR /app
 
 # Use build cache for npm install
+# Install runtime dependencies that are marked as external in build.ts
+# Also install dependencies of external packages (e.g., pg for drizzle-orm)
 RUN --mount=type=cache,target=/root/.npm \
-    npm install --no-save --omit=dev argon2 class-transformer
+    npm install --no-save --omit=dev argon2 class-transformer @opentelemetry/api drizzle-orm pg
 
 COPY --from=builder_base /deps/docker-binary /usr/local/bin/docker-compose
 RUN chmod +x /usr/local/bin/docker-compose && \

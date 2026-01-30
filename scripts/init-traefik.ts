@@ -87,6 +87,18 @@ async function initTraefik() {
 }
 
 initTraefik().catch((err) => {
-  console.error('Failed to initialize Traefik:', err);
+  if (err.code === 'EACCES' || err.code === 'EPERM') {
+    console.error('Failed to initialize Traefik: Permission denied');
+    console.error('');
+    console.error('The .internal directory appears to be owned by root or another user.');
+    console.error('This commonly happens when Docker containers create directories.');
+    console.error('');
+    console.error('To fix this, run the following command in your terminal:');
+    console.error(`  sudo chown -R $USER:$USER ${process.env.RUNTIPI_STATE_PATH || '.internal'}`);
+    console.error('');
+    console.error('Original error:', err.message);
+  } else {
+    console.error('Failed to initialize Traefik:', err);
+  }
   process.exit(1);
 });

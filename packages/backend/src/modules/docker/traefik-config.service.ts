@@ -48,6 +48,30 @@ export class TraefikConfigService {
     try {
       this.logger.debug('Generating Traefik file-based configuration from Docker containers...');
 
+      const { directories } = this.config.getConfig();
+      const configPath = `${directories.dataDir}/state/traefik/dynamic/apps.yml`;
+
+      // Check if there's an existing invalid config file and remove it first
+      // This prevents Traefik from trying to parse invalid YAML
+      if (await this.filesystem.pathExists(configPath)) {
+        try {
+          const existingContent = await this.filesystem.readTextFile(configPath);
+          if (existingContent) {
+            // Try to parse it to see if it's valid
+            try {
+              yaml.parse(existingContent);
+            } catch {
+              // Invalid YAML - delete it
+              this.logger.debug(`Removing invalid Traefik config file at ${configPath}`);
+              await this.filesystem.removeFile(configPath);
+            }
+          }
+        } catch {
+          // If we can't read it, try to remove it anyway
+          await this.filesystem.removeFile(configPath);
+        }
+      }
+
       const containers = await this.docker.listContainers({
         filters: {
           label: ['traefik.enable=true'],
@@ -155,10 +179,36 @@ export class TraefikConfigService {
       }
 
       // Write the configuration file
-      const { directories } = this.config.getConfig();
-      // Use dataDir/state since stateDir doesn't exist in the config
-      const configPath = `${directories.dataDir}/state/traefik/dynamic/apps.yml`;
-      const yamlContent = yaml.stringify(config, { indent: 2 });
+      // configPath already defined at the start of the function
+
+      const routerCount = Object.keys(config.http.routers).length;
+      const serviceCount = Object.keys(config.http.services).length;
+
+      // Traefik doesn't accept empty routers/services objects - only write file if we have content
+      if (routerCount === 0 && serviceCount === 0) {
+        // Delete the file if it exists to avoid stale/invalid config
+        if (await this.filesystem.pathExists(configPath)) {
+          this.logger.debug(`No routers/services found, deleting stale Traefik config at ${configPath}`);
+          await this.filesystem.removeFile(configPath);
+        } else {
+          this.logger.debug('No routers/services found, skipping Traefik config file write');
+        }
+        return;
+      }
+
+      // Only include non-empty sections in the config
+      const validConfig: Partial<TraefikConfig> = {
+        http: {},
+      };
+
+      if (routerCount > 0) {
+        validConfig.http!.routers = config.http.routers;
+      }
+      if (serviceCount > 0) {
+        validConfig.http!.services = config.http.services;
+      }
+
+      const yamlContent = yaml.stringify(validConfig, { indent: 2 });
 
       this.logger.debug(`Writing Traefik config to ${configPath}`);
       await this.filesystem.writeTextFile(configPath, yamlContent);
@@ -169,8 +219,6 @@ export class TraefikConfigService {
         throw new Error('Failed to write Traefik config: file is empty after write');
       }
 
-      const routerCount = Object.keys(config.http.routers).length;
-      const serviceCount = Object.keys(config.http.services).length;
       this.logger.info(`Generated Traefik config with ${routerCount} routers and ${serviceCount} services and wrote to ${configPath}`);
 
       // Log router names for debugging

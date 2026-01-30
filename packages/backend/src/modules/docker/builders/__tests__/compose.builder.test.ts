@@ -18,7 +18,7 @@ describe('DockerComposeBuilder', () => {
     serviceBuilder = new ServiceBuilder();
   });
 
-  it('should build a docker-compose file', () => {
+  it('should build a docker-compose file', async () => {
     const serviceName = 'service';
     const service: ServiceInput = {
       name: serviceName,
@@ -26,11 +26,11 @@ describe('DockerComposeBuilder', () => {
       internalPort: 80,
     };
 
-    const compose = composeBuilder.getDockerCompose([service], {}, urn, subnet);
+    const compose = await composeBuilder.getDockerCompose([service], {}, urn, subnet);
     expect(compose).toMatchSnapshot();
   });
 
-  it('should correctly format deploy resources', () => {
+  it('should correctly format deploy resources', async () => {
     const service: ServiceInput = {
       name: 'service',
       image: 'image',
@@ -43,11 +43,11 @@ describe('DockerComposeBuilder', () => {
       },
     };
 
-    const compose = composeBuilder.getDockerCompose([service], {}, urn, subnet);
+    const compose = await composeBuilder.getDockerCompose([service], {}, urn, subnet);
     expect(compose).toMatchSnapshot();
   });
 
-  it('should correctly format devices', () => {
+  it('should correctly format devices', async () => {
     const service: ServiceInput = {
       name: 'service',
       image: 'image',
@@ -55,11 +55,11 @@ describe('DockerComposeBuilder', () => {
       devices: ['/dev/ttyUSB0:/dev/ttyUSB0', '/dev/sda:/dev/xvda:rwm'],
     };
 
-    const compose = composeBuilder.getDockerCompose([service], {}, urn, subnet);
+    const compose = await composeBuilder.getDockerCompose([service], {}, urn, subnet);
     expect(compose).toMatchSnapshot();
   });
 
-  it('should correctly format entrypoint as string', () => {
+  it('should correctly format entrypoint as string', async () => {
     const service: ServiceInput = {
       name: 'service',
       image: 'image',
@@ -67,12 +67,12 @@ describe('DockerComposeBuilder', () => {
       entrypoint: 'entrypoint',
     };
 
-    const compose = composeBuilder.getDockerCompose([service], {}, urn, subnet);
+    const compose = await composeBuilder.getDockerCompose([service], {}, urn, subnet);
 
     expect(compose).toMatchSnapshot();
   });
 
-  it('should correctly format entrypoint as array', () => {
+  it('should correctly format entrypoint as array', async () => {
     const service: ServiceInput = {
       name: 'service',
       image: 'image',
@@ -80,12 +80,12 @@ describe('DockerComposeBuilder', () => {
       entrypoint: ['entrypoint', 'arg1', 'arg2'],
     };
 
-    const compose = composeBuilder.getDockerCompose([service], {}, urn, subnet);
+    const compose = await composeBuilder.getDockerCompose([service], {}, urn, subnet);
 
     expect(compose).toMatchSnapshot();
   });
 
-  it('should correctly format logging', () => {
+  it('should correctly format logging', async () => {
     const service: ServiceInput = {
       name: 'service',
       image: 'image',
@@ -93,7 +93,7 @@ describe('DockerComposeBuilder', () => {
       logging: { driver: 'json-file', options: { 'syslog-address': 'tcp://192.168.0.42:123' } },
     };
 
-    const compose = composeBuilder.getDockerCompose([service], {}, urn, subnet);
+    const compose = await composeBuilder.getDockerCompose([service], {}, urn, subnet);
 
     expect(compose).toMatchSnapshot();
   });
@@ -115,7 +115,7 @@ describe('DockerComposeBuilder', () => {
     expect(compose).toMatchSnapshot();
   });
 
-  it('should correctly format a complex docker-compose file', () => {
+  it('should correctly format a complex docker-compose file', async () => {
     const service1: ServiceInput = {
       name: 'service1',
       image: 'image1',
@@ -166,12 +166,12 @@ describe('DockerComposeBuilder', () => {
       internalPort: 443,
     };
 
-    const compose = composeBuilder.getDockerCompose([service1, service2], {}, urn, subnet);
+    const compose = await composeBuilder.getDockerCompose([service1, service2], {}, urn, subnet);
 
     expect(compose).toMatchSnapshot();
   });
 
-  it('should add port mapping when exposedLocal is enabled', () => {
+  it('should NOT add port mapping when exposedLocal is enabled but openPort is false', async () => {
     const service: ServiceInput = {
       name: 'service',
       image: 'image',
@@ -179,15 +179,30 @@ describe('DockerComposeBuilder', () => {
       isMain: true,
     };
 
-    const compose = composeBuilder.getDockerCompose([service], { exposedLocal: true, port: 8080 }, urn, subnet);
+    const compose = await composeBuilder.getDockerCompose([service], { exposedLocal: true, openPort: false, port: 8080 }, urn, subnet);
+    const yamlObject = yaml.parse(compose);
+
+    // Ports should not be exposed when exposedLocal=true but openPort=false
+    // Traefik uses Docker internal networking and doesn't need host port mapping
+    expect(yamlObject.services.service.ports).toBeUndefined();
+  });
+
+  it('should add port mapping when openPort is enabled', async () => {
+    const service: ServiceInput = {
+      name: 'service',
+      image: 'image',
+      internalPort: 440,
+      isMain: true,
+    };
+
+    const compose = await composeBuilder.getDockerCompose([service], { openPort: true }, urn, subnet);
     const yamlObject = yaml.parse(compose);
 
     expect(yamlObject.services.service.ports).toBeDefined();
-    // It seems the code uses ${APP_PORT} env var for host port
     expect(yamlObject.services.service.ports[0]).toBe('${APP_PORT}:440');
   });
 
-  it('should add port mapping when openPort is enabled', () => {
+  it('should only add default labels when service is not exposed', async () => {
     const service: ServiceInput = {
       name: 'service',
       image: 'image',
@@ -195,22 +210,7 @@ describe('DockerComposeBuilder', () => {
       isMain: true,
     };
 
-    const compose = composeBuilder.getDockerCompose([service], { openPort: true }, urn, subnet);
-    const yamlObject = yaml.parse(compose);
-
-    expect(yamlObject.services.service.ports).toBeDefined();
-    expect(yamlObject.services.service.ports[0]).toBe('${APP_PORT}:440');
-  });
-
-  it('should only add default labels when service is not exposed', () => {
-    const service: ServiceInput = {
-      name: 'service',
-      image: 'image',
-      internalPort: 440,
-      isMain: true,
-    };
-
-    const compose = composeBuilder.getDockerCompose([service], { exposed: false, exposedLocal: false }, urn, subnet);
+    const compose = await composeBuilder.getDockerCompose([service], { exposed: false, exposedLocal: false }, urn, subnet);
     const yamlObject = yaml.parse(compose);
 
     expect(yamlObject.services.service.labels).toEqual({ 'ci-os-hub.managed': true, 'ci-os-hub.appurn': urn });
@@ -280,7 +280,7 @@ describe('DockerComposeBuilder', () => {
       ],
     };
 
-    const yaml = composeBuilder.getDockerCompose(composeJson.services, { appId: 'test-app', openPort: true }, urn, subnet);
+    const yaml = await composeBuilder.getDockerCompose(composeJson.services, { appId: 'test-app', openPort: true }, urn, subnet);
 
     expect(yaml).toMatchSnapshot();
   });

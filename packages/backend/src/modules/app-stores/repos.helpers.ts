@@ -98,10 +98,17 @@ export class ReposHelpers {
         return this.fetchCiCloudRepo(url, id, repoPath);
       }
 
+      // Validate URL before attempting to clone
+      // Skip invalid URLs (like "migrated" from old migrations) gracefully
+      if (!url || url.trim() === '' || (!url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('git@'))) {
+        this.logger.warn(`Skipping invalid repo URL for ${id}: ${url || '(empty)'}`);
+        return { success: false, message: `Invalid repo URL: ${url || '(empty)'}` };
+      }
+
       const [repoUrl, branch] = this.getRepoBaseUrlAndBranch(url);
 
       if (!repoUrl) {
-        this.logger.error(`Invalid repo URL: ${url}`);
+        this.logger.warn(`Invalid repo URL format for ${id}: ${url}`);
         return { success: false, message: `Invalid repo URL: ${url}` };
       }
 

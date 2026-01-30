@@ -68,6 +68,9 @@ export class DockerComposeBuilder {
     });
   }
 
+  private fullSubdomain?: string; // Full subdomain including org slug (e.g., mattermost-bdc), extracted from APP_PUBLIC_HOSTNAME
+  private publicDomain?: string;
+
   private buildService = (params: Service, form: AppEventFormInput, appUrn: AppUrn, envFile?: string) => {
     const { appName, appStoreId } = extractAppUrn(appUrn);
 
@@ -130,9 +133,10 @@ export class DockerComposeBuilder {
     }
 
     if (params.isMain) {
-      // When exposedLocal is true, expose the port directly for Cloudflare tunnel routing
-      // When openPort is true, also expose the port for local network access
-      if ((form.exposedLocal || form.openPort) && params.internalPort) {
+      // Only expose port on host if openPort is true (for direct local network access)
+      // When exposedLocal=true but openPort=false, Traefik uses Docker internal networking
+      // and doesn't need the host port mapping
+      if (form.openPort && params.internalPort) {
         service.setPort({
           containerPort: params.internalPort,
           // biome-ignore lint/suspicious/noTemplateCurlyInString: intended
@@ -148,15 +152,27 @@ export class DockerComposeBuilder {
     };
 
     // Generate Traefik labels if exposedLocal is true
+    // Traefik routes using Docker internal networking (container IP + internalPort)
+    // It does NOT use host port mappings - only the isMain service gets Traefik labels
     let traefikLabels: Record<string, string | boolean> = {};
     if (form.exposedLocal && params.isMain && params.internalPort) {
+      // Use org info read in getDockerCompose (set by app.helpers.ts in APP_PUBLIC_HOSTNAME)
+      // Fallback to using this.domain as public domain if not found
+      const publicDomainToUse = this.publicDomain || this.domain;
+
+      // Use full subdomain from APP_PUBLIC_HOSTNAME if available (includes org slug)
+      // Otherwise fall back to constructing it from localSubdomain
+      const subdomainToUse = this.fullSubdomain || form.localSubdomain || `${appName}-${appStoreId}`;
+
       const traefikBuilder = new TraefikLabelsBuilder({
         internalPort: params.internalPort,
         appId: appName,
         storeId: appStoreId,
         exposedLocal: form.exposedLocal,
         enableAuth: form.enableAuth,
-        localSubdomain: form.localSubdomain,
+        localSubdomain: subdomainToUse, // Use full subdomain (with org slug) from APP_PUBLIC_HOSTNAME
+        publicDomain: publicDomainToUse,
+        localDomain: this.localDomain,
       });
       traefikBuilder.addExposedLocalLabels();
       traefikLabels = traefikBuilder.build();
@@ -169,7 +185,7 @@ export class DockerComposeBuilder {
     return service.build();
   };
 
-  public getDockerCompose(
+  public async getDockerCompose(
     services: ServiceInput[],
     form: AppEventFormInput,
     appUrn: AppUrn,
@@ -184,7 +200,70 @@ export class DockerComposeBuilder {
     this.domain = domain || process.env.DOMAIN || 'example.com';
     this.localDomain = localDomain || process.env.LOCAL_DOMAIN || 'tipi.lan';
 
-    const myServices = services.map((service) => this.buildService(service, form, appUrn, envFile));
+    // Read full subdomain (with org slug) and public domain from env file if available (set by app.helpers.ts)
+    // APP_PUBLIC_HOSTNAME format: appname-orgslug.publicdomain.com
+    // We extract the full subdomain (appname-orgslug) directly instead of reconstructing it
+    this.fullSubdomain = undefined; // Full subdomain including org slug (e.g., mattermost-bdc)
+    this.publicDomain = undefined;
+
+    if (envFile) {
+      try {
+        const fs = await import('fs/promises');
+        const envContent = await fs.readFile(envFile, 'utf-8');
+        const envLines = envContent.split('\n');
+
+        // Extract full subdomain and public domain from APP_PUBLIC_HOSTNAME
+        // Format: appname-orgslug.publicdomain.com
+        for (const line of envLines) {
+          if (line.startsWith('APP_PUBLIC_HOSTNAME=')) {
+            const exposedDomain = line.split('=')[1]?.trim();
+            if (exposedDomain) {
+              const parts = exposedDomain.split('.');
+              if (parts.length >= 2) {
+                this.publicDomain = parts.slice(-2).join('.'); // Get last two parts (e.g., companionintelligence.com)
+                // Extract full subdomain (everything before the last two dots, e.g., mattermost-bdc)
+                this.fullSubdomain = parts.slice(0, -2).join('.');
+              }
+            }
+            break;
+          }
+        }
+      } catch (error) {
+        // If we can't read the env file, continue without org info
+        // Traefik will still work with just the local domain
+      }
+    }
+
+    // Build a map of service names to their healthcheck status for validation
+    const serviceHealthcheckMap = new Map<string, boolean>();
+    for (const service of services) {
+      serviceHealthcheckMap.set(service.name, !!service.healthCheck);
+    }
+
+    // Validate and fix depends_on conditions: if a service depends on another with
+    // condition: service_healthy but the target has no healthcheck, change to service_started
+    const fixedServices = services.map((service) => {
+      if (service.dependsOn && typeof service.dependsOn === 'object' && !Array.isArray(service.dependsOn)) {
+        const fixedDependsOn: Record<string, { condition: 'service_healthy' | 'service_started' | 'service_completed_successfully' }> = {};
+        for (const [depName, depConfig] of Object.entries(service.dependsOn)) {
+          if (depConfig.condition === 'service_healthy') {
+            const targetHasHealthcheck = serviceHealthcheckMap.get(depName);
+            if (targetHasHealthcheck) {
+              fixedDependsOn[depName] = depConfig;
+            } else {
+              // Target service has no healthcheck, downgrade to service_started
+              fixedDependsOn[depName] = { condition: 'service_started' as const };
+            }
+          } else {
+            fixedDependsOn[depName] = depConfig;
+          }
+        }
+        return { ...service, dependsOn: fixedDependsOn };
+      }
+      return service;
+    });
+
+    const myServices = fixedServices.map((service) => this.buildService(service, form, appUrn, envFile));
 
     const mainNetworkName = `${process.env.HUB_CONTAINER_NAME || 'ci-os-hub'}_network`;
 

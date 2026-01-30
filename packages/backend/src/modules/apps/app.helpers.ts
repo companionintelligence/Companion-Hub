@@ -205,55 +205,96 @@ export class AppHelpers {
       }
     }
 
-    envMap.set('APP_EXPOSED', 'false');
-    envMap.set('APP_HOST', internalIp);
-    envMap.set('APP_PROTOCOL', 'http');
+    // --- Core Identity Variables ---
+    // These variables represent the fundamental identity of the service.
 
-    if (config.port && form.port) {
-      envMap.set('APP_DOMAIN', `${internalIp}:${form.port}`);
-      envMap.set('APP_URL', `http://${internalIp}:${form.port}`);
+    // 1. APP_HOSTNAME: The internal IP address (e.g. 192.168.1.5)
+    envMap.set('APP_HOSTNAME', internalIp);
+
+    // 2. APP_PORT (Already set earlier): The internal port
+
+    // 3. APP_INTERNAL_AUTHORITY: The combination of internal IP and port
+    if (config.port || form.port) {
+      envMap.set('APP_INTERNAL_AUTHORITY', `${internalIp}:${form.port ? form.port : config.port}`);
     }
 
+    // --- Exposure State Variables ---
+    // Determine the public access configuration.
+
+    let isExposed = false;
+    let scheme = 'http';
+    let publicHostname = '';
+    let publicUrl = '';
+
+    // Handle Local Exposure (Cloudflare Tunnel via Traefik)
     if (form.exposedLocal) {
       let subdomain = form.localSubdomain ? form.localSubdomain : `${appName}-${appStoreId}`;
-      // exposedLocal means "publish to internet via Cloudflare"
-      // Container should think it's public and HTTPS (even though Traefik receives HTTP from Cloudflare)
       const configDomain = this.config.getConfig().domain;
       let publicDomain = envMap.get('DOMAIN') || configDomain;
 
-      // Fix for deep subdomains - strip any subdomain prefix from publicDomain
-      // We must not use deep subdomains. Where it is installed is where it should be.
       if (publicDomain.endsWith(`.${configDomain}`)) {
         publicDomain = configDomain;
       }
 
-      // Always add organization suffix to subdomain if org exists and subdomain doesn't already have it
-      // The final form MUST be <appslug>-<orgslug>.<domain> where appSlug is specified by the user in the install app form
-      if (org?.slug && !subdomain.endsWith(`-${org.slug}`)) {
+      if (org?.slug) {
         subdomain = `${subdomain}-${org.slug}`;
       }
 
+      // APP_LOCAL_DOMAIN is distinct - used for local network access
       envMap.set('APP_LOCAL_DOMAIN', `${subdomain}.${envMap.get('LOCAL_DOMAIN') || this.config.getConfig().localDomain}`);
 
       if (!form.openPort) {
-        // App thinks it's public HTTPS (for proper URL generation and SSL handling)
-        // Traefik will set X-Forwarded-Proto: https header so apps know they're behind HTTPS
-        envMap.set('APP_EXPOSED', 'true');
-        envMap.set('APP_EXPOSED_DOMAIN', `${subdomain}.${publicDomain}`);
-        envMap.set('APP_PROTOCOL', 'https');
-        envMap.set('APP_DOMAIN', `${subdomain}.${publicDomain}`);
-        envMap.set('APP_HOST', `${subdomain}.${publicDomain}`);
-        envMap.set('APP_URL', `https://${subdomain}.${publicDomain}`);
+        isExposed = true;
+        scheme = 'https';
+        publicHostname = `${subdomain}.${publicDomain}`;
+        publicUrl = `https://${publicHostname}`;
       }
     }
 
+    // Handle Public Exposure (Custom Domain)
     if (form.exposed && form.domain && typeof form.domain === 'string') {
-      envMap.set('APP_EXPOSED', 'true');
-      envMap.set('APP_DOMAIN', form.domain);
-      envMap.set('APP_HOST', form.domain);
-      envMap.set('APP_EXPOSED_DOMAIN', form.domain);
-      envMap.set('APP_PROTOCOL', 'https');
-      envMap.set('APP_URL', `https://${form.domain}`);
+      isExposed = true;
+      scheme = 'https';
+      publicHostname = form.domain;
+      publicUrl = `https://${form.domain}`;
+    }
+
+    // Set Exposure Variables
+    envMap.set('APP_EXPOSED', String(isExposed));
+    envMap.set('APP_SCHEME', scheme);
+
+    if (isExposed) {
+      envMap.set('APP_PUBLIC_HOSTNAME', publicHostname);
+      envMap.set('APP_PUBLIC_URL', publicUrl);
+    }
+
+    // --- Derived Variables ---
+    // These are constructed from the core variables for compatibility with various application patterns.
+
+    envMap.set('APP_PROTOCOL', scheme);
+
+    // APP_HOST: Internal IP in internal mode, Public FQDN in exposed mode.
+    envMap.set('APP_HOST', isExposed ? publicHostname : internalIp);
+
+    // APP_DOMAIN: IP:PORT in internal mode, Public FQDN in exposed mode.
+    if (isExposed) {
+      envMap.set('APP_DOMAIN', publicHostname);
+      envMap.set('APP_EXPOSED_DOMAIN', publicHostname);
+    } else {
+      const internalAuthority = envMap.get('APP_INTERNAL_AUTHORITY');
+      if (internalAuthority) {
+        envMap.set('APP_DOMAIN', internalAuthority);
+      }
+    }
+
+    // APP_URL: The full URL to access the app
+    if (isExposed) {
+      envMap.set('APP_URL', publicUrl);
+    } else {
+      const internalAuthority = envMap.get('APP_INTERNAL_AUTHORITY');
+      if (internalAuthority) {
+        envMap.set('APP_URL', `http://${internalAuthority}`);
+      }
     }
 
     if (appName === 'cloudflared') {

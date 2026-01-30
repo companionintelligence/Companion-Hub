@@ -9,10 +9,11 @@ import * as path from 'node:path';
 
 export interface AppInfo {
   name: string;
-  subdomain: string;
+  subdomain: string; // Full subdomain (e.g., n8n-bdc) - used for Cloudflare public hostname
   localPort: number;
   protocol?: 'http' | 'https';
   hostname?: string;
+  originServerName?: string; // HTTP Host header to send to Traefik (e.g., n8n-bdc.companionintelligence.com)
 }
 
 @Injectable()

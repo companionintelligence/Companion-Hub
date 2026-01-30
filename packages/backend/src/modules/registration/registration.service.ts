@@ -1,7 +1,7 @@
 import { Injectable, type OnApplicationBootstrap, Inject, forwardRef } from '@nestjs/common';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import { CloudflareClientService } from '../cloudflare/cloudflare-client.service';
+import { CloudflareClientService, type AppInfo } from '../cloudflare/cloudflare-client.service';
 import { DeviceRegistrationRepository } from './device-registration.repository';
 import { RepoEventsQueue } from '../queue/entities/repo-events';
 import si from 'systeminformation';
@@ -49,68 +49,59 @@ export class RegistrationService implements OnApplicationBootstrap {
       if (isRegistered) {
         const org = await this.deviceRegistrationRepository.getFirstDeviceRegistration();
         if (org && !org.tunnelId) {
-          const { cloudflareTunnelId } = this.config.getConfig();
+          this.logger.warn(`Organization ${org.id} exists but Tunnel ID is missing. Attempting to recover...`);
+          try {
+            // Attempt to recover by re-registering/check-in with Cloud
+            const { ciCloudApiUrl, ciHubApiKey } = this.config.getConfig();
+            const deviceId = await this.getDeviceId();
 
-          if (cloudflareTunnelId) {
-            this.logger.info(`Recovering Tunnel ID from environment: ${cloudflareTunnelId}`);
-            await this.deviceRegistrationRepository.updateDeviceRegistration(org.id, {
-              tunnelId: cloudflareTunnelId,
-            });
-          } else {
-            this.logger.warn(`Organization ${org.id} exists but Tunnel ID is missing. Attempting to recover...`);
-            try {
-              // Attempt to recover by re-registering/check-in with Cloud
-              const { ciCloudApiUrl, ciHubApiKey } = this.config.getConfig();
-              const deviceId = await this.getDeviceId();
+            if (ciCloudApiUrl) {
+              this.logger.info(`Attempting to recover tunnel credentials via registration endpoint for device ${deviceId}`);
 
-              if (ciCloudApiUrl) {
-                this.logger.info(`Attempting to recover tunnel credentials via registration endpoint for device ${deviceId}`);
+              const registerUrl = `${ciCloudApiUrl}/devices/hub/register`;
+              const headers: Record<string, string> = {
+                'Content-Type': 'application/json',
+              };
+              if (ciHubApiKey) {
+                headers.Authorization = `Bearer ${ciHubApiKey}`;
+              }
 
-                const registerUrl = `${ciCloudApiUrl}/devices/hub/register`;
-                const headers: Record<string, string> = {
-                  'Content-Type': 'application/json',
-                };
-                if (ciHubApiKey) {
-                  headers.Authorization = `Bearer ${ciHubApiKey}`;
-                }
+              const registerResponse = await fetch(registerUrl, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({
+                  device_id: deviceId,
+                  organization_id: org.id,
+                  description: `CI OS Hub Device - ${deviceId} (Recovery)`,
+                }),
+              });
 
-                const registerResponse = await fetch(registerUrl, {
-                  method: 'POST',
-                  headers,
-                  body: JSON.stringify({
-                    device_id: deviceId,
-                    organization_id: org.id,
-                    description: `CI OS Hub Device - ${deviceId} (Recovery)`,
-                  }),
-                });
+              if (registerResponse.ok) {
+                // biome-ignore lint/suspicious/noExplicitAny: External API response
+                const data = (await registerResponse.json()) as any;
 
-                if (registerResponse.ok) {
-                  // biome-ignore lint/suspicious/noExplicitAny: External API response
-                  const data = (await registerResponse.json()) as any;
+                if (data.tunnel_id && data.tunnel_token) {
+                  const tunnelCredentials = await this.cloudflareClientService.initializeTunnel(org.id, {
+                    tunnelId: data.tunnel_id,
+                    token: data.tunnel_token,
+                  });
 
-                  if (data.tunnel_id && data.tunnel_token) {
-                    const tunnelCredentials = await this.cloudflareClientService.initializeTunnel(org.id, {
-                      tunnelId: data.tunnel_id,
-                      token: data.tunnel_token,
+                  if (tunnelCredentials) {
+                    await this.deviceRegistrationRepository.updateDeviceRegistration(org.id, {
+                      tunnelId: tunnelCredentials.tunnelId,
+                      tunnelToken: tunnelCredentials.token,
                     });
-
-                    if (tunnelCredentials) {
-                      await this.deviceRegistrationRepository.updateDeviceRegistration(org.id, {
-                        tunnelId: tunnelCredentials.tunnelId,
-                        tunnelToken: tunnelCredentials.token,
-                      });
-                      this.logger.info(`Tunnel ID recovered successfully: ${tunnelCredentials.tunnelId}`);
-                    }
-                  } else {
-                    this.logger.error('Failed to recover Tunnel ID: API returned success but no credentials');
+                    this.logger.info(`Tunnel ID recovered successfully: ${tunnelCredentials.tunnelId}`);
                   }
                 } else {
-                  this.logger.error(`Failed to recover Tunnel ID: API returned ${registerResponse.status}`);
+                  this.logger.error('Failed to recover Tunnel ID: API returned success but no credentials');
                 }
+              } else {
+                this.logger.error(`Failed to recover Tunnel ID: API returned ${registerResponse.status}`);
               }
-            } catch (err) {
-              this.logger.error(`Error during tunnel recovery: ${err}`);
             }
+          } catch (err) {
+            this.logger.error(`Error during tunnel recovery: ${err}`);
           }
         }
       }
@@ -306,19 +297,15 @@ export class RegistrationService implements OnApplicationBootstrap {
     }
 
     try {
-      const { cloudflareTunnelId, userSettings } = this.config.getConfig();
+      const { userSettings } = this.config.getConfig();
       const rootDomain = userSettings.domain;
 
       // Try to fetch organization details from CI Cloud API
       let orgName: string | null = null;
-      let tunnelId: string | null = cloudflareTunnelId || null;
+      let tunnelId: string | null = null;
       let tunnelToken: string | null = null;
       let orgSlug: string | null = null;
       let subdomain: string | null = null;
-
-      if (tunnelId) {
-        this.logger.debug(`Using tunnel ID from environment: ${tunnelId}`);
-      }
 
       // First, check if activation result contains organization info
       if (activationResult) {
@@ -394,6 +381,33 @@ export class RegistrationService implements OnApplicationBootstrap {
       });
 
       this.logger.info(`Successfully setup organization infrastructure: ${domain} (tunnel: ${tunnelId})`);
+
+      // Sync hub domain to CI-Cloud so it can create DNS and tunnel routes
+      // The hub needs to be registered as an "app" so CI-Cloud knows to route the domain
+      if (tunnelId) {
+        try {
+          const hubSubdomain = subdomain; // e.g., "1-grok"
+          const hubAppInfo: AppInfo = {
+            name: 'ci-os-hub',
+            subdomain: hubSubdomain,
+            localPort: 80, // Traefik port
+            protocol: 'http' as const,
+            hostname: 'traefik', // Route through Traefik
+            originServerName: domain, // Full domain for Host header (e.g., 1-grok.companionintelligence.com)
+          };
+
+          this.logger.info(`Syncing hub domain to CI-Cloud: ${domain}`);
+          const syncSuccess = await this.cloudflareClientService.syncState(organizationId, [hubAppInfo], tunnelId);
+          if (syncSuccess) {
+            this.logger.info('Successfully synced hub domain to CI-Cloud');
+          } else {
+            this.logger.warn('Failed to sync hub domain to CI-Cloud - DNS/tunnel routes may not be configured');
+          }
+        } catch (error) {
+          this.logger.error(`Error syncing hub domain to CI-Cloud: ${error instanceof Error ? error.message : String(error)}`);
+          // Don't fail registration if sync fails - tunnel is still initialized
+        }
+      }
 
       // Wait for DNS resolution before returning
       // This ensures that when the user is redirected, the domain is likely working
