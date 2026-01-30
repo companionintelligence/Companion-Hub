@@ -4,6 +4,7 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { SSEService } from '@/core/sse/sse.service';
 import { HttpStatus, Inject, Injectable, OnApplicationBootstrap } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 import type { AppUrn } from '@runtipi/common/types';
 import { lt, valid } from 'semver';
 import semver from 'semver';
@@ -42,6 +43,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
     private readonly registrationService: RegistrationService,
     private readonly repoHelpers: ReposHelpers,
     private readonly appStoreService: AppStoreService,
+    private readonly moduleRef: ModuleRef,
     @Inject(APP_ASYNC_MUTEX) private mutex: AsyncMutex,
   ) {
     this.logger.debug('Subscribing to app events...');
@@ -60,9 +62,8 @@ export class AppLifecycleService implements OnApplicationBootstrap {
     setTimeout(async () => {
       try {
         const { TraefikConfigService } = await import('../docker/traefik-config.service');
-        // Use the command factory's moduleRef to get the service
-        // biome-ignore lint/suspicious/noExplicitAny: Need access to moduleRef which is not exposed in types
-        const traefikConfigService = (this.commandFactory as any).moduleRef?.get(TraefikConfigService, { strict: false });
+        // Use moduleRef to get the service (lazily to avoid circular dependency)
+        const traefikConfigService = this.moduleRef.get(TraefikConfigService, { strict: false });
         if (traefikConfigService) {
           await traefikConfigService.generateTraefikConfig();
           this.logger.info('Traefik file-based configuration regenerated on startup');

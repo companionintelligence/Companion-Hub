@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { DatabaseService } from '@/core/database/database.service';
 import { deviceRegistration } from '@/core/database/drizzle/schema';
-import { eq } from 'drizzle-orm';
+import { eq, type InferInsertModel } from 'drizzle-orm';
 
 @Injectable()
 export class DeviceRegistrationRepository {
@@ -19,15 +19,7 @@ export class DeviceRegistrationRepository {
     return result[0];
   }
 
-  async updateDeviceRegistration(
-    orgId: string,
-    data: Partial<{
-      slug: string;
-      name: string;
-      tunnelId: string;
-      tunnelToken: string;
-    }>,
-  ) {
+  async updateDeviceRegistration(orgId: string, data: Partial<InferInsertModel<typeof deviceRegistration>>) {
     const result = await this.databaseService.db
       .update(deviceRegistration)
       .set({ ...data, updatedAt: new Date().toISOString() })
