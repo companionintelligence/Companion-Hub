@@ -101,7 +101,7 @@ describe('AppHelpers Reproduction', () => {
 
     // Mock appFilesManager.writeAppEnv to capture the output
     let generatedEnvContent = '';
-    appFilesManager.writeAppEnv.mockImplementation(async (urn, content) => {
+    appFilesManager.writeAppEnv.mockImplementation(async (_urn, content) => {
       generatedEnvContent = content;
     });
 

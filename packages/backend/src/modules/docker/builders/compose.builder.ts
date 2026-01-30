@@ -208,7 +208,7 @@ export class DockerComposeBuilder {
 
     if (envFile) {
       try {
-        const fs = await import('fs/promises');
+        const fs = await import('node:fs/promises');
         const envContent = await fs.readFile(envFile, 'utf-8');
         const envLines = envContent.split('\n');
 
@@ -228,7 +228,7 @@ export class DockerComposeBuilder {
             break;
           }
         }
-      } catch (error) {
+      } catch (_error) {
         // If we can't read the env file, continue without org info
         // Traefik will still work with just the local domain
       }

@@ -198,14 +198,17 @@ export class TraefikConfigService {
 
       // Only include non-empty sections in the config
       const validConfig: Partial<TraefikConfig> = {
-        http: {},
+        http: {
+          routers: {},
+          services: {},
+        },
       };
 
-      if (routerCount > 0) {
-        validConfig.http!.routers = config.http.routers;
+      if (routerCount > 0 && validConfig.http) {
+        validConfig.http.routers = config.http.routers;
       }
-      if (serviceCount > 0) {
-        validConfig.http!.services = config.http.services;
+      if (serviceCount > 0 && validConfig.http) {
+        validConfig.http.services = config.http.services;
       }
 
       const yamlContent = yaml.stringify(validConfig, { indent: 2 });

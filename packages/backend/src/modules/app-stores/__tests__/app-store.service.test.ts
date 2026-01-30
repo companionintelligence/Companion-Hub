@@ -75,6 +75,7 @@ describe('AppStoreService', () => {
   it('should handle update_all queue event', async () => {
     const reply = vi.fn();
     appStoreRepository.getEnabledAppStores.mockResolvedValue([{ id: 1, url: 'http://test', slug: 'main', enabled: true, type: 'git' } as any]);
+    repoHelpers.pullRepo.mockResolvedValue({ success: true, message: '' });
 
     await capturedQueueCallback({ command: 'update_all' }, reply);
 

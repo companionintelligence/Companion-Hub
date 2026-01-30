@@ -5,6 +5,7 @@ import { DOCKERODE } from './constants';
 import { DockerService } from './docker.service';
 import { TraefikConfigService } from './traefik-config.service';
 
+// biome-ignore lint/performance/noBarrelFile: This is a module entry point
 export { DOCKERODE } from './constants';
 
 @Module({

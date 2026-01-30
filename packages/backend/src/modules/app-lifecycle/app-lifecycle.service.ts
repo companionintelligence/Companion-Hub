@@ -61,6 +61,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       try {
         const { TraefikConfigService } = await import('../docker/traefik-config.service');
         // Use the command factory's moduleRef to get the service
+        // biome-ignore lint/suspicious/noExplicitAny: Need access to moduleRef which is not exposed in types
         const traefikConfigService = (this.commandFactory as any).moduleRef?.get(TraefikConfigService, { strict: false });
         if (traefikConfigService) {
           await traefikConfigService.generateTraefikConfig();
