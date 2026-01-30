@@ -7,6 +7,7 @@
   "license": "UNLICENSED",
   "scripts": {
     "dev": "nest start --watch --preserveWatchOutput",
+    "build": "rm -rf dist && bun build.ts",
     "bundle": "rm -rf dist && bun build.ts",
     "tsc": "npx tsgo --noEmit",
     "sentry:sourcemaps": "sentry-cli sourcemaps inject --org runtipi --project runtipi-backend ./dist && sentry-cli sourcemaps upload --org runtipi --project runtipi-backend ./dist",

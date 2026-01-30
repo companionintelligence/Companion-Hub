@@ -49,68 +49,59 @@ export class RegistrationService implements OnApplicationBootstrap {
       if (isRegistered) {
         const org = await this.deviceRegistrationRepository.getFirstDeviceRegistration();
         if (org && !org.tunnelId) {
-          const { cloudflareTunnelId } = this.config.getConfig();
+          this.logger.warn(`Organization ${org.id} exists but Tunnel ID is missing. Attempting to recover...`);
+          try {
+            // Attempt to recover by re-registering/check-in with Cloud
+            const { ciCloudApiUrl, ciHubApiKey } = this.config.getConfig();
+            const deviceId = await this.getDeviceId();
 
-          if (cloudflareTunnelId) {
-            this.logger.info(`Recovering Tunnel ID from environment: ${cloudflareTunnelId}`);
-            await this.deviceRegistrationRepository.updateDeviceRegistration(org.id, {
-              tunnelId: cloudflareTunnelId,
-            });
-          } else {
-            this.logger.warn(`Organization ${org.id} exists but Tunnel ID is missing. Attempting to recover...`);
-            try {
-              // Attempt to recover by re-registering/check-in with Cloud
-              const { ciCloudApiUrl, ciHubApiKey } = this.config.getConfig();
-              const deviceId = await this.getDeviceId();
+            if (ciCloudApiUrl) {
+              this.logger.info(`Attempting to recover tunnel credentials via registration endpoint for device ${deviceId}`);
 
-              if (ciCloudApiUrl) {
-                this.logger.info(`Attempting to recover tunnel credentials via registration endpoint for device ${deviceId}`);
+              const registerUrl = `${ciCloudApiUrl}/devices/hub/register`;
+              const headers: Record<string, string> = {
+                'Content-Type': 'application/json',
+              };
+              if (ciHubApiKey) {
+                headers.Authorization = `Bearer ${ciHubApiKey}`;
+              }
 
-                const registerUrl = `${ciCloudApiUrl}/devices/hub/register`;
-                const headers: Record<string, string> = {
-                  'Content-Type': 'application/json',
-                };
-                if (ciHubApiKey) {
-                  headers.Authorization = `Bearer ${ciHubApiKey}`;
-                }
+              const registerResponse = await fetch(registerUrl, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({
+                  device_id: deviceId,
+                  organization_id: org.id,
+                  description: `CI OS Hub Device - ${deviceId} (Recovery)`,
+                }),
+              });
 
-                const registerResponse = await fetch(registerUrl, {
-                  method: 'POST',
-                  headers,
-                  body: JSON.stringify({
-                    device_id: deviceId,
-                    organization_id: org.id,
-                    description: `CI OS Hub Device - ${deviceId} (Recovery)`,
-                  }),
-                });
+              if (registerResponse.ok) {
+                // biome-ignore lint/suspicious/noExplicitAny: External API response
+                const data = (await registerResponse.json()) as any;
 
-                if (registerResponse.ok) {
-                  // biome-ignore lint/suspicious/noExplicitAny: External API response
-                  const data = (await registerResponse.json()) as any;
+                if (data.tunnel_id && data.tunnel_token) {
+                  const tunnelCredentials = await this.cloudflareClientService.initializeTunnel(org.id, {
+                    tunnelId: data.tunnel_id,
+                    token: data.tunnel_token,
+                  });
 
-                  if (data.tunnel_id && data.tunnel_token) {
-                    const tunnelCredentials = await this.cloudflareClientService.initializeTunnel(org.id, {
-                      tunnelId: data.tunnel_id,
-                      token: data.tunnel_token,
+                  if (tunnelCredentials) {
+                    await this.deviceRegistrationRepository.updateDeviceRegistration(org.id, {
+                      tunnelId: tunnelCredentials.tunnelId,
+                      tunnelToken: tunnelCredentials.token,
                     });
-
-                    if (tunnelCredentials) {
-                      await this.deviceRegistrationRepository.updateDeviceRegistration(org.id, {
-                        tunnelId: tunnelCredentials.tunnelId,
-                        tunnelToken: tunnelCredentials.token,
-                      });
-                      this.logger.info(`Tunnel ID recovered successfully: ${tunnelCredentials.tunnelId}`);
-                    }
-                  } else {
-                    this.logger.error('Failed to recover Tunnel ID: API returned success but no credentials');
+                    this.logger.info(`Tunnel ID recovered successfully: ${tunnelCredentials.tunnelId}`);
                   }
                 } else {
-                  this.logger.error(`Failed to recover Tunnel ID: API returned ${registerResponse.status}`);
+                  this.logger.error('Failed to recover Tunnel ID: API returned success but no credentials');
                 }
+              } else {
+                this.logger.error(`Failed to recover Tunnel ID: API returned ${registerResponse.status}`);
               }
-            } catch (err) {
-              this.logger.error(`Error during tunnel recovery: ${err}`);
             }
+          } catch (err) {
+            this.logger.error(`Error during tunnel recovery: ${err}`);
           }
         }
       }
@@ -306,19 +297,15 @@ export class RegistrationService implements OnApplicationBootstrap {
     }
 
     try {
-      const { cloudflareTunnelId, userSettings } = this.config.getConfig();
+      const { userSettings } = this.config.getConfig();
       const rootDomain = userSettings.domain;
 
       // Try to fetch organization details from CI Cloud API
       let orgName: string | null = null;
-      let tunnelId: string | null = cloudflareTunnelId || null;
+      let tunnelId: string | null = null;
       let tunnelToken: string | null = null;
       let orgSlug: string | null = null;
       let subdomain: string | null = null;
-
-      if (tunnelId) {
-        this.logger.debug(`Using tunnel ID from environment: ${tunnelId}`);
-      }
 
       // First, check if activation result contains organization info
       if (activationResult) {

@@ -32,6 +32,9 @@ export default defineConfig({
   plugins,
   resolve: {
     alias,
+    dedupe: ['@tanstack/react-query'],
+    // Ensure proper resolution of packages in Bun's node_modules structure
+    preserveSymlinks: false,
   },
   server: {
     open: true,
@@ -80,7 +83,15 @@ export default defineConfig({
     // Set to true to force re-optimization, or false to use cache
     force: false,
     // Include these dependencies in optimization
-    include: ['i18next', 'react-i18next', 'i18next-http-backend', 'i18next-browser-languagedetector', '@sentry/react', 'js-cookie'],
+    include: [
+      'i18next',
+      'react-i18next',
+      'i18next-http-backend',
+      'i18next-browser-languagedetector',
+      '@sentry/react',
+      'js-cookie',
+      '@tanstack/react-query',
+    ],
   },
   build: {
     sourcemap: true,
