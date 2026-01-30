@@ -1,39 +1,32 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
 exports[`AppService > copyAssets > should create base folder structure 1`] = `
-"/
-├─ app-data/
-└─ data/
-   ├─ apps/
-   ├─ backups/
-   ├─ media/
-   │  ├─ data/
-   │  │  ├─ books/
-   │  │  ├─ comics/
-   │  │  ├─ images/
-   │  │  ├─ movies/
-   │  │  ├─ music/
-   │  │  ├─ podcasts/
-   │  │  ├─ roms/
-   │  │  └─ tv/
-   │  ├─ downloads/
-   │  │  ├─ complete/
-   │  │  ├─ incomplete/
-   │  │  └─ watch/
-   │  ├─ torrents/
-   │  │  ├─ complete/
-   │  │  ├─ incomplete/
-   │  │  └─ watch/
-   │  └─ usenet/
-   │     ├─ complete/
-   │     ├─ incomplete/
-   │     └─ watch/
-   ├─ repos/
-   ├─ state/
-   │  ├─ traefik/
-   │  │  ├─ config/
-   │  │  ├─ dynamic/
-   │  │  └─ tls/
-   │  └─ seed
-   └─ .env"
+{
+  "/app-data": null,
+  "/data/.env": "ROOT_FOLDER_HOST=/opt/runtipi",
+  "/data/apps": null,
+  "/data/backups": null,
+  "/data/media/data/books": null,
+  "/data/media/data/comics": null,
+  "/data/media/data/images": null,
+  "/data/media/data/movies": null,
+  "/data/media/data/music": null,
+  "/data/media/data/podcasts": null,
+  "/data/media/data/roms": null,
+  "/data/media/data/tv": null,
+  "/data/media/downloads/complete": null,
+  "/data/media/downloads/incomplete": null,
+  "/data/media/downloads/watch": null,
+  "/data/media/torrents/complete": null,
+  "/data/media/torrents/incomplete": null,
+  "/data/media/torrents/watch": null,
+  "/data/media/usenet/complete": null,
+  "/data/media/usenet/incomplete": null,
+  "/data/media/usenet/watch": null,
+  "/data/repos": null,
+  "/data/state/seed": "seed",
+  "/data/state/traefik/config": null,
+  "/data/state/traefik/dynamic": null,
+  "/data/state/traefik/tls": null,
+}
 `;
