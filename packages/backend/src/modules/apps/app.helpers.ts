@@ -227,9 +227,10 @@ export class AppHelpers {
         publicDomain = configDomain;
       }
 
-      // Always add organization suffix to subdomain if org exists and subdomain doesn't already have it
-      // The final form MUST be <appslug>-<orgslug>.<domain> where appSlug is specified by the user in the install app form
-      if (org?.slug && !subdomain.endsWith(`-${org.slug}`)) {
+      // Add organization suffix to subdomain if org exists
+      // Frontend shows the org slug as a fixed suffix in the UI, so users only enter the app name
+      // Always add the org slug here to ensure consistency
+      if (org?.slug) {
         subdomain = `${subdomain}-${org.slug}`;
       }
 

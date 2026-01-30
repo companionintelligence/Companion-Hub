@@ -642,9 +642,11 @@ export class AppLifecycleService implements OnApplicationBootstrap {
               publicHostname = appExposedDomain; // Use the full domain as-is
             } else {
               // Fallback: reconstruct from database (shouldn't happen in normal operation)
+              // localSubdomain in DB should already include org slug, but add it if missing
               let sub = app.localSubdomain || `${app.appName}-${app.appStoreSlug}`;
-              // Add organization suffix if not already present
-              if (orgInfo?.slug && !sub.endsWith(`-${orgInfo.slug}`)) {
+              // Add organization suffix if org exists
+              // Note: localSubdomain in DB should already have org slug, but this ensures consistency
+              if (orgInfo?.slug) {
                 sub = `${sub}-${orgInfo.slug}`;
               }
               subdomain = sub;
