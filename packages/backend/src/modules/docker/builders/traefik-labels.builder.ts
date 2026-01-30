@@ -5,7 +5,7 @@ interface TraefikLabelsArgs {
   exposed?: boolean;
   storeId: string;
   enableAuth?: boolean;
-  localSubdomain?: string; // Full subdomain including org slug (e.g., mattermost-bdc), extracted from APP_EXPOSED_DOMAIN
+  localSubdomain?: string; // Full subdomain including org slug (e.g., mattermost-bdc), extracted from APP_PUBLIC_HOSTNAME
   publicDomain?: string; // Public domain (e.g., companionintelligence.com)
   localDomain?: string; // Local domain (e.g., tipi.lan)
 }
@@ -29,14 +29,14 @@ export class TraefikLabelsBuilder {
     if (this.params.exposed) {
       Object.assign(this.labels, {
         'traefik.enable': true,
-        // biome-ignore lint/suspicious/noTemplateCurlyInString: Traefik label requires literal ${APP_DOMAIN}
-        [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-insecure.rule`]: 'Host(`${APP_DOMAIN}`)',
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: Traefik label requires literal ${APP_PUBLIC_HOSTNAME}
+        [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-insecure.rule`]: 'Host(`${APP_PUBLIC_HOSTNAME}`)',
         [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-insecure.entrypoints`]: 'web',
         [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-insecure.service`]: `${this.params.appId}-${this.params.storeId}`,
         // REMOVED: No HTTPS redirect middleware - Cloudflare Tunnel handles SSL
         // [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-insecure.middlewares`]: `${this.params.appId}-${this.params.storeId}-web-redirect`,
-        // biome-ignore lint/suspicious/noTemplateCurlyInString: Traefik label requires literal ${APP_DOMAIN}
-        [`traefik.http.routers.${this.params.appId}-${this.params.storeId}.rule`]: 'Host(`${APP_DOMAIN}`)',
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: Traefik label requires literal ${APP_PUBLIC_HOSTNAME}
+        [`traefik.http.routers.${this.params.appId}-${this.params.storeId}.rule`]: 'Host(`${APP_PUBLIC_HOSTNAME}`)',
         [`traefik.http.routers.${this.params.appId}-${this.params.storeId}.entrypoints`]: 'websecure',
         [`traefik.http.routers.${this.params.appId}-${this.params.storeId}.service`]: `${this.params.appId}-${this.params.storeId}`,
         [`traefik.http.routers.${this.params.appId}-${this.params.storeId}.tls.certresolver`]: 'myresolver',
@@ -54,7 +54,7 @@ export class TraefikLabelsBuilder {
 
   addExposedLocalLabels() {
     if (this.params.exposedLocal) {
-      // localSubdomain is already the full subdomain (appname-orgslug) from APP_EXPOSED_DOMAIN
+      // localSubdomain is already the full subdomain (appname-orgslug) from APP_PUBLIC_HOSTNAME
       // No need to add org slug again - it's already included
       const subdomain = this.params.localSubdomain || `${this.params.appId}-${this.params.storeId}`;
 

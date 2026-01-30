@@ -609,8 +609,8 @@ export class AppLifecycleService implements OnApplicationBootstrap {
             // Construct URN for this app
             const appUrn = createAppUrn(app.appName, app.appStoreSlug);
 
-            // Read APP_EXPOSED_DOMAIN directly from the app's env file
-            // APP_EXPOSED_DOMAIN already contains the full domain (e.g., n8n-bdc.companionintelligence.com)
+            // Read APP_PUBLIC_HOSTNAME directly from the app's env file
+            // APP_PUBLIC_HOSTNAME already contains the full domain (e.g., n8n-bdc.companionintelligence.com)
             // No need to parse or reconstruct - just use it directly
             let appExposedDomain: string | undefined;
 
@@ -619,7 +619,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
               if (appEnv.content) {
                 const envLines = appEnv.content.split('\n');
                 for (const line of envLines) {
-                  if (line.startsWith('APP_EXPOSED_DOMAIN=')) {
+                  if (line.startsWith('APP_PUBLIC_HOSTNAME=')) {
                     appExposedDomain = line.split('=')[1]?.trim();
                     break;
                   }
@@ -627,10 +627,10 @@ export class AppLifecycleService implements OnApplicationBootstrap {
               }
             } catch (error) {
               // If we can't read the env file, fall back to reconstructing from database
-              this.logger.debug(`[Cloudflare] Could not read APP_EXPOSED_DOMAIN for ${appUrn}, falling back to database value`);
+              this.logger.debug(`[Cloudflare] Could not read APP_PUBLIC_HOSTNAME for ${appUrn}, falling back to database value`);
             }
 
-            // Use APP_EXPOSED_DOMAIN directly if available, otherwise reconstruct from database
+            // Use APP_PUBLIC_HOSTNAME directly if available, otherwise reconstruct from database
             let subdomain: string;
             let publicHostname: string;
 
@@ -663,7 +663,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
               localPort: 80, // Traefik port - Traefik routes to the app based on Host header
               protocol: 'http' as const,
               hostname: 'traefik', // Use container name to reach Traefik within the same network
-              originServerName: publicHostname, // Full domain from APP_EXPOSED_DOMAIN (e.g., n8n-bdc.companionintelligence.com)
+              originServerName: publicHostname, // Full domain from APP_PUBLIC_HOSTNAME (e.g., n8n-bdc.companionintelligence.com)
             };
           }),
       );

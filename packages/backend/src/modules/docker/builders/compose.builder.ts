@@ -68,7 +68,7 @@ export class DockerComposeBuilder {
     });
   }
 
-  private fullSubdomain?: string; // Full subdomain including org slug (e.g., mattermost-bdc), extracted from APP_EXPOSED_DOMAIN
+  private fullSubdomain?: string; // Full subdomain including org slug (e.g., mattermost-bdc), extracted from APP_PUBLIC_HOSTNAME
   private publicDomain?: string;
 
   private buildService = (params: Service, form: AppEventFormInput, appUrn: AppUrn, envFile?: string) => {
@@ -156,11 +156,11 @@ export class DockerComposeBuilder {
     // It does NOT use host port mappings - only the isMain service gets Traefik labels
     let traefikLabels: Record<string, string | boolean> = {};
     if (form.exposedLocal && params.isMain && params.internalPort) {
-      // Use org info read in getDockerCompose (set by app.helpers.ts in APP_EXPOSED_DOMAIN)
+      // Use org info read in getDockerCompose (set by app.helpers.ts in APP_PUBLIC_HOSTNAME)
       // Fallback to using this.domain as public domain if not found
       const publicDomainToUse = this.publicDomain || this.domain;
 
-      // Use full subdomain from APP_EXPOSED_DOMAIN if available (includes org slug)
+      // Use full subdomain from APP_PUBLIC_HOSTNAME if available (includes org slug)
       // Otherwise fall back to constructing it from localSubdomain
       const subdomainToUse = this.fullSubdomain || form.localSubdomain || `${appName}-${appStoreId}`;
 
@@ -170,7 +170,7 @@ export class DockerComposeBuilder {
         storeId: appStoreId,
         exposedLocal: form.exposedLocal,
         enableAuth: form.enableAuth,
-        localSubdomain: subdomainToUse, // Use full subdomain (with org slug) from APP_EXPOSED_DOMAIN
+        localSubdomain: subdomainToUse, // Use full subdomain (with org slug) from APP_PUBLIC_HOSTNAME
         publicDomain: publicDomainToUse,
         localDomain: this.localDomain,
       });
@@ -201,7 +201,7 @@ export class DockerComposeBuilder {
     this.localDomain = localDomain || process.env.LOCAL_DOMAIN || 'tipi.lan';
 
     // Read full subdomain (with org slug) and public domain from env file if available (set by app.helpers.ts)
-    // APP_EXPOSED_DOMAIN format: appname-orgslug.publicdomain.com
+    // APP_PUBLIC_HOSTNAME format: appname-orgslug.publicdomain.com
     // We extract the full subdomain (appname-orgslug) directly instead of reconstructing it
     this.fullSubdomain = undefined; // Full subdomain including org slug (e.g., mattermost-bdc)
     this.publicDomain = undefined;
@@ -212,10 +212,10 @@ export class DockerComposeBuilder {
         const envContent = await fs.readFile(envFile, 'utf-8');
         const envLines = envContent.split('\n');
 
-        // Extract full subdomain and public domain from APP_EXPOSED_DOMAIN
+        // Extract full subdomain and public domain from APP_PUBLIC_HOSTNAME
         // Format: appname-orgslug.publicdomain.com
         for (const line of envLines) {
-          if (line.startsWith('APP_EXPOSED_DOMAIN=')) {
+          if (line.startsWith('APP_PUBLIC_HOSTNAME=')) {
             const exposedDomain = line.split('=')[1]?.trim();
             if (exposedDomain) {
               const parts = exposedDomain.split('.');

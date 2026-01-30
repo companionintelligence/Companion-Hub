@@ -179,9 +179,14 @@ describe('AppHelpers', () => {
 
       // Assert
       expect(envMap.get('APP_EXPOSED')).toBe('true');
+      // Legacy
       expect(envMap.get('APP_DOMAIN')).toBe(domain);
       expect(envMap.get('APP_HOST')).toBe(domain);
       expect(envMap.get('APP_PROTOCOL')).toBe('https');
+      // Atomic
+      expect(envMap.get('APP_SCHEME')).toBe('https');
+      expect(envMap.get('APP_PUBLIC_HOSTNAME')).toBe(domain);
+      expect(envMap.get('APP_PUBLIC_URL')).toBe(`https://${domain}`);
     });
 
     it('should set correct domain settings for local exposure', async () => {
@@ -196,9 +201,15 @@ describe('AppHelpers', () => {
       });
 
       // Assert
-      expect(envMap.get('APP_DOMAIN')).toBe('test-app-test-store.example.com');
-      expect(envMap.get('APP_HOST')).toBe('test-app-test-store.example.com');
+      const expectedDomain = 'test-app-test-store.example.com';
+      // Legacy
+      expect(envMap.get('APP_DOMAIN')).toBe(expectedDomain);
+      expect(envMap.get('APP_HOST')).toBe(expectedDomain);
       expect(envMap.get('APP_PROTOCOL')).toBe('https');
+      // Atomic
+      expect(envMap.get('APP_SCHEME')).toBe('https');
+      expect(envMap.get('APP_PUBLIC_HOSTNAME')).toBe(expectedDomain);
+      expect(envMap.get('APP_PUBLIC_URL')).toBe(`https://${expectedDomain}`);
     });
 
     it('should set correct domain settings for internal access', async () => {
@@ -211,9 +222,14 @@ describe('AppHelpers', () => {
       await appHelpers.generateEnvFile(testAppUrn, { port });
 
       // Assert
+      // Legacy
       expect(envMap.get('APP_DOMAIN')).toBe('127.0.0.1:9091');
       expect(envMap.get('APP_HOST')).toBe('127.0.0.1');
       expect(envMap.get('APP_PROTOCOL')).toBe('http');
+      // Atomic
+      expect(envMap.get('APP_HOSTNAME')).toBe('127.0.0.1');
+      expect(envMap.get('APP_INTERNAL_AUTHORITY')).toBe('127.0.0.1:9091');
+      expect(envMap.get('APP_SCHEME')).toBe('http');
     });
 
     it('should throw error for required form fields', async () => {
