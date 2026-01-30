@@ -1,130 +1,705 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
 exports[`App lifecycle > install app > should not delete an existing app-data folder even if the app is reinstalled 1`] = `
-"/
-├─ app-data/
-│  └─ test/
-│     └─ test2/
-│        ├─ app.env
-│        └─ data/
-│           └─ test.txt
-└─ data/
-   ├─ .env
-   ├─ apps/
-   │  └─ test/
-   │     └─ test2/
-   │        ├─ config.json
-   │        ├─ data/
-   │        ├─ docker-compose.json
-   │        ├─ docker-compose.yml
-   │        └─ metadata/
-   │           └─ description.md
-   ├─ backups/
-   ├─ repos/
-   │  └─ test/
-   │     └─ apps/
-   │        └─ test2/
-   │           ├─ config.json
-   │           ├─ data/
-   │           ├─ docker-compose.json
-   │           └─ metadata/
-   │              └─ description.md
-   └─ state/
-      └─ seed"
+{
+  "/app-data/test/test2/app.env": "ROOT_FOLDER_HOST=/opt/runtipi
+DOMAIN=undefined
+LOCAL_DOMAIN=undefined
+APP_PORT=9040
+APP_URN=test2:test
+APP_ID=test2-test
+APP_NAME=test2
+APP_STORE_ID=test
+APP_DATA_DIR=/opt/runtipi/app-data/test/test2
+APP_IMAGE_TAG=5.12.2
+APP_HOSTNAME=127.0.0.1
+APP_INTERNAL_AUTHORITY=127.0.0.1:9040
+APP_EXPOSED=false
+APP_SCHEME=http
+APP_PROTOCOL=http
+APP_HOST=127.0.0.1
+APP_DOMAIN=127.0.0.1:9040
+APP_URL=http://127.0.0.1:9040
+",
+  "/app-data/test/test2/data/test.txt": "test",
+  "/data/.env": "ROOT_FOLDER_HOST=/opt/runtipi",
+  "/data/apps/test/test2/config.json": "{
+  "id": "test2",
+  "urn": "test2:test",
+  "name": "color cursim",
+  "port": 9040,
+  "https": false,
+  "author": "Tyreek.Muller",
+  "no_gui": false,
+  "available": true,
+  "exposable": true,
+  "dynamic_config": true,
+  "source": "https://extroverted-jazz.org",
+  "version": "5.12.2",
+  "categories": [
+    "utilities"
+  ],
+  "description": "Pax impedit conicio cognomen cur stabilis utique dolore sortitus.",
+  "short_desc": "Quibusdam spero turbo agnosco tenax careo autem.",
+  "website": "https://burly-swordfish.name",
+  "supported_architectures": [],
+  "created_at": 1769810550000,
+  "updated_at": 1769810550000,
+  "deprecated": false,
+  "tipi_version": 1,
+  "force_expose": false,
+  "generate_vapid_keys": false,
+  "form_fields": []
+}",
+  "/data/apps/test/test2/data": null,
+  "/data/apps/test/test2/docker-compose.json": "{
+  "services": [
+    {
+      "name": "test2",
+      "image": "nginx:latest",
+      "isMain": true,
+      "internalPort": 80,
+      "environment": {
+        "TEST": "test"
+      }
+    }
+  ]
+}",
+  "/data/apps/test/test2/docker-compose.yml": "services:
+  test2:
+    image: nginx:latest
+    restart: unless-stopped
+    networks:
+      test2_test_network:
+        gw_priority: 0
+      ci-os-hub_network:
+        gw_priority: 1
+    environment:
+      TEST: test
+    ports:
+      - \${APP_PORT}:80
+    labels:
+      ci-os-hub.managed: true
+      ci-os-hub.appurn: test2:test
+    env_file:
+      - /app-data/test/test2/app.env
+networks:
+  ci-os-hub_network:
+    name: ci-os-hub_network
+    external: true
+  test2_test_network:
+    name: test2_test_network
+    external: false
+    ipam:
+      config:
+        - subnet: 10.128.10.0/24
+
+",
+  "/data/apps/test/test2/metadata/description.md": "test",
+  "/data/backups": null,
+  "/data/repos/test/apps/test2/config.json": "{
+  "id": "test2",
+  "urn": "test2:test",
+  "name": "color cursim",
+  "port": 9040,
+  "https": false,
+  "author": "Tyreek.Muller",
+  "no_gui": false,
+  "available": true,
+  "exposable": true,
+  "dynamic_config": true,
+  "source": "https://extroverted-jazz.org",
+  "version": "5.12.2",
+  "categories": [
+    "utilities"
+  ],
+  "description": "Pax impedit conicio cognomen cur stabilis utique dolore sortitus.",
+  "short_desc": "Quibusdam spero turbo agnosco tenax careo autem.",
+  "website": "https://burly-swordfish.name",
+  "supported_architectures": [],
+  "created_at": 1769810550000,
+  "updated_at": 1769810550000,
+  "deprecated": false,
+  "tipi_version": 1,
+  "force_expose": false,
+  "generate_vapid_keys": false,
+  "form_fields": []
+}",
+  "/data/repos/test/apps/test2/data": null,
+  "/data/repos/test/apps/test2/docker-compose.json": "{
+  "services": [
+    {
+      "name": "test2",
+      "image": "nginx:latest",
+      "isMain": true,
+      "internalPort": 80,
+      "environment": {
+        "TEST": "test"
+      }
+    }
+  ]
+}",
+  "/data/repos/test/apps/test2/metadata/description.md": "test",
+  "/data/state/seed": "seed",
+}
 `;
 
 exports[`App lifecycle > install app > should successfully install app and create expected directory structure 1`] = `
-"/
-├─ app-data/
-│  └─ test/
-│     └─ test/
-│        ├─ app.env
-│        └─ data/
-└─ data/
-   ├─ .env
-   ├─ apps/
-   │  └─ test/
-   │     └─ test/
-   │        ├─ config.json
-   │        ├─ data/
-   │        ├─ docker-compose.json
-   │        ├─ docker-compose.yml
-   │        └─ metadata/
-   │           └─ description.md
-   ├─ backups/
-   ├─ repos/
-   │  └─ test/
-   │     └─ apps/
-   │        └─ test/
-   │           ├─ config.json
-   │           ├─ data/
-   │           ├─ docker-compose.json
-   │           └─ metadata/
-   │              └─ description.md
-   └─ state/
-      └─ seed"
+{
+  "/app-data/test/test/app.env": "ROOT_FOLDER_HOST=/opt/runtipi
+DOMAIN=undefined
+LOCAL_DOMAIN=undefined
+APP_PORT=3041
+APP_URN=test:test
+APP_ID=test-test
+APP_NAME=test
+APP_STORE_ID=test
+APP_DATA_DIR=/opt/runtipi/app-data/test/test
+APP_IMAGE_TAG=0.8.15
+APP_HOSTNAME=127.0.0.1
+APP_INTERNAL_AUTHORITY=127.0.0.1:3041
+APP_EXPOSED=false
+APP_SCHEME=http
+APP_PROTOCOL=http
+APP_HOST=127.0.0.1
+APP_DOMAIN=127.0.0.1:3041
+APP_URL=http://127.0.0.1:3041
+",
+  "/app-data/test/test/data": null,
+  "/data/.env": "ROOT_FOLDER_HOST=/opt/runtipi",
+  "/data/apps/test/test/config.json": "{
+  "id": "test",
+  "urn": "test:test",
+  "name": "subito circumvenio",
+  "port": 3041,
+  "https": false,
+  "author": "Katlyn_Kassulke",
+  "no_gui": false,
+  "available": true,
+  "exposable": true,
+  "dynamic_config": true,
+  "source": "https://growing-rationale.info/",
+  "version": "0.8.15",
+  "categories": [
+    "utilities"
+  ],
+  "description": "Atque exercitationem exercitationem reiciendis.",
+  "short_desc": "Surculus perferendis suppono commodi conturbo calco claudeo quos aliquam.",
+  "website": "https://international-kettledrum.info/",
+  "supported_architectures": [],
+  "created_at": 1769810550000,
+  "updated_at": 1769810550000,
+  "deprecated": false,
+  "tipi_version": 1,
+  "force_expose": false,
+  "generate_vapid_keys": false,
+  "form_fields": []
+}",
+  "/data/apps/test/test/data": null,
+  "/data/apps/test/test/docker-compose.json": "{
+  "services": [
+    {
+      "name": "test",
+      "image": "nginx:latest",
+      "isMain": true,
+      "internalPort": 80,
+      "environment": {
+        "TEST": "test"
+      }
+    }
+  ]
+}",
+  "/data/apps/test/test/docker-compose.yml": "services:
+  test:
+    image: nginx:latest
+    restart: unless-stopped
+    networks:
+      test_test_network:
+        gw_priority: 0
+      ci-os-hub_network:
+        gw_priority: 1
+    environment:
+      TEST: test
+    ports:
+      - \${APP_PORT}:80
+    labels:
+      ci-os-hub.managed: true
+      ci-os-hub.appurn: test:test
+    env_file:
+      - /app-data/test/test/app.env
+networks:
+  ci-os-hub_network:
+    name: ci-os-hub_network
+    external: true
+  test_test_network:
+    name: test_test_network
+    external: false
+    ipam:
+      config:
+        - subnet: 10.128.10.0/24
+
+",
+  "/data/apps/test/test/metadata/description.md": "test",
+  "/data/backups": null,
+  "/data/repos/test/apps/test/config.json": "{
+  "id": "test",
+  "urn": "test:test",
+  "name": "subito circumvenio",
+  "port": 3041,
+  "https": false,
+  "author": "Katlyn_Kassulke",
+  "no_gui": false,
+  "available": true,
+  "exposable": true,
+  "dynamic_config": true,
+  "source": "https://growing-rationale.info/",
+  "version": "0.8.15",
+  "categories": [
+    "utilities"
+  ],
+  "description": "Atque exercitationem exercitationem reiciendis.",
+  "short_desc": "Surculus perferendis suppono commodi conturbo calco claudeo quos aliquam.",
+  "website": "https://international-kettledrum.info/",
+  "supported_architectures": [],
+  "created_at": 1769810550000,
+  "updated_at": 1769810550000,
+  "deprecated": false,
+  "tipi_version": 1,
+  "force_expose": false,
+  "generate_vapid_keys": false,
+  "form_fields": []
+}",
+  "/data/repos/test/apps/test/data": null,
+  "/data/repos/test/apps/test/docker-compose.json": "{
+  "services": [
+    {
+      "name": "test",
+      "image": "nginx:latest",
+      "isMain": true,
+      "internalPort": 80,
+      "environment": {
+        "TEST": "test"
+      }
+    }
+  ]
+}",
+  "/data/repos/test/apps/test/metadata/description.md": "test",
+  "/data/state/seed": "seed",
+}
 `;
 
 exports[`App lifecycle > update all apps > should update multiple apps that have newer versions available 1`] = `
-"/
-├─ app-data/
-│  └─ test/
-│     ├─ app1/
-│     │  ├─ app.env
-│     │  └─ data/
-│     ├─ app2/
-│     │  ├─ app.env
-│     │  └─ data/
-│     └─ app3/
-│        ├─ app.env
-│        └─ data/
-└─ data/
-   ├─ .env
-   ├─ apps/
-   │  └─ test/
-   │     ├─ app1/
-   │     │  ├─ config.json
-   │     │  ├─ data/
-   │     │  ├─ docker-compose.json
-   │     │  ├─ docker-compose.yml
-   │     │  └─ metadata/
-   │     │     └─ description.md
-   │     ├─ app2/
-   │     │  ├─ config.json
-   │     │  ├─ data/
-   │     │  ├─ docker-compose.json
-   │     │  ├─ docker-compose.yml
-   │     │  └─ metadata/
-   │     │     └─ description.md
-   │     └─ app3/
-   │        ├─ config.json
-   │        ├─ data/
-   │        ├─ docker-compose.json
-   │        ├─ docker-compose.yml
-   │        └─ metadata/
-   │           └─ description.md
-   ├─ backups/
-   ├─ repos/
-   │  └─ test/
-   │     └─ apps/
-   │        ├─ app1/
-   │        │  ├─ config.json
-   │        │  ├─ data/
-   │        │  ├─ docker-compose.json
-   │        │  └─ metadata/
-   │        │     └─ description.md
-   │        ├─ app2/
-   │        │  ├─ config.json
-   │        │  ├─ data/
-   │        │  ├─ docker-compose.json
-   │        │  └─ metadata/
-   │        │     └─ description.md
-   │        └─ app3/
-   │           ├─ config.json
-   │           ├─ data/
-   │           ├─ docker-compose.json
-   │           └─ metadata/
-   │              └─ description.md
-   └─ state/
-      └─ seed"
+{
+  "/app-data/test/app1/app.env": "ROOT_FOLDER_HOST=/opt/runtipi
+DOMAIN=undefined
+LOCAL_DOMAIN=undefined
+APP_PORT=1227
+APP_URN=app1:test
+APP_ID=app1-test
+APP_NAME=app1
+APP_STORE_ID=test
+APP_DATA_DIR=/opt/runtipi/app-data/test/app1
+APP_IMAGE_TAG=6.5.7
+APP_HOSTNAME=127.0.0.1
+APP_INTERNAL_AUTHORITY=127.0.0.1:1227
+APP_EXPOSED=false
+APP_SCHEME=http
+APP_PROTOCOL=http
+APP_HOST=127.0.0.1
+APP_DOMAIN=127.0.0.1:1227
+APP_URL=http://127.0.0.1:1227
+",
+  "/app-data/test/app1/data": null,
+  "/app-data/test/app2/app.env": "ROOT_FOLDER_HOST=/opt/runtipi
+DOMAIN=undefined
+LOCAL_DOMAIN=undefined
+APP_PORT=2100
+APP_URN=app2:test
+APP_ID=app2-test
+APP_NAME=app2
+APP_STORE_ID=test
+APP_DATA_DIR=/opt/runtipi/app-data/test/app2
+APP_IMAGE_TAG=3.14.0
+APP_HOSTNAME=127.0.0.1
+APP_INTERNAL_AUTHORITY=127.0.0.1:2100
+APP_EXPOSED=false
+APP_SCHEME=http
+APP_PROTOCOL=http
+APP_HOST=127.0.0.1
+APP_DOMAIN=127.0.0.1:2100
+APP_URL=http://127.0.0.1:2100
+",
+  "/app-data/test/app2/data": null,
+  "/app-data/test/app3/app.env": "ROOT_FOLDER_HOST=/opt/runtipi
+DOMAIN=undefined
+LOCAL_DOMAIN=undefined
+APP_PORT=4868
+APP_URN=app3:test
+APP_ID=app3-test
+APP_NAME=app3
+APP_STORE_ID=test
+APP_DATA_DIR=/opt/runtipi/app-data/test/app3
+APP_IMAGE_TAG=7.0.1
+APP_HOSTNAME=127.0.0.1
+APP_INTERNAL_AUTHORITY=127.0.0.1:4868
+APP_EXPOSED=false
+APP_SCHEME=http
+APP_PROTOCOL=http
+APP_HOST=127.0.0.1
+APP_DOMAIN=127.0.0.1:4868
+APP_URL=http://127.0.0.1:4868
+",
+  "/app-data/test/app3/data": null,
+  "/data/.env": "ROOT_FOLDER_HOST=/opt/runtipi",
+  "/data/apps/test/app1/config.json": "{
+  "id": "app1",
+  "urn": "app1:test",
+  "name": "soleo uredo",
+  "port": 1227,
+  "https": false,
+  "author": "Dock_Bergstrom",
+  "no_gui": false,
+  "available": true,
+  "exposable": true,
+  "dynamic_config": true,
+  "source": "https://cautious-department.com/",
+  "version": "6.5.7",
+  "categories": [
+    "utilities"
+  ],
+  "description": "Copiose explicabo arx.",
+  "short_desc": "Clarus ratione acquiro valens acceptus antepono tergiversatio.",
+  "website": "https://scary-vista.org/",
+  "supported_architectures": [],
+  "created_at": 1769810550000,
+  "updated_at": 1769810550000,
+  "deprecated": false,
+  "tipi_version": 2,
+  "force_expose": false,
+  "generate_vapid_keys": false,
+  "form_fields": []
+}",
+  "/data/apps/test/app1/data": null,
+  "/data/apps/test/app1/docker-compose.json": "{
+  "services": [
+    {
+      "name": "app1",
+      "image": "nginx:latest",
+      "isMain": true,
+      "internalPort": 80,
+      "environment": {
+        "TEST": "test"
+      }
+    }
+  ]
+}",
+  "/data/apps/test/app1/docker-compose.yml": "services:
+  app1:
+    image: nginx:latest
+    restart: unless-stopped
+    networks:
+      app1_test_network:
+        gw_priority: 0
+      ci-os-hub_network:
+        gw_priority: 1
+    environment:
+      TEST: test
+    ports:
+      - \${APP_PORT}:80
+    labels:
+      ci-os-hub.managed: true
+      ci-os-hub.appurn: app1:test
+    env_file:
+      - /app-data/test/app1/app.env
+networks:
+  ci-os-hub_network:
+    name: ci-os-hub_network
+    external: true
+  app1_test_network:
+    name: app1_test_network
+    external: false
+    ipam:
+      config:
+        - subnet: 10.128.13.0/24
+
+",
+  "/data/apps/test/app1/metadata/description.md": "test",
+  "/data/apps/test/app2/config.json": "{
+  "id": "app2",
+  "urn": "app2:test",
+  "name": "curriculum libero",
+  "port": 2100,
+  "https": false,
+  "author": "Colleen_Koss",
+  "no_gui": false,
+  "available": true,
+  "exposable": true,
+  "dynamic_config": true,
+  "source": "https://our-cricket.net",
+  "version": "3.14.0",
+  "categories": [
+    "utilities"
+  ],
+  "description": "Adduco tamdiu demergo animus illo aeger solitudo vulnus.",
+  "short_desc": "Natus ambulo subseco solvo admiratio textor earum cursim tertius.",
+  "website": "https://long-conservative.com/",
+  "supported_architectures": [],
+  "created_at": 1769810550000,
+  "updated_at": 1769810550000,
+  "deprecated": false,
+  "tipi_version": 2,
+  "force_expose": false,
+  "generate_vapid_keys": false,
+  "form_fields": []
+}",
+  "/data/apps/test/app2/data": null,
+  "/data/apps/test/app2/docker-compose.json": "{
+  "services": [
+    {
+      "name": "app2",
+      "image": "nginx:latest",
+      "isMain": true,
+      "internalPort": 80,
+      "environment": {
+        "TEST": "test"
+      }
+    }
+  ]
+}",
+  "/data/apps/test/app2/docker-compose.yml": "services:
+  app2:
+    image: nginx:latest
+    restart: unless-stopped
+    networks:
+      app2_test_network:
+        gw_priority: 0
+      ci-os-hub_network:
+        gw_priority: 1
+    environment:
+      TEST: test
+    ports:
+      - \${APP_PORT}:80
+    labels:
+      ci-os-hub.managed: true
+      ci-os-hub.appurn: app2:test
+    env_file:
+      - /app-data/test/app2/app.env
+networks:
+  ci-os-hub_network:
+    name: ci-os-hub_network
+    external: true
+  app2_test_network:
+    name: app2_test_network
+    external: false
+    ipam:
+      config:
+        - subnet: 10.128.12.0/24
+
+",
+  "/data/apps/test/app2/metadata/description.md": "test",
+  "/data/apps/test/app3/config.json": "{
+  "id": "app3",
+  "urn": "app3:test",
+  "name": "sulum vitae",
+  "port": 4868,
+  "https": false,
+  "author": "Scarlett94",
+  "no_gui": false,
+  "available": true,
+  "exposable": true,
+  "dynamic_config": true,
+  "source": "https://cluttered-necklace.biz",
+  "version": "7.0.1",
+  "categories": [
+    "utilities"
+  ],
+  "description": "Utique convoco harum minus.",
+  "short_desc": "Mollitia solvo coadunatio curatio.",
+  "website": "https://violent-morning.org/",
+  "supported_architectures": [],
+  "created_at": 1769810550000,
+  "updated_at": 1769810550000,
+  "deprecated": false,
+  "tipi_version": 4,
+  "force_expose": false,
+  "generate_vapid_keys": false,
+  "form_fields": []
+}",
+  "/data/apps/test/app3/data": null,
+  "/data/apps/test/app3/docker-compose.json": "{
+  "services": [
+    {
+      "name": "app3",
+      "image": "nginx:latest",
+      "isMain": true,
+      "internalPort": 80,
+      "environment": {
+        "TEST": "test"
+      }
+    }
+  ]
+}",
+  "/data/apps/test/app3/docker-compose.yml": "services:
+  app3:
+    image: nginx:latest
+    restart: unless-stopped
+    networks:
+      app3_test_network:
+        gw_priority: 0
+      ci-os-hub_network:
+        gw_priority: 1
+    environment:
+      TEST: test
+    ports:
+      - \${APP_PORT}:80
+    labels:
+      ci-os-hub.managed: true
+      ci-os-hub.appurn: app3:test
+    env_file:
+      - /app-data/test/app3/app.env
+networks:
+  ci-os-hub_network:
+    name: ci-os-hub_network
+    external: true
+  app3_test_network:
+    name: app3_test_network
+    external: false
+    ipam:
+      config:
+        - subnet: 10.128.10.0/24
+
+",
+  "/data/apps/test/app3/metadata/description.md": "test",
+  "/data/backups": null,
+  "/data/repos/test/apps/app1/config.json": "{
+  "id": "app1",
+  "urn": "app1:test",
+  "name": "soleo uredo",
+  "port": 1227,
+  "https": false,
+  "author": "Dock_Bergstrom",
+  "no_gui": false,
+  "available": true,
+  "exposable": true,
+  "dynamic_config": true,
+  "source": "https://cautious-department.com/",
+  "version": "6.5.7",
+  "categories": [
+    "utilities"
+  ],
+  "description": "Copiose explicabo arx.",
+  "short_desc": "Clarus ratione acquiro valens acceptus antepono tergiversatio.",
+  "website": "https://scary-vista.org/",
+  "supported_architectures": [],
+  "created_at": 1769810550000,
+  "updated_at": 1769810550000,
+  "deprecated": false,
+  "tipi_version": 2,
+  "force_expose": false,
+  "generate_vapid_keys": false,
+  "form_fields": []
+}",
+  "/data/repos/test/apps/app1/data": null,
+  "/data/repos/test/apps/app1/docker-compose.json": "{
+  "services": [
+    {
+      "name": "app1",
+      "image": "nginx:latest",
+      "isMain": true,
+      "internalPort": 80,
+      "environment": {
+        "TEST": "test"
+      }
+    }
+  ]
+}",
+  "/data/repos/test/apps/app1/metadata/description.md": "test",
+  "/data/repos/test/apps/app2/config.json": "{
+  "id": "app2",
+  "urn": "app2:test",
+  "name": "curriculum libero",
+  "port": 2100,
+  "https": false,
+  "author": "Colleen_Koss",
+  "no_gui": false,
+  "available": true,
+  "exposable": true,
+  "dynamic_config": true,
+  "source": "https://our-cricket.net",
+  "version": "3.14.0",
+  "categories": [
+    "utilities"
+  ],
+  "description": "Adduco tamdiu demergo animus illo aeger solitudo vulnus.",
+  "short_desc": "Natus ambulo subseco solvo admiratio textor earum cursim tertius.",
+  "website": "https://long-conservative.com/",
+  "supported_architectures": [],
+  "created_at": 1769810550000,
+  "updated_at": 1769810550000,
+  "deprecated": false,
+  "tipi_version": 2,
+  "force_expose": false,
+  "generate_vapid_keys": false,
+  "form_fields": []
+}",
+  "/data/repos/test/apps/app2/data": null,
+  "/data/repos/test/apps/app2/docker-compose.json": "{
+  "services": [
+    {
+      "name": "app2",
+      "image": "nginx:latest",
+      "isMain": true,
+      "internalPort": 80,
+      "environment": {
+        "TEST": "test"
+      }
+    }
+  ]
+}",
+  "/data/repos/test/apps/app2/metadata/description.md": "test",
+  "/data/repos/test/apps/app3/config.json": "{
+  "id": "app3",
+  "urn": "app3:test",
+  "name": "sulum vitae",
+  "port": 4868,
+  "https": false,
+  "author": "Scarlett94",
+  "no_gui": false,
+  "available": true,
+  "exposable": true,
+  "dynamic_config": true,
+  "source": "https://cluttered-necklace.biz",
+  "version": "7.0.1",
+  "categories": [
+    "utilities"
+  ],
+  "description": "Utique convoco harum minus.",
+  "short_desc": "Mollitia solvo coadunatio curatio.",
+  "website": "https://violent-morning.org/",
+  "supported_architectures": [],
+  "created_at": 1769810550000,
+  "updated_at": 1769810550000,
+  "deprecated": false,
+  "tipi_version": 4,
+  "force_expose": false,
+  "generate_vapid_keys": false,
+  "form_fields": []
+}",
+  "/data/repos/test/apps/app3/data": null,
+  "/data/repos/test/apps/app3/docker-compose.json": "{
+  "services": [
+    {
+      "name": "app3",
+      "image": "nginx:latest",
+      "isMain": true,
+      "internalPort": 80,
+      "environment": {
+        "TEST": "test"
+      }
+    }
+  ]
+}",
+  "/data/repos/test/apps/app3/metadata/description.md": "test",
+  "/data/state/seed": "seed",
+}
 `;
