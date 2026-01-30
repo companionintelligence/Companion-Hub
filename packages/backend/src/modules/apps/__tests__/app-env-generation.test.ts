@@ -118,5 +118,10 @@ describe('AppHelpers Reproduction', () => {
 
     // Verify correct subdomain construction
     expect(generatedEnvContent).toContain('APP_EXPOSED_DOMAIN=test-app-test-store-test-org-slug.example.com');
+
+    // Verify new atomic variables
+    expect(generatedEnvContent).toContain('APP_PUBLIC_HOSTNAME=test-app-test-store-test-org-slug.example.com');
+    expect(generatedEnvContent).toContain('APP_PUBLIC_URL=https://test-app-test-store-test-org-slug.example.com');
+    expect(generatedEnvContent).toContain('APP_SCHEME=https');
   });
 });

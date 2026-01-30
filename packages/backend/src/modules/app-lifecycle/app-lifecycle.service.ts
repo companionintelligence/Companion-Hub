@@ -606,52 +606,13 @@ export class AppLifecycleService implements OnApplicationBootstrap {
             return app.exposedLocal && ['running', 'starting', 'restarting'].includes(app.status) && app.localSubdomain;
           })
           .map(async (app: AppFromDb) => {
-            // Construct URN for this app
-            const appUrn = createAppUrn(app.appName, app.appStoreSlug);
+            // Construct "First Principles" subdomain from database + org info
+            // This ignores APP_PUBLIC_HOSTNAME (which might have issues) and rebuilds the
+            // intended state correctly.
 
-            // Read APP_EXPOSED_DOMAIN directly from the app's env file
-            // APP_EXPOSED_DOMAIN already contains the full domain (e.g., n8n-bdc.companionintelligence.com)
-            // No need to parse or reconstruct - just use it directly
-            let appExposedDomain: string | undefined;
-
-            try {
-              const appEnv = await this.appFilesManager.getAppEnv(appUrn);
-              if (appEnv.content) {
-                const envLines = appEnv.content.split('\n');
-                for (const line of envLines) {
-                  if (line.startsWith('APP_EXPOSED_DOMAIN=')) {
-                    appExposedDomain = line.split('=')[1]?.trim();
-                    break;
-                  }
-                }
-              }
-            } catch (error) {
-              // If we can't read the env file, fall back to reconstructing from database
-              this.logger.debug(`[Cloudflare] Could not read APP_EXPOSED_DOMAIN for ${appUrn}, falling back to database value`);
-            }
-
-            // Use APP_EXPOSED_DOMAIN directly if available, otherwise reconstruct from database
-            let subdomain: string;
-            let publicHostname: string;
-
-            if (appExposedDomain) {
-              // Extract subdomain (everything before the first dot)
-              // e.g., "n8n-bdc.companionintelligence.com" -> "n8n-bdc"
-              const firstDotIndex = appExposedDomain.indexOf('.');
-              subdomain = firstDotIndex > 0 ? appExposedDomain.substring(0, firstDotIndex) : appExposedDomain;
-              publicHostname = appExposedDomain; // Use the full domain as-is
-            } else {
-              // Fallback: reconstruct from database (shouldn't happen in normal operation)
-              // localSubdomain in DB should already include org slug, but add it if missing
-              let sub = app.localSubdomain || `${app.appName}-${app.appStoreSlug}`;
-              // Add organization suffix if org exists
-              // Note: localSubdomain in DB should already have org slug, but this ensures consistency
-              if (orgInfo?.slug) {
-                sub = `${sub}-${orgInfo.slug}`;
-              }
-              subdomain = sub;
-              publicHostname = `${sub}.${publicDomain}`;
-            }
+            const subdomain = app.localSubdomain || `${app.appName}-${app.appStoreSlug}`;
+            const orgSlug = orgInfo.slug;
+            const publicHostname = `${subdomain}-${orgSlug}.${publicDomain}`;
 
             // When exposedLocal is true, we use Cloudflare Tunnel to expose apps to the internet
             // Traefik is configured to ONLY accept the public domain Host header (not local domain)
@@ -663,7 +624,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
               localPort: 80, // Traefik port - Traefik routes to the app based on Host header
               protocol: 'http' as const,
               hostname: 'traefik', // Use container name to reach Traefik within the same network
-              originServerName: publicHostname, // Full domain from APP_EXPOSED_DOMAIN (e.g., n8n-bdc.companionintelligence.com)
+              originServerName: publicHostname, // Full domain from APP_PUBLIC_HOSTNAME (e.g., n8n-bdc.companionintelligence.com)
             };
           }),
       );
