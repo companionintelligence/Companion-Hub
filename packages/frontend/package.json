@@ -4,11 +4,11 @@
   "version": "0.0.5",
   "type": "module",
   "scripts": {
-    "dev": "bun x @react-router/dev dev",
+    "dev": "react-router dev",
     "bundle": "node node_modules/@react-router/dev/bin.js build",
     "preview": "vite preview",
     "test": "vitest run",
-    "tsc": "bunx @react-router/dev typegen && bun x tsgo --noEmit"
+    "tsc": "react-router typegen && npx tsgo --noEmit"
   },
   "dependencies": {
     "@codemirror/lang-json": "^6.0.2",

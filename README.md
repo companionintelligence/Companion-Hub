@@ -30,10 +30,10 @@ Once you have forked the repository and cloned it on your local machine you can 
 
 ## Install dependencies
 
-runtipi uses [`bun`](https://bun.com/) as its JavaScript runtime and package manager, and `turbo.js` as its monorepo orchestrator. Install Bun using the instructions from the [official Bun website](https://bun.com/).
+runtipi uses [`pnpm`](https://pnpm.io/) as its package manager, and `turbo.js` as its monorepo orchestrator. Install pnpm using the instructions from the [official pnpm website](https://pnpm.io/installation).
 
 Install the project dependencies
-`bun install`
+`pnpm install`
 
 ## Edit the environment variables
 
@@ -59,5 +59,5 @@ This will create `tunnel/certs/custom-ca.pem` and `custom-ca.key`.
 
 ## Run runtipi
 
-1. Start the app with `bun run start:dev` from the root folder
+1. Start the app with `pnpm run start:dev` from the root folder
 2. Visit `localhost:3000` in your browser

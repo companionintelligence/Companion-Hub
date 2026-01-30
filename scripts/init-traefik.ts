@@ -1,4 +1,4 @@
-import { mkdir, copyFile, writeFile, chmod, rm, stat } from 'node:fs/promises';
+import { mkdir, copyFile, writeFile, chmod, rm, stat, readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 
@@ -38,7 +38,7 @@ async function initTraefik() {
 
     console.log(`Copying traefik.yml to ${traefikDest}`);
     // Replace placeholder with default if necessary
-    const content = await Bun.file(traefikSrc).text();
+    const content = await readFile(traefikSrc, 'utf-8');
     const finalContent = content.replace('{{ACME_EMAIL}}', 'admin@localhost');
     await writeFile(traefikDest, finalContent);
   } else {

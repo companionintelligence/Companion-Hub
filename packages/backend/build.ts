@@ -1,11 +1,13 @@
-await Bun.build({
-  entrypoints: ['./src/main.ts'],
+import * as esbuild from 'esbuild';
+
+await esbuild.build({
+  entryPoints: ['./src/main.ts'],
   outdir: './dist',
   format: 'esm',
-  target: 'node',
-  env: 'disable',
+  platform: 'node',
   sourcemap: true,
   minify: false,
+  bundle: true,
   external: [
     'argon2',
     'class-transformer',

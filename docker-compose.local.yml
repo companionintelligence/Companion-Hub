@@ -43,7 +43,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.dev
-    command: npx turbo run dev --filter backend --filter @runtipi/common
+    command: pnpm exec turbo run dev --filter backend --filter @runtipi/common
     depends_on:
       ci-hub-db:
         condition: service_healthy

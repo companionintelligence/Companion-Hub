@@ -1,6 +1,6 @@
-#!/usr/bin/env bun
+#!/usr/bin/env npx tsx
 
-import { $ } from 'bun';
+import { $ } from 'zx';
 import { existsSync } from 'node:fs';
 
 console.log('🧹 Starting cleanup of CI-OS-Hub network, containers, volumes, and caches...\n');

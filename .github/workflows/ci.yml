@@ -22,13 +22,13 @@ jobs:
         uses: "./.github/actions/install-dependencies"
 
       - name: Run biome tests
-        run: bun run lint:ci
+        run: pnpm run lint:ci
 
       - name: Run tsc
-        run: bun run tsc
+        run: pnpm run tsc
 
       - name: Run tests
-        run: bun run test
+        run: pnpm run test
 
   build:
     runs-on: ubuntu-latest
@@ -40,4 +40,4 @@ jobs:
         uses: "./.github/actions/install-dependencies"
 
       - name: Build client
-        run: bun run bundle
+        run: pnpm run bundle

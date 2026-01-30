@@ -38,4 +38,4 @@ jobs:
         uses: "./.github/actions/install-dependencies"
 
       - name: Run integration tests
-        run: bun run test:integration
+        run: pnpm run test:integration

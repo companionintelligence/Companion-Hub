@@ -63,7 +63,7 @@ async function main() {
     };
 
     console.log('Running tests...');
-    await runCommand('bun', ['vitest', '--watch=false', '--config', './vitest.integration.config.mts'], env);
+    await runCommand('npx', ['vitest', '--watch=false', '--config', './vitest.integration.config.mts'], env);
   } catch (error) {
     console.error('Test run failed:', error);
     process.exit(1);

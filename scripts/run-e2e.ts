@@ -160,7 +160,7 @@ async function main() {
     };
 
     console.log('Running Playwright tests...');
-    await runCommand('bun', ['playwright', 'test', '--workers=1'], env);
+    await runCommand('npx', ['playwright', 'test', '--workers=1'], env);
   } catch (error) {
     console.error('E2E test run failed:', error);
     console.log('Fetching app logs...');

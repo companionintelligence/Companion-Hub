@@ -2,15 +2,12 @@
   "name": "runtipi",
   "version": "4.1.0",
   "description": "",
-  "packageManager": "bun@1.3.0",
-  "workspaces": [
-    "packages/*"
-  ],
+  "packageManager": "pnpm@9.15.0",
   "scripts": {
-    "local": "bun run local:infra && dotenv -e .env.local -- turbo run local",
+    "local": "pnpm run local:infra && dotenv -e .env.local -- turbo run local",
     "dev": "turbo run dev --parallel",
     "local:infra": "ENV_FILE=.env.local docker compose --env-file .env.local --project-name runtipi -f docker-compose.local.yml up -d ci-os-hub-queue ci-hub-db",
-    "local:cleanup": "bun run cleanup && rm -rf .internal && rm -rf tunnel/token tunnel/certs",
+    "local:cleanup": "pnpm run cleanup && rm -rf .internal && rm -rf tunnel/token tunnel/certs",
     "bundle": "turbo bundle",
     "build": "turbo run build",
     "tsc": "turbo run tsc",
@@ -18,13 +15,13 @@
     "test:integration": "turbo run test:integration",
     "start": "node ./main.js",
     "start:local": "ENV_FILE=.env.local docker compose --env-file .env.local --project-name runtipi -f docker-compose.local.yml up --build",
-    "start:prod": "bun scripts/init-traefik.ts && ENV_FILE=.env.prod CI_CLOUD_API_URL=https://ci.computer/api docker compose --env-file .env.prod --project-name runtipi -f docker-compose.prod.yml up --build",
-    "start:staging": "bun scripts/init-traefik.ts && ENV_FILE=.env.staging CI_CLOUD_API_URL=https://companionintel.com/api docker compose --env-file .env.staging --project-name runtipi -f docker-compose.prod.yml up --build",
-    "start:dev": "bun scripts/init-traefik.ts && ENV_FILE=.env.dev CI_CLOUD_API_URL=https://setup.companionintelligence.com/api docker compose --env-file .env.dev --project-name runtipi -f docker-compose.prod.yml up --build",
-    "cleanup": "bun run scripts/cleanup.ts",
-    "test:e2e": "bun scripts/run-e2e.ts",
+    "start:prod": "tsx scripts/init-traefik.ts && ENV_FILE=.env.prod CI_CLOUD_API_URL=https://ci.computer/api docker compose --env-file .env.prod --project-name runtipi -f docker-compose.prod.yml up --build",
+    "start:staging": "tsx scripts/init-traefik.ts && ENV_FILE=.env.staging CI_CLOUD_API_URL=https://companionintel.com/api docker compose --env-file .env.staging --project-name runtipi -f docker-compose.prod.yml up --build",
+    "start:dev": "tsx scripts/init-traefik.ts && ENV_FILE=.env.dev CI_CLOUD_API_URL=https://setup.companionintelligence.com/api docker compose --env-file .env.dev --project-name runtipi -f docker-compose.prod.yml up --build",
+    "cleanup": "tsx scripts/cleanup.ts",
+    "test:e2e": "tsx scripts/run-e2e.ts",
     "test:e2e:ui": "NODE_ENV=test dotenv -e .env -e .env.e2e -- playwright test --ui",
-    "check:all": "bun run lint && turbo run tsc && turbo run build && turbo run test",
+    "check:all": "pnpm run lint && turbo run tsc && turbo run build && turbo run test",
     "gen:api-client": "openapi-ts",
     "lint:ci": "biome ci . --error-on-warnings --no-errors-on-unmatched",
     "lint": "biome check",
@@ -34,7 +31,7 @@
   },
   "lint-staged": {
     "*": [
-      "bun run lint:fix",
+      "pnpm run lint:fix",
       "git add"
     ]
   },
@@ -46,12 +43,13 @@
     "@hey-api/openapi-ts": "^0.86.11",
     "@playwright/test": "^1.52.0",
     "@types/adm-zip": "^0.5.7",
-    "@types/bun": "^1.2.22",
     "@types/pg": "^8.15.1",
     "dotenv-cli": "^10.0.0",
     "husky": "^9.1.7",
     "lint-staged": "^16.2.7",
-    "turbo": "^2.5.6"
+    "tsx": "^4.19.2",
+    "turbo": "^2.5.6",
+    "zx": "^8.3.0"
   },
   "dependencies": {
     "adm-zip": "^0.5.16",
