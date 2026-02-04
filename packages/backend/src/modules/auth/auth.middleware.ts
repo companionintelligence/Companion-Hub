@@ -35,6 +35,13 @@ export class AuthMiddleware implements NestMiddleware {
         return next();
       }
 
+      const ciHubApiKey = this.config.get('ciHubApiKey');
+      if (ciHubApiKey && token === ciHubApiKey) {
+        const user = await this.userRepository.getFirstOperator();
+        req.user = user;
+        return next();
+      }
+
       const jwtSecret = this.config.get('jwtSecret');
 
       try {
