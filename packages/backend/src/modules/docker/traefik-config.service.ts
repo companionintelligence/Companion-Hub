@@ -198,7 +198,7 @@ export class TraefikConfigService {
 
       // Only include non-empty sections in the config
       const validConfig: Partial<TraefikConfig> = {
-        http: {},
+        http: {} as any,
       };
 
       if (routerCount > 0) {

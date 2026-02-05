@@ -37,7 +37,7 @@ export class RegistrationController {
     // Build callback URL (where CI Cloud should redirect back to)
     // Use the request origin to construct the callback URL
     const protocol = req.protocol || 'http';
-    const host = req.get('host') || 'localhost:3000';
+    const host = req.get('host') || 'localhost:5173';
     const callbackUrl = `${protocol}://${host}/device-registration`;
 
     // Build registration URL with callback parameter

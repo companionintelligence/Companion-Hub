@@ -252,6 +252,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
         if (!isMounted || isAvailableRef) return;
 
         try {
+          /** @todo move this to the backend */
           const response = await fetch(appUrl);
           const text = await response.text();
           const isCloudflare = text.includes('Cloudflare Ray ID') || text.includes('cf-error-details');
@@ -275,10 +276,12 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
               setCheckError(isCloudflare ? 'Cloudflare Error' : 'Application Error');
             }
           }
-        } catch (_error) {
+        } catch {
           // If check request fails (e.g. CORS or network error/DNS not found), keep loading (DNS propagating)
           if (isMounted) {
             setUrlAvailable(null);
+
+            // remove these
             setCheckError(null);
             setIsCheckingUrl(true);
             setIsCheckingUrl(false);

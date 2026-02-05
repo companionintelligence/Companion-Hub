@@ -386,7 +386,7 @@ export class RegistrationService implements OnApplicationBootstrap {
       // The hub needs to be registered as an "app" so CI-Cloud knows to route the domain
       if (tunnelId) {
         try {
-          const hubSubdomain = subdomain; // e.g., "1-grok"
+          const hubSubdomain = subdomain as string; // e.g., "1-grok"
           const hubAppInfo: AppInfo = {
             name: 'ci-os-hub',
             subdomain: hubSubdomain,

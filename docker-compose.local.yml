@@ -43,7 +43,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.dev
-    command: npx turbo run dev --filter backend --filter @runtipi/common
+    command: npx turbo run dev --filter backend --filter @runtipi/common --filter frontend
     depends_on:
       ci-hub-db:
         condition: service_healthy
@@ -60,6 +60,7 @@ services:
     ports:
       - 3000:3000
       - 9091:9091
+      - 5173:5173
     volumes:
       # Hot reload
       - ./packages/backend/src:/app/packages/backend/src

@@ -172,6 +172,8 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       throw new TranslatableError('SYSTEM_ERROR_INVALID_BODY', undefined, HttpStatus.BAD_REQUEST, { cause: parsedForm });
     }
 
+    console.log('parsedForm', parsedForm)
+
     if (app) {
       await this.appRepository.updateAppById(app.id, { config: parsedForm, ...parsedForm });
       return this.startApp({ appUrn });

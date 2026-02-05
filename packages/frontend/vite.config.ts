@@ -96,6 +96,16 @@ export default defineConfig({
   build: {
     sourcemap: true,
   },
+  server: {
+    host: '0.0.0.0',
+    port: 5173,
+    proxy: {
+      '/api': {
+        target: 'http://localhost:3000',
+        changeOrigin: true,
+      },
+    },
+  },
   esbuild: {
     jsxInject: isVitest ? `import React from 'react'` : undefined,
   },
