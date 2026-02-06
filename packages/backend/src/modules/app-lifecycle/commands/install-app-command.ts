@@ -104,7 +104,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
 
       emitProgress(50);
       try {
-        await dockerService.composeApp(appUrn, 'down --rmi all --remove-orphans');
+        await dockerService.composeApp(appUrn, 'down --remove-orphans');
       } catch (_) {
         logger.warn(`No prior containers to remove for app ${appUrn}`);
       }

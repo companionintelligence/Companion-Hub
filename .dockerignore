@@ -4,6 +4,7 @@
 .github
 
 # Dependencies
+node_modules
 **/node_modules
 .pnp
 .pnp.js
@@ -15,7 +16,9 @@ coverage
 
 # Build outputs
 dist
+**/dist
 build
+**/build
 *.tsbuildinfo
 
 # Environment

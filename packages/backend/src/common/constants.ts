@@ -1,3 +1,9 @@
+if (process.env.TIPI_APP_DIR && process.env.TIPI_APP_DIR.includes('Users')) {
+    console.error('CRITICAL WARNING: Host path detected in container Env!', process.env.TIPI_APP_DIR);
+} else {
+    console.log('CONSTANTS LOADED. TIPI_APP_DIR:', process.env.TIPI_APP_DIR);
+}
+
 export const APP_DIR = process.env.TIPI_APP_DIR || '/app';
 export const DATA_DIR = process.env.TIPI_DATA_DIR || '/data';
 export const APP_DATA_DIR = process.env.TIPI_APP_DATA_DIR || '/app-data';

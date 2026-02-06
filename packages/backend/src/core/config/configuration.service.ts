@@ -63,7 +63,8 @@ export class ConfigurationService {
 
   // Lowest level, cannot use any other service or module to avoid circular dependencies
   constructor(private readonly envUtils: EnvUtils) {
-    dotenv.config({ path: this.envPath, override: true, quiet: true });
+    // Do not override existing env vars (e.g. from Docker)
+    dotenv.config({ path: this.envPath, override: false, quiet: true });
     this.logger = new LoggerService('backend', path.join(DATA_DIR, 'logs'), process.env.LOG_LEVEL as LogLevel);
     this.config = this.configure();
   }

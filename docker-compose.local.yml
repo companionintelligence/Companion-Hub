@@ -23,7 +23,7 @@ services:
 
   ci-os-hub-queue:
     container_name: ci-os-hub-queue
-    image: rabbitmq:4-alpine
+    image: rabbitmq:3.12-alpine
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "rabbitmqctl", "status"]
@@ -80,6 +80,7 @@ services:
       - ${RUNTIPI_BACKUPS_PATH:-.internal}/backups:/data/backups
       # Static
       - ${ENV_FILE:-.env}:/data/.env
+      - ${ENV_FILE:-.env}:/app/.env
       - ./.internal/cache:/cache
       - ./docker-compose.local.yml:/data/docker-compose.yml
       - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -91,6 +92,8 @@ services:
     environment:
       LOCAL: true
       NODE_ENV: development
+      TIPI_APP_DIR: /app
+      NODE_OPTIONS: "--dns-result-order=ipv4first"
       ROOT_FOLDER_HOST: ${PWD}/.internal
       POSTGRES_PASSWORD: postgres
       RABBITMQ_USERNAME: tipi

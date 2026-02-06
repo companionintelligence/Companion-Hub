@@ -150,6 +150,14 @@
             }
           },
           {
+            "name": "slug",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "subdomain",
             "required": true,
             "in": "query",
@@ -2722,10 +2730,6 @@
                 "type": "string",
                 "pattern": "^\\S.*\\S$|^\\S?$"
               },
-              "appsRepoUrl": {
-                "type": "string",
-                "format": "uri"
-              },
               "demoMode": {
                 "type": "boolean"
               },
@@ -2802,11 +2806,19 @@
                 "type": "string",
                 "pattern": "^\\S.*\\S$|^\\S?$"
               },
+              "appsRepoUrl": {
+                "type": "string",
+                "format": "uri"
+              },
               "ciHubApiKey": {
                 "type": "string",
                 "pattern": "^\\S.*\\S$|^\\S?$"
               },
               "ciHubOrganizationId": {
+                "type": "string",
+                "pattern": "^\\S.*\\S$|^\\S?$"
+              },
+              "ciHubOrganizationLabel": {
                 "type": "string",
                 "pattern": "^\\S.*\\S$|^\\S?$"
               },
@@ -2829,7 +2841,6 @@
               "allowAutoThemes",
               "allowErrorMonitoring",
               "appDataPath",
-              "appsRepoUrl",
               "demoMode",
               "disablePasswordReset",
               "dnsIp",
@@ -2920,6 +2931,9 @@
             "type": "string"
           },
           "ciHubOrganizationId": {
+            "type": "string"
+          },
+          "ciHubOrganizationLabel": {
             "type": "string"
           },
           "ciHubOrganizationSlug": {

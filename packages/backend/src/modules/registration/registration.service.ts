@@ -386,10 +386,9 @@ export class RegistrationService implements OnApplicationBootstrap {
       // The hub needs to be registered as an "app" so CI-Cloud knows to route the domain
       if (tunnelId) {
         try {
-          const hubSubdomain = subdomain as string; // e.g., "1-grok"
           const hubAppInfo: AppInfo = {
             name: 'ci-os-hub',
-            subdomain: hubSubdomain,
+            subdomain: subdomain!,
             localPort: 80, // Traefik port
             protocol: 'http' as const,
             hostname: 'traefik', // Route through Traefik

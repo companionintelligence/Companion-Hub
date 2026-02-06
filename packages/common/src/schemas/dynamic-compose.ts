@@ -15,6 +15,7 @@ export const CURRENT_SCHEMA_VERSION = 2;
 
 export const serviceSchemaV2 = z.object({
   image: z.string('CUSTOM_APP_ERROR_IMAGE_REQUIRED'),
+  pull_policy: z.enum(['always', 'never', 'missing', 'build']).optional(),
   name: z.string('CUSTOM_APP_ERROR_NAME_REQUIRED'),
   internalPort: z
     .union([

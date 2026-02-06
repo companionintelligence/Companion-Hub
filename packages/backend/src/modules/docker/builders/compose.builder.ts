@@ -88,6 +88,7 @@ export class DockerComposeBuilder {
     const service = new ServiceBuilder();
     service
       .setImage(params.image)
+      .setPullPolicy(params.pull_policy)
       .setName(params.name)
       .setEnvironment(params.environment)
       .setCommand(params.command)

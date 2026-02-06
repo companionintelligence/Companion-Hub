@@ -23,15 +23,29 @@ export class DatabaseService {
 
   private getMigrationsPath(): string {
     const { appDir } = this.configurationService.get('directories');
+    console.log(`[DB] Process CWD: ${process.cwd()}`);
+    console.log(`[DB] NODE_ENV: ${process.env.NODE_ENV}`);
 
     if (process.env.NODE_ENV === 'development') {
-      const devPath = path.resolve(process.cwd(), 'src/core/database/drizzle');
-      if (fs.existsSync(devPath)) {
-        return devPath;
-      }
+      // Try standard package path
+      let devPath = path.resolve(process.cwd(), 'src/core/database/drizzle');
+      console.log(`[DB] Checking dev path 1: ${devPath}`);
+      if (fs.existsSync(devPath)) return devPath;
+
+      // Try monorepo root path
+      devPath = path.resolve(process.cwd(), 'packages/backend/src/core/database/drizzle');
+      console.log(`[DB] Checking dev path 2: ${devPath}`);
+      if (fs.existsSync(devPath)) return devPath;
+      
+      // Try absolute path guess
+      devPath = '/app/packages/backend/src/core/database/drizzle';
+       console.log(`[DB] Checking dev path 3: ${devPath}`);
+      if (fs.existsSync(devPath)) return devPath;
     }
 
-    return path.join(appDir, 'assets', 'migrations');
+    const prodPath = path.join(appDir, 'assets', 'migrations');
+    console.log(`[DB] Using prod path: ${prodPath}`);
+    return prodPath;
   }
 
   migrate = async () => {
@@ -40,7 +54,8 @@ export class DatabaseService {
       await migrate(this.db, { migrationsFolder: this.getMigrationsPath() });
       this.logger.debug('Database migration complete.');
     } catch (error) {
-      this.logger.error('Error migrating database:', error);
+      const pathUsed = this.getMigrationsPath();
+      this.logger.error(`Error migrating database at path [${pathUsed}]:`, error);
       throw error;
     }
   };

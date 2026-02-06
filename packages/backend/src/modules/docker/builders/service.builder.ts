@@ -107,6 +107,7 @@ export interface BuilderService {
   sysctls?: Record<string, number>;
   dns?: string | string[];
   env_file?: string[];
+  pull_policy?: 'always' | 'never' | 'missing' | 'build';
 }
 
 export type BuiltService = ReturnType<typeof ServiceBuilder.prototype.build>;
@@ -129,6 +130,13 @@ export class ServiceBuilder {
    */
   setImage(image: string) {
     this.service.image = image;
+    return this;
+  }
+
+  setPullPolicy(policy?: 'always' | 'never' | 'missing' | 'build') {
+    if (policy) {
+      this.service.pull_policy = policy;
+    }
     return this;
   }
 
@@ -653,6 +661,7 @@ export class ServiceBuilder {
       sysctls: this.service.sysctls,
       dns: this.service.dns,
       env_file: this.service.env_file,
+      pull_policy: this.service.pull_policy,
     };
 
     // Delete any undefined properties
