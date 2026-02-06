@@ -85,7 +85,7 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
         setValue('port', info.port.toString());
       }
       // Set default subdomain if not provided
-      const defaultSubdomain = info.urn.split(':').join('-');
+      const defaultSubdomain = info.urn.split(':')[0]; // just the app name part of the urn as default
       if (!watchLocalSubdomain) {
         setValue('localSubdomain', defaultSubdomain);
       }
