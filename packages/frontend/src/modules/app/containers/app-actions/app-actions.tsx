@@ -15,6 +15,7 @@ import {
 } from '@tabler/icons-react';
 import type React from 'react';
 import { createElement, useState, useEffect } from 'react';
+import { client } from '@/api-client/client.gen';
 import { Button, type ButtonProps } from '@/components/ui/Button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/DropdownMenu';
 import { useDisclosure } from '@/lib/hooks/use-disclosure';
@@ -232,7 +233,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
   const [urlAvailable, setUrlAvailable] = useState<boolean | null>(null);
   const [isCheckingUrl, setIsCheckingUrl] = useState(false);
 
-  const subdomain = metadata.localSubdomain || app?.localSubdomain || info.urn.split(':').join('-');
+  const subdomain = app?.localSubdomain
   const organizationSlug = userSettings.ciHubOrganizationSlug;
   const domainSuffix = `-${organizationSlug}.${userSettings.domain}`;
   const appUrl = `https://${subdomain}${domainSuffix}${info.url_suffix || ''}`;
@@ -252,15 +253,13 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
         if (!isMounted || isAvailableRef) return;
 
         try {
-          const response = await fetch(appUrl);
-          const text = await response.text();
-          const isCloudflare = text.includes('Cloudflare Ray ID') || text.includes('cf-error-details');
-          const isAvailable = response.ok && !isCloudflare;
+          const { data } = await client.get({ url: `/apps/${info.urn}/check-availability` });
+          const { available, reason } = (data as any) || {};
 
           if (isMounted) {
-            setUrlAvailable(isAvailable);
+            setUrlAvailable(available);
 
-            if (isAvailable) {
+            if (available) {
               setIsCheckingUrl(false);
               setCheckError(null);
               // If available, stop polling
@@ -272,7 +271,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
             } else {
               // Page resolves but errors (e.g. Cloudflare error)
               setIsCheckingUrl(false); // Stop spinner to show error button
-              setCheckError(isCloudflare ? 'Cloudflare Error' : 'Application Error');
+              setCheckError(reason === 'CLOUDFLARE' ? 'Cloudflare Error' : 'Application Error');
             }
           }
         } catch (_error) {
@@ -281,7 +280,6 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
             setUrlAvailable(null);
             setCheckError(null);
             setIsCheckingUrl(true);
-            setIsCheckingUrl(false);
           }
         }
       };
@@ -312,8 +310,8 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
       key="open"
       IconComponent={IconExternalLink}
       onClick={() => {
-        // Navigate to the app at ${name}.${userSettings.domain} in the same tab
-        window.location.href = appUrl;
+        // Open the app in a new tab
+        window.open(appUrl, '_blank');
       }}
       title={t('APP_ACTION_OPEN')}
       disabled={isCheckingUrl || urlAvailable === false}

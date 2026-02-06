@@ -67,4 +67,10 @@ export class AppsController {
   async unignoreAppVersion(@Param('urn') urn: string) {
     return this.appsService.unignoreAppVersion(castAppUrn(urn));
   }
+
+  @Get(':urn/check-availability')
+  @UseGuards(AuthGuard)
+  async checkAvailability(@Param('urn') urn: string) {
+    return this.appsService.checkAppAvailability(castAppUrn(urn));
+  }
 }

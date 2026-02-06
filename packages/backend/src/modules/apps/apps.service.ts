@@ -1,11 +1,14 @@
 import { TranslatableError } from '@/common/error/translatable-error';
 import { createAppUrn } from '@/common/helpers/app-helpers';
 import { pLimit } from '@/common/helpers/file-helpers';
+import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import { Injectable } from '@nestjs/common';
-import type { AppUrn } from '@runtipi/common/types';
+import { Inject, Injectable, forwardRef } from '@nestjs/common';
 import { CURRENT_SCHEMA_VERSION, parseComposeJson } from '@runtipi/common/schemas';
+import type { AppUrn } from '@runtipi/common/types';
+import axios from 'axios';
 import { MarketplaceService } from '../marketplace/marketplace.service';
+import { RegistrationService } from '../registration/registration.service';
 import { AppFilesManager } from './app-files-manager';
 import { AppsRepository } from './apps.repository';
 
@@ -18,6 +21,8 @@ export class AppsService {
     private readonly appFilesManager: AppFilesManager,
     private readonly logger: LoggerService,
     private readonly marketplaceService: MarketplaceService,
+    private readonly configurationService: ConfigurationService,
+    @Inject(forwardRef(() => RegistrationService)) private readonly registrationService: RegistrationService,
   ) {}
 
   private async populateAppInfo(apps: AppList) {
@@ -120,6 +125,43 @@ export class AppsService {
     };
 
     return { app: app ?? null, info, metadata };
+  }
+
+  public async checkAppAvailability(appUrn: AppUrn): Promise<{ available: boolean; reason?: string }> {
+    const { app, info, metadata } = await this.getApp(appUrn);
+
+    if (!app || app.status !== 'running') {
+      return { available: false };
+    }
+
+    const config = this.configurationService.getConfig();
+    const userSettings = config.userSettings;
+    const org = await this.registrationService.getDeviceRegistrationInfo();
+    const organizationSlug = org?.slug;
+
+    if (!organizationSlug || !userSettings.domain) {
+      return { available: false }; // Should likely return check error, but boolean is fine for now
+    }
+
+    const subdomain = app.localSubdomain;
+    const domainSuffix = `-${organizationSlug}.${userSettings.domain}`;
+    const urlSuffix = (info as any).url_suffix || '';
+    const appUrl = `https://${subdomain}${domainSuffix}${urlSuffix}`;
+
+    try {
+      const response = await axios.get(appUrl, { timeout: 5000, validateStatus: () => true });
+      const text = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
+      const isCloudflare = text.includes('Cloudflare Ray ID') || text.includes('cf-error-details');
+
+      if (isCloudflare) {
+        return { available: false, reason: 'CLOUDFLARE' };
+      }
+
+      const available = response.status >= 200 && response.status < 300;
+      return { available };
+    } catch (e) {
+      return { available: false, reason: 'ERROR' };
+    }
   }
 
   public async getRandomPort(tries = 3): Promise<number> {
