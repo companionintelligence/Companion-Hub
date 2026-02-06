@@ -118,7 +118,7 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
 
     // Determine which subdomain to check
     // If localSubdomain is empty, use the default (appName-appStoreId format)
-    const subdomainToCheck = watchLocalSubdomain || info.urn.split(':').join('-');
+    const subdomainToCheck = watchLocalSubdomain || info.urn.split(':')[0];
 
     if (!subdomainToCheck) {
       setDnsAvailabilityError(null);
@@ -209,7 +209,7 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
                 label={t('APP_INSTALL_FORM_LOCAL_SUBDOMAIN')}
                 error={errors.localSubdomain?.message || dnsAvailabilityError || undefined}
                 disabled={loading}
-                placeholder={info.urn.split(':').join('-')}
+                placeholder={info.urn.split(':')[0]}
               />
             </div>
             <Controller
@@ -253,7 +253,7 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
 
     // Set default subdomain if not provided and app is exposable
     if (info.exposable && !formValues.localSubdomain) {
-      formValues.localSubdomain = info.urn.split(':').join('-');
+      formValues.localSubdomain = info.urn.split(':')[0];
     }
 
     const validationErrors = validateAppConfig(formValues, formFields);

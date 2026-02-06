@@ -13,7 +13,7 @@ import { useUserContext } from '@/context/user-context';
 import { GuestLinkTile } from '../components/guest-link-tile';
 
 const Tile = ({ data, localDomain, sslPort }: { data: GuestAppsDto['installed'][number]; localDomain: string; sslPort: number }) => {
-  const { info, app, metadata } = data;
+  const { info, app } = data;
 
   const hostname = typeof window !== 'undefined' ? window.location.hostname : '';
 
@@ -33,7 +33,7 @@ const Tile = ({ data, localDomain, sslPort }: { data: GuestAppsDto['installed'][
     }
 
     if (type === 'localDomain') {
-      url = `https://${metadata.localSubdomain}.${localDomain}${sslPort !== 443 ? `:${sslPort}` : ''}${info.url_suffix || ''}`;
+      url = `https://${app.localSubdomain}.${localDomain}${sslPort !== 443 ? `:${sslPort}` : ''}${info.url_suffix || ''}`;
     }
 
     window.open(url, '_blank', 'noreferrer');
@@ -59,7 +59,7 @@ const Tile = ({ data, localDomain, sslPort }: { data: GuestAppsDto['installed'][
           {(app.exposedLocal || !info.dynamic_config) && (
             <DropdownMenuItem onClick={() => handleOpen('localDomain')}>
               <IconLock className="text-muted me-2" size={16} />
-              {metadata.localSubdomain}.{localDomain}
+              {app.localSubdomain}.{localDomain}
               {sslPort !== 443 ? `:${sslPort}` : ''}
             </DropdownMenuItem>
           )}

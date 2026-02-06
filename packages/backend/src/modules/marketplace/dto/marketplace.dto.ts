@@ -4,7 +4,6 @@ import { createArkDto } from 'nestjs-arktype';
 
 const metadataSchema = type({
   hasCustomConfig: 'boolean?',
-  localSubdomain: 'string',
   latestVersion: 'number',
   minTipiVersion: type('string').or('null').optional(),
   latestDockerVersion: 'string?',

@@ -346,7 +346,6 @@ export type GuestAppsDto = {
         };
         metadata: {
             latestVersion: number;
-            localSubdomain: string;
             composeSchemaVersion?: number;
             hasCustomConfig?: boolean;
             latestDockerVersion?: string;

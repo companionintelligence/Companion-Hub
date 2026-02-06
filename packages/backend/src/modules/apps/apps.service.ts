@@ -54,7 +54,7 @@ export class AppsService {
             this.logger.debug(`Could not parse compose schema version for ${appUrn}:`, error);
           }
 
-          const localSubdomain = app.localSubdomain || appUrn.split(':').join('-');
+          const localSubdomain = app.localSubdomain || appUrn.split(':')[0];
           return {
             app,
             info: appInfo,
@@ -104,8 +104,6 @@ export class AppsService {
       throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', {}, 404);
     }
 
-    const localSubdomain = app?.localSubdomain || appUrn.split(':').join('-');
-
     let composeSchemaVersion: number | undefined;
     try {
       const compose = await this.appFilesManager.getDockerComposeJson(appUrn);
@@ -119,7 +117,6 @@ export class AppsService {
 
     const metadata = {
       hasCustomConfig,
-      localSubdomain,
       composeSchemaVersion: composeSchemaVersion ?? CURRENT_SCHEMA_VERSION,
       ...updateInfo,
     };
@@ -128,7 +125,7 @@ export class AppsService {
   }
 
   public async checkAppAvailability(appUrn: AppUrn): Promise<{ available: boolean; reason?: string }> {
-    const { app, info, metadata } = await this.getApp(appUrn);
+    const { app, info } = await this.getApp(appUrn);
 
     if (!app || app.status !== 'running') {
       return { available: false };
@@ -149,6 +146,7 @@ export class AppsService {
     const appUrl = `https://${subdomain}${domainSuffix}${urlSuffix}`;
 
     try {
+      console.log('trying to check availability of', appUrl);
       const response = await axios.get(appUrl, { timeout: 5000, validateStatus: () => true });
       const text = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
       const isCloudflare = text.includes('Cloudflare Ray ID') || text.includes('cf-error-details');
@@ -160,7 +158,7 @@ export class AppsService {
       const available = response.status >= 200 && response.status < 300;
       return { available };
     } catch (e) {
-      return { available: false, reason: 'ERROR' };
+      return { available: false, reason: e instanceof Error ? e.message : 'UNKNOWN_ERROR' };
     }
   }
 

@@ -233,7 +233,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
   const [urlAvailable, setUrlAvailable] = useState<boolean | null>(null);
   const [isCheckingUrl, setIsCheckingUrl] = useState(false);
 
-  const subdomain = app?.localSubdomain
+  const subdomain = app?.localSubdomain;
   const organizationSlug = userSettings.ciHubOrganizationSlug;
   const domainSuffix = `-${organizationSlug}.${userSettings.domain}`;
   const appUrl = `https://${subdomain}${domainSuffix}${info.url_suffix || ''}`;
@@ -253,7 +253,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
         if (!isMounted || isAvailableRef) return;
 
         try {
-          const { data } = await client.get({ url: `/apps/${info.urn}/check-availability` });
+          const { data } = await client.get({ url: `/api/apps/${info.urn}/check-availability` });
           const { available, reason } = (data as any) || {};
 
           if (isMounted) {
@@ -274,12 +274,12 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
               setCheckError(reason === 'CLOUDFLARE' ? 'Cloudflare Error' : 'Application Error');
             }
           }
-        } catch (_error) {
+        } catch (error) {
           // If check request fails (e.g. CORS or network error/DNS not found), keep loading (DNS propagating)
           if (isMounted) {
             setUrlAvailable(null);
-            setCheckError(null);
             setIsCheckingUrl(true);
+            setCheckError(error instanceof Error ? error.message : 'Unknown error');
           }
         }
       };
