@@ -11,7 +11,7 @@ import { join } from 'node:path';
 
 const RESULTS_DIR = process.env.RESULTS_DIR || join(process.env.HOME || '~', 'qa-results');
 const SCREENSHOTS_DIR = join(RESULTS_DIR, 'screenshots');
-const APP_STORE_DIR = '../CI-App-Store/apps';
+const APP_STORE_DIR = process.env.APP_STORE_DIR || join(process.env.HOME || '~', 'devel/CI-App-Store/apps');
 
 interface QAResult {
   appId: string;

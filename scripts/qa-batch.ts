@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { join } from 'node:path';
 
 const RESULTS_DIR = process.env.RESULTS_DIR || join(process.env.HOME || '~', 'qa-results');
-const APP_STORE_DIR = '../CI-App-Store/apps';
+const APP_STORE_DIR = process.env.APP_STORE_DIR || join(process.env.HOME || '~', 'devel/CI-App-Store/apps');
 const BATCH = parseInt(process.env.BATCH || '0', 10);
 const BATCH_SIZE = 86;
 
