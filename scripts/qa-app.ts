@@ -180,8 +180,9 @@ async function qaApp(appId: string): Promise<QAResult> {
     const screenshotPath = join(SCREENSHOTS_DIR, `${appId}.png`);
     
     try {
+      // Use 'bun x' not 'bunx' - bunx doesn't exist in bun
       execSync(
-        `bunx playwright screenshot http://localhost:${result.port}/ "${screenshotPath}" --wait-for-timeout=3000`,
+        `bun x playwright screenshot http://localhost:${result.port}/ "${screenshotPath}" --wait-for-timeout=3000`,
         { stdio: 'pipe', timeout: 30000 }
       );
       result.screenshotPath = screenshotPath;
