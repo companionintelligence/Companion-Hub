@@ -174,6 +174,11 @@ export class ReposHelpers {
         };
 
         await fs.promises.writeFile(path.join(appDir, 'config.json'), JSON.stringify(enrichedApp, null, 2));
+
+        // Write docker-compose.json if available
+        if (typeof app.compose === 'string') {
+          await fs.promises.writeFile(path.join(appDir, 'docker-compose.json'), app.compose);
+        }
       }
 
       // Also write a repo.json or config.json so Tipi sees it as a valid repo?

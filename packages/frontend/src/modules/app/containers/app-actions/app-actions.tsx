@@ -254,7 +254,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
 
         try {
           const { data } = await client.get({ url: `/api/apps/${info.urn}/check-availability` });
-          const { available, reason } = (data as any) || {};
+          const { available, reason } = (data || {}) as { available: boolean; reason?: 'CLOUDFLARE' | 'APP_ERROR' };
 
           if (isMounted) {
             setUrlAvailable(available);
@@ -303,7 +303,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
     setUrlAvailable(null);
     setIsCheckingUrl(false);
     setCheckError(null);
-  }, [app?.status, app?.exposedLocal, app?.openPort, app?.exposed, info.no_gui, appUrl]);
+  }, [app?.status, app?.exposedLocal, app?.openPort, app?.exposed, info.no_gui, info.urn]);
 
   const OpenButton = (
     <ActionButton

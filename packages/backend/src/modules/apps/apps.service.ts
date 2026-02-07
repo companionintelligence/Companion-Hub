@@ -142,11 +142,10 @@ export class AppsService {
 
     const subdomain = app.localSubdomain;
     const domainSuffix = `-${organizationSlug}.${userSettings.domain}`;
-    const urlSuffix = (info as any).url_suffix || '';
+    const urlSuffix = info.url_suffix || '';
     const appUrl = `https://${subdomain}${domainSuffix}${urlSuffix}`;
 
     try {
-      console.log('trying to check availability of', appUrl);
       const response = await axios.get(appUrl, { timeout: 5000, validateStatus: () => true });
       const text = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
       const isCloudflare = text.includes('Cloudflare Ray ID') || text.includes('cf-error-details');
