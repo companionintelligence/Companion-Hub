@@ -142,7 +142,7 @@ export class AppsService {
 
     const subdomain = app.localSubdomain;
     const domainSuffix = `-${organizationSlug}.${userSettings.domain}`;
-    const urlSuffix = (info as any).url_suffix || '';
+    const urlSuffix = info.url_suffix || '';
     const appUrl = `https://${subdomain}${domainSuffix}${urlSuffix}`;
 
     try {

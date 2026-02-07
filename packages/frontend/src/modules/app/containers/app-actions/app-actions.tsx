@@ -254,7 +254,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
 
         try {
           const { data } = await client.get({ url: `/api/apps/${info.urn}/check-availability` });
-          const { available, reason } = (data as any) || {};
+          const { available, reason } = (data || {}) as { available: boolean; reason?: 'CLOUDFLARE' | 'APP_ERROR' };
 
           if (isMounted) {
             setUrlAvailable(available);
