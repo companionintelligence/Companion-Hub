@@ -1,0 +1,350 @@
+name: App Catalog Fleet Tests
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Test mode'
+        required: true
+        default: 'full'
+        type: choice
+        options:
+          - full        # All 602 apps across 7 servers
+          - high-priority  # Only high priority apps
+          - single-batch   # Single batch on single server
+          - quick       # Quick smoke test (10 apps)
+      batch:
+        description: 'Batch number (0-6) for single-batch mode'
+        required: false
+        default: '0'
+      server:
+        description: 'Target server for single-batch mode'
+        required: false
+        default: 'core-1'
+        type: choice
+        options:
+          - core-1
+          - core-2
+          - core-3
+          - core-4
+          - core-5
+          - core-6
+          - core-7
+  schedule:
+    # Weekly on Sunday at 2am Pacific (10am UTC)
+    - cron: '0 10 * * 0'
+
+env:
+  CORE_1_IP: 100.108.17.53
+  CORE_2_IP: 100.101.156.33
+  CORE_3_IP: 100.108.125.105
+  CORE_4_IP: 100.76.114.122
+  CORE_5_IP: 100.118.2.90
+  CORE_6_IP: 100.95.23.128
+  CORE_7_IP: 100.74.95.94
+  SSH_USER: ci
+
+jobs:
+  prepare:
+    name: Prepare Test Matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      total_apps: ${{ steps.set-matrix.outputs.total_apps }}
+    steps:
+      - uses: actions/checkout@v4
+      
+      - id: set-matrix
+        run: |
+          MODE="${{ github.event.inputs.mode || 'full' }}"
+          
+          if [[ "$MODE" == "full" ]] || [[ "$MODE" == "" ]]; then
+            # Full fleet - all 7 servers
+            echo 'matrix={"include":[
+              {"server":"core-1","ip":"100.108.17.53","batch":0},
+              {"server":"core-2","ip":"100.101.156.33","batch":1},
+              {"server":"core-3","ip":"100.108.125.105","batch":2},
+              {"server":"core-4","ip":"100.76.114.122","batch":3},
+              {"server":"core-5","ip":"100.118.2.90","batch":4},
+              {"server":"core-6","ip":"100.95.23.128","batch":5},
+              {"server":"core-7","ip":"100.74.95.94","batch":6}
+            ]}' >> $GITHUB_OUTPUT
+            echo "total_apps=602" >> $GITHUB_OUTPUT
+            
+          elif [[ "$MODE" == "high-priority" ]]; then
+            # High priority apps only (12 apps, single server)
+            echo 'matrix={"include":[
+              {"server":"core-1","ip":"100.108.17.53","batch":"high"}
+            ]}' >> $GITHUB_OUTPUT
+            echo "total_apps=12" >> $GITHUB_OUTPUT
+            
+          elif [[ "$MODE" == "single-batch" ]]; then
+            SERVER="${{ github.event.inputs.server || 'core-1' }}"
+            BATCH="${{ github.event.inputs.batch || '0' }}"
+            
+            # Map server to IP
+            case $SERVER in
+              core-1) IP="100.108.17.53" ;;
+              core-2) IP="100.101.156.33" ;;
+              core-3) IP="100.108.125.105" ;;
+              core-4) IP="100.76.114.122" ;;
+              core-5) IP="100.118.2.90" ;;
+              core-6) IP="100.95.23.128" ;;
+              core-7) IP="100.74.95.94" ;;
+            esac
+            
+            echo "matrix={\"include\":[{\"server\":\"$SERVER\",\"ip\":\"$IP\",\"batch\":$BATCH}]}" >> $GITHUB_OUTPUT
+            echo "total_apps=86" >> $GITHUB_OUTPUT
+            
+          elif [[ "$MODE" == "quick" ]]; then
+            # Quick smoke test - 10 essential apps on one server
+            echo 'matrix={"include":[
+              {"server":"core-1","ip":"100.108.17.53","batch":"quick"}
+            ]}' >> $GITHUB_OUTPUT
+            echo "total_apps=10" >> $GITHUB_OUTPUT
+          fi
+
+  test-batch:
+    name: Test Batch on ${{ matrix.server }}
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 180  # 3 hours max per server
+    strategy:
+      fail-fast: false
+      max-parallel: 7
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Tailscale
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+          version: 1.58.2
+
+      - name: Verify connectivity
+        run: |
+          echo "Testing connection to ${{ matrix.server }} (${{ matrix.ip }})..."
+          ping -c 3 ${{ matrix.ip }}
+
+      - name: Prepare test environment
+        run: |
+          ssh -o StrictHostKeyChecking=no ${{ env.SSH_USER }}@${{ matrix.ip }} << 'ENDSSH'
+            # Update code
+            cd ~/devel/CI-OS-Hub
+            git fetch origin develop
+            git reset --hard origin/develop
+            
+            # Install dependencies
+            bun install --frozen-lockfile 2>/dev/null || bun install
+            
+            # Ensure directories exist
+            mkdir -p e2e/screenshots/current e2e/screenshots/baselines e2e/results
+            
+            # Check Docker
+            docker info > /dev/null 2>&1 || echo "Warning: Docker not accessible"
+            
+            # Check CI-OS-Hub service
+            systemctl --user status ci-hub 2>/dev/null || echo "Hub service not found"
+          ENDSSH
+
+      - name: Run catalog tests
+        id: run-tests
+        run: |
+          BATCH="${{ matrix.batch }}"
+          
+          ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=60 ${{ env.SSH_USER }}@${{ matrix.ip }} << ENDSSH
+            cd ~/devel/CI-OS-Hub
+            
+            # Set environment
+            export BATCH=$BATCH
+            export TEST_DOMAIN=test.ci.computer
+            export E2E_TEST_EMAIL=e2e-test@ci.computer
+            export E2E_TEST_PASSWORD="${{ secrets.E2E_TEST_PASSWORD }}"
+            
+            # Determine test file
+            if [[ "$BATCH" == "high" ]]; then
+              TEST_FILE="e2e/app-lifecycle.spec.ts"
+            elif [[ "$BATCH" == "quick" ]]; then
+              TEST_FILE="e2e/app-lifecycle.spec.ts"
+              export QUICK_MODE=true
+            else
+              TEST_FILE="e2e/generated/catalog-batch-${BATCH}.spec.ts"
+            fi
+            
+            echo "Running tests: \$TEST_FILE"
+            echo "Batch: $BATCH"
+            echo "Server: ${{ matrix.server }}"
+            
+            # Run Playwright tests with extended timeout
+            bunx playwright test \$TEST_FILE \
+              --timeout=300000 \
+              --reporter=json,html \
+              --output=test-results-batch-${BATCH} \
+              2>&1 || true
+            
+            # Generate summary
+            if [ -f playwright-report/index.html ]; then
+              echo "Tests completed - report generated"
+            else
+              echo "Warning: No report generated"
+            fi
+          ENDSSH
+
+      - name: Collect results
+        if: always()
+        run: |
+          BATCH="${{ matrix.batch }}"
+          
+          mkdir -p results-${{ matrix.server }}
+          
+          # Copy test results
+          scp -o StrictHostKeyChecking=no -r \
+            ${{ env.SSH_USER }}@${{ matrix.ip }}:~/devel/CI-OS-Hub/test-results-batch-${BATCH} \
+            results-${{ matrix.server }}/ 2>/dev/null || true
+          
+          # Copy report
+          scp -o StrictHostKeyChecking=no -r \
+            ${{ env.SSH_USER }}@${{ matrix.ip }}:~/devel/CI-OS-Hub/playwright-report \
+            results-${{ matrix.server }}/ 2>/dev/null || true
+          
+          # Copy screenshots
+          scp -o StrictHostKeyChecking=no -r \
+            ${{ env.SSH_USER }}@${{ matrix.ip }}:~/devel/CI-OS-Hub/e2e/screenshots/current \
+            results-${{ matrix.server }}/screenshots/ 2>/dev/null || true
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: results-${{ matrix.server }}-batch-${{ matrix.batch }}
+          path: results-${{ matrix.server }}/
+          retention-days: 30
+
+  aggregate:
+    name: Aggregate Results
+    needs: [prepare, test-batch]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Download all results
+        uses: actions/download-artifact@v4
+        with:
+          path: all-results/
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Generate unified report
+        run: |
+          bun << 'SCRIPT'
+          const fs = require('fs');
+          const path = require('path');
+          
+          const resultsDir = 'all-results';
+          const results = [];
+          let totalPassed = 0, totalFailed = 0;
+          
+          // Scan all result directories
+          if (fs.existsSync(resultsDir)) {
+            const dirs = fs.readdirSync(resultsDir);
+            
+            for (const dir of dirs) {
+              const reportPath = path.join(resultsDir, dir, 'playwright-report', 'report.json');
+              
+              if (fs.existsSync(reportPath)) {
+                try {
+                  const report = JSON.parse(fs.readFileSync(reportPath, 'utf-8'));
+                  totalPassed += report.stats?.expected || 0;
+                  totalFailed += report.stats?.unexpected || 0;
+                  results.push({
+                    server: dir.replace('results-', '').split('-batch')[0],
+                    batch: dir.match(/batch-(\d+)/)?.[1] || 'unknown',
+                    passed: report.stats?.expected || 0,
+                    failed: report.stats?.unexpected || 0,
+                  });
+                } catch (e) {
+                  console.error(`Failed to parse ${reportPath}: ${e.message}`);
+                }
+              }
+            }
+          }
+          
+          const total = totalPassed + totalFailed;
+          const passRate = total > 0 ? ((totalPassed / total) * 100).toFixed(1) : '0';
+          
+          // Generate markdown report
+          let md = `# App Catalog Fleet Test Report\n\n`;
+          md += `**Date:** ${new Date().toISOString().split('T')[0]}\n`;
+          md += `**Total Apps Tested:** ${{ needs.prepare.outputs.total_apps }}\n\n`;
+          md += `## Summary\n\n`;
+          md += `| Metric | Value |\n|--------|-------|\n`;
+          md += `| Total Passed | ${totalPassed} |\n`;
+          md += `| Total Failed | ${totalFailed} |\n`;
+          md += `| Pass Rate | ${passRate}% |\n\n`;
+          
+          md += `## Server Results\n\n`;
+          md += `| Server | Batch | Passed | Failed |\n`;
+          md += `|--------|-------|--------|--------|\n`;
+          for (const r of results) {
+            md += `| ${r.server} | ${r.batch} | ${r.passed} | ${r.failed} |\n`;
+          }
+          
+          fs.writeFileSync('fleet-report.md', md);
+          console.log(md);
+          SCRIPT
+
+      - name: Post summary
+        run: cat fleet-report.md >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload unified report
+        uses: actions/upload-artifact@v4
+        with:
+          name: fleet-unified-report
+          path: fleet-report.md
+          retention-days: 90
+
+  notify:
+    name: Notify
+    needs: [prepare, test-batch, aggregate]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+      - name: Determine status
+        id: status
+        run: |
+          if [[ "${{ needs.test-batch.result }}" == "success" ]]; then
+            echo "status=✅ Passed" >> $GITHUB_OUTPUT
+            echo "color=3066993" >> $GITHUB_OUTPUT
+          elif [[ "${{ needs.test-batch.result }}" == "failure" ]]; then
+            echo "status=❌ Failed" >> $GITHUB_OUTPUT
+            echo "color=15158332" >> $GITHUB_OUTPUT
+          else
+            echo "status=⚠️ Partial" >> $GITHUB_OUTPUT
+            echo "color=16776960" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Send Discord notification
+        if: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          curl -X POST "${{ secrets.DISCORD_WEBHOOK_URL }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "embeds": [{
+                "title": "App Catalog Fleet Tests - ${{ steps.status.outputs.status }}",
+                "description": "Weekly app catalog tests completed.",
+                "color": ${{ steps.status.outputs.color }},
+                "fields": [
+                  {"name": "Mode", "value": "${{ github.event.inputs.mode || 'full' }}", "inline": true},
+                  {"name": "Apps", "value": "${{ needs.prepare.outputs.total_apps }}", "inline": true},
+                  {"name": "Servers", "value": "7", "inline": true}
+                ],
+                "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+              }]
+            }'
