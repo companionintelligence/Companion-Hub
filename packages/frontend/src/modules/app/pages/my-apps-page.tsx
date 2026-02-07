@@ -42,7 +42,12 @@ export default () => {
 
     if (info.available) {
       return (
-        <Link key={app.id} to={`/apps/${storeId}/${appName}`} className="col-sm-6 col-lg-4 app-link p-2 pt-0 pb-0 mb-0">
+        <Link
+          key={app.id}
+          to={`/apps/${storeId}/${appName}`}
+          className="col-sm-6 col-lg-4 app-link p-2 pt-0 pb-0 mb-0"
+          data-testid={`installed-app-${appName}`}
+        >
           <AppTile key={info.urn} status={app.status} info={info} updateAvailable={updateAvailable} pendingRestart={app.pendingRestart} />
         </Link>
       );

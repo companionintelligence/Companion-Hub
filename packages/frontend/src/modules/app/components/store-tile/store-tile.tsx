@@ -16,7 +16,7 @@ export const StoreTile: React.FC<{ app: AppInfoSimple; isLoading: boolean }> = (
   const [appId, storeId] = app.urn.split(':');
 
   return (
-    <Link aria-label={app.name} className="app-tile" to={`/app-store/${storeId}/${appId}`}>
+    <Link aria-label={app.name} className="app-tile" to={`/app-store/${storeId}/${appId}`} data-testid={`app-card-${appId}`}>
       <div key={app.id} className="d-flex overflow-hidden align-items-center py-2 ps-2">
         <Skeleton loading={isLoading}>
           <AppLogo className="logo" urn={app.urn} placeholder={isLoading} />

@@ -1,0 +1,162 @@
+name: Fleet E2E Tests
+on:
+  workflow_dispatch:
+    inputs:
+      server:
+        description: 'Target server (core-5, core-6, core-7)'
+        required: true
+        default: 'core-6'
+        type: choice
+        options:
+          - core-5
+          - core-6
+          - core-7
+      test_suite:
+        description: 'Test suite to run'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - ftue
+          - cloudflare
+          - tailscale
+          - cloud-account
+          - app-lifecycle
+  schedule:
+    # Run nightly at 3am Pacific
+    - cron: '0 11 * * *'
+
+env:
+  # Server IPs on Tailscale
+  CORE_5_IP: 100.118.2.90
+  CORE_6_IP: 100.95.23.128
+  CORE_7_IP: 100.74.95.94
+
+jobs:
+  e2e-fleet:
+    name: E2E Tests on ${{ github.event.inputs.server || 'core-6' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Tailscale
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+
+      - name: Set server IP
+        id: server-ip
+        run: |
+          SERVER="${{ github.event.inputs.server || 'core-6' }}"
+          case $SERVER in
+            core-5) echo "ip=${{ env.CORE_5_IP }}" >> $GITHUB_OUTPUT ;;
+            core-6) echo "ip=${{ env.CORE_6_IP }}" >> $GITHUB_OUTPUT ;;
+            core-7) echo "ip=${{ env.CORE_7_IP }}" >> $GITHUB_OUTPUT ;;
+          esac
+          echo "server=$SERVER" >> $GITHUB_OUTPUT
+
+      - name: Verify Tailscale connectivity
+        run: |
+          ping -c 3 ${{ steps.server-ip.outputs.ip }} || exit 1
+          echo "Successfully connected to ${{ steps.server-ip.outputs.server }}"
+
+      - name: Install dependencies
+        uses: "./.github/actions/install-dependencies"
+
+      - name: Get installed playwright version
+        id: playwright-version
+        run: echo "version=$(node -e "console.log(require('./package.json').devDependencies['@playwright/test'])")" >> $GITHUB_OUTPUT
+
+      - name: Cache Playwright binaries
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ steps.playwright-version.outputs.version }}
+
+      - name: Install Playwright Browsers
+        run: bunx playwright install --with-deps chromium
+
+      - name: Create .env.e2e file
+        run: |
+          cat > .env.e2e << EOF
+          SERVER_IP=${{ steps.server-ip.outputs.ip }}
+          SERVER_PORT=80
+          NODE_ENV=test
+          CF_API_TOKEN=${{ secrets.CF_API_TOKEN }}
+          CF_ZONE_ID=${{ secrets.CF_ZONE_ID }}
+          TS_AUTH_KEY=${{ secrets.TS_AUTH_KEY }}
+          RUN_TAILSCALE_TESTS=true
+          TEST_DOMAIN=test.ci.computer
+          CLOUD_URL=https://cloud.ci.computer
+          TEST_EMAIL=e2e-test@ci.computer
+          TEST_PASSWORD=${{ secrets.E2E_TEST_PASSWORD }}
+          EOF
+
+      - name: Determine test pattern
+        id: test-pattern
+        run: |
+          SUITE="${{ github.event.inputs.test_suite || 'all' }}"
+          case $SUITE in
+            all) echo "pattern=e2e/*.spec.ts" >> $GITHUB_OUTPUT ;;
+            ftue) echo "pattern=e2e/ftue.spec.ts" >> $GITHUB_OUTPUT ;;
+            cloudflare) echo "pattern=e2e/cloudflare.spec.ts" >> $GITHUB_OUTPUT ;;
+            tailscale) echo "pattern=e2e/tailscale.spec.ts" >> $GITHUB_OUTPUT ;;
+            cloud-account) echo "pattern=e2e/cloud-account.spec.ts" >> $GITHUB_OUTPUT ;;
+            app-lifecycle) echo "pattern=e2e/app-lifecycle.spec.ts" >> $GITHUB_OUTPUT ;;
+          esac
+
+      - name: Run Playwright tests
+        run: |
+          bunx playwright test ${{ steps.test-pattern.outputs.pattern }} --workers=1
+        env:
+          SERVER_IP: ${{ steps.server-ip.outputs.ip }}
+
+      - name: Upload test report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-report-${{ steps.server-ip.outputs.server }}
+          path: playwright-report/
+          retention-days: 14
+
+      - name: Upload screenshots
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-screenshots-${{ steps.server-ip.outputs.server }}
+          path: e2e/screenshots/
+          retention-days: 14
+
+  notify:
+    name: Notify Results
+    runs-on: ubuntu-latest
+    needs: [e2e-fleet]
+    if: always()
+    steps:
+      - name: Send Discord notification
+        if: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          STATUS="${{ needs.e2e-fleet.result }}"
+          SERVER="${{ github.event.inputs.server || 'core-6' }}"
+          COLOR=$([[ "$STATUS" == "success" ]] && echo "3066993" || echo "15158332")
+          
+          curl -X POST "${{ secrets.DISCORD_WEBHOOK_URL }}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"embeds\": [{
+                \"title\": \"E2E Tests - $STATUS\",
+                \"description\": \"Fleet E2E tests on $SERVER completed.\",
+                \"color\": $COLOR,
+                \"fields\": [
+                  {\"name\": \"Server\", \"value\": \"$SERVER\", \"inline\": true},
+                  {\"name\": \"Suite\", \"value\": \"${{ github.event.inputs.test_suite || 'all' }}\", \"inline\": true}
+                ],
+                \"url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
+              }]
+            }"

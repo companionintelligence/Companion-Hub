@@ -1,0 +1,26 @@
+{
+  "generated": "2026-02-07T10:44:11.224Z",
+  "totalApps": 601,
+  "batches": 7,
+  "appsPerBatch": 86,
+  "byPriority": {
+    "high": 12,
+    "medium": 115,
+    "low": 474
+  },
+  "byCategory": {
+    "data": 128,
+    "utilities": 197,
+    "media": 68,
+    "ai": 15,
+    "photography": 3,
+    "development": 51,
+    "automation": 32,
+    "security": 30,
+    "music": 12,
+    "network": 63,
+    "finance": 82,
+    "social": 41,
+    "featured": 4
+  }
+}

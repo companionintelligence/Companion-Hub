@@ -12,30 +12,35 @@ interface IProps {
   isLoading?: boolean;
 }
 
-export const SystemStat: React.FC<IProps> = ({ icon: IconComponent, progress, title, subtitle, metric, isLoading }) => (
-  <div className="col-sm-6 col-lg-4 px-1 pt-0 pb-0">
-    <div className="card">
-      <div className="card-body">
-        <div className="d-flex justify-content-between align-items-start">
-          <Skeleton loading={isLoading}>
-            <div className={clsx('h2 mb-3 font-weight-bold')}>{title}</div>
-          </Skeleton>
-          <IconComponent />
-        </div>
-        <div className={clsx('h2')}>
-          <Skeleton loading={isLoading}>{metric}</Skeleton>
-        </div>
-        <div className={clsx('mb-3 text-muted')}>
-          <Skeleton loading={isLoading}>{subtitle}</Skeleton>
-        </div>
-        <Skeleton loading={isLoading}>
-          <div className="progress progress-sm">
-            <div className="progress-bar bg-primary" style={{ width: `${progress.toFixed(0)}%` }}>
-              <span className="visually-hidden">{`${progress.toFixed(0)}%`}</span>
-            </div>
+export const SystemStat: React.FC<IProps> = ({ icon: IconComponent, progress, title, subtitle, metric, isLoading }) => {
+  // Generate testId from title (e.g., "Disk space" -> "stat-disk-space")
+  const testId = `stat-${title.toLowerCase().replace(/\s+/g, '-')}`;
+
+  return (
+    <div className="col-sm-6 col-lg-4 px-1 pt-0 pb-0" data-testid={testId}>
+      <div className="card">
+        <div className="card-body">
+          <div className="d-flex justify-content-between align-items-start">
+            <Skeleton loading={isLoading}>
+              <div className={clsx('h2 mb-3 font-weight-bold')}>{title}</div>
+            </Skeleton>
+            <IconComponent />
           </div>
-        </Skeleton>
+          <div className={clsx('h2')}>
+            <Skeleton loading={isLoading}>{metric}</Skeleton>
+          </div>
+          <div className={clsx('mb-3 text-muted')}>
+            <Skeleton loading={isLoading}>{subtitle}</Skeleton>
+          </div>
+          <Skeleton loading={isLoading}>
+            <div className="progress progress-sm" data-testid={`${testId}-progress`}>
+              <div className="progress-bar bg-primary" style={{ width: `${progress.toFixed(0)}%` }}>
+                <span className="visually-hidden">{`${progress.toFixed(0)}%`}</span>
+              </div>
+            </div>
+          </Skeleton>
+        </div>
       </div>
     </div>
-  </div>
-);
+  );
+};

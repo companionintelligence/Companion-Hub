@@ -56,7 +56,9 @@ interface BtnProps extends ButtonProps {
 const ActionButton: React.FC<BtnProps> = (props) => {
   const { IconComponent, loading, title, className, ...rest } = props;
 
-  const testId = loading ? 'action-button-loading' : undefined;
+  // Generate testId from title (e.g., "Start" -> "action-start", "Install" -> "action-install")
+  const actionName = title?.toString().toLowerCase().replace(/\s+/g, '-') || 'unknown';
+  const testId = loading ? 'action-button-loading' : `action-${actionName}`;
 
   return (
     <Button data-testid={testId} loading={loading} {...rest} className={clsx('action-button', className)}>
