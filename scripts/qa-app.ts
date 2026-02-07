@@ -66,11 +66,28 @@ async function qaApp(appId: string): Promise<QAResult> {
     result.name = config.name || appId;
     result.port = config.port || 80;
     
-    // Get image from docker-compose
-    const composePath = join(APP_STORE_DIR, appId, 'docker-compose.yml');
-    const composeContent = readFileSync(composePath, 'utf-8');
-    const imageMatch = composeContent.match(/image:\s*(.+)/);
-    result.image = imageMatch ? imageMatch[1].trim() : `${appId}:latest`;
+    // Get image from docker-compose.json (runtipi format)
+    const composeJsonPath = join(APP_STORE_DIR, appId, 'docker-compose.json');
+    const composeYmlPath = join(APP_STORE_DIR, appId, 'docker-compose.yml');
+    
+    if (existsSync(composeJsonPath)) {
+      // Runtipi JSON format
+      const compose = JSON.parse(readFileSync(composeJsonPath, 'utf-8'));
+      const mainService = compose.services?.find((s: { isMain?: boolean }) => s.isMain) || compose.services?.[0];
+      if (mainService) {
+        result.image = mainService.image;
+        result.port = mainService.internalPort || result.port;
+      } else {
+        result.image = `${appId}:latest`;
+      }
+    } else if (existsSync(composeYmlPath)) {
+      // Traditional docker-compose.yml
+      const composeContent = readFileSync(composeYmlPath, 'utf-8');
+      const imageMatch = composeContent.match(/image:\s*(.+)/);
+      result.image = imageMatch ? imageMatch[1].trim() : `${appId}:latest`;
+    } else {
+      throw new Error(`No docker-compose found for ${appId}`);
+    }
     
     console.log(`   Name: ${result.name}`);
     console.log(`   Image: ${result.image}`);
