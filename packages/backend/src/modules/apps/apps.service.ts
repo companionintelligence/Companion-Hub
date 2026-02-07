@@ -146,7 +146,6 @@ export class AppsService {
     const appUrl = `https://${subdomain}${domainSuffix}${urlSuffix}`;
 
     try {
-      console.log('trying to check availability of', appUrl);
       const response = await axios.get(appUrl, { timeout: 5000, validateStatus: () => true });
       const text = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
       const isCloudflare = text.includes('Cloudflare Ray ID') || text.includes('cf-error-details');

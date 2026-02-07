@@ -303,7 +303,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
     setUrlAvailable(null);
     setIsCheckingUrl(false);
     setCheckError(null);
-  }, [app?.status, app?.exposedLocal, app?.openPort, app?.exposed, info.no_gui, appUrl]);
+  }, [app?.status, app?.exposedLocal, app?.openPort, app?.exposed, info.no_gui, info.urn]);
 
   const OpenButton = (
     <ActionButton
