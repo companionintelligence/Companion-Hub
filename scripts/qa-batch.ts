@@ -66,7 +66,7 @@ async function main() {
       // Run qa-app.ts for this app
       execSync(`bun run scripts/qa-app.ts ${appId}`, {
         stdio: 'inherit',
-        env: { ...process.env, RESULTS_DIR },
+        env: { ...process.env, RESULTS_DIR, APP_STORE_DIR },
         timeout: 300000, // 5 min max per app
       });
       
