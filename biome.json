@@ -17,7 +17,8 @@
       "!**/api-client",
       "!**/swagger.json",
       "!**/packages/backend/src/core/database/drizzle/meta",
-      "!**/packages/frontend/src/styles/transparent-theme.css"
+      "!**/packages/frontend/src/styles/transparent-theme.css",
+      "!**/packages/frontend/src/styles/globals.css"
     ]
   },
   "formatter": {

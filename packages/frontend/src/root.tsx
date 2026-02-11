@@ -5,6 +5,7 @@ import type { Route } from './+types/root';
 import { userContext } from './api-client';
 import { client } from './api-client/client.gen';
 import stylesheet from './app.css?url';
+import globalsStylesheet from './styles/globals.css?url';
 import transparentTheme from './styles/transparent-theme.css?url';
 import { Providers } from './components/providers/providers';
 import { TranslatableError } from './types/error.types';
@@ -39,7 +40,11 @@ client.setConfig({
 });
 
 export const links: Route.LinksFunction = () => [
+  { rel: 'preconnect', href: 'https://fonts.googleapis.com' },
+  { rel: 'preconnect', href: 'https://fonts.gstatic.com', crossOrigin: 'anonymous' },
+  { rel: 'stylesheet', href: 'https://fonts.googleapis.com/css2?family=Montserrat:wght@200;400;500;600;700&display=swap' },
   { rel: 'stylesheet', href: stylesheet },
+  { rel: 'stylesheet', href: globalsStylesheet },
   { rel: 'stylesheet', href: transparentTheme },
   { rel: 'apple-touch-icon', sizes: '180x180', href: '/icons/apple-touch-icon.png' },
   { rel: 'icon', type: 'image/png', sizes: '32x32', href: '/icons/favicon-96x96.png' },

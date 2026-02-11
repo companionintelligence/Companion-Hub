@@ -122,7 +122,8 @@ test.describe('Tailscale Binding', () => {
     // Access via HTTPS (requires being on tailnet)
     if (process.env.RUN_TAILSCALE_TESTS === 'true') {
       const servePage = await context.newPage();
-      await servePage.goto(serveUrl!, { waitUntil: 'networkidle' });
+      if (!serveUrl) throw new Error('Serve URL not found');
+      await servePage.goto(serveUrl, { waitUntil: 'networkidle' });
 
       // Verify HTTPS is working
       await expect(servePage.getByText(/companion|hub/i)).toBeVisible();

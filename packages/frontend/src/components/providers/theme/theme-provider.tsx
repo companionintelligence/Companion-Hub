@@ -28,12 +28,14 @@ export const ThemeProvider = (props: Props) => {
     if (theme) {
       Cookies.set('theme', theme || initialTheme || 'light', { path: '/', expires: 365 });
       document.body.dataset.bsTheme = theme;
+      document.documentElement.classList.toggle('dark', theme === 'dark');
     } else if (!Cookies.get('theme')) {
       // Detect system theme
       const systemTheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
       setDarkMode(systemTheme === 'dark');
       Cookies.set('theme', systemTheme, { path: '/', expires: 365 });
       document.body.dataset.bsTheme = systemTheme;
+      document.documentElement.classList.toggle('dark', systemTheme === 'dark');
     }
 
     const cookieTheme = Cookies.get('theme');
