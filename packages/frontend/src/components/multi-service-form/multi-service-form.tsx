@@ -2,7 +2,7 @@ import './services-form.css';
 import { Button } from '@/components/ui/Button';
 import { arktypeResolver } from '@hookform/resolvers/arktype';
 import { dynamicComposeSchemaArk } from '@runtipi/common/schemas';
-import { IconArrowsDownUp, IconCloudDataConnection, IconPlus, IconServer, IconSettings, IconVariable, IconX } from '@tabler/icons-react';
+import { ArrowUpDown, Network, Plus, Server, Settings, Variable, X } from 'lucide-react';
 import { useForm } from 'react-hook-form';
 import { JsonComposeEditor } from './json-compose-editor';
 import { useMultiServiceStore } from '@/stores/multiServiceStore';
@@ -50,23 +50,23 @@ export const MultiServiceForm = ({ onSubmit }: Props) => {
     {
       id: 'essentials',
       label: t('MULTI_SERVICE_TAB_ESSENTIALS'),
-      icon: IconSettings,
+      icon: Server,
     },
     {
       id: 'environment',
       label: t('MULTI_SERVICE_TAB_ENVIRONMENT'),
-      icon: IconVariable,
+      icon: Variable,
     },
-    { id: 'volumes', label: t('MULTI_SERVICE_TAB_VOLUMES'), icon: IconServer },
+    { id: 'volumes', label: t('MULTI_SERVICE_TAB_VOLUMES'), icon: Network },
     {
       id: 'ports',
       label: t('MULTI_SERVICE_TAB_PORTS'),
-      icon: IconArrowsDownUp,
+      icon: ArrowUpDown,
     },
     {
       id: 'advanced',
       label: t('MULTI_SERVICE_TAB_ADVANCED'),
-      icon: IconCloudDataConnection,
+      icon: Settings,
     },
   ];
 
@@ -138,7 +138,7 @@ export const MultiServiceForm = ({ onSubmit }: Props) => {
     return Boolean(form.formState.errors.services?.[index]);
   };
 
-  const renderTab = (tabId: string, label: string, IconComponent: typeof IconSettings, index: number) => {
+  const renderTab = (tabId: string, label: string, IconComponent: typeof Settings, index: number) => {
     const isActive = activeTab === tabId;
     const tabClass = clsx('nav-link', { active: isActive });
 
@@ -174,7 +174,7 @@ export const MultiServiceForm = ({ onSubmit }: Props) => {
             <div className="col-12 col-md-2 border-end p-0">
               <div className="d-flex justify-content-between align-items-center p-3">
                 <div className="fw-bold">{t('MULTI_SERVICE_SERVICES')}</div>
-                <IconPlus className="text-primary cursor-pointer" size={20} onClick={() => saveBeforeAction(addService)()} />
+                <Plus className="text-primary cursor-pointer" size={20} onClick={() => saveBeforeAction(addService)()} />
               </div>
               <div className="w-full border-top">
                 <div className="list-group list-group-transparent m-0">
@@ -205,7 +205,7 @@ export const MultiServiceForm = ({ onSubmit }: Props) => {
                               saveBeforeAction(removeService)(index);
                             }}
                           >
-                            <IconX />
+                            <X />
                           </button>
                         )}
                       </div>

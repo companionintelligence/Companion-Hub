@@ -1,7 +1,7 @@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/Select';
 import { iconForCategory } from '@/modules/app/helpers/table-helpers';
 import type { AppCategory } from '@/types/app.types';
-import { IconX } from '@tabler/icons-react';
+import { X } from 'lucide-react';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -50,7 +50,7 @@ export const CategorySelector = ({ onSelect, className, initialValue }: Props) =
           <>
             <SelectItem key="clear" value="clear">
               <span className="d-flex gap-2">
-                <IconX size={20} />
+                <X size={20} />
                 {t('CLEAR')}
               </span>
             </SelectItem>

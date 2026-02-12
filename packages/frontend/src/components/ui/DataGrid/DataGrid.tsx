@@ -1,3 +1,4 @@
+import { Card, CardContent } from '../Card/Card';
 import type React from 'react';
 
 interface IProps {
@@ -5,9 +6,7 @@ interface IProps {
 }
 
 export const DataGrid: React.FC<IProps> = ({ children }) => (
-  <div className="card">
-    <div className="card-body">
-      <div className="datagrid">{children}</div>
-    </div>
-  </div>
+  <Card>
+    <CardContent className="p-4 sm:p-6 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-6">{children}</CardContent>
+  </Card>
 );

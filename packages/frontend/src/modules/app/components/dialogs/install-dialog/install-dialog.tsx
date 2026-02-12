@@ -5,7 +5,7 @@ import { ScrollArea } from '@/components/ui/ScrollArea';
 import { useAppStatus } from '@/modules/app/helpers/use-app-status';
 import type { AppInfo } from '@/types/app.types';
 import type { TranslatableError } from '@/types/error.types';
-import { IconAlertCircle } from '@tabler/icons-react';
+import { AlertCircle } from 'lucide-react';
 import { useMutation } from '@tanstack/react-query';
 import type React from 'react';
 import { useId } from 'react';
@@ -56,7 +56,7 @@ export const InstallDialog: React.FC<IProps> = ({ info, isOpen, onClose }) => {
             {info.force_pull && (
               <Alert variant="warning">
                 <AlertIcon>
-                  <IconAlertCircle stroke={2} />
+                  <AlertCircle strokeWidth={2} />
                 </AlertIcon>
                 <div>
                   <AlertHeading>{t('WARNING')}</AlertHeading>

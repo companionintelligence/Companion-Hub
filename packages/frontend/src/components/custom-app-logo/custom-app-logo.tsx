@@ -1,5 +1,5 @@
 import { AppLogo } from '@/components/app-logo/app-logo';
-import { IconUpload } from '@tabler/icons-react';
+import { Upload } from 'lucide-react';
 import clsx from 'clsx';
 import type React from 'react';
 import { useRef } from 'react';
@@ -68,7 +68,7 @@ export const CustomAppLogo: React.FC<{
             disabled={isUploading}
           >
             <div className="custom-app-logo-overlay-content">
-              <IconUpload size={size / 3} className="custom-app-logo-icon" />
+              <Upload size={size / 3} className="custom-app-logo-icon" />
               <span className="custom-app-logo-text">{isUploading ? t('CUSTOM_APP_UPLOADING') : t('CUSTOM_APP_UPLOAD_IMAGE')}</span>
             </div>
           </button>

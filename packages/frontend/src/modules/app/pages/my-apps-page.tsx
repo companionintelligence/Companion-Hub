@@ -6,7 +6,7 @@ import { useSuspenseQuery } from '@tanstack/react-query';
 import { AppTile } from '../components/app-tile/app-tile';
 import { LinkTile } from '../components/link-tile/link-tile';
 import { ButtonTile } from '../components/button-tile/button-tile';
-import { IconLayoutGridAdd, IconLinkPlus } from '@tabler/icons-react';
+import { AppWindow, Link as LinkIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useDisclosure } from '@/lib/hooks/use-disclosure';
 import { AddLinkDialog } from '../components/dialogs/add-link/add-link-dialog';
@@ -90,14 +90,14 @@ export default () => {
                   title={t('CUSTOM_APP_ADD_TITLE')}
                   subtitle={t('CUSTOM_APP_ADD_SUBTITLE')}
                   action={() => navigate('/apps/create')}
-                  icon={<IconLayoutGridAdd size={50} stroke={1.5} color="#A4A4A4" />}
+                  icon={<AppWindow size={50} strokeWidth={1.5} color="#A4A4A4" />}
                   className="col-12 col-sm-6 col-lg-6 col-lg-6"
                 />
                 <ButtonTile
                   title={t('LINKS_ADD_TITLE')}
                   subtitle={t('LINKS_ADD_SUBTITLE')}
                   action={() => addLinkDisclosure.open()}
-                  icon={<IconLinkPlus size={50} stroke={1.5} color="#A4A4A4" />}
+                  icon={<LinkIcon size={50} strokeWidth={1.5} color="#A4A4A4" />}
                   className="col-12 col-sm-6 col-md-6 col-lg-6"
                 />
               </div>
@@ -111,13 +111,13 @@ export default () => {
               title={t('CUSTOM_APP_ADD_TITLE')}
               subtitle={t('CUSTOM_APP_ADD_SUBTITLE')}
               action={() => navigate('/apps/create')}
-              icon={<IconLayoutGridAdd size={50} stroke={1.5} />}
+              icon={<AppWindow size={50} strokeWidth={1.5} />}
             />
             <ButtonTile
               title={t('LINKS_ADD_TITLE')}
               subtitle={t('LINKS_ADD_SUBTITLE')}
               action={() => addLinkDisclosure.open()}
-              icon={<IconLinkPlus size={50} stroke={1.5} />}
+              icon={<LinkIcon size={50} strokeWidth={1.5} />}
             />
           </div>
         )}

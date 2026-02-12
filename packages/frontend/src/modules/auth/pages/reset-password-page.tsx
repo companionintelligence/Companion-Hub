@@ -1,5 +1,6 @@
 import { cancelResetPasswordMutation, checkResetPasswordRequestOptions, resetPasswordMutation } from '@/api-client/@tanstack/react-query.gen';
 import { Button } from '@/components/ui/Button';
+import { Card, CardContent } from '@/components/ui/Card';
 import { useUserContext } from '@/context/user-context';
 import type { TranslatableError } from '@/types/error.types';
 import { useMutation, useSuspenseQuery } from '@tanstack/react-query';
@@ -83,24 +84,24 @@ export default () => {
             <p className="text-muted mb-4">For demo purposes, please use the following credentials to access the application.</p>
           </div>
 
-          <div className="card bg-light mb-4">
-            <div className="card-body">
-              <div className="row g-3">
-                <div className="col-12">
-                  <div className="d-flex align-items-center justify-content-between">
-                    <span className="text-muted fw-semibold">Email:</span>
+          <Card className="bg-muted/50 mb-4">
+            <CardContent>
+              <div className="flex flex-col gap-3">
+                <div className="col-span-12">
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground font-semibold">Email:</span>
                     <code className="fs-5 fw-bold text-primary">me@{domain}</code>
                   </div>
                 </div>
-                <div className="col-12">
-                  <div className="d-flex align-items-center justify-content-between">
-                    <span className="text-muted fw-semibold">Password:</span>
+                <div className="col-span-12">
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground font-semibold">Password:</span>
                     <code className="fs-5 fw-bold text-primary">{domain}</code>
                   </div>
                 </div>
               </div>
-            </div>
-          </div>
+            </CardContent>
+          </Card>
 
           <div className="alert alert-info d-flex align-items-start mb-4" role="alert">
             <svg

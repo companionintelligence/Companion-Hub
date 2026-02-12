@@ -1,6 +1,7 @@
 import { getAppComposeDiffOptions, getAppConfigDiffOptions, getAppOptions, updateAppMutation } from '@/api-client/@tanstack/react-query.gen';
 import { AppLogo } from '@/components/app-logo/app-logo';
 import { Button } from '@/components/ui/Button';
+import { Card, CardContent, CardFooter, CardHeader } from '@/components/ui/Card';
 import { ScrollArea } from '@/components/ui/ScrollArea';
 import { StepContent, Stepper, StepTrigger, StepTriggerList } from '@/components/ui/Stepper/Stepper';
 import { Switch } from '@/components/ui/Switch';
@@ -12,7 +13,7 @@ import { motion } from 'framer-motion';
 import { useMemo, useState } from 'react';
 import toast from 'react-hot-toast';
 import { Trans, useTranslation } from 'react-i18next';
-import { IconArrowRight, IconChevronLeft, IconChevronRight, IconInfoCircle } from '@tabler/icons-react';
+import { ArrowRight, ChevronLeft, ChevronRight, Info } from 'lucide-react';
 import { Alert, AlertDescription, AlertHeading, AlertIcon } from '@/components/ui/Alert/Alert';
 import type { TranslatableError } from '@/types/error.types';
 import { redirect, useLocation, useNavigate, useParams } from 'react-router';
@@ -85,21 +86,21 @@ export default function AppUpdatePage({ loaderData }: Route.ComponentProps) {
   );
 
   return (
-    <div className="card" data-testid="app-update">
-      <div className="card-header border-0 pb-0">
-        <div className="d-flex flex-column flex-lg-row align-items-start align-items-lg-center border-bottom pb-4 w-100">
+    <Card data-testid="app-update">
+      <CardHeader className="border-0 pb-0">
+        <div className="flex flex-col lg:flex-row items-start lg:items-center border-b pb-4 w-full">
           <AppLogo urn={info.urn} size={96} alt={info.name} />
-          <div className="mt-3 mt-lg-0 ms-lg-3">
-            <h2 className="mb-1">{t('APP_UPDATE_FORM_TITLE', { name: info.name })}</h2>
-            <div className="d-flex flex-wrap align-items-center gap-2 text-muted">
+          <div className="mt-3 lg:mt-0 lg:ml-3">
+            <h2 className="mb-1 text-2xl font-bold">{t('APP_UPDATE_FORM_TITLE', { name: info.name })}</h2>
+            <div className="flex flex-wrap items-center gap-2 text-muted-foreground">
               <span className="badge bg-muted text-white">{info.version}</span>
-              <IconArrowRight size={16} />
+              <ArrowRight size={16} />
               <span className="badge bg-success text-white">{metadata.latestDockerVersion}</span>
             </div>
           </div>
         </div>
-      </div>
-      <div className="card-body pt-2">
+      </CardHeader>
+      <CardContent className="pt-2">
         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
           <Stepper currentStep={currentStep}>
             <StepTriggerList>
@@ -110,7 +111,7 @@ export default function AppUpdatePage({ loaderData }: Route.ComponentProps) {
             </StepTriggerList>
             <div className="mt-1">
               <StepContent step={0}>
-                <div className="text-muted">
+                <div className="text-muted-foreground">
                   <Trans
                     t={t}
                     i18nKey="APP_UPDATE_INFORMATION_SUBTITLE"
@@ -123,7 +124,7 @@ export default function AppUpdatePage({ loaderData }: Route.ComponentProps) {
                 </div>
               </StepContent>
               <StepContent step={1}>
-                <div className="text-muted">{t('APP_UPDATE_CONFIGURATION_SUBTITLE')}</div>
+                <div className="text-muted-foreground">{t('APP_UPDATE_CONFIGURATION_SUBTITLE')}</div>
                 {configDiffQuery.isLoading && <LoadingBlock />}
                 {!configDiffQuery.isLoading && (
                   <ScrollArea maxheight={500} className="mt-3 border rounded">
@@ -143,7 +144,7 @@ export default function AppUpdatePage({ loaderData }: Route.ComponentProps) {
                 )}
               </StepContent>
               <StepContent step={2}>
-                <div className="text-muted">{t('APP_UPDATE_COMPOSE_SUBTITLE')}</div>
+                <div className="text-muted-foreground">{t('APP_UPDATE_COMPOSE_SUBTITLE')}</div>
                 {composeDiffQuery.isLoading && <LoadingBlock />}
                 {!composeDiffQuery.isLoading && (
                   <ScrollArea maxheight={500} className="mt-3 border rounded">
@@ -163,7 +164,7 @@ export default function AppUpdatePage({ loaderData }: Route.ComponentProps) {
                 )}
                 <Alert variant="info" className="mt-3">
                   <AlertIcon>
-                    <IconInfoCircle stroke={2} />
+                    <Info strokeWidth={2} />
                   </AlertIcon>
                   <div>
                     <AlertHeading>{t('APP_UPDATE_COMPOSE_ALERT_TITLE')}</AlertHeading>
@@ -172,19 +173,19 @@ export default function AppUpdatePage({ loaderData }: Route.ComponentProps) {
                 </Alert>
               </StepContent>
               <StepContent step={3}>
-                <div className="text-muted">{t('APP_UPDATE_BACKUP_SUBTITLE')}</div>
+                <div className="text-muted-foreground">{t('APP_UPDATE_BACKUP_SUBTITLE')}</div>
                 <Switch checked={backupApp} onCheckedChange={setBackupApp} label={t('APP_UPDATE_FORM_BACKUP')} className="mt-3" />
               </StepContent>
             </div>
           </Stepper>
         </motion.div>
-      </div>
-      <div className="card-footer border-0 d-flex align-items-center justify-content-between gap-3">
+      </CardContent>
+      <CardFooter className="border-0 flex items-center justify-between gap-3">
         <Button variant="ghost" onClick={() => navigate(location.state?.from || '/apps')}>
-          <IconChevronLeft className="me-1" size={16} />
+          <ChevronLeft className="me-1" size={16} />
           {t('APP_ACTION_CANCEL')}
         </Button>
-        <div className="d-flex align-items-center justify-content-end gap-2">
+        <div className="flex items-center justify-end gap-2">
           {currentStep > 0 && (
             <Button variant="link" onClick={() => setCurrentStep((step) => step - 1)} className="me-2">
               {t('APP_UPDATE_FORM_BACK')}
@@ -193,7 +194,7 @@ export default function AppUpdatePage({ loaderData }: Route.ComponentProps) {
           {currentStep < 3 && (
             <Button onClick={() => setCurrentStep((step) => step + 1)}>
               {t('APP_UPDATE_FORM_NEXT')}
-              <IconChevronRight className="ms-2 text-muted" size={12} />
+              <ChevronRight className="ms-2 text-muted" size={12} />
             </Button>
           )}
           {currentStep === 3 && (
@@ -211,7 +212,7 @@ export default function AppUpdatePage({ loaderData }: Route.ComponentProps) {
             </Button>
           )}
         </div>
-      </div>
-    </div>
+      </CardFooter>
+    </Card>
   );
 }

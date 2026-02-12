@@ -4,7 +4,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { useAppStatus } from '@/modules/app/helpers/use-app-status';
 import type { AppInfo } from '@/types/app.types';
 import type { TranslatableError } from '@/types/error.types';
-import { IconAlertTriangle } from '@tabler/icons-react';
+import { AlertTriangle } from 'lucide-react';
 import { useMutation } from '@tanstack/react-query';
 import type React from 'react';
 import toast from 'react-hot-toast';
@@ -37,7 +37,7 @@ export const ResetDialog: React.FC<IProps> = ({ info, isOpen, onClose }) => {
           <DialogTitle>{t('APP_RESET_FORM_TITLE', { name: info.name })}</DialogTitle>
         </DialogHeader>
         <DialogDescription className="text-center py-4">
-          <IconAlertTriangle className="icon mb-2 text-danger icon-lg" />
+          <AlertTriangle className="icon mb-2 text-warning icon-lg" />
           <h3>{t('APP_RESET_FORM_WARNING')}</h3>
           <div className="text-muted">{t('APP_RESET_FORM_SUBTITLE')}</div>
         </DialogDescription>

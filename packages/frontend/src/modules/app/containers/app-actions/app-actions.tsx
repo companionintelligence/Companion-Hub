@@ -1,18 +1,18 @@
 import {
-  IconAlertTriangle,
-  IconBan,
-  IconCircleCheck,
-  IconDots,
-  IconDownload,
-  IconEdit,
-  IconEraser,
-  IconExternalLink,
-  IconPlayerPause,
-  IconPlayerPlay,
-  IconRotateClockwise,
-  IconSettings,
-  IconTrash,
-} from '@tabler/icons-react';
+  AlertTriangle,
+  Ban,
+  CheckCircle,
+  MoreHorizontal,
+  Download,
+  Edit,
+  Eraser,
+  ExternalLink,
+  Pause,
+  Play,
+  RotateCw,
+  Settings,
+  Trash,
+} from 'lucide-react';
 import type React from 'react';
 import { createElement, useState, useEffect } from 'react';
 import { client } from '@/api-client/client.gen';
@@ -50,7 +50,7 @@ interface IProps {
 }
 
 interface BtnProps extends ButtonProps {
-  IconComponent?: typeof IconDownload;
+  IconComponent?: typeof Download;
 }
 
 const ActionButton: React.FC<BtnProps> = (props) => {
@@ -119,7 +119,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
   const StartButton = (
     <ActionButton
       key="start"
-      IconComponent={IconPlayerPlay}
+      IconComponent={Play}
       onClick={() => startMutation.mutate({ path: { urn: info.urn } })}
       title={t('APP_ACTION_START')}
       intent="success"
@@ -141,19 +141,19 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
 
   const RemoveListItem = (
     <DropdownMenuItem onClick={uninstallDisclosure.open} key="remove" className="text-danger">
-      <IconTrash className="me-2" size={16} />
+      <Trash className="me-2" size={16} />
       {t('APP_ACTION_REMOVE')}
     </DropdownMenuItem>
   );
   const SettingsListItem = (
     <DropdownMenuItem onClick={updateSettingsDisclosure.open} key="settings">
-      <IconSettings className="me-2" size={16} />
+      <Settings className="me-2" size={16} />
       {t('APP_ACTION_SETTINGS')}
     </DropdownMenuItem>
   );
   const RestartListItem = (
     <DropdownMenuItem onClick={restartDisclosure.open} key="restart" className="configChanged">
-      <IconRotateClockwise className="me-2" size={16} />
+      <RotateCw className="me-2" size={16} />
       {t('APP_ACTION_RESTART')}
       {app?.pendingRestart && (
         <div>
@@ -171,7 +171,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
       key="update"
       className="updateAvailable"
     >
-      <IconDownload className="me-2" size={16} />
+      <Download className="me-2" size={16} />
       <Tooltip className="tooltip" anchorSelect=".updateAvailable">
         {t('MY_APPS_UPDATE_AVAILABLE')}
       </Tooltip>
@@ -187,7 +187,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
       key="ignore-version"
       disabled={ignoreVersionMutation.isPending}
     >
-      <IconBan className="me-2" size={16} />
+      <Ban className="me-2" size={16} />
       {t('APP_ACTION_IGNORE_VERSION')}
     </DropdownMenuItem>
   );
@@ -197,19 +197,19 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
       key="unignore-version"
       disabled={unignoreVersionMutation.isPending}
     >
-      <IconCircleCheck className="me-2" size={16} />
+      <CheckCircle className="me-2" size={16} />
       {t('APP_ACTION_UNIGNORE_VERSION')}
     </DropdownMenuItem>
   );
   const CancelListItem = (
     <DropdownMenuItem onClick={stopDisclosure.open} key="cancel">
-      <IconPlayerPause className="me-2" size={16} />
+      <Pause className="me-2" size={16} />
       {t('APP_ACTION_CANCEL')}
     </DropdownMenuItem>
   );
   const ResetListItem = (
     <DropdownMenuItem onClick={resetAppDisclosure.open} key="reset" className="text-danger">
-      <IconEraser className="me-2" size={16} />
+      <Eraser className="me-2" size={16} />
       {t('APP_INSTALL_FORM_RESET')}
     </DropdownMenuItem>
   );
@@ -220,14 +220,12 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
       key="edit-config"
       disabled={app?.status !== 'stopped' && app?.status !== 'missing'}
     >
-      <IconEdit className="me-2" size={16} />
+      <Edit className="me-2" size={16} />
       {t('CUSTOM_APP_EDIT_CONFIG')}
     </DropdownMenuItem>
   );
 
-  const StopButton = (
-    <ActionButton key="stop" IconComponent={IconPlayerPause} onClick={stopDisclosure.open} title={t('APP_ACTION_STOP')} intent="default" />
-  );
+  const StopButton = <ActionButton key="stop" IconComponent={Pause} onClick={stopDisclosure.open} title={t('APP_ACTION_STOP')} intent="default" />;
   const InstallButton = <ActionButton key="install" onClick={installDisclosure.open} title={t('APP_ACTION_INSTALL')} intent="success" />;
 
   // Check if the app URL is available before showing Open button
@@ -310,7 +308,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
   const OpenButton = (
     <ActionButton
       key="open"
-      IconComponent={IconExternalLink}
+      IconComponent={ExternalLink}
       onClick={() => {
         // Open the app in a new tab
         window.open(appUrl, '_blank');
@@ -323,7 +321,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
 
   const ErrorButton = (
     <div key="error">
-      <ActionButton IconComponent={IconAlertTriangle} title={t('APP_ACTION_OPEN')} className="app-error-button" intent="danger" disabled />
+      <ActionButton IconComponent={AlertTriangle} title={t('APP_ACTION_OPEN')} className="app-error-button" intent="danger" disabled />
       <Tooltip className="tooltip" anchorSelect=".app-error-button">
         {checkError}
       </Tooltip>
@@ -420,7 +418,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button name="more" className="more-button">
-                <IconDots size={14} />
+                <MoreHorizontal size={14} />
                 {((updateAvailable && !versionIsIgnored) || app?.pendingRestart) && <span className="badge badge-dot bg-red badge-notification" />}
               </Button>
             </DropdownMenuTrigger>

@@ -5,6 +5,7 @@ import toast from 'react-hot-toast';
 import { dynamicComposeSchemaArk } from '@runtipi/common/schemas';
 import { MultiServiceForm } from '@/components/multi-service-form/multi-service-form';
 import { Input } from '@/components/ui/Input/Input';
+import { Card, CardContent } from '@/components/ui/Card';
 import type { TranslatableError } from '@/types/error.types';
 import { useEffect, useId, useState } from 'react';
 import { useMultiServiceStore } from '@/stores/multiServiceStore';
@@ -84,10 +85,10 @@ export default function EditPageContent({ loaderData }: Route.ComponentProps) {
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="card">
-        <div className="card-body">
-          <div className="row">
-            <div className="col-md-6">
+      <Card>
+        <CardContent>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
               <Input
                 label={
                   <>
@@ -102,8 +103,8 @@ export default function EditPageContent({ loaderData }: Route.ComponentProps) {
               <div className="form-text">{t('CUSTOM_APP_NAME_EDIT_HELP')}</div>
             </div>
           </div>
-        </div>
-      </div>
+        </CardContent>
+      </Card>
       <MultiServiceForm onSubmit={onSubmit} />
     </div>
   );

@@ -7,6 +7,7 @@ import type { dynamicComposeSchemaArk } from '@runtipi/common/schemas';
 import { MultiServiceForm } from '@/components/multi-service-form/multi-service-form';
 import { createCustomAppMutation } from '@/api-client/@tanstack/react-query.gen';
 import { Input } from '@/components/ui/Input/Input';
+import { Card, CardContent } from '@/components/ui/Card';
 import type { TranslatableError } from '@/types/error.types';
 import { useState } from 'react';
 
@@ -50,10 +51,10 @@ export default () => {
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="card">
-        <div className="card-body">
-          <div className="row">
-            <div className="col-md-6">
+      <Card>
+        <CardContent>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
               <Input
                 label={
                   <>
@@ -69,8 +70,8 @@ export default () => {
               <div className="form-text">{t('CUSTOM_APP_NAME_HELP')}</div>
             </div>
           </div>
-        </div>
-      </div>
+        </CardContent>
+      </Card>
       <MultiServiceForm onSubmit={onSubmit} />
     </div>
   );

@@ -44,7 +44,7 @@ export const Providers = ({ children }: PropsWithChildren) => {
             <Suspense fallback={<PageSuspense />}>
               <UserContextProvider>
                 <SentryProvider>
-                  <ThemeProvider>
+                  <ThemeProvider defaultTheme="dark">
                     <AutoThemeProvider>
                       <I18nProvider>{children}</I18nProvider>
                     </AutoThemeProvider>

@@ -1,11 +1,12 @@
-import type { IconProps } from '@tabler/icons-react';
+import { Card, CardContent } from '@/components/ui/Card';
 import clsx from 'clsx';
+import type { LucideIcon } from 'lucide-react';
 import type { FunctionComponent } from 'react';
 
 interface CompactSystemStatProps {
   title: string;
   metric: string;
-  icon: FunctionComponent<IconProps>;
+  icon: LucideIcon;
   progress: number;
   isLoading?: boolean;
   color?: string;
@@ -13,16 +14,16 @@ interface CompactSystemStatProps {
 
 export const CompactSystemStat = ({ title, metric, icon: Icon, progress, isLoading, color = 'primary' }: CompactSystemStatProps) => {
   return (
-    <div className="card card-sm">
-      <div className="card-body">
-        <div className="d-flex align-items-center mb-2">
-          <div className="subheader">{title}</div>
-          <div className="ms-auto">
-            <Icon size={20} className="text-muted" />
+    <Card>
+      <CardContent>
+        <div className="flex items-center mb-2">
+          <div className="text-sm font-medium text-muted-foreground uppercase tracking-wide">{title}</div>
+          <div className="ml-auto">
+            <Icon size={20} className="text-muted-foreground" />
           </div>
         </div>
-        <div className="d-flex align-items-baseline mb-2">
-          <div className="h1 mb-0 me-2">{isLoading ? '...' : metric}</div>
+        <div className="flex items-baseline mb-2">
+          <div className="text-2xl font-bold mb-0 me-2">{isLoading ? '...' : metric}</div>
         </div>
         <div className="progress progress-sm">
           <div
@@ -35,7 +36,7 @@ export const CompactSystemStat = ({ title, metric, icon: Icon, progress, isLoadi
             aria-label={`${progress}% Complete`}
           />
         </div>
-      </div>
-    </div>
+      </CardContent>
+    </Card>
   );
 };

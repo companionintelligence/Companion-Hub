@@ -1,5 +1,5 @@
 import { systemLoadOptions, getInstalledAppsOptions } from '@/api-client/@tanstack/react-query.gen';
-import { IconCircuitResistor, IconCpu, IconDatabase, IconBrandAppstore } from '@tabler/icons-react';
+import { Activity, Cpu, Database, LayoutGrid, MemoryStick } from 'lucide-react';
 import { useSuspenseQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { useRef } from 'react';
@@ -39,7 +39,7 @@ export default () => {
               isLoading={isLoading}
               title={t('DASHBOARD_DISK_SPACE_TITLE')}
               metric={`${systemData.diskUsed} GB`}
-              icon={IconDatabase}
+              icon={Database}
               progress={systemData.percentUsed}
               color="blue"
             />
@@ -49,7 +49,7 @@ export default () => {
               isLoading={isLoading}
               title={t('DASHBOARD_CPU_TITLE')}
               metric={`${systemData.cpuLoad.toFixed(2)}%`}
-              icon={IconCpu}
+              icon={Cpu}
               progress={systemData.cpuLoad}
               color="red"
             />
@@ -59,7 +59,7 @@ export default () => {
               isLoading={isLoading}
               title={t('DASHBOARD_MEMORY_TITLE')}
               metric={`${systemData.percentUsedMemory}%`}
-              icon={IconCircuitResistor}
+              icon={MemoryStick}
               progress={systemData.percentUsedMemory}
               color="green"
             />
@@ -74,7 +74,7 @@ export default () => {
         {/* App Store Button */}
         <div className="d-flex justify-content-center mt-2">
           <button type="button" className="btn btn-primary btn-lg d-flex align-items-center gap-2" onClick={() => navigate('/app-store')}>
-            <IconBrandAppstore size={24} />
+            <LayoutGrid size={24} />
             {t('HEADER_APP_STORE')}
           </button>
         </div>

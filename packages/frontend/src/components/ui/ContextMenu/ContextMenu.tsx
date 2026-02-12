@@ -1,7 +1,7 @@
 'use client';
 
 import * as ContextMenuPrimitive from '@radix-ui/react-context-menu';
-import { IconCheck, IconChevronRight, IconCircle } from '@tabler/icons-react';
+import { Check, ChevronRight, Circle } from 'lucide-react';
 import clsx from 'clsx';
 import type * as React from 'react';
 
@@ -27,7 +27,7 @@ const ContextMenuSubTrigger = ({
 }) => (
   <ContextMenuPrimitive.SubTrigger className={clsx('', inset && 'ps-2', className)} {...props}>
     {children}
-    <IconChevronRight className="" />
+    <ChevronRight className="" />
   </ContextMenuPrimitive.SubTrigger>
 );
 
@@ -53,7 +53,7 @@ const ContextMenuCheckboxItem = ({ className, children, checked, ...props }: Rea
   <ContextMenuPrimitive.CheckboxItem className={clsx('', className)} checked={checked} {...props}>
     <span>
       <ContextMenuPrimitive.ItemIndicator>
-        <IconCheck />
+        <Check />
       </ContextMenuPrimitive.ItemIndicator>
     </span>
     {children}
@@ -64,7 +64,7 @@ const ContextMenuRadioItem = ({ className, children, ...props }: React.Component
   <ContextMenuPrimitive.RadioItem className={clsx('', className)} {...props}>
     <span>
       <ContextMenuPrimitive.ItemIndicator>
-        <IconCircle />
+        <Circle />
       </ContextMenuPrimitive.ItemIndicator>
     </span>
     {children}

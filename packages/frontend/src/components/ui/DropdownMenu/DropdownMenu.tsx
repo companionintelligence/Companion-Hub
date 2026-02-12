@@ -1,7 +1,7 @@
 'use client';
 
 import * as DropdownMenuPrimitive from '@radix-ui/react-dropdown-menu';
-import { IconChevronRight } from '@tabler/icons-react';
+import { ChevronRight } from 'lucide-react';
 import clsx from 'clsx';
 import type * as React from 'react';
 
@@ -21,7 +21,7 @@ const DropdownMenuSubTrigger = ({
 }) => (
   <DropdownMenuPrimitive.SubTrigger className={clsx('', inset && 'ps-8', className)} {...props}>
     {children}
-    <IconChevronRight className="" />
+    <ChevronRight className="" />
   </DropdownMenuPrimitive.SubTrigger>
 );
 

@@ -1,58 +1,69 @@
-import clsx from 'clsx';
-import type * as React from 'react';
+import * as React from 'react';
+import { cn } from '@/lib/utils';
 
-interface IProps extends React.InputHTMLAttributes<HTMLInputElement> {
+interface InputGroupProps extends React.InputHTMLAttributes<HTMLInputElement> {
   error?: string;
   label?: string | React.ReactNode;
   isInvalid?: boolean;
   groupPrefix?: string | React.ReactNode;
   groupSuffix?: string | React.ReactNode;
   groupClassName?: string;
-  ref?: React.Ref<HTMLInputElement>;
 }
 
-export const InputGroup = ({
-  name,
-  label,
-  error,
-  type = 'text',
-  className,
-  isInvalid,
-  groupPrefix,
-  groupSuffix,
-  groupClassName,
-  ...rest
-}: IProps) => {
-  let prefix = groupPrefix;
-  if (typeof groupPrefix === 'string') {
-    prefix = <span className="input-group-text">{groupPrefix}</span>;
-  }
-  let suffix = groupSuffix;
-  if (typeof groupSuffix === 'string') {
-    suffix = <span className="input-group-text">{groupSuffix}</span>;
-  }
+export const InputGroup = React.forwardRef<HTMLInputElement, InputGroupProps>(
+  ({ name, label, error, type = 'text', className, isInvalid, groupPrefix, groupSuffix, groupClassName, id, ...rest }, ref) => {
+    const renderPrefix = () => {
+      if (!groupPrefix) return null;
+      if (typeof groupPrefix === 'string') {
+        return (
+          <div className="flex items-center rounded-l-md border border-r-0 border-input bg-muted px-3 text-sm text-muted-foreground">
+            {groupPrefix}
+          </div>
+        );
+      }
+      return <div className="flex items-center">{groupPrefix}</div>;
+    };
 
-  return (
-    <div className={clsx(className)}>
-      {label && (
-        <label htmlFor={name} className="form-label">
-          {label}
-        </label>
-      )}
-      <div className={clsx('input-group', groupClassName)}>
-        {prefix}
-        <input
-          suppressHydrationWarning
-          aria-label={name}
-          type={type}
-          name={name}
-          id={name}
-          className={clsx('form-control', { 'is-invalid is-invalid-lite': error || isInvalid })}
-          {...rest}
-        />
-        {suffix}
-        {error && <div className="invalid-feedback">{error}</div>}
+    const renderSuffix = () => {
+      if (!groupSuffix) return null;
+      if (typeof groupSuffix === 'string') {
+        return (
+          <div className="flex items-center rounded-r-md border border-l-0 border-input bg-muted px-3 text-sm text-muted-foreground">
+            {groupSuffix}
+          </div>
+        );
+      }
+      return <div className="flex items-center">{groupSuffix}</div>;
+    };
+
+    return (
+      <div className={cn('space-y-2', className)}>
+        {label && (
+          <label htmlFor={id || name} className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">
+            {label}
+          </label>
+        )}
+        <div className={cn('flex w-full shadow-sm', groupClassName)}>
+          {renderPrefix()}
+          <input
+            ref={ref}
+            type={type}
+            name={name}
+            id={id || name}
+            className={cn(
+              'flex h-9 w-full border border-input bg-transparent px-3 py-1 text-base transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium file:text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 md:text-sm',
+              groupPrefix ? 'rounded-l-none' : 'rounded-l-md',
+              groupSuffix ? 'rounded-r-none' : 'rounded-r-md',
+              (error || isInvalid) && 'border-destructive focus-visible:ring-destructive',
+            )}
+            {...rest}
+          />
+          {renderSuffix()}
+        </div>
+        {error && <p className="text-[0.8rem] font-medium text-destructive">{error}</p>}
       </div>
-    </div>
-  );
-};
+    );
+  },
+);
+
+InputGroup.displayName = 'InputGroup';
