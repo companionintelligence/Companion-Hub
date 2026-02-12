@@ -57,7 +57,31 @@ Run the helper script:
 
 This will create `tunnel/certs/custom-ca.pem` and `custom-ca.key`.
 
-## Run runtipi
+## Run CI OS Hub locally
 
-1. Start the app with `bun run start:dev` from the root folder
-2. Visit `localhost:3000` in your browser
+We have consolidated the local development workflow into a single command.
+
+### `bun dev` (Recommended)
+
+This is the main command for local development. It does the following:
+1. Starts the required infrastructure (Postgres DB, RabbitMQ) in Docker containers in the background.
+2. Starts the Backend (NestJS) in watch mode.
+3. Starts the Frontend (React Router) in HMR mode.
+
+Both the backend and frontend will hot-reload on file changes.
+
+### Other Commands
+
+- `bun run build`: Builds all packages.
+- `bun run test`: Runs all tests.
+- `bun run cleanup`: Stops infrastructure containers and removes temporary files/directories (`.internal`, certs).
+- `bun run start:docker`: Runs the entire stack (including the Hub app itself) inside Docker containers. This is closer to how it runs in production but slower for development loop.
+- `bun run start:prod`: Simulates a production environment (uses production env vars and connects to live cloud APIs).
+- `bun run start:staging`: Simulates staging environment (connects to companionintel.com API).
+- `bun run start:cloud-dev`: Simulates development environment (connects to setup.companionintelligence.com API).
+
+### Accessing the App
+
+Once `bun dev` is running:
+- **Frontend** is available at `http://localhost:5173` (or the port shown in terminal).
+- **Backend API** is available at `http://localhost:3000`.
