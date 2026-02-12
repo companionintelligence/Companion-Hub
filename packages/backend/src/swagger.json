@@ -150,6 +150,14 @@
             }
           },
           {
+            "name": "slug",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "subdomain",
             "required": true,
             "in": "query",
@@ -585,6 +593,29 @@
     "/api/apps/{urn}/unignore-version": {
       "patch": {
         "operationId": "unignoreAppVersion",
+        "parameters": [
+          {
+            "name": "urn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Apps"
+        ]
+      }
+    },
+    "/api/apps/{urn}/check-availability": {
+      "get": {
+        "operationId": "checkAvailability",
         "parameters": [
           {
             "name": "urn",
@@ -2722,10 +2753,6 @@
                 "type": "string",
                 "pattern": "^\\S.*\\S$|^\\S?$"
               },
-              "appsRepoUrl": {
-                "type": "string",
-                "format": "uri"
-              },
               "demoMode": {
                 "type": "boolean"
               },
@@ -2802,11 +2829,19 @@
                 "type": "string",
                 "pattern": "^\\S.*\\S$|^\\S?$"
               },
+              "appsRepoUrl": {
+                "type": "string",
+                "format": "uri"
+              },
               "ciHubApiKey": {
                 "type": "string",
                 "pattern": "^\\S.*\\S$|^\\S?$"
               },
               "ciHubOrganizationId": {
+                "type": "string",
+                "pattern": "^\\S.*\\S$|^\\S?$"
+              },
+              "ciHubOrganizationLabel": {
                 "type": "string",
                 "pattern": "^\\S.*\\S$|^\\S?$"
               },
@@ -2829,7 +2864,6 @@
               "allowAutoThemes",
               "allowErrorMonitoring",
               "appDataPath",
-              "appsRepoUrl",
               "demoMode",
               "disablePasswordReset",
               "dnsIp",
@@ -2920,6 +2954,9 @@
             "type": "string"
           },
           "ciHubOrganizationId": {
+            "type": "string"
+          },
+          "ciHubOrganizationLabel": {
             "type": "string"
           },
           "ciHubOrganizationSlug": {
@@ -3408,9 +3445,6 @@
                     "latestVersion": {
                       "type": "number"
                     },
-                    "localSubdomain": {
-                      "type": "string"
-                    },
                     "composeSchemaVersion": {
                       "type": "number"
                     },
@@ -3432,8 +3466,7 @@
                     }
                   },
                   "required": [
-                    "latestVersion",
-                    "localSubdomain"
+                    "latestVersion"
                   ]
                 }
               },
@@ -3806,9 +3839,6 @@
                     "latestVersion": {
                       "type": "number"
                     },
-                    "localSubdomain": {
-                      "type": "string"
-                    },
                     "composeSchemaVersion": {
                       "type": "number"
                     },
@@ -3830,8 +3860,7 @@
                     }
                   },
                   "required": [
-                    "latestVersion",
-                    "localSubdomain"
+                    "latestVersion"
                   ]
                 }
               },
@@ -4102,9 +4131,6 @@
               "latestVersion": {
                 "type": "number"
               },
-              "localSubdomain": {
-                "type": "string"
-              },
               "composeSchemaVersion": {
                 "type": "number"
               },
@@ -4126,8 +4152,7 @@
               }
             },
             "required": [
-              "latestVersion",
-              "localSubdomain"
+              "latestVersion"
             ]
           },
           "app": {
