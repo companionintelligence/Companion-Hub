@@ -6,13 +6,7 @@ export interface GlassContainerProps extends React.HTMLAttributes<HTMLDivElement
   border?: boolean;
 }
 
-export const GlassContainer: React.FC<GlassContainerProps> = ({
-  children,
-  className,
-  intensity = 'medium',
-  border = true,
-  ...props
-}) => {
+export const GlassContainer: React.FC<GlassContainerProps> = ({ children, className, intensity = 'medium', border = true, ...props }) => {
   const intensityClasses = {
     low: 'bg-white/5 dark:bg-black/5 backdrop-blur-sm',
     medium: 'bg-white/10 dark:bg-black/10 backdrop-blur-md',

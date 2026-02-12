@@ -40,11 +40,7 @@ const Tile = ({ data, localDomain, sslPort }: { data: GuestAppsDto['installed'][
   return (
     <DropdownMenu modal={false}>
       <DropdownMenuTrigger asChild>
-        {/* biome-ignore lint/a11y/noNoninteractiveTabindex: works fine */}
-        <div
-          tabIndex={0}
-          className="relative group cursor-pointer rounded-xl transition-all duration-300 hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
-        >
+        <div className="relative group cursor-pointer rounded-xl transition-all duration-300 hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2">
           <AppTile key={info.urn} info={info} status={app.status} updateAvailable={false} />
         </div>
       </DropdownMenuTrigger>

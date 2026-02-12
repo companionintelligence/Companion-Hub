@@ -1,4 +1,4 @@
-import { ArrowLeft, FileCertificate, LogIn, Maximize, Minimize, Settings } from 'lucide-react';
+import { ArrowLeft, FileCheck2, LogIn, Maximize, Minimize, Settings } from 'lucide-react';
 import { type ReactNode, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useLocation } from 'react-router';
@@ -79,7 +79,7 @@ export const BaseHeader = (props: BaseHeaderProps) => {
                   className="downloadCert nav-link px-0 cursor-pointer"
                   data-testid="download-certificate-button"
                 >
-                  <FileCertificate size={20} />
+                  <FileCheck2 size={20} />
                 </button>
               </>
             )}

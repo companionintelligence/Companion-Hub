@@ -1,7 +1,6 @@
 import { AppLogo } from '@/components/app-logo/app-logo';
 import { limitText } from '@/lib/helpers/text-helpers';
 import type { AppInfo, AppStatus as AppStatusType } from '@/types/app.types';
-import { Card, CardContent } from '@/components/ui/Card';
 import { AlertCircle, Download, RotateCw } from 'lucide-react';
 import type React from 'react';
 import { useTranslation } from 'react-i18next';
