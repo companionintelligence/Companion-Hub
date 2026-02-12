@@ -35,7 +35,6 @@ import { UninstallDialog } from '../../components/dialogs/uninstall-dialog/unins
 import { UpdateSettingsDialog } from '../../components/dialogs/update-settings-dialog/update-settings-dialog';
 import { useAppStatus } from '../../helpers/use-app-status';
 import { useInstallationProgress } from '../../helpers/use-installation-progress';
-import { Tooltip } from 'react-tooltip';
 import { DropdownMenuSeparator } from '@/components/ui/DropdownMenu/DropdownMenu';
 import { useLocation, useNavigate } from 'react-router';
 import type { AppUrn } from '@runtipi/common/types';
@@ -63,7 +62,7 @@ const ActionButton: React.FC<BtnProps> = (props) => {
   return (
     <Button data-testid={testId} loading={loading} {...rest} className={clsx('action-button', className)}>
       {title}
-      {IconComponent && <IconComponent className="ms-1" size={14} />}
+      {IconComponent && <IconComponent className="ml-1" size={14} />}
     </Button>
   );
 };
@@ -140,45 +139,29 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
   })();
 
   const RemoveListItem = (
-    <DropdownMenuItem onClick={uninstallDisclosure.open} key="remove" className="text-danger">
-      <Trash className="me-2" size={16} />
+    <DropdownMenuItem onClick={uninstallDisclosure.open} key="remove" className="text-destructive focus:text-destructive">
+      <Trash className="mr-2" size={16} />
       {t('APP_ACTION_REMOVE')}
     </DropdownMenuItem>
   );
   const SettingsListItem = (
     <DropdownMenuItem onClick={updateSettingsDisclosure.open} key="settings">
-      <Settings className="me-2" size={16} />
+      <Settings className="mr-2" size={16} />
       {t('APP_ACTION_SETTINGS')}
     </DropdownMenuItem>
   );
   const RestartListItem = (
-    <DropdownMenuItem onClick={restartDisclosure.open} key="restart" className="configChanged">
-      <RotateCw className="me-2" size={16} />
+    <DropdownMenuItem onClick={restartDisclosure.open} key="restart">
+      <RotateCw className="mr-2" size={16} />
       {t('APP_ACTION_RESTART')}
-      {app?.pendingRestart && (
-        <div>
-          <Tooltip className="tooltip" anchorSelect=".configChanged">
-            {t('MY_APPS_PENDING_RESTART')}
-          </Tooltip>
-          <span className="ms-2 badge bg-red" />
-        </div>
-      )}
+      {app?.pendingRestart && <span className="ml-2 h-2 w-2 rounded-full bg-red-500" />}
     </DropdownMenuItem>
   );
   const UpdateListItem = (
-    <DropdownMenuItem
-      onClick={() => navigate(`${location.pathname}/update`, { state: { from: location.pathname } })}
-      key="update"
-      className="updateAvailable"
-    >
-      <Download className="me-2" size={16} />
-      <Tooltip className="tooltip" anchorSelect=".updateAvailable">
-        {t('MY_APPS_UPDATE_AVAILABLE')}
-      </Tooltip>
-      <div>
-        {t('APP_ACTION_UPDATE')}
-        <span className="ms-2 badge bg-red" />
-      </div>
+    <DropdownMenuItem onClick={() => navigate(`${location.pathname}/update`, { state: { from: location.pathname } })} key="update">
+      <Download className="mr-2" size={16} />
+      {t('APP_ACTION_UPDATE')}
+      <span className="ml-2 h-2 w-2 rounded-full bg-red-500" />
     </DropdownMenuItem>
   );
   const IgnoreVersionListItem = (
@@ -187,7 +170,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
       key="ignore-version"
       disabled={ignoreVersionMutation.isPending}
     >
-      <Ban className="me-2" size={16} />
+      <Ban className="mr-2" size={16} />
       {t('APP_ACTION_IGNORE_VERSION')}
     </DropdownMenuItem>
   );
@@ -197,19 +180,19 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
       key="unignore-version"
       disabled={unignoreVersionMutation.isPending}
     >
-      <CheckCircle className="me-2" size={16} />
+      <CheckCircle className="mr-2" size={16} />
       {t('APP_ACTION_UNIGNORE_VERSION')}
     </DropdownMenuItem>
   );
   const CancelListItem = (
     <DropdownMenuItem onClick={stopDisclosure.open} key="cancel">
-      <Pause className="me-2" size={16} />
+      <Pause className="mr-2" size={16} />
       {t('APP_ACTION_CANCEL')}
     </DropdownMenuItem>
   );
   const ResetListItem = (
-    <DropdownMenuItem onClick={resetAppDisclosure.open} key="reset" className="text-danger">
-      <Eraser className="me-2" size={16} />
+    <DropdownMenuItem onClick={resetAppDisclosure.open} key="reset" className="text-destructive focus:text-destructive">
+      <Eraser className="mr-2" size={16} />
       {t('APP_INSTALL_FORM_RESET')}
     </DropdownMenuItem>
   );
@@ -220,7 +203,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
       key="edit-config"
       disabled={app?.status !== 'stopped' && app?.status !== 'missing'}
     >
-      <Edit className="me-2" size={16} />
+      <Edit className="mr-2" size={16} />
       {t('CUSTOM_APP_EDIT_CONFIG')}
     </DropdownMenuItem>
   );
@@ -320,11 +303,8 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
   );
 
   const ErrorButton = (
-    <div key="error">
-      <ActionButton IconComponent={AlertTriangle} title={t('APP_ACTION_OPEN')} className="app-error-button" intent="danger" disabled />
-      <Tooltip className="tooltip" anchorSelect=".app-error-button">
-        {checkError}
-      </Tooltip>
+    <div key="error" title={checkError ?? undefined}>
+      <ActionButton IconComponent={AlertTriangle} title={t('APP_ACTION_OPEN')} intent="danger" disabled />
     </div>
   );
 
@@ -407,7 +387,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
         info={info}
         config={app?.config ?? {}}
       />
-      <div className="mt-1 btn-list d-flex">
+      <div className="mt-1 flex flex-wrap gap-2">
         {buttons.map((button) => {
           return createElement(button.type, {
             ...button.props,
@@ -417,9 +397,11 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
         {listItems.length > 0 && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button name="more" className="more-button">
+              <Button variant="outline" name="more" className="more-button relative">
                 <MoreHorizontal size={14} />
-                {((updateAvailable && !versionIsIgnored) || app?.pendingRestart) && <span className="badge badge-dot bg-red badge-notification" />}
+                {((updateAvailable && !versionIsIgnored) || app?.pendingRestart) && (
+                  <span className="absolute -top-1 -right-1 h-2 w-2 rounded-full bg-red-500" />
+                )}
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent>

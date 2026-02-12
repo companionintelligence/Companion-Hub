@@ -1,10 +1,21 @@
 import { Link, NavLink, useNavigate } from 'react-router';
-import { LogOut, Home, Settings, Store, Menu, LayoutGrid, LogIn } from 'lucide-react';
+import { LogOut, Home, Settings, Store, Menu, LayoutGrid, LogIn, Sun, Moon } from 'lucide-react';
 import { clsx } from 'clsx';
 import { useTranslation } from 'react-i18next';
 import { Button, buttonVariants } from '@/components/ui/Button';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/DropdownMenu';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubTrigger,
+  DropdownMenuSubContent,
+  DropdownMenuPortal,
+  DropdownMenuTrigger,
+} from '@/components/ui/DropdownMenu';
 import { ModeToggle } from '@/components/mode-toggle';
+import { useTheme } from '@/components/providers/theme/theme-provider';
 import { useUserContext } from '@/context/user-context';
 import { useMutation } from '@tanstack/react-query';
 import { logoutMutation } from '@/api-client/@tanstack/react-query.gen';
@@ -16,8 +27,8 @@ type HeaderProps = {
 };
 
 export const Header = (props: HeaderProps) => {
-  const { isUpdateAvailable } = props;
   const userContext = useUserContext();
+  const { setTheme } = useTheme();
   // Prefer context for authentication state
   const isLoggedIn = props.isLoggedIn ?? userContext.isLoggedIn;
 
@@ -89,7 +100,6 @@ export const Header = (props: HeaderProps) => {
             >
               <Settings className="size-4" />
               <span className="sr-only">{t('HEADER_SETTINGS', 'Settings')}</span>
-              {isUpdateAvailable && <span className="absolute top-2 right-2 h-2 w-2 rounded-full bg-red-600 ring-2 ring-white" />}
             </NavLink>
 
             <Button variant="ghost" size="icon" title={t('HEADER_LOGOUT', 'Logout')} onClick={handleLogout}>
@@ -135,9 +145,25 @@ export const Header = (props: HeaderProps) => {
                   <Link to="/settings" className="w-full cursor-pointer flex items-center">
                     <Settings className="mr-2 size-4" />
                     {t('HEADER_SETTINGS', 'Settings')}
-                    {isUpdateAvailable && <span className="ml-auto block h-2 w-2 rounded-full bg-red-500" />}
                   </Link>
                 </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger>
+                    <div className="relative mr-2 size-4">
+                      <Sun className="absolute size-4 rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0" />
+                      <Moon className="absolute size-4 rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100" />
+                    </div>
+                    <span>Theme</span>
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuPortal>
+                    <DropdownMenuSubContent>
+                      <DropdownMenuItem onClick={() => setTheme('light')}>Light</DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => setTheme('dark')}>Dark</DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => setTheme('system')}>System</DropdownMenuItem>
+                    </DropdownMenuSubContent>
+                  </DropdownMenuPortal>
+                </DropdownMenuSub>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onClick={handleLogout} className="cursor-pointer flex items-center text-red-600 focus:text-red-600">
                   <LogOut className="mr-2 size-4" />

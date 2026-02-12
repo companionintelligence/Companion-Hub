@@ -16,7 +16,7 @@ import React from 'react';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router';
-import clsx from 'clsx';
+import { cn } from '@/lib/utils';
 
 const AppDescriptionEditor = React.lazy(() =>
   import('../../components/app-description-editor/app-description-editor').then((module) => ({ default: module.AppDescriptionEditor })),
@@ -79,17 +79,19 @@ export const AppDetailsTabs = ({ info, app, metadata }: IProps) => {
         <TabsTrigger onClick={() => handleTabChange('info')} value="info">
           {t('APP_DETAILS_BASE_INFO')}
         </TabsTrigger>
-        <TabsTrigger value="backups" onClick={() => handleTabChange('backups')} disabled={!app} className="d-none d-md-block">
+        <TabsTrigger value="backups" onClick={() => handleTabChange('backups')} disabled={!app} className="hidden md:inline-flex">
           {t('APP_BACKUPS_TAB_TITLE')}
         </TabsTrigger>
-        <TabsTrigger onClick={() => handleTabChange('logs')} value="logs" disabled={!app} className="d-none d-md-block">
+        <TabsTrigger onClick={() => handleTabChange('logs')} value="logs" disabled={!app} className="hidden md:inline-flex">
           {t('APP_LOGS_TAB_TITLE')}
         </TabsTrigger>
-        <TabsTrigger onClick={() => handleTabChange('user-config')} value="user-config" disabled={!app} className="d-none d-md-block">
+        <TabsTrigger onClick={() => handleTabChange('user-config')} value="user-config" disabled={!app} className="hidden md:inline-flex">
           {t('APP_USER_CONFIG_TAB_TITLE')}
         </TabsTrigger>
         <DropdownMenu>
-          <DropdownMenuTrigger className="nav-link dropdown-toggle d-block d-md-none">{t('MORE')}</DropdownMenuTrigger>
+          <DropdownMenuTrigger className="inline-flex md:hidden items-center justify-center whitespace-nowrap rounded-sm px-3 py-1.5 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">
+            {t('MORE')} ▾
+          </DropdownMenuTrigger>
           <DropdownMenuContent>
             <DropdownMenuItem onClick={() => handleTabChange('backups')}>{t('APP_BACKUPS_TAB_TITLE')}</DropdownMenuItem>
             <DropdownMenuItem onClick={() => handleTabChange('logs')}>{t('APP_LOGS_TAB_TITLE')}</DropdownMenuItem>
@@ -109,7 +111,7 @@ export const AppDetailsTabs = ({ info, app, metadata }: IProps) => {
             </div>
           </Alert>
         )}
-        <Alert variant="warning" className={clsx('mb-4', { 'd-none': schemaVersion === undefined || schemaVersion >= CURRENT_SCHEMA_VERSION })}>
+        <Alert variant="warning" className={cn('mb-4', { hidden: schemaVersion === undefined || schemaVersion >= CURRENT_SCHEMA_VERSION })}>
           <AlertIcon>
             <AlertTriangle strokeWidth={2} />
           </AlertIcon>
@@ -145,7 +147,7 @@ export const AppDetailsTabs = ({ info, app, metadata }: IProps) => {
                   </Button>
                   <Button
                     variant="outline"
-                    className="ms-2"
+                    className="ml-2"
                     onClick={() =>
                       saveMetaMutation.mutate({
                         path: { urn: info.urn },
@@ -177,7 +179,7 @@ export const AppDetailsTabs = ({ info, app, metadata }: IProps) => {
           <DataGridItem title={t('APP_DETAILS_SOURCE_CODE')}>
             <a target="_blank" rel="noreferrer" className="text-blue-500 text-xs" href={info.source}>
               {t('APP_DETAILS_LINK')}
-              <ExternalLink size={15} className="ms-1 mb-1" />
+              <ExternalLink size={15} className="ml-1 mb-1 inline" />
             </a>
           </DataGridItem>
           <DataGridItem title={t('APP_DETAILS_AUTHOR')}>{info.author}</DataGridItem>
@@ -186,18 +188,18 @@ export const AppDetailsTabs = ({ info, app, metadata }: IProps) => {
           </DataGridItem>
           <DataGridItem title={t('APP_DETAILS_CATEGORIES_TITLE')}>
             {info.categories?.map((c) => (
-              <div key={c} className="badge text-white bg-green me-1">
+              <span key={c} className="inline-flex items-center rounded-full bg-green-500/10 px-2.5 py-0.5 text-xs font-medium text-green-500 mr-1">
                 {t(`APP_CATEGORY_${c.toUpperCase() as Uppercase<typeof c>}`)}
-              </div>
+              </span>
             ))}
           </DataGridItem>
           <DataGridItem title={t('APP_DETAILS_VERSION')}>{info.version}</DataGridItem>
           {info.supported_architectures && (
             <DataGridItem title={t('APP_DETAILS_SUPPORTED_ARCH')}>
               {info.supported_architectures.map((a) => (
-                <div key={a} className="badge text-white bg-red me-1">
+                <span key={a} className="inline-flex items-center rounded-full bg-red-500/10 px-2.5 py-0.5 text-xs font-medium text-red-500 mr-1">
                   {a.toLowerCase()}
-                </div>
+                </span>
               ))}
             </DataGridItem>
           )}
@@ -205,7 +207,7 @@ export const AppDetailsTabs = ({ info, app, metadata }: IProps) => {
             <DataGridItem title={t('APP_DETAILS_WEBSITE')}>
               <a target="_blank" rel="noreferrer" className="text-blue-500 text-xs" href={info.website}>
                 {info.website}
-                <ExternalLink size={15} className="ms-1 mb-1" />
+                <ExternalLink size={15} className="ml-1 mb-1 inline" />
               </a>
             </DataGridItem>
           )}

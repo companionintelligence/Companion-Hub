@@ -7,18 +7,18 @@ import { keepPreviousData, useInfiniteQuery, useSuspenseQuery, useQuery } from '
 import { AppCard } from '@/modules/app/components/app-card/app-card';
 import { useCallback, useEffect, useState, useMemo } from 'react';
 import { Input } from '@/components/ui/Input';
-import { useTranslation } from 'react-i18next';
-// Remove ActionBar import as it is no longer used
-import { Navigate, useParams, useSearchParams, Link } from 'react-router';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs/tabs';
+import { Navigate, useParams, Link } from 'react-router';
 import alts from '@/lib/data/alts.json';
 import { iconForCategory, colorSchemeForCategory } from '@/modules/app/helpers/table-helpers';
 import clsx from 'clsx';
 import { Card, CardHeader, CardTitle } from '@/components/ui/Card';
-import { Search } from 'lucide-react';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/Table/Table';
+import { Search, ArrowRight, ArrowLeftRight, LayoutGrid } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 
 const SKELETONS = Array.from({ length: 12 }, (_, i) => `skeleton-${i}`);
+
+const ALTERNATIVES_VIEW = '__alternatives__';
 
 export const AppStorePageSuspense = () => {
   return (
@@ -35,16 +35,12 @@ export const AppStorePageSuspense = () => {
 
 export default () => {
   const params = useParams<{ storeId: string }>();
-  const [searchParams, setSearchParams] = useSearchParams();
-  const selectedStore = searchParams.get('store') ?? undefined;
-  const activeTab = searchParams.get('tab') || 'alternatives';
-
   const { setCategory, category, storeId, setStoreId, search: initialSearch, setSearch } = useAppStoreState();
   const [search, setLocalSearch] = useState(initialSearch);
-  const { t } = useTranslation();
   const { data: registrationStatus, isLoading: isCheckingRegistration, error: registrationError } = useRegistrationStatus();
 
-  // Redirect to device registration if not registered or if API returns forbidden
+  const isAlternativesView = category === ALTERNATIVES_VIEW;
+
   useEffect(() => {
     if (!isCheckingRegistration) {
       if (registrationError || (registrationStatus && !registrationStatus.registered)) {
@@ -52,12 +48,6 @@ export default () => {
       }
     }
   }, [registrationStatus, isCheckingRegistration, registrationError]);
-
-  useEffect(() => {
-    if (selectedStore !== undefined && selectedStore !== storeId) {
-      setStoreId(selectedStore);
-    }
-  }, [selectedStore, setStoreId, storeId]);
 
   const { data: appStores } = useSuspenseQuery({
     ...getEnabledAppStoresOptions(),
@@ -69,7 +59,7 @@ export default () => {
     ...searchAppsOptions({
       query: { pageSize: 1000, storeId: ciCloudStore?.slug },
     }),
-    enabled: !!ciCloudStore && activeTab === 'alternatives',
+    enabled: !!ciCloudStore && isAlternativesView,
   });
 
   const availableAppSlugs = useMemo(() => {
@@ -77,20 +67,15 @@ export default () => {
     return new Set(allAppsData.data.filter((app) => app.available).map((app) => app.id));
   }, [allAppsData]);
 
-  // Ensure "CI Cloud" is selected or fallback to default
   useEffect(() => {
-    // If a specific store is selected in URL, do not override it with defaults
-    if (selectedStore) return;
-
     if (appStores?.appStores) {
-      // Find CI Cloud store
       if (ciCloudStore && storeId !== ciCloudStore.slug) {
         setStoreId(ciCloudStore.slug);
       } else if (!ciCloudStore && !storeId && appStores.appStores.length > 0) {
         setStoreId(appStores.appStores[0]?.slug);
       }
     }
-  }, [appStores, storeId, setStoreId, selectedStore, ciCloudStore]);
+  }, [appStores, storeId, setStoreId, ciCloudStore]);
 
   const onSearch = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -100,22 +85,10 @@ export default () => {
     [setSearch],
   );
 
-  const onTabChange = useCallback(
-    (tab: string) => {
-      setSearchParams(
-        (prev) => {
-          const newParams = new URLSearchParams(prev);
-          newParams.set('tab', tab);
-          return newParams;
-        },
-        { replace: true },
-      );
-    },
-    [setSearchParams],
-  );
+  const effectiveCategory = isAlternativesView ? undefined : category;
 
   const { data, hasNextPage, isFetchingNextPage, isFetching, fetchNextPage } = useInfiniteQuery({
-    ...searchAppsInfiniteOptions({ query: { search, category, pageSize: 24, storeId } }),
+    ...searchAppsInfiniteOptions({ query: { search, category: effectiveCategory, pageSize: 24, storeId } }),
     getNextPageParam: (lastPage) => lastPage.nextCursor,
     placeholderData: keepPreviousData,
   });
@@ -129,11 +102,32 @@ export default () => {
     isFetching: isFetchingNextPage || isFetching,
   });
 
+  // Filter alternatives by search query
+  const filteredAlts = useMemo(() => {
+    if (!search) return alts;
+    const q = search.toLowerCase();
+    const result: Record<string, (typeof alts)[keyof typeof alts]> = {};
+    for (const [cat, items] of Object.entries(alts)) {
+      // biome-ignore lint/suspicious/noExplicitAny: JSON import typing
+      const filtered = (items as any[]).filter((item) => {
+        // biome-ignore lint/suspicious/noExplicitAny: JSON import typing
+        const propMatch = (item.proprietary as any[]).some((p) => p.name.toLowerCase().includes(q));
+        // biome-ignore lint/suspicious/noExplicitAny: JSON import typing
+        const altMatch = (item.alternatives as any[]).some((a) => a.name.toLowerCase().includes(q));
+        const catMatch = cat.toLowerCase().includes(q);
+        return propMatch || altMatch || catMatch;
+      });
+      if (filtered.length > 0) {
+        result[cat] = filtered as (typeof alts)[keyof typeof alts];
+      }
+    }
+    return result;
+  }, [search]);
+
   if (params.storeId) {
     return <Navigate to={`/app-store?store=${params.storeId}`} />;
   }
 
-  // Show loading while checking registration or if not registered
   if (isCheckingRegistration || (registrationStatus && !registrationStatus.registered)) {
     return <AppStorePageSuspense />;
   }
@@ -144,178 +138,249 @@ export default () => {
 
   return (
     <div className="h-full flex flex-col">
-      <Tabs value={activeTab} onValueChange={onTabChange} className="h-full flex flex-col">
-        <div className="flex-shrink-0 mb-4 px-6 pt-4">
-          <TabsList>
-            <TabsTrigger value="alternatives">Alternatives</TabsTrigger>
-            <TabsTrigger value="browse">Browse</TabsTrigger>
-          </TabsList>
-        </div>
+      <div className="flex-shrink-0 px-6 pt-6 pb-2">
+        <h2 className="text-3xl font-bold tracking-tight mb-2 text-foreground">App Store</h2>
+        <p className="text-muted-foreground">Discover and manage your applications</p>
+      </div>
 
-        <TabsContent value="alternatives" className="flex-1 overflow-y-auto min-h-0 card p-4 mx-6 mb-6">
-          {Object.entries(alts).map(([category, items]) => {
-            const categoryInfo = iconForCategory.find((c) => c.id === category);
-            const Icon = categoryInfo?.icon;
-            const color = colorSchemeForCategory[category] || 'blue';
-
-            return (
-              <Card key={category} className="mb-4">
-                <CardHeader>
-                  <div className="flex items-center">
-                    {Icon && <Icon className={clsx('icon me-2', `text-${color}`)} />}
-                    <CardTitle className="capitalize">{category}</CardTitle>
-                  </div>
-                </CardHeader>
-                <div className="table-responsive">
-                  <table className="table table-vcenter card-table">
-                    <thead>
-                      <tr>
-                        <th className="w-50">Proprietary</th>
-                        <th className="w-50">Open Source Alternatives</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {/* biome-ignore lint/suspicious/noExplicitAny: JSON import typing */}
-                      {(items as any[]).map((item, index) => (
-                        // biome-ignore lint/suspicious/noArrayIndexKey: Static list
-                        <tr key={index}>
-                          <td>
-                            <div className="flex flex-wrap gap-2">
-                              {/* biome-ignore lint/suspicious/noExplicitAny: JSON import typing */}
-                              {(item.proprietary as any[]).map((prop) => (
-                                <div key={prop.name} className="flex items-center mr-3 mb-2" title={prop.name}>
-                                  {prop.icon && <span className="avatar avatar-sm me-2" style={{ backgroundImage: `url(${prop.icon})` }} />}
-                                  <span>{prop.name}</span>
-                                </div>
-                              ))}
-                            </div>
-                          </td>
-                          <td>
-                            <div className="flex flex-wrap gap-2">
-                              {/* biome-ignore lint/suspicious/noExplicitAny: JSON import typing */}
-                              {(item.alternatives as any[]).map((alt) => {
-                                const isAvailable = alt.appSlug && availableAppSlugs.has(alt.appSlug) && ciCloudStore;
-                                if (isAvailable) {
-                                  return (
-                                    <Link
-                                      key={alt.name}
-                                      to={`/app-store/${ciCloudStore.slug}/${alt.appSlug}`}
-                                      className="btn btn-ghost-primary flex items-center mr-2 mb-2"
-                                    >
-                                      {alt.icon && <span className="avatar avatar-xs me-2" style={{ backgroundImage: `url(${alt.icon})` }} />}
-                                      {alt.name}
-                                    </Link>
-                                  );
-                                }
-                                return (
-                                  <div key={alt.name} className="btn btn-ghost-secondary flex items-center mr-2 mb-2 opacity-50 cursor-not-allowed">
-                                    {alt.icon && (
-                                      <span
-                                        className="avatar avatar-xs me-2"
-                                        style={{ backgroundImage: `url(${alt.icon})`, filter: 'grayscale(100%)' }}
-                                      />
-                                    )}
-                                    {alt.name}
-                                    <span className="badge badge-outline text-muted ms-2 text-xs">Soon</span>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </Card>
-            );
-          })}
-        </TabsContent>
-
-        <TabsContent value="browse" className="flex-1 flex flex-col min-h-0" contentClassName="h-full flex flex-col p-0">
-          <div className="flex-shrink-0 px-6 pt-4 pb-2">
-            <div>
-              <h2 className="text-3xl font-bold tracking-tight mb-2 text-foreground capitalize">App Store</h2>
-              <p className="text-lg text-muted-foreground">Browse and manage your sovereign applications</p>
+      <div className="flex flex-1 min-h-0 pt-4">
+        {/* Left Sidebar */}
+        <aside className="w-64 flex-shrink-0 border-r bg-muted/10 hidden md:flex flex-col ml-6 mb-6 rounded-2xl border">
+          <div className="p-4 border-b">
+            <div className="relative">
+              <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground z-10" />
+              <Input placeholder="Search apps..." className="pl-9 bg-muted/50" value={search} onChange={onSearch} />
             </div>
           </div>
-          <div className="flex h-full pt-4">
-            {/* Left Sidebar */}
-            <aside className="w-64 flex-shrink-0 border-r bg-muted/10 hidden md:flex flex-col ml-6 mb-6 rounded-2xl border">
-              <div className="p-4 border-b">
-                <div className="relative">
-                  <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground z-10" />
-                  <Input placeholder={t('APP_STORE_SEARCH_PLACEHOLDER')} className="pl-9" value={search} onChange={onSearch} />
-                </div>
-              </div>
-              <div className="flex-1 overflow-y-auto py-4 px-2 no-scrollbar">
-                <div className="space-y-1">
+          <div className="flex-1 overflow-y-auto py-4 px-2 no-scrollbar">
+            <div className="space-y-1">
+              {/* All Apps */}
+              <Button
+                variant="ghost"
+                className={clsx(
+                  'w-full justify-start font-normal text-sm gap-3 px-4 py-2 h-auto',
+                  category ? 'text-muted-foreground hover:bg-muted/50' : 'bg-primary/10 text-primary font-medium hover:bg-primary/20',
+                )}
+                onClick={() => setCategory(undefined)}
+              >
+                <LayoutGrid className="h-4 w-4" />
+                <span className="truncate">All</span>
+              </Button>
+
+              {/* Alternatives - special item */}
+              <div className="my-2 mx-3 border-t border-border/50" />
+              <Button
+                variant="ghost"
+                className={clsx(
+                  'w-full justify-start font-normal text-sm gap-3 px-4 py-2 h-auto',
+                  isAlternativesView ? 'bg-primary/10 text-primary font-medium hover:bg-primary/20' : 'text-muted-foreground hover:bg-muted/50',
+                )}
+                onClick={() => setCategory(ALTERNATIVES_VIEW)}
+              >
+                <ArrowLeftRight className="h-4 w-4" />
+                <span className="truncate">Alternatives</span>
+              </Button>
+              <div className="my-2 mx-3 border-t border-border/50" />
+
+              {/* Categories */}
+              {iconForCategory.map((cat) => {
+                const Icon = cat.icon;
+                const isSelected = category === cat.id;
+
+                return (
                   <Button
+                    key={cat.id}
                     variant="ghost"
                     className={clsx(
                       'w-full justify-start font-normal text-sm gap-3 px-4 py-2 h-auto',
-                      category ? 'text-muted-foreground hover:bg-muted/50' : 'bg-primary/10 text-primary font-medium hover:bg-primary/20',
+                      isSelected ? 'bg-primary/10 text-primary font-medium hover:bg-primary/20' : 'text-muted-foreground hover:bg-muted/50',
                     )}
-                    onClick={() => setCategory(undefined)}
+                    onClick={() => setCategory(cat.id)}
                   >
-                    <span className="truncate">All Apps</span>
+                    {Icon && <Icon className="h-4 w-4" />}
+                    <span className="truncate">{cat.id.charAt(0).toUpperCase() + cat.id.slice(1)}</span>
                   </Button>
-                  {iconForCategory.map((cat) => {
-                    const Icon = cat.icon;
-                    const isSelected = category === cat.id;
+                );
+              })}
+            </div>
+          </div>
+        </aside>
 
-                    return (
-                      <Button
-                        key={cat.id}
-                        variant="ghost"
-                        className={clsx(
-                          'w-full justify-start font-normal text-sm gap-3 px-4 py-2 h-auto',
-                          isSelected ? 'bg-primary/10 text-primary font-medium hover:bg-primary/20' : 'text-muted-foreground hover:bg-muted/50',
-                        )}
-                        onClick={() => setCategory(cat.id)}
-                      >
-                        {Icon && <Icon className="h-4 w-4" />}
-                        <span className="truncate">{cat.id.charAt(0).toUpperCase() + cat.id.slice(1)}</span>
-                      </Button>
-                    );
-                  })}
-                </div>
-              </div>
-            </aside>
-
-            <div className="flex-1 overflow-y-auto min-h-0 px-6 py-4" data-testid="app-store-scroll-container">
-              {!apps?.length && !isLoading ? (
+        {/* Main Content */}
+        <div className="flex-1 overflow-y-auto min-h-0 px-6 py-4" data-testid="app-store-scroll-container">
+          {/* Mobile Search & Categories */}
+          <div className="md:hidden space-y-4 mb-6">
+            <div className="relative">
+              <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+              <Input placeholder="Search apps..." className="pl-9 bg-muted/50" value={search} onChange={onSearch} />
+            </div>
+            <div className="flex gap-2 overflow-x-auto pb-2 no-scrollbar -mx-6 px-6">
+              <Button
+                variant="outline"
+                size="sm"
+                className={clsx(
+                  'rounded-full whitespace-nowrap',
+                  category ? 'bg-background text-muted-foreground border-border' : 'bg-primary text-primary-foreground border-primary',
+                )}
+                onClick={() => setCategory(undefined)}
+              >
+                <LayoutGrid className="h-3.5 w-3.5 mr-1.5" />
+                All
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className={clsx(
+                  'rounded-full whitespace-nowrap',
+                  isAlternativesView ? 'bg-primary text-primary-foreground border-primary' : 'bg-background text-muted-foreground border-border',
+                )}
+                onClick={() => setCategory(ALTERNATIVES_VIEW)}
+              >
+                <ArrowLeftRight className="h-3.5 w-3.5 mr-1.5" />
+                Alternatives
+              </Button>
+              {iconForCategory.map((cat) => {
+                const Icon = cat.icon;
+                const isSelected = category === cat.id;
+                return (
+                  <Button
+                    key={cat.id}
+                    variant="outline"
+                    size="sm"
+                    className={clsx(
+                      'rounded-full whitespace-nowrap',
+                      isSelected ? 'bg-primary text-primary-foreground border-primary' : 'bg-background text-muted-foreground border-border',
+                    )}
+                    onClick={() => setCategory(cat.id)}
+                  >
+                    {Icon && <Icon className="h-3.5 w-3.5 mr-1.5" />}
+                    {cat.id.charAt(0).toUpperCase() + cat.id.slice(1)}
+                  </Button>
+                );
+              })}
+            </div>
+          </div>
+          {isAlternativesView ? (
+            <div className="space-y-6">
+              {Object.keys(filteredAlts).length === 0 ? (
                 <EmptyPage title="APP_STORE_NO_RESULTS" subtitle="APP_STORE_NO_RESULTS_SUBTITLE" />
               ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
-                  {isLoading && !apps.length
-                    ? SKELETONS.map((key) => (
-                        <AppCard
-                          key={key}
-                          // biome-ignore lint/suspicious/noExplicitAny: Mock data for skeleton
-                          app={{ urn: 'loading:loading', name: '', short_desc: '', categories: [] } as any}
-                          isLoading={true}
-                        />
-                      ))
-                    : apps.map((app, i) => {
-                        const isLastElement = apps.length === i + 1;
-                        return (
-                          <div ref={isLastElement ? lastElementRef : null} key={app.urn}>
-                            <AppCard app={app} isLoading={false} />
-                          </div>
-                        );
-                      })}
-                  {isFetchingNextPage && (
-                    <div className="col-span-full text-center p-4">
-                      <output className="spinner-border text-primary" />
-                    </div>
-                  )}
+                Object.entries(filteredAlts).map(([altCategory, items]) => {
+                  const categoryInfo = iconForCategory.find((c) => c.id === altCategory);
+                  const Icon = categoryInfo?.icon;
+                  const color = colorSchemeForCategory[altCategory] || 'blue';
+
+                  return (
+                    <Card key={altCategory} className="overflow-hidden">
+                      <CardHeader className="border-b bg-muted/30 py-4 px-6">
+                        <div className="flex items-center gap-2">
+                          {Icon && <Icon className={clsx('h-5 w-5', `text-${color}`)} />}
+                          <CardTitle className="capitalize text-base">{altCategory}</CardTitle>
+                        </div>
+                      </CardHeader>
+                      <Table>
+                        <TableHeader>
+                          <TableRow className="bg-muted/20 hover:bg-muted/20">
+                            <TableHead className="w-1/2 font-semibold">Proprietary</TableHead>
+                            <TableHead className="w-1/2 font-semibold">Open Source Alternatives</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {/* biome-ignore lint/suspicious/noExplicitAny: JSON import typing */}
+                          {(items as any[]).map((item, index) => (
+                            // biome-ignore lint/suspicious/noArrayIndexKey: Static list
+                            <TableRow key={index}>
+                              <TableCell className="py-3">
+                                <div className="flex flex-wrap gap-2">
+                                  {/* biome-ignore lint/suspicious/noExplicitAny: JSON import typing */}
+                                  {(item.proprietary as any[]).map((prop) => (
+                                    <div
+                                      key={prop.name}
+                                      className="flex items-center gap-2 rounded-full bg-muted/50 px-3 py-1.5 text-sm"
+                                      title={prop.name}
+                                    >
+                                      {prop.icon && (
+                                        <img src={prop.icon} alt={prop.name} className="h-5 w-5 rounded-full object-cover" loading="lazy" />
+                                      )}
+                                      <span className="font-medium">{prop.name}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </TableCell>
+                              <TableCell className="py-3">
+                                <div className="flex flex-wrap gap-2">
+                                  {/* biome-ignore lint/suspicious/noExplicitAny: JSON import typing */}
+                                  {(item.alternatives as any[]).map((alt) => {
+                                    const isAvailable = alt.appSlug && availableAppSlugs.has(alt.appSlug) && ciCloudStore;
+                                    if (isAvailable) {
+                                      return (
+                                        <Link
+                                          key={alt.name}
+                                          to={`/app-store/${ciCloudStore.slug}/${alt.appSlug}`}
+                                          className="flex items-center gap-2 rounded-full bg-primary/10 px-3 py-1.5 text-sm font-medium text-primary hover:bg-primary/20 transition-colors"
+                                        >
+                                          {alt.icon && (
+                                            <img src={alt.icon} alt={alt.name} className="h-5 w-5 rounded-full object-cover" loading="lazy" />
+                                          )}
+                                          {alt.name}
+                                          <ArrowRight className="h-3 w-3" />
+                                        </Link>
+                                      );
+                                    }
+                                    return (
+                                      <div
+                                        key={alt.name}
+                                        className="flex items-center gap-2 rounded-full bg-muted/30 px-3 py-1.5 text-sm text-muted-foreground cursor-not-allowed"
+                                      >
+                                        {alt.icon && (
+                                          <img src={alt.icon} alt={alt.name} className="h-5 w-5 rounded-full object-cover grayscale" loading="lazy" />
+                                        )}
+                                        {alt.name}
+                                        <span className="text-xs bg-muted/50 px-1.5 py-0.5 rounded-full">Soon</span>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </Card>
+                  );
+                })
+              )}
+            </div>
+          ) : !apps?.length && !isLoading ? (
+            <EmptyPage title="APP_STORE_NO_RESULTS" subtitle="APP_STORE_NO_RESULTS_SUBTITLE" />
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
+              {isLoading && !apps.length
+                ? SKELETONS.map((key) => (
+                    <AppCard
+                      key={key}
+                      // biome-ignore lint/suspicious/noExplicitAny: Mock data for skeleton
+                      app={{ urn: 'loading:loading', name: '', short_desc: '', categories: [] } as any}
+                      isLoading={true}
+                    />
+                  ))
+                : apps.map((app, i) => {
+                    const isLastElement = apps.length === i + 1;
+                    return (
+                      <div ref={isLastElement ? lastElementRef : null} key={app.urn}>
+                        <AppCard app={app} isLoading={false} />
+                      </div>
+                    );
+                  })}
+              {isFetchingNextPage && (
+                <div className="col-span-full text-center p-4">
+                  <output className="spinner-border text-primary" />
                 </div>
               )}
             </div>
-          </div>
-        </TabsContent>
-      </Tabs>
+          )}
+        </div>
+      </div>
     </div>
   );
 };

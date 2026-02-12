@@ -1,7 +1,6 @@
 import { getAppOptions } from '@/api-client/@tanstack/react-query.gen';
 import { useAppContext } from '@/context/app-context';
 import { useSuspenseQuery } from '@tanstack/react-query';
-import { useTranslation } from 'react-i18next';
 import { redirect, useParams } from 'react-router';
 import { AppStatus } from '../components/app-status/app-status';
 import { AppActions } from '../containers/app-actions/app-actions';
