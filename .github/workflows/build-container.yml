@@ -1,4 +1,4 @@
-name: Deploy to Cloudflare
+name: Build and Push Container
 
 on:
   push:
@@ -18,18 +18,18 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Deploy to Cloudflare (Production)
+      - name: Build and Push Container (Production)
         if: github.ref == 'refs/heads/main'
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: deploy --env production
+          command: containers build --push --tag ci-os-hub:latest
 
-      - name: Deploy to Cloudflare (Staging)
+      - name: Build and Push Container (Staging)
         if: github.ref == 'refs/heads/develop'
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: deploy --env staging
+          command: containers build --push --tag ci-os-hub:staging
