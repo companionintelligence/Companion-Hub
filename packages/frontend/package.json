@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "bun x @react-router/dev dev",
+    "local": "bun run dev",
     "build": "node node_modules/@react-router/dev/bin.js build",
     "bundle": "node node_modules/@react-router/dev/bin.js build",
     "preview": "vite preview",
