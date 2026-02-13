@@ -57,24 +57,34 @@ describe('AuthController', () => {
       expect(logger.debug).toHaveBeenCalledWith('User authenticated for Traefik forward auth', { username: 'testuser' });
     });
 
-    it('should return 401 when user is not authenticated', async () => {
+    it('should redirect to login when user is not authenticated', async () => {
       // Arrange
       const req = {
         user: undefined,
+        headers: {
+          'x-forwarded-uri': '/dashboard',
+          'x-forwarded-proto': 'https',
+          'x-forwarded-host': 'jellyfin-myorg.companionintelligence.com',
+        },
       } as unknown as Request;
 
       const res = {
         status: vi.fn().mockReturnThis(),
-        send: vi.fn(),
+        redirect: vi.fn(),
       } as unknown as Response;
 
       // Act
       await authController.traefik(req, res);
 
       // Assert
-      expect(res.status).toHaveBeenCalledWith(401);
-      expect(res.send).toHaveBeenCalledWith('Unauthorized');
-      expect(logger.debug).toHaveBeenCalledWith('User not authenticated for Traefik forward auth');
+      expect(res.status).toHaveBeenCalledWith(302);
+      expect(res.redirect).toHaveBeenCalledWith(
+        expect.stringContaining('companionintelligence.com/login')
+      );
+      expect(logger.debug).toHaveBeenCalledWith(
+        'Unauthenticated Traefik forward auth request',
+        expect.objectContaining({ host: 'jellyfin-myorg.companionintelligence.com' })
+      );
     });
   });
 });
