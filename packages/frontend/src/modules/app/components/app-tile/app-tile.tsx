@@ -1,7 +1,7 @@
 import { AppLogo } from '@/components/app-logo/app-logo';
 import { limitText } from '@/lib/helpers/text-helpers';
 import type { AppInfo, AppStatus as AppStatusType } from '@/types/app.types';
-import { IconAlertCircle, IconDownload, IconRotateClockwise } from '@tabler/icons-react';
+import { AlertCircle, Download, RotateCw } from 'lucide-react';
 import type React from 'react';
 import { useTranslation } from 'react-i18next';
 import { Tooltip } from 'react-tooltip';
@@ -28,7 +28,7 @@ export const AppTile: React.FC<{
           {t('MY_APPS_PENDING_RESTART')}
         </Tooltip>
         <div className="pendingRestart ribbon bg-warning ribbon-top">
-          <IconRotateClockwise size={20} />
+          <RotateCw size={20} />
         </div>
       </>
     );
@@ -39,7 +39,7 @@ export const AppTile: React.FC<{
           {t('MY_APPS_UPDATE_AVAILABLE')}
         </Tooltip>
         <div className="updateAvailable ribbon bg-green ribbon-top">
-          <IconDownload size={20} />
+          <Download size={20} />
         </div>
       </>
     );
@@ -50,7 +50,7 @@ export const AppTile: React.FC<{
           {t('MY_APPS_DEPRECATED')}
         </Tooltip>
         <div className="deprecated ribbon bg-red ribbon-top">
-          <IconAlertCircle />
+          <AlertCircle />
         </div>
       </>
     );

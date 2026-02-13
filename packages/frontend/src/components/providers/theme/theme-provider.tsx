@@ -1,46 +1,58 @@
-import { useUserContext } from '@/context/user-context';
-import { useUIStore } from '@/stores/ui-store';
-import Cookies from 'js-cookie';
-import type React from 'react';
-import { useEffect } from 'react';
+import { createContext, useContext, useEffect, useState } from 'react';
 
-type Props = {
+export type Theme = 'dark' | 'light' | 'system';
+
+type ThemeProviderProps = {
   children: React.ReactNode;
-  initialTheme?: string;
+  defaultTheme?: Theme;
+  storageKey?: string;
 };
 
-export const ThemeProvider = (props: Props) => {
-  const { children, initialTheme } = props;
-  const { themeBase, themeColor } = useUserContext();
+type ThemeProviderState = {
+  theme: Theme;
+  setTheme: (theme: Theme) => void;
+};
 
-  const theme = useUIStore((state) => state.theme);
-  const setDarkMode = useUIStore((state) => state.setDarkMode);
+const initialState: ThemeProviderState = {
+  theme: 'system',
+  setTheme: () => null,
+};
+
+const ThemeProviderContext = createContext<ThemeProviderState>(initialState);
+
+export function ThemeProvider({ children, defaultTheme = 'system', storageKey = 'vite-ui-theme' }: ThemeProviderProps) {
+  const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem(storageKey) as Theme) || defaultTheme);
 
   useEffect(() => {
-    if (themeBase) {
-      document.body.dataset.bsThemeBase = themeBase;
-    }
+    const root = window.document.documentElement;
 
-    if (themeColor) {
-      document.body.dataset.bsThemePrimary = themeColor;
-    }
+    root.classList.remove('light', 'dark');
 
-    if (theme) {
-      Cookies.set('theme', theme || initialTheme || 'light', { path: '/', expires: 365 });
-      document.body.dataset.bsTheme = theme;
-      document.documentElement.classList.toggle('dark', theme === 'dark');
-    } else if (!Cookies.get('theme')) {
-      // Detect system theme
+    if (theme === 'system') {
       const systemTheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-      setDarkMode(systemTheme === 'dark');
-      Cookies.set('theme', systemTheme, { path: '/', expires: 365 });
-      document.body.dataset.bsTheme = systemTheme;
-      document.documentElement.classList.toggle('dark', systemTheme === 'dark');
+
+      root.classList.add(systemTheme);
+      return;
     }
 
-    const cookieTheme = Cookies.get('theme');
-    setDarkMode(cookieTheme === 'dark');
-  }, [initialTheme, setDarkMode, theme, themeBase, themeColor]);
+    root.classList.add(theme);
+  }, [theme]);
 
-  return children;
+  const value = {
+    theme,
+    setTheme: (theme: Theme) => {
+      localStorage.setItem(storageKey, theme);
+      setTheme(theme);
+    },
+  };
+
+  return <ThemeProviderContext.Provider value={value}>{children}</ThemeProviderContext.Provider>;
+}
+
+export const useTheme = () => {
+  const context = useContext(ThemeProviderContext);
+
+  if (context === undefined) throw new Error('useTheme must be used within a ThemeProvider');
+
+  return context;
 };

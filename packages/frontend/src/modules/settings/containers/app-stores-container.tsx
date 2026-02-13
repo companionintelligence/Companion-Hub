@@ -1,10 +1,11 @@
 import { getAllAppStoresOptions, pullAppStoresMutation } from '@/api-client/@tanstack/react-query.gen';
 import { Alert, AlertDescription, AlertHeading, AlertIcon } from '@/components/ui/Alert/Alert';
-import { IconAlertCircle, IconBrandAppstore, IconRefresh } from '@tabler/icons-react';
+import { AlertCircle, LayoutGrid, RefreshCw } from 'lucide-react';
 import { useMutation, useQueryClient, useSuspenseQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { AppStoresTable } from '../components/app-stores-table/app-stores-table';
 import { Button } from '@/components/ui/Button';
+import { CardContent } from '@/components/ui/Card';
 import toast from 'react-hot-toast';
 
 export const AppStoresContainer = () => {
@@ -27,21 +28,21 @@ export const AppStoresContainer = () => {
   });
 
   return (
-    <div className="card-body">
-      <div className="d-flex align-items-center justify-content-between mb-2">
-        <div className="d-flex align-items-center">
-          <IconBrandAppstore className="me-2" />
+    <CardContent>
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center">
+          <LayoutGrid className="me-2" />
           <h2 className="mb-0">{t('SETTINGS_APPSTORES_TITLE')}</h2>
         </div>
         <Button onClick={() => pullMutation.mutate({})} loading={pullMutation.isPending} variant="outline">
-          <IconRefresh className="me-2" size={16} />
+          <RefreshCw className="me-2" size={16} />
           {t('REFRESH')}
         </Button>
       </div>
       <p className="text-muted">{t('SETTINGS_APPSTORES_SUBTITLE')}</p>
       <Alert variant="warning">
         <AlertIcon>
-          <IconAlertCircle stroke={2} />
+          <AlertCircle strokeWidth={2} />
         </AlertIcon>
         <div>
           <AlertHeading>{t('COMMON_WARNING')}</AlertHeading>
@@ -49,6 +50,6 @@ export const AppStoresContainer = () => {
         </div>
       </Alert>
       <AppStoresTable appStores={data.appStores} />
-    </div>
+    </CardContent>
   );
 };

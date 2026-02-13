@@ -1,4 +1,5 @@
 import { LanguageSelector } from '@/components/language-selector/language-selector';
+import { Card, CardContent } from '@/components/ui/Card';
 import { useUserContext } from '@/context/user-context';
 import type { Locale } from '@/lib/i18n/locales';
 import { getLogo } from '@/lib/theme/theme';
@@ -27,9 +28,9 @@ export const AuthLayout = ({ children }: PropsWithChildren) => {
             }}
           />
         </div>
-        <div className="card card-md">
-          <div className="card-body">{children}</div>
-        </div>
+        <Card className="max-w-md w-full mx-auto">
+          <CardContent>{children}</CardContent>
+        </Card>
       </div>
     </div>
   );

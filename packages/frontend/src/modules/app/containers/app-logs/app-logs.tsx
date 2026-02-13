@@ -1,3 +1,4 @@
+import { Card, CardContent } from '@/components/ui/Card';
 import { useSSE } from '@/lib/hooks/use-sse';
 import { Suspense, lazy, useRef, useState } from 'react';
 
@@ -33,11 +34,11 @@ export const AppLogs = ({ appUrn }: { appUrn: string }) => {
 
   return (
     <Suspense>
-      <div className="card">
-        <div className="card-body">
+      <Card>
+        <CardContent>
           <LogsTerminal logs={logs} maxLines={maxLines.current} onMaxLinesChange={updateMaxLines} />
-        </div>
-      </div>
+        </CardContent>
+      </Card>
     </Suspense>
   );
 };

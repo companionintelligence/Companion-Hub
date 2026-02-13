@@ -1,11 +1,9 @@
 import type { GuestAppsDto } from '@/api-client';
 import { getGuestAppsOptions, getGuestLinksOptions } from '@/api-client/@tanstack/react-query.gen';
-import { GuestHeader } from '@/components/header/guest-header';
-import { BaseDashboardLayout } from '@/components/layouts/dashboard/base-dashboard-layout';
-import { PageTitle } from '@/components/page-title/page-title';
+import { Header } from '@/components/header/header';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/DropdownMenu';
 import { AppTile } from '@/modules/app/components/app-tile/app-tile';
-import { IconLock, IconLockOff } from '@tabler/icons-react';
+import { Lock, LockOpen } from 'lucide-react';
 import { useSuspenseQuery } from '@tanstack/react-query';
 import '@/styles/app-grid.css';
 import { EmptyPage } from '@/components/empty-page/empty-page';
@@ -42,8 +40,7 @@ const Tile = ({ data, localDomain, sslPort }: { data: GuestAppsDto['installed'][
   return (
     <DropdownMenu modal={false}>
       <DropdownMenuTrigger asChild>
-        {/* biome-ignore lint/a11y/noNoninteractiveTabindex: works fine */}
-        <div tabIndex={0} className="col-sm-6 col-lg-4 app-link p-2 pt-0 pb-0 mb-0">
+        <div className="relative group cursor-pointer rounded-xl transition-all duration-300 hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2">
           <AppTile key={info.urn} info={info} status={app.status} updateAvailable={false} />
         </div>
       </DropdownMenuTrigger>
@@ -51,21 +48,21 @@ const Tile = ({ data, localDomain, sslPort }: { data: GuestAppsDto['installed'][
         <DropdownMenuGroup>
           {app.exposed && app.domain && (
             <DropdownMenuItem onClick={() => handleOpen('domain')}>
-              <IconLock className="text-green me-2" size={16} />
+              <Lock className="text-green-500 mr-2" size={16} />
               {app.domain}
               {sslPort !== 443 ? `:${sslPort}` : ''}
             </DropdownMenuItem>
           )}
           {(app.exposedLocal || !info.dynamic_config) && (
             <DropdownMenuItem onClick={() => handleOpen('localDomain')}>
-              <IconLock className="text-muted me-2" size={16} />
+              <Lock className="text-muted-foreground mr-2" size={16} />
               {app.localSubdomain}.{localDomain}
               {sslPort !== 443 ? `:${sslPort}` : ''}
             </DropdownMenuItem>
           )}
           {(app.openPort || !info.dynamic_config) && (
             <DropdownMenuItem onClick={() => handleOpen('port')}>
-              <IconLockOff className="text-muted me-2" size={16} />
+              <LockOpen className="text-muted-foreground mr-2" size={16} />
               {hostname}:{app.port ?? info.port}
             </DropdownMenuItem>
           )}
@@ -89,16 +86,19 @@ export const GuestDashboard = () => {
   const hasContent = appsData.installed.length > 0 || linksData.links.length > 0;
 
   return (
-    <BaseDashboardLayout header={<GuestHeader />} pageTitle={<PageTitle apps={[]} />}>
-      {!hasContent && <EmptyPage title="GUEST_DASHBOARD_NO_APPS" subtitle="GUEST_DASHBOARD_NO_APPS_SUBTITLE" />}
-      <div className="row row-cards">
-        {appsData.installed.map((appData) => {
-          return <Tile key={appData.app.id} data={appData} localDomain={localDomain} sslPort={sslPort} />;
-        })}
-        {linksData.links.map((link) => (
-          <GuestLinkTile key={link.id} link={link} />
-        ))}
+    <div className="flex min-h-screen flex-col bg-background">
+      <Header isLoggedIn={false} />
+      <div className="flex flex-1 flex-col pt-24 px-4 container mx-auto pb-8">
+        {!hasContent && <EmptyPage title="GUEST_DASHBOARD_NO_APPS" subtitle="GUEST_DASHBOARD_NO_APPS_SUBTITLE" />}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+          {appsData.installed.map((appData) => {
+            return <Tile key={appData.app.id} data={appData} localDomain={localDomain} sslPort={sslPort} />;
+          })}
+          {linksData.links.map((link) => (
+            <GuestLinkTile key={link.id} link={link} />
+          ))}
+        </div>
       </div>
-    </BaseDashboardLayout>
+    </div>
   );
 };

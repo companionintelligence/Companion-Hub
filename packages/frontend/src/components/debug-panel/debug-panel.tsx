@@ -11,8 +11,9 @@ import {
   uninstallAllAppsMutation,
 } from '@/api-client/@tanstack/react-query.gen';
 import { Button } from '../ui/Button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import './debug-panel.css';
-import { IconX } from '@tabler/icons-react';
+import { X } from 'lucide-react';
 
 export const DebugPanel = () => {
   const [isVisible, setIsVisible] = useState(false);
@@ -139,14 +140,14 @@ export const DebugPanel = () => {
   return (
     <>
       {isVisible && (
-        <div className="card debug-panel">
-          <div className="card-header d-flex justify-content-between">
-            <h3 className="card-title">Developer Tools</h3>
+        <Card className="debug-panel">
+          <CardHeader className="flex flex-row justify-between items-center p-4">
+            <CardTitle>Developer Tools</CardTitle>
             <Button variant="ghost" intent="danger" size="sm" aria-label="Close" onClick={() => setIsVisible(false)}>
-              <IconX size={16} />
+              <X size={16} />
             </Button>
-          </div>
-          <div className="card-body d-flex flex-column" style={{ gap: '0.5rem' }}>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-2 p-4 pt-0">
             <Button onClick={() => seedMutation.mutate({})}>{seedMutation.isPending ? 'Seeding...' : 'Seed database'}</Button>
             <Button onClick={() => startAllApps.mutate({})}>{startAllApps.isPending ? 'Starting all apps...' : 'Start all apps'}</Button>
             <Button onClick={() => subnetsMutation.mutate({})}>
@@ -162,8 +163,8 @@ export const DebugPanel = () => {
             <Button onClick={() => uninstallAllApps.mutate({})} intent="danger">
               {uninstallAllApps.isPending ? 'Uninstalling all apps...' : 'Uninstall all apps'}
             </Button>
-          </div>
-        </div>
+          </CardContent>
+        </Card>
       )}
     </>
   );

@@ -1,21 +1,21 @@
 import type { AppCategory } from '@/types/app.types';
 import {
-  IconBook,
-  IconBrain,
-  IconBroadcast,
-  IconCamera,
-  IconCode,
-  IconDatabase,
-  IconDeviceGamepad2,
-  IconMovie,
-  IconMusic,
-  IconPigMoney,
-  IconRobot,
-  IconShieldLock,
-  IconStar,
-  IconTool,
-  IconUsers,
-} from '@tabler/icons-react';
+  Book,
+  Bot,
+  Brain,
+  Camera,
+  Clapperboard,
+  Code,
+  Database,
+  Gamepad2,
+  Music,
+  PiggyBank,
+  Radio,
+  ShieldCheck,
+  Star,
+  Users,
+  Wrench,
+} from 'lucide-react';
 
 export const colorSchemeForCategory: Record<string, string> = {
   network: 'blue',
@@ -37,23 +37,23 @@ export const colorSchemeForCategory: Record<string, string> = {
 
 type AppCategoryEntry = {
   id: AppCategory;
-  icon: typeof IconBook;
+  icon: typeof Book;
 };
 
 export const iconForCategory: AppCategoryEntry[] = [
-  { id: 'network', icon: IconBroadcast },
-  { id: 'media', icon: IconMovie },
-  { id: 'development', icon: IconCode },
-  { id: 'automation', icon: IconRobot },
-  { id: 'social', icon: IconUsers },
-  { id: 'utilities', icon: IconTool },
-  { id: 'photography', icon: IconCamera },
-  { id: 'security', icon: IconShieldLock },
-  { id: 'featured', icon: IconStar },
-  { id: 'books', icon: IconBook },
-  { id: 'data', icon: IconDatabase },
-  { id: 'music', icon: IconMusic },
-  { id: 'finance', icon: IconPigMoney },
-  { id: 'gaming', icon: IconDeviceGamepad2 },
-  { id: 'ai', icon: IconBrain },
+  { id: 'featured', icon: Star },
+  { id: 'ai', icon: Brain },
+  { id: 'automation', icon: Bot },
+  { id: 'books', icon: Book },
+  { id: 'data', icon: Database },
+  { id: 'development', icon: Code },
+  { id: 'finance', icon: PiggyBank },
+  { id: 'gaming', icon: Gamepad2 },
+  { id: 'media', icon: Clapperboard },
+  { id: 'music', icon: Music },
+  { id: 'network', icon: Radio },
+  { id: 'photography', icon: Camera },
+  { id: 'security', icon: ShieldCheck },
+  { id: 'social', icon: Users },
+  { id: 'utilities', icon: Wrench },
 ];

@@ -1,7 +1,8 @@
 import { Markdown } from '@/components/markdown/markdown';
 import { Button } from '@/components/ui/Button';
 import { useAppContext } from '@/context/app-context';
-import { IconStar } from '@tabler/icons-react';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
+import { Star } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import semver from 'semver';
 import { UpdateRepoModal } from '../components/update-repo-modal/update-repo-modal';
@@ -20,35 +21,33 @@ export const GeneralActionsContainer = () => {
     return (
       <div>
         {version.releases?.map((release) => (
-          <div key={release.version} className="mt-3 card col-12 col-md-8">
-            <div className="card-stamp">
-              <div className="card-stamp-icon bg-yellow">
-                <IconStar size={80} />
-              </div>
+          <Card key={release.version} className="mt-3 relative overflow-hidden w-full md:w-2/3">
+            <div className="absolute -right-6 -top-6 text-yellow-500 opacity-20 rotate-12 pointer-events-none">
+              <Star size={80} fill="currentColor" />
             </div>
-            <div className="card-header">
-              <h3 className="card-title">Version {release.version}</h3>
-            </div>
-            <div className="card-body">
+            <CardHeader>
+              <CardTitle>Version {release.version}</CardTitle>
+            </CardHeader>
+            <CardContent>
               <Markdown className="" content={release.body} />
-            </div>
-          </div>
+            </CardContent>
+          </Card>
         ))}
       </div>
     );
   };
 
   return (
-    <div className="card-body">
+    <CardContent>
       <h2 className="mb-4">{t('SETTINGS_ACTIONS_TITLE')}</h2>
-      <h3 className="card-title mt-4">{t('SETTINGS_ACTIONS_CURRENT_VERSION', { version: version.current })}</h3>
-      <p className="card-subtitle">
+      <CardTitle className="mt-4">{t('SETTINGS_ACTIONS_CURRENT_VERSION', { version: version.current })}</CardTitle>
+      <p className="text-muted-foreground">
         {isLatest ? t('SETTINGS_ACTIONS_STAY_UP_TO_DATE') : t('SETTINGS_ACTIONS_NEW_VERSION', { version: version.latest })}
       </p>
       {renderUpdate()}
-      <h3 className="card-title mt-4">{t('SETTINGS_ACTIONS_UPDATE_REPO_TITLE')}</h3>
-      <p className="card-subtitle">{t('SETTINGS_ACTIONS_UPDATE_REPO_SUBTITLE')}</p>
+      <CardTitle className="mt-4">{t('SETTINGS_ACTIONS_UPDATE_REPO_TITLE')}</CardTitle>
+      <p className="text-muted-foreground">{t('SETTINGS_ACTIONS_UPDATE_REPO_SUBTITLE')}</p>
       <UpdateRepoModal />
-    </div>
+    </CardContent>
   );
 };

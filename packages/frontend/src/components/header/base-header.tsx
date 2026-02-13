@@ -1,4 +1,4 @@
-import { IconArrowLeft, IconCertificate, IconLogin, IconMaximize, IconMinimize, IconSettings } from '@tabler/icons-react';
+import { ArrowLeft, FileCheck2, LogIn, Maximize, Minimize, Settings } from 'lucide-react';
 import { type ReactNode, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useLocation } from 'react-router';
@@ -63,7 +63,7 @@ export const BaseHeader = (props: BaseHeaderProps) => {
           <div />
         ) : (
           <Link to="/dashboard" className="nav-link px-0 cursor-pointer me-3" aria-label="Back">
-            <IconArrowLeft size={20} />
+            <ArrowLeft size={20} />
           </Link>
         )}
         <div className="navbar-nav flex-row order-md-last">
@@ -79,7 +79,7 @@ export const BaseHeader = (props: BaseHeaderProps) => {
                   className="downloadCert nav-link px-0 cursor-pointer"
                   data-testid="download-certificate-button"
                 >
-                  <IconCertificate size={20} />
+                  <FileCheck2 size={20} />
                 </button>
               </>
             )}
@@ -90,13 +90,13 @@ export const BaseHeader = (props: BaseHeaderProps) => {
                   {isFullscreen ? t('HEADER_EXIT_FULLSCREEN') : t('HEADER_ENTER_FULLSCREEN')}
                 </Tooltip>
                 <button type="button" onClick={toggleFullscreen} className="fullscreen nav-link px-0 cursor-pointer" data-testid="fullscreen-button">
-                  {isFullscreen ? <IconMinimize size={20} /> : <IconMaximize size={20} />}
+                  {isFullscreen ? <Minimize size={20} /> : <Maximize size={20} />}
                 </button>
                 <Tooltip className="tooltip" anchorSelect=".settings">
                   {t('HEADER_SETTINGS')}
                 </Tooltip>
                 <Link to="/settings" className="settings nav-link px-0 cursor-pointer" data-testid="settings-button">
-                  <IconSettings size={20} />
+                  <Settings size={20} />
                 </Link>
               </>
             ) : (
@@ -111,7 +111,7 @@ export const BaseHeader = (props: BaseHeaderProps) => {
                   className="logIn nav-link px-0 cursor-pointer"
                   data-testid="login-button"
                 >
-                  <IconLogin size={20} />
+                  <LogIn size={20} />
                 </button>
               </>
             )}

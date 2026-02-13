@@ -1,4 +1,5 @@
 import { Button } from '@/components/ui/Button';
+import { Card, CardContent } from '@/components/ui/Card';
 import { Switch } from '@/components/ui/Switch';
 import { copilot } from '@uiw/codemirror-theme-copilot';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -7,7 +8,7 @@ import CodeMirror from '@uiw/react-codemirror';
 import { yaml } from '@codemirror/lang-yaml';
 import { Alert, AlertDescription, AlertHeading, AlertIcon } from '@/components/ui/Alert/Alert';
 import type { AppInfo } from '@/types/app.types';
-import { IconAlertCircle } from '@tabler/icons-react';
+import { AlertCircle } from 'lucide-react';
 import { useState } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 import {
@@ -88,11 +89,11 @@ export const AppUserConfigEditors = ({ info, initialAppEnv, initialDockerCompose
   };
 
   return (
-    <div className="card">
-      <div className="card-body">
+    <Card>
+      <CardContent>
         <Alert variant="warning">
           <AlertIcon>
-            <IconAlertCircle stroke={2} />
+            <AlertCircle strokeWidth={2} />
           </AlertIcon>
           <div>
             <AlertHeading>{t('USER_CONFIG_WARNING_TITLE')}</AlertHeading>
@@ -134,7 +135,7 @@ export const AppUserConfigEditors = ({ info, initialAppEnv, initialDockerCompose
             </TabsContent>
           </Tabs>
         </div>
-      </div>
-    </div>
+      </CardContent>
+    </Card>
   );
 };

@@ -1,28 +1,26 @@
 import type { AppStatus as AppStatusType } from '@/types/app.types';
-import clsx from 'clsx';
+import { cn } from '@/lib/utils';
 import type React from 'react';
 import { useTranslation } from 'react-i18next';
-import { Tooltip } from 'react-tooltip';
 
 export const AppStatus: React.FC<{ lite?: boolean; status: AppStatusType }> = ({ status, lite }) => {
   const { t } = useTranslation();
 
   const formattedStatus = t(`APP_STATUS_${status.toUpperCase()}`);
 
-  const classes = clsx('status-dot status-gray', {
-    'status-dot-animated status-green': status === 'running',
-    'status-red': status === 'stopped',
-  });
-
   if (status === 'missing') return null;
 
+  const dotClasses = cn(
+    'inline-block h-2 w-2 rounded-full',
+    status === 'running' && 'bg-green-500 animate-pulse',
+    status === 'stopped' && 'bg-red-500',
+    status !== 'running' && status !== 'stopped' && 'bg-gray-400',
+  );
+
   return (
-    <>
-      {lite && <Tooltip className="tooltip" id={formattedStatus} anchorSelect=".appStatus" place="top" />}
-      <div data-tooltip-content={formattedStatus} data-tooltip-id={formattedStatus} className="appStatus d-flex align-items-center">
-        <span className={classes} />
-        {!lite && <span className={clsx('ms-2 text-muted')}>{formattedStatus}</span>}
-      </div>
-    </>
+    <div className="flex items-center" title={lite ? formattedStatus : undefined}>
+      <span className={dotClasses} />
+      {!lite && <span className="ml-2 text-sm text-muted-foreground">{formattedStatus}</span>}
+    </div>
   );
 };

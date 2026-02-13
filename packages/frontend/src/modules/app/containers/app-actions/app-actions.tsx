@@ -1,18 +1,18 @@
 import {
-  IconAlertTriangle,
-  IconBan,
-  IconCircleCheck,
-  IconDots,
-  IconDownload,
-  IconEdit,
-  IconEraser,
-  IconExternalLink,
-  IconPlayerPause,
-  IconPlayerPlay,
-  IconRotateClockwise,
-  IconSettings,
-  IconTrash,
-} from '@tabler/icons-react';
+  AlertTriangle,
+  Ban,
+  CheckCircle,
+  MoreHorizontal,
+  Download,
+  Edit,
+  Eraser,
+  ExternalLink,
+  Pause,
+  Play,
+  RotateCw,
+  Settings,
+  Trash,
+} from 'lucide-react';
 import type React from 'react';
 import { createElement, useState, useEffect } from 'react';
 import { client } from '@/api-client/client.gen';
@@ -35,7 +35,6 @@ import { UninstallDialog } from '../../components/dialogs/uninstall-dialog/unins
 import { UpdateSettingsDialog } from '../../components/dialogs/update-settings-dialog/update-settings-dialog';
 import { useAppStatus } from '../../helpers/use-app-status';
 import { useInstallationProgress } from '../../helpers/use-installation-progress';
-import { Tooltip } from 'react-tooltip';
 import { DropdownMenuSeparator } from '@/components/ui/DropdownMenu/DropdownMenu';
 import { useLocation, useNavigate } from 'react-router';
 import type { AppUrn } from '@runtipi/common/types';
@@ -50,7 +49,7 @@ interface IProps {
 }
 
 interface BtnProps extends ButtonProps {
-  IconComponent?: typeof IconDownload;
+  IconComponent?: typeof Download;
 }
 
 const ActionButton: React.FC<BtnProps> = (props) => {
@@ -63,7 +62,7 @@ const ActionButton: React.FC<BtnProps> = (props) => {
   return (
     <Button data-testid={testId} loading={loading} {...rest} className={clsx('action-button', className)}>
       {title}
-      {IconComponent && <IconComponent className="ms-1" size={14} />}
+      {IconComponent && <IconComponent className="ml-1" size={14} />}
     </Button>
   );
 };
@@ -119,7 +118,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
   const StartButton = (
     <ActionButton
       key="start"
-      IconComponent={IconPlayerPlay}
+      IconComponent={Play}
       onClick={() => startMutation.mutate({ path: { urn: info.urn } })}
       title={t('APP_ACTION_START')}
       intent="success"
@@ -140,45 +139,29 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
   })();
 
   const RemoveListItem = (
-    <DropdownMenuItem onClick={uninstallDisclosure.open} key="remove" className="text-danger">
-      <IconTrash className="me-2" size={16} />
+    <DropdownMenuItem onClick={uninstallDisclosure.open} key="remove" className="text-destructive focus:text-destructive">
+      <Trash className="mr-2" size={16} />
       {t('APP_ACTION_REMOVE')}
     </DropdownMenuItem>
   );
   const SettingsListItem = (
     <DropdownMenuItem onClick={updateSettingsDisclosure.open} key="settings">
-      <IconSettings className="me-2" size={16} />
+      <Settings className="mr-2" size={16} />
       {t('APP_ACTION_SETTINGS')}
     </DropdownMenuItem>
   );
   const RestartListItem = (
-    <DropdownMenuItem onClick={restartDisclosure.open} key="restart" className="configChanged">
-      <IconRotateClockwise className="me-2" size={16} />
+    <DropdownMenuItem onClick={restartDisclosure.open} key="restart">
+      <RotateCw className="mr-2" size={16} />
       {t('APP_ACTION_RESTART')}
-      {app?.pendingRestart && (
-        <div>
-          <Tooltip className="tooltip" anchorSelect=".configChanged">
-            {t('MY_APPS_PENDING_RESTART')}
-          </Tooltip>
-          <span className="ms-2 badge bg-red" />
-        </div>
-      )}
+      {app?.pendingRestart && <span className="ml-2 h-2 w-2 rounded-full bg-red-500" />}
     </DropdownMenuItem>
   );
   const UpdateListItem = (
-    <DropdownMenuItem
-      onClick={() => navigate(`${location.pathname}/update`, { state: { from: location.pathname } })}
-      key="update"
-      className="updateAvailable"
-    >
-      <IconDownload className="me-2" size={16} />
-      <Tooltip className="tooltip" anchorSelect=".updateAvailable">
-        {t('MY_APPS_UPDATE_AVAILABLE')}
-      </Tooltip>
-      <div>
-        {t('APP_ACTION_UPDATE')}
-        <span className="ms-2 badge bg-red" />
-      </div>
+    <DropdownMenuItem onClick={() => navigate(`${location.pathname}/update`, { state: { from: location.pathname } })} key="update">
+      <Download className="mr-2" size={16} />
+      {t('APP_ACTION_UPDATE')}
+      <span className="ml-2 h-2 w-2 rounded-full bg-red-500" />
     </DropdownMenuItem>
   );
   const IgnoreVersionListItem = (
@@ -187,7 +170,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
       key="ignore-version"
       disabled={ignoreVersionMutation.isPending}
     >
-      <IconBan className="me-2" size={16} />
+      <Ban className="mr-2" size={16} />
       {t('APP_ACTION_IGNORE_VERSION')}
     </DropdownMenuItem>
   );
@@ -197,19 +180,19 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
       key="unignore-version"
       disabled={unignoreVersionMutation.isPending}
     >
-      <IconCircleCheck className="me-2" size={16} />
+      <CheckCircle className="mr-2" size={16} />
       {t('APP_ACTION_UNIGNORE_VERSION')}
     </DropdownMenuItem>
   );
   const CancelListItem = (
     <DropdownMenuItem onClick={stopDisclosure.open} key="cancel">
-      <IconPlayerPause className="me-2" size={16} />
+      <Pause className="mr-2" size={16} />
       {t('APP_ACTION_CANCEL')}
     </DropdownMenuItem>
   );
   const ResetListItem = (
-    <DropdownMenuItem onClick={resetAppDisclosure.open} key="reset" className="text-danger">
-      <IconEraser className="me-2" size={16} />
+    <DropdownMenuItem onClick={resetAppDisclosure.open} key="reset" className="text-destructive focus:text-destructive">
+      <Eraser className="mr-2" size={16} />
       {t('APP_INSTALL_FORM_RESET')}
     </DropdownMenuItem>
   );
@@ -220,14 +203,12 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
       key="edit-config"
       disabled={app?.status !== 'stopped' && app?.status !== 'missing'}
     >
-      <IconEdit className="me-2" size={16} />
+      <Edit className="mr-2" size={16} />
       {t('CUSTOM_APP_EDIT_CONFIG')}
     </DropdownMenuItem>
   );
 
-  const StopButton = (
-    <ActionButton key="stop" IconComponent={IconPlayerPause} onClick={stopDisclosure.open} title={t('APP_ACTION_STOP')} intent="default" />
-  );
+  const StopButton = <ActionButton key="stop" IconComponent={Pause} onClick={stopDisclosure.open} title={t('APP_ACTION_STOP')} intent="default" />;
   const InstallButton = <ActionButton key="install" onClick={installDisclosure.open} title={t('APP_ACTION_INSTALL')} intent="success" />;
 
   // Check if the app URL is available before showing Open button
@@ -310,7 +291,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
   const OpenButton = (
     <ActionButton
       key="open"
-      IconComponent={IconExternalLink}
+      IconComponent={ExternalLink}
       onClick={() => {
         // Open the app in a new tab
         window.open(appUrl, '_blank');
@@ -322,11 +303,8 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
   );
 
   const ErrorButton = (
-    <div key="error">
-      <ActionButton IconComponent={IconAlertTriangle} title={t('APP_ACTION_OPEN')} className="app-error-button" intent="danger" disabled />
-      <Tooltip className="tooltip" anchorSelect=".app-error-button">
-        {checkError}
-      </Tooltip>
+    <div key="error" title={checkError ?? undefined}>
+      <ActionButton IconComponent={AlertTriangle} title={t('APP_ACTION_OPEN')} intent="danger" disabled />
     </div>
   );
 
@@ -409,7 +387,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
         info={info}
         config={app?.config ?? {}}
       />
-      <div className="mt-1 btn-list d-flex">
+      <div className="mt-1 flex flex-wrap gap-2">
         {buttons.map((button) => {
           return createElement(button.type, {
             ...button.props,
@@ -419,9 +397,11 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
         {listItems.length > 0 && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button name="more" className="more-button">
-                <IconDots size={14} />
-                {((updateAvailable && !versionIsIgnored) || app?.pendingRestart) && <span className="badge badge-dot bg-red badge-notification" />}
+              <Button variant="outline" name="more" className="more-button relative">
+                <MoreHorizontal size={14} />
+                {((updateAvailable && !versionIsIgnored) || app?.pendingRestart) && (
+                  <span className="absolute -top-1 -right-1 h-2 w-2 rounded-full bg-red-500" />
+                )}
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent>
