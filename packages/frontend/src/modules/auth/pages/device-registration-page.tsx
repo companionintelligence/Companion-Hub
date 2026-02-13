@@ -1,9 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router';
 import { Button } from '@/components/ui/Button';
-import { Card, CardContent } from '@/components/ui/Card';
 import { Alert, AlertDescription } from '@/components/ui/Alert/Alert';
-import { AlertCircle, ExternalLink } from 'lucide-react';
+import { AlertCircle, ExternalLink, Loader2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useUserContext } from '@/context/user-context';
 
@@ -160,10 +159,12 @@ export default function DeviceRegistrationPage() {
   // Show loading state
   if (isLoading) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-[50vh] gap-6 text-center">
-        <div className="animate-spin rounded-full h-12 w-12 border-4 border-primary border-t-transparent" />
-        <h1 className="text-2xl font-bold text-foreground">Registering Device...</h1>
-        <p className="text-muted-foreground max-w-md">Please wait while your device is registered.</p>
+      <div className="flex flex-col items-center gap-4 text-center py-4">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+        <div>
+          <h2 className="text-xl font-semibold text-foreground">Registering Device...</h2>
+          <p className="text-sm text-muted-foreground mt-1">Please wait while your device is registered.</p>
+        </div>
       </div>
     );
   }
@@ -171,12 +172,14 @@ export default function DeviceRegistrationPage() {
   // Show callback processing state
   if (isCallback) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-[50vh] gap-6 text-center">
-        <div className="animate-spin rounded-full h-12 w-12 border-4 border-primary border-t-transparent" />
-        <h1 className="text-2xl font-bold text-foreground">Setting up device...</h1>
-        <p className="text-muted-foreground max-w-md">Starting Cloudflare tunnel and configuring access...</p>
+      <div className="flex flex-col items-center gap-4 text-center py-4">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+        <div>
+          <h2 className="text-xl font-semibold text-foreground">Setting up device...</h2>
+          <p className="text-sm text-muted-foreground mt-1">Starting Cloudflare tunnel and configuring access...</p>
+        </div>
         {error && (
-          <Alert variant="danger" className="max-w-md">
+          <Alert variant="danger" className="text-left">
             <AlertDescription>
               <div className="flex items-start gap-2">
                 <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
@@ -196,45 +199,41 @@ export default function DeviceRegistrationPage() {
 
   // Show registration redirect page
   return (
-    <div className="flex flex-col items-center justify-center min-h-[50vh] gap-6">
-      <Card className="w-full max-w-md">
-        <CardContent>
-          <h1 className="text-2xl font-bold text-center mb-4">Device Registration Required</h1>
-          <p className="text-muted-foreground text-center mb-6">
-            This device needs to be registered with CI Cloud to access the app store. You will be redirected to complete the registration process.
-          </p>
+    <>
+      <h2 className="text-xl font-semibold text-center mb-4">Device Registration Required</h2>
+      <p className="text-sm text-muted-foreground text-center mb-6">
+        This device needs to be registered with CI Cloud to access the app store. You will be redirected to complete the registration process.
+      </p>
 
-          {deviceId && (
-            <div className="mb-4 p-3 bg-muted rounded-lg">
-              <p className="text-sm text-muted-foreground mb-1">Device ID:</p>
-              <p className="font-mono text-sm">{deviceId}</p>
+      {deviceId && (
+        <div className="mb-4 p-3 bg-muted/50 rounded-lg">
+          <p className="text-xs text-muted-foreground mb-1">Device ID</p>
+          <p className="font-mono text-sm break-all">{deviceId}</p>
+        </div>
+      )}
+
+      {error && (
+        <Alert variant="danger" className="mb-4">
+          <AlertDescription>
+            <div className="flex items-start gap-2">
+              <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+              <span>{error}</span>
             </div>
-          )}
+          </AlertDescription>
+        </Alert>
+      )}
 
-          {error && (
-            <Alert variant="danger" className="mb-4">
-              <AlertDescription>
-                <div className="flex items-start gap-2">
-                  <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
-                  <span>{error}</span>
-                </div>
-              </AlertDescription>
-            </Alert>
-          )}
-
-          {registrationUrl && (
-            <>
-              <Button intent="primary" className="w-full" onClick={handleRedirectToCICloud}>
-                Register Device on CI Cloud
-                <ExternalLink className="ml-2 h-4 w-4" />
-              </Button>
-              <p className="text-xs text-muted-foreground mt-4 text-center">
-                You will be redirected to CI Cloud to sign in, create an organization, and complete device registration.
-              </p>
-            </>
-          )}
-        </CardContent>
-      </Card>
-    </div>
+      {registrationUrl && (
+        <>
+          <Button intent="primary" className="w-full" onClick={handleRedirectToCICloud}>
+            Register Device on CI Cloud
+            <ExternalLink className="ml-2 h-4 w-4" />
+          </Button>
+          <p className="text-xs text-muted-foreground mt-4 text-center">
+            You will be redirected to CI Cloud to sign in, create an organization, and complete device registration.
+          </p>
+        </>
+      )}
+    </>
   );
 }

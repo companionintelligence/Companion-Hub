@@ -18,31 +18,33 @@ export const Welcome = ({ allowErrorMonitoring }: Props) => {
   });
 
   return (
-    <div className="page page-center">
-      <div className="container container-tight py-4">
-        <div className="text-center mb-4">
+    <div className="flex min-h-screen items-center justify-center bg-background px-4 py-8">
+      <div className="w-full max-w-md">
+        <div className="text-center mb-6">
           <img
             alt="Companion Hub logo"
             src={getLogo(true)}
-            height={128}
-            width={128}
+            height={80}
+            width={80}
+            className="mx-auto"
             style={{
               maxWidth: '100%',
               height: 'auto',
             }}
           />
         </div>
-        <Card className="max-w-md mx-auto">
-          <CardContent>
-            <h2 className="text-2xl font-bold text-center mb-4">Thanks for using Companion Hub</h2>
-            <div className="flex flex-col items-center">
+        <Card className="w-full">
+          <CardContent className="p-6">
+            <h2 className="text-xl font-semibold text-center mb-2">Thanks for using Companion Hub</h2>
+            <p className="text-sm text-muted-foreground text-center mb-6">Configure your preferences before getting started.</p>
+            <div className="flex flex-col items-center gap-4">
               <Switch checked={errorMonitoring} onCheckedChange={setErrorMonitoring} label="Enable error reporting" />
               <Button
                 intent="primary"
-                className="mt-3"
+                className="w-full"
                 onClick={() => acknowledge.mutate({ body: { allowErrorMonitoring: errorMonitoring } })}
-                loading={acknowledge.isPending || acknowledge.isPending}
-                disabled={acknowledge.isPending || acknowledge.isPending}
+                loading={acknowledge.isPending}
+                disabled={acknowledge.isPending}
               >
                 Save and enter
               </Button>

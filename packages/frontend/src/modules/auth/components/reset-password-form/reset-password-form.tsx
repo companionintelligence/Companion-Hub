@@ -41,7 +41,7 @@ export const ResetPasswordForm: React.FC<IProps> = ({ onSubmit, loading, onCance
 
   return (
     <>
-      <h2 className="h2 text-center mb-4">{t('AUTH_RESET_PASSWORD_TITLE')}</h2>
+      <h2 className="text-xl font-semibold text-center mb-4">{t('AUTH_RESET_PASSWORD_TITLE')}</h2>
       <form onSubmit={handleSubmit(onSubmit)}>
         <Input
           {...register('password')}
@@ -61,11 +61,11 @@ export const ResetPasswordForm: React.FC<IProps> = ({ onSubmit, loading, onCance
           className="mb-3"
           placeholder={t('AUTH_FORM_NEW_PASSWORD_CONFIRMATION_PLACEHOLDER')}
         />
-        <div className="form-footer">
-          <Button loading={loading} type="submit" intent="primary" className="w-100 mb-3">
+        <div className="mt-4">
+          <Button loading={loading} type="submit" intent="primary" className="w-full mb-3">
             {t('AUTH_RESET_PASSWORD_SUBMIT')}
           </Button>
-          <Button onClick={onCancel} type="button" variant="outline" intent="dark" className="w-100">
+          <Button onClick={onCancel} type="button" variant="outline" className="w-full">
             {t('AUTH_RESET_PASSWORD_CANCEL')}
           </Button>
         </div>

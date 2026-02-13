@@ -15,13 +15,6 @@ main {
 
 body {
   overflow: hidden;
-  /* biome-ignore lint/complexity/noImportantStyles: Override */
-  background-color: transparent !important;
-}
-
-.page {
-  /* biome-ignore lint/complexity/noImportantStyles: Override */
-  background-color: transparent !important;
 }
 
 .tooltip {

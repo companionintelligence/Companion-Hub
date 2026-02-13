@@ -6,10 +6,8 @@ import { userContext } from './api-client';
 import { client } from './api-client/client.gen';
 import stylesheet from './app.css?url';
 import globalsStylesheet from './styles/globals.css?url';
-import transparentTheme from './styles/transparent-theme.css?url';
 import { Providers } from './components/providers/providers';
 import { TranslatableError } from './types/error.types';
-import { GlobalBackground } from './components/global-background/global-background';
 
 client.interceptors.response.use(async (res) => {
   if (res.status >= 400) {
@@ -45,7 +43,6 @@ export const links: Route.LinksFunction = () => [
   { rel: 'stylesheet', href: 'https://fonts.googleapis.com/css2?family=Montserrat:wght@200;400;500;600;700&display=swap' },
   { rel: 'stylesheet', href: stylesheet },
   { rel: 'stylesheet', href: globalsStylesheet },
-  { rel: 'stylesheet', href: transparentTheme },
   { rel: 'apple-touch-icon', sizes: '180x180', href: '/icons/apple-touch-icon.png' },
   { rel: 'icon', type: 'image/png', sizes: '32x32', href: '/icons/favicon-96x96.png' },
   { rel: 'icon', type: 'image/svg+xml', href: '/icons/favicon.svg' },
@@ -134,12 +131,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
 }
 
 export default function App({ loaderData: _loaderData }: Route.ComponentProps) {
-  // Placeholder for user background image setting
-  const userBackgroundImage = null;
-
   return (
     <Providers>
-      <GlobalBackground backgroundImage={userBackgroundImage} />
       <Outlet />
       <Toaster />
     </Providers>
