@@ -49,7 +49,7 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
     let finalVariant = variant;
 
     if (!finalVariant && intent) {
-      const intentMap: Record<string, any> = {
+      const intentMap: Record<string, ButtonProps['variant']> = {
         default: 'default',
         primary: 'default',
         secondary: 'secondary',
@@ -60,7 +60,7 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
         dark: 'secondary',
         light: 'ghost',
       };
-      finalVariant = intentMap[intent] as any;
+      finalVariant = intentMap[intent];
     }
 
     // Default to 'default' if nothing set
