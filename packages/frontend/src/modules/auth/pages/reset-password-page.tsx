@@ -1,9 +1,11 @@
 import { cancelResetPasswordMutation, checkResetPasswordRequestOptions, resetPasswordMutation } from '@/api-client/@tanstack/react-query.gen';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent } from '@/components/ui/Card';
+import { Alert, AlertDescription } from '@/components/ui/Alert/Alert';
 import { useUserContext } from '@/context/user-context';
 import type { TranslatableError } from '@/types/error.types';
 import { useMutation, useSuspenseQuery } from '@tanstack/react-query';
+import { Info } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { Trans, useTranslation } from 'react-i18next';
 import { Link, useNavigate } from 'react-router';
@@ -35,8 +37,8 @@ export default () => {
   if (resetPassword.data?.success && resetPassword.data?.email) {
     return (
       <>
-        <h2 className="h2 text-center mb-4">{t('AUTH_RESET_PASSWORD_SUCCESS_TITLE')}</h2>
-        <p className="text-secondary mb-4">
+        <h2 className="text-xl font-semibold text-center mb-4">{t('AUTH_RESET_PASSWORD_SUCCESS_TITLE')}</h2>
+        <p className="text-sm text-muted-foreground mb-4">
           <Trans
             t={t}
             i18nKey="AUTH_RESET_PASSWORD_SUCCESS"
@@ -48,7 +50,7 @@ export default () => {
             }}
           />
         </p>
-        <Button onClick={() => navigate('/login')} type="button" intent="primary" className="w-100">
+        <Button onClick={() => navigate('/login')} type="button" intent="primary" className="w-full">
           {t('AUTH_RESET_PASSWORD_BACK_TO_LOGIN')}
         </Button>
       </>
@@ -61,73 +63,40 @@ export default () => {
         <div className="text-center">
           <div className="mb-4">
             <div className="mb-3">
-              <svg
-                aria-hidden="true"
-                xmlns="http://www.w3.org/2000/svg"
-                className="icon icon-lg text-muted mb-2"
-                width="48"
-                height="48"
-                viewBox="0 0 24 24"
-                strokeWidth="2"
-                stroke="currentColor"
-                fill="none"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path stroke="none" d="M0 0h24v24H0z" fill="none" />
-                <path d="M12 12m-9 0a9 9 0 1 0 18 0a9 9 0 1 0 -18 0" />
-                <path d="M12 8v4" />
-                <path d="M12 16h.01" />
-              </svg>
+              <Info className="mx-auto h-10 w-10 text-muted-foreground" />
             </div>
-            <h2 className="h2 text-center mb-3">Demo Account Credentials</h2>
-            <p className="text-muted mb-4">For demo purposes, please use the following credentials to access the application.</p>
+            <h2 className="text-xl font-semibold text-center mb-3">Demo Account Credentials</h2>
+            <p className="text-sm text-muted-foreground mb-4">For demo purposes, please use the following credentials to access the application.</p>
           </div>
 
           <Card className="bg-muted/50 mb-4">
-            <CardContent>
+            <CardContent className="p-4">
               <div className="flex flex-col gap-3">
-                <div className="col-span-12">
-                  <div className="flex items-center justify-between">
-                    <span className="text-muted-foreground font-semibold">Email:</span>
-                    <code className="fs-5 fw-bold text-primary">me@{domain}</code>
-                  </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-muted-foreground font-medium">Email:</span>
+                  <code className="text-sm font-semibold text-primary">me@{domain}</code>
                 </div>
-                <div className="col-span-12">
-                  <div className="flex items-center justify-between">
-                    <span className="text-muted-foreground font-semibold">Password:</span>
-                    <code className="fs-5 fw-bold text-primary">{domain}</code>
-                  </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-muted-foreground font-medium">Password:</span>
+                  <code className="text-sm font-semibold text-primary">{domain}</code>
                 </div>
               </div>
             </CardContent>
           </Card>
 
-          <div className="alert alert-info d-flex align-items-start mb-4" role="alert">
-            <svg
-              aria-hidden="true"
-              xmlns="http://www.w3.org/2000/svg"
-              className="icon alert-icon me-2"
-              width="24"
-              height="24"
-              viewBox="0 0 24 24"
-              strokeWidth="2"
-              stroke="currentColor"
-              fill="none"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <path stroke="none" d="M0 0h24v24H0z" fill="none" />
-              <path d="M12 12m-9 0a9 9 0 1 0 18 0a9 9 0 1 0 -18 0" />
-              <path d="M12 8v4" />
-              <path d="M12 16h.01" />
-            </svg>
-            <div>
-              <strong>Need help?</strong> If you still can't log in with these credentials, please contact your system administrator for assistance.
-            </div>
-          </div>
+          <Alert className="mb-4 text-left">
+            <AlertDescription>
+              <div className="flex items-start gap-2">
+                <Info className="h-4 w-4 mt-0.5 flex-shrink-0" />
+                <div>
+                  <strong>Need help?</strong> If you still can't log in with these credentials, please contact your system administrator for
+                  assistance.
+                </div>
+              </div>
+            </AlertDescription>
+          </Alert>
 
-          <Button asChild intent="primary" className="w-100">
+          <Button asChild intent="primary" className="w-full">
             <Link to="/login">Back to Login</Link>
           </Button>
         </div>
@@ -136,9 +105,9 @@ export default () => {
 
     return (
       <>
-        <h2 className="h2 text-center mb-4">{t('AUTH_RESET_PASSWORD_TITLE')}</h2>
-        <p className="text-secondary mb-4">{t('AUTH_RESET_PASSWORD_INSTRUCTIONS')}</p>
-        <pre>
+        <h2 className="text-xl font-semibold text-center mb-4">{t('AUTH_RESET_PASSWORD_TITLE')}</h2>
+        <p className="text-sm text-muted-foreground mb-4">{t('AUTH_RESET_PASSWORD_INSTRUCTIONS')}</p>
+        <pre className="bg-muted/50 rounded-lg p-3 text-sm">
           <code>./runtipi-cli reset-password</code>
         </pre>
       </>

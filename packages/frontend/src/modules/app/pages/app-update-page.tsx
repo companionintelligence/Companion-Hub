@@ -187,7 +187,7 @@ export default function AppUpdatePage({ loaderData }: Route.ComponentProps) {
         </Button>
         <div className="flex items-center justify-end gap-2">
           {currentStep > 0 && (
-            <Button variant="link" onClick={() => setCurrentStep((step) => step - 1)} className="me-2">
+            <Button variant="link" onClick={() => setCurrentStep((step) => step - 1)} className="mr-2">
               {t('APP_UPDATE_FORM_BACK')}
             </Button>
           )}

@@ -11,25 +11,26 @@ export const AuthLayout = ({ children }: PropsWithChildren) => {
 
   const { allowAutoThemes } = useUserContext();
   return (
-    <div className="page page-center">
-      <div className="position-absolute top-0 mt-3 end-0 me-1 pb-4">
+    <div className="flex min-h-screen items-center justify-center bg-background px-4 py-8">
+      <div className="absolute top-3 right-3">
         <LanguageSelector locale={locale as Locale} />
       </div>
-      <div className="container container-tight py-4">
-        <div className="text-center mb-4">
+      <div className="w-full max-w-md">
+        <div className="text-center mb-6">
           <img
             alt="Companion Hub logo"
             src={getLogo(allowAutoThemes)}
-            height={128}
-            width={128}
+            height={80}
+            width={80}
+            className="mx-auto"
             style={{
               maxWidth: '100%',
               height: 'auto',
             }}
           />
         </div>
-        <Card className="max-w-md w-full mx-auto">
-          <CardContent>{children}</CardContent>
+        <Card className="w-full">
+          <CardContent className="p-6">{children}</CardContent>
         </Card>
       </div>
     </div>

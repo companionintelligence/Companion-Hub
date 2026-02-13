@@ -15,7 +15,7 @@ export const TotpForm = (props: Props) => {
 
   return (
     <>
-      <h2 className="h2 text-center mb-4">{t('AUTH_TOTP_TITLE')}</h2>
+      <h2 className="text-xl font-semibold text-center mb-4">{t('AUTH_TOTP_TITLE')}</h2>
       <form
         onSubmit={(e) => {
           setTotpCode('');
@@ -23,10 +23,10 @@ export const TotpForm = (props: Props) => {
           onSubmit(totpCode);
         }}
       >
-        <p className="text-secondary">{t('AUTH_TOTP_INSTRUCTIONS')}</p>
+        <p className="text-sm text-muted-foreground mb-3">{t('AUTH_TOTP_INSTRUCTIONS')}</p>
         <OtpInput valueLength={6} value={totpCode} onChange={(o) => setTotpCode(o)} />
-        <div className="form-footer">
-          <Button disabled={totpCode.trim().length < 6} loading={loading} intent="primary" type="submit" className="w-100">
+        <div className="mt-4">
+          <Button disabled={totpCode.trim().length < 6} loading={loading} intent="primary" type="submit" className="w-full">
             {t('AUTH_TOTP_SUBMIT')}
           </Button>
         </div>

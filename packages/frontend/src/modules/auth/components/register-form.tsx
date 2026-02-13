@@ -40,7 +40,7 @@ export const RegisterForm: React.FC<IProps> = ({ onSubmit, loading }) => {
 
   return (
     <>
-      <h2 className="h2 text-center mb-4">{t('AUTH_REGISTER_TITLE')}</h2>
+      <h2 className="text-xl font-semibold text-center mb-4">{t('AUTH_REGISTER_TITLE')}</h2>
       <form onSubmit={handleSubmit(onSubmit)}>
         <Input
           {...register('email')}
@@ -69,8 +69,8 @@ export const RegisterForm: React.FC<IProps> = ({ onSubmit, loading }) => {
           className="mb-3"
           placeholder={t('AUTH_FORM_PASSWORD_CONFIRMATION_PLACEHOLDER')}
         />
-        <div className="form-footer">
-          <Button loading={loading} type="submit" intent="primary" className="w-100">
+        <div className="mt-4">
+          <Button loading={loading} type="submit" intent="primary" className="w-full">
             {t('AUTH_REGISTER_SUBMIT')}
           </Button>
         </div>

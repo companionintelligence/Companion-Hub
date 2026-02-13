@@ -53,7 +53,7 @@ export const EditAppStoreDialog = ({ appStore }: Props) => {
 
   return (
     <div>
-      <Button loading={editAppStore.isPending} size="sm" variant="ghost" onClick={() => editAppStoreDisclosure.open()} className="me-2">
+      <Button loading={editAppStore.isPending} size="sm" variant="ghost" onClick={() => editAppStoreDisclosure.open()} className="mr-2">
         {t('APP_STORE_TABLE_EDIT')}
       </Button>
       <Dialog open={editAppStoreDisclosure.isOpen} onOpenChange={editAppStoreDisclosure.toggle}>
@@ -61,7 +61,7 @@ export const EditAppStoreDialog = ({ appStore }: Props) => {
           <DialogHeader>
             <DialogTitle>{t('APP_STORE_EDIT_DIALOG_TITLE')}</DialogTitle>
           </DialogHeader>
-          <DialogDescription className="d-flex flex-column">
+          <DialogDescription className="flex flex-col">
             <form onSubmit={handleSubmit(validate)} id={formId}>
               <Input
                 label="Name"

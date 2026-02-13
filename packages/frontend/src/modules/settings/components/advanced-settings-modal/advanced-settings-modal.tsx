@@ -20,7 +20,7 @@ export const AdvancedSettingsModal = (props: IProps) => {
             <DialogTitle>{t('SETTINGS_GENERAL_ADVANCED_SETTINGS_MODAL_TITLE')}</DialogTitle>
           </DialogHeader>
           <DialogDescription>
-            <span className="text-muted">{t('SETTINGS_GENERAL_ADVANCED_SETTINGS_MODAL_SUBTITLE')}</span>
+            <span className="text-muted-foreground">{t('SETTINGS_GENERAL_ADVANCED_SETTINGS_MODAL_SUBTITLE')}</span>
           </DialogDescription>
           <DialogFooter>
             <Button onClick={() => advancedSettingsDisclosure.close()}>{t('ACTIONS_CANCEL')}</Button>

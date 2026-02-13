@@ -8,26 +8,24 @@ type ErrorPageProps = {
 
 export const ErrorPage = ({ error, onReset }: ErrorPageProps) => {
   return (
-    <div className="page page-center">
-      <div className="container-tight py-4">
-        <div className="empty">
-          <p className="empty-title">Oops... An error occurred!</p>
-          <p className="empty-subtitle text-secondary">
-            Try refreshing the page or click the button below to try again. If the problem persists, open an issue on GitHub with the error message
-            below.
-          </p>
-          <div className="empty-action">
-            <Button intent="primary" onClick={onReset}>
-              <RotateCw className="me-2" />
-              Retry
-            </Button>
-          </div>
-          <pre className="mt-5" style={{ whiteSpace: 'normal' }}>
-            {error.message}
-            <br />
-            Location: {location.pathname}
-          </pre>
+    <div className="flex min-h-screen items-center justify-center bg-background px-4">
+      <div className="w-full max-w-md text-center">
+        <p className="text-xl font-semibold text-foreground mb-2">Oops... An error occurred!</p>
+        <p className="text-sm text-muted-foreground mb-4">
+          Try refreshing the page or click the button below to try again. If the problem persists, open an issue on GitHub with the error message
+          below.
+        </p>
+        <div className="mb-4">
+          <Button intent="primary" onClick={onReset}>
+            <RotateCw className="mr-2 h-4 w-4" />
+            Retry
+          </Button>
         </div>
+        <pre className="text-xs text-muted-foreground bg-muted/50 rounded-lg p-3 text-left overflow-auto" style={{ whiteSpace: 'normal' }}>
+          {error.message}
+          <br />
+          Location: {location.pathname}
+        </pre>
       </div>
     </div>
   );

@@ -242,11 +242,11 @@ export const RestartAllButton = ({ availableUpdates }: Props) => {
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
           <DropdownMenuItem onClick={() => handleActionClick('restart-all')}>
-            <RotateCw className="me-2" size={16} />
+            <RotateCw className="mr-2" size={16} />
             {t('MY_APPS_RESTART_ALL_FORM_SUBMIT')}
           </DropdownMenuItem>
           <DropdownMenuItem onClick={() => handleActionClick('update-all')}>
-            <RefreshCw className="me-2" size={16} />
+            <RefreshCw className="mr-2" size={16} />
             {t('MY_APPS_UPDATE_ALL_FORM_SUBMIT')}
           </DropdownMenuItem>
         </DropdownMenuContent>

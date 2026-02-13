@@ -26,18 +26,23 @@ export const FullScreenModal = ({ isOpen, onClose, children, title }: FullScreen
             right: 0,
             bottom: 0,
             backgroundColor: 'transparent',
-            color: 'var(--tblr-body-color)',
             zIndex: 1050,
             overflowY: 'auto',
             display: 'flex',
             flexDirection: 'column',
           }}
+          className="text-foreground"
         >
-          <div className="page-body w-100">
-            <div className="container-xl py-4">
-              <div className="d-flex justify-content-between align-items-center mb-4">
+          <div className="w-full">
+            <div className="container mx-auto max-w-screen-xl px-4 py-4">
+              <div className="flex justify-between items-center mb-4">
                 {title && <h1 className="m-0">{title}</h1>}
-                <button type="button" className="btn btn-icon btn-ghost-secondary ms-auto" onClick={onClose} aria-label="Close">
+                <button
+                  type="button"
+                  className="inline-flex items-center justify-center rounded-md p-2 text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors ml-auto"
+                  onClick={onClose}
+                  aria-label="Close"
+                >
                   <X size={32} />
                 </button>
               </div>

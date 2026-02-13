@@ -47,15 +47,18 @@ export default () => {
   };
 
   return (
-    <div className="d-flex flex-column h-100">
-      <div className="d-flex justify-content-end align-items-center mb-4">
-        <div className="d-flex gap-2">
+    <div className="flex flex-col h-full">
+      <div className="flex justify-end items-center mb-4">
+        <div className="flex gap-2">
           <button
             type="button"
             onClick={() => setDarkMode(true)}
-            className={clsx('btn btn-icon', {
-              'd-none': theme === 'dark',
-            })}
+            className={clsx(
+              'inline-flex items-center justify-center rounded-md p-2 text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors',
+              {
+                hidden: theme === 'dark',
+              },
+            )}
             title={t('HEADER_DARK_MODE')}
           >
             <Moon size={24} />
@@ -63,42 +66,57 @@ export default () => {
           <button
             type="button"
             onClick={() => setDarkMode(false)}
-            className={clsx('btn btn-icon', {
-              'd-none': theme === 'light',
-            })}
+            className={clsx(
+              'inline-flex items-center justify-center rounded-md p-2 text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors',
+              {
+                hidden: theme === 'light',
+              },
+            )}
             title={t('HEADER_LIGHT_MODE')}
           >
             <Sun size={24} />
           </button>
-          <button type="button" onClick={handleLogout} className="btn btn-icon" title={t('HEADER_LOGOUT')}>
+          <button
+            type="button"
+            onClick={handleLogout}
+            className="inline-flex items-center justify-center rounded-md p-2 text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors"
+            title={t('HEADER_LOGOUT')}
+          >
             <LogOut size={24} />
           </button>
-          <button type="button" className="btn btn-icon btn-ghost-secondary" onClick={onClose} aria-label="Close">
+          <button
+            type="button"
+            className="inline-flex items-center justify-center rounded-md p-2 text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors"
+            onClick={onClose}
+            aria-label="Close"
+          >
             <X size={32} />
           </button>
         </div>
       </div>
 
-      <div className="d-flex flex-column flex-grow-1 overflow-hidden">
-        <Tabs value={currentTab} onValueChange={handleTabChange} className="flex-grow-1 d-flex flex-column h-100 overflow-hidden">
+      <div className="flex flex-col flex-1 overflow-hidden">
+        <Tabs value={currentTab} onValueChange={handleTabChange} className="flex-1 flex flex-col h-full overflow-hidden">
           <TabsList>
             <TabsTrigger value="settings">{t('SETTINGS_GENERAL_TAB_TITLE')}</TabsTrigger>
             <TabsTrigger value="security">{t('SETTINGS_SECURITY_TAB_TITLE')}</TabsTrigger>
-            <TabsTrigger value="appstores" className="d-none d-md-block">
+            <TabsTrigger value="appstores" className="hidden md:inline-flex">
               {t('SETTINGS_APPSTORES_TAB_TITLE')}
             </TabsTrigger>
-            <TabsTrigger value="logs" className="d-none d-md-block">
+            <TabsTrigger value="logs" className="hidden md:inline-flex">
               {t('SETTINGS_LOGS_TAB_TITLE')}
             </TabsTrigger>
             <DropdownMenu>
-              <DropdownMenuTrigger className="nav-link dropdown-toggle d-block d-md-none">{t('MORE')}</DropdownMenuTrigger>
+              <DropdownMenuTrigger className="inline-flex md:hidden items-center justify-center whitespace-nowrap rounded-sm px-3 py-1.5 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">
+                {t('MORE')}
+              </DropdownMenuTrigger>
               <DropdownMenuContent>
                 <DropdownMenuItem onClick={() => handleTabChange('appstores')}>{t('SETTINGS_APPSTORES_TAB_TITLE')}</DropdownMenuItem>
                 <DropdownMenuItem onClick={() => handleTabChange('logs')}>{t('SETTINGS_LOGS_TAB_TITLE')}</DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
           </TabsList>
-          <div className="p-3 flex-grow-1 overflow-y-auto min-h-0" data-testid="settings-scroll-container">
+          <div className="p-3 flex-1 overflow-y-auto min-h-0" data-testid="settings-scroll-container">
             <TabsContent value="settings">
               <Suspense fallback={<div>Loading...</div>}>
                 <UserSettingsContainer initialValues={userSettings} />

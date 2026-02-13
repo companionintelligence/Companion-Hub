@@ -1,5 +1,1 @@
-.ribbon-top.bg-warning:before {
-  border-color: var(--tblr-warning);
-  border-left-color: transparent;
-  border-top-color: transparent;
-}
+/* Badge styling is now handled via Tailwind classes in app-tile.tsx */

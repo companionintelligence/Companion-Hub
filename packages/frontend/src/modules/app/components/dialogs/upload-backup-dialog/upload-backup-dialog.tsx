@@ -53,7 +53,7 @@ export const UploadBackupDialog: React.FC<IProps> = ({ isOpen, onClose, onConfir
           <DialogTitle>{t('APP_BACKUP_UPLOAD_TITLE')}</DialogTitle>
         </DialogHeader>
         <DialogDescription>
-          <span className="text-muted d-block mb-3">{t('APP_BACKUP_UPLOAD_SUBTITLE')}</span>
+          <span className="text-muted-foreground block mb-3">{t('APP_BACKUP_UPLOAD_SUBTITLE')}</span>
           <Input
             className="mb-3"
             ref={fileInputRef}

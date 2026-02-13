@@ -55,7 +55,7 @@ export const AddAppStoreDialog = () => {
           <DialogHeader>
             <DialogTitle>{t('APP_STORE_ADD_DIALOG_TITLE')}</DialogTitle>
           </DialogHeader>
-          <DialogDescription className="d-flex flex-column">
+          <DialogDescription className="flex flex-col">
             <form onSubmit={handleSubmit(onSubmit)} id={formId}>
               <Input
                 label={t('APP_STORE_ADD_FORM_NAME')}

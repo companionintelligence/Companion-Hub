@@ -47,7 +47,7 @@ const PaginationNext = ({ className, ...props }: React.ComponentProps<typeof Pag
 PaginationNext.displayName = 'PaginationNext';
 
 const PaginationEllipsis = ({ className, ...props }: React.ComponentProps<'span'>) => (
-  <span aria-hidden className={clsx('px-1 d-flex align-items-center justify-content-center h-100 paginaton-link', className)} {...props}>
+  <span aria-hidden className={clsx('px-1 flex items-center justify-center h-full paginaton-link', className)} {...props}>
     <MoreHorizontal size={14} className="mx-1" />
   </span>
 );
