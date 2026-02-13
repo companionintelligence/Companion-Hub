@@ -195,28 +195,12 @@ export class AuthController {
   @Get('/traefik')
   async traefik(@Req() req: Request, @Res() res: Response) {
     if (req.user) {
-      this.logger.debug('User already logged in');
+      this.logger.debug('User authenticated for Traefik forward auth', { username: req.user.username });
+      res.setHeader('X-Runtipi-User', req.user.username);
       return res.status(200).send();
     }
 
-    const uri = req.headers['x-forwarded-uri'] as string;
-    const proto = req.headers['x-forwarded-proto'] as string;
-    const host = req.headers['x-forwarded-host'] as string;
-
-    this.logger.debug('Auth request', { uri, proto, host });
-
-    const subdomains = host.split('.');
-    const app = subdomains[0] ?? '';
-    const rootDomain = subdomains.slice(1).join('.');
-
-    const redirectUrl = new URL(uri, `${proto}://${host}`);
-
-    const loginUrl = new URL('/login', `${proto}://${rootDomain}`);
-    loginUrl.searchParams.set('redirect_url', redirectUrl.toString());
-    loginUrl.searchParams.set('app', app);
-
-    this.logger.debug('Redirecting to login', { loginUrl: loginUrl.toString(), redirectUrl: redirectUrl.toString(), app });
-
-    return res.status(302).redirect(loginUrl.toString());
+    this.logger.debug('User not authenticated for Traefik forward auth');
+    return res.status(401).send('Unauthorized');
   }
 }
