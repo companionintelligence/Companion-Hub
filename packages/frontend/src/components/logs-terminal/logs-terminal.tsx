@@ -1,5 +1,6 @@
 import { useLocalStorage } from '@uidotdev/usehooks';
 import clsx from 'clsx';
+import { InputGroup } from '@/components/ui/Input';
 import DOMPurify from 'dompurify';
 import { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -49,16 +50,14 @@ export const LogsTerminal = (props: Props) => {
           </label>
         </div>
         <div className="col">
-          <div className="input-group mb-2">
-            <span className="input-group-text">{t('APP_LOGS_TAB_MAX_LINES')}</span>
-            <input
-              id="max-lines"
-              type="number"
-              className="form-control"
-              value={maxLines}
-              onChange={(e) => updateMaxLines(Number.parseInt(e.target.value, 10))}
-            />
-          </div>
+          <InputGroup
+            className="mb-2"
+            id="max-lines"
+            groupPrefix={t('APP_LOGS_TAB_MAX_LINES')}
+            type="number"
+            value={maxLines}
+            onChange={(e) => updateMaxLines(Number.parseInt(e.target.value, 10))}
+          />
         </div>
       </div>
       <pre

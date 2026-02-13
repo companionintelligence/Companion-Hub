@@ -1,6 +1,7 @@
 import { updateAppMetadataMutation } from '@/api-client/@tanstack/react-query.gen';
 import { Alert, AlertDescription, AlertHeading, AlertIcon } from '@/components/ui/Alert/Alert';
 import { Button } from '@/components/ui/Button';
+import { Card, CardContent, CardHeader } from '@/components/ui/Card';
 import { DataGrid, DataGridItem } from '@/components/ui/DataGrid';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/DropdownMenu';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -8,14 +9,14 @@ import type { AppDetails, AppInfo, AppMetadata } from '@/types/app.types';
 import { extractAppUrn } from '@/utils/app-helpers';
 import type { AppUrn } from '@runtipi/common/types';
 import { CURRENT_SCHEMA_VERSION } from '@runtipi/common/schemas';
-import { IconAlertCircle, IconAlertTriangle, IconExternalLink } from '@tabler/icons-react';
+import { AlertCircle, AlertTriangle, ExternalLink } from 'lucide-react';
 import { useMutation } from '@tanstack/react-query';
 import { Suspense, lazy } from 'react';
 import React from 'react';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router';
-import clsx from 'clsx';
+import { cn } from '@/lib/utils';
 
 const AppDescriptionEditor = React.lazy(() =>
   import('../../components/app-description-editor/app-description-editor').then((module) => ({ default: module.AppDescriptionEditor })),
@@ -78,17 +79,19 @@ export const AppDetailsTabs = ({ info, app, metadata }: IProps) => {
         <TabsTrigger onClick={() => handleTabChange('info')} value="info">
           {t('APP_DETAILS_BASE_INFO')}
         </TabsTrigger>
-        <TabsTrigger value="backups" onClick={() => handleTabChange('backups')} disabled={!app} className="d-none d-md-block">
+        <TabsTrigger value="backups" onClick={() => handleTabChange('backups')} disabled={!app} className="hidden md:inline-flex">
           {t('APP_BACKUPS_TAB_TITLE')}
         </TabsTrigger>
-        <TabsTrigger onClick={() => handleTabChange('logs')} value="logs" disabled={!app} className="d-none d-md-block">
+        <TabsTrigger onClick={() => handleTabChange('logs')} value="logs" disabled={!app} className="hidden md:inline-flex">
           {t('APP_LOGS_TAB_TITLE')}
         </TabsTrigger>
-        <TabsTrigger onClick={() => handleTabChange('user-config')} value="user-config" disabled={!app} className="d-none d-md-block">
+        <TabsTrigger onClick={() => handleTabChange('user-config')} value="user-config" disabled={!app} className="hidden md:inline-flex">
           {t('APP_USER_CONFIG_TAB_TITLE')}
         </TabsTrigger>
         <DropdownMenu>
-          <DropdownMenuTrigger className="nav-link dropdown-toggle d-block d-md-none">{t('MORE')}</DropdownMenuTrigger>
+          <DropdownMenuTrigger className="inline-flex md:hidden items-center justify-center whitespace-nowrap rounded-sm px-3 py-1.5 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">
+            {t('MORE')} ▾
+          </DropdownMenuTrigger>
           <DropdownMenuContent>
             <DropdownMenuItem onClick={() => handleTabChange('backups')}>{t('APP_BACKUPS_TAB_TITLE')}</DropdownMenuItem>
             <DropdownMenuItem onClick={() => handleTabChange('logs')}>{t('APP_LOGS_TAB_TITLE')}</DropdownMenuItem>
@@ -100,7 +103,7 @@ export const AppDetailsTabs = ({ info, app, metadata }: IProps) => {
         {info.deprecated && (
           <Alert variant="danger" className="mb-4">
             <AlertIcon>
-              <IconAlertCircle stroke={2} />
+              <AlertCircle strokeWidth={2} />
             </AlertIcon>
             <div>
               <AlertHeading>{t('APP_DETAILS_DEPRECATED_ALERT_TITLE')}</AlertHeading>
@@ -108,9 +111,9 @@ export const AppDetailsTabs = ({ info, app, metadata }: IProps) => {
             </div>
           </Alert>
         )}
-        <Alert variant="warning" className={clsx('mb-4', { 'd-none': schemaVersion === undefined || schemaVersion >= CURRENT_SCHEMA_VERSION })}>
+        <Alert variant="warning" className={cn('mb-4', { hidden: schemaVersion === undefined || schemaVersion >= CURRENT_SCHEMA_VERSION })}>
           <AlertIcon>
-            <IconAlertTriangle stroke={2} />
+            <AlertTriangle strokeWidth={2} />
           </AlertIcon>
           <div>
             <AlertHeading>{t('APP_COMPOSE_SCHEMA_OUTDATED_ALERT_TITLE')}</AlertHeading>
@@ -121,10 +124,10 @@ export const AppDetailsTabs = ({ info, app, metadata }: IProps) => {
             </AlertDescription>
           </div>
         </Alert>
-        <div className="card">
+        <Card>
           {isUserApp && (
-            <div className="card-header d-flex justify-content-between align-items-center">
-              <h3 className="mb-0">{t('APP_DETAILS_NOTES')}</h3>
+            <CardHeader className="flex flex-row justify-between items-center space-y-0 p-6">
+              <h3 className="mb-0 font-semibold text-lg">{t('APP_DETAILS_NOTES')}</h3>
               {!isEditing && (
                 <Button variant="outline" onClick={() => setIsEditing(!isEditing)}>
                   {t('EDIT')}
@@ -144,7 +147,7 @@ export const AppDetailsTabs = ({ info, app, metadata }: IProps) => {
                   </Button>
                   <Button
                     variant="outline"
-                    className="ms-2"
+                    className="ml-2"
                     onClick={() =>
                       saveMetaMutation.mutate({
                         path: { urn: info.urn },
@@ -157,14 +160,14 @@ export const AppDetailsTabs = ({ info, app, metadata }: IProps) => {
                   </Button>
                 </div>
               )}
-            </div>
+            </CardHeader>
           )}
-          <div className="card-body">
+          <CardContent>
             <Suspense>
               <AppDescriptionEditor isEditing={isEditing} meta={meta} setMeta={setMeta} />
             </Suspense>
-          </div>
-        </div>
+          </CardContent>
+        </Card>
       </TabsContent>
       <TabsContent value="backups">
         <Suspense>
@@ -176,7 +179,7 @@ export const AppDetailsTabs = ({ info, app, metadata }: IProps) => {
           <DataGridItem title={t('APP_DETAILS_SOURCE_CODE')}>
             <a target="_blank" rel="noreferrer" className="text-blue-500 text-xs" href={info.source}>
               {t('APP_DETAILS_LINK')}
-              <IconExternalLink size={15} className="ms-1 mb-1" />
+              <ExternalLink size={15} className="ml-1 mb-1 inline" />
             </a>
           </DataGridItem>
           <DataGridItem title={t('APP_DETAILS_AUTHOR')}>{info.author}</DataGridItem>
@@ -185,18 +188,18 @@ export const AppDetailsTabs = ({ info, app, metadata }: IProps) => {
           </DataGridItem>
           <DataGridItem title={t('APP_DETAILS_CATEGORIES_TITLE')}>
             {info.categories?.map((c) => (
-              <div key={c} className="badge text-white bg-green me-1">
+              <span key={c} className="inline-flex items-center rounded-full bg-green-500/10 px-2.5 py-0.5 text-xs font-medium text-green-500 mr-1">
                 {t(`APP_CATEGORY_${c.toUpperCase() as Uppercase<typeof c>}`)}
-              </div>
+              </span>
             ))}
           </DataGridItem>
           <DataGridItem title={t('APP_DETAILS_VERSION')}>{info.version}</DataGridItem>
           {info.supported_architectures && (
             <DataGridItem title={t('APP_DETAILS_SUPPORTED_ARCH')}>
               {info.supported_architectures.map((a) => (
-                <div key={a} className="badge text-white bg-red me-1">
+                <span key={a} className="inline-flex items-center rounded-full bg-red-500/10 px-2.5 py-0.5 text-xs font-medium text-red-500 mr-1">
                   {a.toLowerCase()}
-                </div>
+                </span>
               ))}
             </DataGridItem>
           )}
@@ -204,7 +207,7 @@ export const AppDetailsTabs = ({ info, app, metadata }: IProps) => {
             <DataGridItem title={t('APP_DETAILS_WEBSITE')}>
               <a target="_blank" rel="noreferrer" className="text-blue-500 text-xs" href={info.website}>
                 {info.website}
-                <IconExternalLink size={15} className="ms-1 mb-1" />
+                <ExternalLink size={15} className="ml-1 mb-1 inline" />
               </a>
             </DataGridItem>
           )}

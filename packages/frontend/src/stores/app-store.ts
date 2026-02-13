@@ -1,11 +1,13 @@
 import type { AppCategory } from '@/types/app.types';
 import { create } from 'zustand';
 
+export type StoreCategoryFilter = AppCategory | '__alternatives__';
+
 type Store = {
   search: string;
   setSearch: (textSearch: string) => void;
-  category?: AppCategory;
-  setCategory: (selectedCategory?: AppCategory) => void;
+  category?: StoreCategoryFilter;
+  setCategory: (selectedCategory?: StoreCategoryFilter) => void;
   sortDirection: 'asc' | 'desc';
   setSortDirection: (sortDirection: 'asc' | 'desc') => void;
   storeId?: string;

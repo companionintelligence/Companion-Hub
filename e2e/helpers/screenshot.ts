@@ -5,8 +5,8 @@
  */
 
 import type { Page } from '@playwright/test';
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
-import { join, dirname } from 'path';
+import { readFileSync, existsSync, mkdirSync } from 'node:fs';
+import { join, dirname } from 'node:path';
 
 export interface ScreenshotOptions {
   fullPage?: boolean;

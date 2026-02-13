@@ -1,36 +1,41 @@
-import './input.css';
-import clsx from 'clsx';
-import type React from 'react';
+import * as React from 'react';
+import { cn } from '@/lib/utils';
 
-interface IProps extends React.InputHTMLAttributes<HTMLInputElement> {
+export interface InputProps extends React.InputHTMLAttributes<HTMLInputElement> {
   error?: string;
   label?: string | React.ReactNode;
   helpText?: string | React.ReactNode;
   isInvalid?: boolean;
-  children?: React.ReactNode;
-  ref?: React.Ref<HTMLInputElement>;
 }
 
-export const Input = ({ name, label, error, helpText, type = 'text', className, isInvalid, children, ...rest }: IProps) => (
-  <div className={clsx(className)}>
-    {label && (
-      <label htmlFor={name} className="form-label">
-        {label}
-      </label>
-    )}
-    <input
-      suppressHydrationWarning
-      aria-label={name}
-      type={type}
-      name={name}
-      id={name}
-      className={clsx('form-control', {
-        'is-invalid': error || isInvalid,
-      })}
-      {...rest}
-    />
-    {helpText && <div className="form-text">{helpText}</div>}
-    {children}
-    {error && <div className="invalid-feedback">{error}</div>}
-  </div>
+const Input = React.forwardRef<HTMLInputElement, InputProps>(
+  ({ className, type = 'text', error, label, helpText, isInvalid, children, id, name, ...props }, ref) => {
+    return (
+      <div className={cn('space-y-2', className)}>
+        {label && (
+          <label htmlFor={id || name} className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">
+            {label}
+          </label>
+        )}
+        <input
+          ref={ref}
+          type={type}
+          name={name}
+          id={id || name}
+          // shadcn input styles
+          className={cn(
+            'flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-base shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium file:text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 md:text-sm',
+            (error || isInvalid) && 'border-destructive focus-visible:ring-destructive',
+          )}
+          {...props}
+        />
+        {helpText && <p className="text-[0.8rem] text-muted-foreground">{helpText}</p>}
+        {children}
+        {error && <p className="text-[0.8rem] font-medium text-destructive">{error}</p>}
+      </div>
+    );
+  },
 );
+Input.displayName = 'Input';
+
+export { Input };

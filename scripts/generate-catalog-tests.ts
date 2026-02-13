@@ -6,8 +6,8 @@
  * and distributes them across fleet servers for parallel testing.
  */
 
-import { readdir, readFile, writeFile } from 'fs/promises';
-import { join } from 'path';
+import { readdir, readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 
 const APP_STORE_PATH = '../CI-App-Store/apps';
 const OUTPUT_PATH = './e2e/generated';

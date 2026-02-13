@@ -1,10 +1,11 @@
+import { Card, CardContent } from '@/components/ui/Card';
 import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
-import type { IconAperture } from '@tabler/icons-react';
 import clsx from 'clsx';
+import type { LucideIcon } from 'lucide-react';
 import type React from 'react';
 
 interface IProps {
-  icon: typeof IconAperture;
+  icon: LucideIcon;
   progress: number;
   title: string;
   subtitle: string;
@@ -17,30 +18,28 @@ export const SystemStat: React.FC<IProps> = ({ icon: IconComponent, progress, ti
   const testId = `stat-${title.toLowerCase().replace(/\s+/g, '-')}`;
 
   return (
-    <div className="col-sm-6 col-lg-4 px-1 pt-0 pb-0" data-testid={testId}>
-      <div className="card">
-        <div className="card-body">
-          <div className="d-flex justify-content-between align-items-start">
-            <Skeleton loading={isLoading}>
-              <div className={clsx('h2 mb-3 font-weight-bold')}>{title}</div>
-            </Skeleton>
-            <IconComponent />
-          </div>
-          <div className={clsx('h2')}>
-            <Skeleton loading={isLoading}>{metric}</Skeleton>
-          </div>
-          <div className={clsx('mb-3 text-muted')}>
-            <Skeleton loading={isLoading}>{subtitle}</Skeleton>
-          </div>
+    <Card>
+      <CardContent>
+        <div className="flex justify-between items-start">
           <Skeleton loading={isLoading}>
-            <div className="progress progress-sm" data-testid={`${testId}-progress`}>
-              <div className="progress-bar bg-primary" style={{ width: `${progress.toFixed(0)}%` }}>
-                <span className="visually-hidden">{`${progress.toFixed(0)}%`}</span>
-              </div>
-            </div>
+            <div className={clsx('text-2xl mb-3 font-bold')}>{title}</div>
           </Skeleton>
+          <IconComponent />
         </div>
-      </div>
-    </div>
+        <div className={clsx('text-2xl')}>
+          <Skeleton loading={isLoading}>{metric}</Skeleton>
+        </div>
+        <div className={clsx('mb-3 text-muted-foreground')}>
+          <Skeleton loading={isLoading}>{subtitle}</Skeleton>
+        </div>
+        <Skeleton loading={isLoading}>
+          <div className="progress progress-sm" data-testid={`${testId}-progress`}>
+            <div className="progress-bar bg-primary" style={{ width: `${progress.toFixed(0)}%` }}>
+              <span className="visually-hidden">{`${progress.toFixed(0)}%`}</span>
+            </div>
+          </div>
+        </Skeleton>
+      </CardContent>
+    </Card>
   );
 };

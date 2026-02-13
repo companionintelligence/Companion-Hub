@@ -4,7 +4,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { useDisclosure } from '@/lib/hooks/use-disclosure';
 import type { AppStore } from '@/types/app.types';
 import type { TranslatableError } from '@/types/error.types';
-import { IconAlertTriangle } from '@tabler/icons-react';
+import { AlertTriangle } from 'lucide-react';
 import { useMutation } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
@@ -39,7 +39,7 @@ export const DeleteAppStoreDialog = ({ appStore }: Props) => {
             <DialogTitle>{t('APP_STORE_DELETE_DIALOG_TITLE')}</DialogTitle>
           </DialogHeader>
           <DialogDescription className="text-center py-4">
-            <IconAlertTriangle className="icon mb-2 text-danger icon-lg" />
+            <AlertTriangle className="icon mb-2 text-danger icon-lg" />
             <h3>{t('APP_STORE_DELETE_DIALOG_SUBTITLE')}</h3>
             <span className="text-muted">{t('APP_STORE_DELETE_DIALOG_WARNING', { name: appStore.name })}</span>
           </DialogDescription>

@@ -6,15 +6,11 @@ import { useSuspenseQuery } from '@tanstack/react-query';
 import { AppTile } from '../components/app-tile/app-tile';
 import { LinkTile } from '../components/link-tile/link-tile';
 import { ButtonTile } from '../components/button-tile/button-tile';
-import { IconLayoutGridAdd, IconLinkPlus } from '@tabler/icons-react';
+import { AppWindow, Link as LinkIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useDisclosure } from '@/lib/hooks/use-disclosure';
 import { AddLinkDialog } from '../components/dialogs/add-link/add-link-dialog';
 import '@/styles/app-grid.css';
-import { useAppContext } from '@/context/app-context';
-import { ActionBar } from '@/components/action-bar/action-bar';
-import clsx from 'clsx';
-import { RestartAllButton, StartAllButton, StopAllButton } from '../components/batch-actions-dialog/batch-actions-dialog';
 
 export default () => {
   const { data: apps } = useSuspenseQuery({
@@ -24,8 +20,6 @@ export default () => {
   const { data: links } = useSuspenseQuery({
     ...getLinksOptions(),
   });
-
-  const { updatesAvailable } = useAppContext();
 
   const addLinkDisclosure = useDisclosure();
   const navigate = useNavigate();
@@ -42,12 +36,7 @@ export default () => {
 
     if (info.available) {
       return (
-        <Link
-          key={app.id}
-          to={`/apps/${storeId}/${appName}`}
-          className="col-sm-6 col-lg-4 app-link p-2 pt-0 pb-0 mb-0"
-          data-testid={`installed-app-${appName}`}
-        >
+        <Link key={app.id} to={`/apps/${storeId}/${appName}`} className="app-link" data-testid={`installed-app-${appName}`}>
           <AppTile key={info.urn} status={app.status} info={info} updateAvailable={updateAvailable} pendingRestart={app.pendingRestart} />
         </Link>
       );
@@ -58,25 +47,18 @@ export default () => {
 
   const renderLink = (link: CustomLink) => {
     return (
-      <Link key={link.id} to={link.url} target="_blank" className="col-sm-6 col-lg-4 app-link p-2 pt-0 pb-0 mb-0">
+      <Link key={link.id} to={link.url} target="_blank" className="app-link">
         <LinkTile key={link.id} link={link} />
       </Link>
     );
   };
 
   return (
-    <div className="h-full flex flex-col">
-      <ActionBar className={clsx({ 'd-none': installed.length <= 1 })}>
-        <ActionBar.Left>
-          <StartAllButton availableUpdates={updatesAvailable} />
-        </ActionBar.Left>
-        <ActionBar.Center>
-          <StopAllButton availableUpdates={updatesAvailable} />
-        </ActionBar.Center>
-        <ActionBar.Right>
-          <RestartAllButton availableUpdates={updatesAvailable} />
-        </ActionBar.Right>
-      </ActionBar>
+    <div className="h-full flex flex-col px-6 pt-4">
+      <div className="flex-shrink-0 mb-6">
+        <h2 className="text-3xl font-bold tracking-tight mb-1 text-foreground">My Apps</h2>
+        <p className="text-lg text-muted-foreground">Manage your installed applications and links</p>
+      </div>
       <div className="flex-1 overflow-y-auto min-h-0" data-testid="my-apps-scroll-container">
         {installed.length === 0 && customLinks.length === 0 ? (
           <EmptyPage
@@ -90,34 +72,34 @@ export default () => {
                   title={t('CUSTOM_APP_ADD_TITLE')}
                   subtitle={t('CUSTOM_APP_ADD_SUBTITLE')}
                   action={() => navigate('/apps/create')}
-                  icon={<IconLayoutGridAdd size={50} stroke={1.5} color="#A4A4A4" />}
+                  icon={<AppWindow size={50} strokeWidth={1.5} color="#A4A4A4" />}
                   className="col-12 col-sm-6 col-lg-6 col-lg-6"
                 />
                 <ButtonTile
                   title={t('LINKS_ADD_TITLE')}
                   subtitle={t('LINKS_ADD_SUBTITLE')}
                   action={() => addLinkDisclosure.open()}
-                  icon={<IconLinkPlus size={50} stroke={1.5} color="#A4A4A4" />}
+                  icon={<LinkIcon size={50} strokeWidth={1.5} color="#A4A4A4" />}
                   className="col-12 col-sm-6 col-md-6 col-lg-6"
                 />
               </div>
             }
           />
         ) : (
-          <div className="row row-cards" data-testid="apps-list">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4" data-testid="apps-list">
             {installed.map(renderApp)}
             {customLinks.map(renderLink)}
             <ButtonTile
               title={t('CUSTOM_APP_ADD_TITLE')}
               subtitle={t('CUSTOM_APP_ADD_SUBTITLE')}
               action={() => navigate('/apps/create')}
-              icon={<IconLayoutGridAdd size={50} stroke={1.5} />}
+              icon={<AppWindow size={50} strokeWidth={1.5} />}
             />
             <ButtonTile
               title={t('LINKS_ADD_TITLE')}
               subtitle={t('LINKS_ADD_SUBTITLE')}
               action={() => addLinkDisclosure.open()}
-              icon={<IconLinkPlus size={50} stroke={1.5} />}
+              icon={<LinkIcon size={50} strokeWidth={1.5} />}
             />
           </div>
         )}

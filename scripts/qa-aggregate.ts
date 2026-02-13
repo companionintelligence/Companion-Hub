@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /**
  * Aggregate QA Results from Fleet
- * 
+ *
  * Collects results from all servers and generates unified report
  */
 
@@ -55,119 +55,116 @@ async function main() {
   console.log('╔════════════════════════════════════════════════════════════╗');
   console.log('║  App Store QA - Fleet Aggregator                           ║');
   console.log('╚════════════════════════════════════════════════════════════╝\n');
-  
+
   // Create local results directory
   if (!existsSync(LOCAL_RESULTS)) mkdirSync(LOCAL_RESULTS, { recursive: true });
-  
+
   const allResults: QAResult[] = [];
   const batchSummaries: (BatchSummary & { server: string })[] = [];
-  
+
   // Collect from each server
   for (const server of FLEET) {
     console.log(`\n📥 Collecting from ${server.name} (${server.ip})...`);
-    
+
     const serverDir = join(LOCAL_RESULTS, server.name);
     if (!existsSync(serverDir)) mkdirSync(serverDir, { recursive: true });
-    
+
     try {
       // Copy results.json
-      execSync(
-        `scp -o StrictHostKeyChecking=no -o ConnectTimeout=10 ${SSH_USER}@${server.ip}:~/qa-results/results.json ${serverDir}/`,
-        { stdio: 'pipe', timeout: 30000 }
-      );
+      execSync(`scp -o StrictHostKeyChecking=no -o ConnectTimeout=10 ${SSH_USER}@${server.ip}:~/qa-results/results.json ${serverDir}/`, {
+        stdio: 'pipe',
+        timeout: 30000,
+      });
       console.log('   ✓ results.json');
-      
+
       // Copy batch summary
-      execSync(
-        `scp -o StrictHostKeyChecking=no ${SSH_USER}@${server.ip}:~/qa-results/batch-${server.batch}-summary.json ${serverDir}/`,
-        { stdio: 'pipe', timeout: 30000 }
-      );
+      execSync(`scp -o StrictHostKeyChecking=no ${SSH_USER}@${server.ip}:~/qa-results/batch-${server.batch}-summary.json ${serverDir}/`, {
+        stdio: 'pipe',
+        timeout: 30000,
+      });
       console.log('   ✓ batch summary');
-      
+
       // Copy screenshots
-      execSync(
-        `scp -r -o StrictHostKeyChecking=no ${SSH_USER}@${server.ip}:~/qa-results/screenshots ${serverDir}/`,
-        { stdio: 'pipe', timeout: 120000 }
-      );
+      execSync(`scp -r -o StrictHostKeyChecking=no ${SSH_USER}@${server.ip}:~/qa-results/screenshots ${serverDir}/`, {
+        stdio: 'pipe',
+        timeout: 120000,
+      });
       console.log('   ✓ screenshots');
-      
+
       // Parse and merge
       const resultsFile = join(serverDir, 'results.json');
       if (existsSync(resultsFile)) {
         const results = JSON.parse(readFileSync(resultsFile, 'utf-8'));
         allResults.push(...results);
       }
-      
+
       const summaryFile = join(serverDir, `batch-${server.batch}-summary.json`);
       if (existsSync(summaryFile)) {
         const summary = JSON.parse(readFileSync(summaryFile, 'utf-8'));
         batchSummaries.push({ ...summary, server: server.name });
       }
-      
-    } catch (error) {
+    } catch (_error) {
       console.log(`   ✗ Failed to collect from ${server.name}`);
     }
   }
-  
+
   // Calculate totals
-  const totalPassed = allResults.filter(r => r.score === 'pass').length;
-  const totalWarned = allResults.filter(r => r.score === 'warn').length;
-  const totalFailed = allResults.filter(r => r.score === 'fail').length;
+  const totalPassed = allResults.filter((r) => r.score === 'pass').length;
+  const totalWarned = allResults.filter((r) => r.score === 'warn').length;
+  const totalFailed = allResults.filter((r) => r.score === 'fail').length;
   const totalApps = allResults.length;
-  const passRate = totalApps > 0 ? (totalPassed / totalApps) * 100 : 0;
-  
-  console.log('\n' + '═'.repeat(60));
+  const _passRate = totalApps > 0 ? (totalPassed / totalApps) * 100 : 0;
+
+  console.log(`\n${'═'.repeat(60)}`);
   console.log('FLEET RESULTS');
   console.log('═'.repeat(60));
   console.log(`\nTotal apps tested: ${totalApps}`);
   console.log(`✅ Pass: ${totalPassed} (${((totalPassed / totalApps) * 100).toFixed(1)}%)`);
   console.log(`⚠️ Warn: ${totalWarned} (${((totalWarned / totalApps) * 100).toFixed(1)}%)`);
   console.log(`❌ Fail: ${totalFailed} (${((totalFailed / totalApps) * 100).toFixed(1)}%)`);
-  
+
   // Save merged results
-  writeFileSync(
-    join(LOCAL_RESULTS, 'all-results.json'),
-    JSON.stringify(allResults, null, 2)
-  );
-  
+  writeFileSync(join(LOCAL_RESULTS, 'all-results.json'), JSON.stringify(allResults, null, 2));
+
   // Generate unified report
-  let md = `# App Store QA Report\n\n`;
+  let md = '# App Store QA Report\n\n';
   md += `**Date:** ${new Date().toISOString().split('T')[0]}\n`;
   md += `**Total Apps:** ${totalApps}\n\n`;
-  
-  md += `## Summary\n\n`;
-  md += `| Status | Count | Percent |\n|--------|-------|--------|\n`;
+
+  md += '## Summary\n\n';
+  md += '| Status | Count | Percent |\n|--------|-------|--------|\n';
   md += `| ✅ Pass | ${totalPassed} | ${((totalPassed / totalApps) * 100).toFixed(1)}% |\n`;
   md += `| ⚠️ Warn | ${totalWarned} | ${((totalWarned / totalApps) * 100).toFixed(1)}% |\n`;
   md += `| ❌ Fail | ${totalFailed} | ${((totalFailed / totalApps) * 100).toFixed(1)}% |\n\n`;
-  
-  md += `## Server Results\n\n`;
-  md += `| Server | Batch | Apps | Pass | Warn | Fail | Rate | Time |\n`;
-  md += `|--------|-------|------|------|------|------|------|------|\n`;
+
+  md += '## Server Results\n\n';
+  md += '| Server | Batch | Apps | Pass | Warn | Fail | Rate | Time |\n';
+  md += '|--------|-------|------|------|------|------|------|------|\n';
   for (const s of batchSummaries) {
     md += `| ${s.server} | ${s.batch} | ${s.total} | ${s.passed} | ${s.warned} | ${s.failed} | ${s.passRate.toFixed(0)}% | ${s.elapsedMinutes.toFixed(0)}m |\n`;
   }
   md += '\n';
-  
+
   md += `## Failed Apps (${totalFailed})\n\n`;
-  const failedApps = allResults.filter(r => r.score === 'fail').sort((a, b) => a.appId.localeCompare(b.appId));
+  const failedApps = allResults.filter((r) => r.score === 'fail').sort((a, b) => a.appId.localeCompare(b.appId));
   if (failedApps.length === 0) {
-    md += `None! 🎉\n\n`;
+    md += 'None! 🎉\n\n';
   } else {
-    md += `| App | Image | Notes |\n|-----|-------|-------|\n`;
+    md += '| App | Image | Notes |\n|-----|-------|-------|\n';
     for (const app of failedApps) {
       md += `| ${app.appId} | ${app.image || '-'} | ${app.notes || '-'} |\n`;
     }
     md += '\n';
   }
-  
+
   md += `## Warnings (${totalWarned})\n\n`;
-  const warnedApps = allResults.filter(r => r.score === 'warn').sort((a, b) => a.appId.localeCompare(b.appId));
+  const warnedApps = allResults.filter((r) => r.score === 'warn').sort((a, b) => a.appId.localeCompare(b.appId));
   if (warnedApps.length === 0) {
-    md += `None\n\n`;
+    md += 'None\n\n';
   } else {
-    md += `| App | Notes |\n|-----|-------|\n`;
-    for (const app of warnedApps.slice(0, 50)) { // Limit to 50
+    md += '| App | Notes |\n|-----|-------|\n';
+    for (const app of warnedApps.slice(0, 50)) {
+      // Limit to 50
       md += `| ${app.appId} | ${app.notes || '-'} |\n`;
     }
     if (warnedApps.length > 50) {
@@ -175,39 +172,48 @@ async function main() {
     }
     md += '\n';
   }
-  
-  md += `## Resource Usage\n\n`;
-  md += `### Top 20 by Memory\n\n`;
-  const byMemory = [...allResults].filter(r => r.memoryMb > 0).sort((a, b) => b.memoryMb - a.memoryMb).slice(0, 20);
-  md += `| App | Memory | Peak | CPU | Startup | Image Size |\n`;
-  md += `|-----|--------|------|-----|---------|------------|\n`;
+
+  md += '## Resource Usage\n\n';
+  md += '### Top 20 by Memory\n\n';
+  const byMemory = [...allResults]
+    .filter((r) => r.memoryMb > 0)
+    .sort((a, b) => b.memoryMb - a.memoryMb)
+    .slice(0, 20);
+  md += '| App | Memory | Peak | CPU | Startup | Image Size |\n';
+  md += '|-----|--------|------|-----|---------|------------|\n';
   for (const app of byMemory) {
     md += `| ${app.appId} | ${app.memoryMb}MB | ${app.memoryPeakMb}MB | ${app.cpuPercent}% | ${(app.startupMs / 1000).toFixed(1)}s | ${app.imageSizeMb}MB |\n`;
   }
   md += '\n';
-  
-  md += `### Slowest to Start (Top 20)\n\n`;
-  const byStartup = [...allResults].filter(r => r.startupMs > 0).sort((a, b) => b.startupMs - a.startupMs).slice(0, 20);
-  md += `| App | Startup Time | Memory |\n`;
-  md += `|-----|--------------|--------|\n`;
+
+  md += '### Slowest to Start (Top 20)\n\n';
+  const byStartup = [...allResults]
+    .filter((r) => r.startupMs > 0)
+    .sort((a, b) => b.startupMs - a.startupMs)
+    .slice(0, 20);
+  md += '| App | Startup Time | Memory |\n';
+  md += '|-----|--------------|--------|\n';
   for (const app of byStartup) {
     md += `| ${app.appId} | ${(app.startupMs / 1000).toFixed(1)}s | ${app.memoryMb}MB |\n`;
   }
   md += '\n';
-  
-  md += `### Largest Images (Top 20)\n\n`;
-  const bySize = [...allResults].filter(r => r.imageSizeMb > 0).sort((a, b) => b.imageSizeMb - a.imageSizeMb).slice(0, 20);
-  md += `| App | Image Size | Memory |\n`;
-  md += `|-----|------------|--------|\n`;
+
+  md += '### Largest Images (Top 20)\n\n';
+  const bySize = [...allResults]
+    .filter((r) => r.imageSizeMb > 0)
+    .sort((a, b) => b.imageSizeMb - a.imageSizeMb)
+    .slice(0, 20);
+  md += '| App | Image Size | Memory |\n';
+  md += '|-----|------------|--------|\n';
   for (const app of bySize) {
     md += `| ${app.appId} | ${app.imageSizeMb}MB | ${app.memoryMb}MB |\n`;
   }
-  
+
   writeFileSync(join(LOCAL_RESULTS, 'report.md'), md);
   console.log(`\n📁 Report saved to ${LOCAL_RESULTS}/report.md`);
-  
+
   // Also save benchmarks JSON
-  const benchmarks = allResults.map(r => ({
+  const benchmarks = allResults.map((r) => ({
     appId: r.appId,
     imageSizeMb: r.imageSizeMb,
     memoryMb: r.memoryMb,
@@ -216,7 +222,7 @@ async function main() {
     startupMs: r.startupMs,
     score: r.score,
   }));
-  
+
   writeFileSync(join(LOCAL_RESULTS, 'benchmarks.json'), JSON.stringify(benchmarks, null, 2));
   console.log(`📁 Benchmarks saved to ${LOCAL_RESULTS}/benchmarks.json`);
 }

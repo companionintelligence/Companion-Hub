@@ -4,7 +4,7 @@ import { Input } from '@/components/ui/Input';
 import { Switch } from '@/components/ui/Switch';
 import { useDisclosure } from '@/lib/hooks/use-disclosure';
 import type { Locale } from '@/lib/i18n/locales';
-import { IconAdjustmentsAlt, IconAdjustmentsCode, IconInfoCircle, IconUser } from '@tabler/icons-react';
+import { SlidersHorizontal, Sliders, Info, User } from 'lucide-react';
 import clsx from 'clsx';
 import type React from 'react';
 import { Suspense, lazy, useEffect } from 'react';
@@ -149,7 +149,7 @@ export const UserSettingsForm = (props: IProps) => {
       {isDirty && (
         <Alert variant="info" className="fade-in">
           <AlertIcon>
-            <IconInfoCircle stroke={2} />
+            <Info strokeWidth={2} />
           </AlertIcon>
           <div>
             <AlertHeading>{t('SETTINGS_GENERAL_SAVE_ALERT_TITLE')}</AlertHeading>
@@ -158,7 +158,7 @@ export const UserSettingsForm = (props: IProps) => {
         </Alert>
       )}
       <div className="d-flex mb-2">
-        <IconUser className="me-2" />
+        <User className="me-2" />
         <h2 className="text-2xl font-bold mb-0">{t('SETTINGS_GENERAL_USER_SETTINGS')}</h2>
       </div>
       <LanguageSelector showLabel locale={currentLocale} />
@@ -176,7 +176,7 @@ export const UserSettingsForm = (props: IProps) => {
       />
       <form className="flex flex-col mt-2" onSubmit={handleSubmit(validate)}>
         <div className="d-flex mb-2">
-          <IconAdjustmentsAlt className="me-2" />
+          <SlidersHorizontal className="me-2" />
           <h2 className="text-2xl font-bold mb-0">{t('SETTINGS_GENERAL_TITLE')}</h2>
         </div>
         <p className="mb-4">{t('SETTINGS_GENERAL_SUBTITLE')}</p>
@@ -346,7 +346,7 @@ export const UserSettingsForm = (props: IProps) => {
         {initialValues?.advancedSettings && (
           <div>
             <div className="d-flex mb-2">
-              <IconAdjustmentsCode className="me-2" />
+              <Sliders className="me-2" />
               <h2 className="text-2xl font-bold mb-0">{t('SETTINGS_GENERAL_ADVANCED_SETTINGS_TITLE')}</h2>
             </div>
             <p className="mb-4">{t('SETTINGS_GENERAL_ADVANCED_SETTINGS_SUBTITLE')}</p>

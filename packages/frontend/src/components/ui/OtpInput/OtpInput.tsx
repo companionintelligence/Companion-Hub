@@ -149,7 +149,10 @@ export const OtpInput = ({ value, valueLength, onChange, className }: Props) => 
           autoComplete="one-time-code"
           pattern="\d{1}"
           maxLength={valueLength}
-          className={clsx('form-control otp-input', className)}
+          className={clsx(
+            'h-9 w-10 text-center border border-input bg-transparent rounded-md shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring transition-all',
+            className,
+          )}
           value={digit}
         />
       ))}

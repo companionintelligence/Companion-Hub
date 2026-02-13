@@ -4,7 +4,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/DropdownMenu';
 import { useDisclosure } from '@/lib/hooks/use-disclosure';
 import type { TranslatableError } from '@/types/error.types';
-import { IconDots, IconPlayerPause, IconPlayerPlay, IconRefresh, IconRotateClockwise } from '@tabler/icons-react';
+import { MoreHorizontal, Pause, Play, RefreshCw, RotateCw } from 'lucide-react';
 import { useMutation } from '@tanstack/react-query';
 import React from 'react';
 import toast from 'react-hot-toast';
@@ -111,7 +111,7 @@ export const StartAllButton = (_: Props) => {
         title={t('MY_APPS_START_ALL_FORM_SUBMIT')}
         className="batch-action-desktop-button gap-2"
       >
-        <IconPlayerPlay size={18} />
+        <Play size={18} />
         {t('MY_APPS_START_ALL_FORM_SUBMIT')}
       </Button>
     </>
@@ -155,7 +155,7 @@ export const StopAllButton = (_: Props) => {
         title={t('MY_APPS_STOP_ALL_FORM_SUBMIT')}
         className="batch-action-desktop-button gap-2"
       >
-        <IconPlayerPause size={18} />
+        <Pause size={18} />
         {t('MY_APPS_STOP_ALL_FORM_SUBMIT')}
       </Button>
     </>
@@ -223,7 +223,7 @@ export const RestartAllButton = ({ availableUpdates }: Props) => {
           title={t('MY_APPS_RESTART_ALL_FORM_SUBMIT')}
           className="batch-action-desktop-button gap-2"
         >
-          <IconRotateClockwise size={18} />
+          <RotateCw size={18} />
           {t('MY_APPS_RESTART_ALL_FORM_SUBMIT')}
         </Button>
       </>
@@ -236,17 +236,17 @@ export const RestartAllButton = ({ availableUpdates }: Props) => {
       <DropdownMenu open={dropdownDisclosure.isOpen} onOpenChange={dropdownDisclosure.toggle}>
         <DropdownMenuTrigger asChild>
           <Button size="icon" intent="default" title={t('MY_APPS_BATCH_ACTIONS')} className="batch-action-desktop-button gap-2">
-            <IconDots size={18} />
+            <MoreHorizontal size={18} />
             {t('MY_APPS_BATCH_ACTIONS')}
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
           <DropdownMenuItem onClick={() => handleActionClick('restart-all')}>
-            <IconRotateClockwise className="me-2" size={16} />
+            <RotateCw className="me-2" size={16} />
             {t('MY_APPS_RESTART_ALL_FORM_SUBMIT')}
           </DropdownMenuItem>
           <DropdownMenuItem onClick={() => handleActionClick('update-all')}>
-            <IconRefresh className="me-2" size={16} />
+            <RefreshCw className="me-2" size={16} />
             {t('MY_APPS_UPDATE_ALL_FORM_SUBMIT')}
           </DropdownMenuItem>
         </DropdownMenuContent>

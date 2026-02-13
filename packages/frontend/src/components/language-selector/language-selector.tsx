@@ -1,6 +1,6 @@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/Select';
 import { type Locale, locales } from '@/lib/i18n/locales';
-import { IconExternalLink } from '@tabler/icons-react';
+import { ExternalLink } from 'lucide-react';
 import i18next from 'i18next';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
@@ -18,7 +18,7 @@ const LanguageSelectorLabel = () => {
       {t('SETTINGS_GENERAL_LANGUAGE')}&nbsp;
       <a href="https://crowdin.com/project/runtipi/invite?h=ae594e86cd807bc075310cab20a4aa921693663" target="_blank" rel="noreferrer">
         {t('SETTINGS_GENERAL_LANGUAGE_HELP_TRANSLATE')}
-        <IconExternalLink className="ms-1 mb-1" size={16} />
+        <ExternalLink className="ms-1 mb-1" size={16} />
       </a>
     </span>
   );

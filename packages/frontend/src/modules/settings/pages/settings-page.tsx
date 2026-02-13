@@ -3,7 +3,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useAppContext } from '@/context/app-context';
 import { useUIStore } from '@/stores/ui-store';
-import { IconLogout, IconMoon, IconSun, IconX } from '@tabler/icons-react';
+import { LogOut, Moon, Sun, X } from 'lucide-react';
 import { useMutation } from '@tanstack/react-query';
 import clsx from 'clsx';
 import { Suspense, lazy } from 'react';
@@ -58,7 +58,7 @@ export default () => {
             })}
             title={t('HEADER_DARK_MODE')}
           >
-            <IconMoon size={24} />
+            <Moon size={24} />
           </button>
           <button
             type="button"
@@ -68,13 +68,13 @@ export default () => {
             })}
             title={t('HEADER_LIGHT_MODE')}
           >
-            <IconSun size={24} />
+            <Sun size={24} />
           </button>
           <button type="button" onClick={handleLogout} className="btn btn-icon" title={t('HEADER_LOGOUT')}>
-            <IconLogout size={24} />
+            <LogOut size={24} />
           </button>
           <button type="button" className="btn btn-icon btn-ghost-secondary" onClick={onClose} aria-label="Close">
-            <IconX size={32} />
+            <X size={32} />
           </button>
         </div>
       </div>

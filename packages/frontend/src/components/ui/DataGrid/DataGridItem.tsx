@@ -6,8 +6,8 @@ interface IProps {
 }
 
 export const DataGridItem: React.FC<IProps> = ({ children, title }) => (
-  <div className="datagrid-item">
-    <div className="datagrid-title">{title}</div>
-    <div className="datagrid-content">{children}</div>
+  <div className="flex flex-col space-y-1.5">
+    <span className="text-sm font-medium text-muted-foreground uppercase tracking-wide">{title}</span>
+    <div className="text-sm font-medium text-foreground">{children}</div>
   </div>
 );

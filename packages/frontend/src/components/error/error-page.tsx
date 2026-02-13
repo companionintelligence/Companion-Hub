@@ -1,4 +1,4 @@
-import { IconReload } from '@tabler/icons-react';
+import { RotateCw } from 'lucide-react';
 import { Button } from '../ui/Button';
 
 type ErrorPageProps = {
@@ -18,7 +18,7 @@ export const ErrorPage = ({ error, onReset }: ErrorPageProps) => {
           </p>
           <div className="empty-action">
             <Button intent="primary" onClick={onReset}>
-              <IconReload className="me-2" />
+              <RotateCw className="me-2" />
               Retry
             </Button>
           </div>

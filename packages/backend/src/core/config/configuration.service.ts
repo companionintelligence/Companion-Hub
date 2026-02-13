@@ -26,7 +26,7 @@ const envSchema = z.object({
   TIPI_VERSION: z.string(),
   JWT_SECRET: z.string(),
   APPS_REPO_URL: z.string().optional(),
-  CI_CLOUD_URL: z.string().default('https://app.ci.computer'),
+  CI_CLOUD_URL: z.string(),
   DOMAIN: z.string(),
   LOCAL_DOMAIN: z.string(),
   DNS_IP: z.string().default('9.9.9.9'),

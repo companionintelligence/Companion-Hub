@@ -21,13 +21,13 @@
   transition: background-color 0.3s ease;
 }
 
-[data-bs-theme="light"] .background--custom::after,
-[data-bs-theme="light"] .background--image::after {
+.light .background--custom::after,
+.light .background--image::after {
   background-color: rgba(255, 255, 255, 0.5);
 }
 
-[data-bs-theme="dark"] .background--custom::after,
-[data-bs-theme="dark"] .background--image::after {
+.dark .background--custom::after,
+.dark .background--image::after {
   background-color: rgba(0, 0, 0, 0.5);
 }
 

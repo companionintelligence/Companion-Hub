@@ -10,7 +10,7 @@
  */
 
 import { expect, installApp, loginUser, test } from './fixtures/fixtures';
-import { execSync } from 'child_process';
+// import { execSync } from 'child_process';
 
 // Test app configuration
 const TEST_APP = {
@@ -161,9 +161,6 @@ test.describe('App Deletion & Cleanup', () => {
 
     // Navigate to app
     await page.goto(`/apps/${TEST_APP.appId}`);
-
-    // Get container name before deletion for verification
-    const containerName = `${TEST_APP.containerPrefix}`;
 
     // Click delete/uninstall
     await page.getByRole('button', { name: /delete|uninstall|remove/i }).click();

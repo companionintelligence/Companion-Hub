@@ -104,6 +104,7 @@ test.describe('Server Linking', () => {
 
     // Get server ID or name
     const serverName = await page.getByTestId('server-name').textContent();
+    if (!serverName) throw new Error('Server name not found');
 
     // Open cloud dashboard
     const cloudPage = await context.newPage();
@@ -116,7 +117,7 @@ test.describe('Server Linking', () => {
     await cloudPage.goto(`${CLOUD_CONFIG.baseUrl}/servers`);
 
     // Verify server appears
-    await expect(cloudPage.getByText(serverName!)).toBeVisible();
+    await expect(cloudPage.getByText(serverName)).toBeVisible();
 
     await cloudPage.close();
   });

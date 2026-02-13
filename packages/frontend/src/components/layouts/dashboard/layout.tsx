@@ -1,44 +1,40 @@
 import { Header } from '@/components/header/header';
 import { type PropsWithChildren, useEffect, useRef } from 'react';
 import semver from 'semver';
-import './layout.css';
-import { PageTitle } from '@/components/page-title/page-title';
-import { Welcome } from '@/components/welcome/welcome';
 import { useAppContext } from '@/context/app-context';
 import { useUserContext } from '@/context/user-context';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useLocation } from 'react-router';
+import { Welcome } from '@/components/welcome/welcome';
 
 export const DashboardLayoutSuspense = ({ children }: PropsWithChildren) => {
   return (
-    <div className="page">
+    <div className="flex bg-background overflow-hidden h-screen w-screen flex-col">
       <Header isLoggedIn={false} isUpdateAvailable={false} allowAutoThemes={false} />
-      <div className="page-wrapper">
-        <div className="page-header d-print-none">
-          <span className="title" />
-        </div>
-        <div className="page-body">
-          <div className="container-xl">
-            <div className="card px-3 pb-3">{children}</div>
-          </div>
-        </div>
+      <div className="flex flex-1 flex-col pt-24 px-4 container mx-auto h-full overflow-y-auto no-scrollbar">
+        <div className="rounded-xl border bg-card text-card-foreground shadow p-6">{children}</div>
       </div>
     </div>
   );
 };
 
 export const DashboardLayout = ({ children }: PropsWithChildren) => {
-  const { userSettings, user, apps, version } = useAppContext();
+  const { user, userSettings, version } = useAppContext();
   const location = useLocation();
   const prevPathRef = useRef(location.pathname);
-
   const { isLoggedIn } = useUserContext();
 
   useEffect(() => {
     prevPathRef.current = location.pathname;
   }, [location.pathname]);
 
-  let isLatest = semver.valid(version.current) && semver.valid(version.latest) && semver.gte(version.current, version.latest);
+  // Version check logic
+  let isLatest = false;
+  try {
+    isLatest = (semver.valid(version.current) && semver.valid(version.latest) && semver.gte(version.current, version.latest)) || false;
+  } catch (_e) {
+    // ignore semver errors
+  }
 
   if (version.current === 'nightly') {
     isLatest = true;
@@ -48,6 +44,7 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
     return <Welcome allowErrorMonitoring={userSettings.allowErrorMonitoring} />;
   }
 
+  // Transition logic
   const getDepth = (path: string) => {
     if (path === '/dashboard') return 0;
     if (path.startsWith('/apps') || path.startsWith('/app-store') || path.startsWith('/settings')) {
@@ -67,59 +64,44 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
 
   const variants = {
     enter: (direction: number) => ({
-      y: direction > 0 ? '100%' : 0,
-      opacity: direction > 0 ? 1 : 0,
-      zIndex: direction > 0 ? 10 : 0,
+      x: direction > 0 ? 1000 : -1000,
+      opacity: 0,
     }),
     center: {
-      y: 0,
-      opacity: 1,
       zIndex: 1,
-      pointerEvents: 'auto',
+      x: 0,
+      opacity: 1,
     },
     exit: (direction: number) => ({
-      y: direction < 0 ? '100%' : 0,
-      opacity: direction < 0 ? 1 : 0,
-      zIndex: direction < 0 ? 10 : 0,
-      pointerEvents: 'none',
+      zIndex: 0,
+      x: direction < 0 ? 1000 : -1000,
+      opacity: 0,
     }),
   };
 
-  const _isAppStore = location.pathname.startsWith('/app-store');
-  const shouldShowTitle = !['/dashboard', '/apps', '/settings', '/app-store'].includes(location.pathname);
-
   return (
-    <div className="page fixed inset-0 overflow-hidden flex flex-col">
+    <div className="flex bg-background overflow-hidden h-screen w-screen flex-col">
       <Header isLoggedIn={isLoggedIn} isUpdateAvailable={!isLatest} allowAutoThemes={userSettings.allowAutoThemes} />
-      <div className="page-wrapper flex-1 flex flex-col relative overflow-hidden min-h-0">
-        {shouldShowTitle && (
-          <div className="page-header d-print-none z-20 relative">
-            <div className="container-xl">
-              <div className="text-reset title">
-                <PageTitle apps={apps} />
-              </div>
-            </div>
-          </div>
-        )}
-        <div className="page-body flex-1 relative overflow-hidden min-h-0">
-          <div className="container-xl h-full relative">
-            <AnimatePresence mode="popLayout" custom={direction}>
-              <motion.div
-                key={location.pathname}
-                custom={direction}
-                variants={variants}
-                initial="enter"
-                animate="center"
-                exit="exit"
-                transition={{ duration: 0.6, ease: 'easeInOut' }}
-                className="absolute inset-0 w-full h-full overflow-hidden"
-              >
-                {children}
-              </motion.div>
-            </AnimatePresence>
-          </div>
-        </div>
-      </div>
+
+      <main className="flex-1 relative pt-24 px-4 container mx-auto h-full overflow-y-auto overflow-x-hidden no-scrollbar">
+        <AnimatePresence mode="popLayout" custom={direction}>
+          <motion.div
+            key={location.pathname}
+            custom={direction}
+            variants={variants}
+            initial="enter"
+            animate="center"
+            exit="exit"
+            transition={{
+              x: { type: 'spring', stiffness: 300, damping: 30 },
+              opacity: { duration: 0.2 },
+            }}
+            className="w-full h-full"
+          >
+            {children}
+          </motion.div>
+        </AnimatePresence>
+      </main>
     </div>
   );
 };
