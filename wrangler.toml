@@ -17,9 +17,10 @@ bindings = [
 ]
 
 # Migration to create the Durable Object class
+# new_sqlite_classes is required for Cloudflare Containers with SQL storage
 [[migrations]]
 tag = "v1"
-new_classes = ["AppContainer"]
+new_sqlite_classes = ["AppContainer"]
 
 # Development environment (triggered by develop branch)
 [env.dev]

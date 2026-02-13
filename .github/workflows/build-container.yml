@@ -69,16 +69,15 @@ jobs:
 
           echo "environment=$ENV" >> $GITHUB_OUTPUT
 
-          # Set Docker tags based on environment
           if [ "$ENV" = "production" ]; then
             echo "docker_tag=latest" >> $GITHUB_OUTPUT
-            echo "container_tag=latest" >> $GITHUB_OUTPUT
+            echo "container_tag=ci-os-hub:latest" >> $GITHUB_OUTPUT
           elif [ "$ENV" = "staging" ]; then
             echo "docker_tag=staging" >> $GITHUB_OUTPUT
-            echo "container_tag=staging" >> $GITHUB_OUTPUT
+            echo "container_tag=ci-os-hub:staging" >> $GITHUB_OUTPUT
           else
             echo "docker_tag=dev" >> $GITHUB_OUTPUT
-            echo "container_tag=dev" >> $GITHUB_OUTPUT
+            echo "container_tag=ci-os-hub:dev" >> $GITHUB_OUTPUT
           fi
 
       - name: Extract metadata (tags, labels) for Docker
@@ -102,5 +101,4 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: deploy --env ${{ steps.tags.outputs.environment }}
-          workingDirectory: "."
+          command: containers build --push --tag ${{ steps.tags.outputs.container_tag }}
