@@ -11,7 +11,7 @@ describe('AuthController', () => {
   let authController: AuthController;
   let authService: MockProxy<AuthService>;
   let logger: MockProxy<LoggerService>;
-  let config: MockProxy<ConfigurationService>;
+  let _config: MockProxy<ConfigurationService>;
 
   beforeEach(async () => {
     const moduleRef = await Test.createTestingModule({
@@ -26,7 +26,7 @@ describe('AuthController', () => {
     authController = moduleRef.get(AuthController);
     authService = moduleRef.get(AuthService);
     logger = moduleRef.get(LoggerService);
-    config = moduleRef.get(ConfigurationService);
+    _config = moduleRef.get(ConfigurationService);
   });
 
   it('should be defined', () => {
@@ -78,12 +78,10 @@ describe('AuthController', () => {
 
       // Assert
       expect(res.status).toHaveBeenCalledWith(302);
-      expect(res.redirect).toHaveBeenCalledWith(
-        expect.stringContaining('companionintelligence.com/login')
-      );
+      expect(res.redirect).toHaveBeenCalledWith(expect.stringContaining('companionintelligence.com/login'));
       expect(logger.debug).toHaveBeenCalledWith(
         'Unauthenticated Traefik forward auth request',
-        expect.objectContaining({ host: 'jellyfin-myorg.companionintelligence.com' })
+        expect.objectContaining({ host: 'jellyfin-myorg.companionintelligence.com' }),
       );
     });
   });
