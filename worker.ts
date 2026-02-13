@@ -13,7 +13,7 @@ export class AppContainer extends DurableObject {
     super(ctx, env);
   }
 
-  async fetch(request: Request): Promise<Response> {
+  async fetch(_request: Request): Promise<Response> {
     // This is where you would proxy requests to the container
     // or handle container lifecycle events.
     // For now, we return a simple status message.
@@ -25,7 +25,7 @@ export class AppContainer extends DurableObject {
 }
 
 export default {
-  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
     // Generate an ID for the container DO.
     // For a singleton service, we can use a hardcoded name.
     const id = env.APP_CONTAINER.idFromName('default');
