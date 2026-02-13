@@ -15,13 +15,13 @@ const ScrollBar = ({ className, orientation = 'vertical', ...props }: React.Comp
     )}
     {...props}
   >
-    <ScrollAreaPrimitive.ScrollAreaThumb className={clsx('position-relative rounded-pill bg-muted', orientation === 'vertical' && 'flex-grow-1')} />
+    <ScrollAreaPrimitive.ScrollAreaThumb className={clsx('relative rounded-full bg-muted', orientation === 'vertical' && 'grow')} />
   </ScrollAreaPrimitive.ScrollAreaScrollbar>
 );
 
 const ScrollArea = ({ className, children, ...props }: React.ComponentProps<typeof ScrollAreaPrimitive.Root> & { maxheight: number }) => (
-  <ScrollAreaPrimitive.Root className={clsx('position-relative overflow-hidden', className)} {...props}>
-    <ScrollAreaPrimitive.Viewport style={{ maxHeight: props.maxheight }} className={clsx(styles.viewport, 'w-100')}>
+  <ScrollAreaPrimitive.Root className={clsx('relative overflow-hidden', className)} {...props}>
+    <ScrollAreaPrimitive.Viewport style={{ maxHeight: props.maxheight }} className={clsx(styles.viewport, 'w-full')}>
       {children}
     </ScrollAreaPrimitive.Viewport>
     <ScrollBar />

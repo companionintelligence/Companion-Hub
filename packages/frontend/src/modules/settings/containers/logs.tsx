@@ -36,7 +36,7 @@ export const LogsContainer = () => {
       <Suspense>
         <LogsTerminal logs={logs} maxLines={maxLines.current} onMaxLinesChange={updateMaxLines} />
       </Suspense>
-      <div className="text-center text-muted mt-4">
+      <div className="text-center text-muted-foreground mt-4">
         Powered by Docker, Node, React, TypeScript, Runtipi, PostgreSQL, Ubuntu, Debian, and many other OSS projects we love. See release notes for
         details.
       </div>

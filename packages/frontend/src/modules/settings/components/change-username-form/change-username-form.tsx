@@ -56,9 +56,9 @@ export const ChangeUsernameForm = ({ username }: Props) => {
           <DialogHeader>
             <DialogTitle>{t('SETTINGS_SECURITY_CHANGE_USERNAME_FORM_PASSWORD')}</DialogTitle>
           </DialogHeader>
-          <DialogDescription className="d-flex flex-column">
-            <form onSubmit={handleSubmit(onSubmit)} className="w-100" id={formId}>
-              <p className="text-muted">{t('SETTINGS_SECURITY_CHANGE_USERNAME_FORM_PASSWORD_NEEDED_HINT')}</p>
+          <DialogDescription className="flex flex-col">
+            <form onSubmit={handleSubmit(onSubmit)} className="w-full" id={formId}>
+              <p className="text-muted-foreground">{t('SETTINGS_SECURITY_CHANGE_USERNAME_FORM_PASSWORD_NEEDED_HINT')}</p>
               <Input
                 error={formState.errors.newUsername?.message}
                 disabled={changeUsername.isPending}

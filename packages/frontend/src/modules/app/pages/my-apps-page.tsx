@@ -67,20 +67,20 @@ export default () => {
             redirectPath="/app-store"
             actionLabel="MY_APPS_EMPTY_ACTION"
             extraContent={
-              <div className="d-flex flex-column flex-sm-row gap-2 justify-content-center">
+              <div className="flex flex-col sm:flex-row gap-2 justify-center">
                 <ButtonTile
                   title={t('CUSTOM_APP_ADD_TITLE')}
                   subtitle={t('CUSTOM_APP_ADD_SUBTITLE')}
                   action={() => navigate('/apps/create')}
                   icon={<AppWindow size={50} strokeWidth={1.5} color="#A4A4A4" />}
-                  className="col-12 col-sm-6 col-lg-6 col-lg-6"
+                  className="w-full sm:w-1/2"
                 />
                 <ButtonTile
                   title={t('LINKS_ADD_TITLE')}
                   subtitle={t('LINKS_ADD_SUBTITLE')}
                   action={() => addLinkDisclosure.open()}
                   icon={<LinkIcon size={50} strokeWidth={1.5} color="#A4A4A4" />}
-                  className="col-12 col-sm-6 col-md-6 col-lg-6"
+                  className="w-full sm:w-1/2"
                 />
               </div>
             }

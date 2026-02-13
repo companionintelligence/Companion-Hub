@@ -100,7 +100,7 @@ export const AppUserConfigEditors = ({ info, initialAppEnv, initialDockerCompose
             <AlertDescription>{t('USER_CONFIG_WARNING_DESCRIPTION')}</AlertDescription>
           </div>
         </Alert>
-        <div className="d-flex mb-3 align-items-center justify-content-between">
+        <div className="flex mb-3 items-center justify-between">
           <Switch className="mt-2" label={t('USER_CONFIG_ENABLE')} checked={isEnabled} onCheckedChange={handleToggleEnabled} />
           <Button onClick={handleSave}>{t('SAVE')}</Button>
         </div>

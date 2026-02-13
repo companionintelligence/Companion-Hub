@@ -53,7 +53,7 @@ export const ChangePasswordForm = () => {
   };
 
   return (
-    <form onSubmit={handleSubmit(onSubmit)} className="mb-4 w-100 ">
+    <form onSubmit={handleSubmit(onSubmit)} className="mb-4 w-full">
       <Input
         disabled={changePassword.isPending}
         {...register('currentPassword')}

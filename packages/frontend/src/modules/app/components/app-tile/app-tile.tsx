@@ -1,4 +1,5 @@
 import { AppLogo } from '@/components/app-logo/app-logo';
+import { Card, CardContent } from '@/components/ui/Card';
 import { limitText } from '@/lib/helpers/text-helpers';
 import type { AppInfo, AppStatus as AppStatusType } from '@/types/app.types';
 import { AlertCircle, Download, RotateCw } from 'lucide-react';
@@ -18,7 +19,7 @@ export const AppTile: React.FC<{
 }> = ({ info, status, updateAvailable, pendingRestart }) => {
   const { t } = useTranslation();
 
-  var badge = null;
+  let badge = null;
 
   // Using if-else sets the badge once while rendering them in the return causes badges to stack
   if (pendingRestart) {
@@ -27,7 +28,7 @@ export const AppTile: React.FC<{
         <Tooltip className="tooltip" anchorSelect=".pendingRestart">
           {t('MY_APPS_PENDING_RESTART')}
         </Tooltip>
-        <div className="pendingRestart ribbon bg-warning ribbon-top">
+        <div className="pendingRestart absolute top-0 right-0 rounded-tr-lg rounded-bl-lg bg-amber-500 text-white p-1.5">
           <RotateCw size={20} />
         </div>
       </>
@@ -38,7 +39,7 @@ export const AppTile: React.FC<{
         <Tooltip className="tooltip" anchorSelect=".updateAvailable">
           {t('MY_APPS_UPDATE_AVAILABLE')}
         </Tooltip>
-        <div className="updateAvailable ribbon bg-green ribbon-top">
+        <div className="updateAvailable absolute top-0 right-0 rounded-tr-lg rounded-bl-lg bg-green-500 text-white p-1.5">
           <Download size={20} />
         </div>
       </>
@@ -49,7 +50,7 @@ export const AppTile: React.FC<{
         <Tooltip className="tooltip" anchorSelect=".deprecated">
           {t('MY_APPS_DEPRECATED')}
         </Tooltip>
-        <div className="deprecated ribbon bg-red ribbon-top">
+        <div className="deprecated absolute top-0 right-0 rounded-tr-lg rounded-bl-lg bg-red-500 text-white p-1.5">
           <AlertCircle />
         </div>
       </>
@@ -57,18 +58,18 @@ export const AppTile: React.FC<{
   }
 
   return (
-    <div className="card card-sm card-link">
-      <div className="card-body d-flex gap-3 d-flex align-items-center">
+    <Card className="relative hover:bg-accent/50 transition-colors">
+      <CardContent className="flex items-center gap-3 p-4">
         <AppLogo alt={`${info.name} logo`} urn={info.urn} size={60} />
-        <div className="d-flex flex-column justify-items-center">
-          <div className="d-flex align-items-center gap-2">
-            <span className="fw-bolder">{info.name}</span>
+        <div className="flex flex-col justify-center">
+          <div className="flex items-center gap-2">
+            <span className="font-bold">{info.name}</span>
             <AppStatus lite status={status} />
           </div>
-          <div className="text-muted">{limitText(info.short_desc, 50)}</div>
+          <div className="text-muted-foreground text-sm">{limitText(info.short_desc, 50)}</div>
         </div>
-      </div>
+      </CardContent>
       {badge}
-    </div>
+    </Card>
   );
 };

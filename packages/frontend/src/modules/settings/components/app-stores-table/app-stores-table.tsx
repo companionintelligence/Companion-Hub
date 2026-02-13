@@ -9,15 +9,15 @@ type Props = {
 };
 
 const EnabledBadge = ({ enabled }: { enabled: boolean }) => (
-  <div className="d-flex align-items-center">
-    <span className={`badge bg-${enabled ? 'success' : 'danger'} me-2`} />
+  <div className="flex items-center">
+    <span className={`inline-block size-2 rounded-full mr-2 ${enabled ? 'bg-green-500' : 'bg-red-500'}`} />
     <span>{enabled ? 'Enabled' : 'Disabled'}</span>
   </div>
 );
 
 export const AppStoresTable = ({ appStores }: Props) => {
   return (
-    <div className="d-flex flex-column">
+    <div className="flex flex-col">
       <Table>
         <TableHeader>
           <TableRow>
@@ -40,7 +40,7 @@ export const AppStoresTable = ({ appStores }: Props) => {
                 </a>
               </TableCell>
               <TableCell>
-                <div className="d-flex flex-row">
+                <div className="flex flex-row">
                   <EditAppStoreDialog appStore={appStore} />
                   <DeleteAppStoreDialog appStore={appStore} />
                 </div>

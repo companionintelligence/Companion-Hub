@@ -41,10 +41,10 @@ export const UninstallDialog = ({ info, isOpen, onClose }: IProps) => {
           <DialogTitle>{t('APP_UNINSTALL_FORM_TITLE', { name: info.name })}</DialogTitle>
         </DialogHeader>
         <DialogDescription className="text-center py-4">
-          <AlertTriangle className="icon mb-2 text-danger icon-lg" />
+          <AlertTriangle className="mb-2 text-destructive size-12 mx-auto" />
           <h3>{t('APP_UNINSTALL_FORM_WARNING')}</h3>
-          <span className="text-muted">{t('APP_UNINSTALL_FORM_SUBTITLE')}</span>
-          <div className="justify-content-center d-flex pt-3">
+          <span className="text-muted-foreground">{t('APP_UNINSTALL_FORM_SUBTITLE')}</span>
+          <div className="flex justify-center pt-3">
             <Switch
               className="text-start"
               checked={shouldRemoveBackups}

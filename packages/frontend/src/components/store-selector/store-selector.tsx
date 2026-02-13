@@ -45,17 +45,17 @@ export const StoreSelector = ({ onSelect, className, initialValue, stores }: Pro
         {value && (
           <>
             <SelectItem key="clear" value="clear">
-              <span className="d-flex gap-2">
+              <span className="flex gap-2">
                 <X size={20} />
                 {t('CLEAR')}
               </span>
             </SelectItem>
-            <div className="dropdown-divider" />
+            <div className="h-px bg-border my-1" />
           </>
         )}
         {options?.map(({ value, label }) => (
           <SelectItem key={value} value={value.toString()}>
-            <span className="d-flex gap-2">{label}</span>
+            <span className="flex gap-2">{label}</span>
           </SelectItem>
         ))}
       </SelectContent>

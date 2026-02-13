@@ -31,15 +31,15 @@ export const AppStoresContainer = () => {
     <CardContent>
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center">
-          <LayoutGrid className="me-2" />
-          <h2 className="mb-0">{t('SETTINGS_APPSTORES_TITLE')}</h2>
+          <LayoutGrid className="mr-2" />
+          <h2 className="text-xl font-semibold">{t('SETTINGS_APPSTORES_TITLE')}</h2>
         </div>
         <Button onClick={() => pullMutation.mutate({})} loading={pullMutation.isPending} variant="outline">
-          <RefreshCw className="me-2" size={16} />
+          <RefreshCw className="mr-2" size={16} />
           {t('REFRESH')}
         </Button>
       </div>
-      <p className="text-muted">{t('SETTINGS_APPSTORES_SUBTITLE')}</p>
+      <p className="text-muted-foreground">{t('SETTINGS_APPSTORES_SUBTITLE')}</p>
       <Alert variant="warning">
         <AlertIcon>
           <AlertCircle strokeWidth={2} />

@@ -81,15 +81,15 @@ export const OtpForm = (props: { totpEnabled: boolean }) => {
     return (
       <div className="mt-4">
         <div className="mb-4">
-          <p className="text-muted">{t('SETTINGS_SECURITY_SCAN_QR_CODE')}</p>
+          <p className="text-muted-foreground">{t('SETTINGS_SECURITY_SCAN_QR_CODE')}</p>
           <QRCodeSVG value={uri} />
         </div>
         <div className="mb-4">
-          <p className="text-muted">{t('SETTINGS_SECURITY_ENTER_KEY_MANUALLY')}</p>
+          <p className="text-muted-foreground">{t('SETTINGS_SECURITY_ENTER_KEY_MANUALLY')}</p>
           <Input name="secret key" value={key} readOnly />
         </div>
         <div className="mb-4">
-          <p className="text-muted">{t('SETTINGS_SECURITY_ENTER_2FA_CODE')}</p>
+          <p className="text-muted-foreground">{t('SETTINGS_SECURITY_ENTER_2FA_CODE')}</p>
           <OtpInput value={totpCode} valueLength={6} onChange={(e) => setTotpCode(e)} />
           <Button
             disabled={totpCode.trim().length < 6}
@@ -116,8 +116,8 @@ export const OtpForm = (props: { totpEnabled: boolean }) => {
     <>
       {!key && <Switch onCheckedChange={handleTotp} checked={totpEnabled} label={t('SETTINGS_SECURITY_ENABLE_2FA')} />}
       {getTotpUri.isPending && (
-        <div className="progress w-50">
-          <div className="progress-bar progress-bar-indeterminate bg-green" />
+        <div className="w-1/2 h-1.5 rounded-full bg-muted overflow-hidden">
+          <div className="h-full bg-green-500 rounded-full animate-pulse" />
         </div>
       )}
       {renderSetupQr()}
@@ -126,7 +126,7 @@ export const OtpForm = (props: { totpEnabled: boolean }) => {
           <DialogHeader>
             <DialogTitle>{t('SETTINGS_SECURITY_PASSWORD_NEEDED')}</DialogTitle>
           </DialogHeader>
-          <DialogDescription className="d-flex flex-column">
+          <DialogDescription className="flex flex-col">
             <form
               onSubmit={(e) => {
                 e.preventDefault();
@@ -134,7 +134,7 @@ export const OtpForm = (props: { totpEnabled: boolean }) => {
               }}
               id={passwordFormId}
             >
-              <p className="text-muted">{t('SETTINGS_SECURITY_PASSWORD_NEEDED_HINT')}</p>
+              <p className="text-muted-foreground">{t('SETTINGS_SECURITY_PASSWORD_NEEDED_HINT')}</p>
               <Input
                 name="password"
                 type="password"
@@ -155,7 +155,7 @@ export const OtpForm = (props: { totpEnabled: boolean }) => {
           <DialogHeader>
             <DialogTitle>{t('SETTINGS_SECURITY_PASSWORD_NEEDED')}</DialogTitle>
           </DialogHeader>
-          <DialogDescription className="d-flex flex-column">
+          <DialogDescription className="flex flex-col">
             <form
               onSubmit={(e) => {
                 e.preventDefault();
@@ -163,7 +163,7 @@ export const OtpForm = (props: { totpEnabled: boolean }) => {
               }}
               id={totpFormId}
             >
-              <p className="text-muted">{t('SETTINGS_SECURITY_PASSWORD_NEEDED_HINT')}</p>
+              <p className="text-muted-foreground">{t('SETTINGS_SECURITY_PASSWORD_NEEDED_HINT')}</p>
               <Input
                 name="password"
                 type="password"

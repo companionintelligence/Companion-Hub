@@ -31,7 +31,7 @@ export const UpdateRepoModal = () => {
             <DialogTitle>{t('SETTINGS_ACTIONS_UPDATE_REPO_TITLE')}</DialogTitle>
           </DialogHeader>
           <DialogDescription>
-            <span className="text-muted">{t('SETTINGS_ACTIONS_UPDATE_REPO_MODAL_SUBTITLE')}</span>
+            <span className="text-muted-foreground">{t('SETTINGS_ACTIONS_UPDATE_REPO_MODAL_SUBTITLE')}</span>
           </DialogDescription>
           <DialogFooter>
             <Button intent="success" loading={updateRepo.isPending} onClick={() => updateRepo.mutate({})}>

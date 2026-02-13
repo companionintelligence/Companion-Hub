@@ -25,7 +25,7 @@ export const StepTrigger: React.FC<StepTriggerProps> = ({ step, title, disabled,
   const currentStep = useContext(StepperContext);
   return (
     <li
-      className={clsx('breadcrumb-item d-flex align-items-center justify-content-center', currentStep === step && 'active', disabled && 'disabled')}
+      className={clsx('breadcrumb-item flex items-center justify-center', currentStep === step && 'active', disabled && 'disabled')}
       onClick={() => onStepChange(step)}
       onKeyDown={() => onStepChange(step)}
     >

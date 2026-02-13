@@ -12,22 +12,22 @@ export const SecurityContainer = (props: { totpEnabled: boolean; username?: stri
   return (
     <CardContent>
       <div className="flex mb-2">
-        <User className="me-2" />
-        <h2 className="mb-0">{t('SETTINGS_SECURITY_CHANGE_USERNAME_TITLE')}</h2>
+        <User className="mr-2" />
+        <h2 className="text-xl font-semibold">{t('SETTINGS_SECURITY_CHANGE_USERNAME_TITLE')}</h2>
       </div>
-      <p className="text-muted">{t('SETTINGS_SECURITY_CHANGE_USERNAME_SUBTITLE')}</p>
+      <p className="text-muted-foreground">{t('SETTINGS_SECURITY_CHANGE_USERNAME_SUBTITLE')}</p>
       <ChangeUsernameForm username={username} />
-      <div className="d-flex mb-2">
-        <Key className="me-2" />
-        <h2 className="mb-0">{t('SETTINGS_SECURITY_CHANGE_PASSWORD_TITLE')}</h2>
+      <div className="flex mb-2">
+        <Key className="mr-2" />
+        <h2 className="text-xl font-semibold">{t('SETTINGS_SECURITY_CHANGE_PASSWORD_TITLE')}</h2>
       </div>
-      <p className="text-muted">{t('SETTINGS_SECURITY_CHANGE_PASSWORD_SUBTITLE')}</p>
+      <p className="text-muted-foreground">{t('SETTINGS_SECURITY_CHANGE_PASSWORD_SUBTITLE')}</p>
       <ChangePasswordForm />
-      <div className="d-flex mb-2">
-        <Lock className="me-2" />
-        <h2 className="mb-0">{t('SETTINGS_SECURITY_2FA_TITLE')}</h2>
+      <div className="flex mb-2">
+        <Lock className="mr-2" />
+        <h2 className="text-xl font-semibold">{t('SETTINGS_SECURITY_2FA_TITLE')}</h2>
       </div>
-      <p className="text-muted">
+      <p className="text-muted-foreground">
         {t('SETTINGS_SECURITY_2FA_SUBTITLE')}
         <br />
         {t('SETTINGS_SECURITY_2FA_SUBTITLE_2')}

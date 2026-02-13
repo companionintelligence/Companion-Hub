@@ -21,7 +21,7 @@ export const NavBar: React.FC<IProps> = ({ isUpdateAvailable: _isUpdateAvailable
     return (
       <li aria-label={title} data-testid={`nav-item-${name}`} className={itemClass}>
         <Link to={`/${name}`} className="nav-link">
-          <span className={`nav-link-icon d-md-none d-lg-inline-block navbar-icon-${name}`}>
+          <span className={`nav-link-icon hidden lg:inline-block navbar-icon-${name}`}>
             <IconComponent size={24} />
           </span>
           <span className="nav-link-title">{title}</span>
@@ -32,7 +32,7 @@ export const NavBar: React.FC<IProps> = ({ isUpdateAvailable: _isUpdateAvailable
 
   return (
     <div id="navbar-menu" className="collapse navbar-collapse">
-      <div className="d-flex flex-column flex-md-row flex-fill align-items-stretch align-items-md-center">
+      <div className="flex flex-col md:flex-row flex-1 items-stretch md:items-center">
         <ul className="navbar-nav gap-1">
           {renderItem(t('HEADER_DASHBOARD'), 'dashboard', Home)}
           {renderItem(t('HEADER_APPS'), 'apps', LayoutGrid)}
