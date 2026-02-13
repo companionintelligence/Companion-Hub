@@ -101,11 +101,11 @@ test.describe('Cloudflare Binding', () => {
     await page.getByRole('tab', { name: /network|domains/i }).click();
 
     const tunnelUrl = await page.getByTestId('tunnel-url').textContent();
-    expect(tunnelUrl).toBeTruthy();
+    if (!tunnelUrl) throw new Error('Tunnel URL not found');
 
     // Open tunnel URL in new tab
     const externalPage = await context.newPage();
-    await externalPage.goto(tunnelUrl!, { waitUntil: 'networkidle' });
+    await externalPage.goto(tunnelUrl, { waitUntil: 'networkidle' });
 
     // Should load the Hub login or dashboard
     await expect(externalPage.getByText(/companion|hub|login/i)).toBeVisible();

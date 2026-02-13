@@ -1,6 +1,6 @@
 import type * as React from 'react';
 
-import { IconChevronLeft, IconChevronRight, IconDots } from '@tabler/icons-react';
+import { ChevronLeft, ChevronRight, MoreHorizontal } from 'lucide-react';
 import clsx from 'clsx';
 import { Button, type ButtonProps } from '../Button/Button';
 import './Pagination.css';
@@ -34,21 +34,21 @@ PaginationLink.displayName = 'PaginationLink';
 
 const PaginationPrevious = ({ className, ...props }: React.ComponentProps<typeof PaginationLink>) => (
   <PaginationLink aria-label="Go to previous page" small={false} className={clsx('', className)} {...props}>
-    <IconChevronLeft className="" />
+    <ChevronLeft className="" />
   </PaginationLink>
 );
 PaginationPrevious.displayName = 'PaginationPrevious';
 
 const PaginationNext = ({ className, ...props }: React.ComponentProps<typeof PaginationLink>) => (
   <PaginationLink aria-label="Go to next page" small={false} className={clsx('', className)} {...props}>
-    <IconChevronRight className="" />
+    <ChevronRight className="" />
   </PaginationLink>
 );
 PaginationNext.displayName = 'PaginationNext';
 
 const PaginationEllipsis = ({ className, ...props }: React.ComponentProps<'span'>) => (
   <span aria-hidden className={clsx('px-1 d-flex align-items-center justify-content-center h-100 paginaton-link', className)} {...props}>
-    <IconDots size={14} className="mx-1" />
+    <MoreHorizontal size={14} className="mx-1" />
   </span>
 );
 PaginationEllipsis.displayName = 'PaginationEllipsis';

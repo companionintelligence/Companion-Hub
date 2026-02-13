@@ -2,6 +2,7 @@ import { limitText } from '@/lib/helpers/text-helpers';
 import type React from 'react';
 import './store-tile.css';
 import { AppLogo } from '@/components/app-logo/app-logo';
+import { Card, CardContent } from '@/components/ui/Card';
 import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
 import type { AppInfoSimple } from '@/types/app.types';
 import { useTranslation } from 'react-i18next';
@@ -17,18 +18,18 @@ export const StoreTile: React.FC<{ app: AppInfoSimple; isLoading: boolean }> = (
 
   return (
     <Link aria-label={app.name} className="app-tile" to={`/app-store/${storeId}/${appId}`} data-testid={`app-card-${appId}`}>
-      <div key={app.id} className="d-flex overflow-hidden align-items-center py-2 ps-2">
+      <Card key={app.id} className="flex overflow-hidden items-center py-2 pl-2">
         <Skeleton loading={isLoading}>
           <AppLogo className="logo" urn={app.urn} placeholder={isLoading} />
         </Skeleton>
-        <div className="card-body p-2">
-          <div className="d-flex align-items-center" style={{ columnGap: '0.75rem' }}>
+        <CardContent className="p-2">
+          <div className="flex items-center" style={{ columnGap: '0.75rem' }}>
             <h3 className="text-bold h-3 mb-2">
               <Skeleton loading={isLoading}>{limitText(app.name, 20)}</Skeleton>
             </h3>
             {isNew ? <div className="text-white badge me-1 bg-green">{t('APP_NEW')}</div> : null}
           </div>
-          <p className="text-muted mb-2 store-tile-description">
+          <p className="text-muted-foreground mb-2 store-tile-description">
             <Skeleton loading={isLoading}>{app.short_desc}</Skeleton>
           </p>
           {app.categories?.map((category) => (
@@ -38,8 +39,8 @@ export const StoreTile: React.FC<{ app: AppInfoSimple; isLoading: boolean }> = (
               </div>
             </Skeleton>
           ))}
-        </div>
-      </div>
+        </CardContent>
+      </Card>
     </Link>
   );
 };

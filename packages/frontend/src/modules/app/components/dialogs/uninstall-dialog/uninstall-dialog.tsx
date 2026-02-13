@@ -5,7 +5,7 @@ import { Switch } from '@/components/ui/Switch';
 import { useAppStatus } from '@/modules/app/helpers/use-app-status';
 import type { AppInfo } from '@/types/app.types';
 import type { TranslatableError } from '@/types/error.types';
-import { IconAlertTriangle } from '@tabler/icons-react';
+import { AlertTriangle } from 'lucide-react';
 import { useMutation } from '@tanstack/react-query';
 import { useState } from 'react';
 import toast from 'react-hot-toast';
@@ -41,7 +41,7 @@ export const UninstallDialog = ({ info, isOpen, onClose }: IProps) => {
           <DialogTitle>{t('APP_UNINSTALL_FORM_TITLE', { name: info.name })}</DialogTitle>
         </DialogHeader>
         <DialogDescription className="text-center py-4">
-          <IconAlertTriangle className="icon mb-2 text-danger icon-lg" />
+          <AlertTriangle className="icon mb-2 text-danger icon-lg" />
           <h3>{t('APP_UNINSTALL_FORM_WARNING')}</h3>
           <span className="text-muted">{t('APP_UNINSTALL_FORM_SUBTITLE')}</span>
           <div className="justify-content-center d-flex pt-3">

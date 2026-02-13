@@ -7,6 +7,7 @@ import i18next from 'i18next';
 import { useState } from 'react';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
+import { CardContent } from '@/components/ui/Card';
 import { type SettingsFormValues, UserSettingsForm } from '../components/user-settings-form/user-settings-form';
 
 type Props = {
@@ -40,8 +41,8 @@ export const UserSettingsContainer = ({ initialValues }: Props) => {
   };
 
   return (
-    <div className="card-body">
+    <CardContent>
       <UserSettingsForm initialValues={initialValues} currentLocale={currentLocale as Locale} onSubmit={onSubmit} />
-    </div>
+    </CardContent>
   );
 };

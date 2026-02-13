@@ -110,12 +110,12 @@ test.describe('First-Time User Experience', () => {
     await expect(page.getByText(/cpu|memory|ram/i)).toBeVisible();
   });
 
-  test('should show system health on dashboard', async ({ page }) => {
+  test('should show system health on dashboard', async ({ page, context }) => {
     // Seed organization and create user
     await seedOrganization();
     const { createTestUser, loginUser } = await import('./fixtures/fixtures');
     await createTestUser();
-    await loginUser(page, {} as any);
+    await loginUser(page, context);
 
     // Dashboard should show health metrics
     await expect(page.getByText(/disk space/i)).toBeVisible();
@@ -172,12 +172,12 @@ test.describe('FTUE - Security Setup', () => {
 });
 
 test.describe('FTUE - Network Configuration', () => {
-  test('should show network setup options', async ({ page }) => {
+  test('should show network setup options', async ({ page, context }) => {
     await clearDatabase();
     await seedOrganization();
     const { createTestUser, loginUser } = await import('./fixtures/fixtures');
     await createTestUser();
-    await loginUser(page, {} as any);
+    await loginUser(page, context);
 
     // Go to settings
     await page.goto('/settings');

@@ -3,7 +3,7 @@ import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/Table';
 import type { dynamicComposeSchemaArk } from '@runtipi/common/schemas';
-import { IconX } from '@tabler/icons-react';
+import { X } from 'lucide-react';
 import clsx from 'clsx';
 import { useFieldArray, type Control, type FieldErrors, type UseFormRegister } from 'react-hook-form';
 import { Tooltip } from 'react-tooltip';
@@ -66,7 +66,7 @@ export const EnvironmentConfig = ({ errors, serviceIndex, control, register }: P
                 </TableCell>
                 <TableCell className="align-middle w-1">
                   <Button type="button" size="sm" onClick={() => remove(index)} className="btn-action">
-                    <IconX className="" size={16} />
+                    <X className="" size={16} />
                   </Button>
                 </TableCell>
               </TableRow>

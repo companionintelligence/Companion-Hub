@@ -8,6 +8,7 @@ import {
 import { DateFormat } from '@/components/date-format/date-format';
 import { FileSize } from '@/components/file-size/file-size';
 import { Button } from '@/components/ui/Button';
+import { Card, CardContent, CardFooter, CardHeader } from '@/components/ui/Card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/Table';
 import { TablePagination } from '@/components/ui/TablePagination/TablePagination';
 import { useDisclosure } from '@/lib/hooks/use-disclosure';
@@ -112,63 +113,70 @@ export const AppBackups = ({ info, status }: Props) => {
     uploadBackup.isPending;
 
   return (
-    <div className="card">
-      <div className="card-header d-flex justify-content-between align-items-center">
-        <div className="">
-          <h3 className="h3 mb-0">{t('BACKUPS_LIST')}</h3>
-        </div>
-        <div className="d-flex gap-2">
-          <Button onClick={uploadModalDisclosure.open} disabled={disableActions}>
-            {t('APP_BACKUP_UPLOAD')}
-          </Button>
-          <Button onClick={backupModalDisclosure.open} disabled={disableActions}>
-            {t('BACKUPS_LIST_BACKUP_NOW')}
-          </Button>
-        </div>
-      </div>
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>{t('BACKUPS_LIST_ROW_TITLE_ID')}</TableHead>
-            <TableHead>{t('BACKUPS_LIST_ROW_TITLE_SIZE')}</TableHead>
-            <TableHead>{t('BACKUPS_LIST_ROW_TITLE_DATE')}</TableHead>
-            <TableHead align="right">{t('BACKUPS_LIST_ROW_TITLE_ACTIONS')}</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {data.data.map((backup) => (
-            <TableRow key={backup.id}>
-              <TableCell>{backup.id}</TableCell>
-              <TableCell>
-                <FileSize size={backup.size} />
-              </TableCell>
-              <TableCell>
-                <DateFormat date={new Date(backup.date)} />
-              </TableCell>
-              <TableCell align="right">
-                <Button size="sm" variant="ghost" onClick={() => handleDownloadClick(backup)} disabled={disableActions} className="me-1">
-                  {t('APP_BACKUP_DOWNLOAD')}
-                </Button>
-                <Button size="sm" variant="ghost" onClick={() => handleRestoreClick(backup)} disabled={disableActions} className="me-1">
-                  {t('APP_RESTORE_SUBMIT')}
-                </Button>
-                <Button size="sm" intent="danger" variant="ghost" onClick={() => handleDeleteClick(backup)} disabled={disableActions}>
-                  {t('DELETE_BACKUP_MODAL_SUBMIT')}
-                </Button>
-              </TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
-      <div className="card-footer d-flex justify-content-end">
-        <TablePagination
-          totalPages={Math.max(1, data.lastPage)}
-          currentPage={page}
-          onPageChange={(p) => setPage(p)}
-          onBack={() => setPage(page - 1)}
-          onNext={() => setPage(page + 1)}
-        />
-      </div>
+    <div>
+      <Card>
+        <CardHeader className="flex flex-row justify-between items-center space-y-0 p-6">
+          <div className="">
+            <h3 className="h3 mb-0 text-xl font-bold">{t('BACKUPS_LIST')}</h3>
+          </div>
+          <div className="flex gap-2">
+            <Button onClick={uploadModalDisclosure.open} disabled={disableActions}>
+              {t('APP_BACKUP_UPLOAD')}
+            </Button>
+            <Button onClick={backupModalDisclosure.open} disabled={disableActions}>
+              {t('BACKUPS_LIST_BACKUP_NOW')}
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent className="p-0">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>{t('BACKUPS_LIST_ROW_TITLE_ID')}</TableHead>
+                <TableHead>{t('BACKUPS_LIST_ROW_TITLE_SIZE')}</TableHead>
+                <TableHead>{t('BACKUPS_LIST_ROW_TITLE_DATE')}</TableHead>
+                <TableHead align="right">{t('BACKUPS_LIST_ROW_TITLE_ACTIONS')}</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {data.data.map((backup) => (
+                <TableRow key={backup.id}>
+                  <TableCell>{backup.id}</TableCell>
+                  <TableCell>
+                    <FileSize size={backup.size} />
+                  </TableCell>
+                  <TableCell>
+                    <DateFormat date={new Date(backup.date)} />
+                  </TableCell>
+                  <TableCell align="right">
+                    <Button size="sm" variant="ghost" onClick={() => handleDownloadClick(backup)} disabled={disableActions} className="me-1">
+                      {t('APP_BACKUP_DOWNLOAD')}
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => handleRestoreClick(backup)} disabled={disableActions} className="me-1">
+                      {t('APP_RESTORE_SUBMIT')}
+                    </Button>
+                    <Button size="sm" intent="danger" variant="ghost" onClick={() => handleDeleteClick(backup)} disabled={disableActions}>
+                      {t('DELETE_BACKUP_MODAL_SUBMIT')}
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </CardContent>
+        <CardFooter className="flex justify-end p-6">
+          <TablePagination
+            totalPages={Math.max(1, data.lastPage)}
+            currentPage={page}
+            onPageChange={(p) => setPage(p)}
+            onBack={() => setPage(page - 1)}
+            onNext={() => setPage(page + 1)}
+          />
+          ``` {
+            // Additional code if needed
+          }
+        </CardFooter>
+      </Card>
       <BackupAppDialog
         info={info}
         isOpen={backupModalDisclosure.isOpen}

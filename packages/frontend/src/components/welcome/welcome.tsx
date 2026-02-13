@@ -1,5 +1,6 @@
 import { acknowledgeWelcomeMutation } from '@/api-client/@tanstack/react-query.gen';
 import { Button } from '@/components/ui/Button';
+import { Card, CardContent } from '@/components/ui/Card';
 import { Switch } from '@/components/ui/Switch';
 import { getLogo } from '@/lib/theme/theme';
 import { useMutation } from '@tanstack/react-query';
@@ -31,10 +32,10 @@ export const Welcome = ({ allowErrorMonitoring }: Props) => {
             }}
           />
         </div>
-        <div className="card card-md">
-          <div className="card-body">
-            <h2 className="h2 text-center mb-4">Thanks for using Companion Hub</h2>
-            <div className="d-flex flex-column align-items-center">
+        <Card className="max-w-md mx-auto">
+          <CardContent>
+            <h2 className="text-2xl font-bold text-center mb-4">Thanks for using Companion Hub</h2>
+            <div className="flex flex-col items-center">
               <Switch checked={errorMonitoring} onCheckedChange={setErrorMonitoring} label="Enable error reporting" />
               <Button
                 intent="primary"
@@ -46,8 +47,8 @@ export const Welcome = ({ allowErrorMonitoring }: Props) => {
                 Save and enter
               </Button>
             </div>
-          </div>
-        </div>
+          </CardContent>
+        </Card>
       </div>
     </div>
   );

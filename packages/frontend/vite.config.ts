@@ -3,13 +3,14 @@ import { reactRouter } from '@react-router/dev/vite';
 import { sentryVitePlugin } from '@sentry/vite-plugin';
 import { defineConfig, type PluginOption } from 'vite';
 import tsconfigPaths from 'vite-tsconfig-paths';
+import tailwindcss from '@tailwindcss/vite';
 
 const alias = {
   '@': path.resolve(__dirname, './src'),
 };
 const _isTest = process.env.NODE_ENV === 'test';
 const isVitest = process.env.VITEST === 'true';
-const plugins: PluginOption[] = [!isVitest && reactRouter(), tsconfigPaths()];
+const plugins: PluginOption[] = [!isVitest && reactRouter(), tsconfigPaths(), tailwindcss()];
 
 const { NODE_ENV } = process.env;
 if (NODE_ENV === 'production') {

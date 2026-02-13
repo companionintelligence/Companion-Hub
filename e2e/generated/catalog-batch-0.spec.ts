@@ -4,7 +4,7 @@
  * Apps: 86
  */
 
-import { expect, installApp, loginUser, test } from '../fixtures/fixtures';
+import { expect, loginUser, test } from '../fixtures/fixtures';
 
 const APPS = [
   {
@@ -885,7 +885,7 @@ test.describe('App Catalog Batch 0', () => {
       });
 
       if (app.hasGui) {
-        test(`access ${app.id} via subdomain`, async ({ page, context }) => {
+        test(`access ${app.id} via subdomain`, async ({ context }) => {
           const subdomain = `test-${app.id}`;
           const url = `https://${subdomain}.${process.env.TEST_DOMAIN || 'test.ci.computer'}${app.healthEndpoint}`;
 

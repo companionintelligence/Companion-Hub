@@ -4,8 +4,8 @@
  * Utilities to verify DNS records during tests
  */
 
-import { exec } from 'child_process';
-import { promisify } from 'util';
+import { exec } from 'node:child_process';
+import { promisify } from 'node:util';
 
 const execAsync = promisify(exec);
 
@@ -132,6 +132,7 @@ export class DNSHelper {
       const data = await response.json();
 
       if (data.success && data.result) {
+        // biome-ignore lint/suspicious/noExplicitAny: External API response
         return data.result.map((r: any) => ({
           name: r.name,
           type: r.type,

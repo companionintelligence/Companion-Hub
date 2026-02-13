@@ -1,4 +1,5 @@
 import { Button } from '@/components/ui/Button';
+import { Input } from '@/components/ui/Input';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
 import type React from 'react';
 import { useRef, useState } from 'react';
@@ -53,17 +54,20 @@ export const UploadBackupDialog: React.FC<IProps> = ({ isOpen, onClose, onConfir
         </DialogHeader>
         <DialogDescription>
           <span className="text-muted d-block mb-3">{t('APP_BACKUP_UPLOAD_SUBTITLE')}</span>
-          <div className="form-group">
-            <label htmlFor="backup-file" className="form-label">
-              {t('APP_BACKUP_UPLOAD_FILE_LABEL')}
-            </label>
-            <input ref={fileInputRef} id="backup-file" type="file" accept=".tar.gz" onChange={handleFileChange} className="form-control" />
-            {selectedFile && (
-              <div className="mt-2 text-muted small">
-                {t('SELECTED_FILE')}: {selectedFile.name}
-              </div>
-            )}
-          </div>
+          <Input
+            className="mb-3"
+            ref={fileInputRef}
+            id="backup-file"
+            label={t('APP_BACKUP_UPLOAD_FILE_LABEL')}
+            type="file"
+            accept=".tar.gz"
+            onChange={handleFileChange}
+          />
+          {selectedFile && (
+            <div className="mt-2 text-muted small">
+              {t('SELECTED_FILE')}: {selectedFile.name}
+            </div>
+          )}
         </DialogDescription>
         <DialogFooter>
           <Button onClick={handleConfirm} intent="success" disabled={!selectedFile}>

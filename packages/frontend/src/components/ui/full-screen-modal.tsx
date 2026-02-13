@@ -1,4 +1,4 @@
-import { IconX } from '@tabler/icons-react';
+import { X } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
 import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
@@ -38,7 +38,7 @@ export const FullScreenModal = ({ isOpen, onClose, children, title }: FullScreen
               <div className="d-flex justify-content-between align-items-center mb-4">
                 {title && <h1 className="m-0">{title}</h1>}
                 <button type="button" className="btn btn-icon btn-ghost-secondary ms-auto" onClick={onClose} aria-label="Close">
-                  <IconX size={32} />
+                  <X size={32} />
                 </button>
               </div>
               {children}

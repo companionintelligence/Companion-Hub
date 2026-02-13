@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router';
 import { Button } from '@/components/ui/Button';
+import { Card, CardContent } from '@/components/ui/Card';
 import { Alert, AlertDescription } from '@/components/ui/Alert/Alert';
-import { IconAlertCircle, IconExternalLink } from '@tabler/icons-react';
+import { AlertCircle, ExternalLink } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useUserContext } from '@/context/user-context';
 
@@ -178,7 +179,7 @@ export default function DeviceRegistrationPage() {
           <Alert variant="danger" className="max-w-md">
             <AlertDescription>
               <div className="flex items-start gap-2">
-                <IconAlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+                <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
                 <span>{error}</span>
               </div>
             </AlertDescription>
@@ -196,8 +197,8 @@ export default function DeviceRegistrationPage() {
   // Show registration redirect page
   return (
     <div className="flex flex-col items-center justify-center min-h-[50vh] gap-6">
-      <div className="card w-full max-w-md">
-        <div className="card-body">
+      <Card className="w-full max-w-md">
+        <CardContent>
           <h1 className="text-2xl font-bold text-center mb-4">Device Registration Required</h1>
           <p className="text-muted-foreground text-center mb-6">
             This device needs to be registered with CI Cloud to access the app store. You will be redirected to complete the registration process.
@@ -214,7 +215,7 @@ export default function DeviceRegistrationPage() {
             <Alert variant="danger" className="mb-4">
               <AlertDescription>
                 <div className="flex items-start gap-2">
-                  <IconAlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+                  <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
                   <span>{error}</span>
                 </div>
               </AlertDescription>
@@ -225,15 +226,15 @@ export default function DeviceRegistrationPage() {
             <>
               <Button intent="primary" className="w-full" onClick={handleRedirectToCICloud}>
                 Register Device on CI Cloud
-                <IconExternalLink className="ml-2 h-4 w-4" />
+                <ExternalLink className="ml-2 h-4 w-4" />
               </Button>
               <p className="text-xs text-muted-foreground mt-4 text-center">
                 You will be redirected to CI Cloud to sign in, create an organization, and complete device registration.
               </p>
             </>
           )}
-        </div>
-      </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }
