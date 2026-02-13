@@ -1,0 +1,34 @@
+name = "ci-os-hub"
+main = "worker.ts"
+compatibility_date = "2024-09-23"
+
+# Container configuration
+# This builds and pushes the Dockerfile at the root
+[[containers]]
+image = "./Dockerfile"
+class_name = "AppContainer"
+max_instances = 1
+instance_type = "basic"
+
+# Durable Object binding for the container
+[durable_objects]
+bindings = [
+  { name = "APP_CONTAINER", class_name = "AppContainer" }
+]
+
+# Migration to create the Durable Object class
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["AppContainer"]
+
+# Development environment (triggered by develop branch)
+[env.dev]
+name = "ci-os-hub-dev"
+
+# Staging environment (triggered by staging branch)
+[env.staging]
+name = "ci-os-hub-staging"
+
+# Production environment (triggered by main branch)
+[env.production]
+name = "ci-os-hub-production"

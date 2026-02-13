@@ -1,0 +1,105 @@
+name: Build and Push Container
+
+on:
+  push:
+    branches:
+      - "main"
+      - "develop"
+      - "staging"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        type: choice
+        options:
+          - dev
+          - staging
+          - production
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    name: Deploy
+    permissions:
+      contents: read
+      deployments: write
+      packages: write
+    environment:
+      name: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || github.ref == 'refs/heads/main' && 'production' || github.ref == 'refs/heads/staging' && 'staging' || github.ref == 'refs/heads/develop' && 'dev' || 'dev' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Pre-check required secrets
+        run: |
+          echo "Checking required secrets..."
+          if [ -z "${{ secrets.CLOUDFLARE_API_TOKEN }}" ]; then
+            echo "::error::CLOUDFLARE_API_TOKEN secret is not set"
+            exit 1
+          fi
+          if [ -z "${{ secrets.CLOUDFLARE_ACCOUNT_ID }}" ]; then
+            echo "::error::CLOUDFLARE_ACCOUNT_ID secret is not set"
+            exit 1
+          fi
+          echo "✓ All required secrets are present"
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Determine Docker tags
+        id: tags
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            ENV="${{ inputs.environment }}"
+          elif [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            ENV="production"
+          elif [ "${{ github.ref }}" = "refs/heads/staging" ]; then
+            ENV="staging"
+          elif [ "${{ github.ref }}" = "refs/heads/develop" ]; then
+            ENV="dev"
+          else
+            ENV="dev"
+          fi
+
+          echo "environment=$ENV" >> $GITHUB_OUTPUT
+
+          # Set Docker tags based on environment
+          if [ "$ENV" = "production" ]; then
+            echo "docker_tag=latest" >> $GITHUB_OUTPUT
+            echo "container_tag=latest" >> $GITHUB_OUTPUT
+          elif [ "$ENV" = "staging" ]; then
+            echo "docker_tag=staging" >> $GITHUB_OUTPUT
+            echo "container_tag=staging" >> $GITHUB_OUTPUT
+          else
+            echo "docker_tag=dev" >> $GITHUB_OUTPUT
+            echo "container_tag=dev" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=${{ steps.tags.outputs.docker_tag }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Build and Push Container to Cloudflare
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: containers build --push --tag ci-os-hub:${{ steps.tags.outputs.container_tag }}
