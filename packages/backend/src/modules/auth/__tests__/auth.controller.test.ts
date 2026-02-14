@@ -9,7 +9,7 @@ import { AuthService } from '../auth.service';
 
 describe('AuthController', () => {
   let authController: AuthController;
-  let authService: MockProxy<AuthService>;
+  let _authService: MockProxy<AuthService>;
   let logger: MockProxy<LoggerService>;
   let _config: MockProxy<ConfigurationService>;
 
@@ -24,7 +24,7 @@ describe('AuthController', () => {
     }).compile();
 
     authController = moduleRef.get(AuthController);
-    authService = moduleRef.get(AuthService);
+    _authService = moduleRef.get(AuthService);
     logger = moduleRef.get(LoggerService);
     _config = moduleRef.get(ConfigurationService);
   });
