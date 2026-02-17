@@ -1,6 +1,5 @@
 import { RegistryService } from '@/utils/registry/registry.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
-import { LoggerService } from '@/core/logger/logger.service';
 import { HttpService } from '@nestjs/axios';
 import { Test } from '@nestjs/testing';
 import { of, throwError } from 'rxjs';

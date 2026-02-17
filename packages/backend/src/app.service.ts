@@ -13,7 +13,6 @@ import { RepoEventsQueue } from './modules/queue/entities/repo-events';
 import { SystemEventsQueue } from './modules/queue/entities/system-events';
 import { DOCKERODE } from './modules/docker/docker.module';
 import Dockerode from 'dockerode';
-import { GithubService } from './utils/github/github.service';
 import { RegistryService } from './utils/registry/registry.service';
 
 @Injectable()
@@ -29,7 +28,6 @@ export class AppService {
     private readonly marketplaceService: MarketplaceService,
     private readonly databaseService: DatabaseService,
     private readonly appLifecycleService: AppLifecycleService,
-    private readonly githubService: GithubService,
     private readonly registryService: RegistryService,
     @Inject(DOCKERODE) private docker: Dockerode,
   ) {}
