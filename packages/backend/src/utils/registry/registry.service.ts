@@ -24,14 +24,10 @@ export class RegistryService {
   }
 
   private async getTags(repository: string): Promise<string[]> {
-    const registryUrl = this.configuration.get('CI_CLOUD_URL');
+    const registryUrl = this.configuration.get('ciCloudUrl');
     if (!registryUrl) {
-      throw new Error('CI_CLOUD_URL is not configured');
+      throw new Error('ciCloudUrl is not configured');
     }
-
-    // Default to 'ci-os-hub/dashboard' or similar if repository is just 'ci-os-hub'
-    // But caller probably passes the full logical name.
-    // The registry API structure in the hono app is /v2/:name/tags/list
 
     try {
       const { data } = await firstValueFrom(this.httpService.get(`${registryUrl}/v2/${repository}/tags/list`));

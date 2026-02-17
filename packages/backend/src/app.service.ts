@@ -105,23 +105,14 @@ export class AppService {
   public async getVersion() {
     const { version: currentVersion } = this.configuration.getConfig();
 
-    const [releasesSince] = await Promise.all([
-      // this.githubService.getLatestRelease('runtipi', 'runtipi'),
-      // this.githubService.getReleasesSince('runtipi', 'runtipi', currentVersion),
-      this.registryService.getTagsSince('ci-os-hub', currentVersion),
-    ]);
+    const [releasesSince] = await Promise.all([this.registryService.getTagsSince('ci-os-hub', currentVersion)]);
 
-    // We assume the tags are just the version number for now, we can extract details later
-    // The previous implementation returned full GitHub Release objects
-    // We need to map our tags to something similar or update the frontend to handle simple tags
-
-    // For now we'll mock the release body as it's not available in the registry
     const releases = releasesSince.map((tag) => ({
       version: tag,
       body: `Release ${tag}`,
     }));
 
-    const latest = releases.length > 0 ? releases[0].version : currentVersion;
+    const latest = releases[0]?.version ?? currentVersion;
 
     return {
       current: currentVersion,
