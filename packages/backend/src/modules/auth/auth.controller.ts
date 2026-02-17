@@ -195,7 +195,8 @@ export class AuthController {
   @Get('/traefik')
   async traefik(@Req() req: Request, @Res() res: Response) {
     if (req.user) {
-      this.logger.debug('User already logged in');
+      this.logger.debug('User authenticated for Traefik forward auth', { username: req.user.username });
+      res.setHeader('X-Runtipi-User', req.user.username);
       return res.status(200).send();
     }
 
@@ -203,7 +204,7 @@ export class AuthController {
     const proto = req.headers['x-forwarded-proto'] as string;
     const host = req.headers['x-forwarded-host'] as string;
 
-    this.logger.debug('Auth request', { uri, proto, host });
+    this.logger.debug('Unauthenticated Traefik forward auth request', { uri, proto, host });
 
     const subdomains = host.split('.');
     const app = subdomains[0] ?? '';
