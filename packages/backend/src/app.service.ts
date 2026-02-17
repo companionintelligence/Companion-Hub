@@ -13,7 +13,7 @@ import { RepoEventsQueue } from './modules/queue/entities/repo-events';
 import { SystemEventsQueue } from './modules/queue/entities/system-events';
 import { DOCKERODE } from './modules/docker/docker.module';
 import Dockerode from 'dockerode';
-import { GithubService } from './utils/github/github.service';
+import { RegistryService } from './utils/registry/registry.service';
 
 @Injectable()
 export class AppService {
@@ -28,7 +28,7 @@ export class AppService {
     private readonly marketplaceService: MarketplaceService,
     private readonly databaseService: DatabaseService,
     private readonly appLifecycleService: AppLifecycleService,
-    private readonly githubService: GithubService,
+    private readonly registryService: RegistryService,
     @Inject(DOCKERODE) private docker: Dockerode,
   ) {}
 
@@ -103,16 +103,20 @@ export class AppService {
   public async getVersion() {
     const { version: currentVersion } = this.configuration.getConfig();
 
-    const [githubRelease, releasesSince] = await Promise.all([
-      this.githubService.getLatestRelease('runtipi', 'runtipi'),
-      this.githubService.getReleasesSince('runtipi', 'runtipi', currentVersion),
-    ]);
+    const [releasesSince] = await Promise.all([this.registryService.getTagsSince('ci-os-hub', currentVersion)]);
+
+    const releases = releasesSince.map((tag) => ({
+      version: tag,
+      body: `Release ${tag}`,
+    }));
+
+    const latest = releases[0]?.version ?? currentVersion;
 
     return {
       current: currentVersion,
-      latest: githubRelease?.version || currentVersion,
-      body: githubRelease?.body ?? '',
-      releases: releasesSince,
+      latest,
+      body: '',
+      releases,
     };
   }
 
