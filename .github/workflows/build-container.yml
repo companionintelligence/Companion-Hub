@@ -96,15 +96,10 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: '1.3.0'
-
-      - name: Build and Push Container to Cloudflare
+      - name: Deploy to Cloudflare Containers
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          wrangler-version: '4'
-          command: containers build --push --tag ${{ steps.tags.outputs.container_tag }}
+          wranglerVersion: '4'
+          command: deploy --env ${{ steps.tags.outputs.environment }}
