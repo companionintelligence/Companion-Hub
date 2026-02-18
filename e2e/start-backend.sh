@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # e2e/start-backend.sh — Start backend for E2E tests
-# Creates required directories/files, writes .env for backend, then starts
+# Creates required directories/files, writes .env for backend, builds, then starts
 
 set -euo pipefail
 
@@ -11,7 +11,21 @@ mkdir -p "$DATA_DIR"/{state,logs,apps,app-data,repos,backups,user-config,media}
 mkdir -p "$DATA_DIR/state/traefik"/{config,dynamic,tls}
 touch "$DATA_DIR/state/traefik/acme_storage.json"
 
+# Build workspace dependencies (common package must be compiled before backend can start)
+echo "Building @runtipi/common..."
+(cd packages/common && bun run build)
+
+# Build backend (nest build uses swc, doesn't reliably copy all assets)
+echo "Building backend..."
+(cd packages/backend && bun run nest build)
+
+# Copy migration assets that nest build may not handle
+mkdir -p packages/backend/dist/assets/migrations/meta
+cp packages/backend/src/core/database/drizzle/*.sql packages/backend/dist/assets/migrations/
+cp packages/backend/src/core/database/drizzle/meta/* packages/backend/dist/assets/migrations/meta/
+
 # Write .env file with all required vars (backend reads this on startup)
+BACKEND_DIST="$(pwd)/packages/backend/dist"
 cat > "$DATA_DIR/.env" << EOF
 NODE_ENV=${NODE_ENV:-development}
 POSTGRES_HOST=${POSTGRES_HOST:-localhost}
@@ -49,11 +63,11 @@ DNS_IP=${DNS_IP:-9.9.9.9}
 ARCHITECTURE=${ARCHITECTURE:-amd64}
 TIPI_DATA_DIR=$DATA_DIR
 TIPI_APP_DATA_DIR=$DATA_DIR/app-data
-TIPI_APP_DIR=$DATA_DIR/apps
+TIPI_APP_DIR=$BACKEND_DIST
 EOF
 
 echo "E2E backend starting with DATA_DIR=$DATA_DIR"
 
-# Start backend from the backend package dir (needed for migration path resolution)
+# Run the compiled backend directly
 cd packages/backend
-exec bun run nest start --watch --preserveWatchOutput
+exec node dist/src/main.js
