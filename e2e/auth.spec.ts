@@ -1,5 +1,5 @@
 import { testUser } from './helpers/constants';
-import { expect, test } from './fixtures/fixtures';
+import { expect, test, createTestUser } from './fixtures/fixtures';
 
 test('should register a new user', async ({ page }) => {
   await page.goto('/register');
@@ -18,13 +18,6 @@ test('should register a new user', async ({ page }) => {
 });
 
 test('should login with existing user', async ({ page }) => {
-  // We need to register first or seed the user.
-  // Since we clear DB before each test, we need to seed here.
-  // But wait, `loginUser` helper does that.
-  // Let's test the login flow manually to be sure.
-
-  // Seed user
-  const { createTestUser } = await import('./fixtures/fixtures');
   await createTestUser();
 
   await page.goto('/login');
