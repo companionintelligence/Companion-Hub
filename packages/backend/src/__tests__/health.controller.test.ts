@@ -61,7 +61,7 @@ describe('HealthController', () => {
     });
 
     it('should return not ok when a directory is missing', async () => {
-      vi.mocked(fs.promises.access).mockImplementation(async (p: any, mode?: any) => {
+      vi.mocked(fs.promises.access).mockImplementation(async (p: any, _mode?: any) => {
         const pathStr = typeof p === 'string' ? p : p.toString();
         // APP_DATA_DIR doesn't exist
         if (pathStr === APP_DATA_DIR || pathStr.startsWith(APP_DATA_DIR)) {
