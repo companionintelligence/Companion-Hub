@@ -1,1 +1,8 @@
-bun run lint-staged
+#!/bin/sh
+# Ensure bun is in PATH for git hook context (minimal PATH)
+export PATH="$HOME/.bun/bin:$HOME/.local/bin:$PATH"
+if command -v bun >/dev/null 2>&1; then
+  bun run lint-staged
+else
+  npx lint-staged
+fi
