@@ -1,4 +1,4 @@
-import { APP_DATA_DIR, DATA_DIR } from '@/common/constants';
+import { APP_DATA_DIR } from '@/common/constants';
 import { HealthController } from '@/core/health/health.controller';
 import { QueueHealthIndicator } from '@/modules/queue/queue.health';
 import { HealthCheckService } from '@nestjs/terminus';
@@ -6,7 +6,6 @@ import { Test } from '@nestjs/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock } from 'vitest-mock-extended';
 import fs from 'node:fs';
-import path from 'node:path';
 
 vi.mock('node:fs', async () => {
   const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
