@@ -22,6 +22,7 @@ permissions:
 jobs:
   tag:
     runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, 'chore: bump version')"
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -29,7 +30,18 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      - name: Check if HEAD is already tagged
+        id: check
+        run: |
+          if git describe --exact-match HEAD 2>/dev/null; then
+            echo "HEAD is already tagged: $(git describe --exact-match HEAD)"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Determine bump type
+        if: steps.check.outputs.skip != 'true'
         id: bump
         run: |
           # Manual override
@@ -53,8 +65,14 @@ jobs:
           echo "Last tag: $LAST_TAG"
           echo "base=$LAST_TAG" >> "$GITHUB_OUTPUT"
 
+          # Ensure LAST_TAG is a valid ref before using it in a range
+          if ! git rev-parse "$LAST_TAG" >/dev/null 2>&1; then
+            echo "Tag $LAST_TAG is not a valid ref"
+            exit 1
+          fi
+
           # Parse commits since last tag for conventional commit prefixes
-          COMMITS=$(git log "${LAST_TAG}..HEAD" --pretty=format:"%s" 2>/dev/null || echo "")
+          COMMITS=$(git log "${LAST_TAG}..HEAD" --pretty=format:"%s")
 
           if [ -z "$COMMITS" ]; then
             echo "No new commits since $LAST_TAG"
@@ -81,7 +99,7 @@ jobs:
           echo "type=patch" >> "$GITHUB_OUTPUT"
 
       - name: Bump version and tag
-        if: steps.bump.outputs.type != 'none'
+        if: steps.check.outputs.skip != 'true' && steps.bump.outputs.type != 'none'
         id: tag
         run: |
           BUMP="${{ steps.bump.outputs.type }}"
@@ -94,7 +112,14 @@ jobs:
             VERSION=$(node -p "require('./package.json').version")
           fi
 
-          IFS='.' read -r MAJOR MINOR PATCH <<< "${VERSION%%-*}"
+          BASE_VERSION="${VERSION%%-*}"
+
+          if ! echo "$BASE_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "Invalid version format: $VERSION"
+            exit 1
+          fi
+
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE_VERSION"
 
           case "$BUMP" in
             major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
@@ -109,20 +134,27 @@ jobs:
           echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$NEW_TAG" >> "$GITHUB_OUTPUT"
 
-          # Update package.json version
-          node -e "
-            const pkg = require('./package.json');
-            pkg.version = '${NEW_VERSION}';
-            require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
-          "
+          # Check if tag already exists
+          if git rev-parse "$NEW_TAG" >/dev/null 2>&1; then
+            echo "Tag $NEW_TAG already exists, skipping"
+            exit 0
+          fi
+
+          # Update package.json version (using jq to avoid shell injection)
+          jq --arg version "$NEW_VERSION" '.version = $version' package.json > package.json.tmp
+          mv package.json.tmp package.json
 
           # Commit and tag
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add package.json
-          git commit -m "chore: bump version to ${NEW_TAG}" || echo "No changes to commit"
+          if ! git commit -m "chore: bump version to ${NEW_TAG}"; then
+            echo "No changes to commit - package.json may already be at version ${NEW_VERSION}"
+            exit 1
+          fi
           git tag -a "$NEW_TAG" -m "Release ${NEW_TAG}"
-          git push origin staging --follow-tags
+          # Push only the tag — avoid re-triggering this workflow
+          git push origin "$NEW_TAG"
 
       - name: Summary
         if: steps.tag.outputs.tag
@@ -132,4 +164,4 @@ jobs:
           echo "Bump type: **${{ steps.bump.outputs.type }}**" >> "$GITHUB_STEP_SUMMARY"
           echo "Version: **${{ steps.tag.outputs.version }}**" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "This tag will trigger the [Release Workflow](../actions/workflows/release.yml)." >> "$GITHUB_STEP_SUMMARY"
+          echo "This tag will trigger the [Release Workflow](https://github.com/${{ github.repository }}/actions/workflows/release.yml)." >> "$GITHUB_STEP_SUMMARY"
