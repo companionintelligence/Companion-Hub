@@ -1,6 +1,8 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import { Inject, Injectable } from '@nestjs/common';
 import * as Sentry from '@sentry/nestjs';
+import { APP_DATA_DIR, DATA_DIR } from './common/constants';
 import { CacheService, ONE_DAY_IN_SECONDS } from './core/cache/cache.service';
 import { ConfigurationService } from './core/config/configuration.service';
 import { DatabaseService } from './core/database/database.service';
@@ -37,6 +39,9 @@ export class AppService {
       this.logger.info('Starting bootstrap...');
       await this.databaseService.migrate();
       this.logger.info('Database migration completed');
+
+      // Validate data directory integrity
+      await this.validateDataDirectories();
 
       await this.docker.pruneNetworks();
       this.logger.info('Docker networks pruned');
@@ -205,5 +210,69 @@ export class AppService {
       // They'll be created on-demand when needed
       this.logger.warn(`Media folder creation failed or timed out: ${error instanceof Error ? error.message : error}. Continuing startup...`);
     }
+  }
+
+  /**
+   * Validate that critical data directories exist and are writable.
+   * Creates missing directories and logs warnings for potential data loss.
+   */
+  private async validateDataDirectories(): Promise<void> {
+    const criticalDirs = [
+      { name: 'data', path: DATA_DIR },
+      { name: 'app-data', path: APP_DATA_DIR },
+      { name: 'state', path: path.join(DATA_DIR, 'state') },
+      { name: 'apps', path: path.join(DATA_DIR, 'apps') },
+      { name: 'user-config', path: path.join(DATA_DIR, 'user-config') },
+    ];
+
+    for (const dir of criticalDirs) {
+      try {
+        await fs.promises.access(dir.path, fs.constants.F_OK);
+      } catch {
+        this.logger.warn(`Critical directory missing: ${dir.path} — creating it`);
+        await fs.promises.mkdir(dir.path, { recursive: true });
+      }
+
+      try {
+        await fs.promises.access(dir.path, fs.constants.W_OK);
+      } catch {
+        this.logger.error(`Critical directory not writable: ${dir.path}`);
+      }
+    }
+
+    // Check for data loss: sentinel file in app-data
+    const sentinelPath = path.join(APP_DATA_DIR, '.ci-hub-initialized');
+    try {
+      await fs.promises.access(sentinelPath);
+      this.logger.info('Data integrity check passed — app-data volume intact');
+    } catch {
+      // Check if this is a fresh install or data loss
+      const appsDir = path.join(DATA_DIR, 'apps');
+      try {
+        const entries = await fs.promises.readdir(appsDir);
+        if (entries.length > 0) {
+          this.logger.error(
+            'POTENTIAL DATA LOSS: App definitions exist but app-data sentinel is missing. ' +
+              'This may indicate the app-data volume was recreated. ' +
+              'Check that app databases and configs are intact.',
+          );
+        }
+      } catch {
+        // apps dir empty or missing — fresh install
+      }
+
+      // Create sentinel for future checks
+      try {
+        await fs.promises.writeFile(sentinelPath, JSON.stringify({
+          createdAt: new Date().toISOString(),
+          version: process.env.TIPI_VERSION || 'unknown',
+        }));
+        this.logger.info('Created app-data sentinel file (first run or volume reset)');
+      } catch (err) {
+        this.logger.error(`Failed to create sentinel file: ${err}`);
+      }
+    }
+
+    this.logger.info('Data directory validation completed');
   }
 }

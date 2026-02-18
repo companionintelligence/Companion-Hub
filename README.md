@@ -85,3 +85,45 @@ Both the backend and frontend will hot-reload on file changes.
 Once `bun dev` is running:
 - **Frontend** is available at `http://localhost:5173` (or the port shown in terminal).
 - **Backend API** is available at `http://localhost:3000`.
+
+## Data Persistence
+
+### Critical Data Paths
+
+| Path (container) | Volume Type | Contents | Survives Update? |
+|---|---|---|---|
+| `/app-data` | Named volume (`ci_hub_app_data`) | App databases, configs, user data | ✅ Yes |
+| `/var/lib/postgresql/data` | Named volume (`ci_hub_pgdata`) | Hub database | ✅ Yes |
+| `/data/state` | Bind mount | Traefik config, ACME certs, seed | ✅ Yes (if paths correct) |
+| `/data/apps` | Bind mount | Installed app definitions | ✅ Yes (if paths correct) |
+| `/data/user-config` | Bind mount | User app overrides | ✅ Yes (if paths correct) |
+| `/app` | Ephemeral | Hub application code | ❌ Rebuilt on update |
+
+### ROOT_FOLDER_HOST
+
+`ROOT_FOLDER_HOST` **must** be set to an absolute host path in `.env` (e.g., `/opt/ci-os-hub/data`). This path is used to generate Docker volume mounts for installed apps. The Hub will refuse to start if it's relative.
+
+### Updating the Hub
+
+Use the update script for safe updates:
+
+```bash
+./scripts/updater/update.sh
+```
+
+The script performs pre-flight checks, creates a database backup, pulls new images, restarts services, and verifies data integrity.
+
+### Migrating Existing Installs
+
+If upgrading from a version that used bind mounts for app-data:
+
+```bash
+./scripts/migrate-to-named-volumes.sh [--dry-run]
+```
+
+This copies data from `.internal/app-data` into the `ci_hub_app_data` named volume. The original data is preserved as a backup.
+
+### Health Checks
+
+- `GET /api/health` — Standard health check (database, queue)
+- `GET /api/health/data` — Data integrity check (verifies all critical directories exist and are writable)
