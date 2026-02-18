@@ -45,6 +45,7 @@ export const createMockApp = (data: Partial<App>): App => ({
   enableAuth: false,
   exposed: false,
   exposedLocal: false,
+  exposureMode: 'local',
   isVisibleOnGuestDashboard: false,
   openPort: true,
   port: faker.number.int({ min: 1024, max: 65535 }),

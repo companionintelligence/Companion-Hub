@@ -253,6 +253,13 @@
       "when": 1769477709720,
       "tag": "0035_typical_lucky_pierre",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1771413000000,
+      "tag": "0036_add_exposure_mode",
+      "breakpoints": true
     }
   ]
 }

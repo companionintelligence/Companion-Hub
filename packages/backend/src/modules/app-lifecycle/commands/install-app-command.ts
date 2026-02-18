@@ -132,7 +132,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
       // Create Cloudflare Tunnel route if exposedLocal is enabled (app is published to internet)
       // This part now uses CloudflareClientService to SYNC state with CI-Cloud
       // CI-Cloud will handle the actual DNS and Tunnel updates via the trigger in AppLifecycleService
-      logger.info(`[Cloudflare] Syncing state for ${appUrn}, exposedLocal: ${form.exposedLocal}`);
+      logger.info(`[Cloudflare] Syncing state for ${appUrn}, exposureMode: ${form.exposureMode || (form.exposedLocal ? 'cloudflare' : 'local')}`);
       try {
         const cloudflareService = this.moduleRef.get(CloudflareClientService, { strict: false });
         if (cloudflareService) {
@@ -148,8 +148,9 @@ export class InstallAppCommand extends AppLifecycleCommand {
         // Don't fail the installation if Cloudflare sync fails
       }
 
-      // Regenerate Traefik file-based config after app is installed and started (workaround for Docker API version issue)
-      if (form.exposedLocal && !form.skipRun) {
+      // Regenerate Traefik file-based config after app is installed and started
+      const effectiveExposure = form.exposureMode || (form.exposedLocal ? 'cloudflare' : 'local');
+      if (effectiveExposure !== 'local' && !form.skipRun) {
         const traefikConfigService = this.moduleRef.get(TraefikConfigService, { strict: false });
         if (traefikConfigService) {
           logger.debug(`Regenerating Traefik config for newly installed exposed app ${appUrn}`);

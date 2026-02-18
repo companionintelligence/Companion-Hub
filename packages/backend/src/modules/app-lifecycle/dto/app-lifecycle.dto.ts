@@ -5,6 +5,7 @@ export const appFormSchema = type({
   port: 'number >= 1024 & number <= 65535?',
   exposed: 'boolean?',
   exposedLocal: 'boolean?',
+  exposureMode: "'local' | 'cloudflare' | 'tailscale'?",
   openPort: 'boolean = true',
   domain: 'string?',
   isVisibleOnGuestDashboard: 'boolean?',

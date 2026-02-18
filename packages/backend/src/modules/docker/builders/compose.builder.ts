@@ -151,11 +151,13 @@ export class DockerComposeBuilder {
       'ci-os-hub.appurn': appUrn,
     };
 
-    // Generate Traefik labels if exposedLocal is true
+    // Generate Traefik labels based on exposure mode
     // Traefik routes using Docker internal networking (container IP + internalPort)
     // It does NOT use host port mappings - only the isMain service gets Traefik labels
     let traefikLabels: Record<string, string | boolean> = {};
-    if (form.exposedLocal && params.isMain && params.internalPort) {
+    const effectiveExposureMode = form.exposureMode || (form.exposedLocal ? 'cloudflare' : 'local');
+
+    if (effectiveExposureMode !== 'local' && params.isMain && params.internalPort) {
       // Use org info read in getDockerCompose (set by app.helpers.ts in APP_PUBLIC_HOSTNAME)
       // Fallback to using this.domain as public domain if not found
       const publicDomainToUse = this.publicDomain || this.domain;
@@ -168,6 +170,7 @@ export class DockerComposeBuilder {
         internalPort: params.internalPort,
         appId: appName,
         storeId: appStoreId,
+        exposureMode: effectiveExposureMode as 'local' | 'cloudflare' | 'tailscale',
         exposedLocal: form.exposedLocal,
         enableAuth: form.enableAuth,
         localSubdomain: subdomainToUse, // Use full subdomain (with org slug) from APP_PUBLIC_HOSTNAME
@@ -175,6 +178,7 @@ export class DockerComposeBuilder {
         localDomain: this.localDomain,
       });
       traefikBuilder.addExposedLocalLabels();
+      traefikBuilder.addTailscaleLabels();
       traefikLabels = traefikBuilder.build();
     }
 
