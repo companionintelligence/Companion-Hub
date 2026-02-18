@@ -9,10 +9,6 @@ interface Env {
  * This object controls the container instance.
  */
 export class AppContainer extends DurableObject {
-  constructor(ctx: DurableObjectState, env: Env) {
-    super(ctx, env);
-  }
-
   async fetch(_request: Request): Promise<Response> {
     // This is where you would proxy requests to the container
     // or handle container lifecycle events.
