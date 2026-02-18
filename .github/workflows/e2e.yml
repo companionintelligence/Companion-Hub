@@ -47,7 +47,14 @@ jobs:
       - name: Create data directories
         run: |
           mkdir -p /tmp/runtipi-e2e/{apps,app-data,state,repos,logs,backups,user-config,media}
-          mkdir -p /tmp/runtipi-e2e/apps/packages/backend/src
+          mkdir -p /tmp/runtipi-e2e/state/traefik/{config,dynamic,tls}
+          touch /tmp/runtipi-e2e/state/traefik/acme_storage.json
+          echo "# E2E test env" > /tmp/runtipi-e2e/.env
+
+      - name: Verify services
+        run: |
+          pg_isready -h localhost -p 6543 -U tipi
+          curl -sf http://localhost:5672 || echo "RabbitMQ AMQP port open (expected non-HTTP)"
 
       - name: Cache Playwright
         uses: actions/cache@v4

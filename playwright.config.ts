@@ -65,10 +65,12 @@ export default defineConfig({
   ],
   webServer: [
     {
-      command: 'bun run --filter backend dev',
+      command: 'bash e2e/start-backend.sh',
       url: `http://localhost:${BACKEND_PORT}/api/health`,
       reuseExistingServer: !process.env.CI,
-      timeout: 120000,
+      timeout: 180000,
+      stdout: 'pipe',
+      stderr: 'pipe',
       env: backendEnv,
     },
     {
@@ -76,6 +78,8 @@ export default defineConfig({
       url: `http://localhost:${FRONTEND_PORT}`,
       reuseExistingServer: !process.env.CI,
       timeout: 60000,
+      stdout: 'pipe',
+      stderr: 'pipe',
     },
   ],
 });
