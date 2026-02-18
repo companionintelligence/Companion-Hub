@@ -54,13 +54,6 @@ services:
         LOCAL: ${LOCAL:-false}
         TARGETARCH: ${TARGETARCH:-amd64}
         DOCKER_PLATFORM: ${DOCKER_PLATFORM:-linux/amd64}
-      # Enable BuildKit cache for faster rebuilds
-      # Note: Requires BuildKit with docker-container driver or containerd image store
-      # Uncomment below if you have BuildKit configured with a compatible driver:
-      # cache_from:
-      #   - type=local,src=/tmp/.buildx-cache
-      # cache_to:
-      #   - type=local,dest=/tmp/.buildx-cache,mode=max
     depends_on:
       ci-hub-db:
         condition: service_healthy
@@ -77,17 +70,18 @@ services:
       timeout: 5s
       retries: 15
     volumes:
-      # Data
-      - ${RUNTIPI_MEDIA_PATH:-.internal}/media:/data/media
+      # Critical app data — named volume, survives container recreation
+      - ci_hub_app_data:/app-data
+      # Data directories — bind mounts from host (require ROOT_FOLDER_HOST)
+      - ${RUNTIPI_MEDIA_PATH:-${ROOT_FOLDER_HOST:-.internal}}/media:/data/media
       # Allow Hub to configure Tunnel
       - ./tunnel:/app/tunnel
-      - ${RUNTIPI_STATE_PATH:-.internal}/state:/data/state
-      - ${RUNTIPI_REPOS_PATH:-.internal}/repos:/data/repos
-      - ${RUNTIPI_APPS_PATH:-.internal}/apps:/data/apps
-      - ${RUNTIPI_LOGS_PATH:-.internal}/logs:/data/logs
-      - ${RUNTIPI_USER_CONFIG_PATH:-.internal}/user-config:/data/user-config
-      - ${RUNTIPI_APP_DATA_PATH:-.internal}/app-data:/app-data
-      - ${RUNTIPI_BACKUPS_PATH:-.internal}/backups:/data/backups
+      - ${RUNTIPI_STATE_PATH:-${ROOT_FOLDER_HOST:-.internal}}/state:/data/state
+      - ${RUNTIPI_REPOS_PATH:-${ROOT_FOLDER_HOST:-.internal}}/repos:/data/repos
+      - ${RUNTIPI_APPS_PATH:-${ROOT_FOLDER_HOST:-.internal}}/apps:/data/apps
+      - ${RUNTIPI_LOGS_PATH:-${ROOT_FOLDER_HOST:-.internal}}/logs:/data/logs
+      - ${RUNTIPI_USER_CONFIG_PATH:-${ROOT_FOLDER_HOST:-.internal}}/user-config:/data/user-config
+      - ${RUNTIPI_BACKUPS_PATH:-${ROOT_FOLDER_HOST:-.internal}}/backups:/data/backups
       # Static
       - ${ENV_FILE:-.env}:/data/.env:ro
       - ./.internal/cache:/cache
@@ -104,7 +98,7 @@ services:
       API_PORT: 5002
       LOCAL: ${LOCAL:-false}
       NODE_ENV: ${NODE_ENV:-production}
-      ROOT_FOLDER_HOST: ${ROOT_FOLDER_HOST:-.internal}
+      ROOT_FOLDER_HOST: ${ROOT_FOLDER_HOST:?ROOT_FOLDER_HOST must be set to an absolute host path}
       POSTGRES_HOST: ${POSTGRES_HOST:-ci-hub-db}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_USERNAME: ${POSTGRES_USERNAME:-tipi}
@@ -142,14 +136,12 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       # Mount Traefik config files individually to avoid mount conflicts
-      - ${RUNTIPI_STATE_PATH:-.internal}/state/traefik/config/traefik.yml:/etc/traefik/traefik.yml:ro
-      - ${RUNTIPI_STATE_PATH:-.internal}/state/traefik/dynamic:/etc/traefik/dynamic:ro
-      - ${RUNTIPI_STATE_PATH:-.internal}/state/traefik/acme_storage.json:/etc/traefik/acme.json:rw
-      - ${RUNTIPI_STATE_PATH:-.internal}/state/traefik/tls:/etc/traefik/tls:ro
+      - ${RUNTIPI_STATE_PATH:-${ROOT_FOLDER_HOST:-.internal}}/state/traefik/config/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ${RUNTIPI_STATE_PATH:-${ROOT_FOLDER_HOST:-.internal}}/state/traefik/dynamic:/etc/traefik/dynamic:ro
+      - ${RUNTIPI_STATE_PATH:-${ROOT_FOLDER_HOST:-.internal}}/state/traefik/acme_storage.json:/etc/traefik/acme.json:rw
+      - ${RUNTIPI_STATE_PATH:-${ROOT_FOLDER_HOST:-.internal}}/state/traefik/tls:/etc/traefik/tls:ro
     networks:
       ci_os_hub_network:
-        # aliases:
-        #   - host.docker.internal
     depends_on:
       - ci-os-hub
     labels:
@@ -160,14 +152,8 @@ services:
     container_name: ${CLOUDFLARED_CONTAINER_NAME:-cloudflared}
     restart: unless-stopped
     command: tunnel run --token-file /home/nonroot/.cloudflared/token
-    # environment:
-    #   - TUNNEL_TOKEN=${TUNNEL_TOKEN}
     volumes:
       - ./tunnel:/home/nonroot/.cloudflared:ro
-      # - ./tunnel/config.yml:/home/nonroot/.cloudflared/config.yml:ro
-      # - ./tunnel/certs:/etc/cloudflared/certs:ro
-    # extra_hosts:
-    #   - "host.docker.internal:host-gateway"
     networks:
       - ci_os_hub_network
     depends_on:
@@ -178,11 +164,9 @@ networks:
   ci_os_hub_network:
     driver: bridge
     name: ${NETWORK_NAME:-ci-os-hub_network}
-    # ipam:
-    #   driver: default
-    #   config:
-    #     - subnet: 172.28.0.0/16
 
 volumes:
   ci_hub_pgdata:
     name: ${DB_VOLUME_NAME:-ci_hub_pgdata}
+  ci_hub_app_data:
+    name: ci_hub_app_data
