@@ -263,10 +263,13 @@ export class AppService {
 
       // Create sentinel for future checks
       try {
-        await fs.promises.writeFile(sentinelPath, JSON.stringify({
-          createdAt: new Date().toISOString(),
-          version: process.env.TIPI_VERSION || 'unknown',
-        }));
+        await fs.promises.writeFile(
+          sentinelPath,
+          JSON.stringify({
+            createdAt: new Date().toISOString(),
+            version: process.env.TIPI_VERSION || 'unknown',
+          }),
+        );
         this.logger.info('Created app-data sentinel file (first run or volume reset)');
       } catch (err) {
         this.logger.error(`Failed to create sentinel file: ${err}`);
