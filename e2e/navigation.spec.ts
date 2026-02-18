@@ -9,21 +9,21 @@ test.describe('Navigation', () => {
 
     // My Apps
     await page.getByRole('link', { name: 'My Apps' }).click();
-    await expect(page).toHaveURL(/\/apps/);
+    await page.waitForURL(/\/apps/);
 
     // App Store
     await page.getByRole('link', { name: 'App Store' }).click();
-    await expect(page).toHaveURL(/\/app-store/);
+    await page.waitForURL(/\/app-store/);
     await expect(page.getByRole('heading', { name: 'App Store' })).toBeVisible();
 
     // Settings
     await page.getByRole('link', { name: 'Settings' }).click();
-    await expect(page).toHaveURL(/\/settings/);
+    await page.waitForURL(/\/settings/);
     await expect(page.getByRole('tablist')).toBeVisible();
 
     // Back to Dashboard
     await page.getByRole('link', { name: 'Dashboard' }).click();
-    await expect(page).toHaveURL(/\/dashboard/);
+    await page.waitForURL(/\/dashboard/);
     await expect(page.getByText('Disk space')).toBeVisible();
   });
 
