@@ -1,0 +1,135 @@
+name: Auto Semver Tag
+
+on:
+  push:
+    branches:
+      - staging
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Force bump type (patch/minor/major)"
+        required: false
+        type: choice
+        options:
+          - ""
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Determine bump type
+        id: bump
+        run: |
+          # Manual override
+          if [ -n "${{ inputs.bump }}" ]; then
+            echo "type=${{ inputs.bump }}" >> "$GITHUB_OUTPUT"
+            echo "Forced bump: ${{ inputs.bump }}"
+            exit 0
+          fi
+
+          # Find last semver tag
+          LAST_TAG=$(git tag --list 'v*.*.*' --sort=-v:refname | head -1)
+
+          if [ -z "$LAST_TAG" ]; then
+            echo "No previous tag found — using package.json version as base"
+            VERSION=$(node -p "require('./package.json').version")
+            echo "type=patch" >> "$GITHUB_OUTPUT"
+            echo "base=v${VERSION}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Last tag: $LAST_TAG"
+          echo "base=$LAST_TAG" >> "$GITHUB_OUTPUT"
+
+          # Parse commits since last tag for conventional commit prefixes
+          COMMITS=$(git log "${LAST_TAG}..HEAD" --pretty=format:"%s" 2>/dev/null || echo "")
+
+          if [ -z "$COMMITS" ]; then
+            echo "No new commits since $LAST_TAG"
+            echo "type=none" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Commits since $LAST_TAG:"
+          echo "$COMMITS"
+
+          # Check for breaking changes
+          if echo "$COMMITS" | grep -qiE "^[a-z]+(\(.+\))?!:|BREAKING CHANGE"; then
+            echo "type=major" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Check for features
+          if echo "$COMMITS" | grep -qiE "^feat(\(.+\))?:"; then
+            echo "type=minor" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Default to patch
+          echo "type=patch" >> "$GITHUB_OUTPUT"
+
+      - name: Bump version and tag
+        if: steps.bump.outputs.type != 'none'
+        id: tag
+        run: |
+          BUMP="${{ steps.bump.outputs.type }}"
+          BASE="${{ steps.bump.outputs.base }}"
+
+          # Get current version from last tag or package.json
+          if [ -n "$BASE" ] && echo "$BASE" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+'; then
+            VERSION="${BASE#v}"
+          else
+            VERSION=$(node -p "require('./package.json').version")
+          fi
+
+          IFS='.' read -r MAJOR MINOR PATCH <<< "${VERSION%%-*}"
+
+          case "$BUMP" in
+            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+            patch) PATCH=$((PATCH + 1)) ;;
+          esac
+
+          NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          NEW_TAG="v${NEW_VERSION}"
+
+          echo "Bumping $BUMP: v${VERSION} → ${NEW_TAG}"
+          echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$NEW_TAG" >> "$GITHUB_OUTPUT"
+
+          # Update package.json version
+          node -e "
+            const pkg = require('./package.json');
+            pkg.version = '${NEW_VERSION}';
+            require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+
+          # Commit and tag
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json
+          git commit -m "chore: bump version to ${NEW_TAG}" || echo "No changes to commit"
+          git tag -a "$NEW_TAG" -m "Release ${NEW_TAG}"
+          git push origin staging --follow-tags
+
+      - name: Summary
+        if: steps.tag.outputs.tag
+        run: |
+          echo "### 🏷️ Tagged ${{ steps.tag.outputs.tag }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Bump type: **${{ steps.bump.outputs.type }}**" >> "$GITHUB_STEP_SUMMARY"
+          echo "Version: **${{ steps.tag.outputs.version }}**" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "This tag will trigger the [Release Workflow](../actions/workflows/release.yml)." >> "$GITHUB_STEP_SUMMARY"
