@@ -2177,6 +2177,20 @@
         ]
       }
     },
+    "/api/health/data": {
+      "get": {
+        "operationId": "checkDataIntegrity",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Health"
+        ]
+      }
+    },
     "/api/user-config/{urn}": {
       "get": {
         "operationId": "getUserConfig",

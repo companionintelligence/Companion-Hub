@@ -1,153 +1,100 @@
 name: E2E Tests
+
 on:
-  workflow_call:
-    inputs:
-      version:
-        required: true
-        type: string
-        description: "Version to test (e.g. v1.6.0-beta.1)"
-  workflow_dispatch:
+  pull_request:
+    branches: [develop, main]
+  push:
+    branches: [develop]
 
 jobs:
-  build-images:
-    if: ${{ !inputs.version }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          driver: cloud
-          endpoint: "meienberger/runtipi-builder"
-          install: true
-
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push images
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          secrets: |
-            "sentry_token=${{ secrets.SENTRY_AUTH_TOKEN }}"
-          build-args: |
-            TIPI_VERSION=e2e
-          platforms: linux/amd64
-          push: true
-          tags: ghcr.io/runtipi/runtipi:e2e
-
-      - name: Create cli folder
-        run: mkdir -p bin
-
-      - name: Download CLI form release on runtipi/cli repo
-        run: |
-          REPO="runtipi/cli"
-          VERSION=nightly
-
-          ASSETS_URL=$(curl -s \
-            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Accept: application/vnd.github.v3+json" \
-            "https://api.github.com/repos/$REPO/releases/tags/$VERSION" \
-            | jq -r '.assets[] | select(.name | test("runtipi-cli.+")) | .browser_download_url')
-
-          echo "Assets URL: $ASSETS_URL"
-
-          for url in $ASSETS_URL; do
-            echo "Downloading from $url"
-            curl -L -o "bin/${url##*/}" -H "Accept: application/octet-stream" -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" "$url"
-          done
-
-      - name: Print files
-        run: tree bin
-
-      - uses: pyTooling/Actions/releaser@r0
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          tag: e2e
-          rm: true
-          files: bin/runtipi-cli-*
-
   e2e:
-    timeout-minutes: 60
+    timeout-minutes: 15
     runs-on: ubuntu-latest
-    needs: [build-images]
-    if: ${{ always() && (needs.build-images.result == 'success' || needs.build-images.result == 'skipped') }}
+    services:
+      postgres:
+        image: postgres:14
+        env:
+          POSTGRES_USER: tipi
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: tipi
+        ports:
+          - 6543:5432
+        options: >-
+          --health-cmd "pg_isready -U tipi"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      rabbitmq:
+        image: rabbitmq:4-alpine
+        env:
+          RABBITMQ_DEFAULT_USER: tipi
+          RABBITMQ_DEFAULT_PASS: tipi
+        ports:
+          - 5672:5672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 10s
+          --health-timeout 10s
+          --health-retries 10
+
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
+      - uses: actions/checkout@v4
 
-      - name: Create .env.local
+      - uses: oven-sh/setup-bun@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - run: bun install --frozen-lockfile
+
+      - name: Create data directories
         run: |
-          echo "LOG_LEVEL=debug" > .env.local
+          mkdir -p /tmp/runtipi-e2e/{apps,app-data,state,repos,logs,backups,user-config,media}
+          mkdir -p /tmp/runtipi-e2e/state/traefik/{config,dynamic,tls}
+          touch /tmp/runtipi-e2e/state/traefik/acme_storage.json
+          echo "# E2E test env" > /tmp/runtipi-e2e/.env
 
-      - name: Run install script
-        if: ${{ inputs.version }}
+      - name: Verify services
         run: |
-          docker version
-          mkdir -p runtipi/user-config
-          echo -e "services:\n  runtipi-db:\n    ports:\n      - 6543:6543" > runtipi/user-config/tipi-compose.yml
-          curl -s https://raw.githubusercontent.com/runtipi/runtipi/${{ inputs.version }}/scripts/install.sh > install.sh
-          chmod +x install.sh
-          ./install.sh --version ${{ inputs.version }} --asset runtipi-cli-linux-x86_64.tar.gz --env-file ${{ github.workspace }}/.env.local
+          # Postgres readiness is guaranteed by the service health check above
+          # Just verify the port is reachable from the runner
+          timeout 10 bash -c 'until echo > /dev/tcp/localhost/6543; do sleep 1; done' && echo "Postgres port open"
+          curl -sf http://localhost:5672 || echo "RabbitMQ AMQP port open (expected non-HTTP)"
 
-      - name: Run install script
-        if: ${{ !inputs.version }}
-        run: |
-          mkdir -p runtipi/user-config
-          echo -e "services:\n  runtipi-db:\n    ports:\n      - 6543:6543" > runtipi/user-config/tipi-compose.yml
-          ./scripts/install.sh --version e2e --env-file ${{ github.workspace }}/.env.local
-          cd ..
-
-      - name: Create .env.e2e file
-        run: |
-          echo "SERVER_IP=$(hostname -I | awk '{print $1}')" > .env.e2e
-          echo "POSTGRES_PASSWORD=$(grep POSTGRES_PASSWORD runtipi/.env | cut -d '=' -f2)" >> .env.e2e
-          echo "BASE_PATH=./runtipi" >> .env.e2e
-          echo "HOME=/root" >> .env.e2e
-
-      - name: Install dependencies
-        uses: "./.github/actions/install-dependencies"
-
-      - name: Get installed playwright version
-        id: playwright-version
-        run: echo "version=$(node -e "console.log(require('./package.json').devDependencies['@playwright/test'])")" >> $GITHUB_OUTPUT
-
-      - name: Cache Playwright binaries
-        id: cache-playwright-binaries
+      - name: Cache Playwright
         uses: actions/cache@v4
         with:
-          path: /root/.cache/ms-playwright
-          key: ${{ runner.os }}-playwright-${{ steps.playwright-version.outputs.version }}
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ hashFiles('bun.lock') }}
 
-      - name: Install Playwright Browsers
-        if: steps.cache-playwright-binaries.outputs.cache-hit != 'true'
-        run: sudo env "PATH=$PATH" bunx playwright install --with-deps
+      - run: bunx playwright install --with-deps chromium
 
-      - name: Install dependencies
-        uses: "./.github/actions/install-dependencies"
-
-      - name: Run Playwright tests
-        id: run-e2e
-        run: sudo env "PATH=$PATH" bun run test:e2e
-
-      - name: Dump app logs in playwright-report folder
-        if: always()
-        run: |
-          id
-          sudo mkdir -p playwright-report
-          sudo cp ./runtipi/logs/* playwright-report/
+      - name: Run E2E tests
+        run: bun run test:e2e:ci
+        env:
+          SERVER_IP: localhost
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: 6543
+          POSTGRES_USERNAME: tipi
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DBNAME: tipi
+          RABBITMQ_HOST: localhost
+          RABBITMQ_PORT: 5672
+          RABBITMQ_USERNAME: tipi
+          RABBITMQ_PASSWORD: tipi
+          JWT_SECRET: e2e-test-secret
+          CI_CLOUD_URL: https://app.companionintelligence.com
+          CI_CLOUD_API_URL: https://app.companionintelligence.com/api
+          CI_CLOUD_FRONTEND_URL: https://app.companionintelligence.com
+          DOMAIN: ci.computer
+          LOCAL_DOMAIN: tipi.lan
+          ROOT_FOLDER_HOST: /tmp/runtipi-e2e
+          RUNTIPI_APP_DATA_PATH: /tmp/runtipi-e2e
+          TIPI_DATA_DIR: /tmp/runtipi-e2e
+          TIPI_APP_DATA_DIR: /tmp/runtipi-e2e/app-data
+          TIPI_APP_DIR: ${{ github.workspace }}
+          CI: true
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -155,34 +102,3 @@ jobs:
           name: playwright-report
           path: playwright-report/
           retention-days: 7
-
-  report-deployment:
-    runs-on: ubuntu-latest
-    needs: [e2e]
-    outputs:
-      page_url: ${{ steps.deployment.outputs.page_url }}
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    if: always()
-    steps:
-      - name: Download report artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: playwright-report
-          path: playwright-report/
-
-      - name: Setup Pages
-        uses: actions/configure-pages@v5
-
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v4
-        with:
-          path: playwright-report/
-
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4

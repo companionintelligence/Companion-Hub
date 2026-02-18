@@ -1,36 +1,85 @@
 import { defineConfig, devices } from '@playwright/test';
 
-/**
- * See https://playwright.dev/docs/test-configuration.
- */
+const BACKEND_PORT = process.env.BACKEND_PORT || '3000';
+const FRONTEND_PORT = process.env.FRONTEND_PORT || '9091';
+const SERVER_IP = process.env.SERVER_IP || 'localhost';
+
+// Common env vars needed by the backend
+const backendEnv: Record<string, string> = {
+  NODE_ENV: 'development',
+  POSTGRES_HOST: process.env.POSTGRES_HOST || 'localhost',
+  POSTGRES_PORT: process.env.POSTGRES_PORT || '6543',
+  POSTGRES_USERNAME: process.env.POSTGRES_USERNAME || 'tipi',
+  POSTGRES_PASSWORD: process.env.POSTGRES_PASSWORD || 'postgres',
+  POSTGRES_DBNAME: process.env.POSTGRES_DBNAME || 'tipi',
+  RABBITMQ_HOST: process.env.RABBITMQ_HOST || 'localhost',
+  RABBITMQ_PORT: process.env.RABBITMQ_PORT || '5672',
+  RABBITMQ_USERNAME: process.env.RABBITMQ_USERNAME || 'tipi',
+  RABBITMQ_PASSWORD: process.env.RABBITMQ_PASSWORD || 'tipi',
+  JWT_SECRET: process.env.JWT_SECRET || 'e2e-test-secret',
+  CI_CLOUD_URL: process.env.CI_CLOUD_URL || 'https://app.companionintelligence.com',
+  CI_CLOUD_API_URL: process.env.CI_CLOUD_API_URL || 'https://app.companionintelligence.com/api',
+  CI_CLOUD_FRONTEND_URL: process.env.CI_CLOUD_FRONTEND_URL || 'https://app.companionintelligence.com',
+  DOMAIN: process.env.DOMAIN || 'ci.computer',
+  LOCAL_DOMAIN: process.env.LOCAL_DOMAIN || 'tipi.lan',
+  DEMO_MODE: 'false',
+  GUEST_DASHBOARD: 'false',
+  TZ: 'UTC',
+  THEME_BASE: 'gray',
+  THEME_COLOR: 'blue',
+  EXPERIMENTAL_INSECURE_COOKIE: 'true',
+  TIPI_VERSION: 'e2e',
+  INTERNAL_IP: '0.0.0.0',
+  ROOT_FOLDER_HOST: process.env.ROOT_FOLDER_HOST || '/tmp/runtipi-e2e',
+  RUNTIPI_APP_DATA_PATH: process.env.RUNTIPI_APP_DATA_PATH || '/tmp/runtipi-e2e',
+  RUNTIPI_FORWARD_AUTH_URL: 'http://localhost:3000/api/auth/traefik',
+  ALLOW_AUTO_THEMES: 'true',
+  ALLOW_ERROR_MONITORING: 'false',
+  PERSIST_TRAEFIK_CONFIG: 'false',
+  ADVANCED_SETTINGS: 'false',
+  DISABLE_PASSWORD_RESET: 'true',
+  TIPI_DATA_DIR: process.env.TIPI_DATA_DIR || '/tmp/runtipi-e2e',
+  TIPI_APP_DATA_DIR: process.env.TIPI_APP_DATA_DIR || '/tmp/runtipi-e2e/app-data',
+  TIPI_APP_DIR: process.env.TIPI_APP_DIR || process.cwd(),
+};
 
 export default defineConfig({
   testDir: './e2e',
-  /* Run tests in files in parallel */
+  testIgnore: ['**/future/**', '**/generated/**'],
   fullyParallel: false,
-  /* Fail the build on CI if you accidentally left test.only in the source code. */
   forbidOnly: !!process.env.CI,
-  /* Retry on CI only */
   retries: process.env.CI ? 1 : 0,
-  /* Opt out of parallel tests on CI. */
   workers: 1,
-  /* Reporter to use. See https://playwright.dev/docs/test-reporters */
-  reporter: process.env.CI ? 'github' : 'list',
-  /* Shared settings for all the projects below. See https://playwright.dev/docs/api/class-testoptions. */
+  reporter: process.env.CI ? [['github'], ['html', { open: 'never' }]] : 'list',
   use: {
-    /* Base URL to use in actions like `await page.goto('/')`. */
-    baseURL: `http://${process.env.SERVER_IP}${process.env.SERVER_PORT ? `:${process.env.SERVER_PORT}` : ''}`,
-    /* Collect trace when retrying the failed test. See https://playwright.dev/docs/trace-viewer */
-    trace: 'on',
+    baseURL: `http://${SERVER_IP}:${FRONTEND_PORT}`,
+    trace: 'on-first-retry',
     video: 'retain-on-failure',
   },
   timeout: 30000,
-
-  /* Configure projects for major browsers */
   projects: [
     {
       name: 'chromium',
       use: { ...devices['Desktop Chrome'] },
+    },
+  ],
+  webServer: [
+    {
+      command: 'bash e2e/start-backend.sh',
+      url: `http://localhost:${BACKEND_PORT}/api/health`,
+      reuseExistingServer: !process.env.CI,
+      timeout: 180000,
+      stdout: 'pipe',
+      stderr: 'pipe',
+      env: backendEnv,
+    },
+    {
+      command: 'bun run --filter frontend dev',
+      url: `http://localhost:${FRONTEND_PORT}`,
+      reuseExistingServer: !process.env.CI,
+      timeout: 60000,
+      stdout: 'pipe',
+      stderr: 'pipe',
     },
   ],
 });
