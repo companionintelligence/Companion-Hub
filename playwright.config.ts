@@ -40,7 +40,7 @@ const backendEnv: Record<string, string> = {
   DISABLE_PASSWORD_RESET: 'true',
   TIPI_DATA_DIR: process.env.TIPI_DATA_DIR || '/tmp/runtipi-e2e',
   TIPI_APP_DATA_DIR: process.env.TIPI_APP_DATA_DIR || '/tmp/runtipi-e2e/app-data',
-  TIPI_APP_DIR: process.env.TIPI_APP_DIR || '/tmp/runtipi-e2e/apps',
+  TIPI_APP_DIR: process.env.TIPI_APP_DIR || process.cwd(),
 };
 
 export default defineConfig({
