@@ -1,5 +1,5 @@
 import { relations } from 'drizzle-orm';
-import { boolean, customType, integer, pgEnum, pgTable, serial, text, timestamp, varchar } from 'drizzle-orm/pg-core';
+import { boolean, customType, integer, pgEnum, pgTable, serial, text, timestamp, uniqueIndex, varchar } from 'drizzle-orm/pg-core';
 
 export const appStatusEnum = pgEnum('app_status_enum', [
   'running',
@@ -97,6 +97,20 @@ export const appStore = pgTable('app_store', {
   updatedAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
   type: text().default('git'),
 });
+
+export const portAllocation = pgTable(
+  'port_allocation',
+  {
+    id: serial().primaryKey().notNull(),
+    appUrn: varchar('app_urn').notNull(),
+    hostPort: integer('host_port').notNull(),
+    containerPort: integer('container_port').notNull(),
+    protocol: varchar({ length: 3 }).default('tcp').notNull(), // 'tcp' | 'udp'
+    label: varchar({ length: 64 }).default('main').notNull(), // e.g. 'main', 'admin-ui', 'api'
+    createdAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
+  },
+  (table) => [uniqueIndex('port_protocol_idx').on(table.hostPort, table.protocol)],
+);
 
 export const deviceRegistration = pgTable('device_registration', {
   id: varchar().notNull().primaryKey(), // organization_id from CI Cloud

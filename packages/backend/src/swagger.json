@@ -937,6 +937,129 @@
         ]
       }
     },
+    "/api/system-inspector": {
+      "get": {
+        "operationId": "getFullInspection",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Full system inspection: ports, containers, health",
+        "tags": [
+          "System Inspector"
+        ]
+      }
+    },
+    "/api/system-inspector/containers": {
+      "get": {
+        "operationId": "getContainers",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Running Docker containers and their status",
+        "tags": [
+          "System Inspector"
+        ]
+      }
+    },
+    "/api/system-inspector/ports": {
+      "get": {
+        "operationId": "getPorts",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Port allocations with live bind checks",
+        "tags": [
+          "System Inspector"
+        ]
+      }
+    },
+    "/api/system-inspector/health": {
+      "get": {
+        "operationId": "getHealth",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "System health: CPU, memory, disk, uptime",
+        "tags": [
+          "System Inspector"
+        ]
+      }
+    },
+    "/api/ports": {
+      "get": {
+        "operationId": "getAllAllocations",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Returns all port allocations across all apps"
+          }
+        },
+        "summary": "Get all port allocations",
+        "tags": [
+          "Ports"
+        ]
+      }
+    },
+    "/api/ports/{appUrn}": {
+      "get": {
+        "operationId": "getAppPorts",
+        "parameters": [
+          {
+            "name": "appUrn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Returns port allocations for the specified app"
+          }
+        },
+        "summary": "Get port allocations for a specific app",
+        "tags": [
+          "Ports"
+        ]
+      }
+    },
+    "/api/ports/{appUrn}/check": {
+      "get": {
+        "operationId": "checkAppPorts",
+        "parameters": [
+          {
+            "name": "appUrn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Returns current port status and availability"
+          }
+        },
+        "summary": "Check port availability for an app",
+        "tags": [
+          "Ports"
+        ]
+      }
+    },
     "/api/i18n/locales/{ns}/{lng}.json": {
       "get": {
         "operationId": "getTranslation",
@@ -4889,6 +5012,14 @@
           },
           "exposedLocal": {
             "type": "boolean"
+          },
+          "exposureMode": {
+            "type": "string",
+            "enum": [
+              "cloudflare",
+              "local",
+              "tailscale"
+            ]
           },
           "isVisibleOnGuestDashboard": {
             "type": "boolean"
