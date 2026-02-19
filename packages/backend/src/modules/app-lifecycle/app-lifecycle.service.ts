@@ -15,6 +15,7 @@ import { AppsRepository } from '../apps/apps.repository';
 import { AppsService } from '../apps/apps.service';
 import { BackupManager } from '../backups/backup.manager';
 import { CloudflareClientService, AppInfo } from '../cloudflare/cloudflare-client.service';
+import { TailscaleService } from '../tailscale/tailscale.service';
 import { MarketplaceService } from '../marketplace/marketplace.service';
 import { RegistrationService } from '../registration/registration.service';
 import { ReposHelpers } from '../app-stores/repos.helpers';
@@ -53,7 +54,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
   async onApplicationBootstrap() {
     this.logger.info('Triggering initial Cloudflare sync in 5s...');
     setTimeout(() => {
-      this.triggerCloudflareSync().catch((e) => this.logger.error(`Startup sync failed: ${e.message}`));
+      this.syncExposure().catch((e) => this.logger.error(`Startup sync failed: ${e.message}`));
     }, 5000);
 
     // Regenerate Traefik file-based config on startup to sync existing running apps
@@ -84,7 +85,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       if (success) {
         this.logger.debug('Command executed successfully, triggering Cloudflare sync...');
         // Trigger sync to ensure cloud state matches local state (exposed apps)
-        await this.triggerCloudflareSync();
+        await this.syncExposure();
       }
 
       await reply({ success, message });
@@ -128,7 +129,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
         const { isProduction: isProdEnv } = this.config.getConfig();
         if (isProdEnv && app.exposedLocal) {
           this.logger.info(`[Cloudflare] App ${appUrn} started and is exposedLocal. Triggering sync.`);
-          await this.triggerCloudflareSync();
+          await this.syncExposure();
         }
       } else {
         this.logger.error(`Failed to start app ${appUrn}: ${message}`);
@@ -289,7 +290,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
         if (createdApp.exposedLocal || (appInfo.exposable && !exposedLocal)) {
           // Wait for DB consistency/propagation
           await new Promise((r) => setTimeout(r, 2000));
-          await this.triggerCloudflareSync();
+          await this.syncExposure();
         }
       } else {
         this.sseService.emit('app', { event: 'install_error', appUrn, appStatus: 'missing', error: message });
@@ -325,7 +326,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
 
         // Trigger sync to remove route if exposedLocal
         if (app.exposedLocal) {
-          await this.triggerCloudflareSync();
+          await this.syncExposure();
         }
       } else {
         this.sseService.emit('app', { event: 'stop_error', appUrn, appStatus: 'running', error: message });
@@ -395,7 +396,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
 
         // Trigger sync to remove route if it was exposedLocal
         if (app.exposedLocal) {
-          await this.triggerCloudflareSync();
+          await this.syncExposure();
         }
       } else {
         this.logger.error(`Failed to uninstall app ${appUrn}: ${message}`);
@@ -569,9 +570,69 @@ export class AppLifecycleService implements OnApplicationBootstrap {
 
     // Sync state with Cloudflare whenever exposedLocal is enabled or changed
     this.logger.info(`[Cloudflare] Config updated for ${appUrn}. Triggering state sync.`);
-    await this.triggerCloudflareSync();
+    await this.syncExposure();
 
     return { requestId };
+  }
+
+  /**
+   * Sync exposure state for all apps — Cloudflare + Tailscale in parallel
+   */
+  private async syncExposure() {
+    await Promise.allSettled([this.triggerCloudflareSync(), this.triggerTailscaleSync()]);
+  }
+
+  /**
+   * Sync Tailscale Serve state for apps with exposureMode='tailscale'
+   */
+  private async triggerTailscaleSync() {
+    try {
+      const tailscaleService = this.moduleRef.get(TailscaleService, { strict: false });
+      if (!tailscaleService) return;
+
+      const status = await tailscaleService.getStatus().catch(() => null);
+      if (!status?.connected) return;
+
+      const apps = await this.appRepository.getApps();
+
+      // Apps that should be Tailscale-served
+      const shouldServe = apps.filter(
+        (app) =>
+          // biome-ignore lint/suspicious/noExplicitAny: exposureMode not yet in repository type
+          (app as Record<string, unknown>).exposureMode === 'tailscale' &&
+          ['running', 'starting', 'restarting'].includes(app.status) &&
+          app.localSubdomain,
+      );
+
+      // Get current serve state
+      const serveStatus = await tailscaleService.getServeStatus();
+      const currentlyServed = new Set(serveStatus.entries.map((e) => e.service));
+
+      // Add missing
+      for (const app of shouldServe) {
+        const subdomain = app.localSubdomain || '';
+        if (subdomain && !currentlyServed.has(subdomain)) {
+          await tailscaleService
+            .serveApp({
+              subdomain,
+              localPort: 80, // Traefik
+            })
+            .catch((e) => this.logger.error(`[Tailscale] Failed to serve ${subdomain}: ${e}`));
+        }
+      }
+
+      // Remove stale
+      const shouldServeNames = new Set(shouldServe.map((a) => a.localSubdomain).filter(Boolean));
+      for (const served of currentlyServed) {
+        if (!shouldServeNames.has(served)) {
+          await tailscaleService.unserveApp(served).catch((e) => this.logger.error(`[Tailscale] Failed to unserve ${served}: ${e}`));
+        }
+      }
+
+      this.logger.debug(`[Tailscale] Sync complete: ${shouldServe.length} apps served`);
+    } catch (error) {
+      this.logger.error(`[Tailscale] Sync failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   /**

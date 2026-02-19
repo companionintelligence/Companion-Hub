@@ -14,6 +14,9 @@ import { AppStoresContainer } from '../containers/app-stores-container';
 const UserSettingsContainer = lazy(() => import('../containers/user-settings').then((module) => ({ default: module.UserSettingsContainer })));
 const SecurityContainer = lazy(() => import('../containers/security').then((module) => ({ default: module.SecurityContainer })));
 const LogsContainer = lazy(() => import('../containers/logs').then((module) => ({ default: module.LogsContainer })));
+const NetworkSettingsContainer = lazy(() =>
+  import('../containers/network-settings').then((module) => ({ default: module.NetworkSettingsContainer })),
+);
 
 export default () => {
   const { t } = useTranslation();
@@ -103,6 +106,9 @@ export default () => {
             <TabsTrigger value="appstores" className="hidden md:inline-flex">
               {t('SETTINGS_APPSTORES_TAB_TITLE')}
             </TabsTrigger>
+            <TabsTrigger value="network" className="hidden md:inline-flex">
+              {t('SETTINGS_NETWORK_TAB_TITLE')}
+            </TabsTrigger>
             <TabsTrigger value="logs" className="hidden md:inline-flex">
               {t('SETTINGS_LOGS_TAB_TITLE')}
             </TabsTrigger>
@@ -112,6 +118,7 @@ export default () => {
               </DropdownMenuTrigger>
               <DropdownMenuContent>
                 <DropdownMenuItem onClick={() => handleTabChange('appstores')}>{t('SETTINGS_APPSTORES_TAB_TITLE')}</DropdownMenuItem>
+                <DropdownMenuItem onClick={() => handleTabChange('network')}>{t('SETTINGS_NETWORK_TAB_TITLE')}</DropdownMenuItem>
                 <DropdownMenuItem onClick={() => handleTabChange('logs')}>{t('SETTINGS_LOGS_TAB_TITLE')}</DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
@@ -130,6 +137,11 @@ export default () => {
             <TabsContent value="appstores">
               <Suspense fallback={<div>Loading...</div>}>
                 <AppStoresContainer />
+              </Suspense>
+            </TabsContent>
+            <TabsContent value="network">
+              <Suspense fallback={<div>Loading...</div>}>
+                <NetworkSettingsContainer />
               </Suspense>
             </TabsContent>
             <TabsContent value="logs">
