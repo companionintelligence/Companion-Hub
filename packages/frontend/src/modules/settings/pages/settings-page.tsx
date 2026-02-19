@@ -17,6 +17,9 @@ const LogsContainer = lazy(() => import('../containers/logs').then((module) => (
 const NetworkSettingsContainer = lazy(() =>
   import('../containers/network-settings').then((module) => ({ default: module.NetworkSettingsContainer })),
 );
+const SystemInspectorContainer = lazy(() =>
+  import('../containers/system-inspector').then((module) => ({ default: module.SystemInspectorContainer })),
+);
 
 export default () => {
   const { t } = useTranslation();
@@ -109,6 +112,9 @@ export default () => {
             <TabsTrigger value="network" className="hidden md:inline-flex">
               {t('SETTINGS_NETWORK_TAB_TITLE')}
             </TabsTrigger>
+            <TabsTrigger value="system" className="hidden md:inline-flex">
+              System
+            </TabsTrigger>
             <TabsTrigger value="logs" className="hidden md:inline-flex">
               {t('SETTINGS_LOGS_TAB_TITLE')}
             </TabsTrigger>
@@ -119,6 +125,7 @@ export default () => {
               <DropdownMenuContent>
                 <DropdownMenuItem onClick={() => handleTabChange('appstores')}>{t('SETTINGS_APPSTORES_TAB_TITLE')}</DropdownMenuItem>
                 <DropdownMenuItem onClick={() => handleTabChange('network')}>{t('SETTINGS_NETWORK_TAB_TITLE')}</DropdownMenuItem>
+                <DropdownMenuItem onClick={() => handleTabChange('system')}>System</DropdownMenuItem>
                 <DropdownMenuItem onClick={() => handleTabChange('logs')}>{t('SETTINGS_LOGS_TAB_TITLE')}</DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
@@ -142,6 +149,11 @@ export default () => {
             <TabsContent value="network">
               <Suspense fallback={<div>Loading...</div>}>
                 <NetworkSettingsContainer />
+              </Suspense>
+            </TabsContent>
+            <TabsContent value="system">
+              <Suspense fallback={<div>Loading...</div>}>
+                <SystemInspectorContainer />
               </Suspense>
             </TabsContent>
             <TabsContent value="logs">
