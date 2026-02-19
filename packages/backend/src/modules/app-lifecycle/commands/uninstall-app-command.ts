@@ -2,6 +2,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { CloudflareClientService } from '@/modules/cloudflare/cloudflare-client.service';
 import { DockerService } from '@/modules/docker/docker.service';
+import { PortManagerService } from '@/modules/network/port-manager.service';
 import type { AppUrn } from '@runtipi/common/types';
 import { AppLifecycleCommand } from './command';
 
@@ -13,6 +14,19 @@ export class UninstallAppCommand extends AppLifecycleCommand {
 
     try {
       logger.info(`Uninstalling app ${appUrn}`);
+
+      // Release allocated ports
+      try {
+        const portManager = this.moduleRef.get(PortManagerService, { strict: false });
+        if (portManager) {
+          const released = await portManager.releaseAll(appUrn);
+          if (released > 0) {
+            logger.info(`Released ${released} port allocation(s) for ${appUrn}`);
+          }
+        }
+      } catch (err) {
+        logger.warn(`Failed to release ports for ${appUrn}: ${err}`);
+      }
 
       try {
         await dockerService.composeApp(appUrn, 'down --remove-orphans -v --rmi all');

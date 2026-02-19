@@ -8,6 +8,7 @@ import { DockerService } from '@/modules/docker/docker.service';
 import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
+import { PortManagerService } from '@/modules/network/port-manager.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import type { AppUrn } from '@runtipi/common/types';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
@@ -56,6 +57,81 @@ export class InstallAppCommand extends AppLifecycleCommand {
       emitProgress(25);
       logger.info(`Creating app.env file for app ${appUrn}`);
       await appHelpers.generateEnvFile(appUrn, form);
+
+      // Allocate ports via the port manager
+      emitProgress(27);
+      try {
+        const portManager = this.moduleRef.get(PortManagerService, { strict: false });
+        const appInfo = await appFilesManager.getInstalledAppInfo(appUrn);
+        if (portManager && appInfo) {
+          // Release any existing allocations (in case of reinstall)
+          await portManager.releaseAll(appUrn);
+
+          const portRequests: Array<{ containerPort: number; protocol?: 'tcp' | 'udp'; label: string; preferredHostPort?: number }> = [];
+
+          // Main port from config.json
+          if (appInfo.port) {
+            portRequests.push({
+              containerPort: appInfo.port,
+              label: 'main',
+              preferredHostPort: form.port ?? appInfo.port,
+            });
+          }
+
+          // Additional ports from docker-compose.json services
+          const composeJson = await appFilesManager.getDockerComposeJson(appUrn);
+          if (composeJson.content) {
+            try {
+              const { services } = parseComposeJson(composeJson.content);
+              for (const service of services) {
+                if (service.addPorts) {
+                  for (const addPort of service.addPorts) {
+                    const containerPort =
+                      typeof addPort.containerPort === 'string' ? Number.parseInt(addPort.containerPort, 10) : addPort.containerPort;
+                    const hostPort = typeof addPort.hostPort === 'string' ? Number.parseInt(addPort.hostPort, 10) : addPort.hostPort;
+                    if (!Number.isNaN(containerPort) && !Number.isNaN(hostPort)) {
+                      portRequests.push({
+                        containerPort,
+                        label: `${service.name}-${containerPort}`,
+                        preferredHostPort: hostPort,
+                        protocol: addPort.udp ? 'udp' : 'tcp',
+                      });
+                    }
+                  }
+                }
+              }
+            } catch (parseErr) {
+              logger.warn(`Failed to parse compose for extra ports: ${parseErr}`);
+            }
+          }
+
+          if (portRequests.length > 0) {
+            const allocations = await portManager.allocatePorts(appUrn, portRequests);
+            logger.info(
+              `Allocated ${allocations.length} port(s) for ${appUrn}: ${allocations.map((a) => `${a.hostPort}:${a.containerPort}/${a.protocol} [${a.label}]`).join(', ')}`,
+            );
+
+            // Update APP_PORT in the env file with the allocated main port
+            const mainAlloc = allocations.find((a) => a.label === 'main');
+            if (mainAlloc) {
+              const appEnvData = await appFilesManager.getAppEnv(appUrn);
+              const envMap = envUtils.envStringToMap(appEnvData.content);
+              envMap.set('APP_PORT', String(mainAlloc.hostPort));
+
+              // Update APP_INTERNAL_AUTHORITY with allocated port
+              const internalIp = envMap.get('APP_HOSTNAME') || _config.getConfig().internalIp;
+              envMap.set('APP_INTERNAL_AUTHORITY', `${internalIp}:${mainAlloc.hostPort}`);
+
+              // Also update form.port so ensureAppDir uses the right port
+              form.port = mainAlloc.hostPort;
+
+              await appFilesManager.writeAppEnv(appUrn, envUtils.envMapToString(envMap));
+            }
+          }
+        }
+      } catch (portErr) {
+        logger.warn(`Port allocation failed, falling back to config defaults: ${portErr}`);
+      }
 
       // Ensure app directory exists before we try to use APP_DATA_DIR
       emitProgress(30);
