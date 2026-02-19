@@ -34,8 +34,9 @@ export class StartAppCommand extends AppLifecycleCommand {
       const forcePull = !form.skipPull && config.force_pull;
       await dockerService.composeApp(appUrn, `up --detach --force-recreate --remove-orphans ${forcePull ? '--pull always' : ''}`);
 
-      // Regenerate Traefik file-based config after app starts (workaround for Docker API version issue)
-      if (form.exposedLocal) {
+      // Regenerate Traefik file-based config after app starts
+      const effectiveExposure = form.exposureMode || (form.exposedLocal ? 'cloudflare' : 'local');
+      if (effectiveExposure !== 'local') {
         logger.debug(`Regenerating Traefik config for exposed app ${appUrn}`);
         // Wait longer for container to fully start and network to be attached
         await traefikConfigService.regenerateTraefikConfig(5000); // Wait 5s for container to fully start

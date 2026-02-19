@@ -54,6 +54,7 @@ export const app = pgTable('app', {
   openPort: boolean('open_port').default(true).notNull(),
   port: integer(),
   exposedLocal: boolean('exposed_local').default(false).notNull(),
+  exposureMode: varchar('exposure_mode').default('local').notNull(), // 'local' | 'cloudflare' | 'tailscale'
   appStoreSlug: varchar('app_store_slug').notNull(),
   appName: varchar('app_name').notNull(),
   enableAuth: boolean('enable_auth').default(false).notNull(),

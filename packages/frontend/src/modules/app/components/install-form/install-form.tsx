@@ -29,6 +29,7 @@ export type FormValues = {
   port?: string;
   exposed: boolean;
   exposedLocal: boolean;
+  exposureMode: 'local' | 'cloudflare' | 'tailscale';
   openPort: boolean;
   domain?: string;
   localSubdomain?: string;
@@ -75,10 +76,10 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
       setValue('exposed', true);
       setValue('openPort', false);
     }
-    // Always set exposedLocal to true and use recommended port
-    // openPort is always false since we route through Traefik
+    // Set default exposure mode and port for exposable apps
     if (info.exposable && info.dynamic_config) {
-      setValue('exposedLocal', true);
+      setValue('exposureMode', 'cloudflare');
+      setValue('exposedLocal', true); // backward compat
       setValue('openPort', false); // Always false - apps route through Traefik
       setValue('enableAuth', true); // Enable authentication by default
       if (info.port) {
@@ -189,29 +190,51 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
   };
 
   const renderDynamicConfigProxyForm = () => {
+    const watchExposureMode = watch('exposureMode', 'cloudflare');
+
     return (
       <>
         {info.exposable && (
           <>
-            {/* Hide "Publish to internet" switch - always set to true */}
-            {/* Always set exposedLocal to true and use recommended port */}
-            {/* Hide port input - always use recommended port (info.port) */}
-            {/* Always show subdomain input as if "Publish to internet" is enabled */}
+            {/* Exposure mode selector */}
             <div className="mb-3">
-              <InputGroup
-                groupPrefix="https://"
-                groupSuffix={
-                  orgSlug
-                    ? `-${orgSlug}.${domain}${isCheckingDns ? ' (checking...)' : ''}`
-                    : `-${localDomain}${isCheckingDns ? ' (checking...)' : ''}`
-                }
-                {...register('localSubdomain')}
-                label={t('APP_INSTALL_FORM_LOCAL_SUBDOMAIN')}
-                error={errors.localSubdomain?.message || dnsAvailabilityError || undefined}
+              <label htmlFor="exposureMode" className="block text-sm font-medium mb-1">
+                {t('APP_INSTALL_FORM_EXPOSURE_MODE')}
+              </label>
+              <select
+                id="exposureMode"
+                {...register('exposureMode')}
+                className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary dark:border-gray-600 dark:bg-gray-800"
                 disabled={loading}
-                placeholder={info.urn.split(':')[0]}
-              />
+                defaultValue="cloudflare"
+              >
+                <option value="cloudflare">{t('APP_INSTALL_FORM_EXPOSURE_CLOUDFLARE')}</option>
+                <option value="tailscale">{t('APP_INSTALL_FORM_EXPOSURE_TAILSCALE')}</option>
+                <option value="local">{t('APP_INSTALL_FORM_EXPOSURE_LOCAL')}</option>
+              </select>
             </div>
+
+            {/* Subdomain input — shown for cloudflare and tailscale modes */}
+            {watchExposureMode !== 'local' && (
+              <div className="mb-3">
+                <InputGroup
+                  groupPrefix="https://"
+                  groupSuffix={
+                    watchExposureMode === 'tailscale'
+                      ? `.${localDomain || 'tailnet'}${isCheckingDns ? ' (checking...)' : ''}`
+                      : orgSlug
+                        ? `-${orgSlug}.${domain}${isCheckingDns ? ' (checking...)' : ''}`
+                        : `-${localDomain}${isCheckingDns ? ' (checking...)' : ''}`
+                  }
+                  {...register('localSubdomain')}
+                  label={t('APP_INSTALL_FORM_LOCAL_SUBDOMAIN')}
+                  error={errors.localSubdomain?.message || dnsAvailabilityError || undefined}
+                  disabled={loading}
+                  placeholder={info.urn.split(':')[0]}
+                />
+              </div>
+            )}
+
             <Controller
               control={control}
               name="enableAuth"
@@ -242,11 +265,11 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
   };
 
   const validate = async (values: FormValues) => {
-    // Always set exposedLocal to true and use recommended port
-    // Enable authentication by default
+    const exposureMode = values.exposureMode || 'cloudflare';
     const formValues = {
       ...values,
-      exposedLocal: true,
+      exposureMode,
+      exposedLocal: exposureMode === 'cloudflare', // backward compat
       enableAuth: values.enableAuth ?? true,
       port: values.port || (info.port ? info.port.toString() : undefined),
     };

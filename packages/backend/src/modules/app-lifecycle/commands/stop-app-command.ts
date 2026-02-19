@@ -34,7 +34,8 @@ export class StopAppCommand extends AppLifecycleCommand {
       await dockerService.composeApp(appUrn, 'down --remove-orphans');
 
       // Regenerate Traefik file-based config after app stops to remove its routes
-      if (form.exposedLocal) {
+      const effectiveExposure = form.exposureMode || (form.exposedLocal ? 'cloudflare' : 'local');
+      if (effectiveExposure !== 'local') {
         logger.debug(`Regenerating Traefik config after stopping exposed app ${appUrn}`);
         await traefikConfigService.regenerateTraefikConfig(1000); // Wait 1s for container to fully stop
       }
