@@ -70,28 +70,46 @@ export class PortManagerService {
 
     for (const req of requests) {
       const protocol = req.protocol ?? 'tcp';
-      let hostPort: number;
+      const allocation = await this.allocateWithRetry(appUrn, req.containerPort, protocol, req.label, req.preferredHostPort);
 
-      if (req.preferredHostPort && (await this.isPortAvailable(req.preferredHostPort, protocol))) {
-        hostPort = req.preferredHostPort;
-      } else {
-        hostPort = await this.findAvailablePort(protocol);
-      }
-
-      const allocation = await this.portAllocationRepo.create({
-        appUrn,
-        hostPort,
-        containerPort: req.containerPort,
-        protocol,
-        label: req.label,
-      });
-
-      this.logger.info(`Port allocated: ${hostPort}:${req.containerPort}/${protocol} [${req.label}] for ${appUrn}`);
-
+      this.logger.info(`Port allocated: ${allocation.hostPort}:${req.containerPort}/${protocol} [${req.label}] for ${appUrn}`);
       allocations.push(allocation);
     }
 
     return allocations;
+  }
+
+  /**
+   * Attempt to allocate a port, retrying on unique constraint violations (concurrent installs).
+   */
+  private async allocateWithRetry(
+    appUrn: AppUrn,
+    containerPort: number,
+    protocol: 'tcp' | 'udp',
+    label: string,
+    preferredHostPort?: number,
+    attempt = 0,
+  ): Promise<PortAllocation> {
+    const maxRetries = 3;
+    let hostPort: number;
+
+    if (attempt === 0 && preferredHostPort && (await this.isPortAvailable(preferredHostPort, protocol))) {
+      hostPort = preferredHostPort;
+    } else {
+      hostPort = await this.findAvailablePort(protocol);
+    }
+
+    try {
+      return await this.portAllocationRepo.create({ appUrn, hostPort, containerPort, protocol, label });
+    } catch (err) {
+      const isConstraintViolation =
+        err instanceof Error && (err.message.includes('unique') || err.message.includes('duplicate') || err.message.includes('23505'));
+      if (isConstraintViolation && attempt < maxRetries) {
+        this.logger.warn(`Port ${hostPort}/${protocol} conflict on insert (attempt ${attempt + 1}/${maxRetries}), retrying...`);
+        return this.allocateWithRetry(appUrn, containerPort, protocol, label, undefined, attempt + 1);
+      }
+      throw err;
+    }
   }
 
   /**

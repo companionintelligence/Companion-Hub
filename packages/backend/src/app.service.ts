@@ -16,6 +16,8 @@ import { SystemEventsQueue } from './modules/queue/entities/system-events';
 import { DOCKERODE } from './modules/docker/docker.module';
 import Dockerode from 'dockerode';
 import { RegistryService } from './utils/registry/registry.service';
+import { PortManagerService } from './modules/network/port-manager.service';
+import { AppsRepository } from './modules/apps/apps.repository';
 
 @Injectable()
 export class AppService {
@@ -31,6 +33,8 @@ export class AppService {
     private readonly databaseService: DatabaseService,
     private readonly appLifecycleService: AppLifecycleService,
     private readonly registryService: RegistryService,
+    private readonly portManager: PortManagerService,
+    private readonly appsRepository: AppsRepository,
     @Inject(DOCKERODE) private docker: Dockerode,
   ) {}
 
@@ -90,6 +94,9 @@ export class AppService {
       this.logger.info('Copying assets...');
       await this.copyAssets();
       this.logger.info('Assets copied');
+
+      // Backfill port allocations for apps installed before the port manager
+      await this.migrateExistingPortAllocations();
 
       if (__prod__ && (buster !== version || version === 'nightly')) {
         this.logger.info('Restarting running apps...');
@@ -277,5 +284,34 @@ export class AppService {
     }
 
     this.logger.info('Data directory validation completed');
+  }
+
+  /**
+   * Backfill port allocations for apps that were installed before the port manager existed.
+   * Scans all installed apps and creates port_allocation records for any that are missing.
+   */
+  private async migrateExistingPortAllocations() {
+    try {
+      const apps = await this.appsRepository.getApps();
+      let migrated = 0;
+
+      for (const installedApp of apps) {
+        if (!installedApp.port) continue;
+
+        const appUrn = `${installedApp.appName}:${installedApp.appStoreSlug}` as import('@runtipi/common/types').AppUrn;
+        try {
+          await this.portManager.migrateExistingApp(appUrn, installedApp.port, installedApp.port);
+          migrated++;
+        } catch (err) {
+          this.logger.warn(`Failed to migrate port allocation for ${appUrn}: ${err}`);
+        }
+      }
+
+      if (migrated > 0) {
+        this.logger.info(`Port allocation migration: checked ${apps.length} apps, backfilled ${migrated}`);
+      }
+    } catch (err) {
+      this.logger.warn(`Port allocation migration failed (non-fatal): ${err}`);
+    }
   }
 }

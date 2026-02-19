@@ -136,4 +136,21 @@ describe('PortManagerService', () => {
     const ports = await service.getAppPorts('legacy:store' as AppUrn);
     expect(ports).toHaveLength(1);
   });
+
+  it('should retry on unique constraint violation during allocation', async () => {
+    let callCount = 0;
+    const origCreate = repo.create;
+    repo.create = vi.fn(async (data) => {
+      callCount++;
+      if (callCount === 1) {
+        throw new Error('duplicate key value violates unique constraint "port_protocol_idx"');
+      }
+      return origCreate(data);
+    }) as typeof repo.create;
+
+    const allocations = await service.allocatePorts('retry-app:store' as AppUrn, [{ containerPort: 8080, label: 'main', preferredHostPort: 15000 }]);
+
+    expect(allocations).toHaveLength(1);
+    expect(callCount).toBe(2); // First failed, second succeeded
+  });
 });
