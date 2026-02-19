@@ -110,3 +110,4 @@ repo.zip
 # Tunnel Certs
 tunnel/*
 
+.env.local

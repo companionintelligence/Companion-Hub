@@ -9,6 +9,7 @@ import { MarketplaceModule } from '../marketplace/marketplace.module';
 import { AppStoreModule } from '../app-stores/app-store.module';
 import { QueueModule } from '../queue/queue.module';
 import { RegistrationModule } from '../registration/registration.module';
+import { TailscaleModule } from '../tailscale/tailscale.module';
 import { AppLifecycleCommandFactory } from './app-lifecycle-command.factory';
 import { AppLifecycleController } from './app-lifecycle.controller';
 import { AppLifecycleService } from './app-lifecycle.service';
@@ -26,6 +27,7 @@ import { AppStatusSyncService } from './app-status-sync.service';
     SSEModule,
     CloudflareModule,
     RegistrationModule,
+    TailscaleModule,
   ],
   providers: [AppLifecycleService, AppLifecycleCommandFactory, AppStatusSyncService],
   controllers: [AppLifecycleController],
