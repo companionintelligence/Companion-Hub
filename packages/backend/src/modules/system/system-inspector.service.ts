@@ -1,7 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 import { PortManagerService } from '@/modules/network/port-manager.service';
-import { AppsRepository } from '@/modules/apps/apps.repository';
 import si from 'systeminformation';
 import Dockerode from 'dockerode';
 import { Inject } from '@nestjs/common';
@@ -48,7 +47,6 @@ export class SystemInspectorService {
   constructor(
     private readonly logger: LoggerService,
     private readonly portManager: PortManagerService,
-    readonly _appsRepo: AppsRepository,
     @Inject(DOCKERODE) private readonly docker: Dockerode,
   ) {}
 
