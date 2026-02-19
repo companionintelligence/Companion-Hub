@@ -598,7 +598,6 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       // Apps that should be Tailscale-served
       const shouldServe = apps.filter(
         (app) =>
-          // biome-ignore lint/suspicious/noExplicitAny: exposureMode not yet in repository type
           (app as Record<string, unknown>).exposureMode === 'tailscale' &&
           ['running', 'starting', 'restarting'].includes(app.status) &&
           app.localSubdomain,

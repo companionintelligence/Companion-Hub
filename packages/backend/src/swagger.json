@@ -1891,6 +1891,111 @@
         ]
       }
     },
+    "/api/tailscale/status": {
+      "get": {
+        "operationId": "getStatus",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Tailscale"
+        ]
+      }
+    },
+    "/api/tailscale/auth/start": {
+      "post": {
+        "operationId": "startAuth",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Tailscale"
+        ]
+      }
+    },
+    "/api/tailscale/auth/check": {
+      "get": {
+        "operationId": "checkAuth",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Tailscale"
+        ]
+      }
+    },
+    "/api/tailscale/disconnect": {
+      "post": {
+        "operationId": "disconnect",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Tailscale"
+        ]
+      }
+    },
+    "/api/tailscale/serve": {
+      "get": {
+        "operationId": "getServeStatus",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Tailscale"
+        ]
+      }
+    },
     "/api/links/guest": {
       "get": {
         "operationId": "getGuestLinks",
