@@ -179,6 +179,26 @@ export class ReposHelpers {
         if (typeof app.compose === 'string') {
           await fs.promises.writeFile(path.join(appDir, 'docker-compose.json'), app.compose);
         }
+
+        // Download app icon so getAppImage can serve it from metadata/logo.*
+        const iconUrl = typeof app.icon === 'string' ? app.icon : null;
+        if (iconUrl) {
+          try {
+            const fullIconUrl = iconUrl.startsWith('http') ? iconUrl : `${url}${iconUrl}`;
+            const iconRes = await fetch(fullIconUrl);
+            if (iconRes.ok) {
+              const contentType = iconRes.headers.get('content-type') || 'image/png';
+              const extMap: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/svg+xml': 'svg' };
+              const ext = extMap[contentType.split(';')[0]?.trim() ?? ''] ?? 'png';
+              const metadataDir = path.join(appDir, 'metadata');
+              await this.ensureDirectoryWithPermissions(metadataDir);
+              const buffer = Buffer.from(await iconRes.arrayBuffer());
+              await fs.promises.writeFile(path.join(metadataDir, `logo.${ext}`), buffer);
+            }
+          } catch {
+            // Non-fatal: logo will fall back to generic thumbnail
+          }
+        }
       }
 
       // Also write a repo.json or config.json so Tipi sees it as a valid repo?
