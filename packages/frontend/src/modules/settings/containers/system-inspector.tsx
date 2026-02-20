@@ -114,13 +114,13 @@ const StatCard = ({
   percent?: number;
   color?: string;
 }) => (
-  <div className="rounded-lg border p-4 flex flex-col gap-2">
+  <div className="rounded-lg border p-3 sm:p-4 flex flex-col gap-1.5 sm:gap-2">
     <div className="flex items-center gap-2 text-muted-foreground">
-      <Icon className="h-4 w-4" />
+      <Icon className="h-4 w-4 flex-shrink-0" />
       <span className="text-xs font-medium uppercase tracking-wider">{title}</span>
     </div>
-    <div className="text-2xl font-bold">{value}</div>
-    {subtitle && <div className="text-xs text-muted-foreground">{subtitle}</div>}
+    <div className="text-xl sm:text-2xl font-bold truncate">{value}</div>
+    {subtitle && <div className="text-xs text-muted-foreground truncate">{subtitle}</div>}
     {percent !== undefined && <ProgressBar percent={percent} color={color} />}
   </div>
 );
@@ -172,7 +172,9 @@ const SystemHealthSection = ({ health }: { health: SystemHealth }) => (
     <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
       <div className="rounded-lg border p-3">
         <div className="text-xs text-muted-foreground mb-1">Hostname</div>
-        <div className="font-mono text-xs break-all">{health.hostname}</div>
+        <div className="text-xs truncate" title={health.hostname}>
+          {health.hostname}
+        </div>
       </div>
       <div className="rounded-lg border p-3">
         <div className="text-xs text-muted-foreground mb-1">Docker</div>
@@ -180,9 +182,9 @@ const SystemHealthSection = ({ health }: { health: SystemHealth }) => (
       </div>
       <div className="rounded-lg border p-3">
         <div className="text-xs text-muted-foreground mb-1">Containers</div>
-        <div className="flex gap-2 items-center">
-          <Badge variant="success">{health.containerCount.running} running</Badge>
-          {health.containerCount.stopped > 0 && <Badge variant="danger">{health.containerCount.stopped} stopped</Badge>}
+        <div className="flex gap-1.5 items-center flex-wrap">
+          <Badge variant="success">{health.containerCount.running} run</Badge>
+          {health.containerCount.stopped > 0 && <Badge variant="danger">{health.containerCount.stopped} stop</Badge>}
         </div>
       </div>
       <div className="rounded-lg border p-3">
@@ -205,8 +207,8 @@ const ContainersSection = ({ containers }: { containers: ContainerInfo[] }) => {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center gap-2">
-        <Container className="h-5 w-5 text-primary" />
-        <h3 className="text-base font-semibold">Docker Containers</h3>
+        <Container className="h-5 w-5 text-primary flex-shrink-0" />
+        <h3 className="text-sm sm:text-base font-semibold whitespace-nowrap">Docker Containers</h3>
         <Badge>{containers.length} total</Badge>
       </div>
 
@@ -221,7 +223,7 @@ const ContainersSection = ({ containers }: { containers: ContainerInfo[] }) => {
                   <th className="text-left p-2 pl-3 font-medium text-muted-foreground">Status</th>
                   <th className="text-left p-2 font-medium text-muted-foreground">Container</th>
                   <th className="text-left p-2 font-medium text-muted-foreground hidden md:table-cell">Image</th>
-                  <th className="text-left p-2 font-medium text-muted-foreground">Ports</th>
+                  <th className="text-left p-2 font-medium text-muted-foreground hidden sm:table-cell">Ports</th>
                   <th className="text-left p-2 font-medium text-muted-foreground hidden sm:table-cell">Uptime</th>
                   <th className="text-left p-2 pr-3 font-medium text-muted-foreground hidden lg:table-cell">App</th>
                 </tr>
@@ -232,25 +234,25 @@ const ContainersSection = ({ containers }: { containers: ContainerInfo[] }) => {
                     <td className="p-2 pl-3">
                       <StateIcon state={c.state} />
                     </td>
-                    <td className="p-2">
-                      <div className="font-mono text-xs">{c.name}</div>
-                      <div className="text-xs text-muted-foreground">{c.id}</div>
+                    <td className="p-2 max-w-[120px] sm:max-w-none">
+                      <div className="font-mono text-xs truncate">{c.name}</div>
+                      <div className="text-xs text-muted-foreground truncate">{c.id}</div>
                     </td>
                     <td className="p-2 hidden md:table-cell">
                       <div className="font-mono text-xs truncate max-w-[200px]" title={c.image}>
                         {c.image.split('/').pop()?.split(':')[0] || c.image}
                       </div>
                     </td>
-                    <td className="p-2">
+                    <td className="p-2 hidden sm:table-cell">
                       <div className="flex flex-wrap gap-1">
                         {c.ports
                           .filter((p) => p.hostPort)
                           .map((p, _i) => (
                             <Badge key={`${p.hostPort}-${p.containerPort}-${p.protocol}`} variant={c.state === 'running' ? 'success' : 'default'}>
-                              {p.hostPort}→{p.containerPort}/{p.protocol}
+                              {p.hostPort}→{p.containerPort}
                             </Badge>
                           ))}
-                        {c.ports.filter((p) => p.hostPort).length === 0 && <span className="text-xs text-muted-foreground">none</span>}
+                        {c.ports.filter((p) => p.hostPort).length === 0 && <span className="text-xs text-muted-foreground">—</span>}
                       </div>
                     </td>
                     <td className="p-2 hidden sm:table-cell">
@@ -281,9 +283,9 @@ const PortManagementSection = ({ ports }: { ports: { allocations: PortStatus[]; 
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex items-center gap-2">
-        <Network className="h-5 w-5 text-primary" />
-        <h3 className="text-base font-semibold">Port Allocations</h3>
+      <div className="flex items-center gap-2 flex-wrap">
+        <Network className="h-5 w-5 text-primary flex-shrink-0" />
+        <h3 className="text-sm sm:text-base font-semibold whitespace-nowrap">Port Allocations</h3>
         <Badge>{ports.allocations.length} managed</Badge>
         {ports.untracked.length > 0 && (
           <button type="button" onClick={() => setShowUntracked(!showUntracked)} className="ml-auto">
@@ -297,71 +299,114 @@ const PortManagementSection = ({ ports }: { ports: { allocations: PortStatus[]; 
           No port allocations yet. Install an app to see port assignments here.
         </div>
       ) : (
-        <div className="rounded-lg border overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b bg-muted/50">
-                  <th className="text-left p-2 pl-3 font-medium text-muted-foreground">Status</th>
-                  <th className="text-left p-2 font-medium text-muted-foreground">Host Port</th>
-                  <th className="text-left p-2 font-medium text-muted-foreground">→ Container</th>
-                  <th className="text-left p-2 font-medium text-muted-foreground">Protocol</th>
-                  <th className="text-left p-2 font-medium text-muted-foreground">Label</th>
-                  <th className="text-left p-2 font-medium text-muted-foreground hidden sm:table-cell">App</th>
-                  <th className="text-left p-2 pr-3 font-medium text-muted-foreground hidden md:table-cell">Container</th>
-                </tr>
-              </thead>
-              <tbody>
-                {ports.allocations.map((p) => (
-                  <tr key={`${p.hostPort}-${p.protocol}`} className="border-b last:border-0 hover:bg-muted/30 transition-colors">
-                    <td className="p-2 pl-3">
-                      {p.bound ? (
-                        <span title="Port is bound and active">
-                          <CheckCircle2 className="h-4 w-4 text-green-500" />
-                        </span>
-                      ) : (
-                        <span title="Port allocated but not bound">
-                          <XCircle className="h-4 w-4 text-muted-foreground" />
-                        </span>
-                      )}
-                    </td>
-                    <td className="p-2 font-mono text-xs font-semibold">{p.hostPort}</td>
-                    <td className="p-2 font-mono text-xs">{p.containerPort}</td>
-                    <td className="p-2">
-                      <Badge variant={p.protocol === 'udp' ? 'warning' : 'default'}>{p.protocol.toUpperCase()}</Badge>
-                    </td>
-                    <td className="p-2 text-xs">{p.label}</td>
-                    <td className="p-2 hidden sm:table-cell">
-                      <Badge>{p.appUrn.split(':')[0]}</Badge>
-                    </td>
-                    <td className="p-2 pr-3 hidden md:table-cell font-mono text-xs text-muted-foreground">{p.containerName || '-'}</td>
+        <>
+          {/* Desktop: Table */}
+          <div className="rounded-lg border overflow-hidden hidden sm:block">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b bg-muted/50">
+                    <th className="text-left p-2 pl-3 font-medium text-muted-foreground">Status</th>
+                    <th className="text-left p-2 font-medium text-muted-foreground">Host Port</th>
+                    <th className="text-left p-2 font-medium text-muted-foreground">→ Container</th>
+                    <th className="text-left p-2 font-medium text-muted-foreground">Protocol</th>
+                    <th className="text-left p-2 font-medium text-muted-foreground">Label</th>
+                    <th className="text-left p-2 font-medium text-muted-foreground">App</th>
+                    <th className="text-left p-2 pr-3 font-medium text-muted-foreground hidden md:table-cell">Container</th>
                   </tr>
-                ))}
-                {showUntracked &&
-                  ports.untracked.map((u) => (
-                    <tr
-                      key={`untracked-${u.port}`}
-                      className="border-b last:border-0 bg-yellow-50/50 dark:bg-yellow-900/10 hover:bg-yellow-50 dark:hover:bg-yellow-900/20 transition-colors"
-                    >
+                </thead>
+                <tbody>
+                  {ports.allocations.map((p) => (
+                    <tr key={`${p.hostPort}-${p.protocol}`} className="border-b last:border-0 hover:bg-muted/30 transition-colors">
                       <td className="p-2 pl-3">
-                        <span title="Untracked port">
-                          <AlertTriangle className="h-4 w-4 text-yellow-500" />
-                        </span>
+                        {p.bound ? (
+                          <span title="Port is bound and active">
+                            <CheckCircle2 className="h-4 w-4 text-green-500" />
+                          </span>
+                        ) : (
+                          <span title="Port allocated but not bound">
+                            <XCircle className="h-4 w-4 text-muted-foreground" />
+                          </span>
+                        )}
                       </td>
-                      <td className="p-2 font-mono text-xs font-semibold">{u.port}</td>
-                      <td className="p-2 font-mono text-xs text-muted-foreground">-</td>
+                      <td className="p-2 font-mono text-xs font-semibold">{p.hostPort}</td>
+                      <td className="p-2 font-mono text-xs">{p.containerPort}</td>
                       <td className="p-2">
-                        <Badge variant="warning">?</Badge>
+                        <Badge variant={p.protocol === 'udp' ? 'warning' : 'default'}>{p.protocol.toUpperCase()}</Badge>
                       </td>
-                      <td className="p-2 text-xs text-muted-foreground">untracked</td>
-                      <td className="p-2 hidden sm:table-cell text-xs text-muted-foreground">-</td>
-                      <td className="p-2 pr-3 hidden md:table-cell font-mono text-xs">{u.process}</td>
+                      <td className="p-2 text-xs">{p.label}</td>
+                      <td className="p-2">
+                        <Badge>{p.appUrn.split(':')[0]}</Badge>
+                      </td>
+                      <td className="p-2 pr-3 hidden md:table-cell font-mono text-xs text-muted-foreground">{p.containerName || '-'}</td>
                     </tr>
                   ))}
-              </tbody>
-            </table>
+                  {showUntracked &&
+                    ports.untracked.map((u) => (
+                      <tr
+                        key={`untracked-${u.port}`}
+                        className="border-b last:border-0 bg-yellow-50/50 dark:bg-yellow-900/10 hover:bg-yellow-50 dark:hover:bg-yellow-900/20 transition-colors"
+                      >
+                        <td className="p-2 pl-3">
+                          <span title="Untracked port">
+                            <AlertTriangle className="h-4 w-4 text-yellow-500" />
+                          </span>
+                        </td>
+                        <td className="p-2 font-mono text-xs font-semibold">{u.port}</td>
+                        <td className="p-2 font-mono text-xs text-muted-foreground">-</td>
+                        <td className="p-2">
+                          <Badge variant="warning">?</Badge>
+                        </td>
+                        <td className="p-2 text-xs text-muted-foreground">untracked</td>
+                        <td className="p-2 text-xs text-muted-foreground">-</td>
+                        <td className="p-2 pr-3 hidden md:table-cell font-mono text-xs">{u.process}</td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+            </div>
           </div>
-        </div>
+
+          {/* Mobile: Card list */}
+          <div className="sm:hidden flex flex-col gap-2">
+            {ports.allocations.map((p) => (
+              <div key={`m-${p.hostPort}-${p.protocol}`} className="rounded-lg border p-3 flex items-center gap-3">
+                {p.bound ? (
+                  <CheckCircle2 className="h-4 w-4 text-green-500 flex-shrink-0" />
+                ) : (
+                  <XCircle className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+                )}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-xs font-semibold">
+                      {p.hostPort}→{p.containerPort}
+                    </span>
+                    <Badge variant={p.protocol === 'udp' ? 'warning' : 'default'}>{p.protocol.toUpperCase()}</Badge>
+                  </div>
+                  <div className="text-xs text-muted-foreground truncate">
+                    {p.appUrn.split(':')[0]} · {p.label}
+                  </div>
+                </div>
+              </div>
+            ))}
+            {showUntracked &&
+              ports.untracked.map((u) => (
+                <div
+                  key={`m-untracked-${u.port}`}
+                  className="rounded-lg border border-yellow-200 dark:border-yellow-800 p-3 flex items-center gap-3 bg-yellow-50/50 dark:bg-yellow-900/10"
+                >
+                  <AlertTriangle className="h-4 w-4 text-yellow-500 flex-shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-xs font-semibold">{u.port}</span>
+                      <Badge variant="warning">untracked</Badge>
+                    </div>
+                    <div className="text-xs text-muted-foreground truncate">{u.process}</div>
+                  </div>
+                </div>
+              ))}
+          </div>
+        </>
       )}
     </div>
   );
@@ -402,12 +447,12 @@ export const SystemInspectorContainer = () => {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
         <div>
           <h3 className="text-lg font-medium">System Inspector</h3>
-          <p className="text-sm text-muted-foreground">Real-time overview of containers, ports, and system resources</p>
+          <p className="text-xs sm:text-sm text-muted-foreground">Real-time overview of containers, ports, and system resources</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-shrink-0">
           <span className="text-xs text-muted-foreground">Updated {lastUpdated}</span>
           <button
             type="button"
