@@ -16,24 +16,24 @@ export const InputGroup = React.forwardRef<HTMLInputElement, InputGroupProps>(
       if (!groupPrefix) return null;
       if (typeof groupPrefix === 'string') {
         return (
-          <div className="flex items-center rounded-l-md border border-r-0 border-input bg-muted px-3 text-sm text-muted-foreground">
+          <div className="flex shrink-0 items-center whitespace-nowrap rounded-l-md border border-r-0 border-input bg-muted px-3 text-sm text-muted-foreground">
             {groupPrefix}
           </div>
         );
       }
-      return <div className="flex items-center">{groupPrefix}</div>;
+      return <div className="flex shrink-0 items-center whitespace-nowrap">{groupPrefix}</div>;
     };
 
     const renderSuffix = () => {
       if (!groupSuffix) return null;
       if (typeof groupSuffix === 'string') {
         return (
-          <div className="flex items-center rounded-r-md border border-l-0 border-input bg-muted px-3 text-sm text-muted-foreground">
+          <div className="flex shrink-0 items-center whitespace-nowrap rounded-r-md border border-l-0 border-input bg-muted px-3 text-sm text-muted-foreground">
             {groupSuffix}
           </div>
         );
       }
-      return <div className="flex items-center">{groupSuffix}</div>;
+      return <div className="flex shrink-0 items-center whitespace-nowrap">{groupSuffix}</div>;
     };
 
     return (
@@ -43,7 +43,7 @@ export const InputGroup = React.forwardRef<HTMLInputElement, InputGroupProps>(
             {label}
           </label>
         )}
-        <div className={cn('flex w-full shadow-sm', groupClassName)}>
+        <div className={cn('flex min-w-0 flex-nowrap w-full shadow-sm', groupClassName)}>
           {renderPrefix()}
           <input
             ref={ref}
@@ -51,7 +51,7 @@ export const InputGroup = React.forwardRef<HTMLInputElement, InputGroupProps>(
             name={name}
             id={id || name}
             className={cn(
-              'flex h-9 w-full border border-input bg-transparent px-3 py-1 text-base transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium file:text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 md:text-sm',
+              'min-w-0 flex-1 h-11 border border-input bg-transparent px-3 py-1 text-base transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium file:text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 md:text-sm',
               groupPrefix ? 'rounded-l-none' : 'rounded-l-md',
               groupSuffix ? 'rounded-r-none' : 'rounded-r-md',
               (error || isInvalid) && 'border-destructive focus-visible:ring-destructive',

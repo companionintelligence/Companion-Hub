@@ -570,6 +570,7 @@
   "APP_INSTALL_FORM_ERROR_LOCAL_SUBDOMAIN_INVALID": "Invalid subdomain",
   "APP_INSTALL_FORM_ERROR_LOCAL_SUBDOMAIN_FORMAT": "Subdomain is not valid (only lowercase letters, numbers and dashes are allowed. Max length 63 characters)",
   "APP_INSTALL_FORM_ERROR_DNS_NOT_AVAILABLE": "The name \"{{name}}\" is not available. This DNS record already exists in Cloudflare.",
+  "APP_INSTALL_FORM_CHECKING_DNS": "Checking DNS availability...",
   "APP_INSTALL_FORM_RANDOM": "Random",
   "APP_INSTALL_FORM_SHOW_PASSWORD": "Show password",
   "APP_INSTALL_FORM_HIDE_PASSWORD": "Hide password",

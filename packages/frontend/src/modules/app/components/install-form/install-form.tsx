@@ -220,11 +220,7 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
                 <InputGroup
                   groupPrefix="https://"
                   groupSuffix={
-                    watchExposureMode === 'tailscale'
-                      ? `.${localDomain || 'tailnet'}${isCheckingDns ? ' (checking...)' : ''}`
-                      : orgSlug
-                        ? `-${orgSlug}.${domain}${isCheckingDns ? ' (checking...)' : ''}`
-                        : `-${localDomain}${isCheckingDns ? ' (checking...)' : ''}`
+                    watchExposureMode === 'tailscale' ? `.${localDomain || 'tailnet'}` : orgSlug ? `-${orgSlug}.${domain}` : `-${localDomain}`
                   }
                   {...register('localSubdomain')}
                   label={t('APP_INSTALL_FORM_LOCAL_SUBDOMAIN')}
@@ -232,6 +228,7 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
                   disabled={loading}
                   placeholder={info.urn.split(':')[0]}
                 />
+                {isCheckingDns && <p className="mt-1.5 text-sm text-muted-foreground">{t('APP_INSTALL_FORM_CHECKING_DNS')}</p>}
               </div>
             )}
 
@@ -381,7 +378,7 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
           error={errors.maxBackups?.message}
           placeholder={globalMaxBackups === 0 ? undefined : globalMaxBackups.toString()}
         />
-        <span className="text-muted">{t('APP_INSTALL_FORM_MAX_BACKUPS_HINT', { value: globalMaxBackups })}</span>
+        <span className="text-sm text-muted-foreground">{t('APP_INSTALL_FORM_MAX_BACKUPS_HINT', { value: globalMaxBackups })}</span>
       </div>
     </form>
   );
