@@ -1,6 +1,7 @@
 import { useLocalStorage } from '@uidotdev/usehooks';
 import clsx from 'clsx';
 import { InputGroup } from '@/components/ui/Input';
+import { Switch } from '@/components/ui/Switch';
 import DOMPurify from 'dompurify';
 import { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -36,22 +37,11 @@ export const LogsTerminal = (props: Props) => {
 
   return (
     <div>
-      <div className="row d-flex align-items-center ps-1">
-        <div className="col">
-          <label className="form-check form-switch mt-1" htmlFor="follow-logs">
-            <input id="follow-logs" className="form-check-input" type="checkbox" checked={follow} onChange={() => setFollow(!follow)} />
-            <span className="form-check-label">{t('APP_LOGS_TAB_FOLLOW')}</span>
-          </label>
-        </div>
-        <div className="col">
-          <label className="form-check form-switch mt-1" htmlFor="follow-logs">
-            <input id="follow-logs" className="form-check-input" type="checkbox" checked={wrapLines} onChange={() => setWrapLines(!wrapLines)} />
-            <span className="form-check-label">{t('APP_LOGS_TAB_WRAP_LINES')}</span>
-          </label>
-        </div>
-        <div className="col">
+      <div className="flex flex-wrap items-center gap-6 mb-3">
+        <Switch name="follow-logs" checked={follow} onCheckedChange={() => setFollow(!follow)} label={t('APP_LOGS_TAB_FOLLOW')} />
+        <Switch name="wrap-lines" checked={wrapLines} onCheckedChange={() => setWrapLines(!wrapLines)} label={t('APP_LOGS_TAB_WRAP_LINES')} />
+        <div className="ml-auto w-48">
           <InputGroup
-            className="mb-2"
             id="max-lines"
             groupPrefix={t('APP_LOGS_TAB_MAX_LINES')}
             type="number"

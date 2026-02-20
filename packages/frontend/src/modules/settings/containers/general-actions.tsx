@@ -1,8 +1,8 @@
 import { Markdown } from '@/components/markdown/markdown';
 import { Button } from '@/components/ui/Button';
 import { useAppContext } from '@/context/app-context';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
-import { Star } from 'lucide-react';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/Card';
+import { Star, ArrowUpCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import semver from 'semver';
 import { UpdateRepoModal } from '../components/update-repo-modal/update-repo-modal';
@@ -38,16 +38,27 @@ export const GeneralActionsContainer = () => {
   };
 
   return (
-    <CardContent>
-      <h2 className="mb-4">{t('SETTINGS_ACTIONS_TITLE')}</h2>
-      <CardTitle className="mt-4">{t('SETTINGS_ACTIONS_CURRENT_VERSION', { version: version.current })}</CardTitle>
-      <p className="text-muted-foreground">
-        {isLatest ? t('SETTINGS_ACTIONS_STAY_UP_TO_DATE') : t('SETTINGS_ACTIONS_NEW_VERSION', { version: version.latest })}
-      </p>
-      {renderUpdate()}
-      <CardTitle className="mt-4">{t('SETTINGS_ACTIONS_UPDATE_REPO_TITLE')}</CardTitle>
-      <p className="text-muted-foreground">{t('SETTINGS_ACTIONS_UPDATE_REPO_SUBTITLE')}</p>
-      <UpdateRepoModal />
-    </CardContent>
+    <div className="space-y-6">
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <ArrowUpCircle className="h-5 w-5 text-muted-foreground" />
+            <CardTitle className="text-xl">{t('SETTINGS_ACTIONS_TITLE')}</CardTitle>
+          </div>
+          <CardDescription>{t('SETTINGS_ACTIONS_CURRENT_VERSION', { version: version.current })}</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-muted-foreground mb-4">
+            {isLatest ? t('SETTINGS_ACTIONS_STAY_UP_TO_DATE') : t('SETTINGS_ACTIONS_NEW_VERSION', { version: version.latest })}
+          </p>
+          {renderUpdate()}
+          <div className="mt-6 pt-6 border-t">
+            <h3 className="text-lg font-semibold mb-1">{t('SETTINGS_ACTIONS_UPDATE_REPO_TITLE')}</h3>
+            <p className="text-sm text-muted-foreground mb-3">{t('SETTINGS_ACTIONS_UPDATE_REPO_SUBTITLE')}</p>
+            <UpdateRepoModal />
+          </div>
+        </CardContent>
+      </Card>
+    </div>
   );
 };

@@ -1,5 +1,6 @@
 import { LanguageSelector } from '@/components/language-selector/language-selector';
 import { Button } from '@/components/ui/Button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Input } from '@/components/ui/Input';
 import { Switch } from '@/components/ui/Switch';
 import { useDisclosure } from '@/lib/hooks/use-disclosure';
@@ -145,7 +146,7 @@ export const UserSettingsForm = (props: IProps) => {
   };
 
   return (
-    <>
+    <div className="space-y-6">
       {isDirty && (
         <Alert variant="info" className="fade-in">
           <AlertIcon>
@@ -157,169 +158,179 @@ export const UserSettingsForm = (props: IProps) => {
           </div>
         </Alert>
       )}
-      <div className="flex items-center mb-2">
-        <User className="mr-2" />
-        <h2 className="text-2xl font-bold">{t('SETTINGS_GENERAL_USER_SETTINGS')}</h2>
-      </div>
-      <LanguageSelector showLabel locale={currentLocale} />
-      <Controller
-        control={control}
-        name="themeBase"
-        render={({ field: { onChange, value } }) => <ThemeBaseSelector value={value as ThemeBase} onChange={onChange} />}
-      />
-      <Controller
-        control={control}
-        name="themeColor"
-        render={({ field: { onChange, value } }) => (
-          <ColorSelector name="themeColor" label={t('SETTINGS_GENERAL_PRIMARY_COLOR')} value={value as ThemeColor} onChange={onChange} />
-        )}
-      />
-      <form className="flex flex-col mt-2" onSubmit={handleSubmit(validate)}>
-        <div className="flex items-center mb-2">
-          <SlidersHorizontal className="mr-2" />
-          <h2 className="text-2xl font-bold">{t('SETTINGS_GENERAL_TITLE')}</h2>
-        </div>
-        <p className="mb-4">{t('SETTINGS_GENERAL_SUBTITLE')}</p>
-        <div className="mb-3">
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <User className="h-5 w-5 text-muted-foreground" />
+            <CardTitle className="text-xl">{t('SETTINGS_GENERAL_USER_SETTINGS')}</CardTitle>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <LanguageSelector showLabel locale={currentLocale} />
           <Controller
             control={control}
-            name="guestDashboard"
-            defaultValue={false}
-            render={({ field: { onChange, value, ref, ...rest } }) => (
-              <Switch
-                className="mb-3"
-                ref={ref}
-                checked={value}
-                onCheckedChange={onChange}
-                {...rest}
-                label={
-                  <>
-                    {t('SETTINGS_GENERAL_GUEST_DASHBOARD')}
-                    <Tooltip className="tooltip" anchorSelect=".guest-dashboard-hint">
-                      {t('SETTINGS_GENERAL_GUEST_DASHBOARD_HINT')}
-                    </Tooltip>
-                    <span
-                      className={clsx(
-                        'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help guest-dashboard-hint',
-                      )}
-                    >
-                      ?
-                    </span>
-                  </>
-                }
-              />
+            name="themeBase"
+            render={({ field: { onChange, value } }) => <ThemeBaseSelector value={value as ThemeBase} onChange={onChange} />}
+          />
+          <Controller
+            control={control}
+            name="themeColor"
+            render={({ field: { onChange, value } }) => (
+              <ColorSelector name="themeColor" label={t('SETTINGS_GENERAL_PRIMARY_COLOR')} value={value as ThemeColor} onChange={onChange} />
             )}
           />
-        </div>
-        <div className="mb-3">
-          <Controller
-            control={control}
-            name="allowErrorMonitoring"
-            defaultValue={false}
-            render={({ field: { onChange, value, ref, ...rest } }) => (
-              <Switch
-                className="mb-3"
-                ref={ref}
-                checked={value}
-                onCheckedChange={onChange}
-                {...rest}
-                label={
-                  <>
-                    {t('SETTINGS_GENERAL_ALLOW_ERROR_MONITORING')}
-                    <Tooltip className="tooltip" anchorSelect=".allow-errors-hint">
-                      {t('SETTINGS_GENERAL_ALLOW_ERROR_MONITORING_HINT')}
-                    </Tooltip>
-                    <span
-                      className={clsx(
-                        'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help allow-errors-hint',
-                      )}
-                    >
-                      ?
-                    </span>
-                  </>
-                }
-              />
-            )}
-          />
-        </div>
-        <div className="mb-3">
-          <Controller
-            control={control}
-            name="allowAutoThemes"
-            defaultValue={false}
-            render={({ field: { onChange, value, ref, ...rest } }) => (
-              <Switch
-                className="mb-3"
-                ref={ref}
-                checked={value}
-                onCheckedChange={onChange}
-                {...rest}
-                label={
-                  <>
-                    {t('SETTINGS_GENERAL_ALLOW_AUTO_THEMES')}
-                    <Tooltip className="tooltip" anchorSelect=".allow-auto-themes-hint">
-                      {t('SETTINGS_GENERAL_ALLOW_AUTO_THEMES_HINT')}
-                    </Tooltip>
-                    <span
-                      className={clsx(
-                        'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help allow-auto-themes-hint',
-                      )}
-                    >
-                      ?
-                    </span>
-                  </>
-                }
-              />
-            )}
-          />
-        </div>
-        <div className="mb-3">
-          <Controller
-            control={control}
-            name="advancedSettings"
-            defaultValue={false}
-            render={({ field: { onChange, value, ref, ...rest } }) => (
-              <div>
-                <AdvancedSettingsModal
-                  onEnable={() => {
-                    advancedSettingsDisclosure.close();
-                    onChange(true);
-                  }}
-                  advancedSettingsDisclosure={advancedSettingsDisclosure}
-                />
-                <Switch
-                  className="mb-3"
-                  ref={ref}
-                  checked={value}
-                  onCheckedChange={(checked) => {
-                    if (checked) {
-                      advancedSettingsDisclosure.open();
-                    } else {
-                      onChange(false);
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <SlidersHorizontal className="h-5 w-5 text-muted-foreground" />
+            <CardTitle className="text-xl">{t('SETTINGS_GENERAL_TITLE')}</CardTitle>
+          </div>
+          <p className="text-sm text-muted-foreground">{t('SETTINGS_GENERAL_SUBTITLE')}</p>
+        </CardHeader>
+        <CardContent>
+          <form className="flex flex-col mt-2" onSubmit={handleSubmit(validate)}>
+            <div className="mb-3">
+              <Controller
+                control={control}
+                name="guestDashboard"
+                defaultValue={false}
+                render={({ field: { onChange, value, ref, ...rest } }) => (
+                  <Switch
+                    className="mb-3"
+                    ref={ref}
+                    checked={value}
+                    onCheckedChange={onChange}
+                    {...rest}
+                    label={
+                      <>
+                        {t('SETTINGS_GENERAL_GUEST_DASHBOARD')}
+                        <Tooltip className="tooltip" anchorSelect=".guest-dashboard-hint">
+                          {t('SETTINGS_GENERAL_GUEST_DASHBOARD_HINT')}
+                        </Tooltip>
+                        <span
+                          className={clsx(
+                            'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help guest-dashboard-hint',
+                          )}
+                        >
+                          ?
+                        </span>
+                      </>
                     }
-                  }}
-                  {...rest}
-                  label={
-                    <>
-                      {t('SETTINGS_GENERAL_ADVANCED_SETTINGS_TITLE')}
-                      <Tooltip className="tooltip" anchorSelect=".advanced-settings-hint">
-                        {t('SETTINGS_GENERAL_ADVANCED_SETTINGS_SUBTITLE')}
-                      </Tooltip>
-                      <span
-                        className={clsx(
-                          'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help advanced-settings-hint',
-                        )}
-                      >
-                        ?
-                      </span>
-                    </>
-                  }
-                />
-              </div>
-            )}
-          />
-        </div>
-        {/* <div className="mb-3">
+                  />
+                )}
+              />
+            </div>
+            <div className="mb-3">
+              <Controller
+                control={control}
+                name="allowErrorMonitoring"
+                defaultValue={false}
+                render={({ field: { onChange, value, ref, ...rest } }) => (
+                  <Switch
+                    className="mb-3"
+                    ref={ref}
+                    checked={value}
+                    onCheckedChange={onChange}
+                    {...rest}
+                    label={
+                      <>
+                        {t('SETTINGS_GENERAL_ALLOW_ERROR_MONITORING')}
+                        <Tooltip className="tooltip" anchorSelect=".allow-errors-hint">
+                          {t('SETTINGS_GENERAL_ALLOW_ERROR_MONITORING_HINT')}
+                        </Tooltip>
+                        <span
+                          className={clsx(
+                            'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help allow-errors-hint',
+                          )}
+                        >
+                          ?
+                        </span>
+                      </>
+                    }
+                  />
+                )}
+              />
+            </div>
+            <div className="mb-3">
+              <Controller
+                control={control}
+                name="allowAutoThemes"
+                defaultValue={false}
+                render={({ field: { onChange, value, ref, ...rest } }) => (
+                  <Switch
+                    className="mb-3"
+                    ref={ref}
+                    checked={value}
+                    onCheckedChange={onChange}
+                    {...rest}
+                    label={
+                      <>
+                        {t('SETTINGS_GENERAL_ALLOW_AUTO_THEMES')}
+                        <Tooltip className="tooltip" anchorSelect=".allow-auto-themes-hint">
+                          {t('SETTINGS_GENERAL_ALLOW_AUTO_THEMES_HINT')}
+                        </Tooltip>
+                        <span
+                          className={clsx(
+                            'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help allow-auto-themes-hint',
+                          )}
+                        >
+                          ?
+                        </span>
+                      </>
+                    }
+                  />
+                )}
+              />
+            </div>
+            <div className="mb-3">
+              <Controller
+                control={control}
+                name="advancedSettings"
+                defaultValue={false}
+                render={({ field: { onChange, value, ref, ...rest } }) => (
+                  <div>
+                    <AdvancedSettingsModal
+                      onEnable={() => {
+                        advancedSettingsDisclosure.close();
+                        onChange(true);
+                      }}
+                      advancedSettingsDisclosure={advancedSettingsDisclosure}
+                    />
+                    <Switch
+                      className="mb-3"
+                      ref={ref}
+                      checked={value}
+                      onCheckedChange={(checked) => {
+                        if (checked) {
+                          advancedSettingsDisclosure.open();
+                        } else {
+                          onChange(false);
+                        }
+                      }}
+                      {...rest}
+                      label={
+                        <>
+                          {t('SETTINGS_GENERAL_ADVANCED_SETTINGS_TITLE')}
+                          <Tooltip className="tooltip" anchorSelect=".advanced-settings-hint">
+                            {t('SETTINGS_GENERAL_ADVANCED_SETTINGS_SUBTITLE')}
+                          </Tooltip>
+                          <span
+                            className={clsx(
+                              'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help advanced-settings-hint',
+                            )}
+                          >
+                            ?
+                          </span>
+                        </>
+                      }
+                    />
+                  </div>
+                )}
+              />
+            </div>
+            {/* <div className="mb-3">
           <Input
             {...register('appsRepoUrl')}
             label={
@@ -335,325 +346,327 @@ export const UserSettingsForm = (props: IProps) => {
             placeholder="https://github.com/runtipi/runtipi-appstore"
           />
         </div> */}
-        <div>
-          <Controller
-            control={control}
-            name="timeZone"
-            defaultValue="Etc/GMT"
-            render={({ field: { onChange, value } }) => (
-              <Suspense fallback={<TimeZoneSuspense />}>
-                <TimeZoneSelector onChange={onChange} timeZone={value} />
-              </Suspense>
-            )}
-          />
-        </div>
-        <div className="mb-3">
-          <Input
-            {...register('localDomain')}
-            label={
-              <>
-                {t('SETTINGS_GENERAL_LOCAL_DOMAIN')}
-                <Tooltip className="tooltip" anchorSelect=".local-domain-hint">
-                  {t('SETTINGS_GENERAL_LOCAL_DOMAIN_HINT')}
-                </Tooltip>
-                <span
-                  className={clsx(
-                    'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help local-domain-hint',
-                  )}
-                >
-                  ?
-                </span>
-              </>
-            }
-            error={errors.localDomain?.message}
-            placeholder="example.local"
-            disabled={initialValues?.advancedSettings === false}
-          />
-          <Button className="mt-2 mb-2" onClick={downloadCertificate}>
-            {t('SETTINGS_GENERAL_DOWNLOAD_CERTIFICATE')}
-          </Button>
-        </div>
-        {initialValues?.advancedSettings && (
-          <div>
-            <div className="flex items-center mb-2">
-              <Sliders className="mr-2" />
-              <h2 className="text-2xl font-bold">{t('SETTINGS_GENERAL_ADVANCED_SETTINGS_TITLE')}</h2>
-            </div>
-            <p className="mb-4">{t('SETTINGS_GENERAL_ADVANCED_SETTINGS_SUBTITLE')}</p>
-            <div className="mb-3">
+            <div>
               <Controller
                 control={control}
-                name="persistTraefikConfig"
-                defaultValue={false}
-                render={({ field: { onChange, value, ref, ...rest } }) => (
-                  <Switch
-                    className="mb-3"
-                    ref={ref}
-                    checked={value}
-                    onCheckedChange={onChange}
-                    {...rest}
+                name="timeZone"
+                defaultValue="Etc/GMT"
+                render={({ field: { onChange, value } }) => (
+                  <Suspense fallback={<TimeZoneSuspense />}>
+                    <TimeZoneSelector onChange={onChange} timeZone={value} />
+                  </Suspense>
+                )}
+              />
+            </div>
+            <div className="mb-3">
+              <Input
+                {...register('localDomain')}
+                label={
+                  <>
+                    {t('SETTINGS_GENERAL_LOCAL_DOMAIN')}
+                    <Tooltip className="tooltip" anchorSelect=".local-domain-hint">
+                      {t('SETTINGS_GENERAL_LOCAL_DOMAIN_HINT')}
+                    </Tooltip>
+                    <span
+                      className={clsx(
+                        'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help local-domain-hint',
+                      )}
+                    >
+                      ?
+                    </span>
+                  </>
+                }
+                error={errors.localDomain?.message}
+                placeholder="example.local"
+                disabled={initialValues?.advancedSettings === false}
+              />
+              <Button className="mt-2 mb-2" onClick={downloadCertificate}>
+                {t('SETTINGS_GENERAL_DOWNLOAD_CERTIFICATE')}
+              </Button>
+            </div>
+            {initialValues?.advancedSettings && (
+              <div>
+                <div className="flex items-center mb-2">
+                  <Sliders className="mr-2" />
+                  <h2 className="text-2xl font-bold">{t('SETTINGS_GENERAL_ADVANCED_SETTINGS_TITLE')}</h2>
+                </div>
+                <p className="mb-4">{t('SETTINGS_GENERAL_ADVANCED_SETTINGS_SUBTITLE')}</p>
+                <div className="mb-3">
+                  <Controller
+                    control={control}
+                    name="persistTraefikConfig"
+                    defaultValue={false}
+                    render={({ field: { onChange, value, ref, ...rest } }) => (
+                      <Switch
+                        className="mb-3"
+                        ref={ref}
+                        checked={value}
+                        onCheckedChange={onChange}
+                        {...rest}
+                        label={
+                          <>
+                            {t('SETTINGS_GENERAL_PERSIST_TRAEFIK_CONFIG')}
+                            <Tooltip className="tooltip" anchorSelect=".persist-traefik-config-hint">
+                              {t('SETTINGS_GENERAL_PERSIST_TRAEFIK_CONFIG_HINT')}
+                            </Tooltip>
+                            <span
+                              className={clsx(
+                                'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help persist-traefik-config-hint',
+                              )}
+                            >
+                              ?
+                            </span>
+                          </>
+                        }
+                      />
+                    )}
+                  />
+                </div>
+                <div className="mb-3">
+                  <Input
+                    {...register('domain')}
                     label={
                       <>
-                        {t('SETTINGS_GENERAL_PERSIST_TRAEFIK_CONFIG')}
-                        <Tooltip className="tooltip" anchorSelect=".persist-traefik-config-hint">
-                          {t('SETTINGS_GENERAL_PERSIST_TRAEFIK_CONFIG_HINT')}
+                        {t('SETTINGS_GENERAL_DOMAIN')}
+                        <Tooltip className="tooltip" anchorSelect=".domain-hint">
+                          {t('SETTINGS_GENERAL_DOMAIN_HINT')}
                         </Tooltip>
                         <span
                           className={clsx(
-                            'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help persist-traefik-config-hint',
+                            'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help domain-hint',
                           )}
                         >
                           ?
                         </span>
                       </>
                     }
+                    error={errors.domain?.message}
+                    placeholder="example.com"
                   />
-                )}
-              />
-            </div>
-            <div className="mb-3">
-              <Input
-                {...register('domain')}
-                label={
-                  <>
-                    {t('SETTINGS_GENERAL_DOMAIN')}
-                    <Tooltip className="tooltip" anchorSelect=".domain-hint">
-                      {t('SETTINGS_GENERAL_DOMAIN_HINT')}
-                    </Tooltip>
-                    <span
-                      className={clsx(
-                        'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help domain-hint',
-                      )}
-                    >
-                      ?
-                    </span>
-                  </>
-                }
-                error={errors.domain?.message}
-                placeholder="example.com"
-              />
-            </div>
-            <div className="mb-3">
-              <Input
-                {...register('internalIp')}
-                label={
-                  <>
-                    {t('SETTINGS_GENERAL_INTERNAL_IP')}
-                    <Tooltip className="tooltip" anchorSelect=".internal-ip-hint">
-                      {t('SETTINGS_GENERAL_INTERNAL_IP_HINT')}
-                    </Tooltip>
-                    <span
-                      className={clsx(
-                        'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help internal-ip-hint',
-                      )}
-                    >
-                      ?
-                    </span>
-                  </>
-                }
-                error={errors.internalIp?.message}
-                placeholder="192.168.1.1"
-              />
-            </div>
-            <div className="mb-3">
-              <Input
-                {...register('listenIp')}
-                label={
-                  <>
-                    {t('SETTINGS_GENERAL_LISTEN_IP')}
-                    <Tooltip className="tooltip" anchorSelect=".listen-ip-hint">
-                      {t('SETTINGS_GENERAL_LISTEN_IP_HINT')}
-                    </Tooltip>
-                    <span
-                      className={clsx(
-                        'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help listen-ip-hint',
-                      )}
-                    >
-                      ?
-                    </span>
-                  </>
-                }
-                error={errors.listenIp?.message}
-                placeholder="0.0.0.0"
-              />
-            </div>
-            <div className="mb-3">
-              <Input
-                {...register('port', {
-                  valueAsNumber: true,
-                })}
-                label={
-                  <>
-                    {t('SETTINGS_GENERAL_PORT')}
-                    <Tooltip className="tooltip" anchorSelect=".port-hint">
-                      {t('SETTINGS_GENERAL_PORT_HINT')}
-                    </Tooltip>
-                    <span
-                      className={clsx(
-                        'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help port-hint',
-                      )}
-                    >
-                      ?
-                    </span>
-                  </>
-                }
-                error={errors.port?.message}
-                placeholder="80"
-                type="number"
-                max={65535}
-              />
-            </div>
-            <div className="mb-3">
-              <Input
-                {...register('sslPort', {
-                  valueAsNumber: true,
-                })}
-                label={
-                  <>
-                    {t('SETTINGS_GENERAL_SSL_PORT')}
-                    <Tooltip className="tooltip" anchorSelect=".sslPort-hint">
-                      {t('SETTINGS_GENERAL_SSL_PORT_HINT')}
-                    </Tooltip>
-                    <span
-                      className={clsx(
-                        'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help sslPort-hint',
-                      )}
-                    >
-                      ?
-                    </span>
-                  </>
-                }
-                error={errors.sslPort?.message}
-                placeholder="443"
-                type="number"
-                max={65535}
-              />
-            </div>
-            <div className="mb-3">
-              <Input
-                {...register('eventsTimeout', {
-                  valueAsNumber: true,
-                  required: true,
-                })}
-                label={
-                  <>
-                    {t('SETTINGS_GENERAL_EVENTS_TIMEOUT')}
-                    <Tooltip className="tooltip" anchorSelect=".events-timeout-hint">
-                      {t('SETTINGS_GENERAL_EVENTS_TIMEOUT_HINT')}
-                    </Tooltip>
-                    <span
-                      className={clsx(
-                        'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help events-timeout-hint',
-                      )}
-                    >
-                      ?
-                    </span>
-                  </>
-                }
-                error={errors.eventsTimeout?.message}
-                placeholder="5"
-                type="number"
-              />
-            </div>
-            <div className="mb-3">
-              <Input
-                {...register('maxBackups', {
-                  valueAsNumber: true,
-                  required: true,
-                })}
-                label={
-                  <>
-                    {t('SETTINGS_GENERAL_MAX_BACKUPS')}
-                    <Tooltip className="tooltip" anchorSelect=".max-backups-hint">
-                      {t('SETTINGS_GENERAL_MAX_BACKUPS_HINT')}
-                    </Tooltip>
-                    <span
-                      className={clsx(
-                        'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help max-backups-hint',
-                      )}
-                    >
-                      ?
-                    </span>
-                  </>
-                }
-                error={errors.maxBackups?.message}
-                placeholder="5"
-                type="number"
-                min={0}
-                max={100}
-              />
-            </div>
-            <div className="mb-3">
-              <Input
-                {...register('appDataPath')}
-                label={
-                  <>
-                    {t('SETTINGS_GENERAL_APP_DATA_PATH')}
-                    <Tooltip className="tooltip" anchorSelect=".app-data-path-hint">
-                      {t('SETTINGS_GENERAL_APP_DATA_PATH_HINT')}
-                    </Tooltip>
-                    <span
-                      className={clsx(
-                        'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help app-data-path-hint',
-                      )}
-                    >
-                      ?
-                    </span>
-                  </>
-                }
-                error={errors.appDataPath?.message}
-                placeholder="/path/to/app/data"
-              />
-            </div>
-            <div className="mb-3">
-              <Input
-                {...register('forwardAuthUrl')}
-                label={
-                  <>
-                    {t('SETTINGS_GENERAL_FORWARD_AUTH_URL')}
-                    <Tooltip className="tooltip" anchorSelect=".forward-auth-url-hint">
-                      {t('SETTINGS_GENERAL_FORWARD_AUTH_URL_HINT')}
-                    </Tooltip>
-                    <span
-                      className={clsx(
-                        'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help forward-auth-url-hint',
-                      )}
-                    >
-                      ?
-                    </span>
-                  </>
-                }
-                error={errors.forwardAuthUrl?.message}
-                placeholder="https://auth.example.com"
-              />
-            </div>
-            <div className="mb-3">
-              <Controller
-                control={control}
-                name="logLevel"
-                defaultValue="info"
-                render={({ field: { onChange, value } }) => (
-                  <Select value={value} defaultValue="info" onValueChange={onChange}>
-                    <SelectTrigger className="mb-3" name="logLevel" label={t('SETTINGS_GENERAL_LOG_LEVEL')}>
-                      <SelectValue placeholder="Log level" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {Object.values(LOG_LEVEL_ENUM).map((level) => (
-                        <SelectItem key={level} value={level}>
-                          {level}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                )}
-              />
-            </div>
-          </div>
-        )}
-        <Button loading={loading} type="submit" intent="success">
-          {t('SETTINGS_GENERAL_SUBMIT')}
-        </Button>
-      </form>
-    </>
+                </div>
+                <div className="mb-3">
+                  <Input
+                    {...register('internalIp')}
+                    label={
+                      <>
+                        {t('SETTINGS_GENERAL_INTERNAL_IP')}
+                        <Tooltip className="tooltip" anchorSelect=".internal-ip-hint">
+                          {t('SETTINGS_GENERAL_INTERNAL_IP_HINT')}
+                        </Tooltip>
+                        <span
+                          className={clsx(
+                            'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help internal-ip-hint',
+                          )}
+                        >
+                          ?
+                        </span>
+                      </>
+                    }
+                    error={errors.internalIp?.message}
+                    placeholder="192.168.1.1"
+                  />
+                </div>
+                <div className="mb-3">
+                  <Input
+                    {...register('listenIp')}
+                    label={
+                      <>
+                        {t('SETTINGS_GENERAL_LISTEN_IP')}
+                        <Tooltip className="tooltip" anchorSelect=".listen-ip-hint">
+                          {t('SETTINGS_GENERAL_LISTEN_IP_HINT')}
+                        </Tooltip>
+                        <span
+                          className={clsx(
+                            'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help listen-ip-hint',
+                          )}
+                        >
+                          ?
+                        </span>
+                      </>
+                    }
+                    error={errors.listenIp?.message}
+                    placeholder="0.0.0.0"
+                  />
+                </div>
+                <div className="mb-3">
+                  <Input
+                    {...register('port', {
+                      valueAsNumber: true,
+                    })}
+                    label={
+                      <>
+                        {t('SETTINGS_GENERAL_PORT')}
+                        <Tooltip className="tooltip" anchorSelect=".port-hint">
+                          {t('SETTINGS_GENERAL_PORT_HINT')}
+                        </Tooltip>
+                        <span
+                          className={clsx(
+                            'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help port-hint',
+                          )}
+                        >
+                          ?
+                        </span>
+                      </>
+                    }
+                    error={errors.port?.message}
+                    placeholder="80"
+                    type="number"
+                    max={65535}
+                  />
+                </div>
+                <div className="mb-3">
+                  <Input
+                    {...register('sslPort', {
+                      valueAsNumber: true,
+                    })}
+                    label={
+                      <>
+                        {t('SETTINGS_GENERAL_SSL_PORT')}
+                        <Tooltip className="tooltip" anchorSelect=".sslPort-hint">
+                          {t('SETTINGS_GENERAL_SSL_PORT_HINT')}
+                        </Tooltip>
+                        <span
+                          className={clsx(
+                            'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help sslPort-hint',
+                          )}
+                        >
+                          ?
+                        </span>
+                      </>
+                    }
+                    error={errors.sslPort?.message}
+                    placeholder="443"
+                    type="number"
+                    max={65535}
+                  />
+                </div>
+                <div className="mb-3">
+                  <Input
+                    {...register('eventsTimeout', {
+                      valueAsNumber: true,
+                      required: true,
+                    })}
+                    label={
+                      <>
+                        {t('SETTINGS_GENERAL_EVENTS_TIMEOUT')}
+                        <Tooltip className="tooltip" anchorSelect=".events-timeout-hint">
+                          {t('SETTINGS_GENERAL_EVENTS_TIMEOUT_HINT')}
+                        </Tooltip>
+                        <span
+                          className={clsx(
+                            'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help events-timeout-hint',
+                          )}
+                        >
+                          ?
+                        </span>
+                      </>
+                    }
+                    error={errors.eventsTimeout?.message}
+                    placeholder="5"
+                    type="number"
+                  />
+                </div>
+                <div className="mb-3">
+                  <Input
+                    {...register('maxBackups', {
+                      valueAsNumber: true,
+                      required: true,
+                    })}
+                    label={
+                      <>
+                        {t('SETTINGS_GENERAL_MAX_BACKUPS')}
+                        <Tooltip className="tooltip" anchorSelect=".max-backups-hint">
+                          {t('SETTINGS_GENERAL_MAX_BACKUPS_HINT')}
+                        </Tooltip>
+                        <span
+                          className={clsx(
+                            'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help max-backups-hint',
+                          )}
+                        >
+                          ?
+                        </span>
+                      </>
+                    }
+                    error={errors.maxBackups?.message}
+                    placeholder="5"
+                    type="number"
+                    min={0}
+                    max={100}
+                  />
+                </div>
+                <div className="mb-3">
+                  <Input
+                    {...register('appDataPath')}
+                    label={
+                      <>
+                        {t('SETTINGS_GENERAL_APP_DATA_PATH')}
+                        <Tooltip className="tooltip" anchorSelect=".app-data-path-hint">
+                          {t('SETTINGS_GENERAL_APP_DATA_PATH_HINT')}
+                        </Tooltip>
+                        <span
+                          className={clsx(
+                            'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help app-data-path-hint',
+                          )}
+                        >
+                          ?
+                        </span>
+                      </>
+                    }
+                    error={errors.appDataPath?.message}
+                    placeholder="/path/to/app/data"
+                  />
+                </div>
+                <div className="mb-3">
+                  <Input
+                    {...register('forwardAuthUrl')}
+                    label={
+                      <>
+                        {t('SETTINGS_GENERAL_FORWARD_AUTH_URL')}
+                        <Tooltip className="tooltip" anchorSelect=".forward-auth-url-hint">
+                          {t('SETTINGS_GENERAL_FORWARD_AUTH_URL_HINT')}
+                        </Tooltip>
+                        <span
+                          className={clsx(
+                            'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help forward-auth-url-hint',
+                          )}
+                        >
+                          ?
+                        </span>
+                      </>
+                    }
+                    error={errors.forwardAuthUrl?.message}
+                    placeholder="https://auth.example.com"
+                  />
+                </div>
+                <div className="mb-3">
+                  <Controller
+                    control={control}
+                    name="logLevel"
+                    defaultValue="info"
+                    render={({ field: { onChange, value } }) => (
+                      <Select value={value} defaultValue="info" onValueChange={onChange}>
+                        <SelectTrigger className="mb-3" name="logLevel" label={t('SETTINGS_GENERAL_LOG_LEVEL')}>
+                          <SelectValue placeholder="Log level" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {Object.values(LOG_LEVEL_ENUM).map((level) => (
+                            <SelectItem key={level} value={level}>
+                              {level}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                  />
+                </div>
+              </div>
+            )}
+            <Button loading={loading} type="submit" intent="success">
+              {t('SETTINGS_GENERAL_SUBMIT')}
+            </Button>
+          </form>
+        </CardContent>
+      </Card>
+    </div>
   );
 };
