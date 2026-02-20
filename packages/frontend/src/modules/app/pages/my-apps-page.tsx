@@ -56,7 +56,7 @@ export default () => {
   return (
     <div className="h-full flex flex-col px-6 pt-4">
       <div className="flex-shrink-0 mb-6">
-        <h2 className="text-3xl font-bold tracking-tight mb-1 text-foreground">My Apps</h2>
+        <h2 className="text-2xl sm:text-3xl font-bold tracking-tight mb-1 text-foreground">My Apps</h2>
         <p className="text-lg text-muted-foreground">Manage your installed applications and links</p>
       </div>
       <div className="flex-1 overflow-y-auto min-h-0" data-testid="my-apps-scroll-container">

@@ -6,11 +6,11 @@ interface SimpleAppTileProps {
 }
 
 export const SimpleAppTile = ({ name, urn }: SimpleAppTileProps) => (
-  <div className="flex flex-col items-center text-center p-2 cursor-pointer hover:opacity-80 transition-opacity" style={{ width: 120 }}>
+  <div className="flex flex-col items-center text-center p-2 cursor-pointer hover:opacity-80 transition-opacity w-full">
     <div className="mb-2">
-      <AppLogo urn={urn} alt={name} size={64} className="rounded-xl shadow-sm" />
+      <AppLogo urn={urn} alt={name} size={56} className="rounded-xl shadow-sm" />
     </div>
-    <div className="truncate w-full font-medium text-sm" title={name}>
+    <div className="truncate w-full font-medium text-xs sm:text-sm" title={name}>
       {name}
     </div>
   </div>
