@@ -6,6 +6,7 @@ import { useUserContext } from '@/context/user-context';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useLocation } from 'react-router';
 import { Welcome } from '@/components/welcome/welcome';
+import { CompanionChat } from '@/modules/companion/components/companion-chat';
 
 export const DashboardLayoutSuspense = ({ children }: PropsWithChildren) => {
   return (
@@ -102,6 +103,7 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
           </motion.div>
         </AnimatePresence>
       </main>
+      <CompanionChat />
     </div>
   );
 };

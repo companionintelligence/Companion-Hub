@@ -121,3 +121,15 @@ export const deviceRegistration = pgTable('device_registration', {
   createdAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
   updatedAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
 });
+
+// ─── Companion Agent Messages ──────────────────────────────────────────────────
+
+export const companionMessage = pgTable('companion_message', {
+  id: serial('id').primaryKey(),
+  userId: integer('user_id').notNull(),
+  role: varchar('role', { length: 20 }).notNull(), // system, user, assistant, tool
+  content: text('content').notNull(),
+  toolCalls: text('tool_calls'), // JSON string of tool calls
+  toolCallId: varchar('tool_call_id', { length: 100 }),
+  createdAt: timestamp('created_at', { mode: 'string' }).defaultNow().notNull(),
+});
