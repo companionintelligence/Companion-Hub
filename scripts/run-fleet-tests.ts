@@ -147,7 +147,7 @@ async function runTestsOnServer(server: FleetServer, _verbose: boolean): Promise
 
   const sshCommand = `
     cd ~/devel/CI-OS-Hub && 
-    git pull --quiet origin develop 2>/dev/null || true &&
+    git pull --quiet origin dev 2>/dev/null || true &&
     bun install --silent 2>/dev/null || true &&
     bun run playwright test e2e/generated/catalog-batch-${server.batch}.spec.ts \
       --reporter=json \

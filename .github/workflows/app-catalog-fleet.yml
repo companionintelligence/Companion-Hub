@@ -134,8 +134,8 @@ jobs:
           ssh -o StrictHostKeyChecking=no ${{ env.SSH_USER }}@${{ matrix.ip }} << 'ENDSSH'
             # Update code
             cd ~/devel/CI-OS-Hub
-            git fetch origin develop
-            git reset --hard origin/develop
+            git fetch origin dev
+            git reset --hard origin/dev
             
             # Install dependencies
             bun install --frozen-lockfile 2>/dev/null || bun install

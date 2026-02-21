@@ -6,21 +6,21 @@ This document describes the multi-environment CI/CD pipeline for CI-OS-Hub.
 
 The CI-OS-Hub project has a multi-environment deployment pipeline that automatically deploys to three environments based on branch activity:
 
-- **Development (dev)**: Triggered by pushes to `develop` branch
+- **Development (dev)**: Triggered by pushes to `dev` branch
 - **Staging**: Triggered by pushes to `staging` branch  
 - **Production**: Triggered by pushes to `main` branch
 
 ## Branch Strategy
 
 ```
-develop  →  dev environment (ci-os-hub-dev)
+dev      →  dev environment (ci-os-hub-dev)
 staging  →  staging environment (ci-os-hub-staging)
 main     →  production environment (ci-os-hub-production)
 ```
 
 ## Docker Image Tags
 
-- `develop` branch → `ghcr.io/companionintelligence/ci-os-hub:dev`
+- `dev` branch → `ghcr.io/companionintelligence/ci-os-hub:dev`
 - `staging` branch → `ghcr.io/companionintelligence/ci-os-hub:staging`
 - `main` branch → `ghcr.io/companionintelligence/ci-os-hub:latest`
 
@@ -57,7 +57,7 @@ Create three GitHub Environments in repository settings:
 
 - Push to `main` → Production (requires approval)
 - Push to `staging` → Staging
-- Push to `develop` → Dev
+- Push to `dev` → Dev
 
 ### Manual Deployments
 
