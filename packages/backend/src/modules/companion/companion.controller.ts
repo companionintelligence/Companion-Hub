@@ -1,8 +1,8 @@
-import { Controller, Post, Get, Delete, Put, Body, Query, Req, UseGuards, type MessageEvent, HttpCode } from '@nestjs/common';
+import { Controller, Post, Get, Delete, Put, Body, Query, Req, Res, UseGuards, HttpCode } from '@nestjs/common';
+import type { Response } from 'express';
 import { AuthGuard } from '@/modules/auth/auth.guard';
 import { CompanionService } from './companion.service';
 import type { ChatRequestDto, CompanionConfigDto } from './dto/companion.dto';
-import { Observable } from 'rxjs';
 
 @UseGuards(AuthGuard)
 @Controller('companion')
@@ -15,35 +15,27 @@ export class CompanionController {
    */
   @Post('chat')
   @HttpCode(200)
-  chat(@Body() body: ChatRequestDto, @Req() req: Record<string, unknown>): Observable<MessageEvent> {
+  async chat(@Body() body: ChatRequestDto, @Req() req: Record<string, unknown>, @Res() res: Response) {
     const userId = (req as { userId?: number }).userId || 1;
     const message = body.message;
 
-    return new Observable((subscriber) => {
-      (async () => {
-        try {
-          for await (const event of this.companionService.chat(userId, message)) {
-            subscriber.next({
-              data: JSON.stringify(event),
-              type: 'message',
-            });
-          }
-          subscriber.complete();
-        } catch (error) {
-          subscriber.next({
-            data: JSON.stringify({ type: 'error', content: String(error) }),
-            type: 'message',
-          });
-          subscriber.complete();
-        }
-      })();
-    });
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders();
+
+    try {
+      for await (const event of this.companionService.chat(userId, message)) {
+        res.write(`data: ${JSON.stringify(event)}\n\n`);
+      }
+    } catch (error) {
+      res.write(`data: ${JSON.stringify({ type: 'error', content: String(error) })}\n\n`);
+    } finally {
+      res.end();
+    }
   }
 
-  /**
-   * Get conversation history.
-   * GET /api/companion/history
-   */
   @Get('history')
   async getHistory(@Req() req: Record<string, unknown>, @Query('limit') limit?: string) {
     const userId = (req as { userId?: number }).userId || 1;
@@ -51,10 +43,6 @@ export class CompanionController {
     return { messages };
   }
 
-  /**
-   * Clear conversation history.
-   * DELETE /api/companion/history
-   */
   @Delete('history')
   async clearHistory(@Req() req: Record<string, unknown>) {
     const userId = (req as { userId?: number }).userId || 1;
@@ -62,40 +50,24 @@ export class CompanionController {
     return { success: true };
   }
 
-  /**
-   * List available LLM models.
-   * GET /api/companion/models
-   */
   @Get('models')
   async getModels() {
     const models = await this.companionService.getModels();
     return { models };
   }
 
-  /**
-   * List registered tools.
-   * GET /api/companion/tools
-   */
   @Get('tools')
   async getTools() {
     const tools = await this.companionService.getTools();
     return { tools };
   }
 
-  /**
-   * Update LLM provider configuration.
-   * PUT /api/companion/config
-   */
   @Put('config')
   async updateConfig(@Body() config: CompanionConfigDto) {
     await this.companionService.updateConfig(config);
     return { success: true };
   }
 
-  /**
-   * Get companion status.
-   * GET /api/companion/status
-   */
   @Get('status')
   async getStatus(@Req() req: Record<string, unknown>) {
     const userId = (req as { userId?: number }).userId || 1;
