@@ -9,6 +9,17 @@ import { useCallback, useEffect, useState, useMemo } from 'react';
 import { Input } from '@/components/ui/Input';
 import { Navigate, useParams, Link } from 'react-router';
 import alts from '@/lib/data/alts.json';
+
+interface AltEntry {
+  name: string;
+  icon: string | null;
+  url: string | null;
+  appSlug?: string;
+}
+interface AltItem {
+  proprietary: AltEntry[];
+  alternatives: AltEntry[];
+}
 import { iconForCategory, colorSchemeForCategory } from '@/modules/app/helpers/table-helpers';
 import clsx from 'clsx';
 import { Card, CardHeader, CardTitle } from '@/components/ui/Card';
@@ -108,12 +119,9 @@ export default () => {
     const q = search.toLowerCase();
     const result: Record<string, (typeof alts)[keyof typeof alts]> = {};
     for (const [cat, items] of Object.entries(alts)) {
-      // biome-ignore lint/suspicious/noExplicitAny: JSON import typing
-      const filtered = (items as any[]).filter((item) => {
-        // biome-ignore lint/suspicious/noExplicitAny: JSON import typing
-        const propMatch = (item.proprietary as any[]).some((p) => p.name.toLowerCase().includes(q));
-        // biome-ignore lint/suspicious/noExplicitAny: JSON import typing
-        const altMatch = (item.alternatives as any[]).some((a) => a.name.toLowerCase().includes(q));
+      const filtered = (items as AltItem[]).filter((item) => {
+        const propMatch = item.proprietary.some((p) => p.name.toLowerCase().includes(q));
+        const altMatch = item.alternatives.some((a) => a.name.toLowerCase().includes(q));
         const catMatch = cat.toLowerCase().includes(q);
         return propMatch || altMatch || catMatch;
       });
@@ -286,14 +294,12 @@ export default () => {
                           </TableRow>
                         </TableHeader>
                         <TableBody>
-                          {/* biome-ignore lint/suspicious/noExplicitAny: JSON import typing */}
-                          {(items as any[]).map((item, index) => (
+                          {(items as AltItem[]).map((item, index) => (
                             // biome-ignore lint/suspicious/noArrayIndexKey: Static list
                             <TableRow key={index}>
                               <TableCell className="py-3">
                                 <div className="flex flex-wrap gap-2">
-                                  {/* biome-ignore lint/suspicious/noExplicitAny: JSON import typing */}
-                                  {(item.proprietary as any[]).map((prop) => (
+                                  {item.proprietary.map((prop) => (
                                     <div
                                       key={prop.name}
                                       className="flex items-center gap-2 rounded-full bg-muted/50 px-3 py-1.5 text-sm"
@@ -309,8 +315,7 @@ export default () => {
                               </TableCell>
                               <TableCell className="py-3">
                                 <div className="flex flex-wrap gap-2">
-                                  {/* biome-ignore lint/suspicious/noExplicitAny: JSON import typing */}
-                                  {(item.alternatives as any[]).map((alt) => {
+                                  {item.alternatives.map((alt) => {
                                     const isAvailable = alt.appSlug && availableAppSlugs.has(alt.appSlug) && ciCloudStore;
                                     if (isAvailable) {
                                       return (

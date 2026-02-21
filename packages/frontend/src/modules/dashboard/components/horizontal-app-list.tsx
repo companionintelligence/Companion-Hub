@@ -17,8 +17,8 @@ export const HorizontalAppList = ({ apps }: HorizontalAppListProps) => {
 
   if (apps.length === 0) {
     return (
-      <Link to="/app-store" className="flex justify-center items-center no-underline" style={{ minHeight: '380px', width: '100%' }}>
-        <h1 className="text-center text-3xl text-muted-foreground/30 font-medium">
+      <Link to="/app-store" className="flex justify-center items-center no-underline py-16 sm:py-0 w-full" style={{ minHeight: 0 }}>
+        <h1 className="text-center text-xl sm:text-3xl text-muted-foreground/30 font-medium px-4">
           {t('DASHBOARD_NO_APPS_MESSAGE', 'Click here to install your first app')}
         </h1>
       </Link>
@@ -30,13 +30,10 @@ export const HorizontalAppList = ({ apps }: HorizontalAppListProps) => {
       <div
         className="grid gap-3 py-2 px-1"
         style={{
-          gridTemplateRows: 'repeat(3, min-content)',
-          gridAutoFlow: 'column',
-          gridAutoColumns: 'max-content',
+          gridTemplateColumns: 'repeat(auto-fill, minmax(100px, 1fr))',
           overflowX: 'auto',
           scrollBehavior: 'smooth',
           scrollbarWidth: 'none',
-          minHeight: '380px',
           alignContent: 'start',
         }}
       >

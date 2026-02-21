@@ -26,7 +26,7 @@ export default () => {
     <div className="h-full overflow-y-auto">
       <div className="flex flex-col items-center gap-6 py-6">
         {/* Usage Section — 3 widgets centered */}
-        <div className="grid grid-cols-3 gap-4 w-full max-w-2xl px-4">
+        <div className="grid grid-cols-3 gap-2 sm:gap-4 w-full max-w-2xl px-2 sm:px-4">
           <CompactSystemStat
             isLoading={isLoading}
             title={t('DASHBOARD_DISK_SPACE_TITLE')}
@@ -54,7 +54,7 @@ export default () => {
         </div>
 
         {/* Apps Section */}
-        <div className="w-full">
+        <div className="w-full max-w-2xl px-2 sm:px-4">
           <HorizontalAppList apps={appsData.installed} />
         </div>
 
