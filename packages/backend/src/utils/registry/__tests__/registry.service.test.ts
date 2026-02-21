@@ -39,7 +39,7 @@ describe('RegistryService', () => {
       const result = await registryService.getTagsSince('ci-os-hub', '1.0.0');
 
       expect(result).toEqual(['1.2.0', '1.1.0']);
-      expect(httpService.get).toHaveBeenCalledWith('https://cloud.ci.computer/v2/ci-os-hub/tags/list');
+      expect(httpService.get).toHaveBeenCalledWith('https://portal.ci.computer/v2/ci-os-hub/tags/list');
     });
 
     it('should return empty array when no newer tags exist', async () => {
