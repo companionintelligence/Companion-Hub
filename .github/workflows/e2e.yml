@@ -84,9 +84,9 @@ jobs:
           RABBITMQ_USERNAME: tipi
           RABBITMQ_PASSWORD: tipi
           JWT_SECRET: e2e-test-secret
-          CI_CLOUD_URL: https://app.companionintelligence.com
-          CI_CLOUD_API_URL: https://app.companionintelligence.com/api
-          CI_CLOUD_FRONTEND_URL: https://app.companionintelligence.com
+          CI_CLOUD_URL: https://portal.companionintelligence.com
+          CI_CLOUD_API_URL: https://portal.companionintelligence.com/api
+          CI_CLOUD_FRONTEND_URL: https://portal.companionintelligence.com
           DOMAIN: ci.computer
           LOCAL_DOMAIN: tipi.lan
           ROOT_FOLDER_HOST: /tmp/runtipi-e2e

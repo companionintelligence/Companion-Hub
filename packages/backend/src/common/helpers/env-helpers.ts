@@ -212,7 +212,7 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   envMap.set('THEME_COLOR', settings.themeColor || envMap.get('THEME_COLOR') || 'blue');
 
   // CI Cloud integration settings
-  const ciCloudUrl = process.env.CI_CLOUD_URL || envMap.get('CI_CLOUD_URL') || 'https://app.ci.computer';
+  const ciCloudUrl = process.env.CI_CLOUD_URL || envMap.get('CI_CLOUD_URL') || 'https://portal.ci.computer';
   envMap.set('CI_CLOUD_URL', ciCloudUrl);
 
   // Only write the env file if values have actually changed to avoid unnecessary overwrites

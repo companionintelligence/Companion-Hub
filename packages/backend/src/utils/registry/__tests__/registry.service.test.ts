@@ -31,7 +31,7 @@ describe('RegistryService', () => {
     });
 
     it('should return tags newer than current version sorted descending', async () => {
-      configurationService.get.mockReturnValue('https://cloud.ci.computer');
+      configurationService.get.mockReturnValue('https://portal.ci.computer');
       httpService.get.mockReturnValue(
         of({ data: { tags: ['1.0.0', '1.1.0', '1.2.0', '0.9.0'] }, status: 200, statusText: 'OK', headers: {}, config: {} } as any),
       );
@@ -43,7 +43,7 @@ describe('RegistryService', () => {
     });
 
     it('should return empty array when no newer tags exist', async () => {
-      configurationService.get.mockReturnValue('https://cloud.ci.computer');
+      configurationService.get.mockReturnValue('https://portal.ci.computer');
       httpService.get.mockReturnValue(of({ data: { tags: ['1.0.0', '0.9.0'] }, status: 200, statusText: 'OK', headers: {}, config: {} } as any));
 
       const result = await registryService.getTagsSince('ci-os-hub', '1.0.0');
@@ -52,7 +52,7 @@ describe('RegistryService', () => {
     });
 
     it('should filter out invalid semver tags', async () => {
-      configurationService.get.mockReturnValue('https://cloud.ci.computer');
+      configurationService.get.mockReturnValue('https://portal.ci.computer');
       httpService.get.mockReturnValue(
         of({ data: { tags: ['latest', 'dev', '1.1.0', 'abc', '1.2.0'] }, status: 200, statusText: 'OK', headers: {}, config: {} } as any),
       );
@@ -63,7 +63,7 @@ describe('RegistryService', () => {
     });
 
     it('should return empty array on network error', async () => {
-      configurationService.get.mockReturnValue('https://cloud.ci.computer');
+      configurationService.get.mockReturnValue('https://portal.ci.computer');
       httpService.get.mockReturnValue(throwError(() => new Error('Network error')));
 
       const result = await registryService.getTagsSince('ci-os-hub', '1.0.0');
@@ -74,7 +74,7 @@ describe('RegistryService', () => {
 
   describe('getLatestVersion', () => {
     it('should return the latest semver tag', async () => {
-      configurationService.get.mockReturnValue('https://cloud.ci.computer');
+      configurationService.get.mockReturnValue('https://portal.ci.computer');
       httpService.get.mockReturnValue(
         of({ data: { tags: ['1.0.0', '2.0.0', '1.5.0'] }, status: 200, statusText: 'OK', headers: {}, config: {} } as any),
       );
@@ -85,7 +85,7 @@ describe('RegistryService', () => {
     });
 
     it('should return 0.0.0 when no tags exist', async () => {
-      configurationService.get.mockReturnValue('https://cloud.ci.computer');
+      configurationService.get.mockReturnValue('https://portal.ci.computer');
       httpService.get.mockReturnValue(of({ data: { tags: [] }, status: 200, statusText: 'OK', headers: {}, config: {} } as any));
 
       const result = await registryService.getLatestVersion('ci-os-hub');
