@@ -9,6 +9,16 @@ import { useCallback, useEffect, useState, useMemo } from 'react';
 import { Input } from '@/components/ui/Input';
 import { Navigate, useParams, Link } from 'react-router';
 import alts from '@/lib/data/alts.json';
+
+interface AltEntry {
+  name: string;
+  icon: string | null;
+  url: string | null;
+}
+interface AltItem {
+  proprietary: AltEntry[];
+  alternatives: AltEntry[];
+}
 import { iconForCategory, colorSchemeForCategory } from '@/modules/app/helpers/table-helpers';
 import clsx from 'clsx';
 import { Card, CardHeader, CardTitle } from '@/components/ui/Card';
@@ -108,12 +118,9 @@ export default () => {
     const q = search.toLowerCase();
     const result: Record<string, (typeof alts)[keyof typeof alts]> = {};
     for (const [cat, items] of Object.entries(alts)) {
-      // biome-ignore lint/suspicious/noExplicitAny: JSON import typing
-      const filtered = (items as any[]).filter((item) => {
-        // biome-ignore lint/suspicious/noExplicitAny: JSON import typing
-        const propMatch = (item.proprietary as any[]).some((p) => p.name.toLowerCase().includes(q));
-        // biome-ignore lint/suspicious/noExplicitAny: JSON import typing
-        const altMatch = (item.alternatives as any[]).some((a) => a.name.toLowerCase().includes(q));
+      const filtered = (items as AltItem[]).filter((item) => {
+        const propMatch = item.proprietary.some((p) => p.name.toLowerCase().includes(q));
+        const altMatch = item.alternatives.some((a) => a.name.toLowerCase().includes(q));
         const catMatch = cat.toLowerCase().includes(q);
         return propMatch || altMatch || catMatch;
       });
@@ -138,65 +145,12 @@ export default () => {
 
   return (
     <div className="h-full flex flex-col">
-      <div className="flex-shrink-0 px-6 pt-6 pb-2 hidden md:block">
-        <h2 className="text-2xl sm:text-3xl font-bold tracking-tight mb-2 text-foreground">App Store</h2>
+      <div className="flex-shrink-0 px-6 pt-6 pb-2">
+        <h2 className="text-3xl font-bold tracking-tight mb-2 text-foreground">App Store</h2>
         <p className="text-muted-foreground">Discover and manage your applications</p>
       </div>
 
-      {/* Mobile: Sticky search & categories */}
-      <div className="md:hidden flex-shrink-0 bg-background/95 backdrop-blur-sm border-b px-4 pt-3 pb-2 space-y-2.5">
-        <div className="relative">
-          <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-          <Input placeholder="Search apps..." className="pl-9 bg-muted/50" value={search} onChange={onSearch} />
-        </div>
-        <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar -mx-4 px-4">
-          <Button
-            variant="outline"
-            size="sm"
-            className={clsx(
-              'rounded-full whitespace-nowrap',
-              category ? 'bg-background text-muted-foreground border-border' : 'bg-primary text-primary-foreground border-primary',
-            )}
-            onClick={() => setCategory(undefined)}
-          >
-            <LayoutGrid className="h-3.5 w-3.5 mr-1.5" />
-            All
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            className={clsx(
-              'rounded-full whitespace-nowrap',
-              isAlternativesView ? 'bg-primary text-primary-foreground border-primary' : 'bg-background text-muted-foreground border-border',
-            )}
-            onClick={() => setCategory(ALTERNATIVES_VIEW)}
-          >
-            <ArrowLeftRight className="h-3.5 w-3.5 mr-1.5" />
-            Alternatives
-          </Button>
-          {iconForCategory.map((cat) => {
-            const Icon = cat.icon;
-            const isSelected = category === cat.id;
-            return (
-              <Button
-                key={cat.id}
-                variant="outline"
-                size="sm"
-                className={clsx(
-                  'rounded-full whitespace-nowrap',
-                  isSelected ? 'bg-primary text-primary-foreground border-primary' : 'bg-background text-muted-foreground border-border',
-                )}
-                onClick={() => setCategory(cat.id)}
-              >
-                {Icon && <Icon className="h-3.5 w-3.5 mr-1.5" />}
-                {cat.id.charAt(0).toUpperCase() + cat.id.slice(1)}
-              </Button>
-            );
-          })}
-        </div>
-      </div>
-
-      <div className="flex flex-1 min-h-0 md:pt-4">
+      <div className="flex flex-1 min-h-0 pt-4">
         {/* Left Sidebar */}
         <aside className="w-64 flex-shrink-0 border-r bg-muted/10 hidden md:flex flex-col ml-6 mb-6 rounded-2xl border">
           <div className="p-4 border-b">
@@ -260,7 +214,59 @@ export default () => {
         </aside>
 
         {/* Main Content */}
-        <div className="flex-1 overflow-y-auto min-h-0 px-4 sm:px-6 py-4" data-testid="app-store-scroll-container">
+        <div className="flex-1 overflow-y-auto min-h-0 px-6 py-4" data-testid="app-store-scroll-container">
+          {/* Mobile Search & Categories */}
+          <div className="md:hidden space-y-4 mb-6">
+            <div className="relative">
+              <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+              <Input placeholder="Search apps..." className="pl-9 bg-muted/50" value={search} onChange={onSearch} />
+            </div>
+            <div className="flex gap-2 overflow-x-auto pb-2 no-scrollbar -mx-6 px-6">
+              <Button
+                variant="outline"
+                size="sm"
+                className={clsx(
+                  'rounded-full whitespace-nowrap',
+                  category ? 'bg-background text-muted-foreground border-border' : 'bg-primary text-primary-foreground border-primary',
+                )}
+                onClick={() => setCategory(undefined)}
+              >
+                <LayoutGrid className="h-3.5 w-3.5 mr-1.5" />
+                All
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className={clsx(
+                  'rounded-full whitespace-nowrap',
+                  isAlternativesView ? 'bg-primary text-primary-foreground border-primary' : 'bg-background text-muted-foreground border-border',
+                )}
+                onClick={() => setCategory(ALTERNATIVES_VIEW)}
+              >
+                <ArrowLeftRight className="h-3.5 w-3.5 mr-1.5" />
+                Alternatives
+              </Button>
+              {iconForCategory.map((cat) => {
+                const Icon = cat.icon;
+                const isSelected = category === cat.id;
+                return (
+                  <Button
+                    key={cat.id}
+                    variant="outline"
+                    size="sm"
+                    className={clsx(
+                      'rounded-full whitespace-nowrap',
+                      isSelected ? 'bg-primary text-primary-foreground border-primary' : 'bg-background text-muted-foreground border-border',
+                    )}
+                    onClick={() => setCategory(cat.id)}
+                  >
+                    {Icon && <Icon className="h-3.5 w-3.5 mr-1.5" />}
+                    {cat.id.charAt(0).toUpperCase() + cat.id.slice(1)}
+                  </Button>
+                );
+              })}
+            </div>
+          </div>
           {isAlternativesView ? (
             <div className="space-y-6">
               {Object.keys(filteredAlts).length === 0 ? (
@@ -273,141 +279,77 @@ export default () => {
 
                   return (
                     <Card key={altCategory} className="overflow-hidden">
-                      <CardHeader className="border-b bg-muted/30 py-3 sm:py-4 px-4 sm:px-6">
+                      <CardHeader className="border-b bg-muted/30 py-4 px-6">
                         <div className="flex items-center gap-2">
                           {Icon && <Icon className={clsx('h-5 w-5', `text-${color}`)} />}
                           <CardTitle className="capitalize text-base">{altCategory}</CardTitle>
                         </div>
                       </CardHeader>
-
-                      {/* Desktop: Table layout */}
-                      <div className="hidden sm:block">
-                        <Table>
-                          <TableHeader>
-                            <TableRow className="bg-muted/20 hover:bg-muted/20">
-                              <TableHead className="w-1/2 font-semibold">Proprietary</TableHead>
-                              <TableHead className="w-1/2 font-semibold">Open Source Alternatives</TableHead>
-                            </TableRow>
-                          </TableHeader>
-                          <TableBody>
-                            {/* biome-ignore lint/suspicious/noExplicitAny: JSON import typing */}
-                            {(items as any[]).map((item, index) => (
-                              // biome-ignore lint/suspicious/noArrayIndexKey: Static list
-                              <TableRow key={index}>
-                                <TableCell className="py-3">
-                                  <div className="flex flex-wrap gap-2">
-                                    {/* biome-ignore lint/suspicious/noExplicitAny: JSON import typing */}
-                                    {(item.proprietary as any[]).map((prop) => (
-                                      <div
-                                        key={prop.name}
-                                        className="flex items-center gap-2 rounded-full bg-muted/50 px-3 py-1.5 text-sm"
-                                        title={prop.name}
-                                      >
-                                        {prop.icon && (
-                                          <img src={prop.icon} alt={prop.name} className="h-5 w-5 rounded-full object-cover" loading="lazy" />
-                                        )}
-                                        <span className="font-medium">{prop.name}</span>
-                                      </div>
-                                    ))}
-                                  </div>
-                                </TableCell>
-                                <TableCell className="py-3">
-                                  <div className="flex flex-wrap gap-2">
-                                    {/* biome-ignore lint/suspicious/noExplicitAny: JSON import typing */}
-                                    {(item.alternatives as any[]).map((alt) => {
-                                      const isAvailable = alt.appSlug && availableAppSlugs.has(alt.appSlug) && ciCloudStore;
-                                      if (isAvailable) {
-                                        return (
-                                          <Link
-                                            key={alt.name}
-                                            to={`/app-store/${ciCloudStore.slug}/${alt.appSlug}`}
-                                            className="flex items-center gap-2 rounded-full bg-primary/10 px-3 py-1.5 text-sm font-medium text-primary hover:bg-primary/20 transition-colors"
-                                          >
-                                            {alt.icon && (
-                                              <img src={alt.icon} alt={alt.name} className="h-5 w-5 rounded-full object-cover" loading="lazy" />
-                                            )}
-                                            {alt.name}
-                                            <ArrowRight className="h-3 w-3" />
-                                          </Link>
-                                        );
-                                      }
+                      <Table>
+                        <TableHeader>
+                          <TableRow className="bg-muted/20 hover:bg-muted/20">
+                            <TableHead className="w-1/2 font-semibold">Proprietary</TableHead>
+                            <TableHead className="w-1/2 font-semibold">Open Source Alternatives</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {(items as AltItem[]).map((item, index) => (
+                            // biome-ignore lint/suspicious/noArrayIndexKey: Static list
+                            <TableRow key={index}>
+                              <TableCell className="py-3">
+                                <div className="flex flex-wrap gap-2">
+                                  {item.proprietary.map((prop) => (
+                                    <div
+                                      key={prop.name}
+                                      className="flex items-center gap-2 rounded-full bg-muted/50 px-3 py-1.5 text-sm"
+                                      title={prop.name}
+                                    >
+                                      {prop.icon && (
+                                        <img src={prop.icon} alt={prop.name} className="h-5 w-5 rounded-full object-cover" loading="lazy" />
+                                      )}
+                                      <span className="font-medium">{prop.name}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </TableCell>
+                              <TableCell className="py-3">
+                                <div className="flex flex-wrap gap-2">
+                                  {item.alternatives.map((alt) => {
+                                    const isAvailable = alt.appSlug && availableAppSlugs.has(alt.appSlug) && ciCloudStore;
+                                    if (isAvailable) {
                                       return (
-                                        <div
+                                        <Link
                                           key={alt.name}
-                                          className="flex items-center gap-2 rounded-full bg-muted/30 px-3 py-1.5 text-sm text-muted-foreground cursor-not-allowed"
+                                          to={`/app-store/${ciCloudStore.slug}/${alt.appSlug}`}
+                                          className="flex items-center gap-2 rounded-full bg-primary/10 px-3 py-1.5 text-sm font-medium text-primary hover:bg-primary/20 transition-colors"
                                         >
                                           {alt.icon && (
-                                            <img
-                                              src={alt.icon}
-                                              alt={alt.name}
-                                              className="h-5 w-5 rounded-full object-cover grayscale"
-                                              loading="lazy"
-                                            />
+                                            <img src={alt.icon} alt={alt.name} className="h-5 w-5 rounded-full object-cover" loading="lazy" />
                                           )}
                                           {alt.name}
-                                          <span className="text-xs bg-muted/50 px-1.5 py-0.5 rounded-full">Soon</span>
-                                        </div>
+                                          <ArrowRight className="h-3 w-3" />
+                                        </Link>
                                       );
-                                    })}
-                                  </div>
-                                </TableCell>
-                              </TableRow>
-                            ))}
-                          </TableBody>
-                        </Table>
-                      </div>
-
-                      {/* Mobile: Stacked layout */}
-                      <div className="sm:hidden divide-y">
-                        {/* biome-ignore lint/suspicious/noExplicitAny: JSON import typing */}
-                        {(items as any[]).map((item, index) => (
-                          // biome-ignore lint/suspicious/noArrayIndexKey: Static list
-                          <div key={index} className="px-4 py-3 space-y-2">
-                            <div className="flex flex-wrap gap-1.5">
-                              {/* biome-ignore lint/suspicious/noExplicitAny: JSON import typing */}
-                              {(item.proprietary as any[]).map((prop) => (
-                                <span key={prop.name} className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
-                                  {prop.icon && <img src={prop.icon} alt={prop.name} className="h-4 w-4 rounded-full object-cover" loading="lazy" />}
-                                  {prop.name}
-                                  {(item.proprietary as any[]).indexOf(prop) < (item.proprietary as any[]).length - 1 && (
-                                    <span className="text-muted-foreground/40 mx-0.5">/</span>
-                                  )}
-                                </span>
-                              ))}
-                            </div>
-                            <div className="flex flex-wrap gap-1.5">
-                              {/* biome-ignore lint/suspicious/noExplicitAny: JSON import typing */}
-                              {(item.alternatives as any[]).map((alt) => {
-                                const isAvailable = alt.appSlug && availableAppSlugs.has(alt.appSlug) && ciCloudStore;
-                                if (isAvailable) {
-                                  return (
-                                    <Link
-                                      key={alt.name}
-                                      to={`/app-store/${ciCloudStore.slug}/${alt.appSlug}`}
-                                      className="flex items-center gap-1.5 rounded-full bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary hover:bg-primary/20 transition-colors"
-                                    >
-                                      {alt.icon && <img src={alt.icon} alt={alt.name} className="h-4 w-4 rounded-full object-cover" loading="lazy" />}
-                                      {alt.name}
-                                      <ArrowRight className="h-3 w-3" />
-                                    </Link>
-                                  );
-                                }
-                                return (
-                                  <div
-                                    key={alt.name}
-                                    className="flex items-center gap-1.5 rounded-full bg-muted/30 px-2.5 py-1 text-xs text-muted-foreground"
-                                  >
-                                    {alt.icon && (
-                                      <img src={alt.icon} alt={alt.name} className="h-4 w-4 rounded-full object-cover grayscale" loading="lazy" />
-                                    )}
-                                    {alt.name}
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
+                                    }
+                                    return (
+                                      <div
+                                        key={alt.name}
+                                        className="flex items-center gap-2 rounded-full bg-muted/30 px-3 py-1.5 text-sm text-muted-foreground cursor-not-allowed"
+                                      >
+                                        {alt.icon && (
+                                          <img src={alt.icon} alt={alt.name} className="h-5 w-5 rounded-full object-cover grayscale" loading="lazy" />
+                                        )}
+                                        {alt.name}
+                                        <span className="text-xs bg-muted/50 px-1.5 py-0.5 rounded-full">Soon</span>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
                     </Card>
                   );
                 })
