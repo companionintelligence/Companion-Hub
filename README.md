@@ -78,7 +78,7 @@ Both the backend and frontend will hot-reload on file changes.
 - `bun run start:docker`: Runs the entire stack (including the Hub app itself) inside Docker containers. This is closer to how it runs in production but slower for development loop.
 - `bun run start:prod`: Simulates a production environment (uses production env vars and connects to live cloud APIs).
 - `bun run start:staging`: Simulates staging environment (connects to companionintel.com API).
-- `bun run start:cloud-dev`: Simulates development environment (connects to setup.companionintelligence.com API).
+- `bun run start:cloud-dev`: Simulates development environment (connects to portal.companionintelligence.com API).
 
 ### Accessing the App
 
