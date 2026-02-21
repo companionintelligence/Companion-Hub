@@ -38,7 +38,6 @@ export class CompanionService {
       rounds++;
       let fullContent = '';
       const toolCalls: Array<{ id: string; function: { name: string; arguments: string } }> = [];
-      let _finishReason = 'stop';
 
       for await (const event of this.llmProvider.streamChat(messages, toolDefs)) {
         if (event.type === 'token') {
@@ -50,8 +49,6 @@ export class CompanionService {
         } else if (event.type === 'error') {
           yield event;
           return;
-        } else if (event.type === 'done') {
-          _finishReason = event.finishReason || 'stop';
         }
       }
 
