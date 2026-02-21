@@ -93,7 +93,7 @@ jobs:
           TS_AUTH_KEY=${{ secrets.TS_AUTH_KEY }}
           RUN_TAILSCALE_TESTS=true
           TEST_DOMAIN=test.ci.computer
-          CLOUD_URL=https://cloud.ci.computer
+          CLOUD_URL=https://portal.ci.computer
           TEST_EMAIL=e2e-test@ci.computer
           TEST_PASSWORD=${{ secrets.E2E_TEST_PASSWORD }}
           EOF
