@@ -2666,6 +2666,111 @@
         ]
       }
     },
+    "/api/companion/chat": {
+      "post": {
+        "operationId": "chat",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Companion"
+        ]
+      }
+    },
+    "/api/companion/history": {
+      "get": {
+        "operationId": "getHistory",
+        "parameters": [
+          {
+            "name": "limit",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Companion"
+        ]
+      },
+      "delete": {
+        "operationId": "clearHistory",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Companion"
+        ]
+      }
+    },
+    "/api/companion/models": {
+      "get": {
+        "operationId": "getModels",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Companion"
+        ]
+      }
+    },
+    "/api/companion/tools": {
+      "get": {
+        "operationId": "getTools",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Companion"
+        ]
+      }
+    },
+    "/api/companion/config": {
+      "put": {
+        "operationId": "updateConfig",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Companion"
+        ]
+      }
+    },
+    "/api/companion/status": {
+      "get": {
+        "operationId": "getStatus",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Companion"
+        ]
+      }
+    },
     "/api/debug/seed": {
       "post": {
         "operationId": "seedDatabase",
