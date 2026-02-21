@@ -14,6 +14,7 @@ interface AltEntry {
   name: string;
   icon: string | null;
   url: string | null;
+  appSlug?: string;
 }
 interface AltItem {
   proprietary: AltEntry[];
