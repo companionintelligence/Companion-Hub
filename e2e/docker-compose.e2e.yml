@@ -58,7 +58,7 @@ services:
       CI_CLOUD_API_URL: http://non-existent-service:3000
       CI_CLOUD_FRONTEND_URL: http://non-existent-service:3000
       CI_CLOUD_APP_STORE_URL: http://non-existent-service:3000/api
-      APPS_REPO_URL: https://github.com/runtipi/runtipi-appstore
+      APPS_REPO_URL: https://github.com/companionintelligence/CI-App-Store
       APPS_REPO_ID: repo-id
       DOMAIN: ci.computer
       LOCAL_DOMAIN: tipi.lan
