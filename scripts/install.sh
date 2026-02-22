@@ -3,12 +3,12 @@ set -o errexit
 set -o nounset
 set -o pipefail
 
-echo "Installing runtipi..."
+echo "Installing Companion Home..."
 
 ARCHITECTURE="$(uname -m)"
 # Not supported on 32 bits systems
 if [[ "$ARCHITECTURE" == "armv7"* ]] || [[ "$ARCHITECTURE" == "i686" ]] || [[ "$ARCHITECTURE" == "i386" ]]; then
-  echo "runtipi is not supported on 32 bits systems"
+  echo "Companion Home is not supported on 32-bit systems"
   exit 1
 fi
 
@@ -17,7 +17,7 @@ fi
 ### --------------------------------
 UPDATE="false"
 VERSION="latest"
-ASSET="runtipi-cli-linux-x86_64.tar.gz"
+ASSET="runtipi-cli-linux-x86_64.tar.gz" # TODO: rename when CI CLI is available
 ENV_FILE=""
 
 while [ -n "${1-}" ]; do
@@ -201,7 +201,7 @@ function check_dependency_and_install() {
 
 # If version was not given it will install the latest version
 if [[ "${VERSION}" == "latest" ]]; then
-  LATEST_VERSION=$(curl -sL https://api.github.com/repos/runtipi/runtipi/releases/latest | grep tag_name | cut -d '"' -f4)
+  LATEST_VERSION=$(curl -sL https://api.github.com/repos/companionintelligence/CI-OS-Hub/releases/latest | grep tag_name | cut -d '"' -f4)
   VERSION="${LATEST_VERSION}"
 fi
 
@@ -209,10 +209,10 @@ if [[ "$ARCHITECTURE" == "arm64" || "$ARCHITECTURE" == "aarch64" ]]; then
   ASSET="runtipi-cli-linux-aarch64.tar.gz"
 fi
 
-URL="https://github.com/runtipi/runtipi/releases/download/$VERSION/$ASSET"
+URL="https://github.com/companionintelligence/CI-OS-Hub/releases/download/$VERSION/$ASSET"
 
 if [[ "${UPDATE}" == "false" ]]; then
-  mkdir -p runtipi
+  mkdir -p runtipi # TODO: rename directory when codebase migration is complete
   cd runtipi || exit
 fi
 
