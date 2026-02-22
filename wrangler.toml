@@ -22,7 +22,7 @@ bindings = [
 tag = "v1"
 new_sqlite_classes = ["AppContainer"]
 
-# Development environment (triggered by develop branch)
+# Development environment (triggered by dev branch)
 [env.dev]
 name = "ci-os-hub-dev"
 

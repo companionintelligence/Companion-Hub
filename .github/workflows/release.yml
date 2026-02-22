@@ -102,7 +102,7 @@ jobs:
         id: return_dispatch
         with:
           token: ${{ secrets.PAT_CLI }}
-          ref: develop
+          ref: dev
           repo: cli
           owner: runtipi
           workflow: build.yml

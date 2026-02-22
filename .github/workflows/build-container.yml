@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - "main"
-      - "develop"
+      - "dev"
       - "staging"
   workflow_dispatch:
     inputs:
@@ -26,7 +26,7 @@ jobs:
       deployments: write
       packages: write
     environment:
-      name: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || github.ref == 'refs/heads/main' && 'production' || github.ref == 'refs/heads/staging' && 'staging' || github.ref == 'refs/heads/develop' && 'dev' || 'dev' }}
+      name: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || github.ref == 'refs/heads/main' && 'production' || github.ref == 'refs/heads/staging' && 'staging' || github.ref == 'refs/heads/dev' && 'dev' || 'dev' }}
 
     steps:
       - name: Checkout repository
@@ -61,7 +61,7 @@ jobs:
             ENV="production"
           elif [ "${{ github.ref }}" = "refs/heads/staging" ]; then
             ENV="staging"
-          elif [ "${{ github.ref }}" = "refs/heads/develop" ]; then
+          elif [ "${{ github.ref }}" = "refs/heads/dev" ]; then
             ENV="dev"
           else
             ENV="dev"
