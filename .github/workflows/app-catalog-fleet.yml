@@ -29,9 +29,6 @@ on:
           - core-5
           - core-6
           - core-7
-  schedule:
-    # Weekly on Sunday at 2am Pacific (10am UTC)
-    - cron: '0 10 * * 0'
 
 env:
   CORE_1_IP: 100.108.17.53
