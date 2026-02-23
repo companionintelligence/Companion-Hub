@@ -103,22 +103,6 @@ ALTER COLUMN "app_name"
 SET
   NOT NULL;
 
-INSERT INTO
-  "app_store" ("slug", "hash", "name", "url", "branch")
-VALUES
-  (
-    'migrated',
-    'migrated',
-    'migrated',
-    'migrated',
-    'main'
-  );
-
---> statement-breakpoint
-UPDATE app
-SET
-  app_store_slug = 'migrated';
-
 --> statement-breakpoint
 CREATE SEQUENCE app_id_seq;
 
