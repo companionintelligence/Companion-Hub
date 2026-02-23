@@ -74,8 +74,8 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
 
   const jwtSecret = envMap.get('JWT_SECRET') || envUtils.deriveEntropy('jwt_secret');
 
-  const rootFolderHost = envMap.get('ROOT_FOLDER_HOST') || process.env.ROOT_FOLDER_HOST;
-  const internalIp = envMap.get('INTERNAL_IP') || '127.0.0.1';
+  const rootFolderHost = process.env.ROOT_FOLDER_HOST || envMap.get('ROOT_FOLDER_HOST');
+  const internalIp = process.env.INTERNAL_IP || envMap.get('INTERNAL_IP') || '127.0.0.1';
 
   if (!rootFolderHost) {
     throw new Error(
@@ -212,7 +212,10 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   envMap.set('THEME_COLOR', settings.themeColor || envMap.get('THEME_COLOR') || 'blue');
 
   // CI Cloud integration settings
-  const ciCloudUrl = process.env.CI_CLOUD_URL || envMap.get('CI_CLOUD_URL') || 'https://portal.ci.computer';
+  const ciCloudUrl = process.env.CI_CLOUD_URL || envMap.get('CI_CLOUD_URL');
+  if (!ciCloudUrl) {
+    throw new Error('CI_CLOUD_URL is required for CI Cloud integration. Please set it in your .env file or environment variables.');
+  }
   envMap.set('CI_CLOUD_URL', ciCloudUrl);
 
   // Only write the env file if values have actually changed to avoid unnecessary overwrites
