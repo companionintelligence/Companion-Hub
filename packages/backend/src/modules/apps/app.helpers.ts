@@ -167,7 +167,7 @@ export class AppHelpers {
     if (!envMap.has('PGID')) {
       envMap.set('PGID', COMMON_ENV_DEFAULTS.PGID);
     }
-    // TZ is already set from system settings earlier, but ensure it has a fallback
+    // TZ provides a fallback default if not already set from system settings or .env file
     if (!envMap.has('TZ')) {
       envMap.set('TZ', COMMON_ENV_DEFAULTS.TZ);
     }

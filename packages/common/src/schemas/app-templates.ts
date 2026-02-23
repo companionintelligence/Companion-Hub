@@ -63,7 +63,7 @@ export const COMMON_ENV_DEFAULTS = {
   PUID: '1000',
   PGID: '1000',
   
-  // Timezone (will be overridden with system timezone)
+  // Timezone (fallback default, typically overridden with system timezone)
   TZ: 'Etc/UTC',
   
   // Common paths
