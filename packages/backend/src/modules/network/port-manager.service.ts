@@ -2,6 +2,7 @@ import { TranslatableError } from '@/common/error/translatable-error';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable } from '@nestjs/common';
 import type { AppUrn } from '@runtipi/common/types';
+import { COMMON_APP_PORTS, PORT_RANGE_CATEGORIES } from '@runtipi/common/schemas';
 import { AppsRepository } from '../apps/apps.repository';
 import { PortAllocationRepository } from './port-allocation.repository';
 import net from 'node:net';
@@ -22,8 +23,8 @@ const RESERVED_RANGES: Array<[number, number]> = [
 ];
 
 /** Default port range for dynamic allocation */
-const DYNAMIC_PORT_MIN = 10000;
-const DYNAMIC_PORT_MAX = 60000;
+const DYNAMIC_PORT_MIN = PORT_RANGE_CATEGORIES.CUSTOM_SERVICES.min;
+const DYNAMIC_PORT_MAX = PORT_RANGE_CATEGORIES.CUSTOM_SERVICES.max;
 
 /** How many times to retry if a port turns out to be in use */
 const MAX_PROBE_RETRIES = 10;
@@ -54,6 +55,7 @@ export class PortManagerService {
    * - protocol: tcp or udp (default tcp)
    * - label: human-readable label (e.g. 'main', 'admin-ui')
    * - preferredHostPort: optional hint — will be used if available
+   * - suggestFromCommon: if true, suggests a port from COMMON_APP_PORTS based on label
    *
    * Returns the allocated PortAllocations.
    */
@@ -64,19 +66,65 @@ export class PortManagerService {
       protocol?: 'tcp' | 'udp';
       label: string;
       preferredHostPort?: number;
+      suggestFromCommon?: boolean;
     }>,
   ): Promise<PortAllocation[]> {
     const allocations: PortAllocation[] = [];
 
     for (const req of requests) {
       const protocol = req.protocol ?? 'tcp';
-      const allocation = await this.allocateWithRetry(appUrn, req.containerPort, protocol, req.label, req.preferredHostPort);
+      
+      // Suggest port from common ports if requested
+      let preferredPort = req.preferredHostPort;
+      if (!preferredPort && req.suggestFromCommon) {
+        preferredPort = this.getSuggestedPortFromLabel(req.label, req.containerPort);
+      }
+      
+      const allocation = await this.allocateWithRetry(appUrn, req.containerPort, protocol, req.label, preferredPort);
 
       this.logger.info(`Port allocated: ${allocation.hostPort}:${req.containerPort}/${protocol} [${req.label}] for ${appUrn}`);
       allocations.push(allocation);
     }
 
     return allocations;
+  }
+
+  /**
+   * Suggest a host port based on label or container port using common port templates
+   */
+  private getSuggestedPortFromLabel(label: string, containerPort: number): number | undefined {
+    const labelLower = label.toLowerCase();
+    
+    // Try to match label to common port names
+    if (labelLower.includes('web') || labelLower === 'main' || labelLower.includes('ui')) {
+      return COMMON_APP_PORTS.WEB_UI;
+    }
+    if (labelLower.includes('admin')) {
+      return COMMON_APP_PORTS.ADMIN_UI;
+    }
+    if (labelLower.includes('api')) {
+      return COMMON_APP_PORTS.API;
+    }
+    if (labelLower.includes('postgres') || labelLower.includes('postgresql')) {
+      return COMMON_APP_PORTS.POSTGRES;
+    }
+    if (labelLower.includes('mysql')) {
+      return COMMON_APP_PORTS.MYSQL;
+    }
+    if (labelLower.includes('redis')) {
+      return COMMON_APP_PORTS.REDIS;
+    }
+    if (labelLower.includes('mongo')) {
+      return COMMON_APP_PORTS.MONGODB;
+    }
+    
+    // If container port matches a common service port, use it
+    const commonPortValues = Object.values(COMMON_APP_PORTS);
+    if (commonPortValues.includes(containerPort)) {
+      return containerPort;
+    }
+    
+    return undefined;
   }
 
   /**

@@ -20,6 +20,15 @@ import { type SSE, type Topic, sseSchema } from './sse.js';
 
 import { toJsonSchema } from './utils/to-json-schema.js';
 
+import {
+  COMMON_APP_PORTS,
+  COMMON_ENV_DEFAULTS,
+  DATABASE_ENV_TEMPLATES,
+  COMMON_FORM_FIELD_TEMPLATES,
+  PORT_RANGE_CATEGORIES,
+  APP_CATEGORY_PORT_DEFAULTS,
+} from './app-templates.js';
+
 export {
   dynamicComposeSchema,
   dynamicComposeSchemaArk,
@@ -39,6 +48,12 @@ export {
   appInfoSchemaArk,
   sseSchema,
   frontmatterSchema,
+  COMMON_APP_PORTS,
+  COMMON_ENV_DEFAULTS,
+  DATABASE_ENV_TEMPLATES,
+  COMMON_FORM_FIELD_TEMPLATES,
+  PORT_RANGE_CATEGORIES,
+  APP_CATEGORY_PORT_DEFAULTS,
   type ServiceInput,
   type DependsOn,
   type Service,

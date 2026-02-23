@@ -5,6 +5,7 @@ import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable } from '@nestjs/common';
 import type { AppUrn } from '@runtipi/common/types';
+import { COMMON_ENV_DEFAULTS } from '@runtipi/common/schemas';
 import { EnvUtils } from '../env/env.utils';
 import type { AppEventFormInput } from '../queue/entities/app-events';
 import { AppFilesManager } from './app-files-manager';
@@ -157,6 +158,19 @@ export class AppHelpers {
       this.logger.info(`Set APP_DATA_DIR for ${appUrn}: ${finalAppDataDir}`);
     }
     envMap.set('APP_IMAGE_TAG', config.version);
+
+    // Add common environment variable defaults if not already set
+    // These are standard defaults from industry best practices
+    if (!envMap.has('PUID')) {
+      envMap.set('PUID', COMMON_ENV_DEFAULTS.PUID);
+    }
+    if (!envMap.has('PGID')) {
+      envMap.set('PGID', COMMON_ENV_DEFAULTS.PGID);
+    }
+    // TZ is already set from system settings earlier, but ensure it has a fallback
+    if (!envMap.has('TZ')) {
+      envMap.set('TZ', COMMON_ENV_DEFAULTS.TZ);
+    }
 
     const appEnv = await this.appFilesManager.getAppEnv(appUrn);
     const existingAppEnvMap = this.envUtils.envStringToMap(appEnv.content);
