@@ -73,7 +73,7 @@ Build outputs will be in `src-tauri/target/release/bundle/`:
 
 Configuration is managed in `src-tauri/tauri.conf.json`:
 
-- **identifier**: `cloud.homedock.app.homedock`
+- **identifier**: `computer.ci.app.hub`
 - **productName**: CI OS Hub
 - **Development**: Points to `http://localhost:9091` (frontend dev server)
 - **Production**: Uses bundled frontend from `packages/frontend/build/client`
@@ -122,9 +122,9 @@ Available Tauri commands (callable from frontend):
 
 ## Storage Locations
 
-- **Windows**: `%APPDATA%\cloud.homedock.app\homedock`
-- **macOS**: `~/Library/Application Support/cloud.homedock.app/homedock`
-- **Linux**: `~/.local/share/cloud.homedock.app/homedock`
+- **Windows**: `%APPDATA%\computer.ci.app\hub`
+- **macOS**: `~/Library/Application Support/computer.ci.app/hub`
+- **Linux**: `~/.local/share/computer.ci.app/hub`
 
 ## Technical Details
 
@@ -174,4 +174,4 @@ When adding new features:
 
 - [Tauri Documentation](https://v2.tauri.app)
 - [CI OS Hub Main Repository](https://github.com/companionintelligence/CI-OS-Hub)
-- [Companion Intelligence Website](https://www.homedock.cloud)
+- [Companion Intelligence Website](https://ci.computer)

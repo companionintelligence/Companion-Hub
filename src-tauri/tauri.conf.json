@@ -1,7 +1,7 @@
 {
   "productName": "CI OS Hub",
   "version": "0.1.0",
-  "identifier": "cloud.homedock.app.homedock",
+  "identifier": "computer.ci.app.hub",
   "build": {
     "beforeDevCommand": "bun run dev:app",
     "devUrl": "http://localhost:9091",
@@ -75,7 +75,7 @@
     "updater": {
       "active": true,
       "endpoints": [
-        "https://releases.homedock.cloud/desktop/{{target}}/{{arch}}/{{current_version}}"
+        "https://releases.ci.computer/desktop/{{target}}/{{arch}}/{{current_version}}"
       ],
       "dialog": true,
       "pubkey": ""

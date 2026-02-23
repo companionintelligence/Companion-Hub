@@ -56,7 +56,7 @@ This implementation adds a foundational Tauri v2 desktop application to CI OS Hu
 ## Configuration Details
 
 ### Application Identity
-- **identifier**: `cloud.homedock.app.homedock`
+- **identifier**: `computer.ci.app.hub`
 - **productName**: CI OS Hub
 - **version**: 0.1.0
 
@@ -170,9 +170,9 @@ The workflow template at `.github/workflows/build-desktop.yml.disabled` can be e
 
 ## Storage Locations
 
-- **Windows**: `%APPDATA%\cloud.homedock.app\homedock`
-- **macOS**: `~/Library/Application Support/cloud.homedock.app/homedock`
-- **Linux**: `~/.local/share/cloud.homedock.app/homedock`
+- **Windows**: `%APPDATA%\computer.ci.app\hub`
+- **macOS**: `~/Library/Application Support/computer.ci.app/hub`
+- **Linux**: `~/.local/share/computer.ci.app/hub`
 
 ## Compatibility
 
