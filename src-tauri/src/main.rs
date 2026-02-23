@@ -4,6 +4,7 @@
 use tauri::Manager;
 
 mod system;
+mod installers;
 
 #[tauri::command]
 fn get_system_info() -> Result<String, String> {
@@ -42,6 +43,25 @@ pub fn run() {
             system::check_colima,
             system::check_python_installed,
             system::check_all_prerequisites,
+            // Windows installer commands
+            installers::windows::install_wsl2,
+            installers::windows::check_wsl2_restart_required,
+            installers::windows::configure_wsl2_ubuntu,
+            installers::windows::install_docker_desktop,
+            installers::windows::start_docker_desktop,
+            installers::windows::configure_docker_wsl2,
+            installers::windows::install_python_wsl2,
+            installers::windows::check_python_version_wsl2,
+            // macOS installer commands
+            installers::macos::install_homebrew,
+            installers::macos::update_homebrew,
+            installers::macos::install_colima,
+            installers::macos::start_colima,
+            installers::macos::stop_colima,
+            installers::macos::restart_colima,
+            installers::macos::install_python_macos,
+            installers::macos::check_python_version_macos,
+            installers::macos::configure_headless_python,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
