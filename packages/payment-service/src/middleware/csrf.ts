@@ -1,7 +1,19 @@
 import { Request, Response, NextFunction } from 'express';
 import { randomBytes, createHmac, timingSafeEqual } from 'crypto';
 
-const CSRF_SECRET = process.env.CSRF_SECRET || process.env.API_SECRET_KEY || randomBytes(32).toString('hex');
+let CSRF_SECRET = process.env.CSRF_SECRET || process.env.API_SECRET_KEY;
+if (!CSRF_SECRET) {
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error(
+      'CSRF_SECRET (or API_SECRET_KEY) environment variable must be set in production. Refusing to start with a randomly generated secret.'
+    );
+  } else {
+    CSRF_SECRET = randomBytes(32).toString('hex');
+    console.warn(
+      '[CSRF] No CSRF_SECRET or API_SECRET_KEY set. Using a randomly generated secret. All CSRF tokens will be invalidated on server restart. Set CSRF_SECRET in your environment for persistent tokens.'
+    );
+  }
+}
 const CSRF_TOKEN_HEADER = 'X-CSRF-Token';
 const CSRF_COOKIE_NAME = 'csrf_token';
 

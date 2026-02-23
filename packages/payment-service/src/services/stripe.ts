@@ -99,8 +99,7 @@ export class StripeService {
 
     try {
       // Convert to cents using integer arithmetic to avoid floating point errors
-      // Multiply first, then round to handle decimal precision correctly
-      const amountInCents = Math.round(Number((params.amount * 100).toFixed(2)));
+      const amountInCents = Math.round(params.amount * 100);
       
       const paymentIntent = await this.stripe.paymentIntents.create({
         amount: amountInCents,

@@ -337,15 +337,15 @@ export class OAuthService {
     // Revoke old refresh token
     this.db.prepare('UPDATE oauth_refresh_tokens SET revoked = 1 WHERE token = ?').run(params.refreshToken);
 
-    // Delete old access token
-    this.db.prepare('DELETE FROM oauth_access_tokens WHERE token = ?').run(token.access_token);
-
-    // Get scopes from old access token or use default
+    // Get scopes from old access token before deleting it
     const oldAccessToken = this.db.prepare(
       'SELECT scopes FROM oauth_access_tokens WHERE token = ?'
     ).get(token.access_token) as { scopes: string } | undefined;
     
     const scopes = oldAccessToken ? JSON.parse(oldAccessToken.scopes) : ['read'];
+
+    // Delete old access token
+    this.db.prepare('DELETE FROM oauth_access_tokens WHERE token = ?').run(token.access_token);
 
     // Generate new tokens
     return this.generateTokens(token.client_id, token.user_id, scopes);

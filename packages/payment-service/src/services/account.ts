@@ -1,4 +1,4 @@
-import { createHash, randomBytes, timingSafeEqual, createHmac } from 'crypto';
+import { createHash, randomBytes, timingSafeEqual, createHmac, pbkdf2Sync } from 'crypto';
 import type Database from 'better-sqlite3';
 
 export interface User {
@@ -55,7 +55,7 @@ export class AccountService {
     const digest = 'sha512';
     
     // Synchronous PBKDF2 - for async, use crypto.pbkdf2
-    const hash = require('crypto').pbkdf2Sync(password, useSalt, iterations, keyLength, digest).toString('hex');
+    const hash = pbkdf2Sync(password, useSalt, iterations, keyLength, digest).toString('hex');
     return { hash: `${useSalt}:${iterations}:${hash}`, salt: useSalt };
   }
 
@@ -75,7 +75,7 @@ export class AccountService {
     const digest = 'sha512';
     
     try {
-      const computedHash = require('crypto').pbkdf2Sync(password, salt, iterations, keyLength, digest).toString('hex');
+      const computedHash = pbkdf2Sync(password, salt, iterations, keyLength, digest).toString('hex');
       return timingSafeEqual(
         Buffer.from(hash, 'hex'),
         Buffer.from(computedHash, 'hex')
