@@ -299,7 +299,11 @@ test_build_artifacts() {
         local dmg_count=$(find "$dmg_path" -name "*.dmg" | wc -l)
         if [[ $dmg_count -gt 0 ]]; then
             add_test_result "DMG Installer" "Pass" "Found $dmg_count installer(s)"
-            find "$dmg_path" -name "*.dmg" -exec sh -c 'echo "  - $(basename "$1"): $(du -h "$1" | cut -f1)"' _ {} \;
+            while IFS= read -r dmg_file; do
+                local file_name=$(basename "$dmg_file")
+                local file_size=$(du -h "$dmg_file" | cut -f1)
+                write_info "  - $file_name: $file_size"
+            done < <(find "$dmg_path" -name "*.dmg")
         else
             add_test_result "DMG Installer" "Fail" "No DMG files found"
         fi
