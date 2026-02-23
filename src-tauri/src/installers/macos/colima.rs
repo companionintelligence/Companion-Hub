@@ -115,13 +115,12 @@ pub async fn stop_colima() -> Result<(), String> {
 
 /// Restart Colima
 #[tauri::command]
-pub async fn restart_colima() -> Result<(), String> {
+pub async fn restart_colima(app: AppHandle) -> Result<(), String> {
     stop_colima().await?;
     
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
     
-    let app_handle = tauri::AppHandle::default(); // This needs proper handling
-    start_colima(app_handle).await
+    start_colima(app).await
 }
 
 fn emit_progress(app: &AppHandle, step: &str, progress: u8, status: InstallStatus, message: &str) {

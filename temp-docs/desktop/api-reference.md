@@ -188,10 +188,7 @@ Installs WSL2 and Ubuntu 22.04 on Windows.
 
 **Example:**
 ```typescript
-import { getCurrentWindow } from '@tauri-apps/api/window';
-
-const app = getCurrentWindow();
-await invoke('install_wsl2', { app });
+await invoke('install_wsl2');
 ```
 
 ### check_wsl2_restart_required()
@@ -260,7 +257,7 @@ Configures Docker Desktop to use WSL2 backend.
 
 ### install_python_wsl2(app: AppHandle)
 
-Installs Python 3.12.1 in WSL2 Ubuntu.
+Installs Python 3.12.x in WSL2 Ubuntu.
 
 **Platform:** Windows only
 
@@ -336,7 +333,7 @@ Starts Colima with optimized configuration.
 
 **Example:**
 ```typescript
-await invoke('start_colima', { app });
+await invoke('start_colima');
 ```
 
 ### stop_colima()
@@ -357,7 +354,7 @@ Restarts Colima.
 
 ### install_python_macos(app: AppHandle)
 
-Installs Python 3.12.1 via Homebrew.
+Installs Python 3.12.x via Homebrew.
 
 **Platform:** macOS only
 
@@ -423,12 +420,10 @@ type InstallStatus =
 ## Complete Installation Example
 
 ```typescript
-import { invoke, listen } from '@tauri-apps/api';
-import { getCurrentWindow } from '@tauri-apps/api/window';
-
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 async function installDependencies() {
-  const app = getCurrentWindow();
-  
+    
   // Listen for progress
   const unlisten = await listen('install-progress', (event) => {
     const { step, progress, status, message } = event.payload;
@@ -450,7 +445,7 @@ async function installDependencies() {
     // Install as needed
     if (window.navigator.platform.includes('Win')) {
       if (needsWSL2) {
-        await invoke('install_wsl2', { app });
+        await invoke('install_wsl2');
         
         const needsRestart = await invoke('check_wsl2_restart_required');
         if (needsRestart) {
@@ -458,20 +453,20 @@ async function installDependencies() {
           return;
         }
         
-        await invoke('configure_wsl2_ubuntu', { app });
+        await invoke('configure_wsl2_ubuntu');
       }
       
       if (needsDocker) {
-        await invoke('install_docker_desktop', { app });
+        await invoke('install_docker_desktop');
         await invoke('start_docker_desktop');
       }
       
-      await invoke('install_python_wsl2', { app });
+      await invoke('install_python_wsl2');
     } else if (window.navigator.platform.includes('Mac')) {
-      await invoke('install_homebrew', { app });
-      await invoke('install_colima', { app });
-      await invoke('start_colima', { app });
-      await invoke('install_python_macos', { app });
+      await invoke('install_homebrew');
+      await invoke('install_colima');
+      await invoke('start_colima');
+      await invoke('install_python_macos');
       await invoke('configure_headless_python');
     }
     
@@ -490,7 +485,7 @@ All commands return Promises that reject with error messages:
 
 ```typescript
 try {
-  await invoke('install_wsl2', { app });
+  await invoke('install_wsl2');
 } catch (error) {
   // error is a string with the error message
   console.error('Installation failed:', error);

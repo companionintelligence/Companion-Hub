@@ -14,8 +14,8 @@ CI OS Hub Desktop is a native desktop application that provides a seamless exper
 ### Automated Installation
 The desktop application can automatically install and configure all required dependencies:
 
-- **Windows**: WSL2, Docker Desktop, Ubuntu 22.04, Python 3.12.1
-- **macOS**: Homebrew, Colima, Lima, Docker, Python 3.12.1
+- **Windows**: WSL2, Docker Desktop, Ubuntu 22.04, Python 3.12.x
+- **macOS**: Homebrew, Colima, Lima, Docker, Python 3.12.x
 - **All Platforms**: Virtual environments, development tools
 
 ### Native Integration

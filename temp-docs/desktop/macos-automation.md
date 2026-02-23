@@ -2,7 +2,7 @@
 
 ## Overview
 
-CI OS Hub Desktop provides automated installation of all required macOS dependencies, including Homebrew, Colima, Docker tools, and Python 3.12.1. The system is optimized for both Intel and Apple Silicon Macs.
+CI OS Hub Desktop provides automated installation of all required macOS dependencies, including Homebrew, Colima, Docker tools, and Python 3.12.x. The system is optimized for both Intel and Apple Silicon Macs.
 
 ## Automated Components
 
@@ -56,7 +56,7 @@ Colima provides a lightweight container runtime using Lima virtualization, repla
 
 ### Python Environment
 
-Python 3.12.1 is installed in headless mode (no GUI dependencies) with an isolated virtual environment.
+Python 3.12.x is installed in headless mode (no GUI dependencies) with an isolated virtual environment.
 
 **What Gets Installed:**
 - Python 3.12 from Homebrew
@@ -124,7 +124,8 @@ console.log('Colima running:', colimaStatus.installed);
 Trigger installations programmatically:
 
 ```typescript
-import { invoke, listen } from '@tauri-apps/api';
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 
 // Listen for progress updates
 const unlisten = await listen('install-progress', (event) => {
@@ -135,7 +136,7 @@ const unlisten = await listen('install-progress', (event) => {
 
 // Install Homebrew
 try {
-  await invoke('install_homebrew', { app });
+  await invoke('install_homebrew');
   console.log('Homebrew installation complete');
 } catch (error) {
   console.error('Homebrew installation failed:', error);
@@ -145,13 +146,13 @@ try {
 await invoke('update_homebrew');
 
 // Install Colima and Docker tools
-await invoke('install_colima', { app });
+await invoke('install_colima');
 
 // Start Colima
-await invoke('start_colima', { app });
+await invoke('start_colima');
 
 // Install Python
-await invoke('install_python_macos', { app });
+await invoke('install_python_macos');
 
 // Configure headless Python
 await invoke('configure_headless_python');

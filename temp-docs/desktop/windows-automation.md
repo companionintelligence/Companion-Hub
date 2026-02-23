@@ -2,7 +2,7 @@
 
 ## Overview
 
-CI OS Hub Desktop provides automated installation and configuration of all required Windows dependencies, including WSL2, Docker Desktop, and Python 3.12.1. This eliminates manual setup and ensures optimal configuration.
+CI OS Hub Desktop provides automated installation and configuration of all required Windows dependencies, including WSL2, Docker Desktop, and Python 3.12.x. This eliminates manual setup and ensures optimal configuration.
 
 ## Automated Components
 
@@ -46,10 +46,10 @@ Docker Desktop with WSL2 backend provides container support for CI OS Hub.
 
 ### Python Environment
 
-Python 3.12.1 is installed in WSL2 with an isolated virtual environment.
+Python 3.12.x is installed in WSL2 with an isolated virtual environment.
 
 **What Gets Installed:**
-- Python 3.12.1 from deadsnakes PPA
+- Python 3.12.x from deadsnakes PPA
 - python3.12-venv (virtual environment support)
 - python3.12-dev (development headers)
 - pip (package manager)
@@ -58,7 +58,7 @@ Python 3.12.1 is installed in WSL2 with an isolated virtual environment.
 **Installation Process:**
 1. Adds deadsnakes PPA to Ubuntu
 2. Updates package lists
-3. Installs Python 3.12.1 and dependencies
+3. Installs Python 3.12.x and dependencies
 4. Creates isolated virtual environment
 5. Upgrades pip and essential packages
 
@@ -95,7 +95,8 @@ console.log('Docker installed:', dockerStatus.installed);
 Trigger installations programmatically:
 
 ```typescript
-import { invoke, listen } from '@tauri-apps/api';
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 
 // Listen for progress updates
 const unlisten = await listen('install-progress', (event) => {
@@ -106,7 +107,7 @@ const unlisten = await listen('install-progress', (event) => {
 
 // Install WSL2
 try {
-  await invoke('install_wsl2', { app });
+  await invoke('install_wsl2');
   console.log('WSL2 installation complete');
 } catch (error) {
   console.error('WSL2 installation failed:', error);
@@ -119,16 +120,16 @@ if (needsRestart) {
 }
 
 // Configure Ubuntu after restart
-await invoke('configure_wsl2_ubuntu', { app });
+await invoke('configure_wsl2_ubuntu');
 
 // Install Docker Desktop
-await invoke('install_docker_desktop', { app });
+await invoke('install_docker_desktop');
 
 // Start Docker
 await invoke('start_docker_desktop');
 
 // Install Python
-await invoke('install_python_wsl2', { app });
+await invoke('install_python_wsl2');
 ```
 
 ## Configuration
@@ -171,7 +172,7 @@ Activate the virtual environment:
 source ~/.ci-hub-venv/bin/activate
 
 # Check Python version
-python --version  # Should show Python 3.12.1
+python --version  # Should show Python 3.12.x
 
 # Install additional packages if needed
 pip install package-name

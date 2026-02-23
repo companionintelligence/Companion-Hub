@@ -94,19 +94,19 @@ On first launch, the desktop application will:
 - Windows Subsystem for Linux (WSL2)
 - Ubuntu 22.04 LTS
 - Docker Desktop with WSL2 backend
-- Python 3.12.1 in virtual environment
+- Python 3.12.x in virtual environment
 
 #### macOS
 - Homebrew package manager
 - Lima virtualization framework
 - Colima container runtime
 - Docker CLI and Docker Compose
-- Headless Python 3.12.1
+- Headless Python 3.12.x
 
 #### Linux
 - Docker (if not present)
 - Docker Compose
-- Python 3.12.1
+- Python 3.12.x
 
 ## Post-Installation
 

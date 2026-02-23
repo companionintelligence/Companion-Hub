@@ -49,7 +49,7 @@ This directory contains comprehensive documentation for the CI OS Hub Desktop ap
 - ✅ Windows Docker Desktop installation
 - ✅ macOS Homebrew installation
 - ✅ macOS Colima/Docker setup
-- ✅ Python 3.12.1 environment setup
+- ✅ Python 3.12.x environment setup
 - ✅ Progress tracking and error handling
 
 ### Platform Support
