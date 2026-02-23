@@ -14,6 +14,28 @@ https://www.runtipi.io/docs/getting-started/installation?utm_source=github&utm_c
 
 https://forums.runtipi.io
 
+## Desktop Application
+
+CI OS Hub is now available as a native desktop application for Windows, macOS, and Linux! 
+
+The desktop app provides:
+- Native system integration and system tray support
+- Cross-platform installers (MSI/NSIS for Windows, DMG for macOS, AppImage/DEB for Linux)
+- Automatic backend lifecycle management
+- Foundation for future automation features (WSL2/Docker setup, installation wizard, cloud instance management)
+
+See [`src-tauri/README.md`](src-tauri/README.md) for desktop development documentation.
+
+### Quick Start - Desktop
+
+```bash
+# Development mode
+bun run dev:desktop
+
+# Build desktop installers
+bun run build:desktop
+```
+
 # Running locally
 
 In this guide we will show you how to run Runtipi locally on your machine. This is useful if you want to contribute to the project or if you want to test new apps you added to the appstore.
