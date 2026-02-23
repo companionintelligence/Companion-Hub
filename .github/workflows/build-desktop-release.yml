@@ -1,0 +1,238 @@
+name: Build Desktop Releases
+
+on:
+  push:
+    tags:
+      - 'desktop-v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build (e.g., desktop-v1.0.0)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: 'macos-latest'
+            os_name: 'macOS'
+            target: 'universal-apple-darwin'
+            artifacts: |
+              src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+              src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz
+          
+          - platform: 'ubuntu-22.04'
+            os_name: 'Linux'
+            target: 'x86_64-unknown-linux-gnu'
+            artifacts: |
+              src-tauri/target/release/bundle/deb/*.deb
+              src-tauri/target/release/bundle/appimage/*.AppImage
+              src-tauri/target/release/bundle/rpm/*.rpm
+          
+          - platform: 'windows-latest'
+            os_name: 'Windows'
+            target: 'x86_64-pc-windows-msvc'
+            artifacts: |
+              src-tauri/target/release/bundle/msi/*.msi
+              src-tauri/target/release/bundle/nsis/*.exe
+
+    runs-on: ${{ matrix.platform }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: 1.3.0
+
+      - name: Setup Node.js (for Tauri CLI)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev \
+            rpm
+
+      - name: Install project dependencies
+        run: bun install
+
+      - name: Build common packages
+        run: bun run build
+
+      - name: Build Tauri application
+        env:
+          TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+          TAURI_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
+        run: |
+          cd src-tauri
+          cargo build --release --target ${{ matrix.target }}
+          cd ..
+          bun run build:desktop
+        continue-on-error: false
+
+      - name: List build artifacts (Debug)
+        run: |
+          echo "Listing build artifacts..."
+          if [ "${{ matrix.platform }}" = "windows-latest" ]; then
+            dir src-tauri\target\release\bundle /s /b 2>nul || echo "No Windows bundles found"
+          else
+            find src-tauri/target -name "bundle" -type d -exec ls -lah {} \; 2>/dev/null || echo "No bundles found"
+          fi
+        shell: bash
+
+      - name: Rename artifacts with version
+        run: |
+          VERSION="${{ github.ref_name }}"
+          if [ -z "$VERSION" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          fi
+          VERSION="${VERSION#desktop-v}"
+          echo "Version: $VERSION"
+          
+          # Create output directory
+          mkdir -p release-artifacts
+          
+          # Copy and rename files based on platform
+          if [ "${{ matrix.platform }}" = "macos-latest" ]; then
+            find src-tauri/target -name "*.dmg" -exec cp {} release-artifacts/CI-OS-Hub-Desktop_${VERSION}_universal.dmg \; 2>/dev/null || true
+            find src-tauri/target -name "*.app.tar.gz" -exec cp {} release-artifacts/CI-OS-Hub-Desktop_${VERSION}_universal.app.tar.gz \; 2>/dev/null || true
+          elif [ "${{ matrix.platform }}" = "ubuntu-22.04" ]; then
+            find src-tauri/target -name "*.deb" -exec cp {} release-artifacts/CI-OS-Hub-Desktop_${VERSION}_amd64.deb \; 2>/dev/null || true
+            find src-tauri/target -name "*.AppImage" -exec cp {} release-artifacts/CI-OS-Hub-Desktop_${VERSION}_x86_64.AppImage \; 2>/dev/null || true
+            find src-tauri/target -name "*.rpm" -exec cp {} release-artifacts/CI-OS-Hub-Desktop_${VERSION}_x86_64.rpm \; 2>/dev/null || true
+          elif [ "${{ matrix.platform }}" = "windows-latest" ]; then
+            find src-tauri/target -name "*.msi" -exec cp {} release-artifacts/CI-OS-Hub-Desktop_${VERSION}_x64.msi \; 2>/dev/null || true
+            find src-tauri/target -name "*.exe" -exec cp {} release-artifacts/CI-OS-Hub-Desktop_${VERSION}_x64-setup.exe \; 2>/dev/null || true
+          fi
+          
+          ls -lah release-artifacts/ || echo "No artifacts found"
+        shell: bash
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.os_name }}
+          path: release-artifacts/*
+          retention-days: 30
+          if-no-files-found: warn
+
+  create-release:
+    needs: build-desktop
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/desktop-v')
+    
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List downloaded artifacts
+        run: |
+          echo "Downloaded artifacts:"
+          find artifacts -type f -ls
+
+      - name: Prepare release files
+        run: |
+          mkdir -p release-files
+          find artifacts -type f -exec cp {} release-files/ \;
+          ls -lah release-files/
+
+      - name: Generate checksums
+        run: |
+          cd release-files
+          for file in *; do
+            if [ -f "$file" ]; then
+              sha256sum "$file" >> SHA256SUMS.txt
+            fi
+          done
+          cat SHA256SUMS.txt
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: release-files/*
+          draft: false
+          prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') }}
+          generate_release_notes: true
+          body: |
+            ## CI OS Hub Desktop Release
+            
+            Download the appropriate installer for your platform:
+            
+            ### macOS
+            - **Universal (Intel + Apple Silicon)**: `CI-OS-Hub-Desktop_*_universal.dmg`
+            
+            ### Windows
+            - **MSI Installer**: `CI-OS-Hub-Desktop_*_x64.msi` (recommended)
+            - **EXE Installer**: `CI-OS-Hub-Desktop_*_x64-setup.exe`
+            
+            ### Linux
+            - **Debian/Ubuntu**: `CI-OS-Hub-Desktop_*_amd64.deb`
+            - **RPM (Fedora/RHEL)**: `CI-OS-Hub-Desktop_*_x86_64.rpm`
+            - **AppImage (Universal)**: `CI-OS-Hub-Desktop_*_x86_64.AppImage`
+            
+            ### Installation
+            
+            See [installation documentation](https://github.com/companionintelligence/CI-OS-Hub/blob/main/temp-docs/desktop/installation.md) for detailed instructions.
+            
+            ### Checksums
+            
+            Verify your download with SHA256:
+            ```
+            $(cat release-files/SHA256SUMS.txt)
+            ```
+            
+            ### What's Included
+            
+            - Automated system detection
+            - Windows: WSL2, Docker Desktop, Python 3.12.1 automation
+            - macOS: Homebrew, Colima, Docker, Python 3.12.1 automation
+            - Real-time installation progress tracking
+            - Multi-platform support
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Optional: Upload to additional distribution channels
+  upload-to-distributions:
+    needs: create-release
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/desktop-v') && !contains(github.ref, 'alpha') && !contains(github.ref, 'beta')
+    
+    steps:
+      - name: Placeholder for distribution uploads
+        run: |
+          echo "This job can be extended to upload releases to:"
+          echo "- Homebrew Cask (macOS)"
+          echo "- Chocolatey (Windows)"
+          echo "- Snapcraft (Linux)"
+          echo "- Flathub (Linux)"
+          echo "- AUR (Arch Linux)"
