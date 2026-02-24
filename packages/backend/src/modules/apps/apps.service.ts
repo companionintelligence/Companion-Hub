@@ -138,7 +138,7 @@ export class AppsService {
     return { app: app ?? null, info, metadata, allocatedPort };
   }
 
-  public async checkAppAvailability(appUrn: AppUrn): Promise<{ available: boolean; reason?: string }> {
+  public async checkAppAvailability(appUrn: AppUrn): Promise<{ available: boolean; reason?: string; detail?: string }> {
     const { app, info } = await this.getApp(appUrn);
 
     if (!app || app.status !== 'running') {
