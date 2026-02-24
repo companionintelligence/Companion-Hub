@@ -37,7 +37,7 @@ export class RestartAppCommand extends AppLifecycleCommand {
       }
 
       const forcePull = !form.skipPull && config.force_pull;
-      await dockerService.composeApp(appUrn, `up --detach --force-recreate --remove-orphans ${forcePull ? '--pull always' : '--pull never'}`);
+      await dockerService.composeApp(appUrn, `up --detach --force-recreate --remove-orphans ${forcePull ? '--pull always' : ''}`);
 
       // Regenerate Traefik file-based config after app restarts (workaround for Docker API version issue)
       if (form.exposedLocal) {

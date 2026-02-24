@@ -32,7 +32,7 @@ export class StartAppCommand extends AppLifecycleCommand {
       }
 
       const forcePull = !form.skipPull && config.force_pull;
-      await dockerService.composeApp(appUrn, `up --detach --force-recreate --remove-orphans ${forcePull ? '--pull always' : '--pull never'}`);
+      await dockerService.composeApp(appUrn, `up --detach --force-recreate --remove-orphans ${forcePull ? '--pull always' : ''}`);
 
       // Regenerate Traefik file-based config after app starts
       const effectiveExposure = form.exposureMode || (form.exposedLocal ? 'cloudflare' : 'local');
