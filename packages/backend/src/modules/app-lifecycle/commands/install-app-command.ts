@@ -178,11 +178,38 @@ export class InstallAppCommand extends AppLifecycleCommand {
 
       emitProgress(45);
 
-      // Pre-set permissions BEFORE compose up so containers don't crash on first start
-      // due to root-owned mount directories (affects code-server, file-browser, forgejo, graylog, passbolt, vaultwarden)
+      // Pre-create volume mount directories and set permissions BEFORE compose up
+      // so containers don't crash on first start due to root-owned mount dirs
+      // (affects code-server, file-browser, forgejo, graylog, passbolt, vaultwarden)
       try {
+        // Parse compose to find all host volume paths and pre-create them
+        const preComposeJson = await appFilesManager.getDockerComposeJson(appUrn);
+        if (preComposeJson.content) {
+          try {
+            const { services: preServices } = parseComposeJson(preComposeJson.content);
+            const { appStoreId: preStoreId, appName: preName } = extractAppUrn(appUrn);
+            const preContainerAppDataPath = path.join(_config.getConfig().directories.appDataDir, preStoreId, preName);
+            for (const svc of preServices) {
+              if (svc.volumes) {
+                for (const vol of svc.volumes) {
+                  if (typeof vol === 'object' && 'hostPath' in vol) {
+                    // Replace ${APP_DATA_DIR} with container path
+                    const hostPath = (vol.hostPath as string).replace(/\$\{APP_DATA_DIR\}/g, preContainerAppDataPath);
+                    if (hostPath.startsWith(preContainerAppDataPath)) {
+                      await fs.promises.mkdir(hostPath, { recursive: true }).catch(() => {
+                        /* ignore mkdir errors */
+                      });
+                    }
+                  }
+                }
+              }
+            }
+          } catch (parseErr) {
+            logger.debug(`[AppDiag] Could not pre-create volume dirs: ${parseErr}`);
+          }
+        }
         await appFilesManager.setAppDataDirPermissions(appUrn);
-        logger.info(`[AppDiag] Pre-set data dir permissions for ${appUrn}`);
+        logger.info(`[AppDiag] Pre-created volume dirs and set permissions for ${appUrn}`);
       } catch (permErr) {
         logger.warn(`[AppDiag] Pre-set permissions failed for ${appUrn}: ${permErr}`);
       }
