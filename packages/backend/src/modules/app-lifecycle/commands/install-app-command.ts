@@ -180,7 +180,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
 
       emitProgress(50);
       try {
-        await dockerService.composeApp(appUrn, 'down --rmi all --remove-orphans');
+        await dockerService.composeApp(appUrn, 'down --rmi local --remove-orphans');
       } catch (_) {
         logger.warn(`No prior containers to remove for app ${appUrn}`);
       }
@@ -201,7 +201,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
       }
 
       emitProgress(60);
-      await dockerService.composeApp(appUrn, `up --detach --force-recreate --remove-orphans ${forcePull ? '--pull always' : ''}`);
+      await dockerService.composeApp(appUrn, `up --detach --force-recreate --remove-orphans ${forcePull ? '--pull always' : '--pull never'}`);
       emitProgress(85);
       await appFilesManager.setAppDataDirPermissions(appUrn);
 
