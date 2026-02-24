@@ -8,6 +8,7 @@ import { AppFilesManager } from '../app-files-manager';
 import { AppsRepository } from '../apps.repository';
 import { MarketplaceService } from '../../marketplace/marketplace.service';
 import { RegistrationService } from '../../registration/registration.service';
+import { PortAllocationRepository } from '../../network/port-allocation.repository';
 import type { AppUrn } from '@runtipi/common/types';
 
 describe('AppsService', () => {
@@ -26,6 +27,7 @@ describe('AppsService', () => {
         { provide: LoggerService, useValue: mock<LoggerService>() },
         { provide: MarketplaceService, useValue: mock<MarketplaceService>() },
         { provide: ConfigurationService, useValue: mock<ConfigurationService>() },
+        { provide: PortAllocationRepository, useValue: mock<PortAllocationRepository>() },
         { provide: RegistrationService, useValue: mock<RegistrationService>() },
       ],
     }).compile();
