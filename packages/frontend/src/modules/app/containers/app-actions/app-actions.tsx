@@ -237,7 +237,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
 
         try {
           const { data } = await client.get({ url: `/api/apps/${info.urn}/check-availability` });
-          const { available, reason } = (data || {}) as { available: boolean; reason?: 'CLOUDFLARE' | 'APP_ERROR' };
+          const { available, reason, detail } = (data || {}) as { available: boolean; reason?: string; detail?: string };
 
           if (isMounted) {
             setUrlAvailable(available);
@@ -254,7 +254,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
             } else {
               // Page resolves but errors (e.g. Cloudflare error)
               setIsCheckingUrl(false); // Stop spinner to show error button
-              setCheckError(reason === 'CLOUDFLARE' ? 'Cloudflare Error' : 'Application Error');
+              setCheckError(detail || (reason === 'CLOUDFLARE' ? 'Cloudflare Error' : 'Application Error'));
             }
           }
         } catch (error) {

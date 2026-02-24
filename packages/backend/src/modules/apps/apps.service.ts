@@ -165,13 +165,20 @@ export class AppsService {
       const isCloudflare = text.includes('Cloudflare Ray ID') || text.includes('cf-error-details');
 
       if (isCloudflare) {
-        return { available: false, reason: 'CLOUDFLARE' };
+        // Extract Cloudflare error code if present (e.g. "Error 502", "Error 1033")
+        const cfErrorMatch = text.match(/Error\s+(\d{3,4})/i);
+        const cfDetail = cfErrorMatch ? `Cloudflare Error ${cfErrorMatch[1]}` : `Cloudflare Error (HTTP ${response.status})`;
+        return { available: false, reason: 'CLOUDFLARE', detail: cfDetail };
       }
 
       const available = response.status >= 200 && response.status < 300;
+      if (!available) {
+        return { available: false, reason: 'APP_ERROR', detail: `HTTP ${response.status} ${response.statusText || ''}`.trim() };
+      }
       return { available };
     } catch (e) {
-      return { available: false, reason: e instanceof Error ? e.message : 'UNKNOWN_ERROR' };
+      const message = e instanceof Error ? e.message : 'UNKNOWN_ERROR';
+      return { available: false, reason: 'NETWORK_ERROR', detail: message };
     }
   }
 
