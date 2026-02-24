@@ -154,6 +154,24 @@ describe('ReposHelpers', () => {
       expect(fs.promises.writeFile).toHaveBeenCalledWith(expect.stringContaining('docker-compose.yml'), 'services: test');
     });
 
+    it('should write multiple files from files format', async () => {
+      fetchMock.mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          files: {
+            'config.json': '{"name":"test"}',
+            'docker-compose.json': 'services:\n  app:\n    image: test',
+          },
+        }),
+      });
+
+      const result = await service.downloadAppFiles('http://cloud.api', 'ci-cloud', 'multi-app');
+
+      expect(result.success).toBe(true);
+      expect(fs.promises.writeFile).toHaveBeenCalledWith(expect.stringContaining('config.json'), '{"name":"test"}');
+      expect(fs.promises.writeFile).toHaveBeenCalledWith(expect.stringContaining('docker-compose.json'), 'services:\n  app:\n    image: test');
+    });
+
     it('should handle payment required', async () => {
       fetchMock.mockResolvedValue({
         ok: false,
