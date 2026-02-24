@@ -67,6 +67,20 @@
         ]
       }
     },
+    "/api/user-advanced-mode": {
+      "patch": {
+        "operationId": "updateAdvancedMode",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "App"
+        ]
+      }
+    },
     "/api/acknowledge-welcome": {
       "patch": {
         "operationId": "acknowledgeWelcome",
@@ -2949,6 +2963,9 @@
           "user": {
             "type": "object",
             "properties": {
+              "advancedMode": {
+                "type": "boolean"
+              },
               "hasSeenWelcome": {
                 "type": "boolean"
               },
@@ -2971,6 +2988,7 @@
               }
             },
             "required": [
+              "advancedMode",
               "hasSeenWelcome",
               "id",
               "locale",

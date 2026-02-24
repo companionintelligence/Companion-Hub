@@ -199,20 +199,38 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
           <>
             {/* Exposure mode selector */}
             <div className="mb-3">
-              <label htmlFor="exposureMode" className="block text-sm font-medium mb-1">
-                {t('APP_INSTALL_FORM_EXPOSURE_MODE')}
-              </label>
-              <select
-                id="exposureMode"
-                {...register('exposureMode')}
-                className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary dark:border-gray-600 dark:bg-gray-800"
-                disabled={loading}
+              <span className="block text-sm font-medium mb-1">{t('APP_INSTALL_FORM_EXPOSURE_MODE')}</span>
+              <Controller
+                control={control}
+                name="exposureMode"
                 defaultValue="cloudflare"
-              >
-                <option value="cloudflare">{t('APP_INSTALL_FORM_EXPOSURE_CLOUDFLARE')}</option>
-                <option value="tailscale">{t('APP_INSTALL_FORM_EXPOSURE_TAILSCALE')}</option>
-                <option value="local">{t('APP_INSTALL_FORM_EXPOSURE_LOCAL')}</option>
-              </select>
+                render={({ field: { onChange, value } }) => (
+                  <div className="grid grid-cols-3 gap-2">
+                    {(
+                      [
+                        { key: 'cloudflare', label: t('APP_INSTALL_FORM_EXPOSURE_CLOUDFLARE') },
+                        { key: 'tailscale', label: t('APP_INSTALL_FORM_EXPOSURE_TAILSCALE') },
+                        { key: 'local', label: t('APP_INSTALL_FORM_EXPOSURE_LOCAL') },
+                      ] as const
+                    ).map((option) => (
+                      <button
+                        key={option.key}
+                        type="button"
+                        disabled={loading}
+                        onClick={() => onChange(option.key)}
+                        className={clsx(
+                          'rounded-md border px-3 py-2 text-sm font-medium transition-colors',
+                          value === option.key
+                            ? 'border-primary bg-primary text-primary-foreground'
+                            : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700',
+                        )}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              />
             </div>
 
             {/* Subdomain input — shown for cloudflare and tailscale modes */}
@@ -357,12 +375,7 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
       {/* Port section hidden - always use default port and route through Traefik */}
       {info.exposable && (
         <>
-          {info.dynamic_config && (
-            <>
-              <h3>{t('APP_INSTALL_FORM_REVERSE_PROXY')}</h3>
-              {renderDynamicConfigProxyForm()}
-            </>
-          )}
+          {info.dynamic_config && renderDynamicConfigProxyForm()}
           {renderExposeForm()}
         </>
       )}
@@ -385,7 +398,7 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
           <span className="text-sm text-muted-foreground">{t('APP_INSTALL_FORM_MAX_BACKUPS_HINT', { value: globalMaxBackups })}</span>
         </div>
       )}
-      {!isAdvancedMode && <p className="text-xs text-muted-foreground mt-2">{t('APP_INSTALL_FORM_ADVANCED_MODE_HINT')}</p>}
+      {!isAdvancedMode && null}
     </form>
   );
 };
