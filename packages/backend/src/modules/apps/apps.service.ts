@@ -8,6 +8,7 @@ import { CURRENT_SCHEMA_VERSION, parseComposeJson } from '@runtipi/common/schema
 import type { AppUrn } from '@runtipi/common/types';
 import axios from 'axios';
 import { MarketplaceService } from '../marketplace/marketplace.service';
+import { PortAllocationRepository } from '../network/port-allocation.repository';
 import { RegistrationService } from '../registration/registration.service';
 import { AppFilesManager } from './app-files-manager';
 import { AppsRepository } from './apps.repository';
@@ -22,6 +23,7 @@ export class AppsService {
     private readonly logger: LoggerService,
     private readonly marketplaceService: MarketplaceService,
     private readonly configurationService: ConfigurationService,
+    private readonly portAllocationRepository: PortAllocationRepository,
     @Inject(forwardRef(() => RegistrationService)) private readonly registrationService: RegistrationService,
   ) {}
 
@@ -121,7 +123,19 @@ export class AppsService {
       ...updateInfo,
     };
 
-    return { app: app ?? null, info, metadata };
+    // Get allocated port from port_allocation table
+    let allocatedPort: number | undefined;
+    try {
+      const allocations = await this.portAllocationRepository.getByAppUrn(appUrn);
+      const mainAlloc = allocations.find((a) => a.label === 'main');
+      if (mainAlloc) {
+        allocatedPort = mainAlloc.hostPort;
+      }
+    } catch (err) {
+      this.logger.debug(`Could not get port allocation for ${appUrn}: ${err}`);
+    }
+
+    return { app: app ?? null, info, metadata, allocatedPort };
   }
 
   public async checkAppAvailability(appUrn: AppUrn): Promise<{ available: boolean; reason?: string }> {

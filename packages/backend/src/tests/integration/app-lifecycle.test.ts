@@ -21,6 +21,7 @@ import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppHelpers } from '@/modules/apps/app.helpers';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { AppsService } from '@/modules/apps/apps.service';
+import { PortAllocationRepository } from '@/modules/network/port-allocation.repository';
 import { DOCKERODE } from '@/modules/docker/docker.module';
 import { DockerService } from '@/modules/docker/docker.service';
 import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
@@ -126,6 +127,7 @@ describe('App lifecycle', () => {
         AppLifecycleCommandFactory,
         AppFilesManager,
         AppsRepository,
+        PortAllocationRepository,
         EnvUtils,
         AppHelpers,
         AppsService,
