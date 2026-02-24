@@ -144,9 +144,11 @@ export class ReposHelpers {
       await this.ensureDirectoryWithPermissions(appsPath);
 
       // Fetch metadata list
-      const response = await fetch(`${url}/store`); // Assuming url is base API url
+      const storeUrl = `${url}/store`;
+      this.logger.debug(`Fetching store metadata from ${storeUrl}`);
+      const response = await fetch(storeUrl); // Assuming url is base API url
       if (!response.ok) {
-        throw new Error(`Failed to fetch store metadata: ${response.statusText}`);
+        throw new Error(`Failed to fetch store metadata from ${storeUrl}: ${response.status} ${response.statusText}`);
       }
 
       const apps = (await response.json()) as Array<{ id: string; slug?: string; [key: string]: unknown }>;
