@@ -339,4 +339,82 @@ export class DockerService {
       });
     });
   }
+
+  /**
+   * Diagnose app containers after startup - check for crash-loops, exited containers, and capture logs
+   * @param appUrn - The app URN
+   * @returns Diagnostic results with unhealthy container info
+   */
+  public async diagnoseAppContainers(appUrn: AppUrn): Promise<{
+    unhealthy: Array<{ name: string; state: string; logs: string }>;
+    healthy: string[];
+  }> {
+    const projectName = appUrn.replace(':', '_');
+    const result: { unhealthy: Array<{ name: string; state: string; logs: string }>; healthy: string[] } = {
+      unhealthy: [],
+      healthy: [],
+    };
+
+    try {
+      // List containers for this compose project
+      const listCmd = spawn('docker', [
+        'ps',
+        '-a',
+        '--filter',
+        `label=com.docker.compose.project=${projectName}`,
+        '--format',
+        '{{.Names}}|{{.Status}}',
+      ]);
+
+      const output = await new Promise<string>((resolve, reject) => {
+        const chunks: string[] = [];
+        listCmd.stdout.on('data', (data: Buffer) => chunks.push(String(data)));
+        listCmd.stderr.on('data', (data: Buffer) => this.logger.debug(`docker ps stderr: ${String(data)}`));
+        listCmd.on('close', (code) => {
+          if (code === 0) resolve(chunks.join(''));
+          else reject(new Error(`docker ps failed with code ${code}`));
+        });
+        listCmd.on('error', reject);
+      });
+
+      const lines = output.trim().split('\n').filter(Boolean);
+
+      for (const line of lines) {
+        const [containerName, status] = line.split('|');
+        if (!containerName || !status) continue;
+
+        const isUnhealthy = status.includes('Restarting') || status.includes('Exited') || status.includes('Created') || status.includes('Dead');
+
+        if (isUnhealthy) {
+          // Capture last 20 lines of logs
+          let logs = '';
+          try {
+            const logCmd = spawn('docker', ['logs', '--tail', '20', containerName]);
+            logs = await new Promise<string>((resolve, reject) => {
+              const chunks: string[] = [];
+              logCmd.stdout.on('data', (data: Buffer) => chunks.push(String(data)));
+              logCmd.stderr.on('data', (data: Buffer) => chunks.push(String(data)));
+              logCmd.on('close', () => resolve(chunks.join('').trim()));
+              logCmd.on('error', () => resolve('(failed to capture logs)'));
+            });
+          } catch {
+            logs = '(failed to capture logs)';
+          }
+
+          this.logger.warn(`[AppDiag] Container ${containerName} is ${status}`);
+          if (logs) {
+            this.logger.warn(`[AppDiag] ${containerName} logs:\n${logs}`);
+          }
+
+          result.unhealthy.push({ name: containerName, state: status, logs });
+        } else {
+          result.healthy.push(containerName);
+        }
+      }
+    } catch (error) {
+      this.logger.error(`[AppDiag] Failed to diagnose containers for ${appUrn}: ${error}`);
+    }
+
+    return result;
+  }
 }

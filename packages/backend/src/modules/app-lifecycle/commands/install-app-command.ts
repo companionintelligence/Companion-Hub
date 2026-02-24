@@ -178,6 +178,15 @@ export class InstallAppCommand extends AppLifecycleCommand {
 
       emitProgress(45);
 
+      // Pre-set permissions BEFORE compose up so containers don't crash on first start
+      // due to root-owned mount directories (affects code-server, file-browser, forgejo, graylog, passbolt, vaultwarden)
+      try {
+        await appFilesManager.setAppDataDirPermissions(appUrn);
+        logger.info(`[AppDiag] Pre-set data dir permissions for ${appUrn}`);
+      } catch (permErr) {
+        logger.warn(`[AppDiag] Pre-set permissions failed for ${appUrn}: ${permErr}`);
+      }
+
       emitProgress(50);
       try {
         await dockerService.composeApp(appUrn, 'down --rmi local --remove-orphans');
@@ -202,8 +211,23 @@ export class InstallAppCommand extends AppLifecycleCommand {
 
       emitProgress(60);
       await dockerService.composeApp(appUrn, `up --detach --force-recreate --remove-orphans ${forcePull ? '--pull always' : '--pull never'}`);
-      emitProgress(85);
+      emitProgress(80);
       await appFilesManager.setAppDataDirPermissions(appUrn);
+
+      // Post-start health check: wait, then inspect container states and capture logs from failing containers
+      emitProgress(85);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 30000)); // Wait 30s for containers to stabilize
+        const diagResults = await dockerService.diagnoseAppContainers(appUrn);
+        if (diagResults.unhealthy.length > 0) {
+          const errorSummary = diagResults.unhealthy.map((c) => `${c.name} (${c.state}): ${c.logs}`).join('\n');
+          logger.warn(`[AppDiag] App ${appUrn} has unhealthy containers:\n${errorSummary}`);
+        } else {
+          logger.info(`[AppDiag] All containers healthy for ${appUrn}`);
+        }
+      } catch (diagErr) {
+        logger.warn(`[AppDiag] Post-start diagnostics failed for ${appUrn}: ${diagErr}`);
+      }
 
       // Create Cloudflare Tunnel route if exposedLocal is enabled (app is published to internet)
       // This part now uses CloudflareClientService to SYNC state with CI-Cloud
