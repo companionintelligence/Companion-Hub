@@ -86,6 +86,7 @@ services:
       - ${ENV_FILE:-.env}:/data/.env:ro
       - ./.internal/cache:/cache
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${DOCKER_CONFIG_PATH:-/root/.docker/config.json}:/root/.docker/config.json:ro
       - /proc/meminfo:/host/proc/meminfo:ro
       - ./docker-compose.prod.yml:/data/docker-compose.yml
       - /etc/localtime:/etc/localtime:ro
