@@ -44,6 +44,7 @@ describe('InstallForm', () => {
         maxBackups: 5,
         guestDashboard: false,
       },
+      user: { advancedMode: true },
       isProduction: true,
     } as unknown as ReturnType<typeof useAppContext>);
 
@@ -69,6 +70,7 @@ describe('InstallForm', () => {
         maxBackups: 5,
         guestDashboard: false,
       },
+      user: { advancedMode: true },
       isProduction: true,
     } as unknown as ReturnType<typeof useAppContext>);
 

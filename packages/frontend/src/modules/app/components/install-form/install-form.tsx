@@ -43,8 +43,9 @@ const typeFilter = (field: FormField) => !hiddenTypes.includes(field.type);
 
 export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit, initialValues, loading, formId }) => {
   const { t } = useTranslation();
-  const { userSettings, isProduction } = useAppContext();
+  const { userSettings, isProduction, user } = useAppContext();
   const { guestDashboard, localDomain, maxBackups: globalMaxBackups, ciHubOrganizationSlug, domain } = userSettings;
+  const isAdvancedMode = user.advancedMode;
 
   const orgSlug = ciHubOrganizationSlug ? ciHubOrganizationSlug.toLowerCase().replace(/\s+/g, '-') : undefined;
 
@@ -215,7 +216,7 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
             </div>
 
             {/* Subdomain input — shown for cloudflare and tailscale modes */}
-            {watchExposureMode !== 'local' && (
+            {isAdvancedMode && watchExposureMode !== 'local' && (
               <div className="mb-3">
                 <InputGroup
                   groupPrefix="https://"
@@ -232,29 +233,31 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
               </div>
             )}
 
-            <Controller
-              control={control}
-              name="enableAuth"
-              defaultValue={true}
-              render={({ field: { onChange, value, ref, ...props } }) => (
-                <Switch
-                  {...props}
-                  className="mb-3"
-                  ref={ref}
-                  checked={value ?? true}
-                  onCheckedChange={onChange}
-                  label={
-                    <>
-                      {t('APP_INSTALL_FORM_ENABLE_AUTH')}
-                      <Tooltip className="tooltip" anchorSelect=".enable-auth-hint">
-                        {t('APP_INSTALL_FORM_ENABLE_AUTH_HINT')}
-                      </Tooltip>
-                      <span className={clsx('ms-1 form-help enable-auth-hint')}>?</span>
-                    </>
-                  }
-                />
-              )}
-            />
+            {isAdvancedMode && (
+              <Controller
+                control={control}
+                name="enableAuth"
+                defaultValue={true}
+                render={({ field: { onChange, value, ref, ...props } }) => (
+                  <Switch
+                    {...props}
+                    className="mb-3"
+                    ref={ref}
+                    checked={value ?? true}
+                    onCheckedChange={onChange}
+                    label={
+                      <>
+                        {t('APP_INSTALL_FORM_ENABLE_AUTH')}
+                        <Tooltip className="tooltip" anchorSelect=".enable-auth-hint">
+                          {t('APP_INSTALL_FORM_ENABLE_AUTH_HINT')}
+                        </Tooltip>
+                        <span className={clsx('ms-1 form-help enable-auth-hint')}>?</span>
+                      </>
+                    }
+                  />
+                )}
+              />
+            )}
           </>
         )}
       </>
@@ -334,7 +337,7 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
     <form className="flex flex-col" onSubmit={handleSubmit(validate)} id={formId}>
       {(guestDashboard || formFields.filter(typeFilter).length !== 0) && <h3>{t('APP_INSTALL_FORM_GENERAL')}</h3>}
       {formFields.filter(typeFilter).map(renderField)}
-      {guestDashboard && (
+      {guestDashboard && isAdvancedMode && (
         <Controller
           control={control}
           name="isVisibleOnGuestDashboard"
@@ -363,23 +366,26 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
           {renderExposeForm()}
         </>
       )}
-      <div className="mb-3">
-        <Input
-          type="number"
-          min={0}
-          max={100}
-          {...register('maxBackups', {
-            valueAsNumber: true,
-            setValueAs: (value) => (value === '' || value === null ? undefined : Number(value)),
-            min: { value: 0, message: t('APP_INSTALL_FORM_MAX_BACKUPS_ERROR_MIN') },
-            max: { value: 100, message: t('APP_INSTALL_FORM_MAX_BACKUPS_ERROR_MAX') },
-          })}
-          label={t('APP_INSTALL_FORM_MAX_BACKUPS')}
-          error={errors.maxBackups?.message}
-          placeholder={globalMaxBackups === 0 ? undefined : globalMaxBackups.toString()}
-        />
-        <span className="text-sm text-muted-foreground">{t('APP_INSTALL_FORM_MAX_BACKUPS_HINT', { value: globalMaxBackups })}</span>
-      </div>
+      {isAdvancedMode && (
+        <div className="mb-3">
+          <Input
+            type="number"
+            min={0}
+            max={100}
+            {...register('maxBackups', {
+              valueAsNumber: true,
+              setValueAs: (value) => (value === '' || value === null ? undefined : Number(value)),
+              min: { value: 0, message: t('APP_INSTALL_FORM_MAX_BACKUPS_ERROR_MIN') },
+              max: { value: 100, message: t('APP_INSTALL_FORM_MAX_BACKUPS_ERROR_MAX') },
+            })}
+            label={t('APP_INSTALL_FORM_MAX_BACKUPS')}
+            error={errors.maxBackups?.message}
+            placeholder={globalMaxBackups === 0 ? undefined : globalMaxBackups.toString()}
+          />
+          <span className="text-sm text-muted-foreground">{t('APP_INSTALL_FORM_MAX_BACKUPS_HINT', { value: globalMaxBackups })}</span>
+        </div>
+      )}
+      {!isAdvancedMode && <p className="text-xs text-muted-foreground mt-2">{t('APP_INSTALL_FORM_ADVANCED_MODE_HINT')}</p>}
     </form>
   );
 };

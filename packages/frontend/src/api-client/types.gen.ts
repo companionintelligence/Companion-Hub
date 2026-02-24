@@ -47,6 +47,7 @@ export type AppContextDto = {
         operator: boolean;
         totpEnabled: boolean;
         username: string;
+        advancedMode: boolean;
     };
     userSettings: {
         advancedSettings: boolean;
@@ -1095,6 +1096,21 @@ export type UpdateUserSettingsData = {
 };
 
 export type UpdateUserSettingsResponses = {
+    200: unknown;
+};
+
+export type UpdateAdvancedModeBody = {
+    advancedMode: boolean;
+};
+
+export type UpdateAdvancedModeData = {
+    body: UpdateAdvancedModeBody;
+    path?: never;
+    query?: never;
+    url: '/api/user-advanced-mode';
+};
+
+export type UpdateAdvancedModeResponses = {
     200: unknown;
 };
 

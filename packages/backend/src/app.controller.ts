@@ -11,6 +11,7 @@ import { RegistrationService } from '@/modules/registration/registration.service
 import type { UserDto } from './modules/user/dto/user.dto';
 import { ApiResponse } from '@nestjs/swagger';
 import { LoggerService } from '@/core/logger/logger.service';
+import { TranslatableError } from '@/common/error/translatable-error';
 
 @Controller()
 export class AppController {
@@ -208,6 +209,16 @@ export class AppController {
   @UseGuards(AuthGuard)
   async updateUserSettings(@Body() body: UserSettingsBody) {
     await this.configuration.setUserSettings(body);
+  }
+
+  @Patch('/user-advanced-mode')
+  @UseGuards(AuthGuard)
+  async updateAdvancedMode(@Req() req: Request, @Body() body: { advancedMode: boolean }) {
+    if (!req.user) {
+      throw new TranslatableError('SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN');
+    }
+
+    await this.userRepository.updateUser(req.user.id, { advancedMode: Boolean(body.advancedMode) });
   }
 
   @Patch('/acknowledge-welcome')
