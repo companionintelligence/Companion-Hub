@@ -52,6 +52,8 @@ const appContextSchema = type({
   apps: AppInfoSimpleDto.schema.array(),
   updatesAvailable: 'number',
   isProduction: 'boolean',
+  cloudflareAvailable: 'boolean',
+  tailscaleAvailable: 'boolean',
 });
 
 export class UserSettingsDto extends createArkDto(settingsSchema, { name: 'UserSettingsDto' }) {}

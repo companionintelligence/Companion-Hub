@@ -202,6 +202,8 @@
   "APP_INSTALL_FORM_EXPOSURE_CLOUDFLARE": "Public Web",
   "APP_INSTALL_FORM_EXPOSURE_TAILSCALE": "Private VPN",
   "APP_INSTALL_FORM_EXPOSURE_LOCAL": "This Machine Only",
+  "APP_INSTALL_FORM_EXPOSURE_CLOUDFLARE_UNAVAILABLE": "Cloudflare tunnel not configured",
+  "APP_INSTALL_FORM_EXPOSURE_TAILSCALE_UNAVAILABLE": "Tailscale not connected",
   "APP_INSTALL_FORM_FORCE_PULL_WARNING": "This app uses the <code>{{tag}}</code> tag, this means that the image will be pulled every time you start it and you may get rate-limited by the registry.",
   "APP_LOGS_TAB_FOLLOW": "Follow logs",
   "APP_LOGS_TAB_MAX_LINES": "Max lines:",

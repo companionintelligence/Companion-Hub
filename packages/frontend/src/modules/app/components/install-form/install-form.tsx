@@ -3,7 +3,7 @@ import { getRandomPortMutation } from '@/api-client/@tanstack/react-query.gen';
 import { Input, InputGroup } from '@/components/ui/Input';
 import { Switch } from '@/components/ui/Switch';
 import { useAppContext } from '@/context/app-context';
-import type { AppInfo, FormField } from '@/types/app.types';
+import type { AppInfo, AppStatus, FormField } from '@/types/app.types';
 import type { TranslatableError } from '@/types/error.types';
 import { useMutation } from '@tanstack/react-query';
 import clsx from 'clsx';
@@ -23,6 +23,7 @@ interface IProps {
   info: AppInfo;
   loading?: boolean;
   formId: string;
+  appStatus?: AppStatus;
 }
 
 export type FormValues = {
@@ -41,9 +42,9 @@ export type FormValues = {
 
 const typeFilter = (field: FormField) => !hiddenTypes.includes(field.type);
 
-export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit, initialValues, loading, formId }) => {
+export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit, initialValues, loading, formId, appStatus }) => {
   const { t } = useTranslation();
-  const { userSettings, isProduction, user } = useAppContext();
+  const { userSettings, isProduction, user, cloudflareAvailable, tailscaleAvailable } = useAppContext();
   const { guestDashboard, localDomain, maxBackups: globalMaxBackups, ciHubOrganizationSlug, domain } = userSettings;
   const isAdvancedMode = user.advancedMode;
 
@@ -79,7 +80,9 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
     }
     // Set default exposure mode and port for exposable apps
     if (info.exposable && info.dynamic_config) {
-      setValue('exposureMode', 'cloudflare');
+      // Auto-select first available mode: cloudflare > tailscale > local
+      const defaultMode = cloudflareAvailable ? 'cloudflare' : tailscaleAvailable ? 'tailscale' : 'local';
+      setValue('exposureMode', (initialValues?.exposureMode as FormValues['exposureMode']) || defaultMode);
       setValue('exposedLocal', true); // backward compat
       setValue('openPort', false); // Always false - apps route through Traefik
       setValue('enableAuth', true); // Enable authentication by default
@@ -92,7 +95,19 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
         setValue('localSubdomain', defaultSubdomain);
       }
     }
-  }, [initialValues, isDirty, setValue, info.force_expose, info.exposable, info.dynamic_config, info.port, watchLocalSubdomain, info.urn.split]);
+  }, [
+    initialValues,
+    isDirty,
+    setValue,
+    info.force_expose,
+    info.exposable,
+    info.dynamic_config,
+    info.port,
+    watchLocalSubdomain,
+    info.urn.split,
+    cloudflareAvailable,
+    tailscaleAvailable,
+  ]);
 
   const _randomPortMutation = useMutation({
     ...getRandomPortMutation(),
@@ -192,6 +207,8 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
 
   const renderDynamicConfigProxyForm = () => {
     const watchExposureMode = watch('exposureMode', 'cloudflare');
+    const transitionalStatuses = ['installing', 'starting', 'stopping', 'updating', 'restarting', 'backing_up'];
+    const isTransitional = appStatus ? transitionalStatuses.includes(appStatus) : false;
 
     return (
       <>
@@ -208,26 +225,44 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
                   <div className="grid grid-cols-3 gap-2">
                     {(
                       [
-                        { key: 'cloudflare', label: t('APP_INSTALL_FORM_EXPOSURE_CLOUDFLARE') },
-                        { key: 'tailscale', label: t('APP_INSTALL_FORM_EXPOSURE_TAILSCALE') },
-                        { key: 'local', label: t('APP_INSTALL_FORM_EXPOSURE_LOCAL') },
+                        {
+                          key: 'cloudflare',
+                          label: t('APP_INSTALL_FORM_EXPOSURE_CLOUDFLARE'),
+                          available: cloudflareAvailable,
+                          tooltip: t('APP_INSTALL_FORM_EXPOSURE_CLOUDFLARE_UNAVAILABLE'),
+                        },
+                        {
+                          key: 'tailscale',
+                          label: t('APP_INSTALL_FORM_EXPOSURE_TAILSCALE'),
+                          available: tailscaleAvailable,
+                          tooltip: t('APP_INSTALL_FORM_EXPOSURE_TAILSCALE_UNAVAILABLE'),
+                        },
+                        { key: 'local', label: t('APP_INSTALL_FORM_EXPOSURE_LOCAL'), available: true, tooltip: '' },
                       ] as const
-                    ).map((option) => (
-                      <button
-                        key={option.key}
-                        type="button"
-                        disabled={loading}
-                        onClick={() => onChange(option.key)}
-                        className={clsx(
-                          'rounded-md border px-3 py-2 text-sm font-medium transition-colors',
-                          value === option.key
-                            ? 'border-primary bg-primary text-primary-foreground'
-                            : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700',
-                        )}
-                      >
-                        {option.label}
-                      </button>
-                    ))}
+                    ).map((option) => {
+                      const isDisabled = loading || !option.available || isTransitional;
+                      return (
+                        <div key={option.key} className="relative">
+                          <button
+                            type="button"
+                            disabled={isDisabled}
+                            data-tooltip-id={`exposure-tooltip-${option.key}`}
+                            data-tooltip-content={option.available ? undefined : option.tooltip}
+                            onClick={() => option.available && onChange(option.key)}
+                            className={clsx(
+                              'w-full rounded-md border px-3 py-2 text-sm font-medium transition-colors',
+                              value === option.key
+                                ? 'border-primary bg-primary text-primary-foreground'
+                                : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700',
+                              isDisabled && 'opacity-50 cursor-not-allowed hover:bg-white dark:hover:bg-gray-800',
+                            )}
+                          >
+                            {option.label}
+                          </button>
+                          {!option.available && <Tooltip id={`exposure-tooltip-${option.key}`} className="tooltip" />}
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               />

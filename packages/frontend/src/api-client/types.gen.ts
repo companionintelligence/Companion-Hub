@@ -40,6 +40,9 @@ export type AppContextDto = {
         urn: string;
     }>;
     updatesAvailable: number;
+    isProduction: boolean;
+    cloudflareAvailable: boolean;
+    tailscaleAvailable: boolean;
     user: {
         hasSeenWelcome: boolean;
         id: number;

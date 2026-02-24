@@ -2954,7 +2954,13 @@
               ]
             }
           },
+          "cloudflareAvailable": {
+            "type": "boolean"
+          },
           "isProduction": {
+            "type": "boolean"
+          },
+          "tailscaleAvailable": {
             "type": "boolean"
           },
           "updatesAvailable": {
@@ -3184,7 +3190,9 @@
         },
         "required": [
           "apps",
+          "cloudflareAvailable",
           "isProduction",
+          "tailscaleAvailable",
           "updatesAvailable",
           "user",
           "userSettings",

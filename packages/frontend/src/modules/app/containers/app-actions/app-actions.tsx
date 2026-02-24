@@ -386,6 +386,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
         onClose={updateSettingsDisclosure.close}
         info={info}
         config={app?.config ?? {}}
+        status={app?.status}
       />
       <div className="mt-1 flex flex-wrap gap-2">
         {buttons.map((button) => {
