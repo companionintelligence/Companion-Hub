@@ -234,13 +234,20 @@ export class ReposHelpers {
         throw new Error(`Failed to fetch app files: ${response.statusText}`);
       }
 
-      const data = (await response.json()) as { files?: Record<string, string> };
-      const files = data.files || {};
+      const data = (await response.json()) as {
+        files?: Record<string, string>;
+      };
 
       await this.ensureDirectoryWithPermissions(appPath);
 
-      for (const [filename, content] of Object.entries(files)) {
-        await fs.promises.writeFile(path.join(appPath, filename), content);
+      const files = data.files || {};
+
+      if (Object.keys(files).length > 0) {
+        for (const [filename, content] of Object.entries(files)) {
+          await fs.promises.writeFile(path.join(appPath, filename), typeof content === 'string' ? content : JSON.stringify(content, null, 2));
+        }
+      } else {
+        this.logger.warn(`No app files found in response for ${appSlug}`);
       }
 
       return { success: true, message: 'App files downloaded' };

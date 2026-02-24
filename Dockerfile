@@ -138,7 +138,9 @@ RUN --mount=type=cache,target=/root/.npm \
 
 COPY --from=builder_base /deps/docker-binary /usr/local/bin/docker-compose
 RUN chmod +x /usr/local/bin/docker-compose && \
-    ls -lh /usr/local/bin/docker-compose
+    ls -lh /usr/local/bin/docker-compose && \
+    mkdir -p /root/.docker/cli-plugins && \
+    ln -s /usr/local/bin/docker-compose /root/.docker/cli-plugins/docker-compose
 COPY --from=builder /app/package.json ./
 
     # Assets - copy built artifacts
