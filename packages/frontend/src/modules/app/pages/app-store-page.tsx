@@ -58,7 +58,7 @@ export default () => {
     onSuccess: () => {
       queryClient.invalidateQueries({
         predicate: (query) => {
-          const key = query.queryKey[0] as any;
+          const key = query.queryKey[0] as Record<string, unknown> | undefined;
           return key?._id === 'searchApps' || key?._id === 'getEnabledAppStores';
         },
       });
