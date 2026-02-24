@@ -390,7 +390,7 @@ export class DockerService {
           let logs = '';
           try {
             const logCmd = spawn('docker', ['logs', '--tail', '20', containerName]);
-            logs = await new Promise<string>((resolve, reject) => {
+            logs = await new Promise<string>((resolve, _reject) => {
               const chunks: string[] = [];
               logCmd.stdout.on('data', (data: Buffer) => chunks.push(String(data)));
               logCmd.stderr.on('data', (data: Buffer) => chunks.push(String(data)));

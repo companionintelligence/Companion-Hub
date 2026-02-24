@@ -241,20 +241,21 @@ export class InstallAppCommand extends AppLifecycleCommand {
       emitProgress(80);
       await appFilesManager.setAppDataDirPermissions(appUrn);
 
-      // Post-start health check: wait, then inspect container states and capture logs from failing containers
+      // Post-start health check: fire-and-forget — don't block install completion
       emitProgress(85);
-      try {
-        await new Promise((resolve) => setTimeout(resolve, 30000)); // Wait 30s for containers to stabilize
-        const diagResults = await dockerService.diagnoseAppContainers(appUrn);
-        if (diagResults.unhealthy.length > 0) {
-          const errorSummary = diagResults.unhealthy.map((c) => `${c.name} (${c.state}): ${c.logs}`).join('\n');
-          logger.warn(`[AppDiag] App ${appUrn} has unhealthy containers:\n${errorSummary}`);
-        } else {
-          logger.info(`[AppDiag] All containers healthy for ${appUrn}`);
+      setTimeout(async () => {
+        try {
+          const diagResults = await dockerService.diagnoseAppContainers(appUrn);
+          if (diagResults.unhealthy.length > 0) {
+            const errorSummary = diagResults.unhealthy.map((c) => `${c.name} (${c.state}): ${c.logs}`).join('\n');
+            logger.warn(`[AppDiag] App ${appUrn} has unhealthy containers:\n${errorSummary}`);
+          } else {
+            logger.info(`[AppDiag] All containers healthy for ${appUrn}`);
+          }
+        } catch (diagErr) {
+          logger.warn(`[AppDiag] Post-start diagnostics failed for ${appUrn}: ${diagErr}`);
         }
-      } catch (diagErr) {
-        logger.warn(`[AppDiag] Post-start diagnostics failed for ${appUrn}: ${diagErr}`);
-      }
+      }, 30000);
 
       // Create Cloudflare Tunnel route if exposedLocal is enabled (app is published to internet)
       // This part now uses CloudflareClientService to SYNC state with CI-Cloud
