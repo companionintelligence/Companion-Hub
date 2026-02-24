@@ -173,7 +173,7 @@ export class AppsService {
 
       const available = response.status >= 200 && response.status < 300;
       if (!available) {
-        return { available: false, reason: 'APP_ERROR', detail: `HTTP ${response.status} ${response.statusText || ''}`.trim() };
+        return { available: false, reason: 'APP_ERROR', detail: `HTTP ${response.status}` };
       }
       return { available };
     } catch (e) {
