@@ -1,14 +1,21 @@
 import { getEnabledAppStoresOptions, searchAppsInfiniteOptions, searchAppsOptions } from '@/api-client/@tanstack/react-query.gen';
+import { pullAppStores } from '@/api-client/sdk.gen';
 import { EmptyPage } from '@/components/empty-page/empty-page';
+import { Button } from '@/components/ui/Button';
+import { Card, CardHeader, CardTitle } from '@/components/ui/Card';
+import { Input } from '@/components/ui/Input';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/Table/Table';
+import alts from '@/lib/data/alts.json';
 import { useInfiniteScroll } from '@/lib/hooks/use-infinite-scroll';
 import { useRegistrationStatus } from '@/lib/hooks/use-registration-status';
-import { useAppStoreState } from '@/stores/app-store';
-import { keepPreviousData, useInfiniteQuery, useSuspenseQuery, useQuery } from '@tanstack/react-query';
 import { AppCard } from '@/modules/app/components/app-card/app-card';
+import { iconForCategory, colorSchemeForCategory } from '@/modules/app/helpers/table-helpers';
+import { useAppStoreState } from '@/stores/app-store';
+import { keepPreviousData, useInfiniteQuery, useSuspenseQuery, useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import clsx from 'clsx';
+import { Search, ArrowRight, ArrowLeftRight, LayoutGrid, RefreshCw } from 'lucide-react';
 import { useCallback, useEffect, useState, useMemo } from 'react';
-import { Input } from '@/components/ui/Input';
 import { Navigate, useParams, Link } from 'react-router';
-import alts from '@/lib/data/alts.json';
 
 interface AltEntry {
   name: string;
@@ -16,16 +23,11 @@ interface AltEntry {
   url: string | null;
   appSlug?: string;
 }
+
 interface AltItem {
   proprietary: AltEntry[];
   alternatives: AltEntry[];
 }
-import { iconForCategory, colorSchemeForCategory } from '@/modules/app/helpers/table-helpers';
-import clsx from 'clsx';
-import { Card, CardHeader, CardTitle } from '@/components/ui/Card';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/Table/Table';
-import { Search, ArrowRight, ArrowLeftRight, LayoutGrid } from 'lucide-react';
-import { Button } from '@/components/ui/Button';
 
 const SKELETONS = Array.from({ length: 12 }, (_, i) => `skeleton-${i}`);
 
@@ -49,6 +51,19 @@ export default () => {
   const { setCategory, category, storeId, setStoreId, search: initialSearch, setSearch } = useAppStoreState();
   const [search, setLocalSearch] = useState(initialSearch);
   const { data: registrationStatus, isLoading: isCheckingRegistration, error: registrationError } = useRegistrationStatus();
+
+  const queryClient = useQueryClient();
+  const { mutate: pullApps, isPending: isPulling } = useMutation({
+    mutationFn: () => pullAppStores(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        predicate: (query) => {
+          const key = query.queryKey[0] as Record<string, unknown> | undefined;
+          return key?._id === 'searchApps' || key?._id === 'getEnabledAppStores';
+        },
+      });
+    },
+  });
 
   const isAlternativesView = category === ALTERNATIVES_VIEW;
 
@@ -146,9 +161,15 @@ export default () => {
 
   return (
     <div className="h-full flex flex-col">
-      <div className="flex-shrink-0 px-6 pt-6 pb-2">
-        <h2 className="text-3xl font-bold tracking-tight mb-2 text-foreground">App Store</h2>
-        <p className="text-muted-foreground">Discover and manage your applications</p>
+      <div className="flex-shrink-0 px-6 pt-6 pb-2 flex justify-between items-start">
+        <div>
+          <h2 className="text-3xl font-bold tracking-tight mb-2 text-foreground">App Store</h2>
+          <p className="text-muted-foreground">Discover and manage your applications</p>
+        </div>
+        <Button onClick={() => pullApps()} disabled={isPulling} variant="outline" size="sm" className="gap-2">
+          <RefreshCw className={clsx('h-4 w-4', isPulling && 'animate-spin')} />
+          {isPulling ? 'Syncing...' : 'Check for Updates'}
+        </Button>
       </div>
 
       <div className="flex flex-1 min-h-0 pt-4">
