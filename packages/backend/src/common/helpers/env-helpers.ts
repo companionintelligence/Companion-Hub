@@ -145,9 +145,9 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   envMap.set('DNS_IP', settings.dnsIp || envMap.get('DNS_IP') || '9.9.9.9');
   envMap.set('ARCHITECTURE', getArchitecture());
   envMap.set('JWT_SECRET', jwtSecret);
-  // Prioritize .env file value over settings.json for DOMAIN
-  // .env file is the authoritative source (read-only mount)
-  envMap.set('DOMAIN', envMap.get('DOMAIN') || 'example.com');
+  // Prioritize process.env.DOMAIN (from .env.local) over data .env value
+  // Falls back to data .env, then to example.com as last resort
+  envMap.set('DOMAIN', process.env.DOMAIN || envMap.get('DOMAIN') || 'example.com');
   envMap.set('RUNTIPI_APP_DATA_PATH', finalAppDataPath);
   envMap.set(
     'RUNTIPI_FORWARD_AUTH_URL',

@@ -64,7 +64,19 @@ export class ConfigurationService {
 
   // Lowest level, cannot use any other service or module to avoid circular dependencies
   constructor(private readonly envUtils: EnvUtils) {
+    // Preserve .env.local values (loaded first by NestJS/dotenv) before loading data .env
+    const preservedEnv: Record<string, string> = {};
+    for (const key of ['DOMAIN', 'LOCAL_DOMAIN']) {
+      if (process.env[key]) preservedEnv[key] = process.env[key]!;
+    }
+
     dotenv.config({ path: this.envPath, override: true, quiet: true });
+
+    // Restore .env.local values — they take priority over data .env
+    for (const [key, value] of Object.entries(preservedEnv)) {
+      process.env[key] = value;
+    }
+
     this.logger = new LoggerService('backend', path.join(DATA_DIR, 'logs'), process.env.LOG_LEVEL as LogLevel);
     this.config = this.configure();
   }

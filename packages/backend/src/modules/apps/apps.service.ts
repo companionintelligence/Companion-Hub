@@ -257,21 +257,17 @@ export class AppsService {
 
       // DNS resolution failure
       if (message.includes('ENOTFOUND') || message.includes('getaddrinfo')) {
-        if (exposureMode === 'cloudflare') {
-          return {
-            available: false,
-            reason: 'NETWORK_ERROR',
-            errorCode: 'DNS_NOT_FOUND',
-            detail: 'DNS record not found. The domain may not be synced with Cloudflare yet.',
-            resolvable: true,
-          };
-        }
         return {
           available: false,
           reason: 'NETWORK_ERROR',
           errorCode: 'DNS_NOT_FOUND',
-          detail: 'DNS resolution failed for the app domain.',
-          resolvable: false,
+          detail:
+            exposureMode === 'cloudflare'
+              ? 'DNS record not found. The domain may not be synced with Cloudflare yet.'
+              : exposureMode === 'tailscale'
+                ? 'DNS resolution failed. Tailscale may not be serving this app yet.'
+                : 'DNS resolution failed. The domain configuration may need updating.',
+          resolvable: true,
         };
       }
 
