@@ -273,6 +273,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       localSubdomain: parsedForm.localSubdomain ?? null,
       openPort: openPort ?? false,
       exposedLocal: exposedLocal ?? !!appInfo.exposable,
+      exposureMode: parsedForm.exposureMode ?? 'local',
       appStoreSlug: appStoreId,
       isVisibleOnGuestDashboard,
       enableAuth: enableAuth ?? false,
