@@ -217,11 +217,13 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
   const [urlAvailable, setUrlAvailable] = useState<boolean | null>(null);
   const [isCheckingUrl, setIsCheckingUrl] = useState(false);
   const [isResolving, setIsResolving] = useState(false);
+  const [appUrl, setAppUrl] = useState<string | null>(null);
 
+  // Fallback URL construction (used before backend responds)
   const subdomain = app?.localSubdomain;
   const organizationSlug = userSettings.ciHubOrganizationSlug;
   const domainSuffix = `-${organizationSlug}.${userSettings.domain}`;
-  const appUrl = `https://${subdomain}${domainSuffix}${info.url_suffix || ''}`;
+  const fallbackUrl = `https://${subdomain}${domainSuffix}${info.url_suffix || ''}`;
 
   const triggerRecheck = () => {
     setUrlAvailable(null);
@@ -251,7 +253,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
 
   useEffect(() => {
     // Only check if app is running and exposed
-    if (app?.status === 'running' && (app?.exposedLocal || app?.openPort || app?.exposed) && !info.no_gui) {
+    if (app?.status === 'running' && !info.no_gui) {
       setIsCheckingUrl(true);
       setUrlAvailable(null);
 
@@ -265,8 +267,14 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
 
         try {
           const { data } = await client.get({ url: `/api/apps/${info.urn}/check-availability` });
-          const { available, detail, resolvable } = (data || {}) as {
+          const {
+            available,
+            appUrl: resolvedUrl,
+            detail,
+            resolvable,
+          } = (data || {}) as {
             available: boolean;
+            appUrl?: string;
             reason?: string;
             detail?: string;
             errorCode?: string;
@@ -274,6 +282,9 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
           };
 
           if (isMounted) {
+            if (resolvedUrl) {
+              setAppUrl(resolvedUrl);
+            }
             setUrlAvailable(available);
 
             if (available) {
@@ -321,14 +332,14 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
     setIsCheckingUrl(false);
     setCheckError(null);
     setErrorResolvable(false);
-  }, [app?.status, app?.exposedLocal, app?.openPort, app?.exposed, info.no_gui, info.urn]);
+  }, [app?.status, info.no_gui, info.urn]);
 
   const OpenButton = (
     <ActionButton
       key="open"
       IconComponent={ExternalLink}
       onClick={() => {
-        window.open(appUrl, '_blank');
+        window.open(appUrl || fallbackUrl, '_blank');
       }}
       title={t('APP_ACTION_OPEN')}
       disabled={isCheckingUrl || urlAvailable === false}
@@ -381,8 +392,8 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
       listItemsDestructive.push(ResetListItem);
       listItemsDestructive.push(RemoveListItem);
 
-      // Show Open button if app is exposed (will be disabled while checking availability)
-      if (!info.no_gui && (app?.exposedLocal || app?.openPort || app?.exposed)) {
+      // Always show Open button for running apps with a GUI
+      if (!info.no_gui) {
         if (checkError) {
           buttons.push(ErrorButton);
         } else {

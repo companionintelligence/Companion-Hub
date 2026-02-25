@@ -142,6 +142,7 @@ export class AppsService {
 
   public async checkAppAvailability(appUrn: AppUrn): Promise<{
     available: boolean;
+    appUrl?: string;
     reason?: string;
     detail?: string;
     errorCode?: string;
@@ -157,16 +158,32 @@ export class AppsService {
     const userSettings = config.userSettings;
     const org = await this.registrationService.getDeviceRegistrationInfo();
     const organizationSlug = org?.slug;
-
-    if (!organizationSlug || !userSettings.domain) {
-      return { available: false };
-    }
-
     const exposureMode = ((app as Record<string, unknown>).exposureMode as string) || 'local';
     const subdomain = app.localSubdomain;
-    const domainSuffix = `-${organizationSlug}.${userSettings.domain}`;
     const urlSuffix = info.url_suffix || '';
-    const appUrl = `https://${subdomain}${domainSuffix}${urlSuffix}`;
+
+    // Build the app URL based on exposure mode
+    let appUrl: string;
+    if (exposureMode === 'local') {
+      // Local mode: access via Traefik on the Hub's internal IP
+      const internalIp = userSettings.internalIp || '127.0.0.1';
+      const port = userSettings.sslPort || 443;
+      // Traefik routes based on Host header, so we use the local domain
+      // For local access, use http with the internal IP and app port if available
+      const appPort = app.port;
+      if (appPort) {
+        appUrl = `http://${internalIp}:${appPort}${urlSuffix}`;
+      } else {
+        appUrl = `http://${internalIp}:${port}${urlSuffix}`;
+      }
+    } else {
+      // Cloudflare/Tailscale: use public domain
+      if (!organizationSlug || !userSettings.domain) {
+        return { available: false };
+      }
+      const domainSuffix = `-${organizationSlug}.${userSettings.domain}`;
+      appUrl = `https://${subdomain}${domainSuffix}${urlSuffix}`;
+    }
 
     try {
       const response = await axios.get(appUrl, { timeout: 5000, validateStatus: () => true });
@@ -251,7 +268,7 @@ export class AppsService {
           resolvable: false,
         };
       }
-      return { available };
+      return { available, appUrl };
     } catch (e) {
       const message = e instanceof Error ? e.message : 'UNKNOWN_ERROR';
 
