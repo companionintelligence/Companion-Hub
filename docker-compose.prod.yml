@@ -157,6 +157,8 @@ services:
       - ./tunnel:/home/nonroot/.cloudflared:ro
     networks:
       - ci_os_hub_network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       - ci-os-hub
       - traefik
