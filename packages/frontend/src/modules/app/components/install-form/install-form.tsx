@@ -81,6 +81,7 @@ export const InstallForm: React.FC<IProps> = ({
     setValue,
     watch,
     setError,
+    clearErrors,
     control,
   } = useForm<FormValues>({});
   const _watchExposed = watch('exposed', false);
@@ -205,7 +206,7 @@ export const InstallForm: React.FC<IProps> = ({
           if (data.available) {
             // Clear error if DNS is available
             setDnsAvailabilityError(null);
-            setError('localSubdomain', {});
+            clearErrors('localSubdomain');
           } else {
             const errorMessage = t('APP_INSTALL_FORM_ERROR_DNS_NOT_AVAILABLE', { name: subdomainToCheck });
             setDnsAvailabilityError(errorMessage);
@@ -231,7 +232,7 @@ export const InstallForm: React.FC<IProps> = ({
         clearTimeout(dnsCheckTimeoutRef.current);
       }
     };
-  }, [watchLocalSubdomain, info.exposable, info.urn, isProduction, setError, t]);
+  }, [watchLocalSubdomain, info.exposable, info.urn, isProduction, setError, clearErrors, t]);
 
   const renderField = (field: FormField) => {
     return (
