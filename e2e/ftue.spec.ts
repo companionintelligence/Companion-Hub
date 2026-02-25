@@ -13,7 +13,7 @@ test.describe('First-Time User Experience', () => {
     await expect(page.getByRole('heading', { name: 'Register your account' })).toBeVisible();
   });
 
-  test('should complete registration and see welcome screen', async ({ page }) => {
+  test('should go straight to dashboard after registration', async ({ page }) => {
     await page.goto('/register');
 
     await page.getByPlaceholder('you@example.com').fill('admin@test.local');
@@ -21,22 +21,8 @@ test.describe('First-Time User Experience', () => {
     await page.getByPlaceholder('Confirm your password').fill('SecurePass123!');
     await page.getByRole('button', { name: 'Register' }).click();
 
-    // Welcome screen
-    await expect(page.getByRole('heading', { name: 'Thanks for using Companion Hub' })).toBeVisible();
-  });
-
-  test('should reach dashboard after completing welcome wizard', async ({ page }) => {
-    await page.goto('/register');
-
-    await page.getByPlaceholder('you@example.com').fill('admin@test.local');
-    await page.getByPlaceholder('Enter your password').fill('SecurePass123!');
-    await page.getByPlaceholder('Confirm your password').fill('SecurePass123!');
-    await page.getByRole('button', { name: 'Register' }).click();
-
-    await expect(page.getByRole('heading', { name: 'Thanks for using Companion Hub' })).toBeVisible();
-    await page.getByRole('button', { name: 'Save and enter' }).click();
-
-    await expect(page.getByText('Disk space')).toBeVisible();
+    // No welcome screen — straight to dashboard
+    await expect(page.getByText('Disk space')).toBeVisible({ timeout: 15000 });
     await expect(page.getByText('CPU load')).toBeVisible();
   });
 });
