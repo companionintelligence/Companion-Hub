@@ -1126,6 +1126,40 @@
           "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://ollama.com",
           "url": "https://ollama.com/",
           "appSlug": "ollama"
+        },
+        {
+          "name": "OpenClaw",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://openclaw.ai",
+          "url": "https://openclaw.ai/",
+          "appSlug": "openclaw"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
+          "name": "Midjourney",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.midjourney.com",
+          "url": null
+        },
+        {
+          "name": "DALL-E",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://openai.com/dall-e",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "ComfyUI",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://github.com/comfyanonymous/ComfyUI",
+          "url": "https://github.com/comfyanonymous/ComfyUI",
+          "appSlug": "comfyui"
+        },
+        {
+          "name": "Stable Diffusion WebUI",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://github.com/AUTOMATIC1111/stable-diffusion-webui",
+          "url": "https://github.com/AUTOMATIC1111/stable-diffusion-webui",
+          "appSlug": "stable-diffusion-webui"
         }
       ]
     }
