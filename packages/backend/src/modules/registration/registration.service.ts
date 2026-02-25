@@ -272,7 +272,7 @@ export class RegistrationService implements OnApplicationBootstrap {
    */
   private async setupOrganizationInfrastructure(
     organizationId: string,
-    activationResult: { organization_name: string; tunnel_id: string; tunnel_token: string; slug: string; subdomain: string },
+    activationResult: { organization_name: string; tunnel_id: string; tunnel_token: string; slug: string; subdomain: string; domain?: string },
   ): Promise<void> {
     // Check if organization infrastructure already exists
     const existingOrg = await this.deviceRegistrationRepository.getDeviceRegistrationById(organizationId);
@@ -381,6 +381,14 @@ export class RegistrationService implements OnApplicationBootstrap {
       });
 
       this.logger.info(`Successfully setup organization infrastructure: ${domain} (tunnel: ${tunnelId})`);
+
+      // Persist the correct domain to the data .env so it survives restarts.
+      // The data .env may have the default 'example.com' from initial generation.
+      // Prefer the domain from CI-Cloud response, fall back to the .env.local DOMAIN.
+      const correctDomain = activationResult.domain || rootDomain;
+      if (correctDomain && correctDomain !== 'example.com') {
+        await this.config.setDomain(correctDomain);
+      }
 
       // Sync hub domain to CI-Cloud so it can create DNS and tunnel routes
       // The hub needs to be registered as an "app" so CI-Cloud knows to route the domain

@@ -224,6 +224,34 @@ export class ConfigurationService {
     }
   }
 
+  /**
+   * Update the DOMAIN value in the data .env file and in-memory config.
+   * Called after registration when the real domain is known.
+   */
+  public async setDomain(domain: string) {
+    try {
+      let envFile = '';
+      try {
+        envFile = fs.readFileSync(this.envPath, 'utf8');
+      } catch {
+        // file may not exist yet
+      }
+
+      const envMap = this.envUtils.envStringToMap(envFile);
+      envMap.set('DOMAIN', domain);
+      const newContent = this.envUtils.envMapToString(envMap);
+      await fs.promises.writeFile(this.envPath, newContent, 'utf8');
+
+      // Update in-memory config
+      this.config.domain = domain;
+      this.config.userSettings.domain = domain;
+
+      this.logger.info(`Updated DOMAIN in data .env to: ${domain}`);
+    } catch (error) {
+      this.logger.error('Failed to update DOMAIN in .env', error);
+    }
+  }
+
   public async initSentry(params: { release: string; allowSentry: boolean }) {
     const { allowSentry } = params;
 
