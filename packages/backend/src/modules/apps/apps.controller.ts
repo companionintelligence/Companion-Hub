@@ -73,4 +73,10 @@ export class AppsController {
   async checkAvailability(@Param('urn') urn: string) {
     return this.appsService.checkAppAvailability(castAppUrn(urn));
   }
+
+  @Post(':urn/resolve-availability')
+  @UseGuards(AuthGuard)
+  async resolveAvailability(@Param('urn') urn: string) {
+    return this.appsService.resolveAppAvailability(castAppUrn(urn));
+  }
 }

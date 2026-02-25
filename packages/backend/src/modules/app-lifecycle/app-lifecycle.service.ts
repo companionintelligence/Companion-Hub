@@ -583,6 +583,13 @@ export class AppLifecycleService implements OnApplicationBootstrap {
   }
 
   /**
+   * Public wrapper for syncExposure — used by AppsService.resolveAppAvailability
+   */
+  public async syncExposurePublic() {
+    return this.syncExposure();
+  }
+
+  /**
    * Sync Tailscale Serve state for apps with exposureMode='tailscale'
    */
   private async triggerTailscaleSync() {
