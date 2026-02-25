@@ -341,6 +341,53 @@ export class DockerService {
   }
 
   /**
+   * Ensure a container is running, starting it via docker compose if needed.
+   * Tries `docker restart` first; if the container doesn't exist, falls back to
+   * `docker compose --profile <profile> up <service> -d` using the appropriate
+   * compose file for the current environment.
+   */
+  public async ensureContainerRunning(containerName: string, opts: { composeFile: string; profile?: string }): Promise<void> {
+    try {
+      await this.restartContainer(containerName);
+    } catch {
+      this.logger.info(`Container ${containerName} not found, creating via docker compose...`);
+      await this.composeUpService(containerName, opts);
+    }
+  }
+
+  private async composeUpService(serviceName: string, opts: { composeFile: string; profile?: string }): Promise<void> {
+    const args = ['compose', '-f', opts.composeFile];
+    if (opts.profile) {
+      args.push('--profile', opts.profile);
+    }
+    args.push('up', serviceName, '-d');
+
+    return new Promise((resolve, reject) => {
+      this.logger.info(`Running: docker ${args.join(' ')}`);
+      const cmd = spawn('docker', args, { cwd: path.dirname(opts.composeFile) });
+
+      let stderr = '';
+      cmd.stderr?.on('data', (data: Buffer) => {
+        stderr += data.toString();
+      });
+
+      cmd.on('close', (code) => {
+        if (code === 0) {
+          this.logger.info(`Service ${serviceName} started successfully via docker compose`);
+          resolve();
+        } else {
+          this.logger.error(`Failed to start service ${serviceName}: ${stderr}`);
+          reject(new Error(`Failed to start service ${serviceName} via docker compose`));
+        }
+      });
+
+      cmd.on('error', (err) => {
+        reject(err);
+      });
+    });
+  }
+
+  /**
    * Diagnose app containers after startup - check for crash-loops, exited containers, and capture logs
    * @param appUrn - The app URN
    * @returns Diagnostic results with unhealthy container info

@@ -83,10 +83,14 @@ export class CloudflareClientService {
 
         await this.updateTunnelFiles(this.tunnelToken);
 
-        this.logger.log('Restarting cloudflared container to apply new token...');
+        this.logger.log('Ensuring cloudflared container is running...');
         const dockerService = this.moduleRef.get(DockerService, { strict: false });
-        await dockerService.restartContainer('cloudflared');
-        this.logger.log('Cloudflared container restarted.');
+        const composeFile = this.getComposeFile();
+        await dockerService.ensureContainerRunning('cloudflared', {
+          composeFile,
+          profile: 'cloudflare',
+        });
+        this.logger.log('Cloudflared container is running.');
 
         this.logger.log(`Tunnel configured successfully: ${this.tunnelId}`);
         return { tunnelId: this.tunnelId, token: this.tunnelToken };
@@ -157,5 +161,24 @@ export class CloudflareClientService {
 
   getTunnelToken(): string | null {
     return this.tunnelToken;
+  }
+
+  /**
+   * Resolve the correct docker-compose file for the current environment.
+   * Local/dev uses docker-compose.local.yml, staging uses docker-compose.staging.yml,
+   * and production uses docker-compose.prod.yml.
+   */
+  private getComposeFile(): string {
+    const isLocal = process.env.LOCAL === 'true' || process.env.NODE_ENV === 'development';
+    const isStaging = process.env.NODE_ENV === 'staging';
+
+    let filename = 'docker-compose.prod.yml';
+    if (isLocal) {
+      filename = 'docker-compose.local.yml';
+    } else if (isStaging) {
+      filename = 'docker-compose.staging.yml';
+    }
+
+    return path.join(APP_DIR, filename);
   }
 }
