@@ -5,7 +5,6 @@ import { useAppContext } from '@/context/app-context';
 import { useUserContext } from '@/context/user-context';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useLocation } from 'react-router';
-import { Welcome } from '@/components/welcome/welcome';
 
 export const DashboardLayoutSuspense = ({ children }: PropsWithChildren) => {
   return (
@@ -41,7 +40,23 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
   }
 
   if (!user.hasSeenWelcome) {
-    return <Welcome allowErrorMonitoring={userSettings.allowErrorMonitoring} />;
+    // Auto-acknowledge — no welcome/error-reporting gate needed
+    const acknowledgeWelcome = async () => {
+      try {
+        await fetch('/api/acknowledge-welcome', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ allowErrorMonitoring: false }),
+          credentials: 'include',
+        });
+        window.location.reload();
+      } catch {
+        // If it fails, the next page load will retry
+        window.location.reload();
+      }
+    };
+    acknowledgeWelcome();
+    return null;
   }
 
   // Transition logic
