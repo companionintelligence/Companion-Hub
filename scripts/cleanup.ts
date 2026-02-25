@@ -187,7 +187,7 @@ try {
 
 // Step 7: Optional - Clean up .internal directories (commented out by default)
 console.log('\n7️⃣ Checking .internal directories...');
-const _internalDirs = [
+const internalDirs = [
   '.internal/media',
   '.internal/state',
   '.internal/repos',
@@ -199,14 +199,12 @@ const _internalDirs = [
   '.internal/cache',
 ];
 
-console.log('   💡 To remove .internal directories, uncomment the cleanup section in the script');
-// Uncomment below to also remove .internal directories:
-// for (const dir of internalDirs) {
-//   if (existsSync(dir)) {
-//     console.log(`   Removing ${dir}...`);
-//     await $`rm -rf ${dir}`.quiet();
-//   }
-// }
+for (const dir of internalDirs) {
+  if (existsSync(dir)) {
+    console.log(`   Removing ${dir}...`);
+    await $`rm -rf ${dir}`.quiet();
+  }
+}
 
 console.log('\n✅ Cleanup complete!');
 console.log('\n📝 Summary:');
@@ -215,4 +213,4 @@ console.log('   - All related volumes removed');
 console.log('   - Network removed');
 console.log('   - Docker build cache pruned');
 console.log('   - Buildx cache removed');
-console.log('\n💡 Note: .internal directories were preserved. Uncomment in script to remove them.');
+console.log('   - .internal directories cleaned');
