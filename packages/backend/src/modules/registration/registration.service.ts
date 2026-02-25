@@ -397,8 +397,8 @@ export class RegistrationService implements OnApplicationBootstrap {
         try {
           // subdomain from CI-Cloud is already combined: "{userSlug}-{orgSlug}"
           // State sync will add the org slug again, so strip it to get just the user part
-          const orgSuffix = orgSlug ? `-${orgSlug}` : '';
-          const hubSubdomain = orgSuffix && subdomain.endsWith(orgSuffix) ? subdomain.slice(0, -orgSuffix.length) : subdomain;
+          const orgSuffix = `-${orgSlug}`;
+          const hubSubdomain = subdomain.endsWith(orgSuffix) ? subdomain.slice(0, -orgSuffix.length) : subdomain;
           const hubAppInfo: AppInfo = {
             name: 'ci-os-hub',
             subdomain: hubSubdomain,
