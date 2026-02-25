@@ -650,6 +650,29 @@
         ]
       }
     },
+    "/api/apps/{urn}/resolve-availability": {
+      "post": {
+        "operationId": "resolveAvailability",
+        "parameters": [
+          {
+            "name": "urn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Apps"
+        ]
+      }
+    },
     "/api/marketplace/apps/search": {
       "get": {
         "operationId": "searchApps",
