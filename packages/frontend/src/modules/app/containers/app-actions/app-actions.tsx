@@ -213,17 +213,47 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
 
   // Check if the app URL is available before showing Open button
   const [checkError, setCheckError] = useState<string | null>(null);
+  const [errorResolvable, setErrorResolvable] = useState(false);
   const [urlAvailable, setUrlAvailable] = useState<boolean | null>(null);
   const [isCheckingUrl, setIsCheckingUrl] = useState(false);
+  const [isResolving, setIsResolving] = useState(false);
+  const [appUrl, setAppUrl] = useState<string | null>(null);
 
+  // Fallback URL construction (used before backend responds)
   const subdomain = app?.localSubdomain;
   const organizationSlug = userSettings.ciHubOrganizationSlug;
   const domainSuffix = `-${organizationSlug}.${userSettings.domain}`;
-  const appUrl = `https://${subdomain}${domainSuffix}${info.url_suffix || ''}`;
+  const fallbackUrl = `https://${subdomain}${domainSuffix}${info.url_suffix || ''}`;
+
+  const triggerRecheck = () => {
+    setUrlAvailable(null);
+    setCheckError(null);
+    setErrorResolvable(false);
+    setIsCheckingUrl(true);
+  };
+
+  const handleResolve = async () => {
+    setIsResolving(true);
+    try {
+      const { data } = await client.post({ url: `/api/apps/${info.urn}/resolve-availability` });
+      const result = (data || {}) as { success: boolean; detail: string };
+      if (result.success) {
+        toast.success(result.detail || 'Resolution attempted. Rechecking...');
+        // Wait a moment for changes to take effect, then recheck
+        setTimeout(triggerRecheck, 3000);
+      } else {
+        toast.error(result.detail || 'Resolution failed.');
+      }
+    } catch (e) {
+      toast.error(`Failed to resolve: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    } finally {
+      setIsResolving(false);
+    }
+  };
 
   useEffect(() => {
     // Only check if app is running and exposed
-    if (app?.status === 'running' && (app?.exposedLocal || app?.openPort || app?.exposed) && !info.no_gui) {
+    if (app?.status === 'running' && !info.no_gui) {
       setIsCheckingUrl(true);
       setUrlAvailable(null);
 
@@ -237,32 +267,47 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
 
         try {
           const { data } = await client.get({ url: `/api/apps/${info.urn}/check-availability` });
-          const { available, reason } = (data || {}) as { available: boolean; reason?: 'CLOUDFLARE' | 'APP_ERROR' };
+          const {
+            available,
+            appUrl: resolvedUrl,
+            detail,
+            resolvable,
+          } = (data || {}) as {
+            available: boolean;
+            appUrl?: string;
+            reason?: string;
+            detail?: string;
+            errorCode?: string;
+            resolvable?: boolean;
+          };
 
           if (isMounted) {
+            if (resolvedUrl) {
+              setAppUrl(resolvedUrl);
+            }
             setUrlAvailable(available);
 
             if (available) {
               setIsCheckingUrl(false);
               setCheckError(null);
-              // If available, stop polling
+              setErrorResolvable(false);
               isAvailableRef = true;
               if (pollInterval) {
                 clearInterval(pollInterval);
                 pollInterval = null;
               }
             } else {
-              // Page resolves but errors (e.g. Cloudflare error)
-              setIsCheckingUrl(false); // Stop spinner to show error button
-              setCheckError(reason === 'CLOUDFLARE' ? 'Cloudflare Error' : 'Application Error');
+              setIsCheckingUrl(false);
+              setCheckError(detail || 'Application Error');
+              setErrorResolvable(resolvable ?? false);
             }
           }
         } catch (error) {
-          // If check request fails (e.g. CORS or network error/DNS not found), keep loading (DNS propagating)
           if (isMounted) {
             setUrlAvailable(null);
             setIsCheckingUrl(true);
             setCheckError(error instanceof Error ? error.message : 'Unknown error');
+            setErrorResolvable(false);
           }
         }
       };
@@ -286,15 +331,15 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
     setUrlAvailable(null);
     setIsCheckingUrl(false);
     setCheckError(null);
-  }, [app?.status, app?.exposedLocal, app?.openPort, app?.exposed, info.no_gui, info.urn]);
+    setErrorResolvable(false);
+  }, [app?.status, info.no_gui, info.urn]);
 
   const OpenButton = (
     <ActionButton
       key="open"
       IconComponent={ExternalLink}
       onClick={() => {
-        // Open the app in a new tab
-        window.open(appUrl, '_blank');
+        window.open(appUrl || fallbackUrl, '_blank');
       }}
       title={t('APP_ACTION_OPEN')}
       disabled={isCheckingUrl || urlAvailable === false}
@@ -302,7 +347,18 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
     />
   );
 
-  const ErrorButton = (
+  const ErrorButton = errorResolvable ? (
+    <div key="error" title={checkError ?? undefined}>
+      <ActionButton
+        IconComponent={RotateCw}
+        title={t('APP_ACTION_RESOLVE')}
+        intent="warning"
+        onClick={handleResolve}
+        loading={isResolving}
+        disabled={isResolving}
+      />
+    </div>
+  ) : (
     <div key="error" title={checkError ?? undefined}>
       <ActionButton IconComponent={AlertTriangle} title={t('APP_ACTION_OPEN')} intent="danger" disabled />
     </div>
@@ -336,8 +392,8 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
       listItemsDestructive.push(ResetListItem);
       listItemsDestructive.push(RemoveListItem);
 
-      // Show Open button if app is exposed (will be disabled while checking availability)
-      if (!info.no_gui && (app?.exposedLocal || app?.openPort || app?.exposed)) {
+      // Always show Open button for running apps with a GUI
+      if (!info.no_gui) {
         if (checkError) {
           buttons.push(ErrorButton);
         } else {
@@ -386,6 +442,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
         onClose={updateSettingsDisclosure.close}
         info={info}
         config={app?.config ?? {}}
+        status={app?.status}
       />
       <div className="mt-1 flex flex-wrap gap-2">
         {buttons.map((button) => {

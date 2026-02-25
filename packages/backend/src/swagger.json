@@ -67,6 +67,20 @@
         ]
       }
     },
+    "/api/user-advanced-mode": {
+      "patch": {
+        "operationId": "updateAdvancedMode",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "App"
+        ]
+      }
+    },
     "/api/acknowledge-welcome": {
       "patch": {
         "operationId": "acknowledgeWelcome",
@@ -628,6 +642,29 @@
         ],
         "responses": {
           "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Apps"
+        ]
+      }
+    },
+    "/api/apps/{urn}/resolve-availability": {
+      "post": {
+        "operationId": "resolveAvailability",
+        "parameters": [
+          {
+            "name": "urn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
             "description": ""
           }
         },
@@ -2940,7 +2977,13 @@
               ]
             }
           },
+          "cloudflareAvailable": {
+            "type": "boolean"
+          },
           "isProduction": {
+            "type": "boolean"
+          },
+          "tailscaleAvailable": {
             "type": "boolean"
           },
           "updatesAvailable": {
@@ -2949,6 +2992,9 @@
           "user": {
             "type": "object",
             "properties": {
+              "advancedMode": {
+                "type": "boolean"
+              },
               "hasSeenWelcome": {
                 "type": "boolean"
               },
@@ -2971,6 +3017,7 @@
               }
             },
             "required": [
+              "advancedMode",
               "hasSeenWelcome",
               "id",
               "locale",
@@ -3166,7 +3213,9 @@
         },
         "required": [
           "apps",
+          "cloudflareAvailable",
           "isProduction",
+          "tailscaleAvailable",
           "updatesAvailable",
           "user",
           "userSettings",

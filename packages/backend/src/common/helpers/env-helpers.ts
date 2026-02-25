@@ -35,6 +35,48 @@ const getArchitecture = () => {
   throw new Error(`Unsupported architecture: ${arch}`);
 };
 
+/**
+ * Resolve a configuration value using the standard priority chain:
+ *
+ *   1. process.env (from .env.local or system environment — deployment intent)
+ *   2. settings.json value (user preference from UI)
+ *   3. data .env (previously persisted value)
+ *   4. hardcoded default
+ *
+ * For boolean settings, pass the settings value through `settingsVal`
+ * (which may be undefined if not set). For string settings, omit
+ * `settingsVal` if there is no corresponding settings.json field.
+ */
+function resolve(
+  key: string,
+  opts: {
+    envMap: Map<string, string>;
+    settingsVal?: string | undefined;
+    fallback: string;
+  },
+): string {
+  // 1. process.env (.env.local / system) always wins
+  if (process.env[key] !== undefined && process.env[key] !== '') {
+    return process.env[key] as string;
+  }
+  // 2. settings.json value (if provided and not undefined)
+  if (opts.settingsVal !== undefined) {
+    return opts.settingsVal;
+  }
+  // 3. Previously persisted value in data .env
+  const persisted = opts.envMap.get(key);
+  if (persisted !== undefined && persisted !== '') {
+    return persisted;
+  }
+  // 4. Hardcoded default
+  return opts.fallback;
+}
+
+/** Coerce a settings boolean to string, or return undefined if not set */
+function boolStr(val: boolean | undefined): string | undefined {
+  return typeof val === 'boolean' ? String(val) : undefined;
+}
+
 export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   const logger = new LoggerService('backend', path.join(path.join(DATA_DIR, 'logs')), process.env.LOG_LEVEL as LogLevel);
   logger.debug('Checking system env file');
@@ -72,10 +114,11 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
 
   await generateSeed();
 
+  // --- Resolve all values using the standard priority chain ---
+
   const jwtSecret = envMap.get('JWT_SECRET') || envUtils.deriveEntropy('jwt_secret');
 
-  const rootFolderHost = process.env.ROOT_FOLDER_HOST || envMap.get('ROOT_FOLDER_HOST');
-  const internalIp = process.env.INTERNAL_IP || envMap.get('INTERNAL_IP') || '127.0.0.1';
+  const rootFolderHost = resolve('ROOT_FOLDER_HOST', { envMap, fallback: '' });
 
   if (!rootFolderHost) {
     throw new Error(
@@ -83,16 +126,7 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
     );
   }
 
-  // CRITICAL: ROOT_FOLDER_HOST must be a host path, not a container path
-  // If it contains ${PWD} or is relative, we need to handle it differently
-  // In Docker, ROOT_FOLDER_HOST should be set to an absolute host path by docker-compose
-  // If it's still relative or contains variables, we cannot resolve it from inside the container
   if (!path.isAbsolute(rootFolderHost)) {
-    logger.warn(
-      `ROOT_FOLDER_HOST is relative (${rootFolderHost}). This should be an absolute host path. If running in Docker, check docker-compose.yml.`,
-    );
-    // In development, if we're in a container and ROOT_FOLDER_HOST is relative,
-    // we cannot determine the host path. This is a configuration error.
     throw new Error(
       `ROOT_FOLDER_HOST must be an absolute host path, got: ${rootFolderHost}. ` +
         'Please set ROOT_FOLDER_HOST to an absolute path in docker-compose.yml or .env file.',
@@ -100,7 +134,7 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   }
 
   // Ensure that the app data path does not contain the /app-data suffix
-  let appDataPath = settings.appDataPath || envMap.get('RUNTIPI_APP_DATA_PATH');
+  let appDataPath = settings.appDataPath || resolve('RUNTIPI_APP_DATA_PATH', { envMap, fallback: '' });
   const appDataSegment = '/app-data';
 
   while (appDataPath?.endsWith(appDataSegment)) {
@@ -109,121 +143,118 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   }
 
   // Ensure RUNTIPI_APP_DATA_PATH is always absolute (host path)
-  // If it's relative, resolve it against ROOT_FOLDER_HOST (which must be absolute)
   if (appDataPath && !path.isAbsolute(appDataPath)) {
-    // rootFolderHost is guaranteed to be absolute at this point
     appDataPath = path.resolve(rootFolderHost, appDataPath);
     logger.debug(`Resolved relative RUNTIPI_APP_DATA_PATH against ROOT_FOLDER_HOST to: ${appDataPath}`);
   }
 
-  // Final fallback to rootFolderHost if appDataPath is still not set
   const finalAppDataPath = appDataPath || rootFolderHost;
 
-  // Final validation - should be absolute at this point
   if (!path.isAbsolute(finalAppDataPath)) {
-    logger.error(
-      `RUNTIPI_APP_DATA_PATH is not absolute: ${finalAppDataPath}. This will cause Docker mount errors. Please set it to an absolute path.`,
-    );
     throw new Error(
       `RUNTIPI_APP_DATA_PATH must be an absolute path, got: ${finalAppDataPath}. ` +
         'Please set ROOT_FOLDER_HOST to an absolute path or set RUNTIPI_APP_DATA_PATH to an absolute path.',
     );
   }
 
-  // Additional validation: ensure it's not a container path
   if (finalAppDataPath.startsWith('/app') || finalAppDataPath.startsWith('/data/')) {
-    logger.error(`RUNTIPI_APP_DATA_PATH appears to be a container path: ${finalAppDataPath}. This must be a host path for Docker mounts to work.`);
     throw new Error(
       `RUNTIPI_APP_DATA_PATH must be a host path, not a container path. Got: ${finalAppDataPath}. ` +
         'Please ensure ROOT_FOLDER_HOST is set to an absolute host path.',
     );
   }
 
+  // --- Write resolved values into envMap ---
+  // Every value uses resolve() for consistent priority:
+  //   process.env > settings.json > data .env > default
+
   envMap.set('ROOT_FOLDER_HOST', rootFolderHost);
-  envMap.set('TZ', settings.timeZone || envMap.get('TZ') || Intl.DateTimeFormat().resolvedOptions().timeZone);
-  envMap.set('INTERNAL_IP', settings.listenIp || internalIp);
-  envMap.set('DNS_IP', settings.dnsIp || envMap.get('DNS_IP') || '9.9.9.9');
   envMap.set('ARCHITECTURE', getArchitecture());
   envMap.set('JWT_SECRET', jwtSecret);
-  // Prioritize .env file value over settings.json for DOMAIN
-  // .env file is the authoritative source (read-only mount)
-  envMap.set('DOMAIN', envMap.get('DOMAIN') || 'example.com');
   envMap.set('RUNTIPI_APP_DATA_PATH', finalAppDataPath);
+
+  // Core infrastructure
+  envMap.set('INTERNAL_IP', resolve('INTERNAL_IP', { envMap, settingsVal: settings.listenIp, fallback: '127.0.0.1' }));
+  envMap.set('TZ', resolve('TZ', { envMap, settingsVal: settings.timeZone, fallback: Intl.DateTimeFormat().resolvedOptions().timeZone }));
+  envMap.set('DNS_IP', resolve('DNS_IP', { envMap, settingsVal: settings.dnsIp, fallback: '9.9.9.9' }));
+  envMap.set('DOMAIN', resolve('DOMAIN', { envMap, fallback: 'example.com' }));
+  envMap.set('LOCAL_DOMAIN', resolve('LOCAL_DOMAIN', { envMap, settingsVal: settings.localDomain, fallback: '' }));
   envMap.set(
     'RUNTIPI_FORWARD_AUTH_URL',
-    settings.forwardAuthUrl ||
-      process.env.RUNTIPI_FORWARD_AUTH_URL ||
-      envMap.get('RUNTIPI_FORWARD_AUTH_URL') ||
-      'http://ci-os-hub:3000/api/auth/traefik',
+    resolve('RUNTIPI_FORWARD_AUTH_URL', { envMap, settingsVal: settings.forwardAuthUrl, fallback: 'http://ci-os-hub:3000/api/auth/traefik' }),
   );
 
-  envMap.set('POSTGRES_HOST', process.env.POSTGRES_HOST || envMap.get('POSTGRES_HOST') || 'ci-hub-db');
-  envMap.set('POSTGRES_DBNAME', process.env.POSTGRES_DBNAME || envMap.get('POSTGRES_DBNAME') || 'tipi');
-  envMap.set('POSTGRES_USERNAME', process.env.POSTGRES_USERNAME || envMap.get('POSTGRES_USERNAME') || 'tipi');
-  envMap.set('POSTGRES_PORT', process.env.POSTGRES_PORT || envMap.get('POSTGRES_PORT') || String(6543));
-  // Override old runtipi-queue hostname if present
-  const currentRabbitmqHost = process.env.RABBITMQ_HOST || envMap.get('RABBITMQ_HOST');
-  if (currentRabbitmqHost === 'runtipi-queue') {
-    envMap.set('RABBITMQ_HOST', 'ci-os-hub-queue');
-  } else {
-    envMap.set('RABBITMQ_HOST', currentRabbitmqHost || 'ci-os-hub-queue');
+  // Database
+  envMap.set('POSTGRES_HOST', resolve('POSTGRES_HOST', { envMap, fallback: 'ci-hub-db' }));
+  envMap.set('POSTGRES_DBNAME', resolve('POSTGRES_DBNAME', { envMap, fallback: 'tipi' }));
+  envMap.set('POSTGRES_USERNAME', resolve('POSTGRES_USERNAME', { envMap, fallback: 'tipi' }));
+  envMap.set('POSTGRES_PORT', resolve('POSTGRES_PORT', { envMap, fallback: '6543' }));
+
+  // Message queue — also handle legacy hostname migration
+  let rabbitmqHost = resolve('RABBITMQ_HOST', { envMap, fallback: 'ci-os-hub-queue' });
+  if (rabbitmqHost === 'runtipi-queue') {
+    rabbitmqHost = 'ci-os-hub-queue';
   }
-  envMap.set('RABBITMQ_USERNAME', envMap.get('RABBITMQ_USERNAME') || 'tipi');
-  envMap.set('RABBITMQ_PASSWORD', envMap.get('RABBITMQ_PASSWORD') || 'tipi');
-  envMap.set('DEMO_MODE', typeof settings.demoMode === 'boolean' ? String(settings.demoMode) : envMap.get('DEMO_MODE') || 'false');
+  envMap.set('RABBITMQ_HOST', rabbitmqHost);
+  envMap.set('RABBITMQ_USERNAME', resolve('RABBITMQ_USERNAME', { envMap, fallback: 'tipi' }));
+  envMap.set('RABBITMQ_PASSWORD', resolve('RABBITMQ_PASSWORD', { envMap, fallback: 'tipi' }));
+
+  // Feature flags / user preferences (settings.json booleans)
+  envMap.set('DEMO_MODE', resolve('DEMO_MODE', { envMap, settingsVal: boolStr(settings.demoMode), fallback: 'false' }));
   envMap.set(
     'DISABLE_PASSWORD_RESET',
-    typeof settings.disablePasswordReset === 'boolean' ? String(settings.disablePasswordReset) : envMap.get('DISABLE_PASSWORD_RESET') || 'true',
+    resolve('DISABLE_PASSWORD_RESET', { envMap, settingsVal: boolStr(settings.disablePasswordReset), fallback: 'true' }),
   );
-  envMap.set(
-    'GUEST_DASHBOARD',
-    typeof settings.guestDashboard === 'boolean' ? String(settings.guestDashboard) : envMap.get('GUEST_DASHBOARD') || 'false',
-  );
-  if (settings.localDomain) {
-    envMap.set('LOCAL_DOMAIN', settings.localDomain);
-  }
-  // If not in settings, preserve existing env value. DO NOT default to tipi.lan.
-  // The value comes from .env on startup, which is strictly validated by configuration.service.ts
-
-  envMap.set(
-    'ALLOW_AUTO_THEMES',
-    typeof settings.allowAutoThemes === 'boolean' ? String(settings.allowAutoThemes) : envMap.get('ALLOW_AUTO_THEMES') || 'true',
-  );
+  envMap.set('GUEST_DASHBOARD', resolve('GUEST_DASHBOARD', { envMap, settingsVal: boolStr(settings.guestDashboard), fallback: 'false' }));
+  envMap.set('ALLOW_AUTO_THEMES', resolve('ALLOW_AUTO_THEMES', { envMap, settingsVal: boolStr(settings.allowAutoThemes), fallback: 'true' }));
   envMap.set(
     'ALLOW_ERROR_MONITORING',
-    typeof settings.allowErrorMonitoring === 'boolean' ? String(settings.allowErrorMonitoring) : envMap.get('ALLOW_ERROR_MONITORING') || 'false',
+    resolve('ALLOW_ERROR_MONITORING', { envMap, settingsVal: boolStr(settings.allowErrorMonitoring), fallback: 'false' }),
   );
   envMap.set(
     'PERSIST_TRAEFIK_CONFIG',
-    typeof settings.persistTraefikConfig === 'boolean' ? String(settings.persistTraefikConfig) : envMap.get('PERSIST_TRAEFIK_CONFIG') || 'false',
+    resolve('PERSIST_TRAEFIK_CONFIG', { envMap, settingsVal: boolStr(settings.persistTraefikConfig), fallback: 'false' }),
   );
   envMap.set(
     'QUEUE_TIMEOUT_IN_MINUTES',
-    typeof settings.eventsTimeout === 'number' ? String(settings.eventsTimeout) : envMap.get('QUEUE_TIMEOUT_IN_MINUTES') || '5',
+    resolve('QUEUE_TIMEOUT_IN_MINUTES', {
+      envMap,
+      settingsVal: typeof settings.eventsTimeout === 'number' ? String(settings.eventsTimeout) : undefined,
+      fallback: '5',
+    }),
   );
-  envMap.set('MAX_BACKUPS', typeof settings.maxBackups === 'number' ? String(settings.maxBackups) : envMap.get('MAX_BACKUPS') || '0');
   envMap.set(
-    'ADVANCED_SETTINGS',
-    typeof settings.advancedSettings === 'boolean' ? String(settings.advancedSettings) : envMap.get('ADVANCED_SETTINGS') || 'false',
+    'MAX_BACKUPS',
+    resolve('MAX_BACKUPS', {
+      envMap,
+      settingsVal: typeof settings.maxBackups === 'number' ? String(settings.maxBackups) : undefined,
+      fallback: '0',
+    }),
   );
-  envMap.set('LOG_LEVEL', settings.logLevel || envMap.get('LOG_LEVEL') || 'info');
-  envMap.set('EXPERIMENTAL_INSECURE_COOKIE', settings.experimental_insecureCookie ? 'true' : 'false');
-  envMap.set('THEME_BASE', settings.themeBase || envMap.get('THEME_BASE') || 'gray');
-  envMap.set('THEME_COLOR', settings.themeColor || envMap.get('THEME_COLOR') || 'blue');
+  envMap.set('ADVANCED_SETTINGS', resolve('ADVANCED_SETTINGS', { envMap, settingsVal: boolStr(settings.advancedSettings), fallback: 'false' }));
+  envMap.set('LOG_LEVEL', resolve('LOG_LEVEL', { envMap, settingsVal: settings.logLevel, fallback: 'info' }));
+  envMap.set(
+    'EXPERIMENTAL_INSECURE_COOKIE',
+    resolve('EXPERIMENTAL_INSECURE_COOKIE', { envMap, settingsVal: boolStr(settings.experimental_insecureCookie), fallback: 'false' }),
+  );
 
-  // CI Cloud integration settings
-  const ciCloudUrl = process.env.CI_CLOUD_URL || envMap.get('CI_CLOUD_URL');
+  // Theming
+  envMap.set('THEME_BASE', resolve('THEME_BASE', { envMap, settingsVal: settings.themeBase, fallback: 'gray' }));
+  envMap.set('THEME_COLOR', resolve('THEME_COLOR', { envMap, settingsVal: settings.themeColor, fallback: 'blue' }));
+
+  // CI Cloud integration
+  const ciCloudUrl = resolve('CI_CLOUD_URL', { envMap, fallback: '' });
   if (!ciCloudUrl) {
     throw new Error('CI_CLOUD_URL is required for CI Cloud integration. Please set it in your .env file or environment variables.');
   }
   envMap.set('CI_CLOUD_URL', ciCloudUrl);
+  envMap.set('CI_CLOUD_FRONTEND_URL', resolve('CI_CLOUD_FRONTEND_URL', { envMap, fallback: ciCloudUrl }));
 
-  // Only write the env file if values have actually changed to avoid unnecessary overwrites
-  // This preserves manual edits to .env while still syncing settings.json changes
+  // --- Write data .env only if values changed ---
+
   const newEnvContent = envUtils.envMapToString(envMap);
   const currentEnvMap = envUtils.envStringToMap(envFile);
 
-  // Check if any values have changed
   let hasChanges = false;
   const changedVars: string[] = [];
   for (const [key, newValue] of envMap.entries()) {
@@ -235,7 +266,6 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
     }
   }
 
-  // Also check for removed variables
   if (!hasChanges) {
     for (const [key] of currentEnvMap.entries()) {
       if (!envMap.has(key)) {
@@ -248,7 +278,6 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
 
   if (hasChanges) {
     logger.info(`Environment file has changes (${changedVars.length} variables: ${changedVars.join(', ')}), updating...`);
-    // Try to write the env file, but continue if it's read-only (e.g., mounted as read-only)
     try {
       await fs.promises.writeFile(envFilePath, newEnvContent);
       logger.info('Environment file updated successfully');
@@ -263,7 +292,9 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
     logger.debug('Environment file unchanged, skipping write');
   }
 
-  dotenv.config({ path: envFilePath, override: true, quiet: true });
+  // Load the resolved data .env into process.env as DEFAULTS only.
+  // .env.local values already in process.env are NOT overwritten.
+  dotenv.config({ path: envFilePath, override: false, quiet: true });
 
   return envMap;
 };

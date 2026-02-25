@@ -3,7 +3,7 @@ import { getRandomPortMutation } from '@/api-client/@tanstack/react-query.gen';
 import { Input, InputGroup } from '@/components/ui/Input';
 import { Switch } from '@/components/ui/Switch';
 import { useAppContext } from '@/context/app-context';
-import type { AppInfo, FormField } from '@/types/app.types';
+import type { AppInfo, AppStatus, FormField } from '@/types/app.types';
 import type { TranslatableError } from '@/types/error.types';
 import { useMutation } from '@tanstack/react-query';
 import clsx from 'clsx';
@@ -23,6 +23,7 @@ interface IProps {
   info: AppInfo;
   loading?: boolean;
   formId: string;
+  appStatus?: AppStatus;
 }
 
 export type FormValues = {
@@ -41,10 +42,11 @@ export type FormValues = {
 
 const typeFilter = (field: FormField) => !hiddenTypes.includes(field.type);
 
-export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit, initialValues, loading, formId }) => {
+export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit, initialValues, loading, formId, appStatus }) => {
   const { t } = useTranslation();
-  const { userSettings, isProduction } = useAppContext();
+  const { userSettings, isProduction, user, cloudflareAvailable, tailscaleAvailable } = useAppContext();
   const { guestDashboard, localDomain, maxBackups: globalMaxBackups, ciHubOrganizationSlug, domain } = userSettings;
+  const isAdvancedMode = user.advancedMode;
 
   const orgSlug = ciHubOrganizationSlug ? ciHubOrganizationSlug.toLowerCase().replace(/\s+/g, '-') : undefined;
 
@@ -78,7 +80,9 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
     }
     // Set default exposure mode and port for exposable apps
     if (info.exposable && info.dynamic_config) {
-      setValue('exposureMode', 'cloudflare');
+      // Auto-select first available mode: cloudflare > tailscale > local
+      const defaultMode = cloudflareAvailable ? 'cloudflare' : tailscaleAvailable ? 'tailscale' : 'local';
+      setValue('exposureMode', (initialValues?.exposureMode as FormValues['exposureMode']) || defaultMode);
       setValue('exposedLocal', true); // backward compat
       setValue('openPort', false); // Always false - apps route through Traefik
       setValue('enableAuth', true); // Enable authentication by default
@@ -91,7 +95,19 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
         setValue('localSubdomain', defaultSubdomain);
       }
     }
-  }, [initialValues, isDirty, setValue, info.force_expose, info.exposable, info.dynamic_config, info.port, watchLocalSubdomain, info.urn.split]);
+  }, [
+    initialValues,
+    isDirty,
+    setValue,
+    info.force_expose,
+    info.exposable,
+    info.dynamic_config,
+    info.port,
+    watchLocalSubdomain,
+    info.urn.split,
+    cloudflareAvailable,
+    tailscaleAvailable,
+  ]);
 
   const _randomPortMutation = useMutation({
     ...getRandomPortMutation(),
@@ -191,6 +207,8 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
 
   const renderDynamicConfigProxyForm = () => {
     const watchExposureMode = watch('exposureMode', 'cloudflare');
+    const transitionalStatuses = ['installing', 'starting', 'stopping', 'updating', 'restarting', 'backing_up'];
+    const isTransitional = appStatus ? transitionalStatuses.includes(appStatus) : false;
 
     return (
       <>
@@ -198,24 +216,60 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
           <>
             {/* Exposure mode selector */}
             <div className="mb-3">
-              <label htmlFor="exposureMode" className="block text-sm font-medium mb-1">
-                {t('APP_INSTALL_FORM_EXPOSURE_MODE')}
-              </label>
-              <select
-                id="exposureMode"
-                {...register('exposureMode')}
-                className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary dark:border-gray-600 dark:bg-gray-800"
-                disabled={loading}
+              <span className="block text-sm font-medium mb-1">{t('APP_INSTALL_FORM_EXPOSURE_MODE')}</span>
+              <Controller
+                control={control}
+                name="exposureMode"
                 defaultValue="cloudflare"
-              >
-                <option value="cloudflare">{t('APP_INSTALL_FORM_EXPOSURE_CLOUDFLARE')}</option>
-                <option value="tailscale">{t('APP_INSTALL_FORM_EXPOSURE_TAILSCALE')}</option>
-                <option value="local">{t('APP_INSTALL_FORM_EXPOSURE_LOCAL')}</option>
-              </select>
+                render={({ field: { onChange, value } }) => (
+                  <div className="grid grid-cols-3 gap-2">
+                    {(
+                      [
+                        {
+                          key: 'cloudflare',
+                          label: t('APP_INSTALL_FORM_EXPOSURE_CLOUDFLARE'),
+                          available: cloudflareAvailable,
+                          tooltip: t('APP_INSTALL_FORM_EXPOSURE_CLOUDFLARE_UNAVAILABLE'),
+                        },
+                        {
+                          key: 'tailscale',
+                          label: t('APP_INSTALL_FORM_EXPOSURE_TAILSCALE'),
+                          available: tailscaleAvailable,
+                          tooltip: t('APP_INSTALL_FORM_EXPOSURE_TAILSCALE_UNAVAILABLE'),
+                        },
+                        { key: 'local', label: t('APP_INSTALL_FORM_EXPOSURE_LOCAL'), available: true, tooltip: '' },
+                      ] as const
+                    ).map((option) => {
+                      const isDisabled = loading || !option.available || isTransitional;
+                      return (
+                        <div key={option.key} className="relative">
+                          <button
+                            type="button"
+                            disabled={isDisabled}
+                            data-tooltip-id={`exposure-tooltip-${option.key}`}
+                            data-tooltip-content={option.available ? undefined : option.tooltip}
+                            onClick={() => option.available && onChange(option.key)}
+                            className={clsx(
+                              'w-full rounded-md border px-3 py-2 text-sm font-medium transition-colors',
+                              value === option.key
+                                ? 'border-primary bg-primary text-primary-foreground'
+                                : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700',
+                              isDisabled && 'opacity-50 cursor-not-allowed hover:bg-white dark:hover:bg-gray-800',
+                            )}
+                          >
+                            {option.label}
+                          </button>
+                          {!option.available && <Tooltip id={`exposure-tooltip-${option.key}`} className="tooltip" />}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              />
             </div>
 
             {/* Subdomain input — shown for cloudflare and tailscale modes */}
-            {watchExposureMode !== 'local' && (
+            {isAdvancedMode && watchExposureMode !== 'local' && (
               <div className="mb-3">
                 <InputGroup
                   groupPrefix="https://"
@@ -232,29 +286,31 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
               </div>
             )}
 
-            <Controller
-              control={control}
-              name="enableAuth"
-              defaultValue={true}
-              render={({ field: { onChange, value, ref, ...props } }) => (
-                <Switch
-                  {...props}
-                  className="mb-3"
-                  ref={ref}
-                  checked={value ?? true}
-                  onCheckedChange={onChange}
-                  label={
-                    <>
-                      {t('APP_INSTALL_FORM_ENABLE_AUTH')}
-                      <Tooltip className="tooltip" anchorSelect=".enable-auth-hint">
-                        {t('APP_INSTALL_FORM_ENABLE_AUTH_HINT')}
-                      </Tooltip>
-                      <span className={clsx('ms-1 form-help enable-auth-hint')}>?</span>
-                    </>
-                  }
-                />
-              )}
-            />
+            {isAdvancedMode && (
+              <Controller
+                control={control}
+                name="enableAuth"
+                defaultValue={true}
+                render={({ field: { onChange, value, ref, ...props } }) => (
+                  <Switch
+                    {...props}
+                    className="mb-3"
+                    ref={ref}
+                    checked={value ?? true}
+                    onCheckedChange={onChange}
+                    label={
+                      <>
+                        {t('APP_INSTALL_FORM_ENABLE_AUTH')}
+                        <Tooltip className="tooltip" anchorSelect=".enable-auth-hint">
+                          {t('APP_INSTALL_FORM_ENABLE_AUTH_HINT')}
+                        </Tooltip>
+                        <span className={clsx('ms-1 form-help enable-auth-hint')}>?</span>
+                      </>
+                    }
+                  />
+                )}
+              />
+            )}
           </>
         )}
       </>
@@ -334,7 +390,7 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
     <form className="flex flex-col" onSubmit={handleSubmit(validate)} id={formId}>
       {(guestDashboard || formFields.filter(typeFilter).length !== 0) && <h3>{t('APP_INSTALL_FORM_GENERAL')}</h3>}
       {formFields.filter(typeFilter).map(renderField)}
-      {guestDashboard && (
+      {guestDashboard && isAdvancedMode && (
         <Controller
           control={control}
           name="isVisibleOnGuestDashboard"
@@ -354,32 +410,30 @@ export const InstallForm: React.FC<IProps> = ({ formFields = [], info, onSubmit,
       {/* Port section hidden - always use default port and route through Traefik */}
       {info.exposable && (
         <>
-          {info.dynamic_config && (
-            <>
-              <h3>{t('APP_INSTALL_FORM_REVERSE_PROXY')}</h3>
-              {renderDynamicConfigProxyForm()}
-            </>
-          )}
+          {info.dynamic_config && renderDynamicConfigProxyForm()}
           {renderExposeForm()}
         </>
       )}
-      <div className="mb-3">
-        <Input
-          type="number"
-          min={0}
-          max={100}
-          {...register('maxBackups', {
-            valueAsNumber: true,
-            setValueAs: (value) => (value === '' || value === null ? undefined : Number(value)),
-            min: { value: 0, message: t('APP_INSTALL_FORM_MAX_BACKUPS_ERROR_MIN') },
-            max: { value: 100, message: t('APP_INSTALL_FORM_MAX_BACKUPS_ERROR_MAX') },
-          })}
-          label={t('APP_INSTALL_FORM_MAX_BACKUPS')}
-          error={errors.maxBackups?.message}
-          placeholder={globalMaxBackups === 0 ? undefined : globalMaxBackups.toString()}
-        />
-        <span className="text-sm text-muted-foreground">{t('APP_INSTALL_FORM_MAX_BACKUPS_HINT', { value: globalMaxBackups })}</span>
-      </div>
+      {isAdvancedMode && (
+        <div className="mb-3">
+          <Input
+            type="number"
+            min={0}
+            max={100}
+            {...register('maxBackups', {
+              valueAsNumber: true,
+              setValueAs: (value) => (value === '' || value === null ? undefined : Number(value)),
+              min: { value: 0, message: t('APP_INSTALL_FORM_MAX_BACKUPS_ERROR_MIN') },
+              max: { value: 100, message: t('APP_INSTALL_FORM_MAX_BACKUPS_ERROR_MAX') },
+            })}
+            label={t('APP_INSTALL_FORM_MAX_BACKUPS')}
+            error={errors.maxBackups?.message}
+            placeholder={globalMaxBackups === 0 ? undefined : globalMaxBackups.toString()}
+          />
+          <span className="text-sm text-muted-foreground">{t('APP_INSTALL_FORM_MAX_BACKUPS_HINT', { value: globalMaxBackups })}</span>
+        </div>
+      )}
+      {!isAdvancedMode && null}
     </form>
   );
 };

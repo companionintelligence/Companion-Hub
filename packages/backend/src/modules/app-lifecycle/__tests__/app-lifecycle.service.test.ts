@@ -128,6 +128,60 @@ describe('AppLifecycleService', () => {
     });
   });
 
+  describe('installApp', () => {
+    const appUrn = 'testapp:ci-cloud' as any;
+    const baseAppInfo = {
+      id: 'testapp',
+      urn: 'urn:app:testapp',
+      name: 'Test App',
+      port: 8080,
+      tipi_version: 1,
+      exposable: true,
+      supported_architectures: ['amd64'],
+    };
+
+    beforeEach(() => {
+      configService.getConfig.mockReturnValue({
+        isProduction: false,
+        architecture: 'amd64',
+        version: '1.0.0',
+        userSettings: { localDomain: 'lan', guestDashboard: false },
+      } as any);
+      marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(baseAppInfo as any);
+      appsRepository.getAppsByDomain.mockResolvedValue([]);
+      appsRepository.getAppsByLocalSubdomain.mockResolvedValue([]);
+      appsRepository.getAppsByPort.mockResolvedValue([]);
+      appsRepository.createApp.mockImplementation(async (data: any) => ({ id: 1, ...data }));
+      appEventsQueue.publish.mockResolvedValue({ success: true, message: 'OK' } as any);
+      appFilesManager.getAppEnvMap.mockReturnValue(new Map());
+      reposHelpers.downloadAppFiles.mockResolvedValue({ files: {} } as any);
+    });
+
+    it('MUST persist exposureMode=cloudflare when provided in form', async () => {
+      await service.installApp({ appUrn, form: { exposureMode: 'cloudflare', exposedLocal: true } });
+
+      expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ exposureMode: 'cloudflare' }));
+    });
+
+    it('MUST persist exposureMode=tailscale when provided in form', async () => {
+      await service.installApp({ appUrn, form: { exposureMode: 'tailscale', exposedLocal: true } });
+
+      expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ exposureMode: 'tailscale' }));
+    });
+
+    it('MUST default exposureMode to local when not provided', async () => {
+      await service.installApp({ appUrn, form: {} });
+
+      expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ exposureMode: 'local' }));
+    });
+
+    it('MUST persist exposureMode=local explicitly when provided', async () => {
+      await service.installApp({ appUrn, form: { exposureMode: 'local' } });
+
+      expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ exposureMode: 'local' }));
+    });
+  });
+
   describe('startApp', () => {
     it('should start existing app', async () => {
       const appUrn = 'test-app' as any;

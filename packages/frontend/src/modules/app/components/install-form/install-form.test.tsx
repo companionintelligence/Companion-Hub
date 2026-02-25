@@ -44,7 +44,10 @@ describe('InstallForm', () => {
         maxBackups: 5,
         guestDashboard: false,
       },
+      user: { advancedMode: true },
       isProduction: true,
+      cloudflareAvailable: true,
+      tailscaleAvailable: false,
     } as unknown as ReturnType<typeof useAppContext>);
 
     const mockInfo = {
@@ -69,7 +72,10 @@ describe('InstallForm', () => {
         maxBackups: 5,
         guestDashboard: false,
       },
+      user: { advancedMode: true },
       isProduction: true,
+      cloudflareAvailable: true,
+      tailscaleAvailable: false,
     } as unknown as ReturnType<typeof useAppContext>);
 
     const mockInfo = {

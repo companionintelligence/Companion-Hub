@@ -27,6 +27,7 @@ const envSchema = z.object({
   JWT_SECRET: z.string(),
   APPS_REPO_URL: z.string().optional(),
   CI_CLOUD_URL: z.string(),
+  CI_CLOUD_FRONTEND_URL: z.string(),
   DOMAIN: z.string(),
   LOCAL_DOMAIN: z.string(),
   DNS_IP: z.string().default('9.9.9.9'),
@@ -63,7 +64,9 @@ export class ConfigurationService {
 
   // Lowest level, cannot use any other service or module to avoid circular dependencies
   constructor(private readonly envUtils: EnvUtils) {
-    dotenv.config({ path: this.envPath, override: true, quiet: true });
+    // Load data .env as defaults only — .env.local values (already in process.env) take priority.
+    // override: false means existing process.env values are NOT clobbered.
+    dotenv.config({ path: this.envPath, override: false, quiet: true });
     this.logger = new LoggerService('backend', path.join(DATA_DIR, 'logs'), process.env.LOG_LEVEL as LogLevel);
     this.config = this.configure();
   }
@@ -165,7 +168,7 @@ export class ConfigurationService {
       ciCloudUrl: env.data.CI_CLOUD_URL,
       ciCloudAppStoreUrl: `${env.data.CI_CLOUD_URL}/api`,
       ciCloudApiUrl: `${env.data.CI_CLOUD_URL}/api`,
-      ciCloudFrontendUrl: env.data.CI_CLOUD_URL,
+      ciCloudFrontendUrl: env.data.CI_CLOUD_FRONTEND_URL,
       ciHubOrganizationId: settingsCreds.ciHubOrganizationId,
       ciHubApiKey: settingsCreds.ciHubApiKey,
       architecture: env.data.ARCHITECTURE,
@@ -220,6 +223,34 @@ export class ConfigurationService {
     } catch (error) {
       this.logger.error('Failed to set user settings', error);
       throw new InternalServerErrorException('Failed to set user settings');
+    }
+  }
+
+  /**
+   * Update the DOMAIN value in the data .env file and in-memory config.
+   * Called after registration when the real domain is known.
+   */
+  public async setDomain(domain: string) {
+    try {
+      let envFile = '';
+      try {
+        envFile = fs.readFileSync(this.envPath, 'utf8');
+      } catch {
+        // file may not exist yet
+      }
+
+      const envMap = this.envUtils.envStringToMap(envFile);
+      envMap.set('DOMAIN', domain);
+      const newContent = this.envUtils.envMapToString(envMap);
+      await fs.promises.writeFile(this.envPath, newContent, 'utf8');
+
+      // Update in-memory config
+      this.config.domain = domain;
+      this.config.userSettings.domain = domain;
+
+      this.logger.info(`Updated DOMAIN in data .env to: ${domain}`);
+    } catch (error) {
+      this.logger.error('Failed to update DOMAIN in .env', error);
     }
   }
 

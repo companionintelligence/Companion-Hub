@@ -34,7 +34,7 @@ export class UserRepository {
   public async getUserDtoById(id: number) {
     return this.db.query.user.findFirst({
       where: eq(user.id, Number(id)),
-      columns: { id: true, username: true, totpEnabled: true, locale: true, operator: true, hasSeenWelcome: true },
+      columns: { id: true, username: true, totpEnabled: true, locale: true, operator: true, hasSeenWelcome: true, advancedMode: true },
     });
   }
 

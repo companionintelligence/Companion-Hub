@@ -8,6 +8,7 @@ export const userSchema = type({
   locale: 'string.trim',
   operator: 'boolean',
   hasSeenWelcome: 'boolean',
+  advancedMode: 'boolean',
 });
 
 export class UserDto extends createArkDto(userSchema, { name: 'UserDto' }) {}

@@ -19,7 +19,7 @@ interface IProps {
   status?: AppStatus;
 }
 
-export const UpdateSettingsDialog: React.FC<IProps> = ({ info, config, isOpen, onClose }) => {
+export const UpdateSettingsDialog: React.FC<IProps> = ({ info, config, isOpen, onClose, status }) => {
   const { t } = useTranslation();
   const formId = useId();
 
@@ -59,6 +59,7 @@ export const UpdateSettingsDialog: React.FC<IProps> = ({ info, config, isOpen, o
               info={info}
               initialValues={{ ...config }}
               formId={formId}
+              appStatus={status}
             />
           </DialogDescription>
         </ScrollArea>

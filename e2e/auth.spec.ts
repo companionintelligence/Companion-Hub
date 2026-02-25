@@ -10,11 +10,8 @@ test('should register a new user', async ({ page }) => {
 
   await page.getByRole('button', { name: 'Register' }).click();
 
-  // Welcome screen
-  await expect(page.getByRole('heading', { name: 'Thanks for using Companion Hub' })).toBeVisible();
-  await page.getByRole('button', { name: 'Save and enter' }).click();
-
-  await expect(page.getByText('Disk space')).toBeVisible();
+  // Should go straight to dashboard (no welcome screen)
+  await expect(page.getByText('Disk space')).toBeVisible({ timeout: 15000 });
 });
 
 test('should login with existing user', async ({ page }) => {

@@ -115,4 +115,36 @@ describe('UserRepository', () => {
       expect(result).toEqual({ id: 1, operator: true });
     });
   });
+
+  describe('advancedMode field', () => {
+    it('MUST include advancedMode in user DTO via getUserDtoById', async () => {
+      mockDb.query.user.findFirst.mockResolvedValue({
+        id: 1,
+        username: 'test',
+        totpEnabled: false,
+        locale: 'en',
+        operator: true,
+        hasSeenWelcome: false,
+        advancedMode: true,
+      });
+      const result = await repository.getUserDtoById(1);
+      expect(result).toHaveProperty('advancedMode', true);
+
+      // Verify getUserDtoById passes columns config including advancedMode
+      const callArgs = mockDb.query.user.findFirst.mock.calls[0]?.[0];
+      expect(callArgs).toBeDefined();
+      expect(callArgs).toHaveProperty('columns');
+    });
+
+    it('SHOULD default advancedMode to false for new users', async () => {
+      // The schema defines advancedMode with .default(false).notNull()
+      mockDb.insert.mockReturnValue({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: 2, advancedMode: false }]),
+        }),
+      });
+      const result = await repository.createUser({ username: 'newuser' } as any);
+      expect(result?.advancedMode).toBe(false);
+    });
+  });
 });

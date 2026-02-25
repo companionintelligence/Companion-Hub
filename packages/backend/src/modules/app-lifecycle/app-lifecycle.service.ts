@@ -273,6 +273,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       localSubdomain: parsedForm.localSubdomain ?? null,
       openPort: openPort ?? false,
       exposedLocal: exposedLocal ?? !!appInfo.exposable,
+      exposureMode: parsedForm.exposureMode ?? 'local',
       appStoreSlug: appStoreId,
       isVisibleOnGuestDashboard,
       enableAuth: enableAuth ?? false,
@@ -580,6 +581,13 @@ export class AppLifecycleService implements OnApplicationBootstrap {
    */
   private async syncExposure() {
     await Promise.allSettled([this.triggerCloudflareSync(), this.triggerTailscaleSync()]);
+  }
+
+  /**
+   * Public wrapper for syncExposure — used by AppsService.resolveAppAvailability
+   */
+  public async syncExposurePublic() {
+    return this.syncExposure();
   }
 
   /**

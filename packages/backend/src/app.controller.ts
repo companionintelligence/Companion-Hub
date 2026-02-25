@@ -11,6 +11,9 @@ import { RegistrationService } from '@/modules/registration/registration.service
 import type { UserDto } from './modules/user/dto/user.dto';
 import { ApiResponse } from '@nestjs/swagger';
 import { LoggerService } from '@/core/logger/logger.service';
+import { TranslatableError } from '@/common/error/translatable-error';
+import { CloudflareClientService } from './modules/cloudflare/cloudflare-client.service';
+import { TailscaleService } from './modules/tailscale/tailscale.service';
 
 @Controller()
 export class AppController {
@@ -22,6 +25,8 @@ export class AppController {
     private readonly marketplaceService: MarketplaceService,
     private readonly logger: LoggerService,
     private readonly registrationService: RegistrationService,
+    private readonly cloudflareClientService: CloudflareClientService,
+    private readonly tailscaleService: TailscaleService,
   ) {}
 
   @Get('/user-context')
@@ -191,6 +196,16 @@ export class AppController {
     const orgSlug = org?.slug;
     const orgLabel = org?.name;
 
+    // Check service availability
+    const cloudflareAvailable = Boolean(this.cloudflareClientService.getTunnelToken());
+    let tailscaleAvailable = false;
+    try {
+      const tsStatus = await this.tailscaleService.getStatus();
+      tailscaleAvailable = tsStatus.installed && tsStatus.connected;
+    } catch {
+      tailscaleAvailable = false;
+    }
+
     return AppContextDto.parse(
       {
         version,
@@ -199,6 +214,8 @@ export class AppController {
         apps,
         updatesAvailable: updatesAvailable.length,
         isProduction,
+        cloudflareAvailable,
+        tailscaleAvailable,
       },
       { reportOnly: true },
     );
@@ -208,6 +225,16 @@ export class AppController {
   @UseGuards(AuthGuard)
   async updateUserSettings(@Body() body: UserSettingsBody) {
     await this.configuration.setUserSettings(body);
+  }
+
+  @Patch('/user-advanced-mode')
+  @UseGuards(AuthGuard)
+  async updateAdvancedMode(@Req() req: Request, @Body() body: { advancedMode: boolean }) {
+    if (!req.user) {
+      throw new TranslatableError('SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN');
+    }
+
+    await this.userRepository.updateUser(req.user.id, { advancedMode: Boolean(body.advancedMode) });
   }
 
   @Patch('/acknowledge-welcome')

@@ -84,6 +84,7 @@ export const user = pgTable('user', {
   salt: text(),
   locale: varchar().default('en').notNull(),
   hasSeenWelcome: boolean('has_seen_welcome').default(false).notNull(),
+  advancedMode: boolean('advanced_mode').default(false).notNull(),
 });
 
 export const appStore = pgTable('app_store', {

@@ -107,6 +107,21 @@ services:
       # ---- General ----- #
       ci-hub.managed: true
 
+  # Cloudflare tunnel for dev — opt-in via: docker compose --profile cloudflare up cloudflared -d
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared
+    restart: unless-stopped
+    command: tunnel run --token-file /home/nonroot/.cloudflared/token
+    volumes:
+      - ./tunnel:/home/nonroot/.cloudflared:ro
+    networks:
+      - ci_os_hub_network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    profiles:
+      - cloudflare
+
 networks:
   ci_os_hub_network:
     driver: bridge
