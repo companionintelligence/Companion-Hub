@@ -232,6 +232,7 @@ export class RegistrationService implements OnApplicationBootstrap {
           device_id: deviceId,
           organization_id: ciHubOrganizationId,
           description: `CI OS Hub Device - ${deviceId}`,
+          port: process.env.LOCAL === 'true' ? 9091 : Number(process.env.API_PORT) || 3000,
         }),
       });
 
