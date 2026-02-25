@@ -46,6 +46,8 @@ describe('InstallForm', () => {
       },
       user: { advancedMode: true },
       isProduction: true,
+      cloudflareAvailable: true,
+      tailscaleAvailable: false,
     } as unknown as ReturnType<typeof useAppContext>);
 
     const mockInfo = {
@@ -72,6 +74,8 @@ describe('InstallForm', () => {
       },
       user: { advancedMode: true },
       isProduction: true,
+      cloudflareAvailable: true,
+      tailscaleAvailable: false,
     } as unknown as ReturnType<typeof useAppContext>);
 
     const mockInfo = {
