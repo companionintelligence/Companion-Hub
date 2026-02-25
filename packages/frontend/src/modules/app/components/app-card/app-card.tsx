@@ -3,7 +3,7 @@ import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
 import { GlassContainer } from '@/components/ui/glass-container';
 import { limitText } from '@/lib/helpers/text-helpers';
 import type { AppInfoSimple } from '@/types/app.types';
-import { Download, Star } from 'lucide-react';
+import { Download } from 'lucide-react';
 import type React from 'react';
 import { Link } from 'react-router';
 
@@ -56,13 +56,7 @@ export const AppCard: React.FC<AppCardProps> = ({ app, isLoading }) => {
         <h3 className="font-bold text-base sm:text-lg mb-1 truncate text-foreground group-hover:text-primary transition-colors">{app.name}</h3>
         <p className="text-sm text-muted-foreground line-clamp-2 mb-4 flex-grow">{limitText(app.short_desc, 80)}</p>
 
-        <div className="flex items-center justify-between mt-auto">
-          {/* Placeholder for rating to match style */}
-          <div className="flex items-center text-amber-400 text-sm">
-            <Star className="w-4 h-4 fill-current mr-1" />
-            <span>4.8</span>
-            <span className="text-muted-foreground ml-1 text-xs">(128)</span>
-          </div>
+        <div className="flex items-center justify-end mt-auto">
           <Button variant="ghost" size="sm" className="h-8 w-8 rounded-full p-0">
             <Download className="w-4 h-4" />
           </Button>
