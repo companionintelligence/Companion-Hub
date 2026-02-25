@@ -6,13 +6,14 @@ interface IProps {
   isEdit?: boolean;
   loading?: boolean;
   formId: string;
+  disabled?: boolean;
 }
 
-export const InstallFormButtons: React.FC<IProps> = ({ isEdit, loading, formId }) => {
+export const InstallFormButtons: React.FC<IProps> = ({ isEdit, loading, formId, disabled }) => {
   const { t } = useTranslation();
 
   return (
-    <Button loading={loading} type="submit" intent="success" form={formId}>
+    <Button loading={loading} disabled={disabled} type="submit" intent="success" form={formId}>
       {isEdit ? t('APP_INSTALL_FORM_SUBMIT_UPDATE') : t('APP_INSTALL_FORM_SUBMIT_INSTALL')}
     </Button>
   );

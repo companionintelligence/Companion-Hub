@@ -1,6 +1,5 @@
 import { updateAppConfigMutation } from '@/api-client/@tanstack/react-query.gen';
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
-import { ScrollArea } from '@/components/ui/ScrollArea';
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
 import type { AppInfo, AppStatus } from '@/types/app.types';
 import type { TranslatableError } from '@/types/error.types';
 import { useMutation } from '@tanstack/react-query';
@@ -51,18 +50,15 @@ export const UpdateSettingsDialog: React.FC<IProps> = ({ info, config, isOpen, o
         <DialogHeader>
           <DialogTitle>{t('APP_UPDATE_SETTINGS_FORM_TITLE', { name: info.id })}</DialogTitle>
         </DialogHeader>
-        <ScrollArea maxheight={500}>
-          <DialogDescription>
-            <InstallForm
-              onSubmit={(values: FormValues) => updateConfig.mutate({ path: { urn: info.urn }, body: normalizeFormValues(values) })}
-              formFields={info.form_fields}
-              info={info}
-              initialValues={{ ...config }}
-              formId={formId}
-              appStatus={status}
-            />
-          </DialogDescription>
-        </ScrollArea>
+        <InstallForm
+          onSubmit={(values: FormValues) => updateConfig.mutate({ path: { urn: info.urn }, body: normalizeFormValues(values) })}
+          formFields={info.form_fields}
+          info={info}
+          initialValues={{ ...config }}
+          formId={formId}
+          appStatus={status}
+          scrollable
+        />
         <DialogFooter>
           <InstallFormButtons loading={updateConfig.isPending} isEdit formId={formId} />
         </DialogFooter>
