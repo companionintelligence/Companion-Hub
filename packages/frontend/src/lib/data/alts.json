@@ -188,6 +188,39 @@
     {
       "proprietary": [
         {
+          "name": "Squarespace",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.squarespace.com",
+          "url": null
+        },
+        {
+          "name": "Wix",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.wix.com",
+          "url": null
+        },
+        {
+          "name": "Medium",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://medium.com",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "WordPress",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://wordpress.org",
+          "url": "https://wordpress.org/",
+          "appSlug": "wordpress"
+        },
+        {
+          "name": "Ghost",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://ghost.org",
+          "url": "https://ghost.org/",
+          "appSlug": "ghost"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
           "name": "Gmail",
           "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://mail.google.com",
           "url": null
@@ -780,6 +813,28 @@
     {
       "proprietary": [
         {
+          "name": "GeForce Now",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.nvidia.com/en-us/geforce-now",
+          "url": null
+        },
+        {
+          "name": "Xbox Cloud Gaming",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.xbox.com/en-US/play",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "Steam Headless",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://github.com/Steam-Headless/docker-steam-headless",
+          "url": "https://github.com/Steam-Headless/docker-steam-headless",
+          "appSlug": "steam-headless"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
           "name": "Figma",
           "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.figma.com",
           "url": null
@@ -936,6 +991,33 @@
     {
       "proprietary": [
         {
+          "name": "Google Home",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://home.google.com",
+          "url": null
+        },
+        {
+          "name": "Amazon Alexa",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://alexa.amazon.com",
+          "url": null
+        },
+        {
+          "name": "Apple HomeKit",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.apple.com/home-app",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "Home Assistant",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.home-assistant.io",
+          "url": "https://www.home-assistant.io/",
+          "appSlug": "homeassistant"
+        }
+      ]
+    },
+    {
+      "proprietary": [
+        {
           "name": "Zapier",
           "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://zapier.com",
           "url": null
@@ -969,6 +1051,33 @@
     }
   ],
   "security": [
+    {
+      "proprietary": [
+        {
+          "name": "Ring",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://ring.com",
+          "url": null
+        },
+        {
+          "name": "Nest Cam",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://store.google.com/category/cameras",
+          "url": null
+        },
+        {
+          "name": "Arlo",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.arlo.com",
+          "url": null
+        }
+      ],
+      "alternatives": [
+        {
+          "name": "Frigate",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://frigate.video",
+          "url": "https://frigate.video/",
+          "appSlug": "frigate"
+        }
+      ]
+    },
     {
       "proprietary": [
         {
