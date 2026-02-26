@@ -213,6 +213,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
 
   // Check if the app URL is available before showing Open button
   const [checkError, setCheckError] = useState<string | null>(null);
+  const [checkErrorCode, setCheckErrorCode] = useState<string | null>(null);
   const [errorResolvable, setErrorResolvable] = useState(false);
   const [urlAvailable, setUrlAvailable] = useState<boolean | null>(null);
   const [isCheckingUrl, setIsCheckingUrl] = useState(false);
@@ -228,6 +229,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
   const triggerRecheck = () => {
     setUrlAvailable(null);
     setCheckError(null);
+    setCheckErrorCode(null);
     setErrorResolvable(false);
     setIsCheckingUrl(true);
   };
@@ -272,6 +274,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
             appUrl: resolvedUrl,
             detail,
             resolvable,
+            errorCode,
           } = (data || {}) as {
             available: boolean;
             appUrl?: string;
@@ -290,6 +293,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
             if (available) {
               setIsCheckingUrl(false);
               setCheckError(null);
+              setCheckErrorCode(null);
               setErrorResolvable(false);
               isAvailableRef = true;
               if (pollInterval) {
@@ -299,6 +303,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
             } else {
               setIsCheckingUrl(false);
               setCheckError(detail || 'Application Error');
+              setCheckErrorCode(errorCode || null);
               setErrorResolvable(resolvable ?? false);
             }
           }
@@ -307,6 +312,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
             setUrlAvailable(null);
             setIsCheckingUrl(true);
             setCheckError(error instanceof Error ? error.message : 'Unknown error');
+            setCheckErrorCode(null);
             setErrorResolvable(false);
           }
         }
@@ -331,8 +337,11 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
     setUrlAvailable(null);
     setIsCheckingUrl(false);
     setCheckError(null);
+    setCheckErrorCode(null);
     setErrorResolvable(false);
   }, [app?.status, info.no_gui, info.urn]);
+
+  const isTunnelPending = checkErrorCode === 'CF_UPSTREAM_ERROR' || checkErrorCode === 'CF_TUNNEL_NOT_FOUND';
 
   const OpenButton = (
     <ActionButton
@@ -346,6 +355,8 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
       loading={isCheckingUrl}
     />
   );
+
+  const PendingButton = <ActionButton key="pending" title={t('APP_ACTION_PENDING')} disabled loading />;
 
   const ErrorButton = errorResolvable ? (
     <div key="error" title={checkError ?? undefined}>
@@ -394,7 +405,9 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
 
       // Always show Open button for running apps with a GUI
       if (!info.no_gui) {
-        if (checkError) {
+        if (checkError && isTunnelPending) {
+          buttons.push(PendingButton);
+        } else if (checkError) {
           buttons.push(ErrorButton);
         } else {
           buttons.push(OpenButton);

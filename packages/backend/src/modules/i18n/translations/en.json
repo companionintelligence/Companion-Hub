@@ -3,6 +3,7 @@
   "APP_ACTION_INSTALL": "Install",
   "APP_ACTION_LOADING": "Loading",
   "APP_ACTION_OPEN": "Open",
+  "APP_ACTION_PENDING": "Pending...",
   "APP_ACTION_RESOLVE": "Resolve",
   "APP_ACTION_REMOVE": "Remove",
   "APP_ACTION_SETTINGS": "Settings",
