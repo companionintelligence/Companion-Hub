@@ -392,18 +392,10 @@ export class RegistrationService implements OnApplicationBootstrap {
       }
 
       // Sync hub domain to CI-Cloud so it can create DNS and tunnel routes
-      // Hub route is already configured by CI-Cloud during /devices/hub/register.
-      // We no longer call syncState here because it would overwrite the Hub's
-      // application name from 'OS Hub' to 'ci-os-hub' in CI-Cloud's database,
-      // causing subsequent app syncs to fail to find the Hub route.
-      // The triggerCloudflareSync in app-lifecycle.service.ts now always includes
-      // the Hub in the sync payload, so the route is preserved on every sync.
-      if (tunnelId && subdomain) {
-        this.logger.info(`Hub tunnel configured: ${domain} (tunnel: ${tunnelId}). Hub route managed by CI-Cloud registration.`);
-      }
+      // Hub route is managed by CI-Cloud's /devices/hub/register — no syncState needed here.
+      // triggerCloudflareSync in app-lifecycle.service.ts includes the Hub on every sync.
 
       // Wait for DNS resolution before returning
-      // This ensures that when the user is redirected, the domain is likely working
       this.logger.info(`Waiting for DNS resolution on https://${domain}...`);
       const maxRetries = 60 * 10; // 10 minutes
       for (let i = 0; i < maxRetries; i++) {
