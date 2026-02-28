@@ -1,7 +1,7 @@
 import { Injectable, type OnApplicationBootstrap, Inject, forwardRef } from '@nestjs/common';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import { CloudflareClientService, type AppInfo } from '../cloudflare/cloudflare-client.service';
+import { CloudflareClientService } from '../cloudflare/cloudflare-client.service';
 import { DeviceRegistrationRepository } from './device-registration.repository';
 import { RepoEventsQueue } from '../queue/entities/repo-events';
 import si from 'systeminformation';
