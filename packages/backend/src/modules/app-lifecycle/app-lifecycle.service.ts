@@ -670,38 +670,44 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       const exposedApps: AppInfo[] = await Promise.all(
         apps
           .filter((app: AppFromDb) => {
-            // Include apps that are exposedLocal and running/starting/restarting
-            // Port check removed - port value isn't used (always routes through Traefik on port 80)
-            // Traefik uses internal port from service definition, not the database port field
             return app.exposedLocal && ['running', 'starting', 'restarting'].includes(app.status) && app.localSubdomain;
           })
           .map(async (app: AppFromDb) => {
-            // Construct "First Principles" subdomain from database + org info
-            // This ignores APP_PUBLIC_HOSTNAME (which might have issues) and rebuilds the
-            // intended state correctly.
-
             const subdomain = app.localSubdomain || `${app.appName}-${app.appStoreSlug}`;
             const orgSlug = orgInfo.slug;
             const publicHostname = `${subdomain}-${orgSlug}.${publicDomain}`;
 
-            // When exposedLocal is true, we use Cloudflare Tunnel to expose apps to the internet
-            // Traefik is configured to ONLY accept the public domain Host header (not local domain)
-            // We use the public domain as originServerName so Cloudflare Tunnel sends
-            // the public domain Host header, which matches our Traefik public domain Host rule
             return {
               name: app.appName,
-              subdomain: subdomain, // Subdomain part only (e.g., n8n-bdc)
-              localPort: 80, // Traefik port - Traefik routes to the app based on Host header
+              subdomain,
+              localPort: 80,
               protocol: 'http' as const,
-              hostname: 'traefik', // Use container name to reach Traefik within the same network
-              originServerName: publicHostname, // Full domain from APP_PUBLIC_HOSTNAME (e.g., n8n-bdc.companionintelligence.com)
+              hostname: 'traefik',
+              originServerName: publicHostname,
             };
           }),
       );
 
-      // Don't add Dashboard here - it's already registered during device registration
-      // Adding it here would overwrite the Hub's domain (devicename-orgname.ci.computer)
-      // The Dashboard/Hub is accessible at the device subdomain registered during setup
+      // Include the Hub in every sync so CI-Cloud preserves its tunnel route.
+      // Hub subdomain is extracted from the stored domain: {hubSub}-{orgSlug}.{rootDomain}
+      const userDomain = userSettings.domain;
+      if (userDomain) {
+        const orgSlug = orgInfo.slug;
+        const domainPrefix = userDomain.split('.')[0] ?? '';
+        const orgSuffix = `-${orgSlug}`;
+        const hubSubdomain = domainPrefix.endsWith(orgSuffix) ? domainPrefix.slice(0, -orgSuffix.length) : domainPrefix;
+
+        if (hubSubdomain) {
+          exposedApps.unshift({
+            name: 'OS Hub',
+            subdomain: hubSubdomain,
+            localPort: 80,
+            protocol: 'http' as const,
+            hostname: 'traefik',
+            originServerName: userDomain,
+          });
+        }
+      }
 
       await this.cloudflareClientService.syncState(orgInfo.id, exposedApps, orgInfo.tunnelId || undefined);
     } catch (error) {

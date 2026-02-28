@@ -1,7 +1,7 @@
 import { Injectable, type OnApplicationBootstrap, Inject, forwardRef } from '@nestjs/common';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import { CloudflareClientService, type AppInfo } from '../cloudflare/cloudflare-client.service';
+import { CloudflareClientService } from '../cloudflare/cloudflare-client.service';
 import { DeviceRegistrationRepository } from './device-registration.repository';
 import { RepoEventsQueue } from '../queue/entities/repo-events';
 import si from 'systeminformation';
@@ -392,37 +392,10 @@ export class RegistrationService implements OnApplicationBootstrap {
       }
 
       // Sync hub domain to CI-Cloud so it can create DNS and tunnel routes
-      // The hub needs to be registered as an "app" so CI-Cloud knows to route the domain
-      if (tunnelId && subdomain) {
-        try {
-          // subdomain from CI-Cloud is already combined: "{userSlug}-{orgSlug}"
-          // State sync will add the org slug again, so strip it to get just the user part
-          const orgSuffix = `-${orgSlug}`;
-          const hubSubdomain = subdomain.endsWith(orgSuffix) ? subdomain.slice(0, -orgSuffix.length) : subdomain;
-          const hubAppInfo: AppInfo = {
-            name: 'ci-os-hub',
-            subdomain: hubSubdomain,
-            localPort: 80, // Traefik port
-            protocol: 'http' as const,
-            hostname: 'traefik', // Route through Traefik
-            originServerName: domain, // Full domain for Host header (e.g., 1-grok.companionintelligence.com)
-          };
-
-          this.logger.info(`Syncing hub domain to CI-Cloud: ${domain}`);
-          const syncSuccess = await this.cloudflareClientService.syncState(organizationId, [hubAppInfo], tunnelId);
-          if (syncSuccess) {
-            this.logger.info('Successfully synced hub domain to CI-Cloud');
-          } else {
-            this.logger.warn('Failed to sync hub domain to CI-Cloud - DNS/tunnel routes may not be configured');
-          }
-        } catch (error) {
-          this.logger.error(`Error syncing hub domain to CI-Cloud: ${error instanceof Error ? error.message : String(error)}`);
-          // Don't fail registration if sync fails - tunnel is still initialized
-        }
-      }
+      // Hub route is managed by CI-Cloud's /devices/hub/register — no syncState needed here.
+      // triggerCloudflareSync in app-lifecycle.service.ts includes the Hub on every sync.
 
       // Wait for DNS resolution before returning
-      // This ensures that when the user is redirected, the domain is likely working
       this.logger.info(`Waiting for DNS resolution on https://${domain}...`);
       const maxRetries = 60 * 10; // 10 minutes
       for (let i = 0; i < maxRetries; i++) {

@@ -116,6 +116,106 @@ describe('AppLifecycleService', () => {
       expect(reply).toHaveBeenCalledWith({ success: true, message: 'OK' });
     });
 
+    it('should include Hub route as OS Hub in cloudflare sync payload', async () => {
+      const data = { appUrn: 'test-app', action: 'install', form: {} } as any;
+      const reply = vi.fn();
+      const command = { execute: vi.fn().mockResolvedValue({ success: true, message: 'OK' }) };
+
+      commandFactory.createCommand.mockReturnValue(command as any);
+
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue({
+        id: 'org-id',
+        tunnelId: 'tunnel-id',
+        slug: 'myorg',
+        name: 'My Org',
+      } as any);
+      appsRepository.getApps.mockResolvedValue([]);
+      configService.getConfig.mockReturnValue({
+        userSettings: { domain: 'mydevice-myorg.companionintelligence.com', localDomain: 'lan' },
+        domain: 'companionintelligence.com',
+      } as any);
+
+      await service.invokeCommand(data, reply);
+
+      expect(cloudflareClientService.syncState).toHaveBeenCalledWith(
+        'org-id',
+        expect.arrayContaining([
+          expect.objectContaining({
+            name: 'OS Hub',
+            subdomain: 'mydevice',
+            localPort: 80,
+            hostname: 'traefik',
+            originServerName: 'mydevice-myorg.companionintelligence.com',
+          }),
+        ]),
+        'tunnel-id',
+      );
+    });
+
+    it('should include Hub route alongside exposed apps', async () => {
+      const data = { appUrn: 'test-app', action: 'install', form: {} } as any;
+      const reply = vi.fn();
+      const command = { execute: vi.fn().mockResolvedValue({ success: true, message: 'OK' }) };
+
+      commandFactory.createCommand.mockReturnValue(command as any);
+
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue({
+        id: 'org-id',
+        tunnelId: 'tunnel-id',
+        slug: 'acme',
+        name: 'Acme Corp',
+      } as any);
+      appsRepository.getApps.mockResolvedValue([
+        {
+          appName: 'n8n',
+          exposedLocal: true,
+          status: 'running',
+          localSubdomain: 'n8n-abc',
+          appStoreSlug: 'ci-cloud',
+        },
+      ] as any);
+      configService.getConfig.mockReturnValue({
+        userSettings: { domain: 'hub1-acme.companionintelligence.com', localDomain: 'lan' },
+        domain: 'companionintelligence.com',
+      } as any);
+
+      await service.invokeCommand(data, reply);
+
+      const syncCall = cloudflareClientService.syncState.mock.calls[0];
+      const apps = syncCall?.[1] as any[];
+
+      // Hub should be first
+      expect(apps[0]).toMatchObject({ name: 'OS Hub', subdomain: 'hub1' });
+      // Exposed app should follow
+      expect(apps[1]).toMatchObject({ name: 'n8n', subdomain: 'n8n-abc' });
+    });
+
+    it('should not include Hub route when domain is not configured', async () => {
+      const data = { appUrn: 'test-app', action: 'install', form: {} } as any;
+      const reply = vi.fn();
+      const command = { execute: vi.fn().mockResolvedValue({ success: true, message: 'OK' }) };
+
+      commandFactory.createCommand.mockReturnValue(command as any);
+
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue({
+        id: 'org-id',
+        tunnelId: 'tunnel-id',
+        slug: 'myorg',
+        name: 'My Org',
+      } as any);
+      appsRepository.getApps.mockResolvedValue([]);
+      configService.getConfig.mockReturnValue({
+        userSettings: { localDomain: 'lan' },
+        domain: 'companionintelligence.com',
+      } as any);
+
+      await service.invokeCommand(data, reply);
+
+      const syncCall = cloudflareClientService.syncState.mock.calls[0];
+      const apps = syncCall?.[1] as any[];
+      expect(apps).toHaveLength(0);
+    });
+
     it('should handle errors during execution', async () => {
       const data = { appUrn: 'test-app', action: 'install' } as any;
       const reply = vi.fn();
