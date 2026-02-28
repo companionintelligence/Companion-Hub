@@ -699,9 +699,29 @@ export class AppLifecycleService implements OnApplicationBootstrap {
           }),
       );
 
-      // Don't add Dashboard here - it's already registered during device registration
-      // Adding it here would overwrite the Hub's domain (devicename-orgname.ci.computer)
-      // The Dashboard/Hub is accessible at the device subdomain registered during setup
+      // Always include the Hub/Dashboard in the sync payload so CI-Cloud preserves
+      // its tunnel route. Without this, CI-Cloud replaces the entire tunnel config
+      // with only app routes, making the dashboard inaccessible.
+      // The Hub subdomain is extracted from the stored domain: {hubSubdomain}-{orgSlug}.{rootDomain}
+      const userDomain = userSettings.domain;
+      if (userDomain) {
+        const orgSlug = orgInfo.slug;
+        // Domain format: {hubSub}-{orgSlug}.rootdomain.com — extract hubSub
+        const domainPrefix = userDomain.split('.')[0] ?? ''; // e.g., "mydevice-myorg"
+        const orgSuffix = `-${orgSlug}`;
+        const hubSubdomain = domainPrefix.endsWith(orgSuffix) ? domainPrefix.slice(0, -orgSuffix.length) : domainPrefix;
+
+        if (hubSubdomain) {
+          exposedApps.unshift({
+            name: 'OS Hub',
+            subdomain: hubSubdomain,
+            localPort: 80,
+            protocol: 'http' as const,
+            hostname: 'traefik',
+            originServerName: userDomain,
+          });
+        }
+      }
 
       await this.cloudflareClientService.syncState(orgInfo.id, exposedApps, orgInfo.tunnelId || undefined);
     } catch (error) {

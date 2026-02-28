@@ -392,33 +392,14 @@ export class RegistrationService implements OnApplicationBootstrap {
       }
 
       // Sync hub domain to CI-Cloud so it can create DNS and tunnel routes
-      // The hub needs to be registered as an "app" so CI-Cloud knows to route the domain
+      // Hub route is already configured by CI-Cloud during /devices/hub/register.
+      // We no longer call syncState here because it would overwrite the Hub's
+      // application name from 'OS Hub' to 'ci-os-hub' in CI-Cloud's database,
+      // causing subsequent app syncs to fail to find the Hub route.
+      // The triggerCloudflareSync in app-lifecycle.service.ts now always includes
+      // the Hub in the sync payload, so the route is preserved on every sync.
       if (tunnelId && subdomain) {
-        try {
-          // subdomain from CI-Cloud is already combined: "{userSlug}-{orgSlug}"
-          // State sync will add the org slug again, so strip it to get just the user part
-          const orgSuffix = `-${orgSlug}`;
-          const hubSubdomain = subdomain.endsWith(orgSuffix) ? subdomain.slice(0, -orgSuffix.length) : subdomain;
-          const hubAppInfo: AppInfo = {
-            name: 'ci-os-hub',
-            subdomain: hubSubdomain,
-            localPort: 80, // Traefik port
-            protocol: 'http' as const,
-            hostname: 'traefik', // Route through Traefik
-            originServerName: domain, // Full domain for Host header (e.g., 1-grok.companionintelligence.com)
-          };
-
-          this.logger.info(`Syncing hub domain to CI-Cloud: ${domain}`);
-          const syncSuccess = await this.cloudflareClientService.syncState(organizationId, [hubAppInfo], tunnelId);
-          if (syncSuccess) {
-            this.logger.info('Successfully synced hub domain to CI-Cloud');
-          } else {
-            this.logger.warn('Failed to sync hub domain to CI-Cloud - DNS/tunnel routes may not be configured');
-          }
-        } catch (error) {
-          this.logger.error(`Error syncing hub domain to CI-Cloud: ${error instanceof Error ? error.message : String(error)}`);
-          // Don't fail registration if sync fails - tunnel is still initialized
-        }
+        this.logger.info(`Hub tunnel configured: ${domain} (tunnel: ${tunnelId}). Hub route managed by CI-Cloud registration.`);
       }
 
       // Wait for DNS resolution before returning
