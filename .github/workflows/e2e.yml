@@ -5,6 +5,12 @@ on:
     branches: [dev, main]
   push:
     branches: [dev]
+  workflow_call:
+    inputs:
+      version:
+        description: "Version tag for release E2E"
+        required: false
+        type: string
 
 jobs:
   e2e:
