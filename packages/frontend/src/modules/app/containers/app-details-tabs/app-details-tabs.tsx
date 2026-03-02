@@ -25,7 +25,7 @@ interface IProps {
   metadata?: AppMetadata;
 }
 
-export const AppDetailsTabs = ({ info, app, metadata }: IProps) => {
+export const AppDetailsTabs = ({ info, app: _app, metadata }: IProps) => {
   const { t } = useTranslation();
 
   const urn = extractAppUrn(info.urn as AppUrn);
