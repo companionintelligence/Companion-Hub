@@ -60,36 +60,38 @@ export default () => {
             </DropdownMenu>
           </TabsList>
           <div className="p-3 flex-1 overflow-y-auto min-h-0" data-testid="settings-scroll-container">
-            <TabsContent value="settings">
-              <Suspense fallback={<div>Loading...</div>}>
-                <UserSettingsContainer initialValues={userSettings} />
-              </Suspense>
-            </TabsContent>
-            <TabsContent value="security">
-              <Suspense fallback={<div>Loading...</div>}>
-                <SecurityContainer totpEnabled={Boolean(user.totpEnabled)} username={user.username} />
-              </Suspense>
-            </TabsContent>
-            <TabsContent value="appstores">
-              <Suspense fallback={<div>Loading...</div>}>
-                <AppStoresContainer />
-              </Suspense>
-            </TabsContent>
-            <TabsContent value="network">
-              <Suspense fallback={<div>Loading...</div>}>
-                <NetworkSettingsContainer />
-              </Suspense>
-            </TabsContent>
-            <TabsContent value="system">
-              <Suspense fallback={<div>Loading...</div>}>
-                <SystemInspectorContainer />
-              </Suspense>
-            </TabsContent>
-            <TabsContent value="logs">
-              <Suspense fallback={<div>Loading...</div>}>
-                <LogsContainer />
-              </Suspense>
-            </TabsContent>
+            <div className="max-w-3xl mx-auto w-full">
+              <TabsContent value="settings">
+                <Suspense fallback={<div>Loading...</div>}>
+                  <UserSettingsContainer initialValues={userSettings} />
+                </Suspense>
+              </TabsContent>
+              <TabsContent value="security">
+                <Suspense fallback={<div>Loading...</div>}>
+                  <SecurityContainer totpEnabled={Boolean(user.totpEnabled)} username={user.username} />
+                </Suspense>
+              </TabsContent>
+              <TabsContent value="appstores">
+                <Suspense fallback={<div>Loading...</div>}>
+                  <AppStoresContainer />
+                </Suspense>
+              </TabsContent>
+              <TabsContent value="network">
+                <Suspense fallback={<div>Loading...</div>}>
+                  <NetworkSettingsContainer />
+                </Suspense>
+              </TabsContent>
+              <TabsContent value="system">
+                <Suspense fallback={<div>Loading...</div>}>
+                  <SystemInspectorContainer />
+                </Suspense>
+              </TabsContent>
+              <TabsContent value="logs">
+                <Suspense fallback={<div>Loading...</div>}>
+                  <LogsContainer />
+                </Suspense>
+              </TabsContent>
+            </div>
           </div>
         </Tabs>
       </div>
