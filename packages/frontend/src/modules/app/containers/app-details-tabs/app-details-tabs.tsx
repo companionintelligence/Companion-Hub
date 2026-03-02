@@ -112,7 +112,7 @@ export const AppDetailsTabs = ({ info, app, metadata }: IProps) => {
             )}
           </CardHeader>
         )}
-        <CardContent>
+        <CardContent className="pt-6 text-sm">
           <Suspense>
             <AppDescriptionEditor isEditing={isEditing} meta={meta} setMeta={setMeta} />
           </Suspense>
