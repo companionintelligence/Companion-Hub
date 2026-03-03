@@ -8,6 +8,7 @@ export const userSchema = type({
   locale: 'string.trim',
   operator: 'boolean',
   hasSeenWelcome: 'boolean',
+  hasCompletedOnboarding: 'boolean',
   advancedMode: 'boolean',
 });
 

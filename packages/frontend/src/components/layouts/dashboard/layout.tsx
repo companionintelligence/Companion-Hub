@@ -4,7 +4,7 @@ import semver from 'semver';
 import { useAppContext } from '@/context/app-context';
 import { useUserContext } from '@/context/user-context';
 import { AnimatePresence, motion } from 'framer-motion';
-import { useLocation } from 'react-router';
+import { useLocation, useNavigate } from 'react-router';
 
 export const DashboardLayoutSuspense = ({ children }: PropsWithChildren) => {
   return (
@@ -20,6 +20,7 @@ export const DashboardLayoutSuspense = ({ children }: PropsWithChildren) => {
 export const DashboardLayout = ({ children }: PropsWithChildren) => {
   const { user, userSettings, version } = useAppContext();
   const location = useLocation();
+  const navigate = useNavigate();
   const prevPathRef = useRef(location.pathname);
   const { isLoggedIn } = useUserContext();
 
@@ -56,6 +57,12 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
       }
     };
     acknowledgeWelcome();
+    return null;
+  }
+
+  // Redirect to onboarding if not completed (but not if already on the onboarding page)
+  if (!user.hasCompletedOnboarding && !location.pathname.startsWith('/onboarding')) {
+    navigate('/onboarding', { replace: true });
     return null;
   }
 

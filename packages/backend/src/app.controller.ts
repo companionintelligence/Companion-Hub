@@ -254,4 +254,13 @@ export class AppController {
 
     await this.configuration.setUserSettings({ allowErrorMonitoring: body.allowErrorMonitoring });
   }
+
+  @Patch('/complete-onboarding')
+  @UseGuards(AuthGuard)
+  async completeOnboarding(@Req() req: Request) {
+    if (!req.user) {
+      return;
+    }
+    await this.userRepository.updateUser(req.user.id, { hasCompletedOnboarding: true });
+  }
 }

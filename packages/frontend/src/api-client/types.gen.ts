@@ -45,6 +45,7 @@ export type AppContextDto = {
     tailscaleAvailable: boolean;
     user: {
         hasSeenWelcome: boolean;
+        hasCompletedOnboarding: boolean;
         id: number;
         locale: string;
         operator: boolean;
