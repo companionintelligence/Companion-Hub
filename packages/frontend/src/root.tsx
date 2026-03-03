@@ -61,7 +61,16 @@ export async function clientLoader({ request }: Route.ActionArgs) {
     if (regRes.ok) {
       const regData = await regRes.json();
       if (!regData.registered) {
-        if (url.pathname !== '/device-registration') {
+        // Allow register/login/reset pages through so users can create accounts first
+        const allowedPaths = ['/device-registration', '/register', '/login', '/reset-password'];
+        if (!allowedPaths.some((p) => url.pathname.startsWith(p))) {
+          // On root path, check if users exist first — fresh installs need registration before device setup
+          if (url.pathname === '/') {
+            const user = await userContext();
+            if (!user.data || !user.data.isConfigured) {
+              return redirect('/register');
+            }
+          }
           return redirect('/device-registration');
         }
         return null;
