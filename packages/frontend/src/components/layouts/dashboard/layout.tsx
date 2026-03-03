@@ -40,11 +40,12 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
     isLatest = true;
   }
 
-  // Redirect to onboarding if not completed (but not if already on the onboarding page)
-  if (!user.hasCompletedOnboarding && !location.pathname.startsWith('/onboarding')) {
-    navigate('/onboarding', { replace: true });
-    return null;
-  }
+  // Redirect to onboarding if not completed
+  useEffect(() => {
+    if (!user.hasCompletedOnboarding && !location.pathname.startsWith('/onboarding')) {
+      navigate('/onboarding', { replace: true });
+    }
+  }, [user.hasCompletedOnboarding, location.pathname, navigate]);
 
   // Transition logic
   const getDepth = (path: string) => {
