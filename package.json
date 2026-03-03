@@ -8,6 +8,8 @@
   ],
   "scripts": {
     "dev": "bun run infra:up && dotenv -e .env.local -- bun run dev:app",
+    "dev:desktop": "cd packages/desktop/src-tauri && cargo tauri dev",
+    "build:desktop": "cd packages/desktop/src-tauri && cargo tauri build",
     "dev:app": "POSTGRES_HOST=localhost RABBITMQ_HOST=localhost NODE_ENV=development turbo run local",
     "infra:up": "ENV_FILE=.env.local docker compose --env-file .env.local --project-name runtipi -f docker-compose.local.yml up -d ci-os-hub-queue ci-hub-db",
     "infra:down": "docker compose --project-name runtipi -f docker-compose.local.yml down",
