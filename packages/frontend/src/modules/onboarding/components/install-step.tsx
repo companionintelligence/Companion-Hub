@@ -27,26 +27,32 @@ export const InstallStep = ({ apps, onComplete }: InstallStepProps) => {
     started.current = true;
 
     const installAll = async () => {
+      const minDelay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
       for (let i = 0; i < apps.length; i++) {
         const app = apps[i];
         if (!app) continue;
 
         if (!app.urn) {
           setStates((prev) => prev.map((s, idx) => (idx === i ? { ...s, status: 'error', error: 'Not available in store' } : s)));
+          await minDelay(500);
           continue;
         }
 
         setStates((prev) => prev.map((s, idx) => (idx === i ? { ...s, status: 'installing' } : s)));
 
         try {
-          const res = await fetch(`/api/app-lifecycle/${encodeURIComponent(app.urn)}/install`, {
-            method: 'POST',
-            credentials: 'include',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              localSubdomain: app.localSubdomain || app.appSlug,
+          const [res] = await Promise.all([
+            fetch(`/api/app-lifecycle/${encodeURIComponent(app.urn)}/install`, {
+              method: 'POST',
+              credentials: 'include',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                localSubdomain: app.localSubdomain || app.appSlug,
+              }),
             }),
-          });
+            minDelay(800),
+          ]);
 
           if (!res.ok) {
             const data = await res.json().catch(() => ({}));
@@ -60,7 +66,7 @@ export const InstallStep = ({ apps, onComplete }: InstallStepProps) => {
       }
 
       setDone(true);
-      setTimeout(() => onCompleteRef.current(), 1500);
+      setTimeout(() => onCompleteRef.current(), 3000);
     };
 
     installAll();
