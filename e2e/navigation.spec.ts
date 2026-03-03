@@ -8,7 +8,7 @@ test.describe('Navigation', () => {
     await expect(page.getByText('Disk space')).toBeVisible();
 
     // App Store
-    await page.getByRole('link', { name: 'App Store' }).click();
+    await page.getByRole('link', { name: 'Store' }).click();
     await page.waitForURL(/\/app-store/);
     await expect(page.getByRole('heading', { name: 'App Store' })).toBeVisible();
 
@@ -18,7 +18,7 @@ test.describe('Navigation', () => {
     await expect(page.getByRole('tab', { name: 'Settings' })).toBeVisible();
 
     // Back to Dashboard
-    await page.getByRole('link', { name: 'Dashboard' }).click();
+    await page.getByRole('link', { name: 'Home' }).click();
     await page.waitForURL(/\/dashboard/);
     await expect(page.getByText('Disk space')).toBeVisible();
   });

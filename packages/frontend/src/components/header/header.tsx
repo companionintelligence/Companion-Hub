@@ -64,11 +64,11 @@ export const Header = (props: HeaderProps) => {
         <nav className="hidden md:flex items-center justify-center gap-2">
           <NavLink to="/dashboard" className={getNavLinkClass}>
             <Home className="mr-2 size-4" />
-            {t('HEADER_DASHBOARD', 'Dashboard')}
+            Home
           </NavLink>
           <NavLink to="/app-store" className={getNavLinkClass}>
             <Store className="mr-2 size-4" />
-            {t('HEADER_APP_STORE', 'Store')}
+            Store
           </NavLink>
         </nav>
       )}
@@ -121,13 +121,13 @@ export const Header = (props: HeaderProps) => {
                 <DropdownMenuItem asChild>
                   <Link to="/dashboard" className="w-full cursor-pointer flex items-center">
                     <Home className="mr-2 size-4" />
-                    {t('HEADER_DASHBOARD', 'Dashboard')}
+                    Home
                   </Link>
                 </DropdownMenuItem>
                 <DropdownMenuItem asChild>
                   <Link to="/app-store" className="w-full cursor-pointer flex items-center">
                     <Store className="mr-2 size-4" />
-                    {t('HEADER_APP_STORE', 'Store')}
+                    Store
                   </Link>
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
