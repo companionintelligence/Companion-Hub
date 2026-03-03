@@ -55,7 +55,7 @@ export const Header = (props: HeaderProps) => {
       {/* Logo (Left) */}
       <div className="flex flex-1 items-center justify-start">
         <Link to="/dashboard" className="flex items-center">
-          <img src="/2024_CI__Logo_Banner_Color_small.svg" alt="Companion Intelligence Logo" className="h-8 w-auto object-contain" />
+          <img src="/2024_CI__Logo_Banner_Color.png" alt="Companion Intelligence Logo" className="h-8 w-auto object-contain" />
         </Link>
       </div>
 
