@@ -4,7 +4,7 @@ import semver from 'semver';
 import { useAppContext } from '@/context/app-context';
 import { useUserContext } from '@/context/user-context';
 import { AnimatePresence, motion } from 'framer-motion';
-import { useLocation, useNavigate } from 'react-router';
+import { useLocation, useNavigate, Navigate } from 'react-router';
 
 export const DashboardLayoutSuspense = ({ children }: PropsWithChildren) => {
   return (
@@ -41,11 +41,9 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
   }
 
   // Redirect to onboarding if not completed
-  useEffect(() => {
-    if (!user.hasCompletedOnboarding && !location.pathname.startsWith('/onboarding')) {
-      navigate('/onboarding', { replace: true });
-    }
-  }, [user.hasCompletedOnboarding, location.pathname, navigate]);
+  if (!user.hasCompletedOnboarding && !location.pathname.startsWith('/onboarding')) {
+    return <Navigate to="/onboarding" replace />;
+  }
 
   // Transition logic
   const getDepth = (path: string) => {

@@ -1,5 +1,5 @@
 import { Card, CardContent } from '@/components/ui/Card';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { OnboardingApp } from '../helpers/types';
 
 interface InstallStepProps {
@@ -17,93 +17,93 @@ interface AppInstallState {
 
 export const InstallStep = ({ apps, onComplete }: InstallStepProps) => {
   const [states, setStates] = useState<AppInstallState[]>(apps.map((app) => ({ app, status: 'pending' })));
-  const [currentIndex, setCurrentIndex] = useState(0);
   const [done, setDone] = useState(false);
+  const started = useRef(false);
+  const onCompleteRef = useRef(onComplete);
+  onCompleteRef.current = onComplete;
 
   useEffect(() => {
-    if (done || apps.length === 0) return;
+    if (started.current || apps.length === 0) return;
+    started.current = true;
 
-    const installNext = async (index: number) => {
-      if (index >= apps.length) {
-        setDone(true);
-        // Wait a beat so user sees the final state
-        setTimeout(onComplete, 1500);
-        return;
-      }
+    const installAll = async () => {
+      for (let i = 0; i < apps.length; i++) {
+        const app = apps[i];
+        if (!app) continue;
 
-      const app = apps[index];
-      if (!app) return;
-      if (!app.urn) {
-        // Skip apps without a valid URN
-        setStates((prev) => prev.map((s, i) => (i === index ? { ...s, status: 'error', error: 'Not available in store' } : s)));
-        setCurrentIndex(index + 1);
-        return;
-      }
-
-      setStates((prev) => prev.map((s, i) => (i === index ? { ...s, status: 'installing' } : s)));
-
-      try {
-        const res = await fetch(`/api/app-lifecycle/${encodeURIComponent(app.urn)}/install`, {
-          method: 'POST',
-          credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            localSubdomain: app.localSubdomain || app.appSlug,
-          }),
-        });
-
-        if (!res.ok) {
-          const data = await res.json().catch(() => ({}));
-          throw new Error(data.message || `HTTP ${res.status}`);
+        if (!app.urn) {
+          setStates((prev) => prev.map((s, idx) => (idx === i ? { ...s, status: 'error', error: 'Not available in store' } : s)));
+          continue;
         }
 
-        setStates((prev) => prev.map((s, i) => (i === index ? { ...s, status: 'success' } : s)));
-      } catch (e) {
-        setStates((prev) => prev.map((s, i) => (i === index ? { ...s, status: 'error', error: (e as Error).message } : s)));
+        setStates((prev) => prev.map((s, idx) => (idx === i ? { ...s, status: 'installing' } : s)));
+
+        try {
+          const res = await fetch(`/api/app-lifecycle/${encodeURIComponent(app.urn)}/install`, {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              localSubdomain: app.localSubdomain || app.appSlug,
+            }),
+          });
+
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            throw new Error(data.message || `HTTP ${res.status}`);
+          }
+
+          setStates((prev) => prev.map((s, idx) => (idx === i ? { ...s, status: 'success' } : s)));
+        } catch (e) {
+          setStates((prev) => prev.map((s, idx) => (idx === i ? { ...s, status: 'error', error: (e as Error).message } : s)));
+        }
       }
 
-      setCurrentIndex(index + 1);
+      setDone(true);
+      setTimeout(() => onCompleteRef.current(), 1500);
     };
 
-    installNext(currentIndex);
-  }, [currentIndex, done, apps, onComplete]);
+    installAll();
+  }, [apps]);
 
   const statusIcon = (status: InstallStatus) => {
     switch (status) {
       case 'pending':
-        return '⏳';
+        return <span className="text-muted-foreground">○</span>;
       case 'installing':
-        return '⚙️';
+        return <div className="animate-spin w-4 h-4 border-2 border-primary border-t-transparent rounded-full" />;
       case 'success':
-        return '✅';
+        return <span className="text-green-500">✓</span>;
       case 'error':
-        return '❌';
+        return <span className="text-destructive">✕</span>;
     }
   };
 
   const completedCount = states.filter((s) => s.status === 'success').length;
   const errorCount = states.filter((s) => s.status === 'error').length;
-  const progress = apps.length > 0 ? Math.round(((completedCount + errorCount) / apps.length) * 100) : 0;
+  const processedCount = completedCount + errorCount;
+  const progress = apps.length > 0 ? Math.round((processedCount / apps.length) * 100) : 0;
 
   return (
     <Card>
       <CardContent className="p-6">
         <div className="mb-4">
-          <h2 className="text-xl font-semibold mb-1">Installing Apps</h2>
+          <h2 className="text-xl font-semibold mb-1">{done ? 'Installation Complete' : 'Installing Apps'}</h2>
           <p className="text-sm text-muted-foreground">
-            {done ? `Done! ${completedCount} installed, ${errorCount} failed.` : `Installing ${currentIndex + 1} of ${apps.length}...`}
+            {done
+              ? `${completedCount} installed${errorCount > 0 ? `, ${errorCount} failed` : ''}.`
+              : `Installing ${processedCount + 1} of ${apps.length}...`}
           </p>
         </div>
 
-        {/* Progress bar */}
-        <div className="w-full bg-muted rounded-full h-2 mb-4">
-          <div className="bg-primary h-2 rounded-full transition-all duration-300" style={{ width: `${progress}%` }} />
+        <div className="w-full bg-muted rounded-full h-2 mb-4 overflow-hidden">
+          <div className="bg-primary h-2 rounded-full transition-all duration-500 ease-out" style={{ width: `${progress}%` }} />
         </div>
 
-        <div className="space-y-2 max-h-[350px] overflow-y-auto pr-2">
+        <div className="space-y-1 max-h-[350px] overflow-y-auto pr-2">
           {states.map((state) => (
-            <div key={state.app.appSlug} className="flex items-center gap-3 p-2 rounded-lg">
-              <span className="text-lg">{statusIcon(state.status)}</span>
+            <div key={state.app.appSlug} className="flex items-center gap-3 px-3 py-2 rounded-lg transition-colors">
+              <span className="w-5 h-5 flex items-center justify-center text-sm font-semibold">{statusIcon(state.status)}</span>
               <img
                 src={state.app.icon}
                 alt=""
@@ -116,7 +116,6 @@ export const InstallStep = ({ apps, onComplete }: InstallStepProps) => {
                 <div className="text-sm font-medium">{state.app.name}</div>
                 {state.error && <div className="text-xs text-destructive">{state.error}</div>}
               </div>
-              {state.status === 'installing' && <div className="animate-spin w-4 h-4 border-2 border-primary border-t-transparent rounded-full" />}
             </div>
           ))}
         </div>
