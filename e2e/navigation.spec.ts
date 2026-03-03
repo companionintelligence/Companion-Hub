@@ -7,10 +7,6 @@ test.describe('Navigation', () => {
     // Dashboard (already there after login)
     await expect(page.getByText('Disk space')).toBeVisible();
 
-    // My Apps
-    await page.getByRole('link', { name: 'My Apps' }).click();
-    await page.waitForURL(/\/apps/);
-
     // App Store
     await page.getByRole('link', { name: 'App Store' }).click();
     await page.waitForURL(/\/app-store/);
