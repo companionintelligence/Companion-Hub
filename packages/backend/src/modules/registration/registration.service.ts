@@ -58,7 +58,7 @@ export class RegistrationService implements OnApplicationBootstrap {
             if (ciCloudApiUrl) {
               this.logger.info(`Attempting to recover tunnel credentials via registration endpoint for device ${deviceId}`);
 
-              const registerUrl = `${ciCloudApiUrl}/devices/hub/register`;
+              const registerUrl = `${ciCloudApiUrl}/devices/register`;
               const headers: Record<string, string> = {
                 'Content-Type': 'application/json',
               };
@@ -196,7 +196,7 @@ export class RegistrationService implements OnApplicationBootstrap {
   }
 
   private async checkRegistrationWithCloud(): Promise<boolean> {
-    const { ciCloudApiUrl, ciHubOrganizationId, ciHubApiKey } = this.config.getConfig();
+    const { ciCloudApiUrl, ciHubOrganizationId } = this.config.getConfig();
 
     // If CI Cloud API is not configured, allow access (backward compatibility)
     if (!ciCloudApiUrl) {
@@ -209,60 +209,11 @@ export class RegistrationService implements OnApplicationBootstrap {
       return false;
     }
 
-    try {
-      const deviceId = await this.getDeviceId();
-
-      // Step 1: Register device with CI Cloud Hub API
-      const registerUrl = `${ciCloudApiUrl}/devices/hub/register`;
-
-      this.logger.debug(`Registering device at ${registerUrl} for device ${deviceId}`);
-
-      const registerHeaders: Record<string, string> = {
-        'Content-Type': 'application/json',
-      };
-
-      if (ciHubApiKey) {
-        registerHeaders.Authorization = `Bearer ${ciHubApiKey}`;
-      }
-
-      const registerResponse = await fetch(registerUrl, {
-        method: 'POST',
-        headers: registerHeaders,
-        body: JSON.stringify({
-          device_id: deviceId,
-          organization_id: ciHubOrganizationId,
-          description: `CI OS Hub Device - ${deviceId}`,
-          port: process.env.LOCAL === 'true' ? 9091 : Number(process.env.API_PORT) || 3000,
-        }),
-      });
-
-      if (registerResponse.ok) {
-        // biome-ignore lint/suspicious/noExplicitAny: External API response
-        const result = (await registerResponse.json()) as any;
-        this.logger.info(`Device registered successfully: ${result.device_id} (status: ${result.status})`);
-
-        if (result.api_key) {
-          await this.config.setUserSettings({ ciHubApiKey: result.api_key });
-          this.logger.info('Saved Hub API Key from registration response');
-        }
-
-        // Trigger repo update now that we are registered
-        this.logger.debug('Triggering repository update after successful registration');
-        await this.repoQueue.publish({ command: 'update_all' });
-
-        // Setup infrastructure using the response
-        await this.setupOrganizationInfrastructure(ciHubOrganizationId, result);
-        return true;
-      }
-
-      // biome-ignore lint/suspicious/noExplicitAny: External API response
-      const errorData = (await registerResponse.json().catch(() => ({ error: 'Unknown error' }))) as any;
-      this.logger.warn(`Device registration failed: ${registerResponse.status} - ${errorData.error || registerResponse.statusText}`);
-      return false;
-    } catch (error) {
-      this.logger.error('Failed to contact cloud server for registration:', error);
-      return false;
-    }
+    // Server-to-server registration requires session auth on CI-Cloud,
+    // which we don't have. Registration should go through the web redirect flow
+    // (Hub → CI-Cloud portal → callback via /device-registration).
+    this.logger.debug('Automatic registration via polling is not supported. Use the web redirect flow via /device-registration.');
+    return false;
   }
 
   /**
@@ -392,7 +343,7 @@ export class RegistrationService implements OnApplicationBootstrap {
       }
 
       // Sync hub domain to CI-Cloud so it can create DNS and tunnel routes
-      // Hub route is managed by CI-Cloud's /devices/hub/register — no syncState needed here.
+      // Hub route is managed by CI-Cloud's /devices/register — no syncState needed here.
       // triggerCloudflareSync in app-lifecycle.service.ts includes the Hub on every sync.
 
       // Wait for DNS resolution before returning
@@ -453,7 +404,7 @@ export class RegistrationService implements OnApplicationBootstrap {
    * Called from the registration form
    *
    * This method performs the complete registration flow:
-   * 1. Registers device with CI Cloud (/api/devices/hub/register)
+   * 1. Registers device with CI Cloud (/api/devices/register)
    * 2. Activates device (/api/web/register)
    * 3. Validates organization subdomain availability
    * 4. Creates Cloudflare tunnel and DNS records
@@ -504,8 +455,8 @@ export class RegistrationService implements OnApplicationBootstrap {
       this.logger.info(`Starting device registration: device_id=${deviceId}, organization_id=${organizationId}, organization_name=${sanitizedName}`);
 
       // Step 1: Register device with CI Cloud
-      // POST http://localhost:8001/api/devices/hub/register
-      const registerUrl = `${ciCloudApiUrl}/devices/hub/register`;
+      // POST http://localhost:8001/api/devices/register
+      const registerUrl = `${ciCloudApiUrl}/devices/register`;
       const registerHeaders: Record<string, string> = {
         'Content-Type': 'application/json',
       };
