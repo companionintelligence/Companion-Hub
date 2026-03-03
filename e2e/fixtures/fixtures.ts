@@ -15,7 +15,7 @@ export const test = base.extend({
 export { expect } from '@playwright/test';
 
 export const createTestUser = async () => {
-  await db.insert(user).values({ password: testUser.hashedPassword, username: testUser.email, operator: true, hasSeenWelcome: true });
+  await db.insert(user).values({ password: testUser.hashedPassword, username: testUser.email, operator: true, hasCompletedOnboarding: true });
 };
 
 export const loginUser = async (page: Page, _?: BrowserContext) => {

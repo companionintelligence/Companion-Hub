@@ -19,7 +19,7 @@ test.describe('Navigation', () => {
     // Settings
     await page.getByRole('link', { name: 'Settings' }).click();
     await page.waitForURL(/\/settings/);
-    await expect(page.getByRole('tablist')).toBeVisible();
+    await expect(page.getByRole('tab', { name: 'Settings' })).toBeVisible();
 
     // Back to Dashboard
     await page.getByRole('link', { name: 'Dashboard' }).click();

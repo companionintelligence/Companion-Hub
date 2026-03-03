@@ -246,12 +246,21 @@ export class AppController {
 
     const version = await this.appService.getVersion();
     this.configuration.initSentry({ release: version.current, allowSentry: body.allowErrorMonitoring });
-    await this.userRepository.updateUser(req.user.id, { hasSeenWelcome: true });
+    await this.userRepository.updateUser(req.user.id, { hasCompletedOnboarding: true });
 
     if (this.configuration.get('demoMode')) {
       return;
     }
 
     await this.configuration.setUserSettings({ allowErrorMonitoring: body.allowErrorMonitoring });
+  }
+
+  @Patch('/complete-onboarding')
+  @UseGuards(AuthGuard)
+  async completeOnboarding(@Req() req: Request) {
+    if (!req.user) {
+      return;
+    }
+    await this.userRepository.updateUser(req.user.id, { hasCompletedOnboarding: true });
   }
 }

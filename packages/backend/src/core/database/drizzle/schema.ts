@@ -83,7 +83,7 @@ export const user = pgTable('user', {
   totpEnabled: boolean('totp_enabled').default(false).notNull(),
   salt: text(),
   locale: varchar().default('en').notNull(),
-  hasSeenWelcome: boolean('has_seen_welcome').default(false).notNull(),
+  hasCompletedOnboarding: boolean('has_completed_onboarding').default(false).notNull(),
   advancedMode: boolean('advanced_mode').default(false).notNull(),
 });
 
