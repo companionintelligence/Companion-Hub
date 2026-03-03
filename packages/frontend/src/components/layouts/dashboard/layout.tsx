@@ -40,26 +40,6 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
     isLatest = true;
   }
 
-  if (!user.hasSeenWelcome) {
-    // Auto-acknowledge — no welcome/error-reporting gate needed
-    const acknowledgeWelcome = async () => {
-      try {
-        await fetch('/api/acknowledge-welcome', {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ allowErrorMonitoring: false }),
-          credentials: 'include',
-        });
-        window.location.reload();
-      } catch {
-        // If it fails, the next page load will retry
-        window.location.reload();
-      }
-    };
-    acknowledgeWelcome();
-    return null;
-  }
-
   // Redirect to onboarding if not completed (but not if already on the onboarding page)
   if (!user.hasCompletedOnboarding && !location.pathname.startsWith('/onboarding')) {
     navigate('/onboarding', { replace: true });

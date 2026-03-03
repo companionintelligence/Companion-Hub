@@ -246,7 +246,7 @@ export class AppController {
 
     const version = await this.appService.getVersion();
     this.configuration.initSentry({ release: version.current, allowSentry: body.allowErrorMonitoring });
-    await this.userRepository.updateUser(req.user.id, { hasSeenWelcome: true });
+    await this.userRepository.updateUser(req.user.id, { hasCompletedOnboarding: true });
 
     if (this.configuration.get('demoMode')) {
       return;

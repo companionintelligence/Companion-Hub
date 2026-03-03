@@ -44,7 +44,6 @@ export type AppContextDto = {
     cloudflareAvailable: boolean;
     tailscaleAvailable: boolean;
     user: {
-        hasSeenWelcome: boolean;
         hasCompletedOnboarding: boolean;
         id: number;
         locale: string;
