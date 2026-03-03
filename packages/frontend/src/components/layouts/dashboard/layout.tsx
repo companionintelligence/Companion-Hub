@@ -4,7 +4,7 @@ import semver from 'semver';
 import { useAppContext } from '@/context/app-context';
 import { useUserContext } from '@/context/user-context';
 import { AnimatePresence, motion } from 'framer-motion';
-import { useLocation, useNavigate, Navigate } from 'react-router';
+import { useLocation, Navigate } from 'react-router';
 
 export const DashboardLayoutSuspense = ({ children }: PropsWithChildren) => {
   return (
@@ -20,7 +20,6 @@ export const DashboardLayoutSuspense = ({ children }: PropsWithChildren) => {
 export const DashboardLayout = ({ children }: PropsWithChildren) => {
   const { user, userSettings, version } = useAppContext();
   const location = useLocation();
-  const navigate = useNavigate();
   const prevPathRef = useRef(location.pathname);
   const { isLoggedIn } = useUserContext();
 
