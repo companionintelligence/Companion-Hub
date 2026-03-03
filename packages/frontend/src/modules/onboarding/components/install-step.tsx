@@ -1,3 +1,4 @@
+import { Button } from '@/components/ui/Button';
 import { Card, CardContent } from '@/components/ui/Card';
 import { useEffect, useRef, useState } from 'react';
 import type { OnboardingApp } from '../helpers/types';
@@ -51,7 +52,7 @@ export const InstallStep = ({ apps, onComplete }: InstallStepProps) => {
                 localSubdomain: app.localSubdomain || app.appSlug,
               }),
             }),
-            minDelay(800),
+            minDelay(1200),
           ]);
 
           if (!res.ok) {
@@ -66,7 +67,6 @@ export const InstallStep = ({ apps, onComplete }: InstallStepProps) => {
       }
 
       setDone(true);
-      setTimeout(() => onCompleteRef.current(), 3000);
     };
 
     installAll();
@@ -125,6 +125,14 @@ export const InstallStep = ({ apps, onComplete }: InstallStepProps) => {
             </div>
           ))}
         </div>
+
+        {done && (
+          <div className="flex justify-end mt-6">
+            <Button intent="primary" onClick={onComplete}>
+              Continue
+            </Button>
+          </div>
+        )}
       </CardContent>
     </Card>
   );
