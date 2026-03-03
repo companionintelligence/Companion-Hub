@@ -1,5 +1,5 @@
 import { Link, NavLink, useNavigate } from 'react-router';
-import { LogOut, Home, Settings, Store, Menu, LayoutGrid, LogIn, Sun, Moon } from 'lucide-react';
+import { LogOut, Home, Settings, Store, Menu, LogIn, Sun, Moon } from 'lucide-react';
 import { clsx } from 'clsx';
 import { useTranslation } from 'react-i18next';
 import { Button, buttonVariants } from '@/components/ui/Button';
@@ -66,10 +66,6 @@ export const Header = (props: HeaderProps) => {
             <Home className="mr-2 size-4" />
             {t('HEADER_DASHBOARD', 'Dashboard')}
           </NavLink>
-          <NavLink to="/apps" className={getNavLinkClass}>
-            <LayoutGrid className="mr-2 size-4" />
-            {t('HEADER_APPS', 'Apps')}
-          </NavLink>
           <NavLink to="/app-store" className={getNavLinkClass}>
             <Store className="mr-2 size-4" />
             {t('HEADER_APP_STORE', 'Store')}
@@ -126,12 +122,6 @@ export const Header = (props: HeaderProps) => {
                   <Link to="/dashboard" className="w-full cursor-pointer flex items-center">
                     <Home className="mr-2 size-4" />
                     {t('HEADER_DASHBOARD', 'Dashboard')}
-                  </Link>
-                </DropdownMenuItem>
-                <DropdownMenuItem asChild>
-                  <Link to="/apps" className="w-full cursor-pointer flex items-center">
-                    <LayoutGrid className="mr-2 size-4" />
-                    {t('HEADER_APPS', 'Apps')}
                   </Link>
                 </DropdownMenuItem>
                 <DropdownMenuItem asChild>
