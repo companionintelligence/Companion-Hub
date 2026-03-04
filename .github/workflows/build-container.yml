@@ -72,12 +72,15 @@ jobs:
           if [ "$ENV" = "production" ]; then
             echo "docker_tag=latest" >> $GITHUB_OUTPUT
             echo "container_tag=ci-os-hub:latest" >> $GITHUB_OUTPUT
+            echo "portal_registry=portal.ci.computer" >> $GITHUB_OUTPUT
           elif [ "$ENV" = "staging" ]; then
             echo "docker_tag=staging" >> $GITHUB_OUTPUT
             echo "container_tag=ci-os-hub:staging" >> $GITHUB_OUTPUT
+            echo "portal_registry=portal.companionintel.com" >> $GITHUB_OUTPUT
           else
             echo "docker_tag=dev" >> $GITHUB_OUTPUT
             echo "container_tag=ci-os-hub:dev" >> $GITHUB_OUTPUT
+            echo "portal_registry=portal.companionintelligence.com" >> $GITHUB_OUTPUT
           fi
 
       - name: Extract metadata (tags, labels) for Docker
@@ -95,6 +98,28 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Push to Portal registry
+        if: ${{ secrets.PORTAL_REGISTRY_USERNAME != '' }}
+        run: |
+          PORTAL="${{ steps.tags.outputs.portal_registry }}"
+          TAG="${{ steps.tags.outputs.docker_tag }}"
+          GHCR_IMAGE="ghcr.io/${{ github.repository }}:${TAG}"
+          PORTAL_IMAGE="${PORTAL}/ci-os-hub:${TAG}"
+
+          echo "Logging in to ${PORTAL}..."
+          echo "${{ secrets.PORTAL_REGISTRY_PASSWORD }}" | docker login "${PORTAL}" -u "${{ secrets.PORTAL_REGISTRY_USERNAME }}" --password-stdin
+
+          echo "Tagging ${GHCR_IMAGE} → ${PORTAL_IMAGE}"
+          docker pull "${GHCR_IMAGE}"
+          docker tag "${GHCR_IMAGE}" "${PORTAL_IMAGE}"
+
+          # Also tag as :latest so pull-dev.sh works
+          docker tag "${GHCR_IMAGE}" "${PORTAL}/ci-os-hub:latest"
+
+          echo "Pushing to ${PORTAL}..."
+          docker push "${PORTAL_IMAGE}"
+          docker push "${PORTAL}/ci-os-hub:latest"
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
