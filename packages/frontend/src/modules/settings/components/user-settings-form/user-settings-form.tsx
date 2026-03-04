@@ -172,13 +172,7 @@ export const UserSettingsForm = (props: IProps) => {
             name="themeBase"
             render={({ field: { onChange, value } }) => <ThemeBaseSelector value={value as ThemeBase} onChange={onChange} />}
           />
-          <Controller
-            control={control}
-            name="themeColor"
-            render={({ field: { onChange, value } }) => (
-              <ColorSelector name="themeColor" label={t('SETTINGS_GENERAL_PRIMARY_COLOR')} value={value as ThemeColor} onChange={onChange} />
-            )}
-          />
+          {/* ColorSelector hidden — theme colors don't apply yet */}
         </CardContent>
       </Card>
       <Card>

@@ -18,7 +18,7 @@ export const StoreTile: React.FC<{ app: AppInfoSimple; isLoading: boolean }> = (
 
   return (
     <Link aria-label={app.name} className="app-tile" to={`/app-store/${storeId}/${appId}`} data-testid={`app-card-${appId}`}>
-      <Card key={app.id} className="flex overflow-hidden items-center py-2 pl-2">
+      <Card key={app.id} className="flex overflow-hidden items-center py-2 pl-2 transition-all hover:shadow-md hover:scale-[1.02] active:scale-[0.98]">
         <Skeleton loading={isLoading}>
           <AppLogo className="logo" urn={app.urn} placeholder={isLoading} />
         </Skeleton>
