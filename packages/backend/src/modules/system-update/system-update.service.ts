@@ -9,6 +9,7 @@ import { RegistryService } from '@/utils/registry/registry.service';
 
 @Injectable()
 export class SystemUpdateService implements OnApplicationBootstrap {
+  autoUpdateInterval: ReturnType<typeof setInterval> | null = null;
   private static readonly CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
   constructor(
