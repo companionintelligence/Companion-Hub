@@ -99,6 +99,9 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
+      - name: Install crane
+        uses: imjasonh/setup-crane@v0.4
+
       - name: Push to Portal registry
         continue-on-error: true
         env:
@@ -109,21 +112,15 @@ jobs:
           PORTAL="${{ steps.tags.outputs.portal_registry }}"
           TAG="${{ steps.tags.outputs.docker_tag }}"
           GHCR_IMAGE="ghcr.io/${{ github.repository }}:${TAG}"
-          PORTAL_IMAGE="${PORTAL}/ci-os-hub:${TAG}"
 
           echo "Logging in to ${PORTAL}..."
-          echo "${PORTAL_PASS}" | docker login "${PORTAL}" -u "${PORTAL_USER}" --password-stdin
+          crane auth login "${PORTAL}" -u "${PORTAL_USER}" -p "${PORTAL_PASS}"
 
-          echo "Tagging ${GHCR_IMAGE} → ${PORTAL_IMAGE}"
-          docker pull "${GHCR_IMAGE}"
-          docker tag "${GHCR_IMAGE}" "${PORTAL_IMAGE}"
+          echo "Copying ${GHCR_IMAGE} → ${PORTAL}/ci-os-hub:${TAG}"
+          crane copy "${GHCR_IMAGE}" "${PORTAL}/ci-os-hub:${TAG}"
 
-          # Also tag as :latest so pull-dev.sh works
-          docker tag "${GHCR_IMAGE}" "${PORTAL}/ci-os-hub:latest"
-
-          echo "Pushing to ${PORTAL}..."
-          docker push "${PORTAL_IMAGE}"
-          docker push "${PORTAL}/ci-os-hub:latest"
+          echo "Copying ${GHCR_IMAGE} → ${PORTAL}/ci-os-hub:latest"
+          crane copy "${GHCR_IMAGE}" "${PORTAL}/ci-os-hub:latest"
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
