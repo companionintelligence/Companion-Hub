@@ -108,14 +108,8 @@ export class RegistrationService implements OnApplicationBootstrap {
     }
 
     if (!isRegistered) {
-      // Only start polling if organization ID is already configured
-      const { ciHubOrganizationId } = this.config.getConfig();
-      if (ciHubOrganizationId) {
-        // Start polling for registration
-        this.pollRegistration();
-      } else {
-        this.logger.debug('No organization ID configured, waiting for manual registration');
-      }
+      // Start polling CI-Cloud for registration status (no org ID needed)
+      this.pollRegistration();
     }
   }
 
@@ -179,7 +173,7 @@ export class RegistrationService implements OnApplicationBootstrap {
             this.checkInterval = null;
           }
         } else {
-          this.logger.debug('Device not yet registered, retrying in 1s...');
+          this.logger.debug('Device not yet registered, retrying in 30s...');
         }
       } catch (error) {
         this.logger.error('Error checking registration status:', error);
@@ -191,7 +185,7 @@ export class RegistrationService implements OnApplicationBootstrap {
 
     // Start interval if not registered
     if (!this._isRegistered) {
-      this.checkInterval = setInterval(check, 1000);
+      this.checkInterval = setInterval(check, 30000);
     }
   }
 
@@ -205,7 +199,7 @@ export class RegistrationService implements OnApplicationBootstrap {
     }
 
     const deviceId = await this.getDeviceId();
-    const statusUrl = new URL('/devices/registration-status', ciCloudApiUrl);
+    const statusUrl = new URL('devices/registration-status', ciCloudApiUrl.endsWith('/') ? ciCloudApiUrl : `${ciCloudApiUrl}/`);
     statusUrl.searchParams.set('device_id', deviceId);
 
     try {
