@@ -199,7 +199,7 @@ export class RegistrationService implements OnApplicationBootstrap {
     }
 
     const deviceId = await this.getDeviceId();
-    const statusUrl = new URL('/devices/registration-status', ciCloudApiUrl);
+    const statusUrl = new URL('devices/registration-status', ciCloudApiUrl.endsWith('/') ? ciCloudApiUrl : `${ciCloudApiUrl}/`);
     statusUrl.searchParams.set('device_id', deviceId);
 
     try {
