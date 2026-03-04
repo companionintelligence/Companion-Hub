@@ -196,7 +196,7 @@ export class RegistrationService implements OnApplicationBootstrap {
   }
 
   private async checkRegistrationWithCloud(): Promise<boolean> {
-    const { ciCloudApiUrl, ciHubOrganizationId } = this.config.getConfig();
+    const { ciCloudApiUrl } = this.config.getConfig();
 
     // If CI Cloud API is not configured, allow access (backward compatibility)
     if (!ciCloudApiUrl) {
@@ -204,16 +204,63 @@ export class RegistrationService implements OnApplicationBootstrap {
       return true;
     }
 
-    // If organization ID is not configured, don't try to register
-    if (!ciHubOrganizationId) {
+    const deviceId = await this.getDeviceId();
+    const statusUrl = new URL('/devices/registration-status', ciCloudApiUrl);
+    statusUrl.searchParams.set('device_id', deviceId);
+
+    try {
+      const response = await fetch(statusUrl.toString(), { method: 'GET' });
+      if (!response.ok) {
+        this.logger.warn(`Registration status check failed: ${response.status} ${response.statusText}`);
+        return false;
+      }
+
+      const data = (await response.json()) as {
+        registered?: boolean;
+        ready?: boolean;
+        organization_id?: string;
+        organization_name?: string;
+        slug?: string;
+        subdomain?: string;
+        tunnel_id?: string;
+        tunnel_token?: string;
+        api_key?: string;
+        domain?: string;
+      };
+
+      if (!data.registered) {
+        return false;
+      }
+
+      if (!data.ready) {
+        this.logger.debug('Device is registered but not ready yet (missing tunnel/app data).');
+        return false;
+      }
+
+      if (!data.organization_id || !data.tunnel_id || !data.tunnel_token || !data.subdomain) {
+        this.logger.warn('Registration status missing required fields.');
+        return false;
+      }
+
+      if (data.api_key) {
+        await this.config.setUserSettings({ ciHubApiKey: data.api_key });
+      }
+      await this.config.setUserSettings({ ciHubOrganizationId: data.organization_id });
+
+      await this.setupOrganizationInfrastructure(data.organization_id, {
+        organization_name: data.organization_name || 'Organization',
+        tunnel_id: data.tunnel_id,
+        tunnel_token: data.tunnel_token,
+        subdomain: data.subdomain,
+        slug: data.slug || 'org',
+        domain: data.domain,
+      });
+
+      return true;
+    } catch (error) {
+      this.logger.error('Error checking registration status from CI Cloud:', error);
       return false;
     }
-
-    // Server-to-server registration requires session auth on CI-Cloud,
-    // which we don't have. Registration should go through the web redirect flow
-    // (Hub → CI-Cloud portal → callback via /device-registration).
-    this.logger.debug('Automatic registration via polling is not supported. Use the web redirect flow via /device-registration.');
-    return false;
   }
 
   /**

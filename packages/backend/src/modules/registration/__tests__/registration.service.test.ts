@@ -71,13 +71,11 @@ describe('RegistrationService', () => {
     });
   });
 
-  describe('checkRegistrationWithCloud — polling disabled', () => {
+  describe('checkRegistrationWithCloud — polling enabled', () => {
     beforeEach(() => {
       process.env.DEVICE_ID = 'test-device';
       configService.getConfig.mockReturnValue({
         ciCloudApiUrl: 'http://cloud.api',
-        ciHubOrganizationId: 'org-123',
-        ciHubApiKey: 'key-123',
         userSettings: { domain: 'example.com' },
       } as any);
     });
@@ -88,27 +86,74 @@ describe('RegistrationService', () => {
       delete process.env.API_PORT;
     });
 
-    it('MUST return false without calling fetch (polling disabled, use web redirect flow)', async () => {
-      const mockFetch = vi.fn();
-      global.fetch = mockFetch as any;
-
-      const result = await (service as any).checkRegistrationWithCloud();
-
-      expect(result).toBe(false);
-      expect(mockFetch).not.toHaveBeenCalled();
-    });
-
-    it('MUST return true when ciCloudApiUrl is not configured', async () => {
+    it('returns true when ciCloudApiUrl is not configured', async () => {
       configService.getConfig.mockReturnValue({
         ciCloudApiUrl: '',
-        ciHubOrganizationId: 'org-123',
-        ciHubApiKey: 'key-123',
         userSettings: { domain: 'example.com' },
       } as any);
 
       const result = await (service as any).checkRegistrationWithCloud();
 
       expect(result).toBe(true);
+    });
+
+    it('returns false when registration not found', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ registered: false }),
+      });
+      global.fetch = mockFetch as any;
+
+      const result = await (service as any).checkRegistrationWithCloud();
+
+      expect(result).toBe(false);
+    });
+
+    it('returns false when registration is not ready', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ registered: true, ready: false }),
+      });
+      global.fetch = mockFetch as any;
+
+      const result = await (service as any).checkRegistrationWithCloud();
+
+      expect(result).toBe(false);
+    });
+
+    it('persists config and initializes infra when registration is ready', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          registered: true,
+          ready: true,
+          organization_id: 'org-123',
+          organization_name: 'Test Org',
+          slug: 'test-org',
+          subdomain: 'hub-test-org',
+          tunnel_id: 'tunnel-123',
+          tunnel_token: 'token-123',
+          api_key: 'api-123',
+          domain: 'example.com',
+        }),
+      });
+      global.fetch = mockFetch as any;
+
+      const setupSpy = vi.spyOn(service as any, 'setupOrganizationInfrastructure').mockResolvedValue(undefined);
+
+      const result = await (service as any).checkRegistrationWithCloud();
+
+      expect(result).toBe(true);
+      expect(configService.setUserSettings).toHaveBeenCalledWith({ ciHubApiKey: 'api-123' });
+      expect(configService.setUserSettings).toHaveBeenCalledWith({ ciHubOrganizationId: 'org-123' });
+      expect(setupSpy).toHaveBeenCalledWith('org-123', {
+        organization_name: 'Test Org',
+        tunnel_id: 'tunnel-123',
+        tunnel_token: 'token-123',
+        subdomain: 'hub-test-org',
+        slug: 'test-org',
+        domain: 'example.com',
+      });
     });
   });
 });
