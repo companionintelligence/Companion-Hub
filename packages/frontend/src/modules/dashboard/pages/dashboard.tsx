@@ -31,7 +31,9 @@ export default () => {
         {/* Usage Section — 3 widgets centered */}
         <div className="grid grid-cols-3 gap-2 sm:gap-4 w-full max-w-2xl px-2 sm:px-4">
           {isLoading ? (
-            <div className="col-span-3"><LoadingSpinner /></div>
+            <div className="col-span-3">
+              <LoadingSpinner />
+            </div>
           ) : (
             <>
               <CompactSystemStat
@@ -63,9 +65,7 @@ export default () => {
         </div>
 
         {/* Apps Section */}
-        <div className="w-full max-w-2xl px-2 sm:px-4">
-          {appsData ? <HorizontalAppList apps={appsData.installed} /> : <LoadingSpinner />}
-        </div>
+        <div className="w-full max-w-2xl px-2 sm:px-4">{appsData ? <HorizontalAppList apps={appsData.installed} /> : <LoadingSpinner />}</div>
 
         {/* App Store Button */}
         <Button size="lg" className="flex items-center gap-2" onClick={() => navigate('/app-store')}>

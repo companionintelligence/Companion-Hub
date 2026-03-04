@@ -26,12 +26,6 @@ export const CustomAppDetailsPage = () => {
   const [searchParams] = useSearchParams();
   const [bust, setBust] = useState(searchParams.get('bust'));
 
-  if (getApp.isLoading || !getApp.data) {
-    return <PageLoadingSpinner />;
-  }
-
-  const { info, app, metadata } = getApp.data;
-
   const imageUrl = new URL(`/api/marketplace/apps/${params.appId}:_user/image`, window.location.origin);
 
   const uploadImage = useMutation({
@@ -52,6 +46,12 @@ export const CustomAppDetailsPage = () => {
       body: { image: file },
     });
   };
+
+  if (getApp.isLoading || !getApp.data) {
+    return <PageLoadingSpinner />;
+  }
+
+  const { info, app, metadata } = getApp.data;
 
   if (bust) {
     imageUrl.searchParams.set('t', bust);
