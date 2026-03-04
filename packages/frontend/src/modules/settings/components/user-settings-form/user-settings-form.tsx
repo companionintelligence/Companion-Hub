@@ -18,7 +18,7 @@ import { AdvancedSettingsModal } from '../advanced-settings-modal/advanced-setti
 import './user-settings-form.css';
 import { Alert, AlertDescription, AlertHeading, AlertIcon } from '@/components/ui/Alert/Alert';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/Select';
-import { ColorSelector, THEME_COLOR_ENUM, type ThemeColor } from '../color-selector/color-selector';
+import { THEME_COLOR_ENUM } from '../color-selector/color-selector';
 import { THEME_BASE_ENUM, type ThemeBase, ThemeBaseSelector } from '../theme-base-selector/theme-base-selector';
 import { TimeZoneSuspense } from '@/components/timezone-selector/timezone.suspense';
 
