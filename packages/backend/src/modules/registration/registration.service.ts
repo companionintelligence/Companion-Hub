@@ -346,9 +346,10 @@ export class RegistrationService implements OnApplicationBootstrap {
       // Hub route is managed by CI-Cloud's /devices/register — no syncState needed here.
       // triggerCloudflareSync in app-lifecycle.service.ts includes the Hub on every sync.
 
-      // Wait for DNS resolution before returning
-      this.logger.info(`Waiting for DNS resolution on https://${domain}...`);
-      const maxRetries = 60 * 10; // 10 minutes
+      // Verify tunnel connectivity (best-effort, don't block registration)
+      this.logger.info(`Checking tunnel connectivity at https://${domain}...`);
+      const maxRetries = 60; // 1 minute
+      let tunnelReachable = false;
       for (let i = 0; i < maxRetries; i++) {
         try {
           const controller = new AbortController();
@@ -365,6 +366,7 @@ export class RegistrationService implements OnApplicationBootstrap {
 
           if (response.ok) {
             this.logger.info(`DNS resolved and Hub is reachable at https://${domain}`);
+            tunnelReachable = true;
             break;
           }
           this.logger.debug(`Hub reachable but returned status ${response.status}`);
@@ -375,6 +377,11 @@ export class RegistrationService implements OnApplicationBootstrap {
         }
         await new Promise((resolve) => setTimeout(resolve, 1000));
         if (i > 0 && i % 10 === 0) this.logger.info(`Still waiting for DNS resolution... attempt ${i}/${maxRetries}`);
+      }
+      if (!tunnelReachable) {
+        this.logger.warn(
+          `Tunnel not yet reachable at https://${domain} after ${maxRetries}s — DNS may still be propagating. This is normal for first-time setup.`,
+        );
       }
     } catch (error) {
       this.logger.error(`Error setting up organization infrastructure: ${error}`);
