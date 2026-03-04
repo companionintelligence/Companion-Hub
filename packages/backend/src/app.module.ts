@@ -39,6 +39,7 @@ import { ArkValidationPipe } from 'nestjs-arktype';
 import { CustomAppsModule } from './modules/custom-apps/custom-apps.module';
 import { RegistrationModule } from './modules/registration/registration.module';
 import { RegistryModule } from './utils/registry/registry.module';
+import { SystemUpdateModule } from './modules/system-update/system-update.module';
 
 const imports: (DynamicModule | typeof I18nModule)[] = [
   SentryModule.forRoot(),
@@ -70,6 +71,7 @@ const imports: (DynamicModule | typeof I18nModule)[] = [
   GithubModule,
   RegistryModule,
   CustomAppsModule,
+  SystemUpdateModule,
 ];
 
 const { NODE_ENV } = process.env;
