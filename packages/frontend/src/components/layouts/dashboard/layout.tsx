@@ -1,5 +1,5 @@
 import { Header } from '@/components/header/header';
-import { type PropsWithChildren, useEffect, useRef, useState } from 'react';
+import { type PropsWithChildren, useEffect, useRef } from 'react';
 import semver from 'semver';
 import { useAppContext } from '@/context/app-context';
 import { useUserContext } from '@/context/user-context';
@@ -22,19 +22,10 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
   const location = useLocation();
   const prevPathRef = useRef(location.pathname);
   const { isLoggedIn } = useUserContext();
-  const [isDeviceRegistered, setIsDeviceRegistered] = useState<boolean | null>(null);
 
   useEffect(() => {
     prevPathRef.current = location.pathname;
   }, [location.pathname]);
-
-  // Check device registration status on mount
-  useEffect(() => {
-    fetch('/api/registration/status')
-      .then((res) => res.json())
-      .then((data) => setIsDeviceRegistered(data.registered ?? true))
-      .catch(() => setIsDeviceRegistered(true)); // On error, assume registered to avoid blocking
-  }, []);
 
   // Version check logic
   let isLatest = false;
@@ -46,11 +37,6 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
 
   if (version.current === 'nightly') {
     isLatest = true;
-  }
-
-  // Redirect to device registration if device not registered
-  if (isDeviceRegistered === false) {
-    return <Navigate to="/device-registration" replace />;
   }
 
   // Redirect to onboarding if not completed
