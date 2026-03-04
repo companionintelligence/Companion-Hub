@@ -71,7 +71,7 @@ describe('RegistrationService', () => {
     });
   });
 
-  describe('checkRegistrationWithCloud — port in registration body', () => {
+  describe('checkRegistrationWithCloud — polling disabled', () => {
     beforeEach(() => {
       process.env.DEVICE_ID = 'test-device';
       configService.getConfig.mockReturnValue({
@@ -88,82 +88,27 @@ describe('RegistrationService', () => {
       delete process.env.API_PORT;
     });
 
-    it('MUST send port: 9091 in registration body when LOCAL=true', async () => {
-      process.env.LOCAL = 'true';
-      delete process.env.API_PORT;
-
-      const mockFetch = vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          device_id: 'test',
-          status: 'registered',
-          organization_name: 'test',
-          slug: 'test',
-          tunnel_id: 't1',
-          tunnel_token: 'tk1',
-          subdomain: 'sub1',
-        }),
-      });
+    it('MUST return false without calling fetch (polling disabled, use web redirect flow)', async () => {
+      const mockFetch = vi.fn();
       global.fetch = mockFetch as any;
 
-      await (service as any).checkRegistrationWithCloud();
+      const result = await (service as any).checkRegistrationWithCloud();
 
-      expect(mockFetch).toHaveBeenCalled();
-      const fetchCall = mockFetch.mock.calls[0];
-      const body = JSON.parse(fetchCall[1].body);
-      expect(body.port).toBe(9091);
+      expect(result).toBe(false);
+      expect(mockFetch).not.toHaveBeenCalled();
     });
 
-    it('MUST send port: API_PORT value when LOCAL is not true', async () => {
-      delete process.env.LOCAL;
-      process.env.API_PORT = '4000';
+    it('MUST return true when ciCloudApiUrl is not configured', async () => {
+      configService.getConfig.mockReturnValue({
+        ciCloudApiUrl: '',
+        ciHubOrganizationId: 'org-123',
+        ciHubApiKey: 'key-123',
+        userSettings: { domain: 'example.com' },
+      } as any);
 
-      const mockFetch = vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          device_id: 'test',
-          status: 'registered',
-          organization_name: 'test',
-          slug: 'test',
-          tunnel_id: 't1',
-          tunnel_token: 'tk1',
-          subdomain: 'sub1',
-        }),
-      });
-      global.fetch = mockFetch as any;
+      const result = await (service as any).checkRegistrationWithCloud();
 
-      await (service as any).checkRegistrationWithCloud();
-
-      expect(mockFetch).toHaveBeenCalled();
-      const fetchCall = mockFetch.mock.calls[0];
-      const body = JSON.parse(fetchCall[1].body);
-      expect(body.port).toBe(4000);
-    });
-
-    it('MUST default to port 3000 when API_PORT is not set and LOCAL is not true', async () => {
-      delete process.env.LOCAL;
-      delete process.env.API_PORT;
-
-      const mockFetch = vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          device_id: 'test',
-          status: 'registered',
-          organization_name: 'test',
-          slug: 'test',
-          tunnel_id: 't1',
-          tunnel_token: 'tk1',
-          subdomain: 'sub1',
-        }),
-      });
-      global.fetch = mockFetch as any;
-
-      await (service as any).checkRegistrationWithCloud();
-
-      expect(mockFetch).toHaveBeenCalled();
-      const fetchCall = mockFetch.mock.calls[0];
-      const body = JSON.parse(fetchCall[1].body);
-      expect(body.port).toBe(3000);
+      expect(result).toBe(true);
     });
   });
 });
