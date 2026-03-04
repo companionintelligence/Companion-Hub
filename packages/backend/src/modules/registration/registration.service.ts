@@ -16,7 +16,7 @@ export class RegistrationService implements OnApplicationBootstrap {
     private readonly logger: LoggerService,
     @Inject(forwardRef(() => CloudflareClientService)) private readonly cloudflareClientService: CloudflareClientService,
     private readonly deviceRegistrationRepository: DeviceRegistrationRepository,
-    private readonly _repoQueue: RepoEventsQueue,
+    readonly _repoQueue: RepoEventsQueue,
   ) {}
 
   async onApplicationBootstrap() {
