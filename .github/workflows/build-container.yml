@@ -111,7 +111,7 @@ jobs:
         run: |
           PORTAL="${{ steps.tags.outputs.portal_registry }}"
           TAG="${{ steps.tags.outputs.docker_tag }}"
-          GHCR_IMAGE="ghcr.io/${{ github.repository }}:${TAG}"
+          GHCR_IMAGE="ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]'):${TAG}"
 
           echo "Logging in to ${PORTAL}..."
           crane auth login "${PORTAL}" -u "${PORTAL_USER}" -p "${PORTAL_PASS}"
