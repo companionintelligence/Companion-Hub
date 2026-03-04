@@ -585,21 +585,24 @@ export class RegistrationService implements OnApplicationBootstrap {
         };
       }
 
-      // Setup organization infrastructure (Cloudflare tunnel and DNS)
-      // Use the tunnel_id if provided by CI Cloud, otherwise create a new one
-      await this.setupOrganizationInfrastructure(data.organizationId, {
-        organization_name: data.organizationName,
-        tunnel_id: data.tunnelId,
-        tunnel_token: data.tunnelToken,
-        subdomain: incomingSubdomain,
-        slug: data.slug,
-      });
-      // Mark as registered
+      // Mark as registered immediately so the frontend can redirect
       this._isRegistered = true;
       if (this.checkInterval) {
         clearInterval(this.checkInterval);
         this.checkInterval = null;
       }
+
+      // Setup organization infrastructure (Cloudflare tunnel and DNS)
+      // Fire-and-forget: don't block the callback response while waiting for DNS/tunnel
+      this.setupOrganizationInfrastructure(data.organizationId, {
+        organization_name: data.organizationName,
+        tunnel_id: data.tunnelId,
+        tunnel_token: data.tunnelToken,
+        subdomain: incomingSubdomain,
+        slug: data.slug,
+      }).catch((err) => {
+        this.logger.error('Background infrastructure setup failed:', err);
+      });
 
       this.logger.info(`Device registration completed via callback: organization=${data.organizationId}, subdomain=${data.subdomain}`);
 
