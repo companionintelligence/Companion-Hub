@@ -63,7 +63,7 @@ describe('SystemUpdateService', () => {
       const mockProcess = {
         stdout: { on: vi.fn() },
         stderr: { on: vi.fn() },
-        on: vi.fn((event: string, cb: Function) => {
+        on: vi.fn((event: string, cb: (...args: unknown[]) => void) => {
           if (event === 'close') cb(0);
         }),
         unref: vi.fn(),

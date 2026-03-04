@@ -24,7 +24,9 @@ export const GeneralActionsContainer = () => {
     fetch('/api/system/update/auto-updates', { credentials: 'include' })
       .then((res) => res.json())
       .then((data) => setAutoUpdates(data.enabled))
-      .catch(() => {});
+      .catch(() => {
+        // Silently ignore — auto-update toggle defaults to off if fetch fails
+      });
   }, []);
 
   const handleUpdate = useCallback(async () => {

@@ -9,7 +9,6 @@ import { RegistryService } from '@/utils/registry/registry.service';
 
 @Injectable()
 export class SystemUpdateService implements OnApplicationBootstrap {
-  private autoUpdateInterval: ReturnType<typeof setInterval> | null = null;
   private static readonly CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
   constructor(
@@ -77,8 +76,11 @@ export class SystemUpdateService implements OnApplicationBootstrap {
 
   private async runComposeCommand(command: string[]): Promise<void> {
     const [bin, ...args] = command;
+    if (!bin) {
+      throw new Error('Empty command');
+    }
     return new Promise((resolve, reject) => {
-      const cmd = spawn(bin!, args, { stdio: 'pipe' });
+      const cmd = spawn(bin, args, { stdio: 'pipe' });
       const stderr: string[] = [];
       cmd.stderr.on('data', (data: Buffer) => {
         this.logger.debug(`compose: ${String(data).trim()}`);
