@@ -1,19 +1,21 @@
 import { getAllAppStoresOptions, pullAppStoresMutation } from '@/api-client/@tanstack/react-query.gen';
 import { Alert, AlertDescription, AlertHeading, AlertIcon } from '@/components/ui/Alert/Alert';
 import { AlertCircle, LayoutGrid, RefreshCw } from 'lucide-react';
-import { useMutation, useQueryClient, useSuspenseQuery } from '@tanstack/react-query';
+import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { AppStoresTable } from '../components/app-stores-table/app-stores-table';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import toast from 'react-hot-toast';
+import { LoadingSpinner } from '@/components/ui/LoadingSpinner/loading-spinner';
 
 export const AppStoresContainer = () => {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
 
-  const { data } = useSuspenseQuery({
+  const { data, isLoading } = useQuery({
     ...getAllAppStoresOptions(),
+    staleTime: 30_000,
   });
 
   const pullMutation = useMutation({
@@ -26,6 +28,10 @@ export const AppStoresContainer = () => {
       toast.error(t('APP_STORES_UPDATE_ERROR'));
     },
   });
+
+  if (isLoading || !data) {
+    return <LoadingSpinner />;
+  }
 
   return (
     <div className="space-y-6">

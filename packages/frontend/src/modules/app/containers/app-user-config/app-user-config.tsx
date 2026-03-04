@@ -3,7 +3,7 @@ import { Card, CardContent } from '@/components/ui/Card';
 import { Switch } from '@/components/ui/Switch';
 import { copilot } from '@uiw/codemirror-theme-copilot';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { useMutation, useSuspenseQuery } from '@tanstack/react-query';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import CodeMirror from '@uiw/react-codemirror';
 import { yaml } from '@codemirror/lang-yaml';
 import { Alert, AlertDescription, AlertHeading, AlertIcon } from '@/components/ui/Alert/Alert';
@@ -19,6 +19,7 @@ import {
 } from '@/api-client/@tanstack/react-query.gen';
 import toast from 'react-hot-toast';
 import type { TranslatableError } from '@/types/error.types';
+import { LoadingSpinner } from '@/components/ui/LoadingSpinner/loading-spinner';
 
 interface AppUserConfigProps {
   info: AppInfo;
@@ -30,9 +31,14 @@ interface AppUserConfigProps {
 export const AppUserConfig = (props: AppUserConfigProps) => {
   const { info } = props;
 
-  const { data } = useSuspenseQuery({
+  const { data, isLoading } = useQuery({
     ...getUserConfigOptions({ path: { urn: info.urn } }),
+    staleTime: 30_000,
   });
+
+  if (isLoading || !data) {
+    return <LoadingSpinner />;
+  }
 
   return (
     <AppUserConfigEditors

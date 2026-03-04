@@ -4,25 +4,31 @@ import { AppActions } from '../containers/app-actions/app-actions';
 import { AppStatus } from '../components/app-status/app-status';
 import { CustomAppLogo } from '@/components/custom-app-logo/custom-app-logo';
 import { Card, CardHeader } from '@/components/ui/Card';
-import { useMutation, useSuspenseQuery } from '@tanstack/react-query';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import { getAppOptions, uploadAppImageMutation } from '@/api-client/@tanstack/react-query.gen';
 import { useAppContext } from '@/context/app-context';
 import { useTranslation } from 'react-i18next';
 import toast from 'react-hot-toast';
 import type { TranslatableError } from '@/types/error.types';
 import { useState } from 'react';
+import { PageLoadingSpinner } from '@/components/ui/LoadingSpinner/loading-spinner';
 
 export const CustomAppDetailsPage = () => {
   const params = useParams<{ appId: string }>();
   const { t } = useTranslation();
 
-  const getApp = useSuspenseQuery({
+  const getApp = useQuery({
     ...getAppOptions({ path: { urn: `${params.appId}:_user` } }),
+    staleTime: 30_000,
   });
 
   const { userSettings } = useAppContext();
   const [searchParams] = useSearchParams();
   const [bust, setBust] = useState(searchParams.get('bust'));
+
+  if (getApp.isLoading || !getApp.data) {
+    return <PageLoadingSpinner />;
+  }
 
   const { info, app, metadata } = getApp.data;
 
