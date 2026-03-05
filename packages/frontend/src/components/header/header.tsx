@@ -48,7 +48,7 @@ export const Header = (props: HeaderProps) => {
 
   // Common NavLink classes logic
   const getNavLinkClass = ({ isActive }: { isActive: boolean }) =>
-    clsx(buttonVariants({ variant: 'ghost', size: 'sm' }), isActive ? 'bg-accent text-accent-foreground btn-active' : '');
+    clsx(buttonVariants({ variant: 'ghost', size: 'sm' }), 'cursor-pointer', isActive ? 'bg-accent text-accent-foreground btn-active' : '');
 
   return (
     <header className="fixed top-4 left-1/2 z-50 flex h-14 w-[95%] md:w-1/2 -translate-x-1/2 items-center justify-between gap-2 rounded-full border bg-background/80 px-4 shadow-md backdrop-blur-md">
