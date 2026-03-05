@@ -15,19 +15,16 @@ const routes: Record<string, (url: URL) => Response> = {
   'GET /v2/': () => json({}),
 
   // Registry tag list
-  'GET /v2/ci-os-hub/tags/list': () =>
-    json({ name: 'ci-os-hub', tags: ['1.0.0'] }),
+  'GET /v2/ci-os-hub/tags/list': () => json({ name: 'ci-os-hub', tags: ['1.0.0'] }),
 
   // Store metadata (app store list)
   'GET /api/store': () => json([]),
 
   // Device registration status
-  'GET /api/devices/registration-status': () =>
-    json({ registered: false }),
+  'GET /api/devices/registration-status': () => json({ registered: false }),
 
   // Device register (POST)
-  'POST /api/devices/register': () =>
-    json({ success: true, device_id: 'test-device' }),
+  'POST /api/devices/register': () => json({ success: true, device_id: 'test-device' }),
 };
 
 function json(body: unknown, status = 200): Response {
