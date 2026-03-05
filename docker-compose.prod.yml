@@ -153,7 +153,7 @@ services:
     image: cloudflare/cloudflared:latest
     container_name: ${CLOUDFLARED_CONTAINER_NAME:-cloudflared}
     restart: unless-stopped
-    command: tunnel run --token-file /home/nonroot/.cloudflared/token
+    command: tunnel --protocol http2 run --token-file /home/nonroot/.cloudflared/token
     volumes:
       - ./tunnel:/home/nonroot/.cloudflared:ro
     networks:

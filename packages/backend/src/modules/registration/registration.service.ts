@@ -384,13 +384,37 @@ export class RegistrationService implements OnApplicationBootstrap {
       }
 
       // Sync hub domain to CI-Cloud so it can create DNS and tunnel routes
-      // Hub route is managed by CI-Cloud's /devices/register — no syncState needed here.
-      // triggerCloudflareSync in app-lifecycle.service.ts includes the Hub on every sync.
+      // The hub needs to be registered as an "app" so CI-Cloud knows to route the domain
+      if (tunnelId && subdomain) {
+        try {
+          const hubSubdomain = subdomain; // e.g., "1-grok"
+          const hubAppInfo: AppInfo = {
+            name: 'OS Hub',
+            subdomain: hubSubdomain,
+            localPort: 5002,
+            protocol: 'http' as const,
+            hostname: 'host.docker.internal',
+            originServerName: domain,
+            routeType: 'hub', // Prevents CI-Cloud from overwriting the Hub DB record during sync
+          };
 
-      // Verify tunnel connectivity (best-effort, don't block registration)
-      this.logger.info(`Checking tunnel connectivity at https://${domain}...`);
-      const maxRetries = 60; // 1 minute
-      let tunnelReachable = false;
+          this.logger.info(`Syncing hub domain to CI-Cloud: ${domain}`);
+          const syncSuccess = await this.cloudflareClientService.syncState(organizationId, [hubAppInfo], tunnelId);
+          if (syncSuccess) {
+            this.logger.info('Successfully synced hub domain to CI-Cloud');
+          } else {
+            this.logger.warn('Failed to sync hub domain to CI-Cloud - DNS/tunnel routes may not be configured');
+          }
+        } catch (error) {
+          this.logger.error(`Error syncing hub domain to CI-Cloud: ${error instanceof Error ? error.message : String(error)}`);
+          // Don't fail registration if sync fails - tunnel is still initialized
+        }
+      }
+
+      // Wait for DNS resolution before returning
+      // This ensures that when the user is redirected, the domain is likely working
+      this.logger.info(`Waiting for DNS resolution on https://${domain}...`);
+      const maxRetries = 60 * 10; // 10 minutes
       for (let i = 0; i < maxRetries; i++) {
         try {
           const controller = new AbortController();
@@ -594,6 +618,7 @@ export class RegistrationService implements OnApplicationBootstrap {
     organizationName: string;
     slug: string;
     subdomain: string;
+    domain?: string;
     tunnelId: string;
     tunnelToken: string;
     apiKey?: string;
@@ -619,6 +644,12 @@ export class RegistrationService implements OnApplicationBootstrap {
       if (data.organizationId) {
         this.logger.info('Saving CI Hub Organization ID from registration callback');
         await this.config.setUserSettings({ ciHubOrganizationId: data.organizationId });
+      }
+
+      // Persist root domain so useUserContext().domain is always populated
+      if (data.domain) {
+        this.logger.info(`Saving root domain from registration callback: ${data.domain}`);
+        await this.config.setUserSettings({ domain: data.domain });
       }
 
       // Use the subdomain provided by CI Cloud (already validated on CI Cloud side)

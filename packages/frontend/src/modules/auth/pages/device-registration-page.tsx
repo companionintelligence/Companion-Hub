@@ -16,6 +16,9 @@ export default function DeviceRegistrationPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // domain can come from CI Cloud callback params or the Hub's existing user settings
+  const callbackDomain = searchParams.get('domain');
+
   // Check if this is a callback from CI Cloud
   const isCallback =
     searchParams.has('device_id') &&
@@ -53,12 +56,19 @@ export default function DeviceRegistrationPage() {
             throw new Error(`Missing required registration parameters: ${missing.join(', ')}`);
           }
 
+          // Prefer domain from CI Cloud callback over local Hub config
+          const effectiveDomain = (callbackDomain || domain || '').trim();
+          if (!effectiveDomain) {
+            throw new Error('Missing domain: not provided by CI Cloud and not configured on this Hub.');
+          }
+
           const params: Record<string, string> = {
             device_id,
             organization_id,
             organization_name,
             slug,
             subdomain,
+            domain: effectiveDomain,
             api_key,
             tunnel_id,
             tunnel_token,
@@ -75,20 +85,10 @@ export default function DeviceRegistrationPage() {
             toast.success('Device registered successfully!');
             setIsRegistered(true);
 
-            // Redirect to the new subdomain
-            // Default to domain from config if provided
-            // Note: In production this should align with the cloud domain
-            const subdomain = params.subdomain;
-            if (subdomain) {
-              const targetUrl = `https://${subdomain}.${domain}`;
-              setTimeout(() => {
-                window.location.href = targetUrl;
-              }, 1500);
-            } else {
-              setTimeout(() => {
-                navigate('/');
-              }, 1500);
-            }
+            const targetUrl = `https://${subdomain}.${effectiveDomain}`;
+            setTimeout(() => {
+              window.location.href = targetUrl;
+            }, 1500);
           } else {
             setError(data.message || 'Registration failed');
             toast.error(data.message || 'Registration failed');
@@ -146,7 +146,7 @@ export default function DeviceRegistrationPage() {
     };
 
     checkStatus();
-  }, [navigate, searchParams, isCallback, domain]);
+  }, [navigate, searchParams, isCallback, domain, callbackDomain]);
 
   const handleRedirectToCICloud = () => {
     if (registrationUrl) {
