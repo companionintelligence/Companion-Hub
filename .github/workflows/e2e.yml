@@ -76,6 +76,13 @@ jobs:
 
       - run: bunx playwright install --with-deps chromium
 
+      - name: Start mock portal
+        run: |
+          bun run e2e/mock-portal/server.ts &
+          echo "MOCK_PID=$!" >> $GITHUB_ENV
+          sleep 2
+          curl -sf http://localhost:4444/v2/ || echo "Warning: mock portal not responding"
+
       - name: Run E2E tests
         run: bun run test:e2e:ci
         env:
@@ -90,9 +97,9 @@ jobs:
           RABBITMQ_USERNAME: tipi
           RABBITMQ_PASSWORD: tipi
           JWT_SECRET: e2e-test-secret
-          CI_CLOUD_URL: https://portal.companionintelligence.com
-          CI_CLOUD_API_URL: https://portal.companionintelligence.com/api
-          CI_CLOUD_FRONTEND_URL: https://portal.companionintelligence.com
+          CI_CLOUD_URL: http://localhost:4444
+          CI_CLOUD_API_URL: http://localhost:4444/api
+          CI_CLOUD_FRONTEND_URL: http://localhost:4444
           DOMAIN: ci.computer
           LOCAL_DOMAIN: tipi.lan
           ROOT_FOLDER_HOST: /tmp/runtipi-e2e
