@@ -4,11 +4,12 @@ import { Header } from '@/components/header/header';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/DropdownMenu';
 import { AppTile } from '@/modules/app/components/app-tile/app-tile';
 import { Lock, LockOpen } from 'lucide-react';
-import { useSuspenseQuery } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import '@/styles/app-grid.css';
 import { EmptyPage } from '@/components/empty-page/empty-page';
 import { useUserContext } from '@/context/user-context';
 import { GuestLinkTile } from '../components/guest-link-tile';
+import { LoadingSpinner } from '@/components/ui/LoadingSpinner/loading-spinner';
 
 const Tile = ({ data, localDomain, sslPort }: { data: GuestAppsDto['installed'][number]; localDomain: string; sslPort: number }) => {
   const { info, app } = data;
@@ -75,26 +76,29 @@ const Tile = ({ data, localDomain, sslPort }: { data: GuestAppsDto['installed'][
 export const GuestDashboard = () => {
   const { localDomain, sslPort } = useUserContext();
 
-  const { data: appsData } = useSuspenseQuery({
+  const { data: appsData, isLoading: appsLoading } = useQuery({
     ...getGuestAppsOptions(),
+    staleTime: 30_000,
   });
 
-  const { data: linksData } = useSuspenseQuery({
+  const { data: linksData, isLoading: linksLoading } = useQuery({
     ...getGuestLinksOptions(),
+    staleTime: 30_000,
   });
 
-  const hasContent = appsData.installed.length > 0 || linksData.links.length > 0;
+  const hasContent = (appsData?.installed?.length ?? 0) > 0 || (linksData?.links?.length ?? 0) > 0;
 
   return (
     <div className="flex min-h-screen flex-col bg-background">
       <Header isLoggedIn={false} />
       <div className="flex flex-1 flex-col pt-24 px-4 container mx-auto pb-8">
-        {!hasContent && <EmptyPage title="GUEST_DASHBOARD_NO_APPS" subtitle="GUEST_DASHBOARD_NO_APPS_SUBTITLE" />}
+        {!hasContent && !appsLoading && !linksLoading && <EmptyPage title="GUEST_DASHBOARD_NO_APPS" subtitle="GUEST_DASHBOARD_NO_APPS_SUBTITLE" />}
+        {(appsLoading || linksLoading) && <LoadingSpinner />}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-          {appsData.installed.map((appData) => {
+          {appsData?.installed.map((appData) => {
             return <Tile key={appData.app.id} data={appData} localDomain={localDomain} sslPort={sslPort} />;
           })}
-          {linksData.links.map((link) => (
+          {linksData?.links.map((link) => (
             <GuestLinkTile key={link.id} link={link} />
           ))}
         </div>
