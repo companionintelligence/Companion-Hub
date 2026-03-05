@@ -62,7 +62,7 @@ function OnboardingWizard() {
                   setDetectedServices(services);
                   setCurrentStep(1);
                 }}
-                onSkip={() => setCurrentStep(1)}
+                onSkip={() => setCurrentStep(4)}
               />
             </StepContent>
 
