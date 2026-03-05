@@ -52,5 +52,5 @@ Bun.serve({
   },
 });
 
-// biome-ignore lint/suspicious/noConsole: startup log
+// biome-ignore lint/suspicious/noConsole: startup log for CI visibility
 console.log(`Mock portal listening on http://localhost:${PORT}`);
