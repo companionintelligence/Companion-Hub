@@ -15,6 +15,7 @@ const NetworkSettingsContainer = lazy(() =>
 const SystemInspectorContainer = lazy(() =>
   import('../containers/system-inspector').then((module) => ({ default: module.SystemInspectorContainer })),
 );
+const GeneralActionsContainer = lazy(() => import('../containers/general-actions').then((module) => ({ default: module.GeneralActionsContainer })));
 
 export default () => {
   const { t } = useTranslation();
@@ -85,7 +86,10 @@ export default () => {
               </TabsContent>
               <TabsContent value="system">
                 <Suspense fallback={<div>Loading...</div>}>
-                  <SystemInspectorContainer />
+                  <GeneralActionsContainer />
+                  <div className="mt-6">
+                    <SystemInspectorContainer />
+                  </div>
                 </Suspense>
               </TabsContent>
               <TabsContent value="logs">
