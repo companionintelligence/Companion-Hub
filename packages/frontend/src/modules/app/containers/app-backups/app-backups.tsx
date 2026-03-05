@@ -14,7 +14,7 @@ import { TablePagination } from '@/components/ui/TablePagination/TablePagination
 import { useDisclosure } from '@/lib/hooks/use-disclosure';
 import type { AppBackup, AppInfo, AppStatus } from '@/types/app.types';
 import type { TranslatableError } from '@/types/error.types';
-import { useMutation, useSuspenseQuery } from '@tanstack/react-query';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import React from 'react';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
@@ -22,6 +22,7 @@ import { BackupAppDialog } from '../../components/dialogs/backup-app-dialog/back
 import { DeleteAppBackupDialog } from '../../components/dialogs/delete-backup-dialog/delete-backup-dialog';
 import { RestoreAppDialog } from '../../components/dialogs/restore-app-dialog/restore-app-dialog';
 import { UploadBackupDialog } from '../../components/dialogs/upload-backup-dialog/upload-backup-dialog';
+import { LoadingSpinner } from '@/components/ui/LoadingSpinner/loading-spinner';
 
 type Props = {
   info: AppInfo;
@@ -38,8 +39,9 @@ export const AppBackups = ({ info, status }: Props) => {
   const deleteBackupModalDisclosure = useDisclosure();
   const uploadModalDisclosure = useDisclosure();
 
-  const { data } = useSuspenseQuery({
+  const { data, isLoading } = useQuery({
     ...getAppBackupsOptions({ path: { urn: info.urn }, query: { page, pageSize: 5 } }),
+    staleTime: 30_000,
   });
 
   const backupApp = useMutation({
@@ -111,6 +113,10 @@ export const AppBackups = ({ info, status }: Props) => {
     restoreAppBackup.isPending ||
     deleteAppBackup.isPending ||
     uploadBackup.isPending;
+
+  if (isLoading || !data) {
+    return <LoadingSpinner />;
+  }
 
   return (
     <div>

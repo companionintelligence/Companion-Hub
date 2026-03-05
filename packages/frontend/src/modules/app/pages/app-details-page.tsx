@@ -1,12 +1,13 @@
 import { getAppOptions } from '@/api-client/@tanstack/react-query.gen';
 import { useAppContext } from '@/context/app-context';
-import { useSuspenseQuery } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { redirect, useParams } from 'react-router';
 import { AppStatus } from '../components/app-status/app-status';
 import { AppActions } from '../containers/app-actions/app-actions';
 import { AppDetailsTabs } from '../containers/app-details-tabs/app-details-tabs';
 import type { Route } from './+types/app-details-page';
 import { GlassContainer } from '@/components/ui/glass-container';
+import { PageLoadingSpinner } from '@/components/ui/LoadingSpinner/loading-spinner';
 
 export async function clientLoader({ params }: Route.ClientLoaderArgs) {
   const { storeId } = params;
@@ -19,11 +20,16 @@ export async function clientLoader({ params }: Route.ClientLoaderArgs) {
 export default () => {
   const { appId, storeId } = useParams<{ appId: string; storeId: string }>();
 
-  const getApp = useSuspenseQuery({
+  const getApp = useQuery({
     ...getAppOptions({ path: { urn: `${appId}:${storeId}` } }),
+    staleTime: 30_000,
   });
 
   const { userSettings } = useAppContext();
+
+  if (getApp.isLoading || !getApp.data) {
+    return <PageLoadingSpinner />;
+  }
 
   const { info, app, metadata } = getApp.data;
   const logoUrl = info?.urn ? `/api/marketplace/apps/${info.urn}/image` : '/app-not-found.jpg';

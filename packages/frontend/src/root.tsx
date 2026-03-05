@@ -51,53 +51,58 @@ export const links: Route.LinksFunction = () => [
 export async function clientLoader({ request }: Route.ActionArgs) {
   const url = new URL(request.url);
 
-  // Check device registration status
-  try {
-    // We use the internal API URL if server-side rendering, or relative path if client-side
-    // Since this is clientLoader, it runs on client (mostly) or server?
-    // React Router v7 loaders run on server if configured?
-    // Assuming client-side fetch for now or proxy.
-    const regRes = await fetch('/api/registration/status');
-    if (regRes.ok) {
-      const regData = await regRes.json();
-      if (!regData.registered) {
-        // Allow register/login/reset pages through so users can create accounts first
-        const allowedPaths = ['/device-registration', '/register', '/login', '/reset-password'];
-        if (!allowedPaths.some((p) => url.pathname.startsWith(p))) {
-          // On root path, check if users exist first — fresh installs need registration before device setup
-          if (url.pathname === '/') {
-            const user = await userContext();
-            if (!user.data || !user.data.isConfigured) {
-              return redirect('/register');
+  // Check cached registration status (only 'true' is cached)
+  const cachedRegistered = sessionStorage.getItem('device-registered') === 'true';
+
+  // Fire both requests in parallel for speed
+  const [regResult, userResult] = await Promise.all([
+    cachedRegistered
+      ? Promise.resolve({ ok: true, registered: true })
+      : fetch('/api/registration/status')
+          .then(async (res) => {
+            if (!res.ok) return { ok: false, registered: false };
+            const data = await res.json();
+            // Cache only the registered=true state
+            if (data.registered) {
+              sessionStorage.setItem('device-registered', 'true');
             }
-          }
-          return redirect('/device-registration');
+            return { ok: true, registered: data.registered };
+          })
+          .catch(() => ({ ok: false, registered: false })),
+    userContext(),
+  ]);
+
+  // Registration redirect logic
+  if (regResult.ok && !regResult.registered) {
+    const allowedPaths = ['/device-registration', '/register', '/login', '/reset-password'];
+    if (!allowedPaths.some((p) => url.pathname.startsWith(p))) {
+      if (url.pathname === '/') {
+        if (!userResult.data || !userResult.data.isConfigured) {
+          return redirect('/register');
         }
-        return null;
       }
-      if (url.pathname === '/device-registration') {
-        return redirect('/');
-      }
+      return redirect('/device-registration');
     }
-  } catch (e) {
-    console.error('Failed to check registration status', e);
+    return null;
   }
 
-  const user = await userContext();
+  if (regResult.ok && regResult.registered && url.pathname === '/device-registration') {
+    return redirect('/');
+  }
 
   if (url.pathname !== '/') {
-    return user;
+    return userResult;
   }
 
-  if (!user.data) {
+  if (!userResult.data) {
     return redirect('/register');
   }
 
-  if (!user.data.isConfigured) {
+  if (!userResult.data.isConfigured) {
     return redirect('/register');
   }
 
-  if (user.data?.isLoggedIn || user.data?.isGuestDashboardEnabled) {
+  if (userResult.data?.isLoggedIn || userResult.data?.isGuestDashboardEnabled) {
     return redirect('/dashboard');
   }
 
