@@ -30,12 +30,12 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
   // Version check logic
   let isLatest = false;
   try {
-    isLatest = (semver.valid(version.current) && semver.valid(version.latest) && semver.gte(version.current, version.latest)) || false;
+    isLatest = (semver.valid(version?.current) && semver.valid(version?.latest) && semver.gte(version.current, version.latest)) || false;
   } catch (_e) {
     // ignore semver errors
   }
 
-  if (version.current === 'nightly') {
+  if (version?.current === 'nightly') {
     isLatest = true;
   }
 

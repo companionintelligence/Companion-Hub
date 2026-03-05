@@ -19,6 +19,11 @@ const USER_CONTEXT_DEFAULTS: UserContextDto = {
   domain: '',
   localDomain: '',
   sslPort: 443,
+  allowErrorMonitoring: false,
+  allowAutoThemes: false,
+  themeColor: 'blue',
+  themeBase: 'gray',
+  version: { current: '0.0.0', latest: '0.0.0', body: '', releases: [] },
 } as UserContextDto;
 
 export const UserContextProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {

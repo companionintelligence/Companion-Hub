@@ -6,7 +6,7 @@ export const SentryProvider = ({ children }: PropsWithChildren) => {
   const { allowErrorMonitoring, version } = useUserContext();
 
   useEffect(() => {
-    if (allowErrorMonitoring) {
+    if (allowErrorMonitoring && version?.current) {
       console.info('Error monitoring enabled, version:', version.current);
       Sentry.init({
         release: version.current,
@@ -19,7 +19,7 @@ export const SentryProvider = ({ children }: PropsWithChildren) => {
         },
       });
     }
-  }, [allowErrorMonitoring, version.current]);
+  }, [allowErrorMonitoring, version]);
 
   return children;
 };
