@@ -46,19 +46,21 @@ export const UpdateSettingsDialog: React.FC<IProps> = ({ info, config, isOpen, o
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent>
+      <DialogContent className="max-h-[85vh] flex flex-col">
         <DialogHeader>
           <DialogTitle>{t('APP_UPDATE_SETTINGS_FORM_TITLE', { name: info.id })}</DialogTitle>
         </DialogHeader>
-        <InstallForm
-          onSubmit={(values: FormValues) => updateConfig.mutate({ path: { urn: info.urn }, body: normalizeFormValues(values) })}
-          formFields={info.form_fields}
-          info={info}
-          initialValues={{ ...config }}
-          formId={formId}
-          appStatus={status}
-          scrollable
-        />
+        <div className="flex-1 overflow-y-auto">
+          <InstallForm
+            onSubmit={(values: FormValues) => updateConfig.mutate({ path: { urn: info.urn }, body: normalizeFormValues(values) })}
+            formFields={info.form_fields}
+            info={info}
+            initialValues={{ ...config }}
+            formId={formId}
+            appStatus={status}
+            scrollable
+          />
+        </div>
         <DialogFooter>
           <InstallFormButtons loading={updateConfig.isPending} isEdit formId={formId} />
         </DialogFooter>
