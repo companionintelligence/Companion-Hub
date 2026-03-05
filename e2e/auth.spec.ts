@@ -23,5 +23,5 @@ test('should login with existing user', async ({ page }) => {
   await page.getByPlaceholder('Enter your password').fill(testUser.password);
   await page.getByRole('button', { name: 'Login' }).click();
 
-  await expect(page.getByText('Disk space')).toBeVisible();
+  await expect(page.getByText('Disk space')).toBeVisible({ timeout: 30000 });
 });

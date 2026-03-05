@@ -11,7 +11,7 @@ import { useRegistrationStatus } from '@/lib/hooks/use-registration-status';
 import { AppCard } from '@/modules/app/components/app-card/app-card';
 import { iconForCategory, colorSchemeForCategory } from '@/modules/app/helpers/table-helpers';
 import { useAppStoreState } from '@/stores/app-store';
-import { keepPreviousData, useInfiniteQuery, useSuspenseQuery, useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useInfiniteQuery, useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import clsx from 'clsx';
 import { Search, ArrowRight, ArrowLeftRight, LayoutGrid, RefreshCw } from 'lucide-react';
 import { useCallback, useEffect, useState, useMemo } from 'react';
@@ -75,8 +75,9 @@ export default () => {
     }
   }, [registrationStatus, isCheckingRegistration, registrationError]);
 
-  const { data: appStores } = useSuspenseQuery({
+  const { data: appStores } = useQuery({
     ...getEnabledAppStoresOptions(),
+    staleTime: 30_000,
   });
 
   const ciCloudStore = appStores?.appStores?.find((s) => s.name === 'CI Cloud');
