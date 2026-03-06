@@ -3,6 +3,7 @@
 exports[`App lifecycle > install app > should not delete an existing app-data folder even if the app is reinstalled 1`] = `
 {
   "/app-data/test/test2/app.env": "ROOT_FOLDER_HOST=/opt/runtipi
+NODE_ENV=production
 DOMAIN=undefined
 LOCAL_DOMAIN=undefined
 APP_PORT=9040
@@ -147,6 +148,7 @@ networks:
 exports[`App lifecycle > install app > should successfully install app and create expected directory structure 1`] = `
 {
   "/app-data/test/test/app.env": "ROOT_FOLDER_HOST=/opt/runtipi
+NODE_ENV=production
 DOMAIN=undefined
 LOCAL_DOMAIN=undefined
 APP_PORT=3041
@@ -291,6 +293,7 @@ networks:
 exports[`App lifecycle > update all apps > should update multiple apps that have newer versions available 1`] = `
 {
   "/app-data/test/app1/app.env": "ROOT_FOLDER_HOST=/opt/runtipi
+NODE_ENV=production
 DOMAIN=undefined
 LOCAL_DOMAIN=undefined
 APP_PORT=1227
@@ -311,6 +314,7 @@ APP_URL=http://127.0.0.1:1227
 ",
   "/app-data/test/app1/data": null,
   "/app-data/test/app2/app.env": "ROOT_FOLDER_HOST=/opt/runtipi
+NODE_ENV=production
 DOMAIN=undefined
 LOCAL_DOMAIN=undefined
 APP_PORT=2100
@@ -331,6 +335,7 @@ APP_URL=http://127.0.0.1:2100
 ",
   "/app-data/test/app2/data": null,
   "/app-data/test/app3/app.env": "ROOT_FOLDER_HOST=/opt/runtipi
+NODE_ENV=production
 DOMAIN=undefined
 LOCAL_DOMAIN=undefined
 APP_PORT=4868
