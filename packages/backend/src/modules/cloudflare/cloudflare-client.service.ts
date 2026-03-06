@@ -59,7 +59,7 @@ export class CloudflareClientService {
       await fs.mkdir(certsDir, { recursive: true });
 
       // Write the token to a file that cloudflared will read (configured in docker-compose)
-      await fs.writeFile(path.join(tunnelDir, 'token'), token);
+      await fs.writeFile(path.join(tunnelDir, 'token'), token, { mode: 0o644 });
       this.logger.log('Wrote tunnel token to file');
     } catch (e) {
       this.logger.error(`Failed to write tunnel files: ${e}`);

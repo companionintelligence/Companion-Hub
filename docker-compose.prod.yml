@@ -83,7 +83,7 @@ services:
       - ${RUNTIPI_USER_CONFIG_PATH:-${ROOT_FOLDER_HOST:-.internal}}/user-config:/data/user-config
       - ${RUNTIPI_BACKUPS_PATH:-${ROOT_FOLDER_HOST:-.internal}}/backups:/data/backups
       # Static
-      - ${ENV_FILE:-.env}:/data/.env:ro
+      - ${ENV_FILE:-.env}:/data/.env
       - ./.internal/cache:/cache
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ${DOCKER_CONFIG_PATH:-/root/.docker/config.json}:/root/.docker/config.json:ro

@@ -53,7 +53,7 @@ describe('CloudflareClientService', () => {
     it('should write token and ensure cloudflared is running', async () => {
       const result = await service.initializeTunnel('org-id', { tunnelId: 'tun-id', token: 'tok' });
 
-      expect(fs.writeFile).toHaveBeenCalledWith(expect.stringContaining('tunnel/token'), 'tok');
+      expect(fs.writeFile).toHaveBeenCalledWith(expect.stringContaining('tunnel/token'), 'tok', { mode: 0o644 });
       expect(dockerService.ensureContainerRunning).toHaveBeenCalledWith('cloudflared', {
         composeFile: expect.stringContaining('docker-compose.'),
         profile: 'cloudflare',
