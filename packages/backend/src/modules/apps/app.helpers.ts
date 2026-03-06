@@ -45,6 +45,11 @@ export class AppHelpers {
     const baseEnvFile = await this.filesytem.readTextFile(envFilePath);
     const envMap = this.envUtils.envStringToMap(baseEnvFile?.toString() ?? '');
 
+    // App containers must always run in production mode regardless of Hub's NODE_ENV.
+    // Hub's .env may have NODE_ENV=development which propagates via env_file and breaks
+    // apps like Rocket.Chat that try to load dev-only dependencies (e.g. pino-pretty).
+    envMap.set('NODE_ENV', 'production');
+
     const { appName, appStoreId } = extractAppUrn(appUrn);
 
     // Fetch organization info to get the correct domain
