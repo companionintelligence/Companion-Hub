@@ -375,7 +375,9 @@ export class RegistrationService implements OnApplicationBootstrap {
         throw new Error('Organization slug is required to create device registration');
       }
 
-      // Store organization info in database
+      // Store organization info in database.
+      // `hubSubdomain` is the canonical subdomain prefix for Hub routing (e.g. "core1-xyz"),
+      // assigned by CI-Cloud. It is NOT derived from `DOMAIN` / `userSettings.domain`.
       await this.deviceRegistrationRepository.createDeviceRegistration({
         id: organizationId,
         slug: orgSlug,
@@ -387,9 +389,10 @@ export class RegistrationService implements OnApplicationBootstrap {
 
       this.logger.info(`Successfully setup organization infrastructure: ${domain} (tunnel: ${tunnelId})`);
 
-      // Persist the correct domain to the data .env so it survives restarts.
-      // The data .env may have the default 'example.com' from initial generation.
-      // Prefer the domain from CI-Cloud response, fall back to the .env.local DOMAIN.
+      // Persist the correct root domain (e.g. "companionintelligence.com") to the data .env.
+      // `DOMAIN` / `userSettings.domain` is the root domain used for constructing app hostnames
+      // (e.g. "{app}-{org}.{DOMAIN}"). It is NOT used for Hub route identity — that comes from
+      // `hubSubdomain` stored in `device_registration`.
       const correctDomain = activationResult.domain || rootDomain;
       if (correctDomain && correctDomain !== 'example.com') {
         await this.config.setDomain(correctDomain);

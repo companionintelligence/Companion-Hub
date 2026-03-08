@@ -689,7 +689,10 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       );
 
       // Include the Hub in every sync so CI-Cloud preserves its tunnel route.
-      // hubSubdomain is the full prefix stored during registration (e.g. "core1-xyz")
+      // `hubSubdomain` (from device_registration) is the canonical source for Hub route identity.
+      // Do NOT use `DOMAIN` / `userSettings.domain` to derive the Hub subdomain — DOMAIN is the
+      // root domain for app hostname construction, not the Hub prefix.
+      // When hubSubdomain is null (e.g. pre-migration records), the Hub entry is omitted from sync.
       const hubSub = orgInfo.hubSubdomain;
       if (hubSub && publicDomain) {
         const orgSlug = orgInfo.slug;
