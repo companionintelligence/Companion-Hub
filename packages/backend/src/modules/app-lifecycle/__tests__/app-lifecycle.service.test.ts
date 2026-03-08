@@ -147,6 +147,7 @@ describe('AppLifecycleService', () => {
             localPort: 80,
             hostname: 'traefik',
             originServerName: 'mydevice-myorg.companionintelligence.com',
+            isHub: true,
           }),
         ]),
         'tunnel-id',
@@ -187,7 +188,7 @@ describe('AppLifecycleService', () => {
       const apps = syncCall?.[1] as any[];
 
       // Hub should be first with correct hostname
-      expect(apps[0]).toMatchObject({ name: 'OS Hub', subdomain: 'hub1', originServerName: 'hub1-acme.companionintelligence.com' });
+      expect(apps[0]).toMatchObject({ name: 'OS Hub', subdomain: 'hub1', originServerName: 'hub1-acme.companionintelligence.com', isHub: true });
       // Exposed app should follow
       expect(apps[1]).toMatchObject({ name: 'n8n', subdomain: 'n8n-abc' });
     });
