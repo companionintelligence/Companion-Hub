@@ -156,4 +156,121 @@ describe('RegistrationService', () => {
       });
     });
   });
+
+  describe('setupOrganizationInfrastructure — hubSubdomain handling', () => {
+    beforeEach(() => {
+      configService.getConfig.mockReturnValue({
+        ciCloudApiUrl: 'http://cloud.api',
+        userSettings: { domain: 'example.com' },
+        domain: 'example.com',
+      } as any);
+    });
+
+    it('stores hubSubdomain when creating a new device registration', async () => {
+      deviceRegistrationRepository.getDeviceRegistrationById.mockResolvedValue(null as any);
+      cloudflareClientService.initializeTunnel.mockResolvedValue({ tunnelId: 't1', token: 'tok1' } as any);
+      configService.setDomain.mockResolvedValue(undefined);
+      // Mock fetch for tunnel connectivity check
+      global.fetch = vi.fn().mockResolvedValue({ ok: true }) as any;
+
+      await (service as any).setupOrganizationInfrastructure('org-new', {
+        organization_name: 'New Org',
+        tunnel_id: 't1',
+        tunnel_token: 'tok1',
+        subdomain: 'device1-neworg',
+        slug: 'neworg',
+        domain: 'example.com',
+      });
+
+      expect(deviceRegistrationRepository.createDeviceRegistration).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 'org-new',
+          hubSubdomain: 'device1-neworg',
+        }),
+      );
+    });
+
+    it('backfills hubSubdomain when existing org is missing it', async () => {
+      deviceRegistrationRepository.getDeviceRegistrationById.mockResolvedValue({
+        id: 'org-existing',
+        slug: 'existing',
+        name: 'Existing Org',
+        tunnelId: 't1',
+        tunnelToken: 'tok1',
+        hubSubdomain: null,
+      } as any);
+
+      await (service as any).setupOrganizationInfrastructure('org-existing', {
+        organization_name: 'Existing Org',
+        tunnel_id: 't1',
+        tunnel_token: 'tok1',
+        subdomain: 'hub-existing',
+        slug: 'existing',
+      });
+
+      expect(deviceRegistrationRepository.updateDeviceRegistration).toHaveBeenCalledWith(
+        'org-existing',
+        expect.objectContaining({ hubSubdomain: 'hub-existing' }),
+      );
+    });
+
+    it('does NOT overwrite hubSubdomain when existing org already has one', async () => {
+      deviceRegistrationRepository.getDeviceRegistrationById.mockResolvedValue({
+        id: 'org-existing',
+        slug: 'existing',
+        name: 'Existing Org',
+        tunnelId: 't1',
+        tunnelToken: 'tok1',
+        hubSubdomain: 'already-set',
+      } as any);
+
+      await (service as any).setupOrganizationInfrastructure('org-existing', {
+        organization_name: 'Existing Org',
+        tunnel_id: 't1',
+        tunnel_token: 'tok1',
+        subdomain: 'new-value',
+        slug: 'existing',
+      });
+
+      const updateCall = deviceRegistrationRepository.updateDeviceRegistration.mock.calls[0];
+      if (updateCall) {
+        expect(updateCall[1]).not.toHaveProperty('hubSubdomain');
+      }
+    });
+  });
+
+  describe('completeRegistrationFromCallback', () => {
+    beforeEach(() => {
+      process.env.DEVICE_ID = 'test-device';
+      configService.getConfig.mockReturnValue({
+        ciCloudApiUrl: 'http://cloud.api',
+        userSettings: { domain: 'example.com' },
+        domain: 'myhost.example.com',
+      } as any);
+      (si.uuid as any) = vi.fn().mockResolvedValue({ os: 'test-device' });
+    });
+
+    afterEach(() => {
+      delete process.env.DEVICE_ID;
+    });
+
+    it('returns domain in the success response', async () => {
+      const setupSpy = vi.spyOn(service as any, 'setupOrganizationInfrastructure').mockResolvedValue(undefined);
+
+      const result = await service.completeRegistrationFromCallback({
+        deviceId: 'test-device',
+        organizationId: 'org-cb',
+        organizationName: 'Callback Org',
+        slug: 'cb-org',
+        subdomain: 'hub-cb-org',
+        tunnelId: 'tunnel-cb',
+        tunnelToken: 'token-cb',
+        apiKey: 'key-cb',
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.domain).toBe('myhost.example.com');
+      setupSpy.mockRestore();
+    });
+  });
 });
