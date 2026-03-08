@@ -14,6 +14,7 @@ export interface AppInfo {
   protocol?: 'http' | 'https';
   hostname?: string;
   originServerName?: string; // HTTP Host header to send to Traefik (e.g., n8n-bdc.companionintelligence.com)
+  isHub?: boolean;
 }
 
 @Injectable()

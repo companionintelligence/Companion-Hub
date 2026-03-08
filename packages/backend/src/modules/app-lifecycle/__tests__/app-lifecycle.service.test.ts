@@ -128,10 +128,11 @@ describe('AppLifecycleService', () => {
         tunnelId: 'tunnel-id',
         slug: 'myorg',
         name: 'My Org',
+        hubSubdomain: 'mydevice-myorg',
       } as any);
       appsRepository.getApps.mockResolvedValue([]);
       configService.getConfig.mockReturnValue({
-        userSettings: { domain: 'mydevice-myorg.companionintelligence.com', localDomain: 'lan' },
+        userSettings: { domain: 'companionintelligence.com', localDomain: 'lan' },
         domain: 'companionintelligence.com',
       } as any);
 
@@ -164,6 +165,7 @@ describe('AppLifecycleService', () => {
         tunnelId: 'tunnel-id',
         slug: 'acme',
         name: 'Acme Corp',
+        hubSubdomain: 'hub1-acme',
       } as any);
       appsRepository.getApps.mockResolvedValue([
         {
@@ -175,7 +177,7 @@ describe('AppLifecycleService', () => {
         },
       ] as any);
       configService.getConfig.mockReturnValue({
-        userSettings: { domain: 'hub1-acme.companionintelligence.com', localDomain: 'lan' },
+        userSettings: { domain: 'companionintelligence.com', localDomain: 'lan' },
         domain: 'companionintelligence.com',
       } as any);
 
@@ -184,13 +186,13 @@ describe('AppLifecycleService', () => {
       const syncCall = cloudflareClientService.syncState.mock.calls[0];
       const apps = syncCall?.[1] as any[];
 
-      // Hub should be first
-      expect(apps[0]).toMatchObject({ name: 'OS Hub', subdomain: 'hub1' });
+      // Hub should be first with correct hostname
+      expect(apps[0]).toMatchObject({ name: 'OS Hub', subdomain: 'hub1', originServerName: 'hub1-acme.companionintelligence.com' });
       // Exposed app should follow
       expect(apps[1]).toMatchObject({ name: 'n8n', subdomain: 'n8n-abc' });
     });
 
-    it('should not include Hub route when domain is not configured', async () => {
+    it('should not include Hub route when hubSubdomain is not set', async () => {
       const data = { appUrn: 'test-app', action: 'install', form: {} } as any;
       const reply = vi.fn();
       const command = { execute: vi.fn().mockResolvedValue({ success: true, message: 'OK' }) };

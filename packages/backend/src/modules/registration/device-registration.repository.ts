@@ -13,7 +13,14 @@ export class DeviceRegistrationRepository {
     return result[0] || null;
   }
 
-  async createDeviceRegistration(data: { id: string; slug: string; name: string; tunnelId: string | null; tunnelToken?: string | null }) {
+  async createDeviceRegistration(data: {
+    id: string;
+    slug: string;
+    name: string;
+    hubSubdomain?: string | null;
+    tunnelId: string | null;
+    tunnelToken?: string | null;
+  }) {
     const result = await this.databaseService.db.insert(deviceRegistration).values(data).returning();
 
     return result[0];

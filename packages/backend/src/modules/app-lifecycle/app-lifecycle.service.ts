@@ -689,24 +689,23 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       );
 
       // Include the Hub in every sync so CI-Cloud preserves its tunnel route.
-      // Hub subdomain is extracted from the stored domain: {hubSub}-{orgSlug}.{rootDomain}
-      const userDomain = userSettings.domain;
-      if (userDomain) {
+      // hubSubdomain is the full prefix stored during registration (e.g. "core1-xyz")
+      const hubSub = orgInfo.hubSubdomain;
+      if (hubSub && publicDomain) {
         const orgSlug = orgInfo.slug;
-        const domainPrefix = userDomain.split('.')[0] ?? '';
         const orgSuffix = `-${orgSlug}`;
-        const hubSubdomain = domainPrefix.endsWith(orgSuffix) ? domainPrefix.slice(0, -orgSuffix.length) : domainPrefix;
+        const deviceName = hubSub.endsWith(orgSuffix) ? hubSub.slice(0, -orgSuffix.length) : hubSub;
+        const hubHostname = `${hubSub}.${publicDomain}`;
 
-        if (hubSubdomain) {
-          exposedApps.unshift({
-            name: 'OS Hub',
-            subdomain: hubSubdomain,
-            localPort: 80,
-            protocol: 'http' as const,
-            hostname: 'traefik',
-            originServerName: userDomain,
-          });
-        }
+        exposedApps.unshift({
+          name: 'OS Hub',
+          subdomain: deviceName,
+          localPort: 80,
+          protocol: 'http' as const,
+          hostname: 'traefik',
+          originServerName: hubHostname,
+          isHub: true,
+        });
       }
 
       await this.cloudflareClientService.syncState(orgInfo.id, exposedApps, orgInfo.tunnelId || undefined);

@@ -272,15 +272,26 @@ export class RegistrationService implements OnApplicationBootstrap {
     if (existingOrg) {
       this.logger.debug(`Organization infrastructure already exists for ${organizationId}`);
 
+      const updates: Record<string, string> = {};
+
       // Update tunnel credentials if provided (from device registration)
       if (activationResult?.tunnel_id && activationResult?.tunnel_token) {
         this.logger.info(`Updating organization ${organizationId} with tunnel credentials from registration`);
-        await this.deviceRegistrationRepository.updateDeviceRegistration(organizationId, {
-          tunnelId: activationResult.tunnel_id,
-          tunnelToken: activationResult.tunnel_token,
-        });
+        updates.tunnelId = activationResult.tunnel_id;
+        updates.tunnelToken = activationResult.tunnel_token;
+      }
 
-        // Initialize tunnel with new credentials
+      // Backfill hubSubdomain if missing (pre-existing registrations)
+      if (!existingOrg.hubSubdomain && activationResult?.subdomain) {
+        this.logger.info(`Backfilling hubSubdomain for organization ${organizationId}: ${activationResult.subdomain}`);
+        updates.hubSubdomain = activationResult.subdomain;
+      }
+
+      if (Object.keys(updates).length > 0) {
+        await this.deviceRegistrationRepository.updateDeviceRegistration(organizationId, updates);
+      }
+
+      if (activationResult?.tunnel_id && activationResult?.tunnel_token) {
         await this.cloudflareClientService.initializeTunnel(organizationId, {
           tunnelId: activationResult.tunnel_id,
           token: activationResult.tunnel_token,
@@ -369,6 +380,7 @@ export class RegistrationService implements OnApplicationBootstrap {
         id: organizationId,
         slug: orgSlug,
         name: orgName,
+        hubSubdomain: subdomain,
         tunnelId: tunnelId,
         tunnelToken: tunnelToken,
       });
