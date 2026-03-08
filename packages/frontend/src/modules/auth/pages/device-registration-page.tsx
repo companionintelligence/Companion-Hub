@@ -75,12 +75,10 @@ export default function DeviceRegistrationPage() {
             toast.success('Device registered successfully!');
             setIsRegistered(true);
 
-            // Redirect to the new subdomain
-            // Default to domain from config if provided
-            // Note: In production this should align with the cloud domain
             const subdomain = params.subdomain;
-            if (subdomain) {
-              const targetUrl = `https://${subdomain}.${domain}`;
+            const rootDomain = data.domain || domain;
+            if (subdomain && rootDomain) {
+              const targetUrl = `https://${subdomain}.${rootDomain}`;
               setTimeout(() => {
                 window.location.href = targetUrl;
               }, 1500);

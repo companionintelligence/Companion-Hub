@@ -597,7 +597,7 @@ export class RegistrationService implements OnApplicationBootstrap {
     tunnelId: string;
     tunnelToken: string;
     apiKey?: string;
-  }): Promise<{ success: boolean; message: string }> {
+  }): Promise<{ success: boolean; message: string; domain?: string }> {
     try {
       // Verify device ID matches
       const currentDeviceId = await this.getDeviceId();
@@ -654,9 +654,12 @@ export class RegistrationService implements OnApplicationBootstrap {
 
       this.logger.info(`Device registration completed via callback: organization=${data.organizationId}, subdomain=${data.subdomain}`);
 
+      const { domain } = this.config.getConfig();
+
       return {
         success: true,
         message: 'Device registered successfully',
+        domain,
       };
     } catch (error) {
       this.logger.error('Registration callback error:', error);
