@@ -54,59 +54,51 @@ export async function clientLoader({ request }: Route.ActionArgs) {
   // Check cached registration status (only 'true' is cached)
   const cachedRegistered = sessionStorage.getItem('device-registered') === 'true';
 
-  // Fire both requests in parallel for speed
-  const [regResult, userResult] = await Promise.all([
-    cachedRegistered
-      ? Promise.resolve({ ok: true, registered: true })
-      : fetch('/api/registration/status')
-          .then(async (res) => {
-            if (!res.ok) return { ok: false, registered: false };
-            const data = await res.json();
-            // Cache only the registered=true state
-            if (data.registered) {
-              sessionStorage.setItem('device-registered', 'true');
-            }
-            return { ok: true, registered: data.registered };
-          })
-          .catch(() => ({ ok: false, registered: false })),
-    userContext(),
-  ]);
+  // Always check registration status first — device registration must happen before anything else
+  const regResult = cachedRegistered
+    ? { ok: true, registered: true }
+    : await fetch('/api/registration/status')
+        .then(async (res) => {
+          if (!res.ok) return { ok: false, registered: false };
+          const data = await res.json();
+          if (data.registered) {
+            sessionStorage.setItem('device-registered', 'true');
+          }
+          return { ok: true, registered: data.registered };
+        })
+        .catch(() => ({ ok: false, registered: false }));
 
-  // Registration redirect logic
+  // If not registered, only allow the device-registration page
   if (regResult.ok && !regResult.registered) {
-    const allowedPaths = ['/device-registration', '/register', '/login', '/reset-password'];
-    if (!allowedPaths.some((p) => url.pathname.startsWith(p))) {
-      if (url.pathname === '/') {
-        if (!userResult.data || !userResult.data.isConfigured) {
-          return redirect('/register');
-        }
-      }
+    if (url.pathname !== '/device-registration') {
       return redirect('/device-registration');
     }
     return null;
   }
 
+  // Already registered — redirect away from device-registration
   if (regResult.ok && regResult.registered && url.pathname === '/device-registration') {
     return redirect('/');
   }
 
+  // Now check user context for auth/onboarding flow
+  const userResult = await userContext();
+
+  // Non-root paths: let individual route loaders handle redirects
   if (url.pathname !== '/') {
     return userResult;
   }
 
-  if (!userResult.data) {
+  // Root path: determine where to send the user
+  if (!userResult.data?.isConfigured) {
     return redirect('/register');
   }
 
-  if (!userResult.data.isConfigured) {
-    return redirect('/register');
+  if (!userResult.data?.isLoggedIn && !userResult.data?.isGuestDashboardEnabled) {
+    return redirect('/login');
   }
 
-  if (userResult.data?.isLoggedIn || userResult.data?.isGuestDashboardEnabled) {
-    return redirect('/dashboard');
-  }
-
-  return redirect('/login');
+  return redirect('/dashboard');
 }
 
 export function Layout({ children }: { children: React.ReactNode }) {

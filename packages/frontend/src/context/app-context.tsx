@@ -15,7 +15,7 @@ const AppContext = createContext<AppContextValue | null>(null);
 const APP_CONTEXT_DEFAULTS: AppContextDto = {
   version: { current: '0.0.0', latest: '0.0.0', body: '', releases: [] },
   userSettings: {} as AppContextDto['userSettings'],
-  user: { hasCompletedOnboarding: true } as AppContextDto['user'],
+  user: { hasCompletedOnboarding: false } as AppContextDto['user'],
   apps: [],
   updatesAvailable: 0,
   isProduction: true,
