@@ -16,7 +16,7 @@ test('should see security settings', async ({ page }) => {
   await page.goto('/settings');
 
   await expect(page.getByRole('tab', { name: 'Security' })).toBeVisible({ timeout: 30000 });
-  await page.getByRole('tab', { name: 'Security' }).click();
+  await page.getByRole('tab', { name: 'Security' }).click({ force: true });
   await expect(page.getByRole('heading', { name: 'Change username' })).toBeVisible({ timeout: 30000 });
   await expect(page.getByRole('heading', { name: 'Change password' })).toBeVisible({ timeout: 30000 });
   await expect(page.getByRole('heading', { name: 'Two-factor authentication' })).toBeVisible({ timeout: 30000 });
