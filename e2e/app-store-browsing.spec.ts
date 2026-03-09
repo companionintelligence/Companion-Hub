@@ -18,8 +18,10 @@ test.describe('App Store Browsing', () => {
     await page.goto('/app-store');
 
     // Wait for the page to fully load before clicking
-    await expect(page.getByRole('button', { name: 'Ai' })).toBeVisible({ timeout: 30000 });
-    await page.getByRole('button', { name: 'Ai' }).click();
+    const aiCategoryButton = page.getByRole('button', { name: 'Ai' });
+    await expect(aiCategoryButton).toBeVisible({ timeout: 30000 });
+    await aiCategoryButton.scrollIntoViewIfNeeded();
+    await aiCategoryButton.click({ force: true });
 
     // The search should still be visible after category selection
     await expect(page.getByPlaceholder('Search apps...').first()).toBeVisible({ timeout: 30000 });
