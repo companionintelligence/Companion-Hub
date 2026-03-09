@@ -1,4 +1,4 @@
-import { AppContextProvider } from '@/context/app-context';
+import { AppContextProvider, useAppContext } from '@/context/app-context';
 import { useUserContext } from '@/context/user-context';
 import { GuestDashboard } from '@/modules/dashboard/pages/guest-dashboard';
 import { QueryErrorResetBoundary } from '@tanstack/react-query';
@@ -9,6 +9,42 @@ import { ErrorPage } from '../error/error-page';
 import { DashboardLayout, DashboardLayoutSuspense } from '../layouts/dashboard/layout';
 import { SSEProvider } from '../providers/sse/sse-provider';
 import { RouteWrapper } from './route-wrapper';
+
+function AuthenticatedContent({ children }: { children: React.ReactNode }) {
+  const { user, isLoading: isAppLoading } = useAppContext();
+
+  // Wait for app context to load before checking onboarding
+  if (isAppLoading) {
+    return (
+      <DashboardLayoutSuspense>
+        <div className="d-flex justify-content-center align-items-center p-5">
+          <output className="spinner-border text-secondary" />
+        </div>
+      </DashboardLayoutSuspense>
+    );
+  }
+
+  // Redirect to onboarding if not completed
+  if (!user.hasCompletedOnboarding) {
+    return <Navigate to="/onboarding" replace />;
+  }
+
+  return (
+    <SSEProvider>
+      <DashboardLayout>
+        <Suspense
+          fallback={
+            <div className="d-flex justify-content-center align-items-center p-5">
+              <output className="spinner-border text-secondary" />
+            </div>
+          }
+        >
+          {children}
+        </Suspense>
+      </DashboardLayout>
+    </SSEProvider>
+  );
+}
 
 export default () => {
   const { isLoggedIn, isGuestDashboardEnabled } = useUserContext();
@@ -36,19 +72,7 @@ export default () => {
           >
             <Suspense fallback={null}>
               <AppContextProvider>
-                <SSEProvider>
-                  <DashboardLayout>
-                    <Suspense
-                      fallback={
-                        <div className="d-flex justify-content-center align-items-center p-5">
-                          <output className="spinner-border text-secondary" />
-                        </div>
-                      }
-                    >
-                      {outlet}
-                    </Suspense>
-                  </DashboardLayout>
-                </SSEProvider>
+                <AuthenticatedContent>{outlet}</AuthenticatedContent>
               </AppContextProvider>
             </Suspense>
           </ErrorBoundary>
