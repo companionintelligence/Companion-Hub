@@ -53,6 +53,12 @@ export const DOCKER_SERVICE_PATTERNS: Record<string, string> = {
   minio: 'MinIO',
 };
 
+/**
+ * Infrastructure services used by the Hub itself.
+ * These should never appear as "detected services" in onboarding recommendations.
+ */
+export const INFRASTRUCTURE_SERVICE_NAMES: ReadonlySet<string> = new Set(['Traefik', 'PostgreSQL']);
+
 export interface DetectedService {
   name: string;
   image: string;
@@ -79,5 +85,5 @@ export function identifyServices(containers: Array<{ name: string; image: string
     }
   }
 
-  return detected;
+  return detected.filter((s) => !INFRASTRUCTURE_SERVICE_NAMES.has(s.friendlyName));
 }
