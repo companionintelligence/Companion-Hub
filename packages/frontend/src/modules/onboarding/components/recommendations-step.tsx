@@ -17,7 +17,14 @@ interface RecommendationsStepProps {
 export const RecommendationsStep = ({ detectedServices, onSelect, onSkip, onBack }: RecommendationsStepProps) => {
   const { apps: storeApps } = useAppContext();
   const detectedNames = detectedServices.map((s) => s.friendlyName);
-  const recommendations = getRecommendedApps(detectedNames);
+  const storeSlugs = new Set(storeApps.map((a) => a.id));
+  // Filter recommendations to only include alternatives available in the app store
+  const recommendations = getRecommendedApps(detectedNames)
+    .map((rec) => ({
+      ...rec,
+      alternatives: rec.alternatives.filter((alt) => alt.appSlug && storeSlugs.has(alt.appSlug)),
+    }))
+    .filter((rec) => rec.alternatives.length > 0);
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
   // Pre-select popular/recommended ones

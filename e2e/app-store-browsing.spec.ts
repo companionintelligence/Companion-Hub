@@ -15,18 +15,11 @@ test.describe('App Store Browsing', () => {
 
     await expect(page.getByRole('heading', { name: 'App Store' })).toBeVisible({ timeout: 30000 });
 
-    // Category buttons only appear when apps with categories are loaded from the store.
-    // In CI the mock portal returns no apps, so gracefully handle missing categories.
-    const aiButton = page.getByRole('button', { name: 'Ai' });
-    const hasAiCategory = await aiButton.isVisible({ timeout: 5000 }).catch(() => false);
-
-    if (hasAiCategory) {
-      await aiButton.click();
-      await expect(page.getByPlaceholder('Search apps...').first()).toBeVisible({ timeout: 30000 });
-    } else {
-      // No app categories rendered — verify search still works in empty state
-      await expect(page.getByPlaceholder('Search apps...').first()).toBeVisible({ timeout: 30000 });
-    }
+    // Category sidebar buttons are always rendered on desktop viewport.
+    // Click the AI category to filter, then verify the page still works.
+    // Use force:true because the button may be transiently covered by loading overlays.
+    await page.getByRole('button', { name: 'Ai' }).click({ force: true });
+    await expect(page.getByPlaceholder('Search apps...').first()).toBeVisible({ timeout: 30000 });
   });
 
   test('should show empty state when no apps match search', async ({ page }) => {
