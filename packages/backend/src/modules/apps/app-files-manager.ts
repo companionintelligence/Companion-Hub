@@ -20,7 +20,7 @@ export class AppFilesManager {
   private getInstalledAppsFolder() {
     const { directories } = this.configuration.getConfig();
 
-    return path.join(directories.dataDir, 'apps');
+    return path.resolve(directories.dataDir, 'apps');
   }
 
   public getAppPaths(appUrn: AppUrn) {
@@ -29,8 +29,8 @@ export class AppFilesManager {
     const { appStoreId, appName } = extractAppUrn(appUrn);
 
     return {
-      appDataDir: path.join(directories.appDataDir, appStoreId, appName),
-      appInstalledDir: path.join(this.getInstalledAppsFolder(), appStoreId, appName),
+      appDataDir: path.resolve(directories.appDataDir, appStoreId, appName),
+      appInstalledDir: path.resolve(this.getInstalledAppsFolder(), appStoreId, appName),
     };
   }
 
