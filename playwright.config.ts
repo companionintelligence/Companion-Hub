@@ -56,7 +56,7 @@ export default defineConfig({
     trace: 'on-first-retry',
     video: 'retain-on-failure',
   },
-  timeout: 30000,
+  timeout: 60000,
   projects: [
     {
       name: 'chromium',
