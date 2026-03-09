@@ -272,5 +272,57 @@ describe('RegistrationService', () => {
       expect(result.domain).toBe('myhost.example.com');
       setupSpy.mockRestore();
     });
+
+    it('uses domain from callback data when provided (fixes #190)', async () => {
+      configService.getConfig.mockReturnValue({
+        ciCloudApiUrl: 'http://cloud.api',
+        userSettings: { domain: 'example.com' },
+        domain: 'example.com',
+      } as any);
+      configService.setDomain.mockResolvedValue(undefined);
+      const setupSpy = vi.spyOn(service as any, 'setupOrganizationInfrastructure').mockResolvedValue(undefined);
+
+      const result = await service.completeRegistrationFromCallback({
+        deviceId: 'test-device',
+        organizationId: 'org-cb',
+        organizationName: 'Callback Org',
+        slug: 'cb-org',
+        subdomain: 'device-core1',
+        tunnelId: 'tunnel-cb',
+        tunnelToken: 'token-cb',
+        apiKey: 'key-cb',
+        domain: 'companionintelligence.com',
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.domain).toBe('companionintelligence.com');
+      expect(configService.setDomain).toHaveBeenCalledWith('companionintelligence.com');
+      expect(setupSpy).toHaveBeenCalledWith('org-cb', expect.objectContaining({ domain: 'companionintelligence.com' }));
+      setupSpy.mockRestore();
+    });
+
+    it('falls back to config domain when callback domain is not provided', async () => {
+      configService.getConfig.mockReturnValue({
+        ciCloudApiUrl: 'http://cloud.api',
+        userSettings: { domain: 'companionintelligence.com' },
+        domain: 'companionintelligence.com',
+      } as any);
+      const setupSpy = vi.spyOn(service as any, 'setupOrganizationInfrastructure').mockResolvedValue(undefined);
+
+      const result = await service.completeRegistrationFromCallback({
+        deviceId: 'test-device',
+        organizationId: 'org-cb',
+        organizationName: 'Callback Org',
+        slug: 'cb-org',
+        subdomain: 'device-core1',
+        tunnelId: 'tunnel-cb',
+        tunnelToken: 'token-cb',
+        apiKey: 'key-cb',
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.domain).toBe('companionintelligence.com');
+      setupSpy.mockRestore();
+    });
   });
 });

@@ -67,6 +67,7 @@ export class RegistrationController {
     @Query('tunnel_id') tunnelId: string,
     @Query('tunnel_token') tunnelToken: string,
     @Query('api_key') apiKey: string,
+    @Query('domain') domain: string,
   ) {
     if (!deviceId || !organizationId || !organizationName || !subdomain || !tunnelId || !tunnelToken || !apiKey || !slug) {
       return {
@@ -84,6 +85,7 @@ export class RegistrationController {
       tunnelToken,
       apiKey,
       slug,
+      domain,
     });
 
     return result;

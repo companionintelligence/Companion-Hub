@@ -612,6 +612,7 @@ export class RegistrationService implements OnApplicationBootstrap {
     tunnelId: string;
     tunnelToken: string;
     apiKey?: string;
+    domain?: string;
   }): Promise<{ success: boolean; message: string; domain?: string }> {
     try {
       // Verify device ID matches
@@ -655,6 +656,14 @@ export class RegistrationService implements OnApplicationBootstrap {
         this.checkInterval = null;
       }
 
+      // Persist the root domain immediately so the response includes the correct value
+      // for the frontend redirect (e.g. "companionintelligence.com").
+      const currentDomain = this.config.getConfig().domain;
+      const rootDomain = data.domain || currentDomain;
+      if (rootDomain && rootDomain !== 'example.com' && rootDomain !== currentDomain) {
+        await this.config.setDomain(rootDomain);
+      }
+
       // Setup organization infrastructure (Cloudflare tunnel and DNS)
       // Fire-and-forget: don't block the callback response while waiting for DNS/tunnel
       this.setupOrganizationInfrastructure(data.organizationId, {
@@ -663,18 +672,17 @@ export class RegistrationService implements OnApplicationBootstrap {
         tunnel_token: data.tunnelToken,
         subdomain: incomingSubdomain,
         slug: data.slug,
+        domain: rootDomain,
       }).catch((err) => {
         this.logger.error('Background infrastructure setup failed:', err);
       });
 
       this.logger.info(`Device registration completed via callback: organization=${data.organizationId}, subdomain=${data.subdomain}`);
 
-      const { domain } = this.config.getConfig();
-
       return {
         success: true,
         message: 'Device registered successfully',
-        domain,
+        domain: rootDomain,
       };
     } catch (error) {
       this.logger.error('Registration callback error:', error);
