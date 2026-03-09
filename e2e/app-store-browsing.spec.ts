@@ -17,7 +17,8 @@ test.describe('App Store Browsing', () => {
 
     // Category sidebar buttons are always rendered on desktop viewport.
     // Click the AI category to filter, then verify the page still works.
-    await page.getByRole('button', { name: 'Ai' }).click();
+    // Use force:true because the button may be transiently covered by loading overlays.
+    await page.getByRole('button', { name: 'Ai' }).click({ force: true });
     await expect(page.getByPlaceholder('Search apps...').first()).toBeVisible({ timeout: 30000 });
   });
 
