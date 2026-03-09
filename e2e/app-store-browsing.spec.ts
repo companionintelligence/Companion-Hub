@@ -21,7 +21,9 @@ test.describe('App Store Browsing', () => {
     const hasAiCategory = await aiButton.isVisible({ timeout: 5000 }).catch(() => false);
 
     if (hasAiCategory) {
-      await aiButton.click();
+      // Wait for the category list to stabilize before clicking
+      await page.waitForTimeout(1000);
+      await page.getByRole('button', { name: 'Ai' }).click({ timeout: 10000 });
       await expect(page.getByPlaceholder('Search apps...').first()).toBeVisible({ timeout: 30000 });
     } else {
       // No app categories rendered — verify search still works in empty state
