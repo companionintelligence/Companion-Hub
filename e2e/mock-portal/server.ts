@@ -21,7 +21,7 @@ const routes: Record<string, (url: URL) => Response> = {
   'GET /api/store': () => json([]),
 
   // Device registration status
-  'GET /api/devices/registration-status': () => json({ registered: false }),
+  'GET /api/devices/registration-status': () => json({ registered: true }),
 
   // Device register (POST)
   'POST /api/devices/register': () => json({ success: true, device_id: 'test-device' }),
