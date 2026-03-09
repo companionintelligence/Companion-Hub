@@ -15,6 +15,7 @@ test.describe('Navigation', () => {
     // Settings
     await page.getByRole('link', { name: 'Settings' }).click();
     await page.waitForURL(/\/settings/);
+    await expect(page.getByRole('tablist')).toBeVisible({ timeout: 30000 });
     await expect(page.getByRole('tab', { name: 'Settings' })).toBeVisible({ timeout: 30000 });
 
     // Back to Dashboard

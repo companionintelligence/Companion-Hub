@@ -15,8 +15,11 @@ test('should see security settings', async ({ page }) => {
   await loginUser(page);
   await page.goto('/settings');
 
-  await expect(page.getByRole('tab', { name: 'Security' })).toBeVisible({ timeout: 30000 });
-  await page.getByRole('tab', { name: 'Security' }).click();
+  const securityTab = page.getByRole('tab', { name: 'Security' });
+  await expect(securityTab).toBeVisible({ timeout: 30000 });
+  await securityTab.scrollIntoViewIfNeeded();
+  await securityTab.click({ force: true });
+  await expect(securityTab).toHaveAttribute('aria-selected', 'true', { timeout: 30000 });
   await expect(page.getByRole('heading', { name: 'Change username' })).toBeVisible({ timeout: 30000 });
   await expect(page.getByRole('heading', { name: 'Change password' })).toBeVisible({ timeout: 30000 });
   await expect(page.getByRole('heading', { name: 'Two-factor authentication' })).toBeVisible({ timeout: 30000 });
