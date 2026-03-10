@@ -51,7 +51,7 @@ export const links: Route.LinksFunction = () => [
 export async function clientLoader({ request }: Route.ActionArgs) {
   const url = new URL(request.url);
 
-  const CACHE_TTL_MS = 5 * 60 * 1000;
+  const CACHE_TTL_MS = 60 * 1000; // 1 min — short enough that token removal takes effect quickly
   const cachedAt = Number(sessionStorage.getItem('device-registered-at') || '0');
   const cacheValid = sessionStorage.getItem('device-registered') === 'true' && Date.now() - cachedAt < CACHE_TTL_MS;
 
@@ -72,8 +72,10 @@ export async function clientLoader({ request }: Route.ActionArgs) {
         })
         .catch(() => ({ ok: false, registered: false }));
 
-  // If not registered, only allow the device-registration page
-  if (regResult.ok && !regResult.registered) {
+  // Device registration is the prerequisite gate — must be registered before login/register/dashboard
+  // If not registered (or status unknown), only allow the device-registration page
+  const mustShowDeviceRegistration = !regResult.ok || !regResult.registered;
+  if (mustShowDeviceRegistration) {
     if (url.pathname !== '/device-registration') {
       return redirect('/device-registration');
     }
@@ -81,7 +83,7 @@ export async function clientLoader({ request }: Route.ActionArgs) {
   }
 
   // Already registered — redirect away from device-registration
-  if (regResult.ok && regResult.registered && url.pathname === '/device-registration') {
+  if (url.pathname === '/device-registration') {
     return redirect('/');
   }
 

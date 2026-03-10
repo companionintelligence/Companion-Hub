@@ -21,6 +21,7 @@ export default function DeviceRegistrationPage() {
   const [isVerifying, setIsVerifying] = useState(false);
   const [pairingError, setPairingError] = useState<string | null>(null);
   const pairingInputRef = useRef<HTMLInputElement>(null);
+  const [redirectTargetUrl, setRedirectTargetUrl] = useState<string | null>(null);
 
   const isCallback =
     searchParams.has('device_id') &&
@@ -81,11 +82,17 @@ export default function DeviceRegistrationPage() {
 
             const subdomain = params.subdomain;
             const rootDomain = data.domain || domain;
+            const isLocalhost =
+              typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
             if (subdomain && rootDomain) {
               const targetUrl = `https://${subdomain}.${rootDomain}`;
+              const redirectDelayMs = isLocalhost ? (30 + 5) * 1000 : 1500;
+              if (isLocalhost) {
+                setRedirectTargetUrl(targetUrl);
+              }
               setTimeout(() => {
                 window.location.href = targetUrl;
-              }, 1500);
+              }, redirectDelayMs);
             } else {
               setTimeout(() => {
                 navigate('/');
@@ -128,7 +135,7 @@ export default function DeviceRegistrationPage() {
 
           if (!deviceData.registration_url) {
             setError(
-              'CI Cloud frontend URL not configured. ' +
+              'CI Portal frontend URL not configured. ' +
                 'Please set CI_CLOUD_FRONTEND_URL environment variable. ' +
                 `Current value: ${deviceData.ci_cloud_frontend_url || 'not set'}`,
             );
@@ -181,7 +188,7 @@ export default function DeviceRegistrationPage() {
     }
   };
 
-  const handleRedirectToCICloud = () => {
+  const handleRedirectToPortal = () => {
     if (registrationUrl) {
       window.location.href = registrationUrl;
     } else {
@@ -196,6 +203,20 @@ export default function DeviceRegistrationPage() {
         <div>
           <h2 className="text-xl font-semibold text-foreground">Registering Device...</h2>
           <p className="text-sm text-muted-foreground mt-1">Please wait while your device is registered.</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (isRegistered && redirectTargetUrl) {
+    return (
+      <div className="flex flex-col items-center gap-4 text-center py-4 max-w-md mx-auto">
+        <CheckCircle2 className="h-12 w-12 text-green-500" />
+        <div>
+          <h2 className="text-xl font-semibold text-foreground">Device Registered Successfully</h2>
+          <p className="text-sm text-muted-foreground mt-3">
+            Please wait about 30 seconds for your portal tunnel to start, then refresh the page. You will be redirected automatically in 35 seconds.
+          </p>
         </div>
       </div>
     );
@@ -231,7 +252,16 @@ export default function DeviceRegistrationPage() {
     <>
       <h2 className="text-xl font-semibold text-center mb-4">Device Registration Required</h2>
       <p className="text-sm text-muted-foreground text-center mb-6">
-        Enter the 6-character pairing code from CI Cloud to verify this device before registration.
+        Enter the 6-character pairing code from{' '}
+        <a
+          href={`https://portal.${domain || 'companionintelligence.com'}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-primary underline hover:no-underline"
+        >
+          CI Portal
+        </a>{' '}
+        to verify this device before registration.
       </p>
 
       {deviceId && (
@@ -302,13 +332,13 @@ export default function DeviceRegistrationPage() {
 
       {registrationUrl && (
         <>
-          <Button intent="primary" className="w-full" onClick={handleRedirectToCICloud} disabled={!isPairingVerified}>
-            Register Device on CI Cloud
+          <Button intent="primary" className="w-full" onClick={handleRedirectToPortal} disabled={!isPairingVerified}>
+            Register Device on CI Portal
             <ExternalLink className="ml-2 h-4 w-4" />
           </Button>
           {!isPairingVerified && <p className="text-xs text-muted-foreground mt-2 text-center">Verify your pairing code to enable registration.</p>}
           <p className="text-xs text-muted-foreground mt-4 text-center">
-            You will be redirected to CI Cloud to sign in, create an organization, and complete device registration.
+            You will be redirected to CI Portal to sign in, create an organization, and complete device registration.
           </p>
         </>
       )}

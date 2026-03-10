@@ -16,7 +16,7 @@ export const StoreSelector = ({ onSelect, className, initialValue, stores }: Pro
 
   const options = stores.map((store) => ({
     value: store.slug,
-    label: store.name,
+    label: store.name === 'CI Cloud' ? 'CI Portal' : store.name,
   }));
 
   const [value, setValue] = useState(initialValue);

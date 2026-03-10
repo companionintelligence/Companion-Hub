@@ -2,6 +2,7 @@ services:
   ci-hub-db:
     container_name: ${DB_CONTAINER_NAME:-ci-hub-db}
     image: postgres:14
+    pull_policy: if_not_present
     restart: unless-stopped
     stop_grace_period: 120s
     volumes:
@@ -24,6 +25,7 @@ services:
   ci-os-hub-queue:
     container_name: ${QUEUE_CONTAINER_NAME:-ci-os-hub-queue}
     image: rabbitmq:4-alpine
+    pull_policy: if_not_present
     restart: unless-stopped
     ports:
       - "5001:5672"
@@ -128,6 +130,7 @@ services:
 
   traefik:
     image: traefik:v3.6.7
+    pull_policy: if_not_present
     container_name: ${TRAEFIK_CONTAINER_NAME:-traefik}
     restart: unless-stopped
     command:
@@ -151,7 +154,8 @@ services:
       ci-os-hub.managed: true
 
   cloudflared:
-    image: cloudflare/cloudflared:latest
+    image: cloudflare/cloudflared:2026.2.0
+    pull_policy: if_not_present
     container_name: ${CLOUDFLARED_CONTAINER_NAME:-cloudflared}
     restart: unless-stopped
     command: tunnel run --token-file /home/nonroot/.cloudflared/token

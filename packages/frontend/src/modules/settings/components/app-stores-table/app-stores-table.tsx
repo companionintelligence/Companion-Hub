@@ -30,7 +30,20 @@ export const AppStoresTable = ({ appStores }: Props) => {
         <TableBody>
           {appStores.map((appStore) => (
             <TableRow key={appStore.slug}>
-              <TableCell>{appStore.name}</TableCell>
+              <TableCell>
+                {appStore.name === 'CI Cloud' ? (
+                  <a
+                    href={appStore.url.replace(/\/api\/?$/, '')}
+                    target="_blank"
+                    rel="noreferrer noopener nofollow"
+                    className="text-primary underline hover:no-underline"
+                  >
+                    CI Portal
+                  </a>
+                ) : (
+                  appStore.name
+                )}
+              </TableCell>
               <TableCell>
                 <EnabledBadge enabled={appStore.enabled} />
               </TableCell>
