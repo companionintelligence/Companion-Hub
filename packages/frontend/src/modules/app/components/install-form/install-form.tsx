@@ -152,7 +152,9 @@ export const InstallForm: React.FC<IProps> = ({
     info.dynamic_config,
     info.port,
     watchLocalSubdomain,
-    info.urn.split,
+    // include the urn string itself (not the split function) so the effect
+    // re-runs when the app urn changes
+    info.urn,
     cloudflareAvailable,
     tailscaleAvailable,
   ]);
@@ -440,10 +442,8 @@ export const InstallForm: React.FC<IProps> = ({
 
   return (
     <form className="flex flex-col" onSubmit={handleSubmit(validate)} id={formId}>
-      {/* Exposure mode selector — rendered outside scroll area by dialog */}
-      {/* Only show exposure mode selector in advanced mode. In simple mode
-          we remove these configuration controls from the DOM entirely. */}
-      {info.exposable && info.dynamic_config && isAdvancedMode && renderExposureModeSelector()}
+      {/* Exposure mode selector — always shown when applicable, even in simple mode */}
+      {info.exposable && info.dynamic_config && renderExposureModeSelector()}
 
       {/* Configuration section — scrollable when in a dialog */}
       {hasConfigSection && (
