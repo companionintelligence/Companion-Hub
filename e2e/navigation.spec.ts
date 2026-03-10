@@ -28,7 +28,11 @@ test.describe('Navigation', () => {
 
   test('should have working logo link to dashboard', async ({ page }) => {
     await loginUser(page);
-    await page.goto('/settings');
+
+    // Use client-side navigation instead of page.goto() to avoid full page reload
+    // which can stall in CI due to re-initialization of auth, i18n, and app context
+    await page.getByRole('link', { name: 'Settings' }).click();
+    await page.waitForURL(/\/settings/, { timeout: 30000 });
     await expect(async () => {
       await expect(page.getByRole('tab', { name: 'Settings' })).toBeVisible();
     }).toPass({ timeout: 30000 });

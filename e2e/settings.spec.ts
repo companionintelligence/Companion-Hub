@@ -13,7 +13,11 @@ test('should navigate to settings', async ({ page }) => {
 
 test('should see security settings', async ({ page }) => {
   await loginUser(page);
-  await page.goto('/settings');
+
+  // Use client-side navigation instead of page.goto() to avoid full page reload
+  // which can stall in CI due to re-initialization of auth, i18n, and app context
+  await page.getByRole('link', { name: 'Settings' }).click();
+  await page.waitForURL(/\/settings/, { timeout: 30000 });
 
   // Wait for settings page to fully stabilize (Suspense boundaries settle)
   await expect(page.getByRole('tablist')).toBeVisible({ timeout: 30000 });
