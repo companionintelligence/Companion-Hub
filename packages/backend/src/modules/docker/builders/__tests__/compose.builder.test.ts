@@ -14,7 +14,7 @@ describe('DockerComposeBuilder', () => {
   let serviceBuilder: ServiceBuilder;
 
   beforeEach(() => {
-    composeBuilder = new DockerComposeBuilder('ci.computer', 'tipi.lan');
+    composeBuilder = new DockerComposeBuilder('ci.computer', 'ci.lan');
     serviceBuilder = new ServiceBuilder();
   });
 

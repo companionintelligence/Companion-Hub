@@ -202,7 +202,7 @@ export class DockerComposeBuilder {
 
     // Store domain values for use in buildService
     this.domain = domain || process.env.DOMAIN || 'example.com';
-    this.localDomain = localDomain || process.env.LOCAL_DOMAIN || 'tipi.lan';
+    this.localDomain = localDomain || process.env.LOCAL_DOMAIN || 'ci.lan';
 
     // Read full subdomain (with org slug) and public domain from env file if available (set by app.helpers.ts)
     // APP_PUBLIC_HOSTNAME format: appname-orgslug.publicdomain.com

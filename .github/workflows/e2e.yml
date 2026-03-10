@@ -24,21 +24,21 @@ jobs:
       postgres:
         image: postgres:14
         env:
-          POSTGRES_USER: tipi
+          POSTGRES_USER: companion
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: tipi
+          POSTGRES_DB: companiondb
         ports:
           - 6543:5432
         options: >-
-          --health-cmd "pg_isready -U tipi"
+          --health-cmd "pg_isready -U companion"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
       rabbitmq:
         image: rabbitmq:4-alpine
         env:
-          RABBITMQ_DEFAULT_USER: tipi
-          RABBITMQ_DEFAULT_PASS: tipi
+          RABBITMQ_DEFAULT_USER: companion
+          RABBITMQ_DEFAULT_PASS: admin
         ports:
           - 5672:5672
         options: >-
@@ -93,19 +93,19 @@ jobs:
           SERVER_IP: localhost
           POSTGRES_HOST: localhost
           POSTGRES_PORT: 6543
-          POSTGRES_USERNAME: tipi
+          POSTGRES_USERNAME: companion
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DBNAME: tipi
+          POSTGRES_DBNAME: companiondb
           RABBITMQ_HOST: localhost
           RABBITMQ_PORT: 5672
-          RABBITMQ_USERNAME: tipi
-          RABBITMQ_PASSWORD: tipi
+          RABBITMQ_USERNAME: companion
+          RABBITMQ_PASSWORD: admin
           JWT_SECRET: e2e-test-secret
           CI_CLOUD_URL: http://localhost:4444
           CI_CLOUD_API_URL: http://localhost:4444/api
           CI_CLOUD_FRONTEND_URL: http://localhost:4444
           DOMAIN: ci.computer
-          LOCAL_DOMAIN: tipi.lan
+          LOCAL_DOMAIN: ci.lan
           ROOT_FOLDER_HOST: /tmp/runtipi-e2e
           RUNTIPI_APP_DATA_PATH: /tmp/runtipi-e2e
           TIPI_DATA_DIR: /tmp/runtipi-e2e

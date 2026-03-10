@@ -570,7 +570,7 @@ export class ServiceBuilder {
    * @param {string} localDomain Optional localDomain to replace ${LOCAL_DOMAIN} with.
    *
    * @example: { 'runtipi.app_id': '{{RUNTIPI_APP_ID}}' } => { 'runtipi.app_id': 'my-app' }
-   * @example: { 'traefik.http.routers.app-local.rule': 'Host(`app.${LOCAL_DOMAIN}`)' } => 'Host(`app.tipi.lan`)'
+   * @example: { 'traefik.http.routers.app-local.rule': 'Host(`app.${LOCAL_DOMAIN}`)' } => 'Host(`app.ci.lan`)'
    */
   public interpolateVariables(appId: string, localDomain?: string) {
     if (this.service.labels) {

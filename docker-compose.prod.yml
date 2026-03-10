@@ -11,10 +11,10 @@ services:
       - 6543:6543
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-      POSTGRES_USER: ${POSTGRES_USERNAME:-tipi}
-      POSTGRES_DB: ${POSTGRES_DBNAME:-tipi}
+      POSTGRES_USER: ${POSTGRES_USERNAME:-companion}
+      POSTGRES_DB: ${POSTGRES_DBNAME:-companiondb}
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -d tipi -U tipi -p 6543"]
+      test: ["CMD-SHELL", "pg_isready -d ${POSTGRES_DB:-companiondb} -U ${POSTGRES_USER:-companion} -p 6543"]
       interval: 5s
       timeout: 20s
       retries: 120
@@ -28,8 +28,8 @@ services:
     ports:
       - "5001:5672"
     environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USERNAME:-tipi}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-tipi}
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USERNAME:-companion}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-admin}
       # Disable khepri_db to speed up startup (uses classic Mnesia instead)
       RABBITMQ_FEATURE_FLAGS: ""
     healthcheck:
@@ -102,11 +102,11 @@ services:
       ROOT_FOLDER_HOST: ${ROOT_FOLDER_HOST:?ROOT_FOLDER_HOST must be set to an absolute host path}
       POSTGRES_HOST: ${POSTGRES_HOST:-ci-hub-db}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-      POSTGRES_USERNAME: ${POSTGRES_USERNAME:-tipi}
-      POSTGRES_DBNAME: ${POSTGRES_DBNAME:-tipi}
+      POSTGRES_USERNAME: ${POSTGRES_USERNAME:-companion}
+      POSTGRES_DBNAME: ${POSTGRES_DBNAME:-companiondb}
       POSTGRES_PORT: ${POSTGRES_PORT:-6543}
-      RABBITMQ_USERNAME: ${RABBITMQ_USERNAME:-tipi}
-      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-tipi}
+      RABBITMQ_USERNAME: ${RABBITMQ_USERNAME:-companion}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-admin}
       RABBITMQ_HOST: ${RABBITMQ_HOST:-ci-os-hub-queue}
       INTERNAL_IP: ${INTERNAL_IP:-127.0.0.1}
       TIPI_VERSION: ${TIPI_VERSION:-4.5.0}

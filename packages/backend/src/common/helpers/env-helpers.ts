@@ -186,8 +186,8 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
 
   // Database
   envMap.set('POSTGRES_HOST', resolve('POSTGRES_HOST', { envMap, fallback: 'ci-hub-db' }));
-  envMap.set('POSTGRES_DBNAME', resolve('POSTGRES_DBNAME', { envMap, fallback: 'tipi' }));
-  envMap.set('POSTGRES_USERNAME', resolve('POSTGRES_USERNAME', { envMap, fallback: 'tipi' }));
+  envMap.set('POSTGRES_DBNAME', resolve('POSTGRES_DBNAME', { envMap, fallback: 'companiondb' }));
+  envMap.set('POSTGRES_USERNAME', resolve('POSTGRES_USERNAME', { envMap, fallback: 'companion' }));
   envMap.set('POSTGRES_PORT', resolve('POSTGRES_PORT', { envMap, fallback: '6543' }));
 
   // Message queue — also handle legacy hostname migration
@@ -196,8 +196,8 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
     rabbitmqHost = 'ci-os-hub-queue';
   }
   envMap.set('RABBITMQ_HOST', rabbitmqHost);
-  envMap.set('RABBITMQ_USERNAME', resolve('RABBITMQ_USERNAME', { envMap, fallback: 'tipi' }));
-  envMap.set('RABBITMQ_PASSWORD', resolve('RABBITMQ_PASSWORD', { envMap, fallback: 'tipi' }));
+  envMap.set('RABBITMQ_USERNAME', resolve('RABBITMQ_USERNAME', { envMap, fallback: 'companion' }));
+  envMap.set('RABBITMQ_PASSWORD', resolve('RABBITMQ_PASSWORD', { envMap, fallback: 'admin' }));
 
   // Feature flags / user preferences (settings.json booleans)
   envMap.set('DEMO_MODE', resolve('DEMO_MODE', { envMap, settingsVal: boolStr(settings.demoMode), fallback: 'false' }));
