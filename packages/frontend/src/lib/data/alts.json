@@ -534,22 +534,10 @@
       ],
       "alternatives": [
         {
-          "name": "Coolify",
-          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://coolify.io",
-          "url": "https://coolify.io/",
-          "appSlug": "coolify"
-        },
-        {
           "name": "Dokku",
           "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://dokku.com",
           "url": "https://dokku.com/",
           "appSlug": "dokku"
-        },
-        {
-          "name": "CapRover",
-          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://caprover.com",
-          "url": "https://caprover.com/",
-          "appSlug": "caprover"
         }
       ]
     },
@@ -1120,26 +1108,7 @@
           "url": null
         }
       ],
-      "alternatives": [
-        {
-          "name": "WireGuard",
-          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.wireguard.com",
-          "url": "https://www.wireguard.com/",
-          "appSlug": "wireguard"
-        },
-        {
-          "name": "OpenVPN",
-          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://openvpn.net",
-          "url": "https://openvpn.net/",
-          "appSlug": "openvpn"
-        },
-        {
-          "name": "Headscale",
-          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://headscale.net",
-          "url": "https://headscale.net/",
-          "appSlug": "headscale"
-        }
-      ]
+      "alternatives": []
     }
   ],
   "photography": [
@@ -1229,12 +1198,6 @@
           "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://lobechat.com",
           "url": "https://lobechat.com/",
           "appSlug": "lobe-chat"
-        },
-        {
-          "name": "Ollama",
-          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://ollama.com",
-          "url": "https://ollama.com/",
-          "appSlug": "ollama"
         },
         {
           "name": "OpenClaw",
