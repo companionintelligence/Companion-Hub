@@ -15,10 +15,16 @@ test('should see security settings', async ({ page }) => {
   await loginUser(page);
   await page.goto('/settings');
 
-  const securityTab = page.getByRole('tab', { name: 'Security' });
-  await expect(securityTab).toBeVisible({ timeout: 30000 });
-  await securityTab.click();
-  await expect(securityTab).toHaveAttribute('aria-selected', 'true', { timeout: 30000 });
+  // Wait for settings page to fully stabilize (Suspense boundaries settle)
+  await expect(page.getByRole('tablist')).toBeVisible({ timeout: 30000 });
+  await expect(page.getByRole('tab', { name: 'Settings' })).toBeVisible({ timeout: 30000 });
+
+  // Use a retry loop for the click — React re-renders can detach the element between locate and click
+  await expect(async () => {
+    await page.getByRole('tab', { name: 'Security' }).click();
+    await expect(page.getByRole('tab', { name: 'Security' })).toHaveAttribute('aria-selected', 'true');
+  }).toPass({ timeout: 30000 });
+
   await expect(page.getByRole('heading', { name: 'Change username' })).toBeVisible({ timeout: 30000 });
   await expect(page.getByRole('heading', { name: 'Change password' })).toBeVisible({ timeout: 30000 });
   await expect(page.getByRole('heading', { name: 'Two-factor authentication' })).toBeVisible({ timeout: 30000 });
