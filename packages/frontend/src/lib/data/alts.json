@@ -522,28 +522,6 @@
     {
       "proprietary": [
         {
-          "name": "Heroku",
-          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.heroku.com",
-          "url": null
-        },
-        {
-          "name": "Vercel",
-          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://vercel.com",
-          "url": null
-        }
-      ],
-      "alternatives": [
-        {
-          "name": "Dokku",
-          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://dokku.com",
-          "url": "https://dokku.com/",
-          "appSlug": "dokku"
-        }
-      ]
-    },
-    {
-      "proprietary": [
-        {
           "name": "Postman",
           "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.postman.com",
           "url": null
