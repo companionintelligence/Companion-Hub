@@ -215,7 +215,7 @@ export default function DeviceRegistrationPage() {
         <div>
           <h2 className="text-xl font-semibold text-foreground">Device Registered Successfully</h2>
           <p className="text-sm text-muted-foreground mt-3">
-            Please wait about 30 seconds for your portal tunnel to start, then refresh the page. You will be redirected automatically in 35 seconds.
+            Please wait about 30 seconds for your portal tunnel to start. You will be redirected automatically.
           </p>
         </div>
       </div>
