@@ -38,7 +38,7 @@ RUN chmod +x docker-binary && \
 # ---- RUNNER BASE ----
 FROM node_base AS runner_base
 
-RUN apk add --no-cache curl openssl git docker-cli
+RUN apk add --no-cache curl openssl git docker-cli dmidecode
 
 # ---- BUILDER ----
 FROM builder_base AS builder

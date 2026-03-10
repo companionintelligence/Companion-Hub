@@ -40,6 +40,7 @@ services:
       - ci_os_hub_network
 
   ci-os-hub:
+    privileged: true
     build:
       context: .
       dockerfile: Dockerfile.dev

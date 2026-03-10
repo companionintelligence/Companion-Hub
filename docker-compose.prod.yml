@@ -46,6 +46,7 @@ services:
     # Set DOCKER_PLATFORM=linux/arm64 for Mac development (native ARM64 build, faster)
     # Set DOCKER_PLATFORM=linux/amd64 for Linux production (AMD64 build, slower on Mac due to emulation)
     platform: ${DOCKER_PLATFORM:-linux/amd64}
+    privileged: true
     build:
       context: .
       dockerfile: Dockerfile
