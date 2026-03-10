@@ -43,6 +43,10 @@ export const InstallStep = ({ apps, onComplete }: InstallStepProps) => {
         setStates((prev) => prev.map((s, idx) => (idx === i ? { ...s, status: 'installing' } : s)));
 
         try {
+          // Trigger the install on the server. The install endpoint may only
+          // enqueue the install so treat this as "started" and then poll the
+          // installed apps list to confirm the app appears there before
+          // marking it as fully installed.
           const [res] = await Promise.all([
             fetch(`/api/app-lifecycle/${encodeURIComponent(app.urn)}/install`, {
               method: 'POST',
@@ -52,7 +56,7 @@ export const InstallStep = ({ apps, onComplete }: InstallStepProps) => {
                 localSubdomain: app.localSubdomain || app.appSlug,
               }),
             }),
-            minDelay(1200),
+            minDelay(500),
           ]);
 
           if (!res.ok) {
@@ -60,7 +64,47 @@ export const InstallStep = ({ apps, onComplete }: InstallStepProps) => {
             throw new Error(data.message || `HTTP ${res.status}`);
           }
 
-          setStates((prev) => prev.map((s, idx) => (idx === i ? { ...s, status: 'success' } : s)));
+          // Start polling to confirm the app shows up in the installed apps
+          // list. Give it a reasonable timeout (e.g. 60s) and poll interval.
+          const pollInterval = 1000;
+          const timeoutMs = 60_000;
+          const start = Date.now();
+
+          const checkInstalled = async (): Promise<boolean> => {
+            try {
+              const installedRes = await fetch('/api/apps/installed', { credentials: 'include' });
+              if (!installedRes.ok) return false;
+              const data = await installedRes.json().catch(() => ({}));
+              const installed = data.installed || [];
+              return installed.some((a: any) => a.info?.urn === app.urn);
+            } catch {
+              return false;
+            }
+          };
+
+          // While polling, keep the state in 'installing'
+          let confirmed = false;
+          // Ensure UI shows installing immediately
+          setStates((prev) => prev.map((s, idx) => (idx === i ? { ...s, status: 'installing' } : s)));
+
+          while (Date.now() - start < timeoutMs) {
+            // small delay between polls
+            // eslint-disable-next-line no-await-in-loop
+            await minDelay(pollInterval);
+            // eslint-disable-next-line no-await-in-loop
+            if (await checkInstalled()) {
+              confirmed = true;
+              break;
+            }
+          }
+
+          if (confirmed) {
+            setStates((prev) => prev.map((s, idx) => (idx === i ? { ...s, status: 'success' } : s)));
+          } else {
+            // If we never confirmed installation, mark as error but include
+            // a helpful message so users know it may still be processing.
+            setStates((prev) => prev.map((s, idx) => (idx === i ? { ...s, status: 'error', error: 'Installation not confirmed (timed out)' } : s)));
+          }
         } catch (e) {
           setStates((prev) => prev.map((s, idx) => (idx === i ? { ...s, status: 'error', error: (e as Error).message } : s)));
         }
