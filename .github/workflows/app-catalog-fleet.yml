@@ -42,6 +42,7 @@ env:
 
 jobs:
   prepare:
+    if: github.event_name == 'workflow_dispatch'
     name: Prepare Test Matrix
     runs-on: ubuntu-latest
     outputs:
