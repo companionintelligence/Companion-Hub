@@ -24,6 +24,10 @@ export default function DeviceRegistrationPage() {
   const [redirectTargetUrl, setRedirectTargetUrl] = useState<string | null>(null);
   const [isPolling, setIsPolling] = useState(false);
   const [pollError, setPollError] = useState<string | null>(null);
+  const [isLocalhostRedirect, setIsLocalhostRedirect] = useState<boolean | null>(null);
+  const mountedRef = useRef(true);
+  const pollTimerRef = useRef<number | null>(null);
+  const startTimerRef = useRef<number | null>(null);
 
   const isCallback =
     searchParams.has('device_id') &&
@@ -82,7 +86,7 @@ export default function DeviceRegistrationPage() {
             toast.success('Device registered successfully!');
             setIsRegistered(true);
 
-            const subdomain = params.subdomain;
+            const subdomainFromParams = params.subdomain;
             const rootDomain = data.domain || domain;
             const isLocalhost =
               typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
@@ -94,6 +98,7 @@ export default function DeviceRegistrationPage() {
               // the domain responds or we hit the timeout.
               setRedirectTargetUrl(targetUrl);
               setIsPolling(true);
+              setIsLocalhostRedirect(isLocalhost);
               setPollError(null);
 
               const pollInterval = 5000; // 5s
@@ -101,33 +106,43 @@ export default function DeviceRegistrationPage() {
               const start = Date.now();
 
               const tryFetch = async () => {
+                // Create an AbortController for each attempt so we can cancel when
+                // the component unmounts or we navigate away.
+                const controller = new AbortController();
+                const signal = controller.signal;
+
                 try {
                   // Use no-cors so the request will resolve for opaque responses when the
                   // host is up. If the promise resolves, consider the domain reachable.
-                  await fetch(targetUrl, { mode: 'no-cors', cache: 'no-store' });
+                  await fetch(targetUrl, { mode: 'no-cors', cache: 'no-store', signal });
+                  if (!mountedRef.current) return;
                   // If fetch resolved, redirect immediately
                   window.location.href = targetUrl;
                 } catch (e) {
+                  if (!mountedRef.current) return;
                   // In browsers many cross-origin requests will resolve as opaque; treat
                   // rejections as temporary and continue polling until timeout.
                   if (Date.now() - start < maxWaitMs) {
-                    setTimeout(tryFetch, pollInterval);
+                    // schedule next attempt and store the timer so it can be cleared
+                    pollTimerRef.current = window.setTimeout(() => {
+                      tryFetch();
+                    }, pollInterval) as unknown as number;
                   } else {
                     setIsPolling(false);
                     setPollError('Timed out waiting for portal domain to become available. You can try refreshing or visiting the portal manually.');
                     // As a fallback, navigate to root of the hub so the user can continue.
-                    navigate('/');
+                    navigate('/', { replace: true });
                   }
                 }
               };
 
               // Start polling shortly after registration
-              setTimeout(
+              startTimerRef.current = window.setTimeout(
                 () => {
                   tryFetch();
                 },
                 isLocalhost ? 1000 : 1500,
-              );
+              ) as unknown as number;
             } else {
               setTimeout(() => {
                 navigate('/');
@@ -142,7 +157,7 @@ export default function DeviceRegistrationPage() {
           toast.error('Failed to complete registration');
           console.error(e);
         } finally {
-          setIsLoading(false);
+          if (mountedRef.current) setIsLoading(false);
         }
       };
 
@@ -187,6 +202,16 @@ export default function DeviceRegistrationPage() {
     };
 
     checkStatus();
+    return () => {
+      mountedRef.current = false;
+      // clear any outstanding timers
+      if (pollTimerRef.current) {
+        clearTimeout(pollTimerRef.current as unknown as number);
+      }
+      if (startTimerRef.current) {
+        clearTimeout(startTimerRef.current as unknown as number);
+      }
+    };
   }, [navigate, searchParams, isCallback, domain]);
 
   const handleVerifyPairingCode = async () => {
@@ -208,7 +233,7 @@ export default function DeviceRegistrationPage() {
 
       const data = await res.json();
 
-      if (data.success) {
+      if (res.ok && data.success) {
         setIsPairingVerified(true);
         toast.success('Pairing code verified! You can now register this device.');
       } else {
