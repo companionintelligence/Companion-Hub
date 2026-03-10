@@ -32,6 +32,7 @@ env:
 
 jobs:
   e2e-fleet:
+    if: github.event_name == 'workflow_dispatch'
     name: E2E Tests on ${{ github.event.inputs.server || 'core-6' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
