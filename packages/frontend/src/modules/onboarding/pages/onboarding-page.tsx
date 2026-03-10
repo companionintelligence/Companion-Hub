@@ -44,15 +44,23 @@ function OnboardingWizard() {
 
         <Stepper currentStep={currentStep}>
           <StepTriggerList>
-            {stepTitles.map((title, i) => (
-              <StepTrigger
-                key={title}
-                step={i}
-                title={title}
-                disabled={i > currentStep}
-                onStepChange={(s) => s <= currentStep && setCurrentStep(s)}
-              />
-            ))}
+            {stepTitles.map((title, i) => {
+              const isLastStep = i === stepTitles.length - 1;
+              // Allow clicking the last step from any step as a "skip to end" shortcut
+              const alwaysClickable = isLastStep && currentStep < i;
+              const disabled = !alwaysClickable && i > currentStep;
+              const allowStepChange = (s: number) => s <= currentStep || s === stepTitles.length - 1;
+              return (
+                <StepTrigger
+                  key={title}
+                  step={i}
+                  title={title}
+                  disabled={disabled}
+                  alwaysClickable={alwaysClickable}
+                  onStepChange={(s) => allowStepChange(s) && setCurrentStep(s)}
+                />
+              );
+            })}
           </StepTriggerList>
 
           <div className="mt-6">
