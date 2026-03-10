@@ -235,6 +235,68 @@ export class TraefikConfigService {
   }
 
   /**
+   * Write or update the Traefik route for the Hub's public hostname
+   * (e.g. devbox-core1.companionintelligence.com) so requests coming through the
+   * Cloudflare tunnel reach ci-os-hub. This file is separate from apps.yml
+   * because the hub container is explicitly skipped in generateTraefikConfig.
+   */
+  public async writeHubRoute(hubSubdomain: string, domain: string): Promise<void> {
+    if (!hubSubdomain?.trim() || !domain?.trim() || domain === 'example.com') {
+      this.logger.debug('Skipping hub route write: missing subdomain, domain, or example.com');
+      return;
+    }
+    const hostname = `${hubSubdomain.trim()}.${domain.trim()}`;
+    const hubContainer = process.env.HUB_CONTAINER_NAME || 'ci-os-hub';
+
+    try {
+      const { directories } = this.config.getConfig();
+      const configPath = `${directories.dataDir}/state/traefik/dynamic/hub.yml`;
+
+      const config: TraefikConfig = {
+        http: {
+          routers: {
+            'hub-public': {
+              rule: `Host(\`${hostname}\`)`,
+              service: 'hub-service',
+              entryPoints: ['web'],
+            },
+          },
+          services: {
+            'hub-service': {
+              loadBalancer: {
+                servers: [{ url: `http://${hubContainer}:5002` }],
+              },
+            },
+          },
+        },
+      };
+
+      const yamlContent = yaml.stringify(config, { indent: 2 });
+      await this.filesystem.writeTextFile(configPath, yamlContent);
+      this.logger.info(`Wrote Traefik hub route for ${hostname}`);
+    } catch (error) {
+      this.logger.error(`Failed to write hub route for ${hostname}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Remove the hub route file (e.g. when unregistering). Idempotent.
+   */
+  public async removeHubRoute(): Promise<void> {
+    try {
+      const { directories } = this.config.getConfig();
+      const configPath = `${directories.dataDir}/state/traefik/dynamic/hub.yml`;
+      if (await this.filesystem.pathExists(configPath)) {
+        await this.filesystem.removeFile(configPath);
+        this.logger.info('Removed Traefik hub route');
+      }
+    } catch (error) {
+      this.logger.warn('Failed to remove hub route (non-fatal):', error);
+    }
+  }
+
+  /**
    * Regenerate Traefik config after a short delay to allow containers to start
    * Retries up to 3 times if containers aren't ready yet
    */
