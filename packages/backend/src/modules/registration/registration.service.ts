@@ -11,7 +11,7 @@ import { DeviceRegistrationRepository } from './device-registration.repository';
 import { RepoEventsQueue } from '../queue/entities/repo-events';
 import si from 'systeminformation';
 
-const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+const REGISTRATION_VALIDATION_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 
 @Injectable()
 export class RegistrationService implements OnApplicationBootstrap, OnApplicationShutdown {
@@ -44,6 +44,10 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     // token file from the database. isRegistered() requires both a DB record
     // AND the token file on disk, so we must restore the file first.
     await this.recoverTunnelTokenFromDb();
+
+    // Ensure CloudflareClientService has the token in memory (for getTunnelToken() / app-context).
+    // After a restart, the token file may exist on disk but CloudflareClientService starts with null.
+    await this.ensureCloudflareClientHasTunnelToken();
 
     // Ensure Traefik has a route for the hub's public hostname (e.g. devbox-core1.companionintelligence.com)
     // so requests through the Cloudflare tunnel reach ci-os-hub.
@@ -116,6 +120,22 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   }
 
   /**
+   * Load tunnel token from disk into CloudflareClientService memory.
+   * After a restart, the token file exists but CloudflareClientService.tunnelToken is null.
+   * This ensures getTunnelToken() returns correctly for /app-context (cloudflareAvailable).
+   */
+  private async ensureCloudflareClientHasTunnelToken(): Promise<void> {
+    try {
+      if (!this.hasTunnelToken()) return;
+
+      const org = await this.deviceRegistrationRepository.getFirstDeviceRegistration();
+      await this.cloudflareClientService.loadTunnelTokenFromDisk(org?.tunnelId ?? undefined);
+    } catch (e) {
+      this.logger.warn('Failed to load tunnel token into CloudflareClientService (non-fatal)', e);
+    }
+  }
+
+  /**
    * If the org record is missing its tunnelId, attempt to re-register with
    * CI-Cloud to obtain fresh tunnel credentials.
    */
@@ -182,11 +202,11 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       return;
     }
 
-    this.validateRegistrationWithCloud().catch((e) => this.logger.error('Initial weekly validation failed', e));
+    this.validateRegistrationWithCloud().catch((e) => this.logger.error('Initial registration validation failed', e));
 
     this.weeklyValidationInterval = setInterval(() => {
-      this.validateRegistrationWithCloud().catch((e) => this.logger.error('Weekly validation check failed', e));
-    }, ONE_WEEK_MS);
+      this.validateRegistrationWithCloud().catch((e) => this.logger.error('Registration validation check failed', e));
+    }, REGISTRATION_VALIDATION_INTERVAL_MS);
   }
 
   /**
@@ -200,10 +220,13 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     if (!this._isRegistered) return;
 
     if (!this.hasTunnelToken()) {
-      this.logger.warn('Weekly validation: tunnel token missing — revoking registration');
+      this.logger.warn('Registration validation: tunnel token missing — revoking registration');
       this._isRegistered = false;
       return;
     }
+
+    // Re-sync CloudflareClientService from disk so getTunnelToken() stays correct
+    await this.ensureCloudflareClientHasTunnelToken();
 
     const { ciCloudApiUrl } = this.config.getConfig();
     if (!ciCloudApiUrl) return;
@@ -215,7 +238,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
 
       const response = await fetch(statusUrl.toString(), { method: 'GET' });
       if (!response.ok) {
-        this.logger.warn(`Weekly validation: CI Cloud returned ${response.status} — revoking registration`);
+        this.logger.warn(`Registration validation: CI Cloud returned ${response.status} — revoking registration`);
         this._isRegistered = false;
         return;
       }
@@ -229,20 +252,20 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       const deviceStatus = data.device_status || data.status;
 
       if (!data.registered) {
-        this.logger.warn('Weekly validation: device no longer registered in CI Cloud — revoking registration');
+        this.logger.warn('Registration validation: device no longer registered in CI Cloud — revoking registration');
         this._isRegistered = false;
         return;
       }
 
       if (deviceStatus && deviceStatus !== 'active') {
-        this.logger.warn(`Weekly validation: device status is "${deviceStatus}" (not active) — revoking registration`);
+        this.logger.warn(`Registration validation: device status is "${deviceStatus}" (not active) — revoking registration`);
         this._isRegistered = false;
         return;
       }
 
-      this.logger.info('Weekly validation passed: device is active and registered');
+      this.logger.info('Registration validation passed: device is active and registered');
     } catch (e) {
-      this.logger.error('Weekly validation: failed to reach CI Cloud — keeping current state', e);
+      this.logger.error('Registration validation: failed to reach CI Cloud — keeping current state', e);
     }
   }
 
@@ -253,7 +276,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         encoding: 'utf-8',
       }).trim();
 
-      if (serial && serial !== 'Not Specified' && serial !== 'To Be Filled By O.E.M.' && serial !== 'Default string') {
+      if (serial && serial !== 'Not Specified' && serial.toLowerCase() !== 'to be filled by o.e.m.' && serial !== 'Default string') {
         this.logger.debug(`Device ID from dmidecode: ${serial}`);
         return serial;
       }

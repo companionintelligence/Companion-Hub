@@ -35,7 +35,7 @@ export const AppStoresTable = ({ appStores }: Props) => {
                   <a
                     href={appStore.url.replace(/\/api\/?$/, '')}
                     target="_blank"
-                    rel="noreferrer noopener nofollow"
+                    rel="noopener noreferrer nofollow"
                     className="text-primary underline hover:no-underline"
                   >
                     CI Portal

@@ -32,6 +32,7 @@
     "lint": "biome check",
     "lint:fix": "biome check --write --no-errors-on-unmatched",
     "prepare": "husky",
+    "device-id": "bun scripts/get-device-id.ts",
     "version": "echo $npm_package_version"
   },
   "lint-staged": {
