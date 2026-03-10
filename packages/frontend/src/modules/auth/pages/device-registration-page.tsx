@@ -25,9 +25,6 @@ export default function DeviceRegistrationPage() {
   const [pairingError, setPairingError] = useState<string | null>(null);
   const pairingInputRef = useRef<HTMLInputElement>(null);
   const [redirectTargetUrl, setRedirectTargetUrl] = useState<string | null>(null);
-  const [isPolling, setIsPolling] = useState(false);
-  const [pollError, setPollError] = useState<string | null>(null);
-  const [isLocalhostRedirect, setIsLocalhostRedirect] = useState<boolean | null>(null);
   const mountedRef = useRef(true);
   const pollTimerRef = useRef<number | null>(null);
   const startTimerRef = useRef<number | null>(null);
@@ -95,7 +92,6 @@ export default function DeviceRegistrationPage() {
             toast.success('Device registered successfully!');
             setIsRegistered(true);
 
-            const subdomainFromParams = params.subdomain;
             const rootDomain = data.domain || domain;
             const isLocalhost =
               typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
@@ -158,8 +154,9 @@ export default function DeviceRegistrationPage() {
               }, 1500);
             }
           } else {
-            setError(data.message || 'Registration failed');
-            toast.error(data.message || 'Registration failed');
+            const regErrorMsg = typeof data.message === 'string' ? data.message : 'Registration failed';
+            setError(regErrorMsg);
+            toast.error(regErrorMsg);
           }
         } catch (e) {
           setError('Failed to complete registration');
@@ -250,8 +247,9 @@ export default function DeviceRegistrationPage() {
         setIsPairingVerified(true);
         toast.success('Pairing code verified! You can now register this device.');
       } else {
-        setPairingError(data.message || 'Invalid pairing code.');
-        toast.error(data.message || 'Invalid pairing code.');
+        const errorMsg = typeof data.message === 'string' ? data.message : 'Invalid pairing code.';
+        setPairingError(errorMsg);
+        toast.error(errorMsg);
       }
     } catch (e) {
       setPairingError('Failed to verify pairing code. Please try again.');
