@@ -6,6 +6,8 @@ import { AlertCircle, CheckCircle2, ExternalLink, Loader2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useUserContext } from '@/context/user-context';
 
+const DEFAULT_PORTAL_URL = 'https://portal.companionintelligence.com';
+
 export default function DeviceRegistrationPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -13,6 +15,7 @@ export default function DeviceRegistrationPage() {
   const [isRegistered, setIsRegistered] = useState(false);
   const [deviceId, setDeviceId] = useState<string | null>(null);
   const [registrationUrl, setRegistrationUrl] = useState<string | null>(null);
+  const [portalBaseUrl, setPortalBaseUrl] = useState<string>(DEFAULT_PORTAL_URL);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -22,6 +25,12 @@ export default function DeviceRegistrationPage() {
   const [pairingError, setPairingError] = useState<string | null>(null);
   const pairingInputRef = useRef<HTMLInputElement>(null);
   const [redirectTargetUrl, setRedirectTargetUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isLoading && registrationUrl && pairingInputRef.current) {
+      pairingInputRef.current.focus();
+    }
+  }, [isLoading, registrationUrl]);
 
   const isCallback =
     searchParams.has('device_id') &&
@@ -132,6 +141,10 @@ export default function DeviceRegistrationPage() {
           const deviceData = await deviceRes.json();
           setDeviceId(deviceData.device_id);
           setRegistrationUrl(deviceData.registration_url);
+          const base = deviceData.ci_cloud_frontend_url?.trim();
+          if (base) {
+            setPortalBaseUrl(base.replace(/\/+$/, ''));
+          }
 
           if (!deviceData.registration_url) {
             setError(
@@ -197,12 +210,17 @@ export default function DeviceRegistrationPage() {
   };
 
   if (isLoading) {
+    const isProcessingCallback = isCallback;
     return (
       <div className="flex flex-col items-center gap-4 text-center py-4">
         <Loader2 className="h-8 w-8 animate-spin text-primary" />
         <div>
-          <h2 className="text-xl font-semibold text-foreground">Registering Device...</h2>
-          <p className="text-sm text-muted-foreground mt-1">Please wait while your device is registered.</p>
+          <h2 className="text-xl font-semibold text-foreground">
+            {isProcessingCallback ? 'Setting up device...' : 'Checking registration status...'}
+          </h2>
+          <p className="text-sm text-muted-foreground mt-1">
+            {isProcessingCallback ? 'Starting Cloudflare tunnel and configuring access.' : 'Please wait.'}
+          </p>
         </div>
       </div>
     );
@@ -222,24 +240,25 @@ export default function DeviceRegistrationPage() {
     );
   }
 
-  if (isCallback) {
+  if (isCallback && error) {
     return (
       <div className="flex flex-col items-center gap-4 text-center py-4">
-        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+        <AlertCircle className="h-12 w-12 text-destructive" />
         <div>
-          <h2 className="text-xl font-semibold text-foreground">Setting up device...</h2>
-          <p className="text-sm text-muted-foreground mt-1">Starting Cloudflare tunnel and configuring access...</p>
+          <h2 className="text-xl font-semibold text-foreground">Registration failed</h2>
+          <p className="text-sm text-muted-foreground mt-1">We couldn&apos;t complete the device setup.</p>
         </div>
-        {error && (
-          <Alert variant="danger" className="text-left">
-            <AlertDescription>
-              <div className="flex items-start gap-2">
-                <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
-                <span>{error}</span>
-              </div>
-            </AlertDescription>
-          </Alert>
-        )}
+        <Alert variant="danger" className="text-left w-full max-w-md">
+          <AlertDescription>
+            <div className="flex items-start gap-2">
+              <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+              <span>{error}</span>
+            </div>
+          </AlertDescription>
+        </Alert>
+        <Button variant="outline" onClick={() => window.location.reload()}>
+          Try again
+        </Button>
       </div>
     );
   }
@@ -253,12 +272,7 @@ export default function DeviceRegistrationPage() {
       <h2 className="text-xl font-semibold text-center mb-4">Device Registration Required</h2>
       <p className="text-sm text-muted-foreground text-center mb-6">
         Enter the 6-character pairing code from{' '}
-        <a
-          href={`https://portal.${domain || 'companionintelligence.com'}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-primary underline hover:no-underline"
-        >
+        <a href={portalBaseUrl || DEFAULT_PORTAL_URL} target="_blank" rel="noopener noreferrer" className="text-primary underline hover:no-underline">
           CI Portal
         </a>{' '}
         to verify this device before registration.
