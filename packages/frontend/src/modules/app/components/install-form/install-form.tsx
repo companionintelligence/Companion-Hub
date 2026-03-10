@@ -432,13 +432,18 @@ export const InstallForm: React.FC<IProps> = ({
     }
   };
 
-  const visibleFields = formFields.filter(typeFilter);
+  // In simple mode (when user.advancedMode is false) we completely hide
+  // all app configuration form fields from the DOM. Only render fields
+  // when the user is in advanced mode.
+  const visibleFields = isAdvancedMode ? formFields.filter(typeFilter) : [];
   const hasConfigSection = visibleFields.length > 0 || (guestDashboard && isAdvancedMode) || isAdvancedMode;
 
   return (
     <form className="flex flex-col" onSubmit={handleSubmit(validate)} id={formId}>
       {/* Exposure mode selector — rendered outside scroll area by dialog */}
-      {info.exposable && info.dynamic_config && renderExposureModeSelector()}
+      {/* Only show exposure mode selector in advanced mode. In simple mode
+          we remove these configuration controls from the DOM entirely. */}
+      {info.exposable && info.dynamic_config && isAdvancedMode && renderExposureModeSelector()}
 
       {/* Configuration section — scrollable when in a dialog */}
       {hasConfigSection && (
