@@ -74,10 +74,10 @@ export default defineConfig({
       env: backendEnv,
     },
     {
-      command: 'bun run --filter frontend dev',
+      command: process.env.CI ? 'bun run --filter frontend build && bun run --filter frontend preview' : 'bun run --filter frontend dev',
       url: `http://localhost:${FRONTEND_PORT}`,
       reuseExistingServer: !process.env.CI,
-      timeout: 60000,
+      timeout: process.env.CI ? 120000 : 60000,
       stdout: 'pipe',
       stderr: 'pipe',
     },
