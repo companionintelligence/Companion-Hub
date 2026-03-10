@@ -32,6 +32,8 @@ export class AuthController {
     private readonly config: ConfigurationService,
   ) {}
 
+  // Note: PortalController is registered in the module and provides a lightweight portal page
+
   private async setSessionCookie(res: Response, sessionId: string, req: Request) {
     const host = req.headers['x-forwarded-host'] as string | undefined;
     const proto = req.headers['x-forwarded-proto'] as string | undefined;
@@ -196,23 +198,35 @@ export class AuthController {
   async traefik(@Req() req: Request, @Res() res: Response) {
     if (req.user) {
       this.logger.debug('User authenticated for Traefik forward auth', { username: req.user.username });
+      // Basic username header (legacy)
       res.setHeader('X-Runtipi-User', req.user.username);
+      // Additional headers for header-based SSO/pass-through
+      if (req.user.username) res.setHeader('X-Runtipi-Email', req.user.username);
+      if (typeof req.user.id !== 'undefined') res.setHeader('X-Runtipi-UserId', String(req.user.id));
+      // Groups header: currently only operator is available - expose as CSV
+      const groups: string[] = [];
+      if (req.user.operator) groups.push('operator');
+      res.setHeader('X-Runtipi-Groups', JSON.stringify(groups));
+
       return res.status(200).send();
     }
 
-    const uri = req.headers['x-forwarded-uri'] as string;
-    const proto = req.headers['x-forwarded-proto'] as string;
-    const host = req.headers['x-forwarded-host'] as string;
+    const uri = req.headers['x-forwarded-uri'] as string | undefined;
+    const proto = req.headers['x-forwarded-proto'] as string | undefined;
+    const host = req.headers['x-forwarded-host'] as string | undefined;
 
     this.logger.debug('Unauthenticated Traefik forward auth request', { uri, proto, host });
 
-    const subdomains = host.split('.');
+    const subdomains = (host || '').split('.');
     const app = subdomains[0] ?? '';
     const rootDomain = subdomains.slice(1).join('.');
 
-    const redirectUrl = new URL(uri, `${proto}://${host}`);
+    // Build redirect URL safely — fall back to root if headers missing
+    const baseHost = host || '';
+    const baseProto = proto || 'https';
+    const redirectUrl = new URL(uri || '/', `${baseProto}://${baseHost}`);
 
-    const loginUrl = new URL('/login', `${proto}://${rootDomain}`);
+    const loginUrl = new URL('/login', `${baseProto}://${rootDomain || baseHost}`);
     loginUrl.searchParams.set('redirect_url', redirectUrl.toString());
     loginUrl.searchParams.set('app', app);
 

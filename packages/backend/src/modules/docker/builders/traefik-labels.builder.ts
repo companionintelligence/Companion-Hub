@@ -59,6 +59,7 @@ export class TraefikLabelsBuilder {
 
       if (this.params.enableAuth) {
         Object.assign(this.labels, {
+          // Attach the hub forward-auth middleware when auth is enabled for this app
           [`traefik.http.routers.${this.params.appId}-${this.params.storeId}.middlewares`]: 'runtipi@docker',
         });
       }

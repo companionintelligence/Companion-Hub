@@ -348,7 +348,10 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
       key="open"
       IconComponent={ExternalLink}
       onClick={() => {
-        window.open(appUrl || fallbackUrl, '_blank');
+        // Route through Hub portal so hub login/cookies can be applied before opening app
+        const target = appUrl || fallbackUrl;
+        const portalUrl = `/api/auth/portal?redirect=${encodeURIComponent(target)}&app=${encodeURIComponent(info.urn as string)}`;
+        window.open(portalUrl, '_blank');
       }}
       title={t('APP_ACTION_OPEN')}
       disabled={isCheckingUrl || urlAvailable === false}
