@@ -1,129 +1,131 @@
-# CI-OS-Hub
+# CI-OS Hub
 
-REQUIRED: APP STORE
-https://github.com/companionintelligence/CI-App-Store
+**Self-hosted app hub for CI OS.** Install and manage apps from the companion intelligence marketplace with one click. Runs on your machine—your data stays yours.
 
-APP STORE LAUNCHER
-https://github.com/companionintelligence/companionintelligence.github.io
+Part of the [CI OS](https://github.com/companionintelligence) ecosystem. Licensed under [GNU General Public License v3.0](LICENSE).
 
-Based on Runtipi — A personal homeserver for everyone
+---
 
-https://github.com/runtipi/runtipi-appstore
+## What You Need
 
-https://www.runtipi.io/docs/getting-started/installation?utm_source=github&utm_campaign=readme
+| Requirement | Purpose |
+|-------------|---------|
+| **Docker** (v28+) | Runs the hub and all installed apps |
+| **Docker Compose** | Orchestrates services |
+| **Bun** (v1.3+) or **Node** (v22+) | For local development and scripts |
 
-https://forums.runtipi.io
+- [Install Docker Engine](https://docs.docker.com/engine/install/)
+- [Install Bun](https://bun.sh/) (or use Node 22+)
 
-# Running locally
+---
 
-In this guide we will show you how to run Runtipi locally on your machine. This is useful if you want to contribute to the project or if you want to test new apps you added to the appstore.
+## Quick Start
 
-## Prerequisites
+### 1. Clone
 
-- Docker desktop version 28 or later. Instructions: [Install Docker Engine](https://docs.docker.com/engine/install/)
-- Docker-compose
-- Node version 22+
+```bash
+git clone https://github.com/companionintelligence/CI-OS-Hub.git
+cd CI-OS-Hub
+```
 
-## Prepare
+### 2. Configure
 
-Once you have forked the repository and cloned it on your local machine you can start to prepare the environment.
+```bash
+cp .env.example .env.prod
+```
 
-## Install dependencies
+Edit `.env.prod` and set at least:
 
-runtipi uses [`bun`](https://bun.com/) as its JavaScript runtime and package manager, and `turbo.js` as its monorepo orchestrator. Install Bun using the instructions from the [official Bun website](https://bun.com/).
+- **`ROOT_FOLDER_HOST`** — Absolute path for data (e.g. `/opt/ci-os-hub/data` or `$(pwd)/.internal`)
+- **`JWT_SECRET`** — Random secret for sessions (e.g. `openssl rand -hex 32`)
+- **`CI_CLOUD_URL`** and **`CI_CLOUD_API_URL`** — CI Cloud portal URL (defaults work with public CI OS)
 
-Install the project dependencies
-`bun install`
+### 3. Run
 
-## Edit the environment variables
+```bash
+bun scripts/init-traefik.ts
+bun run start:prod
+```
 
-You need to copy `.env.example` to `.env`
+Open http://localhost:5002. On first run, register your device with CI Cloud (you'll get a pairing code or redirect URL). Once registered, you can install apps from the store and optionally expose them via Cloudflare Tunnel.
 
-## Cloudflare Tunnel Token
+---
 
-To enable the Cloudflare Tunnel integration (exposed apps), you must have a valid tunnel token.
-Place your token in the `tunnel/token` file:
+## Local Development
 
-`echo "YOUR_TUNNEL_TOKEN" > tunnel/token`
+For a fast feedback loop:
 
-This token allows the `cloudflared` daemon to authenticate with Cloudflare.
+```bash
+bun install
+cp .env.example .env.local
+# Edit .env.local — set ROOT_FOLDER_HOST, JWT_SECRET, etc.
+bun dev
+```
 
-## Generate Tunnel Certificates
+- **Frontend:** http://localhost:5173  
+- **Backend API:** http://localhost:3000  
 
-If you are working with the Cloudflare Tunnel integration (exposed apps), you need to generate a local Certificate Authority. This allows the `cloudflared` daemon to trust your local HTTPS services.
+Infrastructure (Postgres, RabbitMQ) runs in Docker; backend and frontend run locally with hot reload.
 
-Run the helper script:
-`./scripts/generate-tunnel-certs.sh`
+### Commands
 
-This will create `tunnel/certs/custom-ca.pem` and `custom-ca.key`.
+| Command | Description |
+|---------|-------------|
+| `bun dev` | Start infra + backend + frontend (hot reload) |
+| `bun run build` | Build all packages |
+| `bun run test` | Run tests |
+| `bun run cleanup` | Stop infra, remove `.internal`, tunnel files |
+| `bun run start:prod` | Full stack in Docker (production-like) |
+| `bun run start:staging` | Connects to staging CI Cloud |
+| `bun run start:dev` | Connects to dev CI Cloud |
 
-## Run CI OS Hub locally
+---
 
-We have consolidated the local development workflow into a single command.
+## Cloudflare Tunnel (Optional)
 
-### `bun dev` (Recommended)
+To expose your hub over the internet via CI Cloud:
 
-This is the main command for local development. It does the following:
-1. Starts the required infrastructure (Postgres DB, RabbitMQ) in Docker containers in the background.
-2. Starts the Backend (NestJS) in watch mode.
-3. Starts the Frontend (React Router) in HMR mode.
+1. Register your device with CI Cloud (in the hub UI).
+2. CI Cloud provisions a tunnel; the hub writes the token to `tunnel/token` automatically.
+3. For local dev with tunnels, create the token manually:
 
-Both the backend and frontend will hot-reload on file changes.
+   ```bash
+   echo "YOUR_TUNNEL_TOKEN" > tunnel/token
+   ```
 
-### Other Commands
+4. For HTTPS in local tunnel dev, generate CA certs:
 
-- `bun run build`: Builds all packages.
-- `bun run test`: Runs all tests.
-- `bun run cleanup`: Stops infrastructure containers and removes temporary files/directories (`.internal`, certs).
-- `bun run start:docker`: Runs the entire stack (including the Hub app itself) inside Docker containers. This is closer to how it runs in production but slower for development loop.
-- `bun run start:prod`: Simulates a production environment (uses production env vars and connects to live cloud APIs).
-- `bun run start:staging`: Simulates staging environment (connects to companionintel.com API).
-- `bun run start:cloud-dev`: Simulates development environment (connects to portal.companionintelligence.com API).
+   ```bash
+   ./scripts/generate-tunnel-certs.sh
+   ```
 
-### Accessing the App
+---
 
-Once `bun dev` is running:
-- **Frontend** is available at `http://localhost:5173` (or the port shown in terminal).
-- **Backend API** is available at `http://localhost:3000`.
+## Data & Updating
 
-## Data Persistence
+| Path | Contents |
+|------|----------|
+| `ci_hub_app_data` (volume) | App data, configs, user data |
+| `ci_hub_pgdata` (volume) | Hub database |
+| `ROOT_FOLDER_HOST/state` | Traefik config, certs |
+| `ROOT_FOLDER_HOST/apps` | Installed app definitions |
 
-### Critical Data Paths
-
-| Path (container) | Volume Type | Contents | Survives Update? |
-|---|---|---|---|
-| `/app-data` | Named volume (`ci_hub_app_data`) | App databases, configs, user data | ✅ Yes |
-| `/var/lib/postgresql/data` | Named volume (`ci_hub_pgdata`) | Hub database | ✅ Yes |
-| `/data/state` | Bind mount | Traefik config, ACME certs, seed | ✅ Yes (if paths correct) |
-| `/data/apps` | Bind mount | Installed app definitions | ✅ Yes (if paths correct) |
-| `/data/user-config` | Bind mount | User app overrides | ✅ Yes (if paths correct) |
-| `/app` | Ephemeral | Hub application code | ❌ Rebuilt on update |
-
-### ROOT_FOLDER_HOST
-
-`ROOT_FOLDER_HOST` **must** be set to an absolute host path in `.env` (e.g., `/opt/ci-os-hub/data`). This path is used to generate Docker volume mounts for installed apps. The Hub will refuse to start if it's relative.
-
-### Updating the Hub
-
-Use the update script for safe updates:
+**Update the hub:**
 
 ```bash
 ./scripts/updater/update.sh
 ```
 
-The script performs pre-flight checks, creates a database backup, pulls new images, restarts services, and verifies data integrity.
+---
 
-### Migrating Existing Installs
+## Related Projects
 
-If upgrading from a version that used bind mounts for app-data:
+- **[CI App Store](https://github.com/companionintelligence/CI-App-Store)** — Open-source app catalog
+- **[CI Launcher](https://github.com/companionintelligence/companionintelligence.github.io)** — Web launcher for CI OS hubs
+- **[Runtipi](https://github.com/runtipi/runtipi-appstore)** — Original homeserver foundation
 
-```bash
-./scripts/migrate-to-named-volumes.sh [--dry-run]
-```
+---
 
-This copies data from `.internal/app-data` into the `ci_hub_app_data` named volume. The original data is preserved as a backup.
+## License
 
-### Health Checks
-
-- `GET /api/health` — Standard health check (database, queue)
-- `GET /api/health/data` — Data integrity check (verifies all critical directories exist and are writable)
+[GNU General Public License v3.0](LICENSE) — Use, modify, and share. Derivatives must remain open source.
