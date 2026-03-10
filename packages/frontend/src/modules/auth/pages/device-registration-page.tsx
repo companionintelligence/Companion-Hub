@@ -1,8 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router';
 import { Button } from '@/components/ui/Button';
 import { Alert, AlertDescription } from '@/components/ui/Alert/Alert';
-import { AlertCircle, ExternalLink, Loader2 } from 'lucide-react';
+import { AlertCircle, CheckCircle2, ExternalLink, Loader2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useUserContext } from '@/context/user-context';
 
@@ -16,7 +16,12 @@ export default function DeviceRegistrationPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Check if this is a callback from CI Cloud
+  const [pairingCode, setPairingCode] = useState('');
+  const [isPairingVerified, setIsPairingVerified] = useState(false);
+  const [isVerifying, setIsVerifying] = useState(false);
+  const [pairingError, setPairingError] = useState<string | null>(null);
+  const pairingInputRef = useRef<HTMLInputElement>(null);
+
   const isCallback =
     searchParams.has('device_id') &&
     searchParams.has('organization_id') &&
@@ -24,7 +29,6 @@ export default function DeviceRegistrationPage() {
     searchParams.has('subdomain') &&
     searchParams.has('slug');
 
-  // Handle callback from CI Cloud
   useEffect(() => {
     if (isCallback) {
       const handleCallback = async () => {
@@ -104,7 +108,6 @@ export default function DeviceRegistrationPage() {
       return;
     }
 
-    // Check registration status on mount
     const checkStatus = async () => {
       try {
         const res = await fetch('/api/registration/status');
@@ -117,14 +120,12 @@ export default function DeviceRegistrationPage() {
           }
         }
 
-        // Get device ID and registration URL
         const deviceRes = await fetch('/api/registration/device-id');
         if (deviceRes.ok) {
           const deviceData = await deviceRes.json();
           setDeviceId(deviceData.device_id);
           setRegistrationUrl(deviceData.registration_url);
 
-          // If no registration URL, show helpful error
           if (!deviceData.registration_url) {
             setError(
               'CI Cloud frontend URL not configured. ' +
@@ -146,6 +147,40 @@ export default function DeviceRegistrationPage() {
     checkStatus();
   }, [navigate, searchParams, isCallback, domain]);
 
+  const handleVerifyPairingCode = async () => {
+    const code = pairingCode.trim().toUpperCase();
+    if (code.length !== 6) {
+      setPairingError('Pairing code must be exactly 6 characters.');
+      return;
+    }
+
+    setIsVerifying(true);
+    setPairingError(null);
+
+    try {
+      const res = await fetch('/api/registration/verify-pairing-code', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pairing_code: code }),
+      });
+
+      const data = await res.json();
+
+      if (data.success) {
+        setIsPairingVerified(true);
+        toast.success('Pairing code verified! You can now register this device.');
+      } else {
+        setPairingError(data.message || 'Invalid pairing code.');
+        toast.error(data.message || 'Invalid pairing code.');
+      }
+    } catch (e) {
+      setPairingError('Failed to verify pairing code. Please try again.');
+      console.error(e);
+    } finally {
+      setIsVerifying(false);
+    }
+  };
+
   const handleRedirectToCICloud = () => {
     if (registrationUrl) {
       window.location.href = registrationUrl;
@@ -154,7 +189,6 @@ export default function DeviceRegistrationPage() {
     }
   };
 
-  // Show loading state
   if (isLoading) {
     return (
       <div className="flex flex-col items-center gap-4 text-center py-4">
@@ -167,7 +201,6 @@ export default function DeviceRegistrationPage() {
     );
   }
 
-  // Show callback processing state
   if (isCallback) {
     return (
       <div className="flex flex-col items-center gap-4 text-center py-4">
@@ -190,17 +223,15 @@ export default function DeviceRegistrationPage() {
     );
   }
 
-  // If already registered, redirect
   if (isRegistered) {
-    return null; // Will navigate away
+    return null;
   }
 
-  // Show registration redirect page
   return (
     <>
       <h2 className="text-xl font-semibold text-center mb-4">Device Registration Required</h2>
       <p className="text-sm text-muted-foreground text-center mb-6">
-        This device needs to be registered with CI Cloud to access the app store. You will be redirected to complete the registration process.
+        Enter the 6-character pairing code from CI Cloud to verify this device before registration.
       </p>
 
       {deviceId && (
@@ -221,12 +252,61 @@ export default function DeviceRegistrationPage() {
         </Alert>
       )}
 
+      <div className="mb-6 space-y-2">
+        <label htmlFor="pairing-code" className="text-sm font-medium leading-none block">
+          Pairing Code
+        </label>
+        <div className="flex gap-2">
+          <input
+            id="pairing-code"
+            ref={pairingInputRef}
+            placeholder="ABC123"
+            value={pairingCode}
+            onChange={(e) => {
+              const val = e.target.value
+                .toUpperCase()
+                .replace(/[^A-Z0-9]/g, '')
+                .slice(0, 6);
+              setPairingCode(val);
+              if (isPairingVerified) {
+                setIsPairingVerified(false);
+              }
+              setPairingError(null);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && pairingCode.length === 6 && !isPairingVerified) {
+                handleVerifyPairingCode();
+              }
+            }}
+            maxLength={6}
+            disabled={isPairingVerified}
+            className={`flex-1 h-9 rounded-md border bg-transparent px-3 py-1 text-base shadow-sm transition-colors font-mono tracking-widest placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 md:text-sm ${pairingError ? 'border-destructive focus-visible:ring-destructive' : 'border-input'}`}
+          />
+          <Button
+            variant="outline"
+            onClick={handleVerifyPairingCode}
+            disabled={pairingCode.length !== 6 || isVerifying || isPairingVerified}
+            loading={isVerifying}
+          >
+            {isPairingVerified ? <CheckCircle2 className="h-4 w-4 text-green-500" /> : 'Verify'}
+          </Button>
+        </div>
+        {pairingError && <p className="text-[0.8rem] font-medium text-destructive">{pairingError}</p>}
+        {isPairingVerified && (
+          <p className="text-sm text-green-600 flex items-center gap-1">
+            <CheckCircle2 className="h-3 w-3" />
+            Pairing code verified
+          </p>
+        )}
+      </div>
+
       {registrationUrl && (
         <>
-          <Button intent="primary" className="w-full" onClick={handleRedirectToCICloud}>
+          <Button intent="primary" className="w-full" onClick={handleRedirectToCICloud} disabled={!isPairingVerified}>
             Register Device on CI Cloud
             <ExternalLink className="ml-2 h-4 w-4" />
           </Button>
+          {!isPairingVerified && <p className="text-xs text-muted-foreground mt-2 text-center">Verify your pairing code to enable registration.</p>}
           <p className="text-xs text-muted-foreground mt-4 text-center">
             You will be redirected to CI Cloud to sign in, create an organization, and complete device registration.
           </p>

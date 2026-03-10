@@ -51,11 +51,11 @@ export const links: Route.LinksFunction = () => [
 export async function clientLoader({ request }: Route.ActionArgs) {
   const url = new URL(request.url);
 
-  // Check cached registration status (only 'true' is cached)
-  const cachedRegistered = sessionStorage.getItem('device-registered') === 'true';
+  const CACHE_TTL_MS = 5 * 60 * 1000;
+  const cachedAt = Number(sessionStorage.getItem('device-registered-at') || '0');
+  const cacheValid = sessionStorage.getItem('device-registered') === 'true' && Date.now() - cachedAt < CACHE_TTL_MS;
 
-  // Always check registration status first — device registration must happen before anything else
-  const regResult = cachedRegistered
+  const regResult = cacheValid
     ? { ok: true, registered: true }
     : await fetch('/api/registration/status')
         .then(async (res) => {
@@ -63,6 +63,10 @@ export async function clientLoader({ request }: Route.ActionArgs) {
           const data = await res.json();
           if (data.registered) {
             sessionStorage.setItem('device-registered', 'true');
+            sessionStorage.setItem('device-registered-at', String(Date.now()));
+          } else {
+            sessionStorage.removeItem('device-registered');
+            sessionStorage.removeItem('device-registered-at');
           }
           return { ok: true, registered: data.registered };
         })
