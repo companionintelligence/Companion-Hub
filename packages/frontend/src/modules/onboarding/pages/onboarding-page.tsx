@@ -105,6 +105,9 @@ function OnboardingWizard() {
               <InstallStep
                 apps={selectedApps}
                 onComplete={() => {
+                  // Mark installs as complete (optimistic) and move to final
+                  // step. The InstallStep component itself no longer blocks the
+                  // user from continuing while installs run in the background.
                   setInstallComplete(true);
                   setCurrentStep(4);
                 }}

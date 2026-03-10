@@ -1,6 +1,8 @@
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent } from '@/components/ui/Card';
 import { useEffect, useRef, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import { getInstalledAppsQueryKey } from '@/api-client/@tanstack/react-query.gen';
 import type { OnboardingApp } from '../helpers/types';
 
 interface InstallStepProps {
@@ -22,7 +24,9 @@ export const InstallStep = ({ apps, onComplete }: InstallStepProps) => {
   const started = useRef(false);
   const onCompleteRef = useRef(onComplete);
   onCompleteRef.current = onComplete;
+  const queryClient = useQueryClient();
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: queryClient is stable from useQueryClient
   useEffect(() => {
     if (started.current || apps.length === 0) return;
     started.current = true;
@@ -41,6 +45,34 @@ export const InstallStep = ({ apps, onComplete }: InstallStepProps) => {
         }
 
         setStates((prev) => prev.map((s, idx) => (idx === i ? { ...s, status: 'installing' } : s)));
+        // Add an optimistic entry to the installed apps cache so the dashboard
+        // and other pages show the app as "installing" while the server
+        // processes the request.
+        try {
+          const installedKey = getInstalledAppsQueryKey();
+          const existing = (queryClient.getQueryData(installedKey) as Record<string, unknown>) || { installed: [] };
+          // Remove any prior optimistic entry for this urn
+          const filtered = existing.installed.filter((it: Record<string, Record<string, unknown>>) => it.info?.urn !== app.urn);
+          const tempId = `pending-${app.appSlug}-${Date.now()}`;
+          const optimistic = {
+            info: {
+              urn: app.urn,
+              id: app.appSlug,
+              name: app.name,
+              available: true,
+            },
+            app: {
+              id: tempId,
+              status: 'installing',
+            },
+            metadata: { latestVersion: 0, localSubdomain: app.localSubdomain || '' },
+          };
+          queryClient.setQueryData(installedKey, { installed: [optimistic, ...filtered] });
+        } catch (_e) {
+          // Non-fatal; proceed without optimistic cache if something fails
+          // (e.g., no query client available)
+          // console.warn('Failed to set optimistic installed app', e);
+        }
 
         try {
           // Trigger the install on the server. The install endpoint may only
@@ -76,7 +108,7 @@ export const InstallStep = ({ apps, onComplete }: InstallStepProps) => {
               if (!installedRes.ok) return false;
               const data = await installedRes.json().catch(() => ({}));
               const installed = data.installed || [];
-              return installed.some((a: any) => a.info?.urn === app.urn);
+              return installed.some((a: Record<string, Record<string, unknown>>) => a.info?.urn === app.urn);
             } catch {
               return false;
             }
@@ -100,13 +132,38 @@ export const InstallStep = ({ apps, onComplete }: InstallStepProps) => {
 
           if (confirmed) {
             setStates((prev) => prev.map((s, idx) => (idx === i ? { ...s, status: 'success' } : s)));
+            // Installation confirmed — refresh installed apps list to replace
+            // the optimistic entry with the real one.
+            try {
+              queryClient.invalidateQueries({ queryKey: getInstalledAppsQueryKey() });
+            } catch (_e) {
+              // ignore
+            }
           } else {
             // If we never confirmed installation, mark as error but include
             // a helpful message so users know it may still be processing.
             setStates((prev) => prev.map((s, idx) => (idx === i ? { ...s, status: 'error', error: 'Installation not confirmed (timed out)' } : s)));
+            // Remove optimistic installed entry on error/timeout so dashboard
+            // doesn't keep showing a phantom installing app.
+            try {
+              const installedKey = getInstalledAppsQueryKey();
+              const existing = (queryClient.getQueryData(installedKey) as Record<string, unknown>) || { installed: [] };
+              const filtered = existing.installed.filter((it: Record<string, Record<string, unknown>>) => it.info?.urn !== app.urn);
+              queryClient.setQueryData(installedKey, { installed: filtered });
+            } catch (_e) {
+              // ignore
+            }
           }
-        } catch (e) {
+        } catch (_e) {
           setStates((prev) => prev.map((s, idx) => (idx === i ? { ...s, status: 'error', error: (e as Error).message } : s)));
+          try {
+            const installedKey = getInstalledAppsQueryKey();
+            const existing = (queryClient.getQueryData(installedKey) as Record<string, unknown>) || { installed: [] };
+            const filtered = existing.installed.filter((it: Record<string, Record<string, unknown>>) => it.info?.urn !== app.urn);
+            queryClient.setQueryData(installedKey, { installed: filtered });
+          } catch (_e) {
+            // ignore
+          }
         }
       }
 
@@ -170,13 +227,15 @@ export const InstallStep = ({ apps, onComplete }: InstallStepProps) => {
           ))}
         </div>
 
-        {done && (
-          <div className="flex justify-end mt-6">
-            <Button intent="primary" onClick={onComplete}>
-              Continue
-            </Button>
-          </div>
-        )}
+        <div className="flex justify-end mt-6">
+          {/* Allow users to continue even while installs are running. This button
+              is intentionally always enabled (unless loading) so onboarding does
+              not block the user. If installation completes naturally the
+              original onComplete will also be called by the parent flow. */}
+          <Button intent="primary" onClick={() => onCompleteRef.current()}>
+            {done ? 'Continue' : 'Continue (apps installing in background)'}
+          </Button>
+        </div>
       </CardContent>
     </Card>
   );
