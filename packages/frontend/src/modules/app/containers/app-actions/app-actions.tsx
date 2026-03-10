@@ -62,7 +62,10 @@ const ActionButton: React.FC<BtnProps> = (props) => {
   return (
     <Button data-testid={testId} loading={loading} {...rest} className={clsx('action-button', className)}>
       {title}
-      {IconComponent && <IconComponent className="ml-1" size={14} />}
+      {IconComponent && (
+        // Provide accessible name for icons (assistive tech will read the button label as well)
+        <IconComponent className="ml-1" size={14} role="img" aria-label={title?.toString() ?? undefined} />
+      )}
     </Button>
   );
 };
