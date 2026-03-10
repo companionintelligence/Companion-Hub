@@ -1077,16 +1077,6 @@
           "appSlug": "passbolt"
         }
       ]
-    },
-    {
-      "proprietary": [
-        {
-          "name": "NordVPN",
-          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://nordvpn.com",
-          "url": null
-        }
-      ],
-      "alternatives": []
     }
   ],
   "photography": [
