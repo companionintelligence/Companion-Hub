@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, type OnApplicationShutdown } from '@nestjs/common';
 import * as Sentry from '@sentry/nestjs';
 import { APP_DATA_DIR, DATA_DIR } from './common/constants';
 import { CacheService, ONE_DAY_IN_SECONDS } from './core/cache/cache.service';
@@ -20,7 +20,7 @@ import { PortManagerService } from './modules/network/port-manager.service';
 import { AppsRepository } from './modules/apps/apps.repository';
 
 @Injectable()
-export class AppService {
+export class AppService implements OnApplicationShutdown {
   constructor(
     private readonly cache: CacheService,
     private readonly configuration: ConfigurationService,
@@ -37,6 +37,10 @@ export class AppService {
     private readonly appsRepository: AppsRepository,
     @Inject(DOCKERODE) private docker: Dockerode,
   ) {}
+
+  onApplicationShutdown() {
+    this.logger.stopPeriodicFlush();
+  }
 
   public async bootstrap() {
     try {
@@ -59,7 +63,8 @@ export class AppService {
       this.logger.info('Sentry initialized');
 
       await this.logger.flush();
-      this.logger.info('Logger flushed');
+      this.logger.startPeriodicFlush();
+      this.logger.info('Logger flushed, daily rotation scheduled');
 
       this.logger.info(`Running version: ${process.env.TIPI_VERSION}`);
 

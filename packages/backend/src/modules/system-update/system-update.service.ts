@@ -1,14 +1,14 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
-import { Injectable, OnApplicationBootstrap } from '@nestjs/common';
+import { Injectable, OnApplicationBootstrap, type OnApplicationShutdown } from '@nestjs/common';
 import { DATA_DIR } from '@/common/constants';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { RegistryService } from '@/utils/registry/registry.service';
 
 @Injectable()
-export class SystemUpdateService implements OnApplicationBootstrap {
+export class SystemUpdateService implements OnApplicationBootstrap, OnApplicationShutdown {
   autoUpdateInterval: ReturnType<typeof setInterval> | null = null;
   private static readonly CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
@@ -23,6 +23,13 @@ export class SystemUpdateService implements OnApplicationBootstrap {
     if (__prod__) {
       this.logger.info('Scheduling daily auto-update check');
       this.autoUpdateInterval = setInterval(() => this.autoUpdateCheck(), SystemUpdateService.CHECK_INTERVAL_MS);
+    }
+  }
+
+  onApplicationShutdown() {
+    if (this.autoUpdateInterval) {
+      clearInterval(this.autoUpdateInterval);
+      this.autoUpdateInterval = null;
     }
   }
 

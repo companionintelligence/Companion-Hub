@@ -1,14 +1,16 @@
 import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
-import { Injectable } from '@nestjs/common';
+import { Injectable, type OnApplicationShutdown } from '@nestjs/common';
 import { DATA_DIR } from '@/common/constants';
 
 export const ONE_DAY_IN_SECONDS = 60 * 60 * 24;
 
 @Injectable()
-export class CacheService {
+export class CacheService implements OnApplicationShutdown {
   private db: DatabaseSync;
+  private evictionInterval: NodeJS.Timeout | null = null;
+  private static readonly SIX_HOURS_MS = 6 * 60 * 60 * 1000;
 
   constructor() {
     const cacheDir = path.join(DATA_DIR, 'cache');
@@ -21,6 +23,16 @@ export class CacheService {
 
     if (!tableCheck) {
       this.db.exec('CREATE TABLE keyv (key TEXT PRIMARY KEY, value TEXT)');
+    }
+
+    this.evictExpired();
+    this.evictionInterval = setInterval(() => this.evictExpired(), CacheService.SIX_HOURS_MS);
+  }
+
+  onApplicationShutdown() {
+    if (this.evictionInterval) {
+      clearInterval(this.evictionInterval);
+      this.evictionInterval = null;
     }
   }
 
@@ -66,5 +78,26 @@ export class CacheService {
   public clear() {
     const stmt = this.db.prepare('DELETE FROM keyv');
     stmt.run();
+  }
+
+  private evictExpired() {
+    try {
+      const now = Date.now();
+      const rows = this.db.prepare('SELECT key, value FROM keyv').all() as { key: string; value: string }[];
+      const deleteStmt = this.db.prepare('DELETE FROM keyv WHERE key = ?');
+
+      for (const row of rows) {
+        try {
+          const { expiration = 0 } = JSON.parse(row.value) as { expiration: number };
+          if (expiration > 0 && expiration < now) {
+            deleteStmt.run(row.key);
+          }
+        } catch {
+          deleteStmt.run(row.key);
+        }
+      }
+    } catch {
+      // Eviction is best-effort; failures are non-fatal
+    }
   }
 }
