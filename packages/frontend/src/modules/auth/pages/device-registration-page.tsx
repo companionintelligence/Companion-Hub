@@ -102,9 +102,6 @@ export default function DeviceRegistrationPage() {
               // up to ~5 minutes to be fully available after registration, so poll until
               // the domain responds or we hit the timeout.
               setRedirectTargetUrl(targetUrl);
-              setIsPolling(true);
-              setIsLocalhostRedirect(isLocalhost);
-              setPollError(null);
 
               const pollInterval = 5000; // 5s
               const maxWaitMs = isLocalhost ? 35 * 1000 : 5 * 60 * 1000; // 35s for localhost, 5m for prod
@@ -133,8 +130,6 @@ export default function DeviceRegistrationPage() {
                       tryFetch();
                     }, pollInterval) as unknown as number;
                   } else {
-                    setIsPolling(false);
-                    setPollError('Timed out waiting for portal domain to become available. You can try refreshing or visiting the portal manually.');
                     // As a fallback, navigate to root of the hub so the user can continue.
                     navigate('/', { replace: true });
                   }
