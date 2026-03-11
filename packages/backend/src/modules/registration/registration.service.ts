@@ -286,7 +286,29 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       this.logger.warn('dmidecode failed, falling back to systeminformation', e);
     }
 
-    return (await si.uuid()).hardware;
+    const uuid = await si.uuid();
+
+    const id = uuid.hardware;
+    if (id && id !== '00000000-0000-0000-0000-000000000000') {
+      this.logger.debug(`Device ID from systeminformation: ${id}`);
+      return id;
+    }
+
+    // Fallback: read hardware UUID directly (same as systeminformation's si.uuid().hardware)
+    try {
+      return fs.readFileSync('/sys/class/dmi/id/product_uuid', 'utf-8').trim();
+    } catch (e) {
+      console.error('Could not read /sys/class/dmi/id/product_uuid', e);
+    }
+
+    // Last resort: /etc/machine-id
+    try {
+      return fs.readFileSync('/etc/machine-id', 'utf-8').trim();
+    } catch (e) {
+      console.error('Could not read /etc/machine-id', e);
+    }
+
+    throw new Error('Unable to determine device ID from any source');
   }
 
   private hasTunnelToken(): boolean {

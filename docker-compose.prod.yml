@@ -94,6 +94,7 @@ services:
       - ./docker-compose.prod.yml:/data/docker-compose.yml
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
+      - /etc/machine-id:/etc/machine-id:ro
     networks:
       ci_os_hub_network:
         aliases:

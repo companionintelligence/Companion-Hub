@@ -189,6 +189,11 @@ export class RegistrationController {
     }
 
     const deviceId = await this.registrationService.getDeviceId();
+
+    if (!deviceId) {
+      return { success: false, message: 'Device ID not found. Please ensure your device is properly initialized.' };
+    }
+
     const { ciCloudApiUrl } = this.config.getConfig();
 
     if (!ciCloudApiUrl) {

@@ -25,6 +25,9 @@ export default function DeviceRegistrationPage() {
   const [pairingError, setPairingError] = useState<string | null>(null);
   const pairingInputRef = useRef<HTMLInputElement>(null);
   const [redirectTargetUrl, setRedirectTargetUrl] = useState<string | null>(null);
+  const mountedRef = useRef(true);
+  const pollTimerRef = useRef<number | null>(null);
+  const startTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!isLoading && registrationUrl && pairingInputRef.current) {
@@ -89,34 +92,73 @@ export default function DeviceRegistrationPage() {
             toast.success('Device registered successfully!');
             setIsRegistered(true);
 
-            const subdomain = params.subdomain;
             const rootDomain = data.domain || domain;
             const isLocalhost =
               typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+
             if (subdomain && rootDomain) {
               const targetUrl = `https://${subdomain}.${rootDomain}`;
-              const redirectDelayMs = isLocalhost ? (30 + 5) * 1000 : 1500;
-              if (isLocalhost) {
-                setRedirectTargetUrl(targetUrl);
-              }
-              setTimeout(() => {
-                window.location.href = targetUrl;
-              }, redirectDelayMs);
+              // Show waiting state and poll the target URL for readiness. The portal may take
+              // up to ~5 minutes to be fully available after registration, so poll until
+              // the domain responds or we hit the timeout.
+              setRedirectTargetUrl(targetUrl);
+
+              const pollInterval = 5000; // 5s
+              const maxWaitMs = isLocalhost ? 35 * 1000 : 5 * 60 * 1000; // 35s for localhost, 5m for prod
+              const start = Date.now();
+
+              const tryFetch = async () => {
+                // Create an AbortController for each attempt so we can cancel when
+                // the component unmounts or we navigate away.
+                const controller = new AbortController();
+                const signal = controller.signal;
+
+                try {
+                  // Use no-cors so the request will resolve for opaque responses when the
+                  // host is up. If the promise resolves, consider the domain reachable.
+                  await fetch(targetUrl, { mode: 'no-cors', cache: 'no-store', signal });
+                  if (!mountedRef.current) return;
+                  // If fetch resolved, redirect immediately
+                  window.location.href = targetUrl;
+                } catch {
+                  if (!mountedRef.current) return;
+                  // In browsers many cross-origin requests will resolve as opaque; treat
+                  // rejections as temporary and continue polling until timeout.
+                  if (Date.now() - start < maxWaitMs) {
+                    // schedule next attempt and store the timer so it can be cleared
+                    pollTimerRef.current = window.setTimeout(() => {
+                      tryFetch();
+                    }, pollInterval) as unknown as number;
+                  } else {
+                    // As a fallback, navigate to root of the hub so the user can continue.
+                    navigate('/', { replace: true });
+                  }
+                }
+              };
+
+              // Start polling shortly after registration
+              startTimerRef.current = window.setTimeout(
+                () => {
+                  tryFetch();
+                },
+                isLocalhost ? 1000 : 1500,
+              ) as unknown as number;
             } else {
               setTimeout(() => {
                 navigate('/');
               }, 1500);
             }
           } else {
-            setError(data.message || 'Registration failed');
-            toast.error(data.message || 'Registration failed');
+            const regErrorMsg = typeof data.message === 'string' ? data.message : 'Registration failed';
+            setError(regErrorMsg);
+            toast.error(regErrorMsg);
           }
         } catch (e) {
           setError('Failed to complete registration');
           toast.error('Failed to complete registration');
           console.error(e);
         } finally {
-          setIsLoading(false);
+          if (mountedRef.current) setIsLoading(false);
         }
       };
 
@@ -165,6 +207,16 @@ export default function DeviceRegistrationPage() {
     };
 
     checkStatus();
+    return () => {
+      mountedRef.current = false;
+      // clear any outstanding timers
+      if (pollTimerRef.current) {
+        clearTimeout(pollTimerRef.current as unknown as number);
+      }
+      if (startTimerRef.current) {
+        clearTimeout(startTimerRef.current as unknown as number);
+      }
+    };
   }, [navigate, searchParams, isCallback, domain]);
 
   const handleVerifyPairingCode = async () => {
@@ -186,12 +238,13 @@ export default function DeviceRegistrationPage() {
 
       const data = await res.json();
 
-      if (data.success) {
+      if (res.ok && data.success) {
         setIsPairingVerified(true);
         toast.success('Pairing code verified! You can now register this device.');
       } else {
-        setPairingError(data.message || 'Invalid pairing code.');
-        toast.error(data.message || 'Invalid pairing code.');
+        const errorMsg = typeof data.message === 'string' ? data.message : 'Invalid pairing code.';
+        setPairingError(errorMsg);
+        toast.error(errorMsg);
       }
     } catch (e) {
       setPairingError('Failed to verify pairing code. Please try again.');
@@ -213,7 +266,7 @@ export default function DeviceRegistrationPage() {
     const isProcessingCallback = isCallback;
     return (
       <div className="flex flex-col items-center gap-4 text-center py-4">
-        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+        <Loader2 role="img" aria-label="loading" className="h-8 w-8 animate-spin text-primary" />
         <div>
           <h2 className="text-xl font-semibold text-foreground">
             {isProcessingCallback ? 'Setting up device...' : 'Checking registration status...'}
@@ -229,7 +282,7 @@ export default function DeviceRegistrationPage() {
   if (isRegistered && redirectTargetUrl) {
     return (
       <div className="flex flex-col items-center gap-4 text-center py-4 max-w-md mx-auto">
-        <CheckCircle2 className="h-12 w-12 text-green-500" />
+        <CheckCircle2 role="img" aria-label="success" className="h-12 w-12 text-green-500" />
         <div>
           <h2 className="text-xl font-semibold text-foreground">Device Registered Successfully</h2>
           <p className="text-sm text-muted-foreground mt-3">
@@ -289,7 +342,7 @@ export default function DeviceRegistrationPage() {
         <Alert variant="danger" className="mb-4">
           <AlertDescription>
             <div className="flex items-start gap-2">
-              <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+              <AlertCircle role="img" aria-label="error" className="h-4 w-4 mt-0.5 flex-shrink-0" />
               <span>{error}</span>
             </div>
           </AlertDescription>
@@ -332,13 +385,13 @@ export default function DeviceRegistrationPage() {
             disabled={pairingCode.length !== 6 || isVerifying || isPairingVerified}
             loading={isVerifying}
           >
-            {isPairingVerified ? <CheckCircle2 className="h-4 w-4 text-green-500" /> : 'Verify'}
+            {isPairingVerified ? <CheckCircle2 role="img" aria-label="verified" className="h-4 w-4 text-green-500" /> : 'Verify'}
           </Button>
         </div>
         {pairingError && <p className="text-[0.8rem] font-medium text-destructive">{pairingError}</p>}
         {isPairingVerified && (
           <p className="text-sm text-green-600 flex items-center gap-1">
-            <CheckCircle2 className="h-3 w-3" />
+            <CheckCircle2 role="img" aria-label="verified" className="h-3 w-3" />
             Pairing code verified
           </p>
         )}
@@ -348,7 +401,7 @@ export default function DeviceRegistrationPage() {
         <>
           <Button intent="primary" className="w-full" onClick={handleRedirectToPortal} disabled={!isPairingVerified}>
             Register Device on CI Portal
-            <ExternalLink className="ml-2 h-4 w-4" />
+            <ExternalLink role="img" aria-label="external link" className="ml-2 h-4 w-4" />
           </Button>
           {!isPairingVerified && <p className="text-xs text-muted-foreground mt-2 text-center">Verify your pairing code to enable registration.</p>}
           <p className="text-xs text-muted-foreground mt-4 text-center">
