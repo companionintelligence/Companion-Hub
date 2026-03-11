@@ -540,6 +540,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
     const changed = await this.appRepository.updateAppById(app.id, {
       exposed: exposed ?? false,
       exposedLocal: parsedForm.exposedLocal ?? false,
+      exposureMode: parsedForm.exposureMode ?? 'local',
       openPort: parsedForm.openPort,
       port: parsedForm.port ?? appInfo.port,
       domain: domain ?? null,
