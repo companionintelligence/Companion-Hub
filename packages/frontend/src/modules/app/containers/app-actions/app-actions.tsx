@@ -16,6 +16,7 @@ import {
 import type React from 'react';
 import { createElement, useState, useEffect } from 'react';
 import { client } from '@/api-client/client.gen';
+import { useQueryClient } from '@tanstack/react-query';
 import { Button, type ButtonProps } from '@/components/ui/Button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/DropdownMenu';
 import { useDisclosure } from '@/lib/hooks/use-disclosure';
@@ -226,6 +227,10 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
   const [isResolving, setIsResolving] = useState(false);
   const [appUrl, setAppUrl] = useState<string | null>(null);
 
+  // Show install errors surfaced from SSE via query cache
+  const queryClient = useQueryClient();
+  const installError = queryClient.getQueryData<{ message: string } | null>(['app-install-error', info.urn]) ?? null;
+
   // Fallback URL construction (used before backend responds)
   const subdomain = app?.localSubdomain;
   const organizationSlug = userSettings.ciHubOrganizationSlug;
@@ -362,6 +367,13 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
     />
   );
 
+  // If there was an install error for this app, show it under the open/action area
+  const InstallErrorMessage = installError?.message ? (
+    <p className="mt-1 text-sm text-destructive" role="alert">
+      {installError.message}
+    </p>
+  ) : null;
+
   const PendingButton = <ActionButton key="pending" title={t('APP_ACTION_PENDING')} disabled loading />;
 
   const ErrorButton = errorResolvable ? (
@@ -470,6 +482,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
             key: button.key,
           });
         })}
+        {InstallErrorMessage}
         {listItems.length > 0 && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
