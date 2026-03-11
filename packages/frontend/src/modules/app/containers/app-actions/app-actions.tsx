@@ -62,7 +62,10 @@ const ActionButton: React.FC<BtnProps> = (props) => {
   return (
     <Button data-testid={testId} loading={loading} {...rest} className={clsx('action-button', className)}>
       {title}
-      {IconComponent && <IconComponent className="ml-1" size={14} />}
+      {IconComponent && (
+        // Provide accessible name for icons (assistive tech will read the button label as well)
+        <IconComponent className="ml-1" size={14} role="img" aria-label={title?.toString() ?? undefined} />
+      )}
     </Button>
   );
 };
@@ -130,9 +133,10 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
     return (
       <ActionButton
         key="loading"
-        loading
+        // Show installing text and make button disabled while in-progress
+        disabled
         intent="success"
-        title={`${t('APP_ACTION_LOADING')}${progressText}`}
+        title={`${t('APP_ACTION_INSTALLING')}${progressText}`}
         className="installation-progress-button"
       />
     );
@@ -185,7 +189,9 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
     </DropdownMenuItem>
   );
   const CancelListItem = (
-    <DropdownMenuItem onClick={stopDisclosure.open} key="cancel">
+    // During installation we want the cancel option to surface the uninstall flow
+    // which will remove the partially installed app. Reuse the uninstall dialog.
+    <DropdownMenuItem onClick={uninstallDisclosure.open} key="cancel">
       <Pause className="mr-2" size={16} />
       {t('APP_ACTION_CANCEL')}
     </DropdownMenuItem>
