@@ -56,8 +56,7 @@
         "CI_CLOUD_URL",
         "LOCAL_DOMAIN",
         "DOMAIN",
-        "APPS_REPO_URL",
-        "DEVICE_ID"
+        "APPS_REPO_URL"
       ]
     },
     "test": {

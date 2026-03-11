@@ -152,7 +152,9 @@ export const InstallForm: React.FC<IProps> = ({
     info.dynamic_config,
     info.port,
     watchLocalSubdomain,
-    info.urn.split,
+    // include the urn string itself (not the split function) so the effect
+    // re-runs when the app urn changes
+    info.urn,
     cloudflareAvailable,
     tailscaleAvailable,
   ]);
@@ -432,12 +434,15 @@ export const InstallForm: React.FC<IProps> = ({
     }
   };
 
-  const visibleFields = formFields.filter(typeFilter);
+  // In simple mode (when user.advancedMode is false) we completely hide
+  // all app configuration form fields from the DOM. Only render fields
+  // when the user is in advanced mode.
+  const visibleFields = isAdvancedMode ? formFields.filter(typeFilter) : [];
   const hasConfigSection = visibleFields.length > 0 || (guestDashboard && isAdvancedMode) || isAdvancedMode;
 
   return (
     <form className="flex flex-col" onSubmit={handleSubmit(validate)} id={formId}>
-      {/* Exposure mode selector — rendered outside scroll area by dialog */}
+      {/* Exposure mode selector — always shown when applicable, even in simple mode */}
       {info.exposable && info.dynamic_config && renderExposureModeSelector()}
 
       {/* Configuration section — scrollable when in a dialog */}

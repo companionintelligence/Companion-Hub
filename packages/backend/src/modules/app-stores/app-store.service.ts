@@ -1,7 +1,7 @@
 import { TranslatableError } from '@/common/error/translatable-error';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import { HttpStatus, Injectable, Inject, forwardRef, OnApplicationBootstrap } from '@nestjs/common';
+import { HttpStatus, Injectable, Inject, forwardRef, OnApplicationBootstrap, type OnApplicationShutdown } from '@nestjs/common';
 import slugify from 'slugify';
 import type { UpdateAppStoreBodyDto } from '../marketplace/dto/marketplace.dto';
 import { RepoEventsQueue } from '../queue/entities/repo-events';
@@ -11,7 +11,9 @@ import { ReposHelpers } from './repos.helpers';
 export const RESERVED_APP_STORE_SLUGS = ['_user'];
 
 @Injectable()
-export class AppStoreService implements OnApplicationBootstrap {
+export class AppStoreService implements OnApplicationBootstrap, OnApplicationShutdown {
+  private pullInterval: NodeJS.Timeout | null = null;
+
   constructor(
     private readonly logger: LoggerService,
     private readonly repoQueue: RepoEventsQueue,
@@ -67,12 +69,19 @@ export class AppStoreService implements OnApplicationBootstrap {
 
   onApplicationBootstrap() {
     this.logger.info('Scheduling app store updates every 1 hour');
-    setInterval(
+    this.pullInterval = setInterval(
       () => {
         this.pullRepositories().catch((e) => this.logger.error('Failed to scheduled pull repositories', e));
       },
       1000 * 60 * 60,
-    ); // 1 hour
+    );
+  }
+
+  onApplicationShutdown() {
+    if (this.pullInterval) {
+      clearInterval(this.pullInterval);
+      this.pullInterval = null;
+    }
   }
 
   public async pullRepositories() {

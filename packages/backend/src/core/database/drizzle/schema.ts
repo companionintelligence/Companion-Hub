@@ -120,7 +120,7 @@ export const deviceRegistration = pgTable('device_registration', {
   /**
    * The canonical hub subdomain prefix (e.g. "core1-xyz").
    * This is the authoritative source for the Hub's route identity in Cloudflare tunnel config.
-   * Assigned by CI-Cloud during device registration and stored here — NOT derived from DOMAIN.
+   * Assigned by CI Portal during device registration and stored here — NOT derived from DOMAIN.
    * When null, the Hub route is excluded from Cloudflare sync.
    */
   hubSubdomain: varchar('hub_subdomain'),

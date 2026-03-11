@@ -7,8 +7,12 @@ import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 interface RegisterDeviceDto {
   organization_id: string;
   organization_name: string;
-  device_id?: string; // Optional: custom device ID (auto-generated if not provided)
-  description?: string; // Optional: custom description (auto-generated if not provided)
+  device_id?: string;
+  description?: string;
+}
+
+interface VerifyPairingCodeDto {
+  pairing_code: string;
 }
 
 @ApiTags('Registration')
@@ -171,6 +175,59 @@ export class RegistrationController {
       tunnelNameAvailable: true,
       message: 'Format is valid. Availability will be confirmed during registration.',
     };
+  }
+
+  @Post('verify-pairing-code')
+  @ApiOperation({ summary: 'Verify a signup pairing code and bind device identity with CI Cloud' })
+  @ApiResponse({ status: 200, description: 'Pairing code verified and device identity bound' })
+  @ApiResponse({ status: 400, description: 'Invalid or missing pairing code' })
+  async verifyPairingCode(@Body() body: VerifyPairingCodeDto) {
+    const pairingCode = body.pairing_code?.trim().toUpperCase();
+
+    if (!pairingCode || pairingCode.length !== 6) {
+      return { success: false, message: 'A valid 6-character pairing code is required.' };
+    }
+
+    const deviceId = await this.registrationService.getDeviceId();
+
+    if (!deviceId) {
+      return { success: false, message: 'Device ID not found. Please ensure your device is properly initialized.' };
+    }
+
+    const { ciCloudApiUrl } = this.config.getConfig();
+
+    if (!ciCloudApiUrl) {
+      return { success: false, message: 'CI Cloud API URL not configured.' };
+    }
+
+    try {
+      const pairUrl = `${ciCloudApiUrl}/devices/pair`;
+      const response = await fetch(pairUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pairing_code: pairingCode, device_id: deviceId }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+        return {
+          success: false,
+          message: (errorData as { error?: string }).error || `Pairing failed: ${response.statusText}`,
+        };
+      }
+
+      const data = await response.json();
+      return {
+        success: true,
+        message: 'Pairing code verified. Device identity bound.',
+        device_id: (data as { deviceId?: string }).deviceId,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        message: `Failed to verify pairing code: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      };
+    }
   }
 
   @Post('register')

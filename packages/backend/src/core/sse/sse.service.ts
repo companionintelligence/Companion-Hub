@@ -1,19 +1,20 @@
 import { DockerService } from '@/modules/docker/docker.service';
 import { colorizeLogs } from '@/modules/docker/helpers/colorize-logs';
-import { Injectable, type MessageEvent } from '@nestjs/common';
+import { Injectable, type MessageEvent, type OnApplicationShutdown } from '@nestjs/common';
 import type { SSE, Topic } from '@runtipi/common/schemas';
 import type { AppUrn } from '@runtipi/common/types';
-import { Observable, Subject, interval } from 'rxjs';
+import { Observable, Subject, type Subscription, interval } from 'rxjs';
 import { LoggerService } from '../logger/logger.service';
 
 @Injectable()
-export class SSEService {
+export class SSEService implements OnApplicationShutdown {
+  private cleanupSubscription: Subscription;
+
   constructor(
     private readonly logger: LoggerService,
     private readonly dockerService: DockerService,
   ) {
-    // Kill all topics with no subscribers
-    interval(1000 * 60).subscribe(() => {
+    this.cleanupSubscription = interval(1000 * 60).subscribe(() => {
       this.topics.forEach((topic, key) => {
         if (!topic.observed) {
           this.logger.debug(`Killing topic ${key}`);
@@ -22,6 +23,14 @@ export class SSEService {
         }
       });
     });
+  }
+
+  onApplicationShutdown() {
+    this.cleanupSubscription.unsubscribe();
+    for (const topic of this.topics.values()) {
+      topic.complete();
+    }
+    this.topics.clear();
   }
 
   private topics: Map<Topic, Subject<MessageEvent>> = new Map();

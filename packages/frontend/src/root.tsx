@@ -51,11 +51,11 @@ export const links: Route.LinksFunction = () => [
 export async function clientLoader({ request }: Route.ActionArgs) {
   const url = new URL(request.url);
 
-  // Check cached registration status (only 'true' is cached)
-  const cachedRegistered = sessionStorage.getItem('device-registered') === 'true';
+  const CACHE_TTL_MS = 60 * 1000; // 1 min — short enough that token removal takes effect quickly
+  const cachedAt = Number(sessionStorage.getItem('device-registered-at') || '0');
+  const cacheValid = sessionStorage.getItem('device-registered') === 'true' && Date.now() - cachedAt < CACHE_TTL_MS;
 
-  // Always check registration status first — device registration must happen before anything else
-  const regResult = cachedRegistered
+  const regResult = cacheValid
     ? { ok: true, registered: true }
     : await fetch('/api/registration/status')
         .then(async (res) => {
@@ -63,13 +63,19 @@ export async function clientLoader({ request }: Route.ActionArgs) {
           const data = await res.json();
           if (data.registered) {
             sessionStorage.setItem('device-registered', 'true');
+            sessionStorage.setItem('device-registered-at', String(Date.now()));
+          } else {
+            sessionStorage.removeItem('device-registered');
+            sessionStorage.removeItem('device-registered-at');
           }
           return { ok: true, registered: data.registered };
         })
         .catch(() => ({ ok: false, registered: false }));
 
-  // If not registered, only allow the device-registration page
-  if (regResult.ok && !regResult.registered) {
+  // Device registration is the prerequisite gate — must be registered before login/register/dashboard
+  // If not registered (or status unknown), only allow the device-registration page
+  const mustShowDeviceRegistration = !regResult.ok || !regResult.registered;
+  if (mustShowDeviceRegistration) {
     if (url.pathname !== '/device-registration') {
       return redirect('/device-registration');
     }
@@ -77,7 +83,7 @@ export async function clientLoader({ request }: Route.ActionArgs) {
   }
 
   // Already registered — redirect away from device-registration
-  if (regResult.ok && regResult.registered && url.pathname === '/device-registration') {
+  if (url.pathname === '/device-registration') {
     return redirect('/');
   }
 

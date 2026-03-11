@@ -166,6 +166,30 @@ export class CloudflareClientService {
   }
 
   /**
+   * Load tunnel token from disk into memory. Call on startup so getTunnelToken() returns
+   * correctly after a restart (token file exists but in-memory state was reset).
+   * Optionally set tunnelId from the registered org if available.
+   */
+  async loadTunnelTokenFromDisk(tunnelId?: string | null): Promise<boolean> {
+    try {
+      if (tunnelId) {
+        this.tunnelId = tunnelId;
+      }
+      const tokenPath = path.join(APP_DIR, 'tunnel', 'token');
+      const token = await fs.readFile(tokenPath, 'utf-8');
+      const trimmed = token?.trim();
+      if (trimmed) {
+        this.tunnelToken = trimmed;
+        this.logger.log('Loaded tunnel token from disk');
+        return true;
+      }
+    } catch {
+      // File missing or unreadable — token stays null
+    }
+    return false;
+  }
+
+  /**
    * Resolve the correct docker-compose file for the current environment.
    * Local/dev uses docker-compose.local.yml, staging uses docker-compose.staging.yml,
    * and production uses docker-compose.prod.yml.

@@ -3,6 +3,7 @@ import { RegistrationService } from '../registration.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { CloudflareClientService } from '../../cloudflare/cloudflare-client.service';
+import { TraefikConfigService } from '../../docker/traefik-config.service';
 import { DeviceRegistrationRepository } from '../device-registration.repository';
 import { RepoEventsQueue } from '../../queue/entities/repo-events';
 import { mock, MockProxy } from 'vitest-mock-extended';
@@ -16,6 +17,7 @@ describe('RegistrationService', () => {
   let configService: MockProxy<ConfigurationService>;
   let loggerService: MockProxy<LoggerService>;
   let cloudflareClientService: MockProxy<CloudflareClientService>;
+  let traefikConfigService: MockProxy<TraefikConfigService>;
   let deviceRegistrationRepository: MockProxy<DeviceRegistrationRepository>;
   let repoEventsQueue: MockProxy<RepoEventsQueue>;
 
@@ -23,10 +25,12 @@ describe('RegistrationService', () => {
     configService = mock<ConfigurationService>();
     loggerService = mock<LoggerService>();
     cloudflareClientService = mock<CloudflareClientService>();
+    traefikConfigService = mock<TraefikConfigService>();
+    traefikConfigService.writeHubRoute.mockResolvedValue(undefined);
     deviceRegistrationRepository = mock<DeviceRegistrationRepository>();
     repoEventsQueue = mock<RepoEventsQueue>();
 
-    configService.getConfig.mockReturnValue({ ciCloudApiUrl: 'http://cloud.api' } as any);
+    configService.getConfig.mockReturnValue({ ciCloudApiUrl: 'http://cloud.api', domain: 'example.com' } as any);
     (si.uuid as any) = vi.fn().mockResolvedValue({ os: 'uuid-123' });
 
     const module: TestingModule = await Test.createTestingModule({
@@ -35,6 +39,7 @@ describe('RegistrationService', () => {
         { provide: ConfigurationService, useValue: configService },
         { provide: LoggerService, useValue: loggerService },
         { provide: CloudflareClientService, useValue: cloudflareClientService },
+        { provide: TraefikConfigService, useValue: traefikConfigService },
         { provide: DeviceRegistrationRepository, useValue: deviceRegistrationRepository },
         { provide: RepoEventsQueue, useValue: repoEventsQueue },
       ],
@@ -51,6 +56,7 @@ describe('RegistrationService', () => {
   describe('isRegistered', () => {
     it('should return true if device is registered', async () => {
       deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(true);
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
 
       const result = await (service as any).isRegistered();
       expect(result).toBe(true);
@@ -73,7 +79,7 @@ describe('RegistrationService', () => {
 
   describe('checkRegistrationWithCloud — polling enabled', () => {
     beforeEach(() => {
-      process.env.DEVICE_ID = 'test-device';
+      vi.spyOn(service, 'getDeviceId').mockResolvedValue('test-device');
       configService.getConfig.mockReturnValue({
         ciCloudApiUrl: 'http://cloud.api',
         userSettings: { domain: 'example.com' },
@@ -81,7 +87,6 @@ describe('RegistrationService', () => {
     });
 
     afterEach(() => {
-      delete process.env.DEVICE_ID;
       delete process.env.LOCAL;
       delete process.env.API_PORT;
     });
@@ -241,17 +246,13 @@ describe('RegistrationService', () => {
 
   describe('completeRegistrationFromCallback', () => {
     beforeEach(() => {
-      process.env.DEVICE_ID = 'test-device';
+      vi.spyOn(service, 'getDeviceId').mockResolvedValue('test-device');
       configService.getConfig.mockReturnValue({
         ciCloudApiUrl: 'http://cloud.api',
         userSettings: { domain: 'example.com' },
         domain: 'myhost.example.com',
       } as any);
       (si.uuid as any) = vi.fn().mockResolvedValue({ os: 'test-device' });
-    });
-
-    afterEach(() => {
-      delete process.env.DEVICE_ID;
     });
 
     it('returns domain in the success response', async () => {

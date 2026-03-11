@@ -2,6 +2,7 @@ services:
   ci-hub-db:
     container_name: ci-hub-db
     image: postgres:14
+    pull_policy: if_not_present
     restart: unless-stopped
     stop_grace_period: 1m
     volumes:
@@ -24,6 +25,7 @@ services:
   ci-os-hub-queue:
     container_name: ci-os-hub-queue
     image: rabbitmq:4-alpine
+    pull_policy: if_not_present
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "rabbitmqctl", "status"]
@@ -40,6 +42,7 @@ services:
       - ci_os_hub_network
 
   ci-os-hub:
+    privileged: true
     build:
       context: .
       dockerfile: Dockerfile.dev
@@ -85,6 +88,7 @@ services:
       - /proc/meminfo:/host/proc/meminfo:ro
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
+      - /etc/machine-id:/etc/machine-id:ro
     networks:
       - ci_os_hub_network
     environment:
@@ -111,7 +115,8 @@ services:
 
   # Cloudflare tunnel for dev — opt-in via: docker compose --profile cloudflare up cloudflared -d
   cloudflared:
-    image: cloudflare/cloudflared:latest
+    image: cloudflare/cloudflared:2026.2.0
+    pull_policy: if_not_present
     container_name: cloudflared
     restart: unless-stopped
     command: tunnel run --token-file /home/nonroot/.cloudflared/token

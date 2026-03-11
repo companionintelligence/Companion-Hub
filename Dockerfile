@@ -38,7 +38,7 @@ RUN chmod +x docker-binary && \
 # ---- RUNNER BASE ----
 FROM node_base AS runner_base
 
-RUN apk add --no-cache curl openssl git docker-cli
+RUN apk add --no-cache curl openssl git docker-cli dmidecode
 
 # ---- BUILDER ----
 FROM builder_base AS builder
@@ -62,7 +62,9 @@ COPY ./packages/frontend/public ./packages/frontend/public
 
 # Install dependencies (including devDependencies needed for build)
 # Skip postinstall scripts (git hooks not needed in Docker)
-RUN bun install --frozen-lockfile --ignore-scripts && \
+# Cache bun store to speed up reinstalls when only packages/ change
+RUN --mount=type=cache,target=/root/.bun/install/cache \
+    bun install --frozen-lockfile --ignore-scripts && \
     echo "Verifying @react-router/dev is installed..." && \
     ls -la node_modules/@react-router/dev/bin.js && \
     ls -la node_modules/.bin/react-router && \
@@ -94,7 +96,8 @@ COPY ./packages ./packages
 
 # Recreate package links for workspace packages by running bun install in each
 # This ensures each package can find dependencies from the monorepo
-RUN cd /app && for pkg_dir in packages/*/; do \
+RUN --mount=type=cache,target=/root/.bun/install/cache \
+    cd /app && for pkg_dir in packages/*/; do \
   echo "Linking packages for $pkg_dir"; \
   cd "$pkg_dir" && bun install --frozen-lockfile --no-save 2>&1 | head -3 || true; \
   cd /app; \

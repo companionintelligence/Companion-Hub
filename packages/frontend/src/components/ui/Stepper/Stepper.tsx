@@ -16,14 +16,16 @@ interface StepTriggerProps {
   step: number;
   title: string;
   disabled?: boolean;
+  /** When true, step is clickable even if step > currentStep (e.g. "skip to end" shortcut) */
+  alwaysClickable?: boolean;
   onStepChange: (step: number) => void;
 }
 
-export const StepTrigger: React.FC<StepTriggerProps> = ({ step, title, disabled, onStepChange }) => {
+export const StepTrigger: React.FC<StepTriggerProps> = ({ step, title, disabled, alwaysClickable, onStepChange }) => {
   const currentStep = useContext(StepperContext);
   const isActive = currentStep === step;
   const isCompleted = currentStep > step;
-  const isClickable = !disabled && step <= currentStep;
+  const isClickable = !disabled && (step <= currentStep || alwaysClickable);
 
   return (
     <li className="flex items-center gap-2">

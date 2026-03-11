@@ -164,7 +164,10 @@ export class ReposHelpers {
           urn: `urn:app:${appSlug}`,
           author: typeof app.author === 'string' ? app.author : 'Unknown Author',
           available: typeof app.available === 'boolean' ? app.available : true,
-          short_desc: typeof app.short_desc === 'string' ? app.short_desc : (app.description as string) || 'No description provided',
+          short_desc:
+            typeof app.short_desc === 'string'
+              ? app.short_desc
+              : (typeof app.shortDescription === 'string' ? app.shortDescription : null) || (app.description as string) || 'No description provided',
           title: typeof app.title === 'string' ? app.title : (app.name as string) || appSlug,
           description: typeof app.description === 'string' ? app.description : 'No full description.',
           categories: Array.isArray(app.categories) ? app.categories : ['utilities'],
