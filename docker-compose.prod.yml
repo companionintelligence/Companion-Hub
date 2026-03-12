@@ -170,6 +170,43 @@ services:
       - ci-os-hub
       - traefik
 
+  headscale:
+    image: headscale/headscale:0.25.1
+    pull_policy: if_not_present
+    container_name: ${HEADSCALE_CONTAINER_NAME:-headscale}
+    restart: unless-stopped
+    command: serve
+    volumes:
+      - ${RUNTIPI_STATE_PATH:-${ROOT_FOLDER_HOST:-.internal}}/state/headscale:/etc/headscale
+    networks:
+      - ci_os_hub_network
+    labels:
+      ci-os-hub.managed: true
+
+  hub-tailscale:
+    image: tailscale/tailscale:v1.82.5
+    pull_policy: if_not_present
+    container_name: ${HUB_TAILSCALE_CONTAINER_NAME:-hub-tailscale}
+    restart: unless-stopped
+    hostname: hub-tailscale
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    environment:
+      TS_AUTHKEY: ${HEADSCALE_PREAUTH_KEY:-}
+      TS_EXTRA_ARGS: --login-server=http://headscale:8080 --advertise-routes=172.18.0.0/16 --accept-routes
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_USERSPACE: "false"
+      TS_SOCKET: /var/run/tailscale/tailscaled.sock
+    volumes:
+      - hub_tailscale_state:/var/lib/tailscale
+    depends_on:
+      - headscale
+    networks:
+      - ci_os_hub_network
+    labels:
+      ci-os-hub.managed: true
+
 networks:
   ci_os_hub_network:
     driver: bridge
@@ -180,3 +217,5 @@ volumes:
     name: ${DB_VOLUME_NAME:-ci_hub_pgdata}
   ci_hub_app_data:
     name: ci_hub_app_data
+  hub_tailscale_state:
+    name: hub_tailscale_state

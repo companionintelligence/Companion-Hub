@@ -1,0 +1,297 @@
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { writeFile, mkdir } from 'node:fs/promises';
+import { join } from 'node:path';
+import { DATA_DIR } from '@/common/constants';
+import * as yaml from 'yaml';
+
+export interface HeadscaleDevice {
+  id: string;
+  name: string;
+  givenName: string;
+  ipAddresses: string[];
+  online: boolean;
+  lastSeen: string;
+  createdAt: string;
+  user: string;
+}
+
+export interface HeadscalePreAuthKey {
+  id: string;
+  key: string;
+  reusable: boolean;
+  ephemeral: boolean;
+  used: boolean;
+  expiration: string;
+  createdAt: string;
+  user: string;
+}
+
+export interface HeadscaleUser {
+  id: string;
+  name: string;
+  createdAt: string;
+}
+
+export interface VpnStatus {
+  enabled: boolean;
+  headscaleHealthy: boolean;
+  tailscaleConnected: boolean;
+  tailscaleIp: string | null;
+  deviceCount: number;
+}
+
+@Injectable()
+export class HeadscaleService implements OnModuleInit {
+  private readonly logger = new Logger(HeadscaleService.name);
+  private readonly stateDir = join(DATA_DIR, 'state', 'headscale');
+  private readonly configPath = join(DATA_DIR, 'state', 'headscale', 'config.yaml');
+  private readonly defaultUser = 'hub';
+  private apiKey: string | null = null;
+
+  // Headscale API runs on port 8080 inside the container, accessible via Docker network
+  private readonly headscaleApiUrl = 'http://headscale:8080';
+  // Tailscale container API
+  private readonly tailscaleApiUrl = 'http://hub-tailscale:80';
+
+  async onModuleInit() {
+    try {
+      await this.ensureConfigExists();
+    } catch (error) {
+      this.logger.warn(`Headscale config init skipped: ${error}`);
+    }
+  }
+
+  /**
+   * Generate the Headscale configuration file
+   */
+  async ensureConfigExists(): Promise<void> {
+    await mkdir(this.stateDir, { recursive: true });
+    await mkdir(join(this.stateDir, 'data'), { recursive: true });
+
+    const config = {
+      server_url: 'http://headscale:8080',
+      listen_addr: '0.0.0.0:8080',
+      metrics_listen_addr: '0.0.0.0:9090',
+      private_key_path: '/etc/headscale/private.key',
+      noise: {
+        private_key_path: '/etc/headscale/noise_private.key',
+      },
+      prefixes: {
+        v4: '100.64.0.0/10',
+        v6: 'fd7a:115c:a1e0::/48',
+      },
+      database: {
+        type: 'sqlite',
+        sqlite: {
+          path: '/etc/headscale/data/db.sqlite',
+        },
+      },
+      disable_check_updates: true,
+      ephemeral_node_inactivity_timeout: '5m',
+      log: {
+        level: 'warn',
+      },
+      dns: {
+        magic_dns: true,
+        base_domain: 'hub.internal',
+        nameservers: {
+          global: ['1.1.1.1', '8.8.8.8'],
+        },
+      },
+      derp: {
+        server: {
+          enabled: true,
+          region_id: 999,
+          region_code: 'hub',
+          region_name: 'Hub Embedded DERP',
+          stun_listen_addr: '0.0.0.0:3478',
+        },
+        urls: [],
+        auto_update_enabled: false,
+      },
+      policy: {
+        mode: 'file',
+        path: '',
+      },
+    };
+
+    await writeFile(this.configPath, yaml.stringify(config), 'utf-8');
+    this.logger.log('Headscale config written');
+  }
+
+  /**
+   * Get the Headscale config file path (for docker volume mount)
+   */
+  getConfigPath(): string {
+    return this.configPath;
+  }
+
+  getStateDir(): string {
+    return this.stateDir;
+  }
+
+  /**
+   * Make authenticated API request to Headscale
+   */
+  private async apiRequest<T>(method: string, path: string, body?: unknown): Promise<T> {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+
+    if (this.apiKey) {
+      headers.Authorization = `Bearer ${this.apiKey}`;
+    }
+
+    const res = await fetch(`${this.headscaleApiUrl}${path}`, {
+      method,
+      headers,
+      body: body ? JSON.stringify(body) : undefined,
+    });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`Headscale API ${method} ${path} failed (${res.status}): ${text}`);
+    }
+
+    return res.json() as Promise<T>;
+  }
+
+  /**
+   * Create an API key for internal use
+   */
+  async createApiKey(): Promise<string> {
+    try {
+      const result = await this.apiRequest<{ apiKey: string }>('POST', '/api/v1/apikey', {
+        expiration: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
+      });
+      this.apiKey = result.apiKey;
+      return result.apiKey;
+    } catch (error) {
+      this.logger.error(`Failed to create API key: ${error}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Set the API key (loaded from stored state or newly created)
+   */
+  setApiKey(key: string) {
+    this.apiKey = key;
+  }
+
+  /**
+   * Ensure the default Hub user exists
+   */
+  async ensureUser(): Promise<HeadscaleUser> {
+    try {
+      const result = await this.apiRequest<{ user: HeadscaleUser }>('GET', `/api/v1/user/${this.defaultUser}`);
+      return result.user;
+    } catch {
+      const result = await this.apiRequest<{ user: HeadscaleUser }>('POST', '/api/v1/user', {
+        name: this.defaultUser,
+      });
+      return result.user;
+    }
+  }
+
+  /**
+   * Create a pre-auth key for device enrollment
+   */
+  async createPreAuthKey(params?: { reusable?: boolean; ephemeral?: boolean; expirationHours?: number }): Promise<HeadscalePreAuthKey> {
+    const { reusable = false, ephemeral = false, expirationHours = 24 } = params || {};
+
+    const result = await this.apiRequest<{ preAuthKey: HeadscalePreAuthKey }>('POST', '/api/v1/preauthkey', {
+      user: this.defaultUser,
+      reusable,
+      ephemeral,
+      expiration: new Date(Date.now() + expirationHours * 60 * 60 * 1000).toISOString(),
+    });
+
+    return result.preAuthKey;
+  }
+
+  /**
+   * List all pre-auth keys
+   */
+  async listPreAuthKeys(): Promise<HeadscalePreAuthKey[]> {
+    const result = await this.apiRequest<{ preAuthKeys: HeadscalePreAuthKey[] }>('GET', `/api/v1/preauthkey?user=${this.defaultUser}`);
+    return result.preAuthKeys || [];
+  }
+
+  /**
+   * List connected devices/nodes
+   */
+  async listDevices(): Promise<HeadscaleDevice[]> {
+    const result = await this.apiRequest<{ nodes: HeadscaleDevice[] }>('GET', '/api/v1/node');
+    return (result.nodes || []).map((node) => ({
+      id: node.id,
+      name: node.name,
+      givenName: node.givenName || node.name,
+      ipAddresses: node.ipAddresses || [],
+      online: node.online ?? false,
+      lastSeen: node.lastSeen || '',
+      createdAt: node.createdAt || '',
+      user: node.user || this.defaultUser,
+    }));
+  }
+
+  /**
+   * Remove a device by ID
+   */
+  async removeDevice(deviceId: string): Promise<void> {
+    await this.apiRequest('DELETE', `/api/v1/node/${deviceId}`);
+  }
+
+  /**
+   * Check if Headscale API is reachable
+   */
+  async isHealthy(): Promise<boolean> {
+    try {
+      const res = await fetch(`${this.headscaleApiUrl}/health`, {
+        signal: AbortSignal.timeout(5000),
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Check containerised Tailscale status via its local API
+   */
+  async getTailscaleStatus(): Promise<{ connected: boolean; ip: string | null }> {
+    try {
+      const res = await fetch(`${this.tailscaleApiUrl}/localapi/v0/status`, {
+        signal: AbortSignal.timeout(5000),
+      });
+      if (!res.ok) return { connected: false, ip: null };
+      const data = (await res.json()) as Record<string, unknown>;
+      const self = data.Self as Record<string, unknown> | undefined;
+      return {
+        connected: data.BackendState === 'Running',
+        ip: (self?.TailscaleIPs as string[])?.[0] || null,
+      };
+    } catch {
+      return { connected: false, ip: null };
+    }
+  }
+
+  /**
+   * Get overall VPN status
+   */
+  async getVpnStatus(): Promise<VpnStatus> {
+    const [headscaleHealthy, tailscaleStatus, devices] = await Promise.all([
+      this.isHealthy(),
+      this.getTailscaleStatus(),
+      this.listDevices().catch(() => []),
+    ]);
+
+    return {
+      enabled: true,
+      headscaleHealthy,
+      tailscaleConnected: tailscaleStatus.connected,
+      tailscaleIp: tailscaleStatus.ip,
+      deviceCount: devices.length,
+    };
+  }
+}
