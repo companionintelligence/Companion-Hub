@@ -1,6 +1,5 @@
 #!/usr/bin/env bun
-import { spawnSync } from 'child_process';
-import path from 'path';
+import { spawnSync } from 'node:child_process';
 
 const allowedModes = ['dev', 'start', 'start:detached'];
 const allowedEnvs = ['local', 'dev', 'staging', 'prod'];
