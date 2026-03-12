@@ -11,6 +11,11 @@ mkdir -p "$DATA_DIR"/{state,logs,apps,app-data,repos,backups,user-config,media}
 mkdir -p "$DATA_DIR/state/traefik"/{config,dynamic,tls}
 touch "$DATA_DIR/state/traefik/acme_storage.json"
 
+# Create dummy tunnel token so isRegistered() returns true in E2E
+# Without this, the frontend gates all pages behind device-registration
+mkdir -p "$(pwd)/tunnel"
+echo "e2e-mock-tunnel-token" > "$(pwd)/tunnel/token"
+
 # Build workspace dependencies (common package must be compiled before backend can start)
 echo "Building @runtipi/common..."
 (cd packages/common && bun run build)
