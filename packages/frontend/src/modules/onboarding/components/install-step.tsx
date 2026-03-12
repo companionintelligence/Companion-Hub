@@ -147,7 +147,9 @@ export const InstallStep = ({ apps, onComplete }: InstallStepProps) => {
             // doesn't keep showing a phantom installing app.
             try {
               const installedKey = getInstalledAppsQueryKey();
-              const existing = (queryClient.getQueryData(installedKey) as { installed: Record<string, Record<string, unknown>>[] }) || { installed: [] };
+              const existing = (queryClient.getQueryData(installedKey) as { installed: Record<string, Record<string, unknown>>[] }) || {
+                installed: [],
+              };
               const filtered = existing.installed.filter((it) => it.info?.urn !== app.urn);
               queryClient.setQueryData(installedKey, { installed: filtered });
             } catch (_e) {
@@ -158,7 +160,9 @@ export const InstallStep = ({ apps, onComplete }: InstallStepProps) => {
           setStates((prev) => prev.map((s, idx) => (idx === i ? { ...s, status: 'error', error: (e as Error).message } : s)));
           try {
             const installedKey = getInstalledAppsQueryKey();
-            const existing = (queryClient.getQueryData(installedKey) as { installed: Record<string, Record<string, unknown>>[] }) || { installed: [] };
+            const existing = (queryClient.getQueryData(installedKey) as { installed: Record<string, Record<string, unknown>>[] }) || {
+              installed: [],
+            };
             const filtered = existing.installed.filter((it) => it.info?.urn !== app.urn);
             queryClient.setQueryData(installedKey, { installed: filtered });
           } catch (_e) {
