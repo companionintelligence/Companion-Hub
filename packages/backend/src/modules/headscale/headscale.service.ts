@@ -27,12 +27,6 @@ export interface HeadscalePreAuthKey {
   user: string;
 }
 
-export interface HeadscaleUser {
-  id: string;
-  name: string;
-  createdAt: string;
-}
-
 export interface VpnStatus {
   enabled: boolean;
   headscaleHealthy: boolean;
@@ -229,15 +223,18 @@ export class HeadscaleService implements OnModuleInit {
   /**
    * Ensure the default Hub user exists
    */
-  async ensureUser(): Promise<HeadscaleUser> {
+  async ensureUser(): Promise<void> {
     try {
-      const result = await this.apiRequest<{ user: HeadscaleUser }>('GET', `/api/v1/user/${this.defaultUser}`);
-      return result.user;
-    } catch {
-      const result = await this.apiRequest<{ user: HeadscaleUser }>('POST', '/api/v1/user', {
-        name: this.defaultUser,
-      });
-      return result.user;
+      await this.apiRequest('POST', '/api/v1/user', { name: this.defaultUser });
+      this.logger.log('Created Headscale user: hub');
+    } catch (error) {
+      // User already exists — that's fine
+      const msg = error instanceof Error ? error.message : '';
+      if (msg.includes('UNIQUE constraint') || msg.includes('already exists')) {
+        this.logger.debug('Headscale user already exists');
+        return;
+      }
+      throw error;
     }
   }
 
