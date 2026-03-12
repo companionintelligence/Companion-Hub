@@ -64,6 +64,7 @@ services:
       LOCAL_DOMAIN: ci.lan
       TIPI_VERSION: 9.9.9
       E2E_TEST: true
+      DEVICE_ID: test-device-e2e
     volumes:
       - /data
       - /var/run/docker.sock:/var/run/docker.sock

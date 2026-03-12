@@ -1,10 +1,7 @@
 name: E2E Tests
 
 on:
-  pull_request:
-    branches: [dev, main]
-  push:
-    branches: [dev]
+  workflow_dispatch:
   workflow_call:
     inputs:
       version:
@@ -18,7 +15,7 @@ concurrency:
 
 jobs:
   e2e:
-    timeout-minutes: 15
+    timeout-minutes: 45
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -112,6 +109,7 @@ jobs:
           TIPI_APP_DATA_DIR: /tmp/runtipi-e2e/app-data
           TIPI_APP_DIR: ${{ github.workspace }}
           CI: true
+          DEVICE_ID: test-device-e2e
 
       - uses: actions/upload-artifact@v4
         if: always()

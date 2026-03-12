@@ -29,6 +29,7 @@ import { NetworkModule } from './modules/network/network.module';
 import { QueueModule } from './modules/queue/queue.module';
 import { SystemModule } from './modules/system/system.module';
 import { TailscaleModule } from './modules/tailscale/tailscale.module';
+import { HeadscaleModule } from './modules/headscale/headscale.module';
 import { CloudflareModule } from './modules/cloudflare/cloudflare.module';
 import { UserModule } from './modules/user/user.module';
 import { UserConfigModule } from './modules/user-config/user-config.module';
@@ -64,6 +65,7 @@ const imports: (DynamicModule | typeof I18nModule)[] = [
   SSEModule,
   NetworkModule,
   TailscaleModule,
+  HeadscaleModule,
   CloudflareModule,
   UserConfigModule,
   MutexModule,
