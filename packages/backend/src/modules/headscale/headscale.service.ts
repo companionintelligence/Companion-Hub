@@ -1,7 +1,8 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import { writeFile, mkdir } from 'node:fs/promises';
+import { writeFile, mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DATA_DIR } from '@/common/constants';
+import { execFile } from 'node:child_process';
 import * as yaml from 'yaml';
 
 export interface HeadscaleDevice {
@@ -45,20 +46,65 @@ export class HeadscaleService implements OnModuleInit {
   private readonly logger = new Logger(HeadscaleService.name);
   private readonly stateDir = join(DATA_DIR, 'state', 'headscale');
   private readonly configPath = join(DATA_DIR, 'state', 'headscale', 'config.yaml');
+  private readonly apiKeyPath = join(DATA_DIR, 'state', 'headscale', 'api.key');
   private readonly defaultUser = 'hub';
   private apiKey: string | null = null;
 
   // Headscale API runs on port 8080 inside the container, accessible via Docker network
   private readonly headscaleApiUrl = 'http://headscale:8080';
-  // Tailscale container API
-  private readonly tailscaleApiUrl = 'http://hub-tailscale:80';
 
   async onModuleInit() {
     try {
       await this.ensureConfigExists();
+      await this.loadOrCreateApiKey();
+      await this.ensureUser();
     } catch (error) {
-      this.logger.warn(`Headscale config init skipped: ${error}`);
+      this.logger.warn(`Headscale init: ${error}`);
     }
+  }
+
+  /**
+   * Load API key from file, or create one via Headscale CLI (docker exec)
+   */
+  private async loadOrCreateApiKey(): Promise<void> {
+    // Try loading from file first
+    try {
+      const key = (await readFile(this.apiKeyPath, 'utf-8')).trim();
+      if (key) {
+        this.apiKey = key;
+        this.logger.log('Loaded Headscale API key from file');
+        return;
+      }
+    } catch {
+      // File doesn't exist yet
+    }
+
+    // Create via docker exec into headscale container
+    try {
+      const key = await this.execHeadscaleCli('apikeys', 'create', '--expiration', '365d');
+      if (key) {
+        this.apiKey = key.trim();
+        await writeFile(this.apiKeyPath, this.apiKey, 'utf-8');
+        this.logger.log('Created and stored Headscale API key');
+      }
+    } catch (error) {
+      this.logger.warn(`Could not create API key: ${error}`);
+    }
+  }
+
+  /**
+   * Execute a headscale CLI command via docker exec
+   */
+  private execHeadscaleCli(...args: string[]): Promise<string> {
+    return new Promise((resolve, reject) => {
+      execFile('docker', ['exec', 'headscale', 'headscale', ...args], { timeout: 10000 }, (error, stdout, stderr) => {
+        if (error) {
+          reject(new Error(stderr || error.message));
+          return;
+        }
+        resolve(stdout.trim());
+      });
+    });
   }
 
   /**
@@ -270,20 +316,19 @@ export class HeadscaleService implements OnModuleInit {
   }
 
   /**
-   * Check containerised Tailscale status via its local API
+   * Check containerised Tailscale status via Headscale's node list
    */
   async getTailscaleStatus(): Promise<{ connected: boolean; ip: string | null }> {
     try {
-      const res = await fetch(`${this.tailscaleApiUrl}/localapi/v0/status`, {
-        signal: AbortSignal.timeout(5000),
-      });
-      if (!res.ok) return { connected: false, ip: null };
-      const data = (await res.json()) as Record<string, unknown>;
-      const self = data.Self as Record<string, unknown> | undefined;
-      return {
-        connected: data.BackendState === 'Running',
-        ip: (self?.TailscaleIPs as string[])?.[0] || null,
-      };
+      const devices = await this.listDevices();
+      const hubNode = devices.find((d) => d.name === 'hub-tailscale');
+      if (hubNode) {
+        return {
+          connected: hubNode.online,
+          ip: hubNode.ipAddresses[0] || null,
+        };
+      }
+      return { connected: false, ip: null };
     } catch {
       return { connected: false, ip: null };
     }

@@ -1,11 +1,17 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 vi.mock('node:fs/promises', () => ({
-  readFile: vi.fn(),
+  readFile: vi.fn().mockRejectedValue(new Error('ENOENT')),
   writeFile: vi.fn().mockResolvedValue(undefined),
   mkdir: vi.fn().mockResolvedValue(undefined),
   access: vi.fn(),
   constants: { X_OK: 1, R_OK: 4, W_OK: 2 },
+}));
+
+vi.mock('node:child_process', () => ({
+  execFile: vi.fn((_cmd: string, _args: string[], _opts: unknown, cb: (err: Error | null, stdout: string, stderr: string) => void) => {
+    cb(null, 'mock-api-key', '');
+  }),
 }));
 
 // Mock global fetch
@@ -35,13 +41,23 @@ describe('HeadscaleService', () => {
   });
 
   describe('getTailscaleStatus', () => {
-    it('returns connected status from tailscale local API', async () => {
+    it('returns connected when hub-tailscale node is online', async () => {
+      service.setApiKey('test-key');
       mockFetch.mockResolvedValue({
         ok: true,
         json: () =>
           Promise.resolve({
-            BackendState: 'Running',
-            Self: { TailscaleIPs: ['100.64.0.1'] },
+            nodes: [
+              {
+                id: '1',
+                name: 'hub-tailscale',
+                ipAddresses: ['100.64.0.1'],
+                online: true,
+                lastSeen: '2025-01-01T00:00:00Z',
+                createdAt: '2025-01-01T00:00:00Z',
+                user: 'hub',
+              },
+            ],
           }),
       });
 
@@ -60,17 +76,29 @@ describe('HeadscaleService', () => {
 
   describe('getVpnStatus', () => {
     it('aggregates headscale and tailscale status', async () => {
-      // First call: isHealthy, second: getTailscaleStatus, third: listDevices
+      service.setApiKey('test-key');
+      const nodesResponse = {
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            nodes: [
+              {
+                id: '1',
+                name: 'hub-tailscale',
+                ipAddresses: ['100.64.0.1'],
+                online: true,
+                lastSeen: '2025-01-01T00:00:00Z',
+                createdAt: '2025-01-01T00:00:00Z',
+                user: 'hub',
+              },
+            ],
+          }),
+      };
+
       mockFetch
-        .mockResolvedValueOnce({ ok: true }) // health
-        .mockResolvedValueOnce({
-          ok: true,
-          json: () => Promise.resolve({ BackendState: 'Running', Self: { TailscaleIPs: ['100.64.0.1'] } }),
-        }) // tailscale status
-        .mockResolvedValueOnce({
-          ok: true,
-          json: () => Promise.resolve({ nodes: [{ id: '1', name: 'test', online: true, ipAddresses: ['100.64.0.1'] }] }),
-        }); // devices
+        .mockResolvedValueOnce({ ok: true }) // health check
+        .mockResolvedValueOnce(nodesResponse) // getTailscaleStatus -> listDevices
+        .mockResolvedValueOnce(nodesResponse); // listDevices for deviceCount
 
       const status = await service.getVpnStatus();
       expect(status.enabled).toBe(true);
