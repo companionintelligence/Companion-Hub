@@ -1,12 +1,12 @@
 import type { LoggerService } from '@/core/logger/logger.service';
 import * as Sentry from '@sentry/nestjs';
-import cron from 'node-cron';
+import cron, { type ScheduledTask } from 'node-cron';
 import { AMQPConnectionError, AMQPError, type Connection, type RPCClient } from 'rabbitmq-client';
 import { z } from 'zod';
 import type { EventPublisher } from './event.publisher';
 
 export class Queue<T extends z.ZodType, R extends z.ZodType<{ success: boolean; message: string }>> {
-  private cronTasks: cron.ScheduledTask[] = [];
+  private cronTasks: ScheduledTask[] = [];
 
   constructor(
     private rabbit: Connection,
