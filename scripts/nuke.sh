@@ -7,11 +7,11 @@ fi
 
 echo "Nuking the system..."
 
-# Remove all runtipi data
+# Remove all ci-hub data
 rm -rf .internal
 
 # Remove containers
-docker rm -f runtipi runtipi-reverse-proxy runtipi-db runtipi-queue
+docker rm -f ci-hub ci-hub-reverse-proxy ci-hub-db ci-hub-queue
 
 # Remove docker volumes
-docker volume rm runtipi_pgdata
+docker volume rm ci_hub_pgdata

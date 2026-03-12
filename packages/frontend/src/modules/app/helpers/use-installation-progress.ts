@@ -1,4 +1,4 @@
-import type { AppUrn } from '@runtipi/common/types';
+import type { AppUrn } from '@ci-hub/common/types';
 import { useState, useEffect } from 'react';
 
 // Global progress map to track installation progress across components

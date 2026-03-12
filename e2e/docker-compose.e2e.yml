@@ -52,8 +52,8 @@ services:
       RABBITMQ_PORT: 5672
       RABBITMQ_USERNAME: companion
       RABBITMQ_PASSWORD: admin
-      TIPI_DATA_DIR: /data
-      ROOT_FOLDER_HOST: /tmp/runtipi-e2e
+      CI_HUB_DATA_DIR: /data
+      ROOT_FOLDER_HOST: /tmp/ci-hub-e2e
       JWT_SECRET: test-secret
       CI_CLOUD_API_URL: http://non-existent-service:3000
       CI_CLOUD_APP_STORE_URL: http://non-existent-service:3000/api
@@ -61,7 +61,7 @@ services:
       APPS_REPO_ID: repo-id
       DOMAIN: ci.computer
       LOCAL_DOMAIN: ci.lan
-      TIPI_VERSION: 9.9.9
+      CI_HUB_VERSION: 9.9.9
       E2E_TEST: true
       DEVICE_ID: test-device-e2e
     volumes:

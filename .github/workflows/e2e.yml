@@ -57,10 +57,10 @@ jobs:
 
       - name: Create data directories
         run: |
-          mkdir -p /tmp/runtipi-e2e/{apps,app-data,state,repos,logs,backups,user-config,media}
-          mkdir -p /tmp/runtipi-e2e/state/traefik/{config,dynamic,tls}
-          touch /tmp/runtipi-e2e/state/traefik/acme_storage.json
-          echo "# E2E test env" > /tmp/runtipi-e2e/.env
+          mkdir -p /tmp/ci-hub-e2e/{apps,app-data,state,repos,logs,backups,user-config,media}
+          mkdir -p /tmp/ci-hub-e2e/state/traefik/{config,dynamic,tls}
+          touch /tmp/ci-hub-e2e/state/traefik/acme_storage.json
+          echo "# E2E test env" > /tmp/ci-hub-e2e/.env
 
       - name: Verify services
         run: |
@@ -102,11 +102,11 @@ jobs:
           CI_CLOUD_API_URL: http://localhost:4444/api
           DOMAIN: ci.computer
           LOCAL_DOMAIN: ci.lan
-          ROOT_FOLDER_HOST: /tmp/runtipi-e2e
-          RUNTIPI_APP_DATA_PATH: /tmp/runtipi-e2e
-          TIPI_DATA_DIR: /tmp/runtipi-e2e
-          TIPI_APP_DATA_DIR: /tmp/runtipi-e2e/app-data
-          TIPI_APP_DIR: ${{ github.workspace }}
+          ROOT_FOLDER_HOST: /tmp/ci-hub-e2e
+          CI_HUB_APP_DATA_PATH: /tmp/ci-hub-e2e
+          CI_HUB_DATA_DIR: /tmp/ci-hub-e2e
+          CI_HUB_APP_DATA_DIR: /tmp/ci-hub-e2e/app-data
+          CI_HUB_APP_DIR: ${{ github.workspace }}
           CI: true
           DEVICE_ID: test-device-e2e
 

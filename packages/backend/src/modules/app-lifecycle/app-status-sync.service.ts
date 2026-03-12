@@ -1,7 +1,7 @@
 import { LoggerService } from '@/core/logger/logger.service';
 import { SSEService } from '@/core/sse/sse.service';
 import { Inject, Injectable } from '@nestjs/common';
-import type { AppUrn } from '@runtipi/common/types';
+import type { AppUrn } from '@ci-hub/common/types';
 import * as Sentry from '@sentry/nestjs';
 import type Dockerode from 'dockerode';
 import { DOCKERODE } from '../docker/docker.module';

@@ -59,7 +59,7 @@ export class TraefikLabelsBuilder {
 
       if (this.params.enableAuth) {
         Object.assign(this.labels, {
-          [`traefik.http.routers.${this.params.appId}-${this.params.storeId}.middlewares`]: 'runtipi@docker',
+          [`traefik.http.routers.${this.params.appId}-${this.params.storeId}.middlewares`]: 'ci-hub@docker',
         });
       }
     }
@@ -86,7 +86,7 @@ export class TraefikLabelsBuilder {
 
       if (this.params.enableAuth) {
         Object.assign(this.labels, {
-          [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-local.middlewares`]: 'runtipi@docker',
+          [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-local.middlewares`]: 'ci-hub@docker',
         });
       }
     }

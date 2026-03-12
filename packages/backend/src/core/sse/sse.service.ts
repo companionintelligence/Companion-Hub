@@ -1,8 +1,8 @@
 import { DockerService } from '@/modules/docker/docker.service';
 import { colorizeLogs } from '@/modules/docker/helpers/colorize-logs';
 import { Injectable, type MessageEvent, type OnApplicationShutdown } from '@nestjs/common';
-import type { SSE, Topic } from '@runtipi/common/schemas';
-import type { AppUrn } from '@runtipi/common/types';
+import type { SSE, Topic } from '@ci-hub/common/schemas';
+import type { AppUrn } from '@ci-hub/common/types';
 import { Observable, Subject, type Subscription, interval } from 'rxjs';
 import { LoggerService } from '../logger/logger.service';
 

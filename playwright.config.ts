@@ -29,8 +29,8 @@ const backendEnv: Record<string, string> = {
   EXPERIMENTAL_INSECURE_COOKIE: 'true',
   TIPI_VERSION: 'e2e',
   INTERNAL_IP: '0.0.0.0',
-  ROOT_FOLDER_HOST: process.env.ROOT_FOLDER_HOST || '/tmp/runtipi-e2e',
-  RUNTIPI_APP_DATA_PATH: process.env.RUNTIPI_APP_DATA_PATH || '/tmp/runtipi-e2e',
+  ROOT_FOLDER_HOST: process.env.ROOT_FOLDER_HOST || '/tmp/ci-hub-e2e',
+  RUNTIPI_APP_DATA_PATH: process.env.RUNTIPI_APP_DATA_PATH || '/tmp/ci-hub-e2e',
   RUNTIPI_FORWARD_AUTH_URL: 'http://localhost:3000/api/auth/traefik',
   ALLOW_AUTO_THEMES: 'true',
   ALLOW_ERROR_MONITORING: 'false',
@@ -38,8 +38,8 @@ const backendEnv: Record<string, string> = {
   DEVICE_ID: process.env.DEVICE_ID || 'test-device-e2e',
   ADVANCED_SETTINGS: 'false',
   DISABLE_PASSWORD_RESET: 'true',
-  TIPI_DATA_DIR: process.env.TIPI_DATA_DIR || '/tmp/runtipi-e2e',
-  TIPI_APP_DATA_DIR: process.env.TIPI_APP_DATA_DIR || '/tmp/runtipi-e2e/app-data',
+  TIPI_DATA_DIR: process.env.TIPI_DATA_DIR || '/tmp/ci-hub-e2e',
+  TIPI_APP_DATA_DIR: process.env.TIPI_APP_DATA_DIR || '/tmp/ci-hub-e2e/app-data',
   TIPI_APP_DIR: process.env.TIPI_APP_DIR || process.cwd(),
 };
 

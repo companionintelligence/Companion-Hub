@@ -3,7 +3,7 @@
 exports[`AppService > copyAssets > should create base folder structure 1`] = `
 {
   "/app-data": null,
-  "/data/.env": "ROOT_FOLDER_HOST=/opt/runtipi",
+  "/data/.env": "ROOT_FOLDER_HOST=/opt/ci-hub",
   "/data/apps": null,
   "/data/backups": null,
   "/data/media/data/books": null,

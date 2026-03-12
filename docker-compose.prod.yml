@@ -53,7 +53,7 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        TIPI_VERSION: ${TIPI_VERSION:-4.5.0}
+        CI_HUB_VERSION: ${CI_HUB_VERSION:-4.5.0}
         LOCAL: ${LOCAL:-false}
         TARGETARCH: ${TARGETARCH:-amd64}
         DOCKER_PLATFORM: ${DOCKER_PLATFORM:-linux/amd64}
@@ -76,15 +76,15 @@ services:
       # Critical app data — named volume, survives container recreation
       - ci_hub_app_data:/app-data
       # Data directories — bind mounts from host (require ROOT_FOLDER_HOST)
-      - ${RUNTIPI_MEDIA_PATH:-${ROOT_FOLDER_HOST:-.internal}}/media:/data/media
+      - ${CI_HUB_MEDIA_PATH:-${ROOT_FOLDER_HOST:-.internal}}/media:/data/media
       # Allow Hub to configure Tunnel
       - ./tunnel:/app/tunnel
-      - ${RUNTIPI_STATE_PATH:-${ROOT_FOLDER_HOST:-.internal}}/state:/data/state
-      - ${RUNTIPI_REPOS_PATH:-${ROOT_FOLDER_HOST:-.internal}}/repos:/data/repos
-      - ${RUNTIPI_APPS_PATH:-${ROOT_FOLDER_HOST:-.internal}}/apps:/data/apps
-      - ${RUNTIPI_LOGS_PATH:-${ROOT_FOLDER_HOST:-.internal}}/logs:/data/logs
-      - ${RUNTIPI_USER_CONFIG_PATH:-${ROOT_FOLDER_HOST:-.internal}}/user-config:/data/user-config
-      - ${RUNTIPI_BACKUPS_PATH:-${ROOT_FOLDER_HOST:-.internal}}/backups:/data/backups
+      - ${CI_HUB_STATE_PATH:-${ROOT_FOLDER_HOST:-.internal}}/state:/data/state
+      - ${CI_HUB_REPOS_PATH:-${ROOT_FOLDER_HOST:-.internal}}/repos:/data/repos
+      - ${CI_HUB_APPS_PATH:-${ROOT_FOLDER_HOST:-.internal}}/apps:/data/apps
+      - ${CI_HUB_LOGS_PATH:-${ROOT_FOLDER_HOST:-.internal}}/logs:/data/logs
+      - ${CI_HUB_USER_CONFIG_PATH:-${ROOT_FOLDER_HOST:-.internal}}/user-config:/data/user-config
+      - ${CI_HUB_BACKUPS_PATH:-${ROOT_FOLDER_HOST:-.internal}}/backups:/data/backups
       # Static
       - ${ENV_FILE:-.env}:/data/.env
       - ./.internal/cache:/cache
@@ -113,7 +113,7 @@ services:
       RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-admin}
       RABBITMQ_HOST: ${RABBITMQ_HOST:-ci-os-hub-queue}
       INTERNAL_IP: ${INTERNAL_IP:-127.0.0.1}
-      TIPI_VERSION: ${TIPI_VERSION:-4.5.0}
+      CI_HUB_VERSION: ${CI_HUB_VERSION:-4.5.0}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       CI_CLOUD_API_URL: ${CI_CLOUD_API_URL}
     env_file:
@@ -121,9 +121,9 @@ services:
     labels:
       traefik.enable: true
       ci-os-hub.managed: true
-      traefik.http.middlewares.runtipi.forwardauth.address: "http://ci-os-hub:5002/api/auth/traefik"
-      traefik.http.middlewares.runtipi.forwardauth.trustForwardHeader: "true"
-      traefik.http.middlewares.runtipi.forwardauth.authResponseHeaders: "X-Runtipi-User"
+      traefik.http.middlewares.ci-hub.forwardauth.address: "http://ci-os-hub:5002/api/auth/traefik"
+      traefik.http.middlewares.ci-hub.forwardauth.trustForwardHeader: "true"
+      traefik.http.middlewares.ci-hub.forwardauth.authResponseHeaders: "X-CI-Hub-User"
       # Prevent Traefik from creating a default router on websecure (which triggers ACME)
       traefik.http.routers.ci-os-hub.entrypoints: "web"
       traefik.http.routers.ci-os-hub.rule: "Host(`ci-os-hub.local`)"
@@ -142,10 +142,10 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       # Mount Traefik config files individually to avoid mount conflicts
-      - ${RUNTIPI_STATE_PATH:-${ROOT_FOLDER_HOST:-.internal}}/state/traefik/config/traefik.yml:/etc/traefik/traefik.yml:ro
-      - ${RUNTIPI_STATE_PATH:-${ROOT_FOLDER_HOST:-.internal}}/state/traefik/dynamic:/etc/traefik/dynamic:ro
-      - ${RUNTIPI_STATE_PATH:-${ROOT_FOLDER_HOST:-.internal}}/state/traefik/acme_storage.json:/etc/traefik/acme.json:rw
-      - ${RUNTIPI_STATE_PATH:-${ROOT_FOLDER_HOST:-.internal}}/state/traefik/tls:/etc/traefik/tls:ro
+      - ${CI_HUB_STATE_PATH:-${ROOT_FOLDER_HOST:-.internal}}/state/traefik/config/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ${CI_HUB_STATE_PATH:-${ROOT_FOLDER_HOST:-.internal}}/state/traefik/dynamic:/etc/traefik/dynamic:ro
+      - ${CI_HUB_STATE_PATH:-${ROOT_FOLDER_HOST:-.internal}}/state/traefik/acme_storage.json:/etc/traefik/acme.json:rw
+      - ${CI_HUB_STATE_PATH:-${ROOT_FOLDER_HOST:-.internal}}/state/traefik/tls:/etc/traefik/tls:ro
     networks:
       ci_os_hub_network:
     depends_on:
@@ -176,7 +176,7 @@ services:
     restart: unless-stopped
     command: serve
     volumes:
-      - ${RUNTIPI_STATE_PATH:-${ROOT_FOLDER_HOST:-.internal}}/state/headscale:/etc/headscale
+      - ${CI_HUB_STATE_PATH:-${ROOT_FOLDER_HOST:-.internal}}/state/headscale:/etc/headscale
     networks:
       - ci_os_hub_network
     labels:

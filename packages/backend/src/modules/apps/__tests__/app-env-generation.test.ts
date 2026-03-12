@@ -4,8 +4,8 @@ import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
 import { Test } from '@nestjs/testing';
-import type { AppInfo } from '@runtipi/common/schemas';
-import type { AppUrn } from '@runtipi/common/types';
+import type { AppInfo } from '@ci-hub/common/schemas';
+import type { AppUrn } from '@ci-hub/common/types';
 import { fromPartial } from '@total-typescript/shoehorn';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { mock } from 'vitest-mock-extended';
@@ -77,10 +77,10 @@ describe('AppHelpers Reproduction', () => {
       fromPartial({
         internalIp: '127.0.0.1',
         envFilePath: '/data/.env',
-        rootFolderHost: '/opt/runtipi',
+        rootFolderHost: '/opt/ci-hub',
         domain: 'example.com',
         userSettings: {
-          appDataPath: '/opt/runtipi',
+          appDataPath: '/opt/ci-hub',
           domain: 'example.com',
           localDomain: 'test.local',
         },

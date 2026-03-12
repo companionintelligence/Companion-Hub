@@ -3,7 +3,7 @@ import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { CloudflareClientService } from '@/modules/cloudflare/cloudflare-client.service';
 import { DockerService } from '@/modules/docker/docker.service';
 import { PortManagerService } from '@/modules/network/port-manager.service';
-import type { AppUrn } from '@runtipi/common/types';
+import type { AppUrn } from '@ci-hub/common/types';
 import { AppLifecycleCommand } from './command';
 
 export class UninstallAppCommand extends AppLifecycleCommand {

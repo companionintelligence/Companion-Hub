@@ -2,7 +2,7 @@ import { Controller, Get, Param, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { PortManagerService } from './port-manager.service';
 import { AuthGuard } from '@/modules/auth/auth.guard';
-import type { AppUrn } from '@runtipi/common/types';
+import type { AppUrn } from '@ci-hub/common/types';
 
 @ApiTags('Ports')
 @Controller('ports')

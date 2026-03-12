@@ -1,6 +1,6 @@
 /** biome-ignore-all lint/suspicious/noTemplateCurlyInString: intended */
 import { createAppUrn } from '@/common/helpers/app-helpers';
-import type { ServiceInput } from '@runtipi/common/schemas';
+import type { ServiceInput } from '@ci-hub/common/schemas';
 import { beforeEach, describe, expect, it } from 'vitest';
 import yaml from 'yaml';
 import { DockerComposeBuilder } from '../compose.builder';

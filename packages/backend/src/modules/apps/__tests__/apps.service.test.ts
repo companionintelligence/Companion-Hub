@@ -14,7 +14,7 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { Test, TestingModule } from '@nestjs/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
-import type { AppUrn } from '@runtipi/common/types';
+import type { AppUrn } from '@ci-hub/common/types';
 import { AppsService } from '../apps.service';
 import { AppFilesManager } from '../app-files-manager';
 import { AppsRepository } from '../apps.repository';

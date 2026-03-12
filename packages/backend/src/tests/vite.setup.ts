@@ -33,7 +33,7 @@ beforeEach(async () => {
     );
 
     await fs.promises.writeFile(path.join(DATA_DIR, 'state', 'seed'), 'seed');
-    await fs.promises.writeFile(path.join(DATA_DIR, '.env'), 'ROOT_FOLDER_HOST=/opt/runtipi');
+    await fs.promises.writeFile(path.join(DATA_DIR, '.env'), 'ROOT_FOLDER_HOST=/opt/ci-hub');
   } catch (err) {
     console.error('Failed to setup test directories', err);
   }

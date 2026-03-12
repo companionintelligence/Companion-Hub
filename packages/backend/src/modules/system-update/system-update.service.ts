@@ -62,7 +62,7 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
 
     // Pull the new image
     try {
-      await this.runComposeCommand(['docker', 'compose', '--env-file', envFile, '--project-name', 'runtipi', '-f', composeFile, 'pull', 'ci-os-hub']);
+      await this.runComposeCommand(['docker', 'compose', '--env-file', envFile, '--project-name', 'ci-hub', '-f', composeFile, 'pull', 'ci-os-hub']);
       this.logger.info('Successfully pulled new ci-os-hub image');
     } catch (error) {
       this.logger.error('Failed to pull new image', error);
@@ -72,7 +72,7 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
     // Schedule the restart after a delay so the HTTP response is sent first
     setTimeout(() => {
       this.logger.info('Restarting ci-os-hub container with new image...');
-      const cmd = spawn('docker', ['compose', '--env-file', envFile, '--project-name', 'runtipi', '-f', composeFile, 'up', '-d', 'ci-os-hub'], {
+      const cmd = spawn('docker', ['compose', '--env-file', envFile, '--project-name', 'ci-hub', '-f', composeFile, 'up', '-d', 'ci-os-hub'], {
         stdio: 'ignore',
         detached: true,
       });

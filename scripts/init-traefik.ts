@@ -11,7 +11,7 @@ import { mkdir, copyFile, writeFile, chmod, rm, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 
-const INTERNAL_DIR = process.env.RUNTIPI_STATE_PATH || '.internal';
+const INTERNAL_DIR = process.env.CI_HUB_STATE_PATH || process.env.CI_HUB_STATE_PATH || '.internal';
 const STATE_DIR = path.join(INTERNAL_DIR, 'state');
 const TRAEFIK_DIR = path.join(STATE_DIR, 'traefik');
 
@@ -118,7 +118,7 @@ initTraefik().catch((err) => {
     console.error('This commonly happens when Docker containers create directories.');
     console.error('');
     console.error('To fix this, run the following command in your terminal:');
-    console.error(`  sudo chown -R $USER:$USER ${process.env.RUNTIPI_STATE_PATH || '.internal'}`);
+    console.error(`  sudo chown -R $USER:$USER ${process.env.CI_HUB_STATE_PATH || '.internal'}`);
     console.error('');
     console.error('Original error:', err.message);
   } else {

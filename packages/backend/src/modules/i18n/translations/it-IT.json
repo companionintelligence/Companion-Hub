@@ -200,7 +200,7 @@
   "APP_LOGS_TAB_WRAP_LINES": "Ritorno a capo",
   "APP_USER_CONFIG_TAB_TITLE": "Configurazione utente",
   "USER_CONFIG_WARNING_TITLE": "Avviso",
-  "USER_CONFIG_WARNING_DESCRIPTION": "Modificando la configurazione dell'utente, potresti bloccare l'app. Assicurati di sapere cosa stai facendo. Se la tua app non riesce a partire dopo aver modificato la configurazione dell'utente, cerca nei log nella console del browser o nella pagina delle impostazioni runtipi",
+  "USER_CONFIG_WARNING_DESCRIPTION": "Modificando la configurazione dell'utente, potresti bloccare l'app. Assicurati di sapere cosa stai facendo. Se la tua app non riesce a partire dopo aver modificato la configurazione dell'utente, cerca nei log nella console del browser o nella pagina delle impostazioni CI Hub",
   "USER_CONFIG_ENABLE": "Abilita la configurazione utente",
   "USER_CONFIG_UPDATE_SUCCESS": "Configurazione utente aggiornata con successo",
   "APP_NEW": "NUOVO",

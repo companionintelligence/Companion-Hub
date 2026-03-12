@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { zodAppUrn } from '@runtipi/common/types';
+import { zodAppUrn } from '@ci-hub/common/types';
 import { z } from 'zod';
 import { Queue } from '../queue.entity';
 

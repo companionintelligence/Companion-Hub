@@ -16,7 +16,7 @@ const LanguageSelectorLabel = () => {
   return (
     <span>
       {t('SETTINGS_GENERAL_LANGUAGE')}&nbsp;
-      <a href="https://crowdin.com/project/runtipi/invite?h=ae594e86cd807bc075310cab20a4aa921693663" target="_blank" rel="noreferrer">
+      <a href="https://crowdin.com/project/ci-hub" target="_blank" rel="noreferrer">
         {t('SETTINGS_GENERAL_LANGUAGE_HELP_TRANSLATE')}
         <ExternalLink className="ms-1 mb-1" size={16} />
       </a>

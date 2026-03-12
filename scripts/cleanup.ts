@@ -20,7 +20,7 @@ try {
 
   // Also get containers by project name (ci-os-hub, legacy runtipi, or e2e tests)
   const containersByProject = await $`docker ps -a --filter label=com.docker.compose.project=ci-os-hub --format {{.Names}}`.quiet();
-  const containersByLegacyProject = await $`docker ps -a --filter label=com.docker.compose.project=runtipi --format {{.Names}}`.quiet();
+  const containersByLegacyProject = await $`docker ps -a --filter label=com.docker.compose.project=ci-hub --format {{.Names}}`.quiet();
 
   // Get any stray e2e containers that might use dynamic project names
   const containersByE2E = await $`docker ps -a --filter "name=e2e-" --format {{.Names}}`.quiet();
@@ -164,7 +164,7 @@ console.log('\n Cleaning up docker compose...');
 try {
   // Clean up both new and legacy project names
   await $`docker compose --project-name ci-os-hub -f docker-compose.prod.yml down -v`.quiet();
-  await $`docker compose --project-name runtipi -f docker-compose.prod.yml down -v`.quiet();
+  await $`docker compose --project-name ci-hub -f docker-compose.prod.yml down -v`.quiet();
   console.log('   ✅ Docker compose cleaned');
 } catch (_error) {
   console.error('   Error during docker compose cleanup:', _error);

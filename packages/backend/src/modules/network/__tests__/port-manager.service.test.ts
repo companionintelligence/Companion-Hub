@@ -3,7 +3,7 @@ import { PortManagerService } from '../port-manager.service';
 import type { PortAllocationRepository } from '../port-allocation.repository';
 import type { AppsRepository } from '@/modules/apps/apps.repository';
 import type { LoggerService } from '@/core/logger/logger.service';
-import type { AppUrn } from '@runtipi/common/types';
+import type { AppUrn } from '@ci-hub/common/types';
 
 const mockLogger = {
   info: vi.fn(),

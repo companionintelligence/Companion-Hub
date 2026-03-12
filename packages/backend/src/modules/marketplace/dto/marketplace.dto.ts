@@ -1,4 +1,4 @@
-import { APP_CATEGORIES, appInfoSchemaArk } from '@runtipi/common/schemas';
+import { APP_CATEGORIES, appInfoSchemaArk } from '@ci-hub/common/schemas';
 import { type } from 'arktype';
 import { createArkDto } from 'nestjs-arktype';
 

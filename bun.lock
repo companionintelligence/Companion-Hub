@@ -31,6 +31,7 @@
       "name": "backend",
       "version": "0.0.6",
       "dependencies": {
+        "@ci-hub/common": "workspace:*",
         "@nestjs/axios": "^4.0.1",
         "@nestjs/common": "^11.1.0",
         "@nestjs/config": "^4.0.2",
@@ -43,7 +44,6 @@
         "@otplib/core": "^12.0.1",
         "@otplib/plugin-crypto": "^12.0.1",
         "@otplib/plugin-thirty-two": "^12.0.1",
-        "@runtipi/common": "workspace:*",
         "@sentry/nestjs": "^10.10.0",
         "ansi-to-html": "^0.7.2",
         "argon2": "^0.44.0",
@@ -126,7 +126,7 @@
       },
     },
     "packages/common": {
-      "name": "@runtipi/common",
+      "name": "@ci-hub/common",
       "version": "1.0.0",
       "devDependencies": {
         "@arethetypeswrong/cli": "^0.18.1",
@@ -144,6 +144,7 @@
       "version": "0.0.5",
       "dependencies": {
         "@base-ui/react": "^1.0.0-alpha.1",
+        "@ci-hub/common": "workspace:*",
         "@codemirror/lang-json": "^6.0.2",
         "@codemirror/lang-markdown": "^6.4.0",
         "@codemirror/lang-yaml": "^6.1.2",
@@ -161,7 +162,6 @@
         "@radix-ui/react-switch": "^1.2.4",
         "@radix-ui/react-tabs": "^1.1.11",
         "@react-router/node": "^7.6.0",
-        "@runtipi/common": "workspace:*",
         "@sentry/react": "^10.19.0",
         "@sentry/vite-plugin": "^4.4.0",
         "@stepperize/core": "^1.2.6",
@@ -386,6 +386,8 @@
     "@changesets/types": ["@changesets/types@6.1.0", "", {}, "sha512-rKQcJ+o1nKNgeoYRHKOS07tAMNd3YSN0uHaJOZYjBAgxfV7TUE7JE+z4BzZdQwb5hKaYbayKN5KrYV7ODb2rAA=="],
 
     "@changesets/write": ["@changesets/write@0.4.0", "", { "dependencies": { "@changesets/types": "^6.1.0", "fs-extra": "^7.0.1", "human-id": "^4.1.1", "prettier": "^2.7.1" } }, "sha512-CdTLvIOPiCNuH71pyDu3rA+Q0n65cmAbXnwWH84rKGiFumFzkmHNT8KHTMEchcxN+Kl8I54xGUhJ7l3E7X396Q=="],
+
+    "@ci-hub/common": ["@ci-hub/common@workspace:packages/common"],
 
     "@codemirror/autocomplete": ["@codemirror/autocomplete@6.20.0", "", { "dependencies": { "@codemirror/language": "^6.0.0", "@codemirror/state": "^6.0.0", "@codemirror/view": "^6.17.0", "@lezer/common": "^1.0.0" } }, "sha512-bOwvTOIJcG5FVo5gUUupiwYh8MioPLQ4UcqbcRf7UQ98X90tCa9E1kZ3Z7tqwpZxYyOvh1YTYbmZE9RTfTp5hg=="],
 
@@ -1022,8 +1024,6 @@
     "@rollup/rollup-win32-x64-gnu": ["@rollup/rollup-win32-x64-gnu@4.55.2", "", { "os": "win32", "cpu": "x64" }, "sha512-KvXsBvp13oZz9JGe5NYS7FNizLe99Ny+W8ETsuCyjXiKdiGrcz2/J/N8qxZ/RSwivqjQguug07NLHqrIHrqfYw=="],
 
     "@rollup/rollup-win32-x64-msvc": ["@rollup/rollup-win32-x64-msvc@4.55.2", "", { "os": "win32", "cpu": "x64" }, "sha512-xNO+fksQhsAckRtDSPWaMeT1uIM+JrDRXlerpnWNXhn1TdB3YZ6uKBMBTKP0eX9XtYEP978hHk1f8332i2AW8Q=="],
-
-    "@runtipi/common": ["@runtipi/common@workspace:packages/common"],
 
     "@scarf/scarf": ["@scarf/scarf@1.4.0", "", {}, "sha512-xxeapPiUXdZAE3che6f3xogoJPeZgig6omHEy1rIY5WVsB3H2BHNnZH+gHG6x91SCWyQCzWGsuL2Hh3ClO5/qQ=="],
 
