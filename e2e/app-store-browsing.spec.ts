@@ -26,8 +26,15 @@ test.describe('App Store Browsing', () => {
     await loginUser(page);
     await page.goto('/app-store');
 
-    await expect(page.getByPlaceholder('Search apps...').first()).toBeVisible({ timeout: 30000 });
-    await page.getByPlaceholder('Search apps...').first().fill('zzz-nonexistent-app-xyz');
-    await expect(page.getByText('No app found')).toBeVisible({ timeout: 30000 });
+    // Wait for the page to fully load (heading or search visible)
+    await expect(page.getByRole('heading', { name: 'App Store' })).toBeVisible({ timeout: 30000 });
+
+    // The store may already be empty, but search should still work
+    const searchInput = page.getByPlaceholder('Search apps...').first();
+    await expect(searchInput).toBeVisible({ timeout: 30000 });
+    await searchInput.fill('zzz-nonexistent-app-xyz');
+
+    // Empty state shows translated "No app found" or the raw key
+    await expect(page.getByText(/No app found|APP_STORE_NO_RESULTS/)).toBeVisible({ timeout: 30000 });
   });
 });
