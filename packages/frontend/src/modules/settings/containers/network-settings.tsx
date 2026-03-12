@@ -230,7 +230,7 @@ const VpnSection = () => {
                 <div>
                   <div className="font-mono text-xs select-all">{key.key}</div>
                   <div className="text-xs text-muted-foreground mt-0.5">
-                    Expires {new Date(key.expiration).toLocaleDateString()}
+                    Expires {new Date(key.expiration).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}
                     {key.reusable && ' · Reusable'}
                   </div>
                 </div>
