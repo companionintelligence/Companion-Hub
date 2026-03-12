@@ -112,6 +112,7 @@ jobs:
           TIPI_APP_DATA_DIR: /tmp/runtipi-e2e/app-data
           TIPI_APP_DIR: ${{ github.workspace }}
           CI: true
+          DEVICE_ID: test-device-e2e
 
       - uses: actions/upload-artifact@v4
         if: always()
