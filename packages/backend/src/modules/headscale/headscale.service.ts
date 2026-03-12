@@ -105,6 +105,7 @@ export class HeadscaleService implements OnModuleInit {
           region_code: 'hub',
           region_name: 'Hub Embedded DERP',
           stun_listen_addr: '0.0.0.0:3478',
+          private_key_path: '/etc/headscale/derp_server_private.key',
         },
         urls: [],
         auto_update_enabled: false,
@@ -240,6 +241,18 @@ export class HeadscaleService implements OnModuleInit {
    */
   async removeDevice(deviceId: string): Promise<void> {
     await this.apiRequest('DELETE', `/api/v1/node/${deviceId}`);
+  }
+
+  /**
+   * Enable all advertised routes for a node
+   */
+  async enableRoutes(nodeId: string): Promise<void> {
+    const result = await this.apiRequest<{ routes: { id: string; enabled: boolean }[] }>('GET', `/api/v1/node/${nodeId}/routes`);
+    for (const route of result.routes || []) {
+      if (!route.enabled) {
+        await this.apiRequest('POST', `/api/v1/routes/${route.id}/enable`);
+      }
+    }
   }
 
   /**
