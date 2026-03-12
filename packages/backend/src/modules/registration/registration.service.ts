@@ -270,6 +270,12 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   }
 
   public async getDeviceId(): Promise<string> {
+    const envDeviceId = process.env.DEVICE_ID?.trim();
+    if (envDeviceId) {
+      this.logger.debug(`Device ID from DEVICE_ID env var: ${envDeviceId}`);
+      return envDeviceId;
+    }
+
     try {
       const serial = execSync('dmidecode -s system-serial-number', {
         timeout: 5000,

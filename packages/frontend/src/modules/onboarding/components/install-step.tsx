@@ -50,9 +50,9 @@ export const InstallStep = ({ apps, onComplete }: InstallStepProps) => {
         // processes the request.
         try {
           const installedKey = getInstalledAppsQueryKey();
-          const existing = (queryClient.getQueryData(installedKey) as Record<string, unknown>) || { installed: [] };
+          const existing = (queryClient.getQueryData(installedKey) as { installed: Record<string, Record<string, unknown>>[] }) || { installed: [] };
           // Remove any prior optimistic entry for this urn
-          const filtered = existing.installed.filter((it: Record<string, Record<string, unknown>>) => it.info?.urn !== app.urn);
+          const filtered = existing.installed.filter((it) => it.info?.urn !== app.urn);
           const tempId = `pending-${app.appSlug}-${Date.now()}`;
           const optimistic = {
             info: {
@@ -147,19 +147,23 @@ export const InstallStep = ({ apps, onComplete }: InstallStepProps) => {
             // doesn't keep showing a phantom installing app.
             try {
               const installedKey = getInstalledAppsQueryKey();
-              const existing = (queryClient.getQueryData(installedKey) as Record<string, unknown>) || { installed: [] };
-              const filtered = existing.installed.filter((it: Record<string, Record<string, unknown>>) => it.info?.urn !== app.urn);
+              const existing = (queryClient.getQueryData(installedKey) as { installed: Record<string, Record<string, unknown>>[] }) || {
+                installed: [],
+              };
+              const filtered = existing.installed.filter((it) => it.info?.urn !== app.urn);
               queryClient.setQueryData(installedKey, { installed: filtered });
             } catch (_e) {
               // ignore
             }
           }
-        } catch (_e) {
+        } catch (e) {
           setStates((prev) => prev.map((s, idx) => (idx === i ? { ...s, status: 'error', error: (e as Error).message } : s)));
           try {
             const installedKey = getInstalledAppsQueryKey();
-            const existing = (queryClient.getQueryData(installedKey) as Record<string, unknown>) || { installed: [] };
-            const filtered = existing.installed.filter((it: Record<string, Record<string, unknown>>) => it.info?.urn !== app.urn);
+            const existing = (queryClient.getQueryData(installedKey) as { installed: Record<string, Record<string, unknown>>[] }) || {
+              installed: [],
+            };
+            const filtered = existing.installed.filter((it) => it.info?.urn !== app.urn);
             queryClient.setQueryData(installedKey, { installed: filtered });
           } catch (_e) {
             // ignore
