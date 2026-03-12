@@ -27,6 +27,7 @@ const backendEnv: Record<string, string> = {
   THEME_BASE: 'gray',
   THEME_COLOR: 'blue',
   EXPERIMENTAL_INSECURE_COOKIE: 'true',
+  CI_HUB_VERSION: 'e2e',
   TIPI_VERSION: 'e2e',
   INTERNAL_IP: '0.0.0.0',
   ROOT_FOLDER_HOST: process.env.ROOT_FOLDER_HOST || '/tmp/ci-hub-e2e',
