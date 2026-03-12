@@ -7,7 +7,7 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "bun run infra:up && dotenv -e .env.local -- bun run dev:app",
+    "dev": "bun scripts/start.ts dev",
     "dev:app": "POSTGRES_HOST=localhost RABBITMQ_HOST=localhost NODE_ENV=development turbo run local",
     "infra:up": "ENV_FILE=.env.local docker compose --env-file .env.local --project-name runtipi -f docker-compose.local.yml up -d ci-os-hub-queue ci-hub-db",
     "infra:down": "docker compose --project-name runtipi -f docker-compose.local.yml down",
@@ -17,12 +17,7 @@
     "tsc": "turbo run tsc",
     "test": "turbo test",
     "test:integration": "turbo run test:integration",
-    "start": "node ./main.js",
-    "start:docker": "ENV_FILE=.env.local docker compose --env-file .env.local --project-name runtipi -f docker-compose.local.yml up --build",
-    "start:prod": "bun scripts/init-traefik.ts && ENV_FILE=.env.prod CI_CLOUD_API_URL=https://ci.computer/api docker compose --env-file .env.prod --project-name runtipi -f docker-compose.prod.yml up --build",
-    "start:staging": "bun scripts/init-traefik.ts && ENV_FILE=.env.staging CI_CLOUD_API_URL=https://companionintel.com/api docker compose --env-file .env.staging --project-name runtipi -f docker-compose.prod.yml up --build",
-    "start:dev": "bun scripts/init-traefik.ts && ENV_FILE=.env.dev CI_CLOUD_API_URL=https://portal.companionintelligence.com/api docker compose --env-file .env.dev --project-name runtipi -f docker-compose.prod.yml up --build",
-    "start:dev:detached": "bun scripts/init-traefik.ts && ENV_FILE=.env.dev CI_CLOUD_API_URL=https://portal.companionintelligence.com/api docker compose --env-file .env.dev --project-name runtipi -f docker-compose.prod.yml up -d --build",
+    "start": "bun scripts/start.ts start",
     "test:e2e": "bun scripts/run-e2e.ts",
     "test:e2e:ci": "bunx playwright test",
     "test:e2e:ui": "NODE_ENV=test dotenv -e .env -e .env.e2e -- playwright test --ui",
@@ -33,7 +28,8 @@
     "lint:fix": "biome check --write --no-errors-on-unmatched",
     "prepare": "husky",
     "device-id": "bun scripts/get-device-id.ts",
-    "version": "echo $npm_package_version"
+    "version": "echo $npm_package_version",
+    "start:detached": "bun scripts/start.ts start:detached"
   },
   "lint-staged": {
     "*": [

@@ -43,8 +43,7 @@ Edit `.env.prod` and set at least:
 ### 3. Run
 
 ```bash
-bun scripts/init-traefik.ts
-bun run start:prod
+bun start prod
 ```
 
 Open http://localhost:5002. On first run, register your device with CI Cloud (you'll get a pairing code or redirect URL). Once registered, you can install apps from the store and optionally expose them via Cloudflare Tunnel.
@@ -69,15 +68,16 @@ Infrastructure (Postgres, RabbitMQ) runs in Docker; backend and frontend run loc
 
 ### Commands
 
+All scripts accept an optional environment: `local` (default), `dev`, `staging`, or `prod`.
+
 | Command | Description |
 |---------|-------------|
-| `bun dev` | Start infra + backend + frontend (hot reload) |
+| `bun dev [env]` | Start infra + backend + frontend (hot reload) |
+| `bun start [env]` | Full stack in Docker (attached) |
+| `bun start:detached [env]` | Full stack in Docker (detached) |
 | `bun run build` | Build all packages |
 | `bun run test` | Run tests |
 | `bun run cleanup` | Stop infra, remove `.internal`, tunnel files |
-| `bun run start:prod` | Full stack in Docker (production-like) |
-| `bun run start:staging` | Connects to staging CI Cloud |
-| `bun run start:dev` | Connects to dev CI Cloud |
 
 ---
 
