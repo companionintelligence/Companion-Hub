@@ -36,7 +36,7 @@ export class RegistrationController {
   @ApiResponse({ status: 200, description: 'Returns the device ID and registration URL' })
   async getDeviceId(@Req() req: Request) {
     const deviceId = await this.registrationService.getDeviceId();
-    const { ciCloudFrontendUrl } = this.config.getConfig();
+    const { ciCloudUrl } = this.config.getConfig();
 
     // Build callback URL (where CI Cloud should redirect back to)
     // Use the request origin to construct the callback URL
@@ -46,15 +46,15 @@ export class RegistrationController {
 
     // Build registration URL with callback parameter
     // Handle empty string as well as null/undefined
-    const registrationUrl = ciCloudFrontendUrl?.trim()
-      ? `${ciCloudFrontendUrl.trim()}/device/register?device_id=${encodeURIComponent(deviceId)}&callback_url=${encodeURIComponent(callbackUrl)}`
+    const registrationUrl = ciCloudUrl?.trim()
+      ? `${ciCloudUrl.trim()}/device/register?device_id=${encodeURIComponent(deviceId)}&callback_url=${encodeURIComponent(callbackUrl)}`
       : null;
 
     return {
       device_id: deviceId,
       registration_url: registrationUrl,
       callback_url: callbackUrl,
-      ci_cloud_frontend_url: ciCloudFrontendUrl || null, // For debugging
+      ci_cloud_url: ciCloudUrl || null, // For debugging
     };
   }
 
@@ -129,7 +129,6 @@ export class RegistrationController {
       processEnv: {
         CI_CLOUD_URL: process.env.CI_CLOUD_URL || null,
         CI_CLOUD_API_URL: process.env.CI_CLOUD_API_URL || null,
-        CI_CLOUD_FRONTEND_URL: process.env.CI_CLOUD_FRONTEND_URL || null,
       },
     };
   }

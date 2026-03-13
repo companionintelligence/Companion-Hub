@@ -183,7 +183,7 @@ export default function DeviceRegistrationPage() {
           const deviceData = await deviceRes.json();
           setDeviceId(deviceData.device_id);
           setRegistrationUrl(deviceData.registration_url);
-          const base = deviceData.ci_cloud_frontend_url?.trim();
+          const base = deviceData.ci_cloud_url?.trim();
           if (base) {
             setPortalBaseUrl(base.replace(/\/+$/, ''));
           }
@@ -191,8 +191,8 @@ export default function DeviceRegistrationPage() {
           if (!deviceData.registration_url) {
             setError(
               'CI Portal frontend URL not configured. ' +
-                'Please set CI_CLOUD_FRONTEND_URL environment variable. ' +
-                `Current value: ${deviceData.ci_cloud_frontend_url || 'not set'}`,
+                'Please set CI_CLOUD_URL environment variable. ' +
+                `Current value: ${deviceData.ci_cloud_url || 'not set'}`,
             );
           }
         } else {

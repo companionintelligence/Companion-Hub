@@ -6,7 +6,7 @@ import { existsSync } from 'node:fs';
 console.log('🧹 Starting cleanup of CI-OS-Hub network, containers, volumes, and caches...\n');
 
 // Step 1: Stop and remove all containers in the network
-console.log('1️⃣ Stopping and removing containers...');
+console.log(' Stopping and removing containers...');
 try {
   // Get containers by network
   const containersByNetwork = await $`docker ps -a --filter network=ci_os_hub_network --format {{.Names}}`.quiet();
@@ -82,11 +82,12 @@ try {
     console.log('   No containers found');
   }
 } catch (_error) {
+  console.error('   Error listing containers:', _error);
   console.log('   No containers to remove');
 }
 
 // Step 2: Remove all volumes associated with the network or ci-os-hub
-console.log('\n2️⃣ Removing volumes...');
+console.log('\n Removing volumes...');
 try {
   // Get all volumes
   const volumes = await $`docker volume ls --format {{.Name}}`.quiet();
@@ -120,7 +121,7 @@ try {
 }
 
 // Step 3: Remove the network
-console.log('\n3️⃣ Removing network...');
+console.log('\n Removing network...');
 try {
   await $`docker network rm ci_os_hub_network`.quiet().catch(() => {
     // ignore
@@ -148,32 +149,24 @@ try {
 
   console.log('   ✅ Networks cleaned');
 } catch (_error) {
+  console.error('   Error during network cleanup:', _error);
   console.log('   Network removal skipped');
 }
 
 // Step 4: Clean up docker compose
-console.log('\n4️⃣ Cleaning up docker compose...');
+console.log('\n Cleaning up docker compose...');
 try {
   // Clean up both new and legacy project names
   await $`docker compose --project-name ci-os-hub -f docker-compose.prod.yml down -v`.quiet();
   await $`docker compose --project-name runtipi -f docker-compose.prod.yml down -v`.quiet();
   console.log('   ✅ Docker compose cleaned');
 } catch (_error) {
+  console.error('   Error during docker compose cleanup:', _error);
   console.log('   Docker compose cleanup skipped');
 }
 
-// Step 5: Prune build cache
-console.log('\n5️⃣ Pruning Docker build cache...');
-try {
-  await $`docker builder prune -af --filter type=exec.cachemount`.quiet();
-  await $`docker builder prune -af`.quiet();
-  console.log('   ✅ Build cache pruned');
-} catch (_error) {
-  console.log('   Build cache prune skipped');
-}
-
-// Step 6: Remove buildx cache directory
-console.log('\n6️⃣ Removing buildx cache...');
+// Step 5: Remove buildx cache directory
+console.log('\n Removing buildx cache...');
 try {
   if (existsSync('/tmp/.buildx-cache')) {
     await $`rm -rf /tmp/.buildx-cache`.quiet();
@@ -182,11 +175,12 @@ try {
     console.log('   No buildx cache found');
   }
 } catch (_error) {
+  console.error('   Error removing buildx cache:', _error);
   console.log('   Buildx cache removal skipped');
 }
 
-// Step 7: Optional - Clean up .internal directories (commented out by default)
-console.log('\n7️⃣ Checking .internal directories...');
+// Step 6: Optional - Clean up .internal directories (commented out by default)
+console.log('\n7️ Checking .internal directories...');
 const internalDirs = [
   '.internal/media',
   '.internal/state',
@@ -211,6 +205,5 @@ console.log('\n📝 Summary:');
 console.log('   - All containers in ci-os-hub_network removed');
 console.log('   - All related volumes removed');
 console.log('   - Network removed');
-console.log('   - Docker build cache pruned');
 console.log('   - Buildx cache removed');
 console.log('   - .internal directories cleaned');

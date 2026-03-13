@@ -51,7 +51,6 @@
         "RABBITMQ_PASSWORD",
         "RABBITMQ_HOST",
         "CI_CLOUD_API_URL",
-        "CI_CLOUD_FRONTEND_URL",
         "CI_CLOUD_APP_STORE_URL",
         "CI_CLOUD_URL",
         "LOCAL_DOMAIN",

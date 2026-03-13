@@ -19,7 +19,6 @@ const backendEnv: Record<string, string> = {
   JWT_SECRET: process.env.JWT_SECRET || 'e2e-test-secret',
   CI_CLOUD_URL: process.env.CI_CLOUD_URL || 'https://app.companionintelligence.com',
   CI_CLOUD_API_URL: process.env.CI_CLOUD_API_URL || 'https://app.companionintelligence.com/api',
-  CI_CLOUD_FRONTEND_URL: process.env.CI_CLOUD_FRONTEND_URL || 'https://app.companionintelligence.com',
   DOMAIN: process.env.DOMAIN || 'ci.computer',
   LOCAL_DOMAIN: process.env.LOCAL_DOMAIN || 'ci.lan',
   DEMO_MODE: 'false',

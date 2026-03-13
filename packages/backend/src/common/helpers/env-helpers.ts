@@ -248,7 +248,6 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
     throw new Error('CI_CLOUD_URL is required for CI Cloud integration. Please set it in your .env file or environment variables.');
   }
   envMap.set('CI_CLOUD_URL', ciCloudUrl);
-  envMap.set('CI_CLOUD_FRONTEND_URL', resolve('CI_CLOUD_FRONTEND_URL', { envMap, fallback: ciCloudUrl }));
 
   // --- Write data .env only if values changed ---
 
