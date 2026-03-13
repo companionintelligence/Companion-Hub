@@ -1,6 +1,6 @@
-# CI-OS Hub
+# CI Hub
 
-**Self-hosted app hub for CI OS.** Install and manage apps from the companion intelligence marketplace with one click. Runs on your machine—your data stays yours.
+**Self-hosted app hub for self hosting.** Install and manage apps from the companion intelligence marketplace with one click. Runs on your machine—your data stays yours.
 
 Part of the [CI OS](https://github.com/companionintelligence) ecosystem. Licensed under [GNU General Public License v3.0](LICENSE).
 
