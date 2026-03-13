@@ -233,6 +233,14 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   );
   envMap.set('ADVANCED_SETTINGS', resolve('ADVANCED_SETTINGS', { envMap, settingsVal: boolStr(settings.advancedSettings), fallback: 'false' }));
   envMap.set('LOG_LEVEL', resolve('LOG_LEVEL', { envMap, settingsVal: settings.logLevel, fallback: 'info' }));
+  envMap.set('OTEL_LOGS_ENABLED', resolve('OTEL_LOGS_ENABLED', { envMap, fallback: 'false' }));
+  envMap.set(
+    'OTEL_EXPORTER_OTLP_LOGS_ENDPOINT',
+    resolve('OTEL_EXPORTER_OTLP_LOGS_ENDPOINT', { envMap, fallback: 'https://logs.ci.computer/v1/logs' }),
+  );
+  envMap.set('OTEL_EXPORTER_OTLP_LOGS_HEADERS', resolve('OTEL_EXPORTER_OTLP_LOGS_HEADERS', { envMap, fallback: '' }));
+  envMap.set('OTEL_SERVICE_NAME', resolve('OTEL_SERVICE_NAME', { envMap, fallback: 'ci-os-hub' }));
+  envMap.set('OTEL_SERVICE_VERSION', resolve('OTEL_SERVICE_VERSION', { envMap, fallback: process.env.TIPI_VERSION || '' }));
   envMap.set(
     'EXPERIMENTAL_INSECURE_COOKIE',
     resolve('EXPERIMENTAL_INSECURE_COOKIE', { envMap, settingsVal: boolStr(settings.experimental_insecureCookie), fallback: 'false' }),

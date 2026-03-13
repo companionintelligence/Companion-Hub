@@ -18,5 +18,8 @@ await Bun.build({
     'cpu-features',
     'drizzle-orm',
     '@opentelemetry/api',
+    '@opentelemetry/api-logs',
+    '@opentelemetry/sdk-logs',
+    '@opentelemetry/exporter-logs-otlp-http',
   ],
 });

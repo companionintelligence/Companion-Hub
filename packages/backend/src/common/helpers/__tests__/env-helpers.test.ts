@@ -56,11 +56,24 @@ describe('env-helpers — resolve() priority chain', () => {
     vi.clearAllMocks();
 
     // Save and set required env vars
-    for (const key of ['ROOT_FOLDER_HOST', 'CI_CLOUD_URL', 'DOMAIN', 'GUEST_DASHBOARD', 'DEMO_MODE']) {
+    for (const key of [
+      'ROOT_FOLDER_HOST',
+      'CI_CLOUD_URL',
+      'DOMAIN',
+      'GUEST_DASHBOARD',
+      'DEMO_MODE',
+      'OTEL_LOGS_ENABLED',
+      'OTEL_EXPORTER_OTLP_LOGS_ENDPOINT',
+      'OTEL_EXPORTER_OTLP_LOGS_HEADERS',
+      'OTEL_SERVICE_NAME',
+      'OTEL_SERVICE_VERSION',
+      'TIPI_VERSION',
+    ]) {
       savedEnv[key] = process.env[key];
     }
     process.env.ROOT_FOLDER_HOST = '/home/user/ci-os-hub';
     process.env.CI_CLOUD_URL = 'https://cloud.example.com';
+    process.env.TIPI_VERSION = '4.7.0';
 
     mockedFs.existsSync.mockReturnValue(true);
   });
@@ -135,5 +148,39 @@ describe('env-helpers — resolve() priority chain', () => {
     setupMocks({ settingsJson: { guestDashboard: true } });
     const envMap = await generateSystemEnvFile();
     expect(envMap.get('GUEST_DASHBOARD')).toBe('true');
+  });
+
+  it('MUST set default OpenTelemetry log env values when none are provided', async () => {
+    delete process.env.OTEL_LOGS_ENABLED;
+    delete process.env.OTEL_EXPORTER_OTLP_LOGS_ENDPOINT;
+    delete process.env.OTEL_EXPORTER_OTLP_LOGS_HEADERS;
+    delete process.env.OTEL_SERVICE_NAME;
+    delete process.env.OTEL_SERVICE_VERSION;
+    setupMocks({});
+
+    const envMap = await generateSystemEnvFile();
+
+    expect(envMap.get('OTEL_LOGS_ENABLED')).toBe('false');
+    expect(envMap.get('OTEL_EXPORTER_OTLP_LOGS_ENDPOINT')).toBe('https://logs.ci.computer/v1/logs');
+    expect(envMap.get('OTEL_EXPORTER_OTLP_LOGS_HEADERS')).toBe('');
+    expect(envMap.get('OTEL_SERVICE_NAME')).toBe('ci-os-hub');
+    expect(envMap.get('OTEL_SERVICE_VERSION')).toBe('4.7.0');
+  });
+
+  it('MUST let process.env override OpenTelemetry log env values', async () => {
+    process.env.OTEL_LOGS_ENABLED = 'true';
+    process.env.OTEL_EXPORTER_OTLP_LOGS_ENDPOINT = 'https://logs.example.com/custom';
+    process.env.OTEL_EXPORTER_OTLP_LOGS_HEADERS = 'authorization=Bearer token';
+    process.env.OTEL_SERVICE_NAME = 'custom-service';
+    process.env.OTEL_SERVICE_VERSION = '9.9.9';
+    setupMocks({});
+
+    const envMap = await generateSystemEnvFile();
+
+    expect(envMap.get('OTEL_LOGS_ENABLED')).toBe('true');
+    expect(envMap.get('OTEL_EXPORTER_OTLP_LOGS_ENDPOINT')).toBe('https://logs.example.com/custom');
+    expect(envMap.get('OTEL_EXPORTER_OTLP_LOGS_HEADERS')).toBe('authorization=Bearer token');
+    expect(envMap.get('OTEL_SERVICE_NAME')).toBe('custom-service');
+    expect(envMap.get('OTEL_SERVICE_VERSION')).toBe('9.9.9');
   });
 });
