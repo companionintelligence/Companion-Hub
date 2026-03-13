@@ -222,6 +222,8 @@ export class LoggerService {
   private winstonLogger: Logger;
   private openTelemetryLogger: OtelLogger | null = null;
   private openTelemetryLogLevel: LogLevel = LOG_LEVEL_ENUM.info;
+  private openTelemetryServiceName = 'ci-os-hub';
+  private openTelemetryServiceVersion?: string;
 
   private logsFolder: string;
   private flushInterval: NodeJS.Timeout | null = null;
@@ -239,6 +241,8 @@ export class LoggerService {
     try {
       this.openTelemetryLogger = getOrCreateOpenTelemetryLogger(openTelemetryConfig);
       this.openTelemetryLogLevel = openTelemetryConfig.logLevel;
+      this.openTelemetryServiceName = openTelemetryConfig.serviceName;
+      this.openTelemetryServiceVersion = openTelemetryConfig.serviceVersion;
     } catch (_error) {
       this.openTelemetryLogger = null;
     }
@@ -359,10 +363,8 @@ export class LoggerService {
         severityNumber: mapOpenTelemetrySeverityNumber(level),
         severityText: normalizeLogLevel(level).toUpperCase(),
         attributes: {
-          'service.name': process.env.OTEL_SERVICE_NAME?.trim() || 'ci-os-hub',
-          ...(process.env.OTEL_SERVICE_VERSION?.trim() || process.env.TIPI_VERSION?.trim()
-            ? { 'service.version': process.env.OTEL_SERVICE_VERSION?.trim() || process.env.TIPI_VERSION?.trim() }
-            : {}),
+          'service.name': this.openTelemetryServiceName,
+          ...(this.openTelemetryServiceVersion ? { 'service.version': this.openTelemetryServiceVersion } : {}),
         },
       });
     } catch (_error) {
