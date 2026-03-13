@@ -31,6 +31,12 @@
           "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.collaboraoffice.com",
           "url": "https://www.collaboraoffice.com/",
           "appSlug": "collabora-online"
+        },
+        {
+          "name": "CryptPad",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://cryptpad.org",
+          "url": "https://cryptpad.org/",
+          "appSlug": "cryptpad"
         }
       ]
     },
@@ -516,6 +522,12 @@
           "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://coder.com",
           "url": "https://github.com/coder/code-server",
           "appSlug": "code-server"
+        },
+        {
+          "name": "Arkanum",
+          "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://gitea.ocram85.com/arkanum/arkanum",
+          "url": "https://gitea.ocram85.com/arkanum/arkanum",
+          "appSlug": "arkanum"
         }
       ]
     },
@@ -977,7 +989,7 @@
           "name": "Home Assistant",
           "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://www.home-assistant.io",
           "url": "https://www.home-assistant.io/",
-          "appSlug": "homeassistant"
+          "appSlug": "home-assistant"
         }
       ]
     },
@@ -1159,7 +1171,7 @@
           "name": "Open WebUI",
           "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://openwebui.com",
           "url": "https://openwebui.com/",
-          "appSlug": "open-webui"
+          "appSlug": "openwebui"
         },
         {
           "name": "Lobe Chat",
