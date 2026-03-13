@@ -162,6 +162,7 @@ export class ReposHelpers {
         const enrichedApp = {
           ...app,
           urn: `urn:app:${appSlug}`,
+          name: typeof app.name === 'string' ? app.name : typeof app.title === 'string' ? app.title : appSlug,
           author: typeof app.author === 'string' ? app.author : 'Unknown Author',
           available: typeof app.available === 'boolean' ? app.available : true,
           short_desc:
