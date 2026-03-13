@@ -11,7 +11,7 @@ import { mkdir, copyFile, writeFile, chmod, rm, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 
-const INTERNAL_DIR = process.env.CI_HUB_STATE_PATH || process.env.CI_HUB_STATE_PATH || '.internal';
+const INTERNAL_DIR = process.env.CI_HUB_STATE_PATH || process.env.STATE_PATH || '.internal';
 const STATE_DIR = path.join(INTERNAL_DIR, 'state');
 const TRAEFIK_DIR = path.join(STATE_DIR, 'traefik');
 
