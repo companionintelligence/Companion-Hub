@@ -55,7 +55,7 @@ export class AppFilesManager {
         }
 
         if (parsedConfig.available) {
-          let description = '';
+          let description = parsedConfig.description;
           try {
             const fileExists = await this.filesystem.pathExists(path.join(appInstalledDir, 'metadata', 'description.md'));
             if (fileExists) {
