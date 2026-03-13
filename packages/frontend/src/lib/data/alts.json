@@ -1171,7 +1171,7 @@
           "name": "Open WebUI",
           "icon": "https://www.google.com/s2/favicons?sz=32&domain_url=https://openwebui.com",
           "url": "https://openwebui.com/",
-          "appSlug": "openwebui"
+          "appSlug": "open-webui"
         },
         {
           "name": "Lobe Chat",
