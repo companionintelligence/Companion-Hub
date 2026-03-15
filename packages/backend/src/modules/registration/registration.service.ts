@@ -282,7 +282,19 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         encoding: 'utf-8',
       }).trim();
 
-      if (serial && serial !== 'Not Specified' && serial.toLowerCase() !== 'to be filled by o.e.m.' && serial !== 'Default string') {
+      const invalidSerials = [
+        'not specified',
+        'to be filled by o.e.m.',
+        'default string',
+        'system serial number',
+        'chassis serial number',
+        'none',
+        'na',
+        'n/a',
+        '0',
+        '',
+      ];
+      if (serial && !invalidSerials.includes(serial.toLowerCase())) {
         this.logger.debug(`Device ID from dmidecode: ${serial}`);
         return serial;
       }
