@@ -1,3 +1,13 @@
+/**
+ * Run backend integration tests. Starts postgres + rabbitmq via docker-compose, runs vitest, then tears down.
+ *
+ * Usage:
+ *   bun run scripts/run-integration.ts [-- <vitest-args>]
+ *
+ * Examples:
+ *   bun run scripts/run-integration.ts
+ *   bun run scripts/run-integration.ts -- --grep "registration"
+ */
 import { spawn } from 'node:child_process';
 import { resolve } from 'node:path';
 

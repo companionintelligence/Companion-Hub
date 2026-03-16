@@ -4,6 +4,13 @@
  *
  * Install an app, collect detailed resource metrics,
  * and generate a benchmark report.
+ *
+ * Usage:
+ *   bun run scripts/benchmark-app.ts <app-id> [--save]
+ *
+ * Examples:
+ *   bun run scripts/benchmark-app.ts nextcloud
+ *   bun run scripts/benchmark-app.ts jellyfin --save
  */
 
 import { execSync } from 'node:child_process';

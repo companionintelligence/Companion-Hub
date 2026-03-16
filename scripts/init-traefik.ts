@@ -1,3 +1,12 @@
+/**
+ * Initialize Traefik configuration. Copies config files and generates TLS certificates.
+ *
+ * Usage:
+ *   bun run scripts/init-traefik.ts
+ *
+ * Environment variables:
+ *   RUNTIPI_STATE_PATH - State directory path (default: .internal)
+ */
 import { mkdir, copyFile, writeFile, chmod, rm, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';

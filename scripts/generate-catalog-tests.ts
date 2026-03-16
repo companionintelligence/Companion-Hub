@@ -4,6 +4,9 @@
  *
  * Generates test specs for all apps in CI-App-Store
  * and distributes them across fleet servers for parallel testing.
+ *
+ * Usage:
+ *   bun run scripts/generate-catalog-tests.ts
  */
 
 import { readdir, readFile, writeFile } from 'node:fs/promises';

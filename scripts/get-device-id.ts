@@ -1,3 +1,10 @@
+/**
+ * Print the device ID for this machine. Mirrors the backend registration logic.
+ * Requires sudo for dmidecode access.
+ *
+ * Usage:
+ *   bun run scripts/get-device-id.ts
+ */
 import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 

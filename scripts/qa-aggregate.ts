@@ -2,7 +2,10 @@
 /**
  * Aggregate QA Results from Fleet
  *
- * Collects results from all servers and generates unified report
+ * Collects results from all fleet servers via SSH and generates a unified report.
+ *
+ * Usage:
+ *   bun run scripts/qa-aggregate.ts
  */
 
 import { execSync } from 'node:child_process';

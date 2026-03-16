@@ -1,4 +1,10 @@
 #!/usr/bin/env bun
+/**
+ * Cleanup all CI-OS-Hub Docker resources (containers, networks, volumes, and caches).
+ *
+ * Usage:
+ *   bun run scripts/cleanup.ts
+ */
 
 import { $ } from 'bun';
 import { existsSync } from 'node:fs';

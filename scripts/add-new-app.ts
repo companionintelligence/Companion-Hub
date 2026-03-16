@@ -8,6 +8,13 @@
  * 3. Take baseline screenshot
  * 4. Collect resource benchmarks
  * 5. Add to test catalog
+ *
+ * Usage:
+ *   bun run scripts/add-new-app.ts <id> <name> <image> <port> [categories]
+ *
+ * Examples:
+ *   bun run scripts/add-new-app.ts ghost Ghost ghost:5 2368 blog,cms
+ *   bun run scripts/add-new-app.ts nextcloud Nextcloud nextcloud:28 443
  */
 
 import { execSync } from 'node:child_process';
