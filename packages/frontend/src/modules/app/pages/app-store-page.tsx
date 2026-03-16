@@ -1,4 +1,9 @@
-import { getEnabledAppStoresOptions, searchAppsInfiniteOptions, searchAppsOptions } from '@/api-client/@tanstack/react-query.gen';
+import {
+  getEnabledAppStoresOptions,
+  searchAppsInfiniteOptions,
+  searchAppsOptions,
+  getInstalledAppsOptions,
+} from '@/api-client/@tanstack/react-query.gen';
 import { pullAppStores } from '@/api-client/sdk.gen';
 import { EmptyPage } from '@/components/empty-page/empty-page';
 import { Button } from '@/components/ui/Button';
@@ -79,6 +84,16 @@ export default () => {
     ...getEnabledAppStoresOptions(),
     staleTime: 30_000,
   });
+
+  const { data: installedAppsData } = useQuery({
+    ...getInstalledAppsOptions(),
+    staleTime: 30_000,
+  });
+
+  const installedAppUrns = useMemo(() => {
+    if (!installedAppsData?.installed) return new Set<string>();
+    return new Set(installedAppsData.installed.map((a) => a.info.urn));
+  }, [installedAppsData]);
 
   const ciCloudStore = appStores?.appStores?.find((s) => s.name === 'CI Cloud');
 
@@ -395,7 +410,7 @@ export default () => {
                     const isLastElement = apps.length === i + 1;
                     return (
                       <div ref={isLastElement ? lastElementRef : null} key={app.urn}>
-                        <AppCard app={app} isLoading={false} />
+                        <AppCard app={app} isLoading={false} isInstalled={installedAppUrns.has(app.urn)} />
                       </div>
                     );
                   })}

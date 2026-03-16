@@ -3,16 +3,17 @@ import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
 import { GlassContainer } from '@/components/ui/glass-container';
 import { limitText } from '@/lib/helpers/text-helpers';
 import type { AppInfoSimple } from '@/types/app.types';
-import { Download } from 'lucide-react';
+import { Check, Download } from 'lucide-react';
 import type React from 'react';
 import { Link } from 'react-router';
 
 interface AppCardProps {
   app: AppInfoSimple;
   isLoading?: boolean;
+  isInstalled?: boolean;
 }
 
-export const AppCard: React.FC<AppCardProps> = ({ app, isLoading }) => {
+export const AppCard: React.FC<AppCardProps> = ({ app, isLoading, isInstalled }) => {
   if (isLoading) {
     return (
       <GlassContainer className="h-full p-4 flex flex-col min-h-[220px]" intensity="low">
@@ -60,9 +61,15 @@ export const AppCard: React.FC<AppCardProps> = ({ app, isLoading }) => {
         <p className="text-sm text-muted-foreground line-clamp-2 mb-4 flex-grow">{limitText(app.short_desc, 80)}</p>
 
         <div className="flex items-center justify-end mt-auto">
-          <Button variant="ghost" size="sm" className="h-8 w-8 rounded-full p-0">
-            <Download className="w-4 h-4" />
-          </Button>
+          {isInstalled ? (
+            <div className="h-8 w-8 rounded-full flex items-center justify-center bg-emerald-500/20">
+              <Check className="w-4 h-4 text-emerald-500" />
+            </div>
+          ) : (
+            <Button variant="ghost" size="sm" className="h-8 w-8 rounded-full p-0">
+              <Download className="w-4 h-4" />
+            </Button>
+          )}
         </div>
       </GlassContainer>
     </Link>
