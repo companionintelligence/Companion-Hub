@@ -167,6 +167,7 @@ export class ConfigurationService {
       ciCloudUrl: env.data.CI_CLOUD_URL,
       ciCloudAppStoreUrl: `${env.data.CI_CLOUD_URL}/api`,
       ciCloudApiUrl: `${env.data.CI_CLOUD_URL}/api`,
+      ciCloudFrontendUrl: env.data.CI_CLOUD_URL || '',
       ciHubOrganizationId: settingsCreds.ciHubOrganizationId,
       ciHubApiKey: settingsCreds.ciHubApiKey,
       architecture: env.data.ARCHITECTURE,
