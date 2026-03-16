@@ -88,7 +88,7 @@ describe('ReposHelpers', () => {
         json: async () => appsData,
       });
 
-      await service.pullRepo('http://cloud.api', 'ci-cloud', 'ci_cloud_api');
+      await service.pullRepo('http://cloud.api', 'ci-marketplace', 'ci_cloud_api');
 
       expect(fetchMock).toHaveBeenCalledWith('http://cloud.api/store');
 
@@ -111,7 +111,7 @@ describe('ReposHelpers', () => {
         json: async () => [minimalApp],
       });
 
-      await service.pullRepo('http://cloud.api', 'ci-cloud', 'ci_cloud_api');
+      await service.pullRepo('http://cloud.api', 'ci-marketplace', 'ci_cloud_api');
 
       expect(fetchMock).toHaveBeenCalledWith('http://cloud.api/store');
 
@@ -142,7 +142,7 @@ describe('ReposHelpers', () => {
         }),
       });
 
-      const result = await service.downloadAppFiles('http://cloud.api', 'ci-cloud', 'app1');
+      const result = await service.downloadAppFiles('http://cloud.api', 'ci-marketplace', 'app1');
 
       expect(result.success).toBe(true);
       expect(fetchMock).toHaveBeenCalledWith(
@@ -165,7 +165,7 @@ describe('ReposHelpers', () => {
         }),
       });
 
-      const result = await service.downloadAppFiles('http://cloud.api', 'ci-cloud', 'multi-app');
+      const result = await service.downloadAppFiles('http://cloud.api', 'ci-marketplace', 'multi-app');
 
       expect(result.success).toBe(true);
       expect(fs.promises.writeFile).toHaveBeenCalledWith(expect.stringContaining('config.json'), '{"name":"test"}');
@@ -300,7 +300,7 @@ describe('ReposHelpers', () => {
         json: async () => ({ error: 'Payment Required' }),
       });
 
-      const result = await service.downloadAppFiles('http://cloud.api', 'ci-cloud', 'paid-app');
+      const result = await service.downloadAppFiles('http://cloud.api', 'ci-marketplace', 'paid-app');
       expect(result.success).toBe(false);
       expect(result.message).toContain('Payment Required');
     });
