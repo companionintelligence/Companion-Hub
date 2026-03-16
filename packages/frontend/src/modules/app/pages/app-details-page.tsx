@@ -85,7 +85,7 @@ export default () => {
 
         {/* Main Content / Tabs */}
         <GlassContainer className="p-1 md:p-2 min-h-[300px] sm:min-h-[500px]">
-          <AppDetailsTabs info={info} app={app} metadata={metadata} imageSizeFormatted={imageSize.data?.formatted ?? null} />
+          <AppDetailsTabs info={info} app={app} metadata={metadata} imageSizeFormatted={imageSize.data?.formatted ?? null} imageSizeLoading={imageSize.isLoading} />
         </GlassContainer>
       </div>
     </div>

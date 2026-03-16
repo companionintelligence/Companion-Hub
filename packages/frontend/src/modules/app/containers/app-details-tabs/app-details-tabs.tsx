@@ -24,9 +24,10 @@ interface IProps {
   app?: AppDetails | null;
   metadata?: AppMetadata;
   imageSizeFormatted?: string | null;
+  imageSizeLoading?: boolean;
 }
 
-export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted }: IProps) => {
+export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, imageSizeLoading }: IProps) => {
   const { t } = useTranslation();
 
   const urn = extractAppUrn(info.urn as AppUrn);
@@ -147,13 +148,12 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted }
                 </a>
               </DataGridItem>
             )}
-            {imageSizeFormatted && (
-              <DataGridItem title="Download Size">
+            <DataGridItem title="Download Size">
                 <span className="flex items-center gap-1">
-                  <HardDrive size={15} />~{imageSizeFormatted}
+                  <HardDrive size={15} />
+                  {imageSizeLoading ? 'Calculating...' : imageSizeFormatted ? `~${imageSizeFormatted}` : 'Unknown'}
                 </span>
               </DataGridItem>
-            )}
           </DataGrid>
         </CardContent>
       </Card>
