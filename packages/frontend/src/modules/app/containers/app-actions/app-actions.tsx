@@ -130,7 +130,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
   );
   const LoadingButton = (() => {
     const progress = app?.status === 'installing' ? installationProgress : null;
-    const progressText = progress !== null ? ` ${progress}%` : '';
+    const progressText = progress === null ? '' : ` ${progress}%`;
     return (
       <ActionButton
         key="loading"

@@ -14,7 +14,7 @@ import { LoadingSpinner } from '@/components/ui/LoadingSpinner/loading-spinner';
 const Tile = ({ data, localDomain, sslPort }: { data: GuestAppsDto['installed'][number]; localDomain: string; sslPort: number }) => {
   const { info, app } = data;
 
-  const hostname = typeof window !== 'undefined' ? window.location.hostname : '';
+  const hostname = typeof window === 'undefined' ? '' : window.location.hostname;
 
   const handleOpen = (type: string) => {
     let url = '';
@@ -28,11 +28,11 @@ const Tile = ({ data, localDomain, sslPort }: { data: GuestAppsDto['installed'][
     }
 
     if (type === 'domain' && app.domain) {
-      url = `https://${app.domain}${sslPort !== 443 ? `:${sslPort}` : ''}${info.url_suffix || ''}`;
+      url = `https://${app.domain}${sslPort === 443 ? '' : `:${sslPort}`}${info.url_suffix || ''}`;
     }
 
     if (type === 'localDomain') {
-      url = `https://${app.localSubdomain}.${localDomain}${sslPort !== 443 ? `:${sslPort}` : ''}${info.url_suffix || ''}`;
+      url = `https://${app.localSubdomain}.${localDomain}${sslPort === 443 ? '' : `:${sslPort}`}${info.url_suffix || ''}`;
     }
 
     window.open(url, '_blank', 'noreferrer');
@@ -51,14 +51,14 @@ const Tile = ({ data, localDomain, sslPort }: { data: GuestAppsDto['installed'][
             <DropdownMenuItem onClick={() => handleOpen('domain')}>
               <Lock className="text-green-500 mr-2" size={16} />
               {app.domain}
-              {sslPort !== 443 ? `:${sslPort}` : ''}
+              {sslPort === 443 ? '' : `:${sslPort}`}
             </DropdownMenuItem>
           )}
           {(app.exposedLocal || !info.dynamic_config) && (
             <DropdownMenuItem onClick={() => handleOpen('localDomain')}>
               <Lock className="text-muted-foreground mr-2" size={16} />
               {app.localSubdomain}.{localDomain}
-              {sslPort !== 443 ? `:${sslPort}` : ''}
+              {sslPort === 443 ? '' : `:${sslPort}`}
             </DropdownMenuItem>
           )}
           {(app.openPort || !info.dynamic_config) && (

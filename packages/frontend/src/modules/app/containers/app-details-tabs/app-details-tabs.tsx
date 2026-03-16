@@ -149,11 +149,11 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, 
               </DataGridItem>
             )}
             <DataGridItem title="Download Size">
-                <span className="flex items-center gap-1">
-                  <HardDrive size={15} />
-                  {imageSizeLoading ? 'Calculating...' : imageSizeFormatted ? `~${imageSizeFormatted}` : 'Unknown'}
-                </span>
-              </DataGridItem>
+              <span className="flex items-center gap-1">
+                <HardDrive size={15} />
+                {imageSizeLoading ? 'Calculating...' : imageSizeFormatted ? `~${imageSizeFormatted}` : 'Unknown'}
+              </span>
+            </DataGridItem>
           </DataGrid>
         </CardContent>
       </Card>

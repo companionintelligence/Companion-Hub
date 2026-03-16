@@ -99,10 +99,10 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
       });
       cmd.on('error', reject);
       cmd.on('close', (code) => {
-        if (code !== 0) {
-          reject(new Error(`docker compose exited with code ${code}: ${stderr.join('\n')}`));
-        } else {
+        if (code === 0) {
           resolve();
+        } else {
+          reject(new Error(`docker compose exited with code ${code}: ${stderr.join('\n')}`));
         }
       });
     });

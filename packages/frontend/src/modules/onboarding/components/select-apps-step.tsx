@@ -23,7 +23,7 @@ export const SelectAppsStep = ({ selectedApps, onConfirm, onBack }: SelectAppsSt
           <h2 className="text-xl font-semibold mb-1">Review Your Selection</h2>
           <p className="text-sm text-muted-foreground">
             {apps.length > 0
-              ? `${apps.length} app${apps.length !== 1 ? 's' : ''} selected for installation. Remove any you don't need.`
+              ? `${apps.length} app${apps.length === 1 ? '' : 's'} selected for installation. Remove any you don't need.`
               : 'No apps selected.'}
           </p>
         </div>
@@ -62,7 +62,7 @@ export const SelectAppsStep = ({ selectedApps, onConfirm, onBack }: SelectAppsSt
             Back
           </Button>
           <Button intent="primary" onClick={() => onConfirm(apps)}>
-            {apps.length > 0 ? `Install ${apps.length} app${apps.length !== 1 ? 's' : ''}` : 'Finish setup'}
+            {apps.length > 0 ? `Install ${apps.length} app${apps.length === 1 ? '' : 's'}` : 'Finish setup'}
           </Button>
         </div>
       </CardContent>

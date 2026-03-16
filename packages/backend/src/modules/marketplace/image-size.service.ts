@@ -87,9 +87,10 @@ export class ImageSizeService {
     const parts = imagePath.split('/');
 
     // Detect if first part is a registry (contains . or :)
-    if (parts.length >= 3 || (parts.length >= 2 && (parts[0]!.includes('.') || parts[0]!.includes(':')))) {
-      if (parts[0]!.includes('.') || parts[0]!.includes(':')) {
-        registry = parts[0]!;
+    const firstPart = parts[0] ?? '';
+    if (parts.length >= 3 || (parts.length >= 2 && (firstPart.includes('.') || firstPart.includes(':')))) {
+      if (firstPart.includes('.') || firstPart.includes(':')) {
+        registry = firstPart;
         repository = parts.slice(1).join('/');
       } else {
         // Docker Hub with org/repo
