@@ -15,6 +15,10 @@ interface VerifyPairingCodeDto {
   pairing_code: string;
 }
 
+interface PairDeviceDto {
+  pairing_code: string;
+}
+
 @ApiTags('Registration')
 @Controller('registration')
 export class RegistrationController {
@@ -227,6 +231,21 @@ export class RegistrationController {
         message: `Failed to verify pairing code: ${error instanceof Error ? error.message : 'Unknown error'}`,
       };
     }
+  }
+
+  @Post('pair')
+  @ApiOperation({ summary: 'Pair device using a pairing code — atomic registration in one step' })
+  @ApiResponse({ status: 200, description: 'Device paired and registered successfully' })
+  @ApiResponse({ status: 400, description: 'Invalid pairing code or pairing failed' })
+  async pairDevice(@Body() body: PairDeviceDto) {
+    const pairingCode = body.pairing_code?.trim().toUpperCase();
+
+    if (!pairingCode || pairingCode.length !== 6) {
+      return { success: false, message: 'A valid 6-character pairing code is required.' };
+    }
+
+    const result = await this.registrationService.pairDevice(pairingCode);
+    return result;
   }
 
   @Post('register')

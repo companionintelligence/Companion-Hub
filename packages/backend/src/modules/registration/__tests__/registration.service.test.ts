@@ -244,6 +244,127 @@ describe('RegistrationService', () => {
     });
   });
 
+  describe('pairDevice', () => {
+    beforeEach(() => {
+      vi.spyOn(service, 'getDeviceId').mockResolvedValue('test-device');
+      configService.getConfig.mockReturnValue({
+        ciCloudApiUrl: 'http://cloud.api',
+        userSettings: { domain: 'example.com' },
+        domain: 'example.com',
+      } as any);
+      // Device is not yet registered
+      deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(false);
+    });
+
+    it('succeeds with valid pairing code and stores registration data', async () => {
+      const portalResponse = {
+        device_id: 'test-device',
+        organization_id: 'org-pair',
+        organization_name: 'Paired Org',
+        slug: 'paired-org',
+        subdomain: 'hub-paired-org',
+        tunnel_id: 'tunnel-pair',
+        tunnel_token: 'token-pair',
+        api_key: 'key-pair',
+        domain: 'companionintelligence.com',
+      };
+
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => portalResponse,
+      });
+      global.fetch = mockFetch as any;
+
+      const setupSpy = vi.spyOn(service as any, 'setupOrganizationInfrastructure').mockResolvedValue(undefined);
+      configService.setDomain.mockResolvedValue(undefined);
+
+      const result = await service.pairDevice('ABC123');
+
+      expect(result.success).toBe(true);
+      expect(result.domain).toBe('companionintelligence.com');
+      expect(mockFetch).toHaveBeenCalledWith('http://cloud.api/devices/pair', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pairing_code: 'ABC123', device_id: 'test-device' }),
+      });
+      expect(configService.setUserSettings).toHaveBeenCalledWith({ ciHubApiKey: 'key-pair' });
+      expect(configService.setUserSettings).toHaveBeenCalledWith({ ciHubOrganizationId: 'org-pair' });
+      expect(setupSpy).toHaveBeenCalledWith('org-pair', expect.objectContaining({
+        organization_name: 'Paired Org',
+        tunnel_id: 'tunnel-pair',
+        tunnel_token: 'token-pair',
+        subdomain: 'hub-paired-org',
+        slug: 'paired-org',
+        domain: 'companionintelligence.com',
+      }));
+      setupSpy.mockRestore();
+    });
+
+    it('returns error when pairing code is invalid (Portal returns error)', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: false,
+        statusText: 'Bad Request',
+        json: async () => ({ error: 'Invalid pairing code' }),
+      });
+      global.fetch = mockFetch as any;
+
+      const result = await service.pairDevice('XXXXXX');
+
+      expect(result.success).toBe(false);
+      expect(result.message).toBe('Invalid pairing code');
+    });
+
+    it('returns error when device is already registered', async () => {
+      deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(true);
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
+
+      const result = await service.pairDevice('ABC123');
+
+      expect(result.success).toBe(false);
+      expect(result.message).toBe('Device is already registered.');
+    });
+
+    it('returns error when Portal is unreachable', async () => {
+      const mockFetch = vi.fn().mockRejectedValue(new TypeError('fetch failed'));
+      global.fetch = mockFetch as any;
+
+      const result = await service.pairDevice('ABC123');
+
+      expect(result.success).toBe(false);
+      expect(result.message).toContain('Unable to reach CI Portal');
+    });
+
+    it('returns error when CI Cloud API URL is not configured', async () => {
+      configService.getConfig.mockReturnValue({
+        ciCloudApiUrl: '',
+        userSettings: { domain: 'example.com' },
+        domain: 'example.com',
+      } as any);
+
+      const result = await service.pairDevice('ABC123');
+
+      expect(result.success).toBe(false);
+      expect(result.message).toBe('CI Cloud API URL not configured.');
+    });
+
+    it('returns error when Portal returns incomplete data', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          device_id: 'test-device',
+          organization_id: 'org-pair',
+          // missing tunnel_id, tunnel_token, subdomain, slug
+        }),
+      });
+      global.fetch = mockFetch as any;
+
+      const result = await service.pairDevice('ABC123');
+
+      expect(result.success).toBe(false);
+      expect(result.message).toBe('Portal returned incomplete registration data.');
+    });
+  });
+
   describe('completeRegistrationFromCallback', () => {
     beforeEach(() => {
       vi.spyOn(service, 'getDeviceId').mockResolvedValue('test-device');

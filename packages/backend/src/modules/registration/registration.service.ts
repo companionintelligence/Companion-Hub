@@ -700,6 +700,88 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   }
 
   /**
+   * Pair device using a pairing code — atomic registration in one step.
+   * Sends pairing code + device_id to Portal's POST /api/devices/pair,
+   * stores all returned data locally, and marks the device as registered.
+   */
+  public async pairDevice(pairingCode: string): Promise<{ success: boolean; message: string; domain?: string }> {
+    const { ciCloudApiUrl } = this.config.getConfig();
+
+    if (!ciCloudApiUrl) {
+      return { success: false, message: 'CI Cloud API URL not configured.' };
+    }
+
+    const deviceId = await this.getDeviceId();
+    if (!deviceId) {
+      return { success: false, message: 'Device ID not found. Please ensure your device is properly initialized.' };
+    }
+
+    // Check if already registered
+    const alreadyRegistered = await this.isRegistered();
+    if (alreadyRegistered) {
+      return { success: false, message: 'Device is already registered.' };
+    }
+
+    try {
+      const pairUrl = `${ciCloudApiUrl}/devices/pair`;
+      const response = await fetch(pairUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pairing_code: pairingCode, device_id: deviceId }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+        return {
+          success: false,
+          message: (errorData as { error?: string }).error || `Pairing failed: ${response.statusText}`,
+        };
+      }
+
+      const data = (await response.json()) as {
+        device_id: string;
+        organization_id: string;
+        organization_name: string;
+        slug: string;
+        subdomain: string;
+        tunnel_id: string;
+        tunnel_token: string;
+        api_key: string;
+        domain: string;
+      };
+
+      // Validate required fields from Portal response
+      if (!data.organization_id || !data.tunnel_id || !data.tunnel_token || !data.subdomain || !data.slug) {
+        return {
+          success: false,
+          message: 'Portal returned incomplete registration data.',
+        };
+      }
+
+      // Use completeRegistrationFromCallback which already handles all the storage logic
+      return await this.completeRegistrationFromCallback({
+        deviceId: data.device_id || deviceId,
+        organizationId: data.organization_id,
+        organizationName: data.organization_name || 'Organization',
+        slug: data.slug,
+        subdomain: data.subdomain,
+        tunnelId: data.tunnel_id,
+        tunnelToken: data.tunnel_token,
+        apiKey: data.api_key,
+        domain: data.domain,
+      });
+    } catch (error) {
+      if (error instanceof TypeError && error.message.includes('fetch')) {
+        return { success: false, message: 'Unable to reach CI Portal. Please check your network connection.' };
+      }
+      return {
+        success: false,
+        message: `Pairing failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      };
+    }
+  }
+
+  /**
    * Manually initiate device registration with organization
    * Called from the registration form
    *
