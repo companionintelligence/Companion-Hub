@@ -75,7 +75,7 @@ describe('CloudflareClientService', () => {
 
       expect(result).toBe(true);
       expect(mockAxiosInstance.post).toHaveBeenCalledWith(
-        '/tunnels/state',
+        'tunnels/state',
         expect.objectContaining({ organizationId: 'org-id', tunnelId: 'tun-id' }),
         expect.anything(),
       );
