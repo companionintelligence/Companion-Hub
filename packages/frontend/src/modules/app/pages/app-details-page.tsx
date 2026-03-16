@@ -2,7 +2,6 @@ import { getAppOptions } from '@/api-client/@tanstack/react-query.gen';
 import { client } from '@/api-client/client.gen';
 import { useAppContext } from '@/context/app-context';
 import { useQuery } from '@tanstack/react-query';
-import { HardDrive } from 'lucide-react';
 import { redirect, useParams } from 'react-router';
 import { AppStatus } from '../components/app-status/app-status';
 import { AppActions } from '../containers/app-actions/app-actions';
@@ -72,14 +71,6 @@ export default () => {
                 <div className="transform scale-90 origin-left">
                   <AppStatus status={app?.status ?? 'missing'} />
                 </div>
-                {imageSize.data?.formatted && (
-                  <span
-                    className="flex items-center gap-1 text-xs sm:text-sm font-medium px-2 py-0.5 sm:py-1 rounded-md bg-white/10 text-white/80"
-                    title="Compressed download size"
-                  >
-                    <HardDrive size={12} />~{imageSize.data.formatted}
-                  </span>
-                )}
               </div>
             </div>
 
@@ -94,7 +85,7 @@ export default () => {
 
         {/* Main Content / Tabs */}
         <GlassContainer className="p-1 md:p-2 min-h-[300px] sm:min-h-[500px]">
-          <AppDetailsTabs info={info} app={app} metadata={metadata} />
+          <AppDetailsTabs info={info} app={app} metadata={metadata} imageSizeFormatted={imageSize.data?.formatted ?? null} />
         </GlassContainer>
       </div>
     </div>

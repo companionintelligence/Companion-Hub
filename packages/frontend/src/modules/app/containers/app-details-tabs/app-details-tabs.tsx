@@ -7,7 +7,7 @@ import type { AppDetails, AppInfo, AppMetadata } from '@/types/app.types';
 import { extractAppUrn } from '@/utils/app-helpers';
 import type { AppUrn } from '@runtipi/common/types';
 import { CURRENT_SCHEMA_VERSION } from '@runtipi/common/schemas';
-import { AlertCircle, AlertTriangle, ExternalLink } from 'lucide-react';
+import { AlertCircle, AlertTriangle, ExternalLink, HardDrive } from 'lucide-react';
 import { useMutation } from '@tanstack/react-query';
 import { Suspense } from 'react';
 import React from 'react';
@@ -23,9 +23,10 @@ interface IProps {
   info: AppInfo;
   app?: AppDetails | null;
   metadata?: AppMetadata;
+  imageSizeFormatted?: string | null;
 }
 
-export const AppDetailsTabs = ({ info, app: _app, metadata }: IProps) => {
+export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted }: IProps) => {
   const { t } = useTranslation();
 
   const urn = extractAppUrn(info.urn as AppUrn);
@@ -144,6 +145,13 @@ export const AppDetailsTabs = ({ info, app: _app, metadata }: IProps) => {
                   {info.website}
                   <ExternalLink size={15} className="ml-1 mb-1 inline" />
                 </a>
+              </DataGridItem>
+            )}
+            {imageSizeFormatted && (
+              <DataGridItem title="Download Size">
+                <span className="flex items-center gap-1">
+                  <HardDrive size={15} />~{imageSizeFormatted}
+                </span>
               </DataGridItem>
             )}
           </DataGrid>

@@ -29,11 +29,12 @@ export class ImageSizeService {
 
     try {
       const { content } = await this.marketplaceService.getDockerComposeJson(appUrn);
-      if (!content || !content.services) {
+      const parsed = content as { services?: Record<string, { image?: string }> };
+      if (!parsed || !parsed.services) {
         return { totalBytes: null, formatted: null };
       }
 
-      const services = content.services as Array<{ image?: string }>;
+      const services = Object.values(parsed.services);
       const images = services.map((s) => s.image).filter((img): img is string => Boolean(img));
 
       if (images.length === 0) {
