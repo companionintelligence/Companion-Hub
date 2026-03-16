@@ -174,7 +174,7 @@ describe('AppLifecycleService', () => {
           exposedLocal: true,
           status: 'running',
           localSubdomain: 'n8n-abc',
-          appStoreSlug: 'ci-cloud',
+          appStoreSlug: 'ci-marketplace',
         },
       ] as any);
       configService.getConfig.mockReturnValue({
@@ -232,7 +232,7 @@ describe('AppLifecycleService', () => {
   });
 
   describe('installApp', () => {
-    const appUrn = 'testapp:ci-cloud' as any;
+    const appUrn = 'testapp:ci-marketplace' as any;
     const baseAppInfo = {
       id: 'testapp',
       urn: 'urn:app:testapp',

@@ -103,7 +103,7 @@ export class AppStoreService implements OnApplicationBootstrap, OnApplicationShu
       return;
     }
 
-    const slug = 'ci-cloud';
+    const slug = 'ci-marketplace';
     const existing = await this.appStoreRepository.getAppStoreBySlug(slug);
 
     if (existing) {
@@ -120,7 +120,7 @@ export class AppStoreService implements OnApplicationBootstrap, OnApplicationShu
 
     this.logger.info(`Registering cloud app store: ${ciCloudAppStoreUrl}`);
     await this.appStoreRepository.createAppStore({
-      name: 'CI Cloud',
+      name: 'CI Marketplace',
       url: ciCloudAppStoreUrl,
       slug,
       enabled: true,

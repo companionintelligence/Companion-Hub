@@ -61,7 +61,7 @@ describe('AppStoreService', () => {
     await service.registerCloudAppStore();
     expect(appStoreRepository.createAppStore).toHaveBeenCalledWith(
       expect.objectContaining({
-        slug: 'ci-cloud',
+        slug: 'ci-marketplace',
         url: 'cloud-url',
       }),
     );
