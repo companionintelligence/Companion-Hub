@@ -7,7 +7,7 @@ import type { AppDetails, AppInfo, AppMetadata } from '@/types/app.types';
 import { extractAppUrn } from '@/utils/app-helpers';
 import type { AppUrn } from '@runtipi/common/types';
 import { CURRENT_SCHEMA_VERSION } from '@runtipi/common/schemas';
-import { AlertCircle, AlertTriangle, ExternalLink } from 'lucide-react';
+import { AlertCircle, AlertTriangle, ExternalLink, HardDrive } from 'lucide-react';
 import { useMutation } from '@tanstack/react-query';
 import { Suspense } from 'react';
 import React from 'react';
@@ -23,9 +23,11 @@ interface IProps {
   info: AppInfo;
   app?: AppDetails | null;
   metadata?: AppMetadata;
+  imageSizeFormatted?: string | null;
+  imageSizeLoading?: boolean;
 }
 
-export const AppDetailsTabs = ({ info, app: _app, metadata }: IProps) => {
+export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, imageSizeLoading }: IProps) => {
   const { t } = useTranslation();
 
   const urn = extractAppUrn(info.urn as AppUrn);
@@ -146,6 +148,12 @@ export const AppDetailsTabs = ({ info, app: _app, metadata }: IProps) => {
                 </a>
               </DataGridItem>
             )}
+            <DataGridItem title="Download Size">
+              <span className="flex items-center gap-1">
+                <HardDrive size={15} />
+                {imageSizeLoading ? 'Calculating...' : imageSizeFormatted ? `~${imageSizeFormatted}` : 'Unknown'}
+              </span>
+            </DataGridItem>
           </DataGrid>
         </CardContent>
       </Card>

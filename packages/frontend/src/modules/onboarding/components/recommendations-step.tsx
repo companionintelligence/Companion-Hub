@@ -152,7 +152,7 @@ export const RecommendationsStep = ({ detectedServices, onSelect, onSkip, onBack
               Skip
             </Button>
             <Button intent="primary" onClick={handleContinue} disabled={selected.size === 0}>
-              Continue with {selected.size} app{selected.size !== 1 ? 's' : ''}
+              Continue with {selected.size} app{selected.size === 1 ? '' : 's'}
             </Button>
           </div>
         </div>
