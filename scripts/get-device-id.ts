@@ -3,7 +3,7 @@
  * Requires sudo for dmidecode access.
  *
  * Usage:
- *   bun run scripts/get-device-id.ts
+ *   bun run device-id
  */
 import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';

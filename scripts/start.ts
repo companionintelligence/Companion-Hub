@@ -3,14 +3,13 @@
  * Start the CI-OS-Hub application.
  *
  * Usage:
- *   bun run scripts/start.ts <mode> [env]
+ *   bun run dev                          # dev mode, local env
+ *   bun run start                        # start mode, local env
+ *   bun run start:detached               # detached mode, local env
+ *   bun run scripts/start.ts <mode> [env] # custom mode/env
  *
  * Modes: dev, start, start:detached
  * Envs:  local, dev, staging, prod (default: local)
- *
- * Examples:
- *   bun run scripts/start.ts dev
- *   bun run scripts/start.ts start prod
  */
 import { spawnSync } from 'node:child_process';
 

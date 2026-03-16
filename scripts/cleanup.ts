@@ -3,7 +3,7 @@
  * Cleanup all CI-OS-Hub Docker resources (containers, networks, volumes, and caches).
  *
  * Usage:
- *   bun run scripts/cleanup.ts
+ *   bun run cleanup
  */
 
 import { $ } from 'bun';
