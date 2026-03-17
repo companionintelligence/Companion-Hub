@@ -82,7 +82,7 @@ async function main() {
   }
 
   // Determine which servers to run
-  const serversToRun = singleBatch !== undefined ? FLEET.filter((s) => s.batch === Number.parseInt(singleBatch, 10)) : FLEET;
+  const serversToRun = singleBatch === undefined ? FLEET : FLEET.filter((s) => s.batch === Number.parseInt(singleBatch, 10));
 
   console.log(`📋 Running tests on ${serversToRun.length} server(s):\n`);
   serversToRun.forEach((s) => {

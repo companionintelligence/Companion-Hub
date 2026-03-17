@@ -289,14 +289,17 @@ describe('RegistrationService', () => {
       });
       expect(configService.setUserSettings).toHaveBeenCalledWith({ ciHubApiKey: 'key-pair' });
       expect(configService.setUserSettings).toHaveBeenCalledWith({ ciHubOrganizationId: 'org-pair' });
-      expect(setupSpy).toHaveBeenCalledWith('org-pair', expect.objectContaining({
-        organization_name: 'Paired Org',
-        tunnel_id: 'tunnel-pair',
-        tunnel_token: 'token-pair',
-        subdomain: 'hub-paired-org',
-        slug: 'paired-org',
-        domain: 'companionintelligence.com',
-      }));
+      expect(setupSpy).toHaveBeenCalledWith(
+        'org-pair',
+        expect.objectContaining({
+          organization_name: 'Paired Org',
+          tunnel_id: 'tunnel-pair',
+          tunnel_token: 'token-pair',
+          subdomain: 'hub-paired-org',
+          slug: 'paired-org',
+          domain: 'companionintelligence.com',
+        }),
+      );
       setupSpy.mockRestore();
     });
 

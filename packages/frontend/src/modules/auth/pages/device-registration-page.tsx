@@ -118,9 +118,7 @@ export default function DeviceRegistrationPage() {
         <CheckCircle2 role="img" aria-label="success" className="h-12 w-12 text-green-500" />
         <div>
           <h2 className="text-xl font-semibold text-foreground">Device Registered Successfully</h2>
-          <p className="text-sm text-muted-foreground mt-3">
-            Registering your Hub... You will be redirected automatically.
-          </p>
+          <p className="text-sm text-muted-foreground mt-3">Registering your Hub... You will be redirected automatically.</p>
         </div>
         <Loader2 className="h-6 w-6 animate-spin text-primary" />
       </div>
@@ -183,12 +181,7 @@ export default function DeviceRegistrationPage() {
             disabled={isPairing}
             className={`flex-1 h-9 rounded-md border bg-transparent px-3 py-1 text-base shadow-sm transition-colors font-mono tracking-widest placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 md:text-sm ${pairingError ? 'border-destructive focus-visible:ring-destructive' : 'border-input'}`}
           />
-          <Button
-            intent="primary"
-            onClick={handlePair}
-            disabled={pairingCode.length !== 6 || isPairing}
-            loading={isPairing}
-          >
+          <Button intent="primary" onClick={handlePair} disabled={pairingCode.length !== 6 || isPairing} loading={isPairing}>
             {isPairing ? 'Registering...' : 'Register'}
           </Button>
         </div>
