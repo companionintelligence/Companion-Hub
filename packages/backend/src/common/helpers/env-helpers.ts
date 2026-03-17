@@ -6,7 +6,32 @@ import { settingsSchema } from '@/app.dto';
 import { type LogLevel, LoggerService } from '@/core/logger/logger.service';
 import { EnvUtils } from '@/modules/env/env.utils';
 import dotenv from 'dotenv';
-import { DATA_DIR } from '../constants';
+import {
+  DATA_DIR,
+  DEFAULT_POSTGRES_HOST,
+  DEFAULT_POSTGRES_DBNAME,
+  DEFAULT_POSTGRES_USERNAME,
+  DEFAULT_POSTGRES_PORT,
+  DEFAULT_RABBITMQ_HOST,
+  DEFAULT_RABBITMQ_USERNAME,
+  DEFAULT_RABBITMQ_PASSWORD,
+  DEFAULT_FORWARD_AUTH_URL,
+  DEFAULT_DNS_IP,
+  DEFAULT_CI_CLOUD_URL,
+  DEFAULT_DEMO_MODE,
+  DEFAULT_DISABLE_PASSWORD_RESET,
+  DEFAULT_GUEST_DASHBOARD,
+  DEFAULT_ALLOW_AUTO_THEMES,
+  DEFAULT_ALLOW_ERROR_MONITORING,
+  DEFAULT_PERSIST_TRAEFIK_CONFIG,
+  DEFAULT_QUEUE_TIMEOUT_IN_MINUTES,
+  DEFAULT_MAX_BACKUPS,
+  DEFAULT_ADVANCED_SETTINGS,
+  DEFAULT_LOG_LEVEL,
+  DEFAULT_EXPERIMENTAL_INSECURE_COOKIE,
+  DEFAULT_THEME_BASE,
+  DEFAULT_THEME_COLOR,
+} from '../constants';
 import { type } from 'arktype';
 
 export const DEFAULT_REPO_URL = '';
@@ -203,51 +228,57 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   // Core infrastructure
   envMap.set('INTERNAL_IP', resolve('INTERNAL_IP', { envMap, settingsVal: settings.listenIp, fallback: '127.0.0.1' }));
   envMap.set('TZ', resolve('TZ', { envMap, settingsVal: settings.timeZone, fallback: Intl.DateTimeFormat().resolvedOptions().timeZone }));
-  envMap.set('DNS_IP', resolve('DNS_IP', { envMap, settingsVal: settings.dnsIp, fallback: '9.9.9.9' }));
+  envMap.set('DNS_IP', resolve('DNS_IP', { envMap, settingsVal: settings.dnsIp, fallback: DEFAULT_DNS_IP }));
   envMap.set('DOMAIN', resolve('DOMAIN', { envMap, fallback: 'example.com' }));
   envMap.set('LOCAL_DOMAIN', resolve('LOCAL_DOMAIN', { envMap, settingsVal: settings.localDomain, fallback: '' }));
   envMap.set(
     'CI_HUB_FORWARD_AUTH_URL',
-    resolve('CI_HUB_FORWARD_AUTH_URL', { envMap, settingsVal: settings.forwardAuthUrl, fallback: 'http://ci-os-hub:3000/api/auth/traefik' }),
+    resolve('CI_HUB_FORWARD_AUTH_URL', { envMap, settingsVal: settings.forwardAuthUrl, fallback: DEFAULT_FORWARD_AUTH_URL }),
   );
 
-  // Database
-  envMap.set('POSTGRES_HOST', resolve('POSTGRES_HOST', { envMap, fallback: 'ci-hub-db' }));
-  envMap.set('POSTGRES_DBNAME', resolve('POSTGRES_DBNAME', { envMap, fallback: 'companiondb' }));
-  envMap.set('POSTGRES_USERNAME', resolve('POSTGRES_USERNAME', { envMap, fallback: 'companion' }));
-  envMap.set('POSTGRES_PORT', resolve('POSTGRES_PORT', { envMap, fallback: '6543' }));
+  // Database — these are internal Docker service names/creds; hardcoded defaults from constants
+  envMap.set('POSTGRES_HOST', resolve('POSTGRES_HOST', { envMap, fallback: DEFAULT_POSTGRES_HOST }));
+  envMap.set('POSTGRES_DBNAME', resolve('POSTGRES_DBNAME', { envMap, fallback: DEFAULT_POSTGRES_DBNAME }));
+  envMap.set('POSTGRES_USERNAME', resolve('POSTGRES_USERNAME', { envMap, fallback: DEFAULT_POSTGRES_USERNAME }));
+  envMap.set('POSTGRES_PORT', resolve('POSTGRES_PORT', { envMap, fallback: DEFAULT_POSTGRES_PORT }));
 
   // Message queue — also handle legacy hostname migration
-  let rabbitmqHost = resolve('RABBITMQ_HOST', { envMap, fallback: 'ci-os-hub-queue' });
+  let rabbitmqHost = resolve('RABBITMQ_HOST', { envMap, fallback: DEFAULT_RABBITMQ_HOST });
   if (rabbitmqHost === 'runtipi-queue' || rabbitmqHost === 'ci-hub-queue') {
-    rabbitmqHost = 'ci-os-hub-queue';
+    rabbitmqHost = DEFAULT_RABBITMQ_HOST;
   }
   envMap.set('RABBITMQ_HOST', rabbitmqHost);
-  envMap.set('RABBITMQ_USERNAME', resolve('RABBITMQ_USERNAME', { envMap, fallback: 'companion' }));
-  envMap.set('RABBITMQ_PASSWORD', resolve('RABBITMQ_PASSWORD', { envMap, fallback: 'admin' }));
+  envMap.set('RABBITMQ_USERNAME', resolve('RABBITMQ_USERNAME', { envMap, fallback: DEFAULT_RABBITMQ_USERNAME }));
+  envMap.set('RABBITMQ_PASSWORD', resolve('RABBITMQ_PASSWORD', { envMap, fallback: DEFAULT_RABBITMQ_PASSWORD }));
 
   // Feature flags / user preferences (settings.json booleans)
-  envMap.set('DEMO_MODE', resolve('DEMO_MODE', { envMap, settingsVal: boolStr(settings.demoMode), fallback: 'false' }));
+  envMap.set('DEMO_MODE', resolve('DEMO_MODE', { envMap, settingsVal: boolStr(settings.demoMode), fallback: DEFAULT_DEMO_MODE }));
   envMap.set(
     'DISABLE_PASSWORD_RESET',
-    resolve('DISABLE_PASSWORD_RESET', { envMap, settingsVal: boolStr(settings.disablePasswordReset), fallback: 'true' }),
+    resolve('DISABLE_PASSWORD_RESET', { envMap, settingsVal: boolStr(settings.disablePasswordReset), fallback: DEFAULT_DISABLE_PASSWORD_RESET }),
   );
-  envMap.set('GUEST_DASHBOARD', resolve('GUEST_DASHBOARD', { envMap, settingsVal: boolStr(settings.guestDashboard), fallback: 'false' }));
-  envMap.set('ALLOW_AUTO_THEMES', resolve('ALLOW_AUTO_THEMES', { envMap, settingsVal: boolStr(settings.allowAutoThemes), fallback: 'true' }));
+  envMap.set(
+    'GUEST_DASHBOARD',
+    resolve('GUEST_DASHBOARD', { envMap, settingsVal: boolStr(settings.guestDashboard), fallback: DEFAULT_GUEST_DASHBOARD }),
+  );
+  envMap.set(
+    'ALLOW_AUTO_THEMES',
+    resolve('ALLOW_AUTO_THEMES', { envMap, settingsVal: boolStr(settings.allowAutoThemes), fallback: DEFAULT_ALLOW_AUTO_THEMES }),
+  );
   envMap.set(
     'ALLOW_ERROR_MONITORING',
-    resolve('ALLOW_ERROR_MONITORING', { envMap, settingsVal: boolStr(settings.allowErrorMonitoring), fallback: 'false' }),
+    resolve('ALLOW_ERROR_MONITORING', { envMap, settingsVal: boolStr(settings.allowErrorMonitoring), fallback: DEFAULT_ALLOW_ERROR_MONITORING }),
   );
   envMap.set(
     'PERSIST_TRAEFIK_CONFIG',
-    resolve('PERSIST_TRAEFIK_CONFIG', { envMap, settingsVal: boolStr(settings.persistTraefikConfig), fallback: 'false' }),
+    resolve('PERSIST_TRAEFIK_CONFIG', { envMap, settingsVal: boolStr(settings.persistTraefikConfig), fallback: DEFAULT_PERSIST_TRAEFIK_CONFIG }),
   );
   envMap.set(
     'QUEUE_TIMEOUT_IN_MINUTES',
     resolve('QUEUE_TIMEOUT_IN_MINUTES', {
       envMap,
       settingsVal: typeof settings.eventsTimeout === 'number' ? String(settings.eventsTimeout) : undefined,
-      fallback: '5',
+      fallback: DEFAULT_QUEUE_TIMEOUT_IN_MINUTES,
     }),
   );
   envMap.set(
@@ -255,25 +286,29 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
     resolve('MAX_BACKUPS', {
       envMap,
       settingsVal: typeof settings.maxBackups === 'number' ? String(settings.maxBackups) : undefined,
-      fallback: '0',
+      fallback: DEFAULT_MAX_BACKUPS,
     }),
   );
-  envMap.set('ADVANCED_SETTINGS', resolve('ADVANCED_SETTINGS', { envMap, settingsVal: boolStr(settings.advancedSettings), fallback: 'false' }));
-  envMap.set('LOG_LEVEL', resolve('LOG_LEVEL', { envMap, settingsVal: settings.logLevel, fallback: 'info' }));
+  envMap.set(
+    'ADVANCED_SETTINGS',
+    resolve('ADVANCED_SETTINGS', { envMap, settingsVal: boolStr(settings.advancedSettings), fallback: DEFAULT_ADVANCED_SETTINGS }),
+  );
+  envMap.set('LOG_LEVEL', resolve('LOG_LEVEL', { envMap, settingsVal: settings.logLevel, fallback: DEFAULT_LOG_LEVEL }));
   envMap.set(
     'EXPERIMENTAL_INSECURE_COOKIE',
-    resolve('EXPERIMENTAL_INSECURE_COOKIE', { envMap, settingsVal: boolStr(settings.experimental_insecureCookie), fallback: 'false' }),
+    resolve('EXPERIMENTAL_INSECURE_COOKIE', {
+      envMap,
+      settingsVal: boolStr(settings.experimental_insecureCookie),
+      fallback: DEFAULT_EXPERIMENTAL_INSECURE_COOKIE,
+    }),
   );
 
   // Theming
-  envMap.set('THEME_BASE', resolve('THEME_BASE', { envMap, settingsVal: settings.themeBase, fallback: 'gray' }));
-  envMap.set('THEME_COLOR', resolve('THEME_COLOR', { envMap, settingsVal: settings.themeColor, fallback: 'blue' }));
+  envMap.set('THEME_BASE', resolve('THEME_BASE', { envMap, settingsVal: settings.themeBase, fallback: DEFAULT_THEME_BASE }));
+  envMap.set('THEME_COLOR', resolve('THEME_COLOR', { envMap, settingsVal: settings.themeColor, fallback: DEFAULT_THEME_COLOR }));
 
-  // CI Cloud integration
-  const ciCloudUrl = resolve('CI_CLOUD_URL', { envMap, fallback: '' });
-  if (!ciCloudUrl) {
-    throw new Error('CI_CLOUD_URL is required for CI Cloud integration. Please set it in your .env file or environment variables.');
-  }
+  // CI Cloud integration — hardcode default, allow override
+  const ciCloudUrl = resolve('CI_CLOUD_URL', { envMap, fallback: DEFAULT_CI_CLOUD_URL });
   envMap.set('CI_CLOUD_URL', ciCloudUrl);
 
   // --- Write data .env only if values changed ---

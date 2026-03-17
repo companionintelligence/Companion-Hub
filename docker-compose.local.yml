@@ -12,10 +12,10 @@ services:
       - 6543:6543
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-      POSTGRES_USER: ${POSTGRES_USERNAME:-companion}
-      POSTGRES_DB: ${POSTGRES_DBNAME:-companiondb}
+      POSTGRES_USER: companion
+      POSTGRES_DB: companiondb
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -d ${POSTGRES_DB:-companiondb} -U ${POSTGRES_USER:-companion} -p 6543"]
+      test: ["CMD-SHELL", "pg_isready -d companiondb -U companion -p 6543"]
       interval: 5s
       timeout: 10s
       retries: 120
@@ -36,8 +36,8 @@ services:
     ports:
       - 5672:5672
     environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USERNAME:-companion}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-admin}
+      RABBITMQ_DEFAULT_USER: companion
+      RABBITMQ_DEFAULT_PASS: admin
     networks:
       - ci_os_hub_network
 
@@ -71,15 +71,15 @@ services:
       # Migrations
       - ./packages/backend/src/core/database/drizzle:/app/assets/migrations
       # Data
-      - ${CI_HUB_MEDIA_PATH:-.internal}/media:/data/media
-      - ${CI_HUB_STATE_PATH:-.internal}/state:/data/state
-      - ${CI_HUB_REPOS_PATH:-.internal}/repos:/data/repos
+      - .internal/media:/data/media
+      - .internal/state:/data/state
+      - .internal/repos:/data/repos
       - ../CI-App-Store:/data/repos/migrated
-      - ${CI_HUB_APPS_PATH:-.internal}/apps:/data/apps
-      - ${CI_HUB_LOGS_PATH:-.internal}/logs:/data/logs
-      - ${CI_HUB_USER_CONFIG_PATH:-.internal}/user-config:/data/user-config
-      - ${CI_HUB_APP_DATA_PATH:-.internal}/app-data:/app-data
-      - ${CI_HUB_BACKUPS_PATH:-.internal}/backups:/data/backups
+      - .internal/apps:/data/apps
+      - .internal/logs:/data/logs
+      - .internal/user-config:/data/user-config
+      - .internal/app-data:/app-data
+      - .internal/backups:/data/backups
       # Static
       - ${ENV_FILE:-.env}:/data/.env
       - ./.internal/cache:/cache
@@ -96,11 +96,11 @@ services:
       NODE_ENV: development
       ROOT_FOLDER_HOST: ${PWD}/.internal
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-      POSTGRES_USERNAME: ${POSTGRES_USERNAME:-companion}
-      POSTGRES_DBNAME: ${POSTGRES_DBNAME:-companiondb}
-      RABBITMQ_USERNAME: ${RABBITMQ_USERNAME:-companion}
-      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-admin}
-      RABBITMQ_HOST: ${RABBITMQ_HOST:-ci-os-hub-queue}
+      POSTGRES_USERNAME: companion
+      POSTGRES_DBNAME: companiondb
+      RABBITMQ_USERNAME: companion
+      RABBITMQ_PASSWORD: admin
+      RABBITMQ_HOST: ci-os-hub-queue
       INTERNAL_IP: 127.0.0.1
       CI_HUB_VERSION: 4.5.0
       LOG_LEVEL: debug
