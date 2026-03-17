@@ -50,7 +50,6 @@ export const DEFAULT_DNS_IP = '9.9.9.9';
 
 // CI Cloud
 export const DEFAULT_CI_CLOUD_URL = 'https://portal.companionintelligence.com';
-export const DEFAULT_CI_CLOUD_API_URL = 'https://portal.companionintelligence.com/api';
 
 // Version
 export const DEFAULT_CI_HUB_VERSION = '4.5.0';

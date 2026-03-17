@@ -146,10 +146,10 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
 
       this.logger.warn(`Organization ${org.id} exists but Tunnel ID is missing. Attempting to recover...`);
 
-      const { ciCloudApiUrl, ciHubApiKey } = this.config.getConfig();
+      const { ciCloudUrl, ciHubApiKey } = this.config.getConfig();
       const deviceId = await this.getDeviceId();
 
-      if (!ciCloudApiUrl) return;
+      if (!ciCloudUrl) return;
 
       this.logger.info(`Attempting to recover tunnel credentials via registration endpoint for device ${deviceId}`);
 
@@ -158,7 +158,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         headers.Authorization = `Bearer ${ciHubApiKey}`;
       }
 
-      const registerResponse = await fetch(`${ciCloudApiUrl}/devices/register`, {
+      const registerResponse = await fetch(`${ciCloudUrl}/api/devices/register`, {
         method: 'POST',
         headers,
         body: JSON.stringify({
@@ -228,12 +228,12 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     // Re-sync CloudflareClientService from disk so getTunnelToken() stays correct
     await this.ensureCloudflareClientHasTunnelToken();
 
-    const { ciCloudApiUrl } = this.config.getConfig();
-    if (!ciCloudApiUrl) return;
+    const { ciCloudUrl } = this.config.getConfig();
+    if (!ciCloudUrl) return;
 
     try {
       const deviceId = await this.getDeviceId();
-      const statusUrl = new URL('devices/registration-status', ciCloudApiUrl.endsWith('/') ? ciCloudApiUrl : `${ciCloudApiUrl}/`);
+      const statusUrl = new URL(`${ciCloudUrl}/api/devices/registration-status`);
       statusUrl.searchParams.set('device_id', deviceId);
 
       const response = await fetch(statusUrl.toString(), { method: 'GET' });
@@ -414,16 +414,16 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   }
 
   private async checkRegistrationWithCloud(): Promise<boolean> {
-    const { ciCloudApiUrl } = this.config.getConfig();
+    const { ciCloudUrl } = this.config.getConfig();
 
     // If CI Cloud API is not configured, allow access (backward compatibility)
-    if (!ciCloudApiUrl) {
-      this.logger.debug('CI Cloud API not configured, skipping registration check.');
+    if (!ciCloudUrl) {
+      this.logger.debug('CI Cloud not configured, skipping registration check.');
       return true;
     }
 
     const deviceId = await this.getDeviceId();
-    const statusUrl = new URL('devices/registration-status', ciCloudApiUrl.endsWith('/') ? ciCloudApiUrl : `${ciCloudApiUrl}/`);
+    const statusUrl = new URL(`${ciCloudUrl}/api/devices/registration-status`);
     statusUrl.searchParams.set('device_id', deviceId);
 
     try {
@@ -705,10 +705,10 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
    * stores all returned data locally, and marks the device as registered.
    */
   public async pairDevice(pairingCode: string): Promise<{ success: boolean; message: string; domain?: string; subdomain?: string }> {
-    const { ciCloudApiUrl } = this.config.getConfig();
+    const { ciCloudUrl } = this.config.getConfig();
 
-    if (!ciCloudApiUrl) {
-      return { success: false, message: 'CI Cloud API URL not configured.' };
+    if (!ciCloudUrl) {
+      return { success: false, message: 'CI Cloud URL not configured.' };
     }
 
     const deviceId = await this.getDeviceId();
@@ -723,7 +723,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     }
 
     try {
-      const pairUrl = `${ciCloudApiUrl}/devices/pair`;
+      const pairUrl = `${ciCloudUrl}/api/devices/pair`;
       const response = await fetch(pairUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -798,12 +798,12 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     customDeviceId?: string,
     customDescription?: string,
   ): Promise<{ success: boolean; message: string }> {
-    const { ciCloudApiUrl, ciHubApiKey } = this.config.getConfig();
+    const { ciCloudUrl, ciHubApiKey } = this.config.getConfig();
 
-    if (!ciCloudApiUrl) {
+    if (!ciCloudUrl) {
       return {
         success: false,
-        message: 'CI Cloud API URL not configured. Please set CI_CLOUD_API_URL environment variable.',
+        message: 'CI Cloud URL not configured. Please set CI_CLOUD_URL environment variable.',
       };
     }
 
@@ -838,7 +838,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
 
       // Step 1: Register device with CI Cloud
       // POST http://localhost:8001/api/devices/register
-      const registerUrl = `${ciCloudApiUrl}/devices/register`;
+      const registerUrl = `${ciCloudUrl}/api/devices/register`;
       const registerHeaders: Record<string, string> = {
         'Content-Type': 'application/json',
       };

@@ -29,7 +29,7 @@ describe('AppStoreService', () => {
       return vi.fn() as any;
     });
 
-    configService.getConfig.mockReturnValue({ ciCloudAppStoreUrl: 'cloud-url' } as any);
+    configService.getConfig.mockReturnValue({ ciCloudUrl: 'cloud-url' } as any);
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
