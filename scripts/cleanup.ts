@@ -165,6 +165,8 @@ try {
   // Clean up both new and legacy project names
   await $`docker compose --project-name ci-os-hub -f docker-compose.prod.yml down -v`.quiet();
   await $`docker compose --project-name ci-hub -f docker-compose.prod.yml down -v`.quiet();
+  await $`docker compose --project-name runtipi -f docker-compose.prod.yml down -v`.quiet();
+  await $`docker compose --project-name ci-hub -f docker-compose.local.yml down -v`.quiet();
   console.log('   ✅ Docker compose cleaned');
 } catch (_error) {
   console.error('   Error during docker compose cleanup:', _error);
@@ -199,6 +201,14 @@ const internalDirs = [
   '.internal/cache',
 ];
 
+// Also clean tunnel state
+const tunnelDirs = ['tunnel/token', 'tunnel/certs'];
+for (const td of tunnelDirs) {
+  if (existsSync(td)) {
+    console.log(`   Removing ${td}...`);
+    await $`rm -rf ${td}`.quiet();
+  }
+}
 for (const dir of internalDirs) {
   if (existsSync(dir)) {
     console.log(`   Removing ${dir}...`);

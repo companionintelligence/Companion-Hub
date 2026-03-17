@@ -65,19 +65,7 @@ async function main() {
     // Start infra (db + queue) using local compose
     run(
       'docker',
-      [
-        'compose',
-        '--env-file',
-        envFileStr,
-        '--project-name',
-        'runtipi',
-        '-f',
-        'docker-compose.local.yml',
-        'up',
-        '-d',
-        'ci-os-hub-queue',
-        'ci-hub-db',
-      ],
+      ['compose', '--env-file', envFileStr, '--project-name', 'ci-hub', '-f', 'docker-compose.local.yml', 'up', '-d', 'ci-os-hub-queue', 'ci-hub-db'],
       envOverrides,
     );
 
@@ -102,7 +90,7 @@ async function main() {
     if (env === 'staging') files.push('docker-compose.staging.yml');
   }
 
-  const upArgs = ['compose', '--env-file', envFileStr, '--project-name', 'runtipi'];
+  const upArgs = ['compose', '--env-file', envFileStr, '--project-name', 'ci-hub'];
   for (const f of files) {
     upArgs.push('-f', f);
   }

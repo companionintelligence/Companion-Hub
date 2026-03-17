@@ -11,7 +11,7 @@
     "dev:app": "POSTGRES_HOST=localhost RABBITMQ_HOST=localhost NODE_ENV=development turbo run local",
     "infra:up": "ENV_FILE=.env.local docker compose --env-file .env.local --project-name ci-hub -f docker-compose.local.yml up -d ci-os-hub-queue ci-hub-db",
     "infra:down": "docker compose --project-name ci-hub -f docker-compose.local.yml down",
-    "cleanup": "bun run infra:down && bun run scripts/cleanup.ts && rm -rf .internal && rm -rf tunnel/token tunnel/certs",
+    "cleanup": "bun scripts/cleanup.ts",
     "bundle": "turbo bundle",
     "build": "turbo run build",
     "tsc": "turbo run tsc",
@@ -34,7 +34,9 @@
     "prepare": "husky",
     "device-id": "bun scripts/get-device-id.ts",
     "version": "echo $npm_package_version",
-    "start:detached": "bun scripts/start.ts start:detached"
+    "start:detached": "bun scripts/start.ts start:detached",
+    "fresh": "bun run cleanup && bun start dev",
+    "fresh:local": "bun run cleanup && bun start local"
   },
   "lint-staged": {
     "*": [
