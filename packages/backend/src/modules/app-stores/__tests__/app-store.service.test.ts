@@ -62,7 +62,7 @@ describe('AppStoreService', () => {
     expect(appStoreRepository.createAppStore).toHaveBeenCalledWith(
       expect.objectContaining({
         slug: 'ci-marketplace',
-        url: 'cloud-url',
+        url: 'cloud-url/api',
       }),
     );
   });

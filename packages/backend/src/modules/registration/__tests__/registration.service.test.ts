@@ -337,7 +337,7 @@ describe('RegistrationService', () => {
       expect(result.message).toContain('Unable to reach CI Portal');
     });
 
-    it('returns error when CI Cloud API URL is not configured', async () => {
+    it('returns error when CI Cloud URL is not configured', async () => {
       configService.getConfig.mockReturnValue({
         ciCloudUrl: '',
         userSettings: { domain: 'example.com' },
@@ -347,7 +347,7 @@ describe('RegistrationService', () => {
       const result = await service.pairDevice('ABC123');
 
       expect(result.success).toBe(false);
-      expect(result.message).toBe('CI Cloud API URL not configured.');
+      expect(result.message).toBe('CI Cloud URL not configured.');
     });
 
     it('returns error when Portal returns incomplete data', async () => {
