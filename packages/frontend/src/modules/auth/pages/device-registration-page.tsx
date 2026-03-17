@@ -88,28 +88,30 @@ export default function DeviceRegistrationPage() {
         const { domain, subdomain } = data as { domain?: string; subdomain?: string };
         if (domain && subdomain) {
           const fullUrl = `https://${subdomain}.${domain}`;
-          setRedirectStatus('Waiting for DNS propagation...');
+          setRedirectStatus('Setting up your Hub...');
 
-          const maxAttempts = 24; // 2 minutes at 5s intervals
-          let reachable = false;
-
-          for (let i = 0; i < maxAttempts; i++) {
+          let attempts = 0;
+          // eslint-disable-next-line no-constant-condition
+          while (true) {
             try {
               await fetch(fullUrl, { mode: 'no-cors', cache: 'no-store' });
-              reachable = true;
               break;
             } catch {
               // not reachable yet
             }
 
-            if (i >= 12) {
-              setRedirectStatus('Almost there...');
+            attempts++;
+            if (attempts >= 12) {
+              setRedirectStatus('Waiting for DNS propagation...');
+            }
+            if (attempts >= 36) {
+              setRedirectStatus('Still waiting — this can take a few minutes...');
             }
 
             await new Promise((resolve) => setTimeout(resolve, 5000));
           }
 
-          setRedirectStatus(reachable ? 'Redirecting...' : 'Redirecting (DNS may still be propagating)...');
+          setRedirectStatus('Redirecting...');
           window.location.href = `${fullUrl}/login`;
         } else {
           // Fallback: no domain info, just redirect locally
