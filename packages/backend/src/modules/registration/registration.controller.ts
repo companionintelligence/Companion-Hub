@@ -247,7 +247,14 @@ export class RegistrationController {
       });
       const body = await res.text();
       // Cloudflare error pages when tunnel is not connected
-      if (body.includes('Error 1033') || body.includes('Error 1003') || body.includes('Error 1000') || body.includes('Error 502') || body.includes('Error 521') || body.includes('Error 523')) {
+      if (
+        body.includes('Error 1033') ||
+        body.includes('Error 1003') ||
+        body.includes('Error 1000') ||
+        body.includes('Error 502') ||
+        body.includes('Error 521') ||
+        body.includes('Error 523')
+      ) {
         return { ready: false };
       }
       return { ready: true };
