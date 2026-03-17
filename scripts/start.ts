@@ -102,7 +102,7 @@ async function main() {
     if (env === 'staging') files.push('docker-compose.staging.yml');
   }
 
-  const upArgs = ['compose', '--env-file', envFileStr, '--project-name', 'runtipi'];
+  const upArgs = ['compose', '--env-file', envFileStr, '--project-name', 'ci-hub'];
   for (const f of files) {
     upArgs.push('-f', f);
   }
