@@ -3,7 +3,7 @@ import { DATABASE, type Database } from '@/core/database/database.module';
 import { app } from '@/core/database/drizzle/schema';
 import type { AppStatus, NewApp } from '@/core/database/drizzle/types';
 import { Inject, Injectable } from '@nestjs/common';
-import type { AppUrn } from '@runtipi/common/types';
+import type { AppUrn } from '@ci-hub/common/types';
 import { and, asc, eq, ne, notInArray } from 'drizzle-orm';
 
 @Injectable()

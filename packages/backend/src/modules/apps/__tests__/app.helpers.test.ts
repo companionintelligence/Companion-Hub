@@ -3,8 +3,8 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { Test } from '@nestjs/testing';
-import type { AppInfo } from '@runtipi/common/schemas';
-import type { AppUrn } from '@runtipi/common/types';
+import type { AppInfo } from '@ci-hub/common/schemas';
+import type { AppUrn } from '@ci-hub/common/types';
 import { fromPartial } from '@total-typescript/shoehorn';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { mock } from 'vitest-mock-extended';
@@ -70,10 +70,10 @@ describe('AppHelpers', () => {
         fromPartial({
           internalIp: '127.0.0.1',
           envFilePath: '/data/.env',
-          rootFolderHost: '/opt/runtipi',
+          rootFolderHost: '/opt/ci-hub',
           domain: 'example.com',
           userSettings: {
-            appDataPath: '/opt/runtipi',
+            appDataPath: '/opt/ci-hub',
             domain: 'example.com',
           },
         }),
@@ -105,8 +105,8 @@ describe('AppHelpers', () => {
       // Assert
       expect(envMap.get('APP_PORT')).toBe('9091');
       expect(envMap.get('APP_ID')).toBe('test-app-test-store');
-      expect(envMap.get('ROOT_FOLDER_HOST')).toBe('/opt/runtipi');
-      expect(envMap.get('APP_DATA_DIR')).toBe('/opt/runtipi/app-data/test-store/test-app');
+      expect(envMap.get('ROOT_FOLDER_HOST')).toBe('/opt/ci-hub');
+      expect(envMap.get('APP_DATA_DIR')).toBe('/opt/ci-hub/app-data/test-store/test-app');
     });
 
     it('should handle form port override', async () => {

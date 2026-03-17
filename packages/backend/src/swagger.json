@@ -2037,9 +2037,9 @@
         ]
       }
     },
-    "/api/sse/runtipi-logs": {
+    "/api/sse/ci-hub-logs": {
       "get": {
-        "operationId": "runtipiLogsEvents",
+        "operationId": "hubLogsEvents",
         "parameters": [],
         "responses": {
           "200": {
@@ -2803,8 +2803,8 @@
     }
   },
   "info": {
-    "title": "Runtipi API",
-    "description": "API specs for Runtipi",
+    "title": "CI Hub API",
+    "description": "API specs for CI Hub",
     "version": "1.0",
     "contact": {}
   },

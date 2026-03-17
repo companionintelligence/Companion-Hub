@@ -66,7 +66,7 @@ export class AppService implements OnApplicationShutdown {
       this.logger.startPeriodicFlush();
       this.logger.info('Logger flushed, daily rotation scheduled');
 
-      this.logger.info(`Running version: ${process.env.TIPI_VERSION}`);
+      this.logger.info(`Running version: ${process.env.CI_HUB_VERSION || process.env.TIPI_VERSION}`);
 
       const buster = this.cache.get('buster');
       if (buster !== version) {
@@ -279,7 +279,7 @@ export class AppService implements OnApplicationShutdown {
           sentinelPath,
           JSON.stringify({
             createdAt: new Date().toISOString(),
-            version: process.env.TIPI_VERSION || 'unknown',
+            version: process.env.CI_HUB_VERSION || process.env.TIPI_VERSION || 'unknown',
           }),
         );
         this.logger.info('Created app-data sentinel file (first run or volume reset)');
@@ -303,7 +303,7 @@ export class AppService implements OnApplicationShutdown {
       for (const installedApp of apps) {
         if (!installedApp.port) continue;
 
-        const appUrn = `${installedApp.appName}:${installedApp.appStoreSlug}` as import('@runtipi/common/types').AppUrn;
+        const appUrn = `${installedApp.appName}:${installedApp.appStoreSlug}` as import('@ci-hub/common/types').AppUrn;
         try {
           await this.portManager.migrateExistingApp(appUrn, installedApp.port, installedApp.port);
           migrated++;

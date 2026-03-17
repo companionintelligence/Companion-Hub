@@ -64,7 +64,7 @@ async function addNewApp(config: AppConfig): Promise<void> {
 
     // Create config.json
     const appConfig = {
-      $schema: 'https://schemas.runtipi.io/v2/app-info.json',
+      $schema: 'https://schemas.companionintelligence.com/v2/app-info.json',
       min_tipi_version: 'v4.5.0',
       name: config.name,
       id: config.id,

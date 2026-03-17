@@ -47,6 +47,23 @@ const getArchitecture = () => {
  * (which may be undefined if not set). For string settings, omit
  * `settingsVal` if there is no corresponding settings.json field.
  */
+// Map of new env var names to their legacy equivalents for backward compatibility
+const LEGACY_ENV_MAP: Record<string, string> = {
+  CI_HUB_STATE_PATH: 'RUNTIPI_STATE_PATH',
+  CI_HUB_APP_DATA_PATH: 'RUNTIPI_APP_DATA_PATH',
+  CI_HUB_FORWARD_AUTH_URL: 'RUNTIPI_FORWARD_AUTH_URL',
+  CI_HUB_DATA_DIR: 'TIPI_DATA_DIR',
+  CI_HUB_APP_DIR: 'TIPI_APP_DIR',
+  CI_HUB_APP_DATA_DIR: 'TIPI_APP_DATA_DIR',
+  CI_HUB_VERSION: 'TIPI_VERSION',
+  CI_HUB_MEDIA_PATH: 'RUNTIPI_MEDIA_PATH',
+  CI_HUB_REPOS_PATH: 'RUNTIPI_REPOS_PATH',
+  CI_HUB_APPS_PATH: 'RUNTIPI_APPS_PATH',
+  CI_HUB_LOGS_PATH: 'RUNTIPI_LOGS_PATH',
+  CI_HUB_USER_CONFIG_PATH: 'RUNTIPI_USER_CONFIG_PATH',
+  CI_HUB_BACKUPS_PATH: 'RUNTIPI_BACKUPS_PATH',
+};
+
 function resolve(
   key: string,
   opts: {
@@ -55,18 +72,28 @@ function resolve(
     fallback: string;
   },
 ): string {
-  // 1. process.env (.env.local / system) always wins
+  // 1. process.env (.env.local / system) always wins — check new name first, then legacy
   if (process.env[key] !== undefined && process.env[key] !== '') {
     return process.env[key] as string;
+  }
+  const legacyKey = LEGACY_ENV_MAP[key];
+  if (legacyKey && process.env[legacyKey] !== undefined && process.env[legacyKey] !== '') {
+    return process.env[legacyKey] as string;
   }
   // 2. settings.json value (if provided and not undefined)
   if (opts.settingsVal !== undefined) {
     return opts.settingsVal;
   }
-  // 3. Previously persisted value in data .env
+  // 3. Previously persisted value in data .env — check new name first, then legacy
   const persisted = opts.envMap.get(key);
   if (persisted !== undefined && persisted !== '') {
     return persisted;
+  }
+  if (legacyKey) {
+    const legacyPersisted = opts.envMap.get(legacyKey);
+    if (legacyPersisted !== undefined && legacyPersisted !== '') {
+      return legacyPersisted;
+    }
   }
   // 4. Hardcoded default
   return opts.fallback;
@@ -134,7 +161,7 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   }
 
   // Ensure that the app data path does not contain the /app-data suffix
-  let appDataPath = settings.appDataPath || resolve('RUNTIPI_APP_DATA_PATH', { envMap, fallback: '' });
+  let appDataPath = settings.appDataPath || resolve('CI_HUB_APP_DATA_PATH', { envMap, fallback: '' });
   const appDataSegment = '/app-data';
 
   while (appDataPath?.endsWith(appDataSegment)) {
@@ -142,24 +169,24 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
     appDataPath = appDataPath.slice(0, -appDataSegment.length);
   }
 
-  // Ensure RUNTIPI_APP_DATA_PATH is always absolute (host path)
+  // Ensure CI_HUB_APP_DATA_PATH is always absolute (host path)
   if (appDataPath && !path.isAbsolute(appDataPath)) {
     appDataPath = path.resolve(rootFolderHost, appDataPath);
-    logger.debug(`Resolved relative RUNTIPI_APP_DATA_PATH against ROOT_FOLDER_HOST to: ${appDataPath}`);
+    logger.debug(`Resolved relative CI_HUB_APP_DATA_PATH against ROOT_FOLDER_HOST to: ${appDataPath}`);
   }
 
   const finalAppDataPath = appDataPath || rootFolderHost;
 
   if (!path.isAbsolute(finalAppDataPath)) {
     throw new Error(
-      `RUNTIPI_APP_DATA_PATH must be an absolute path, got: ${finalAppDataPath}. ` +
-        'Please set ROOT_FOLDER_HOST to an absolute path or set RUNTIPI_APP_DATA_PATH to an absolute path.',
+      `CI_HUB_APP_DATA_PATH must be an absolute path, got: ${finalAppDataPath}. ` +
+        'Please set ROOT_FOLDER_HOST to an absolute path or set CI_HUB_APP_DATA_PATH to an absolute path.',
     );
   }
 
   if (finalAppDataPath.startsWith('/app') || finalAppDataPath.startsWith('/data/')) {
     throw new Error(
-      `RUNTIPI_APP_DATA_PATH must be a host path, not a container path. Got: ${finalAppDataPath}. ` +
+      `CI_HUB_APP_DATA_PATH must be a host path, not a container path. Got: ${finalAppDataPath}. ` +
         'Please ensure ROOT_FOLDER_HOST is set to an absolute host path.',
     );
   }
@@ -171,7 +198,7 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   envMap.set('ROOT_FOLDER_HOST', rootFolderHost);
   envMap.set('ARCHITECTURE', getArchitecture());
   envMap.set('JWT_SECRET', jwtSecret);
-  envMap.set('RUNTIPI_APP_DATA_PATH', finalAppDataPath);
+  envMap.set('CI_HUB_APP_DATA_PATH', finalAppDataPath);
 
   // Core infrastructure
   envMap.set('INTERNAL_IP', resolve('INTERNAL_IP', { envMap, settingsVal: settings.listenIp, fallback: '127.0.0.1' }));
@@ -180,8 +207,8 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   envMap.set('DOMAIN', resolve('DOMAIN', { envMap, fallback: 'example.com' }));
   envMap.set('LOCAL_DOMAIN', resolve('LOCAL_DOMAIN', { envMap, settingsVal: settings.localDomain, fallback: '' }));
   envMap.set(
-    'RUNTIPI_FORWARD_AUTH_URL',
-    resolve('RUNTIPI_FORWARD_AUTH_URL', { envMap, settingsVal: settings.forwardAuthUrl, fallback: 'http://ci-os-hub:3000/api/auth/traefik' }),
+    'CI_HUB_FORWARD_AUTH_URL',
+    resolve('CI_HUB_FORWARD_AUTH_URL', { envMap, settingsVal: settings.forwardAuthUrl, fallback: 'http://ci-os-hub:3000/api/auth/traefik' }),
   );
 
   // Database
@@ -192,7 +219,7 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
 
   // Message queue — also handle legacy hostname migration
   let rabbitmqHost = resolve('RABBITMQ_HOST', { envMap, fallback: 'ci-os-hub-queue' });
-  if (rabbitmqHost === 'runtipi-queue') {
+  if (rabbitmqHost === 'runtipi-queue' || rabbitmqHost === 'ci-hub-queue') {
     rabbitmqHost = 'ci-os-hub-queue';
   }
   envMap.set('RABBITMQ_HOST', rabbitmqHost);

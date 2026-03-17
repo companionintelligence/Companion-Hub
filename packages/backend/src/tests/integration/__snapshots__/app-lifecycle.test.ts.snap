@@ -2,7 +2,7 @@
 
 exports[`App lifecycle > install app > should not delete an existing app-data folder even if the app is reinstalled 1`] = `
 {
-  "/app-data/test/test2/app.env": "ROOT_FOLDER_HOST=/opt/runtipi
+  "/app-data/test/test2/app.env": "ROOT_FOLDER_HOST=/opt/ci-hub
 NODE_ENV=production
 DOMAIN=undefined
 LOCAL_DOMAIN=undefined
@@ -11,7 +11,7 @@ APP_URN=test2:test
 APP_ID=test2-test
 APP_NAME=test2
 APP_STORE_ID=test
-APP_DATA_DIR=/opt/runtipi/app-data/test/test2
+APP_DATA_DIR=/opt/ci-hub/app-data/test/test2
 APP_IMAGE_TAG=5.12.2
 APP_HOSTNAME=127.0.0.1
 APP_INTERNAL_AUTHORITY=127.0.0.1:9040
@@ -23,7 +23,7 @@ APP_DOMAIN=127.0.0.1:9040
 APP_URL=http://127.0.0.1:9040
 ",
   "/app-data/test/test2/data/test.txt": "test",
-  "/data/.env": "ROOT_FOLDER_HOST=/opt/runtipi",
+  "/data/.env": "ROOT_FOLDER_HOST=/opt/ci-hub",
   "/data/apps/test/test2/config.json": "{
   "id": "test2",
   "urn": "test2:test",
@@ -147,7 +147,7 @@ networks:
 
 exports[`App lifecycle > install app > should successfully install app and create expected directory structure 1`] = `
 {
-  "/app-data/test/test/app.env": "ROOT_FOLDER_HOST=/opt/runtipi
+  "/app-data/test/test/app.env": "ROOT_FOLDER_HOST=/opt/ci-hub
 NODE_ENV=production
 DOMAIN=undefined
 LOCAL_DOMAIN=undefined
@@ -156,7 +156,7 @@ APP_URN=test:test
 APP_ID=test-test
 APP_NAME=test
 APP_STORE_ID=test
-APP_DATA_DIR=/opt/runtipi/app-data/test/test
+APP_DATA_DIR=/opt/ci-hub/app-data/test/test
 APP_IMAGE_TAG=0.8.15
 APP_HOSTNAME=127.0.0.1
 APP_INTERNAL_AUTHORITY=127.0.0.1:3041
@@ -168,7 +168,7 @@ APP_DOMAIN=127.0.0.1:3041
 APP_URL=http://127.0.0.1:3041
 ",
   "/app-data/test/test/data": null,
-  "/data/.env": "ROOT_FOLDER_HOST=/opt/runtipi",
+  "/data/.env": "ROOT_FOLDER_HOST=/opt/ci-hub",
   "/data/apps/test/test/config.json": "{
   "id": "test",
   "urn": "test:test",
@@ -292,7 +292,7 @@ networks:
 
 exports[`App lifecycle > update all apps > should update multiple apps that have newer versions available 1`] = `
 {
-  "/app-data/test/app1/app.env": "ROOT_FOLDER_HOST=/opt/runtipi
+  "/app-data/test/app1/app.env": "ROOT_FOLDER_HOST=/opt/ci-hub
 NODE_ENV=production
 DOMAIN=undefined
 LOCAL_DOMAIN=undefined
@@ -301,7 +301,7 @@ APP_URN=app1:test
 APP_ID=app1-test
 APP_NAME=app1
 APP_STORE_ID=test
-APP_DATA_DIR=/opt/runtipi/app-data/test/app1
+APP_DATA_DIR=/opt/ci-hub/app-data/test/app1
 APP_IMAGE_TAG=6.5.7
 APP_HOSTNAME=127.0.0.1
 APP_INTERNAL_AUTHORITY=127.0.0.1:1227
@@ -313,7 +313,7 @@ APP_DOMAIN=127.0.0.1:1227
 APP_URL=http://127.0.0.1:1227
 ",
   "/app-data/test/app1/data": null,
-  "/app-data/test/app2/app.env": "ROOT_FOLDER_HOST=/opt/runtipi
+  "/app-data/test/app2/app.env": "ROOT_FOLDER_HOST=/opt/ci-hub
 NODE_ENV=production
 DOMAIN=undefined
 LOCAL_DOMAIN=undefined
@@ -322,7 +322,7 @@ APP_URN=app2:test
 APP_ID=app2-test
 APP_NAME=app2
 APP_STORE_ID=test
-APP_DATA_DIR=/opt/runtipi/app-data/test/app2
+APP_DATA_DIR=/opt/ci-hub/app-data/test/app2
 APP_IMAGE_TAG=3.14.0
 APP_HOSTNAME=127.0.0.1
 APP_INTERNAL_AUTHORITY=127.0.0.1:2100
@@ -334,7 +334,7 @@ APP_DOMAIN=127.0.0.1:2100
 APP_URL=http://127.0.0.1:2100
 ",
   "/app-data/test/app2/data": null,
-  "/app-data/test/app3/app.env": "ROOT_FOLDER_HOST=/opt/runtipi
+  "/app-data/test/app3/app.env": "ROOT_FOLDER_HOST=/opt/ci-hub
 NODE_ENV=production
 DOMAIN=undefined
 LOCAL_DOMAIN=undefined
@@ -343,7 +343,7 @@ APP_URN=app3:test
 APP_ID=app3-test
 APP_NAME=app3
 APP_STORE_ID=test
-APP_DATA_DIR=/opt/runtipi/app-data/test/app3
+APP_DATA_DIR=/opt/ci-hub/app-data/test/app3
 APP_IMAGE_TAG=7.0.1
 APP_HOSTNAME=127.0.0.1
 APP_INTERNAL_AUTHORITY=127.0.0.1:4868
@@ -355,7 +355,7 @@ APP_DOMAIN=127.0.0.1:4868
 APP_URL=http://127.0.0.1:4868
 ",
   "/app-data/test/app3/data": null,
-  "/data/.env": "ROOT_FOLDER_HOST=/opt/runtipi",
+  "/data/.env": "ROOT_FOLDER_HOST=/opt/ci-hub",
   "/data/apps/test/app1/config.json": "{
   "id": "app1",
   "urn": "app1:test",

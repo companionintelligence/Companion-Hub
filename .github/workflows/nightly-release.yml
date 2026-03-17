@@ -38,7 +38,7 @@ jobs:
           secrets: |
             "sentry_token=${{ secrets.SENTRY_AUTH_TOKEN }}"
           build-args: |
-            TIPI_VERSION=nightly
+            CI_HUB_VERSION=nightly
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ghcr.io/companionintelligence/ci-os-hub:nightly

@@ -2,8 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR } from '@/common/constants';
 import { faker } from '@faker-js/faker';
-import type { AppInfo, AppInfoInput } from '@runtipi/common/schemas';
-import type { AppUrn } from '@runtipi/common/types';
+import type { AppInfo, AppInfoInput } from '@ci-hub/common/schemas';
+import type { AppUrn } from '@ci-hub/common/types';
 
 export const createAppInStore = async (storeId: string, app: Partial<AppInfo> = {}) => {
   const id = app.id ?? faker.lorem.words(3).split(' ').join('-').toLowerCase();

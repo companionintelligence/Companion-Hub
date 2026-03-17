@@ -12,7 +12,7 @@ import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import { SubnetManagerService } from '@/modules/network/subnet-manager.service';
-import type { AppUrn } from '@runtipi/common/types';
+import type { AppUrn } from '@ci-hub/common/types';
 
 vi.mock('node:fs', async () => ({
   default: {
@@ -29,7 +29,7 @@ vi.mock('@sentry/nestjs', () => ({
   captureException: vi.fn(),
 }));
 
-vi.mock('@runtipi/common/schemas', async (importOriginal) => ({
+vi.mock('@ci-hub/common/schemas', async (importOriginal) => ({
   ...((await importOriginal()) as any),
   parseComposeJson: vi.fn().mockReturnValue({ services: [], overrides: [] }),
 }));

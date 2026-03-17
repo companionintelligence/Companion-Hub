@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-DATA_DIR="${TIPI_DATA_DIR:-/tmp/runtipi-e2e}"
+DATA_DIR="${TIPI_DATA_DIR:-/tmp/ci-hub-e2e}"
 
 # Create required directory structure
 mkdir -p "$DATA_DIR"/{state,logs,apps,app-data,repos,backups,user-config,media}
@@ -17,7 +17,7 @@ mkdir -p "$(pwd)/tunnel"
 echo "e2e-mock-tunnel-token" > "$(pwd)/tunnel/token"
 
 # Build workspace dependencies (common package must be compiled before backend can start)
-echo "Building @runtipi/common..."
+echo "Building @ci-hub/common..."
 (cd packages/common && bun run build)
 
 # Build backend (nest build uses swc, doesn't reliably copy all assets)
@@ -55,8 +55,8 @@ THEME_COLOR=${THEME_COLOR:-blue}
 EXPERIMENTAL_INSECURE_COOKIE=${EXPERIMENTAL_INSECURE_COOKIE:-true}
 TIPI_VERSION=${TIPI_VERSION:-e2e}
 INTERNAL_IP=${INTERNAL_IP:-0.0.0.0}
-ROOT_FOLDER_HOST=${ROOT_FOLDER_HOST:-/tmp/runtipi-e2e}
-RUNTIPI_APP_DATA_PATH=${RUNTIPI_APP_DATA_PATH:-/tmp/runtipi-e2e}
+ROOT_FOLDER_HOST=${ROOT_FOLDER_HOST:-/tmp/ci-hub-e2e}
+RUNTIPI_APP_DATA_PATH=${RUNTIPI_APP_DATA_PATH:-/tmp/ci-hub-e2e}
 RUNTIPI_FORWARD_AUTH_URL=http://localhost:3000/api/auth/traefik
 ALLOW_AUTO_THEMES=${ALLOW_AUTO_THEMES:-true}
 ALLOW_ERROR_MONITORING=${ALLOW_ERROR_MONITORING:-false}

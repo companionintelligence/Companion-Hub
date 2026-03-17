@@ -1,6 +1,6 @@
 import { useSSE } from '@/lib/hooks/use-sse';
 import { extractAppUrn } from '@/utils/app-helpers';
-import type { AppUrn } from '@runtipi/common/types';
+import type { AppUrn } from '@ci-hub/common/types';
 import { useQueryClient } from '@tanstack/react-query';
 import type { PropsWithChildren } from 'react';
 import toast from 'react-hot-toast';

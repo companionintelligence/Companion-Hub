@@ -46,7 +46,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.dev
-    command: npx turbo run dev --filter backend --filter frontend --filter @runtipi/common
+    command: npx turbo run dev --filter backend --filter frontend --filter @ci-hub/common
     depends_on:
       ci-hub-db:
         condition: service_healthy
@@ -71,15 +71,15 @@ services:
       # Migrations
       - ./packages/backend/src/core/database/drizzle:/app/assets/migrations
       # Data
-      - ${RUNTIPI_MEDIA_PATH:-.internal}/media:/data/media
-      - ${RUNTIPI_STATE_PATH:-.internal}/state:/data/state
-      - ${RUNTIPI_REPOS_PATH:-.internal}/repos:/data/repos
+      - ${CI_HUB_MEDIA_PATH:-.internal}/media:/data/media
+      - ${CI_HUB_STATE_PATH:-.internal}/state:/data/state
+      - ${CI_HUB_REPOS_PATH:-.internal}/repos:/data/repos
       - ../CI-App-Store:/data/repos/migrated
-      - ${RUNTIPI_APPS_PATH:-.internal}/apps:/data/apps
-      - ${RUNTIPI_LOGS_PATH:-.internal}/logs:/data/logs
-      - ${RUNTIPI_USER_CONFIG_PATH:-.internal}/user-config:/data/user-config
-      - ${RUNTIPI_APP_DATA_PATH:-.internal}/app-data:/app-data
-      - ${RUNTIPI_BACKUPS_PATH:-.internal}/backups:/data/backups
+      - ${CI_HUB_APPS_PATH:-.internal}/apps:/data/apps
+      - ${CI_HUB_LOGS_PATH:-.internal}/logs:/data/logs
+      - ${CI_HUB_USER_CONFIG_PATH:-.internal}/user-config:/data/user-config
+      - ${CI_HUB_APP_DATA_PATH:-.internal}/app-data:/app-data
+      - ${CI_HUB_BACKUPS_PATH:-.internal}/backups:/data/backups
       # Static
       - ${ENV_FILE:-.env}:/data/.env
       - ./.internal/cache:/cache
@@ -102,7 +102,7 @@ services:
       RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-admin}
       RABBITMQ_HOST: ${RABBITMQ_HOST:-ci-os-hub-queue}
       INTERNAL_IP: 127.0.0.1
-      TIPI_VERSION: 4.5.0
+      CI_HUB_VERSION: 4.5.0
       LOG_LEVEL: debug
     extra_hosts:
       - "host.docker.internal:host-gateway"

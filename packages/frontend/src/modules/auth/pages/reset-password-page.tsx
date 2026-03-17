@@ -117,7 +117,7 @@ export default () => {
         <h2 className="text-xl font-semibold text-center mb-4">{t('AUTH_RESET_PASSWORD_TITLE')}</h2>
         <p className="text-sm text-muted-foreground mb-4">{t('AUTH_RESET_PASSWORD_INSTRUCTIONS')}</p>
         <pre className="bg-muted/50 rounded-lg p-3 text-sm">
-          <code>./runtipi-cli reset-password</code>
+          <code>./ci-hub-cli reset-password</code>
         </pre>
       </>
     );

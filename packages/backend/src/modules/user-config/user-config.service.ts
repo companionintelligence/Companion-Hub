@@ -1,5 +1,5 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
-import type { AppUrn } from '@runtipi/common/types';
+import type { AppUrn } from '@ci-hub/common/types';
 import { AppsRepository } from '../apps/apps.repository';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';

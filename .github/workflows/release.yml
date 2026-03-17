@@ -83,7 +83,7 @@ jobs:
           secrets: |
             "sentry_token=${{ secrets.SENTRY_AUTH_TOKEN }}"
           build-args: |
-            TIPI_VERSION=${{ needs.determine-release-type.outputs.tagname }}
+            CI_HUB_VERSION=${{ needs.determine-release-type.outputs.tagname }}
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}

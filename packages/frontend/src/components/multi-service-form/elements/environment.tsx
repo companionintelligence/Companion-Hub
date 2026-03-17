@@ -2,7 +2,7 @@ import './elements.css';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/Table';
-import type { dynamicComposeSchemaArk } from '@runtipi/common/schemas';
+import type { dynamicComposeSchemaArk } from '@ci-hub/common/schemas';
 import { X } from 'lucide-react';
 import clsx from 'clsx';
 import { useFieldArray, type Control, type FieldErrors, type UseFormRegister } from 'react-hook-form';

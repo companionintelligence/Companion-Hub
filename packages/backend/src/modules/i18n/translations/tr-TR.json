@@ -200,7 +200,7 @@
   "APP_LOGS_TAB_WRAP_LINES": "Satırları kaydır",
   "APP_USER_CONFIG_TAB_TITLE": "Kullanıcı Yapılandırması",
   "USER_CONFIG_WARNING_TITLE": "Uyarı",
-  "USER_CONFIG_WARNING_DESCRIPTION": "Kullanıcı yapılandırmasını düzenleyerek uygulamayı bozabilirsiniz. Ne yaptığınızdan emin olun. Kullanıcı yapılandırmasını düzenledikten sonra uygulamanız başlamazsa, tarayıcı konsolundaki veya runtipi ayarları sayfasındaki loglara bakın.",
+  "USER_CONFIG_WARNING_DESCRIPTION": "Kullanıcı yapılandırmasını düzenleyerek uygulamayı bozabilirsiniz. Ne yaptığınızdan emin olun. Kullanıcı yapılandırmasını düzenledikten sonra uygulamanız başlamazsa, tarayıcı konsolundaki veya CI Hub ayarları sayfasındaki loglara bakın.",
   "USER_CONFIG_ENABLE": "Kullanıcı yapılandırmasını etkinleştir",
   "USER_CONFIG_UPDATE_SUCCESS": "Kullanıcı yapılandırması başarıyla güncellendi",
   "APP_NEW": "YENİ",

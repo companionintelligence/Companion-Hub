@@ -20,10 +20,10 @@ if (NODE_ENV === 'production') {
     sentryVitePlugin({
       authToken: process.env.SENTRY_AUTH_TOKEN,
       release: {
-        name: process.env.TIPI_VERSION,
+        name: process.env.CI_HUB_VERSION || process.env.TIPI_VERSION,
       },
-      org: 'runtipi',
-      project: 'runtipi-frontend',
+      org: 'companionintelligence',
+      project: 'ci-hub-frontend',
     }) as PluginOption,
   );
 }

@@ -5,8 +5,8 @@ import type { ConfigurationService } from '@/core/config/configuration.service';
 import type { AppStore } from '@/core/database/drizzle/types';
 import type { FilesystemService } from '@/core/filesystem/filesystem.service';
 import type { LoggerService } from '@/core/logger/logger.service';
-import { appInfoSchema, appInfoSchemaArk } from '@runtipi/common/schemas';
-import type { AppUrn } from '@runtipi/common/types';
+import { appInfoSchema, appInfoSchemaArk } from '@ci-hub/common/schemas';
+import type { AppUrn } from '@ci-hub/common/types';
 import { type } from 'arktype';
 
 export class AppStoreFilesManager {

@@ -216,9 +216,9 @@ describe('App lifecycle', () => {
         directories: { dataDir: DATA_DIR, appDir: APP_DIR, appDataDir: APP_DATA_DIR },
         internalIp: '127.0.0.1',
         envFilePath: '/data/.env',
-        rootFolderHost: '/opt/runtipi',
+        rootFolderHost: '/opt/ci-hub',
         userSettings: {
-          appDataPath: '/opt/runtipi',
+          appDataPath: '/opt/ci-hub',
         },
       }),
     );
