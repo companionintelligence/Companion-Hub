@@ -34,7 +34,10 @@
     "prepare": "husky",
     "device-id": "bun scripts/get-device-id.ts",
     "version": "echo $npm_package_version",
-    "start:detached": "bun scripts/start.ts start:detached"
+    "start:detached": "bun scripts/start.ts start:detached",
+    "wipe": "docker compose --project-name ci-hub -f docker-compose.prod.yml down --remove-orphans 2>/dev/null; docker compose --project-name ci-hub -f docker-compose.local.yml down --remove-orphans 2>/dev/null; docker compose --project-name runtipi -f docker-compose.prod.yml down --remove-orphans 2>/dev/null; docker rm -f ci-os-hub ci-os-hub-queue ci-hub-db headscale cloudflared traefik hub-tailscale 2>/dev/null; rm -rf .internal tunnel/token tunnel/certs",
+    "fresh": "bun run wipe && bun start dev",
+    "fresh:local": "bun run wipe && bun start local"
   },
   "lint-staged": {
     "*": [
