@@ -17,7 +17,6 @@ import {
   DEFAULT_RABBITMQ_PASSWORD,
   DEFAULT_FORWARD_AUTH_URL,
   DEFAULT_DNS_IP,
-  DEFAULT_CI_CLOUD_URL,
   DEFAULT_DEMO_MODE,
   DEFAULT_DISABLE_PASSWORD_RESET,
   DEFAULT_GUEST_DASHBOARD,
@@ -139,13 +138,13 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
 
   const settingsFilePath = path.join(DATA_DIR, 'state', 'settings.json');
   const envFilePath = path.join(DATA_DIR, '.env');
+  const resolvedEnvFilePath = path.join(DATA_DIR, 'state', '.env.resolved');
 
-  if (!fs.existsSync(envFilePath)) {
-    await fs.promises.writeFile(envFilePath, '');
-    logger.info('Created new .env file');
+  // Read the source .env (read-only — never written back to)
+  let envFile = '';
+  if (fs.existsSync(envFilePath)) {
+    envFile = await fs.promises.readFile(envFilePath, 'utf-8');
   }
-
-  const envFile = await fs.promises.readFile(envFilePath, 'utf-8');
 
   const envMap: Map<string, string> = envUtils.envStringToMap(envFile);
 
@@ -307,55 +306,31 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   envMap.set('THEME_BASE', resolve('THEME_BASE', { envMap, settingsVal: settings.themeBase, fallback: DEFAULT_THEME_BASE }));
   envMap.set('THEME_COLOR', resolve('THEME_COLOR', { envMap, settingsVal: settings.themeColor, fallback: DEFAULT_THEME_COLOR }));
 
-  // CI Cloud integration — hardcode default, allow override
-  const ciCloudUrl = resolve('CI_CLOUD_URL', { envMap, fallback: DEFAULT_CI_CLOUD_URL });
+  // CI Cloud integration — REQUIRED, no fallback
+  const ciCloudUrl = resolve('CI_CLOUD_URL', { envMap, fallback: '' });
+  if (!ciCloudUrl) {
+    throw new Error('CI_CLOUD_URL is required. Please set it in your .env file (e.g. CI_CLOUD_URL=https://portal.companionintelligence.com)');
+  }
   envMap.set('CI_CLOUD_URL', ciCloudUrl);
 
-  // --- Write data .env only if values changed ---
+  // --- Write resolved env to state dir (never back to source .env) ---
 
   const newEnvContent = envUtils.envMapToString(envMap);
-  const currentEnvMap = envUtils.envStringToMap(envFile);
 
-  let hasChanges = false;
-  const changedVars: string[] = [];
-  for (const [key, newValue] of envMap.entries()) {
-    const currentValue = currentEnvMap.get(key);
-    if (currentValue !== newValue) {
-      hasChanges = true;
-      changedVars.push(key);
-      logger.debug(`Environment variable ${key} changed: ${currentValue || '(missing)'} -> ${newValue}`);
+  try {
+    await fs.promises.writeFile(resolvedEnvFilePath, newEnvContent);
+    logger.debug('Resolved environment written to state/.env.resolved');
+  } catch (error: unknown) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'EROFS') {
+      logger.warn('Cannot write resolved env (read-only mount). Continuing with existing values.');
+    } else {
+      throw error;
     }
   }
 
-  if (!hasChanges) {
-    for (const [key] of currentEnvMap.entries()) {
-      if (!envMap.has(key)) {
-        hasChanges = true;
-        changedVars.push(key);
-        logger.debug(`Environment variable ${key} was removed`);
-      }
-    }
-  }
-
-  if (hasChanges) {
-    logger.info(`Environment file has changes (${changedVars.length} variables: ${changedVars.join(', ')}), updating...`);
-    try {
-      await fs.promises.writeFile(envFilePath, newEnvContent);
-      logger.info('Environment file updated successfully');
-    } catch (error: unknown) {
-      if (error && typeof error === 'object' && 'code' in error && error.code === 'EROFS') {
-        logger.warn('Cannot write to .env file (read-only mount). Continuing with existing values.');
-      } else {
-        throw error;
-      }
-    }
-  } else {
-    logger.debug('Environment file unchanged, skipping write');
-  }
-
-  // Load the resolved data .env into process.env as DEFAULTS only.
+  // Load the resolved env into process.env as DEFAULTS only.
   // .env.local values already in process.env are NOT overwritten.
-  dotenv.config({ path: envFilePath, override: false, quiet: true });
+  dotenv.config({ path: resolvedEnvFilePath, override: false, quiet: true });
 
   return envMap;
 };
