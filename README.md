@@ -38,7 +38,7 @@ Edit `.env.prod` and set at least:
 
 - **`ROOT_FOLDER_HOST`** — Absolute path for data (e.g. `/opt/ci-os-hub/data` or `$(pwd)/.internal`)
 - **`JWT_SECRET`** — Random secret for sessions (e.g. `openssl rand -hex 32`)
-- **`CI_CLOUD_URL`** and **`CI_CLOUD_API_URL`** — CI Cloud portal URL (defaults work with public CI OS)
+- **`CI_CLOUD_URL`** — CI Cloud portal URL (defaults work with public CI OS)
 
 ### 3. Run
 

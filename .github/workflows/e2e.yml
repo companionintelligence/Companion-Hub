@@ -99,7 +99,6 @@ jobs:
           RABBITMQ_PASSWORD: admin
           JWT_SECRET: e2e-test-secret
           CI_CLOUD_URL: http://localhost:4444
-          CI_CLOUD_URL: http://localhost:4444
           DOMAIN: ci.computer
           LOCAL_DOMAIN: ci.lan
           ROOT_FOLDER_HOST: /tmp/ci-hub-e2e
