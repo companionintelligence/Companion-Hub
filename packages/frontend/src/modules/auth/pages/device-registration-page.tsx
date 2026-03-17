@@ -18,6 +18,7 @@ export default function DeviceRegistrationPage() {
   const [isPairing, setIsPairing] = useState(false);
   const [pairingError, setPairingError] = useState<string | null>(null);
   const [pairingSuccess, setPairingSuccess] = useState(false);
+  const [redirectStatus, setRedirectStatus] = useState<string>('Setting up your Hub...');
   const pairingInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -83,10 +84,39 @@ export default function DeviceRegistrationPage() {
       if (res.ok && data.success) {
         setPairingSuccess(true);
         toast.success('Device registered successfully!');
-        // Navigate to onboarding after a brief delay
-        setTimeout(() => {
-          navigate('/', { replace: true });
-        }, 2000);
+
+        const { domain, subdomain } = data as { domain?: string; subdomain?: string };
+        if (domain && subdomain) {
+          const fullUrl = `https://${subdomain}.${domain}`;
+          setRedirectStatus('Waiting for DNS propagation...');
+
+          const maxAttempts = 24; // 2 minutes at 5s intervals
+          let reachable = false;
+
+          for (let i = 0; i < maxAttempts; i++) {
+            try {
+              await fetch(fullUrl, { mode: 'no-cors', cache: 'no-store' });
+              reachable = true;
+              break;
+            } catch {
+              // not reachable yet
+            }
+
+            if (i >= 12) {
+              setRedirectStatus('Almost there...');
+            }
+
+            await new Promise((resolve) => setTimeout(resolve, 5000));
+          }
+
+          setRedirectStatus(reachable ? 'Redirecting...' : 'Redirecting (DNS may still be propagating)...');
+          window.location.href = `${fullUrl}/login`;
+        } else {
+          // Fallback: no domain info, just redirect locally
+          setTimeout(() => {
+            navigate('/', { replace: true });
+          }, 2000);
+        }
       } else {
         const errorMsg = typeof data.message === 'string' ? data.message : 'Registration failed.';
         setPairingError(errorMsg);
@@ -118,7 +148,7 @@ export default function DeviceRegistrationPage() {
         <CheckCircle2 role="img" aria-label="success" className="h-12 w-12 text-green-500" />
         <div>
           <h2 className="text-xl font-semibold text-foreground">Device Registered Successfully</h2>
-          <p className="text-sm text-muted-foreground mt-3">Registering your Hub... You will be redirected automatically.</p>
+          <p className="text-sm text-muted-foreground mt-3">{redirectStatus}</p>
         </div>
         <Loader2 className="h-6 w-6 animate-spin text-primary" />
       </div>

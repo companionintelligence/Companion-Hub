@@ -704,7 +704,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
    * Sends pairing code + device_id to Portal's POST /api/devices/pair,
    * stores all returned data locally, and marks the device as registered.
    */
-  public async pairDevice(pairingCode: string): Promise<{ success: boolean; message: string; domain?: string }> {
+  public async pairDevice(pairingCode: string): Promise<{ success: boolean; message: string; domain?: string; subdomain?: string }> {
     const { ciCloudApiUrl } = this.config.getConfig();
 
     if (!ciCloudApiUrl) {
@@ -932,7 +932,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     tunnelToken: string;
     apiKey?: string;
     domain?: string;
-  }): Promise<{ success: boolean; message: string; domain?: string }> {
+  }): Promise<{ success: boolean; message: string; domain?: string; subdomain?: string }> {
     try {
       // Verify device ID matches
       const currentDeviceId = await this.getDeviceId();
@@ -1002,6 +1002,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         success: true,
         message: 'Device registered successfully',
         domain: rootDomain,
+        subdomain: incomingSubdomain,
       };
     } catch (error) {
       this.logger.error('Registration callback error:', error);
