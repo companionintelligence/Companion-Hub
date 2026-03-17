@@ -94,10 +94,15 @@ export default function DeviceRegistrationPage() {
           // eslint-disable-next-line no-constant-condition
           while (true) {
             try {
-              await fetch(fullUrl, { mode: 'no-cors', cache: 'no-store' });
-              break;
+              const probeRes = await fetch(`/api/registration/probe-domain?url=${encodeURIComponent(fullUrl)}`);
+              if (probeRes.ok) {
+                const probeData = (await probeRes.json()) as { ready: boolean };
+                if (probeData.ready) {
+                  break;
+                }
+              }
             } catch {
-              // not reachable yet
+              // probe endpoint not reachable, keep trying
             }
 
             attempts++;
