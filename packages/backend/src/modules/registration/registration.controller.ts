@@ -15,6 +15,10 @@ interface VerifyPairingCodeDto {
   pairing_code: string;
 }
 
+interface PairDeviceDto {
+  pairing_code: string;
+}
+
 @ApiTags('Registration')
 @Controller('registration')
 export class RegistrationController {
@@ -227,6 +231,51 @@ export class RegistrationController {
         message: `Failed to verify pairing code: ${error instanceof Error ? error.message : 'Unknown error'}`,
       };
     }
+  }
+
+  @Get('probe-domain')
+  @ApiOperation({ summary: 'Probe a CF domain to check if the tunnel is serving the Hub' })
+  @ApiResponse({ status: 200, description: 'Probe result' })
+  async probeDomain(@Query('url') url: string) {
+    if (!url || !url.startsWith('https://')) {
+      return { ready: false };
+    }
+    try {
+      const res = await fetch(url, {
+        redirect: 'follow',
+        signal: AbortSignal.timeout(10000),
+      });
+      const body = await res.text();
+      // Cloudflare error pages when tunnel is not connected
+      if (
+        body.includes('Error 1033') ||
+        body.includes('Error 1003') ||
+        body.includes('Error 1000') ||
+        body.includes('Error 502') ||
+        body.includes('Error 521') ||
+        body.includes('Error 523')
+      ) {
+        return { ready: false };
+      }
+      return { ready: true };
+    } catch {
+      return { ready: false };
+    }
+  }
+
+  @Post('pair')
+  @ApiOperation({ summary: 'Pair device using a pairing code — atomic registration in one step' })
+  @ApiResponse({ status: 200, description: 'Device paired and registered successfully' })
+  @ApiResponse({ status: 400, description: 'Invalid pairing code or pairing failed' })
+  async pairDevice(@Body() body: PairDeviceDto) {
+    const pairingCode = body.pairing_code?.trim().toUpperCase();
+
+    if (!pairingCode || pairingCode.length !== 6) {
+      return { success: false, message: 'A valid 6-character pairing code is required.' };
+    }
+
+    const result = await this.registrationService.pairDevice(pairingCode);
+    return result;
   }
 
   @Post('register')
