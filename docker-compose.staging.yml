@@ -3,7 +3,6 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - CI_CLOUD_API_URL=${CI_CLOUD_API_URL}
       - HUB_CONTAINER_NAME=${HUB_CONTAINER_NAME}
       - NODE_ENV=production
 

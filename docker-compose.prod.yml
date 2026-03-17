@@ -115,7 +115,7 @@ services:
       INTERNAL_IP: ${INTERNAL_IP:-127.0.0.1}
       CI_HUB_VERSION: ${CI_HUB_VERSION:-4.5.0}
       LOG_LEVEL: ${LOG_LEVEL:-info}
-      CI_CLOUD_API_URL: ${CI_CLOUD_API_URL:-https://portal.companionintelligence.com/api}
+      CI_CLOUD_URL: ${CI_CLOUD_URL:-https://portal.companionintelligence.com}
     env_file:
       - ${ENV_FILE:-.env}
     labels:

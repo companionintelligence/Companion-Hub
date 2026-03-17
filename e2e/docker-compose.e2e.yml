@@ -55,8 +55,7 @@ services:
       CI_HUB_DATA_DIR: /data
       ROOT_FOLDER_HOST: /tmp/ci-hub-e2e
       JWT_SECRET: test-secret
-      CI_CLOUD_API_URL: http://non-existent-service:3000
-      CI_CLOUD_APP_STORE_URL: http://non-existent-service:3000/api
+      CI_CLOUD_URL: http://non-existent-service:3000
       APPS_REPO_URL: https://github.com/companionintelligence/CI-App-Store
       APPS_REPO_ID: repo-id
       DOMAIN: ci.computer
