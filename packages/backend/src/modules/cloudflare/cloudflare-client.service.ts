@@ -30,7 +30,8 @@ export class CloudflareClientService {
     private configService: ConfigurationService,
     private moduleRef: ModuleRef,
   ) {
-    this.cloudApiUrl = this.configService.get('ciCloudApiUrl') || 'https://api.example.com/api';
+    const ciCloudUrl = this.configService.get('ciCloudUrl') || 'https://portal.companionintelligence.com';
+    this.cloudApiUrl = `${ciCloudUrl}/api`;
 
     this.client = axios.create({
       baseURL: this.cloudApiUrl,

@@ -30,7 +30,7 @@ describe('CloudflareClientService', () => {
     dockerService = mock<DockerService>();
 
     configService.get.mockImplementation((key) => {
-      if (key === 'ciCloudApiUrl') return 'http://api.cloud';
+      if (key === 'ciCloudUrl') return 'http://api.cloud';
       if (key === 'ciHubApiKey') return 'api-key';
       return null;
     });

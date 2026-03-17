@@ -29,7 +29,7 @@ describe('AppStoreService', () => {
       return vi.fn() as any;
     });
 
-    configService.getConfig.mockReturnValue({ ciCloudAppStoreUrl: 'cloud-url' } as any);
+    configService.getConfig.mockReturnValue({ ciCloudUrl: 'cloud-url' } as any);
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -62,7 +62,7 @@ describe('AppStoreService', () => {
     expect(appStoreRepository.createAppStore).toHaveBeenCalledWith(
       expect.objectContaining({
         slug: 'ci-marketplace',
-        url: 'cloud-url',
+        url: 'cloud-url/api',
       }),
     );
   });

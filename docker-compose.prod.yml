@@ -1,6 +1,6 @@
 services:
   ci-hub-db:
-    container_name: ${DB_CONTAINER_NAME:-ci-hub-db}
+    container_name: ci-hub-db
     image: postgres:14
     pull_policy: if_not_present
     restart: unless-stopped
@@ -12,10 +12,10 @@ services:
       - 6543:6543
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-      POSTGRES_USER: ${POSTGRES_USERNAME:-companion}
-      POSTGRES_DB: ${POSTGRES_DBNAME:-companiondb}
+      POSTGRES_USER: companion
+      POSTGRES_DB: companiondb
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -d ${POSTGRES_DB:-companiondb} -U ${POSTGRES_USER:-companion} -p 6543"]
+      test: ["CMD-SHELL", "pg_isready -d companiondb -U companion -p 6543"]
       interval: 5s
       timeout: 20s
       retries: 120
@@ -23,15 +23,15 @@ services:
       - ci_os_hub_network
 
   ci-os-hub-queue:
-    container_name: ${QUEUE_CONTAINER_NAME:-ci-os-hub-queue}
+    container_name: ci-os-hub-queue
     image: rabbitmq:4-alpine
     pull_policy: if_not_present
     restart: unless-stopped
     ports:
       - "5001:5672"
     environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USERNAME:-companion}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-admin}
+      RABBITMQ_DEFAULT_USER: companion
+      RABBITMQ_DEFAULT_PASS: admin
       # Disable khepri_db to speed up startup (uses classic Mnesia instead)
       RABBITMQ_FEATURE_FLAGS: ""
     healthcheck:
@@ -62,7 +62,7 @@ services:
         condition: service_healthy
       ci-os-hub-queue:
         condition: service_healthy
-    container_name: ${HUB_CONTAINER_NAME:-ci-os-hub}
+    container_name: ci-os-hub
     restart: unless-stopped
     ports:
       - "5002:5002"
@@ -76,15 +76,15 @@ services:
       # Critical app data — named volume, survives container recreation
       - ci_hub_app_data:/app-data
       # Data directories — bind mounts from host (require ROOT_FOLDER_HOST)
-      - ${CI_HUB_MEDIA_PATH:-${ROOT_FOLDER_HOST:-.internal}}/media:/data/media
+      - ${ROOT_FOLDER_HOST:-.internal}/media:/data/media
       # Allow Hub to configure Tunnel
       - ./tunnel:/app/tunnel
-      - ${CI_HUB_STATE_PATH:-${ROOT_FOLDER_HOST:-.internal}}/state:/data/state
-      - ${CI_HUB_REPOS_PATH:-${ROOT_FOLDER_HOST:-.internal}}/repos:/data/repos
-      - ${CI_HUB_APPS_PATH:-${ROOT_FOLDER_HOST:-.internal}}/apps:/data/apps
-      - ${CI_HUB_LOGS_PATH:-${ROOT_FOLDER_HOST:-.internal}}/logs:/data/logs
-      - ${CI_HUB_USER_CONFIG_PATH:-${ROOT_FOLDER_HOST:-.internal}}/user-config:/data/user-config
-      - ${CI_HUB_BACKUPS_PATH:-${ROOT_FOLDER_HOST:-.internal}}/backups:/data/backups
+      - ${ROOT_FOLDER_HOST:-.internal}/state:/data/state
+      - ${ROOT_FOLDER_HOST:-.internal}/repos:/data/repos
+      - ${ROOT_FOLDER_HOST:-.internal}/apps:/data/apps
+      - ${ROOT_FOLDER_HOST:-.internal}/logs:/data/logs
+      - ${ROOT_FOLDER_HOST:-.internal}/user-config:/data/user-config
+      - ${ROOT_FOLDER_HOST:-.internal}/backups:/data/backups
       # Static
       - ${ENV_FILE:-.env}:/data/.env
       - ./.internal/cache:/cache
@@ -104,18 +104,18 @@ services:
       LOCAL: ${LOCAL:-false}
       NODE_ENV: ${NODE_ENV:-production}
       ROOT_FOLDER_HOST: ${ROOT_FOLDER_HOST:?ROOT_FOLDER_HOST must be set to an absolute host path}
-      POSTGRES_HOST: ${POSTGRES_HOST:-ci-hub-db}
+      POSTGRES_HOST: ci-hub-db
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-      POSTGRES_USERNAME: ${POSTGRES_USERNAME:-companion}
-      POSTGRES_DBNAME: ${POSTGRES_DBNAME:-companiondb}
-      POSTGRES_PORT: ${POSTGRES_PORT:-6543}
-      RABBITMQ_USERNAME: ${RABBITMQ_USERNAME:-companion}
-      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-admin}
-      RABBITMQ_HOST: ${RABBITMQ_HOST:-ci-os-hub-queue}
+      POSTGRES_USERNAME: companion
+      POSTGRES_DBNAME: companiondb
+      POSTGRES_PORT: 6543
+      RABBITMQ_USERNAME: companion
+      RABBITMQ_PASSWORD: admin
+      RABBITMQ_HOST: ci-os-hub-queue
       INTERNAL_IP: ${INTERNAL_IP:-127.0.0.1}
       CI_HUB_VERSION: ${CI_HUB_VERSION:-4.5.0}
       LOG_LEVEL: ${LOG_LEVEL:-info}
-      CI_CLOUD_API_URL: ${CI_CLOUD_API_URL}
+      CI_CLOUD_URL: ${CI_CLOUD_URL:-https://portal.companionintelligence.com}
     env_file:
       - ${ENV_FILE:-.env}
     labels:
@@ -131,7 +131,7 @@ services:
   traefik:
     image: traefik:v3.6.7
     pull_policy: if_not_present
-    container_name: ${TRAEFIK_CONTAINER_NAME:-traefik}
+    container_name: traefik
     restart: unless-stopped
     command:
       - --configfile=/etc/traefik/traefik.yml
@@ -142,10 +142,10 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       # Mount Traefik config files individually to avoid mount conflicts
-      - ${CI_HUB_STATE_PATH:-${ROOT_FOLDER_HOST:-.internal}}/state/traefik/config/traefik.yml:/etc/traefik/traefik.yml:ro
-      - ${CI_HUB_STATE_PATH:-${ROOT_FOLDER_HOST:-.internal}}/state/traefik/dynamic:/etc/traefik/dynamic:ro
-      - ${CI_HUB_STATE_PATH:-${ROOT_FOLDER_HOST:-.internal}}/state/traefik/acme_storage.json:/etc/traefik/acme.json:rw
-      - ${CI_HUB_STATE_PATH:-${ROOT_FOLDER_HOST:-.internal}}/state/traefik/tls:/etc/traefik/tls:ro
+      - ${ROOT_FOLDER_HOST:-.internal}/state/traefik/config/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ${ROOT_FOLDER_HOST:-.internal}/state/traefik/dynamic:/etc/traefik/dynamic:ro
+      - ${ROOT_FOLDER_HOST:-.internal}/state/traefik/acme_storage.json:/etc/traefik/acme.json:rw
+      - ${ROOT_FOLDER_HOST:-.internal}/state/traefik/tls:/etc/traefik/tls:ro
     networks:
       ci_os_hub_network:
     depends_on:
@@ -156,7 +156,7 @@ services:
   cloudflared:
     image: cloudflare/cloudflared:2026.2.0
     pull_policy: if_not_present
-    container_name: ${CLOUDFLARED_CONTAINER_NAME:-cloudflared}
+    container_name: cloudflared
     restart: unless-stopped
     command: tunnel run --token-file /home/nonroot/.cloudflared/token
     volumes:
@@ -172,11 +172,11 @@ services:
   headscale:
     image: headscale/headscale:0.25.1
     pull_policy: if_not_present
-    container_name: ${HEADSCALE_CONTAINER_NAME:-headscale}
+    container_name: headscale
     restart: unless-stopped
     command: serve
     volumes:
-      - ${CI_HUB_STATE_PATH:-${ROOT_FOLDER_HOST:-.internal}}/state/headscale:/etc/headscale
+      - ${ROOT_FOLDER_HOST:-.internal}/state/headscale:/etc/headscale
     networks:
       - ci_os_hub_network
     labels:
@@ -185,7 +185,7 @@ services:
   hub-tailscale:
     image: tailscale/tailscale:v1.82.5
     pull_policy: if_not_present
-    container_name: ${HUB_TAILSCALE_CONTAINER_NAME:-hub-tailscale}
+    container_name: hub-tailscale
     restart: unless-stopped
     hostname: hub-tailscale
     cap_add:
@@ -209,11 +209,11 @@ services:
 networks:
   ci_os_hub_network:
     driver: bridge
-    name: ${NETWORK_NAME:-ci-os-hub_network}
+    name: ci-os-hub_network
 
 volumes:
   ci_hub_pgdata:
-    name: ${DB_VOLUME_NAME:-ci_hub_pgdata}
+    name: ci_hub_pgdata
   ci_hub_app_data:
     name: ci_hub_app_data
   hub_tailscale_state:

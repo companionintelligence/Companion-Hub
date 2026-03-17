@@ -121,18 +121,15 @@ export class RegistrationController {
     }
 
     return {
-      ciCloudApiUrl: config.ciCloudApiUrl || null,
-      ciCloudFrontendUrl: config.ciCloudFrontendUrl || null,
+      ciCloudUrl: config.ciCloudUrl || null,
       ciHubApiKey: config.ciHubApiKey ? '***configured***' : null,
       ciHubOrganizationId: config.ciHubOrganizationId || null,
-      ciCloudAppStoreUrl: config.ciCloudAppStoreUrl || null,
       envFilePath: config.envFilePath,
       // Debug: show what's in the .env file
       envFileLines: envFileLines.length > 0 ? envFileLines : null,
       // Also check process.env directly
       processEnv: {
-        CI_CLOUD_URL: process.env.CI_CLOUD_URL || null,
-        CI_CLOUD_API_URL: process.env.CI_CLOUD_API_URL || null,
+        CI_CLOUD_URL: process.env.CI_CLOUD_URL || 'https://portal.companionintelligence.com',
       },
     };
   }
@@ -197,14 +194,14 @@ export class RegistrationController {
       return { success: false, message: 'Device ID not found. Please ensure your device is properly initialized.' };
     }
 
-    const { ciCloudApiUrl } = this.config.getConfig();
+    const { ciCloudUrl } = this.config.getConfig();
 
-    if (!ciCloudApiUrl) {
-      return { success: false, message: 'CI Cloud API URL not configured.' };
+    if (!ciCloudUrl) {
+      return { success: false, message: 'CI Cloud URL not configured.' };
     }
 
     try {
-      const pairUrl = `${ciCloudApiUrl}/devices/pair`;
+      const pairUrl = `${ciCloudUrl}/api/devices/pair`;
       const response = await fetch(pairUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

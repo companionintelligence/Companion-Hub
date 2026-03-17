@@ -96,13 +96,14 @@ export class AppStoreService implements OnApplicationBootstrap, OnApplicationShu
   }
 
   public async registerCloudAppStore() {
-    const { ciCloudAppStoreUrl } = this.config.getConfig();
+    const { ciCloudUrl } = this.config.getConfig();
 
-    if (!ciCloudAppStoreUrl) {
+    if (!ciCloudUrl) {
       this.logger.debug('Skipping cloud app store registration, no URL configured');
       return;
     }
 
+    const ciCloudAppStoreUrl = `${ciCloudUrl}/api`;
     const slug = 'ci-marketplace';
     const existing = await this.appStoreRepository.getAppStoreBySlug(slug);
 

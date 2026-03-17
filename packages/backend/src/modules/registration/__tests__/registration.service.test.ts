@@ -30,7 +30,7 @@ describe('RegistrationService', () => {
     deviceRegistrationRepository = mock<DeviceRegistrationRepository>();
     repoEventsQueue = mock<RepoEventsQueue>();
 
-    configService.getConfig.mockReturnValue({ ciCloudApiUrl: 'http://cloud.api', domain: 'example.com' } as any);
+    configService.getConfig.mockReturnValue({ ciCloudUrl: 'http://cloud.api', domain: 'example.com' } as any);
     (si.uuid as any) = vi.fn().mockResolvedValue({ os: 'uuid-123' });
 
     const module: TestingModule = await Test.createTestingModule({
@@ -81,7 +81,7 @@ describe('RegistrationService', () => {
     beforeEach(() => {
       vi.spyOn(service, 'getDeviceId').mockResolvedValue('test-device');
       configService.getConfig.mockReturnValue({
-        ciCloudApiUrl: 'http://cloud.api',
+        ciCloudUrl: 'http://cloud.api',
         userSettings: { domain: 'example.com' },
       } as any);
     });
@@ -91,9 +91,9 @@ describe('RegistrationService', () => {
       delete process.env.API_PORT;
     });
 
-    it('returns true when ciCloudApiUrl is not configured', async () => {
+    it('returns true when ciCloudUrl is not configured', async () => {
       configService.getConfig.mockReturnValue({
-        ciCloudApiUrl: '',
+        ciCloudUrl: '',
         userSettings: { domain: 'example.com' },
       } as any);
 
@@ -165,7 +165,7 @@ describe('RegistrationService', () => {
   describe('setupOrganizationInfrastructure — hubSubdomain handling', () => {
     beforeEach(() => {
       configService.getConfig.mockReturnValue({
-        ciCloudApiUrl: 'http://cloud.api',
+        ciCloudUrl: 'http://cloud.api',
         userSettings: { domain: 'example.com' },
         domain: 'example.com',
       } as any);
@@ -248,7 +248,7 @@ describe('RegistrationService', () => {
     beforeEach(() => {
       vi.spyOn(service, 'getDeviceId').mockResolvedValue('test-device');
       configService.getConfig.mockReturnValue({
-        ciCloudApiUrl: 'http://cloud.api',
+        ciCloudUrl: 'http://cloud.api',
         userSettings: { domain: 'example.com' },
         domain: 'example.com',
       } as any);
@@ -282,7 +282,7 @@ describe('RegistrationService', () => {
 
       expect(result.success).toBe(true);
       expect(result.domain).toBe('companionintelligence.com');
-      expect(mockFetch).toHaveBeenCalledWith('http://cloud.api/devices/pair', {
+      expect(mockFetch).toHaveBeenCalledWith('http://cloud.api/api/devices/pair', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pairing_code: 'ABC123', device_id: 'test-device' }),
@@ -337,9 +337,9 @@ describe('RegistrationService', () => {
       expect(result.message).toContain('Unable to reach CI Portal');
     });
 
-    it('returns error when CI Cloud API URL is not configured', async () => {
+    it('returns error when CI Cloud URL is not configured', async () => {
       configService.getConfig.mockReturnValue({
-        ciCloudApiUrl: '',
+        ciCloudUrl: '',
         userSettings: { domain: 'example.com' },
         domain: 'example.com',
       } as any);
@@ -347,7 +347,7 @@ describe('RegistrationService', () => {
       const result = await service.pairDevice('ABC123');
 
       expect(result.success).toBe(false);
-      expect(result.message).toBe('CI Cloud API URL not configured.');
+      expect(result.message).toBe('CI Cloud URL not configured.');
     });
 
     it('returns error when Portal returns incomplete data', async () => {
@@ -372,7 +372,7 @@ describe('RegistrationService', () => {
     beforeEach(() => {
       vi.spyOn(service, 'getDeviceId').mockResolvedValue('test-device');
       configService.getConfig.mockReturnValue({
-        ciCloudApiUrl: 'http://cloud.api',
+        ciCloudUrl: 'http://cloud.api',
         userSettings: { domain: 'example.com' },
         domain: 'myhost.example.com',
       } as any);
@@ -400,7 +400,7 @@ describe('RegistrationService', () => {
 
     it('uses domain from callback data when provided (fixes #190)', async () => {
       configService.getConfig.mockReturnValue({
-        ciCloudApiUrl: 'http://cloud.api',
+        ciCloudUrl: 'http://cloud.api',
         userSettings: { domain: 'example.com' },
         domain: 'example.com',
       } as any);
@@ -428,7 +428,7 @@ describe('RegistrationService', () => {
 
     it('falls back to config domain when callback domain is not provided', async () => {
       configService.getConfig.mockReturnValue({
-        ciCloudApiUrl: 'http://cloud.api',
+        ciCloudUrl: 'http://cloud.api',
         userSettings: { domain: 'companionintelligence.com' },
         domain: 'companionintelligence.com',
       } as any);

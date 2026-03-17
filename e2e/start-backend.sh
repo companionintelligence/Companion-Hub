@@ -44,7 +44,6 @@ RABBITMQ_USERNAME=${RABBITMQ_USERNAME:-companion}
 RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD:-admin}
 JWT_SECRET=${JWT_SECRET:-e2e-test-secret}
 CI_CLOUD_URL=${CI_CLOUD_URL:-https://app.companionintelligence.com}
-CI_CLOUD_API_URL=${CI_CLOUD_API_URL:-https://app.companionintelligence.com/api}
 DOMAIN=${DOMAIN:-ci.computer}
 LOCAL_DOMAIN=${LOCAL_DOMAIN:-ci.lan}
 DEMO_MODE=${DEMO_MODE:-false}
