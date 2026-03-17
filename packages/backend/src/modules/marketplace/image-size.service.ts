@@ -1,6 +1,6 @@
 import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable } from '@nestjs/common';
-import type { AppUrn } from '@runtipi/common/types';
+import type { AppUrn } from '@ci-hub/common/types';
 import { MarketplaceService } from './marketplace.service';
 
 interface CachedSize {
