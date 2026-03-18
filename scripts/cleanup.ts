@@ -187,32 +187,21 @@ try {
   console.log('   Buildx cache removal skipped');
 }
 
-// Step 6: Optional - Clean up .internal directories (commented out by default)
-console.log('\n7️ Checking .internal directories...');
-const internalDirs = [
-  '.internal/media',
-  '.internal/state',
-  '.internal/repos',
-  '.internal/apps',
-  '.internal/logs',
-  '.internal/user-config',
-  '.internal/app-data',
-  '.internal/backups',
-  '.internal/cache',
-];
+// Step 6: Clean up .internal directories and tunnel state
+console.log('\n Cleaning .internal and tunnel state...');
+
+// Use sudo because Docker creates files as root inside .internal
+if (existsSync('.internal')) {
+  console.log('   Removing .internal/ (sudo)...');
+  await $`sudo rm -rf .internal`.quiet();
+}
 
 // Also clean tunnel state
 const tunnelDirs = ['tunnel/token', 'tunnel/certs'];
 for (const td of tunnelDirs) {
   if (existsSync(td)) {
     console.log(`   Removing ${td}...`);
-    await $`rm -rf ${td}`.quiet();
-  }
-}
-for (const dir of internalDirs) {
-  if (existsSync(dir)) {
-    console.log(`   Removing ${dir}...`);
-    await $`rm -rf ${dir}`.quiet();
+    await $`sudo rm -rf ${td}`.quiet();
   }
 }
 
