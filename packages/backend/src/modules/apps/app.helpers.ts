@@ -242,7 +242,14 @@ export class AppHelpers {
       }
 
       if (org?.slug) {
-        subdomain = `${subdomain}-${org.slug}`;
+        // Include device slug from hubSubdomain (format: hub-{deviceSlug}-{orgSlug})
+        // to construct full subdomain: {appSubdomain}-{deviceSlug}-{orgSlug}
+        const deviceSlug = org.hubSubdomain?.replace(/^hub-/, '').replace(new RegExp(`-${org.slug}$`), '');
+        if (deviceSlug && deviceSlug !== org.slug) {
+          subdomain = `${subdomain}-${deviceSlug}-${org.slug}`;
+        } else {
+          subdomain = `${subdomain}-${org.slug}`;
+        }
       }
 
       // APP_LOCAL_DOMAIN is distinct - used for local network access

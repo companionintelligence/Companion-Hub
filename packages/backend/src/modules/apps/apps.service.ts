@@ -159,7 +159,7 @@ export class AppsService {
     const org = await this.registrationService.getDeviceRegistrationInfo();
     const organizationSlug = org?.slug;
     const exposureMode = ((app as Record<string, unknown>).exposureMode as string) || 'local';
-    const subdomain = app.localSubdomain;
+    const baseSubdomain = app.localSubdomain;
     const urlSuffix = info.url_suffix || '';
 
     // Build the app URL based on exposure mode
@@ -181,6 +181,11 @@ export class AppsService {
       if (!organizationSlug || !userSettings.domain) {
         return { available: false };
       }
+      // Include device slug from hubSubdomain (format: hub-{deviceSlug}-{orgSlug})
+      const deviceSlug = org?.hubSubdomain?.replace(/^hub-/, '').replace(new RegExp(`-${organizationSlug}$`), '');
+      const subdomain = deviceSlug && deviceSlug !== organizationSlug
+        ? `${baseSubdomain}-${deviceSlug}-${organizationSlug}`
+        : `${baseSubdomain}-${organizationSlug}`;
       const domainSuffix = `-${organizationSlug}.${userSettings.domain}`;
       appUrl = `https://${subdomain}${domainSuffix}${urlSuffix}`;
     }
