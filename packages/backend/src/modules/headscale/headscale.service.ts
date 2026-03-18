@@ -4,6 +4,8 @@ import { join } from 'node:path';
 import { DATA_DIR } from '@/common/constants';
 import { execFile } from 'node:child_process';
 import * as yaml from 'yaml';
+import { ConfigurationService } from '@/core/config/configuration.service';
+import { DockerService } from '../docker/docker.service';
 
 export interface HeadscaleDevice {
   id: string;
@@ -46,6 +48,11 @@ export class HeadscaleService implements OnModuleInit {
 
   // Headscale API runs on port 8080 inside the container, accessible via Docker network
   private readonly headscaleApiUrl = 'http://headscale:8080';
+
+  constructor(
+    private readonly configService: ConfigurationService,
+    private readonly dockerService: DockerService,
+  ) {}
 
   async onModuleInit() {
     try {
@@ -252,6 +259,19 @@ export class HeadscaleService implements OnModuleInit {
     });
 
     return result.preAuthKey;
+  }
+
+  /**
+   * Write a pre-auth key to .env as HEADSCALE_PREAUTH_KEY and recreate hub-tailscale
+   * so it picks up the new key without a full stack restart.
+   */
+  async applyPreAuthKey(key: string): Promise<void> {
+    await this.configService.setEnvVariable('HEADSCALE_PREAUTH_KEY', key);
+
+    // Must use compose up (not restart) so the container is recreated with updated env
+    const composeFile = join(DATA_DIR, 'docker-compose.yml');
+    await this.dockerService.recreateService('hub-tailscale', { composeFile });
+    this.logger.info('Applied pre-auth key and recreated hub-tailscale container');
   }
 
   /**

@@ -48,6 +48,10 @@ export class HeadscaleController {
   async createPreAuthKey(@Body() body: { reusable?: boolean; ephemeral?: boolean; expirationHours?: number }) {
     try {
       const key = await this.headscaleService.createPreAuthKey(body);
+
+      // Automatically write key to .env and recreate hub-tailscale container
+      await this.headscaleService.applyPreAuthKey(key.key);
+
       return { success: true, key };
     } catch (error) {
       return {

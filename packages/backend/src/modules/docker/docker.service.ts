@@ -388,6 +388,42 @@ export class DockerService {
   }
 
   /**
+   * Force-recreate a service via `docker compose up --force-recreate`.
+   * Unlike `restartContainer`, this re-reads env vars from the .env file.
+   */
+  public async recreateService(serviceName: string, opts: { composeFile: string; profile?: string }): Promise<void> {
+    const args = ['compose', '-f', opts.composeFile];
+    if (opts.profile) {
+      args.push('--profile', opts.profile);
+    }
+    args.push('up', serviceName, '-d', '--force-recreate');
+
+    return new Promise((resolve, reject) => {
+      this.logger.info(`Recreating service: docker ${args.join(' ')}`);
+      const cmd = spawn('docker', args, { cwd: path.dirname(opts.composeFile) });
+
+      let stderr = '';
+      cmd.stderr?.on('data', (data: Buffer) => {
+        stderr += data.toString();
+      });
+
+      cmd.on('close', (code) => {
+        if (code === 0) {
+          this.logger.info(`Service ${serviceName} recreated successfully`);
+          resolve();
+        } else {
+          this.logger.error(`Failed to recreate service ${serviceName}: ${stderr}`);
+          reject(new Error(`Failed to recreate service ${serviceName} via docker compose`));
+        }
+      });
+
+      cmd.on('error', (err) => {
+        reject(err);
+      });
+    });
+  }
+
+  /**
    * Diagnose app containers after startup - check for crash-loops, exited containers, and capture logs
    * @param appUrn - The app URN
    * @returns Diagnostic results with unhealthy container info
