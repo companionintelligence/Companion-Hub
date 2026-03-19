@@ -678,9 +678,10 @@ export class AppLifecycleService implements OnApplicationBootstrap {
             const orgSlug = orgInfo.slug;
             const hubSub = orgInfo.hubSubdomain;
             const deviceSlug = hubSub ? hubSub.replace(/^hub-/, '').replace(new RegExp(`-${orgSlug}$`), '') : null;
-            const publicHostname = deviceSlug && deviceSlug !== orgSlug
-              ? `${subdomain}-${deviceSlug}-${orgSlug}.${publicDomain}`
-              : `${subdomain}-${orgSlug}.${publicDomain}`;
+            const publicHostname =
+              deviceSlug && deviceSlug !== orgSlug
+                ? `${subdomain}-${deviceSlug}-${orgSlug}.${publicDomain}`
+                : `${subdomain}-${orgSlug}.${publicDomain}`;
 
             return {
               name: app.appName,
