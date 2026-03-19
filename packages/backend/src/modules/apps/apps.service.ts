@@ -186,8 +186,7 @@ export class AppsService {
       const subdomain = deviceSlug && deviceSlug !== organizationSlug
         ? `${baseSubdomain}-${deviceSlug}-${organizationSlug}`
         : `${baseSubdomain}-${organizationSlug}`;
-      const domainSuffix = `-${organizationSlug}.${userSettings.domain}`;
-      appUrl = `https://${subdomain}${domainSuffix}${urlSuffix}`;
+      appUrl = `https://${subdomain}.${userSettings.domain}${urlSuffix}`;
     }
 
     try {

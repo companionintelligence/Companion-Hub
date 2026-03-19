@@ -676,7 +676,11 @@ export class AppLifecycleService implements OnApplicationBootstrap {
           .map(async (app: AppFromDb) => {
             const subdomain = app.localSubdomain || `${app.appName}-${app.appStoreSlug}`;
             const orgSlug = orgInfo.slug;
-            const publicHostname = `${subdomain}-${orgSlug}.${publicDomain}`;
+            const hubSub = orgInfo.hubSubdomain;
+            const deviceSlug = hubSub ? hubSub.replace(/^hub-/, '').replace(new RegExp(`-${orgSlug}$`), '') : null;
+            const publicHostname = deviceSlug && deviceSlug !== orgSlug
+              ? `${subdomain}-${deviceSlug}-${orgSlug}.${publicDomain}`
+              : `${subdomain}-${orgSlug}.${publicDomain}`;
 
             return {
               name: app.appName,
