@@ -329,7 +329,7 @@ describe('AppLifecycleService', () => {
         },
       ] as any);
 
-      await service.syncCloudflareState();
+      await (service as any).triggerCloudflareSync();
 
       expect(cloudflareClientService.syncState).toHaveBeenCalledWith(
         'org-1',
@@ -365,7 +365,7 @@ describe('AppLifecycleService', () => {
         },
       ] as any);
 
-      await service.syncCloudflareState();
+      await (service as any).triggerCloudflareSync();
 
       expect(cloudflareClientService.syncState).toHaveBeenCalledWith(
         'org-1',
