@@ -303,4 +303,79 @@ describe('AppLifecycleService', () => {
       await expect(service.startApp({ appUrn: 'missing' as any })).rejects.toThrow('APP_ERROR_APP_NOT_FOUND');
     });
   });
+
+  describe('syncCloudflareState - device slug in hostname', () => {
+    it('should include device slug in publicHostname when hubSubdomain has different device slug', async () => {
+      // Setup: org with hubSubdomain hub-test1-myorg
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue({
+        id: 'org-1',
+        slug: 'myorg',
+        hubSubdomain: 'hub-test1-myorg',
+        tunnelId: 'tunnel-123',
+        tunnelToken: 'token',
+      } as any);
+      configService.getConfig.mockReturnValue({
+        userSettings: { domain: 'example.com' },
+        domain: 'example.com',
+      } as any);
+      appsRepository.getApps.mockResolvedValue([
+        {
+          appName: 'element',
+          appStoreSlug: 'store1',
+          localSubdomain: 'element',
+          exposedLocal: true,
+          status: 'running',
+          port: 80,
+        },
+      ] as any);
+
+      await service.syncCloudflareState();
+
+      expect(cloudflareClientService.syncState).toHaveBeenCalledWith(
+        'org-1',
+        expect.arrayContaining([
+          expect.objectContaining({
+            originServerName: 'element-test1-myorg.example.com',
+          }),
+        ]),
+        'tunnel-123',
+      );
+    });
+
+    it('should omit device slug when it equals org slug', async () => {
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue({
+        id: 'org-1',
+        slug: 'myorg',
+        hubSubdomain: 'hub-myorg-myorg',
+        tunnelId: 'tunnel-123',
+        tunnelToken: 'token',
+      } as any);
+      configService.getConfig.mockReturnValue({
+        userSettings: { domain: 'example.com' },
+        domain: 'example.com',
+      } as any);
+      appsRepository.getApps.mockResolvedValue([
+        {
+          appName: 'element',
+          appStoreSlug: 'store1',
+          localSubdomain: 'element',
+          exposedLocal: true,
+          status: 'running',
+          port: 80,
+        },
+      ] as any);
+
+      await service.syncCloudflareState();
+
+      expect(cloudflareClientService.syncState).toHaveBeenCalledWith(
+        'org-1',
+        expect.arrayContaining([
+          expect.objectContaining({
+            originServerName: 'element-myorg.example.com',
+          }),
+        ]),
+        'tunnel-123',
+      );
+    });
+  });
 });
