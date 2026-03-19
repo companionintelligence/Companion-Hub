@@ -180,6 +180,29 @@ describe('AppsService', () => {
       expect(result.appUrl).toBe('https://myapp-myorg.example.com');
     });
 
+    it('MUST include device slug in public URL when hubSubdomain provides one', async () => {
+      setupApp({ exposureMode: 'cloudflare' });
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue({
+        slug: 'myorg',
+        hubSubdomain: 'hub-test1-myorg',
+      } as any);
+      mockAxiosGet.mockResolvedValue({ status: 200, data: 'OK' });
+      const result = await service.checkAppAvailability(appUrn);
+      expect(result.available).toBe(true);
+      expect(result.appUrl).toBe('https://myapp-test1-myorg.example.com');
+    });
+
+    it('MUST omit device slug when hubSubdomain device slug equals org slug', async () => {
+      setupApp({ exposureMode: 'cloudflare' });
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue({
+        slug: 'myorg',
+        hubSubdomain: 'hub-myorg-myorg',
+      } as any);
+      mockAxiosGet.mockResolvedValue({ status: 200, data: 'OK' });
+      const result = await service.checkAppAvailability(appUrn);
+      expect(result.appUrl).toBe('https://myapp-myorg.example.com');
+    });
+
     it('MUST return appUrl in response when available', async () => {
       setupApp({ exposureMode: 'local' });
       mockAxiosGet.mockResolvedValue({ status: 200, data: 'OK' });

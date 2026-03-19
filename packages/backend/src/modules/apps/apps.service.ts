@@ -183,11 +183,9 @@ export class AppsService {
       }
       // Include device slug from hubSubdomain (format: hub-{deviceSlug}-{orgSlug})
       const deviceSlug = org?.hubSubdomain?.replace(/^hub-/, '').replace(new RegExp(`-${organizationSlug}$`), '');
-      const subdomain = deviceSlug && deviceSlug !== organizationSlug
-        ? `${baseSubdomain}-${deviceSlug}-${organizationSlug}`
-        : `${baseSubdomain}-${organizationSlug}`;
-      const domainSuffix = `-${organizationSlug}.${userSettings.domain}`;
-      appUrl = `https://${subdomain}${domainSuffix}${urlSuffix}`;
+      const subdomain =
+        deviceSlug && deviceSlug !== organizationSlug ? `${baseSubdomain}-${deviceSlug}-${organizationSlug}` : `${baseSubdomain}-${organizationSlug}`;
+      appUrl = `https://${subdomain}.${userSettings.domain}${urlSuffix}`;
     }
 
     try {
