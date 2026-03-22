@@ -114,6 +114,7 @@ services:
       ci-hub.managed: true
 
   # Cloudflare tunnel for dev — opt-in via: docker compose --profile cloudflare up cloudflared -d
+  # Also attached to ci-server network so memory-test-amd (CI server gateway) is reachable at ci-server-gateway-1:8642
   cloudflared:
     image: cloudflare/cloudflared:2026.2.0
     pull_policy: if_not_present
@@ -124,6 +125,7 @@ services:
       - ./tunnel:/home/nonroot/.cloudflared:ro
     networks:
       - ci_os_hub_network
+      - ci_server_network
     extra_hosts:
       - "host.docker.internal:host-gateway"
     profiles:
@@ -133,6 +135,9 @@ networks:
   ci_os_hub_network:
     driver: bridge
     name: ci-os-hub_network
+  ci_server_network:
+    external: true
+    name: ci-server_ci
 
 volumes:
   ci_hub_pgdata:
