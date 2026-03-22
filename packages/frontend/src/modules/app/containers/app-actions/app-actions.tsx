@@ -16,6 +16,7 @@ import {
 import type React from 'react';
 import { createElement, useState, useEffect } from 'react';
 import { client } from '@/api-client/client.gen';
+import { useQueryClient } from '@tanstack/react-query';
 import { Button, type ButtonProps } from '@/components/ui/Button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/DropdownMenu';
 import { useDisclosure } from '@/lib/hooks/use-disclosure';
@@ -37,7 +38,7 @@ import { useAppStatus } from '../../helpers/use-app-status';
 import { useInstallationProgress } from '../../helpers/use-installation-progress';
 import { DropdownMenuSeparator } from '@/components/ui/DropdownMenu/DropdownMenu';
 import { useLocation, useNavigate } from 'react-router';
-import type { AppUrn } from '@runtipi/common/types';
+import type { AppUrn } from '@ci-hub/common/types';
 import { useAppContext } from '@/context/app-context';
 
 interface IProps {
@@ -62,7 +63,10 @@ const ActionButton: React.FC<BtnProps> = (props) => {
   return (
     <Button data-testid={testId} loading={loading} {...rest} className={clsx('action-button', className)}>
       {title}
-      {IconComponent && <IconComponent className="ml-1" size={14} />}
+      {IconComponent && (
+        // Provide accessible name for icons (assistive tech will read the button label as well)
+        <IconComponent className="ml-1" size={14} role="img" aria-label={title?.toString() ?? undefined} />
+      )}
     </Button>
   );
 };
@@ -126,13 +130,14 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
   );
   const LoadingButton = (() => {
     const progress = app?.status === 'installing' ? installationProgress : null;
-    const progressText = progress !== null ? ` ${progress}%` : '';
+    const progressText = progress === null ? '' : ` ${progress}%`;
     return (
       <ActionButton
         key="loading"
-        loading
+        // Show installing text and make button disabled while in-progress
+        disabled
         intent="success"
-        title={`${t('APP_ACTION_LOADING')}${progressText}`}
+        title={`${t('APP_ACTION_INSTALLING')}${progressText}`}
         className="installation-progress-button"
       />
     );
@@ -185,7 +190,9 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
     </DropdownMenuItem>
   );
   const CancelListItem = (
-    <DropdownMenuItem onClick={stopDisclosure.open} key="cancel">
+    // During installation we want the cancel option to surface the uninstall flow
+    // which will remove the partially installed app. Reuse the uninstall dialog.
+    <DropdownMenuItem onClick={uninstallDisclosure.open} key="cancel">
       <Pause className="mr-2" size={16} />
       {t('APP_ACTION_CANCEL')}
     </DropdownMenuItem>
@@ -219,6 +226,10 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
   const [isCheckingUrl, setIsCheckingUrl] = useState(false);
   const [isResolving, setIsResolving] = useState(false);
   const [appUrl, setAppUrl] = useState<string | null>(null);
+
+  // Show install errors surfaced from SSE via query cache
+  const queryClient = useQueryClient();
+  const installError = queryClient.getQueryData<{ message: string } | null>(['app-install-error', info.urn]) ?? null;
 
   // Fallback URL construction (used before backend responds)
   const subdomain = app?.localSubdomain;
@@ -356,6 +367,13 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
     />
   );
 
+  // If there was an install error for this app, show it under the open/action area
+  const InstallErrorMessage = installError?.message ? (
+    <p className="mt-1 text-sm text-destructive" role="alert">
+      {installError.message}
+    </p>
+  ) : null;
+
   const PendingButton = <ActionButton key="pending" title={t('APP_ACTION_PENDING')} disabled loading />;
 
   const ErrorButton = errorResolvable ? (
@@ -464,6 +482,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
             key: button.key,
           });
         })}
+        {InstallErrorMessage}
         {listItems.length > 0 && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>

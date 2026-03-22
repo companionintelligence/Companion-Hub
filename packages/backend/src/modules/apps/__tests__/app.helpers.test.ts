@@ -3,8 +3,8 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { Test } from '@nestjs/testing';
-import type { AppInfo } from '@runtipi/common/schemas';
-import type { AppUrn } from '@runtipi/common/types';
+import type { AppInfo } from '@ci-hub/common/schemas';
+import type { AppUrn } from '@ci-hub/common/types';
 import { fromPartial } from '@total-typescript/shoehorn';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { mock } from 'vitest-mock-extended';
@@ -70,10 +70,10 @@ describe('AppHelpers', () => {
         fromPartial({
           internalIp: '127.0.0.1',
           envFilePath: '/data/.env',
-          rootFolderHost: '/opt/runtipi',
+          rootFolderHost: '/opt/ci-hub',
           domain: 'example.com',
           userSettings: {
-            appDataPath: '/opt/runtipi',
+            appDataPath: '/opt/ci-hub',
             domain: 'example.com',
           },
         }),
@@ -105,8 +105,8 @@ describe('AppHelpers', () => {
       // Assert
       expect(envMap.get('APP_PORT')).toBe('9091');
       expect(envMap.get('APP_ID')).toBe('test-app-test-store');
-      expect(envMap.get('ROOT_FOLDER_HOST')).toBe('/opt/runtipi');
-      expect(envMap.get('APP_DATA_DIR')).toBe('/opt/runtipi/app-data/test-store/test-app');
+      expect(envMap.get('ROOT_FOLDER_HOST')).toBe('/opt/ci-hub');
+      expect(envMap.get('APP_DATA_DIR')).toBe('/opt/ci-hub/app-data/test-store/test-app');
     });
 
     it('should handle form port override', async () => {
@@ -486,6 +486,83 @@ describe('AppHelpers', () => {
       // Assert
       expect(envMap.get('APP_DOMAIN')).toBe('myapp-myorg.example.com');
       expect(envMap.get('APP_EXPOSED_DOMAIN')).toBe('myapp-myorg.example.com');
+    });
+
+    describe('device slug subdomain construction', () => {
+      it('should include device slug when hubSubdomain has a different device slug', async () => {
+        // hubSubdomain = hub-test1-myorg → deviceSlug = test1
+        // expected subdomain: element-test1-myorg.example.com
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+
+        deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({
+          id: '123',
+          slug: 'myorg',
+          name: 'My Org',
+          hubSubdomain: 'hub-test1-myorg',
+          tunnelId: 'tunnel-id',
+          tunnelToken: 'tunnel-token',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        });
+
+        await appHelpers.generateEnvFile(testAppUrn, {
+          exposedLocal: true,
+          localSubdomain: 'element',
+        });
+
+        expect(envMap.get('APP_PUBLIC_HOSTNAME')).toBe('element-test1-myorg.example.com');
+        expect(envMap.get('APP_PUBLIC_URL')).toBe('https://element-test1-myorg.example.com');
+      });
+
+      it('should omit device slug when hubSubdomain is null', async () => {
+        // No hubSubdomain → fallback: element-myorg.example.com
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+
+        deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({
+          id: '123',
+          slug: 'myorg',
+          name: 'My Org',
+          hubSubdomain: null,
+          tunnelId: 'tunnel-id',
+          tunnelToken: 'tunnel-token',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        });
+
+        await appHelpers.generateEnvFile(testAppUrn, {
+          exposedLocal: true,
+          localSubdomain: 'element',
+        });
+
+        expect(envMap.get('APP_PUBLIC_HOSTNAME')).toBe('element-myorg.example.com');
+      });
+
+      it('should omit device slug when it equals org slug', async () => {
+        // hubSubdomain = hub-myorg-myorg → deviceSlug = myorg (same as org slug)
+        // expected: element-myorg.example.com (no duplication)
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+
+        deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({
+          id: '123',
+          slug: 'myorg',
+          name: 'My Org',
+          hubSubdomain: 'hub-myorg-myorg',
+          tunnelId: 'tunnel-id',
+          tunnelToken: 'tunnel-token',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        });
+
+        await appHelpers.generateEnvFile(testAppUrn, {
+          exposedLocal: true,
+          localSubdomain: 'element',
+        });
+
+        expect(envMap.get('APP_PUBLIC_HOSTNAME')).toBe('element-myorg.example.com');
+      });
     });
   });
 });

@@ -1,11 +1,13 @@
 import type { LoggerService } from '@/core/logger/logger.service';
 import * as Sentry from '@sentry/nestjs';
-import cron from 'node-cron';
+import cron, { type ScheduledTask } from 'node-cron';
 import { AMQPConnectionError, AMQPError, type Connection, type RPCClient } from 'rabbitmq-client';
 import { z } from 'zod';
 import type { EventPublisher } from './event.publisher';
 
 export class Queue<T extends z.ZodType, R extends z.ZodType<{ success: boolean; message: string }>> {
+  private cronTasks: ScheduledTask[] = [];
+
   constructor(
     private rabbit: Connection,
     private rpcClient: RPCClient,
@@ -97,7 +99,7 @@ export class Queue<T extends z.ZodType, R extends z.ZodType<{ success: boolean; 
       throw new Error('Invalid event data');
     }
 
-    cron.schedule(cronPattern, async () => {
+    const task = cron.schedule(cronPattern, async () => {
       try {
         await this.rpcClient.send(this.queueName, eventData.data);
       } catch (e) {
@@ -105,5 +107,13 @@ export class Queue<T extends z.ZodType, R extends z.ZodType<{ success: boolean; 
         this.logger.error('Error in cron job:', e);
       }
     });
+    this.cronTasks.push(task);
+  }
+
+  public stopAllCronTasks() {
+    for (const task of this.cronTasks) {
+      task.stop();
+    }
+    this.cronTasks = [];
   }
 }

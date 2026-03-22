@@ -3,7 +3,7 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { SSEService } from '@/core/sse/sse.service';
 import { Injectable } from '@nestjs/common';
-import type { AppUrn } from '@runtipi/common/types';
+import type { AppUrn } from '@ci-hub/common/types';
 import { AppLifecycleService } from '../app-lifecycle/app-lifecycle.service';
 import { AppFilesManager } from '../apps/app-files-manager';
 import { AppsRepository } from '../apps/apps.repository';

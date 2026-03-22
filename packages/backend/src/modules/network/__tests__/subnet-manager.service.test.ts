@@ -2,7 +2,7 @@ import { TranslatableError } from '@/common/error/translatable-error';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { DOCKERODE } from '@/modules/docker/docker.module';
 import { Test } from '@nestjs/testing';
-import type { AppUrn } from '@runtipi/common/types';
+import type { AppUrn } from '@ci-hub/common/types';
 import { fromAny, fromPartial } from '@total-typescript/shoehorn';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock } from 'vitest-mock-extended';

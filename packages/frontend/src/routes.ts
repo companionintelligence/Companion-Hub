@@ -9,6 +9,8 @@ export default [
     route('device-registration', './modules/auth/pages/device-registration-page.tsx', { id: 'device-registration' }),
   ]),
   route('playground', './modules/playground/pages/playground-page.tsx', { id: 'playground' }),
+  // Onboarding (authenticated but outside dashboard layout)
+  route('onboarding', './modules/onboarding/pages/onboarding-page.tsx', { id: 'onboarding' }),
   // Authenticated routes
   layout('./components/routes/authenticated-route.tsx', [
     route('dashboard', './modules/dashboard/pages/dashboard.tsx', { id: 'dashboard' }),

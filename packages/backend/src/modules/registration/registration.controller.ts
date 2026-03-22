@@ -7,8 +7,16 @@ import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 interface RegisterDeviceDto {
   organization_id: string;
   organization_name: string;
-  device_id?: string; // Optional: custom device ID (auto-generated if not provided)
-  description?: string; // Optional: custom description (auto-generated if not provided)
+  device_id?: string;
+  description?: string;
+}
+
+interface VerifyPairingCodeDto {
+  pairing_code: string;
+}
+
+interface PairDeviceDto {
+  pairing_code: string;
 }
 
 @ApiTags('Registration')
@@ -32,7 +40,7 @@ export class RegistrationController {
   @ApiResponse({ status: 200, description: 'Returns the device ID and registration URL' })
   async getDeviceId(@Req() req: Request) {
     const deviceId = await this.registrationService.getDeviceId();
-    const { ciCloudFrontendUrl } = this.config.getConfig();
+    const { ciCloudUrl } = this.config.getConfig();
 
     // Build callback URL (where CI Cloud should redirect back to)
     // Use the request origin to construct the callback URL
@@ -42,15 +50,15 @@ export class RegistrationController {
 
     // Build registration URL with callback parameter
     // Handle empty string as well as null/undefined
-    const registrationUrl = ciCloudFrontendUrl?.trim()
-      ? `${ciCloudFrontendUrl.trim()}/device/register?device_id=${encodeURIComponent(deviceId)}&callback_url=${encodeURIComponent(callbackUrl)}`
+    const registrationUrl = ciCloudUrl?.trim()
+      ? `${ciCloudUrl.trim()}/device/register?device_id=${encodeURIComponent(deviceId)}&callback_url=${encodeURIComponent(callbackUrl)}`
       : null;
 
     return {
       device_id: deviceId,
       registration_url: registrationUrl,
       callback_url: callbackUrl,
-      ci_cloud_frontend_url: ciCloudFrontendUrl || null, // For debugging
+      ci_cloud_url: ciCloudUrl || null, // For debugging
     };
   }
 
@@ -67,6 +75,7 @@ export class RegistrationController {
     @Query('tunnel_id') tunnelId: string,
     @Query('tunnel_token') tunnelToken: string,
     @Query('api_key') apiKey: string,
+    @Query('domain') domain: string,
   ) {
     if (!deviceId || !organizationId || !organizationName || !subdomain || !tunnelId || !tunnelToken || !apiKey || !slug) {
       return {
@@ -84,6 +93,7 @@ export class RegistrationController {
       tunnelToken,
       apiKey,
       slug,
+      domain,
     });
 
     return result;
@@ -111,19 +121,15 @@ export class RegistrationController {
     }
 
     return {
-      ciCloudApiUrl: config.ciCloudApiUrl || null,
-      ciCloudFrontendUrl: config.ciCloudFrontendUrl || null,
+      ciCloudUrl: config.ciCloudUrl || null,
       ciHubApiKey: config.ciHubApiKey ? '***configured***' : null,
       ciHubOrganizationId: config.ciHubOrganizationId || null,
-      ciCloudAppStoreUrl: config.ciCloudAppStoreUrl || null,
       envFilePath: config.envFilePath,
       // Debug: show what's in the .env file
       envFileLines: envFileLines.length > 0 ? envFileLines : null,
       // Also check process.env directly
       processEnv: {
-        CI_CLOUD_URL: process.env.CI_CLOUD_URL || null,
-        CI_CLOUD_API_URL: process.env.CI_CLOUD_API_URL || null,
-        CI_CLOUD_FRONTEND_URL: process.env.CI_CLOUD_FRONTEND_URL || null,
+        CI_CLOUD_URL: process.env.CI_CLOUD_URL || 'https://portal.companionintelligence.com',
       },
     };
   }
@@ -169,6 +175,104 @@ export class RegistrationController {
       tunnelNameAvailable: true,
       message: 'Format is valid. Availability will be confirmed during registration.',
     };
+  }
+
+  @Post('verify-pairing-code')
+  @ApiOperation({ summary: 'Verify a signup pairing code and bind device identity with CI Cloud' })
+  @ApiResponse({ status: 200, description: 'Pairing code verified and device identity bound' })
+  @ApiResponse({ status: 400, description: 'Invalid or missing pairing code' })
+  async verifyPairingCode(@Body() body: VerifyPairingCodeDto) {
+    const pairingCode = body.pairing_code?.trim().toUpperCase();
+
+    if (!pairingCode || pairingCode.length !== 6) {
+      return { success: false, message: 'A valid 6-character pairing code is required.' };
+    }
+
+    const deviceId = await this.registrationService.getDeviceId();
+
+    if (!deviceId) {
+      return { success: false, message: 'Device ID not found. Please ensure your device is properly initialized.' };
+    }
+
+    const { ciCloudUrl } = this.config.getConfig();
+
+    if (!ciCloudUrl) {
+      return { success: false, message: 'CI Cloud URL not configured.' };
+    }
+
+    try {
+      const pairUrl = `${ciCloudUrl}/api/devices/pair`;
+      const response = await fetch(pairUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pairing_code: pairingCode, device_id: deviceId }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+        return {
+          success: false,
+          message: (errorData as { error?: string }).error || `Pairing failed: ${response.statusText}`,
+        };
+      }
+
+      const data = await response.json();
+      return {
+        success: true,
+        message: 'Pairing code verified. Device identity bound.',
+        device_id: (data as { deviceId?: string }).deviceId,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        message: `Failed to verify pairing code: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      };
+    }
+  }
+
+  @Get('probe-domain')
+  @ApiOperation({ summary: 'Probe a CF domain to check if the tunnel is serving the Hub' })
+  @ApiResponse({ status: 200, description: 'Probe result' })
+  async probeDomain(@Query('url') url: string) {
+    if (!url || !url.startsWith('https://')) {
+      return { ready: false };
+    }
+    try {
+      const res = await fetch(url, {
+        redirect: 'follow',
+        signal: AbortSignal.timeout(10000),
+      });
+      const body = await res.text();
+      // Cloudflare error pages when tunnel is not connected
+      if (
+        body.includes('Error 1033') ||
+        body.includes('Error 1003') ||
+        body.includes('Error 1000') ||
+        body.includes('Error 502') ||
+        body.includes('Error 521') ||
+        body.includes('Error 523')
+      ) {
+        return { ready: false };
+      }
+      return { ready: true };
+    } catch {
+      return { ready: false };
+    }
+  }
+
+  @Post('pair')
+  @ApiOperation({ summary: 'Pair device using a pairing code — atomic registration in one step' })
+  @ApiResponse({ status: 200, description: 'Device paired and registered successfully' })
+  @ApiResponse({ status: 400, description: 'Invalid pairing code or pairing failed' })
+  async pairDevice(@Body() body: PairDeviceDto) {
+    const pairingCode = body.pairing_code?.trim().toUpperCase();
+
+    if (!pairingCode || pairingCode.length !== 6) {
+      return { success: false, message: 'A valid 6-character pairing code is required.' };
+    }
+
+    const result = await this.registrationService.pairDevice(pairingCode);
+    return result;
   }
 
   @Post('register')

@@ -1,4 +1,9 @@
-import { getEnabledAppStoresOptions, searchAppsInfiniteOptions, searchAppsOptions } from '@/api-client/@tanstack/react-query.gen';
+import {
+  getEnabledAppStoresOptions,
+  searchAppsInfiniteOptions,
+  searchAppsOptions,
+  getInstalledAppsOptions,
+} from '@/api-client/@tanstack/react-query.gen';
 import { pullAppStores } from '@/api-client/sdk.gen';
 import { EmptyPage } from '@/components/empty-page/empty-page';
 import { Button } from '@/components/ui/Button';
@@ -11,7 +16,7 @@ import { useRegistrationStatus } from '@/lib/hooks/use-registration-status';
 import { AppCard } from '@/modules/app/components/app-card/app-card';
 import { iconForCategory, colorSchemeForCategory } from '@/modules/app/helpers/table-helpers';
 import { useAppStoreState } from '@/stores/app-store';
-import { keepPreviousData, useInfiniteQuery, useSuspenseQuery, useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useInfiniteQuery, useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import clsx from 'clsx';
 import { Search, ArrowRight, ArrowLeftRight, LayoutGrid, RefreshCw } from 'lucide-react';
 import { useCallback, useEffect, useState, useMemo } from 'react';
@@ -75,9 +80,20 @@ export default () => {
     }
   }, [registrationStatus, isCheckingRegistration, registrationError]);
 
-  const { data: appStores } = useSuspenseQuery({
+  const { data: appStores } = useQuery({
     ...getEnabledAppStoresOptions(),
+    staleTime: 30_000,
   });
+
+  const { data: installedAppsData } = useQuery({
+    ...getInstalledAppsOptions(),
+    staleTime: 30_000,
+  });
+
+  const installedAppUrns = useMemo(() => {
+    if (!installedAppsData?.installed) return new Set<string>();
+    return new Set(installedAppsData.installed.map((a) => a.info.urn));
+  }, [installedAppsData]);
 
   const ciCloudStore = appStores?.appStores?.find((s) => s.name === 'CI Cloud');
 
@@ -394,7 +410,7 @@ export default () => {
                     const isLastElement = apps.length === i + 1;
                     return (
                       <div ref={isLastElement ? lastElementRef : null} key={app.urn}>
-                        <AppCard app={app} isLoading={false} />
+                        <AppCard app={app} isLoading={false} isInstalled={installedAppUrns.has(app.urn)} />
                       </div>
                     );
                   })}

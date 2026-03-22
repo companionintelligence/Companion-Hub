@@ -6,9 +6,9 @@ const streamAppQuerySchema = type({
   maxLines: 'number.integer | string.integer.parse?',
 });
 
-const streamRuntipiQuerySchema = type({
+const streamHubQuerySchema = type({
   maxLines: 'number.integer | string.integer.parse?',
 });
 
 export class StreamAppLogsQueryDto extends createArkDto(streamAppQuerySchema, { name: 'StreamAppLogsQueryDto', input: true }) {}
-export class StreamRuntipiLogsQueryDto extends createArkDto(streamRuntipiQuerySchema, { name: 'StreamRuntipiLogsQueryDto', input: true }) {}
+export class StreamHubLogsQueryDto extends createArkDto(streamHubQuerySchema, { name: 'StreamHubLogsQueryDto', input: true }) {}

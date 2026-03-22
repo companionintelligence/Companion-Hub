@@ -8,10 +8,10 @@ services:
       - 6543
     environment:
       POSTGRES_PASSWORD: postgres
-      POSTGRES_USER: tipi
-      POSTGRES_DB: tipi
+      POSTGRES_USER: companion
+      POSTGRES_DB: companiondb
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -d tipi -U tipi -p 6543"]
+      test: ["CMD-SHELL", "pg_isready -d companiondb -U companion -p 6543"]
       interval: 5s
       timeout: 10s
       retries: 120
@@ -19,8 +19,8 @@ services:
   queue:
     image: rabbitmq:4-alpine
     environment:
-      RABBITMQ_DEFAULT_USER: tipi
-      RABBITMQ_DEFAULT_PASS: tipi
+      RABBITMQ_DEFAULT_USER: companion
+      RABBITMQ_DEFAULT_PASS: admin
     ports:
       - 5672
     healthcheck:
@@ -45,25 +45,24 @@ services:
       NODE_ENV: production
       POSTGRES_HOST: db
       POSTGRES_PORT: 6543
-      POSTGRES_USERNAME: tipi
+      POSTGRES_USERNAME: companion
       POSTGRES_PASSWORD: postgres
-      POSTGRES_DBNAME: tipi
+      POSTGRES_DBNAME: companiondb
       RABBITMQ_HOST: queue
       RABBITMQ_PORT: 5672
-      RABBITMQ_USERNAME: tipi
-      RABBITMQ_PASSWORD: tipi
-      TIPI_DATA_DIR: /data
-      ROOT_FOLDER_HOST: /tmp/runtipi-e2e
+      RABBITMQ_USERNAME: companion
+      RABBITMQ_PASSWORD: admin
+      CI_HUB_DATA_DIR: /data
+      ROOT_FOLDER_HOST: /tmp/ci-hub-e2e
       JWT_SECRET: test-secret
-      CI_CLOUD_API_URL: http://non-existent-service:3000
-      CI_CLOUD_FRONTEND_URL: http://non-existent-service:3000
-      CI_CLOUD_APP_STORE_URL: http://non-existent-service:3000/api
+      CI_CLOUD_URL: http://non-existent-service:3000
       APPS_REPO_URL: https://github.com/companionintelligence/CI-App-Store
       APPS_REPO_ID: repo-id
       DOMAIN: ci.computer
-      LOCAL_DOMAIN: tipi.lan
-      TIPI_VERSION: 9.9.9
+      LOCAL_DOMAIN: ci.lan
+      CI_HUB_VERSION: 9.9.9
       E2E_TEST: true
+      DEVICE_ID: test-device-e2e
     volumes:
       - /data
       - /var/run/docker.sock:/var/run/docker.sock

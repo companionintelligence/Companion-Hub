@@ -34,7 +34,7 @@ describe('AuthController', () => {
   });
 
   describe('traefik', () => {
-    it('should return 200 with X-Runtipi-User header when user is authenticated', async () => {
+    it('should return 200 with X-CI-Hub-User header when user is authenticated', async () => {
       // Arrange
       const mockUser = { id: 1, username: 'testuser' };
       const req = {
@@ -51,7 +51,7 @@ describe('AuthController', () => {
       await authController.traefik(req, res);
 
       // Assert
-      expect(res.setHeader).toHaveBeenCalledWith('X-Runtipi-User', 'testuser');
+      expect(res.setHeader).toHaveBeenCalledWith('X-CI-Hub-User', 'testuser');
       expect(res.status).toHaveBeenCalledWith(200);
       expect(res.send).toHaveBeenCalled();
       expect(logger.debug).toHaveBeenCalledWith('User authenticated for Traefik forward auth', { username: 'testuser' });

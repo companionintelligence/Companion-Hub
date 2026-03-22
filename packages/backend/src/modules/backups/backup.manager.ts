@@ -4,19 +4,36 @@ import { ArchiveService } from '@/core/archive/archive.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import { Injectable } from '@nestjs/common';
-import type { AppUrn } from '@runtipi/common/types';
+import fs from 'node:fs';
+import { Injectable, type OnApplicationShutdown } from '@nestjs/common';
+import type { AppUrn } from '@ci-hub/common/types';
 import { AppFilesManager } from '../apps/app-files-manager';
 
 @Injectable()
-export class BackupManager {
+export class BackupManager implements OnApplicationShutdown {
+  private static readonly DEFAULT_MAX_BACKUPS = 5;
+  private static readonly ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+  private retentionInterval: NodeJS.Timeout | null = null;
+
   constructor(
     private readonly archiveManager: ArchiveService,
     private readonly logger: LoggerService,
     private readonly config: ConfigurationService,
     private readonly filesystem: FilesystemService,
     private readonly appFilesManager: AppFilesManager,
-  ) {}
+  ) {
+    this.retentionInterval = setInterval(
+      () => this.enforceRetentionAllApps().catch((e) => this.logger.error('Weekly backup retention failed', e)),
+      BackupManager.ONE_WEEK_MS,
+    );
+  }
+
+  onApplicationShutdown() {
+    if (this.retentionInterval) {
+      clearInterval(this.retentionInterval);
+      this.retentionInterval = null;
+    }
+  }
 
   public backupApp = async (appUrn: AppUrn) => {
     const { dataDir } = this.config.get('directories');
@@ -256,5 +273,51 @@ export class BackupManager {
     await this.filesystem.writeBinaryFile(backupPath, fileBuffer);
 
     this.logger.info(`Backup uploaded successfully: ${filename}`);
+  }
+
+  /**
+   * Walk all backup directories and enforce a retention limit.
+   * Uses the global maxBackups setting or a default of 5 as a safety net.
+   */
+  public async enforceRetentionAllApps() {
+    const { dataDir } = this.config.get('directories');
+    const globalMax = this.config.get('userSettings').maxBackups || BackupManager.DEFAULT_MAX_BACKUPS;
+    const backupsRoot = path.join(dataDir, 'backups');
+
+    if (!fs.existsSync(backupsRoot)) return;
+
+    let totalCleaned = 0;
+
+    try {
+      const storeIds = await this.filesystem.listFiles(backupsRoot);
+      for (const storeId of storeIds) {
+        const storeDir = path.join(backupsRoot, storeId);
+        const stat = await this.filesystem.getStats(storeDir);
+        if (!stat.isDirectory()) continue;
+
+        const appNames = await this.filesystem.listFiles(storeDir);
+        for (const appName of appNames) {
+          const appBackupDir = path.join(storeDir, appName);
+          const appStat = await this.filesystem.getStats(appBackupDir);
+          if (!appStat.isDirectory()) continue;
+
+          const appUrn = `${storeId}:${appName}` as AppUrn;
+          const backups = await this.listBackupsByAppId(appUrn);
+
+          if (backups.length > globalMax) {
+            backups.sort((a, b) => b.date - a.date);
+            const toDelete = backups.slice(globalMax);
+            await Promise.all(toDelete.map((b) => this.deleteBackup(appUrn, b.id)));
+            totalCleaned += toDelete.length;
+          }
+        }
+      }
+    } catch (e) {
+      this.logger.error('Error during backup retention enforcement', e);
+    }
+
+    if (totalCleaned > 0) {
+      this.logger.info(`Backup retention: removed ${totalCleaned} old backup(s) across all apps`);
+    }
   }
 }

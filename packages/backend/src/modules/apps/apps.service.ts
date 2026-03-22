@@ -5,8 +5,8 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Inject, Injectable, forwardRef } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
-import { CURRENT_SCHEMA_VERSION, parseComposeJson } from '@runtipi/common/schemas';
-import type { AppUrn } from '@runtipi/common/types';
+import { CURRENT_SCHEMA_VERSION, parseComposeJson } from '@ci-hub/common/schemas';
+import type { AppUrn } from '@ci-hub/common/types';
 import axios from 'axios';
 import { MarketplaceService } from '../marketplace/marketplace.service';
 import { PortAllocationRepository } from '../network/port-allocation.repository';
@@ -159,7 +159,7 @@ export class AppsService {
     const org = await this.registrationService.getDeviceRegistrationInfo();
     const organizationSlug = org?.slug;
     const exposureMode = ((app as Record<string, unknown>).exposureMode as string) || 'local';
-    const subdomain = app.localSubdomain;
+    const baseSubdomain = app.localSubdomain;
     const urlSuffix = info.url_suffix || '';
 
     // Build the app URL based on exposure mode
@@ -181,8 +181,11 @@ export class AppsService {
       if (!organizationSlug || !userSettings.domain) {
         return { available: false };
       }
-      const domainSuffix = `-${organizationSlug}.${userSettings.domain}`;
-      appUrl = `https://${subdomain}${domainSuffix}${urlSuffix}`;
+      // Include device slug from hubSubdomain (format: hub-{deviceSlug}-{orgSlug})
+      const deviceSlug = org?.hubSubdomain?.replace(/^hub-/, '').replace(new RegExp(`-${organizationSlug}$`), '');
+      const subdomain =
+        deviceSlug && deviceSlug !== organizationSlug ? `${baseSubdomain}-${deviceSlug}-${organizationSlug}` : `${baseSubdomain}-${organizationSlug}`;
+      appUrl = `https://${subdomain}.${userSettings.domain}${urlSuffix}`;
     }
 
     try {

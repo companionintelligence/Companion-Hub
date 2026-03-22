@@ -1,7 +1,7 @@
 import { setTimeout } from 'node:timers/promises';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import { Injectable } from '@nestjs/common';
+import { Injectable, type OnApplicationShutdown } from '@nestjs/common';
 import * as Sentry from '@sentry/nestjs';
 import { Connection } from 'rabbitmq-client';
 import { z } from 'zod';
@@ -9,11 +9,13 @@ import { EventPublisher } from './event.publisher';
 import { Queue } from './queue.entity';
 
 @Injectable()
-export class QueueFactory {
+export class QueueFactory implements OnApplicationShutdown {
   private rabbit: Connection;
   private connectionAttempts = 0;
   private isInitialized = false;
   private initializationPromise: Promise<void> | null = null;
+  // biome-ignore lint/suspicious/noExplicitAny: heterogeneous queue schemas
+  private createdQueues: Queue<any, any>[] = [];
 
   public constructor(
     private readonly logger: LoggerService,
@@ -33,6 +35,15 @@ export class QueueFactory {
   }
 
   private async doInitialize() {
+    if (this.rabbit) {
+      try {
+        this.rabbit.removeAllListeners();
+        await this.rabbit.close();
+      } catch {
+        // Old connection may already be dead
+      }
+    }
+
     const { host, password, username, port } = this.config.get('queue');
 
     this.rabbit = new Connection({
@@ -122,6 +133,21 @@ export class QueueFactory {
       queues: [{ autoDelete: false, durable: false, queue: queueName }],
     });
 
-    return new Queue(this.rabbit, rpcClient, publisher, queueName, workers, eventSchema, resultSchema, this.logger);
+    const queue = new Queue(this.rabbit, rpcClient, publisher, queueName, workers, eventSchema, resultSchema, this.logger);
+    this.createdQueues.push(queue);
+    return queue;
+  }
+
+  async onApplicationShutdown() {
+    for (const queue of this.createdQueues) {
+      queue.stopAllCronTasks();
+    }
+    this.createdQueues = [];
+
+    try {
+      await this.rabbit?.close();
+    } catch (e) {
+      this.logger.warn('Error closing RabbitMQ connection during shutdown', e);
+    }
   }
 }

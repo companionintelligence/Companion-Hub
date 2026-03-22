@@ -7,7 +7,7 @@ export const userSchema = type({
   totpEnabled: 'boolean',
   locale: 'string.trim',
   operator: 'boolean',
-  hasSeenWelcome: 'boolean',
+  hasCompletedOnboarding: 'boolean',
   advancedMode: 'boolean',
 });
 

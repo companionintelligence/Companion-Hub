@@ -1,5 +1,5 @@
 import { Input } from '@/components/ui/Input';
-import type { dynamicComposeSchemaArk } from '@runtipi/common/schemas';
+import type { dynamicComposeSchemaArk } from '@ci-hub/common/schemas';
 import type { FieldErrors, UseFormRegister } from 'react-hook-form';
 import { Tooltip } from 'react-tooltip';
 import { useTranslation } from 'react-i18next';

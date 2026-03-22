@@ -1,13 +1,17 @@
 #!/bin/bash
 set -e
 
-# Get the directory where the script is located
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# Go to the root of CI-OS-Hub
-cd "$SCRIPT_DIR/.."
+# Accept an optional base directory argument (used by pull-dev.sh).
+# Default: root of the CI-OS-Hub repo (parent of this script's directory).
+if [ -n "${1:-}" ] && [ -d "$1" ]; then
+  BASE_DIR="$1"
+else
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  BASE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+fi
 
 # Directory for generated certs
-CERT_DIR="tunnel/certs"
+CERT_DIR="$BASE_DIR/tunnel/certs"
 mkdir -p "$CERT_DIR"
 
 echo "Generating Custom CA Certificate in $CERT_DIR..."

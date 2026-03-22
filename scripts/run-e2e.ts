@@ -1,3 +1,9 @@
+/**
+ * Run end-to-end tests. Starts the docker-compose e2e environment, runs Playwright tests, then tears down.
+ *
+ * Usage:
+ *   bun run test:e2e
+ */
 import { spawn } from 'node:child_process';
 import { resolve } from 'node:path';
 

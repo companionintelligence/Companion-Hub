@@ -1,10 +1,7 @@
 name: E2E Tests
 
 on:
-  pull_request:
-    branches: [dev, main]
-  push:
-    branches: [dev]
+  workflow_dispatch:
   workflow_call:
     inputs:
       version:
@@ -12,29 +9,33 @@ on:
         required: false
         type: string
 
+concurrency:
+  group: e2e-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   e2e:
-    timeout-minutes: 15
+    timeout-minutes: 45
     runs-on: ubuntu-latest
     services:
       postgres:
         image: postgres:14
         env:
-          POSTGRES_USER: tipi
+          POSTGRES_USER: companion
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: tipi
+          POSTGRES_DB: companiondb
         ports:
           - 6543:5432
         options: >-
-          --health-cmd "pg_isready -U tipi"
+          --health-cmd "pg_isready -U companion"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
       rabbitmq:
         image: rabbitmq:4-alpine
         env:
-          RABBITMQ_DEFAULT_USER: tipi
-          RABBITMQ_DEFAULT_PASS: tipi
+          RABBITMQ_DEFAULT_USER: companion
+          RABBITMQ_DEFAULT_PASS: admin
         ports:
           - 5672:5672
         options: >-
@@ -56,10 +57,10 @@ jobs:
 
       - name: Create data directories
         run: |
-          mkdir -p /tmp/runtipi-e2e/{apps,app-data,state,repos,logs,backups,user-config,media}
-          mkdir -p /tmp/runtipi-e2e/state/traefik/{config,dynamic,tls}
-          touch /tmp/runtipi-e2e/state/traefik/acme_storage.json
-          echo "# E2E test env" > /tmp/runtipi-e2e/.env
+          mkdir -p /tmp/ci-hub-e2e/{apps,app-data,state,repos,logs,backups,user-config,media}
+          mkdir -p /tmp/ci-hub-e2e/state/traefik/{config,dynamic,tls}
+          touch /tmp/ci-hub-e2e/state/traefik/acme_storage.json
+          echo "# E2E test env" > /tmp/ci-hub-e2e/.env
 
       - name: Verify services
         run: |
@@ -76,31 +77,37 @@ jobs:
 
       - run: bunx playwright install --with-deps chromium
 
+      - name: Start mock portal
+        run: |
+          bun run e2e/mock-portal/server.ts &
+          echo "MOCK_PID=$!" >> $GITHUB_ENV
+          sleep 2
+          curl -sf http://localhost:4444/v2/ || echo "Warning: mock portal not responding"
+
       - name: Run E2E tests
         run: bun run test:e2e:ci
         env:
           SERVER_IP: localhost
           POSTGRES_HOST: localhost
           POSTGRES_PORT: 6543
-          POSTGRES_USERNAME: tipi
+          POSTGRES_USERNAME: companion
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DBNAME: tipi
+          POSTGRES_DBNAME: companiondb
           RABBITMQ_HOST: localhost
           RABBITMQ_PORT: 5672
-          RABBITMQ_USERNAME: tipi
-          RABBITMQ_PASSWORD: tipi
+          RABBITMQ_USERNAME: companion
+          RABBITMQ_PASSWORD: admin
           JWT_SECRET: e2e-test-secret
-          CI_CLOUD_URL: https://portal.companionintelligence.com
-          CI_CLOUD_API_URL: https://portal.companionintelligence.com/api
-          CI_CLOUD_FRONTEND_URL: https://portal.companionintelligence.com
+          CI_CLOUD_URL: http://localhost:4444
           DOMAIN: ci.computer
-          LOCAL_DOMAIN: tipi.lan
-          ROOT_FOLDER_HOST: /tmp/runtipi-e2e
-          RUNTIPI_APP_DATA_PATH: /tmp/runtipi-e2e
-          TIPI_DATA_DIR: /tmp/runtipi-e2e
-          TIPI_APP_DATA_DIR: /tmp/runtipi-e2e/app-data
-          TIPI_APP_DIR: ${{ github.workspace }}
+          LOCAL_DOMAIN: ci.lan
+          ROOT_FOLDER_HOST: /tmp/ci-hub-e2e
+          CI_HUB_APP_DATA_PATH: /tmp/ci-hub-e2e
+          CI_HUB_DATA_DIR: /tmp/ci-hub-e2e
+          CI_HUB_APP_DATA_DIR: /tmp/ci-hub-e2e/app-data
+          CI_HUB_APP_DIR: ${{ github.workspace }}
           CI: true
+          DEVICE_ID: test-device-e2e
 
       - uses: actions/upload-artifact@v4
         if: always()

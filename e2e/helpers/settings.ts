@@ -32,7 +32,7 @@ export const unsetPasswordChangeRequest = async () => {
 };
 
 export const setWelcomeSeen = async (seen: boolean) => {
-  await db.update(user).set({ hasSeenWelcome: seen });
+  await db.update(user).set({ hasCompletedOnboarding: seen });
   return Promise.resolve();
 };
 

@@ -14,6 +14,8 @@ export interface AppInfo {
   protocol?: 'http' | 'https';
   hostname?: string;
   originServerName?: string; // HTTP Host header to send to Traefik (e.g., n8n-bdc.companionintelligence.com)
+  /** When true, identifies this entry as the Hub itself (not a user-installed app). CI-Cloud uses this flag to distinguish Hub routes from app routes in tunnel config. */
+  isHub?: boolean;
 }
 
 @Injectable()
@@ -28,7 +30,8 @@ export class CloudflareClientService {
     private configService: ConfigurationService,
     private moduleRef: ModuleRef,
   ) {
-    this.cloudApiUrl = this.configService.get('ciCloudApiUrl') || 'https://api.example.com/api';
+    const ciCloudUrl = this.configService.get('ciCloudUrl') || 'https://portal.companionintelligence.com';
+    this.cloudApiUrl = `${ciCloudUrl}/api`;
 
     this.client = axios.create({
       baseURL: this.cloudApiUrl,
@@ -59,7 +62,7 @@ export class CloudflareClientService {
       await fs.mkdir(certsDir, { recursive: true });
 
       // Write the token to a file that cloudflared will read (configured in docker-compose)
-      await fs.writeFile(path.join(tunnelDir, 'token'), token);
+      await fs.writeFile(path.join(tunnelDir, 'token'), token, { mode: 0o644 });
       this.logger.log('Wrote tunnel token to file');
     } catch (e) {
       this.logger.error(`Failed to write tunnel files: ${e}`);
@@ -126,7 +129,7 @@ export class CloudflareClientService {
       this.logger.log(`Syncing ${apps.length} apps to CI-Cloud (Tunnel: ${this.tunnelId})...`);
       this.logger.log(`Sync Payload: ${JSON.stringify({ organizationId, tunnelId: this.tunnelId, apps }, null, 2)}`);
       const response = await this.client.post(
-        '/tunnels/state',
+        'tunnels/state',
         {
           organizationId,
           tunnelId: this.tunnelId,
@@ -161,6 +164,30 @@ export class CloudflareClientService {
 
   getTunnelToken(): string | null {
     return this.tunnelToken;
+  }
+
+  /**
+   * Load tunnel token from disk into memory. Call on startup so getTunnelToken() returns
+   * correctly after a restart (token file exists but in-memory state was reset).
+   * Optionally set tunnelId from the registered org if available.
+   */
+  async loadTunnelTokenFromDisk(tunnelId?: string | null): Promise<boolean> {
+    try {
+      if (tunnelId) {
+        this.tunnelId = tunnelId;
+      }
+      const tokenPath = path.join(APP_DIR, 'tunnel', 'token');
+      const token = await fs.readFile(tokenPath, 'utf-8');
+      const trimmed = token?.trim();
+      if (trimmed) {
+        this.tunnelToken = trimmed;
+        this.logger.log('Loaded tunnel token from disk');
+        return true;
+      }
+    } catch {
+      // File missing or unreadable — token stays null
+    }
+    return false;
   }
 
   /**

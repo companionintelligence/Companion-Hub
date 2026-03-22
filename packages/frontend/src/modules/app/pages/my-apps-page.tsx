@@ -2,7 +2,7 @@ import { Link, useNavigate } from 'react-router';
 import { getInstalledAppsOptions, getLinksOptions } from '@/api-client/@tanstack/react-query.gen';
 import { EmptyPage } from '@/components/empty-page/empty-page';
 import type { CustomLink } from '@/types/app.types';
-import { useSuspenseQuery } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { AppTile } from '../components/app-tile/app-tile';
 import { LinkTile } from '../components/link-tile/link-tile';
 import { ButtonTile } from '../components/button-tile/button-tile';
@@ -11,22 +11,25 @@ import { useTranslation } from 'react-i18next';
 import { useDisclosure } from '@/lib/hooks/use-disclosure';
 import { AddLinkDialog } from '../components/dialogs/add-link/add-link-dialog';
 import '@/styles/app-grid.css';
+import { LoadingSpinner } from '@/components/ui/LoadingSpinner/loading-spinner';
 
 export default () => {
-  const { data: apps } = useSuspenseQuery({
+  const { data: apps, isLoading: appsLoading } = useQuery({
     ...getInstalledAppsOptions(),
+    staleTime: 30_000,
   });
 
-  const { data: links } = useSuspenseQuery({
+  const { data: links, isLoading: linksLoading } = useQuery({
     ...getLinksOptions(),
+    staleTime: 30_000,
   });
 
   const addLinkDisclosure = useDisclosure();
   const navigate = useNavigate();
   const { t } = useTranslation();
 
-  const { installed } = apps;
-  const { links: customLinks = [] } = links;
+  const installed = apps?.installed ?? [];
+  const customLinks = links?.links ?? [];
 
   const renderApp = ({ info, app, metadata }: (typeof installed)[number]) => {
     const versionIsIgnored = app.ignoredVersion === metadata.latestVersion;
@@ -60,7 +63,9 @@ export default () => {
         <p className="text-lg text-muted-foreground">Manage your installed applications and links</p>
       </div>
       <div className="flex-1 overflow-y-auto min-h-0" data-testid="my-apps-scroll-container">
-        {installed.length === 0 && customLinks.length === 0 ? (
+        {(appsLoading || linksLoading) && !apps && !links ? (
+          <LoadingSpinner />
+        ) : installed.length === 0 && customLinks.length === 0 ? (
           <EmptyPage
             title="MY_APPS_EMPTY_TITLE"
             subtitle="MY_APPS_EMPTY_SUBTITLE"

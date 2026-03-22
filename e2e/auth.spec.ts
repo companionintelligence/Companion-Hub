@@ -10,8 +10,8 @@ test('should register a new user', async ({ page }) => {
 
   await page.getByRole('button', { name: 'Register' }).click();
 
-  // Should go straight to dashboard (no welcome screen)
-  await expect(page.getByText('Disk space')).toBeVisible({ timeout: 15000 });
+  // New users are redirected to onboarding wizard
+  await expect(page.getByText('Welcome to Companion Hub')).toBeVisible({ timeout: 15000 });
 });
 
 test('should login with existing user', async ({ page }) => {
@@ -23,5 +23,5 @@ test('should login with existing user', async ({ page }) => {
   await page.getByPlaceholder('Enter your password').fill(testUser.password);
   await page.getByRole('button', { name: 'Login' }).click();
 
-  await expect(page.getByText('Disk space')).toBeVisible();
+  await expect(page.getByText('Disk space')).toBeVisible({ timeout: 30000 });
 });

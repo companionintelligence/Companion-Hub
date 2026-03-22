@@ -180,14 +180,17 @@ export class AppController {
   @UseGuards(AuthGuard)
   @ApiResponse({ type: AppContextDto })
   async appContext(@Req() req: Request) {
-    const version = await this.appService.getVersion();
-    const org = await this.registrationService.getDeviceRegistrationInfo();
-
     const { userSettings, isProduction } = this.configuration.getConfig();
 
-    const apps = await this.marketplaceService.getAvailableApps();
+    // Parallelize all independent async calls
+    const [version, org, apps, installedApps, tailscaleStatus] = await Promise.all([
+      this.appService.getVersion(),
+      this.registrationService.getDeviceRegistrationInfo(),
+      this.marketplaceService.getAvailableApps(),
+      this.appsService.getInstalledApps(),
+      this.tailscaleService.getStatus().catch(() => ({ installed: false, connected: false })),
+    ]);
 
-    const installedApps = await this.appsService.getInstalledApps();
     const updatesAvailable = installedApps.filter(({ app, metadata }) => {
       return Number(app.version) < Number(metadata?.latestVersion ?? 0) && app.status !== 'updating';
     });
@@ -198,13 +201,7 @@ export class AppController {
 
     // Check service availability
     const cloudflareAvailable = Boolean(this.cloudflareClientService.getTunnelToken());
-    let tailscaleAvailable = false;
-    try {
-      const tsStatus = await this.tailscaleService.getStatus();
-      tailscaleAvailable = tsStatus.installed && tsStatus.connected;
-    } catch {
-      tailscaleAvailable = false;
-    }
+    const tailscaleAvailable = tailscaleStatus.installed && tailscaleStatus.connected;
 
     return AppContextDto.parse(
       {
@@ -246,12 +243,21 @@ export class AppController {
 
     const version = await this.appService.getVersion();
     this.configuration.initSentry({ release: version.current, allowSentry: body.allowErrorMonitoring });
-    await this.userRepository.updateUser(req.user.id, { hasSeenWelcome: true });
+    await this.userRepository.updateUser(req.user.id, { hasCompletedOnboarding: true });
 
     if (this.configuration.get('demoMode')) {
       return;
     }
 
     await this.configuration.setUserSettings({ allowErrorMonitoring: body.allowErrorMonitoring });
+  }
+
+  @Patch('/complete-onboarding')
+  @UseGuards(AuthGuard)
+  async completeOnboarding(@Req() req: Request) {
+    if (!req.user) {
+      return;
+    }
+    await this.userRepository.updateUser(req.user.id, { hasCompletedOnboarding: true });
   }
 }

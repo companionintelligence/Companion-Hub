@@ -196,7 +196,7 @@ export class AuthController {
   async traefik(@Req() req: Request, @Res() res: Response) {
     if (req.user) {
       this.logger.debug('User authenticated for Traefik forward auth', { username: req.user.username });
-      res.setHeader('X-Runtipi-User', req.user.username);
+      res.setHeader('X-CI-Hub-User', req.user.username);
       return res.status(200).send();
     }
 

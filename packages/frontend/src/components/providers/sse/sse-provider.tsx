@@ -1,6 +1,6 @@
 import { useSSE } from '@/lib/hooks/use-sse';
 import { extractAppUrn } from '@/utils/app-helpers';
-import type { AppUrn } from '@runtipi/common/types';
+import type { AppUrn } from '@ci-hub/common/types';
 import { useQueryClient } from '@tanstack/react-query';
 import type { PropsWithChildren } from 'react';
 import toast from 'react-hot-toast';
@@ -28,6 +28,27 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
 
       // Invalidate queries to refresh app data (including progress)
       queryClient.invalidateQueries();
+
+      // Persist install errors in the query cache so UI components can render them
+      // under the app action button. Clear the cached error when status changes
+      // indicate install success/failure or when installation restarts.
+      try {
+        if (event === 'install_error' && appUrn && error) {
+          queryClient.setQueryData(['app-install-error', appUrn], { message: error, ts: Date.now() });
+        }
+
+        if (event === 'install_success') {
+          queryClient.setQueryData(['app-install-error', appUrn], null);
+        }
+
+        if (event === 'status_change' && (appStatus === 'running' || appStatus === 'missing' || appStatus === 'installing')) {
+          queryClient.setQueryData(['app-install-error', appUrn], null);
+        }
+      } catch (e) {
+        // Non-fatal: cache manipulation should not break SSE handling
+        // eslint-disable-next-line no-console
+        console.error('Failed to update app-install-error cache', e);
+      }
 
       if (appStoreId === '_user' && event === 'uninstall_success') {
         navigate('/apps', { replace: true });

@@ -3,7 +3,7 @@ import { expect, loginUser, test } from './fixtures/fixtures';
 test('should navigate to app store', async ({ page }) => {
   await loginUser(page);
 
-  await page.getByRole('link', { name: 'App Store' }).click();
+  await page.getByRole('link', { name: 'Store' }).click();
   await expect(page.getByRole('heading', { name: 'App Store' })).toBeVisible();
   await expect(page.getByPlaceholder('Search apps...').first()).toBeVisible();
 });

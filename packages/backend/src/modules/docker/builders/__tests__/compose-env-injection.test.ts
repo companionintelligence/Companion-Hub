@@ -1,6 +1,6 @@
 import { createAppUrn } from '@/common/helpers/app-helpers';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
-import type { ServiceInput } from '@runtipi/common/schemas';
+import type { ServiceInput } from '@ci-hub/common/schemas';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { DockerComposeBuilder } from '../compose.builder';
 

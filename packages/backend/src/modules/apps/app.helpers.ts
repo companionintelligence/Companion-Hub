@@ -4,7 +4,7 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable } from '@nestjs/common';
-import type { AppUrn } from '@runtipi/common/types';
+import type { AppUrn } from '@ci-hub/common/types';
 import { EnvUtils } from '../env/env.utils';
 import type { AppEventFormInput } from '../queue/entities/app-events';
 import { AppFilesManager } from './app-files-manager';
@@ -45,6 +45,11 @@ export class AppHelpers {
     const baseEnvFile = await this.filesytem.readTextFile(envFilePath);
     const envMap = this.envUtils.envStringToMap(baseEnvFile?.toString() ?? '');
 
+    // App containers must always run in production mode regardless of Hub's NODE_ENV.
+    // Hub's .env may have NODE_ENV=development which propagates via env_file and breaks
+    // apps like Rocket.Chat that try to load dev-only dependencies (e.g. pino-pretty).
+    envMap.set('NODE_ENV', 'production');
+
     const { appName, appStoreId } = extractAppUrn(appUrn);
 
     // Fetch organization info to get the correct domain
@@ -80,15 +85,15 @@ export class AppHelpers {
     // APP_DATA_DIR must be the host absolute path for Docker volume mounts
     // Docker Compose runs from inside the ci-os-hub container but connects to the host Docker daemon
     // So it needs the host path, not the container path
-    // The volume is mounted as: ${RUNTIPI_APP_DATA_PATH:-.internal}/app-data:/app-data
+    // The volume is mounted as: ${CI_HUB_APP_DATA_PATH:-.internal}/app-data:/app-data
     // We need to construct the absolute host path that matches this mount
 
     // Get the base path (without /app-data suffix)
-    const baseAppDataPath = envMap.get('RUNTIPI_APP_DATA_PATH') || userSettings.appDataPath || rootFolderHost;
+    const baseAppDataPath = envMap.get('CI_HUB_APP_DATA_PATH') || userSettings.appDataPath || rootFolderHost;
 
     this.logger.debug(
       `Constructing APP_DATA_DIR for ${appUrn}: ` +
-        `RUNTIPI_APP_DATA_PATH=${envMap.get('RUNTIPI_APP_DATA_PATH')}, ` +
+        `CI_HUB_APP_DATA_PATH=${envMap.get('CI_HUB_APP_DATA_PATH')}, ` +
         `userSettings.appDataPath=${userSettings.appDataPath}, ` +
         `rootFolderHost=${rootFolderHost}, ` +
         `baseAppDataPath=${baseAppDataPath}`,
@@ -112,18 +117,18 @@ export class AppHelpers {
       } else {
         // Both paths are relative - this is a problem
         this.logger.error(
-          `Both ROOT_FOLDER_HOST (${rootFolderHost}) and RUNTIPI_APP_DATA_PATH (${baseAppDataPath}) are relative. ` +
+          `Both ROOT_FOLDER_HOST (${rootFolderHost}) and CI_HUB_APP_DATA_PATH (${baseAppDataPath}) are relative. ` +
             'APP_DATA_DIR will not resolve correctly. Please set ROOT_FOLDER_HOST to an absolute path.',
         );
         throw new Error(
-          'Cannot resolve APP_DATA_DIR: Both ROOT_FOLDER_HOST and RUNTIPI_APP_DATA_PATH are relative paths. ' +
+          'Cannot resolve APP_DATA_DIR: Both ROOT_FOLDER_HOST and CI_HUB_APP_DATA_PATH are relative paths. ' +
             'ROOT_FOLDER_HOST must be an absolute path.',
         );
       }
     }
 
     // Ensure the base path doesn't already end with /app-data
-    // If RUNTIPI_APP_DATA_PATH already includes /app-data, remove it
+    // If CI_HUB_APP_DATA_PATH already includes /app-data, remove it
     if (appDataHostBase.endsWith('/app-data') || appDataHostBase.endsWith('\\app-data')) {
       appDataHostBase = appDataHostBase.slice(0, -9); // Remove '/app-data'
       this.logger.debug(`Removed /app-data suffix from base path: ${appDataHostBase}`);
@@ -237,7 +242,14 @@ export class AppHelpers {
       }
 
       if (org?.slug) {
-        subdomain = `${subdomain}-${org.slug}`;
+        // Include device slug from hubSubdomain (format: hub-{deviceSlug}-{orgSlug})
+        // to construct full subdomain: {appSubdomain}-{deviceSlug}-{orgSlug}
+        const deviceSlug = org.hubSubdomain?.replace(/^hub-/, '').replace(new RegExp(`-${org.slug}$`), '');
+        if (deviceSlug && deviceSlug !== org.slug) {
+          subdomain = `${subdomain}-${deviceSlug}-${org.slug}`;
+        } else {
+          subdomain = `${subdomain}-${org.slug}`;
+        }
       }
 
       // APP_LOCAL_DOMAIN is distinct - used for local network access

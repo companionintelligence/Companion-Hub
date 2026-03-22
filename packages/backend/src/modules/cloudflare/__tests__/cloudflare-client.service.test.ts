@@ -30,7 +30,7 @@ describe('CloudflareClientService', () => {
     dockerService = mock<DockerService>();
 
     configService.get.mockImplementation((key) => {
-      if (key === 'ciCloudApiUrl') return 'http://api.cloud';
+      if (key === 'ciCloudUrl') return 'http://api.cloud';
       if (key === 'ciHubApiKey') return 'api-key';
       return null;
     });
@@ -53,7 +53,7 @@ describe('CloudflareClientService', () => {
     it('should write token and ensure cloudflared is running', async () => {
       const result = await service.initializeTunnel('org-id', { tunnelId: 'tun-id', token: 'tok' });
 
-      expect(fs.writeFile).toHaveBeenCalledWith(expect.stringContaining('tunnel/token'), 'tok');
+      expect(fs.writeFile).toHaveBeenCalledWith(expect.stringContaining('tunnel/token'), 'tok', { mode: 0o644 });
       expect(dockerService.ensureContainerRunning).toHaveBeenCalledWith('cloudflared', {
         composeFile: expect.stringContaining('docker-compose.'),
         profile: 'cloudflare',
@@ -75,7 +75,7 @@ describe('CloudflareClientService', () => {
 
       expect(result).toBe(true);
       expect(mockAxiosInstance.post).toHaveBeenCalledWith(
-        '/tunnels/state',
+        'tunnels/state',
         expect.objectContaining({ organizationId: 'org-id', tunnelId: 'tun-id' }),
         expect.anything(),
       );

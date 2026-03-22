@@ -274,6 +274,20 @@
       "when": 1771862400000,
       "tag": "0038_add_advanced_mode",
       "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1772000000000,
+      "tag": "0039_add_onboarding",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1772200000000,
+      "tag": "0040_add_hub_subdomain",
+      "breakpoints": true
     }
   ]
 }

@@ -39,7 +39,7 @@ describe('InstallForm', () => {
     vi.mocked(useAppContext).mockReturnValue({
       userSettings: {
         ciHubOrganizationSlug: 'Josh', // Case insensitive check
-        localDomain: 'tipi.lan',
+        localDomain: 'ci.lan',
         domain: 'example.com',
         maxBackups: 5,
         guestDashboard: false,
@@ -67,7 +67,7 @@ describe('InstallForm', () => {
     vi.mocked(useAppContext).mockReturnValue({
       userSettings: {
         ciHubOrganizationSlug: undefined,
-        localDomain: 'tipi.lan',
+        localDomain: 'ci.lan',
         domain: 'example.com',
         maxBackups: 5,
         guestDashboard: false,
@@ -87,7 +87,7 @@ describe('InstallForm', () => {
 
     render(<InstallForm info={mockInfo} onSubmit={vi.fn()} formId="test-form" formFields={[]} />);
 
-    // Expect to see "-tipi.lan"
-    expect(screen.getByText(/-tipi.lan/)).toBeInTheDocument();
+    // Expect to see "-ci.lan"
+    expect(screen.getByText(/-ci.lan/)).toBeInTheDocument();
   });
 });

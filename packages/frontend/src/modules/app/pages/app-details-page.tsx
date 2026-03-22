@@ -1,12 +1,14 @@
 import { getAppOptions } from '@/api-client/@tanstack/react-query.gen';
+import { client } from '@/api-client/client.gen';
 import { useAppContext } from '@/context/app-context';
-import { useSuspenseQuery } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { redirect, useParams } from 'react-router';
 import { AppStatus } from '../components/app-status/app-status';
 import { AppActions } from '../containers/app-actions/app-actions';
 import { AppDetailsTabs } from '../containers/app-details-tabs/app-details-tabs';
 import type { Route } from './+types/app-details-page';
 import { GlassContainer } from '@/components/ui/glass-container';
+import { PageLoadingSpinner } from '@/components/ui/LoadingSpinner/loading-spinner';
 
 export async function clientLoader({ params }: Route.ClientLoaderArgs) {
   const { storeId } = params;
@@ -18,12 +20,28 @@ export async function clientLoader({ params }: Route.ClientLoaderArgs) {
 
 export default () => {
   const { appId, storeId } = useParams<{ appId: string; storeId: string }>();
+  const appUrn = `${appId}:${storeId}`;
 
-  const getApp = useSuspenseQuery({
-    ...getAppOptions({ path: { urn: `${appId}:${storeId}` } }),
+  const getApp = useQuery({
+    ...getAppOptions({ path: { urn: appUrn } }),
+    staleTime: 30_000,
+  });
+
+  const imageSize = useQuery({
+    queryKey: ['app-image-size', appUrn],
+    queryFn: async () => {
+      const { data } = await client.get({ url: `/api/marketplace/apps/${appUrn}/image-size` });
+      return data as { totalBytes: number | null; formatted: string | null };
+    },
+    staleTime: 1000 * 60 * 60, // 1 hour
+    retry: false,
   });
 
   const { userSettings } = useAppContext();
+
+  if (getApp.isLoading || !getApp.data) {
+    return <PageLoadingSpinner />;
+  }
 
   const { info, app, metadata } = getApp.data;
   const logoUrl = info?.urn ? `/api/marketplace/apps/${info.urn}/image` : '/app-not-found.jpg';
@@ -67,7 +85,13 @@ export default () => {
 
         {/* Main Content / Tabs */}
         <GlassContainer className="p-1 md:p-2 min-h-[300px] sm:min-h-[500px]">
-          <AppDetailsTabs info={info} app={app} metadata={metadata} />
+          <AppDetailsTabs
+            info={info}
+            app={app}
+            metadata={metadata}
+            imageSizeFormatted={imageSize.data?.formatted ?? null}
+            imageSizeLoading={imageSize.isLoading}
+          />
         </GlassContainer>
       </div>
     </div>

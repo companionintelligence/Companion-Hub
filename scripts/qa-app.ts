@@ -2,7 +2,18 @@
 /**
  * QA Single App
  *
- * Quick test: run container, check port, screenshot, benchmark, cleanup
+ * Quick test: run container, check port, screenshot, benchmark, cleanup.
+ *
+ * Usage:
+ *   bun run scripts/qa-app.ts <app-id>
+ *
+ * Environment variables:
+ *   RESULTS_DIR   - Directory for QA results (default: ~/qa-results)
+ *   APP_STORE_DIR - Path to CI-App-Store/apps (default: ~/devel/CI-App-Store/apps)
+ *
+ * Examples:
+ *   bun run scripts/qa-app.ts nextcloud
+ *   RESULTS_DIR=/tmp/results bun run scripts/qa-app.ts ghost
  */
 
 import { execSync } from 'node:child_process';

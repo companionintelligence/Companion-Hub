@@ -3,7 +3,14 @@
  * Fleet Test Orchestrator
  *
  * Distributes app catalog tests across 7 fleet servers
- * and collects results for unified reporting.
+ * and collects results for unified reporting. Dry run by default.
+ *
+ * Usage:
+ *   bun run scripts/run-fleet-tests.ts [--batch=<0-6>] [--execute] [--verbose]
+ *
+ * Examples:
+ *   bun run scripts/run-fleet-tests.ts
+ *   bun run scripts/run-fleet-tests.ts --batch=2 --execute --verbose
  */
 
 import { execSync } from 'node:child_process';
@@ -62,7 +69,7 @@ const SCREENSHOTS_DIR = 'e2e/screenshots';
 async function main() {
   const args = process.argv.slice(2);
   const singleBatch = args.find((a) => a.startsWith('--batch='))?.split('=')[1];
-  const dryRun = args.includes('--dry-run');
+  const execute = args.includes('--execute');
   const verbose = args.includes('--verbose');
 
   console.log('╔════════════════════════════════════════════════════════════╗');
@@ -75,7 +82,7 @@ async function main() {
   }
 
   // Determine which servers to run
-  const serversToRun = singleBatch !== undefined ? FLEET.filter((s) => s.batch === Number.parseInt(singleBatch, 10)) : FLEET;
+  const serversToRun = singleBatch === undefined ? FLEET : FLEET.filter((s) => s.batch === Number.parseInt(singleBatch, 10));
 
   console.log(`📋 Running tests on ${serversToRun.length} server(s):\n`);
   serversToRun.forEach((s) => {
@@ -83,8 +90,8 @@ async function main() {
   });
   console.log('');
 
-  if (dryRun) {
-    console.log('🔍 Dry run mode - not executing tests\n');
+  if (!execute) {
+    console.log('🔍 Dry run mode - not executing tests. Pass --execute to run.\n');
     return;
   }
 

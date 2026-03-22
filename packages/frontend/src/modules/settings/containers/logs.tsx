@@ -9,7 +9,7 @@ export const LogsContainer = () => {
   const maxLines = useRef(300);
 
   useSSE({
-    topic: 'runtipi-logs',
+    topic: 'ci-hub-logs',
     params: new URLSearchParams({ maxLines: maxLines.current.toString() }),
     onEvent: (data) => {
       setLogs((prevLogs) => {

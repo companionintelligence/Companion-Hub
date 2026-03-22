@@ -31,7 +31,7 @@ export default () => {
     onSuccess: async () => {
       setUserContext({ isLoggedIn: true });
       refreshUserContext();
-      navigate('/dashboard');
+      navigate('/onboarding');
     },
     onError: (e: TranslatableError) => {
       toast.error(t(e.message, e.intlParams));

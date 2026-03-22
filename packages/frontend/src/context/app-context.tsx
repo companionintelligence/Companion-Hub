@@ -1,14 +1,27 @@
 import type { AppContextDto } from '@/api-client';
 import { appContextOptions, appContextQueryKey, searchAppsInfiniteOptions, systemLoadOptions } from '@/api-client/@tanstack/react-query.gen';
-import { type QueryClient, useQueryClient, useSuspenseQuery } from '@tanstack/react-query';
+import { type QueryClient, useQueryClient, useQuery } from '@tanstack/react-query';
 import { createContext, useContext, useEffect } from 'react';
 
 interface AppContextValue extends AppContextDto {
   refreshAppContext: () => Promise<void>;
   setAppContext: (newAppContext: Partial<AppContextDto>) => void;
+  isLoading: boolean;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
+
+// Sensible defaults while app-context is loading
+const APP_CONTEXT_DEFAULTS: AppContextDto = {
+  version: { current: '0.0.0', latest: '0.0.0', body: '', releases: [] },
+  userSettings: {} as AppContextDto['userSettings'],
+  user: { hasCompletedOnboarding: false } as AppContextDto['user'],
+  apps: [],
+  updatesAvailable: 0,
+  isProduction: true,
+  cloudflareAvailable: false,
+  tailscaleAvailable: false,
+};
 
 // Optimistically prefetch pages that are likely to be visited
 const prefetch = async (queryClient: QueryClient) => {
@@ -28,11 +41,13 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     data: appContext,
     error,
     isFetching,
-  } = useSuspenseQuery({
+    isLoading,
+  } = useQuery({
     ...appContextOptions(),
+    staleTime: 30_000, // 30 seconds — don't refetch on every navigation
   });
 
-  if (error && !isFetching) {
+  if (error && !isFetching && !appContext) {
     throw error;
   }
 
@@ -40,11 +55,14 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     await queryClient.invalidateQueries({ queryKey });
   };
 
+  const resolved = appContext ?? APP_CONTEXT_DEFAULTS;
+
   const value = {
-    ...appContext,
+    ...resolved,
+    isLoading,
     refreshAppContext,
     setAppContext: (newAppContext: Partial<AppContextDto>) => {
-      queryClient.setQueryData(['appContext'], { ...appContext, ...newAppContext });
+      queryClient.setQueryData(['appContext'], { ...resolved, ...newAppContext });
     },
   };
 

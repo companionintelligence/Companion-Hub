@@ -51,48 +51,60 @@ export const links: Route.LinksFunction = () => [
 export async function clientLoader({ request }: Route.ActionArgs) {
   const url = new URL(request.url);
 
-  // Check device registration status
-  try {
-    // We use the internal API URL if server-side rendering, or relative path if client-side
-    // Since this is clientLoader, it runs on client (mostly) or server?
-    // React Router v7 loaders run on server if configured?
-    // Assuming client-side fetch for now or proxy.
-    const regRes = await fetch('/api/registration/status');
-    if (regRes.ok) {
-      const regData = await regRes.json();
-      if (!regData.registered) {
-        if (url.pathname !== '/device-registration') {
-          return redirect('/device-registration');
-        }
-        return null;
-      }
-      if (url.pathname === '/device-registration') {
-        return redirect('/');
-      }
+  const CACHE_TTL_MS = 60 * 1000; // 1 min — short enough that token removal takes effect quickly
+  const cachedAt = Number(sessionStorage.getItem('device-registered-at') || '0');
+  const cacheValid = sessionStorage.getItem('device-registered') === 'true' && Date.now() - cachedAt < CACHE_TTL_MS;
+
+  const regResult = cacheValid
+    ? { ok: true, registered: true }
+    : await fetch('/api/registration/status')
+        .then(async (res) => {
+          if (!res.ok) return { ok: false, registered: false };
+          const data = await res.json();
+          if (data.registered) {
+            sessionStorage.setItem('device-registered', 'true');
+            sessionStorage.setItem('device-registered-at', String(Date.now()));
+          } else {
+            sessionStorage.removeItem('device-registered');
+            sessionStorage.removeItem('device-registered-at');
+          }
+          return { ok: true, registered: data.registered };
+        })
+        .catch(() => ({ ok: false, registered: false }));
+
+  // Device registration is the prerequisite gate — must be registered before login/register/dashboard
+  // If not registered (or status unknown), only allow the device-registration page
+  const mustShowDeviceRegistration = !regResult.ok || !regResult.registered;
+  if (mustShowDeviceRegistration) {
+    if (url.pathname !== '/device-registration') {
+      return redirect('/device-registration');
     }
-  } catch (e) {
-    console.error('Failed to check registration status', e);
+    return null;
   }
 
-  const user = await userContext();
+  // Already registered — redirect away from device-registration
+  if (url.pathname === '/device-registration') {
+    return redirect('/');
+  }
 
+  // Now check user context for auth/onboarding flow
+  const userResult = await userContext();
+
+  // Non-root paths: let individual route loaders handle redirects
   if (url.pathname !== '/') {
-    return user;
+    return userResult;
   }
 
-  if (!user.data) {
+  // Root path: determine where to send the user
+  if (!userResult.data?.isConfigured) {
     return redirect('/register');
   }
 
-  if (!user.data.isConfigured) {
-    return redirect('/register');
+  if (!userResult.data?.isLoggedIn && !userResult.data?.isGuestDashboardEnabled) {
+    return redirect('/login');
   }
 
-  if (user.data?.isLoggedIn || user.data?.isGuestDashboardEnabled) {
-    return redirect('/dashboard');
-  }
-
-  return redirect('/login');
+  return redirect('/dashboard');
 }
 
 export function Layout({ children }: { children: React.ReactNode }) {

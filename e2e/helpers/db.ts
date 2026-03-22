@@ -4,8 +4,10 @@ import { emptyDir } from './settings';
 
 const port = process.env.POSTGRES_PORT || 6543;
 const password = process.env.POSTGRES_PASSWORD || 'postgres';
+const username = process.env.POSTGRES_USERNAME || 'companion';
+const dbName = process.env.POSTGRES_DBNAME || 'companiondb';
 const host = process.env.SERVER_IP || process.env.POSTGRES_HOST || 'localhost';
-const connectionString = `postgresql://tipi:${password}@${host}:${port}/tipi?connect_timeout=300`;
+const connectionString = `postgresql://${username}:${password}@${host}:${port}/${dbName}?connect_timeout=300`;
 
 export const db = drizzle(connectionString, { schema });
 

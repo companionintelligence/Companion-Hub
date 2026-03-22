@@ -1,4 +1,4 @@
-import type { AppUrn } from '@runtipi/common/types';
+import type { AppUrn } from '@ci-hub/common/types';
 import { useState, useEffect } from 'react';
 
 // Global progress map to track installation progress across components
@@ -13,10 +13,10 @@ const progressSubscribers = new Set<(appUrn: string, progress: number | null) =>
  * This is called by the SSE provider when it receives progress updates
  */
 export const updateInstallationProgress = (appUrn: AppUrn, progress: number | null) => {
-  if (progress !== null) {
-    installationProgressMap.set(appUrn, progress);
-  } else {
+  if (progress === null) {
     installationProgressMap.delete(appUrn);
+  } else {
+    installationProgressMap.set(appUrn, progress);
   }
 
   // Notify all subscribers

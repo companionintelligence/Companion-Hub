@@ -1,4 +1,4 @@
-import { dynamicComposeSchemaArk } from '@runtipi/common/schemas';
+import { dynamicComposeSchemaArk } from '@ci-hub/common/schemas';
 import betterAjvErrors from 'better-ajv-errors';
 import Ajv from 'ajv/dist/2020';
 import { useEffect, useState } from 'react';

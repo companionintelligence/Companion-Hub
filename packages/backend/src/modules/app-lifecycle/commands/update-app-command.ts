@@ -6,10 +6,10 @@ import { DockerService } from '@/modules/docker/docker.service';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import type { ModuleRef } from '@nestjs/core';
-import type { AppUrn } from '@runtipi/common/types';
+import type { AppUrn } from '@ci-hub/common/types';
 import type Dockerode from 'dockerode';
 import { AppLifecycleCommand } from './command';
-import { parseComposeJson } from '@runtipi/common/schemas';
+import { parseComposeJson } from '@ci-hub/common/schemas';
 
 export class UpdateAppCommand extends AppLifecycleCommand {
   constructor(
@@ -32,7 +32,7 @@ export class UpdateAppCommand extends AppLifecycleCommand {
       const composeToInstall = await marketplaceService.getDockerComposeJson(appUrn);
       parseComposeJson(composeToInstall.content);
     } catch (err) {
-      logger.error(`Error parsing docker-compose.yml for app ${appUrn} from marketplace repository. Are you running the latest version of runtipi?`);
+      logger.error(`Error parsing docker-compose.yml for app ${appUrn} from marketplace repository. Are you running the latest version of CI Hub?`);
       return this.handleAppError(err, appUrn, 'update_error');
     }
 

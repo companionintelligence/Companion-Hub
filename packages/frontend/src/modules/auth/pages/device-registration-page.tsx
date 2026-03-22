@@ -1,138 +1,51 @@
-import { useState, useEffect } from 'react';
-import { useNavigate, useSearchParams } from 'react-router';
+import { useState, useEffect, useRef } from 'react';
+import { useNavigate } from 'react-router';
 import { Button } from '@/components/ui/Button';
 import { Alert, AlertDescription } from '@/components/ui/Alert/Alert';
-import { AlertCircle, ExternalLink, Loader2 } from 'lucide-react';
+import { AlertCircle, CheckCircle2, Loader2 } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { useUserContext } from '@/context/user-context';
+
+const DEFAULT_PORTAL_URL = 'https://portal.companionintelligence.com';
 
 export default function DeviceRegistrationPage() {
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
-  const { domain } = useUserContext();
-  const [isRegistered, setIsRegistered] = useState(false);
   const [deviceId, setDeviceId] = useState<string | null>(null);
-  const [registrationUrl, setRegistrationUrl] = useState<string | null>(null);
+  const [portalBaseUrl, setPortalBaseUrl] = useState<string>(DEFAULT_PORTAL_URL);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Check if this is a callback from CI Cloud
-  const isCallback =
-    searchParams.has('device_id') &&
-    searchParams.has('organization_id') &&
-    searchParams.has('organization_name') &&
-    searchParams.has('subdomain') &&
-    searchParams.has('slug');
+  const [pairingCode, setPairingCode] = useState('');
+  const [isPairing, setIsPairing] = useState(false);
+  const [pairingError, setPairingError] = useState<string | null>(null);
+  const [pairingSuccess, setPairingSuccess] = useState(false);
+  const [redirectStatus, setRedirectStatus] = useState<string>('Setting up your Hub...');
+  const pairingInputRef = useRef<HTMLInputElement>(null);
 
-  // Handle callback from CI Cloud
   useEffect(() => {
-    if (isCallback) {
-      const handleCallback = async () => {
-        try {
-          const device_id = searchParams.get('device_id');
-          const organization_id = searchParams.get('organization_id');
-          const organization_name = searchParams.get('organization_name');
-          const slug = searchParams.get('slug');
-          const subdomain = searchParams.get('subdomain');
-          const api_key = searchParams.get('api_key');
-          const tunnel_id = searchParams.get('tunnel_id');
-          const tunnel_token = searchParams.get('tunnel_token');
-          const ca_cert = searchParams.get('ca_cert');
-
-          if (!device_id || !organization_id || !organization_name || !subdomain || !api_key || !tunnel_id || !tunnel_token || !slug) {
-            const missing = [];
-            if (!device_id) missing.push('device_id');
-            if (!organization_id) missing.push('organization_id');
-            if (!organization_name) missing.push('organization_name');
-            if (!slug) missing.push('slug');
-            if (!subdomain) missing.push('subdomain');
-            if (!api_key) missing.push('api_key');
-            if (!tunnel_id) missing.push('tunnel_id');
-            if (!tunnel_token) missing.push('tunnel_token');
-
-            throw new Error(`Missing required registration parameters: ${missing.join(', ')}`);
-          }
-
-          const params: Record<string, string> = {
-            device_id,
-            organization_id,
-            organization_name,
-            slug,
-            subdomain,
-            api_key,
-            tunnel_id,
-            tunnel_token,
-          };
-
-          if (ca_cert) {
-            params.ca_cert = ca_cert;
-          }
-
-          const res = await fetch(`/api/registration/callback?${new URLSearchParams(params).toString()}`);
-          const data = await res.json();
-
-          if (res.ok && data.success) {
-            toast.success('Device registered successfully!');
-            setIsRegistered(true);
-
-            // Redirect to the new subdomain
-            // Default to domain from config if provided
-            // Note: In production this should align with the cloud domain
-            const subdomain = params.subdomain;
-            if (subdomain) {
-              const targetUrl = `https://${subdomain}.${domain}`;
-              setTimeout(() => {
-                window.location.href = targetUrl;
-              }, 1500);
-            } else {
-              setTimeout(() => {
-                navigate('/');
-              }, 1500);
-            }
-          } else {
-            setError(data.message || 'Registration failed');
-            toast.error(data.message || 'Registration failed');
-          }
-        } catch (e) {
-          setError('Failed to complete registration');
-          toast.error('Failed to complete registration');
-          console.error(e);
-        } finally {
-          setIsLoading(false);
-        }
-      };
-
-      handleCallback();
-      return;
+    if (!isLoading && deviceId && pairingInputRef.current) {
+      pairingInputRef.current.focus();
     }
+  }, [isLoading, deviceId]);
 
-    // Check registration status on mount
+  useEffect(() => {
     const checkStatus = async () => {
       try {
         const res = await fetch('/api/registration/status');
         if (res.ok) {
           const data = await res.json();
           if (data.registered) {
-            setIsRegistered(true);
             navigate('/');
             return;
           }
         }
 
-        // Get device ID and registration URL
         const deviceRes = await fetch('/api/registration/device-id');
         if (deviceRes.ok) {
           const deviceData = await deviceRes.json();
           setDeviceId(deviceData.device_id);
-          setRegistrationUrl(deviceData.registration_url);
-
-          // If no registration URL, show helpful error
-          if (!deviceData.registration_url) {
-            setError(
-              'CI Cloud frontend URL not configured. ' +
-                'Please set CI_CLOUD_FRONTEND_URL environment variable. ' +
-                `Current value: ${deviceData.ci_cloud_frontend_url || 'not set'}`,
-            );
+          const base = deviceData.ci_cloud_url?.trim();
+          if (base) {
+            setPortalBaseUrl(base.replace(/\/+$/, ''));
           }
         } else {
           setError('Failed to get device information');
@@ -146,63 +59,118 @@ export default function DeviceRegistrationPage() {
     };
 
     checkStatus();
-  }, [navigate, searchParams, isCallback, domain]);
+  }, [navigate]);
 
-  const handleRedirectToCICloud = () => {
-    if (registrationUrl) {
-      window.location.href = registrationUrl;
-    } else {
-      toast.error('Registration URL not available');
+  const handlePair = async () => {
+    const code = pairingCode.trim().toUpperCase();
+    if (code.length !== 6) {
+      setPairingError('Pairing code must be exactly 6 characters.');
+      return;
+    }
+
+    setIsPairing(true);
+    setPairingError(null);
+    setError(null);
+
+    try {
+      const res = await fetch('/api/registration/pair', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pairing_code: code }),
+      });
+
+      const data = await res.json();
+
+      if (res.ok && data.success) {
+        setPairingSuccess(true);
+        toast.success('Device registered successfully!');
+
+        const { domain, subdomain } = data as { domain?: string; subdomain?: string };
+        if (domain && subdomain) {
+          const fullUrl = `https://${subdomain}.${domain}`;
+          setRedirectStatus('Setting up your Hub...');
+
+          let attempts = 0;
+          // eslint-disable-next-line no-constant-condition
+          while (true) {
+            try {
+              const probeRes = await fetch(`/api/registration/probe-domain?url=${encodeURIComponent(fullUrl)}`);
+              if (probeRes.ok) {
+                const probeData = (await probeRes.json()) as { ready: boolean };
+                if (probeData.ready) {
+                  break;
+                }
+              }
+            } catch {
+              // probe endpoint not reachable, keep trying
+            }
+
+            attempts++;
+            if (attempts >= 12) {
+              setRedirectStatus('Waiting for DNS propagation...');
+            }
+            if (attempts >= 36) {
+              setRedirectStatus('Still waiting — this can take a few minutes...');
+            }
+
+            await new Promise((resolve) => setTimeout(resolve, 5000));
+          }
+
+          setRedirectStatus('Redirecting...');
+          window.location.href = `${fullUrl}/login`;
+        } else {
+          // Fallback: no domain info, just redirect locally
+          setTimeout(() => {
+            navigate('/', { replace: true });
+          }, 2000);
+        }
+      } else {
+        const errorMsg = typeof data.message === 'string' ? data.message : 'Registration failed.';
+        setPairingError(errorMsg);
+        toast.error(errorMsg);
+      }
+    } catch (e) {
+      setPairingError('Failed to register device. Please try again.');
+      console.error(e);
+    } finally {
+      setIsPairing(false);
     }
   };
 
-  // Show loading state
   if (isLoading) {
     return (
       <div className="flex flex-col items-center gap-4 text-center py-4">
-        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+        <Loader2 role="img" aria-label="loading" className="h-8 w-8 animate-spin text-primary" />
         <div>
-          <h2 className="text-xl font-semibold text-foreground">Registering Device...</h2>
-          <p className="text-sm text-muted-foreground mt-1">Please wait while your device is registered.</p>
+          <h2 className="text-xl font-semibold text-foreground">Checking registration status...</h2>
+          <p className="text-sm text-muted-foreground mt-1">Please wait.</p>
         </div>
       </div>
     );
   }
 
-  // Show callback processing state
-  if (isCallback) {
+  if (pairingSuccess) {
     return (
-      <div className="flex flex-col items-center gap-4 text-center py-4">
-        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      <div className="flex flex-col items-center gap-4 text-center py-4 max-w-md mx-auto">
+        <CheckCircle2 role="img" aria-label="success" className="h-12 w-12 text-green-500" />
         <div>
-          <h2 className="text-xl font-semibold text-foreground">Setting up device...</h2>
-          <p className="text-sm text-muted-foreground mt-1">Starting Cloudflare tunnel and configuring access...</p>
+          <h2 className="text-xl font-semibold text-foreground">Device Registered Successfully</h2>
+          <p className="text-sm text-muted-foreground mt-3">{redirectStatus}</p>
         </div>
-        {error && (
-          <Alert variant="danger" className="text-left">
-            <AlertDescription>
-              <div className="flex items-start gap-2">
-                <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
-                <span>{error}</span>
-              </div>
-            </AlertDescription>
-          </Alert>
-        )}
+        <Loader2 className="h-6 w-6 animate-spin text-primary" />
       </div>
     );
   }
 
-  // If already registered, redirect
-  if (isRegistered) {
-    return null; // Will navigate away
-  }
-
-  // Show registration redirect page
   return (
     <>
       <h2 className="text-xl font-semibold text-center mb-4">Device Registration Required</h2>
       <p className="text-sm text-muted-foreground text-center mb-6">
-        This device needs to be registered with CI Cloud to access the app store. You will be redirected to complete the registration process.
+        Enter the 6-character pairing code from{' '}
+        <a href={portalBaseUrl || DEFAULT_PORTAL_URL} target="_blank" rel="noopener noreferrer" className="text-primary underline hover:no-underline">
+          CI Portal
+        </a>{' '}
+        to register this device.
       </p>
 
       {deviceId && (
@@ -216,24 +184,54 @@ export default function DeviceRegistrationPage() {
         <Alert variant="danger" className="mb-4">
           <AlertDescription>
             <div className="flex items-start gap-2">
-              <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+              <AlertCircle role="img" aria-label="error" className="h-4 w-4 mt-0.5 flex-shrink-0" />
               <span>{error}</span>
             </div>
           </AlertDescription>
         </Alert>
       )}
 
-      {registrationUrl && (
-        <>
-          <Button intent="primary" className="w-full" onClick={handleRedirectToCICloud}>
-            Register Device on CI Cloud
-            <ExternalLink className="ml-2 h-4 w-4" />
+      <div className="mb-6 space-y-2">
+        <label htmlFor="pairing-code" className="text-sm font-medium leading-none block">
+          Pairing Code
+        </label>
+        <div className="flex gap-2">
+          <input
+            id="pairing-code"
+            ref={pairingInputRef}
+            placeholder="ABC123"
+            value={pairingCode}
+            onChange={(e) => {
+              const val = e.target.value
+                .toUpperCase()
+                .replace(/[^A-Z0-9]/g, '')
+                .slice(0, 6);
+              setPairingCode(val);
+              setPairingError(null);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && pairingCode.length === 6 && !isPairing) {
+                handlePair();
+              }
+            }}
+            maxLength={6}
+            disabled={isPairing}
+            className={`flex-1 h-9 rounded-md border bg-transparent px-3 py-1 text-base shadow-sm transition-colors font-mono tracking-widest placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 md:text-sm ${pairingError ? 'border-destructive focus-visible:ring-destructive' : 'border-input'}`}
+          />
+          <Button intent="primary" onClick={handlePair} disabled={pairingCode.length !== 6 || isPairing} loading={isPairing}>
+            {isPairing ? 'Registering...' : 'Register'}
           </Button>
-          <p className="text-xs text-muted-foreground mt-4 text-center">
-            You will be redirected to CI Cloud to sign in, create an organization, and complete device registration.
-          </p>
-        </>
-      )}
+        </div>
+        {pairingError && <p className="text-[0.8rem] font-medium text-destructive">{pairingError}</p>}
+      </div>
+
+      <p className="text-xs text-muted-foreground text-center">
+        Don&apos;t have a pairing code?{' '}
+        <a href={portalBaseUrl || DEFAULT_PORTAL_URL} target="_blank" rel="noopener noreferrer" className="text-primary underline hover:no-underline">
+          Visit CI Portal
+        </a>{' '}
+        to create an account and add a device.
+      </p>
     </>
   );
 }

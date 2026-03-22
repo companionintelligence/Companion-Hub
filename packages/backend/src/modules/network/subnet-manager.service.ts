@@ -1,7 +1,7 @@
 import { TranslatableError } from '@/common/error/translatable-error';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Inject, Injectable } from '@nestjs/common';
-import type { AppUrn } from '@runtipi/common/types';
+import type { AppUrn } from '@ci-hub/common/types';
 import Dockerode from 'dockerode';
 import { AppsRepository } from '../apps/apps.repository';
 import { DOCKERODE } from '../docker/docker.module';

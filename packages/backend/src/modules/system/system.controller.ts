@@ -28,4 +28,10 @@ export class SystemController {
 
     return res.send(cert);
   }
+
+  @UseGuards(AuthGuard)
+  @Get('/detect-services')
+  async detectServices() {
+    return this.systemService.detectDockerServices();
+  }
 }

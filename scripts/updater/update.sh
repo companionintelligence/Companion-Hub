@@ -102,7 +102,7 @@ if [ "$SKIP_BACKUP" = "false" ]; then
   # Backup database
   if docker ps --format '{{.Names}}' | grep -q "${DB_CONTAINER_NAME:-ci-hub-db}"; then
     echo "   Backing up database..."
-    docker exec "${DB_CONTAINER_NAME:-ci-hub-db}" pg_dump -U "${POSTGRES_USERNAME:-tipi}" "${POSTGRES_DBNAME:-tipi}" \
+    docker exec "${DB_CONTAINER_NAME:-ci-hub-db}" pg_dump -U "${POSTGRES_USERNAME:-companion}" "${POSTGRES_DBNAME:-companiondb}" \
       > "$BACKUP_DIR/database.sql" 2>/dev/null || echo "   WARNING: Database backup failed (non-fatal)"
   fi
 
