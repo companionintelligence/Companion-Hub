@@ -41,7 +41,7 @@ export const HorizontalAppList = ({ apps }: HorizontalAppListProps) => {
           const [appName, storeId] = info.urn.split(':');
           return (
             <Link key={app.id} to={`/apps/${storeId}/${appName}`} className="no-underline text-inherit">
-              <SimpleAppTile name={info.name} urn={info.urn} />
+              <SimpleAppTile name={info.name} urn={info.urn} status={app.status} isInstalling={app.status === 'installing'} />
             </Link>
           );
         })}

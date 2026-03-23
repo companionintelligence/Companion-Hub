@@ -62,6 +62,14 @@ describe('RegistryService', () => {
       expect(result).toEqual(['1.2.0', '1.1.0']);
     });
 
+    it('should return empty array when currentVersion is not valid semver', async () => {
+      const callsBefore = httpService.get.mock.calls.length;
+      const result = await registryService.getTagsSince('ci-os-hub', 'e2e');
+
+      expect(result).toEqual([]);
+      expect(httpService.get.mock.calls.length).toBe(callsBefore);
+    });
+
     it('should return empty array on network error', async () => {
       configurationService.get.mockReturnValue('https://portal.ci.computer');
       httpService.get.mockReturnValue(throwError(() => new Error('Network error')));

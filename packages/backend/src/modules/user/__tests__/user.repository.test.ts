@@ -124,7 +124,7 @@ describe('UserRepository', () => {
         totpEnabled: false,
         locale: 'en',
         operator: true,
-        hasSeenWelcome: false,
+        hasCompletedOnboarding: false,
         advancedMode: true,
       });
       const result = await repository.getUserDtoById(1);

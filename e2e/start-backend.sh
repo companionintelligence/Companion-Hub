@@ -4,15 +4,20 @@
 
 set -euo pipefail
 
-DATA_DIR="${TIPI_DATA_DIR:-/tmp/runtipi-e2e}"
+DATA_DIR="${TIPI_DATA_DIR:-/tmp/ci-hub-e2e}"
 
 # Create required directory structure
 mkdir -p "$DATA_DIR"/{state,logs,apps,app-data,repos,backups,user-config,media}
 mkdir -p "$DATA_DIR/state/traefik"/{config,dynamic,tls}
 touch "$DATA_DIR/state/traefik/acme_storage.json"
 
+# Create dummy tunnel token so isRegistered() returns true in E2E
+# Without this, the frontend gates all pages behind device-registration
+mkdir -p "$(pwd)/tunnel"
+echo "e2e-mock-tunnel-token" > "$(pwd)/tunnel/token"
+
 # Build workspace dependencies (common package must be compiled before backend can start)
-echo "Building @runtipi/common..."
+echo "Building @ci-hub/common..."
 (cd packages/common && bun run build)
 
 # Build backend (nest build uses swc, doesn't reliably copy all assets)
@@ -30,19 +35,17 @@ cat > "$DATA_DIR/.env" << EOF
 NODE_ENV=${NODE_ENV:-development}
 POSTGRES_HOST=${POSTGRES_HOST:-localhost}
 POSTGRES_PORT=${POSTGRES_PORT:-6543}
-POSTGRES_USERNAME=${POSTGRES_USERNAME:-tipi}
+POSTGRES_USERNAME=${POSTGRES_USERNAME:-companion}
 POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
-POSTGRES_DBNAME=${POSTGRES_DBNAME:-tipi}
+POSTGRES_DBNAME=${POSTGRES_DBNAME:-companiondb}
 RABBITMQ_HOST=${RABBITMQ_HOST:-localhost}
 RABBITMQ_PORT=${RABBITMQ_PORT:-5672}
-RABBITMQ_USERNAME=${RABBITMQ_USERNAME:-tipi}
-RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD:-tipi}
+RABBITMQ_USERNAME=${RABBITMQ_USERNAME:-companion}
+RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD:-admin}
 JWT_SECRET=${JWT_SECRET:-e2e-test-secret}
 CI_CLOUD_URL=${CI_CLOUD_URL:-https://app.companionintelligence.com}
-CI_CLOUD_API_URL=${CI_CLOUD_API_URL:-https://app.companionintelligence.com/api}
-CI_CLOUD_FRONTEND_URL=${CI_CLOUD_FRONTEND_URL:-https://app.companionintelligence.com}
 DOMAIN=${DOMAIN:-ci.computer}
-LOCAL_DOMAIN=${LOCAL_DOMAIN:-tipi.lan}
+LOCAL_DOMAIN=${LOCAL_DOMAIN:-ci.lan}
 DEMO_MODE=${DEMO_MODE:-false}
 GUEST_DASHBOARD=${GUEST_DASHBOARD:-false}
 TZ=${TZ:-UTC}
@@ -51,8 +54,8 @@ THEME_COLOR=${THEME_COLOR:-blue}
 EXPERIMENTAL_INSECURE_COOKIE=${EXPERIMENTAL_INSECURE_COOKIE:-true}
 TIPI_VERSION=${TIPI_VERSION:-e2e}
 INTERNAL_IP=${INTERNAL_IP:-0.0.0.0}
-ROOT_FOLDER_HOST=${ROOT_FOLDER_HOST:-/tmp/runtipi-e2e}
-RUNTIPI_APP_DATA_PATH=${RUNTIPI_APP_DATA_PATH:-/tmp/runtipi-e2e}
+ROOT_FOLDER_HOST=${ROOT_FOLDER_HOST:-/tmp/ci-hub-e2e}
+RUNTIPI_APP_DATA_PATH=${RUNTIPI_APP_DATA_PATH:-/tmp/ci-hub-e2e}
 RUNTIPI_FORWARD_AUTH_URL=http://localhost:3000/api/auth/traefik
 ALLOW_AUTO_THEMES=${ALLOW_AUTO_THEMES:-true}
 ALLOW_ERROR_MONITORING=${ALLOW_ERROR_MONITORING:-false}
@@ -61,6 +64,7 @@ ADVANCED_SETTINGS=${ADVANCED_SETTINGS:-false}
 DISABLE_PASSWORD_RESET=${DISABLE_PASSWORD_RESET:-true}
 DNS_IP=${DNS_IP:-9.9.9.9}
 ARCHITECTURE=${ARCHITECTURE:-amd64}
+DEVICE_ID=${DEVICE_ID:-test-device-e2e}
 TIPI_DATA_DIR=$DATA_DIR
 TIPI_APP_DATA_DIR=$DATA_DIR/app-data
 TIPI_APP_DIR=$(pwd)

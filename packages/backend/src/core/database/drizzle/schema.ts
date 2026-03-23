@@ -83,7 +83,7 @@ export const user = pgTable('user', {
   totpEnabled: boolean('totp_enabled').default(false).notNull(),
   salt: text(),
   locale: varchar().default('en').notNull(),
-  hasSeenWelcome: boolean('has_seen_welcome').default(false).notNull(),
+  hasCompletedOnboarding: boolean('has_completed_onboarding').default(false).notNull(),
   advancedMode: boolean('advanced_mode').default(false).notNull(),
 });
 
@@ -117,6 +117,13 @@ export const deviceRegistration = pgTable('device_registration', {
   id: varchar().notNull().primaryKey(), // organization_id from CI Cloud
   slug: varchar().notNull(), // organization slug for subdomain
   name: varchar().notNull(), // organization label for display
+  /**
+   * The canonical hub subdomain prefix (e.g. "core1-xyz").
+   * This is the authoritative source for the Hub's route identity in Cloudflare tunnel config.
+   * Assigned by CI Portal during device registration and stored here — NOT derived from DOMAIN.
+   * When null, the Hub route is excluded from Cloudflare sync.
+   */
+  hubSubdomain: varchar('hub_subdomain'),
   tunnelId: varchar('tunnel_id'), // Cloudflare Tunnel ID (nullable now)
   tunnelToken: varchar('tunnel_token'),
   createdAt: timestamp({ mode: 'string' }).defaultNow().notNull(),

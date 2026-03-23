@@ -10,10 +10,10 @@ import { EnvUtils } from '@/modules/env/env.utils';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import { PortManagerService } from '@/modules/network/port-manager.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
-import type { AppUrn } from '@runtipi/common/types';
+import type { AppUrn } from '@ci-hub/common/types';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { AppLifecycleCommand } from './command';
-import { parseComposeJson } from '@runtipi/common/schemas';
+import { parseComposeJson } from '@ci-hub/common/schemas';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -38,7 +38,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
       const composeToInstall = await marketplaceService.getDockerComposeJson(appUrn);
       parseComposeJson(composeToInstall.content);
     } catch (err) {
-      logger.error(`Error parsing docker-compose.yml for app ${appUrn} from marketplace repository. Are you running the latest version of runtipi?`);
+      logger.error(`Error parsing docker-compose.yml for app ${appUrn} from marketplace repository. Are you running the latest version of CI Hub?`);
       return this.handleAppError(err, appUrn, 'update_error');
     }
 

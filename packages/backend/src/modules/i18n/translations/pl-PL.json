@@ -200,7 +200,7 @@
   "APP_LOGS_TAB_WRAP_LINES": "Zawijanie wierszy",
   "APP_USER_CONFIG_TAB_TITLE": "Konfiguracja użytkownika",
   "USER_CONFIG_WARNING_TITLE": "Ostrzeżenie",
-  "USER_CONFIG_WARNING_DESCRIPTION": "Edytowanie konfiguracji użytkownika może uszkodzić aplikację. Upewnij się, że wiesz co robisz. Jeżeli twoja aplikacja nie będzie chciała się uruchomić po edycji konfiguracji użytkownika, poszukaj logów w konsoli przeglądarki lub na stronie ustawień runtipi.",
+  "USER_CONFIG_WARNING_DESCRIPTION": "Edytowanie konfiguracji użytkownika może uszkodzić aplikację. Upewnij się, że wiesz co robisz. Jeżeli twoja aplikacja nie będzie chciała się uruchomić po edycji konfiguracji użytkownika, poszukaj logów w konsoli przeglądarki lub na stronie ustawień CI Hub.",
   "USER_CONFIG_ENABLE": "Włącz konfigurację użytkownika",
   "USER_CONFIG_UPDATE_SUCCESS": "Konfiguracja użytkownika zaktualizowana pomyślnie",
   "APP_NEW": "NOWY",

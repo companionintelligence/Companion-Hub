@@ -1,8 +1,8 @@
 import { useTranslation } from 'react-i18next';
 import { redirect, useNavigate, useParams } from 'react-router';
-import { useMutation, useSuspenseQuery } from '@tanstack/react-query';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
-import { dynamicComposeSchemaArk } from '@runtipi/common/schemas';
+import { dynamicComposeSchemaArk } from '@ci-hub/common/schemas';
 import { MultiServiceForm } from '@/components/multi-service-form/multi-service-form';
 import { Input } from '@/components/ui/Input/Input';
 import { Card, CardContent } from '@/components/ui/Card';
@@ -37,9 +37,10 @@ export default function EditPageContent({ loaderData }: Route.ComponentProps) {
   const [appName] = useState(params.appId);
   const { setServices } = useMultiServiceStore();
 
-  const { data: currentConfig } = useSuspenseQuery({
+  const { data: currentConfig } = useQuery({
     ...getAppComposeDiffOptions({ path: { urn: `${params.appId}:_user` } }),
     initialData: loaderData?.composeDiff,
+    staleTime: 30_000,
   });
 
   const id = useId();

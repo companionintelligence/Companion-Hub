@@ -2,7 +2,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { BackupManager } from '@/modules/backups/backup.manager';
 import { DockerService } from '@/modules/docker/docker.service';
 import type { ModuleRef } from '@nestjs/core';
-import type { AppUrn } from '@runtipi/common/types';
+import type { AppUrn } from '@ci-hub/common/types';
 import type Dockerode from 'dockerode';
 import { AppLifecycleCommand } from './command';
 

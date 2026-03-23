@@ -44,7 +44,7 @@ export type AppContextDto = {
     cloudflareAvailable: boolean;
     tailscaleAvailable: boolean;
     user: {
-        hasSeenWelcome: boolean;
+        hasCompletedOnboarding: boolean;
         id: number;
         locale: string;
         operator: boolean;
@@ -1824,14 +1824,14 @@ export type AppLogsEventsResponses = {
     200: unknown;
 };
 
-export type RuntipiLogsEventsData = {
+export type HubLogsEventsData = {
     body?: never;
     path?: never;
     query?: never;
-    url: '/api/sse/runtipi-logs';
+    url: '/api/sse/ci-hub-logs';
 };
 
-export type RuntipiLogsEventsResponses = {
+export type HubLogsEventsResponses = {
     200: unknown;
 };
 

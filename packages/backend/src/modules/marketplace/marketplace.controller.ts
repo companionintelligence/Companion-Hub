@@ -29,6 +29,7 @@ import {
   UpdateAppStoreBodyDto,
   UpdateAppStoreDto,
 } from './dto/marketplace.dto';
+import { ImageSizeService } from './image-size.service';
 import { MarketplaceService } from './marketplace.service';
 
 @Controller('marketplace')
@@ -36,6 +37,7 @@ export class MarketplaceController {
   constructor(
     private readonly marketplaceService: MarketplaceService,
     private readonly appStoreService: AppStoreService,
+    private readonly imageSizeService: ImageSizeService,
   ) {}
 
   @Get('apps/search')
@@ -77,6 +79,12 @@ export class MarketplaceController {
     });
 
     return res.send(image);
+  }
+
+  @Get('apps/:urn/image-size')
+  @UseGuards(AuthGuard)
+  async getAppImageSize(@Param('urn') urn: string) {
+    return this.imageSizeService.getAppImageSize(castAppUrn(urn));
   }
 
   @Post('pull')

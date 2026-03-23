@@ -14,7 +14,7 @@ import { EnvUtils } from '@/modules/env/env.utils';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import { PortManagerService } from '@/modules/network/port-manager.service';
 import { CloudflareClientService } from '@/modules/cloudflare/cloudflare-client.service';
-import type { AppUrn } from '@runtipi/common/types';
+import type { AppUrn } from '@ci-hub/common/types';
 
 // Mock fs
 vi.mock('node:fs', async () => ({
@@ -32,7 +32,7 @@ vi.mock('@sentry/nestjs', () => ({
   captureException: vi.fn(),
 }));
 
-vi.mock('@runtipi/common/schemas', async (importOriginal) => ({
+vi.mock('@ci-hub/common/schemas', async (importOriginal) => ({
   ...((await importOriginal()) as any),
   parseComposeJson: vi.fn().mockReturnValue({ services: [], overrides: [] }),
 }));

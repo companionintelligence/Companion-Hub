@@ -58,4 +58,19 @@ export class SystemService {
       return file;
     }
   }
+
+  public async detectDockerServices(): Promise<{ services: Array<{ name: string; image: string; status: string }> }> {
+    try {
+      const containers = await si.dockerContainers();
+      const services = containers.map((c) => ({
+        name: c.name,
+        image: c.image,
+        status: c.state,
+      }));
+      return { services };
+    } catch (e) {
+      this.logger.error(`Failed to detect Docker services: ${e}`);
+      return { services: [] };
+    }
+  }
 }

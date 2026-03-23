@@ -128,10 +128,11 @@ describe('AppLifecycleService', () => {
         tunnelId: 'tunnel-id',
         slug: 'myorg',
         name: 'My Org',
+        hubSubdomain: 'mydevice-myorg',
       } as any);
       appsRepository.getApps.mockResolvedValue([]);
       configService.getConfig.mockReturnValue({
-        userSettings: { domain: 'mydevice-myorg.companionintelligence.com', localDomain: 'lan' },
+        userSettings: { domain: 'companionintelligence.com', localDomain: 'lan' },
         domain: 'companionintelligence.com',
       } as any);
 
@@ -146,6 +147,7 @@ describe('AppLifecycleService', () => {
             localPort: 80,
             hostname: 'traefik',
             originServerName: 'mydevice-myorg.companionintelligence.com',
+            isHub: true,
           }),
         ]),
         'tunnel-id',
@@ -164,6 +166,7 @@ describe('AppLifecycleService', () => {
         tunnelId: 'tunnel-id',
         slug: 'acme',
         name: 'Acme Corp',
+        hubSubdomain: 'hub1-acme',
       } as any);
       appsRepository.getApps.mockResolvedValue([
         {
@@ -171,11 +174,11 @@ describe('AppLifecycleService', () => {
           exposedLocal: true,
           status: 'running',
           localSubdomain: 'n8n-abc',
-          appStoreSlug: 'ci-cloud',
+          appStoreSlug: 'ci-marketplace',
         },
       ] as any);
       configService.getConfig.mockReturnValue({
-        userSettings: { domain: 'hub1-acme.companionintelligence.com', localDomain: 'lan' },
+        userSettings: { domain: 'companionintelligence.com', localDomain: 'lan' },
         domain: 'companionintelligence.com',
       } as any);
 
@@ -184,13 +187,13 @@ describe('AppLifecycleService', () => {
       const syncCall = cloudflareClientService.syncState.mock.calls[0];
       const apps = syncCall?.[1] as any[];
 
-      // Hub should be first
-      expect(apps[0]).toMatchObject({ name: 'OS Hub', subdomain: 'hub1' });
+      // Hub should be first with correct hostname
+      expect(apps[0]).toMatchObject({ name: 'OS Hub', subdomain: 'hub1', originServerName: 'hub1-acme.companionintelligence.com', isHub: true });
       // Exposed app should follow
       expect(apps[1]).toMatchObject({ name: 'n8n', subdomain: 'n8n-abc' });
     });
 
-    it('should not include Hub route when domain is not configured', async () => {
+    it('should not include Hub route when hubSubdomain is not set', async () => {
       const data = { appUrn: 'test-app', action: 'install', form: {} } as any;
       const reply = vi.fn();
       const command = { execute: vi.fn().mockResolvedValue({ success: true, message: 'OK' }) };
@@ -229,7 +232,7 @@ describe('AppLifecycleService', () => {
   });
 
   describe('installApp', () => {
-    const appUrn = 'testapp:ci-cloud' as any;
+    const appUrn = 'testapp:ci-marketplace' as any;
     const baseAppInfo = {
       id: 'testapp',
       urn: 'urn:app:testapp',
@@ -298,6 +301,81 @@ describe('AppLifecycleService', () => {
     it('should throw if app not found', async () => {
       appsRepository.getAppByUrn.mockResolvedValue(null as any);
       await expect(service.startApp({ appUrn: 'missing' as any })).rejects.toThrow('APP_ERROR_APP_NOT_FOUND');
+    });
+  });
+
+  describe('syncCloudflareState - device slug in hostname', () => {
+    it('should include device slug in publicHostname when hubSubdomain has different device slug', async () => {
+      // Setup: org with hubSubdomain hub-test1-myorg
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue({
+        id: 'org-1',
+        slug: 'myorg',
+        hubSubdomain: 'hub-test1-myorg',
+        tunnelId: 'tunnel-123',
+        tunnelToken: 'token',
+      } as any);
+      configService.getConfig.mockReturnValue({
+        userSettings: { domain: 'example.com' },
+        domain: 'example.com',
+      } as any);
+      appsRepository.getApps.mockResolvedValue([
+        {
+          appName: 'element',
+          appStoreSlug: 'store1',
+          localSubdomain: 'element',
+          exposedLocal: true,
+          status: 'running',
+          port: 80,
+        },
+      ] as any);
+
+      await service.syncExposurePublic();
+
+      expect(cloudflareClientService.syncState).toHaveBeenCalledWith(
+        'org-1',
+        expect.arrayContaining([
+          expect.objectContaining({
+            originServerName: 'element-test1-myorg.example.com',
+          }),
+        ]),
+        'tunnel-123',
+      );
+    });
+
+    it('should omit device slug when it equals org slug', async () => {
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue({
+        id: 'org-1',
+        slug: 'myorg',
+        hubSubdomain: 'hub-myorg-myorg',
+        tunnelId: 'tunnel-123',
+        tunnelToken: 'token',
+      } as any);
+      configService.getConfig.mockReturnValue({
+        userSettings: { domain: 'example.com' },
+        domain: 'example.com',
+      } as any);
+      appsRepository.getApps.mockResolvedValue([
+        {
+          appName: 'element',
+          appStoreSlug: 'store1',
+          localSubdomain: 'element',
+          exposedLocal: true,
+          status: 'running',
+          port: 80,
+        },
+      ] as any);
+
+      await service.syncExposurePublic();
+
+      expect(cloudflareClientService.syncState).toHaveBeenCalledWith(
+        'org-1',
+        expect.arrayContaining([
+          expect.objectContaining({
+            originServerName: 'element-myorg.example.com',
+          }),
+        ]),
+        'tunnel-123',
+      );
     });
   });
 });

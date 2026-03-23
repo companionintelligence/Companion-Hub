@@ -1,8 +1,17 @@
+/**
+ * Initialize Traefik configuration. Copies config files and generates TLS certificates.
+ *
+ * Usage:
+ *   bun run scripts/init-traefik.ts
+ *
+ * Environment variables:
+ *   RUNTIPI_STATE_PATH - State directory path (default: .internal)
+ */
 import { mkdir, copyFile, writeFile, chmod, rm, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 
-const INTERNAL_DIR = process.env.RUNTIPI_STATE_PATH || '.internal';
+const INTERNAL_DIR = process.env.CI_HUB_STATE_PATH || process.env.STATE_PATH || '.internal';
 const STATE_DIR = path.join(INTERNAL_DIR, 'state');
 const TRAEFIK_DIR = path.join(STATE_DIR, 'traefik');
 
@@ -27,20 +36,26 @@ async function initTraefik() {
   const traefikDest = path.join(TRAEFIK_DIR, 'config', 'traefik.yml');
 
   if (existsSync(traefikSrc)) {
-    // Check if dest is a directory (Docker mess up)
+    let shouldCopy = true;
     if (existsSync(traefikDest)) {
-      const stats = await stat(traefikDest);
-      if (stats.isDirectory()) {
+      const destStats = await stat(traefikDest);
+      if (destStats.isDirectory()) {
         console.log(`Removing directory at destination: ${traefikDest}`);
         await rm(traefikDest, { recursive: true, force: true });
+      } else {
+        const srcStats = await stat(traefikSrc);
+        if (destStats.mtimeMs >= srcStats.mtimeMs) {
+          shouldCopy = false;
+          console.log('traefik.yml already up to date');
+        }
       }
     }
-
-    console.log(`Copying traefik.yml to ${traefikDest}`);
-    // Replace placeholder with default if necessary
-    const content = await Bun.file(traefikSrc).text();
-    const finalContent = content.replace('{{ACME_EMAIL}}', 'admin@localhost');
-    await writeFile(traefikDest, finalContent);
+    if (shouldCopy) {
+      console.log(`Copying traefik.yml to ${traefikDest}`);
+      const content = await Bun.file(traefikSrc).text();
+      const finalContent = content.replace('{{ACME_EMAIL}}', 'admin@localhost');
+      await writeFile(traefikDest, finalContent);
+    }
   } else {
     console.warn(`Warning: Source traefik.yml not found at ${traefikSrc}`);
   }
@@ -54,15 +69,24 @@ async function initTraefik() {
     const dynamicDest = path.join(TRAEFIK_DIR, 'dynamic', 'dynamic.yml');
 
     if (existsSync(dynamicSrc)) {
+      let shouldCopyDynamic = true;
       if (existsSync(dynamicDest)) {
-        const stats = await stat(dynamicDest);
-        if (stats.isDirectory()) {
+        const destStats = await stat(dynamicDest);
+        if (destStats.isDirectory()) {
           console.log(`Removing directory at destination: ${dynamicDest}`);
           await rm(dynamicDest, { recursive: true, force: true });
+        } else {
+          const srcStats = await stat(dynamicSrc);
+          if (destStats.mtimeMs >= srcStats.mtimeMs) {
+            shouldCopyDynamic = false;
+            console.log('dynamic.yml already up to date');
+          }
         }
       }
-      console.log(`Copying dynamic.yml to ${dynamicDest}`);
-      await copyFile(dynamicSrc, dynamicDest);
+      if (shouldCopyDynamic) {
+        console.log(`Copying dynamic.yml to ${dynamicDest}`);
+        await copyFile(dynamicSrc, dynamicDest);
+      }
     }
   }
 
@@ -94,7 +118,7 @@ initTraefik().catch((err) => {
     console.error('This commonly happens when Docker containers create directories.');
     console.error('');
     console.error('To fix this, run the following command in your terminal:');
-    console.error(`  sudo chown -R $USER:$USER ${process.env.RUNTIPI_STATE_PATH || '.internal'}`);
+    console.error(`  sudo chown -R $USER:$USER ${process.env.CI_HUB_STATE_PATH || '.internal'}`);
     console.error('');
     console.error('Original error:', err.message);
   } else {

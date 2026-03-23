@@ -19,6 +19,9 @@ export class RegistryService {
   }
 
   public async getTagsSince(repository: string, currentVersion: string) {
+    if (!semver.valid(currentVersion)) {
+      return [];
+    }
     const tags = await this.getTags(repository);
     return tags.filter((tag) => semver.gt(tag, currentVersion));
   }

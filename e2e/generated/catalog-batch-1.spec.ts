@@ -538,7 +538,7 @@ const APPS = [
     priority: 'low',
   },
   {
-    id: 'openwebui',
+    id: 'open-webui',
     storeSlug: 'ci-apps',
     name: 'Open WebUI',
     expectedPort: 8080,

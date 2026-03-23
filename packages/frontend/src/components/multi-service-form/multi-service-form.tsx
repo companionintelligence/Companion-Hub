@@ -1,7 +1,7 @@
 import './services-form.css';
 import { Button } from '@/components/ui/Button';
 import { arktypeResolver } from '@hookform/resolvers/arktype';
-import { dynamicComposeSchemaArk } from '@runtipi/common/schemas';
+import { dynamicComposeSchemaArk } from '@ci-hub/common/schemas';
 import { ArrowUpDown, Network, Plus, Server, Settings, Variable, X } from 'lucide-react';
 import { useForm } from 'react-hook-form';
 import { JsonComposeEditor } from './json-compose-editor';
@@ -275,7 +275,7 @@ export const MultiServiceForm = ({ onSubmit }: Props) => {
             })}
           >
             <a
-              href="https://runtipi.io/docs/reference/dynamic-compose"
+              href="https://docs.companionintelligence.com/reference/dynamic-compose"
               target="_blank"
               rel="noopener noreferrer"
               className="text-muted small underline-offset-2 hover:underline"

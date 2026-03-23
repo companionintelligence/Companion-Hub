@@ -3,6 +3,7 @@ import { RegistrationService } from '../registration.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { CloudflareClientService } from '../../cloudflare/cloudflare-client.service';
+import { TraefikConfigService } from '../../docker/traefik-config.service';
 import { DeviceRegistrationRepository } from '../device-registration.repository';
 import { RepoEventsQueue } from '../../queue/entities/repo-events';
 import { mock, MockProxy } from 'vitest-mock-extended';
@@ -16,6 +17,7 @@ describe('RegistrationService', () => {
   let configService: MockProxy<ConfigurationService>;
   let loggerService: MockProxy<LoggerService>;
   let cloudflareClientService: MockProxy<CloudflareClientService>;
+  let traefikConfigService: MockProxy<TraefikConfigService>;
   let deviceRegistrationRepository: MockProxy<DeviceRegistrationRepository>;
   let repoEventsQueue: MockProxy<RepoEventsQueue>;
 
@@ -23,10 +25,12 @@ describe('RegistrationService', () => {
     configService = mock<ConfigurationService>();
     loggerService = mock<LoggerService>();
     cloudflareClientService = mock<CloudflareClientService>();
+    traefikConfigService = mock<TraefikConfigService>();
+    traefikConfigService.writeHubRoute.mockResolvedValue(undefined);
     deviceRegistrationRepository = mock<DeviceRegistrationRepository>();
     repoEventsQueue = mock<RepoEventsQueue>();
 
-    configService.getConfig.mockReturnValue({ ciCloudApiUrl: 'http://cloud.api' } as any);
+    configService.getConfig.mockReturnValue({ ciCloudUrl: 'http://cloud.api', domain: 'example.com' } as any);
     (si.uuid as any) = vi.fn().mockResolvedValue({ os: 'uuid-123' });
 
     const module: TestingModule = await Test.createTestingModule({
@@ -35,6 +39,7 @@ describe('RegistrationService', () => {
         { provide: ConfigurationService, useValue: configService },
         { provide: LoggerService, useValue: loggerService },
         { provide: CloudflareClientService, useValue: cloudflareClientService },
+        { provide: TraefikConfigService, useValue: traefikConfigService },
         { provide: DeviceRegistrationRepository, useValue: deviceRegistrationRepository },
         { provide: RepoEventsQueue, useValue: repoEventsQueue },
       ],
@@ -51,6 +56,7 @@ describe('RegistrationService', () => {
   describe('isRegistered', () => {
     it('should return true if device is registered', async () => {
       deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(true);
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
 
       const result = await (service as any).isRegistered();
       expect(result).toBe(true);
@@ -71,99 +77,377 @@ describe('RegistrationService', () => {
     });
   });
 
-  describe('checkRegistrationWithCloud — port in registration body', () => {
+  describe('checkRegistrationWithCloud — polling enabled', () => {
     beforeEach(() => {
-      process.env.DEVICE_ID = 'test-device';
+      vi.spyOn(service, 'getDeviceId').mockResolvedValue('test-device');
       configService.getConfig.mockReturnValue({
-        ciCloudApiUrl: 'http://cloud.api',
-        ciHubOrganizationId: 'org-123',
-        ciHubApiKey: 'key-123',
+        ciCloudUrl: 'http://cloud.api',
         userSettings: { domain: 'example.com' },
       } as any);
     });
 
     afterEach(() => {
-      delete process.env.DEVICE_ID;
       delete process.env.LOCAL;
       delete process.env.API_PORT;
     });
 
-    it('MUST send port: 9091 in registration body when LOCAL=true', async () => {
-      process.env.LOCAL = 'true';
-      delete process.env.API_PORT;
+    it('returns true when ciCloudUrl is not configured', async () => {
+      configService.getConfig.mockReturnValue({
+        ciCloudUrl: '',
+        userSettings: { domain: 'example.com' },
+      } as any);
 
-      const mockFetch = vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          device_id: 'test',
-          status: 'registered',
-          organization_name: 'test',
-          slug: 'test',
-          tunnel_id: 't1',
-          tunnel_token: 'tk1',
-          subdomain: 'sub1',
-        }),
-      });
-      global.fetch = mockFetch as any;
+      const result = await (service as any).checkRegistrationWithCloud();
 
-      await (service as any).checkRegistrationWithCloud();
-
-      expect(mockFetch).toHaveBeenCalled();
-      const fetchCall = mockFetch.mock.calls[0];
-      const body = JSON.parse(fetchCall[1].body);
-      expect(body.port).toBe(9091);
+      expect(result).toBe(true);
     });
 
-    it('MUST send port: API_PORT value when LOCAL is not true', async () => {
-      delete process.env.LOCAL;
-      process.env.API_PORT = '4000';
-
+    it('returns false when registration not found', async () => {
       const mockFetch = vi.fn().mockResolvedValue({
         ok: true,
-        json: async () => ({
-          device_id: 'test',
-          status: 'registered',
-          organization_name: 'test',
-          slug: 'test',
-          tunnel_id: 't1',
-          tunnel_token: 'tk1',
-          subdomain: 'sub1',
-        }),
+        json: async () => ({ registered: false }),
       });
       global.fetch = mockFetch as any;
 
-      await (service as any).checkRegistrationWithCloud();
+      const result = await (service as any).checkRegistrationWithCloud();
 
-      expect(mockFetch).toHaveBeenCalled();
-      const fetchCall = mockFetch.mock.calls[0];
-      const body = JSON.parse(fetchCall[1].body);
-      expect(body.port).toBe(4000);
+      expect(result).toBe(false);
     });
 
-    it('MUST default to port 3000 when API_PORT is not set and LOCAL is not true', async () => {
-      delete process.env.LOCAL;
-      delete process.env.API_PORT;
+    it('returns false when registration is not ready', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ registered: true, ready: false }),
+      });
+      global.fetch = mockFetch as any;
 
+      const result = await (service as any).checkRegistrationWithCloud();
+
+      expect(result).toBe(false);
+    });
+
+    it('persists config and initializes infra when registration is ready', async () => {
       const mockFetch = vi.fn().mockResolvedValue({
         ok: true,
         json: async () => ({
-          device_id: 'test',
-          status: 'registered',
-          organization_name: 'test',
-          slug: 'test',
-          tunnel_id: 't1',
-          tunnel_token: 'tk1',
-          subdomain: 'sub1',
+          registered: true,
+          ready: true,
+          organization_id: 'org-123',
+          organization_name: 'Test Org',
+          slug: 'test-org',
+          subdomain: 'hub-test-org',
+          tunnel_id: 'tunnel-123',
+          tunnel_token: 'token-123',
+          api_key: 'api-123',
+          domain: 'example.com',
         }),
       });
       global.fetch = mockFetch as any;
 
-      await (service as any).checkRegistrationWithCloud();
+      const setupSpy = vi.spyOn(service as any, 'setupOrganizationInfrastructure').mockResolvedValue(undefined);
 
-      expect(mockFetch).toHaveBeenCalled();
-      const fetchCall = mockFetch.mock.calls[0];
-      const body = JSON.parse(fetchCall[1].body);
-      expect(body.port).toBe(3000);
+      const result = await (service as any).checkRegistrationWithCloud();
+
+      expect(result).toBe(true);
+      expect(configService.setUserSettings).toHaveBeenCalledWith({ ciHubApiKey: 'api-123' });
+      expect(configService.setUserSettings).toHaveBeenCalledWith({ ciHubOrganizationId: 'org-123' });
+      expect(setupSpy).toHaveBeenCalledWith('org-123', {
+        organization_name: 'Test Org',
+        tunnel_id: 'tunnel-123',
+        tunnel_token: 'token-123',
+        subdomain: 'hub-test-org',
+        slug: 'test-org',
+        domain: 'example.com',
+      });
+    });
+  });
+
+  describe('setupOrganizationInfrastructure — hubSubdomain handling', () => {
+    beforeEach(() => {
+      configService.getConfig.mockReturnValue({
+        ciCloudUrl: 'http://cloud.api',
+        userSettings: { domain: 'example.com' },
+        domain: 'example.com',
+      } as any);
+    });
+
+    it('stores hubSubdomain when creating a new device registration', async () => {
+      deviceRegistrationRepository.getDeviceRegistrationById.mockResolvedValue(null as any);
+      cloudflareClientService.initializeTunnel.mockResolvedValue({ tunnelId: 't1', token: 'tok1' } as any);
+      configService.setDomain.mockResolvedValue(undefined);
+      // Mock fetch for tunnel connectivity check
+      global.fetch = vi.fn().mockResolvedValue({ ok: true }) as any;
+
+      await (service as any).setupOrganizationInfrastructure('org-new', {
+        organization_name: 'New Org',
+        tunnel_id: 't1',
+        tunnel_token: 'tok1',
+        subdomain: 'device1-neworg',
+        slug: 'neworg',
+        domain: 'example.com',
+      });
+
+      expect(deviceRegistrationRepository.createDeviceRegistration).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 'org-new',
+          hubSubdomain: 'device1-neworg',
+        }),
+      );
+    });
+
+    it('backfills hubSubdomain when existing org is missing it', async () => {
+      deviceRegistrationRepository.getDeviceRegistrationById.mockResolvedValue({
+        id: 'org-existing',
+        slug: 'existing',
+        name: 'Existing Org',
+        tunnelId: 't1',
+        tunnelToken: 'tok1',
+        hubSubdomain: null,
+      } as any);
+
+      await (service as any).setupOrganizationInfrastructure('org-existing', {
+        organization_name: 'Existing Org',
+        tunnel_id: 't1',
+        tunnel_token: 'tok1',
+        subdomain: 'hub-existing',
+        slug: 'existing',
+      });
+
+      expect(deviceRegistrationRepository.updateDeviceRegistration).toHaveBeenCalledWith(
+        'org-existing',
+        expect.objectContaining({ hubSubdomain: 'hub-existing' }),
+      );
+    });
+
+    it('does NOT overwrite hubSubdomain when existing org already has one', async () => {
+      deviceRegistrationRepository.getDeviceRegistrationById.mockResolvedValue({
+        id: 'org-existing',
+        slug: 'existing',
+        name: 'Existing Org',
+        tunnelId: 't1',
+        tunnelToken: 'tok1',
+        hubSubdomain: 'already-set',
+      } as any);
+
+      await (service as any).setupOrganizationInfrastructure('org-existing', {
+        organization_name: 'Existing Org',
+        tunnel_id: 't1',
+        tunnel_token: 'tok1',
+        subdomain: 'new-value',
+        slug: 'existing',
+      });
+
+      const updateCall = deviceRegistrationRepository.updateDeviceRegistration.mock.calls[0];
+      if (updateCall) {
+        expect(updateCall[1]).not.toHaveProperty('hubSubdomain');
+      }
+    });
+  });
+
+  describe('pairDevice', () => {
+    beforeEach(() => {
+      vi.spyOn(service, 'getDeviceId').mockResolvedValue('test-device');
+      configService.getConfig.mockReturnValue({
+        ciCloudUrl: 'http://cloud.api',
+        userSettings: { domain: 'example.com' },
+        domain: 'example.com',
+      } as any);
+      // Device is not yet registered
+      deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(false);
+    });
+
+    it('succeeds with valid pairing code and stores registration data', async () => {
+      const portalResponse = {
+        device_id: 'test-device',
+        organization_id: 'org-pair',
+        organization_name: 'Paired Org',
+        slug: 'paired-org',
+        subdomain: 'hub-paired-org',
+        tunnel_id: 'tunnel-pair',
+        tunnel_token: 'token-pair',
+        api_key: 'key-pair',
+        domain: 'companionintelligence.com',
+      };
+
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => portalResponse,
+      });
+      global.fetch = mockFetch as any;
+
+      const setupSpy = vi.spyOn(service as any, 'setupOrganizationInfrastructure').mockResolvedValue(undefined);
+      configService.setDomain.mockResolvedValue(undefined);
+
+      const result = await service.pairDevice('ABC123');
+
+      expect(result.success).toBe(true);
+      expect(result.domain).toBe('companionintelligence.com');
+      expect(mockFetch).toHaveBeenCalledWith('http://cloud.api/api/devices/pair', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pairing_code: 'ABC123', device_id: 'test-device' }),
+      });
+      expect(configService.setUserSettings).toHaveBeenCalledWith({ ciHubApiKey: 'key-pair' });
+      expect(configService.setUserSettings).toHaveBeenCalledWith({ ciHubOrganizationId: 'org-pair' });
+      expect(setupSpy).toHaveBeenCalledWith(
+        'org-pair',
+        expect.objectContaining({
+          organization_name: 'Paired Org',
+          tunnel_id: 'tunnel-pair',
+          tunnel_token: 'token-pair',
+          subdomain: 'hub-paired-org',
+          slug: 'paired-org',
+          domain: 'companionintelligence.com',
+        }),
+      );
+      setupSpy.mockRestore();
+    });
+
+    it('returns error when pairing code is invalid (Portal returns error)', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: false,
+        statusText: 'Bad Request',
+        json: async () => ({ error: 'Invalid pairing code' }),
+      });
+      global.fetch = mockFetch as any;
+
+      const result = await service.pairDevice('XXXXXX');
+
+      expect(result.success).toBe(false);
+      expect(result.message).toBe('Invalid pairing code');
+    });
+
+    it('returns error when device is already registered', async () => {
+      deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(true);
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
+
+      const result = await service.pairDevice('ABC123');
+
+      expect(result.success).toBe(false);
+      expect(result.message).toBe('Device is already registered.');
+    });
+
+    it('returns error when Portal is unreachable', async () => {
+      const mockFetch = vi.fn().mockRejectedValue(new TypeError('fetch failed'));
+      global.fetch = mockFetch as any;
+
+      const result = await service.pairDevice('ABC123');
+
+      expect(result.success).toBe(false);
+      expect(result.message).toContain('Unable to reach CI Portal');
+    });
+
+    it('returns error when CI Cloud URL is not configured', async () => {
+      configService.getConfig.mockReturnValue({
+        ciCloudUrl: '',
+        userSettings: { domain: 'example.com' },
+        domain: 'example.com',
+      } as any);
+
+      const result = await service.pairDevice('ABC123');
+
+      expect(result.success).toBe(false);
+      expect(result.message).toBe('CI Cloud URL not configured.');
+    });
+
+    it('returns error when Portal returns incomplete data', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          device_id: 'test-device',
+          organization_id: 'org-pair',
+          // missing tunnel_id, tunnel_token, subdomain, slug
+        }),
+      });
+      global.fetch = mockFetch as any;
+
+      const result = await service.pairDevice('ABC123');
+
+      expect(result.success).toBe(false);
+      expect(result.message).toBe('Portal returned incomplete registration data.');
+    });
+  });
+
+  describe('completeRegistrationFromCallback', () => {
+    beforeEach(() => {
+      vi.spyOn(service, 'getDeviceId').mockResolvedValue('test-device');
+      configService.getConfig.mockReturnValue({
+        ciCloudUrl: 'http://cloud.api',
+        userSettings: { domain: 'example.com' },
+        domain: 'myhost.example.com',
+      } as any);
+      (si.uuid as any) = vi.fn().mockResolvedValue({ os: 'test-device' });
+    });
+
+    it('returns domain in the success response', async () => {
+      const setupSpy = vi.spyOn(service as any, 'setupOrganizationInfrastructure').mockResolvedValue(undefined);
+
+      const result = await service.completeRegistrationFromCallback({
+        deviceId: 'test-device',
+        organizationId: 'org-cb',
+        organizationName: 'Callback Org',
+        slug: 'cb-org',
+        subdomain: 'hub-cb-org',
+        tunnelId: 'tunnel-cb',
+        tunnelToken: 'token-cb',
+        apiKey: 'key-cb',
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.domain).toBe('myhost.example.com');
+      setupSpy.mockRestore();
+    });
+
+    it('uses domain from callback data when provided (fixes #190)', async () => {
+      configService.getConfig.mockReturnValue({
+        ciCloudUrl: 'http://cloud.api',
+        userSettings: { domain: 'example.com' },
+        domain: 'example.com',
+      } as any);
+      configService.setDomain.mockResolvedValue(undefined);
+      const setupSpy = vi.spyOn(service as any, 'setupOrganizationInfrastructure').mockResolvedValue(undefined);
+
+      const result = await service.completeRegistrationFromCallback({
+        deviceId: 'test-device',
+        organizationId: 'org-cb',
+        organizationName: 'Callback Org',
+        slug: 'cb-org',
+        subdomain: 'device-core1',
+        tunnelId: 'tunnel-cb',
+        tunnelToken: 'token-cb',
+        apiKey: 'key-cb',
+        domain: 'companionintelligence.com',
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.domain).toBe('companionintelligence.com');
+      expect(configService.setDomain).toHaveBeenCalledWith('companionintelligence.com');
+      expect(setupSpy).toHaveBeenCalledWith('org-cb', expect.objectContaining({ domain: 'companionintelligence.com' }));
+      setupSpy.mockRestore();
+    });
+
+    it('falls back to config domain when callback domain is not provided', async () => {
+      configService.getConfig.mockReturnValue({
+        ciCloudUrl: 'http://cloud.api',
+        userSettings: { domain: 'companionintelligence.com' },
+        domain: 'companionintelligence.com',
+      } as any);
+      const setupSpy = vi.spyOn(service as any, 'setupOrganizationInfrastructure').mockResolvedValue(undefined);
+
+      const result = await service.completeRegistrationFromCallback({
+        deviceId: 'test-device',
+        organizationId: 'org-cb',
+        organizationName: 'Callback Org',
+        slug: 'cb-org',
+        subdomain: 'device-core1',
+        tunnelId: 'tunnel-cb',
+        tunnelToken: 'token-cb',
+        apiKey: 'key-cb',
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.domain).toBe('companionintelligence.com');
+      setupSpy.mockRestore();
     });
   });
 });

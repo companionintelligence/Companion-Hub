@@ -2,7 +2,15 @@
 /**
  * QA Batch Runner
  *
- * Run QA on a batch of apps based on BATCH env var (0-6)
+ * Run QA on a batch of apps based on BATCH env var (0-6).
+ *
+ * Usage:
+ *   BATCH=<0-6> bun run scripts/qa-batch.ts
+ *
+ * Environment variables:
+ *   BATCH         - Batch number 0-6 (default: 0)
+ *   RESULTS_DIR   - Directory for QA results (default: ~/qa-results)
+ *   APP_STORE_DIR - Path to CI-App-Store/apps (default: ~/devel/CI-App-Store/apps)
  */
 
 import { execSync } from 'node:child_process';

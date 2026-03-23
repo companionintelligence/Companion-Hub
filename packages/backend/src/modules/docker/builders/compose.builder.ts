@@ -1,7 +1,7 @@
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
-import { type Service, type ServiceInput, serviceSchema } from '@runtipi/common/schemas';
-import type { AppUrn } from '@runtipi/common/types';
+import { type Service, type ServiceInput, serviceSchema } from '@ci-hub/common/schemas';
+import type { AppUrn } from '@ci-hub/common/types';
 import * as yaml from 'yaml';
 import { type BuiltService, ServiceBuilder } from './service.builder';
 import { TraefikLabelsBuilder } from './traefik-labels.builder';
@@ -68,7 +68,7 @@ export class DockerComposeBuilder {
     });
   }
 
-  private fullSubdomain?: string; // Full subdomain including org slug (e.g., mattermost-bdc), extracted from APP_PUBLIC_HOSTNAME
+  private fullSubdomain?: string; // Full subdomain including device + org slug (e.g., mattermost-test1-bdc), extracted from APP_PUBLIC_HOSTNAME
   private publicDomain?: string;
 
   private buildService = (params: Service, form: AppEventFormInput, appUrn: AppUrn, envFile?: string) => {
@@ -202,12 +202,12 @@ export class DockerComposeBuilder {
 
     // Store domain values for use in buildService
     this.domain = domain || process.env.DOMAIN || 'example.com';
-    this.localDomain = localDomain || process.env.LOCAL_DOMAIN || 'tipi.lan';
+    this.localDomain = localDomain || process.env.LOCAL_DOMAIN || 'ci.lan';
 
     // Read full subdomain (with org slug) and public domain from env file if available (set by app.helpers.ts)
-    // APP_PUBLIC_HOSTNAME format: appname-orgslug.publicdomain.com
-    // We extract the full subdomain (appname-orgslug) directly instead of reconstructing it
-    this.fullSubdomain = undefined; // Full subdomain including org slug (e.g., mattermost-bdc)
+    // APP_PUBLIC_HOSTNAME format: appname-deviceslug-orgslug.publicdomain.com
+    // We extract the full subdomain (appname-deviceslug-orgslug) directly instead of reconstructing it
+    this.fullSubdomain = undefined; // Full subdomain including device + org slug (e.g., mattermost-test1-bdc)
     this.publicDomain = undefined;
 
     if (envFile) {
@@ -217,7 +217,7 @@ export class DockerComposeBuilder {
         const envLines = envContent.split('\n');
 
         // Extract full subdomain and public domain from APP_PUBLIC_HOSTNAME
-        // Format: appname-orgslug.publicdomain.com
+        // Format: appname-deviceslug-orgslug.publicdomain.com
         for (const line of envLines) {
           if (line.startsWith('APP_PUBLIC_HOSTNAME=')) {
             const exposedDomain = line.split('=')[1]?.trim();
@@ -225,7 +225,7 @@ export class DockerComposeBuilder {
               const parts = exposedDomain.split('.');
               if (parts.length >= 2) {
                 this.publicDomain = parts.slice(-2).join('.'); // Get last two parts (e.g., companionintelligence.com)
-                // Extract full subdomain (everything before the last two dots, e.g., mattermost-bdc)
+                // Extract full subdomain (everything before the last two dots, e.g., mattermost-test1-bdc)
                 this.fullSubdomain = parts.slice(0, -2).join('.');
               }
             }

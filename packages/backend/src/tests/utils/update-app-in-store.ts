@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR } from '@/common/constants';
-import type { AppInfo } from '@runtipi/common/schemas';
+import type { AppInfo } from '@ci-hub/common/schemas';
 
 export const updateAppInStore = async (storeId: string, appId: string, newConfig: Partial<AppInfo> = {}) => {
   const appStorePath = `${DATA_DIR}/repos/${storeId}/apps/${appId}`;

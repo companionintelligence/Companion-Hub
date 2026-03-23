@@ -4,12 +4,12 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { HttpStatus, Injectable } from '@nestjs/common';
-import type { AppUrn } from '@runtipi/common/types';
+import type { AppUrn } from '@ci-hub/common/types';
 import path from 'node:path';
 import { AppsRepository } from '../apps/apps.repository';
 import type { CreateCustomAppDto, UpdateCustomAppDto } from './dto/custom-apps.dto';
 import { getFrontmatter } from '@/utils/frontmatter/frontmatter';
-import { frontmatterSchema, type AppInfo, serviceSchemaArk } from '@runtipi/common/schemas';
+import { frontmatterSchema, type AppInfo, serviceSchemaArk } from '@ci-hub/common/schemas';
 
 const APPS_FOLDER = '_user';
 

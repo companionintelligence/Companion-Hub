@@ -4,7 +4,7 @@ http:
       insecureSkipVerify: true
 
   middlewares:
-    runtipi:
+    ci-hub:
       forwardAuth:
         address: "http://ci-os-hub:5002/api/auth/traefik"
         trustForwardHeader: true

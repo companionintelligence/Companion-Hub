@@ -1,5 +1,5 @@
 import type { Architecture } from '@/common/constants';
-import { type DynamicCompose, type ServiceInput } from '@runtipi/common/schemas';
+import { type DynamicCompose, type ServiceInput } from '@ci-hub/common/schemas';
 import deepmerge from 'deepmerge';
 
 /**

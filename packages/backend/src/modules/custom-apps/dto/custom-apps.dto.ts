@@ -1,5 +1,5 @@
 import { createArkDto } from 'nestjs-arktype';
-import { dynamicComposeSchemaArk } from '@runtipi/common/schemas';
+import { dynamicComposeSchemaArk } from '@ci-hub/common/schemas';
 import { type } from 'arktype';
 
 export const createCustomAppSchema = type({

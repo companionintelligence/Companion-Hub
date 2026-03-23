@@ -66,6 +66,7 @@ export class LoggerService {
   private winstonLogger: Logger;
 
   private logsFolder: string;
+  private flushInterval: NodeJS.Timeout | null = null;
 
   constructor(id: string, folder: string, logLevel: LogLevel) {
     this.winstonLogger = newLogger(id, folder, logLevel);
@@ -143,6 +144,22 @@ export class LoggerService {
       this.winstonLogger.error('Error flushing logs', error);
     }
   };
+
+  private static readonly DAILY_MS = 24 * 60 * 60 * 1000;
+
+  public startPeriodicFlush() {
+    if (this.flushInterval) return;
+    this.flushInterval = setInterval(() => {
+      this.flush().catch((e) => this.winstonLogger.error('Periodic log flush failed', e));
+    }, LoggerService.DAILY_MS);
+  }
+
+  public stopPeriodicFlush() {
+    if (this.flushInterval) {
+      clearInterval(this.flushInterval);
+      this.flushInterval = null;
+    }
+  }
 
   private log = (level: string, messages: unknown[]) => {
     const stringMessages = messages.flatMap((m) => {

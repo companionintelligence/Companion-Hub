@@ -1,5 +1,5 @@
 import type { Architecture } from '@/common/constants';
-import type { ServiceInput } from '@runtipi/common/schemas';
+import type { ServiceInput } from '@ci-hub/common/schemas';
 import { describe, expect, it } from 'vitest';
 import { mergeArchitectureOverrides } from '../compose-helpers';
 

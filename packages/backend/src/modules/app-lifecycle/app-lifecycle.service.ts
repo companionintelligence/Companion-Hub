@@ -5,7 +5,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { SSEService } from '@/core/sse/sse.service';
 import { HttpStatus, Inject, Injectable, OnApplicationBootstrap } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
-import type { AppUrn } from '@runtipi/common/types';
+import type { AppUrn } from '@ci-hub/common/types';
 import { lt, valid } from 'semver';
 import semver from 'semver';
 import validator from 'validator';
@@ -540,6 +540,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
     const changed = await this.appRepository.updateAppById(app.id, {
       exposed: exposed ?? false,
       exposedLocal: parsedForm.exposedLocal ?? false,
+      exposureMode: parsedForm.exposureMode ?? 'local',
       openPort: parsedForm.openPort,
       port: parsedForm.port ?? appInfo.port,
       domain: domain ?? null,
@@ -675,7 +676,12 @@ export class AppLifecycleService implements OnApplicationBootstrap {
           .map(async (app: AppFromDb) => {
             const subdomain = app.localSubdomain || `${app.appName}-${app.appStoreSlug}`;
             const orgSlug = orgInfo.slug;
-            const publicHostname = `${subdomain}-${orgSlug}.${publicDomain}`;
+            const hubSub = orgInfo.hubSubdomain;
+            const deviceSlug = hubSub ? hubSub.replace(/^hub-/, '').replace(new RegExp(`-${orgSlug}$`), '') : null;
+            const publicHostname =
+              deviceSlug && deviceSlug !== orgSlug
+                ? `${subdomain}-${deviceSlug}-${orgSlug}.${publicDomain}`
+                : `${subdomain}-${orgSlug}.${publicDomain}`;
 
             return {
               name: app.appName,
@@ -689,24 +695,26 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       );
 
       // Include the Hub in every sync so CI-Cloud preserves its tunnel route.
-      // Hub subdomain is extracted from the stored domain: {hubSub}-{orgSlug}.{rootDomain}
-      const userDomain = userSettings.domain;
-      if (userDomain) {
+      // `hubSubdomain` (from device_registration) is the canonical source for Hub route identity.
+      // Do NOT use `DOMAIN` / `userSettings.domain` to derive the Hub subdomain — DOMAIN is the
+      // root domain for app hostname construction, not the Hub prefix.
+      // When hubSubdomain is null (e.g. pre-migration records), the Hub entry is omitted from sync.
+      const hubSub = orgInfo.hubSubdomain;
+      if (hubSub && publicDomain) {
         const orgSlug = orgInfo.slug;
-        const domainPrefix = userDomain.split('.')[0] ?? '';
         const orgSuffix = `-${orgSlug}`;
-        const hubSubdomain = domainPrefix.endsWith(orgSuffix) ? domainPrefix.slice(0, -orgSuffix.length) : domainPrefix;
+        const deviceName = hubSub.endsWith(orgSuffix) ? hubSub.slice(0, -orgSuffix.length) : hubSub;
+        const hubHostname = `${hubSub}.${publicDomain}`;
 
-        if (hubSubdomain) {
-          exposedApps.unshift({
-            name: 'OS Hub',
-            subdomain: hubSubdomain,
-            localPort: 80,
-            protocol: 'http' as const,
-            hostname: 'traefik',
-            originServerName: userDomain,
-          });
-        }
+        exposedApps.unshift({
+          name: 'OS Hub',
+          subdomain: deviceName,
+          localPort: 80,
+          protocol: 'http' as const,
+          hostname: 'traefik',
+          originServerName: hubHostname,
+          isHub: true,
+        });
       }
 
       await this.cloudflareClientService.syncState(orgInfo.id, exposedApps, orgInfo.tunnelId || undefined);

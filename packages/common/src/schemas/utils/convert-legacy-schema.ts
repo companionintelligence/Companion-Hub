@@ -22,7 +22,7 @@ export const parseComposeJson = (data: unknown): ParsedCompose => {
   if (schemaVersion === 1) {
     const mainServiceName = Object.values(parsed.data.services).find((s) => s.isMain)?.name;
     console.warn(
-      `${mainServiceName} is using deprecated schema version 1 or missing schemaVersion. Please update the compose schema to the latest version. https://runtipi.io/docs/reference/dynamic-compose`,
+      `${mainServiceName} is using deprecated schema version 1 or missing schemaVersion. Please update the compose schema to the latest version. https://docs.companionintelligence.com/reference/dynamic-compose`,
     );
 
     // @ts-expect-error - Type narrowing for V1 schema conversion

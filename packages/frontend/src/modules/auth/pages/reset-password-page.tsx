@@ -4,8 +4,8 @@ import { Card, CardContent } from '@/components/ui/Card';
 import { Alert, AlertDescription } from '@/components/ui/Alert/Alert';
 import { useUserContext } from '@/context/user-context';
 import type { TranslatableError } from '@/types/error.types';
-import { useMutation, useSuspenseQuery } from '@tanstack/react-query';
-import { Info } from 'lucide-react';
+import { useMutation, useQuery } from '@tanstack/react-query';
+import { Info, Loader2 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { Trans, useTranslation } from 'react-i18next';
 import { Link, useNavigate } from 'react-router';
@@ -16,8 +16,9 @@ export default () => {
   const navigate = useNavigate();
   const { isPasswordResetDisabled, domain } = useUserContext();
 
-  const { data } = useSuspenseQuery({
+  const { data, isLoading } = useQuery({
     ...checkResetPasswordRequestOptions(),
+    staleTime: 30_000,
   });
 
   const resetPassword = useMutation({
@@ -33,6 +34,14 @@ export default () => {
       toast.error(t(e.message, e.intlParams));
     },
   });
+
+  if (isLoading || !data) {
+    return (
+      <div className="flex items-center justify-center p-8">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
 
   if (resetPassword.data?.success && resetPassword.data?.email) {
     return (
@@ -108,7 +117,7 @@ export default () => {
         <h2 className="text-xl font-semibold text-center mb-4">{t('AUTH_RESET_PASSWORD_TITLE')}</h2>
         <p className="text-sm text-muted-foreground mb-4">{t('AUTH_RESET_PASSWORD_INSTRUCTIONS')}</p>
         <pre className="bg-muted/50 rounded-lg p-3 text-sm">
-          <code>./runtipi-cli reset-password</code>
+          <code>./ci-hub-cli reset-password</code>
         </pre>
       </>
     );

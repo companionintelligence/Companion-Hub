@@ -23,16 +23,15 @@ const envSchema = z.object({
   RABBITMQ_PORT: z.coerce.number().default(5672),
   ARCHITECTURE: z.enum(ARCHITECTURES).default('amd64'),
   INTERNAL_IP: z.string(),
-  TIPI_VERSION: z.string(),
+  CI_HUB_VERSION: z.string(),
   JWT_SECRET: z.string(),
   APPS_REPO_URL: z.string().optional(),
   CI_CLOUD_URL: z.string(),
-  CI_CLOUD_FRONTEND_URL: z.string(),
   DOMAIN: z.string(),
   LOCAL_DOMAIN: z.string(),
   DNS_IP: z.string().default('9.9.9.9'),
-  RUNTIPI_APP_DATA_PATH: z.string(),
-  RUNTIPI_FORWARD_AUTH_URL: z.string(),
+  CI_HUB_APP_DATA_PATH: z.string(),
+  CI_HUB_FORWARD_AUTH_URL: z.string(),
   DEMO_MODE: z.string().transform((val) => val.toLowerCase() === 'true'),
   DISABLE_PASSWORD_RESET: z
     .string()
@@ -87,6 +86,18 @@ export class ConfigurationService {
 
     const conf = { ...Object.fromEntries(envMap), ...process.env } as Record<string, string>;
 
+    // Backward compatibility: map legacy env var names to new names (new takes precedence)
+    const legacyEnvMap: Record<string, string> = {
+      TIPI_VERSION: 'CI_HUB_VERSION',
+      RUNTIPI_APP_DATA_PATH: 'CI_HUB_APP_DATA_PATH',
+      RUNTIPI_FORWARD_AUTH_URL: 'CI_HUB_FORWARD_AUTH_URL',
+    };
+    for (const [oldName, newName] of Object.entries(legacyEnvMap)) {
+      if (!conf[newName] && conf[oldName]) {
+        conf[newName] = conf[oldName];
+      }
+    }
+
     const env = envSchema.safeParse(conf);
 
     if (!env.success) {
@@ -133,7 +144,7 @@ export class ConfigurationService {
         appDir: APP_DIR,
       },
       logLevel: env.data.LOG_LEVEL,
-      version: env.data.TIPI_VERSION,
+      version: env.data.CI_HUB_VERSION,
       isProduction: NODE_ENV === 'production',
       userSettings: {
         allowAutoThemes: env.data.ALLOW_AUTO_THEMES,
@@ -150,8 +161,8 @@ export class ConfigurationService {
         internalIp: env.data.INTERNAL_IP,
         postgresPort: env.data.POSTGRES_PORT,
         dnsIp: env.data.DNS_IP,
-        appDataPath: env.data.RUNTIPI_APP_DATA_PATH,
-        forwardAuthUrl: env.data.RUNTIPI_FORWARD_AUTH_URL,
+        appDataPath: env.data.CI_HUB_APP_DATA_PATH,
+        forwardAuthUrl: env.data.CI_HUB_FORWARD_AUTH_URL,
         persistTraefikConfig: env.data.PERSIST_TRAEFIK_CONFIG,
         eventsTimeout: env.data.QUEUE_TIMEOUT_IN_MINUTES,
         advancedSettings: env.data.ADVANCED_SETTINGS,
@@ -166,9 +177,6 @@ export class ConfigurationService {
       domain: env.data.DOMAIN,
       localDomain: env.data.LOCAL_DOMAIN,
       ciCloudUrl: env.data.CI_CLOUD_URL,
-      ciCloudAppStoreUrl: `${env.data.CI_CLOUD_URL}/api`,
-      ciCloudApiUrl: `${env.data.CI_CLOUD_URL}/api`,
-      ciCloudFrontendUrl: env.data.CI_CLOUD_FRONTEND_URL,
       ciHubOrganizationId: settingsCreds.ciHubOrganizationId,
       ciHubApiKey: settingsCreds.ciHubApiKey,
       architecture: env.data.ARCHITECTURE,

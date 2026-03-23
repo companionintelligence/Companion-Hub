@@ -18,7 +18,7 @@ import { AdvancedSettingsModal } from '../advanced-settings-modal/advanced-setti
 import './user-settings-form.css';
 import { Alert, AlertDescription, AlertHeading, AlertIcon } from '@/components/ui/Alert/Alert';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/Select';
-import { ColorSelector, THEME_COLOR_ENUM, type ThemeColor } from '../color-selector/color-selector';
+import { THEME_COLOR_ENUM } from '../color-selector/color-selector';
 import { THEME_BASE_ENUM, type ThemeBase, ThemeBaseSelector } from '../theme-base-selector/theme-base-selector';
 import { TimeZoneSuspense } from '@/components/timezone-selector/timezone.suspense';
 
@@ -172,13 +172,7 @@ export const UserSettingsForm = (props: IProps) => {
             name="themeBase"
             render={({ field: { onChange, value } }) => <ThemeBaseSelector value={value as ThemeBase} onChange={onChange} />}
           />
-          <Controller
-            control={control}
-            name="themeColor"
-            render={({ field: { onChange, value } }) => (
-              <ColorSelector name="themeColor" label={t('SETTINGS_GENERAL_PRIMARY_COLOR')} value={value as ThemeColor} onChange={onChange} />
-            )}
-          />
+          {/* ColorSelector hidden — theme colors don't apply yet */}
         </CardContent>
       </Card>
       <Card>
@@ -343,7 +337,7 @@ export const UserSettingsForm = (props: IProps) => {
               </>
             }
             error={errors.appsRepoUrl?.message}
-            placeholder="https://github.com/runtipi/runtipi-appstore"
+            placeholder="https://github.com/companionintelligence/ci-hub-appstore"
           />
         </div> */}
             <div>

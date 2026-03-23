@@ -28,9 +28,9 @@
       "persistent": true,
       "env": [
         "API_PORT",
-        "TIPI_DATA_DIR",
-        "TIPI_APP_DATA_DIR",
-        "TIPI_APP_DIR",
+        "CI_HUB_DATA_DIR",
+        "CI_HUB_APP_DATA_DIR",
+        "CI_HUB_APP_DIR",
         "NODE_ENV",
         "LOCAL",
         "ROOT_FOLDER_HOST",
@@ -45,19 +45,15 @@
         "RABBITMQ_PASSWORD",
         "JWT_SECRET",
         "INTERNAL_IP",
-        "TIPI_VERSION",
+        "CI_HUB_VERSION",
         "LOG_LEVEL",
         "RABBITMQ_USERNAME",
         "RABBITMQ_PASSWORD",
         "RABBITMQ_HOST",
-        "CI_CLOUD_API_URL",
-        "CI_CLOUD_FRONTEND_URL",
-        "CI_CLOUD_APP_STORE_URL",
         "CI_CLOUD_URL",
         "LOCAL_DOMAIN",
         "DOMAIN",
-        "APPS_REPO_URL",
-        "DEVICE_ID"
+        "APPS_REPO_URL"
       ]
     },
     "test": {

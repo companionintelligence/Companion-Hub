@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export type Topic = 'app' | 'app-logs' | 'runtipi-logs';
+export type Topic = 'app' | 'app-logs' | 'ci-hub-logs';
 
 export const sseSchema = z.union([
   z.object({
@@ -60,7 +60,7 @@ export const sseSchema = z.union([
     }),
   }),
   z.object({
-    topic: z.literal('runtipi-logs'),
+    topic: z.literal('ci-hub-logs'),
     data: z.object({
       event: z.union([z.literal('newLogs'), z.literal('stopLogs')]),
       lines: z.array(z.string()).optional(),
