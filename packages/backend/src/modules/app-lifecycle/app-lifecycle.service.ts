@@ -58,6 +58,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
     }, 5000);
 
     // Regenerate Traefik file-based config on startup to sync existing running apps
+    // TODO(#244): revisit on next Traefik upgrade
     // This is a workaround for Traefik Docker provider API version incompatibility
     this.logger.info('Regenerating Traefik file-based configuration on startup...');
     setTimeout(async () => {

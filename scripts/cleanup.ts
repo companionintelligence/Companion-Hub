@@ -18,7 +18,7 @@ try {
   const containersByNetwork = await $`docker ps -a --filter network=ci_os_hub_network --format {{.Names}}`.quiet();
   const containersByNewNetwork = await $`docker ps -a --filter network=ci-os-hub_network --format {{.Names}}`.quiet();
 
-  // Also get containers by project name (ci-os-hub, legacy runtipi, or e2e tests)
+  // Also get containers by project name (ci-os-hub, ci-hub, or e2e tests)
   const containersByProject = await $`docker ps -a --filter label=com.docker.compose.project=ci-os-hub --format {{.Names}}`.quiet();
   const containersByLegacyProject = await $`docker ps -a --filter label=com.docker.compose.project=ci-hub --format {{.Names}}`.quiet();
 
@@ -99,7 +99,7 @@ try {
   const volumes = await $`docker volume ls --format {{.Name}}`.quiet();
   const volumeNames = volumes.stdout.toString().trim().split('\n').filter(Boolean);
 
-  // Filter volumes related to ci-os-hub/ci_os_hub/apps (include legacy runtipi volumes)
+  // Filter volumes related to ci-os-hub/ci_os_hub/apps
   const relatedVolumes = volumeNames.filter(
     (vol) =>
       vol.includes('ci_os_hub') ||
@@ -162,10 +162,10 @@ try {
 // Step 4: Clean up docker compose
 console.log('\n Cleaning up docker compose...');
 try {
-  // Clean up both new and legacy project names
+  // Clean up both current and legacy project names
   await $`docker compose --project-name ci-os-hub -f docker-compose.prod.yml down -v`.quiet();
   await $`docker compose --project-name ci-hub -f docker-compose.prod.yml down -v`.quiet();
-  await $`docker compose --project-name runtipi -f docker-compose.prod.yml down -v`.quiet();
+  await $`docker compose --project-name runtipi -f docker-compose.prod.yml down -v`.quiet(); // legacy ci-hub project name
   await $`docker compose --project-name ci-hub -f docker-compose.local.yml down -v`.quiet();
   console.log('   ✅ Docker compose cleaned');
 } catch (_error) {

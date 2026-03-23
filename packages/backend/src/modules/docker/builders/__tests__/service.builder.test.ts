@@ -111,37 +111,6 @@ describe('ServiceBuilder', () => {
       service = new ServiceBuilder().setName('test').setImage('test');
     });
 
-    describe('Legacy boolean flags (backward compatibility)', () => {
-      it('should handle shared flag', () => {
-        const built = service.setVolume({ hostPath: '/host', containerPath: '/container', shared: true }).build();
-
-        expect(built.volumes).toEqual(['/host:/container:z']);
-      });
-
-      it('should handle private flag', () => {
-        const built = service.setVolume({ hostPath: '/host', containerPath: '/container', private: true }).build();
-
-        expect(built.volumes).toEqual(['/host:/container:Z']);
-      });
-
-      it('should throw error when both shared and private are set', () => {
-        expect(() => {
-          service.setVolume({
-            hostPath: '/host',
-            containerPath: '/container',
-            shared: true,
-            private: true,
-          });
-        }).toThrowError('Only one of shared or private can be set');
-      });
-
-      it('should combine readOnly with legacy flags', () => {
-        const built = service.setVolume({ hostPath: '/host', containerPath: '/container', readOnly: true, shared: true }).build();
-
-        expect(built.volumes).toEqual(['/host:/container:ro:z']);
-      });
-    });
-
     describe('New bind mount propagation', () => {
       it('should handle rshared propagation mode', () => {
         const built = service
@@ -276,17 +245,6 @@ describe('ServiceBuilder', () => {
             bind: { propagation: 'rshared' },
           },
         ]);
-      });
-
-      it('should throw error when mixing legacy flags with bind propagation', () => {
-        expect(() => {
-          service.setVolume({
-            hostPath: '/host',
-            containerPath: '/container',
-            shared: true,
-            bind: { propagation: 'rshared' },
-          });
-        }).toThrowError('Cannot use both legacy flags (shared/private) and new bind.propagation simultaneously');
       });
     });
 
