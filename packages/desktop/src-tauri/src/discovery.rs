@@ -27,7 +27,12 @@ pub async fn find_hubs() -> Result<Vec<String>, Box<dyn std::error::Error + Send
             Ok(Ok(Ok(ServiceEvent::ServiceResolved(info)))) => {
                 let port = info.get_port();
                 for addr in info.get_addresses() {
-                    hubs.push(format!("http://{}:{}", addr, port));
+                    let url = if addr.is_ipv6() {
+                        format!("http://[{}]:{}", addr, port)
+                    } else {
+                        format!("http://{}:{}", addr, port)
+                    };
+                    hubs.push(url);
                 }
             }
             _ => {
