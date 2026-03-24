@@ -4,10 +4,10 @@
   "version": "0.1.0",
   "identifier": "computer.ci.app.hub",
   "build": {
-    "beforeDevCommand": "cd ../.. && bun run dev:app",
+    "beforeDevCommand": "cd ../../.. && bun run dev:app",
     "devUrl": "http://localhost:9091",
-    "beforeBuildCommand": "cd ../.. && bun run build",
-    "frontendDist": "../../packages/frontend/build/client"
+    "beforeBuildCommand": "cd ../../.. && bun run build",
+    "frontendDist": "../../../packages/frontend/build/client"
   },
   "bundle": {
     "active": true,
