@@ -437,7 +437,7 @@ export const InstallForm: React.FC<IProps> = ({
   // In simple mode (when user.advancedMode is false) we completely hide
   // all app configuration form fields from the DOM. Only render fields
   // when the user is in advanced mode.
-  const visibleFields = isAdvancedMode ? formFields.filter(typeFilter) : [];
+  const visibleFields = isAdvancedMode ? formFields.filter(typeFilter) : formFields.filter((field) => field.required);
   const hasConfigSection = visibleFields.length > 0 || (guestDashboard && isAdvancedMode) || isAdvancedMode;
 
   return (
