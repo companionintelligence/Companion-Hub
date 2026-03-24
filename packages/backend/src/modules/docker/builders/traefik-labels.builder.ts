@@ -4,10 +4,6 @@ interface TraefikLabelsArgs {
   internalPort: number | string;
   appId: string;
   exposureMode: ExposureMode;
-  /** @deprecated Use exposureMode instead */
-  exposedLocal?: boolean;
-  /** @deprecated Use exposureMode instead */
-  exposed?: boolean;
   storeId: string;
   enableAuth?: boolean;
   localSubdomain?: string;
@@ -23,16 +19,8 @@ export class TraefikLabelsBuilder {
   constructor(private params: TraefikLabelsArgs) {
     const mainNetworkName = `${process.env.HUB_CONTAINER_NAME || 'ci-os-hub'}_network`;
 
-    // Resolve effective mode — prefer explicit exposureMode, fall back to legacy booleans
-    if (params.exposureMode && params.exposureMode !== 'local') {
-      this.effectiveMode = params.exposureMode;
-    } else if (params.exposedLocal) {
-      this.effectiveMode = 'cloudflare';
-    } else if (params.exposed) {
-      this.effectiveMode = 'cloudflare';
-    } else {
-      this.effectiveMode = params.exposureMode || 'local';
-    }
+    // Resolve effective mode
+    this.effectiveMode = params.exposureMode || 'local';
 
     this.labels = {
       generated: true,
@@ -43,7 +31,7 @@ export class TraefikLabelsBuilder {
   }
 
   addExposedLabels() {
-    if (this.effectiveMode === 'cloudflare' || this.params.exposed) {
+    if (this.effectiveMode === 'cloudflare') {
       Object.assign(this.labels, {
         'traefik.enable': true,
         // biome-ignore lint/suspicious/noTemplateCurlyInString: Traefik label requires literal ${APP_PUBLIC_HOSTNAME}
@@ -67,7 +55,7 @@ export class TraefikLabelsBuilder {
   }
 
   addExposedLocalLabels() {
-    if (this.effectiveMode === 'cloudflare' || this.params.exposedLocal) {
+    if (this.effectiveMode === 'cloudflare') {
       const subdomain = this.params.localSubdomain || `${this.params.appId}-${this.params.storeId}`;
       const domainToUse = this.params.publicDomain || 'example.com';
       const publicHost = `${subdomain}.${domainToUse}`;

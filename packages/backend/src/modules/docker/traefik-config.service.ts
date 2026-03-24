@@ -42,6 +42,7 @@ export class TraefikConfigService {
 
   /**
    * Generate Traefik file-based configuration from running Docker containers
+   * // TODO(#244): revisit on next Traefik upgrade
    * This is a workaround for Traefik Docker provider API version incompatibility
    */
   public async generateTraefikConfig(): Promise<void> {

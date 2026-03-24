@@ -3,6 +3,8 @@ import { ApiTags, ApiOperation } from '@nestjs/swagger';
 import { AuthGuard } from '@/modules/auth/auth.guard';
 import { SystemInspectorService } from './system-inspector.service';
 
+// Registered in SystemModule (system.module.ts) as a controller + provider
+
 @ApiTags('System Inspector')
 @Controller('system-inspector')
 @UseGuards(AuthGuard)

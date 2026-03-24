@@ -15,7 +15,6 @@ const buttonVariants = cva(
         secondary: 'bg-secondary text-secondary-foreground shadow-sm hover:bg-secondary/80',
         ghost: 'hover:bg-accent hover:text-accent-foreground',
         link: 'text-primary underline-offset-4 hover:underline',
-        // Mapped legacy variants
         success: 'bg-green-600 text-white shadow hover:bg-green-700',
         warning: 'bg-yellow-500 text-white shadow hover:bg-yellow-600',
         info: 'bg-blue-500 text-white shadow hover:bg-blue-600',
@@ -44,7 +43,7 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
   ({ className, variant, intent, size, asChild = false, loading, children, disabled, ...props }, ref) => {
     const Comp = asChild ? Slot : 'button';
 
-    // Map legacy intent to variant if variant is not provided (or to override if needed)
+    // Map intent to variant if variant is not provided
     // We prioritize the explicit 'variant' prop if it exists.
     let finalVariant = variant;
 

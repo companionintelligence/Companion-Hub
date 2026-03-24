@@ -8,7 +8,6 @@ export default [
     route('reset-password', './modules/auth/pages/reset-password-page.tsx', { id: 'reset-password' }),
     route('device-registration', './modules/auth/pages/device-registration-page.tsx', { id: 'device-registration' }),
   ]),
-  route('playground', './modules/playground/pages/playground-page.tsx', { id: 'playground' }),
   // Onboarding (authenticated but outside dashboard layout)
   route('onboarding', './modules/onboarding/pages/onboarding-page.tsx', { id: 'onboarding' }),
   // Authenticated routes

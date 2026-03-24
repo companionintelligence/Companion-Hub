@@ -370,7 +370,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   }
 
   private async verifyLicense() {
-    this.logger.info('License verification skipped (deprecated). Assuming valid registration.');
+    // License verification is not currently implemented
     return;
   }
 

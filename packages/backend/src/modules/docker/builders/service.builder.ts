@@ -13,8 +13,6 @@ interface ServiceVolume {
   hostPath: string;
   containerPath: string;
   readOnly?: boolean;
-  shared?: boolean;
-  private?: boolean;
   bind?: {
     propagation?: 'rprivate' | 'private' | 'rshared' | 'shared' | 'rslave' | 'slave';
   };
@@ -247,9 +245,6 @@ export class ServiceBuilder {
    * @example
    * ```typescript
    * const service = new ServiceBuilder();
-   * // Legacy usage (backward compatible)
-   * service.setVolume({ hostPath: '/path/to/host', containerPath: '/path/to/container', shared: true });
-   * // New bind propagation usage
    * service.setVolume({
    *   hostPath: '/path/to/host',
    *   containerPath: '/path/to/container',
@@ -260,18 +255,6 @@ export class ServiceBuilder {
   setVolume(volume: ServiceVolume) {
     if (!this.service.volumes) {
       this.service.volumes = [];
-    }
-
-    // Validation: ensure only one propagation method is used
-    const legacyFlags = [volume.shared, volume.private].filter(Boolean).length;
-    const newBindFlag = Boolean(volume.bind?.propagation);
-
-    if (legacyFlags > 1) {
-      throw new Error('Only one of shared or private can be set');
-    }
-
-    if (legacyFlags > 0 && newBindFlag) {
-      throw new Error('Cannot use both legacy flags (shared/private) and new bind.propagation simultaneously');
     }
 
     if (volume.bind?.propagation) {
@@ -287,13 +270,7 @@ export class ServiceBuilder {
       this.service.volumes.push(longFormVolume);
     } else {
       const readOnly = volume.readOnly ? ':ro' : '';
-
-      let propagationFlag = '';
-      const shared = volume.shared ? ':z' : '';
-      const privateVolume = volume.private ? ':Z' : '';
-      propagationFlag = shared + privateVolume;
-
-      this.service.volumes.push(`${volume.hostPath}:${volume.containerPath}${readOnly}${propagationFlag}`);
+      this.service.volumes.push(`${volume.hostPath}:${volume.containerPath}${readOnly}`);
     }
 
     return this;

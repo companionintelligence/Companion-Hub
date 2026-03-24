@@ -21,10 +21,6 @@ const SelectTrigger = React.forwardRef<
     value?: string | number | undefined | null;
   }
 >(({ className, children, label, error, onClear, value, ...props }, ref) => {
-  // If label/custom props are used, we follow the legacy pattern of rendering a wrapper.
-  // We apply the className to the wrapper if label is present (legacy behavior seems to be: className on label).
-  // If no label, apply className to button.
-
   const handleClear = (e: React.MouseEvent) => {
     e.stopPropagation();
     e.preventDefault();

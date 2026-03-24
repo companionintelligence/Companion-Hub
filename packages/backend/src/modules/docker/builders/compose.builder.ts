@@ -171,7 +171,6 @@ export class DockerComposeBuilder {
         appId: appName,
         storeId: appStoreId,
         exposureMode: effectiveExposureMode as 'local' | 'cloudflare' | 'tailscale',
-        exposedLocal: form.exposedLocal,
         enableAuth: form.enableAuth,
         localSubdomain: subdomainToUse, // Use full subdomain (with org slug) from APP_PUBLIC_HOSTNAME
         publicDomain: publicDomainToUse,
