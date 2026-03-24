@@ -32,11 +32,20 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
         })
         .build(app)?;
 
+    // Build a single reusable client with explicit connect + overall timeouts
+    // so the health-check loop can never stall indefinitely.
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(5))
+        .build()?;
+
     // Spawn background health-check loop
     let status_ref = Arc::clone(&status_item);
     tauri::async_runtime::spawn(async move {
         loop {
-            let ok = reqwest::get("http://localhost:5002/api/health")
+            let ok = client
+                .get("http://localhost:5002/api/health")
+                .send()
                 .await
                 .map(|r| r.status().is_success())
                 .unwrap_or(false);
