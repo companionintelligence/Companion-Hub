@@ -30,7 +30,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost http: https: ws: wss:; img-src 'self' data: blob: https:; font-src 'self' data:"
     },
     "trayIcon": {
       "iconPath": "icons/icon.png",
