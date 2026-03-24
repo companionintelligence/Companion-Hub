@@ -37,7 +37,9 @@ pub fn run() {
             tray::create_tray(app)?;
 
             // Restore saved window geometry
-            let window = app.get_webview_window("main").unwrap();
+            let window = app
+                .get_webview_window("main")
+                .ok_or("main window not found")?;
             if let Ok(store) = app.store("settings.json") {
                 if let Some(x) = store.get("window_x").and_then(|v: serde_json::Value| v.as_f64()) {
                     if let Some(y) = store.get("window_y").and_then(|v: serde_json::Value| v.as_f64()) {
