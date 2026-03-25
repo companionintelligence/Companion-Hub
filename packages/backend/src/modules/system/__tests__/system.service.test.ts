@@ -25,6 +25,7 @@ describe('SystemService', () => {
     // Mock systeminformation
     (si.currentLoad as any) = vi.fn().mockResolvedValue({ currentLoad: 50 });
     (si.fsSize as any) = vi.fn().mockResolvedValue([{ available: 50 * 1024 * 1024 * 1024, size: 100 * 1024 * 1024 * 1024 }]);
+    (si.graphics as any) = vi.fn().mockResolvedValue({ controllers: [{ utilizationGpu: 30, memoryTotal: 8192, memoryUsed: 4096 }] });
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -64,6 +65,8 @@ describe('SystemService', () => {
       expect(result.diskUsed).toBe(50);
       expect(result.memoryTotal).toBe(8);
       expect(result.percentUsedMemory).toBe(50);
+      expect(result.gpuLoad).toBe(30);
+      expect(result.vramUsedPercent).toBe(50);
     });
 
     it('should handle meminfo read failure', async () => {
@@ -80,6 +83,27 @@ describe('SystemService', () => {
       (si.fsSize as any).mockResolvedValue([]);
       const result = await service.getSystemLoad();
       expect(result.diskSize).toBe(0);
+    });
+
+    it('should handle GPU info failure gracefully', async () => {
+      filesystemService.readTextFile.mockResolvedValue('MemTotal: 8388608\nMemAvailable: 4194304');
+      (si.graphics as any).mockRejectedValue(new Error('No GPU'));
+
+      const result = await service.getSystemLoad();
+
+      expect(loggerService.error).toHaveBeenCalled();
+      expect(result.gpuLoad).toBe(0);
+      expect(result.vramUsedPercent).toBe(0);
+    });
+
+    it('should handle missing GPU controller gracefully', async () => {
+      filesystemService.readTextFile.mockResolvedValue('MemTotal: 8388608\nMemAvailable: 4194304');
+      (si.graphics as any).mockResolvedValue({ controllers: [] });
+
+      const result = await service.getSystemLoad();
+
+      expect(result.gpuLoad).toBe(0);
+      expect(result.vramUsedPercent).toBe(0);
     });
   });
 

@@ -1,5 +1,5 @@
 import { systemLoadOptions, getInstalledAppsOptions } from '@/api-client/@tanstack/react-query.gen';
-import { Cpu, Database, LayoutGrid, MemoryStick } from 'lucide-react';
+import { Cpu, Database, LayoutGrid, MemoryStick, MonitorPlay, Layers } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { CompactSystemStat } from '../components/compact-system-stat';
@@ -59,6 +59,22 @@ export default () => {
                 icon={MemoryStick}
                 progress={systemData.percentUsedMemory}
                 color="green"
+              />
+              <CompactSystemStat
+                isLoading={false}
+                title={t('DASHBOARD_GPU_TITLE')}
+                metric={`${systemData.gpuLoad.toFixed(2)}%`}
+                icon={MonitorPlay}
+                progress={systemData.gpuLoad}
+                color="primary"
+              />
+              <CompactSystemStat
+                isLoading={false}
+                title={t('DASHBOARD_VRAM_TITLE')}
+                metric={`${systemData.vramUsedPercent}%`}
+                icon={Layers}
+                progress={systemData.vramUsedPercent}
+                color="blue"
               />
             </>
           )}

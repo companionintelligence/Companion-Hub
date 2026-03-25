@@ -378,6 +378,8 @@
   "DASHBOARD_DISK_SPACE_SUBTITLE": "Used out of {{total}} GB",
   "DASHBOARD_DISK_SPACE_TITLE": "Disk space",
   "DASHBOARD_MEMORY_TITLE": "Memory used",
+  "DASHBOARD_GPU_TITLE": "GPU load",
+  "DASHBOARD_VRAM_TITLE": "VRAM used",
   "DASHBOARD_TITLE": "Dashboard",
   "DASHBOARD_NO_APPS_MESSAGE": "Click here to install your first app",
   "DASHBOARD_IP_WARNING_TITLE": "Insecure configuration",

@@ -39,6 +39,23 @@ export class SystemService {
     const memoryFree = Math.round(Number(memResult.available) / 1024 / 1024 / 1024);
     const percentUsedMemory = Math.round(((memoryTotal - memoryFree) / memoryTotal) * 100);
 
+    let gpuLoad = 0;
+    let vramUsedPercent = 0;
+    try {
+      const { controllers } = await si.graphics();
+      const gpu = controllers[0];
+      if (gpu) {
+        gpuLoad = gpu.utilizationGpu ?? 0;
+        const vramTotal = gpu.memoryTotal ?? gpu.vram ?? 0;
+        const vramUsed = gpu.memoryUsed ?? 0;
+        if (vramTotal > 0) {
+          vramUsedPercent = Math.round((vramUsed / vramTotal) * 100);
+        }
+      }
+    } catch (e) {
+      this.logger.error(`Unable to read GPU info: ${e}`);
+    }
+
     return {
       diskUsed: diskUsed || 0,
       diskSize: diskSize || 0,
@@ -46,6 +63,8 @@ export class SystemService {
       cpuLoad: currentLoad || 0,
       memoryTotal: memoryTotal || 0,
       percentUsedMemory: percentUsedMemory || 0,
+      gpuLoad: gpuLoad || 0,
+      vramUsedPercent: vramUsedPercent || 0,
     };
   }
 

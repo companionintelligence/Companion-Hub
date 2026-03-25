@@ -8,6 +8,8 @@ const loadSchema = type({
   cpuLoad: 'number = 0',
   memoryTotal: 'number = 0',
   percentUsedMemory: 'number = 0',
+  gpuLoad: 'number = 0',
+  vramUsedPercent: 'number = 0',
 });
 
 // Load

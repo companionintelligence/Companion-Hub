@@ -130,6 +130,8 @@ export type LoadDto = {
     memoryTotal: number;
     percentUsed: number;
     percentUsedMemory: number;
+    gpuLoad: number;
+    vramUsedPercent: number;
 };
 
 export type LoginBody = {
