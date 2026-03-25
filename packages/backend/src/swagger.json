@@ -105,6 +105,20 @@
         ]
       }
     },
+    "/api/complete-onboarding": {
+      "patch": {
+        "operationId": "completeOnboarding",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "App"
+        ]
+      }
+    },
     "/api/registration/status": {
       "get": {
         "operationId": "getStatus",
@@ -202,6 +216,14 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "domain",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -252,6 +274,66 @@
           }
         },
         "summary": "Validate organization name/subdomain availability",
+        "tags": [
+          "Registration"
+        ]
+      }
+    },
+    "/api/registration/verify-pairing-code": {
+      "post": {
+        "operationId": "verifyPairingCode",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Pairing code verified and device identity bound"
+          },
+          "400": {
+            "description": "Invalid or missing pairing code"
+          }
+        },
+        "summary": "Verify a signup pairing code and bind device identity with CI Cloud",
+        "tags": [
+          "Registration"
+        ]
+      }
+    },
+    "/api/registration/probe-domain": {
+      "get": {
+        "operationId": "probeDomain",
+        "parameters": [
+          {
+            "name": "url",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Probe result"
+          }
+        },
+        "summary": "Probe a CF domain to check if the tunnel is serving the Hub",
+        "tags": [
+          "Registration"
+        ]
+      }
+    },
+    "/api/registration/pair": {
+      "post": {
+        "operationId": "pairDevice",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Device paired and registered successfully"
+          },
+          "400": {
+            "description": "Invalid pairing code or pairing failed"
+          }
+        },
+        "summary": "Pair device using a pairing code — atomic registration in one step",
         "tags": [
           "Registration"
         ]
@@ -784,6 +866,29 @@
         ]
       }
     },
+    "/api/marketplace/apps/{urn}/image-size": {
+      "get": {
+        "operationId": "getAppImageSize",
+        "parameters": [
+          {
+            "name": "urn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Marketplace"
+        ]
+      }
+    },
     "/api/marketplace/pull": {
       "post": {
         "operationId": "pullAppStores",
@@ -963,6 +1068,20 @@
     "/api/system/certificate": {
       "get": {
         "operationId": "downloadLocalCertificate",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "System"
+        ]
+      }
+    },
+    "/api/system/detect-services": {
+      "get": {
+        "operationId": "detectServices",
         "parameters": [],
         "responses": {
           "200": {
@@ -2456,6 +2575,120 @@
         ]
       }
     },
+    "/api/headscale/status": {
+      "get": {
+        "operationId": "getVpnStatus",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Headscale"
+        ]
+      }
+    },
+    "/api/headscale/devices": {
+      "get": {
+        "operationId": "listDevices",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Headscale"
+        ]
+      }
+    },
+    "/api/headscale/devices/{id}": {
+      "delete": {
+        "operationId": "removeDevice",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Headscale"
+        ]
+      }
+    },
+    "/api/headscale/preauthkey": {
+      "post": {
+        "operationId": "createPreAuthKey",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Headscale"
+        ]
+      }
+    },
+    "/api/headscale/preauthkeys": {
+      "get": {
+        "operationId": "listPreAuthKeys",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Headscale"
+        ]
+      }
+    },
     "/api/user-config/{urn}": {
       "get": {
         "operationId": "getUserConfig",
@@ -2700,6 +2933,60 @@
         },
         "tags": [
           "CustomApp"
+        ]
+      }
+    },
+    "/api/system/update/check": {
+      "get": {
+        "operationId": "checkForUpdates",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "SystemUpdate"
+        ]
+      }
+    },
+    "/api/system/update": {
+      "post": {
+        "operationId": "performUpdate",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "SystemUpdate"
+        ]
+      }
+    },
+    "/api/system/update/auto-updates": {
+      "get": {
+        "operationId": "getAutoUpdates",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "SystemUpdate"
+        ]
+      },
+      "post": {
+        "operationId": "setAutoUpdates",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "SystemUpdate"
         ]
       }
     },
@@ -2995,7 +3282,7 @@
               "advancedMode": {
                 "type": "boolean"
               },
-              "hasSeenWelcome": {
+              "hasCompletedOnboarding": {
                 "type": "boolean"
               },
               "id": {
@@ -3018,7 +3305,7 @@
             },
             "required": [
               "advancedMode",
-              "hasSeenWelcome",
+              "hasCompletedOnboarding",
               "id",
               "locale",
               "operator",
