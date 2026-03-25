@@ -1,0 +1,54 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicegui-inc/nicegui/main/nicegui/static/schema/tauri.v2.json",
+  "productName": "CI OS Hub",
+  "version": "0.1.0",
+  "identifier": "computer.ci.app.hub",
+  "build": {
+    "beforeDevCommand": "cd ../../.. && bun run --filter=frontend dev",
+    "devUrl": "http://localhost:9091",
+    "beforeBuildCommand": "cd ../../.. && bun run --filter=frontend build",
+    "frontendDist": "../../../packages/frontend/dist/client"
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "11.0"
+    }
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "CI OS Hub",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 800,
+        "minHeight": 600,
+        "resizable": true,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost http: https: ws: wss:; img-src 'self' data: blob: https:; font-src 'self' data:"
+    },
+    "trayIcon": {
+      "iconPath": "icons/icon.png",
+      "iconAsTemplate": true,
+      "menuOnLeftClick": false,
+      "title": "CI OS Hub"
+    }
+  },
+  "plugins": {
+    "notification": {
+      "all": true
+    },
+    "store": {}
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "name": "desktop",
+  "private": true,
+  "version": "0.1.0",
+  "description": "CI OS Hub Desktop — Tauri v2 native wrapper",
+  "scripts": {
+    "dev": "cargo tauri dev",
+    "build": "cargo tauri build",
+    "icons": "cargo tauri icon"
+  }
+}

@@ -36,7 +36,9 @@
     "version": "echo $npm_package_version",
     "start:detached": "bun scripts/start.ts start:detached",
     "fresh": "bun run cleanup && bun start dev",
-    "fresh:local": "bun run cleanup && bun start local"
+    "fresh:local": "bun run cleanup && bun start local",
+    "dev:desktop": "cd packages/desktop && cargo tauri dev",
+    "build:desktop": "cd packages/desktop && cargo tauri build"
   },
   "lint-staged": {
     "*": [
