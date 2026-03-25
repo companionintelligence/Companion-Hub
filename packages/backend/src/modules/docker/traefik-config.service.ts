@@ -24,7 +24,28 @@ interface TraefikConfig {
   http: {
     routers: Record<string, TraefikRouter>;
     services: Record<string, TraefikService>;
+    middlewares?: Record<string, Record<string, unknown>>;
   };
+}
+
+/**
+ * Set a value on a deeply nested object using a path of keys.
+ * E.g. setNestedValue(obj, ['headers', 'customrequestheaders', 'X-Forwarded-Proto'], 'https')
+ * produces { headers: { customrequestheaders: { 'X-Forwarded-Proto': 'https' } } }
+ */
+function setNestedValue(obj: Record<string, unknown>, path: string[], value: string) {
+  let current = obj;
+  for (let i = 0; i < path.length - 1; i++) {
+    const key = path[i]!;
+    if (!(key in current) || typeof current[key] !== 'object' || current[key] === null) {
+      current[key] = {};
+    }
+    current = current[key] as Record<string, unknown>;
+  }
+  const lastKey = path[path.length - 1];
+  if (lastKey) {
+    current[lastKey] = value;
+  }
 }
 
 @Injectable()
@@ -109,6 +130,7 @@ export class TraefikConfigService {
         // Extract Traefik routing information from labels
         const routers: Record<string, TraefikRouter> = {};
         const services: Record<string, TraefikService> = {};
+        const middlewares: Record<string, Record<string, unknown>> = {};
 
         // Find all router labels
         for (const [key, value] of Object.entries(labels)) {
@@ -161,11 +183,37 @@ export class TraefikConfigService {
               };
             }
           }
+
+          // Parse middleware definitions
+          // Label format: traefik.http.middlewares.<name>.<type>.<property>[.<sub>...]
+          if (key.startsWith('traefik.http.middlewares.')) {
+            const parts = key.replace('traefik.http.middlewares.', '').split('.');
+            const middlewareName = parts[0];
+            const nestedPath = parts.slice(1);
+
+            if (!middlewareName || nestedPath.length === 0) continue;
+
+            if (!middlewares[middlewareName]) {
+              middlewares[middlewareName] = {};
+            }
+
+            setNestedValue(middlewares[middlewareName], nestedPath, String(value));
+          }
         }
 
         // Only add routers that have valid rules and services
+        const middlewareNames = Object.keys(middlewares);
         for (const [routerName, router] of Object.entries(routers)) {
           if (router.rule && router.service && router.entryPoints.length > 0) {
+            // Auto-attach middleware definitions from this container to its routers
+            // so app authors only need to define the middleware via extraLabels
+            // without knowing the dynamically generated router name
+            if (middlewareNames.length > 0) {
+              const existing = router.middlewares ?? [];
+              const merged = [...new Set([...existing, ...middlewareNames])];
+              router.middlewares = merged;
+            }
+
             // Only add insecure routers (web entrypoint) for file provider
             // Secure routers (websecure) require TLS which file provider handles differently
             // Note: Traefik's file provider automatically adds @file suffix, so we don't add it here
@@ -177,6 +225,14 @@ export class TraefikConfigService {
 
         // Add services
         Object.assign(config.http.services, services);
+
+        // Add middlewares
+        if (Object.keys(middlewares).length > 0) {
+          if (!config.http.middlewares) {
+            config.http.middlewares = {};
+          }
+          Object.assign(config.http.middlewares, middlewares);
+        }
       }
 
       // Write the configuration file
@@ -184,15 +240,16 @@ export class TraefikConfigService {
 
       const routerCount = Object.keys(config.http.routers).length;
       const serviceCount = Object.keys(config.http.services).length;
+      const middlewareCount = Object.keys(config.http.middlewares ?? {}).length;
 
       // Traefik doesn't accept empty routers/services objects - only write file if we have content
-      if (routerCount === 0 && serviceCount === 0) {
+      if (routerCount === 0 && serviceCount === 0 && middlewareCount === 0) {
         // Delete the file if it exists to avoid stale/invalid config
         if (await this.filesystem.pathExists(configPath)) {
-          this.logger.debug(`No routers/services found, deleting stale Traefik config at ${configPath}`);
+          this.logger.debug(`No routers/services/middlewares found, deleting stale Traefik config at ${configPath}`);
           await this.filesystem.removeFile(configPath);
         } else {
-          this.logger.debug('No routers/services found, skipping Traefik config file write');
+          this.logger.debug('No routers/services/middlewares found, skipping Traefik config file write');
         }
         return;
       }
@@ -211,6 +268,9 @@ export class TraefikConfigService {
       if (serviceCount > 0 && validConfig.http) {
         validConfig.http.services = config.http.services;
       }
+      if (middlewareCount > 0 && validConfig.http) {
+        validConfig.http.middlewares = config.http.middlewares;
+      }
 
       const yamlContent = yaml.stringify(validConfig, { indent: 2 });
 
@@ -223,7 +283,7 @@ export class TraefikConfigService {
         throw new Error('Failed to write Traefik config: file is empty after write');
       }
 
-      this.logger.info(`Generated Traefik config with ${routerCount} routers and ${serviceCount} services and wrote to ${configPath}`);
+      this.logger.info(`Generated Traefik config with ${routerCount} routers, ${serviceCount} services, and ${middlewareCount} middlewares and wrote to ${configPath}`);
 
       // Log router names for debugging
       if (routerCount > 0) {
