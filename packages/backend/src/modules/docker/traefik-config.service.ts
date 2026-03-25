@@ -150,7 +150,9 @@ export class TraefikConfigService {
 
           // Find service port from labels
           if (key.startsWith('traefik.http.services.') && key.endsWith('.loadbalancer.server.port')) {
-            const serviceName = key.replace('traefik.http.services.', '').replace('.loadbalancer.server.port', '');
+            const prefix = 'traefik.http.services.';
+            const suffix = '.loadbalancer.server.port';
+            const serviceName = key.substring(prefix.length, key.length - suffix.length);
             const port = Number.parseInt(String(value), 10);
 
             if (!Number.isNaN(port)) {

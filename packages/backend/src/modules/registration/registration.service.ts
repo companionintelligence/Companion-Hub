@@ -269,6 +269,18 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     }
   }
 
+  private isCommandAvailable(command: string): boolean {
+    if (!/^[a-zA-Z0-9-]+$/.test(command)) {
+      return false;
+    }
+    try {
+      execSync(`command -v ${command}`, { stdio: 'ignore' });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   public async getDeviceId(): Promise<string> {
     const envDeviceId = process.env.DEVICE_ID?.trim();
     if (envDeviceId) {
@@ -276,32 +288,37 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       return envDeviceId;
     }
 
-    try {
-      const serial = execSync('dmidecode -s system-serial-number', {
-        timeout: 5000,
-        encoding: 'utf-8',
-      }).trim();
+    // Prefer a stable hardware-derived identifier when possible.
+    if (this.isCommandAvailable('dmidecode')) {
+      try {
+        const serial = execSync('dmidecode -s system-serial-number', {
+          timeout: 5000,
+          encoding: 'utf-8',
+        }).trim();
 
-      const invalidSerials = [
-        'not specified',
-        'to be filled by o.e.m.',
-        'default string',
-        'system serial number',
-        'chassis serial number',
-        'none',
-        'na',
-        'n/a',
-        '0',
-        '',
-      ];
-      if (serial && !invalidSerials.includes(serial.toLowerCase())) {
-        this.logger.debug(`Device ID from dmidecode: ${serial}`);
-        return serial;
+        const invalidSerials = [
+          'not specified',
+          'to be filled by o.e.m.',
+          'default string',
+          'system serial number',
+          'chassis serial number',
+          'none',
+          'na',
+          'n/a',
+          '0',
+          '',
+        ];
+        if (serial && !invalidSerials.includes(serial.toLowerCase())) {
+          this.logger.debug(`Device ID from dmidecode: ${serial}`);
+          return serial;
+        }
+
+        this.logger.warn(`dmidecode returned unusable value: "${serial}", falling back to systeminformation`);
+      } catch (e) {
+        this.logger.debug('dmidecode not usable (missing permissions, timeout, or error); falling back to systeminformation', e);
       }
-
-      this.logger.warn(`dmidecode returned unusable value: "${serial}", falling back to systeminformation`);
-    } catch (e) {
-      this.logger.warn('dmidecode failed, falling back to systeminformation', e);
+    } else {
+      this.logger.debug('dmidecode binary not found on system; falling back to systeminformation');
     }
 
     const uuid = await si.uuid();

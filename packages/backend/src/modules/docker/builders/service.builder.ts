@@ -552,6 +552,9 @@ export class ServiceBuilder {
   public interpolateVariables(appId: string, localDomain?: string) {
     if (this.service.labels) {
       const interpolatedLabels: Record<string, string | boolean> = {};
+      // NOTE: Support both CI_HUB_APP_ID and legacy RUNTIPI_APP_ID placeholders for backward compatibility
+      // with existing configurations. New configurations should use CI_HUB_APP_ID only. Legacy support may be
+      // removed in a future major release once all runtipi-based configs have been migrated.
       const appIdPattern = /\{\{\s*(?:CI_HUB_APP_ID|RUNTIPI_APP_ID)\s*\}\}/g;
 
       for (const [key, value] of Object.entries(this.service.labels)) {

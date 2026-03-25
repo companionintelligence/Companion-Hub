@@ -17,6 +17,8 @@ import { Tooltip } from 'react-tooltip';
 import { hiddenTypes, validateAppConfig } from './form-validators';
 import { InstallFormField } from './install-form-field';
 
+const DNS_CHECK_WAIT_TIME_MS = 600;
+
 interface IProps {
   formFields?: FormField[];
   onSubmit: (values: FormValues) => void;
@@ -73,6 +75,7 @@ export const InstallForm: React.FC<IProps> = ({
   const isAdvancedMode = user.advancedMode;
 
   const orgSlug = ciHubOrganizationSlug ? ciHubOrganizationSlug.toLowerCase().replace(/\s+/g, '-') : undefined;
+  const defaultMode = cloudflareAvailable ? 'cloudflare' : tailscaleAvailable ? 'tailscale' : 'local';
 
   const {
     register,
@@ -129,7 +132,6 @@ export const InstallForm: React.FC<IProps> = ({
     // Set default exposure mode and port for exposable apps
     if (info.exposable && info.dynamic_config) {
       // Auto-select first available mode: cloudflare > tailscale > local
-      const defaultMode = cloudflareAvailable ? 'cloudflare' : tailscaleAvailable ? 'tailscale' : 'local';
       setValue('exposureMode', (initialValues?.exposureMode as FormValues['exposureMode']) || defaultMode);
       setValue('exposedLocal', true); // backward compat
       setValue('openPort', false); // Always false - apps route through Traefik
@@ -267,7 +269,7 @@ export const InstallForm: React.FC<IProps> = ({
         <Controller
           control={control}
           name="exposureMode"
-          defaultValue="cloudflare"
+          defaultValue={defaultMode}
           render={({ field: { onChange, value } }) => (
             <div className="grid grid-cols-3 gap-2">
               {(
@@ -320,6 +322,13 @@ export const InstallForm: React.FC<IProps> = ({
   const renderAdvancedExposureOptions = () => {
     if (!info.exposable || !isAdvancedMode) return null;
 
+    const subdomainSuffix =
+      watchExposureMode === 'tailscale'
+        ? `.${localDomain || 'tailnet'}`
+        : orgSlug
+          ? `-${orgSlug}.${domain}`
+          : `-${localDomain}`;
+
     return (
       <>
         {/* Subdomain input — shown for cloudflare and tailscale modes */}
@@ -327,7 +336,7 @@ export const InstallForm: React.FC<IProps> = ({
           <div className="mb-3">
             <InputGroup
               groupPrefix="https://"
-              groupSuffix={watchExposureMode === 'tailscale' ? `.${localDomain || 'tailnet'}` : orgSlug ? `-${orgSlug}.${domain}` : `-${localDomain}`}
+              groupSuffix={subdomainSuffix}
               {...register('localSubdomain')}
               label={t('APP_INSTALL_FORM_LOCAL_SUBDOMAIN')}
               error={errors.localSubdomain?.message || dnsAvailabilityError || undefined}
@@ -383,15 +392,21 @@ export const InstallForm: React.FC<IProps> = ({
     const validationErrors = validateAppConfig(formValues, formFields);
 
     // In production, require port when publishing to internet
-    if (isProduction && formValues.exposedLocal && info.dynamic_config && !formValues.port) {
+    if (isProduction && info.dynamic_config && !formValues.port) {
       validationErrors.port = { messageKey: 'APP_INSTALL_FORM_ERROR_REQUIRED', params: { label: t('APP_INSTALL_FORM_PORT') } };
     }
 
     // Check DNS availability synchronously if in production and exposable
-    if (isProduction && info.exposable && formValues.exposedLocal && formValues.localSubdomain) {
+    const shouldCheckDns =
+      isProduction &&
+      info.exposable &&
+      !!formValues.localSubdomain &&
+      (exposureMode === 'cloudflare' || exposureMode === 'tailscale');
+
+    if (shouldCheckDns) {
       if (isCheckingDns) {
         // Wait a bit for DNS check to complete
-        await new Promise((resolve) => setTimeout(resolve, 600));
+        await new Promise((resolve) => setTimeout(resolve, DNS_CHECK_WAIT_TIME_MS));
       }
 
       // If DNS check found an error, prevent submission
