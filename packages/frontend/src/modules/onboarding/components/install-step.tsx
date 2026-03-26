@@ -7,6 +7,8 @@ import type { OnboardingApp } from '../helpers/types';
 
 interface InstallStepProps {
   apps: OnboardingApp[];
+  /** Exposure mode to use for all onboarding installs. Defaults to 'cloudflare'. */
+  defaultExposureMode?: 'cloudflare' | 'tailscale' | 'local';
   onComplete: () => void;
 }
 
@@ -18,7 +20,7 @@ interface AppInstallState {
   error?: string;
 }
 
-export const InstallStep = ({ apps, onComplete }: InstallStepProps) => {
+export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', onComplete }: InstallStepProps) => {
   const [states, setStates] = useState<AppInstallState[]>(apps.map((app) => ({ app, status: 'pending' })));
   const [done, setDone] = useState(false);
   const started = useRef(false);
@@ -87,6 +89,8 @@ export const InstallStep = ({ apps, onComplete }: InstallStepProps) => {
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 localSubdomain: app.localSubdomain || app.appSlug,
+                exposureMode: defaultExposureMode,
+                exposedLocal: defaultExposureMode === 'cloudflare',
               }),
             }),
             minDelay(500),

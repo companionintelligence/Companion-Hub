@@ -28,7 +28,7 @@ const envSchema = z.object({
   APPS_REPO_URL: z.string().optional(),
   CI_CLOUD_URL: z.string(),
   DOMAIN: z.string(),
-  LOCAL_DOMAIN: z.string(),
+  LOCAL_DOMAIN: z.string().default('ci.lan'),
   DNS_IP: z.string().default('9.9.9.9'),
   CI_HUB_APP_DATA_PATH: z.string(),
   CI_HUB_FORWARD_AUTH_URL: z.string(),
