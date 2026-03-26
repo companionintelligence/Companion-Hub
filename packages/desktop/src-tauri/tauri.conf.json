@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicegui-inc/nicegui/main/nicegui/static/schema/tauri.v2.json",
-  "productName": "CI OS Hub",
+  "productName": "Companion Hub",
   "version": "0.1.0",
   "identifier": "computer.ci.app.hub",
   "build": {
@@ -12,13 +12,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": [
-      "icons/32x32.png",
-      "icons/128x128.png",
-      "icons/128x128@2x.png",
-      "icons/icon.icns",
-      "icons/icon.ico"
-    ],
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
     "macOS": {
       "minimumSystemVersion": "11.0"
     }
@@ -26,7 +20,7 @@
   "app": {
     "windows": [
       {
-        "title": "CI OS Hub",
+        "title": "Companion Hub",
         "width": 1280,
         "height": 800,
         "minWidth": 800,
@@ -43,7 +37,7 @@
       "iconPath": "icons/icon.png",
       "iconAsTemplate": true,
       "menuOnLeftClick": false,
-      "title": "CI OS Hub"
+      "title": "Companion Hub"
     }
   }
 }

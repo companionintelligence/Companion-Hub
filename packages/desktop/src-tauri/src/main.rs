@@ -25,6 +25,13 @@ async fn discover_hubs() -> Result<Vec<String>, String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+                let _ = window.unminimize();
+            }
+        }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_notification::init())
@@ -59,7 +66,7 @@ pub fn run() {
 
     builder
         .run(tauri::generate_context!())
-        .expect("error while running CI OS Hub Desktop");
+        .expect("error while running Companion Hub Desktop");
 }
 
 fn main() {

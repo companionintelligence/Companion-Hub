@@ -71,7 +71,7 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
 
     let _tray = TrayIconBuilder::new()
         .menu(&menu)
-        .tooltip("CI OS Hub")
+        .tooltip("Companion Hub")
         .on_menu_event(move |app, event| match event.id.as_ref() {
             "show_hide" => {
                 if let Some(window) = app.get_webview_window("main") {
