@@ -36,7 +36,7 @@ interface TraefikConfig {
 function setNestedValue(obj: Record<string, unknown>, path: string[], value: string) {
   let current = obj;
   for (let i = 0; i < path.length - 1; i++) {
-    const key = path[i]!;
+    const key = path[i];
     if (!(key in current) || typeof current[key] !== 'object' || current[key] === null) {
       current[key] = {};
     }
@@ -283,7 +283,9 @@ export class TraefikConfigService {
         throw new Error('Failed to write Traefik config: file is empty after write');
       }
 
-      this.logger.info(`Generated Traefik config with ${routerCount} routers, ${serviceCount} services, and ${middlewareCount} middlewares and wrote to ${configPath}`);
+      this.logger.info(
+        `Generated Traefik config with ${routerCount} routers, ${serviceCount} services, and ${middlewareCount} middlewares and wrote to ${configPath}`,
+      );
 
       // Log router names for debugging
       if (routerCount > 0) {
