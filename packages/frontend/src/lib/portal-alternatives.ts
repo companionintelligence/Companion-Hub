@@ -1,15 +1,27 @@
 import type { AltAlternative, AltEntry, AltProprietary, AltsCategory } from '@/modules/onboarding/helpers/types';
 
 /**
- * CI Portal base URL (no trailing slash).
- * Set `CI_CLOUD_URL` in CI-Hub `.env` or at Docker build time; Vite injects it as `import.meta.env.CI_CLOUD_URL`.
+ * Portal base URL (no trailing slash).
+ * 1) `import.meta.env.CI_CLOUD_URL` from Vite (process env + `.env.*` at build / dev server start).
+ * 2) Same-origin `GET /api/registration/device-id` → `ci_cloud_url` (runtime Hub config), so Docker images
+ *    still work if the bundle was built without `CI_CLOUD_URL` baked in.
  */
-export function getPortalBaseUrl(): string {
-  const raw = (import.meta.env.CI_CLOUD_URL as string | undefined)?.trim();
-  if (!raw) {
-    throw new Error('CI_CLOUD_URL is not set. Add it to your CI-Hub environment (see .env.example) so the Hub can reach the portal.');
+async function resolvePortalBaseUrl(): Promise<string> {
+  const baked = (import.meta.env.CI_CLOUD_URL as string | undefined)?.trim();
+  if (baked) return baked.replace(/\/$/, '');
+
+  const res = await fetch('/api/registration/device-id', { credentials: 'omit' });
+  if (!res.ok) {
+    throw new Error(
+      `Could not resolve portal URL (GET /api/registration/device-id → ${res.status}). Set CI_CLOUD_URL in the Hub environment (e.g. .env.dev) and restart.`,
+    );
   }
-  return raw.replace(/\/$/, '');
+  const data = (await res.json()) as { ci_cloud_url?: string | null };
+  const fromApi = data.ci_cloud_url?.trim();
+  if (!fromApi) {
+    throw new Error('CI_CLOUD_URL is not set on the Hub server. Add it to your env file (see .env.example) and restart the Hub.');
+  }
+  return fromApi.replace(/\/$/, '');
 }
 
 function normalizeProprietary(p: Partial<AltProprietary> & { name: string }): AltProprietary {
@@ -63,7 +75,7 @@ export function normalizeAlternativesPayload(raw: unknown): AltsCategory {
 }
 
 export async function fetchPortalAlternatives(): Promise<AltsCategory> {
-  const base = getPortalBaseUrl();
+  const base = await resolvePortalBaseUrl();
   const url = `${base}/api/store/alternatives`;
   const res = await fetch(url, { credentials: 'omit' });
   if (!res.ok) {
