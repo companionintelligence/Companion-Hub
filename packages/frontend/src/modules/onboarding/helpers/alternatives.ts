@@ -1,14 +1,13 @@
 import type { AltsCategory, AltEntry, AltAlternative } from './types';
-import altsData from '@/lib/data/alts.json';
 
 export type { AltsCategory, AltEntry, AltAlternative };
 
 /**
  * Get all alternatives data flattened with category info
  */
-export function getAllAlternatives(): Array<AltEntry & { category: string }> {
+export function getAllAlternatives(altsData: AltsCategory): Array<AltEntry & { category: string }> {
   const result: Array<AltEntry & { category: string }> = [];
-  for (const [category, entries] of Object.entries(altsData as Record<string, AltEntry[]>)) {
+  for (const [category, entries] of Object.entries(altsData)) {
     for (const entry of entries) {
       result.push({ ...entry, category });
     }
@@ -22,8 +21,9 @@ export function getAllAlternatives(): Array<AltEntry & { category: string }> {
  */
 export function getRecommendedApps(
   detectedServiceNames: string[],
+  altsData: AltsCategory,
 ): Array<{ category: string; proprietary: string[]; alternatives: AltAlternative[] }> {
-  const allAlts = getAllAlternatives();
+  const allAlts = getAllAlternatives(altsData);
   const detectedLower = new Set(detectedServiceNames.map((n) => n.toLowerCase()));
 
   // For each alt group, check if any detected service matches a proprietary name

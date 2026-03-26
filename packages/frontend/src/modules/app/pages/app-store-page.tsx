@@ -10,8 +10,8 @@ import { Button } from '@/components/ui/Button';
 import { Card, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Input } from '@/components/ui/Input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/Table/Table';
-import alts from '@/lib/data/alts.json';
 import { useInfiniteScroll } from '@/lib/hooks/use-infinite-scroll';
+import { portalAlternativesQueryOptions } from '@/lib/portal-alternatives';
 import { useRegistrationStatus } from '@/lib/hooks/use-registration-status';
 import { AppCard } from '@/modules/app/components/app-card/app-card';
 import { iconForCategory, colorSchemeForCategory } from '@/modules/app/helpers/table-helpers';
@@ -71,6 +71,17 @@ export default () => {
   });
 
   const isAlternativesView = category === ALTERNATIVES_VIEW;
+
+  const {
+    data: alternativesData,
+    isLoading: isAlternativesDataLoading,
+    isError: isAlternativesDataError,
+    error: alternativesDataError,
+    refetch: refetchAlternatives,
+  } = useQuery({
+    ...portalAlternativesQueryOptions(),
+    enabled: isAlternativesView,
+  });
 
   useEffect(() => {
     if (!isCheckingRegistration) {
@@ -144,11 +155,12 @@ export default () => {
     isFetching: isFetchingNextPage || isFetching,
   });
 
-  // Filter alternatives by search query
+  // Filter alternatives by search query (source: portal `/api/store/alternatives`)
   const filteredAlts = useMemo(() => {
+    const alts = alternativesData ?? {};
     if (!search) return alts;
     const q = search.toLowerCase();
-    const result: Record<string, (typeof alts)[keyof typeof alts]> = {};
+    const result: Record<string, AltItem[]> = {};
     for (const [cat, items] of Object.entries(alts)) {
       const filtered = (items as AltItem[]).filter((item) => {
         const propMatch = item.proprietary.some((p) => p.name.toLowerCase().includes(q));
@@ -157,11 +169,11 @@ export default () => {
         return propMatch || altMatch || catMatch;
       });
       if (filtered.length > 0) {
-        result[cat] = filtered as (typeof alts)[keyof typeof alts];
+        result[cat] = filtered;
       }
     }
     return result;
-  }, [search]);
+  }, [search, alternativesData]);
 
   if (params.storeId) {
     return <Navigate to={`/app-store?store=${params.storeId}`} />;
@@ -307,9 +319,24 @@ export default () => {
           </div>
           {isAlternativesView ? (
             <div className="space-y-6">
-              {Object.keys(filteredAlts).length === 0 ? (
+              {isAlternativesDataLoading && (
+                <div className="space-y-4 py-8">
+                  <div className="h-8 max-w-md w-[60%] animate-pulse rounded bg-muted" />
+                  <div className="h-40 animate-pulse rounded-xl bg-muted/40" />
+                </div>
+              )}
+              {isAlternativesDataError && (
+                <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+                  Could not load alternatives from the portal
+                  {alternativesDataError instanceof Error ? `: ${alternativesDataError.message}` : ''}.{' '}
+                  <button type="button" className="underline font-medium" onClick={() => refetchAlternatives()}>
+                    Retry
+                  </button>
+                </div>
+              )}
+              {!isAlternativesDataLoading && !isAlternativesDataError && Object.keys(filteredAlts).length === 0 ? (
                 <EmptyPage title="APP_STORE_NO_RESULTS" subtitle="APP_STORE_NO_RESULTS_SUBTITLE" />
-              ) : (
+              ) : !isAlternativesDataLoading && !isAlternativesDataError ? (
                 Object.entries(filteredAlts).map(([altCategory, items]) => {
                   const categoryInfo = iconForCategory.find((c) => c.id === altCategory);
                   const Icon = categoryInfo?.icon;
@@ -391,7 +418,7 @@ export default () => {
                     </Card>
                   );
                 })
-              )}
+              ) : null}
             </div>
           ) : !apps?.length && !isLoading ? (
             <EmptyPage title="APP_STORE_NO_RESULTS" subtitle="APP_STORE_NO_RESULTS_SUBTITLE" />
