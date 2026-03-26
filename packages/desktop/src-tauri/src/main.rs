@@ -34,9 +34,6 @@ pub fn run() {
             discover_hubs,
         ])
         .setup(|app| {
-            // Build system tray
-            tray::create_tray(app)?;
-
             // Restore saved window geometry
             let window = app
                 .get_webview_window("main")
@@ -54,25 +51,8 @@ pub fn run() {
                 }
             }
 
-            // Save window geometry on close
-            let app_handle = app.handle().clone();
-            window.on_window_event(move |event| {
-                if let tauri::WindowEvent::CloseRequested { .. } = event {
-                    if let Some(window) = app_handle.get_webview_window("main") {
-                        if let Ok(store) = app_handle.store("settings.json") {
-                            if let Ok(pos) = window.outer_position() {
-                                store.set("window_x", serde_json::json!(pos.x));
-                                store.set("window_y", serde_json::json!(pos.y));
-                            }
-                            if let Ok(size) = window.outer_size() {
-                                store.set("window_width", serde_json::json!(size.width));
-                                store.set("window_height", serde_json::json!(size.height));
-                            }
-                            let _ = store.save();
-                        }
-                    }
-                }
-            });
+            // Build system tray (also registers close-to-hide handler)
+            tray::create_tray(app)?;
 
             Ok(())
         });
