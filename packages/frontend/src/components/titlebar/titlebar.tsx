@@ -24,7 +24,7 @@ export function Titlebar() {
 
     import('@tauri-apps/plugin-os')
       .then((mod) => mod.type())
-      .then((os) => setIsMac(os === 'Darwin'))
+      .then((os) => setIsMac(os === 'macos'))
       .catch(console.warn);
   }, []);
 
