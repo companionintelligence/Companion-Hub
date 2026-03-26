@@ -106,7 +106,7 @@ export default () => {
     return new Set(installedAppsData.installed.map((a) => a.info.urn));
   }, [installedAppsData]);
 
-  const ciCloudStore = appStores?.appStores?.find((s) => s.name === 'CI Cloud');
+  const ciCloudStore = appStores?.appStores?.find((s) => s.name === 'CI Marketplace');
 
   const { data: allAppsData } = useQuery({
     ...searchAppsOptions({
