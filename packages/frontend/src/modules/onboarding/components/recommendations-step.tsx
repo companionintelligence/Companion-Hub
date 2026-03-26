@@ -2,7 +2,9 @@ import { Button } from '@/components/ui/Button';
 import { Card, CardContent } from '@/components/ui/Card';
 import { Checkbox } from '@/components/ui/Checkbox/Checkbox';
 import { useAppContext } from '@/context/app-context';
-import { useState } from 'react';
+import { portalAlternativesQueryOptions } from '@/lib/portal-alternatives';
+import { useQuery } from '@tanstack/react-query';
+import { useMemo, useState } from 'react';
 import { getRecommendedApps } from '../helpers/alternatives';
 import type { DetectedService } from '../helpers/service-detection';
 import type { OnboardingApp } from '../helpers/types';
@@ -17,14 +19,26 @@ interface RecommendationsStepProps {
 export const RecommendationsStep = ({ detectedServices, onSelect, onSkip, onBack }: RecommendationsStepProps) => {
   const { apps: storeApps } = useAppContext();
   const detectedNames = detectedServices.map((s) => s.friendlyName);
-  const storeSlugs = new Set(storeApps.map((a) => a.id));
+  const {
+    data: altsData,
+    isLoading: isAltsLoading,
+    isError: isAltsError,
+    error: altsError,
+    refetch,
+  } = useQuery({
+    ...portalAlternativesQueryOptions(),
+  });
   // Filter recommendations to only include alternatives available in the app store
-  const recommendations = getRecommendedApps(detectedNames)
-    .map((rec) => ({
-      ...rec,
-      alternatives: rec.alternatives.filter((alt) => alt.appSlug && storeSlugs.has(alt.appSlug)),
-    }))
-    .filter((rec) => rec.alternatives.length > 0);
+  const recommendations = useMemo(() => {
+    if (!altsData) return [];
+    const storeSlugs = new Set(storeApps.map((a) => a.id));
+    return getRecommendedApps(detectedNames, altsData)
+      .map((rec) => ({
+        ...rec,
+        alternatives: rec.alternatives.filter((alt) => alt.appSlug && storeSlugs.has(alt.appSlug)),
+      }))
+      .filter((rec) => rec.alternatives.length > 0);
+  }, [altsData, detectedNames, storeApps]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
   // Pre-select popular/recommended ones
@@ -88,6 +102,15 @@ export const RecommendationsStep = ({ detectedServices, onSelect, onSkip, onBack
       <CardContent className="p-6">
         <div className="mb-4">
           <h2 className="text-xl font-semibold mb-1">Recommended Apps</h2>
+          {isAltsError && (
+            <div className="mb-3 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              Could not load alternatives from the portal
+              {altsError instanceof Error ? `: ${altsError.message}` : ''}.{' '}
+              <button type="button" className="underline font-medium" onClick={() => refetch()}>
+                Retry
+              </button>
+            </div>
+          )}
           <p className="text-sm text-muted-foreground">
             {detectedServices.length > 0
               ? `We detected ${detectedServices.length} service${detectedServices.length > 1 ? 's' : ''} running. Here are some open-source alternatives you might like.`
@@ -105,6 +128,18 @@ export const RecommendationsStep = ({ detectedServices, onSelect, onSkip, onBack
         </div>
 
         <div className="max-h-[400px] overflow-y-auto space-y-6 pr-2">
+          {isAltsLoading && (
+            <div className="space-y-3 py-4">
+              <div className="h-4 max-w-md w-[75%] animate-pulse rounded bg-muted" />
+              <div className="h-4 max-w-sm w-1/2 animate-pulse rounded bg-muted" />
+              <div className="h-24 animate-pulse rounded-lg bg-muted/50" />
+            </div>
+          )}
+          {!isAltsLoading && !isAltsError && recommendations.length === 0 && altsData && Object.keys(altsData).length > 0 && (
+            <p className="text-sm text-muted-foreground py-4">
+              No matching apps are available in your store yet. You can skip this step or sync the app store.
+            </p>
+          )}
           {Array.from(byCategory.entries()).map(([category, recs]) => (
             <div key={category}>
               <h3 className="text-sm font-medium text-muted-foreground mb-2">{categoryLabels[category] || category}</h3>

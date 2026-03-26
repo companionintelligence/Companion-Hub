@@ -98,6 +98,8 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            CI_CLOUD_URL=https://${{ steps.tags.outputs.portal_registry }}
 
       - name: Install crane
         uses: imjasonh/setup-crane@v0.4

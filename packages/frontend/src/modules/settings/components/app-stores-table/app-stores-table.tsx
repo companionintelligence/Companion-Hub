@@ -31,7 +31,7 @@ export const AppStoresTable = ({ appStores }: Props) => {
           {appStores.map((appStore) => (
             <TableRow key={appStore.slug}>
               <TableCell>
-                {appStore.name === 'CI Cloud' ? (
+                {appStore.name === 'CI Marketplace' ? (
                   <a
                     href={appStore.url.replace(/\/api\/?$/, '')}
                     target="_blank"

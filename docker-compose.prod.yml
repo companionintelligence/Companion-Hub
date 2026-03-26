@@ -54,6 +54,7 @@ services:
       dockerfile: Dockerfile
       args:
         CI_HUB_VERSION: ${CI_HUB_VERSION:-4.5.0}
+        CI_CLOUD_URL: ${CI_CLOUD_URL:-}
         LOCAL: ${LOCAL:-false}
         TARGETARCH: ${TARGETARCH:-amd64}
         DOCKER_PLATFORM: ${DOCKER_PLATFORM:-linux/amd64}

@@ -110,6 +110,10 @@ ls -la packages/frontend/node_modules/@react-router/dev 2>/dev/null | head -1 ||
 ENV NODE_ENV=production
 ENV PATH="/app/node_modules/.bin:${PATH}"
 
+# Frontend bundle reads portal URL from CI_CLOUD_URL (injected via Vite define)
+ARG CI_CLOUD_URL=""
+ENV CI_CLOUD_URL=${CI_CLOUD_URL}
+
 RUN bun run build
 
 RUN echo "TIPI_VERSION: ${SENTRY_RELEASE}"
