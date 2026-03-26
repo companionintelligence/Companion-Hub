@@ -1,3 +1,4 @@
+import { Titlebar } from "./components/titlebar/titlebar";
 import { useEffect } from 'react';
 import { Toaster } from 'react-hot-toast';
 import { Links, Meta, Outlet, Scripts, ScrollRestoration, isRouteErrorResponse, redirect } from 'react-router';
@@ -130,6 +131,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <Links />
       </head>
       <body>
+        <Titlebar />
         <main id="root">
           {children}
           <ScrollRestoration />

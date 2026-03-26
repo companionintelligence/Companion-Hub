@@ -1,7 +1,7 @@
 import type { Config } from 'tailwindcss';
 
 export default {
-  content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'],
+  content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}', './node_modules/tauri-controls/**/*.{js,ts,jsx,tsx}'],
   theme: {
     extend: {
       fontFamily: {

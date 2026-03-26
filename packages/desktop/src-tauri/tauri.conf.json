@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "computer.ci.app.hub",
   "build": {
-    "beforeDevCommand": "cd ../../.. && bun run --filter=frontend dev",
+    "beforeDevCommand": "",
     "devUrl": "http://localhost:9091",
-    "beforeBuildCommand": "cd ../../.. && bun run --filter=frontend build",
+    "beforeBuildCommand": "",
     "frontendDist": "../../../packages/frontend/dist/client"
   },
   "bundle": {
@@ -32,7 +32,8 @@
         "minWidth": 800,
         "minHeight": 600,
         "resizable": true,
-        "center": true
+        "center": true,
+        "decorations": false
       }
     ],
     "security": {
@@ -44,11 +45,5 @@
       "menuOnLeftClick": false,
       "title": "CI OS Hub"
     }
-  },
-  "plugins": {
-    "notification": {
-      "all": true
-    },
-    "store": {}
   }
 }
