@@ -1,4 +1,4 @@
-# CI OS Hub Desktop
+# Companion Hub Desktop
 
 Native desktop wrapper for the Companion Intelligence Hub, built with [Tauri v2](https://v2.tauri.app).
 
