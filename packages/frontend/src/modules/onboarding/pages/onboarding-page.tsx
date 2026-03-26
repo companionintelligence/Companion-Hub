@@ -14,7 +14,8 @@ import { getLogo } from '@/lib/theme/theme';
 import { Suspense } from 'react';
 
 function OnboardingWizard() {
-  const { user } = useAppContext();
+  const { user, cloudflareAvailable, tailscaleAvailable } = useAppContext();
+  const defaultExposureMode = cloudflareAvailable ? 'cloudflare' : tailscaleAvailable ? 'tailscale' : 'local';
   const [currentStep, setCurrentStep] = useState(0);
   const [detectedServices, setDetectedServices] = useState<DetectedService[]>([]);
   const [selectedApps, setSelectedApps] = useState<OnboardingApp[]>([]);
@@ -104,6 +105,7 @@ function OnboardingWizard() {
             <StepContent step={3}>
               <InstallStep
                 apps={selectedApps}
+                defaultExposureMode={defaultExposureMode}
                 onComplete={() => {
                   // Mark installs as complete (optimistic) and move to final
                   // step. The InstallStep component itself no longer blocks the
