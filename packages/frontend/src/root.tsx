@@ -1,4 +1,4 @@
-import { Titlebar } from "./components/titlebar/titlebar";
+import { Titlebar } from './components/titlebar/titlebar';
 import { useEffect } from 'react';
 import { Toaster } from 'react-hot-toast';
 import { Links, Meta, Outlet, Scripts, ScrollRestoration, isRouteErrorResponse, redirect } from 'react-router';
