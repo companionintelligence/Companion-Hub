@@ -37,6 +37,7 @@ function setNestedValue(obj: Record<string, unknown>, path: string[], value: str
   let current = obj;
   for (let i = 0; i < path.length - 1; i++) {
     const key = path[i];
+    if (!key) return
     if (!(key in current) || typeof current[key] !== 'object' || current[key] === null) {
       current[key] = {};
     }
