@@ -64,6 +64,9 @@ pub fn run() {
             Ok(())
         });
 
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+
     builder
         .run(tauri::generate_context!())
         .expect("error while running Companion Hub Desktop");

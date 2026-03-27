@@ -67,7 +67,8 @@ jobs:
           # Postgres readiness is guaranteed by the service health check above
           # Just verify the port is reachable from the runner
           timeout 10 bash -c 'until echo > /dev/tcp/localhost/6543; do sleep 1; done' && echo "Postgres port open"
-          curl -sf http://localhost:5672 || echo "RabbitMQ AMQP port open (expected non-HTTP)"
+          # Wait for RabbitMQ AMQP port to accept connections (health check may pass before port is bound to host)
+          timeout 60 bash -c 'until echo > /dev/tcp/localhost/5672; do sleep 2; done' && echo "RabbitMQ AMQP port open"
 
       - name: Cache Playwright
         uses: actions/cache@v4
