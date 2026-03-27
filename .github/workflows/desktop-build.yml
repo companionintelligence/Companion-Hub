@@ -104,10 +104,12 @@ jobs:
           bun run --filter=frontend build
 
       # Use the published CLI via npx (avoids `cargo install` and bogus CARGO_NET_RETRY_LIMIT → `net.retry` errors).
+      # PR/CI has no TAURI_SIGNING_PRIVATE_KEY; merge off createUpdaterArtifacts so .app/.dmg still build.
+      # Release jobs that set TAURI_SIGNING_PRIVATE_KEY can omit `-c` to emit .tar.gz + .sig for the updater.
       - name: Build Tauri app
         run: |
           cd packages/desktop
-          npx --yes @tauri-apps/cli@2 build --target ${{ matrix.target }}
+          npx --yes @tauri-apps/cli@2 build --target ${{ matrix.target }} -c '{"bundle":{"createUpdaterArtifacts":false}}'
 
       - name: List artifacts
         shell: bash
