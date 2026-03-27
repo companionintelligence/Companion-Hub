@@ -53,16 +53,19 @@ export default defineConfig(({ mode }) => {
   const { NODE_ENV } = process.env;
   if (NODE_ENV === 'production') {
     alias['react-dom/server'] = 'react-dom/server.node';
-    plugins.push(
-      sentryVitePlugin({
-        authToken: process.env.SENTRY_AUTH_TOKEN,
-        release: {
-          name: process.env.CI_HUB_VERSION || process.env.TIPI_VERSION,
-        },
-        org: 'companionintelligence',
-        project: 'ci-hub-frontend',
-      }) as PluginOption,
-    );
+    // Avoid failing CI / local release builds when no Sentry auth token is configured.
+    if (process.env.SENTRY_AUTH_TOKEN) {
+      plugins.push(
+        sentryVitePlugin({
+          authToken: process.env.SENTRY_AUTH_TOKEN,
+          release: {
+            name: process.env.CI_HUB_VERSION || process.env.TIPI_VERSION,
+          },
+          org: 'companionintelligence',
+          project: 'ci-hub-frontend',
+        }) as PluginOption,
+      );
+    }
   }
 
   return {
