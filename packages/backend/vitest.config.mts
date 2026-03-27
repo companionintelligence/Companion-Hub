@@ -18,6 +18,9 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
+      // Vitest does not resolve workspace package.json `exports` the same as Bun/Node; map to source.
+      '@ci-hub/common/schemas': path.resolve(__dirname, '../common/src/schemas/index.ts'),
+      '@ci-hub/common/types': path.resolve(__dirname, '../common/src/types/index.ts'),
     },
   },
 });

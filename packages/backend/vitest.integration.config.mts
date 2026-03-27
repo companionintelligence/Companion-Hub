@@ -14,6 +14,8 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
+      '@ci-hub/common/schemas': path.resolve(__dirname, '../common/src/schemas/index.ts'),
+      '@ci-hub/common/types': path.resolve(__dirname, '../common/src/types/index.ts'),
     },
   },
 });
