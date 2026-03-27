@@ -51,17 +51,26 @@ export const Header = (props: HeaderProps) => {
     clsx(buttonVariants({ variant: 'ghost', size: 'sm' }), 'cursor-pointer', isActive ? 'bg-accent text-accent-foreground btn-active' : '');
 
   return (
-    <header className="fixed top-4 left-1/2 z-50 flex h-14 w-[95%] md:w-1/2 -translate-x-1/2 items-center justify-between gap-2 rounded-full border bg-background/80 px-4 shadow-md backdrop-blur-md">
+    <header className="fixed top-4 left-1/2 z-50 flex h-14 w-[96%] md:w-[77%] lg:w-[70%] xl:w-[53%] -translate-x-1/2 items-center gap-2 rounded-full border bg-background/80 px-3 shadow-md backdrop-blur-md">
       {/* Logo (Left) */}
-      <div className="flex flex-1 items-center justify-start">
+      <div className="flex items-center justify-start">
         <Link to="/dashboard" className="flex items-center">
-          <img src="/2024_CI__Logo_Banner_Color.png" alt="Companion Intelligence Logo" className="h-8 w-auto object-contain" />
+          <img
+            src="/2024_CI__Logo_Banner_Color_small.svg"
+            alt="Companion Intelligence Logo"
+            className="h-9 w-auto object-contain hidden dark:block"
+          />
+          <img
+            src="/2024_CI__Logo_Banner_Color_small-lightmode2.svg"
+            alt="Companion Intelligence Logo"
+            className="h-9 w-auto object-contain block dark:hidden"
+          />
         </Link>
       </div>
 
-      {/* Navigation (Center) - Desktop */}
+      {/* Navigation (Center) — aligned with CI Portal (absolute center, lg+ only) */}
       {isLoggedIn && (
-        <nav className="hidden md:flex items-center justify-center gap-2">
+        <nav className="absolute left-1/2 -translate-x-1/2 hidden lg:flex items-center justify-center gap-2">
           <NavLink to="/dashboard" className={getNavLinkClass}>
             <Home className="mr-2 size-4" />
             Home
@@ -74,7 +83,7 @@ export const Header = (props: HeaderProps) => {
       )}
 
       {/* User Actions (Right) - Desktop */}
-      <div className="hidden md:flex flex-1 items-center justify-end gap-2">
+      <div className="hidden lg:flex items-center justify-end gap-2 ml-auto">
         <ModeToggle />
 
         {!isLoggedIn && (
@@ -107,7 +116,7 @@ export const Header = (props: HeaderProps) => {
       </div>
 
       {/* Mobile Menu (Right) */}
-      <div className="flex md:hidden flex-1 justify-end">
+      <div className="flex lg:hidden justify-end ml-auto">
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" size="icon">
