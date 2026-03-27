@@ -148,20 +148,42 @@ jobs:
     outputs:
       id: ${{ steps.create_release.outputs.id }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate changelog
+        id: changelog
+        uses: mikepenz/release-changelog-builder-action@v5
+        with:
+          configuration: .github/changelog-config.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create version manifest
+        run: |
+          cat > latest.json << EOF
+          {
+            "version": "${{ needs.determine-release-type.outputs.tagname }}",
+            "image": "ghcr.io/companionintelligence/ci-os-hub:${{ needs.determine-release-type.outputs.tagname }}",
+            "channel": "${{ needs.determine-release-type.outputs.release_type }}",
+            "released": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "sha": "${{ github.sha }}"
+          }
+          EOF
+
       - name: Create GitHub release
         id: create_release
         uses: softprops/action-gh-release@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          body: |
-            **${{ needs.determine-release-type.outputs.tagname }}**
+          body: ${{ steps.changelog.outputs.changelog }}
           tag_name: ${{ needs.determine-release-type.outputs.tagname }}
           name: ${{ needs.determine-release-type.outputs.tagname }}
           draft: false
           prerelease: true
-          # TODO: re-enable CLI artifact upload when CI CLI is available
-          # files: cli/runtipi-cli-*
+          files: latest.json
 
   e2e-tests:
     needs: [determine-release-type, publish-release]

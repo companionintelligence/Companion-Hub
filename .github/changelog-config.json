@@ -1,0 +1,10 @@
+{
+  "categories": [
+    { "title": "## 🚀 Features", "labels": ["feat", "feature", "enhancement"] },
+    { "title": "## 🐛 Bug Fixes", "labels": ["fix", "bug", "bugfix"] },
+    { "title": "## 🧹 Maintenance", "labels": ["chore", "refactor", "ci", "docs"] }
+  ],
+  "template": "#{{CHANGELOG}}\n\n**Full Changelog**: #{{RELEASE_DIFF}}",
+  "pr_template": "- #{{TITLE}} (#{{NUMBER}}) by @#{{AUTHOR}}",
+  "empty_template": "No changes since last release."
+}
