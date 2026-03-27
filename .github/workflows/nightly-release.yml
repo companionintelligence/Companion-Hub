@@ -112,6 +112,30 @@ jobs:
   #         rm: true
   #         files: cli/runtipi-cli-*
 
+  update-manifest:
+    needs: [build-images]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create version manifest
+        run: |
+          cat > latest.json << EOF
+          {
+            "version": "nightly",
+            "image": "ghcr.io/companionintelligence/ci-os-hub:nightly",
+            "channel": "nightly",
+            "released": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "sha": "${{ github.sha }}"
+          }
+          EOF
+      - name: Upload to nightly release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: nightly
+          files: latest.json
+          prerelease: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   e2e-tests:
     needs: [build-images]
     uses: "./.github/workflows/e2e.yml"

@@ -1,5 +1,7 @@
 name: Fleet E2E Tests
 on:
+  schedule:
+    - cron: '0 2 * * 0'  # Sunday 2am UTC (noon AEDT)
   workflow_dispatch:
     inputs:
       server:
