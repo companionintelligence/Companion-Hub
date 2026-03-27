@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/nicegui-inc/nicegui/main/nicegui/static/schema/tauri.v2.json",
+  "$schema": "https://schema.tauri.app/config/2",
   "productName": "Companion Hub",
   "version": "0.1.0",
   "identifier": "computer.ci.app.hub",
@@ -11,7 +11,7 @@
   },
   "bundle": {
     "active": true,
-    "createUpdaterArtifacts": "v2Compatible",
+    "createUpdaterArtifacts": true,
     "targets": "all",
     "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
     "macOS": {
