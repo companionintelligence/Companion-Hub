@@ -1,6 +1,7 @@
 import type { LoggerService } from '@/core/logger/logger.service';
 import * as Sentry from '@sentry/nestjs';
-import cron, { type ScheduledTask } from 'node-cron';
+import * as cron from 'node-cron';
+import type { ScheduledTask } from 'node-cron';
 import { AMQPConnectionError, AMQPError, type Connection, type RPCClient } from 'rabbitmq-client';
 import { z } from 'zod';
 import type { EventPublisher } from './event.publisher';

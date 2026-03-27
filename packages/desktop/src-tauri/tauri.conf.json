@@ -11,6 +11,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": "v2Compatible",
     "targets": "all",
     "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
     "macOS": {
@@ -38,6 +39,15 @@
       "iconAsTemplate": true,
       "menuOnLeftClick": false,
       "title": "Companion Hub"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDA5RTdCMUMyN0IzNTI1QTUKUldTbEpUVjd3ckhuQ2JvTERXYXNBdWFpM0xZdHhCZ2NaM21xOXQ0QzgvRkZQQ3hsTmdLdWJsVVkK",
+      "endpoints": [
+        "https://github.com/companionintelligence/CI-Hub/releases/latest/download/latest.json",
+        "https://github.com/companionintelligence/CI-Hub/releases/download/nightly/latest.json"
+      ]
     }
   }
 }
