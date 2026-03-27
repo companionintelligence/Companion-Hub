@@ -103,15 +103,11 @@ jobs:
           bun run --filter=@ci-hub/common build
           bun run --filter=frontend build
 
-      - name: Install Tauri CLI
-        env:
-          CARGO_NET_RETRY_LIMIT: 10
-        run: cargo install tauri-cli --version "^2" --locked
-
+      # Use the published CLI via npx (avoids `cargo install` and bogus CARGO_NET_RETRY_LIMIT → `net.retry` errors).
       - name: Build Tauri app
         run: |
           cd packages/desktop
-          cargo tauri build --target ${{ matrix.target }}
+          npx --yes @tauri-apps/cli@2 build --target ${{ matrix.target }}
 
       - name: List artifacts
         shell: bash
