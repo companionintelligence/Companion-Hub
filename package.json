@@ -36,7 +36,9 @@
     "version": "echo $npm_package_version",
     "start:detached": "bun scripts/start.ts start:detached",
     "fresh": "bun run cleanup && bun start dev",
-    "fresh:local": "bun run cleanup && bun start local"
+    "fresh:local": "bun run cleanup && bun start local",
+    "dev:desktop": "cd packages/desktop && cargo tauri dev",
+    "build:desktop": "cd packages/desktop && cargo tauri build"
   },
   "lint-staged": {
     "*": [
@@ -54,12 +56,16 @@
     "@types/adm-zip": "^0.5.7",
     "@types/bun": "^1.2.22",
     "@types/pg": "^8.15.1",
+    "clsx": "^2.1.1",
     "dotenv-cli": "^10.0.0",
     "husky": "^9.1.7",
     "lint-staged": "^16.2.7",
+    "tailwind-merge": "^3.5.0",
     "turbo": "^2.8.17"
   },
   "dependencies": {
+    "@tauri-apps/api": "^2.10.1",
+    "@tauri-apps/plugin-os": "^2.3.2",
     "adm-zip": "^0.5.16",
     "drizzle-orm": "^0.44.7",
     "express": "^5.2.1",

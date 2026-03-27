@@ -1,0 +1,144 @@
+name: Desktop Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feat/tauri-desktop
+    paths:
+      - "packages/desktop/**"
+      - "packages/frontend/**"
+      - "packages/common/**"
+      - ".github/workflows/desktop-build.yml"
+  pull_request:
+    branches:
+      - dev
+    paths:
+      - "packages/desktop/**"
+      - "packages/frontend/**"
+      - "packages/common/**"
+      - ".github/workflows/desktop-build.yml"
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+            label: macOS (Apple Silicon)
+          - platform: macos-13
+            target: x86_64-apple-darwin
+            label: macOS (Intel)
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            label: Linux (x64)
+
+    name: Build — ${{ matrix.label }}
+    runs-on: ${{ matrix.platform }}
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: packages/desktop/src-tauri -> target
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.0"
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build frontend
+        run: |
+          bun run --filter=@ci-hub/common build
+          bun run --filter=frontend build
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Build Tauri app
+        run: |
+          cd packages/desktop
+          cargo tauri build --target ${{ matrix.target }}
+
+      - name: List artifacts
+        shell: bash
+        run: |
+          echo "=== Release binary ==="
+          ls -lh packages/desktop/src-tauri/target/${{ matrix.target }}/release/ci-os-hub-desktop* 2>/dev/null || true
+          echo "=== Bundles ==="
+          find packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle -type f \( -name "*.dmg" -o -name "*.app" -o -name "*.deb" -o -name "*.rpm" -o -name "*.AppImage" \) -exec ls -lh {} \; 2>/dev/null || true
+
+      - name: Upload macOS DMG
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: companion-hub-${{ matrix.target }}-dmg
+          path: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+
+      - name: Upload macOS app
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: companion-hub-${{ matrix.target }}-app
+          path: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app
+          if-no-files-found: error
+
+      - name: Upload Linux deb
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: companion-hub-linux-x64-deb
+          path: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
+          if-no-files-found: error
+
+      - name: Upload Linux rpm
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: companion-hub-linux-x64-rpm
+          path: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/rpm/*.rpm
+          if-no-files-found: error
+
+      - name: Upload Linux AppImage
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: companion-hub-linux-x64-appimage
+          path: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
+          if-no-files-found: error

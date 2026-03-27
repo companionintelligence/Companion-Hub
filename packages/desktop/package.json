@@ -1,0 +1,11 @@
+{
+  "name": "desktop",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Companion Hub Desktop — Tauri v2 native wrapper",
+  "scripts": {
+    "dev": "cargo tauri dev",
+    "build": "command -v cargo >/dev/null 2>&1 && cargo tauri --version >/dev/null 2>&1 && cargo tauri build || echo \"Skipping desktop build (cargo tauri not available)\"",
+    "icons": "cargo tauri icon"
+  }
+}
