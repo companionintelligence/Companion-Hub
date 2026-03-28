@@ -161,9 +161,11 @@ export class AppFilesManager {
     const { appDataDir } = this.getAppPaths(appUrn);
 
     if (process.platform !== 'win32') {
-      await execAsync(`chmod -Rf a+rwx ${appDataDir}`).catch(() => {
-        this.logger.error(`Error setting permissions for app ${appUrn}`);
-      });
+      const escapedPath = appDataDir.replace(/'/g, "'\\''");
+      const { stderr } = await execAsync(`chmod -Rf a+rwx '${escapedPath}'`);
+      if (stderr) {
+        this.logger.error(`Error setting permissions for app ${appUrn}: ${stderr}`);
+      }
     }
   }
 

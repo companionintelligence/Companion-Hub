@@ -22,8 +22,12 @@ export class FilesystemService {
     const resolvedPath = path.resolve(filePath);
 
     for (const dir of allowedDirs) {
-      if (path.relative(dir, resolvedPath).startsWith('..')) {
-        continue; // If relative path starts with '..', it's outside the allowed dir
+      const rel = path.relative(dir, resolvedPath);
+      // On Windows, path.relative across drive letters returns an absolute path (e.g. "D:\...")
+      // which doesn't start with ".." but is clearly not contained. Check that the relative path
+      // is not absolute and doesn't escape with "..".
+      if (path.isAbsolute(rel) || rel.startsWith('..')) {
+        continue;
       }
 
       return resolvedPath;

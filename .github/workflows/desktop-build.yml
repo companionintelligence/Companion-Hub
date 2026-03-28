@@ -121,7 +121,7 @@ jobs:
           echo "=== Release binary ==="
           ls -lh packages/desktop/src-tauri/target/${{ matrix.target }}/release/ci-os-hub-desktop* 2>/dev/null || true
           echo "=== Bundles ==="
-          find packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle -type f \( -name "*.dmg" -o -name "*.app" -o -name "*.deb" -o -name "*.rpm" -o -name "*.AppImage" -o -name "*.msi" -o -name "*-setup.exe" \) -exec ls -lh {} \; 2>/dev/null || true
+          find packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle \( -name "*.dmg" -o -name "*.app" -o -name "*.deb" -o -name "*.rpm" -o -name "*.AppImage" -o -name "*.msi" -o -name "*-setup.exe" \) -exec ls -lhd {} \; 2>/dev/null || true
 
       - name: Upload macOS DMG
         if: runner.os == 'macOS'
