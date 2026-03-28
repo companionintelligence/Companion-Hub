@@ -72,7 +72,9 @@ export class ReposHelpers {
       await fs.promises.mkdir(dirPath, { recursive: true });
     }
 
-    await fs.promises.chmod(dirPath, 0o755);
+    if (process.platform !== 'win32') {
+      await fs.promises.chmod(dirPath, 0o755);
+    }
     execFileSync('git', ['config', '--global', '--add', 'safe.directory', dirPath], {
       stdio: 'ignore',
     });

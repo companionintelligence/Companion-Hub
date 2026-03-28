@@ -160,9 +160,11 @@ export class AppFilesManager {
   public async setAppDataDirPermissions(appUrn: AppUrn) {
     const { appDataDir } = this.getAppPaths(appUrn);
 
-    await execAsync(`chmod -Rf a+rwx ${appDataDir}`).catch(() => {
-      this.logger.error(`Error setting permissions for app ${appUrn}`);
-    });
+    if (process.platform !== 'win32') {
+      await execAsync(`chmod -Rf a+rwx ${appDataDir}`).catch(() => {
+        this.logger.error(`Error setting permissions for app ${appUrn}`);
+      });
+    }
   }
 
   public async getAppEnv(appUrn: AppUrn) {
