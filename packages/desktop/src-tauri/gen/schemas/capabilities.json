@@ -21,7 +21,8 @@
       "shell:allow-open",
       "notification:default",
       "store:default",
-      "os:default"
+      "os:default",
+      "updater:default"
     ]
   }
 }
