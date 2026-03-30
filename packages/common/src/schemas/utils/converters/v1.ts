@@ -6,6 +6,7 @@ export const serviceSchemaV1 = z.object({
   name: z.string(),
   internalPort: z.string().or(z.number()).optional(),
   isMain: z.boolean().optional(),
+  restart: z.enum(['no', 'always', 'unless-stopped', 'on-failure']).optional(),
   networkMode: z.string().optional(),
   extraHosts: z.array(z.string()).optional(),
   ulimits: z
