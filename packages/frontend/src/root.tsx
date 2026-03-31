@@ -43,9 +43,24 @@ client.setConfig({
 // but the API is on a local HTTP port. Detect Tauri and set the baseUrl.
 const isTauriRelease = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window && !window.location.origin.startsWith('http://localhost');
 
-if (isTauriRelease) {
-  client.setConfig({ baseUrl: 'http://localhost:5002', credentials: 'include' });
-}
+// Probe the backend port — try 5002 (prod) then 3000 (dev)
+const tauriBaseUrlReady: Promise<void> = isTauriRelease
+  ? (async () => {
+      for (const port of [5002, 3000]) {
+        try {
+          const res = await fetch(`http://localhost:${port}/api/health`, { signal: AbortSignal.timeout(2000) });
+          if (res.ok) {
+            client.setConfig({ baseUrl: `http://localhost:${port}`, credentials: 'include' });
+            return;
+          }
+        } catch {
+          /* try next */
+        }
+      }
+      // Neither responded — default to 5002, HubStatus will show the "not running" overlay
+      client.setConfig({ baseUrl: 'http://localhost:5002', credentials: 'include' });
+    })()
+  : Promise.resolve();
 
 export const links: Route.LinksFunction = () => [
   { rel: 'preconnect', href: 'https://fonts.googleapis.com' },
@@ -59,6 +74,9 @@ export const links: Route.LinksFunction = () => [
 ];
 
 export async function clientLoader({ request }: Route.ActionArgs) {
+  // In Tauri release mode, wait for the backend port probe to complete
+  await tauriBaseUrlReady;
+
   const url = new URL(request.url);
 
   const CACHE_TTL_MS = 60 * 1000; // 1 min — short enough that token removal takes effect quickly
