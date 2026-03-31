@@ -1,4 +1,5 @@
 import { Titlebar } from './components/titlebar/titlebar';
+import { HubStatus } from './components/hub-status/hub-status';
 import { useEffect } from 'react';
 import { Toaster } from 'react-hot-toast';
 import { Links, Meta, Outlet, Scripts, ScrollRestoration, isRouteErrorResponse, redirect } from 'react-router';
@@ -38,6 +39,14 @@ client.setConfig({
   credentials: 'include',
 });
 
+// In Tauri release mode, the frontend is served from tauri://localhost
+// but the API is on a local HTTP port. Detect Tauri and set the baseUrl.
+const isTauriRelease = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window && !window.location.origin.startsWith('http://localhost');
+
+if (isTauriRelease) {
+  client.setConfig({ baseUrl: 'http://localhost:5002', credentials: 'include' });
+}
+
 export const links: Route.LinksFunction = () => [
   { rel: 'preconnect', href: 'https://fonts.googleapis.com' },
   { rel: 'preconnect', href: 'https://fonts.gstatic.com', crossOrigin: 'anonymous' },
@@ -58,7 +67,7 @@ export async function clientLoader({ request }: Route.ActionArgs) {
 
   const regResult = cacheValid
     ? { ok: true, registered: true }
-    : await fetch('/api/registration/status')
+    : await fetch(`${client.getConfig().baseUrl ?? ''}/api/registration/status`, { credentials: 'include' })
         .then(async (res) => {
           if (!res.ok) return { ok: false, registered: false };
           const data = await res.json();
@@ -132,11 +141,13 @@ export function Layout({ children }: { children: React.ReactNode }) {
       </head>
       <body>
         <Titlebar />
-        <main id="root">
-          {children}
-          <ScrollRestoration />
-          <Scripts />
-        </main>
+        <HubStatus>
+          <main id="root">
+            {children}
+            <ScrollRestoration />
+            <Scripts />
+          </main>
+        </HubStatus>
       </body>
     </html>
   );
