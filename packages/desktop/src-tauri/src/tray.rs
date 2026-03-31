@@ -1,5 +1,6 @@
 use tauri_plugin_store::StoreExt;
 use tauri::{
+    image::Image,
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
     App, Manager,
@@ -70,6 +71,8 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
     let show_hide_for_menu = Arc::clone(&show_hide_item);
 
     let _tray = TrayIconBuilder::new()
+        .icon(Image::from_path("icons/icon.png").unwrap_or_else(|_| Image::from_bytes(include_bytes!("../icons/icon.png")).expect("failed to load tray icon")))
+        .icon_as_template(true)
         .menu(&menu)
         .tooltip("Companion Hub")
         .on_menu_event(move |app, event| match event.id.as_ref() {
