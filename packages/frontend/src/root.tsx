@@ -145,9 +145,9 @@ export function Layout({ children }: { children: React.ReactNode }) {
           <main id="root">
             {children}
             <ScrollRestoration />
-            <Scripts />
           </main>
         </HubStatus>
+        <Scripts />
       </body>
     </html>
   );
