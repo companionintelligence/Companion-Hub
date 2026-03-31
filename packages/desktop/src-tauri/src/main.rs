@@ -45,6 +45,17 @@ pub fn run() {
             let window = app
                 .get_webview_window("main")
                 .ok_or("main window not found")?;
+
+            // Enable DevTools in debug builds (F12 to open)
+            // In release builds, enable if COMPANION_HUB_DEBUG=1 is set
+            #[cfg(debug_assertions)]
+            window.open_devtools();
+
+            #[cfg(not(debug_assertions))]
+            if std::env::var("COMPANION_HUB_DEBUG").unwrap_or_default() == "1" {
+                window.open_devtools();
+            }
+
             if let Ok(store) = app.store("settings.json") {
                 if let Some(x) = store.get("window_x").and_then(|v: serde_json::Value| v.as_f64()) {
                     if let Some(y) = store.get("window_y").and_then(|v: serde_json::Value| v.as_f64()) {
