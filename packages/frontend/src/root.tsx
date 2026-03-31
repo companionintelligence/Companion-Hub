@@ -35,13 +35,16 @@ client.interceptors.response.use(async (res) => {
   return res;
 });
 
-client.setConfig({
-  credentials: 'include',
-});
-
 // In Tauri release mode, the frontend is served from tauri://localhost
 // but the API is on a local HTTP port. Detect Tauri and set the baseUrl.
+// Cross-origin credentials ('include') are blocked by browsers when the server
+// responds with Access-Control-Allow-Origin: * — so we use 'omit' in Tauri mode.
 const isTauriRelease = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window && !window.location.origin.startsWith('http://localhost');
+const credentialMode: RequestCredentials = isTauriRelease ? 'omit' : 'include';
+
+client.setConfig({
+  credentials: credentialMode,
+});
 
 // Probe the backend port — try 5002 (prod) then 3000 (dev)
 const tauriBaseUrlReady: Promise<void> = isTauriRelease
@@ -50,7 +53,7 @@ const tauriBaseUrlReady: Promise<void> = isTauriRelease
         try {
           const res = await fetch(`http://localhost:${port}/api/health`, { signal: AbortSignal.timeout(2000) });
           if (res.ok) {
-            client.setConfig({ baseUrl: `http://localhost:${port}`, credentials: 'include' });
+            client.setConfig({ baseUrl: `http://localhost:${port}`, credentials: credentialMode });
             return;
           }
         } catch {
@@ -58,7 +61,7 @@ const tauriBaseUrlReady: Promise<void> = isTauriRelease
         }
       }
       // Neither responded — default to 5002, HubStatus will show the "not running" overlay
-      client.setConfig({ baseUrl: 'http://localhost:5002', credentials: 'include' });
+      client.setConfig({ baseUrl: 'http://localhost:5002', credentials: credentialMode });
     })()
   : Promise.resolve();
 
@@ -85,7 +88,7 @@ export async function clientLoader({ request }: Route.ActionArgs) {
 
   const regResult = cacheValid
     ? { ok: true, registered: true }
-    : await fetch(`${client.getConfig().baseUrl ?? ''}/api/registration/status`, { credentials: 'include' })
+    : await fetch(`${client.getConfig().baseUrl ?? ''}/api/registration/status`, { credentials: credentialMode })
         .then(async (res) => {
           if (!res.ok) return { ok: false, registered: false };
           const data = await res.json();
