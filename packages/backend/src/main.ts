@@ -27,7 +27,15 @@ async function setupSwagger(app: INestApplication) {
   const { NODE_ENV } = process.env;
   // write the swagger.json file to the assets folder
   if (NODE_ENV !== 'production') {
-    await fs.promises.writeFile(path.join(APP_DIR, 'packages', 'backend', 'src', 'swagger.json'), JSON.stringify(document, null, 2));
+    try {
+      const swaggerPath = path.join(APP_DIR, 'packages', 'backend', 'src', 'swagger.json');
+      await fs.promises.mkdir(path.dirname(swaggerPath), { recursive: true });
+      await fs.promises.writeFile(swaggerPath, JSON.stringify(document, null, 2));
+    } catch (error) {
+      // Non-fatal — swagger.json is just for API docs during development
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`Could not write swagger.json — skipping (non-fatal): ${message}`);
+    }
   }
 }
 
