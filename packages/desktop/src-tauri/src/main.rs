@@ -24,6 +24,12 @@ async fn discover_hubs() -> Result<Vec<String>, String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Enable WebView2 remote debugging on Windows when COMPANION_HUB_DEBUG=1
+    // Must be set BEFORE the WebView2 runtime is created
+    if std::env::var("COMPANION_HUB_DEBUG").unwrap_or_default() == "1" {
+        std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--remote-debugging-port=9222 --auto-open-devtools-for-tabs");
+    }
+
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
