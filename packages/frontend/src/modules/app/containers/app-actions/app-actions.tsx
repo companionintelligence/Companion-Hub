@@ -14,7 +14,7 @@ import {
   Trash,
 } from 'lucide-react';
 import type React from 'react';
-import { createElement, useState, useEffect } from 'react';
+import { createElement, useState, useEffect, useCallback, useRef } from 'react';
 import { client } from '@/api-client/client.gen';
 import { useQueryClient } from '@tanstack/react-query';
 import { Button, type ButtonProps } from '@/components/ui/Button';
@@ -39,7 +39,6 @@ import { useInstallationProgress } from '../../helpers/use-installation-progress
 import { DropdownMenuSeparator } from '@/components/ui/DropdownMenu/DropdownMenu';
 import { useLocation, useNavigate } from 'react-router';
 import type { AppUrn } from '@ci-hub/common/types';
-import { useAppContext } from '@/context/app-context';
 
 interface IProps {
   app?: AppDetails | null;
@@ -71,8 +70,27 @@ const ActionButton: React.FC<BtnProps> = (props) => {
   );
 };
 
+const ERROR_MESSAGES: Record<string, string> = {
+  CF_TUNNEL_NOT_FOUND: 'Tunnel route not configured — syncing...',
+  CF_UPSTREAM_ERROR: 'Connecting through tunnel...',
+  CF_ORIGIN_DOWN: 'Origin server is down',
+  CF_TIMEOUT: 'Connection timed out',
+  CF_UNKNOWN: 'Cloudflare error',
+  DNS_NOT_FOUND: 'DNS propagating...',
+  CONNECTION_REFUSED: 'App not responding',
+  CONNECTION_TIMEOUT: 'Connection timed out',
+  PROXY_UPSTREAM_ERROR: 'Waiting for app to start...',
+  APP_HTTP_ERROR: 'App returned an error',
+  NO_DEVICE_REGISTRATION: 'Device not registered',
+};
+
+// Polling phases
+const GRACE_PERIOD_MS = 60_000;
+const GRACE_POLL_MS = 3_000;
+const NORMAL_POLL_MS = 10_000;
+const MAX_POLL_MS = 5 * 60_000;
+
 export const AppActions = ({ app, info, metadata }: IProps) => {
-  const { userSettings } = useAppContext();
   const installDisclosure = useDisclosure();
   const stopDisclosure = useDisclosure();
   const restartDisclosure = useDisclosure();
@@ -134,7 +152,6 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
     return (
       <ActionButton
         key="loading"
-        // Show installing text and make button disabled while in-progress
         disabled
         intent="success"
         title={`${t('APP_ACTION_INSTALLING')}${progressText}`}
@@ -190,8 +207,6 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
     </DropdownMenuItem>
   );
   const CancelListItem = (
-    // During installation we want the cancel option to surface the uninstall flow
-    // which will remove the partially installed app. Reuse the uninstall dialog.
     <DropdownMenuItem onClick={uninstallDisclosure.open} key="cancel">
       <Pause className="mr-2" size={16} />
       {t('APP_ACTION_CANCEL')}
@@ -218,7 +233,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
   const StopButton = <ActionButton key="stop" IconComponent={Pause} onClick={stopDisclosure.open} title={t('APP_ACTION_STOP')} intent="default" />;
   const InstallButton = <ActionButton key="install" onClick={installDisclosure.open} title={t('APP_ACTION_INSTALL')} intent="success" />;
 
-  // Check if the app URL is available before showing Open button
+  // Availability check state
   const [checkError, setCheckError] = useState<string | null>(null);
   const [checkErrorCode, setCheckErrorCode] = useState<string | null>(null);
   const [errorResolvable, setErrorResolvable] = useState(false);
@@ -226,24 +241,29 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
   const [isCheckingUrl, setIsCheckingUrl] = useState(false);
   const [isResolving, setIsResolving] = useState(false);
   const [appUrl, setAppUrl] = useState<string | null>(null);
+  const [stage, setStage] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  const [pollingStopped, setPollingStopped] = useState(false);
+  const pollStartRef = useRef<number>(0);
 
   // Show install errors surfaced from SSE via query cache
   const queryClient = useQueryClient();
   const installError = queryClient.getQueryData<{ message: string } | null>(['app-install-error', info.urn]) ?? null;
 
-  // Fallback URL construction (used before backend responds)
-  const subdomain = app?.localSubdomain;
-  const organizationSlug = userSettings.ciHubOrganizationSlug;
-  const domainSuffix = `-${organizationSlug}.${userSettings.domain}`;
-  const fallbackUrl = `https://${subdomain}${domainSuffix}${info.url_suffix || ''}`;
+  const exposureMode = ((app as Record<string, unknown> | null)?.exposureMode as string) || 'local';
+  const isLocal = exposureMode === 'local';
 
-  const triggerRecheck = () => {
+  const resetPolling = useCallback(() => {
     setUrlAvailable(null);
     setCheckError(null);
     setCheckErrorCode(null);
     setErrorResolvable(false);
     setIsCheckingUrl(true);
-  };
+    setStage(null);
+    setAttempt(0);
+    setPollingStopped(false);
+    pollStartRef.current = Date.now();
+  }, []);
 
   const handleResolve = async () => {
     setIsResolving(true);
@@ -252,8 +272,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
       const result = (data || {}) as { success: boolean; detail: string };
       if (result.success) {
         toast.success(result.detail || 'Resolution attempted. Rechecking...');
-        // Wait a moment for changes to take effect, then recheck
-        setTimeout(triggerRecheck, 3000);
+        setTimeout(resetPolling, 3000);
       } else {
         toast.error(result.detail || 'Resolution failed.');
       }
@@ -265,107 +284,226 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
   };
 
   useEffect(() => {
-    // Only check if app is running and exposed
-    if (app?.status === 'running' && !info.no_gui) {
-      setIsCheckingUrl(true);
+    // Only check if app is running, has a GUI, and is NOT local mode (local is instant)
+    if (app?.status !== 'running' || info.no_gui || isLocal) {
       setUrlAvailable(null);
-
-      let isMounted = true;
-      let isAvailableRef = false; // Track availability to stop polling
-      let pollInterval: ReturnType<typeof setInterval> | null = null;
-
-      // Check if URL is reachable directly from client
-      const checkUrl = async () => {
-        if (!isMounted || isAvailableRef) return;
-
-        try {
-          const { data } = await client.get({ url: `/api/apps/${info.urn}/check-availability` });
-          const {
-            available,
-            appUrl: resolvedUrl,
-            detail,
-            resolvable,
-            errorCode,
-          } = (data || {}) as {
-            available: boolean;
-            appUrl?: string;
-            reason?: string;
-            detail?: string;
-            errorCode?: string;
-            resolvable?: boolean;
-          };
-
-          if (isMounted) {
-            if (resolvedUrl) {
-              setAppUrl(resolvedUrl);
-            }
-            setUrlAvailable(available);
-
-            if (available) {
-              setIsCheckingUrl(false);
-              setCheckError(null);
-              setCheckErrorCode(null);
-              setErrorResolvable(false);
-              isAvailableRef = true;
-              if (pollInterval) {
-                clearInterval(pollInterval);
-                pollInterval = null;
-              }
-            } else {
-              setIsCheckingUrl(false);
-              setCheckError(detail || 'Application Error');
-              setCheckErrorCode(errorCode || null);
-              setErrorResolvable(resolvable ?? false);
-            }
-          }
-        } catch (error) {
-          if (isMounted) {
-            setUrlAvailable(null);
-            setIsCheckingUrl(true);
-            setCheckError(error instanceof Error ? error.message : 'Unknown error');
-            setCheckErrorCode(null);
-            setErrorResolvable(false);
-          }
-        }
-      };
-
-      // Initial check after short delay
-      const initialTimeout = setTimeout(() => {
-        checkUrl();
-
-        // Start polling every 5 seconds until available
-        pollInterval = setInterval(checkUrl, 5000);
-      }, 1000);
-
-      return () => {
-        isMounted = false;
-        clearTimeout(initialTimeout);
-        if (pollInterval) {
-          clearInterval(pollInterval);
-        }
-      };
+      setIsCheckingUrl(false);
+      setCheckError(null);
+      setCheckErrorCode(null);
+      setErrorResolvable(false);
+      setStage(null);
+      setAttempt(0);
+      setPollingStopped(false);
+      return;
     }
+
+    setIsCheckingUrl(true);
     setUrlAvailable(null);
-    setIsCheckingUrl(false);
-    setCheckError(null);
-    setCheckErrorCode(null);
-    setErrorResolvable(false);
-  }, [app?.status, info.no_gui, info.urn]);
+    pollStartRef.current = Date.now();
 
-  const isTunnelPending = checkErrorCode === 'CF_UPSTREAM_ERROR' || checkErrorCode === 'CF_TUNNEL_NOT_FOUND';
+    let isMounted = true;
+    let isAvailableRef = false;
+    let pollTimeout: ReturnType<typeof setTimeout> | null = null;
+    let attemptCount = 0;
 
-  const OpenButton = (
-    <ActionButton
-      key="open"
-      IconComponent={ExternalLink}
-      onClick={() => {
-        window.open(appUrl || fallbackUrl, '_blank');
-      }}
-      title={t('APP_ACTION_OPEN')}
-      disabled={isCheckingUrl || urlAvailable === false}
-      loading={isCheckingUrl}
-    />
-  );
+    const checkUrl = async () => {
+      if (!isMounted || isAvailableRef) return;
+
+      attemptCount++;
+      if (isMounted) setAttempt(attemptCount);
+
+      try {
+        const { data } = await client.get({ url: `/api/apps/${info.urn}/check-availability` });
+        const {
+          available,
+          appUrl: resolvedUrl,
+          detail,
+          resolvable,
+          errorCode,
+          stage: responseStage,
+        } = (data || {}) as {
+          available: boolean;
+          appUrl?: string;
+          httpStatus?: number;
+          stage?: string;
+          reason?: string;
+          detail?: string;
+          errorCode?: string;
+          resolvable?: boolean;
+        };
+
+        if (!isMounted) return;
+
+        if (resolvedUrl) setAppUrl(resolvedUrl);
+        setStage(responseStage || null);
+        setUrlAvailable(available);
+
+        if (available) {
+          setIsCheckingUrl(false);
+          setCheckError(null);
+          setCheckErrorCode(null);
+          setErrorResolvable(false);
+          isAvailableRef = true;
+          return; // Stop polling
+        }
+
+        setIsCheckingUrl(false);
+        setCheckError(detail || 'Application Error');
+        setCheckErrorCode(errorCode || null);
+        setErrorResolvable(resolvable ?? false);
+      } catch (error) {
+        if (!isMounted) return;
+        setUrlAvailable(null);
+        setIsCheckingUrl(true);
+        setCheckError(error instanceof Error ? error.message : 'Unknown error');
+        setCheckErrorCode(null);
+        setErrorResolvable(false);
+      }
+
+      // Schedule next poll with backoff
+      if (!isMounted || isAvailableRef) return;
+
+      const elapsed = Date.now() - pollStartRef.current;
+      if (elapsed >= MAX_POLL_MS) {
+        if (isMounted) setPollingStopped(true);
+        return; // Stop polling after 5 minutes
+      }
+
+      const interval = elapsed < GRACE_PERIOD_MS ? GRACE_POLL_MS : NORMAL_POLL_MS;
+      pollTimeout = setTimeout(checkUrl, interval);
+    };
+
+    // Initial check after short delay
+    const initialTimeout = setTimeout(checkUrl, 1000);
+
+    return () => {
+      isMounted = false;
+      clearTimeout(initialTimeout);
+      if (pollTimeout) clearTimeout(pollTimeout);
+    };
+  }, [app?.status, info.no_gui, info.urn, isLocal]);
+
+  // Determine UI state for the Open button area
+  const elapsed = pollStartRef.current ? Date.now() - pollStartRef.current : 0;
+  const withinGracePeriod = elapsed < GRACE_PERIOD_MS && !pollingStopped;
+  const statusMessage = checkErrorCode ? ERROR_MESSAGES[checkErrorCode] || checkError : checkError;
+
+  // Build the Open button area for running apps with GUI
+  const renderOpenButtonArea = () => {
+    if (info.no_gui) return null;
+
+    // Local mode: always show enabled Open button immediately
+    if (isLocal) {
+      return (
+        <ActionButton
+          key="open-local"
+          IconComponent={ExternalLink}
+          onClick={() => {
+            // For local, construct URL from app data since backend returns it immediately
+            if (appUrl) {
+              window.open(appUrl, '_blank');
+            } else {
+              // Fetch URL on-demand for local
+              client.get({ url: `/api/apps/${info.urn}/check-availability` }).then(({ data }) => {
+                const result = (data || {}) as { appUrl?: string };
+                if (result.appUrl) window.open(result.appUrl, '_blank');
+              });
+            }
+          }}
+          title={t('APP_ACTION_OPEN')}
+        />
+      );
+    }
+
+    // Brief loading spinner for first few attempts
+    if (isCheckingUrl && attempt < 3) {
+      return <ActionButton key="open-loading" title={t('APP_ACTION_OPEN')} disabled loading />;
+    }
+
+    // Available — show enabled Open button
+    if (urlAvailable) {
+      return (
+        <ActionButton
+          key="open"
+          IconComponent={ExternalLink}
+          onClick={() => appUrl && window.open(appUrl, '_blank')}
+          title={t('APP_ACTION_OPEN')}
+          disabled={!appUrl}
+        />
+      );
+    }
+
+    // Not available, within grace period — show "Starting..." with spinner
+    if (!urlAvailable && withinGracePeriod && stage === 'propagating') {
+      return (
+        <div key="open-propagating" className="flex flex-col items-start gap-1">
+          <ActionButton title="Starting..." disabled loading />
+          {statusMessage && <span className="text-xs text-muted-foreground">{statusMessage}</span>}
+          {appUrl && (
+            <button
+              type="button"
+              className="text-xs text-muted-foreground underline hover:text-foreground"
+              onClick={() => window.open(appUrl, '_blank')}
+            >
+              Open anyway ↗
+            </button>
+          )}
+        </div>
+      );
+    }
+
+    // Not available, past grace / polling stopped, resolvable
+    if (!urlAvailable && urlAvailable !== null && errorResolvable) {
+      return (
+        <div key="open-resolvable" className="flex flex-col items-start gap-1">
+          {pollingStopped ? (
+            <ActionButton IconComponent={RotateCw} title="Retry" intent="warning" onClick={resetPolling} />
+          ) : (
+            <ActionButton
+              IconComponent={RotateCw}
+              title={t('APP_ACTION_RESOLVE')}
+              intent="warning"
+              onClick={handleResolve}
+              loading={isResolving}
+              disabled={isResolving}
+            />
+          )}
+          {statusMessage && <span className="text-xs text-amber-600">{statusMessage}</span>}
+          {appUrl && (
+            <button
+              type="button"
+              className="text-xs text-muted-foreground underline hover:text-foreground"
+              onClick={() => window.open(appUrl, '_blank')}
+            >
+              Open anyway ↗
+            </button>
+          )}
+        </div>
+      );
+    }
+
+    // Not available, not resolvable
+    if (!urlAvailable && urlAvailable !== null) {
+      return (
+        <div key="open-error" className="flex flex-col items-start gap-1">
+          <ActionButton IconComponent={AlertTriangle} title={t('APP_ACTION_OPEN')} intent="danger" disabled />
+          {statusMessage && <span className="text-xs text-destructive">{statusMessage}</span>}
+          {appUrl && (
+            <button
+              type="button"
+              className="text-xs text-muted-foreground underline hover:text-foreground"
+              onClick={() => window.open(appUrl, '_blank')}
+            >
+              Open anyway ↗
+            </button>
+          )}
+        </div>
+      );
+    }
+
+    // Fallback: still checking
+    return <ActionButton key="open-checking" title={t('APP_ACTION_OPEN')} disabled loading />;
+  };
 
   // If there was an install error for this app, show it under the open/action area
   const InstallErrorMessage = installError?.message ? (
@@ -373,25 +511,6 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
       {installError.message}
     </p>
   ) : null;
-
-  const PendingButton = <ActionButton key="pending" title={t('APP_ACTION_PENDING')} disabled loading />;
-
-  const ErrorButton = errorResolvable ? (
-    <div key="error" title={checkError ?? undefined}>
-      <ActionButton
-        IconComponent={RotateCw}
-        title={t('APP_ACTION_RESOLVE')}
-        intent="warning"
-        onClick={handleResolve}
-        loading={isResolving}
-        disabled={isResolving}
-      />
-    </div>
-  ) : (
-    <div key="error" title={checkError ?? undefined}>
-      <ActionButton IconComponent={AlertTriangle} title={t('APP_ACTION_OPEN')} intent="danger" disabled />
-    </div>
-  );
 
   const buttons: React.JSX.Element[] = [];
   const listItems: React.JSX.Element[] = [];
@@ -414,23 +533,16 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
         listItems.push(UnignoreVersionListItem);
       }
       break;
-    case 'running':
+    case 'running': {
       buttons.push(StopButton);
       listItems.push(SettingsListItem);
       listItems.push(RestartListItem);
       listItemsDestructive.push(ResetListItem);
       listItemsDestructive.push(RemoveListItem);
 
-      // Always show Open button for running apps with a GUI
-      if (!info.no_gui) {
-        if (checkError && isTunnelPending) {
-          buttons.push(PendingButton);
-        } else if (checkError) {
-          buttons.push(ErrorButton);
-        } else {
-          buttons.push(OpenButton);
-        }
-      }
+      // Open button area for running apps with a GUI
+      const openArea = renderOpenButtonArea();
+      if (openArea) buttons.push(openArea);
 
       if (updateAvailable && !versionIsIgnored) {
         listItems.push(UpdateListItem);
@@ -439,6 +551,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
         listItems.push(UnignoreVersionListItem);
       }
       break;
+    }
     case 'installing':
     case 'uninstalling':
     case 'starting':
