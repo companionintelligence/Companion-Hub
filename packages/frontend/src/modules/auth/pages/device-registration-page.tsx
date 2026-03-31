@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router';
 import { Button } from '@/components/ui/Button';
 import { Alert, AlertDescription } from '@/components/ui/Alert/Alert';
 import { AlertCircle, CheckCircle2, Loader2 } from 'lucide-react';
+import { apiFetch } from '@/lib/api-fetch';
 import toast from 'react-hot-toast';
 
 const DEFAULT_PORTAL_URL = 'https://portal.companionintelligence.com';
@@ -30,7 +31,7 @@ export default function DeviceRegistrationPage() {
   useEffect(() => {
     const checkStatus = async () => {
       try {
-        const res = await fetch('/api/registration/status');
+        const res = await apiFetch('/api/registration/status');
         if (res.ok) {
           const data = await res.json();
           if (data.registered) {
@@ -39,7 +40,7 @@ export default function DeviceRegistrationPage() {
           }
         }
 
-        const deviceRes = await fetch('/api/registration/device-id');
+        const deviceRes = await apiFetch('/api/registration/device-id');
         if (deviceRes.ok) {
           const deviceData = await deviceRes.json();
           setDeviceId(deviceData.device_id);
@@ -73,7 +74,7 @@ export default function DeviceRegistrationPage() {
     setError(null);
 
     try {
-      const res = await fetch('/api/registration/pair', {
+      const res = await apiFetch('/api/registration/pair', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pairing_code: code }),
@@ -94,7 +95,7 @@ export default function DeviceRegistrationPage() {
           // eslint-disable-next-line no-constant-condition
           while (true) {
             try {
-              const probeRes = await fetch(`/api/registration/probe-domain?url=${encodeURIComponent(fullUrl)}`);
+              const probeRes = await apiFetch(`/api/registration/probe-domain?url=${encodeURIComponent(fullUrl)}`);
               if (probeRes.ok) {
                 const probeData = (await probeRes.json()) as { ready: boolean };
                 if (probeData.ready) {

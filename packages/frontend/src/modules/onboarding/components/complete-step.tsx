@@ -1,3 +1,4 @@
+import { apiFetch } from '@/lib/api-fetch';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent } from '@/components/ui/Card';
 import { useAppContext } from '@/context/app-context';
@@ -16,7 +17,7 @@ export const CompleteStep = ({ installed }: CompleteStepProps) => {
   const handleFinish = async () => {
     setLoading(true);
     try {
-      await fetch('/api/complete-onboarding', {
+      await apiFetch('/api/complete-onboarding', {
         method: 'PATCH',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },

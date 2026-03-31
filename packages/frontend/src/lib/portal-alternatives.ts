@@ -1,4 +1,5 @@
 import type { AltAlternative, AltEntry, AltProprietary, AltsCategory } from '@/modules/onboarding/helpers/types';
+import { apiFetch } from '@/lib/api-fetch';
 
 /**
  * Portal base URL (no trailing slash).
@@ -10,7 +11,7 @@ async function resolvePortalBaseUrl(): Promise<string> {
   const baked = (import.meta.env.CI_CLOUD_URL as string | undefined)?.trim();
   if (baked) return baked.replace(/\/$/, '');
 
-  const res = await fetch('/api/registration/device-id', { credentials: 'omit' });
+  const res = await apiFetch('/api/registration/device-id');
   if (!res.ok) {
     throw new Error(
       `Could not resolve portal URL (GET /api/registration/device-id → ${res.status}). Set CI_CLOUD_URL in the Hub environment (e.g. .env.dev) and restart.`,

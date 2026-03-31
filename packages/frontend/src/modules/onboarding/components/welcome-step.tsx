@@ -1,3 +1,4 @@
+import { apiFetch } from '@/lib/api-fetch';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent } from '@/components/ui/Card';
 import { useState } from 'react';
@@ -16,7 +17,7 @@ export const WelcomeStep = ({ onDetected, onSkip }: WelcomeStepProps) => {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch('/api/system/detect-services', { credentials: 'include' });
+      const res = await apiFetch('/api/system/detect-services', { credentials: 'include' });
       if (!res.ok) throw new Error('Failed to detect services');
       const data = await res.json();
       const detected = identifyServices(data.services || []);
