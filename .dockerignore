@@ -53,3 +53,7 @@ PRODUCTION_SETUP.md
 *.snap
 screenshots
 # e2e
+
+# Tauri/Rust build artifacts
+packages/desktop/src-tauri/target
+**/target
