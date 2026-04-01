@@ -69,7 +69,7 @@ export const InstallForm: React.FC<IProps> = ({
 }) => {
   const { t } = useTranslation();
   const { userSettings, isProduction, user, cloudflareAvailable, tailscaleAvailable } = useAppContext();
-  const { guestDashboard, localDomain, maxBackups: globalMaxBackups, ciHubOrganizationSlug, domain } = userSettings;
+  const { guestDashboard, localDomain, maxBackups: globalMaxBackups, ciHubOrganizationSlug, ciHubDeviceSlug, domain } = userSettings;
   const isAdvancedMode = user.advancedMode;
 
   const orgSlug = ciHubOrganizationSlug ? ciHubOrganizationSlug.toLowerCase().replace(/\s+/g, '-') : undefined;
@@ -327,7 +327,13 @@ export const InstallForm: React.FC<IProps> = ({
           <div className="mb-3">
             <InputGroup
               groupPrefix="https://"
-              groupSuffix={watchExposureMode === 'tailscale' ? `.${localDomain || 'tailnet'}` : orgSlug ? `-${orgSlug}.${domain}` : `-${localDomain}`}
+              groupSuffix={
+                watchExposureMode === 'tailscale'
+                  ? `.${localDomain || 'tailnet'}`
+                  : orgSlug
+                    ? `-${ciHubDeviceSlug ? `${ciHubDeviceSlug}-` : ''}${orgSlug}.${domain}`
+                    : `-${localDomain}`
+              }
               {...register('localSubdomain')}
               label={t('APP_INSTALL_FORM_LOCAL_SUBDOMAIN')}
               error={errors.localSubdomain?.message || dnsAvailabilityError || undefined}

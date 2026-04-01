@@ -92,6 +92,9 @@ export default function DeviceRegistrationPage() {
         // In Tauri desktop mode, stay on the local app — don't redirect to the CF domain
         if (isTauri) {
           setRedirectStatus('Registration complete! Loading dashboard...');
+          // Cache registration status so root loader doesn't re-check
+          sessionStorage.setItem('device-registered', 'true');
+          sessionStorage.setItem('device-registered-at', String(Date.now()));
           // Give the backend a moment to process the registration, then navigate locally
           await new Promise((resolve) => setTimeout(resolve, 3000));
           navigate('/', { replace: true });

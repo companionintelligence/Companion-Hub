@@ -198,6 +198,7 @@ export class AppController {
     // Extract slug from domain
     const orgSlug = org?.slug;
     const orgLabel = org?.name;
+    const deviceSlug = org?.hubSubdomain?.replace(/^hub-/, '').replace(new RegExp(`-${orgSlug}$`), '') || '';
 
     // Check service availability
     const cloudflareAvailable = Boolean(this.cloudflareClientService.getTunnelToken());
@@ -206,7 +207,7 @@ export class AppController {
     return AppContextDto.parse(
       {
         version,
-        userSettings: { ...userSettings, ciHubOrganizationSlug: orgSlug, ciHubOrganizationLabel: orgLabel },
+        userSettings: { ...userSettings, ciHubOrganizationSlug: orgSlug, ciHubOrganizationLabel: orgLabel, ciHubDeviceSlug: deviceSlug },
         user: req.user as UserDto,
         apps,
         updatesAvailable: updatesAvailable.length,

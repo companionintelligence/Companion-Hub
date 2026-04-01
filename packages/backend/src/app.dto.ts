@@ -36,6 +36,7 @@ export const settingsSchema = type({
   ciHubOrganizationId: 'string.trim?',
   ciHubOrganizationSlug: 'string.trim?',
   ciHubOrganizationLabel: 'string.trim?',
+  ciHubDeviceSlug: 'string.trim?',
 });
 
 const versionSchema = type({
