@@ -87,18 +87,29 @@ export default function DeviceRegistrationPage() {
         toast.success('Device registered successfully!');
 
         const { domain, subdomain } = data as { domain?: string; subdomain?: string };
-        if (domain && subdomain) {
+        const isTauri = '__TAURI_INTERNALS__' in window;
+
+        // In Tauri desktop mode, stay on the local app — don't redirect to the CF domain
+        if (isTauri) {
+          setRedirectStatus('Registration complete! Loading dashboard...');
+          // Give the backend a moment to process the registration, then navigate locally
+          await new Promise((resolve) => setTimeout(resolve, 3000));
+          navigate('/', { replace: true });
+        } else if (domain && subdomain) {
           const fullUrl = `https://${subdomain}.${domain}`;
           setRedirectStatus('Setting up your Hub...');
 
+          const MAX_PROBE_ATTEMPTS = 60; // 5 minutes at 5s intervals
           let attempts = 0;
-          // eslint-disable-next-line no-constant-condition
-          while (true) {
+          let tunnelReady = false;
+
+          while (attempts < MAX_PROBE_ATTEMPTS) {
             try {
               const probeRes = await apiFetch(`/api/registration/probe-domain?url=${encodeURIComponent(fullUrl)}`);
               if (probeRes.ok) {
                 const probeData = (await probeRes.json()) as { ready: boolean };
                 if (probeData.ready) {
+                  tunnelReady = true;
                   break;
                 }
               }
@@ -117,8 +128,16 @@ export default function DeviceRegistrationPage() {
             await new Promise((resolve) => setTimeout(resolve, 5000));
           }
 
-          setRedirectStatus('Redirecting...');
-          window.location.href = `${fullUrl}/login`;
+          if (tunnelReady) {
+            setRedirectStatus('Redirecting...');
+            window.location.href = `${fullUrl}/login`;
+          } else {
+            // Tunnel didn't come up within 5 minutes — redirect locally instead
+            setRedirectStatus('Tunnel setup is still in progress. Redirecting to local dashboard...');
+            toast('Cloudflare tunnel is still propagating. You can access your Hub locally for now.', { duration: 8000 });
+            await new Promise((resolve) => setTimeout(resolve, 3000));
+            navigate('/', { replace: true });
+          }
         } else {
           // Fallback: no domain info, just redirect locally
           setTimeout(() => {
