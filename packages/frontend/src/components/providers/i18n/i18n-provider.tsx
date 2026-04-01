@@ -3,9 +3,14 @@ import LanguageDetector from 'i18next-browser-languagedetector';
 import HttpBackend from 'i18next-http-backend';
 import type { PropsWithChildren } from 'react';
 import { I18nextProvider, initReactI18next } from 'react-i18next';
+import { client } from '@/api-client/client.gen';
 
 const Backend = new HttpBackend(null, {
-  loadPath: '/api/i18n/locales/{{ns}}/{{lng}}.json',
+  // Function form: reads baseUrl at request time (after Tauri port probe completes)
+  loadPath: (_languages: string[], _namespaces: string[]) => {
+    const baseUrl = client.getConfig().baseUrl ?? '';
+    return `${baseUrl}/api/i18n/locales/{{ns}}/{{lng}}.json`;
+  },
 });
 
 i18n
