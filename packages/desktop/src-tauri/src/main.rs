@@ -24,6 +24,12 @@ async fn discover_hubs() -> Result<Vec<String>, String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Enable WebView2 remote debugging on Windows when COMPANION_HUB_DEBUG=1
+    // Must be set BEFORE the WebView2 runtime is created
+    if std::env::var("COMPANION_HUB_DEBUG").unwrap_or_default() == "1" {
+        std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--remote-debugging-port=9222 --auto-open-devtools-for-tabs");
+    }
+
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
@@ -45,6 +51,17 @@ pub fn run() {
             let window = app
                 .get_webview_window("main")
                 .ok_or("main window not found")?;
+
+            // Enable DevTools in debug builds (F12 to open)
+            // In release builds, enable if COMPANION_HUB_DEBUG=1 is set
+            #[cfg(debug_assertions)]
+            window.open_devtools();
+
+            #[cfg(not(debug_assertions))]
+            if std::env::var("COMPANION_HUB_DEBUG").unwrap_or_default() == "1" {
+                window.open_devtools();
+            }
+
             if let Ok(store) = app.store("settings.json") {
                 if let Some(x) = store.get("window_x").and_then(|v: serde_json::Value| v.as_f64()) {
                     if let Some(y) = store.get("window_y").and_then(|v: serde_json::Value| v.as_f64()) {

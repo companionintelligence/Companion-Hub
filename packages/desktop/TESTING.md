@@ -177,3 +177,93 @@ tauri-plugin-automation-server = { git = "https://github.com/dcherrera/tauri-plu
 - [W3C WebDriver spec](https://www.w3.org/TR/webdriver2/)
 - [danielraffel/tauri-webdriver](https://github.com/danielraffel/tauri-webdriver) (macOS)
 
+
+## Windows — WebView2 DevTools & Remote Debugging
+
+On Windows, the Tauri app uses Microsoft Edge WebView2. DevTools are available in two ways:
+
+### 1. Built-in DevTools (F12)
+
+In **debug builds** (`cargo build` / `cargo tauri dev`), DevTools open automatically on launch.
+
+In **release builds**, set the environment variable before launching:
+```cmd
+set COMPANION_HUB_DEBUG=1
+C:\workspaces\CI-Hub\packages\desktop\src-tauri\target\release\ci-os-hub-desktop.exe
+```
+
+This opens the Edge DevTools panel attached to the WebView, giving you:
+- Console (view errors, logs)
+- Network tab (inspect API calls, CORS issues)
+- Elements (DOM inspection)
+- Sources (JS debugging)
+
+### 2. Remote Debugging via CDP
+
+WebView2 supports Chrome DevTools Protocol for remote/headless debugging:
+
+```cmd
+@echo off
+set WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222
+C:\workspaces\CI-Hub\packages\desktop\src-tauri\target\release\ci-os-hub-desktop.exe
+```
+
+Save as `debug-tauri.cmd` and run it. Then connect from any machine:
+
+```bash
+# List available debug targets
+curl -s http://<windows-ip>:9222/json
+
+# Open in Chrome/Edge on another machine
+# Navigate to: chrome://inspect → Configure → add <windows-ip>:9222
+```
+
+Or from CLI via curl:
+```bash
+# Get the WebSocket URL for the page
+WS_URL=$(curl -s http://localhost:9222/json | jq -r '.[0].webSocketDebuggerUrl')
+
+# Execute JavaScript via CDP
+curl -s http://localhost:9222/json/version
+```
+
+### 3. Using Edge DevTools from the Windows machine
+
+When the app is running with `COMPANION_HUB_DEBUG=1`:
+1. Open Microsoft Edge
+2. Navigate to `edge://inspect`
+3. The Tauri WebView should appear under "Other targets"
+4. Click "inspect" to open full DevTools
+
+### Common debugging commands via CDP
+
+```bash
+# Get current page URL
+curl -s http://localhost:9222/json | jq '.[0].url'
+
+# Get page title
+curl -s http://localhost:9222/json | jq '.[0].title'
+
+# Take screenshot (via WebSocket — use wscat or similar)
+# Or use the DevTools UI from edge://inspect
+```
+
+### Debugging API connection issues
+
+To verify the frontend can reach the backend in release mode:
+
+```cmd
+set COMPANION_HUB_DEBUG=1
+ci-os-hub-desktop.exe
+```
+
+Then in the DevTools Console:
+```javascript
+// Check what baseUrl is configured
+import('@/api-client/client.gen').then(m => console.log(m.client.getConfig()))
+
+// Test direct fetch to backend
+fetch('http://localhost:5002/api/health').then(r => r.json()).then(console.log)
+
+// Check for CORS errors in the Network tab
+```

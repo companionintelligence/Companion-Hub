@@ -1,5 +1,6 @@
 import { userContext } from '@/api-client';
 import { loginMutation, verifyTotpMutation } from '@/api-client/@tanstack/react-query.gen';
+import { setTauriSessionId } from '@/lib/api-fetch';
 import { useUserContext } from '@/context/user-context';
 import type { TranslatableError } from '@/types/error.types';
 import { useMutation } from '@tanstack/react-query';
@@ -44,6 +45,10 @@ export default () => {
       if (data?.success && data.totpSessionId) {
         setTotpSessionId(data.totpSessionId);
       } else {
+        // Store session ID for Tauri release mode (cross-origin cookie fallback)
+        if ((data as Record<string, unknown>)?.sessionId) {
+          setTauriSessionId((data as Record<string, unknown>).sessionId as string);
+        }
         setUserContext({ isLoggedIn: true });
         refreshUserContext();
 

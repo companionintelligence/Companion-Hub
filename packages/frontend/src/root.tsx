@@ -1,4 +1,5 @@
 import { Titlebar } from './components/titlebar/titlebar';
+import { HubStatus } from './components/hub-status/hub-status';
 import { useEffect } from 'react';
 import { Toaster } from 'react-hot-toast';
 import { Links, Meta, Outlet, Scripts, ScrollRestoration, isRouteErrorResponse, redirect } from 'react-router';
@@ -9,6 +10,16 @@ import stylesheet from './app.css?url';
 import globalsStylesheet from './styles/globals.css?url';
 import { Providers } from './components/providers/providers';
 import { TranslatableError } from './types/error.types';
+import { apiFetch, getTauriSessionId } from './lib/api-fetch';
+
+// Add session header for Tauri release mode (cookies don't work cross-origin over HTTP)
+client.interceptors.request.use((request) => {
+  const sid = getTauriSessionId();
+  if (sid) {
+    request.headers.set('X-CI-Hub-Session', sid);
+  }
+  return request;
+});
 
 client.interceptors.response.use(async (res) => {
   if (res.status >= 400) {
@@ -34,9 +45,35 @@ client.interceptors.response.use(async (res) => {
   return res;
 });
 
+// In Tauri release mode, the frontend is served from tauri://localhost
+// but the API is on a local HTTP port. Detect Tauri and set the baseUrl.
+// Cross-origin credentials ('include') are blocked by browsers when the server
+// responds with Access-Control-Allow-Origin: * — so we use 'omit' in Tauri mode.
+const isTauriRelease = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window && !window.location.origin.startsWith('http://localhost');
+const credentialMode: RequestCredentials = 'include';
+
 client.setConfig({
-  credentials: 'include',
+  credentials: credentialMode,
 });
+
+// Probe the backend port — try 5002 (prod) then 3000 (dev)
+const tauriBaseUrlReady: Promise<void> = isTauriRelease
+  ? (async () => {
+      for (const port of [5002, 3000]) {
+        try {
+          const res = await fetch(`http://localhost:${port}/api/health`, { signal: AbortSignal.timeout(2000) });
+          if (res.ok) {
+            client.setConfig({ baseUrl: `http://localhost:${port}`, credentials: credentialMode });
+            return;
+          }
+        } catch {
+          /* try next */
+        }
+      }
+      // Neither responded — default to 5002, HubStatus will show the "not running" overlay
+      client.setConfig({ baseUrl: 'http://localhost:5002', credentials: credentialMode });
+    })()
+  : Promise.resolve();
 
 export const links: Route.LinksFunction = () => [
   { rel: 'preconnect', href: 'https://fonts.googleapis.com' },
@@ -50,6 +87,9 @@ export const links: Route.LinksFunction = () => [
 ];
 
 export async function clientLoader({ request }: Route.ActionArgs) {
+  // In Tauri release mode, wait for the backend port probe to complete
+  await tauriBaseUrlReady;
+
   const url = new URL(request.url);
 
   const CACHE_TTL_MS = 60 * 1000; // 1 min — short enough that token removal takes effect quickly
@@ -58,7 +98,7 @@ export async function clientLoader({ request }: Route.ActionArgs) {
 
   const regResult = cacheValid
     ? { ok: true, registered: true }
-    : await fetch('/api/registration/status')
+    : await apiFetch('/api/registration/status')
         .then(async (res) => {
           if (!res.ok) return { ok: false, registered: false };
           const data = await res.json();
@@ -132,11 +172,13 @@ export function Layout({ children }: { children: React.ReactNode }) {
       </head>
       <body>
         <Titlebar />
-        <main id="root">
-          {children}
-          <ScrollRestoration />
-          <Scripts />
-        </main>
+        <HubStatus>
+          <main id="root">
+            {children}
+            <ScrollRestoration />
+          </main>
+        </HubStatus>
+        <Scripts />
       </body>
     </html>
   );

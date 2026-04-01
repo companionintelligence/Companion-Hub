@@ -72,10 +72,18 @@ export class ReposHelpers {
       await fs.promises.mkdir(dirPath, { recursive: true });
     }
 
-    await fs.promises.chmod(dirPath, 0o755);
-    execFileSync('git', ['config', '--global', '--add', 'safe.directory', dirPath], {
-      stdio: 'ignore',
-    });
+    if (process.platform !== 'win32') {
+      await fs.promises.chmod(dirPath, 0o755);
+    }
+    try {
+      execFileSync('git', ['config', '--global', '--add', 'safe.directory', dirPath], {
+        stdio: 'ignore',
+      });
+    } catch (error) {
+      this.logger.warn(
+        `Failed to add "${dirPath}" as a git safe.directory. Git may not be installed or available in PATH: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 
   /**

@@ -15,7 +15,7 @@ export class AuthMiddleware implements NestMiddleware {
   ) {}
 
   async use(req: Request, _: Response, next: NextFunction) {
-    const sessionId = req.cookies[SESSION_COOKIE_NAME];
+    const sessionId = req.cookies[SESSION_COOKIE_NAME] || (req.headers['x-ci-hub-session'] as string);
     const bearerToken = req.headers.authorization;
 
     if (sessionId) {

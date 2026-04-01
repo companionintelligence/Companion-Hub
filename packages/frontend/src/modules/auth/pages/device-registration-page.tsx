@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router';
 import { Button } from '@/components/ui/Button';
 import { Alert, AlertDescription } from '@/components/ui/Alert/Alert';
 import { AlertCircle, CheckCircle2, Loader2 } from 'lucide-react';
+import { apiFetch } from '@/lib/api-fetch';
 import toast from 'react-hot-toast';
 
 const DEFAULT_PORTAL_URL = 'https://portal.companionintelligence.com';
@@ -30,7 +31,7 @@ export default function DeviceRegistrationPage() {
   useEffect(() => {
     const checkStatus = async () => {
       try {
-        const res = await fetch('/api/registration/status');
+        const res = await apiFetch('/api/registration/status');
         if (res.ok) {
           const data = await res.json();
           if (data.registered) {
@@ -39,7 +40,7 @@ export default function DeviceRegistrationPage() {
           }
         }
 
-        const deviceRes = await fetch('/api/registration/device-id');
+        const deviceRes = await apiFetch('/api/registration/device-id');
         if (deviceRes.ok) {
           const deviceData = await deviceRes.json();
           setDeviceId(deviceData.device_id);
@@ -73,7 +74,7 @@ export default function DeviceRegistrationPage() {
     setError(null);
 
     try {
-      const res = await fetch('/api/registration/pair', {
+      const res = await apiFetch('/api/registration/pair', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pairing_code: code }),
@@ -86,18 +87,29 @@ export default function DeviceRegistrationPage() {
         toast.success('Device registered successfully!');
 
         const { domain, subdomain } = data as { domain?: string; subdomain?: string };
-        if (domain && subdomain) {
+        const isTauri = '__TAURI_INTERNALS__' in window;
+
+        // In Tauri desktop mode, stay on the local app — don't redirect to the CF domain
+        if (isTauri) {
+          setRedirectStatus('Registration complete! Loading dashboard...');
+          // Give the backend a moment to process the registration, then navigate locally
+          await new Promise((resolve) => setTimeout(resolve, 3000));
+          navigate('/', { replace: true });
+        } else if (domain && subdomain) {
           const fullUrl = `https://${subdomain}.${domain}`;
           setRedirectStatus('Setting up your Hub...');
 
+          const MAX_PROBE_ATTEMPTS = 60; // 5 minutes at 5s intervals
           let attempts = 0;
-          // eslint-disable-next-line no-constant-condition
-          while (true) {
+          let tunnelReady = false;
+
+          while (attempts < MAX_PROBE_ATTEMPTS) {
             try {
-              const probeRes = await fetch(`/api/registration/probe-domain?url=${encodeURIComponent(fullUrl)}`);
+              const probeRes = await apiFetch(`/api/registration/probe-domain?url=${encodeURIComponent(fullUrl)}`);
               if (probeRes.ok) {
                 const probeData = (await probeRes.json()) as { ready: boolean };
                 if (probeData.ready) {
+                  tunnelReady = true;
                   break;
                 }
               }
@@ -116,8 +128,16 @@ export default function DeviceRegistrationPage() {
             await new Promise((resolve) => setTimeout(resolve, 5000));
           }
 
-          setRedirectStatus('Redirecting...');
-          window.location.href = `${fullUrl}/login`;
+          if (tunnelReady) {
+            setRedirectStatus('Redirecting...');
+            window.location.href = `${fullUrl}/login`;
+          } else {
+            // Tunnel didn't come up within 5 minutes — redirect locally instead
+            setRedirectStatus('Tunnel setup is still in progress. Redirecting to local dashboard...');
+            toast('Cloudflare tunnel is still propagating. You can access your Hub locally for now.', { duration: 8000 });
+            await new Promise((resolve) => setTimeout(resolve, 3000));
+            navigate('/', { replace: true });
+          }
         } else {
           // Fallback: no domain info, just redirect locally
           setTimeout(() => {

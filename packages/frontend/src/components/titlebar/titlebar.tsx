@@ -11,6 +11,9 @@ export function Titlebar() {
     if (!('__TAURI_INTERNALS__' in window)) return;
     setIsTauri(true);
 
+    // Set CSS custom property for other components to offset from the titlebar
+    document.documentElement.style.setProperty('--titlebar-height', '40px');
+
     import('@tauri-apps/api/window')
       .then((mod) => {
         const win = mod.getCurrentWindow();

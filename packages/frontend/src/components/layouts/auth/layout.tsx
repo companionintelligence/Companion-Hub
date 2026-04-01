@@ -11,8 +11,11 @@ export const AuthLayout = ({ children }: PropsWithChildren) => {
 
   const { allowAutoThemes } = useUserContext();
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background px-4 py-8">
-      <div className="absolute top-3 right-3">
+    <div
+      className="flex min-h-screen items-center justify-center bg-background px-4 py-8"
+      style={{ paddingTop: 'calc(var(--titlebar-height, 0px) + 2rem)' }}
+    >
+      <div className="absolute right-3" style={{ top: 'calc(var(--titlebar-height, 0px) + 0.75rem)' }}>
         <LanguageSelector locale={locale as Locale} />
       </div>
       <div className="w-full max-w-md">

@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { EOL } from 'node:os';
+import os, { EOL } from 'node:os';
 import path from 'node:path';
 import { APP_DATA_DIR, APP_DIR, DATA_DIR } from '@/common/constants';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -12,20 +12,22 @@ export class FilesystemService {
 
   public getSafeFilePath(filePath: string): string {
     // Define allowed directories as absolute paths
-    const allowedDirs = [
-      path.resolve(APP_DIR),
-      path.resolve(APP_DATA_DIR),
-      path.resolve(DATA_DIR),
-      path.resolve('/host/proc/'),
-      path.resolve('/tmp/'),
-    ];
+    const allowedDirs = [path.resolve(APP_DIR), path.resolve(APP_DATA_DIR), path.resolve(DATA_DIR), os.tmpdir()];
+    // /host/proc is Linux-only (Docker host /proc mount)
+    if (process.platform !== 'win32') {
+      allowedDirs.push(path.resolve('/host/proc/'));
+    }
 
     // Resolve and normalize the file path to an absolute path
     const resolvedPath = path.resolve(filePath);
 
     for (const dir of allowedDirs) {
-      if (path.relative(dir, resolvedPath).startsWith('..')) {
-        continue; // If relative path starts with '..', it's outside the allowed dir
+      const rel = path.relative(dir, resolvedPath);
+      // On Windows, path.relative across drive letters returns an absolute path (e.g. "D:\...")
+      // which doesn't start with ".." but is clearly not contained. Check that the relative path
+      // is not absolute and doesn't escape with "..".
+      if (path.isAbsolute(rel) || rel.startsWith('..')) {
+        continue;
       }
 
       return resolvedPath;
@@ -86,7 +88,7 @@ export class FilesystemService {
 
   async writeTextFile(filePath: string, content: string): Promise<boolean> {
     try {
-      await fs.promises.mkdir(this.getSafeFilePath(filePath.split('/').slice(0, -1).join('/')), { recursive: true });
+      await fs.promises.mkdir(this.getSafeFilePath(path.dirname(filePath)), { recursive: true });
       await fs.promises.writeFile(this.getSafeFilePath(filePath), `${content}${EOL}`, 'utf8');
       return true;
     } catch (error) {
@@ -97,7 +99,7 @@ export class FilesystemService {
 
   async writeBinaryFile(filePath: string, data: Buffer): Promise<boolean> {
     try {
-      await fs.promises.mkdir(this.getSafeFilePath(filePath.split('/').slice(0, -1).join('/')), { recursive: true });
+      await fs.promises.mkdir(this.getSafeFilePath(path.dirname(filePath)), { recursive: true });
       await fs.promises.writeFile(this.getSafeFilePath(filePath), data);
       return true;
     } catch (error) {

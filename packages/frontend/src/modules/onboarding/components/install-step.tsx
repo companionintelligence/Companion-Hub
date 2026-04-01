@@ -1,3 +1,4 @@
+import { apiFetch } from '@/lib/api-fetch';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent } from '@/components/ui/Card';
 import { useEffect, useRef, useState } from 'react';
@@ -83,7 +84,7 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', onComple
           // installed apps list to confirm the app appears there before
           // marking it as fully installed.
           const [res] = await Promise.all([
-            fetch(`/api/app-lifecycle/${encodeURIComponent(app.urn)}/install`, {
+            apiFetch(`/api/app-lifecycle/${encodeURIComponent(app.urn)}/install`, {
               method: 'POST',
               credentials: 'include',
               headers: { 'Content-Type': 'application/json' },
@@ -109,7 +110,7 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', onComple
 
           const checkInstalled = async (): Promise<boolean> => {
             try {
-              const installedRes = await fetch('/api/apps/installed', { credentials: 'include' });
+              const installedRes = await apiFetch('/api/apps/installed', { credentials: 'include' });
               if (!installedRes.ok) return false;
               const data = await installedRes.json().catch(() => ({}));
               const installed = data.installed || [];
