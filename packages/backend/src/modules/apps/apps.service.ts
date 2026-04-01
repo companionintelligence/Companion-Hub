@@ -143,6 +143,8 @@ export class AppsService {
   public async checkAppAvailability(appUrn: AppUrn): Promise<{
     available: boolean;
     appUrl?: string;
+    httpStatus?: number;
+    stage?: 'ready' | 'propagating' | 'error';
     reason?: string;
     detail?: string;
     errorCode?: string;
@@ -151,7 +153,7 @@ export class AppsService {
     const { app, info } = await this.getApp(appUrn);
 
     if (!app || app.status !== 'running') {
-      return { available: false };
+      return { available: false, stage: 'error' };
     }
 
     const config = this.configurationService.getConfig();
@@ -163,30 +165,41 @@ export class AppsService {
     const urlSuffix = info.url_suffix || '';
 
     // Build the app URL based on exposure mode
-    let appUrl: string;
+    let appUrl: string | undefined;
     if (exposureMode === 'local') {
-      // Local mode: access via Traefik on the Hub's internal IP
+      // Local mode: direct access via internal IP and app port
       const internalIp = userSettings.internalIp || '127.0.0.1';
-      const port = userSettings.sslPort || 443;
-      // Traefik routes based on Host header, so we use the local domain
-      // For local access, use http with the internal IP and app port if available
-      const appPort = app.port;
-      if (appPort) {
-        appUrl = `http://${internalIp}:${appPort}${urlSuffix}`;
-      } else {
-        appUrl = `http://${internalIp}:${port}${urlSuffix}`;
+      const appPort = app.port || userSettings.sslPort || 443;
+      appUrl = `http://${internalIp}:${appPort}${urlSuffix}`;
+
+      // Local mode with a port: skip HTTP check entirely — container is on localhost
+      if (app.port) {
+        return { available: true, appUrl, stage: 'ready' };
       }
     } else {
       // Cloudflare/Tailscale: use public domain
       if (!organizationSlug || !userSettings.domain) {
-        return { available: false };
+        return { available: false, appUrl, stage: 'error' };
       }
-      // Include device slug from hubSubdomain (format: hub-{deviceSlug}-{orgSlug})
-      const deviceSlug = org?.hubSubdomain?.replace(/^hub-/, '').replace(new RegExp(`-${organizationSlug}$`), '');
-      const subdomain =
-        deviceSlug && deviceSlug !== organizationSlug ? `${baseSubdomain}-${deviceSlug}-${organizationSlug}` : `${baseSubdomain}-${organizationSlug}`;
+
+      // Always include deviceSlug for correct subdomain construction
+      if (!org?.hubSubdomain) {
+        return {
+          available: false,
+          appUrl: undefined,
+          stage: 'error',
+          errorCode: 'NO_DEVICE_REGISTRATION',
+          detail: 'Device not registered with an organization.',
+          resolvable: false,
+        };
+      }
+      const deviceSlug = org.hubSubdomain.replace(/^hub-/, '').replace(new RegExp(`-${organizationSlug}$`), '');
+      const subdomain = `${baseSubdomain}-${deviceSlug}-${organizationSlug}`;
       appUrl = `https://${subdomain}.${userSettings.domain}${urlSuffix}`;
     }
+
+    // Helper to determine stage from error code
+    const propagatingCodes = new Set(['DNS_NOT_FOUND', 'CF_TUNNEL_NOT_FOUND', 'CF_UPSTREAM_ERROR', 'CF_ORIGIN_DOWN']);
 
     try {
       const response = await axios.get(appUrl, { timeout: 5000, validateStatus: () => true });
@@ -197,10 +210,12 @@ export class AppsService {
         const cfErrorMatch = text.match(/Error\s+(\d{3,4})/i);
         const cfCode = cfErrorMatch ? Number(cfErrorMatch[1]) : response.status;
 
-        // Cloudflare 1033 = Argo Tunnel not found (tunnel config missing for this hostname)
+        // Cloudflare 1033 = Argo Tunnel not found
         if (cfCode === 1033) {
           return {
             available: false,
+            appUrl,
+            stage: 'propagating',
             reason: 'CLOUDFLARE',
             errorCode: 'CF_TUNNEL_NOT_FOUND',
             detail: 'Tunnel route not configured for this app. DNS or tunnel config may be out of sync.',
@@ -208,10 +223,12 @@ export class AppsService {
           };
         }
 
-        // 502/503/504 = upstream unreachable (container down or tunnel can't reach Traefik)
+        // 502/503/504 = upstream unreachable
         if ([502, 503, 504].includes(cfCode) || [502, 503, 504].includes(response.status)) {
           return {
             available: false,
+            appUrl,
+            stage: 'propagating',
             reason: 'CLOUDFLARE',
             errorCode: 'CF_UPSTREAM_ERROR',
             detail: `Cloudflare can't reach the app (HTTP ${response.status}). The container may need restarting or the tunnel config may be stale.`,
@@ -223,6 +240,8 @@ export class AppsService {
         if (cfCode === 521 || response.status === 521) {
           return {
             available: false,
+            appUrl,
+            stage: 'propagating',
             reason: 'CLOUDFLARE',
             errorCode: 'CF_ORIGIN_DOWN',
             detail: 'Cloudflare reports the origin server is down. The tunnel may not be running.',
@@ -234,6 +253,8 @@ export class AppsService {
         if ([522, 524].includes(cfCode) || [522, 524].includes(response.status)) {
           return {
             available: false,
+            appUrl,
+            stage: 'error',
             reason: 'CLOUDFLARE',
             errorCode: 'CF_TIMEOUT',
             detail: 'Connection to the app timed out through Cloudflare. The tunnel or app may be overloaded.',
@@ -243,6 +264,8 @@ export class AppsService {
 
         return {
           available: false,
+          appUrl,
+          stage: 'error',
           reason: 'CLOUDFLARE',
           errorCode: 'CF_UNKNOWN',
           detail: cfErrorMatch ? `Cloudflare Error ${cfErrorMatch[1]}` : `Cloudflare Error (HTTP ${response.status})`,
@@ -250,37 +273,20 @@ export class AppsService {
         };
       }
 
-      const available = response.status >= 200 && response.status < 300;
-      if (!available) {
-        // 502/503 without Cloudflare page = Traefik/reverse proxy can't reach the container
-        if ([502, 503].includes(response.status)) {
-          return {
-            available: false,
-            reason: 'APP_ERROR',
-            errorCode: 'PROXY_UPSTREAM_ERROR',
-            detail: `Reverse proxy returned HTTP ${response.status}. The app container may not be ready yet.`,
-            resolvable: true,
-          };
-        }
-
-        return {
-          available: false,
-          reason: 'APP_ERROR',
-          errorCode: 'APP_HTTP_ERROR',
-          detail: `HTTP ${response.status}`,
-          resolvable: false,
-        };
-      }
-      return { available, appUrl };
+      // Any non-Cloudflare HTTP response means the app is reachable
+      return { available: true, appUrl, httpStatus: response.status, stage: 'ready' };
     } catch (e) {
       const message = e instanceof Error ? e.message : 'UNKNOWN_ERROR';
 
       // DNS resolution failure
       if (message.includes('ENOTFOUND') || message.includes('getaddrinfo')) {
+        const errorCode = 'DNS_NOT_FOUND';
         return {
           available: false,
+          appUrl,
+          stage: propagatingCodes.has(errorCode) ? 'propagating' : 'error',
           reason: 'NETWORK_ERROR',
-          errorCode: 'DNS_NOT_FOUND',
+          errorCode,
           detail:
             exposureMode === 'cloudflare'
               ? 'DNS record not found. The domain may not be synced with Cloudflare yet.'
@@ -295,6 +301,8 @@ export class AppsService {
       if (message.includes('ECONNREFUSED')) {
         return {
           available: false,
+          appUrl,
+          stage: 'error',
           reason: 'NETWORK_ERROR',
           errorCode: 'CONNECTION_REFUSED',
           detail: 'Connection refused. The app or reverse proxy may not be listening.',
@@ -306,6 +314,8 @@ export class AppsService {
       if (message.includes('ETIMEDOUT') || message.includes('timeout')) {
         return {
           available: false,
+          appUrl,
+          stage: 'error',
           reason: 'NETWORK_ERROR',
           errorCode: 'CONNECTION_TIMEOUT',
           detail: 'Connection timed out reaching the app.',
@@ -315,6 +325,8 @@ export class AppsService {
 
       return {
         available: false,
+        appUrl,
+        stage: 'error',
         reason: 'NETWORK_ERROR',
         errorCode: 'UNKNOWN',
         detail: message,

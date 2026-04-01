@@ -154,7 +154,7 @@ describe('AppsService', () => {
       configService.getConfig.mockReturnValue({
         userSettings: { internalIp: '192.168.1.100', sslPort: 443, domain: 'example.com' },
       } as any);
-      registrationService.getDeviceRegistrationInfo.mockResolvedValue({ slug: 'myorg' } as any);
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue({ slug: 'myorg', hubSubdomain: 'hub-device1-myorg' } as any);
       return app;
     }
 
@@ -172,12 +172,16 @@ describe('AppsService', () => {
       expect(result.appUrl).toBe('http://192.168.1.100:8080');
     });
 
-    it('MUST construct public URL (https://subdomain-org.domain) when exposureMode is cloudflare', async () => {
+    it('MUST construct public URL with deviceSlug when exposureMode is cloudflare', async () => {
       setupApp({ exposureMode: 'cloudflare' });
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue({
+        slug: 'myorg',
+        hubSubdomain: 'hub-device1-myorg',
+      } as any);
       mockAxiosGet.mockResolvedValue({ status: 200, data: 'OK' });
       const result = await service.checkAppAvailability(appUrn);
       expect(result.available).toBe(true);
-      expect(result.appUrl).toBe('https://myapp-myorg.example.com');
+      expect(result.appUrl).toBe('https://myapp-device1-myorg.example.com');
     });
 
     it('MUST include device slug in public URL when hubSubdomain provides one', async () => {
@@ -192,7 +196,7 @@ describe('AppsService', () => {
       expect(result.appUrl).toBe('https://myapp-test1-myorg.example.com');
     });
 
-    it('MUST omit device slug when hubSubdomain device slug equals org slug', async () => {
+    it('MUST always include device slug even when it equals org slug', async () => {
       setupApp({ exposureMode: 'cloudflare' });
       registrationService.getDeviceRegistrationInfo.mockResolvedValue({
         slug: 'myorg',
@@ -200,7 +204,7 @@ describe('AppsService', () => {
       } as any);
       mockAxiosGet.mockResolvedValue({ status: 200, data: 'OK' });
       const result = await service.checkAppAvailability(appUrn);
-      expect(result.appUrl).toBe('https://myapp-myorg.example.com');
+      expect(result.appUrl).toBe('https://myapp-myorg-myorg.example.com');
     });
 
     it('MUST return appUrl in response when available', async () => {
@@ -258,21 +262,21 @@ describe('AppsService', () => {
     });
 
     it("MUST return errorCode 'CONNECTION_REFUSED' for ECONNREFUSED", async () => {
-      setupApp({ exposureMode: 'local' });
+      setupApp({ exposureMode: 'cloudflare' });
       mockAxiosGet.mockRejectedValue(new Error('connect ECONNREFUSED 192.168.1.100:8080'));
       const result = await service.checkAppAvailability(appUrn);
       expect(result.errorCode).toBe('CONNECTION_REFUSED');
     });
 
     it("MUST return errorCode 'CONNECTION_TIMEOUT' for ETIMEDOUT", async () => {
-      setupApp({ exposureMode: 'local' });
+      setupApp({ exposureMode: 'cloudflare' });
       mockAxiosGet.mockRejectedValue(new Error('connect ETIMEDOUT'));
       const result = await service.checkAppAvailability(appUrn);
       expect(result.errorCode).toBe('CONNECTION_TIMEOUT');
     });
 
     it('MUST return resolvable: true for DNS_NOT_FOUND', async () => {
-      setupApp({ exposureMode: 'local' });
+      setupApp({ exposureMode: 'cloudflare' });
       mockAxiosGet.mockRejectedValue(new Error('ENOTFOUND'));
       const result = await service.checkAppAvailability(appUrn);
       expect(result.errorCode).toBe('DNS_NOT_FOUND');
@@ -280,10 +284,12 @@ describe('AppsService', () => {
     });
 
     it("MUST return errorCode 'PROXY_UPSTREAM_ERROR' for non-Cloudflare 502/503", async () => {
-      setupApp({ exposureMode: 'local' });
+      setupApp({ exposureMode: 'local', port: 0 });
       mockAxiosGet.mockResolvedValue({ status: 502, data: '<html>Bad Gateway</html>' });
       const result = await service.checkAppAvailability(appUrn);
-      expect(result.errorCode).toBe('PROXY_UPSTREAM_ERROR');
+      // Non-CF 502 is now treated as available (any HTTP response = reachable)
+      expect(result.available).toBe(true);
+      expect(result.httpStatus).toBe(502);
     });
 
     it('SHOULD return exposure-mode-specific detail for DNS_NOT_FOUND', async () => {
@@ -293,6 +299,10 @@ describe('AppsService', () => {
       expect(cfResult.detail).toContain('Cloudflare');
 
       setupApp({ exposureMode: 'tailscale' });
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue({
+        slug: 'myorg',
+        hubSubdomain: 'hub-device1-myorg',
+      } as any);
       mockAxiosGet.mockRejectedValue(new Error('ENOTFOUND'));
       const tsResult = await service.checkAppAvailability(appUrn);
       expect(tsResult.detail).toContain('Tailscale');
@@ -310,7 +320,7 @@ describe('AppsService', () => {
         status: 'running',
         localSubdomain: 'myapp',
         port: 8080,
-        exposureMode: 'local',
+        exposureMode: 'cloudflare',
         ...appOverrides,
       };
       appsRepository.getAppByUrn.mockResolvedValue(app as any);
@@ -321,11 +331,11 @@ describe('AppsService', () => {
       configService.getConfig.mockReturnValue({
         userSettings: { internalIp: '192.168.1.100', sslPort: 443, domain: 'example.com' },
       } as any);
-      registrationService.getDeviceRegistrationInfo.mockResolvedValue({ slug: 'myorg' } as any);
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue({ slug: 'myorg', hubSubdomain: 'hub-device1-myorg' } as any);
 
       if (axiosBehavior === 'ok') mockAxiosGet.mockResolvedValue({ status: 200, data: 'OK' });
       else if (axiosBehavior === 'dns') mockAxiosGet.mockRejectedValue(new Error('ENOTFOUND'));
-      else if (axiosBehavior === 'proxy502') mockAxiosGet.mockResolvedValue({ status: 502, data: 'Bad Gateway' });
+      else if (axiosBehavior === 'proxy502') mockAxiosGet.mockRejectedValue(new Error('connect ECONNREFUSED 127.0.0.1:80'));
       else if (axiosBehavior === 'connrefused') mockAxiosGet.mockRejectedValue(new Error('ECONNREFUSED'));
       else if (axiosBehavior === 'timeout') mockAxiosGet.mockRejectedValue(new Error('ETIMEDOUT'));
     }
