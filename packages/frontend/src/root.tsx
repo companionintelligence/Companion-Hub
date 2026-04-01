@@ -10,7 +10,7 @@ import stylesheet from './app.css?url';
 import globalsStylesheet from './styles/globals.css?url';
 import { Providers } from './components/providers/providers';
 import { TranslatableError } from './types/error.types';
-import { apiFetch, getTauriSessionId, setTauriSessionId } from './lib/api-fetch';
+import { apiFetch, getTauriSessionId } from './lib/api-fetch';
 
 // Add session header for Tauri release mode (cookies don't work cross-origin over HTTP)
 client.interceptors.request.use((request) => {
