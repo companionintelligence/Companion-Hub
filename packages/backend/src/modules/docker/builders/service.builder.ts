@@ -72,7 +72,7 @@ interface VolumeLongForm {
 export interface BuilderService {
   name: string;
   image: string;
-  restart: 'always' | 'unless-stopped' | 'on-failure';
+  restart: 'no' | 'always' | 'unless-stopped' | 'on-failure';
   environment?: Record<string, string | number | boolean>;
   command?: string | string[];
   volumes?: (string | VolumeLongForm)[];
@@ -147,14 +147,14 @@ export class ServiceBuilder {
 
   /**
    * Sets the restart policy for the service.
-   * @param {string} policy The restart policy for the service. Can be one of ['always', 'unless-stopped', 'on-failure']
+   * @param {string} policy The restart policy for the service. Can be one of ['no', 'always', 'unless-stopped', 'on-failure']
    * @example
    * ```typescript
    * const service = new ServiceBuilder();
    * service.setRestartPolicy('always');
    * ```
    */
-  setRestartPolicy(policy: 'always' | 'unless-stopped' | 'on-failure') {
+  setRestartPolicy(policy: 'no' | 'always' | 'unless-stopped' | 'on-failure') {
     this.service.restart = policy;
     return this;
   }

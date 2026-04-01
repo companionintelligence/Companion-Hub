@@ -94,7 +94,7 @@ export class DockerComposeBuilder {
       .setHealthCheck(params.healthCheck)
       .setDependsOn(params.dependsOn)
       .setVolumes(params.volumes)
-      .setRestartPolicy('unless-stopped')
+      .setRestartPolicy(params.restart ?? 'unless-stopped')
       .setExtraHosts(params.extraHosts)
       .setUlimits(params.ulimits)
       .setPorts(params.addPorts)

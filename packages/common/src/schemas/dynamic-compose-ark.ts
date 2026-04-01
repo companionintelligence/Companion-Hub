@@ -8,6 +8,7 @@ export const serviceSchemaArk = type({
 
   // Optional fields
   isMain: type('boolean').optional(),
+  restart: type("'no' | 'always' | 'unless-stopped' | 'on-failure'").optional(),
   networkMode: type('string').optional(),
   extraHosts: type('string[]').configure({ message: 'CUSTOM_APP_ERROR_EXTRA_HOST_INVALID' }).optional(),
   ulimits: type({

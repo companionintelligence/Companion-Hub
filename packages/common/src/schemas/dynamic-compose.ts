@@ -26,6 +26,7 @@ export const serviceSchemaV2 = z.object({
     ])
     .optional(),
   isMain: z.boolean().optional(),
+  restart: z.enum(['no', 'always', 'unless-stopped', 'on-failure'], 'CUSTOM_APP_ERROR_RESTART_INVALID').optional(),
   networkMode: z.string().optional(),
   extraHosts: z.array(z.string('CUSTOM_APP_ERROR_EXTRA_HOST_INVALID')).optional(),
   ulimits: z
