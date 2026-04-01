@@ -51,7 +51,10 @@ export const Header = (props: HeaderProps) => {
     clsx(buttonVariants({ variant: 'ghost', size: 'sm' }), 'cursor-pointer', isActive ? 'bg-accent text-accent-foreground btn-active' : '');
 
   return (
-    <header className="fixed top-4 left-1/2 z-50 flex h-14 w-[96%] md:w-[77%] lg:w-[70%] xl:w-[53%] -translate-x-1/2 items-center gap-2 rounded-full border bg-background/80 px-3 shadow-md backdrop-blur-md">
+    <header
+      className="fixed left-1/2 z-50 flex h-14 w-[96%] md:w-[77%] lg:w-[70%] xl:w-[53%] -translate-x-1/2 items-center gap-2 rounded-full border bg-background/80 px-3 shadow-md backdrop-blur-md"
+      style={{ top: 'calc(var(--titlebar-height, 0px) + 1rem)' }}
+    >
       {/* Logo (Left) */}
       <div className="flex items-center justify-start">
         <Link to="/dashboard" className="flex items-center">

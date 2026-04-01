@@ -6,6 +6,11 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* Titlebar offset — set to 40px by the Tauri Titlebar component, 0px otherwise */
+:root {
+  --titlebar-height: 0px;
+}
+
 @theme inline {
   --font-sans: "Montserrat", system-ui, sans-serif;
 
