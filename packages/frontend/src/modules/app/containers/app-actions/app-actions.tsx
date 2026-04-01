@@ -43,7 +43,9 @@ import type { AppUrn } from '@ci-hub/common/types';
 const openExternalUrl = async (url: string) => {
   if ('__TAURI_INTERNALS__' in window) {
     try {
-      const { open } = (await import('@tauri-apps/plugin-shell' as string)) as { open: (url: string) => Promise<void> };
+      // Use a variable to prevent Vite/Rollup from resolving this at build time
+      const shellModule = '@tauri-apps/plugin-shell';
+      const { open } = (await import(/* @vite-ignore */ shellModule)) as { open: (url: string) => Promise<void> };
       await open(url);
     } catch {
       window.open(url, '_blank');
