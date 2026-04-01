@@ -10,6 +10,16 @@ import stylesheet from './app.css?url';
 import globalsStylesheet from './styles/globals.css?url';
 import { Providers } from './components/providers/providers';
 import { TranslatableError } from './types/error.types';
+import { apiFetch, getTauriSessionId, setTauriSessionId } from './lib/api-fetch';
+
+// Add session header for Tauri release mode (cookies don't work cross-origin over HTTP)
+client.interceptors.request.use((request) => {
+  const sid = getTauriSessionId();
+  if (sid) {
+    request.headers.set('X-CI-Hub-Session', sid);
+  }
+  return request;
+});
 
 client.interceptors.response.use(async (res) => {
   if (res.status >= 400) {
@@ -88,7 +98,7 @@ export async function clientLoader({ request }: Route.ActionArgs) {
 
   const regResult = cacheValid
     ? { ok: true, registered: true }
-    : await fetch(`${client.getConfig().baseUrl ?? ''}/api/registration/status`, { credentials: credentialMode })
+    : await apiFetch('/api/registration/status')
         .then(async (res) => {
           if (!res.ok) return { ok: false, registered: false };
           const data = await res.json();

@@ -40,6 +40,7 @@ const resetPasswordSchema = type({
 const loginResponseSchema = type({
   success: 'boolean',
   totpSessionId: 'string?',
+  sessionId: 'string?',
 });
 
 const registerResponseSchema = type({

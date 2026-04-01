@@ -66,7 +66,9 @@ export class AuthController {
 
     await this.setSessionCookie(res, sessionId, req);
 
-    return LoginDto.parse({ success: true }, { reportOnly: true });
+    // Include session ID in response body for Tauri desktop app
+    // (cross-origin cookies don't work in WebView2 on HTTP)
+    return LoginDto.parse({ success: true, sessionId }, { reportOnly: true });
   }
 
   @Post('/verify-totp')
@@ -76,7 +78,7 @@ export class AuthController {
 
     await this.setSessionCookie(res, sessionId, req);
 
-    return LoginDto.parse({ success: true }, { reportOnly: true });
+    return LoginDto.parse({ success: true, sessionId }, { reportOnly: true });
   }
 
   @Post('/register')
