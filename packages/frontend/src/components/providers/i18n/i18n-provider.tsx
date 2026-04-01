@@ -5,6 +5,8 @@ import { type PropsWithChildren, useEffect, useState } from 'react';
 import { I18nextProvider, initReactI18next } from 'react-i18next';
 import { client } from '@/api-client/client.gen';
 
+const isTauriRelease = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window && !window.location.origin.startsWith('http://localhost:');
+
 let i18nInitialized = false;
 
 function initI18n() {
@@ -12,9 +14,17 @@ function initI18n() {
   i18nInitialized = true;
 
   const Backend = new HttpBackend(null, {
-    loadPath: (_languages: string[], _namespaces: string[]) => {
-      const baseUrl = client.getConfig().baseUrl ?? '';
-      return `${baseUrl}/api/i18n/locales/{{ns}}/{{lng}}.json`;
+    loadPath: '/api/i18n/locales/{{ns}}/{{lng}}.json',
+    // Override the request function for Tauri release mode to prefix baseUrl
+    request: (_options: object, url: string, _payload: object, callback: (err: Error | null, response: { status: number; data: string }) => void) => {
+      const fullUrl = isTauriRelease ? `${client.getConfig().baseUrl ?? ''}${url}` : url;
+      fetch(fullUrl, { credentials: isTauriRelease ? 'omit' : 'same-origin' })
+        .then((res) => {
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          return res.text();
+        })
+        .then((data) => callback(null, { status: 200, data }))
+        .catch((err) => callback(err, { status: 500, data: '' }));
     },
   });
 
