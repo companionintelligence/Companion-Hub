@@ -52,7 +52,18 @@ async function bootstrap() {
 
   app.setGlobalPrefix('/api');
   app.useGlobalPipes(new ValidationPipe());
-  app.enableCors();
+  app.enableCors({
+    origin: (origin: string | undefined, callback: (err: Error | null, origin?: string | boolean) => void) => {
+      // Allow Tauri desktop origins and same-origin (no origin header) requests
+      if (!origin || origin === 'http://tauri.localhost' || origin === 'https://tauri.localhost' || origin.startsWith('http://localhost')) {
+        callback(null, origin || true);
+      } else {
+        // Allow all other origins without credentials
+        callback(null, origin);
+      }
+    },
+    credentials: true,
+  });
   app.use(cookieParser());
 
   await setupSwagger(app);

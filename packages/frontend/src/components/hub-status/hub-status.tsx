@@ -9,7 +9,6 @@ export function HubStatus({ children }: HubStatusProps) {
   const [connected, setConnected] = useState<boolean | null>(null);
   const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
   const isTauriRelease = isTauri && !window.location.origin.startsWith('http://localhost:');
-  const credentialMode: RequestCredentials = isTauriRelease ? 'omit' : 'include';
 
   const checkHealth = useCallback(async () => {
     for (const port of [5002, 3000]) {
@@ -20,7 +19,7 @@ export function HubStatus({ children }: HubStatusProps) {
         if (res.ok) {
           // Ensure the client baseUrl matches the working port
           if (isTauriRelease) {
-            client.setConfig({ baseUrl: `http://localhost:${port}`, credentials: credentialMode });
+            client.setConfig({ baseUrl: `http://localhost:${port}`, credentials: 'include' });
           }
           setConnected(true);
           return;
@@ -30,7 +29,7 @@ export function HubStatus({ children }: HubStatusProps) {
       }
     }
     setConnected(false);
-  }, [isTauriRelease, credentialMode]);
+  }, [isTauriRelease]);
 
   useEffect(() => {
     checkHealth();

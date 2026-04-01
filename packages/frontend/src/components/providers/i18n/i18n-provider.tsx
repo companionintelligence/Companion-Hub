@@ -18,7 +18,7 @@ function initI18n() {
     // Override the request function for Tauri release mode to prefix baseUrl
     request: (_options: object, url: string, _payload: object, callback: (err: Error | null, response: { status: number; data: string }) => void) => {
       const fullUrl = isTauriRelease ? `${client.getConfig().baseUrl ?? ''}${url}` : url;
-      fetch(fullUrl, { credentials: isTauriRelease ? 'omit' : 'same-origin' })
+      fetch(fullUrl, { credentials: 'include' })
         .then((res) => {
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           return res.text();
