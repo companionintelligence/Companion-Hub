@@ -1,6 +1,19 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+fn docker_command() -> Command {
+    let mut cmd = Command::new("docker");
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd
+}
+
 /// Paths used by the Hub manager, stored in Tauri app state.
 pub struct HubPaths {
     pub data_dir: PathBuf,
@@ -24,7 +37,7 @@ pub fn get_hub_status() -> HubStatus {
     }
 
     // Check ci-os-hub container specifically
-    let status = Command::new("docker")
+    let status = docker_command()
         .args([
             "inspect",
             "--format",
@@ -46,9 +59,41 @@ pub fn get_hub_status() -> HubStatus {
     match (state, health) {
         ("running", "healthy") => HubStatus::Running,
         ("running", _) => HubStatus::Starting,
-        ("restarting", _) => HubStatus::Error {
-            message: "Container is restarting — check Docker logs".to_string(),
-        },
+        ("restarting", _) => {
+            // Check if database is still starting — if so, Hub restart is expected
+            let db_status = docker_command()
+                .args(["inspect", "--format", "{{.State.Health.Status}}", "ci-hub-db"])
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .unwrap_or_default();
+
+            if db_status != "healthy" {
+                HubStatus::Starting // DB not ready yet, Hub restart is expected
+            } else {
+                // DB is healthy but Hub is still restarting — might be a real error
+                let restart_count = docker_command()
+                    .args(["inspect", "--format", "{{.RestartCount}}", "ci-os-hub"])
+                    .output()
+                    .map(|o| {
+                        String::from_utf8_lossy(&o.stdout)
+                            .trim()
+                            .parse::<u32>()
+                            .unwrap_or(0)
+                    })
+                    .unwrap_or(0);
+
+                if restart_count <= 3 {
+                    HubStatus::Starting
+                } else {
+                    HubStatus::Error {
+                        message: format!(
+                            "Hub has restarted {} times. Check Docker logs for details.",
+                            restart_count
+                        ),
+                    }
+                }
+            }
+        }
         ("created", _) | ("exited", _) => HubStatus::Stopped,
         _ => HubStatus::Starting,
     }
@@ -62,7 +107,7 @@ pub fn get_hub_data_dir() -> PathBuf {
 
 /// Check if Docker is available
 pub fn is_docker_available() -> bool {
-    Command::new("docker")
+    docker_command()
         .arg("info")
         .output()
         .map(|o| o.status.success())
@@ -71,7 +116,7 @@ pub fn is_docker_available() -> bool {
 
 /// Check if Hub containers exist (stopped or running)
 pub fn hub_containers_exist() -> bool {
-    Command::new("docker")
+    docker_command()
         .args(["ps", "-a", "--filter", "name=ci-os-hub", "--format", "{{.Names}}"])
         .output()
         .map(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty())
@@ -79,8 +124,8 @@ pub fn hub_containers_exist() -> bool {
 }
 
 /// Start Hub using docker compose up
-pub fn start_hub(compose_path: &Path, env_path: &Path, data_dir: &Path) -> Result<String, String> {
-    let output = Command::new("docker")
+pub fn start_hub(compose_path: &Path, env_path: &Path, _data_dir: &Path) -> Result<String, String> {
+    let output = docker_command()
         .args([
             "compose",
             "--env-file",
@@ -92,7 +137,6 @@ pub fn start_hub(compose_path: &Path, env_path: &Path, data_dir: &Path) -> Resul
             "up",
             "-d",
         ])
-        .env("ROOT_FOLDER_HOST", data_dir.to_string_lossy().to_string())
         .output()
         .map_err(|e| format!("Failed to run docker compose: {}", e))?;
 
@@ -105,7 +149,7 @@ pub fn start_hub(compose_path: &Path, env_path: &Path, data_dir: &Path) -> Resul
 
 /// Stop Hub containers
 pub fn stop_hub(compose_path: &Path, env_path: &Path) -> Result<String, String> {
-    let output = Command::new("docker")
+    let output = docker_command()
         .args([
             "compose",
             "--env-file",
