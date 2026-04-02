@@ -1,3 +1,4 @@
+import { apiFetch } from '@/lib/api-fetch';
 import { Markdown } from '@/components/markdown/markdown';
 import { Button } from '@/components/ui/Button';
 import { useAppContext } from '@/context/app-context';
@@ -21,7 +22,7 @@ export const GeneralActionsContainer = () => {
 
   // Fetch auto-update setting on mount
   useEffect(() => {
-    fetch('/api/system/update/auto-updates', { credentials: 'include' })
+    apiFetch('/api/system/update/auto-updates', { credentials: 'include' })
       .then((res) => res.json())
       .then((data) => setAutoUpdates(data.enabled))
       .catch(() => {
@@ -33,7 +34,7 @@ export const GeneralActionsContainer = () => {
     setUpdating(true);
     setUpdateMessage(null);
     try {
-      const res = await fetch('/api/system/update', {
+      const res = await apiFetch('/api/system/update', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -56,7 +57,7 @@ export const GeneralActionsContainer = () => {
     setAutoUpdatesLoading(true);
     const newValue = !autoUpdates;
     try {
-      await fetch('/api/system/update/auto-updates', {
+      await apiFetch('/api/system/update/auto-updates', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',

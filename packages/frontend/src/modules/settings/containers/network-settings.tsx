@@ -70,7 +70,7 @@ const VpnSection = () => {
   const { data: vpnStatus, isLoading } = useQuery<VpnStatus>({
     queryKey: ['vpn-status'],
     queryFn: async () => {
-      const res = await fetch('/api/headscale/status', { credentials: 'include' });
+      const res = await apiFetch('/api/headscale/status', { credentials: 'include' });
       return res.json();
     },
     refetchInterval: 10000,
@@ -79,7 +79,7 @@ const VpnSection = () => {
   const { data: devicesData } = useQuery<{ success: boolean; devices: VpnDevice[] }>({
     queryKey: ['vpn-devices'],
     queryFn: async () => {
-      const res = await fetch('/api/headscale/devices', { credentials: 'include' });
+      const res = await apiFetch('/api/headscale/devices', { credentials: 'include' });
       return res.json();
     },
     refetchInterval: 15000,
@@ -88,14 +88,14 @@ const VpnSection = () => {
   const { data: keysData, refetch: refetchKeys } = useQuery<{ success: boolean; keys: PreAuthKey[] }>({
     queryKey: ['vpn-preauthkeys'],
     queryFn: async () => {
-      const res = await fetch('/api/headscale/preauthkeys', { credentials: 'include' });
+      const res = await apiFetch('/api/headscale/preauthkeys', { credentials: 'include' });
       return res.json();
     },
   });
 
   const createKey = useMutation({
     mutationFn: async () => {
-      const res = await fetch('/api/headscale/preauthkey', {
+      const res = await apiFetch('/api/headscale/preauthkey', {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
@@ -110,7 +110,7 @@ const VpnSection = () => {
 
   const removeDevice = useMutation({
     mutationFn: async (id: string) => {
-      const res = await fetch(`/api/headscale/devices/${id}`, {
+      const res = await apiFetch(`/api/headscale/devices/${id}`, {
         method: 'DELETE',
         credentials: 'include',
       });

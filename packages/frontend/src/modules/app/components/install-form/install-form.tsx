@@ -1,3 +1,4 @@
+import { apiFetch } from '@/lib/api-fetch';
 import type { GetRandomPortResponse } from '@/api-client';
 import { getRandomPortMutation } from '@/api-client/@tanstack/react-query.gen';
 import { Input, InputGroup } from '@/components/ui/Input';
@@ -199,7 +200,7 @@ export const InstallForm: React.FC<IProps> = ({
     // Debounce the DNS check
     dnsCheckTimeoutRef.current = setTimeout(async () => {
       try {
-        const response = await fetch(`/api/cloudflare/check-dns-availability?subdomain=${encodeURIComponent(subdomainToCheck)}`, {
+        const response = await apiFetch(`/api/cloudflare/check-dns-availability?subdomain=${encodeURIComponent(subdomainToCheck)}`, {
           credentials: 'include',
         });
 
@@ -409,7 +410,7 @@ export const InstallForm: React.FC<IProps> = ({
       } else if (isProduction) {
         // Perform a final DNS check before submission
         try {
-          const response = await fetch(`/api/cloudflare/check-dns-availability?subdomain=${encodeURIComponent(formValues.localSubdomain)}`, {
+          const response = await apiFetch(`/api/cloudflare/check-dns-availability?subdomain=${encodeURIComponent(formValues.localSubdomain)}`, {
             credentials: 'include',
           });
 
