@@ -91,20 +91,21 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             "start_hub" => {
-                tauri::async_runtime::spawn(async {
-                    // Start in order: db, queue, hub
-                    let _ = std::process::Command::new("docker")
-                        .args(["start", "ci-hub-db", "ci-os-hub-queue", "ci-os-hub"])
-                        .output();
+                let paths = app.state::<crate::hub_manager::HubPaths>();
+                let compose = paths.compose_path.clone();
+                let env = paths.env_path.clone();
+                let data = paths.data_dir.clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = crate::hub_manager::start_hub(&compose, &env, &data);
                 });
             }
             "stop_hub" => {
-                tauri::async_runtime::spawn(async {
-                    // Stop hub containers
-                    let _ = std::process::Command::new("docker")
-                        .args(["stop", "ci-os-hub", "ci-hub-db", "ci-os-hub-queue"])
-                        .output();
-                    // Stop managed app containers
+                let paths = app.state::<crate::hub_manager::HubPaths>();
+                let compose = paths.compose_path.clone();
+                let env = paths.env_path.clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = crate::hub_manager::stop_hub(&compose, &env);
+                    // Also stop managed app containers
                     if let Ok(output) = std::process::Command::new("docker")
                         .args(["ps", "-q", "--filter", "label=ci-hub.managed"])
                         .output()
