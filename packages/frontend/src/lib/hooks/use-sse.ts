@@ -17,14 +17,20 @@ export const useSSE = <T extends Topic>(props: Props<T>) => {
   const retries = useRef(0);
 
   const initializeSSE = () => {
-    const baseUrl =
-      typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window && !window.location.origin.startsWith('http://localhost:')
-        ? (client.getConfig().baseUrl ?? window.location.origin)
-        : window.location.origin;
+    const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window && !window.location.origin.startsWith('http://localhost:');
+    const baseUrl = isTauri ? (client.getConfig().baseUrl ?? window.location.origin) : window.location.origin;
     const url = new URL(`${baseUrl}/api/sse/${topic}`);
 
     if (props.params) {
       url.search = props.params.toString();
+    }
+
+    // EventSource doesn't support custom headers, so pass session ID as query param for Tauri
+    if (isTauri) {
+      const sid = sessionStorage.getItem('ci-hub-session');
+      if (sid) {
+        url.searchParams.set('session_id', sid);
+      }
     }
 
     const eventSource = new EventSource(url);
