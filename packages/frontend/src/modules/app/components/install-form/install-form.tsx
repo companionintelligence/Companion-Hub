@@ -1,3 +1,4 @@
+import { apiFetch } from '@/lib/api-fetch';
 import type { GetRandomPortResponse } from '@/api-client';
 import { getRandomPortMutation } from '@/api-client/@tanstack/react-query.gen';
 import { Input, InputGroup } from '@/components/ui/Input';
@@ -69,7 +70,7 @@ export const InstallForm: React.FC<IProps> = ({
 }) => {
   const { t } = useTranslation();
   const { userSettings, isProduction, user, cloudflareAvailable, tailscaleAvailable } = useAppContext();
-  const { guestDashboard, localDomain, maxBackups: globalMaxBackups, ciHubOrganizationSlug, domain } = userSettings;
+  const { guestDashboard, localDomain, maxBackups: globalMaxBackups, ciHubOrganizationSlug, ciHubDeviceSlug, domain } = userSettings;
   const isAdvancedMode = user.advancedMode;
 
   const orgSlug = ciHubOrganizationSlug ? ciHubOrganizationSlug.toLowerCase().replace(/\s+/g, '-') : undefined;
@@ -199,7 +200,7 @@ export const InstallForm: React.FC<IProps> = ({
     // Debounce the DNS check
     dnsCheckTimeoutRef.current = setTimeout(async () => {
       try {
-        const response = await fetch(`/api/cloudflare/check-dns-availability?subdomain=${encodeURIComponent(subdomainToCheck)}`, {
+        const response = await apiFetch(`/api/cloudflare/check-dns-availability?subdomain=${encodeURIComponent(subdomainToCheck)}`, {
           credentials: 'include',
         });
 
@@ -327,7 +328,13 @@ export const InstallForm: React.FC<IProps> = ({
           <div className="mb-3">
             <InputGroup
               groupPrefix="https://"
-              groupSuffix={watchExposureMode === 'tailscale' ? `.${localDomain || 'tailnet'}` : orgSlug ? `-${orgSlug}.${domain}` : `-${localDomain}`}
+              groupSuffix={
+                watchExposureMode === 'tailscale'
+                  ? `.${localDomain || 'tailnet'}`
+                  : orgSlug
+                    ? `-${ciHubDeviceSlug ? `${ciHubDeviceSlug}-` : ''}${orgSlug}.${domain}`
+                    : `-${localDomain}`
+              }
               {...register('localSubdomain')}
               label={t('APP_INSTALL_FORM_LOCAL_SUBDOMAIN')}
               error={errors.localSubdomain?.message || dnsAvailabilityError || undefined}
@@ -403,7 +410,7 @@ export const InstallForm: React.FC<IProps> = ({
       } else if (isProduction) {
         // Perform a final DNS check before submission
         try {
-          const response = await fetch(`/api/cloudflare/check-dns-availability?subdomain=${encodeURIComponent(formValues.localSubdomain)}`, {
+          const response = await apiFetch(`/api/cloudflare/check-dns-availability?subdomain=${encodeURIComponent(formValues.localSubdomain)}`, {
             credentials: 'include',
           });
 

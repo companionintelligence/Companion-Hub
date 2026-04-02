@@ -8,7 +8,7 @@ import { useLocation, Navigate } from 'react-router';
 
 export const DashboardLayoutSuspense = ({ children }: PropsWithChildren) => {
   return (
-    <div className="flex bg-background overflow-hidden h-screen w-screen flex-col">
+    <div className="flex bg-background overflow-hidden w-screen flex-col" style={{ height: 'calc(100vh - var(--titlebar-height, 0px))' }}>
       <Header isLoggedIn={false} isUpdateAvailable={false} allowAutoThemes={false} />
       <div className="flex flex-1 flex-col pt-24 px-4 container mx-auto h-full overflow-y-auto no-scrollbar">
         <div className="rounded-xl border bg-card text-card-foreground shadow p-6">{children}</div>
@@ -80,7 +80,7 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
   };
 
   return (
-    <div className="flex bg-background overflow-hidden h-screen w-screen flex-col">
+    <div className="flex bg-background overflow-hidden w-screen flex-col" style={{ height: 'calc(100vh - var(--titlebar-height, 0px))' }}>
       <Header isLoggedIn={isLoggedIn} isUpdateAvailable={!isLatest} allowAutoThemes={userSettings.allowAutoThemes} />
 
       <main className="flex-1 relative pt-24 px-4 container mx-auto h-full overflow-y-auto overflow-x-hidden no-scrollbar">

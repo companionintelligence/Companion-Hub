@@ -269,6 +269,47 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     }
   }
 
+  /**
+   * Reset device registration to allow re-pairing.
+   * Clears in-memory state, database records, tunnel token, and resolved env.
+   */
+  public async resetRegistration(): Promise<void> {
+    this.logger.info('Resetting device registration...');
+
+    // Clear the in-memory registration state
+    this._isRegistered = false;
+
+    // Stop validation intervals
+    if (this.weeklyValidationInterval) {
+      clearInterval(this.weeklyValidationInterval);
+      this.weeklyValidationInterval = null;
+    }
+
+    // Delete the device_registration records from the database
+    await this.deviceRegistrationRepository.deleteAll();
+
+    // Delete the tunnel token file from disk
+    const tokenPath = path.join(APP_DIR, 'tunnel', 'token');
+    try {
+      await fs.promises.unlink(tokenPath);
+    } catch {
+      // File may not exist
+    }
+
+    // Clear the resolved env file so it regenerates
+    const resolvedEnvPath = path.join(APP_DIR, '.env.resolved');
+    try {
+      await fs.promises.unlink(resolvedEnvPath);
+    } catch {
+      // File may not exist
+    }
+
+    this.logger.info('Device registration reset complete');
+
+    // Start polling for new registration
+    this.pollRegistration();
+  }
+
   public async getDeviceId(): Promise<string> {
     const envDeviceId = process.env.DEVICE_ID?.trim();
     if (envDeviceId) {

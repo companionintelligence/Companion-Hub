@@ -2,6 +2,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Globe, Loader2, Trash2, Copy, Plus, Monitor, Shield } from 'lucide-react';
 import { useState } from 'react';
+import { apiFetch } from '@/lib/api-fetch';
+import toast from 'react-hot-toast';
 
 interface VpnStatus {
   enabled: boolean;
@@ -68,7 +70,7 @@ const VpnSection = () => {
   const { data: vpnStatus, isLoading } = useQuery<VpnStatus>({
     queryKey: ['vpn-status'],
     queryFn: async () => {
-      const res = await fetch('/api/headscale/status', { credentials: 'include' });
+      const res = await apiFetch('/api/headscale/status', { credentials: 'include' });
       return res.json();
     },
     refetchInterval: 10000,
@@ -77,7 +79,7 @@ const VpnSection = () => {
   const { data: devicesData } = useQuery<{ success: boolean; devices: VpnDevice[] }>({
     queryKey: ['vpn-devices'],
     queryFn: async () => {
-      const res = await fetch('/api/headscale/devices', { credentials: 'include' });
+      const res = await apiFetch('/api/headscale/devices', { credentials: 'include' });
       return res.json();
     },
     refetchInterval: 15000,
@@ -86,14 +88,14 @@ const VpnSection = () => {
   const { data: keysData, refetch: refetchKeys } = useQuery<{ success: boolean; keys: PreAuthKey[] }>({
     queryKey: ['vpn-preauthkeys'],
     queryFn: async () => {
-      const res = await fetch('/api/headscale/preauthkeys', { credentials: 'include' });
+      const res = await apiFetch('/api/headscale/preauthkeys', { credentials: 'include' });
       return res.json();
     },
   });
 
   const createKey = useMutation({
     mutationFn: async () => {
-      const res = await fetch('/api/headscale/preauthkey', {
+      const res = await apiFetch('/api/headscale/preauthkey', {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
@@ -108,7 +110,7 @@ const VpnSection = () => {
 
   const removeDevice = useMutation({
     mutationFn: async (id: string) => {
-      const res = await fetch(`/api/headscale/devices/${id}`, {
+      const res = await apiFetch(`/api/headscale/devices/${id}`, {
         method: 'DELETE',
         credentials: 'include',
       });
@@ -253,15 +255,43 @@ const VpnSection = () => {
 
 const CloudflareSection = () => {
   const { t } = useTranslation();
+  const [isResetting, setIsResetting] = useState(false);
 
   const { data: status, isLoading } = useQuery<CloudflareStatus>({
     queryKey: ['cloudflare-status'],
     queryFn: async () => {
-      const res = await fetch('/api/cloudflare/status', { credentials: 'include' });
+      const res = await apiFetch('/api/cloudflare/status', { credentials: 'include' });
       return res.json();
     },
     refetchInterval: 30000,
   });
+
+  const handleResetRegistration = async () => {
+    if (
+      !window.confirm(
+        'This will disconnect your device from the Portal and Cloudflare tunnel. You will need to re-pair with a new pairing code. Continue?',
+      )
+    )
+      return;
+    setIsResetting(true);
+    try {
+      const res = await apiFetch('/api/registration/reset', { method: 'POST' });
+      if (res.ok) {
+        toast.success('Registration reset. Redirecting to device registration...');
+        sessionStorage.removeItem('device-registered');
+        sessionStorage.removeItem('device-registered-at');
+        setTimeout(() => {
+          window.location.href = '/device-registration';
+        }, 1500);
+      } else {
+        toast.error('Failed to reset registration');
+      }
+    } catch {
+      toast.error('Failed to reset registration');
+    } finally {
+      setIsResetting(false);
+    }
+  };
 
   if (isLoading) {
     return (
@@ -291,6 +321,17 @@ const CloudflareSection = () => {
         </div>
       )}
       <p className="text-sm text-muted-foreground mt-2">{status?.message}</p>
+      <div className="mt-3 pt-3 border-t">
+        <button
+          type="button"
+          onClick={handleResetRegistration}
+          disabled={isResetting}
+          className="text-sm text-destructive hover:text-destructive/80 underline"
+        >
+          {isResetting ? 'Resetting...' : 'Re-register Device'}
+        </button>
+        <p className="text-xs text-muted-foreground mt-1">Disconnect from the Portal and Cloudflare tunnel. You'll need a new pairing code.</p>
+      </div>
     </div>
   );
 };

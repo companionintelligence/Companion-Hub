@@ -40,6 +40,19 @@ import { DropdownMenuSeparator } from '@/components/ui/DropdownMenu/DropdownMenu
 import { useLocation, useNavigate } from 'react-router';
 import type { AppUrn } from '@ci-hub/common/types';
 
+const openExternalUrl = async (url: string) => {
+  if ('__TAURI_INTERNALS__' in window) {
+    try {
+      const tauri = window as unknown as { __TAURI_INTERNALS__: { invoke: (cmd: string, args: Record<string, unknown>) => Promise<void> } };
+      await tauri.__TAURI_INTERNALS__.invoke('plugin:shell|open', { path: url });
+    } catch {
+      window.open(url, '_blank');
+    }
+  } else {
+    window.open(url, '_blank');
+  }
+};
+
 interface IProps {
   app?: AppDetails | null;
   info: AppInfo;
@@ -149,14 +162,21 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
   const LoadingButton = (() => {
     const progress = app?.status === 'installing' ? installationProgress : null;
     const progressText = progress === null ? '' : ` ${progress}%`;
+
+    let stageText = '';
+    if (progress !== null) {
+      if (progress < 20) stageText = 'Preparing...';
+      else if (progress < 40) stageText = 'Downloading...';
+      else if (progress < 70) stageText = 'Setting up...';
+      else if (progress < 90) stageText = 'Starting...';
+      else stageText = 'Almost ready...';
+    }
+
     return (
-      <ActionButton
-        key="loading"
-        disabled
-        intent="success"
-        title={`${t('APP_ACTION_INSTALLING')}${progressText}`}
-        className="installation-progress-button"
-      />
+      <div key="loading" className="flex flex-col items-start gap-1">
+        <ActionButton disabled intent="success" title={`${t('APP_ACTION_INSTALLING')}${progressText}`} className="installation-progress-button" />
+        {stageText && <p className="text-xs text-muted-foreground">{stageText}</p>}
+      </div>
     );
   })();
 
@@ -401,12 +421,12 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
           onClick={() => {
             // For local, construct URL from app data since backend returns it immediately
             if (appUrl) {
-              window.open(appUrl, '_blank');
+              openExternalUrl(appUrl);
             } else {
               // Fetch URL on-demand for local
               client.get({ url: `/api/apps/${info.urn}/check-availability` }).then(({ data }) => {
                 const result = (data || {}) as { appUrl?: string };
-                if (result.appUrl) window.open(result.appUrl, '_blank');
+                if (result.appUrl) openExternalUrl(result.appUrl);
               });
             }
           }}
@@ -426,7 +446,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
         <ActionButton
           key="open"
           IconComponent={ExternalLink}
-          onClick={() => appUrl && window.open(appUrl, '_blank')}
+          onClick={() => appUrl && openExternalUrl(appUrl)}
           title={t('APP_ACTION_OPEN')}
           disabled={!appUrl}
         />
@@ -440,11 +460,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
           <ActionButton title="Starting..." disabled loading />
           {statusMessage && <span className="text-xs text-muted-foreground">{statusMessage}</span>}
           {appUrl && (
-            <button
-              type="button"
-              className="text-xs text-muted-foreground underline hover:text-foreground"
-              onClick={() => window.open(appUrl, '_blank')}
-            >
+            <button type="button" className="text-xs text-muted-foreground underline hover:text-foreground" onClick={() => openExternalUrl(appUrl)}>
               Open anyway ↗
             </button>
           )}
@@ -470,11 +486,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
           )}
           {statusMessage && <span className="text-xs text-amber-600">{statusMessage}</span>}
           {appUrl && (
-            <button
-              type="button"
-              className="text-xs text-muted-foreground underline hover:text-foreground"
-              onClick={() => window.open(appUrl, '_blank')}
-            >
+            <button type="button" className="text-xs text-muted-foreground underline hover:text-foreground" onClick={() => openExternalUrl(appUrl)}>
               Open anyway ↗
             </button>
           )}
@@ -489,11 +501,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
           <ActionButton IconComponent={AlertTriangle} title={t('APP_ACTION_OPEN')} intent="danger" disabled />
           {statusMessage && <span className="text-xs text-destructive">{statusMessage}</span>}
           {appUrl && (
-            <button
-              type="button"
-              className="text-xs text-muted-foreground underline hover:text-foreground"
-              onClick={() => window.open(appUrl, '_blank')}
-            >
+            <button type="button" className="text-xs text-muted-foreground underline hover:text-foreground" onClick={() => openExternalUrl(appUrl)}>
               Open anyway ↗
             </button>
           )}

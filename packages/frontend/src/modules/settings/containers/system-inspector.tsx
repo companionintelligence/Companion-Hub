@@ -1,3 +1,4 @@
+import { apiFetch } from '@/lib/api-fetch';
 import { useQuery } from '@tanstack/react-query';
 import {
   Activity,
@@ -418,7 +419,7 @@ export const SystemInspectorContainer = () => {
   const { data, isLoading, refetch, isFetching, dataUpdatedAt } = useQuery<InspectionData>({
     queryKey: ['system-inspector'],
     queryFn: async () => {
-      const res = await fetch('/api/system-inspector', { credentials: 'include' });
+      const res = await apiFetch('/api/system-inspector', { credentials: 'include' });
       if (!res.ok) throw new Error('Failed to fetch system inspection');
       return res.json();
     },

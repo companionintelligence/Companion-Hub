@@ -79,6 +79,7 @@ export type AppContextDto = {
         themeBase?: string;
         themeColor?: string;
         ciHubOrganizationSlug?: string;
+        ciHubDeviceSlug?: string;
     };
     version: {
         body: string;
