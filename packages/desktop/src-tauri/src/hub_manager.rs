@@ -264,7 +264,7 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf)
 
         let env_content = format!(
             "ROOT_FOLDER_HOST={data_dir}\n\
-             POSTGRES_PASSWORD=companion-hub-local\n\
+             POSTGRES_PASSWORD=postgres\n\
              JWT_SECRET={secret}\n\
              INTERNAL_IP=0.0.0.0\n\
              DOMAIN=companionintelligence.com\n\
