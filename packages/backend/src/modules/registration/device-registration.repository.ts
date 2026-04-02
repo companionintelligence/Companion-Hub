@@ -51,4 +51,8 @@ export class DeviceRegistrationRepository {
   async deleteDeviceRegistration(orgId: string) {
     await this.databaseService.db.delete(deviceRegistration).where(eq(deviceRegistration.id, orgId));
   }
+
+  async deleteAll() {
+    await this.databaseService.db.delete(deviceRegistration);
+  }
 }

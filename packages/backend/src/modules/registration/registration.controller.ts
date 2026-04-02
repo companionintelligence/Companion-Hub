@@ -27,6 +27,14 @@ export class RegistrationController {
     private readonly config: ConfigurationService,
   ) {}
 
+  @Post('reset')
+  @ApiOperation({ summary: 'Reset device registration to allow re-pairing' })
+  @ApiResponse({ status: 200, description: 'Registration reset successfully' })
+  async resetRegistration() {
+    await this.registrationService.resetRegistration();
+    return { success: true, message: 'Registration reset. You can now re-pair this device.' };
+  }
+
   @Get('status')
   @ApiOperation({ summary: 'Get device registration status' })
   @ApiResponse({ status: 200, description: 'Returns the registration status' })
