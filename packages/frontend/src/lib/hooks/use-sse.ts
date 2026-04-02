@@ -1,5 +1,6 @@
 import type { SSE, Topic } from '@ci-hub/common/schemas';
 import { useEffect, useRef } from 'react';
+import { client } from '@/api-client/client.gen';
 
 type Props<T> = {
   topic: T;
@@ -16,7 +17,11 @@ export const useSSE = <T extends Topic>(props: Props<T>) => {
   const retries = useRef(0);
 
   const initializeSSE = () => {
-    const url = new URL(`${window.location.origin}/api/sse/${topic}`);
+    const baseUrl =
+      typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window && !window.location.origin.startsWith('http://localhost:')
+        ? (client.getConfig().baseUrl ?? window.location.origin)
+        : window.location.origin;
+    const url = new URL(`${baseUrl}/api/sse/${topic}`);
 
     if (props.params) {
       url.search = props.params.toString();
