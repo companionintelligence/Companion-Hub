@@ -267,9 +267,9 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf)
              POSTGRES_PASSWORD=postgres\n\
              JWT_SECRET={secret}\n\
              INTERNAL_IP=0.0.0.0\n\
-             DOMAIN=companionintelligence.com\n\
-             CI_CLOUD_URL=https://portal.companionintelligence.com\n\
-             CI_HUB_VERSION=0.1.0\n\
+             DOMAIN={domain}\n\
+             CI_CLOUD_URL={cloud_url}\n\
+             CI_HUB_VERSION={hub_version}\n\
              LOG_LEVEL=info\n\
              LOCAL=false\n\
              NODE_ENV=production\n\
@@ -277,6 +277,9 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf)
              ENV_FILE=.env\n",
             data_dir = data_dir_str,
             secret = secret,
+            domain = option_env!("CI_HUB_DOMAIN").unwrap_or("companionintelligence.com"),
+            cloud_url = option_env!("CI_HUB_CLOUD_URL").unwrap_or("https://portal.companionintelligence.com"),
+            hub_version = option_env!("CI_HUB_BUILD_VERSION").unwrap_or("4.7.0"),
         );
 
         std::fs::write(&env_path, env_content)
