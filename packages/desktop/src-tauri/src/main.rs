@@ -37,6 +37,12 @@ async fn check_docker_available() -> Result<bool, String> {
     Ok(hub_manager::is_docker_available())
 }
 
+/// Get the current Hub status (Docker availability, container state, health).
+#[tauri::command]
+async fn get_hub_status_command() -> hub_manager::HubStatus {
+    hub_manager::get_hub_status()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
@@ -56,6 +62,7 @@ pub fn run() {
             discover_hubs,
             start_hub_command,
             check_docker_available,
+            get_hub_status_command,
         ])
         .setup(|app| {
             // Restore saved window geometry
