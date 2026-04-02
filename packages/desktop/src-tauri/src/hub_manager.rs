@@ -8,6 +8,52 @@ pub struct HubPaths {
     pub env_path: PathBuf,
 }
 
+#[derive(Clone, serde::Serialize)]
+pub enum HubStatus {
+    DockerNotAvailable,
+    Stopped,
+    Starting,
+    Running,
+    Error { message: String },
+}
+
+/// Get the current status of the Hub by inspecting the Docker container.
+pub fn get_hub_status() -> HubStatus {
+    if !is_docker_available() {
+        return HubStatus::DockerNotAvailable;
+    }
+
+    // Check ci-os-hub container specifically
+    let status = Command::new("docker")
+        .args([
+            "inspect",
+            "--format",
+            "{{.State.Status}}:{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}",
+            "ci-os-hub",
+        ])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+
+    if status.is_empty() || status.contains("No such object") || status.contains("Error") {
+        return HubStatus::Stopped;
+    }
+
+    let parts: Vec<&str> = status.split(':').collect();
+    let state = parts.first().copied().unwrap_or("");
+    let health = parts.get(1).copied().unwrap_or("");
+
+    match (state, health) {
+        ("running", "healthy") => HubStatus::Running,
+        ("running", _) => HubStatus::Starting,
+        ("restarting", _) => HubStatus::Error {
+            message: "Container is restarting — check Docker logs".to_string(),
+        },
+        ("created", _) | ("exited", _) => HubStatus::Stopped,
+        _ => HubStatus::Starting,
+    }
+}
+
 /// Get the Hub data directory (platform-specific)
 pub fn get_hub_data_dir() -> PathBuf {
     let base = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
@@ -94,12 +140,63 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf)
     }
 
     // Copy docker-compose.prod.yml from resources
-    let compose_src = resource_dir.join("docker-compose.prod.yml");
-    let compose_dst = data_dir.join("docker-compose.prod.yml");
-    if compose_src.exists() && !compose_dst.exists() {
-        std::fs::copy(&compose_src, &compose_dst)
-            .map_err(|e| format!("Failed to copy compose file: {}", e))?;
+    // Try multiple candidate paths — Tauri resource dir varies by platform and install method
+    let compose_candidates = [
+        resource_dir.join("docker-compose.prod.yml"),
+        resource_dir.join("resources").join("docker-compose.prod.yml"),
+        // For dev builds, try relative to executable
+        std::env::current_exe()
+            .unwrap_or_default()
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join("resources")
+            .join("docker-compose.prod.yml"),
+    ];
+
+    // Log candidate paths for debugging
+    let log_path = data_dir.join("logs").join("init.log");
+    let mut log_lines = vec![format!(
+        "[{}] initialize_hub: resource_dir = {:?}",
+        chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+        resource_dir
+    )];
+    for (i, candidate) in compose_candidates.iter().enumerate() {
+        log_lines.push(format!(
+            "  candidate[{}]: {:?} exists={}",
+            i,
+            candidate,
+            candidate.exists()
+        ));
     }
+
+    let compose_src = compose_candidates.iter().find(|p| p.exists());
+    let compose_dst = data_dir.join("docker-compose.prod.yml");
+
+    if let Some(src) = compose_src {
+        log_lines.push(format!("  -> using: {:?}", src));
+        if !compose_dst.exists() {
+            std::fs::copy(src, &compose_dst)
+                .map_err(|e| format!("Failed to copy compose file: {}", e))?;
+            log_lines.push("  -> copied to data_dir".to_string());
+        } else {
+            // Always update compose file in case it changed
+            std::fs::copy(src, &compose_dst)
+                .map_err(|e| format!("Failed to update compose file: {}", e))?;
+            log_lines.push("  -> updated in data_dir".to_string());
+        }
+    } else {
+        log_lines.push("  -> WARNING: no compose file found in any candidate path!".to_string());
+    }
+
+    // Write init log (append)
+    let _ = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .and_then(|mut f| {
+            use std::io::Write;
+            writeln!(f, "{}", log_lines.join("\n"))
+        });
 
     // Generate .env if it doesn't exist
     let env_path = data_dir.join(".env");
