@@ -42,6 +42,9 @@ jobs:
           - platform: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             label: Linux (x64)
+          - platform: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            label: Linux (ARM64)
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
             label: Windows (x64)
@@ -143,7 +146,7 @@ jobs:
         if: runner.os == 'Linux'
         uses: actions/upload-artifact@v4
         with:
-          name: companion-hub-linux-x64-deb
+          name: companion-hub-${{ matrix.target }}-deb
           path: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
           if-no-files-found: error
 
@@ -151,7 +154,7 @@ jobs:
         if: runner.os == 'Linux'
         uses: actions/upload-artifact@v4
         with:
-          name: companion-hub-linux-x64-rpm
+          name: companion-hub-${{ matrix.target }}-rpm
           path: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/rpm/*.rpm
           if-no-files-found: error
 
@@ -159,7 +162,7 @@ jobs:
         if: runner.os == 'Linux'
         uses: actions/upload-artifact@v4
         with:
-          name: companion-hub-linux-x64-appimage
+          name: companion-hub-${{ matrix.target }}-appimage
           path: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
           if-no-files-found: error
 
