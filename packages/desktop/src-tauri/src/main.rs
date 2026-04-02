@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod discovery;
+pub mod hub_manager;
 mod tray;
 
 use tauri::Manager;
@@ -22,14 +23,22 @@ async fn discover_hubs() -> Result<Vec<String>, String> {
     discovery::find_hubs().await.map_err(|e| e.to_string())
 }
 
+/// Start the Hub via docker compose.
+#[tauri::command]
+async fn start_hub_command(
+    state: tauri::State<'_, hub_manager::HubPaths>,
+) -> Result<String, String> {
+    hub_manager::start_hub(&state.compose_path, &state.env_path, &state.data_dir)
+}
+
+/// Check if Docker is available on this machine.
+#[tauri::command]
+async fn check_docker_available() -> Result<bool, String> {
+    Ok(hub_manager::is_docker_available())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Enable WebView2 remote debugging on Windows when COMPANION_HUB_DEBUG=1
-    // Must be set BEFORE the WebView2 runtime is created
-    if std::env::var("COMPANION_HUB_DEBUG").unwrap_or_default() == "1" {
-        std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--remote-debugging-port=9222 --auto-open-devtools-for-tabs");
-    }
-
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
@@ -45,6 +54,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             check_hub_status,
             discover_hubs,
+            start_hub_command,
+            check_docker_available,
         ])
         .setup(|app| {
             // Restore saved window geometry
@@ -52,31 +63,57 @@ pub fn run() {
                 .get_webview_window("main")
                 .ok_or("main window not found")?;
 
-            // Enable DevTools in debug builds (F12 to open)
-            // In release builds, enable if COMPANION_HUB_DEBUG=1 is set
             #[cfg(debug_assertions)]
             window.open_devtools();
 
-            #[cfg(not(debug_assertions))]
-            if std::env::var("COMPANION_HUB_DEBUG").unwrap_or_default() == "1" {
-                window.open_devtools();
-            }
-
             if let Ok(store) = app.store("settings.json") {
-                if let Some(x) = store.get("window_x").and_then(|v: serde_json::Value| v.as_f64()) {
-                    if let Some(y) = store.get("window_y").and_then(|v: serde_json::Value| v.as_f64()) {
-                        let _ = window.set_position(tauri::PhysicalPosition::new(x as i32, y as i32));
+                if let Some(x) = store.get("window_x").and_then(|v: serde_json::Value| v.as_f64())
+                {
+                    if let Some(y) =
+                        store.get("window_y").and_then(|v: serde_json::Value| v.as_f64())
+                    {
+                        let _ =
+                            window.set_position(tauri::PhysicalPosition::new(x as i32, y as i32));
                     }
                 }
-                if let Some(w) = store.get("window_width").and_then(|v: serde_json::Value| v.as_f64()) {
-                    if let Some(h) = store.get("window_height").and_then(|v: serde_json::Value| v.as_f64()) {
-                        let _ = window.set_size(tauri::PhysicalSize::new(w as u32, h as u32));
+                if let Some(w) = store
+                    .get("window_width")
+                    .and_then(|v: serde_json::Value| v.as_f64())
+                {
+                    if let Some(h) = store
+                        .get("window_height")
+                        .and_then(|v: serde_json::Value| v.as_f64())
+                    {
+                        let _ =
+                            window.set_size(tauri::PhysicalSize::new(w as u32, h as u32));
                     }
                 }
             }
 
             // Build system tray (also registers close-to-hide handler)
             tray::create_tray(app)?;
+
+            // Initialize Hub data directory and compose file
+            let resource_dir = app.path().resource_dir().map_err(|e| format!("{}", e))?;
+            let (data_dir, compose_path, env_path) =
+                hub_manager::initialize_hub(&resource_dir)?;
+
+            // Store paths in app state for tray and commands to use
+            app.manage(hub_manager::HubPaths {
+                data_dir: data_dir.clone(),
+                compose_path: compose_path.clone(),
+                env_path: env_path.clone(),
+            });
+
+            // Auto-start Hub on first launch if Docker is available
+            if hub_manager::is_docker_available() && !hub_manager::hub_containers_exist() {
+                let compose = compose_path;
+                let env = env_path;
+                let data = data_dir;
+                tauri::async_runtime::spawn(async move {
+                    let _ = hub_manager::start_hub(&compose, &env, &data);
+                });
+            }
 
             Ok(())
         });
