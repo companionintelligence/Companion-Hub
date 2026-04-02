@@ -134,12 +134,9 @@ export class AppHelpers {
       this.logger.debug(`Removed /app-data suffix from base path: ${appDataHostBase}`);
     }
 
-    // Add /app-data suffix if not present
-    const appDataHostPath = path.join(appDataHostBase, 'app-data');
-
-    // Final path: {hostPath}/app-data/{appStoreId}/{appName}
+    // Final path: {hostPath}/{appStoreId}/{appName}
     // This will be used in the app's docker-compose.yml as ${APP_DATA_DIR}
-    const finalAppDataDir = path.join(appDataHostPath, appStoreId, appName);
+    const finalAppDataDir = path.join(appDataHostBase, appStoreId, appName);
 
     // CRITICAL: Verify this is an absolute host path, not a container path
     if (!path.isAbsolute(finalAppDataDir)) {
@@ -154,7 +151,7 @@ export class AppHelpers {
       );
       // Fallback: construct path from ROOT_FOLDER_HOST
       const fallbackBase = path.isAbsolute(rootFolderHost) ? rootFolderHost : process.env.ROOT_FOLDER_HOST || '/tmp';
-      const fallbackPath = path.join(fallbackBase, 'app-data', appStoreId, appName);
+      const fallbackPath = path.join(fallbackBase, appStoreId, appName);
       envMap.set('APP_DATA_DIR', fallbackPath);
       this.logger.warn(`Using fallback APP_DATA_DIR: ${fallbackPath}`);
     } else {

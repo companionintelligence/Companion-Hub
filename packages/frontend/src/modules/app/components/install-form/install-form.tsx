@@ -90,6 +90,9 @@ export const InstallForm: React.FC<IProps> = ({
   const watchLocalSubdomain = watch('localSubdomain', '');
   const watchExposureMode = watch('exposureMode');
 
+  const requiredFieldNames = formFields.filter((f) => f.required && !hiddenTypes.includes(f.type)).map((f) => f.env_variable);
+  const watchedRequiredValues = watch(requiredFieldNames);
+
   const dnsCheckTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const [isCheckingDns, setIsCheckingDns] = useState(false);
   const [dnsAvailabilityError, setDnsAvailabilityError] = useState<string | null>(null);
@@ -106,15 +109,15 @@ export const InstallForm: React.FC<IProps> = ({
 
     // Check required form fields have values
     const requiredFields = formFields.filter((f) => f.required && !hiddenTypes.includes(f.type));
-    const allRequiredFilled = requiredFields.every((f) => {
-      const val = watch(f.env_variable);
+    const allRequiredFilled = requiredFields.every((f, i) => {
+      const val = watchedRequiredValues[i];
       // Fields with defaults count as filled
       if (f.default !== undefined && f.default !== '') return true;
       return val !== undefined && val !== '' && val !== null;
     });
 
     onValidityChange(allRequiredFilled);
-  }, [onValidityChange, info.exposable, info.dynamic_config, watchExposureMode, formFields, watch]);
+  }, [onValidityChange, info.exposable, info.dynamic_config, watchExposureMode, formFields, watchedRequiredValues]);
 
   useEffect(() => {
     if (initialValues && !isDirty) {

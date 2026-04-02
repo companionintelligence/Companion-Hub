@@ -199,7 +199,7 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
     logger.debug(`Resolved relative CI_HUB_APP_DATA_PATH against ROOT_FOLDER_HOST to: ${appDataPath}`);
   }
 
-  const finalAppDataPath = appDataPath || rootFolderHost;
+  const finalAppDataPath = '/var/lib/docker/volumes/ci_hub_app_data/_data';
 
   if (!path.isAbsolute(finalAppDataPath)) {
     throw new Error(
