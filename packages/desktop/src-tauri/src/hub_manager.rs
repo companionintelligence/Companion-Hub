@@ -7,7 +7,7 @@ use std::os::windows::process::CommandExt;
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-fn docker_command() -> Command {
+pub fn docker_command() -> Command {
     let mut cmd = Command::new("docker");
     #[cfg(target_os = "windows")]
     cmd.creation_flags(CREATE_NO_WINDOW);

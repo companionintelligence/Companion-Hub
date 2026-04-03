@@ -16,6 +16,7 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
     let stop_hub = MenuItem::with_id(app, "stop_hub", "Stop Hub", false, None::<&str>)?;
     let sep2 = PredefinedMenuItem::separator(app)?;
     let open_portal = MenuItem::with_id(app, "open_portal", "Open Portal", true, None::<&str>)?;
+    let view_logs = MenuItem::with_id(app, "view_logs", "View Logs", true, None::<&str>)?;
     let sep3 = PredefinedMenuItem::separator(app)?;
     let status = MenuItem::with_id(app, "status", "Status: Checking…", false, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
@@ -23,7 +24,7 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
     let menu = Menu::with_items(app, &[
         &show_hide, &sep1,
         &start_hub, &stop_hub, &sep2,
-        &open_portal, &sep3,
+        &open_portal, &view_logs, &sep3,
         &status, &quit,
     ])?;
 
@@ -106,14 +107,14 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                 tauri::async_runtime::spawn(async move {
                     let _ = crate::hub_manager::stop_hub(&compose, &env);
                     // Also stop managed app containers
-                    if let Ok(output) = std::process::Command::new("docker")
+                    if let Ok(output) = crate::hub_manager::docker_command()
                         .args(["ps", "-q", "--filter", "label=ci-hub.managed"])
                         .output()
                     {
                         let ids = String::from_utf8_lossy(&output.stdout);
                         let ids: Vec<&str> = ids.split_whitespace().collect();
                         if !ids.is_empty() {
-                            let mut cmd = std::process::Command::new("docker");
+                            let mut cmd = crate::hub_manager::docker_command();
                             cmd.arg("stop");
                             for id in ids {
                                 cmd.arg(id);
@@ -125,6 +126,19 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
             }
             "open_portal" => {
                 let _ = app.shell().open("https://portal.companionintelligence.com", None::<tauri_plugin_shell::open::Program>);
+            }
+            "view_logs" => {
+                let log_dir = crate::hub_manager::get_hub_data_dir().join("logs");
+                // Create log dir if it doesn't exist
+                let _ = std::fs::create_dir_all(&log_dir);
+                let init_log = log_dir.join("init.log");
+                if init_log.exists() {
+                    // Open the log file with the system default text editor
+                    let _ = app.shell().open(init_log.to_string_lossy().to_string(), None::<tauri_plugin_shell::open::Program>);
+                } else {
+                    // Open the logs directory in the file explorer
+                    let _ = app.shell().open(log_dir.to_string_lossy().to_string(), None::<tauri_plugin_shell::open::Program>);
+                }
             }
             "quit" => {
                 app.exit(0);
