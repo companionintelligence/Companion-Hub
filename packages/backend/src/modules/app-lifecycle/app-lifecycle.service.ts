@@ -144,7 +144,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
 
   async installApp(params: { appUrn: AppUrn; form: unknown; skipRun?: boolean }) {
     const { appUrn, form, skipRun } = params;
-    const { demoMode, version, architecture } = this.config.getConfig();
+    const { demoMode, version, architecture, skipCloudDownload } = this.config.getConfig();
 
     this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'installing' });
 
@@ -152,7 +152,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
     const { appStoreId, appName } = extractAppUrn(appUrn);
     const store = await this.appStoreService.getAppStoreBySlug(appStoreId);
 
-    if (store && store.type === 'ci_cloud_api') {
+    if (store && store.type === 'ci_cloud_api' && !skipCloudDownload) {
       try {
         const result = await this.repoHelpers.downloadAppFiles(store.url, store.slug, appName);
         if (!result.success) {

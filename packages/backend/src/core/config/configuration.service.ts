@@ -53,6 +53,10 @@ const envSchema = z.object({
   MAX_BACKUPS: z.coerce.number().default(0),
   // Experimental flags
   EXPERIMENTAL_INSECURE_COOKIE: z.string().transform((val) => val.toLowerCase() === 'true'),
+  SKIP_CLOUD_DOWNLOAD: z
+    .string()
+    .transform((val) => val.toLowerCase() === 'true')
+    .optional(),
 });
 
 @Injectable()
@@ -186,6 +190,7 @@ export class ConfigurationService {
       internalIp: env.data.INTERNAL_IP,
       jwtSecret: env.data.JWT_SECRET,
       __prod__: NODE_ENV === 'production',
+      skipCloudDownload: env.data.SKIP_CLOUD_DOWNLOAD,
     };
   }
 
