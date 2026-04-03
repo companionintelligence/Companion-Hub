@@ -267,7 +267,7 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf)
         let hub_version = option_env!("CI_HUB_BUILD_VERSION").unwrap_or("4.7.0");
         
         // Hub container image — use the Portal registry for the target environment
-        let hub_image = format!("portal.{}/ci-os-hub:latest", domain);
+        let hub_image = match option_env!("CI_HUB_DOMAIN").unwrap_or("dev") { "ci.computer" => "ghcr.io/companionintelligence/ci-hub:latest".to_string(), "companionintel.com" => "ghcr.io/companionintelligence/ci-hub:staging".to_string(), _ => "ghcr.io/companionintelligence/ci-hub:dev".to_string(), };
 
         let env_content = format!(
             "ROOT_FOLDER_HOST={data_dir}\n\
