@@ -74,12 +74,11 @@ services:
       timeout: 5s
       retries: 15
     volumes:
-      # Critical app data — named volume, survives container recreation
-      - ci_hub_app_data:/app-data
       # Data directories — bind mounts from host (require ROOT_FOLDER_HOST)
       - ${ROOT_FOLDER_HOST:-.internal}/media:/data/media
       # Allow Hub to configure Tunnel
       - ./tunnel:/app/tunnel
+      - ${ROOT_FOLDER_HOST:-.internal}/app-data:/app-data
       - ${ROOT_FOLDER_HOST:-.internal}/state:/data/state
       - ${ROOT_FOLDER_HOST:-.internal}/repos:/data/repos
       - ${ROOT_FOLDER_HOST:-.internal}/apps:/data/apps
@@ -215,7 +214,5 @@ networks:
 volumes:
   ci_hub_pgdata:
     name: ci_hub_pgdata
-  ci_hub_app_data:
-    name: ci_hub_app_data
   hub_tailscale_state:
     name: hub_tailscale_state
