@@ -49,15 +49,7 @@ services:
     # Set DOCKER_PLATFORM=linux/amd64 for Linux production (AMD64 build, slower on Mac due to emulation)
     platform: ${DOCKER_PLATFORM:-linux/amd64}
     privileged: true
-    build:
-      context: .
-      dockerfile: Dockerfile
-      args:
-        CI_HUB_VERSION: ${CI_HUB_VERSION:-4.5.0}
-        CI_CLOUD_URL: ${CI_CLOUD_URL:-}
-        LOCAL: ${LOCAL:-false}
-        TARGETARCH: ${TARGETARCH:-amd64}
-        DOCKER_PLATFORM: ${DOCKER_PLATFORM:-linux/amd64}
+    image: ghcr.io/companionintelligence/ci-os-hub:nightly
     depends_on:
       ci-hub-db:
         condition: service_healthy

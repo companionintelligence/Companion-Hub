@@ -15,6 +15,102 @@ function getTauriInvoke(): ((cmd: string) => Promise<unknown>) | null {
   return null;
 }
 
+function detectPlatform(): 'windows' | 'macos' | 'linux' {
+  const ua = navigator.userAgent.toLowerCase();
+  if (ua.includes('win')) return 'windows';
+  if (ua.includes('mac')) return 'macos';
+  return 'linux';
+}
+
+function isAppleSilicon(): boolean {
+  // navigator.userAgentData?.architecture is 'arm' on Apple Silicon
+  const uad = (navigator as unknown as { userAgentData?: { architecture?: string } }).userAgentData;
+  return uad?.architecture === 'arm';
+}
+
+function DockerInstallGuide() {
+  const platform = detectPlatform();
+
+  if (platform === 'windows') {
+    return (
+      <>
+        <h1 className="text-2xl font-semibold text-foreground">Docker Desktop Required</h1>
+        <div className="text-center max-w-md text-muted-foreground space-y-3">
+          <p>Companion Hub requires Docker Desktop to run.</p>
+          <ol className="text-left list-decimal list-inside space-y-1">
+            <li>Download Docker Desktop for Windows</li>
+            <li>Run the installer and follow the prompts</li>
+            <li>Restart your computer if prompted</li>
+            <li>Start Docker Desktop</li>
+            <li>Come back here — the Hub will start automatically</li>
+          </ol>
+          <a
+            href="https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+          >
+            Download Docker Desktop
+          </a>
+          <p className="text-xs text-muted-foreground/70">
+            Docker Desktop requires Windows 10/11 with WSL2 enabled. If you see &quot;WSL2 is not installed&quot;, run{' '}
+            <code className="bg-muted px-1 rounded">wsl --install</code> in PowerShell as admin.
+          </p>
+        </div>
+      </>
+    );
+  }
+
+  if (platform === 'macos') {
+    const dmgUrl = isAppleSilicon() ? 'https://desktop.docker.com/mac/main/arm64/Docker.dmg' : 'https://desktop.docker.com/mac/main/amd64/Docker.dmg';
+    return (
+      <>
+        <h1 className="text-2xl font-semibold text-foreground">Docker Desktop Required</h1>
+        <div className="text-center max-w-md text-muted-foreground space-y-3">
+          <p>Companion Hub requires Docker Desktop to run.</p>
+          <ol className="text-left list-decimal list-inside space-y-1">
+            <li>Download Docker Desktop for Mac</li>
+            <li>Open the .dmg and drag Docker to Applications</li>
+            <li>Launch Docker Desktop and grant permissions</li>
+            <li>Come back here — the Hub will start automatically</li>
+          </ol>
+          <a
+            href={dmgUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+          >
+            Download Docker Desktop
+          </a>
+        </div>
+      </>
+    );
+  }
+
+  // Linux
+  return (
+    <>
+      <h1 className="text-2xl font-semibold text-foreground">Docker Engine Required</h1>
+      <div className="text-center max-w-md text-muted-foreground space-y-3">
+        <p>Companion Hub requires Docker to run.</p>
+        <div className="text-left bg-muted rounded-md p-3 text-sm font-mono">
+          <p>curl -fsSL https://get.docker.com | sh</p>
+          <p>sudo usermod -aG docker $USER</p>
+        </div>
+        <p className="text-sm">Then log out and back in, and restart this application.</p>
+        <a
+          href="https://docs.docker.com/engine/install/"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+        >
+          View Docker Install Guide
+        </a>
+      </div>
+    </>
+  );
+}
+
 export function HubStatus({ children }: HubStatusProps) {
   const [status, setStatus] = useState<HubStatusResponse | null>(null);
   const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
@@ -113,18 +209,7 @@ export function HubStatus({ children }: HubStatusProps) {
     <div className="flex min-h-screen flex-col items-center justify-center gap-6 bg-background p-8">
       <img src="/icons/favicon-96x96.png" alt="Companion Hub" className="h-16 w-16 opacity-50" />
 
-      {status === 'DockerNotAvailable' && (
-        <>
-          <h1 className="text-2xl font-semibold text-foreground">Docker Required</h1>
-          <p className="text-center max-w-md text-muted-foreground">
-            Docker is required to run Companion Hub. Please{' '}
-            <a href="https://www.docker.com/products/docker-desktop/" target="_blank" rel="noopener noreferrer" className="underline text-primary">
-              install Docker Desktop
-            </a>{' '}
-            and restart this application.
-          </p>
-        </>
-      )}
+      {status === 'DockerNotAvailable' && <DockerInstallGuide />}
 
       {status === 'Stopped' && (
         <>
