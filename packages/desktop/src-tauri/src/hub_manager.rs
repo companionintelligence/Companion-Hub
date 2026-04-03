@@ -262,6 +262,13 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf)
             data_dir.to_string_lossy().to_string()
         };
 
+        let domain = option_env!("CI_HUB_DOMAIN").unwrap_or("companionintelligence.com");
+        let cloud_url = option_env!("CI_HUB_CLOUD_URL").unwrap_or("https://portal.companionintelligence.com");
+        let hub_version = option_env!("CI_HUB_BUILD_VERSION").unwrap_or("4.7.0");
+        
+        // Hub container image — use the Portal registry for the target environment
+        let hub_image = format!("portal.{}/ci-os-hub:latest", domain);
+
         let env_content = format!(
             "ROOT_FOLDER_HOST={data_dir}\n\
              POSTGRES_PASSWORD=postgres\n\
@@ -270,6 +277,7 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf)
              DOMAIN={domain}\n\
              CI_CLOUD_URL={cloud_url}\n\
              CI_HUB_VERSION={hub_version}\n\
+             CI_HUB_IMAGE={hub_image}\n\
              LOG_LEVEL=info\n\
              LOCAL=false\n\
              NODE_ENV=production\n\
@@ -277,9 +285,10 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf)
              ENV_FILE=.env\n",
             data_dir = data_dir_str,
             secret = secret,
-            domain = option_env!("CI_HUB_DOMAIN").unwrap_or("companionintelligence.com"),
-            cloud_url = option_env!("CI_HUB_CLOUD_URL").unwrap_or("https://portal.companionintelligence.com"),
-            hub_version = option_env!("CI_HUB_BUILD_VERSION").unwrap_or("4.7.0"),
+            domain = domain,
+            cloud_url = cloud_url,
+            hub_version = hub_version,
+            hub_image = hub_image,
         );
 
         std::fs::write(&env_path, env_content)

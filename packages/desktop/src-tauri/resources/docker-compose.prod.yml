@@ -49,7 +49,7 @@ services:
     # Set DOCKER_PLATFORM=linux/amd64 for Linux production (AMD64 build, slower on Mac due to emulation)
     platform: ${DOCKER_PLATFORM:-linux/amd64}
     privileged: true
-    image: ghcr.io/companionintelligence/ci-os-hub:nightly
+    image: ${CI_HUB_IMAGE:-ghcr.io/companionintelligence/ci-os-hub:nightly}
     depends_on:
       ci-hub-db:
         condition: service_healthy
