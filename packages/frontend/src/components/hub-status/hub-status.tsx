@@ -23,9 +23,16 @@ function detectPlatform(): 'windows' | 'macos' | 'linux' {
 }
 
 function isAppleSilicon(): boolean {
-  // navigator.userAgentData?.architecture is 'arm' on Apple Silicon
-  const uad = (navigator as unknown as { userAgentData?: { architecture?: string } }).userAgentData;
-  return uad?.architecture === 'arm';
+  // navigator.userAgentData.architecture is not available in WKWebView/Safari (Tauri's macOS webview)
+  // Fall back to checking User-Agent and platform
+  try {
+    const uad = (navigator as unknown as { userAgentData?: { architecture?: string } }).userAgentData;
+    if (uad?.architecture) return uad.architecture === 'arm';
+    // Fallback: check for arm64/aarch64 in UA or assume Apple Silicon on modern Macs
+    return /arm64|aarch64/i.test(navigator.userAgent) || /Mac/.test(navigator.platform);
+  } catch {
+    return true; // Default to Apple Silicon (more common on new Macs)
+  }
 }
 
 function DockerInstallGuide() {
