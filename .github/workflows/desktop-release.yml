@@ -127,7 +127,7 @@ jobs:
 
       # ── macOS Code Signing ──────────────────────────────────────────
       - name: Import Apple certificate
-        if: runner.os == 'macOS' && env.APPLE_CERTIFICATE != ''
+        if: runner.os == 'macOS' && secrets.APPLE_CERTIFICATE != ''
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -145,18 +145,18 @@ jobs:
 
       - name: Build Tauri app
         env:
-          # macOS signing — Tauri reads these automatically
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # macOS signing — Tauri reads these automatically (only meaningful on macOS)
+          APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_ID: ${{ runner.os == 'macOS' && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ runner.os == 'macOS' && secrets.APPLE_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ runner.os == 'macOS' && secrets.APPLE_TEAM_ID || '' }}
         run: |
           cd packages/desktop
           npx --yes @tauri-apps/cli@2 build --target ${{ matrix.target }} -c '{"bundle":{"createUpdaterArtifacts":false}}'
 
       # ── macOS Notarization ──────────────────────────────────────────
       - name: Notarize macOS DMG
-        if: runner.os == 'macOS' && env.APPLE_ID != ''
+        if: runner.os == 'macOS' && secrets.APPLE_ID != ''
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
@@ -177,7 +177,7 @@ jobs:
 
       # ── Windows Code Signing (Azure Trusted Signing) ────────────────
       - name: Sign Windows artifacts
-        if: runner.os == 'Windows' && env.AZURE_TENANT_ID != ''
+        if: runner.os == 'Windows' && secrets.AZURE_TENANT_ID != ''
         uses: azure/trusted-signing-action@v0.5.0
         with:
           azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
