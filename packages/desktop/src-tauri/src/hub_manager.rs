@@ -263,7 +263,6 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf)
             data_dir.to_string_lossy().to_string()
         };
 
-        let domain = option_env!("CI_HUB_DOMAIN").unwrap_or("companionintelligence.com");
         let cloud_url = option_env!("CI_HUB_CLOUD_URL").unwrap_or("https://portal.companionintelligence.com");
         let hub_version = option_env!("CI_HUB_BUILD_VERSION").unwrap_or("4.7.0");
         
