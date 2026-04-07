@@ -15,6 +15,12 @@ jobs:
     runs-on: [self-hosted, ci-core]
     timeout-minutes: 15
 
+    env:
+      HUB_URL: http://localhost:5002
+      APP_URL: http://localhost:7100
+      HUB_USERNAME: admin@core1hub.local
+      HUB_PASSWORD: CIComputer2026!
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -51,20 +57,50 @@ jobs:
           docker network ls --filter "name=ci-e2e-test-app" --format "{{.Name}}" | xargs -r docker network rm || true
 
       - name: Install dependencies
-        run: npm ci
+        run: bun install
+
+      - name: Install Playwright browsers
+        run: bunx playwright install --with-deps chromium
+
+      - name: Install test app via Hub API
+        run: |
+          # Login
+          curl -sf -X POST http://localhost:5002/api/auth/login \
+            -H "Content-Type: application/json" \
+            -d '{"username":"${{ env.HUB_USERNAME }}","password":"${{ env.HUB_PASSWORD }}"}' \
+            -c /tmp/e2e-cookies.txt
+
+          # Install
+          curl -sf -X POST "http://localhost:5002/api/app-lifecycle/ci-e2e-test-app:ci-marketplace/install" \
+            -H "Content-Type: application/json" \
+            -b /tmp/e2e-cookies.txt \
+            -d '{"E2E_TEXT_FIELD":"hello-e2e","E2E_PASSWORD":"secret123","E2E_EMAIL":"e2e@test.com","E2E_NUMBER":"42","E2E_URL":"https://example.com","E2E_BOOLEAN":"true"}'
+
+          # Wait for running
+          for i in $(seq 1 60); do
+            sleep 5
+            STATUS=$(docker ps --filter "name=ci-e2e-test-app" --filter "status=running" --format "{{.Names}}" | wc -l)
+            echo "Running containers: $STATUS"
+            [ "$STATUS" -ge 5 ] && break
+          done
 
       - name: Run Playwright platform tests
-        run: npx playwright test e2e/platform/ --reporter=html
-        env:
-          HUB_URL: http://localhost:3000
-          APP_URL: http://localhost:7100
+        run: bunx playwright test e2e/platform/ --reporter=html
 
       - name: Cleanup
         if: always()
         run: |
+          # Uninstall via API (best-effort)
+          curl -sf -X POST http://localhost:5002/api/auth/login \
+            -H "Content-Type: application/json" \
+            -d '{"username":"${{ env.HUB_USERNAME }}","password":"${{ env.HUB_PASSWORD }}"}' \
+            -c /tmp/e2e-cookies.txt || true
+          curl -sf -X DELETE "http://localhost:5002/api/app-lifecycle/ci-e2e-test-app:ci-marketplace/uninstall" \
+            -b /tmp/e2e-cookies.txt || true
+          sleep 10
           docker ps -a --filter "name=ci-e2e-test-app" --format "{{.Names}}" | xargs -r docker rm -f || true
           docker network ls --filter "name=ci-e2e-test-app" --format "{{.Name}}" | xargs -r docker network rm || true
-          rm -f /tmp/ci-hub-e2e.lock
+          rm -f /tmp/ci-hub-e2e.lock /tmp/e2e-cookies.txt
 
       - name: Upload Playwright report
         if: failure()

@@ -11,10 +11,10 @@ import { expect, type APIRequestContext } from '@playwright/test';
 const execAsync = promisify(exec);
 
 export const APP_ID = 'ci-e2e-test-app';
-export const APP_STORE = 'test';
+export const APP_STORE = 'ci-marketplace';
 export const APP_URN = `${APP_ID}:${APP_STORE}`;
 export const APP_PORT = 7100;
-export const BASE_URL = process.env.HUB_URL || 'http://localhost:3000';
+export const BASE_URL = process.env.HUB_URL || 'http://localhost:5002';
 export const APP_URL = process.env.APP_URL || `http://localhost:${APP_PORT}`;
 
 export const FORM_DEFAULTS = {
@@ -27,19 +27,29 @@ export const FORM_DEFAULTS = {
 };
 
 /**
+ * Login to the Hub API (required before install/uninstall)
+ */
+export async function login(request: APIRequestContext) {
+  const username = process.env.HUB_USERNAME || 'admin@core1hub.local';
+  const password = process.env.HUB_PASSWORD || 'CIComputer2026!';
+  const res = await request.post(`${BASE_URL}/api/auth/login`, {
+    data: { username, password },
+  });
+  expect(res.ok(), `Login failed: ${res.status()}`).toBeTruthy();
+}
+
+/**
  * Install the test app via Hub API
  */
 export async function installApp(request: APIRequestContext) {
-  const res = await request.post(`${BASE_URL}/api/apps/${APP_URN}/install`, {
+  const res = await request.post(`${BASE_URL}/api/app-lifecycle/${APP_URN}/install`, {
     data: {
-      form: {
-        E2E_TEXT_FIELD: FORM_DEFAULTS.E2E_TEXT_FIELD,
-        E2E_PASSWORD: FORM_DEFAULTS.E2E_PASSWORD,
-        E2E_EMAIL: FORM_DEFAULTS.E2E_EMAIL,
-        E2E_NUMBER: FORM_DEFAULTS.E2E_NUMBER,
-        E2E_URL: FORM_DEFAULTS.E2E_URL,
-        E2E_BOOLEAN: FORM_DEFAULTS.E2E_BOOLEAN,
-      },
+      E2E_TEXT_FIELD: FORM_DEFAULTS.E2E_TEXT_FIELD,
+      E2E_PASSWORD: FORM_DEFAULTS.E2E_PASSWORD,
+      E2E_EMAIL: FORM_DEFAULTS.E2E_EMAIL,
+      E2E_NUMBER: FORM_DEFAULTS.E2E_NUMBER,
+      E2E_URL: FORM_DEFAULTS.E2E_URL,
+      E2E_BOOLEAN: FORM_DEFAULTS.E2E_BOOLEAN,
     },
   });
   expect(res.ok(), `Install failed: ${res.status()} ${await res.text()}`).toBeTruthy();
@@ -50,7 +60,7 @@ export async function installApp(request: APIRequestContext) {
  * Uninstall the test app via Hub API
  */
 export async function uninstallApp(request: APIRequestContext) {
-  const res = await request.post(`${BASE_URL}/api/apps/${APP_URN}/uninstall`);
+  const res = await request.delete(`${BASE_URL}/api/app-lifecycle/${APP_URN}/uninstall`);
   expect(res.ok(), `Uninstall failed: ${res.status()} ${await res.text()}`).toBeTruthy();
   return res.json();
 }
