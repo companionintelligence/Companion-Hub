@@ -3,6 +3,7 @@
 
 mod discovery;
 pub mod hub_manager;
+pub mod port_manager;
 mod tray;
 
 use tauri::Manager;

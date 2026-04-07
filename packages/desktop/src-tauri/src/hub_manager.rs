@@ -123,8 +123,28 @@ pub fn hub_containers_exist() -> bool {
         .unwrap_or(false)
 }
 
-/// Start Hub using docker compose up
+/// Start Hub using docker compose up (with port conflict resolution)
 pub fn start_hub(compose_path: &Path, env_path: &Path, _data_dir: &Path) -> Result<String, String> {
+    // Resolve port conflicts and write to .env before starting
+    let resolution = crate::port_manager::refresh_ports_if_needed(env_path)?;
+
+    // Log warnings and info
+    let log_path = _data_dir.join("logs").join("port-resolution.log");
+    let mut log_lines = vec![format!(
+        "[{}] Port resolution:",
+        chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+    )];
+    for w in &resolution.warnings {
+        log_lines.push(format!("  WARN: {}", w));
+    }
+    for i in &resolution.info {
+        log_lines.push(format!("  INFO: {}", i));
+    }
+    for (var, port) in &resolution.env_vars {
+        log_lines.push(format!("  {}={}", var, port));
+    }
+    let _ = std::fs::write(&log_path, log_lines.join("\n") + "\n");
+
     let output = docker_command()
         .args([
             "compose",
