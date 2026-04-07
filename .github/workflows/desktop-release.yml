@@ -21,6 +21,14 @@ on:
           - dev
           - staging
           - production
+      platforms:
+        description: "Platforms to build"
+        required: false
+        default: "all"
+        type: choice
+        options:
+          - all
+          - macos-only
 
 concurrency:
   group: desktop-release
@@ -28,6 +36,7 @@ concurrency:
 
 jobs:
   build:
+    if: ${{ inputs.platforms == 'all' || startsWith(matrix.label, 'macOS') }}
     strategy:
       fail-fast: false
       matrix:
@@ -146,13 +155,20 @@ jobs:
           security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
           rm certificate.p12
 
-      - name: Build Tauri app
+      - name: Build Tauri app (signed)
+        if: runner.os == 'macOS' && env.APPLE_SIGNING_CONFIGURED
         env:
           # macOS signing — Tauri reads these automatically (only meaningful on macOS)
-          APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && secrets.APPLE_SIGNING_IDENTITY || '' }}
-          APPLE_ID: ${{ runner.os == 'macOS' && secrets.APPLE_ID || '' }}
-          APPLE_PASSWORD: ${{ runner.os == 'macOS' && secrets.APPLE_PASSWORD || '' }}
-          APPLE_TEAM_ID: ${{ runner.os == 'macOS' && secrets.APPLE_TEAM_ID || '' }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          cd packages/desktop
+          npx --yes @tauri-apps/cli@2 build --target ${{ matrix.target }} -c '{"bundle":{"createUpdaterArtifacts":false}}'
+
+      - name: Build Tauri app
+        if: runner.os != 'macOS' || env.APPLE_SIGNING_CONFIGURED != 'true'
         run: |
           cd packages/desktop
           npx --yes @tauri-apps/cli@2 build --target ${{ matrix.target }} -c '{"bundle":{"createUpdaterArtifacts":false}}'
