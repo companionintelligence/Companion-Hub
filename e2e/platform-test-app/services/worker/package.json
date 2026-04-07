@@ -1,0 +1,8 @@
+{
+  "name": "ci-e2e-test-app-worker",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "pg": "^8.13.0"
+  }
+}
