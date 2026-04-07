@@ -51,6 +51,9 @@ jobs:
     name: Build — ${{ matrix.label }}
     runs-on: ${{ matrix.platform }}
     timeout-minutes: 45
+    env:
+      APPLE_SIGNING_CONFIGURED: ${{ secrets.APPLE_CERTIFICATE != '' && 'true' || '' }}
+      WINDOWS_SIGNING_CONFIGURED: ${{ secrets.AZURE_TENANT_ID != '' && 'true' || '' }}
 
     steps:
       - name: Checkout
@@ -127,7 +130,7 @@ jobs:
 
       # ── macOS Code Signing ──────────────────────────────────────────
       - name: Import Apple certificate
-        if: runner.os == 'macOS' && secrets.APPLE_CERTIFICATE != ''
+        if: runner.os == 'macOS' && env.APPLE_SIGNING_CONFIGURED
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -156,7 +159,7 @@ jobs:
 
       # ── macOS Notarization ──────────────────────────────────────────
       - name: Notarize macOS DMG
-        if: runner.os == 'macOS' && secrets.APPLE_ID != ''
+        if: runner.os == 'macOS' && env.APPLE_SIGNING_CONFIGURED
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
@@ -177,7 +180,7 @@ jobs:
 
       # ── Windows Code Signing (Azure Trusted Signing) ────────────────
       - name: Sign Windows artifacts
-        if: runner.os == 'Windows' && secrets.AZURE_TENANT_ID != ''
+        if: runner.os == 'Windows' && env.WINDOWS_SIGNING_CONFIGURED
         uses: azure/trusted-signing-action@v0.5.0
         with:
           azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
