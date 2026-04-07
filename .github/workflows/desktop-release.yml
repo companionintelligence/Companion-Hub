@@ -19,6 +19,7 @@ on:
         type: choice
         options:
           - dev
+          - staging
           - production
 
 concurrency:
@@ -114,16 +115,83 @@ jobs:
             echo "CI_HUB_DOMAIN=ci.computer" >> $GITHUB_ENV
             echo "CI_HUB_CLOUD_URL=https://portal.ci.computer" >> $GITHUB_ENV
             echo "CI_HUB_BUILD_VERSION=4.7.0" >> $GITHUB_ENV
+          elif [ "${{ inputs.environment }}" = "staging" ]; then
+            echo "CI_HUB_DOMAIN=companionintel.com" >> $GITHUB_ENV
+            echo "CI_HUB_CLOUD_URL=https://portal.companionintel.com" >> $GITHUB_ENV
+            echo "CI_HUB_BUILD_VERSION=4.7.0" >> $GITHUB_ENV
           else
             echo "CI_HUB_DOMAIN=companionintelligence.com" >> $GITHUB_ENV
             echo "CI_HUB_CLOUD_URL=https://portal.companionintelligence.com" >> $GITHUB_ENV
             echo "CI_HUB_BUILD_VERSION=4.7.0" >> $GITHUB_ENV
           fi
 
+      # ── macOS Code Signing ──────────────────────────────────────────
+      - name: Import Apple certificate
+        if: runner.os == 'macOS' && secrets.APPLE_CERTIFICATE != ''
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          echo "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          KEYCHAIN_PASSWORD=$(openssl rand -hex 24)
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import certificate.p12 -k "$KEYCHAIN_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
+          rm certificate.p12
+
       - name: Build Tauri app
+        env:
+          # macOS signing — Tauri reads these automatically (only meaningful on macOS)
+          APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_ID: ${{ runner.os == 'macOS' && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ runner.os == 'macOS' && secrets.APPLE_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ runner.os == 'macOS' && secrets.APPLE_TEAM_ID || '' }}
         run: |
           cd packages/desktop
           npx --yes @tauri-apps/cli@2 build --target ${{ matrix.target }} -c '{"bundle":{"createUpdaterArtifacts":false}}'
+
+      # ── macOS Notarization ──────────────────────────────────────────
+      - name: Notarize macOS DMG
+        if: runner.os == 'macOS' && secrets.APPLE_ID != ''
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        shell: bash
+        run: |
+          DMG_PATH=$(find packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/dmg -name "*.dmg" | head -1)
+          if [ -n "$DMG_PATH" ]; then
+            echo "Notarizing $DMG_PATH..."
+            xcrun notarytool submit "$DMG_PATH" \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" \
+              --wait --timeout 600
+            xcrun stapler staple "$DMG_PATH"
+            echo "✅ Notarization complete"
+          fi
+
+      # ── Windows Code Signing (Azure Trusted Signing) ────────────────
+      - name: Sign Windows artifacts
+        if: runner.os == 'Windows' && secrets.AZURE_TENANT_ID != ''
+        uses: azure/trusted-signing-action@v0.5.0
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_CERTIFICATE_PROFILE }}
+          files-folder: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle
+          files-folder-filter: exe,msi
+          files-folder-depth: 3
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
 
       - name: Collect release artifacts
         id: artifacts
@@ -190,7 +258,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag }}
-          name: "Companion Hub Desktop ${{ inputs.tag }}${{ inputs.environment == 'production' && '' || ' (dev)' }}"
+          name: "Companion Hub Desktop ${{ inputs.tag }}${{ inputs.environment == 'production' && '' || format(' ({0})', inputs.environment) }}"
           prerelease: ${{ inputs.prerelease }}
           generate_release_notes: true
           files: release-files/*
