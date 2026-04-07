@@ -17,11 +17,13 @@ async function run() {
       await client.connect();
       break;
     } catch {
-      console.log(`Waiting for Postgres... (${i + 1}/30)`);
-      await new Promise(r => setTimeout(r, 2000));
+      await new Promise((r) => setTimeout(r, 2000));
     }
   }
-  if (!client) { console.error('Failed to connect to Postgres'); process.exit(1); }
+  if (!client) {
+    console.error('Failed to connect to Postgres');
+    process.exit(1);
+  }
 
   await client.query(`
     CREATE TABLE IF NOT EXISTS worker_heartbeats (
@@ -29,18 +31,19 @@ async function run() {
       created_at TIMESTAMPTZ DEFAULT NOW()
     )
   `);
-  console.log('Table ready, starting heartbeat loop');
 
   setInterval(async () => {
     try {
       await client.query('INSERT INTO worker_heartbeats DEFAULT VALUES');
       // Prune old rows to prevent unbounded growth
       await client.query("DELETE FROM worker_heartbeats WHERE created_at < NOW() - INTERVAL '5 minutes'");
-      console.log(`Heartbeat at ${new Date().toISOString()}`);
     } catch (err) {
       console.error('Heartbeat error:', err.message);
     }
   }, 5000);
 }
 
-run().catch(err => { console.error(err); process.exit(1); });
+run().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

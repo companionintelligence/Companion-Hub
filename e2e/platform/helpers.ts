@@ -84,15 +84,15 @@ export async function waitForRunning(timeoutMs = 120_000) {
 
   while (Date.now() - start < timeoutMs) {
     try {
-      const { stdout } = await execAsync(
-        `docker ps --filter "name=ci-e2e-test-app" --filter "status=running" --format "{{.Names}}"`
-      );
+      const { stdout } = await execAsync(`docker ps --filter "name=ci-e2e-test-app" --filter "status=running" --format "{{.Names}}"`);
       const running = stdout.trim().split('\n').filter(Boolean);
-      if (expected.every(name => running.some(r => r.includes(name)))) {
+      if (expected.every((name) => running.some((r) => r.includes(name)))) {
         return running;
       }
-    } catch {}
-    await new Promise(r => setTimeout(r, 3000));
+    } catch {
+      /* ignored */
+    }
+    await new Promise((r) => setTimeout(r, 3000));
   }
   throw new Error(`Timeout waiting for containers after ${timeoutMs}ms`);
 }
@@ -101,9 +101,7 @@ export async function waitForRunning(timeoutMs = 120_000) {
  * Count running containers for the test app
  */
 export async function countContainers(): Promise<number> {
-  const { stdout } = await execAsync(
-    `docker ps --filter "name=ci-e2e-test-app" --filter "status=running" --format "{{.Names}}"`
-  );
+  const { stdout } = await execAsync(`docker ps --filter "name=ci-e2e-test-app" --filter "status=running" --format "{{.Names}}"`);
   return stdout.trim().split('\n').filter(Boolean).length;
 }
 
@@ -122,12 +120,12 @@ export async function buildImages() {
  */
 export async function cleanupContainers() {
   try {
-    const { stdout } = await execAsync(
-      `docker ps -a --filter "name=ci-e2e-test-app" --format "{{.Names}}"`
-    );
+    const { stdout } = await execAsync(`docker ps -a --filter "name=ci-e2e-test-app" --format "{{.Names}}"`);
     const names = stdout.trim().split('\n').filter(Boolean);
     if (names.length > 0) {
       await execAsync(`docker rm -f ${names.join(' ')}`);
     }
-  } catch {}
+  } catch {
+    /* ignored */
+  }
 }

@@ -26,7 +26,7 @@ test.describe('Web UI', () => {
     await page.goto(APP_URL);
     const imgLoaded = await page.evaluate(() => {
       const img = document.getElementById('logo') as HTMLImageElement;
-      return img && img.complete && img.naturalWidth > 0;
+      return img?.complete && img.naturalWidth > 0;
     });
     expect(imgLoaded).toBe(true);
   });

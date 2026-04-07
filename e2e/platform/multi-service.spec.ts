@@ -26,7 +26,7 @@ test.describe('Multi-Service Communication', () => {
 
   test('worker heartbeats are recent (within 30s)', async ({ request }) => {
     // Allow worker time to write at least one heartbeat
-    await new Promise(r => setTimeout(r, 10_000));
+    await new Promise((r) => setTimeout(r, 10_000));
 
     const res = await request.get(`${APP_URL}/api/worker-status`);
     expect(res.ok()).toBeTruthy();

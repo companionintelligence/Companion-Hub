@@ -1,6 +1,6 @@
 const express = require('express');
-const path = require('path');
-const fs = require('fs');
+const path = require('node:path');
+const fs = require('node:fs');
 const { Client } = require('pg');
 const { createClient } = require('redis');
 
@@ -54,7 +54,11 @@ app.get('/api/db-check', async (_req, res) => {
     await client.end();
     res.json({ ok: true, rows: Number(result.rows[0].count) });
   } catch (err) {
-    try { await client.end(); } catch {}
+    try {
+      await client.end();
+    } catch {
+      /* ignored */
+    }
     res.status(500).json({ ok: false, error: err.message });
   }
 });
@@ -69,7 +73,11 @@ app.get('/api/redis-check', async (_req, res) => {
     await redis.quit();
     res.json({ ok: true, written: ts, read: val, match: ts === val });
   } catch (err) {
-    try { await redis.quit(); } catch {}
+    try {
+      await redis.quit();
+    } catch {
+      /* ignored */
+    }
     res.status(500).json({ ok: false, error: err.message });
   }
 });
@@ -84,14 +92,16 @@ app.get('/api/worker-status', async (_req, res) => {
   });
   try {
     await client.connect();
-    const result = await client.query(
-      "SELECT MAX(created_at) as latest FROM worker_heartbeats WHERE created_at > NOW() - INTERVAL '30 seconds'"
-    );
+    const result = await client.query("SELECT MAX(created_at) as latest FROM worker_heartbeats WHERE created_at > NOW() - INTERVAL '30 seconds'");
     await client.end();
     const latest = result.rows[0].latest;
     res.json({ ok: !!latest, latest });
   } catch (err) {
-    try { await client.end(); } catch {}
+    try {
+      await client.end();
+    } catch {
+      /* ignored */
+    }
     res.status(500).json({ ok: false, error: err.message });
   }
 });
@@ -148,4 +158,6 @@ app.get(/^(?!\/api|\/static).*/, (_req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, '0.0.0.0', () => console.log(`E2E test app listening on :${PORT}`));
+app.listen(PORT, '0.0.0.0', () => {
+  /* server started */
+});

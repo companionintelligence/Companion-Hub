@@ -14,19 +14,21 @@ import { buildImages } from './helpers';
 
 const execAsync = promisify(exec);
 
-test.describe.serial('Platform E2E Suite', () => {
-  test('build test app Docker images', async () => {
-    test.setTimeout(120_000);
+test.describe
+  .serial('Platform E2E Suite', () => {
+    test('build test app Docker images', async () => {
+      test.setTimeout(120_000);
 
-    // Check if images already exist
-    try {
-      const { stdout } = await execAsync('docker images ci-e2e-test-app-web:latest --format "{{.ID}}"');
-      if (stdout.trim()) {
-        console.log('Images already built, skipping');
-        return;
+      // Check if images already exist
+      try {
+        const { stdout } = await execAsync('docker images ci-e2e-test-app-web:latest --format "{{.ID}}"');
+        if (stdout.trim()) {
+          return;
+        }
+      } catch {
+        /* ignored */
       }
-    } catch {}
 
-    await buildImages();
+      await buildImages();
+    });
   });
-});

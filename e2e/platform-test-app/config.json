@@ -21,6 +21,14 @@
     { "type": "url", "label": "Test URL", "env_variable": "E2E_URL", "default": "https://example.com", "required": false },
     { "type": "boolean", "label": "Test Boolean", "env_variable": "E2E_BOOLEAN", "default": true, "required": false },
     { "type": "random", "label": "Random Hex Key", "env_variable": "E2E_RANDOM_HEX", "min": 32, "max": 32, "encoding": "hex", "required": false },
-    { "type": "random", "label": "Random Base64 Key", "env_variable": "E2E_RANDOM_B64", "min": 24, "max": 24, "encoding": "base64", "required": false }
+    {
+      "type": "random",
+      "label": "Random Base64 Key",
+      "env_variable": "E2E_RANDOM_B64",
+      "min": 24,
+      "max": 24,
+      "encoding": "base64",
+      "required": false
+    }
   ]
 }
