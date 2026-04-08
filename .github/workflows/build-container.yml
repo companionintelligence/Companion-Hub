@@ -16,6 +16,12 @@ on:
           - dev
           - staging
           - production
+  workflow_call:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        type: string
 
 jobs:
   deploy:

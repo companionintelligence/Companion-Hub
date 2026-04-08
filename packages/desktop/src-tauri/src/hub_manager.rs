@@ -274,6 +274,15 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf)
             _ => "ghcr.io/companionintelligence/ci-hub:dev",
         }.to_string();
 
+        // Resolve Docker config path for the host OS
+        let docker_config_path = dirs::home_dir()
+            .map(|h| h.join(".docker").join("config.json").to_string_lossy().to_string())
+            .unwrap_or_else(|| if cfg!(windows) {
+                "C:\\Users\\Public\\.docker\\config.json".to_string()
+            } else {
+                "/root/.docker/config.json".to_string()
+            });
+
         let env_content = format!(
             "ROOT_FOLDER_HOST={data_dir}\n\
              POSTGRES_PASSWORD=postgres\n\
@@ -283,6 +292,7 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf)
              CI_CLOUD_URL={cloud_url}\n\
              CI_HUB_VERSION={hub_version}\n\
              CI_HUB_IMAGE={hub_image}\n\
+             DOCKER_CONFIG_PATH={docker_config_path}\n\
              LOG_LEVEL=info\n\
              LOCAL=false\n\
              NODE_ENV=production\n\
@@ -294,6 +304,7 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf)
             cloud_url = cloud_url,
             hub_version = hub_version,
             hub_image = hub_image,
+            docker_config_path = docker_config_path,
         );
 
         std::fs::write(&env_path, env_content)
@@ -301,6 +312,22 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf)
     } else {
         // Existing .env — ensure CI_HUB_IMAGE is present (upgrades from older versions)
         let existing = std::fs::read_to_string(&env_path).unwrap_or_default();
+        // Ensure DOCKER_CONFIG_PATH is present (upgrades from older versions)
+        if !existing.contains("DOCKER_CONFIG_PATH=") {
+            let docker_config_path = dirs::home_dir()
+                .map(|h| h.join(".docker").join("config.json").to_string_lossy().to_string())
+                .unwrap_or_else(|| if cfg!(windows) {
+                    "C:\\Users\\Public\\.docker\\config.json".to_string()
+                } else {
+                    "/root/.docker/config.json".to_string()
+                });
+            let append = format!("DOCKER_CONFIG_PATH={}\n", docker_config_path);
+            let mut file = std::fs::OpenOptions::new().append(true).open(&env_path)
+                .map_err(|e| format!("Failed to append to .env: {}", e))?;
+            std::io::Write::write_all(&mut file, append.as_bytes())
+                .map_err(|e| format!("Failed to write DOCKER_CONFIG_PATH: {}", e))?;
+        }
+
         if !existing.contains("CI_HUB_IMAGE=") {
             let hub_image = match domain {
                 "ci.computer" => "ghcr.io/companionintelligence/ci-hub:latest",

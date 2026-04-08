@@ -32,7 +32,15 @@ concurrency:
   group: desktop-release
   cancel-in-progress: false
 jobs:
+  build-container:
+    name: Build Hub Container
+    uses: ./.github/workflows/build-container.yml
+    with:
+      environment: ${{ inputs.environment }}
+    secrets: inherit
+
   build:
+    needs: build-container
     strategy:
       fail-fast: false
       matrix:
