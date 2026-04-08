@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { Window } from '@tauri-apps/api/window';
 
 export function Titlebar() {
@@ -6,6 +6,7 @@ export function Titlebar() {
   const [isMaximized, setIsMaximized] = useState(false);
   const [appWindow, setAppWindow] = useState<Window | null>(null);
   const [isMac, setIsMac] = useState(false);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (!('__TAURI_INTERNALS__' in window)) return;
@@ -31,8 +32,21 @@ export function Titlebar() {
         const win = mod.getCurrentWindow();
         setAppWindow(win);
         win.isMaximized().then(setIsMaximized);
+        // Debounce isMaximized checks on Windows/Linux — calling isMaximized()
+        // with decorations:false can be expensive. On macOS this is handled
+        // natively via titleBarStyle: overlay so no onResized listener needed.
+        win.onResized(() => {
+          if (debounceRef.current) clearTimeout(debounceRef.current);
+          debounceRef.current = setTimeout(() => {
+            win.isMaximized().then(setIsMaximized);
+          }, 150);
+        });
       })
       .catch(console.warn);
+
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
   }, []);
 
   // On macOS with titleBarStyle: overlay, the native traffic lights handle
