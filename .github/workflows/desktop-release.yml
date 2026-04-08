@@ -122,15 +122,15 @@ jobs:
           if [ "${{ inputs.environment }}" = "production" ]; then
             echo "CI_HUB_DOMAIN=ci.computer" >> $GITHUB_ENV
             echo "CI_HUB_CLOUD_URL=https://portal.ci.computer" >> $GITHUB_ENV
-            echo "CI_HUB_BUILD_VERSION=4.7.0" >> $GITHUB_ENV
+            echo "CI_HUB_BUILD_VERSION=${{ inputs.tag }}" >> $GITHUB_ENV
           elif [ "${{ inputs.environment }}" = "staging" ]; then
             echo "CI_HUB_DOMAIN=companionintel.com" >> $GITHUB_ENV
             echo "CI_HUB_CLOUD_URL=https://portal.companionintel.com" >> $GITHUB_ENV
-            echo "CI_HUB_BUILD_VERSION=4.7.0" >> $GITHUB_ENV
+            echo "CI_HUB_BUILD_VERSION=${{ inputs.tag }}" >> $GITHUB_ENV
           else
             echo "CI_HUB_DOMAIN=companionintelligence.com" >> $GITHUB_ENV
             echo "CI_HUB_CLOUD_URL=https://portal.companionintelligence.com" >> $GITHUB_ENV
-            echo "CI_HUB_BUILD_VERSION=4.7.0" >> $GITHUB_ENV
+            echo "CI_HUB_BUILD_VERSION=${{ inputs.tag }}" >> $GITHUB_ENV
           fi
       # ── macOS Code Signing ──────────────────────────────────────────
       - name: Import Apple certificate
