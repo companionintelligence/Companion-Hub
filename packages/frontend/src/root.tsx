@@ -50,7 +50,7 @@ client.interceptors.response.use(async (res) => {
 // Cross-origin credentials ('include') are blocked by browsers when the server
 // responds with Access-Control-Allow-Origin: * — so we use 'omit' in Tauri mode.
 const isTauriRelease = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window && !window.location.origin.startsWith('http://localhost');
-const credentialMode: RequestCredentials = 'include';
+const credentialMode: RequestCredentials = isTauriRelease ? 'omit' : 'include';
 
 client.setConfig({
   credentials: credentialMode,

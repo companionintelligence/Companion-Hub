@@ -11,82 +11,89 @@ export function Titlebar() {
     if (!('__TAURI_INTERNALS__' in window)) return;
     setIsTauri(true);
 
-    // Set CSS custom property for other components to offset from the titlebar
-    document.documentElement.style.setProperty('--titlebar-height', '40px');
+    import('@tauri-apps/plugin-os')
+      .then((mod) => mod.type())
+      .then((os) => {
+        const mac = os === 'macos';
+        setIsMac(mac);
+        // On macOS we use native titleBarStyle: overlay — no custom titlebar needed.
+        // Only set the CSS offset for the overlay traffic lights area.
+        if (mac) {
+          document.documentElement.style.setProperty('--titlebar-height', '28px');
+        } else {
+          document.documentElement.style.setProperty('--titlebar-height', '40px');
+        }
+      })
+      .catch(console.warn);
 
     import('@tauri-apps/api/window')
       .then((mod) => {
         const win = mod.getCurrentWindow();
         setAppWindow(win);
         win.isMaximized().then(setIsMaximized);
-        win.onResized(() => {
-          win.isMaximized().then(setIsMaximized);
-        });
       })
-      .catch(console.warn);
-
-    import('@tauri-apps/plugin-os')
-      .then((mod) => mod.type())
-      .then((os) => setIsMac(os === 'macos'))
       .catch(console.warn);
   }, []);
 
-  if (!isTauri || !appWindow) return null;
+  // On macOS with titleBarStyle: overlay, the native traffic lights handle
+  // minimize/maximize/close. We only need a transparent spacer for layout offset.
+  if (!isTauri) return null;
+  if (isMac) {
+    return <div className="h-7 w-full" data-tauri-drag-region />;
+  }
 
-  const controls = (
-    <div className="flex h-full">
-      <button
-        type="button"
-        aria-label="Minimize window"
-        onClick={() => appWindow.minimize()}
-        className="inline-flex h-full w-[46px] items-center justify-center hover:bg-black/5 dark:hover:bg-white/10"
-      >
-        <svg width="10" height="1" viewBox="0 0 10 1" aria-hidden="true" focusable="false">
-          <title>Minimize</title>
-          <path d="M0 0.5h10" stroke="currentColor" strokeWidth="1" />
-        </svg>
-      </button>
-      <button
-        type="button"
-        aria-label={isMaximized ? 'Restore window' : 'Maximize window'}
-        onClick={() => appWindow.toggleMaximize()}
-        className="inline-flex h-full w-[46px] items-center justify-center hover:bg-black/5 dark:hover:bg-white/10"
-      >
-        {isMaximized ? (
-          <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true" focusable="false">
-            <title>Restore</title>
-            <rect x="2.5" y="0.5" width="7" height="7" stroke="currentColor" fill="none" strokeWidth="1" />
-            <rect x="0.5" y="2.5" width="7" height="7" stroke="currentColor" fill="none" strokeWidth="1" />
-          </svg>
-        ) : (
-          <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true" focusable="false">
-            <title>Maximize</title>
-            <rect x="0.5" y="0.5" width="9" height="9" stroke="currentColor" fill="none" strokeWidth="1" />
-          </svg>
-        )}
-      </button>
-      <button
-        type="button"
-        aria-label="Close window"
-        onClick={() => appWindow.close()}
-        className="inline-flex h-full w-[46px] items-center justify-center hover:bg-[#c42b1c] hover:text-white"
-      >
-        <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true" focusable="false">
-          <title>Close</title>
-          <path d="M1 1L9 9M9 1L1 9" stroke="currentColor" strokeWidth="1.2" />
-        </svg>
-      </button>
-    </div>
-  );
+  // Windows/Linux: custom titlebar with window controls
+  if (!appWindow) return null;
 
   return (
-    <div className="flex h-10 select-none border-b bg-background" data-tauri-drag-region>
-      {isMac ? controls : null}
+    <div className="flex h-10 select-none border-b bg-background">
       <div className="flex flex-1 items-center gap-2 px-3" data-tauri-drag-region>
-        <img src="/icons/favicon-96x96.png" alt="CI Hub" className="h-5 w-5" />
-        <span className="text-sm font-medium text-foreground">Companion Hub</span>
+        <img src="/icons/favicon-96x96.png" alt="CI Hub" className="h-5 w-5 pointer-events-none" />
+        <span className="text-sm font-medium text-foreground pointer-events-none">Companion Hub</span>
       </div>
-      {isMac ? null : controls}
+      <div className="flex h-full">
+        <button
+          type="button"
+          aria-label="Minimize window"
+          onClick={() => appWindow.minimize()}
+          className="inline-flex h-full w-[46px] items-center justify-center hover:bg-black/5 dark:hover:bg-white/10"
+        >
+          <svg width="10" height="1" viewBox="0 0 10 1" aria-hidden="true" focusable="false">
+            <title>Minimize</title>
+            <path d="M0 0.5h10" stroke="currentColor" strokeWidth="1" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          aria-label={isMaximized ? 'Restore window' : 'Maximize window'}
+          onClick={() => appWindow.toggleMaximize()}
+          className="inline-flex h-full w-[46px] items-center justify-center hover:bg-black/5 dark:hover:bg-white/10"
+        >
+          {isMaximized ? (
+            <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true" focusable="false">
+              <title>Restore</title>
+              <rect x="2.5" y="0.5" width="7" height="7" stroke="currentColor" fill="none" strokeWidth="1" />
+              <rect x="0.5" y="2.5" width="7" height="7" stroke="currentColor" fill="none" strokeWidth="1" />
+            </svg>
+          ) : (
+            <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true" focusable="false">
+              <title>Maximize</title>
+              <rect x="0.5" y="0.5" width="9" height="9" stroke="currentColor" fill="none" strokeWidth="1" />
+            </svg>
+          )}
+        </button>
+        <button
+          type="button"
+          aria-label="Close window"
+          onClick={() => appWindow.close()}
+          className="inline-flex h-full w-[46px] items-center justify-center hover:bg-[#c42b1c] hover:text-white"
+        >
+          <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true" focusable="false">
+            <title>Close</title>
+            <path d="M1 1L9 9M9 1L1 9" stroke="currentColor" strokeWidth="1.2" />
+          </svg>
+        </button>
+      </div>
     </div>
   );
 }

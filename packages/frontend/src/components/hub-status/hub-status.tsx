@@ -155,7 +155,7 @@ export function HubStatus({ children }: HubStatusProps) {
                 signal: AbortSignal.timeout(2000),
               });
               if (res.ok) {
-                client.setConfig({ baseUrl: `http://localhost:${port}`, credentials: 'include' });
+                client.setConfig({ baseUrl: `http://localhost:${port}`, credentials: 'omit' });
                 break;
               }
             } catch {
