@@ -105,6 +105,7 @@ services:
       RABBITMQ_USERNAME: companion
       RABBITMQ_PASSWORD: admin
       RABBITMQ_HOST: ci-os-hub-queue
+      RABBITMQ_PORT: 5672
       INTERNAL_IP: ${INTERNAL_IP:-127.0.0.1}
       CI_HUB_VERSION: ${CI_HUB_VERSION:-4.5.0}
       LOG_LEVEL: ${LOG_LEVEL:-info}
