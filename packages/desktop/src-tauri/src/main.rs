@@ -70,8 +70,21 @@ pub fn run() {
                 .get_webview_window("main")
                 .ok_or("main window not found")?;
 
-            #[cfg(debug_assertions)]
-            window.open_devtools();
+            // macOS: config has decorations:true + titleBarStyle:Overlay which gives
+            // native traffic lights over the WebView content. Perfect.
+            //
+            // Windows/Linux: titleBarStyle:Overlay is macOS-only, and native decorations
+            // look wrong with our custom titlebar. Turn decorations off at runtime so
+            // the custom HTML titlebar takes over.
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = window.set_decorations(false);
+            }
+
+            // Devtools available via right-click → Inspect Element in debug builds
+            // but don't auto-open (blocks app interaction on macOS)
+            // #[cfg(debug_assertions)]
+            // window.open_devtools();
 
             if let Ok(store) = app.store("settings.json") {
                 if let Some(x) = store.get("window_x").and_then(|v: serde_json::Value| v.as_f64())
