@@ -54,6 +54,7 @@ jobs:
             label: Windows (x64)
     name: Build — ${{ matrix.label }}
     runs-on: ${{ matrix.platform }}
+    environment: ${{ inputs.environment }}
     timeout-minutes: 45
     env:
       APPLE_SIGNING_CONFIGURED: ${{ secrets.APPLE_CERTIFICATE != '' && 'true' || '' }}
