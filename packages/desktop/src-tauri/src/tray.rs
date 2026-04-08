@@ -125,7 +125,8 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                 });
             }
             "open_portal" => {
-                let _ = app.shell().open("https://portal.companionintelligence.com", None::<tauri_plugin_shell::open::Program>);
+                let portal_url = option_env!("CI_HUB_CLOUD_URL").unwrap_or("https://portal.companionintelligence.com");
+                let _ = app.shell().open(portal_url, None::<tauri_plugin_shell::open::Program>);
             }
             "view_logs" => {
                 let log_dir = crate::hub_manager::get_hub_data_dir().join("logs");
