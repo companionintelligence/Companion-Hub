@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { Window } from '@tauri-apps/api/window';
 
 export function Titlebar() {
@@ -6,6 +6,7 @@ export function Titlebar() {
   const [isMaximized, setIsMaximized] = useState(false);
   const [appWindow, setAppWindow] = useState<Window | null>(null);
   const [isMac, setIsMac] = useState(false);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (!('__TAURI_INTERNALS__' in window)) return;
@@ -19,8 +20,15 @@ export function Titlebar() {
         const win = mod.getCurrentWindow();
         setAppWindow(win);
         win.isMaximized().then(setIsMaximized);
+        // Debounce isMaximized checks — calling isMaximized() on macOS with
+        // decorations:false triggers an expensive synchronous setStyleMask
+        // round-trip in tao. Without debouncing, onResized fires per-pixel
+        // and creates a feedback loop that pins the CPU at 100%.
         win.onResized(() => {
-          win.isMaximized().then(setIsMaximized);
+          if (debounceRef.current) clearTimeout(debounceRef.current);
+          debounceRef.current = setTimeout(() => {
+            win.isMaximized().then(setIsMaximized);
+          }, 150);
         });
       })
       .catch(console.warn);
@@ -29,6 +37,10 @@ export function Titlebar() {
       .then((mod) => mod.type())
       .then((os) => setIsMac(os === 'macos'))
       .catch(console.warn);
+
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
   }, []);
 
   if (!isTauri || !appWindow) return null;
