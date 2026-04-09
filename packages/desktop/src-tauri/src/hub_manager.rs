@@ -413,14 +413,22 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf)
                 .map_err(|e| format!("Failed to append to .env: {}", e))?;
             std::io::Write::write_all(&mut file, append.as_bytes())
                 .map_err(|e| format!("Failed to write DOCKER_CONFIG_PATH: {}", e))?;
-        } else if existing.contains(".docker/config.json") {
-            // Fix existing installs that point at the host's Docker Desktop config
-            let fixed = existing.replace(
-                &format!("DOCKER_CONFIG_PATH={}", dirs::home_dir().map(|h| h.join(".docker").join("config.json").to_string_lossy().to_string()).unwrap_or_default()),
-                &format!("DOCKER_CONFIG_PATH={}", clean_docker_config),
-            );
-            std::fs::write(&env_path, fixed)
-                .map_err(|e| format!("Failed to fix DOCKER_CONFIG_PATH: {}", e))?;
+        } else {
+            // Always overwrite DOCKER_CONFIG_PATH to the clean config — the host's
+            // ~/.docker/config.json contains Docker Desktop context/credential settings
+            // that break inside the container.
+            let fixed_lines: Vec<String> = existing.lines().map(|l| {
+                if l.starts_with("DOCKER_CONFIG_PATH=") {
+                    format!("DOCKER_CONFIG_PATH={}", clean_docker_config)
+                } else {
+                    l.to_string()
+                }
+            }).collect();
+            let fixed = fixed_lines.join("\n") + "\n";
+            if fixed != existing {
+                std::fs::write(&env_path, fixed)
+                    .map_err(|e| format!("Failed to fix DOCKER_CONFIG_PATH: {}", e))?;
+            }
         }
 
         if !existing.contains("CI_HUB_IMAGE=") {
