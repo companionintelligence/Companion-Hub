@@ -127,19 +127,8 @@ jobs:
         if: env.BUILD_ENABLED
         shell: bash
         run: |
-          if [ "${{ inputs.environment }}" = "production" ]; then
-            echo "CI_HUB_DOMAIN=ci.computer" >> $GITHUB_ENV
-            echo "CI_HUB_CLOUD_URL=https://portal.ci.computer" >> $GITHUB_ENV
-            echo "CI_HUB_BUILD_VERSION=${{ inputs.tag }}" >> $GITHUB_ENV
-          elif [ "${{ inputs.environment }}" = "staging" ]; then
-            echo "CI_HUB_DOMAIN=companionintel.com" >> $GITHUB_ENV
-            echo "CI_HUB_CLOUD_URL=https://portal.companionintel.com" >> $GITHUB_ENV
-            echo "CI_HUB_BUILD_VERSION=${{ inputs.tag }}" >> $GITHUB_ENV
-          else
-            echo "CI_HUB_DOMAIN=companionintelligence.com" >> $GITHUB_ENV
-            echo "CI_HUB_CLOUD_URL=https://portal.companionintelligence.com" >> $GITHUB_ENV
-            echo "CI_HUB_BUILD_VERSION=${{ inputs.tag }}" >> $GITHUB_ENV
-          fi
+          echo "CI_HUB_ENVIRONMENT=${{ inputs.environment }}" >> $GITHUB_ENV
+          echo "CI_HUB_BUILD_VERSION=${{ inputs.tag }}" >> $GITHUB_ENV
       # ── macOS Code Signing ──────────────────────────────────────────
       - name: Import Apple certificate
         if: env.BUILD_ENABLED && runner.os == 'macOS' && env.APPLE_SIGNING_CONFIGURED
@@ -290,3 +279,152 @@ jobs:
             - Windows: Windows 10+ with WebView2 (ships with Windows 11)
             - macOS: macOS 11.0+
             - Linux: WebKitGTK 4.1
+
+  upload-r2:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: false
+
+      - name: Install wrangler
+        run: npm install -g wrangler
+
+      - name: Determine R2 bucket
+        id: bucket
+        run: |
+          case "${{ inputs.environment }}" in
+            production) echo "bucket=dl-prod" >> $GITHUB_OUTPUT ;;
+            staging)    echo "bucket=dl-staging" >> $GITHUB_OUTPUT ;;
+            *)          echo "bucket=dl-dev" >> $GITHUB_OUTPUT ;;
+          esac
+
+      - name: Upload artifacts to R2
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_R2_DL_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+        run: |
+          BUCKET="${{ steps.bucket.outputs.bucket }}"
+          VERSION="${{ inputs.tag }}"
+          SEMVER="${VERSION#v}"
+
+          upload() { wrangler r2 object put "$BUCKET/$1" --file "$2"; }
+
+          # macOS
+          for f in artifacts/release-aarch64-apple-darwin/*.dmg; do
+            [ -f "$f" ] && upload "$VERSION/macos/arm/$(basename $f)" "$f"
+          done
+          for f in artifacts/release-x86_64-apple-darwin/*.dmg; do
+            [ -f "$f" ] && upload "$VERSION/macos/intel/$(basename $f)" "$f"
+          done
+
+          # Windows
+          for f in artifacts/release-x86_64-pc-windows-msvc/*.msi; do
+            [ -f "$f" ] && upload "$VERSION/windows/x64/$(basename $f)" "$f"
+          done
+          for f in artifacts/release-x86_64-pc-windows-msvc/*-setup.exe; do
+            [ -f "$f" ] && upload "$VERSION/windows/x64/$(basename $f)" "$f"
+          done
+
+          # Linux x64
+          for f in artifacts/release-x86_64-unknown-linux-gnu/*.deb; do
+            [ -f "$f" ] && upload "$VERSION/linux/deb/x64/$(basename $f)" "$f"
+          done
+          for f in artifacts/release-x86_64-unknown-linux-gnu/*.rpm; do
+            [ -f "$f" ] && upload "$VERSION/linux/rpm/x64/$(basename $f)" "$f"
+          done
+          for f in artifacts/release-x86_64-unknown-linux-gnu/*.AppImage; do
+            [ -f "$f" ] && upload "$VERSION/linux/appimage/x64/$(basename $f)" "$f"
+          done
+
+          # Linux ARM64
+          for f in artifacts/release-aarch64-unknown-linux-gnu/*.deb; do
+            [ -f "$f" ] && upload "$VERSION/linux/deb/arm/$(basename $f)" "$f"
+          done
+          for f in artifacts/release-aarch64-unknown-linux-gnu/*.rpm; do
+            [ -f "$f" ] && upload "$VERSION/linux/rpm/arm/$(basename $f)" "$f"
+          done
+          for f in artifacts/release-aarch64-unknown-linux-gnu/*.AppImage; do
+            [ -f "$f" ] && upload "$VERSION/linux/appimage/arm/$(basename $f)" "$f"
+          done
+
+      - name: Generate and upload manifest.json
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_R2_DL_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+        run: |
+          BUCKET="${{ steps.bucket.outputs.bucket }}"
+          VERSION="${{ inputs.tag }}"
+          SEMVER="${VERSION#v}"
+          ENV="${{ inputs.environment }}"
+          DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+          case "$ENV" in
+            production) DL_DOMAIN="dl.ci.computer" ;;
+            staging)    DL_DOMAIN="dl.companionintel.com" ;;
+            *)          DL_DOMAIN="dl.companionintelligence.com" ;;
+          esac
+
+          # Build manifest from actual uploaded files
+          node -e "
+          const fs = require('fs');
+          const path = require('path');
+          const manifest = {
+            version: '$SEMVER',
+            environment: '$ENV',
+            date: '$DATE',
+            platforms: {}
+          };
+
+          const mappings = [
+            ['windows-x86_64', 'release-x86_64-pc-windows-msvc', { msi: '.msi', exe: '-setup.exe' }],
+            ['darwin-aarch64', 'release-aarch64-apple-darwin', { dmg: '.dmg' }],
+            ['darwin-x86_64', 'release-x86_64-apple-darwin', { dmg: '.dmg' }],
+            ['linux-x86_64', 'release-x86_64-unknown-linux-gnu', { deb: '.deb', rpm: '.rpm', appimage: '.AppImage' }],
+            ['linux-aarch64', 'release-aarch64-unknown-linux-gnu', { deb: '.deb', rpm: '.rpm', appimage: '.AppImage' }],
+          ];
+
+          for (const [platform, artifactDir, formats] of mappings) {
+            const dir = path.join('artifacts', artifactDir);
+            if (!fs.existsSync(dir)) continue;
+            const files = fs.readdirSync(dir);
+            const platformData = {};
+            for (const [fmt, ext] of Object.entries(formats)) {
+              const file = files.find(f => f.endsWith(ext));
+              if (file) {
+                const stat = fs.statSync(path.join(dir, file));
+                // Determine R2 path based on platform
+                let r2Path;
+                if (platform.startsWith('windows')) r2Path = 'windows/x64';
+                else if (platform === 'darwin-aarch64') r2Path = 'macos/arm';
+                else if (platform === 'darwin-x86_64') r2Path = 'macos/intel';
+                else if (platform === 'linux-x86_64') r2Path = fmt === 'appimage' ? 'linux/appimage/x64' : 'linux/' + fmt + '/x64';
+                else r2Path = fmt === 'appimage' ? 'linux/appimage/arm' : 'linux/' + fmt + '/arm';
+                platformData[fmt] = {
+                  url: 'https://$DL_DOMAIN/$VERSION/' + r2Path + '/' + file,
+                  size: stat.size,
+                };
+              }
+            }
+            if (Object.keys(platformData).length > 0) {
+              manifest.platforms[platform] = platformData;
+            }
+          }
+
+          fs.writeFileSync('/tmp/manifest.json', JSON.stringify(manifest, null, 2));
+          console.log(JSON.stringify(manifest, null, 2));
+          "
+
+          wrangler r2 object put "$BUCKET/$VERSION/manifest.json" --file /tmp/manifest.json
+
+      - name: Update latest.json
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_R2_DL_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+        run: |
+          BUCKET="${{ steps.bucket.outputs.bucket }}"
+          echo '{"version":"${{ inputs.tag }}","date":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' > /tmp/latest.json
+          wrangler r2 object put "$BUCKET/latest.json" --file /tmp/latest.json
