@@ -5,7 +5,7 @@ import { createArkDto } from 'nestjs-arktype';
 const metadataSchema = type({
   hasCustomConfig: 'boolean?',
   latestVersion: 'number',
-  minTipiVersion: type('string').or('null').optional(),
+  minHubVersion: type('string').or('null').optional(),
   latestDockerVersion: 'string?',
   composeSchemaVersion: 'number?',
 });

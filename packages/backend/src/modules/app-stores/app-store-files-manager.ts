@@ -192,7 +192,7 @@ export class AppStoreFilesManager {
       return {
         ...paths,
         latestVersion: config.tipi_version,
-        minTipiVersion: config.min_tipi_version ?? null,
+        minHubVersion: config.min_hub_version ?? null,
         latestDockerVersion: config.version,
       };
     }
@@ -200,7 +200,7 @@ export class AppStoreFilesManager {
     return {
       latestVersion: 0,
       latestDockerVersion: '0.0.0',
-      minTipiVersion: null,
+      minHubVersion: null,
       ...paths,
     };
   }
