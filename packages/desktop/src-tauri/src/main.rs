@@ -126,8 +126,12 @@ pub fn run() {
                 env_path: env_path.clone(),
             });
 
-            // Auto-start Hub on first launch if Docker is available
-            if hub_manager::is_docker_available() && !hub_manager::hub_containers_exist() {
+            // Auto-start Hub on launch if Docker is available.
+            // Always run docker compose up -d — it's idempotent: if nothing
+            // changed it's a no-op, but if .env or compose was updated by
+            // initialize_hub (e.g. DOCKER_CONFIG_PATH fix), containers get
+            // recreated with the corrected config.
+            if hub_manager::is_docker_available() {
                 let compose = compose_path;
                 let env = env_path;
                 let data = data_dir;
