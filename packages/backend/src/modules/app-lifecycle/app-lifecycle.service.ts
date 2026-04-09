@@ -6,8 +6,6 @@ import { SSEService } from '@/core/sse/sse.service';
 import { HttpStatus, Inject, Injectable, OnApplicationBootstrap } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type { AppUrn } from '@ci-hub/common/types';
-import { lt, valid } from 'semver';
-import semver from 'semver';
 import validator from 'validator';
 import { type } from 'arktype';
 import { AppFilesManager } from '../apps/app-files-manager';
@@ -144,7 +142,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
 
   async installApp(params: { appUrn: AppUrn; form: unknown; skipRun?: boolean }) {
     const { appUrn, form, skipRun } = params;
-    const { demoMode, version, architecture } = this.config.getConfig();
+    const { demoMode, architecture } = this.config.getConfig();
 
     this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'installing' });
 
@@ -739,10 +737,9 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn });
     }
 
-    const version = this.config.get('version');
-
-    const { minHubVersion } = await this.marketplaceService.getAppUpdateInfo(appUrn);
     // TODO: Re-enable version gating once Hub versioning is stable
+    // const version = this.config.get('version');
+    // const { minHubVersion } = await this.marketplaceService.getAppUpdateInfo(appUrn);
     // if (minHubVersion && semver.valid(version) && semver.lt(version, minHubVersion)) {
     //   throw new TranslatableError('APP_UPDATE_ERROR_MIN_HUB_VERSION', { id: appUrn, minVersion: minHubVersion });
     // }
