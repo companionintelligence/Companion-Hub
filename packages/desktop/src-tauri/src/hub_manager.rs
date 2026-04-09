@@ -8,10 +8,68 @@ use std::os::windows::process::CommandExt;
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 pub fn docker_command() -> Command {
-    let mut cmd = Command::new("docker");
+    let docker_path = find_docker_binary();
+    let mut cmd = Command::new(docker_path);
+    // Ensure common binary paths are in PATH for subprocesses (e.g. docker compose)
+    if let Ok(current_path) = std::env::var("PATH") {
+        let extra_paths = if cfg!(target_os = "macos") {
+            "/usr/local/bin:/opt/homebrew/bin:/Applications/Docker.app/Contents/Resources/bin"
+        } else if cfg!(target_os = "windows") {
+            ""
+        } else {
+            "/usr/local/bin:/usr/bin"
+        };
+        if !extra_paths.is_empty() {
+            cmd.env("PATH", format!("{}:{}", extra_paths, current_path));
+        }
+    }
     #[cfg(target_os = "windows")]
     cmd.creation_flags(CREATE_NO_WINDOW);
     cmd
+}
+
+/// Find the Docker binary, checking common install locations if not in PATH.
+fn find_docker_binary() -> PathBuf {
+    // Try PATH first
+    if let Ok(output) = Command::new("which").arg("docker").output() {
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !path.is_empty() && output.status.success() {
+            return PathBuf::from(path);
+        }
+    }
+
+    // Common macOS locations
+    #[cfg(target_os = "macos")]
+    {
+        let candidates = [
+            "/usr/local/bin/docker",
+            "/opt/homebrew/bin/docker",
+            "/Applications/Docker.app/Contents/Resources/bin/docker",
+        ];
+        for candidate in candidates {
+            if std::path::Path::new(candidate).exists() {
+                return PathBuf::from(candidate);
+            }
+        }
+    }
+
+    // Common Linux locations
+    #[cfg(target_os = "linux")]
+    {
+        let candidates = [
+            "/usr/local/bin/docker",
+            "/usr/bin/docker",
+            "/snap/bin/docker",
+        ];
+        for candidate in candidates {
+            if std::path::Path::new(candidate).exists() {
+                return PathBuf::from(candidate);
+            }
+        }
+    }
+
+    // Fallback — hope it's in PATH
+    PathBuf::from("docker")
 }
 
 /// Paths used by the Hub manager, stored in Tauri app state.
