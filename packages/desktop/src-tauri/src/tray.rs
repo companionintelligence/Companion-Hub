@@ -158,11 +158,13 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
     let status_ref = Arc::clone(&status_item);
     let start_ref = Arc::clone(&start_item);
     let stop_ref = Arc::clone(&stop_item);
+    let env_path_for_health = crate::hub_manager::get_hub_data_dir().join(".env");
     tauri::async_runtime::spawn(async move {
         loop {
-            // Try prod port first, then dev port
+            let api_port = crate::port_manager::read_api_port(&env_path_for_health);
+            // Try resolved port first, then dev port
             let ok = client
-                .get("http://localhost:5002/api/health")
+                .get(format!("http://localhost:{}/api/health", api_port))
                 .send()
                 .await
                 .map(|r| r.status().is_success())
