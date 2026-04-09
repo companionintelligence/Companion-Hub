@@ -126,18 +126,35 @@ pub fn run() {
                 env_path: env_path.clone(),
             });
 
-            // Auto-start Hub on launch if Docker is available.
-            // Always run docker compose up -d — it's idempotent: if nothing
-            // changed it's a no-op, but if .env or compose was updated by
-            // initialize_hub (e.g. DOCKER_CONFIG_PATH fix), containers get
-            // recreated with the corrected config.
+            // Hash-based reconciliation: only start/restart when config changed
+            // or containers don't exist. Respects user intent (stopped Hub stays stopped
+            // unless config changed on upgrade).
             if hub_manager::is_docker_available() {
-                let compose = compose_path;
-                let env = env_path;
-                let data = data_dir;
-                tauri::async_runtime::spawn(async move {
-                    let _ = hub_manager::start_hub(&compose, &env, &data);
-                });
+                let config_hash = compute_config_hash(&compose_path, &env_path);
+                let hash_path = data_dir.join(".config-hash");
+                let saved_hash = std::fs::read_to_string(&hash_path).ok();
+                let containers_exist = hub_manager::hub_containers_exist();
+
+                let should_start = if !containers_exist {
+                    true // First launch or user stopped Hub
+                } else if saved_hash.as_deref() != Some(&config_hash) {
+                    true // Config changed (upgrade, env fix, etc.)
+                } else {
+                    false // Containers exist, config unchanged — do nothing
+                };
+
+                if should_start {
+                    let compose = compose_path;
+                    let env = env_path;
+                    let data = data_dir;
+                    let hash = config_hash;
+                    let hp = hash_path;
+                    tauri::async_runtime::spawn(async move {
+                        if hub_manager::start_hub(&compose, &env, &data).is_ok() {
+                            let _ = std::fs::write(&hp, &hash);
+                        }
+                    });
+                }
             }
 
             Ok(())
@@ -149,6 +166,21 @@ pub fn run() {
     builder
         .run(tauri::generate_context!())
         .expect("error while running Companion Hub Desktop");
+}
+
+use sha2::{Sha256, Digest};
+
+/// Compute a SHA256 hash of the .env and compose file contents.
+/// Used for hash-based reconciliation — only restart containers when config changes.
+fn compute_config_hash(compose_path: &std::path::Path, env_path: &std::path::Path) -> String {
+    let mut hasher = Sha256::new();
+    if let Ok(content) = std::fs::read(compose_path) {
+        hasher.update(&content);
+    }
+    if let Ok(content) = std::fs::read(env_path) {
+        hasher.update(&content);
+    }
+    format!("{:x}", hasher.finalize())
 }
 
 fn main() {
