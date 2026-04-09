@@ -352,14 +352,16 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf)
             _ => "ghcr.io/companionintelligence/ci-hub:dev",
         }.to_string();
 
-        // Resolve Docker config path for the host OS
-        let docker_config_path = dirs::home_dir()
-            .map(|h| h.join(".docker").join("config.json").to_string_lossy().to_string())
-            .unwrap_or_else(|| if cfg!(windows) {
-                "C:\\Users\\Public\\.docker\\config.json".to_string()
-            } else {
-                "/root/.docker/config.json".to_string()
-            });
+        // Generate a clean Docker config for the Hub container.
+        // We can't mount the host's ~/.docker/config.json because Docker Desktop
+        // sets "currentContext": "desktop-linux" and "credsStore": "desktop" which
+        // don't exist inside the container, causing app installs to fail with:
+        // "unable to resolve docker endpoint: context desktop-linux not found"
+        let container_docker_config = data_dir.join(".docker-config.json");
+        if !container_docker_config.exists() {
+            let _ = std::fs::write(&container_docker_config, "{}\n");
+        }
+        let docker_config_path = container_docker_config.to_string_lossy().to_string();
 
         // Detect host architecture for Docker platform selection
         let docker_platform = if cfg!(target_arch = "aarch64") {
@@ -399,20 +401,26 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf)
     } else {
         // Existing .env — ensure CI_HUB_IMAGE is present (upgrades from older versions)
         let existing = std::fs::read_to_string(&env_path).unwrap_or_default();
-        // Ensure DOCKER_CONFIG_PATH is present (upgrades from older versions)
+        // Ensure DOCKER_CONFIG_PATH points to our clean config (upgrades from older versions)
+        let container_docker_config = data_dir.join(".docker-config.json");
+        if !container_docker_config.exists() {
+            let _ = std::fs::write(&container_docker_config, "{}\n");
+        }
+        let clean_docker_config = container_docker_config.to_string_lossy().to_string();
         if !existing.contains("DOCKER_CONFIG_PATH=") {
-            let docker_config_path = dirs::home_dir()
-                .map(|h| h.join(".docker").join("config.json").to_string_lossy().to_string())
-                .unwrap_or_else(|| if cfg!(windows) {
-                    "C:\\Users\\Public\\.docker\\config.json".to_string()
-                } else {
-                    "/root/.docker/config.json".to_string()
-                });
-            let append = format!("DOCKER_CONFIG_PATH={}\n", docker_config_path);
+            let append = format!("DOCKER_CONFIG_PATH={}\n", clean_docker_config);
             let mut file = std::fs::OpenOptions::new().append(true).open(&env_path)
                 .map_err(|e| format!("Failed to append to .env: {}", e))?;
             std::io::Write::write_all(&mut file, append.as_bytes())
                 .map_err(|e| format!("Failed to write DOCKER_CONFIG_PATH: {}", e))?;
+        } else if existing.contains(".docker/config.json") {
+            // Fix existing installs that point at the host's Docker Desktop config
+            let fixed = existing.replace(
+                &format!("DOCKER_CONFIG_PATH={}", dirs::home_dir().map(|h| h.join(".docker").join("config.json").to_string_lossy().to_string()).unwrap_or_default()),
+                &format!("DOCKER_CONFIG_PATH={}", clean_docker_config),
+            );
+            std::fs::write(&env_path, fixed)
+                .map_err(|e| format!("Failed to fix DOCKER_CONFIG_PATH: {}", e))?;
         }
 
         if !existing.contains("CI_HUB_IMAGE=") {
