@@ -341,6 +341,13 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf)
                 "/root/.docker/config.json".to_string()
             });
 
+        // Detect host architecture for Docker platform selection
+        let docker_platform = if cfg!(target_arch = "aarch64") {
+            "linux/arm64"
+        } else {
+            "linux/amd64"
+        };
+
         let env_content = format!(
             "ROOT_FOLDER_HOST={data_dir}\n\
              POSTGRES_PASSWORD=postgres\n\
@@ -351,6 +358,7 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf)
              CI_HUB_VERSION={hub_version}\n\
              CI_HUB_IMAGE={hub_image}\n\
              DOCKER_CONFIG_PATH={docker_config_path}\n\
+             DOCKER_PLATFORM={docker_platform}\n\
              LOG_LEVEL=info\n\
              LOCAL=false\n\
              NODE_ENV=production\n\
@@ -363,6 +371,7 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf)
             hub_version = hub_version,
             hub_image = hub_image,
             docker_config_path = docker_config_path,
+            docker_platform = docker_platform,
         );
 
         std::fs::write(&env_path, env_content)
@@ -399,7 +408,22 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf)
             std::io::Write::write_all(&mut file, append.as_bytes())
                 .map_err(|e| format!("Failed to write CI_HUB_IMAGE: {}", e))?;
         }
-    }
+
+        // Ensure DOCKER_PLATFORM is present (upgrades from older versions)
+        if !existing.contains("DOCKER_PLATFORM=") {
+            let docker_platform = if cfg!(target_arch = "aarch64") {
+                "linux/arm64"
+            } else {
+                "linux/amd64"
+            };
+            let append = format!("DOCKER_PLATFORM={}\n", docker_platform);
+            let mut file = std::fs::OpenOptions::new().append(true).open(&env_path)
+                .map_err(|e| format!("Failed to append to .env: {}", e))?;
+            std::io::Write::write_all(&mut file, append.as_bytes())
+                .map_err(|e| format!("Failed to write DOCKER_PLATFORM: {}", e))?;
+        }
+
+            }
 
     Ok((data_dir, compose_dst, env_path))
 }

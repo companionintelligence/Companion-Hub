@@ -88,7 +88,6 @@ export class ConfigurationService {
 
     // Backward compatibility: map legacy env var names to new names (new takes precedence)
     const legacyEnvMap: Record<string, string> = {
-      TIPI_VERSION: 'CI_HUB_VERSION',
       RUNTIPI_APP_DATA_PATH: 'CI_HUB_APP_DATA_PATH',
       RUNTIPI_FORWARD_AUTH_URL: 'CI_HUB_FORWARD_AUTH_URL',
     };

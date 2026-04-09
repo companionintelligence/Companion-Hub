@@ -70,7 +70,7 @@ export const appInfoSchema = z.object({
   uid: z.number().optional(),
   gid: z.number().optional(),
   dynamic_config: z.boolean().optional().default(true),
-  min_tipi_version: z.string().optional(),
+  min_hub_version: z.string().optional(),
   created_at: z
     .number()
     .int()
@@ -137,7 +137,7 @@ export const appInfoSchemaArk = type({
   uid: 'number?',
   gid: 'number?',
   dynamic_config: 'boolean = true',
-  min_tipi_version: 'string?',
+  min_hub_version: 'string?',
   created_at: type('number.integer >= 0')
     .narrow((v, ctx) => (v < Date.now() ? true : ctx.mustBe('a timestamp before now')))
     .default(0),

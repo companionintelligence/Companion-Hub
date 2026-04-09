@@ -273,7 +273,7 @@ export type MyAppsDto = {
             composeSchemaVersion?: number;
             hasCustomConfig?: boolean;
             latestDockerVersion?: string;
-            minTipiVersion?: string | null;
+            minHubVersion?: string | null;
         };
     }>;
 };
@@ -353,7 +353,7 @@ export type GuestAppsDto = {
             composeSchemaVersion?: number;
             hasCustomConfig?: boolean;
             latestDockerVersion?: string;
-            minTipiVersion?: string | null;
+            minHubVersion?: string | null;
         };
     }>;
 };
@@ -417,7 +417,7 @@ export type GetAppDto = {
         composeSchemaVersion?: number;
         hasCustomConfig?: boolean;
         latestDockerVersion?: string;
-        minTipiVersion?: string | null;
+        minHubVersion?: string | null;
     };
     app?: {
         domain: string | null;

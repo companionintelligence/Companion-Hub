@@ -282,7 +282,7 @@
   "APP_UNINSTALL_FORM_WARNING": "Weet u het zeker? Deze actie kan niet ongedaan worden gemaakt.",
   "APP_UNINSTALL_SUCCESS": "De {{id}} applicatie is met succes verwijderd",
   "APP_UPDATE_CONFIG_SUCCESS": "De Applicatie heeft de configuratie met succes bijgewerkt. Herstart de app voor de bijgewerkte versie te laden",
-  "APP_UPDATE_ERROR_MIN_TIPI_VERSION": "App {{id}} update requires Companion Hub version {{minVersion}} or higher. Please update your instance.",
+  "APP_UPDATE_ERROR_MIN_HUB_VERSION": "App {{id}} update requires Companion Hub version {{minVersion}} or higher. Please update your instance.",
   "APP_UPDATE_INFORMATION_TITLE": "Information",
   "APP_UPDATE_INFORMATION_SUBTITLE": "To update {{name}} to version <strong>{{version}}</strong>, follow the steps to review and apply the update.",
   "APP_UPDATE_CONFIGURATION_TITLE": "Configuration",

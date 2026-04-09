@@ -255,9 +255,12 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       }
     }
 
-    if (appInfo?.min_tipi_version && valid(version) && lt(version, appInfo.min_tipi_version)) {
-      throw new TranslatableError('APP_UPDATE_ERROR_MIN_TIPI_VERSION', { id: appUrn, minVersion: appInfo.min_tipi_version });
-    }
+    // TODO: Re-enable version gating once Hub versioning is stable
+    // Currently disabled during active development — Hub version scheme
+    // changed from Runtipi's 4.x to CI Hub's 0.x, breaking all app installs.
+    // if (appInfo?.min_hub_version && valid(version) && lt(version, appInfo.min_hub_version)) {
+    //   throw new TranslatableError('APP_UPDATE_ERROR_MIN_HUB_VERSION', { id: appUrn, minVersion: appInfo.min_hub_version });
+    // }
 
     const createdApp = await this.appRepository.createApp({
       appName,
@@ -738,10 +741,11 @@ export class AppLifecycleService implements OnApplicationBootstrap {
 
     const version = this.config.get('version');
 
-    const { minTipiVersion } = await this.marketplaceService.getAppUpdateInfo(appUrn);
-    if (minTipiVersion && semver.valid(version) && semver.lt(version, minTipiVersion)) {
-      throw new TranslatableError('APP_UPDATE_ERROR_MIN_TIPI_VERSION', { id: appUrn, minVersion: minTipiVersion });
-    }
+    const { minHubVersion } = await this.marketplaceService.getAppUpdateInfo(appUrn);
+    // TODO: Re-enable version gating once Hub versioning is stable
+    // if (minHubVersion && semver.valid(version) && semver.lt(version, minHubVersion)) {
+    //   throw new TranslatableError('APP_UPDATE_ERROR_MIN_HUB_VERSION', { id: appUrn, minVersion: minHubVersion });
+    // }
 
     await this.appRepository.updateAppById(app.id, { status: 'updating' });
 
