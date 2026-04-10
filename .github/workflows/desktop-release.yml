@@ -301,7 +301,7 @@ jobs:
           BUCKET="dl-prod"
           VERSION="${{ inputs.tag }}"
 
-          upload() { wrangler r2 object put "$BUCKET/$1" --file "$2"; }
+          upload() { wrangler r2 object put --remote "$BUCKET/$1" --file "$2"; }
 
           # macOS
           for f in artifacts/release-aarch64-apple-darwin/*.dmg; do
@@ -398,7 +398,7 @@ jobs:
           console.log(JSON.stringify(manifest, null, 2));
           "
 
-          wrangler r2 object put "$BUCKET/$VERSION/manifest.json" --file /tmp/manifest.json
+          wrangler r2 object put --remote "$BUCKET/$VERSION/manifest.json" --file /tmp/manifest.json
 
       - name: Update latest.json
         env:
@@ -406,4 +406,4 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
         run: |
           echo '{"version":"${{ inputs.tag }}","date":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' > /tmp/latest.json
-          wrangler r2 object put "dl-prod/latest.json" --file /tmp/latest.json
+          wrangler r2 object put --remote "dl-prod/latest.json" --file /tmp/latest.json
