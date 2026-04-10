@@ -283,6 +283,7 @@ jobs:
     if: inputs.environment == 'production'
     needs: release
     runs-on: ubuntu-latest
+    environment: production
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -305,40 +306,40 @@ jobs:
 
           # macOS
           for f in artifacts/release-aarch64-apple-darwin/*.dmg; do
-            [ -f "$f" ] && upload "$VERSION/macos/arm/$(basename $f)" "$f"
+            [ -f "$f" ] && upload "$VERSION/macos/arm/$(basename "$f")" "$f"
           done
           for f in artifacts/release-x86_64-apple-darwin/*.dmg; do
-            [ -f "$f" ] && upload "$VERSION/macos/intel/$(basename $f)" "$f"
+            [ -f "$f" ] && upload "$VERSION/macos/intel/$(basename "$f")" "$f"
           done
 
           # Windows
           for f in artifacts/release-x86_64-pc-windows-msvc/*.msi; do
-            [ -f "$f" ] && upload "$VERSION/windows/x64/$(basename $f)" "$f"
+            [ -f "$f" ] && upload "$VERSION/windows/x64/$(basename "$f")" "$f"
           done
           for f in artifacts/release-x86_64-pc-windows-msvc/*-setup.exe; do
-            [ -f "$f" ] && upload "$VERSION/windows/x64/$(basename $f)" "$f"
+            [ -f "$f" ] && upload "$VERSION/windows/x64/$(basename "$f")" "$f"
           done
 
           # Linux x64
           for f in artifacts/release-x86_64-unknown-linux-gnu/*.deb; do
-            [ -f "$f" ] && upload "$VERSION/linux/deb/x64/$(basename $f)" "$f"
+            [ -f "$f" ] && upload "$VERSION/linux/deb/x64/$(basename "$f")" "$f"
           done
           for f in artifacts/release-x86_64-unknown-linux-gnu/*.rpm; do
-            [ -f "$f" ] && upload "$VERSION/linux/rpm/x64/$(basename $f)" "$f"
+            [ -f "$f" ] && upload "$VERSION/linux/rpm/x64/$(basename "$f")" "$f"
           done
           for f in artifacts/release-x86_64-unknown-linux-gnu/*.AppImage; do
-            [ -f "$f" ] && upload "$VERSION/linux/appimage/x64/$(basename $f)" "$f"
+            [ -f "$f" ] && upload "$VERSION/linux/appimage/x64/$(basename "$f")" "$f"
           done
 
           # Linux ARM64
           for f in artifacts/release-aarch64-unknown-linux-gnu/*.deb; do
-            [ -f "$f" ] && upload "$VERSION/linux/deb/arm/$(basename $f)" "$f"
+            [ -f "$f" ] && upload "$VERSION/linux/deb/arm/$(basename "$f")" "$f"
           done
           for f in artifacts/release-aarch64-unknown-linux-gnu/*.rpm; do
-            [ -f "$f" ] && upload "$VERSION/linux/rpm/arm/$(basename $f)" "$f"
+            [ -f "$f" ] && upload "$VERSION/linux/rpm/arm/$(basename "$f")" "$f"
           done
           for f in artifacts/release-aarch64-unknown-linux-gnu/*.AppImage; do
-            [ -f "$f" ] && upload "$VERSION/linux/appimage/arm/$(basename $f)" "$f"
+            [ -f "$f" ] && upload "$VERSION/linux/appimage/arm/$(basename "$f")" "$f"
           done
 
       - name: Generate and upload manifest.json
