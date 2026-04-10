@@ -248,7 +248,61 @@ pub fn stop_hub(compose_path: &Path, env_path: &Path) -> Result<String, String> 
     }
 }
 
-/// Initialize Hub data directory and .env file
+/// Parse a .env file into a HashMap of key-value pairs.
+fn parse_env_file(path: &Path) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    if let Ok(content) = std::fs::read_to_string(path) {
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some((key, value)) = line.split_once('=') {
+                map.insert(key.trim().to_string(), value.trim().to_string());
+            }
+        }
+    }
+    map
+}
+
+/// Generate a random hex string of the given byte length.
+fn generate_hex(bytes: usize) -> String {
+    (0..bytes)
+        .map(|_| format!("{:02x}", rand::random::<u8>()))
+        .collect()
+}
+
+/// Determine the Hub container image tag from the domain.
+fn image_for_domain(domain: &str) -> &'static str {
+    match domain {
+        "ci.computer" => "ghcr.io/companionintelligence/ci-hub:latest",
+        "companionintel.com" => "ghcr.io/companionintelligence/ci-hub:staging",
+        _ => "ghcr.io/companionintelligence/ci-hub:dev",
+    }
+}
+
+/// Compute the data directory path string, handling Windows Docker Desktop paths.
+fn compute_data_dir_str(data_dir: &Path) -> String {
+    if cfg!(windows) {
+        let path = data_dir.to_string_lossy().to_string();
+        if path.len() >= 2 && path.chars().nth(1) == Some(':') {
+            let drive = path.chars().next().unwrap().to_lowercase().to_string();
+            format!("/{}{}", drive, path[2..].replace('\\', "/"))
+        } else {
+            path.replace('\\', "/")
+        }
+    } else {
+        data_dir.to_string_lossy().to_string()
+    }
+}
+
+/// Initialize Hub data directory and generate .env file.
+///
+/// Uses a regenerate-and-preserve approach:
+/// - Preserved values (read from existing .env, generated if missing): ROOT_FOLDER_HOST, JWT_SECRET, POSTGRES_PASSWORD
+/// - Derived values (always recomputed from the current binary): INTERNAL_IP, DOMAIN, CI_CLOUD_URL, CI_HUB_VERSION, CI_HUB_IMAGE, DOCKER_PLATFORM
+///
+/// Returns (data_dir, compose_path, env_path, env_changed).
 pub fn initialize_hub(resource_dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf), String> {
     let data_dir = get_hub_data_dir();
 
@@ -262,11 +316,9 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf)
     }
 
     // Copy docker-compose.prod.yml from resources
-    // Try multiple candidate paths — Tauri resource dir varies by platform and install method
     let compose_candidates = [
         resource_dir.join("docker-compose.prod.yml"),
         resource_dir.join("resources").join("docker-compose.prod.yml"),
-        // For dev builds, try relative to executable
         std::env::current_exe()
             .unwrap_or_default()
             .parent()
@@ -275,7 +327,6 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf)
             .join("docker-compose.prod.yml"),
     ];
 
-    // Log candidate paths for debugging
     let log_path = data_dir.join("logs").join("init.log");
     let mut log_lines = vec![format!(
         "[{}] initialize_hub: resource_dir = {:?}",
@@ -296,19 +347,74 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf)
 
     if let Some(src) = compose_src {
         log_lines.push(format!("  -> using: {:?}", src));
-        if !compose_dst.exists() {
-            std::fs::copy(src, &compose_dst)
-                .map_err(|e| format!("Failed to copy compose file: {}", e))?;
-            log_lines.push("  -> copied to data_dir".to_string());
-        } else {
-            // Always update compose file in case it changed
-            std::fs::copy(src, &compose_dst)
-                .map_err(|e| format!("Failed to update compose file: {}", e))?;
-            log_lines.push("  -> updated in data_dir".to_string());
-        }
+        std::fs::copy(src, &compose_dst)
+            .map_err(|e| format!("Failed to copy compose file: {}", e))?;
+        log_lines.push("  -> updated in data_dir".to_string());
     } else {
         log_lines.push("  -> WARNING: no compose file found in any candidate path!".to_string());
     }
+
+    // --- Regenerate .env with preserve-and-derive approach ---
+    let env_path = data_dir.join(".env");
+    let existing = parse_env_file(&env_path);
+
+    // Preserved values — read from existing, generate if missing
+    let root_folder_host = existing
+        .get("ROOT_FOLDER_HOST")
+        .cloned()
+        .unwrap_or_else(|| compute_data_dir_str(&data_dir));
+    let jwt_secret = existing
+        .get("JWT_SECRET")
+        .cloned()
+        .unwrap_or_else(|| generate_hex(64));
+    let postgres_password = existing
+        .get("POSTGRES_PASSWORD")
+        .cloned()
+        .unwrap_or_else(|| generate_hex(32));
+
+    // Derived values — always from current binary
+    let domain = option_env!("CI_HUB_DOMAIN").unwrap_or("companionintelligence.com");
+    let cloud_url = option_env!("CI_HUB_CLOUD_URL").unwrap_or("https://portal.companionintelligence.com");
+    let hub_version = option_env!("CI_HUB_BUILD_VERSION").unwrap_or("4.7.0");
+    let hub_image = image_for_domain(domain);
+    let docker_platform = if cfg!(target_arch = "aarch64") {
+        "linux/arm64"
+    } else {
+        "linux/amd64"
+    };
+
+    // Build .env content with deterministic key order
+    let env_content = format!(
+        "# Preserved (generated once, survive upgrades)\n\
+         ROOT_FOLDER_HOST={root_folder_host}\n\
+         JWT_SECRET={jwt_secret}\n\
+         POSTGRES_PASSWORD={postgres_password}\n\
+         \n\
+         # Derived (recomputed every launch from the current binary)\n\
+         INTERNAL_IP=0.0.0.0\n\
+         DOMAIN={domain}\n\
+         CI_CLOUD_URL={cloud_url}\n\
+         CI_HUB_VERSION={hub_version}\n\
+         CI_HUB_IMAGE={hub_image}\n\
+         DOCKER_PLATFORM={docker_platform}\n",
+        root_folder_host = root_folder_host,
+        jwt_secret = jwt_secret,
+        postgres_password = postgres_password,
+        domain = domain,
+        cloud_url = cloud_url,
+        hub_version = hub_version,
+        hub_image = hub_image,
+        docker_platform = docker_platform,
+    );
+
+    // Write .env (port manager will append dynamic port vars after this)
+    let old_content = std::fs::read_to_string(&env_path).unwrap_or_default();
+    // Strip port vars from old content for comparison (port manager manages those)
+    let env_changed = strip_port_vars(&old_content) != env_content;
+    std::fs::write(&env_path, &env_content)
+        .map_err(|e| format!("Failed to write .env: {}", e))?;
+
+    log_lines.push(format!("  .env changed: {}", env_changed));
 
     // Write init log (append)
     let _ = std::fs::OpenOptions::new()
@@ -320,151 +426,23 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf)
             writeln!(f, "{}", log_lines.join("\n"))
         });
 
-    // Generate .env if it doesn't exist
-    // Environment-based config: single CI_HUB_ENVIRONMENT flag drives domain + portal URL
-    let environment = option_env!("CI_HUB_ENVIRONMENT").unwrap_or("dev");
-    let (domain, cloud_url) = match environment {
-        "production" => ("ci.computer", "https://portal.ci.computer"),
-        "staging" => ("companionintel.com", "https://portal.companionintel.com"),
-        _ => ("companionintelligence.com", "https://portal.companionintelligence.com"),
-    };
-    let env_path = data_dir.join(".env");
-    if !env_path.exists() {
-        let secret: String = (0..64)
-            .map(|_| format!("{:02x}", rand::random::<u8>()))
-            .collect();
-
-        // On Windows with Docker Desktop, use /c/Users/... Linux-style path
-        let data_dir_str = if cfg!(windows) {
-            let path = data_dir.to_string_lossy().to_string();
-            if path.len() >= 2 && path.chars().nth(1) == Some(':') {
-                let drive = path.chars().next().unwrap().to_lowercase().to_string();
-                format!("/{}{}", drive, path[2..].replace('\\', "/"))
-            } else {
-                path.replace('\\', "/")
-            }
-        } else {
-            data_dir.to_string_lossy().to_string()
-        };
-
-        let hub_version = option_env!("CI_HUB_BUILD_VERSION").unwrap_or("4.7.0");
-        
-        // Hub container image from GHCR — tag matches the target environment
-        let hub_image = match domain {
-            "ci.computer" => "ghcr.io/companionintelligence/ci-hub:latest",
-            "companionintel.com" => "ghcr.io/companionintelligence/ci-hub:staging",
-            "companionintelligence.com" => "ghcr.io/companionintelligence/ci-hub:dev",
-            _ => "ghcr.io/companionintelligence/ci-hub:dev",
-        }.to_string();
-
-        // Generate a clean Docker config for the Hub container.
-        // We can't mount the host's ~/.docker/config.json because Docker Desktop
-        // sets "currentContext": "desktop-linux" and "credsStore": "desktop" which
-        // don't exist inside the container, causing app installs to fail with:
-        // "unable to resolve docker endpoint: context desktop-linux not found"
-        let container_docker_config = data_dir.join(".docker-config.json");
-        if !container_docker_config.exists() {
-            let _ = std::fs::write(&container_docker_config, "{}\n");
-        }
-        let docker_config_path = container_docker_config.to_string_lossy().to_string();
-
-        // Detect host architecture for Docker platform selection
-        let docker_platform = if cfg!(target_arch = "aarch64") {
-            "linux/arm64"
-        } else {
-            "linux/amd64"
-        };
-
-        let env_content = format!(
-            "ROOT_FOLDER_HOST={data_dir}\n\
-             POSTGRES_PASSWORD=postgres\n\
-             JWT_SECRET={secret}\n\
-             INTERNAL_IP=0.0.0.0\n\
-             DOMAIN={domain}\n\
-             CI_CLOUD_URL={cloud_url}\n\
-             CI_HUB_VERSION={hub_version}\n\
-             CI_HUB_IMAGE={hub_image}\n\
-             DOCKER_CONFIG_PATH={docker_config_path}\n\
-             DOCKER_PLATFORM={docker_platform}\n\
-             LOG_LEVEL=info\n\
-             LOCAL=false\n\
-             NODE_ENV=production\n\
-             EXPERIMENTAL_INSECURE_COOKIE=true\n\
-             ENV_FILE=.env\n",
-            data_dir = data_dir_str,
-            secret = secret,
-            domain = domain,
-            cloud_url = cloud_url,
-            hub_version = hub_version,
-            hub_image = hub_image,
-            docker_config_path = docker_config_path,
-            docker_platform = docker_platform,
-        );
-
-        std::fs::write(&env_path, env_content)
-            .map_err(|e| format!("Failed to write .env: {}", e))?;
-    } else {
-        // Existing .env — ensure CI_HUB_IMAGE is present (upgrades from older versions)
-        let existing = std::fs::read_to_string(&env_path).unwrap_or_default();
-        // Ensure DOCKER_CONFIG_PATH points to our clean config (upgrades from older versions)
-        let container_docker_config = data_dir.join(".docker-config.json");
-        if !container_docker_config.exists() {
-            let _ = std::fs::write(&container_docker_config, "{}\n");
-        }
-        let clean_docker_config = container_docker_config.to_string_lossy().to_string();
-        if !existing.contains("DOCKER_CONFIG_PATH=") {
-            let append = format!("DOCKER_CONFIG_PATH={}\n", clean_docker_config);
-            let mut file = std::fs::OpenOptions::new().append(true).open(&env_path)
-                .map_err(|e| format!("Failed to append to .env: {}", e))?;
-            std::io::Write::write_all(&mut file, append.as_bytes())
-                .map_err(|e| format!("Failed to write DOCKER_CONFIG_PATH: {}", e))?;
-        } else {
-            // Always overwrite DOCKER_CONFIG_PATH to the clean config — the host's
-            // ~/.docker/config.json contains Docker Desktop context/credential settings
-            // that break inside the container.
-            let fixed_lines: Vec<String> = existing.lines().map(|l| {
-                if l.starts_with("DOCKER_CONFIG_PATH=") {
-                    format!("DOCKER_CONFIG_PATH={}", clean_docker_config)
-                } else {
-                    l.to_string()
-                }
-            }).collect();
-            let fixed = fixed_lines.join("\n") + "\n";
-            if fixed != existing {
-                std::fs::write(&env_path, fixed)
-                    .map_err(|e| format!("Failed to fix DOCKER_CONFIG_PATH: {}", e))?;
-            }
-        }
-
-        if !existing.contains("CI_HUB_IMAGE=") {
-            let hub_image = match domain {
-                "ci.computer" => "ghcr.io/companionintelligence/ci-hub:latest",
-                "companionintel.com" => "ghcr.io/companionintelligence/ci-hub:staging",
-                "companionintelligence.com" => "ghcr.io/companionintelligence/ci-hub:dev",
-                _ => "ghcr.io/companionintelligence/ci-hub:dev",
-            };
-            let append = format!("CI_HUB_IMAGE={}\n", hub_image);
-            let mut file = std::fs::OpenOptions::new().append(true).open(&env_path)
-                .map_err(|e| format!("Failed to append to .env: {}", e))?;
-            std::io::Write::write_all(&mut file, append.as_bytes())
-                .map_err(|e| format!("Failed to write CI_HUB_IMAGE: {}", e))?;
-        }
-
-        // Ensure DOCKER_PLATFORM is present (upgrades from older versions)
-        if !existing.contains("DOCKER_PLATFORM=") {
-            let docker_platform = if cfg!(target_arch = "aarch64") {
-                "linux/arm64"
-            } else {
-                "linux/amd64"
-            };
-            let append = format!("DOCKER_PLATFORM={}\n", docker_platform);
-            let mut file = std::fs::OpenOptions::new().append(true).open(&env_path)
-                .map_err(|e| format!("Failed to append to .env: {}", e))?;
-            std::io::Write::write_all(&mut file, append.as_bytes())
-                .map_err(|e| format!("Failed to write DOCKER_PLATFORM: {}", e))?;
-        }
-
-            }
+    // Clean up legacy .docker-config.json if it exists
+    let legacy_docker_config = data_dir.join(".docker-config.json");
+    if legacy_docker_config.exists() {
+        let _ = std::fs::remove_file(&legacy_docker_config);
+    }
 
     Ok((data_dir, compose_dst, env_path))
+}
+
+/// Strip dynamic port variables from .env content for comparison purposes.
+/// Port manager owns these vars and rewrites them each launch.
+fn strip_port_vars(content: &str) -> String {
+    let port_vars = ["API_PORT=", "POSTGRES_PORT=", "RABBITMQ_PORT=", "TRAEFIK_DASHBOARD_PORT=", "HTTP_PORT=", "HTTPS_PORT="];
+    content
+        .lines()
+        .filter(|line| !port_vars.iter().any(|pv| line.starts_with(pv)))
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n"
 }
