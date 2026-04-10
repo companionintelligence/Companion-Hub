@@ -321,7 +321,13 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf)
         });
 
     // Generate .env if it doesn't exist
-    let domain = option_env!("CI_HUB_DOMAIN").unwrap_or("companionintelligence.com");
+    // Environment-based config: single CI_HUB_ENVIRONMENT flag drives domain + portal URL
+    let environment = option_env!("CI_HUB_ENVIRONMENT").unwrap_or("dev");
+    let (domain, cloud_url) = match environment {
+        "production" => ("ci.computer", "https://portal.ci.computer"),
+        "staging" => ("companionintel.com", "https://portal.companionintel.com"),
+        _ => ("companionintelligence.com", "https://portal.companionintelligence.com"),
+    };
     let env_path = data_dir.join(".env");
     if !env_path.exists() {
         let secret: String = (0..64)
@@ -341,7 +347,6 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf)
             data_dir.to_string_lossy().to_string()
         };
 
-        let cloud_url = option_env!("CI_HUB_CLOUD_URL").unwrap_or("https://portal.companionintelligence.com");
         let hub_version = option_env!("CI_HUB_BUILD_VERSION").unwrap_or("4.7.0");
         
         // Hub container image from GHCR — tag matches the target environment
