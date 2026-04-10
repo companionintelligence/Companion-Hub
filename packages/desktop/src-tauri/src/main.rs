@@ -150,9 +150,11 @@ pub fn run() {
                     let hash = config_hash;
                     let hp = hash_path;
                     tauri::async_runtime::spawn(async move {
-                        if hub_manager::start_hub(&compose, &env, &data).is_ok() {
-                            let _ = std::fs::write(&hp, &hash);
-                        }
+                        let _ = hub_manager::start_hub(&compose, &env, &data);
+                        // Save hash regardless of compose exit status — partial starts
+                        // (e.g. Traefik port conflict) are still a valid state. Without
+                        // this, every relaunch re-runs compose because the hash is never saved.
+                        let _ = std::fs::write(&hp, &hash);
                     });
                 }
             }
