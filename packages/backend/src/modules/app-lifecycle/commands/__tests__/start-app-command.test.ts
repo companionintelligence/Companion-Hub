@@ -25,10 +25,6 @@ vi.mock('node:fs', async () => ({
   },
 }));
 
-vi.mock('@sentry/nestjs', () => ({
-  captureException: vi.fn(),
-}));
-
 vi.mock('@ci-hub/common/schemas', async (importOriginal) => ({
   ...((await importOriginal()) as any),
   parseComposeJson: vi.fn().mockReturnValue({ services: [], overrides: [] }),

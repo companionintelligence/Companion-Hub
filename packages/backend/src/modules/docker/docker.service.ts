@@ -5,7 +5,6 @@ import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable, InternalServerErrorException, Inject, forwardRef } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
-import * as Sentry from '@sentry/nestjs';
 import { AppFilesManager } from '../apps/app-files-manager';
 import { AppsService } from '../apps/apps.service';
 
@@ -201,7 +200,6 @@ export class DockerService {
       };
     } catch (error) {
       this.logger.error('Error getting log stream', error);
-      Sentry.captureException(error, { tags: { source: 'docker log stream', appUrn } });
       throw new InternalServerErrorException('Error getting log stream');
     }
   };

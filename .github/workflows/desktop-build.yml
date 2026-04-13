@@ -93,7 +93,6 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      # Production frontend build skips Sentry upload when SENTRY_AUTH_TOKEN is unset (see vite.config.ts).
       - name: Build frontend
         env:
           NODE_ENV: production

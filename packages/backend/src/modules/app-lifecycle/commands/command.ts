@@ -10,7 +10,6 @@ import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import type { ModuleRef } from '@nestjs/core';
 import { parseComposeJson } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
-import * as Sentry from '@sentry/nestjs';
 import { type } from 'arktype';
 import Dockerode from 'dockerode';
 import { ZodError } from 'zod';
@@ -80,9 +79,6 @@ export class AppLifecycleCommand {
       }
 
       logger.error(err);
-      Sentry.captureException(err, {
-        tags: { appId: appUrn, event: 'ensure_app_dir' },
-      });
       throw new Error(`Error generating docker-compose.yml file for app ${appUrn}.`);
     }
 
@@ -90,11 +86,7 @@ export class AppLifecycleCommand {
     await appFilesManager.setAppDataDirPermissions(appUrn);
   }
 
-  protected handleAppError = async (err: unknown, appId: string, event: string): Promise<{ success: false; message: string }> => {
-    Sentry.captureException(err, {
-      tags: { appId, event },
-    });
-
+  protected handleAppError = async (err: unknown, _appId: string, _event: string): Promise<{ success: false; message: string }> => {
     if (err instanceof Error) {
       return { success: false, message: err.message };
     }

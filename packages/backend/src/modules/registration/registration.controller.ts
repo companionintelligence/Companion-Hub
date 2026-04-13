@@ -149,7 +149,7 @@ export class RegistrationController {
     // This used to check locally against Cloudflare but now that logic is centralized in CI-Cloud.
     // We should ideally proxy this request to CI-Cloud, but for now we'll do basic local validation.
 
-    if (!name || !name.trim()) {
+    if (!name?.trim()) {
       return {
         available: false,
         dnsAvailable: false,
@@ -242,7 +242,7 @@ export class RegistrationController {
   @ApiOperation({ summary: 'Probe a CF domain to check if the tunnel is serving the Hub' })
   @ApiResponse({ status: 200, description: 'Probe result' })
   async probeDomain(@Query('url') url: string) {
-    if (!url || !url.startsWith('https://')) {
+    if (!url?.startsWith('https://')) {
       return { ready: false };
     }
     try {
@@ -288,14 +288,14 @@ export class RegistrationController {
   @ApiResponse({ status: 200, description: 'Registration initiated successfully' })
   @ApiResponse({ status: 400, description: 'Invalid request' })
   async registerDevice(@Body() body: RegisterDeviceDto) {
-    if (!body.organization_id || !body.organization_id.trim()) {
+    if (!body.organization_id?.trim()) {
       return {
         success: false,
         message: 'Organization ID is required',
       };
     }
 
-    if (!body.organization_name || !body.organization_name.trim()) {
+    if (!body.organization_name?.trim()) {
       return {
         success: false,
         message: 'Organization name is required',
