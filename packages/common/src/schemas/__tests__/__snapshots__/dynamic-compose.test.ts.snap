@@ -21,6 +21,27 @@ exports[`DynamicCompose Schema Tests with Ark > Service Schema V2 > Required Fie
 }
 `;
 
+exports[`DynamicCompose Schema Tests with Ark DynamicCompose Schema V2 Basic Structure should validate minimal dynamic compose 1`] = `
+{
+  "schemaVersion": 2,
+  "services": [
+    {
+      "image": "nginx:latest",
+      "internalPort": 80,
+      "name": "web",
+    },
+  ],
+}
+`;
+
+exports[`DynamicCompose Schema Tests with Ark Service Schema V2 Required Fields should validate minimal valid service 1`] = `
+{
+  "image": "nginx:latest",
+  "internalPort": 80,
+  "name": "web-server",
+}
+`;
+
 exports[`DynamicCompose Schema Tests with Zod > DynamicCompose Schema V2 > Basic Structure > should validate minimal dynamic compose 1`] = `
 {
   "schemaVersion": 2,
@@ -42,14 +63,6 @@ exports[`DynamicCompose Schema Tests with Zod > Service Schema V2 > Required Fie
 }
 `;
 
-exports[`DynamicCompose Schema Tests with Zod Service Schema V2 Required Fields should validate minimal valid service 1`] = `
-{
-  "image": "nginx:latest",
-  "internalPort": 80,
-  "name": "web-server",
-}
-`;
-
 exports[`DynamicCompose Schema Tests with Zod DynamicCompose Schema V2 Basic Structure should validate minimal dynamic compose 1`] = `
 {
   "schemaVersion": 2,
@@ -63,23 +76,10 @@ exports[`DynamicCompose Schema Tests with Zod DynamicCompose Schema V2 Basic Str
 }
 `;
 
-exports[`DynamicCompose Schema Tests with Ark Service Schema V2 Required Fields should validate minimal valid service 1`] = `
+exports[`DynamicCompose Schema Tests with Zod Service Schema V2 Required Fields should validate minimal valid service 1`] = `
 {
   "image": "nginx:latest",
   "internalPort": 80,
   "name": "web-server",
-}
-`;
-
-exports[`DynamicCompose Schema Tests with Ark DynamicCompose Schema V2 Basic Structure should validate minimal dynamic compose 1`] = `
-{
-  "schemaVersion": 2,
-  "services": [
-    {
-      "image": "nginx:latest",
-      "internalPort": 80,
-      "name": "web",
-    },
-  ],
 }
 `;

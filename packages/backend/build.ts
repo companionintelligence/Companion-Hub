@@ -1,10 +1,13 @@
-await Bun.build({
-  entrypoints: ['./src/main.ts'],
+import { build } from 'esbuild';
+
+build({
+  entryPoints: ['./src/main.ts'],
   outdir: './dist',
   format: 'esm',
-  target: 'node',
+  platform: 'node',
   sourcemap: true,
   minify: false,
+  bundle: true,
   external: [
     'argon2',
     'class-transformer',
@@ -18,5 +21,7 @@ await Bun.build({
     'cpu-features',
     'drizzle-orm',
     '@opentelemetry/api',
+    'ssh2',
+    'pg',
   ],
-});
+}).catch(() => process.exit(1));

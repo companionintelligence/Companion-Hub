@@ -2,7 +2,7 @@
  * Run end-to-end tests. Starts the docker-compose e2e environment, runs Playwright tests, then tears down.
  *
  * Usage:
- *   bun run test:e2e
+ *   pnpm run test:e2e
  */
 import { spawn } from 'node:child_process';
 import { resolve } from 'node:path';
@@ -166,7 +166,7 @@ async function main() {
     };
 
     console.log('Running Playwright tests...');
-    await runCommand('bun', ['playwright', 'test', '--workers=1'], env);
+    await runCommand('pnpm', ['exec', 'playwright', 'test', '--workers=1'], env);
   } catch (error) {
     console.error('E2E test run failed:', error);
     console.log('Fetching app logs...');

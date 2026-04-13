@@ -1,9 +1,9 @@
-#!/usr/bin/env bun
+#!/usr/bin/env tsx
 /**
  * Pre-pull Docker images during off-peak hours
  *
  * Run this overnight to avoid Docker Hub rate limits during testing
- * Usage: BATCH=0 bun run scripts/prepull-images.ts
+ * Usage: BATCH=0 pnpm exec tsx scripts/prepull-images.ts
  */
 
 import { execSync } from 'node:child_process';
@@ -85,7 +85,7 @@ for (const appId of batchApps) {
     }
 
     // Small delay to avoid rate limits
-    await Bun.sleep(1000);
+    await new Promise((r) => setTimeout(r, 1000));
   } catch (_e) {
     console.log(`❌ ${appId}: Error - ${e}`);
     failed++;

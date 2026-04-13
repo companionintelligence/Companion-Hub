@@ -17,7 +17,7 @@ Native desktop wrapper for the Companion Intelligence Hub, built with [Tauri v2]
 ### All Platforms
 
 - [Rust](https://rustup.rs/) (stable) — `rustup` will install `cargo`, `rustc`, etc.
-- [Bun](https://bun.sh/) (≥ 1.3) — for frontend build and dependency management
+- [pnpm](https://pnpm.io/) (≥ 10) — for frontend build and dependency management
 - [Node.js](https://nodejs.org/) (≥ 22) — required by some build tooling
 - [Git](https://git-scm.com/)
 
@@ -90,13 +90,13 @@ Or open the **"x64 Native Tools Command Prompt for VS 2022"** from the Start men
 ### 1. Install dependencies (from repo root)
 
 ```bash
-bun install
+pnpm install
 ```
 
 ### 2. Build the common package
 
 ```bash
-bun run --filter=@ci-hub/common build
+pnpm run --filter=@ci-hub/common build
 ```
 
 ### 3. Start the Hub backend + frontend
@@ -119,14 +119,14 @@ cp .env.example .env.local
 # Edit .env.local — set ROOT_FOLDER_HOST, CI_HUB_DATA_DIR, etc.
 
 # Start backend + frontend
-dotenv -e .env.local -- bun run dev:app
+dotenv -e .env.local -- pnpm run dev:app
 ```
 
 ### 4. Start the Tauri dev app
 
 From the repo root:
 ```bash
-bun run dev:desktop
+pnpm run dev:desktop
 ```
 
 Or from this directory:
@@ -148,14 +148,14 @@ cargo tauri build
 
 Or from repo root:
 ```bash
-bun run build:desktop
+pnpm run build:desktop
 ```
 
 **Important:** The frontend must be built first — the release build embeds static files from `packages/frontend/dist/client`:
 ```bash
 # From repo root
-bun run --filter=@ci-hub/common build
-bun run --filter=frontend build
+pnpm run --filter=@ci-hub/common build
+pnpm run --filter=frontend build
 ```
 
 ### Build output

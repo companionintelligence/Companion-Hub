@@ -1,19 +1,19 @@
-#!/usr/bin/env bun
+#!/usr/bin/env tsx
 /**
  * QA Single App
  *
  * Quick test: run container, check port, screenshot, benchmark, cleanup.
  *
  * Usage:
- *   bun run scripts/qa-app.ts <app-id>
+ *   pnpm exec tsx scripts/qa-app.ts <app-id>
  *
  * Environment variables:
  *   RESULTS_DIR   - Directory for QA results (default: ~/qa-results)
  *   APP_STORE_DIR - Path to CI-App-Store/apps (default: ~/devel/CI-App-Store/apps)
  *
  * Examples:
- *   bun run scripts/qa-app.ts nextcloud
- *   RESULTS_DIR=/tmp/results bun run scripts/qa-app.ts ghost
+ *   pnpm exec tsx scripts/qa-app.ts nextcloud
+ *   RESULTS_DIR=/tmp/results pnpm exec tsx scripts/qa-app.ts ghost
  */
 
 import { execSync } from 'node:child_process';
@@ -154,7 +154,7 @@ async function qaApp(appId: string): Promise<QAResult> {
 
     while (!httpOk && attempts < maxAttempts) {
       attempts++;
-      await Bun.sleep(2000);
+      await new Promise((r) => setTimeout(r, 2000));
 
       try {
         const response = await fetch(`http://localhost:${result.port}/`, {
@@ -187,8 +187,8 @@ async function qaApp(appId: string): Promise<QAResult> {
     const screenshotPath = join(SCREENSHOTS_DIR, `${appId}.png`);
 
     try {
-      // Use 'bun x' not 'bunx' - bunx doesn't exist in bun
-      execSync(`bun x playwright screenshot http://localhost:${result.port}/ "${screenshotPath}" --wait-for-timeout=3000`, {
+      // Use pnpm exec for running binaries
+      execSync(`pnpm exec playwright screenshot http://localhost:${result.port}/ "${screenshotPath}" --wait-for-timeout=3000`, {
         stdio: 'pipe',
         timeout: 30000,
       });
@@ -202,7 +202,7 @@ async function qaApp(appId: string): Promise<QAResult> {
 
     // 5. Collect resource metrics
     console.log('\n📊 Benchmarking...');
-    await Bun.sleep(3000); // Let app stabilize
+    await new Promise((r) => setTimeout(r, 3000)); // Let app stabilize
 
     let maxMem = 0;
     let totalMem = 0;
@@ -228,7 +228,7 @@ async function qaApp(appId: string): Promise<QAResult> {
         maxMem = Math.max(maxMem, memMb);
         samples++;
 
-        await Bun.sleep(2000);
+        await new Promise((r) => setTimeout(r, 2000));
       } catch {
         /* ignore */
       }
@@ -280,12 +280,12 @@ const appId = process.argv[2];
 
 if (!appId) {
   console.log(`
-Usage: bun run qa-app.ts <app-id>
+Usage: tsx qa-app.ts <app-id>
 
 Examples:
-  bun run qa-app.ts nextcloud
-  bun run qa-app.ts jellyfin
-  bun run qa-app.ts ghost
+  tsx qa-app.ts nextcloud
+  tsx qa-app.ts jellyfin
+  tsx qa-app.ts ghost
 `);
   process.exit(1);
 }

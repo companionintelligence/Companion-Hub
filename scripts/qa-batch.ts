@@ -1,11 +1,11 @@
-#!/usr/bin/env bun
+#!/usr/bin/env tsx
 /**
  * QA Batch Runner
  *
  * Run QA on a batch of apps based on BATCH env var (0-6).
  *
  * Usage:
- *   BATCH=<0-6> bun run scripts/qa-batch.ts
+ *   BATCH=<0-6> pnpm exec tsx scripts/qa-batch.ts
  *
  * Environment variables:
  *   BATCH         - Batch number 0-6 (default: 0)
@@ -74,7 +74,7 @@ async function main() {
 
     try {
       // Run qa-app.ts for this app
-      execSync(`bun run scripts/qa-app.ts ${appId}`, {
+      execSync(`pnpm exec tsx scripts/qa-app.ts ${appId}`, {
         stdio: 'inherit',
         env: { ...process.env, RESULTS_DIR, APP_STORE_DIR },
         timeout: 300000, // 5 min max per app

@@ -47,13 +47,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: oven-sh/setup-bun@v2
-
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
 
-      - run: bun install --frozen-lockfile
+      - uses: pnpm/action-setup@v4
+
+      - run: pnpm install --frozen-lockfile
 
       - name: Create data directories
         run: |
@@ -74,19 +74,19 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ hashFiles('bun.lock') }}
+          key: playwright-${{ hashFiles('pnpm-lock.yaml') }}
 
-      - run: bunx playwright install --with-deps chromium
+      - run: pnpm exec playwright install --with-deps chromium
 
       - name: Start mock portal
         run: |
-          bun run e2e/mock-portal/server.ts &
+          pnpm exec tsx e2e/mock-portal/server.ts &
           echo "MOCK_PID=$!" >> $GITHUB_ENV
           sleep 2
           curl -sf http://localhost:4444/v2/ || echo "Warning: mock portal not responding"
 
       - name: Run E2E tests
-        run: bun run test:e2e:ci
+        run: pnpm run test:e2e:ci
         env:
           SERVER_IP: localhost
           POSTGRES_HOST: localhost

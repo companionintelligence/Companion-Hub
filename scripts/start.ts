@@ -1,12 +1,12 @@
-#!/usr/bin/env bun
+#!/usr/bin/env tsx
 /**
  * Start the CI-OS-Hub application.
  *
  * Usage:
- *   bun run dev                          # dev mode, local env
- *   bun run start                        # start mode, local env
- *   bun run start:detached               # detached mode, local env
- *   bun run scripts/start.ts <mode> [env] # custom mode/env
+ *   pnpm run dev                          # dev mode, local env
+ *   pnpm run start                        # start mode, local env
+ *   pnpm run start:detached               # detached mode, local env
+ *   pnpm exec tsx scripts/start.ts <mode> [env] # custom mode/env
  *
  * Modes: dev, start, start:detached
  * Envs:  local, dev, staging, prod (default: local)
@@ -18,7 +18,7 @@ const allowedEnvs = ['local', 'dev', 'staging', 'prod'];
 
 function usageAndExit(msg?: string) {
   if (msg) console.error(msg);
-  console.error(`Usage: bun scripts/start.ts <mode> [env]\n
+  console.error(`Usage: pnpm exec tsx scripts/start.ts <mode> [env]\n
 modes: ${allowedModes.join(', ')}\nenvs: ${allowedEnvs.join(', ')} (default: local)`);
   process.exit(2);
 }
@@ -71,14 +71,14 @@ async function main() {
 
     // Run the app in dev/HMR mode. Use dotenv to load the env file into the process
     // and let the existing dev:app script set POSTGRES_HOST and RABBITMQ_HOST to localhost.
-    run('dotenv', ['-e', envFileStr, '--', 'bun', 'run', 'dev:app'], envOverrides);
+    run('dotenv', ['-e', envFileStr, '--', 'pnpm', 'run', 'dev:app'], envOverrides);
     return;
   }
 
   // start / start:detached
   if (env !== 'local') {
     // initialize traefik first (matches previous behavior)
-    run('bun', ['scripts/init-traefik.ts'], envOverrides);
+    run('tsx', ['scripts/init-traefik.ts'], envOverrides);
   }
 
   // Compose files selection

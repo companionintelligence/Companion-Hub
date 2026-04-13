@@ -3,7 +3,7 @@
  * Requires sudo for dmidecode access.
  *
  * Usage:
- *   bun run device-id
+ *   pnpm run device-id
  */
 import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
