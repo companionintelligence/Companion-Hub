@@ -11,6 +11,8 @@
  * Modes: dev, start, start:detached
  * Envs:  local, dev, staging, prod (default: local)
  */
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 const allowedModes = ['dev', 'start', 'start:detached'];
@@ -43,6 +45,54 @@ if (!envFile) {
 }
 const envFileStr = envFile;
 
+/**
+ * Merge `private-vpn` into COMPOSE_PROFILES when PRIVATE_VPN_ENABLED is not `false` (default on).
+ * Reads PRIVATE_VPN_ENABLED and COMPOSE_PROFILES from the env file and merges with process.env.
+ */
+function mergeComposeProfilesFromEnvFile(envFileName: string): string {
+  const abs = join(process.cwd(), envFileName);
+  let fileContent = '';
+  try {
+    fileContent = readFileSync(abs, 'utf-8');
+  } catch {
+    const fromProc = (process.env.COMPOSE_PROFILES || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const set = new Set(fromProc);
+    set.add('private-vpn');
+    return [...set].join(',');
+  }
+
+  const vars: Record<string, string> = {};
+  for (const line of fileContent.split('\n')) {
+    const t = line.trim();
+    if (!t || t.startsWith('#')) continue;
+    const eq = t.indexOf('=');
+    if (eq === -1) continue;
+    const key = t.slice(0, eq).trim();
+    let val = t.slice(eq + 1).trim();
+    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+      val = val.slice(1, -1);
+    }
+    vars[key] = val;
+  }
+
+  const vpnOn = vars.PRIVATE_VPN_ENABLED !== 'false';
+  const fromFile = (vars.COMPOSE_PROFILES || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const fromProc = (process.env.COMPOSE_PROFILES || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const set = new Set<string>([...fromFile, ...fromProc]);
+  if (vpnOn) set.add('private-vpn');
+  else set.delete('private-vpn');
+  return [...set].join(',');
+}
+
 function run(cmd: string, args: string[], extraEnv: Record<string, string | undefined> = {}) {
   console.log(`> ${cmd} ${args.map((a) => (a.includes(' ') ? JSON.stringify(a) : a)).join(' ')}`);
   const res = spawnSync(cmd, args, {
@@ -58,8 +108,12 @@ function run(cmd: string, args: string[], extraEnv: Record<string, string | unde
 }
 
 async function main() {
+  const composeProfiles = mergeComposeProfilesFromEnvFile(envFileStr);
   // Always set ENV_FILE in the spawned environments so docker-compose can mount the right file
-  const envOverrides = { ENV_FILE: envFileStr };
+  const envOverrides: Record<string, string | undefined> = { ENV_FILE: envFileStr };
+  if (composeProfiles) {
+    envOverrides.COMPOSE_PROFILES = composeProfiles;
+  }
 
   if (mode === 'dev') {
     // Start infra (db + queue) using local compose

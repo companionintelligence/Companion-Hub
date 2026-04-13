@@ -175,6 +175,8 @@ services:
     container_name: headscale
     restart: unless-stopped
     command: serve
+    profiles:
+      - private-vpn
     volumes:
       - ${ROOT_FOLDER_HOST:-.internal}/state/headscale:/etc/headscale
     networks:
@@ -187,6 +189,8 @@ services:
     pull_policy: if_not_present
     container_name: hub-tailscale
     restart: unless-stopped
+    profiles:
+      - private-vpn
     hostname: hub-tailscale
     cap_add:
       - NET_ADMIN

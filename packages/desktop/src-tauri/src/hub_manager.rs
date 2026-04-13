@@ -181,9 +181,51 @@ pub fn hub_containers_exist() -> bool {
         .unwrap_or(false)
 }
 
+/// Parse `.env`-style lines for COMPOSE_PROFILES and PRIVATE_VPN_ENABLED (default VPN on).
+fn compose_profiles_for_hub(env_path: &Path) -> String {
+    let Ok(content) = std::fs::read_to_string(env_path) else {
+        return String::from("private-vpn");
+    };
+    let mut from_file: Vec<String> = Vec::new();
+    let mut vpn_on = true;
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((key, raw_val)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        let val = raw_val
+            .trim()
+            .trim_matches(|c| c == '"' || c == '\'');
+        match key {
+            "PRIVATE_VPN_ENABLED" => vpn_on = val != "false",
+            "COMPOSE_PROFILES" => {
+                from_file = val
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+            }
+            _ => {}
+        }
+    }
+    let mut set: std::collections::HashSet<String> = from_file.into_iter().collect();
+    if vpn_on {
+        set.insert("private-vpn".to_string());
+    } else {
+        set.remove("private-vpn");
+    }
+    set.into_iter().collect::<Vec<_>>().join(",")
+}
+
 /// Start Hub using docker compose up
 pub fn start_hub(compose_path: &Path, env_path: &Path, _data_dir: &Path) -> Result<String, String> {
+    let profiles = compose_profiles_for_hub(env_path);
     let output = docker_command()
+        .env("COMPOSE_PROFILES", &profiles)
         .args([
             "compose",
             "--env-file",
