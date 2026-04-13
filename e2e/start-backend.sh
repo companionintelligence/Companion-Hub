@@ -18,11 +18,11 @@ echo "e2e-mock-tunnel-token" > "$(pwd)/tunnel/token"
 
 # Build workspace dependencies (common package must be compiled before backend can start)
 echo "Building @ci-hub/common..."
-(cd packages/common && bun run build)
+(cd packages/common && pnpm run build)
 
 # Build backend (nest build uses swc, doesn't reliably copy all assets)
 echo "Building backend..."
-(cd packages/backend && bun run nest build)
+(cd packages/backend && pnpm exec nest build)
 
 # Copy migration assets that nest build may not handle
 mkdir -p packages/backend/dist/assets/migrations/meta

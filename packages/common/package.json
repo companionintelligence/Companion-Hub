@@ -34,12 +34,12 @@
     "prepublishOnly": "npm run ci",
     "dev": "tsc --noEmit --watch --preserveWatchOutput",
     "build": "rm -rf dist && tsc && cp package.json dist/",
-    "build:schemas": "bun run ./script/gen-json-schema.ts",
+    "build:schemas": "tsx ./script/gen-json-schema.ts",
     "ci": "npm run build && npm run check-exports",
     "check-exports": "attw --pack . --ignore-rules=cjs-resolves-to-esm",
     "local-release": "changeset version && changeset publish",
     "tsc": "tsc",
-    "test": "bun test --coverage"
+    "test": "vitest run --coverage"
   },
   "keywords": [],
   "author": "",

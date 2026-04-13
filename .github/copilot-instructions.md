@@ -1,7 +1,7 @@
 - Never create a database migration file manually. The user will generate
   automatically based on the `schema.ts` file. You only need to update the
   schema.
-- The project uses bun as a package manager. You can use `bun` commands to
+- The project uses pnpm as a package manager. You can use `pnpm` commands to
   install dependencies, run scripts, and manage the project.
 - When asked to add tests, do not add e2e tests unless explicitly requested.
   Focus on unit tests and integration tests.

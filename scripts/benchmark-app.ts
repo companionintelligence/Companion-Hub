@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env tsx
 /**
  * Benchmark Single App
  *
@@ -6,11 +6,11 @@
  * and generate a benchmark report.
  *
  * Usage:
- *   bun run scripts/benchmark-app.ts <app-id> [--save]
+ *   pnpm exec tsx scripts/benchmark-app.ts <app-id> [--save]
  *
  * Examples:
- *   bun run scripts/benchmark-app.ts nextcloud
- *   bun run scripts/benchmark-app.ts jellyfin --save
+ *   pnpm exec tsx scripts/benchmark-app.ts nextcloud
+ *   pnpm exec tsx scripts/benchmark-app.ts jellyfin --save
  */
 
 import { execSync } from 'node:child_process';
@@ -247,15 +247,15 @@ async function main() {
 
   if (args.length < 1) {
     console.log(`
-Usage: bun run benchmark-app.ts <app-id> [--save]
+Usage: tsx benchmark-app.ts <app-id> [--save]
 
 Arguments:
   app-id    App identifier from catalog
   --save    Save results to benchmarks directory
 
 Examples:
-  bun run benchmark-app.ts nextcloud
-  bun run benchmark-app.ts jellyfin --save
+  tsx benchmark-app.ts nextcloud
+  tsx benchmark-app.ts jellyfin --save
 `);
     process.exit(1);
   }

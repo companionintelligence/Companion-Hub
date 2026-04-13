@@ -7,12 +7,12 @@
   "license": "UNLICENSED",
   "scripts": {
     "dev": "nest start --watch --preserveWatchOutput",
-    "local": "bun run dev",
-    "build": "rm -rf dist && bun build.ts",
-    "bundle": "rm -rf dist && bun build.ts",
-    "tsc": "npx tsgo --noEmit",
+    "local": "pnpm run dev",
+    "build": "rm -rf dist && nest build && tsx build.ts",
+    "bundle": "rm -rf dist && nest build && tsx build.ts",
+    "tsc": "tsc --noEmit",
     "test": "vitest --coverage --watch=false run",
-    "test:integration": "bun scripts/run-integration.ts",
+    "test:integration": "tsx scripts/run-integration.ts",
     "test:watch": "vitest",
     "test:db": "docker compose -f ./src/tests/db.compose.yml up -d",
     "studio": "drizzle-kit studio",
@@ -70,14 +70,13 @@
     "zod-validation-error": "^4.0.2"
   },
   "devDependencies": {
-    "@faker-js/faker": "^10.1.0",
+    "@faker-js/faker": "10.2.0",
     "@nestjs/cli": "^11.0.7",
     "@nestjs/schematics": "^11.0.5",
     "@nestjs/testing": "^11.1.0",
     "@swc/cli": "0.7.8",
     "@swc/core": "^1.11.24",
     "@total-typescript/shoehorn": "^0.1.2",
-    "@types/bun": "^1.3.0",
     "@types/cookie-parser": "^1.4.8",
     "@types/dockerode": "^3.3.38",
     "@types/express": "^5.0.1",
@@ -107,6 +106,7 @@
     "vite-tsconfig-paths": "5.1.4",
     "vitest": "^4.0.6",
     "vitest-mock-extended": "^3.1.0",
-    "wait-for-expect": "^4.0.0"
+    "wait-for-expect": "^4.0.0",
+    "esbuild": "^0.25.0"
   }
 }

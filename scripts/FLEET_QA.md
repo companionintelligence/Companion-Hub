@@ -13,17 +13,17 @@ We use a fleet of servers to parallelize App Store QA testing:
 ### Run QA on Single Server
 ```bash
 # Test a single app
-bun run scripts/qa-app.ts <app-id>
+pnpm exec tsx scripts/qa-app.ts <app-id>
 
 # Test a batch (for parallel fleet testing)
-BATCH=0 TOTAL_BATCHES=7 bun run scripts/qa-batch.ts
+BATCH=0 TOTAL_BATCHES=7 pnpm exec tsx scripts/qa-batch.ts
 ```
 
 ### Run QA on Full Fleet
 ```bash
 # From control machine (liam-mbp):
 for i in 0 1 2 3 4 5 6; do
-  ssh ci@core-$((i+1)) "cd ~/devel/CI-OS-Hub && BATCH=$i bun run scripts/qa-batch.ts" &
+  ssh ci@core-$((i+1)) "cd ~/devel/CI-OS-Hub && BATCH=$i pnpm exec tsx scripts/qa-batch.ts" &
 done
 ```
 
@@ -71,17 +71,17 @@ DOCKER_USER=xxx DOCKER_TOKEN=xxx ./scripts/setup-docker-auth.sh
 Each server needs:
 - Docker (28.x or 29.x)
 - Bun (1.3.x)
-- Playwright Chromium (`bun x playwright install chromium`)
+- Playwright Chromium (`pnpm exec playwright install chromium`)
 - CI-OS-Hub and CI-App-Store repos cloned to `~/devel/`
 
 ### Setup New Server
 
 ```bash
 # Install Bun
-curl -fsSL https://bun.sh/install | bash
+npm install -g pnpm
 
 # Install Playwright
-~/.bun/bin/bun x playwright install chromium
+pnpm exec playwright install chromium
 
 # Clone repos
 mkdir -p ~/devel && cd ~/devel
@@ -109,7 +109,7 @@ Results are saved to `~/qa-results/` on each server:
 
 ```bash
 # Run from control machine after all batches complete
-bun run scripts/qa-aggregate.ts
+pnpm exec tsx scripts/qa-aggregate.ts
 ```
 
 ## Server Fleet

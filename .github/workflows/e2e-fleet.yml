@@ -79,7 +79,7 @@ jobs:
           key: ${{ runner.os }}-playwright-${{ steps.playwright-version.outputs.version }}
 
       - name: Install Playwright Browsers
-        run: bunx playwright install --with-deps chromium
+        run: pnpm exec playwright install --with-deps chromium
 
       - name: Create .env.e2e file
         run: |
@@ -112,7 +112,7 @@ jobs:
 
       - name: Run Playwright tests
         run: |
-          bunx playwright test ${{ steps.test-pattern.outputs.pattern }} --workers=1
+          pnpm exec playwright test ${{ steps.test-pattern.outputs.pattern }} --workers=1
         env:
           SERVER_IP: ${{ steps.server-ip.outputs.ip }}
 
