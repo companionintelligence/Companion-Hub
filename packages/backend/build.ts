@@ -27,6 +27,7 @@ build({
     '@nestjs/typeorm',
     '@nestjs/mapped-types',
     'class-transformer',
+    '@nestjs/mapped-types',
     'class-transformer/storage',
     '@nestjs/mongoose',
     '@nestjs/sequelize',
