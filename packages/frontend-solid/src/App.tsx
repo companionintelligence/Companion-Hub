@@ -1,6 +1,8 @@
 import { Router, Route, Navigate } from '@solidjs/router';
 import { lazy } from 'solid-js';
 import { ThemeProvider } from '@/components/providers/theme/theme-provider';
+import { SSEProvider } from '@/components/providers/sse/sse-provider';
+import { ToastContainer } from '@/components/providers/toast/toast-container';
 import { UserContextProvider } from '@/context/user-context';
 import { AppContextProvider } from '@/context/app-context';
 import { DashboardLayout } from '@/components/layouts/dashboard/layout';
@@ -17,7 +19,9 @@ const DeviceRegistrationPage = lazy(() => import('@/routes/device-registration')
 const OnboardingPage = lazy(() => import('@/routes/onboarding'));
 const DashboardPage = lazy(() => import('@/routes/dashboard'));
 const AppStorePage = lazy(() => import('@/routes/app-store'));
+const AppDetailsPage = lazy(() => import('@/routes/app-details'));
 const MyAppsPage = lazy(() => import('@/routes/my-apps'));
+const CustomAppCreatePage = lazy(() => import('@/routes/custom-app-create'));
 const SettingsPage = lazy(() => import('@/routes/settings'));
 const NotFound = lazy(() => import('@/routes/not-found'));
 
@@ -29,7 +33,9 @@ const AuthenticatedWrapper: ParentComponent = (props) => {
     <Show when={!isUserLoading()} fallback={<LoadingSpinner />}>
       <Show when={userContext().isLoggedIn} fallback={<Navigate href="/login" />}>
         <AppContextProvider>
-          <AuthenticatedContent>{props.children}</AuthenticatedContent>
+          <SSEProvider>
+            <AuthenticatedContent>{props.children}</AuthenticatedContent>
+          </SSEProvider>
         </AppContextProvider>
       </Show>
     </Show>
@@ -58,6 +64,10 @@ function LoadingSpinner() {
   );
 }
 
+function AuthRoute(props: { children: import('solid-js').JSX.Element }) {
+  return <AuthenticatedWrapper>{props.children}</AuthenticatedWrapper>;
+}
+
 export default function App() {
   return (
     <ThemeProvider>
@@ -71,54 +81,20 @@ export default function App() {
           <Route path="/onboarding" component={OnboardingPage} />
 
           {/* Authenticated routes */}
-          <Route
-            path="/dashboard"
-            component={() => (
-              <AuthenticatedWrapper>
-                <DashboardPage />
-              </AuthenticatedWrapper>
-            )}
-          />
-          <Route
-            path="/app-store"
-            component={() => (
-              <AuthenticatedWrapper>
-                <AppStorePage />
-              </AuthenticatedWrapper>
-            )}
-          />
-          <Route
-            path={['/app-store/:storeId', '/app-store/:storeId/:appId', '/app-store/:storeId/:appId/update']}
-            component={() => (
-              <AuthenticatedWrapper>
-                <AppStorePage />
-              </AuthenticatedWrapper>
-            )}
-          />
-          <Route
-            path="/apps"
-            component={() => (
-              <AuthenticatedWrapper>
-                <MyAppsPage />
-              </AuthenticatedWrapper>
-            )}
-          />
-          <Route
-            path={['/apps/create', '/apps/:appId/edit', '/apps/:appId', '/apps/:storeId/:appId', '/apps/:storeId/:appId/update']}
-            component={() => (
-              <AuthenticatedWrapper>
-                <MyAppsPage />
-              </AuthenticatedWrapper>
-            )}
-          />
-          <Route
-            path="/settings"
-            component={() => (
-              <AuthenticatedWrapper>
-                <SettingsPage />
-              </AuthenticatedWrapper>
-            )}
-          />
+          <Route path="/dashboard" component={() => <AuthRoute><DashboardPage /></AuthRoute>} />
+
+          <Route path="/app-store" component={() => <AuthRoute><AppStorePage /></AuthRoute>} />
+          <Route path="/app-store/:storeId" component={() => <AuthRoute><AppStorePage /></AuthRoute>} />
+          <Route path="/app-store/:storeId/:appId" component={() => <AuthRoute><AppDetailsPage /></AuthRoute>} />
+          <Route path="/app-store/:storeId/:appId/update" component={() => <AuthRoute><AppDetailsPage /></AuthRoute>} />
+
+          <Route path="/apps" component={() => <AuthRoute><MyAppsPage /></AuthRoute>} />
+          <Route path="/apps/create" component={() => <AuthRoute><CustomAppCreatePage /></AuthRoute>} />
+          <Route path="/apps/:appId/edit" component={() => <AuthRoute><CustomAppCreatePage /></AuthRoute>} />
+          <Route path="/apps/:storeId/:appId" component={() => <AuthRoute><AppDetailsPage /></AuthRoute>} />
+          <Route path="/apps/:storeId/:appId/update" component={() => <AuthRoute><AppDetailsPage /></AuthRoute>} />
+
+          <Route path="/settings" component={() => <AuthRoute><SettingsPage /></AuthRoute>} />
 
           {/* Root redirect */}
           <Route path="/" component={() => <Navigate href="/dashboard" />} />
@@ -126,6 +102,7 @@ export default function App() {
           {/* 404 */}
           <Route path="*" component={NotFound} />
         </Router>
+        <ToastContainer />
       </UserContextProvider>
     </ThemeProvider>
   );
