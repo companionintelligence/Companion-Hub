@@ -6,7 +6,6 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable, Inject, forwardRef } from '@nestjs/common';
-import * as Sentry from '@sentry/nestjs';
 import git from 'isomorphic-git';
 import http from 'isomorphic-git/http/node';
 import { RegistrationService } from '../registration/registration.service';
@@ -53,8 +52,6 @@ export class ReposHelpers {
    * @param {unknown} err
    */
   private handleRepoError(err: unknown) {
-    Sentry.captureException(err);
-
     if (err instanceof Error) {
       this.logger.error(err);
       return { success: false, message: err.message };

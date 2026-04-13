@@ -7,7 +7,6 @@ import { I18nModule } from '@/modules/i18n/i18n.module';
 import { type DynamicModule, type MiddlewareConsumer, Module, type NestModule } from '@nestjs/common';
 import { APP_FILTER, APP_PIPE } from '@nestjs/core';
 import { ServeStaticModule } from '@nestjs/serve-static';
-import { SentryModule } from '@sentry/nestjs/setup';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { APP_DIR } from './common/constants';
@@ -43,7 +42,6 @@ import { RegistryModule } from './utils/registry/registry.module';
 import { SystemUpdateModule } from './modules/system-update/system-update.module';
 
 const imports: (DynamicModule | typeof I18nModule)[] = [
-  SentryModule.forRoot(),
   RegistrationModule,
   SystemModule,
   I18nModule,

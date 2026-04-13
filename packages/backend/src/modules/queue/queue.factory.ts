@@ -2,7 +2,6 @@ import { setTimeout } from 'node:timers/promises';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable, type OnApplicationShutdown } from '@nestjs/common';
-import * as Sentry from '@sentry/nestjs';
 import { Connection } from 'rabbitmq-client';
 import { z } from 'zod';
 import { EventPublisher } from './event.publisher';
@@ -95,7 +94,6 @@ export class QueueFactory implements OnApplicationShutdown {
   public async reconnect(error: Error) {
     if (this.connectionAttempts > 5) {
       this.logger.error('Queue connection lost, exceeded maximum reconnection attempts');
-      Sentry.captureException(error, { tags: { source: 'rabbitmq' } });
 
       return error;
     }

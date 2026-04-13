@@ -1,5 +1,3 @@
-import './instrument';
-
 import fs from 'node:fs';
 import path from 'node:path';
 import { type INestApplication, type LogLevel, ValidationPipe } from '@nestjs/common';

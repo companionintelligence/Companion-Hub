@@ -46,7 +46,6 @@ FROM builder_base AS builder
 ARG TIPI_VERSION
 ARG LOCAL
 
-ENV SENTRY_RELEASE=${TIPI_VERSION}
 ENV TIPI_VERSION=${TIPI_VERSION}
 # Don't set NODE_ENV=production yet - we need devDependencies for the build
 # NODE_ENV=production will be set for the build step (needed for vite config)
@@ -116,19 +115,11 @@ ENV CI_CLOUD_URL=${CI_CLOUD_URL}
 
 RUN bun run build
 
-RUN echo "TIPI_VERSION: ${SENTRY_RELEASE}"
+RUN echo "TIPI_VERSION: ${TIPI_VERSION}"
 RUN echo "LOCAL: ${LOCAL}"
 
 # Run bundle from /app so symlinks and monorepo hoisting work correctly
 RUN cd /app && bun run bundle 2>&1 | tail -100 || true
-# Upload sourcemaps to Sentry if token is provided (non-blocking - won't fail build)
-RUN --mount=type=secret,id=sentry_token,env=SENTRY_AUTH_TOKEN \
-  if [ "${LOCAL}" != "true" ] && [ -n "${SENTRY_AUTH_TOKEN:-}" ]; then \
-    cd ./packages/backend && \
-    bun run sentry:sourcemaps || echo "Warning: Sentry sourcemap upload failed, continuing build..."; \
-  else \
-    echo "Skipping Sentry sourcemap upload (LOCAL=${LOCAL:-false}, token not provided)"; \
-  fi
 
 # ---- RUNNER ----
 FROM runner_base AS runner
