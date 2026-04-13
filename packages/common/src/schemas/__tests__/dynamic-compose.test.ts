@@ -1,9 +1,7 @@
 import { describe, it, expect } from 'vitest';
 
 import { serviceSchema as serviceSchemaZod, dynamicComposeSchema as dynamicComposeSchemaZod } from '../dynamic-compose.js';
-import { dynamicComposeSchemaArk, serviceSchemaArk } from '../dynamic-compose-ark.js';
 import type { ZodAny } from 'zod';
-import { type } from 'arktype';
 
 type ValidationResult<T> = { success: true; data: T } | { success: false };
 
@@ -12,20 +10,7 @@ function safeParseZod<T>(schema: ZodAny, data: unknown): ValidationResult<T> {
   return result.success ? { success: true, data: result.data } : { success: false };
 }
 
-function safeParseArk<T>(schema: any, data: unknown): ValidationResult<T> {
-  const result = schema(data);
-
-  if (result instanceof type.errors) {
-    return { success: false };
-  }
-
-  return { success: true, data: result as T };
-}
-
-const schemas = [
-  { name: 'Zod', serviceSchema: serviceSchemaZod, dynamicComposeSchema: dynamicComposeSchemaZod, safeParse: safeParseZod },
-  { name: 'Ark', serviceSchema: serviceSchemaArk, dynamicComposeSchema: dynamicComposeSchemaArk, safeParse: safeParseArk },
-];
+const schemas = [{ name: 'Zod', serviceSchema: serviceSchemaZod, dynamicComposeSchema: dynamicComposeSchemaZod, safeParse: safeParseZod }];
 
 schemas.forEach(({ name, serviceSchema, dynamicComposeSchema, safeParse }) => {
   describe(`DynamicCompose Schema Tests with ${name}`, () => {

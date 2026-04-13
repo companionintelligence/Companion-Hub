@@ -5,9 +5,8 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable } from '@nestjs/common';
-import { appInfoSchemaArk } from '@ci-hub/common/schemas';
+import { appInfoSchema } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
-import { type } from 'arktype';
 
 @Injectable()
 export class AppFilesManager {
@@ -46,16 +45,16 @@ export class AppFilesManager {
         const configFile = await this.filesystem.readTextFile(path.join(appInstalledDir, 'config.json'));
 
         const config = JSON.parse(configFile ?? '{}');
-        const parsedConfig = appInfoSchemaArk({ ...config, urn: appUrn });
+        const parsedConfig = appInfoSchema.safeParse({ ...config, urn: appUrn });
 
-        if (parsedConfig instanceof type.errors) {
+        if (!parsedConfig.success) {
           this.logger.error(`App ${appUrn} config error:`);
-          this.logger.error(parsedConfig.summary);
+          this.logger.error(parsedConfig.error.message);
           return null;
         }
 
-        if (parsedConfig.available) {
-          let description = parsedConfig.description;
+        if (parsedConfig.data.available) {
+          let description = parsedConfig.data.description;
           try {
             const fileExists = await this.filesystem.pathExists(path.join(appInstalledDir, 'metadata', 'description.md'));
             if (fileExists) {
@@ -65,7 +64,7 @@ export class AppFilesManager {
             // Ignore missing description
           }
 
-          return { ...parsedConfig, description };
+          return { ...parsedConfig.data, description };
         }
       }
     } catch {

@@ -10,7 +10,6 @@ import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import type { ModuleRef } from '@nestjs/core';
 import { parseComposeJson } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
-import { type } from 'arktype';
 import Dockerode from 'dockerode';
 import { ZodError } from 'zod';
 import { fromError } from 'zod-validation-error';
@@ -63,12 +62,6 @@ export class AppLifecycleCommand {
       await appFilesManager.writeDockerComposeYml(appUrn, composeFile);
     } catch (err) {
       logger.error(`Error generating docker-compose.yml file for app ${appUrn}`);
-
-      if (err instanceof type.errors) {
-        logger.error(err.summary);
-        logger.error('Report this issue to the appstore maintainer.');
-        throw new Error(`Error generating docker-compose.yml file for app ${appUrn}.\n${err.summary}\nReport this issue to the appstore maintainer.`);
-      }
 
       if (err instanceof ZodError) {
         logger.error(fromError(err).toString());

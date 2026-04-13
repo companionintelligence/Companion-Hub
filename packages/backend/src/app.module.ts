@@ -35,7 +35,7 @@ import { UserConfigModule } from './modules/user-config/user-config.module';
 import { MutexModule } from './utils/mutex/mutex.module';
 import { DockerModule } from './modules/docker/docker.module';
 import { GithubModule } from './utils/github/github.module';
-import { ArkValidationPipe } from 'nestjs-arktype';
+import { ZodValidationPipe } from './common/zod-dto';
 import { CustomAppsModule } from './modules/custom-apps/custom-apps.module';
 import { RegistrationModule } from './modules/registration/registration.module';
 import { RegistryModule } from './utils/registry/registry.module';
@@ -92,7 +92,7 @@ if (NODE_ENV === 'production') {
     AppService,
     {
       provide: APP_PIPE,
-      useClass: ArkValidationPipe,
+      useClass: ZodValidationPipe,
     },
     {
       provide: APP_FILTER,

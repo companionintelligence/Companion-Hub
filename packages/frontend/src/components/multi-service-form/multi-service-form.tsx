@@ -1,7 +1,8 @@
 import './services-form.css';
 import { Button } from '@/components/ui/Button';
-import { arktypeResolver } from '@hookform/resolvers/arktype';
-import { dynamicComposeSchemaArk } from '@ci-hub/common/schemas';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { dynamicComposeSchema } from '@ci-hub/common/schemas';
+import type { z } from 'zod';
 import { ArrowUpDown, Network, Plus, Server, Settings, Variable, X } from 'lucide-react';
 import { useForm } from 'react-hook-form';
 import { JsonComposeEditor } from './json-compose-editor';
@@ -16,13 +17,12 @@ import { EssentialConfig } from './elements/essential';
 import { useTranslation } from 'react-i18next';
 import toast from 'react-hot-toast';
 import { deepClean } from '@/utils/objects';
-import { type } from 'arktype';
 
 type Props = {
-  onSubmit?: (data: typeof dynamicComposeSchemaArk.infer) => void;
+  onSubmit?: (data: z.infer<typeof dynamicComposeSchema>) => void;
 };
 
-const cleanSchema = type.pipe((d) => dynamicComposeSchemaArk.omit('schemaVersion')(deepClean(d)));
+const cleanSchema = dynamicComposeSchema.omit({ schemaVersion: true }).transform((d) => deepClean(d));
 
 export const MultiServiceForm = ({ onSubmit }: Props) => {
   const { t } = useTranslation();
@@ -70,8 +70,9 @@ export const MultiServiceForm = ({ onSubmit }: Props) => {
     },
   ];
 
-  const form = useForm<typeof dynamicComposeSchemaArk.infer>({
-    resolver: arktypeResolver(cleanSchema as unknown as typeof dynamicComposeSchemaArk),
+  const form = useForm<z.infer<typeof dynamicComposeSchema>>({
+    // biome-ignore lint/suspicious/noExplicitAny: schema type coercion for resolver
+    resolver: zodResolver(cleanSchema as any),
     defaultValues: {
       services,
     },
@@ -155,7 +156,7 @@ export const MultiServiceForm = ({ onSubmit }: Props) => {
     );
   };
 
-  const handleSubmit = async (data: typeof dynamicComposeSchemaArk.infer) => {
+  const handleSubmit = async (data: z.infer<typeof dynamicComposeSchema>) => {
     const valid = validate(data);
 
     if (valid) {
