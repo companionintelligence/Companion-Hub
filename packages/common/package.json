@@ -47,10 +47,11 @@
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.1",
     "@changesets/cli": "^2.29.3",
+    "@types/node": "^24.12.2",
     "vitest": "^4.0.4"
   },
   "peerDependencies": {
-    "zod": ">=4",
-    "typescript": ">=5"
+    "typescript": ">=5",
+    "zod": ">=4"
   }
 }
