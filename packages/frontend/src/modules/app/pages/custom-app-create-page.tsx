@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router';
 import { useMutation } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import type { dynamicComposeSchema } from '@ci-hub/common/schemas';
-import type { z } from 'zod';
+import { z } from 'zod';
 import { MultiServiceForm } from '@/components/multi-service-form/multi-service-form';
 import { createCustomAppMutation } from '@/api-client/@tanstack/react-query.gen';
 import { Input } from '@/components/ui/Input/Input';
