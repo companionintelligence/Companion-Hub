@@ -86,7 +86,7 @@ export class AppLifecycleCommand {
     await appFilesManager.setAppDataDirPermissions(appUrn);
   }
 
-  protected handleAppError = async (err: unknown, appId: string, event: string): Promise<{ success: false; message: string }> => {
+  protected handleAppError = async (err: unknown, _appId: string, _event: string): Promise<{ success: false; message: string }> => {
     if (err instanceof Error) {
       return { success: false, message: err.message };
     }

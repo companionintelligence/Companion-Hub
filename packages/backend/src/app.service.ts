@@ -53,7 +53,7 @@ export class AppService implements OnApplicationShutdown {
       await this.docker.pruneNetworks();
       this.logger.info('Docker networks pruned');
 
-      const { version, userSettings, __prod__ } = this.configuration.getConfig();
+      const { version, __prod__ } = this.configuration.getConfig();
       const config = this.configuration.getConfig();
       this.logger.info('Log level', config.userSettings.logLevel);
       this.logger.debug('Starting with configuration', config);
