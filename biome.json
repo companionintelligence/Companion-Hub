@@ -18,7 +18,8 @@
       "!**/swagger.json",
       "!**/packages/backend/src/core/database/drizzle/meta",
       "!**/packages/frontend/src/styles/transparent-theme.css",
-      "!**/packages/frontend/src/styles/globals.css"
+      "!**/packages/frontend/src/styles/globals.css",
+      "!**/packages/frontend-solid/src/styles/globals.css"
     ]
   },
   "formatter": {
@@ -104,6 +105,19 @@
       "linter": {
         "domains": {
           "react": "recommended"
+        }
+      }
+    },
+    {
+      "includes": ["**/packages/frontend-solid/**"],
+      "linter": {
+        "rules": {
+          "correctness": {
+            "useHookAtTopLevel": {
+              "level": "off",
+              "options": {}
+            }
+          }
         }
       }
     },
