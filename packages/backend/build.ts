@@ -1,5 +1,5 @@
 import { build } from 'esbuild';
-import { builtinModules } from 'module';
+import { builtinModules } from 'node:module';
 
 const nodeExternals = builtinModules.flatMap((m) => [m, `node:${m}`]);
 
@@ -24,8 +24,10 @@ build({
   external: [
     ...nodeExternals,
     'argon2',
-    'class-transformer',
     '@nestjs/typeorm',
+    '@nestjs/mapped-types',
+    'class-transformer',
+    'class-transformer/storage',
     '@nestjs/mongoose',
     '@nestjs/sequelize',
     '@mikro-orm/core',
