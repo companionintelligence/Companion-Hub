@@ -101,6 +101,12 @@ To expose your hub over the internet via CI Cloud:
 
 ---
 
+## Private VPN (Headscale)
+
+To expose Headscale on a public hostname (DNS, HTTPS, Tailscale `--login-server`), see **[docs/private-vpn.md](docs/private-vpn.md)**.
+
+---
+
 ## Data & Updating
 
 | Path | Contents |

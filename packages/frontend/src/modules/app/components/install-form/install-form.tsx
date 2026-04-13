@@ -14,6 +14,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Controller, useForm } from 'react-hook-form';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
+import { Link } from 'react-router';
 import { Tooltip } from 'react-tooltip';
 import { hiddenTypes, validateAppConfig } from './form-validators';
 import { InstallFormField } from './install-form-field';
@@ -317,6 +318,13 @@ export const InstallForm: React.FC<IProps> = ({
             </div>
           )}
         />
+        {!tailscaleAvailable && info.exposable && info.dynamic_config && (
+          <p className="mt-2 text-xs text-muted-foreground">
+            <Link to="/settings?tab=network" className="text-primary underline-offset-2 hover:underline">
+              {t('APP_INSTALL_FORM_EXPOSURE_TAILSCALE_SETUP_LINK')}
+            </Link>
+          </p>
+        )}
       </div>
     );
   };
