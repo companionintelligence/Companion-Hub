@@ -89,7 +89,7 @@ ENV NODE_ENV="production"
 WORKDIR /app
 
 RUN --mount=type=cache,target=/root/.npm \
-    npm install --no-save --omit=dev argon2 class-transformer @opentelemetry/api drizzle-orm pg
+    npm install --no-save --omit=dev argon2 class-transformer @opentelemetry/api drizzle-orm pg ssh2 i18next-fs-backend
 
 COPY --from=builder_base /deps/docker-binary /usr/local/bin/docker-compose
 RUN chmod +x /usr/local/bin/docker-compose && \
@@ -108,6 +108,7 @@ COPY --from=builder /app/packages/frontend/dist/client ./assets/frontend
 
 EXPOSE 3000
 
-    RUN mv main.js main.mjs
+    # Ensure Node treats .js as ESM (esbuild outputs ESM format)
+    RUN node -e "const p = require('./package.json'); p.type = 'module'; require('fs').writeFileSync('./package.json', JSON.stringify(p, null, 2))"
 
-    CMD ["node", "./main.mjs"]
+    CMD ["node", "./main.js"]
