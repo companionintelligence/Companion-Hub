@@ -1,5 +1,6 @@
 import { TranslatableError } from '@/common/error/translatable-error';
 import { createAppUrn, extractAppUrn } from '@/common/helpers/app-helpers';
+import { buildHeadscaleTunnelFqdn, headscaleTunnelContainerPort, isPrivateVpnEnabled } from '@/common/helpers/private-vpn';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { SSEService } from '@/core/sse/sse.service';
@@ -716,6 +717,24 @@ export class AppLifecycleService implements OnApplicationBootstrap {
           originServerName: hubHostname,
           isHub: true,
         });
+
+        const headscaleFqdn = buildHeadscaleTunnelFqdn(orgInfo, publicDomain);
+        if (headscaleFqdn && isPrivateVpnEnabled()) {
+          const orgSlug = orgInfo.slug;
+          const normalized = hubSub.replace(/^hub-/, '');
+          const deviceSlug = normalized.endsWith(`-${orgSlug}`) ? normalized.slice(0, -(orgSlug.length + 1)) : normalized;
+          const vpnSub =
+            deviceSlug && deviceSlug !== orgSlug ? `vpn-${deviceSlug}-${orgSlug}` : `vpn-${orgSlug}`;
+          exposedApps.splice(1, 0, {
+            name: 'Headscale',
+            subdomain: vpnSub,
+            localPort: headscaleTunnelContainerPort(),
+            protocol: 'http' as const,
+            hostname: 'headscale',
+            originServerName: headscaleFqdn,
+            isHeadscale: true,
+          });
+        }
       }
 
       await this.cloudflareClientService.syncState(orgInfo.id, exposedApps, orgInfo.tunnelId || undefined);

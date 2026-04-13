@@ -85,6 +85,7 @@ describe('AppLifecycleService', () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+    delete process.env.PRIVATE_VPN_ENABLED;
   });
 
   it('should subscribe to queue on init', () => {
@@ -149,6 +150,14 @@ describe('AppLifecycleService', () => {
             originServerName: 'mydevice-myorg.companionintelligence.com',
             isHub: true,
           }),
+          expect.objectContaining({
+            name: 'Headscale',
+            subdomain: 'vpn-mydevice-myorg',
+            localPort: 8080,
+            hostname: 'headscale',
+            originServerName: 'vpn-mydevice-myorg.companionintelligence.com',
+            isHeadscale: true,
+          }),
         ]),
         'tunnel-id',
       );
@@ -189,8 +198,44 @@ describe('AppLifecycleService', () => {
 
       // Hub should be first with correct hostname
       expect(apps[0]).toMatchObject({ name: 'OS Hub', subdomain: 'hub1', originServerName: 'hub1-acme.companionintelligence.com', isHub: true });
+      expect(apps[1]).toMatchObject({
+        name: 'Headscale',
+        subdomain: 'vpn-hub1-acme',
+        localPort: 8080,
+        hostname: 'headscale',
+        isHeadscale: true,
+      });
       // Exposed app should follow
-      expect(apps[1]).toMatchObject({ name: 'n8n', subdomain: 'n8n-abc' });
+      expect(apps[2]).toMatchObject({ name: 'n8n', subdomain: 'n8n-abc' });
+    });
+
+    it('should omit Headscale from sync when PRIVATE_VPN_ENABLED=false', async () => {
+      process.env.PRIVATE_VPN_ENABLED = 'false';
+      const data = { appUrn: 'test-app', action: 'install', form: {} } as any;
+      const reply = vi.fn();
+      const command = { execute: vi.fn().mockResolvedValue({ success: true, message: 'OK' }) };
+
+      commandFactory.createCommand.mockReturnValue(command as any);
+
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue({
+        id: 'org-id',
+        tunnelId: 'tunnel-id',
+        slug: 'myorg',
+        name: 'My Org',
+        hubSubdomain: 'mydevice-myorg',
+      } as any);
+      appsRepository.getApps.mockResolvedValue([]);
+      configService.getConfig.mockReturnValue({
+        userSettings: { domain: 'companionintelligence.com', localDomain: 'lan' },
+        domain: 'companionintelligence.com',
+      } as any);
+
+      await service.invokeCommand(data, reply);
+
+      const syncCall = cloudflareClientService.syncState.mock.calls[0];
+      const apps = syncCall?.[1] as any[];
+      expect(apps).toHaveLength(1);
+      expect(apps[0]).toMatchObject({ name: 'OS Hub', isHub: true });
     });
 
     it('should not include Hub route when hubSubdomain is not set', async () => {
