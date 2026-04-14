@@ -5,7 +5,7 @@
  *   pnpm exec tsx scripts/init-traefik.ts
  *
  * Environment variables:
- *   RUNTIPI_STATE_PATH - State directory path (default: .internal)
+ *   CI_HUB_STATE_PATH - State directory path (default: .internal)
  */
 import { mkdir, copyFile, writeFile, chmod, rm, stat, readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
