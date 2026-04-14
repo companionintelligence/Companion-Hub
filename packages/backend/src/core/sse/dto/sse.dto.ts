@@ -1,14 +1,14 @@
-import { type } from 'arktype';
-import { createArkDto } from 'nestjs-arktype';
+import { z } from 'zod';
+import { createZodDto } from '@/common/zod-dto';
 
-const streamAppQuerySchema = type({
-  appUrn: 'string',
-  maxLines: 'number.integer | string.integer.parse?',
+const streamAppQuerySchema = z.object({
+  appUrn: z.string(),
+  maxLines: z.union([z.number().int(), z.string().transform(Number)]).optional(),
 });
 
-const streamHubQuerySchema = type({
-  maxLines: 'number.integer | string.integer.parse?',
+const streamHubQuerySchema = z.object({
+  maxLines: z.union([z.number().int(), z.string().transform(Number)]).optional(),
 });
 
-export class StreamAppLogsQueryDto extends createArkDto(streamAppQuerySchema, { name: 'StreamAppLogsQueryDto', input: true }) {}
-export class StreamHubLogsQueryDto extends createArkDto(streamHubQuerySchema, { name: 'StreamHubLogsQueryDto', input: true }) {}
+export class StreamAppLogsQueryDto extends createZodDto(streamAppQuerySchema) {}
+export class StreamHubLogsQueryDto extends createZodDto(streamHubQuerySchema) {}

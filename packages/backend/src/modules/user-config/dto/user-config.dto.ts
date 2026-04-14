@@ -1,16 +1,16 @@
-import { type } from 'arktype';
-import { createArkDto } from 'nestjs-arktype';
+import { z } from 'zod';
+import { createZodDto } from '@/common/zod-dto';
 
-const getUserConfigSchema = type({
-  dockerCompose: 'string | null',
-  appEnv: 'string | null',
-  isEnabled: 'boolean',
+const getUserConfigSchema = z.object({
+  dockerCompose: z.string().nullable(),
+  appEnv: z.string().nullable(),
+  isEnabled: z.boolean(),
 });
 
-const updateUserConfigSchema = type({
-  dockerCompose: 'string',
-  appEnv: 'string',
+const updateUserConfigSchema = z.object({
+  dockerCompose: z.string(),
+  appEnv: z.string(),
 });
 
-export class GetUserConfigDto extends createArkDto(getUserConfigSchema, { name: 'GetUserConfigDto' }) {}
-export class UpdateUserConfigDto extends createArkDto(updateUserConfigSchema, { name: 'UpdateUserConfigDto', input: true }) {}
+export class GetUserConfigDto extends createZodDto(getUserConfigSchema) {}
+export class UpdateUserConfigDto extends createZodDto(updateUserConfigSchema) {}

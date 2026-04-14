@@ -8,7 +8,6 @@ import { Injectable, InternalServerErrorException } from '@nestjs/common';
 import dotenv from 'dotenv';
 import { z } from 'zod';
 import { LOG_LEVEL_ENUM, type LogLevel, LoggerService } from '../logger/logger.service';
-import { type } from 'arktype';
 
 const envSchema = z.object({
   POSTGRES_HOST: z.string(),
@@ -205,11 +204,11 @@ export class ConfigurationService {
 
       const fileContent = await fs.promises.readFile(settingsPath, 'utf8');
       const parsedContent = JSON.parse(fileContent);
-      const currentSettingsResult = settingsSchema.partial()(parsedContent);
-      if (currentSettingsResult instanceof type.errors) {
-        throw currentSettingsResult.summary;
+      const currentSettingsResult = settingsSchema.partial().safeParse(parsedContent);
+      if (!currentSettingsResult.success) {
+        throw currentSettingsResult.error.message;
       }
-      const currentSettings = currentSettingsResult;
+      const currentSettings = currentSettingsResult.data;
 
       await fs.promises.writeFile(settingsPath, `${JSON.stringify({ ...currentSettings, ...settings }, null, 2)}`, 'utf8');
 

@@ -1,16 +1,19 @@
 import { Input } from '@/components/ui/Input';
 import { Switch } from '@/components/ui/Switch';
-import type { dynamicComposeSchemaArk } from '@ci-hub/common/schemas';
+import type { dynamicComposeSchema } from '@ci-hub/common/schemas';
+import type { z } from 'zod';
 import type { UseFormRegister, Control, FieldErrors } from 'react-hook-form';
 import { Controller } from 'react-hook-form';
 import { Tooltip } from 'react-tooltip';
 import { useTranslation } from 'react-i18next';
 
+type FormData = z.infer<typeof dynamicComposeSchema>;
+
 type Props = {
-  register: UseFormRegister<typeof dynamicComposeSchemaArk.infer>;
-  control: Control<typeof dynamicComposeSchemaArk.infer>;
+  register: UseFormRegister<FormData>;
+  control: Control<FormData>;
   serviceIndex: number;
-  errors?: FieldErrors<typeof dynamicComposeSchemaArk.infer>;
+  errors?: FieldErrors<FormData>;
 };
 
 export const AdvancedConfig = ({ register, errors, control, serviceIndex }: Props) => {

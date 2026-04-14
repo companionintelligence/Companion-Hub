@@ -1,10 +1,10 @@
 import { create } from 'zustand';
-import { type } from 'arktype';
-import { dynamicComposeSchemaArk, type serviceSchemaArk } from '@ci-hub/common/schemas';
+import type { z } from 'zod';
+import { dynamicComposeSchema, type ServiceInput } from '@ci-hub/common/schemas';
 import toast from 'react-hot-toast';
 
-type MultiServiceFormData = typeof dynamicComposeSchemaArk.infer;
-type ServiceFormData = typeof serviceSchemaArk.infer;
+type MultiServiceFormData = z.infer<typeof dynamicComposeSchema>;
+type ServiceFormData = ServiceInput;
 
 interface ServiceWithId extends ServiceFormData {
   _id: string;
@@ -16,7 +16,7 @@ interface MultiServiceState {
   activeService: number | 'json';
   isDirty: boolean;
   error: string;
-  validate: (values: typeof dynamicComposeSchemaArk.infer) => boolean;
+  validate: (values: z.infer<typeof dynamicComposeSchema>) => boolean;
 
   // Actions
   setActiveService: (tab: number) => void;
@@ -59,10 +59,10 @@ export const useMultiServiceStore = create<MultiServiceState>()((set, get) => ({
   isDirty: false,
   error: '',
   setServices: (services: ServiceWithId[]) => set({ services }),
-  validate: (values: typeof dynamicComposeSchemaArk.infer) => {
-    const res = dynamicComposeSchemaArk.omit('schemaVersion')(values);
+  validate: (values: z.infer<typeof dynamicComposeSchema>) => {
+    const res = dynamicComposeSchema.omit({ schemaVersion: true }).safeParse(values);
 
-    if (res instanceof type.errors) {
+    if (!res.success) {
       set({ error: 'Invalid configuration.' });
       return false;
     }

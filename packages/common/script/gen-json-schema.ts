@@ -1,8 +1,7 @@
 import z from 'zod';
-import { dynamicComposeUnion } from '../src/schemas/dynamic-compose.js';
+import { dynamicComposeUnion, dynamicComposeSchema } from '../src/schemas/dynamic-compose.js';
 import fs from 'node:fs/promises';
 import { appInfoSchema } from '../src/schemas/app-info.js';
-import { dynamicComposeSchemaArk } from '../src/schemas/dynamic-compose-ark.js';
 import { dynamicComposeSchemaV1 } from '../src/schemas/utils/converters/v1.js';
 
 const dynamicCompose = z.toJSONSchema(dynamicComposeUnion, { unrepresentable: 'any' });
@@ -11,7 +10,7 @@ const appInfo = z.toJSONSchema(appInfoSchema.omit({ urn: true }), { unrepresenta
 const outDir = './json-schemas';
 
 const v1 = z.toJSONSchema(dynamicComposeSchemaV1, { unrepresentable: 'any' });
-const v2 = dynamicComposeSchemaArk.toJsonSchema({});
+const v2 = z.toJSONSchema(dynamicComposeSchema, { unrepresentable: 'any' });
 
 await fs.mkdir(outDir, { recursive: true });
 await fs.mkdir(`${outDir}/v1`, { recursive: true });

@@ -89,12 +89,13 @@ ENV NODE_ENV="production"
 WORKDIR /app
 
 RUN --mount=type=cache,target=/root/.npm \
-    npm install --no-save --omit=dev argon2 class-transformer @opentelemetry/api drizzle-orm pg ssh2 i18next-fs-backend
+    npm install --no-save --omit=dev argon2 class-transformer @nestjs/mapped-types @opentelemetry/api drizzle-orm pg ssh2 i18next-fs-backend
 
 COPY --from=builder_base /deps/docker-binary /usr/local/bin/docker-compose
 RUN chmod +x /usr/local/bin/docker-compose && \
     ls -lh /usr/local/bin/docker-compose && \
     mkdir -p /root/.docker/cli-plugins && \
+    echo '{}' > /root/.docker/config.json && \
     ln -s /usr/local/bin/docker-compose /root/.docker/cli-plugins/docker-compose
 COPY --from=builder /app/package.json ./
 

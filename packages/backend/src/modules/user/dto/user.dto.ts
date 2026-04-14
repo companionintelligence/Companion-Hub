@@ -1,14 +1,14 @@
-import { type } from 'arktype';
-import { createArkDto } from 'nestjs-arktype';
+import { z } from 'zod';
+import { createZodDto } from '@/common/zod-dto';
 
-export const userSchema = type({
-  id: 'number.integer',
-  username: 'string.trim',
-  totpEnabled: 'boolean',
-  locale: 'string.trim',
-  operator: 'boolean',
-  hasCompletedOnboarding: 'boolean',
-  advancedMode: 'boolean',
+export const userSchema = z.object({
+  id: z.number().int(),
+  username: z.string().trim(),
+  totpEnabled: z.boolean(),
+  locale: z.string().trim(),
+  operator: z.boolean(),
+  hasCompletedOnboarding: z.boolean(),
+  advancedMode: z.boolean(),
 });
 
-export class UserDto extends createArkDto(userSchema, { name: 'UserDto' }) {}
+export class UserDto extends createZodDto(userSchema) {}
