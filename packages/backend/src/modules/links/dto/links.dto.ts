@@ -1,38 +1,38 @@
-import { type } from 'arktype';
-import { createArkDto } from 'nestjs-arktype';
+import { z } from 'zod';
+import { createZodDto } from '@/common/zod-dto';
 
-export const linkSchema = type({
-  id: 'number',
-  title: 'string > 0 & string <= 20',
-  description: 'string <= 50 | null',
-  url: 'string.url',
-  iconUrl: 'string.url | "" | null',
-  userId: 'number',
-  isVisibleOnGuestDashboard: 'boolean = false',
+export const linkSchema = z.object({
+  id: z.number(),
+  title: z.string().min(1).max(20),
+  description: z.string().max(50).nullable(),
+  url: z.string().url(),
+  iconUrl: z.union([z.string().url(), z.literal('')]).nullable(),
+  userId: z.number(),
+  isVisibleOnGuestDashboard: z.boolean().default(false),
 });
 
-const linkBodySchema = type({
-  title: 'string > 0 & string <= 20',
-  url: 'string.url',
-  description: 'string <= 50?',
-  iconUrl: 'string.url | ""?',
-  isVisibleOnGuestDashboard: 'boolean = false',
+const linkBodySchema = z.object({
+  title: z.string().min(1).max(20),
+  url: z.string().url(),
+  description: z.string().max(50).optional(),
+  iconUrl: z.union([z.string().url(), z.literal('')]).optional(),
+  isVisibleOnGuestDashboard: z.boolean().default(false),
 });
 
-const editLinkBodySchema = type({
-  title: 'string > 0 & string <= 20',
-  url: 'string.url',
-  description: 'string <= 50?',
-  iconUrl: 'string.url | ""?',
-  isVisibleOnGuestDashboard: 'boolean?',
+const editLinkBodySchema = z.object({
+  title: z.string().min(1).max(20),
+  url: z.string().url(),
+  description: z.string().max(50).optional(),
+  iconUrl: z.union([z.string().url(), z.literal('')]).optional(),
+  isVisibleOnGuestDashboard: z.boolean().optional(),
 });
 
-const linksSchema = type({
-  links: linkSchema.array(),
+const linksSchema = z.object({
+  links: z.array(linkSchema),
 });
 
-export class LinkBodyDto extends createArkDto(linkBodySchema, { name: 'LinkBodyDto', input: true }) {}
+export class LinkBodyDto extends createZodDto(linkBodySchema) {}
 
-export class EditLinkBodyDto extends createArkDto(editLinkBodySchema, { name: 'EditLinkBodyDto', input: true }) {}
+export class EditLinkBodyDto extends createZodDto(editLinkBodySchema) {}
 
-export class LinksDto extends createArkDto(linksSchema, { name: 'LinksDto' }) {}
+export class LinksDto extends createZodDto(linksSchema) {}

@@ -1,14 +1,14 @@
-import { type } from 'arktype';
-import { createArkDto } from 'nestjs-arktype';
+import { z } from 'zod';
+import { createZodDto } from '@/common/zod-dto';
 
-const loadSchema = type({
-  diskUsed: 'number = 0',
-  diskSize: 'number = 0',
-  percentUsed: 'number = 0',
-  cpuLoad: 'number = 0',
-  memoryTotal: 'number = 0',
-  percentUsedMemory: 'number = 0',
+const loadSchema = z.object({
+  diskUsed: z.number().default(0),
+  diskSize: z.number().default(0),
+  percentUsed: z.number().default(0),
+  cpuLoad: z.number().default(0),
+  memoryTotal: z.number().default(0),
+  percentUsedMemory: z.number().default(0),
 });
 
 // Load
-export class LoadDto extends createArkDto(loadSchema, { name: 'LoadDto' }) {}
+export class LoadDto extends createZodDto(loadSchema) {}

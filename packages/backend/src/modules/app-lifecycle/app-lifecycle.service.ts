@@ -7,7 +7,6 @@ import { HttpStatus, Inject, Injectable, OnApplicationBootstrap } from '@nestjs/
 import { ModuleRef } from '@nestjs/core';
 import type { AppUrn } from '@ci-hub/common/types';
 import validator from 'validator';
-import { type } from 'arktype';
 import { AppFilesManager } from '../apps/app-files-manager';
 import { AppsRepository } from '../apps/apps.repository';
 import { AppsService } from '../apps/apps.service';
@@ -169,10 +168,11 @@ export class AppLifecycleService implements OnApplicationBootstrap {
 
     const app = await this.appRepository.getAppByUrn(appUrn);
 
-    const parsedForm = appFormSchema(form);
-    if (parsedForm instanceof type.errors) {
-      throw new TranslatableError('SYSTEM_ERROR_INVALID_BODY', undefined, HttpStatus.BAD_REQUEST, { cause: parsedForm });
+    const parsedFormResult = appFormSchema.safeParse(form);
+    if (!parsedFormResult.success) {
+      throw new TranslatableError('SYSTEM_ERROR_INVALID_BODY', undefined, HttpStatus.BAD_REQUEST, { cause: parsedFormResult.error });
     }
+    const parsedForm = parsedFormResult.data;
 
     if (app) {
       await this.appRepository.updateAppById(app.id, { config: parsedForm, ...parsedForm });
@@ -449,11 +449,12 @@ export class AppLifecycleService implements OnApplicationBootstrap {
   public async updateAppConfig(params: { appUrn: AppUrn; form: unknown }) {
     const { appUrn, form } = params;
 
-    const parsedForm = appFormSchema(form);
+    const parsedFormResult = appFormSchema.safeParse(form);
 
-    if (parsedForm instanceof type.errors) {
-      throw new TranslatableError('SYSTEM_ERROR_INVALID_BODY', undefined, HttpStatus.BAD_REQUEST, { cause: parsedForm });
+    if (!parsedFormResult.success) {
+      throw new TranslatableError('SYSTEM_ERROR_INVALID_BODY', undefined, HttpStatus.BAD_REQUEST, { cause: parsedFormResult.error });
     }
+    const parsedForm = parsedFormResult.data;
 
     const { exposed, domain, exposedLocal, enableAuth, openPort, port } = parsedForm;
 

@@ -6,7 +6,7 @@ pub mod hub_manager;
 pub mod port_manager;
 mod tray;
 
-use tauri::Manager;
+use tauri::{Emitter, Listener, Manager};
 use tauri_plugin_store::StoreExt;
 
 /// Check if the Hub backend is reachable at the given URL.
@@ -47,11 +47,18 @@ async fn get_hub_status_command() -> hub_manager::HubStatus {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
                 let _ = window.set_focus();
                 let _ = window.unminimize();
+            }
+            // Deep links arrive as args when the app is already running
+            for arg in &args {
+                if let Some(code) = extract_pairing_code(arg) {
+                    let _ = app.emit("deep-link-pair", code);
+                }
             }
         }))
         .plugin(tauri_plugin_shell::init())
@@ -159,6 +166,17 @@ pub fn run() {
                 }
             }
 
+            // Listen for deep link events (initial launch on macOS)
+            let app_handle = app.handle().clone();
+            app.listen("deep-link://new-url", move |event| {
+                let payload = event.payload();
+                // Payload may be JSON-encoded string
+                let raw = payload.trim_matches('"');
+                if let Some(code) = extract_pairing_code(raw) {
+                    let _ = app_handle.emit("deep-link-pair", code);
+                }
+            });
+
             Ok(())
         });
 
@@ -171,6 +189,33 @@ pub fn run() {
 }
 
 use sha2::{Sha256, Digest};
+
+/// Extract a 6-character pairing code from a `cihub://pair?code=XXXXXX` deep link URL.
+fn extract_pairing_code(url: &str) -> Option<String> {
+    let trimmed = url.trim();
+    if !trimmed.starts_with("cihub://pair") {
+        return None;
+    }
+    // Try query param: cihub://pair?code=ABC123
+    if let Some(query) = trimmed.split('?').nth(1) {
+        for param in query.split('&') {
+            if let Some(code) = param.strip_prefix("code=") {
+                let code = code.trim().to_uppercase();
+                if code.len() == 6 && code.chars().all(|c| c.is_ascii_alphanumeric()) {
+                    return Some(code);
+                }
+            }
+        }
+    }
+    // Try path: cihub://pair/ABC123
+    if let Some(rest) = trimmed.strip_prefix("cihub://pair/") {
+        let code = rest.split('?').next().unwrap_or("").trim().to_uppercase();
+        if code.len() == 6 && code.chars().all(|c| c.is_ascii_alphanumeric()) {
+            return Some(code);
+        }
+    }
+    None
+}
 
 /// Compute a SHA256 hash of the .env and compose file contents.
 /// Used for hash-based reconciliation — only restart containers when config changes.

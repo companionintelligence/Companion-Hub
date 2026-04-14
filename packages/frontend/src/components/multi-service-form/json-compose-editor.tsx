@@ -1,4 +1,4 @@
-import { dynamicComposeSchemaArk } from '@ci-hub/common/schemas';
+import { dynamicComposeSchema, toJsonSchema } from '@ci-hub/common/schemas';
 import betterAjvErrors from 'better-ajv-errors';
 import Ajv from 'ajv/dist/2020';
 import { useEffect, useState } from 'react';
@@ -8,7 +8,7 @@ import { json } from '@codemirror/lang-json';
 import { copilot } from '@uiw/codemirror-theme-copilot';
 import { useTranslation } from 'react-i18next';
 
-const schema = dynamicComposeSchemaArk.omit('schemaVersion').toJsonSchema({ fallback: { default: (ctx) => ctx.base } });
+const schema = toJsonSchema(dynamicComposeSchema.omit({ schemaVersion: true }));
 
 type Props = {
   onChange: (json: string, error?: string) => void;

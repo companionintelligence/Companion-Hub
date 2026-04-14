@@ -1,88 +1,88 @@
-import { type } from 'arktype';
-import { createArkDto } from 'nestjs-arktype';
+import { z } from 'zod';
+import { createZodDto } from '@/common/zod-dto';
 
-const credentialsSchema = type({
-  username: 'string',
-  password: 'string',
+const credentialsSchema = z.object({
+  username: z.string(),
+  password: z.string(),
 });
 
-const verifyTotpSchema = type({
-  totpCode: 'string',
-  totpSessionId: 'string',
+const verifyTotpSchema = z.object({
+  totpCode: z.string(),
+  totpSessionId: z.string(),
 });
 
-const changeUsernameSchema = type({
-  newUsername: 'string',
-  password: 'string',
+const changeUsernameSchema = z.object({
+  newUsername: z.string(),
+  password: z.string(),
 });
 
-const changePasswordSchema = type({
-  currentPassword: 'string',
-  newPassword: 'string',
+const changePasswordSchema = z.object({
+  currentPassword: z.string(),
+  newPassword: z.string(),
 });
 
-const getTotpUriSchema = type({
-  password: 'string',
+const getTotpUriSchema = z.object({
+  password: z.string(),
 });
 
-const setupTotpSchema = type({
-  code: 'string',
+const setupTotpSchema = z.object({
+  code: z.string(),
 });
 
-const disableTotpSchema = type({
-  password: 'string',
+const disableTotpSchema = z.object({
+  password: z.string(),
 });
 
-const resetPasswordSchema = type({
-  newPassword: 'string',
+const resetPasswordSchema = z.object({
+  newPassword: z.string(),
 });
 
-const loginResponseSchema = type({
-  success: 'boolean',
-  totpSessionId: 'string?',
-  sessionId: 'string?',
+const loginResponseSchema = z.object({
+  success: z.boolean(),
+  totpSessionId: z.string().optional(),
+  sessionId: z.string().optional(),
 });
 
-const registerResponseSchema = type({
-  success: 'boolean',
+const registerResponseSchema = z.object({
+  success: z.boolean(),
 });
 
-const getTotpUriResponseSchema = type({
-  key: 'string',
-  uri: 'string',
+const getTotpUriResponseSchema = z.object({
+  key: z.string(),
+  uri: z.string(),
 });
 
-const resetPasswordResponseSchema = type({
-  success: 'boolean',
-  email: 'string',
+const resetPasswordResponseSchema = z.object({
+  success: z.boolean(),
+  email: z.string(),
 });
 
-const checkResetPasswordRequestSchema = type({
-  isRequestPending: 'boolean',
+const checkResetPasswordRequestSchema = z.object({
+  isRequestPending: z.boolean(),
 });
 
 // Login
-export class LoginBody extends createArkDto(credentialsSchema, { name: 'LoginBody', input: true }) {}
-export class VerifyTotpBody extends createArkDto(verifyTotpSchema, { name: 'VerifyTotpBody', input: true }) {}
-export class LoginDto extends createArkDto(loginResponseSchema, { name: 'LoginDto' }) {}
+export class LoginBody extends createZodDto(credentialsSchema) {}
+export class VerifyTotpBody extends createZodDto(verifyTotpSchema) {}
+export class LoginDto extends createZodDto(loginResponseSchema) {}
 
 // Register
-export class RegisterBody extends createArkDto(credentialsSchema, { name: 'RegisterBody', input: true }) {}
-export class RegisterDto extends createArkDto(registerResponseSchema, { name: 'RegisterDto' }) {}
+export class RegisterBody extends createZodDto(credentialsSchema) {}
+export class RegisterDto extends createZodDto(registerResponseSchema) {}
 
 // Change username
-export class ChangeUsernameBody extends createArkDto(changeUsernameSchema, { name: 'ChangeUsernameBody', input: true }) {}
+export class ChangeUsernameBody extends createZodDto(changeUsernameSchema) {}
 
 // Change password
-export class ChangePasswordBody extends createArkDto(changePasswordSchema, { name: 'ChangePasswordBody', input: true }) {}
+export class ChangePasswordBody extends createZodDto(changePasswordSchema) {}
 
 // TOTP
-export class GetTotpUriBody extends createArkDto(getTotpUriSchema, { name: 'GetTotpUriBody', input: true }) {}
-export class GetTotpUriDto extends createArkDto(getTotpUriResponseSchema, { name: 'GetTotpUriDto' }) {}
-export class SetupTotpBody extends createArkDto(setupTotpSchema, { name: 'SetupTotpBody', input: true }) {}
-export class DisableTotpBody extends createArkDto(disableTotpSchema, { name: 'DisableTotpBody', input: true }) {}
+export class GetTotpUriBody extends createZodDto(getTotpUriSchema) {}
+export class GetTotpUriDto extends createZodDto(getTotpUriResponseSchema) {}
+export class SetupTotpBody extends createZodDto(setupTotpSchema) {}
+export class DisableTotpBody extends createZodDto(disableTotpSchema) {}
 
 // Reset password
-export class ResetPasswordBody extends createArkDto(resetPasswordSchema, { name: 'ResetPasswordBody', input: true }) {}
-export class ResetPasswordDto extends createArkDto(resetPasswordResponseSchema, { name: 'ResetPasswordDto' }) {}
-export class CheckResetPasswordRequestDto extends createArkDto(checkResetPasswordRequestSchema, { name: 'CheckResetPasswordRequestDto' }) {}
+export class ResetPasswordBody extends createZodDto(resetPasswordSchema) {}
+export class ResetPasswordDto extends createZodDto(resetPasswordResponseSchema) {}
+export class CheckResetPasswordRequestDto extends createZodDto(checkResetPasswordRequestSchema) {}
