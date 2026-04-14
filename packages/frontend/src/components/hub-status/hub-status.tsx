@@ -45,6 +45,13 @@ type DockerAccessCheck = {
 
 const POST_INSTALL_POLL_ATTEMPTS = 15;
 const POST_INSTALL_POLL_DELAY_MS = 2000;
+const MANUAL_INSTALL_COMMANDS = [
+  'tmp_script="$(mktemp)"',
+  'curl -fsSL https://get.docker.com -o "$tmp_script"',
+  'sudo sh "$tmp_script"',
+  'rm -f "$tmp_script"',
+  'sudo usermod -aG docker $USER',
+] as const;
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -229,10 +236,19 @@ function LinuxDockerInstall() {
         </button>
         <div className="text-center max-w-md text-muted-foreground mt-4 space-y-2">
           <p className="text-xs">Or install manually:</p>
-          <div className="text-left bg-muted rounded-md p-3 text-xs font-mono">
-            <p>curl -fsSL https://get.docker.com | sh</p>
-            <p>sudo usermod -aG docker $USER</p>
+          <div className="text-left bg-muted rounded-md p-3 text-xs font-mono space-y-1">
+            {MANUAL_INSTALL_COMMANDS.map((command) => (
+              <p key={command}>{command}</p>
+            ))}
           </div>
+          <a
+            href="https://docs.docker.com/engine/install/"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-xs text-muted-foreground/70 underline hover:text-foreground"
+          >
+            Docker’s official install docs
+          </a>
         </div>
       </>
     );
@@ -252,9 +268,10 @@ function LinuxDockerInstall() {
             Install Docker
           </button>
         ) : (
-          <div className="text-left bg-muted rounded-md p-3 text-sm font-mono">
-            <p>curl -fsSL https://get.docker.com | sh</p>
-            <p>sudo usermod -aG docker $USER</p>
+          <div className="text-left bg-muted rounded-md p-3 text-sm font-mono space-y-1">
+            {MANUAL_INSTALL_COMMANDS.map((command) => (
+              <p key={command}>{command}</p>
+            ))}
           </div>
         )}
         <p className="text-xs text-muted-foreground/70">You will be prompted for your password. This installs Docker Engine (not Docker Desktop).</p>

@@ -222,22 +222,11 @@ pub fn check_docker_access() -> DockerAccessCheck {
     } else {
         stdout.clone()
     };
-    let combined_lower = combined.to_lowercase();
+    classify_docker_access_result(&combined, output.status.code())
+}
 
-    if combined_lower.contains("permission denied")
-        || combined_lower.contains("got permission denied")
-        || combined_lower.contains("docker.sock")
-            && (combined_lower.contains("permission") || combined_lower.contains("connect"))
-    {
-        return DockerAccessCheck {
-            state: DockerAccessState::PermissionDenied,
-            detail: Some(if combined.is_empty() {
-                "Docker is installed, but this user cannot access the Docker daemon yet.".to_string()
-            } else {
-                combined
-            }),
-        };
-    }
+fn classify_docker_access_result(combined: &str, exit_code: Option<i32>) -> DockerAccessCheck {
+    let combined_lower = combined.to_lowercase();
 
     if combined_lower.contains("cannot connect to the docker daemon")
         || combined_lower.contains("is the docker daemon running")
@@ -250,7 +239,22 @@ pub fn check_docker_access() -> DockerAccessCheck {
             detail: Some(if combined.is_empty() {
                 "Docker is installed, but the daemon is not ready yet.".to_string()
             } else {
-                combined
+                combined.to_string()
+            }),
+        };
+    }
+
+    if combined_lower.contains("permission denied")
+        || combined_lower.contains("got permission denied")
+        || combined_lower.contains("permission denied while trying to connect")
+        || combined_lower.contains("dial unix /var/run/docker.sock: connect: permission denied")
+    {
+        return DockerAccessCheck {
+            state: DockerAccessState::PermissionDenied,
+            detail: Some(if combined.is_empty() {
+                "Docker is installed, but this user cannot access the Docker daemon yet.".to_string()
+            } else {
+                combined.to_string()
             }),
         };
     }
@@ -258,9 +262,9 @@ pub fn check_docker_access() -> DockerAccessCheck {
     DockerAccessCheck {
         state: DockerAccessState::Error,
         detail: Some(if combined.is_empty() {
-            format!("docker info failed with exit code {:?}", output.status.code())
+            format!("docker info failed with exit code {:?}", exit_code)
         } else {
-            combined
+            combined.to_string()
         }),
     }
 }
@@ -684,8 +688,29 @@ fn format_command_output(stdout: &str, stderr: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::{classify_docker_access_result, DockerAccessState};
     #[cfg(target_os = "linux")]
     use super::{format_command_output, truncate_command_output, MAX_COMMAND_OUTPUT_CHARS};
+
+    #[test]
+    fn classifies_daemon_unavailable_before_permission_denied() {
+        let result = classify_docker_access_result(
+            "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?",
+            Some(1),
+        );
+
+        assert!(matches!(result.state, DockerAccessState::DaemonUnavailable));
+    }
+
+    #[test]
+    fn classifies_explicit_permission_denied_as_permission_issue() {
+        let result = classify_docker_access_result(
+            "Got permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock",
+            Some(1),
+        );
+
+        assert!(matches!(result.state, DockerAccessState::PermissionDenied));
+    }
 
     #[cfg(target_os = "linux")]
     #[test]
