@@ -446,3 +446,52 @@ fn strip_port_vars(content: &str) -> String {
         .join("\n")
         + "\n"
 }
+
+/// Install Docker Engine on Linux using the official convenience script.
+/// Uses pkexec for privilege escalation (GUI polkit prompt).
+#[cfg(target_os = "linux")]
+pub fn install_docker_linux() -> Result<String, String> {
+    use std::io::Write as IoWrite;
+
+    let script = format!(
+        r#"#!/bin/bash
+set -e
+export DEBIAN_FRONTEND=noninteractive
+curl -fsSL https://get.docker.com | sh
+usermod -aG docker {user}
+systemctl enable docker
+systemctl start docker
+"#,
+        user = std::env::var("USER").unwrap_or_else(|_| "root".to_string())
+    );
+
+    let tmp_script = std::env::temp_dir().join("ci-hub-docker-install.sh");
+    let mut f = std::fs::File::create(&tmp_script)
+        .map_err(|e| format!("Failed to create install script: {}", e))?;
+    f.write_all(script.as_bytes())
+        .map_err(|e| format!("Failed to write install script: {}", e))?;
+    drop(f);
+
+    Command::new("chmod")
+        .args(["+x", &tmp_script.to_string_lossy()])
+        .output()
+        .map_err(|e| format!("chmod failed: {}", e))?;
+
+    let output = Command::new("pkexec")
+        .args(["bash", &tmp_script.to_string_lossy()])
+        .output()
+        .map_err(|e| format!("Failed to run installer: {}", e))?;
+
+    let _ = std::fs::remove_file(&tmp_script);
+
+    if output.status.success() {
+        Ok("Docker installed successfully. You may need to log out and back in for group changes to take effect.".to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        if stderr.contains("dismissed") || stderr.contains("Not authorized") {
+            Err("Authorization was cancelled.".to_string())
+        } else {
+            Err(format!("Docker installation failed: {}", stderr))
+        }
+    }
+}
