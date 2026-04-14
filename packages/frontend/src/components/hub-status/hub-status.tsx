@@ -35,6 +35,259 @@ function isAppleSilicon(): boolean {
   }
 }
 
+type DockerInstallState = 'idle' | 'installing' | 'success' | 'error' | 'needs-logout' | 'starting-daemon';
+type DockerAccessState = 'available' | 'permission_denied' | 'daemon_unavailable' | 'not_installed' | 'error';
+
+type DockerAccessCheck = {
+  state: DockerAccessState;
+  detail?: string | null;
+};
+
+const POST_INSTALL_POLL_ATTEMPTS = 15;
+const POST_INSTALL_POLL_DELAY_MS = 2000;
+const MANUAL_INSTALL_COMMANDS = [
+  'tmp_script="$(mktemp)"',
+  'curl -fsSL https://get.docker.com -o "$tmp_script"',
+  'sudo sh "$tmp_script"',
+  'rm -f "$tmp_script"',
+  'sudo usermod -aG docker $USER',
+] as const;
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getErrorMessage(err: unknown) {
+  return err instanceof Error ? err.message : String(err);
+}
+
+export async function pollDockerAccess(
+  invoke: (cmd: string) => Promise<unknown>,
+  options?: {
+    attempts?: number;
+    delayMs?: number;
+    sleepFn?: (ms: number) => Promise<void>;
+  },
+): Promise<DockerAccessCheck> {
+  const attempts = options?.attempts ?? POST_INSTALL_POLL_ATTEMPTS;
+  const delayMs = options?.delayMs ?? POST_INSTALL_POLL_DELAY_MS;
+  const sleepFn = options?.sleepFn ?? sleep;
+
+  let lastResult: DockerAccessCheck = {
+    state: 'error',
+    detail: 'Docker did not become ready after installation.',
+  };
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const result = (await invoke('check_docker_access_command')) as DockerAccessCheck;
+    lastResult = result;
+
+    if (result.state === 'available' || result.state === 'permission_denied' || result.state === 'error') {
+      return result;
+    }
+
+    if (attempt < attempts - 1) {
+      await sleepFn(delayMs);
+    }
+  }
+
+  return lastResult;
+}
+
+function LinuxDockerInstall() {
+  const [installState, setInstallState] = useState<DockerInstallState>('idle');
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const invoke = getTauriInvoke();
+
+  const applyPostInstallAccessState = useCallback((dockerAccess: DockerAccessCheck) => {
+    if (dockerAccess.state === 'available') {
+      setInstallState('success');
+      return;
+    }
+
+    if (dockerAccess.state === 'permission_denied') {
+      setInstallState('needs-logout');
+      return;
+    }
+
+    if (dockerAccess.state === 'daemon_unavailable') {
+      setErrorMessage(dockerAccess.detail ?? 'Docker was installed, but the daemon is still starting. Wait a moment, then check again.');
+      setInstallState('starting-daemon');
+      return;
+    }
+
+    if (dockerAccess.state === 'not_installed') {
+      setErrorMessage(
+        dockerAccess.detail ??
+          'Docker install completed, but the Docker CLI is still unavailable. Install Docker manually or try the installer again.',
+      );
+      setInstallState('error');
+      return;
+    }
+
+    setErrorMessage(dockerAccess.detail ?? 'Docker installation did not complete successfully.');
+    setInstallState('error');
+  }, []);
+
+  const checkPostInstallAccess = useCallback(async () => {
+    if (!invoke) return;
+
+    try {
+      const dockerAccess = await pollDockerAccess(invoke);
+      applyPostInstallAccessState(dockerAccess);
+    } catch (err) {
+      setErrorMessage(getErrorMessage(err));
+      setInstallState('error');
+    }
+  }, [applyPostInstallAccessState, invoke]);
+
+  const handleInstall = useCallback(async () => {
+    if (!invoke) return;
+    setInstallState('installing');
+    setErrorMessage(null);
+    try {
+      await invoke('install_docker_linux');
+      await checkPostInstallAccess();
+    } catch (err) {
+      const msg = getErrorMessage(err);
+      if (msg.includes('cancelled') || msg.includes('Authorization')) {
+        setInstallState('idle');
+      } else {
+        setErrorMessage(msg);
+        setInstallState('error');
+      }
+    }
+  }, [checkPostInstallAccess, invoke]);
+
+  if (installState === 'installing') {
+    return (
+      <>
+        <h1 className="text-2xl font-semibold text-foreground">Installing Docker\u2026</h1>
+        <div className="flex items-center gap-3">
+          <svg
+            className="h-5 w-5 animate-spin text-primary"
+            xmlns="http://www.w3.org/2000/svg"
+            fill="none"
+            viewBox="0 0 24 24"
+            role="img"
+            aria-label="Loading"
+          >
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+          </svg>
+          <span className="text-muted-foreground">This may take a minute. You will be prompted for your password.</span>
+        </div>
+      </>
+    );
+  }
+
+  if (installState === 'success') {
+    return (
+      <>
+        <h1 className="text-2xl font-semibold text-foreground">Docker Installed!</h1>
+        <p className="text-muted-foreground">Docker is ready. The Hub will start automatically.</p>
+      </>
+    );
+  }
+
+  if (installState === 'needs-logout') {
+    return (
+      <>
+        <h1 className="text-2xl font-semibold text-foreground">Almost There</h1>
+        <div className="text-center max-w-md text-muted-foreground space-y-3">
+          <p>Docker has been installed, but you need to log out and back in for group permissions to take effect.</p>
+          <p className="text-sm">After logging back in, restart this application.</p>
+        </div>
+      </>
+    );
+  }
+
+  if (installState === 'starting-daemon') {
+    return (
+      <>
+        <h1 className="text-2xl font-semibold text-foreground">Docker Installed — Finishing Startup</h1>
+        <div className="text-center max-w-md text-muted-foreground space-y-3">
+          <p>Docker was installed successfully, but the daemon is still starting.</p>
+          <p className="text-sm">Wait a moment, then check again. If this keeps happening, try restarting Docker or your machine.</p>
+          {errorMessage && <p className="text-xs break-words">{errorMessage}</p>}
+        </div>
+        <button
+          type="button"
+          onClick={checkPostInstallAccess}
+          className="inline-flex items-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+        >
+          Check Again
+        </button>
+      </>
+    );
+  }
+
+  if (installState === 'error') {
+    return (
+      <>
+        <h1 className="text-2xl font-semibold text-foreground">Installation Failed</h1>
+        <p className="text-center max-w-md text-muted-foreground">{errorMessage}</p>
+        <button
+          type="button"
+          onClick={handleInstall}
+          className="inline-flex items-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+        >
+          Try Again
+        </button>
+        <div className="text-center max-w-md text-muted-foreground mt-4 space-y-2">
+          <p className="text-xs">Or install manually:</p>
+          <div className="text-left bg-muted rounded-md p-3 text-xs font-mono space-y-1">
+            {MANUAL_INSTALL_COMMANDS.map((command) => (
+              <p key={command}>{command}</p>
+            ))}
+          </div>
+          <a
+            href="https://docs.docker.com/engine/install/"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-xs text-muted-foreground/70 underline hover:text-foreground"
+          >
+            Docker’s official install docs
+          </a>
+        </div>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <h1 className="text-2xl font-semibold text-foreground">Docker Engine Required</h1>
+      <div className="text-center max-w-md text-muted-foreground space-y-3">
+        <p>Companion Hub requires Docker to run containers. We can install it for you automatically.</p>
+        {invoke ? (
+          <button
+            type="button"
+            onClick={handleInstall}
+            className="inline-flex items-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+          >
+            Install Docker
+          </button>
+        ) : (
+          <div className="text-left bg-muted rounded-md p-3 text-sm font-mono space-y-1">
+            {MANUAL_INSTALL_COMMANDS.map((command) => (
+              <p key={command}>{command}</p>
+            ))}
+          </div>
+        )}
+        <p className="text-xs text-muted-foreground/70">You will be prompted for your password. This installs Docker Engine (not Docker Desktop).</p>
+        <a
+          href="https://docs.docker.com/engine/install/"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-xs text-muted-foreground/70 underline hover:text-foreground"
+        >
+          Prefer to install manually?
+        </a>
+      </div>
+    </>
+  );
+}
+
 function DockerInstallGuide() {
   const platform = detectPlatform();
 
@@ -94,28 +347,8 @@ function DockerInstallGuide() {
     );
   }
 
-  // Linux
-  return (
-    <>
-      <h1 className="text-2xl font-semibold text-foreground">Docker Engine Required</h1>
-      <div className="text-center max-w-md text-muted-foreground space-y-3">
-        <p>Companion Hub requires Docker to run.</p>
-        <div className="text-left bg-muted rounded-md p-3 text-sm font-mono">
-          <p>curl -fsSL https://get.docker.com | sh</p>
-          <p>sudo usermod -aG docker $USER</p>
-        </div>
-        <p className="text-sm">Then log out and back in, and restart this application.</p>
-        <a
-          href="https://docs.docker.com/engine/install/"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="inline-flex items-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-        >
-          View Docker Install Guide
-        </a>
-      </div>
-    </>
-  );
+  // Linux — automatic install via Tauri IPC
+  return <LinuxDockerInstall />;
 }
 
 export function HubStatus({ children }: HubStatusProps) {

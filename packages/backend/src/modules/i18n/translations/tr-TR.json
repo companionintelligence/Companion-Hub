@@ -419,7 +419,7 @@
   "MY_APPS_UPDATE_ALL_IN_PROGRESS": "Tüm uygulamalar güncelleniyor",
   "MY_APPS_UPDATE_AVAILABLE": "Güncelleme mevcut",
   "MY_APPS_PENDING_RESTART": "Bu uygulamanın yapılandırması değişti. Değişiklikleri uygulamak için uygulamayı yeniden başlatın.",
-  "RUNTIPI": "Companion Hub",
+  "APP_NAME": "Companion Hub",
   "SERVER_ERROR_INVALID_LOCALE": "Geçersiz yerel ayar",
   "SERVER_ERROR_NOT_ALLOWED_IN_DEMO": "Demo modunda izin verilmiyor",
   "SERVER_ERROR_NOT_ALLOWED_IN_DEV": "Geliştirici modunda izin verilmiyor",

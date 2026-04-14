@@ -419,7 +419,7 @@
   "MY_APPS_UPDATE_ALL_IN_PROGRESS": "Atualizando todos os aplicativos",
   "MY_APPS_UPDATE_AVAILABLE": "Atualização disponível",
   "MY_APPS_PENDING_RESTART": "A configuração deste aplicativo foi alterada. Reinicie o aplicativo para aplicar as alterações.",
-  "RUNTIPI": "Companion Hub",
+  "APP_NAME": "Companion Hub",
   "SERVER_ERROR_INVALID_LOCALE": "Idioma inválido",
   "SERVER_ERROR_NOT_ALLOWED_IN_DEMO": "Não é permitido no modo demonstração",
   "SERVER_ERROR_NOT_ALLOWED_IN_DEV": "Não permitido no modo de desenvolvimento",

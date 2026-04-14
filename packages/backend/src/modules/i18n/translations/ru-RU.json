@@ -419,7 +419,7 @@
   "MY_APPS_UPDATE_ALL_IN_PROGRESS": "Обновление всех приложений",
   "MY_APPS_UPDATE_AVAILABLE": "Доступно обновление",
   "MY_APPS_PENDING_RESTART": "Настройки этого приложения изменились. Перезапустите приложение, чтобы применить изменения.",
-  "RUNTIPI": "Companion Hub",
+  "APP_NAME": "Companion Hub",
   "SERVER_ERROR_INVALID_LOCALE": "Недопустимый язык",
   "SERVER_ERROR_NOT_ALLOWED_IN_DEMO": "Запрещено в демо-режиме",
   "SERVER_ERROR_NOT_ALLOWED_IN_DEV": "Запрещено в режиме разработки",

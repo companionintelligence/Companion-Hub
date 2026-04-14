@@ -38,6 +38,25 @@ async fn check_docker_available() -> Result<bool, String> {
     Ok(hub_manager::is_docker_available())
 }
 
+/// Return richer Docker access diagnostics for post-install handling.
+#[tauri::command]
+async fn check_docker_access_command() -> Result<hub_manager::DockerAccessCheck, String> {
+    Ok(hub_manager::check_docker_access())
+}
+
+/// Install Docker Engine on Linux (uses pkexec for privilege escalation).
+#[tauri::command]
+async fn install_docker_linux() -> Result<String, String> {
+    #[cfg(target_os = "linux")]
+    {
+        hub_manager::install_docker_linux()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Err("Docker auto-install is only supported on Linux".to_string())
+    }
+}
+
 /// Get the current Hub status (Docker availability, container state, health).
 #[tauri::command]
 async fn get_hub_status_command() -> hub_manager::HubStatus {
@@ -63,7 +82,9 @@ pub fn run() {
             discover_hubs,
             start_hub_command,
             check_docker_available,
+            check_docker_access_command,
             get_hub_status_command,
+            install_docker_linux,
         ])
         .setup(|app| {
             // Restore saved window geometry

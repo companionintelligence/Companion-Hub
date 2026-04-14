@@ -1,11 +1,16 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::PermissionsExt;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+#[cfg(target_os = "linux")]
+const MAX_COMMAND_OUTPUT_CHARS: usize = 400;
 
 pub fn docker_command() -> Command {
     let docker_path = find_docker_binary();
@@ -88,6 +93,22 @@ pub enum HubStatus {
     Error { message: String },
 }
 
+#[derive(Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DockerAccessState {
+    Available,
+    PermissionDenied,
+    DaemonUnavailable,
+    NotInstalled,
+    Error,
+}
+
+#[derive(Clone, serde::Serialize)]
+pub struct DockerAccessCheck {
+    pub state: DockerAccessState,
+    pub detail: Option<String>,
+}
+
 /// Get the current status of the Hub by inspecting the Docker container.
 pub fn get_hub_status() -> HubStatus {
     if !is_docker_available() {
@@ -165,11 +186,87 @@ pub fn get_hub_data_dir() -> PathBuf {
 
 /// Check if Docker is available
 pub fn is_docker_available() -> bool {
-    docker_command()
-        .arg("info")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    matches!(check_docker_access().state, DockerAccessState::Available)
+}
+
+pub fn check_docker_access() -> DockerAccessCheck {
+    let output = match docker_command().arg("info").output() {
+        Ok(output) => output,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return DockerAccessCheck {
+                state: DockerAccessState::NotInstalled,
+                detail: Some("Docker CLI was not found on PATH.".to_string()),
+            };
+        }
+        Err(error) => {
+            return DockerAccessCheck {
+                state: DockerAccessState::Error,
+                detail: Some(format!("Failed to run docker info: {}", error)),
+            };
+        }
+    };
+
+    if output.status.success() {
+        return DockerAccessCheck {
+            state: DockerAccessState::Available,
+            detail: None,
+        };
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let combined = if !stderr.is_empty() && !stdout.is_empty() {
+        format!("{}\n{}", stderr, stdout)
+    } else if !stderr.is_empty() {
+        stderr.clone()
+    } else {
+        stdout.clone()
+    };
+    classify_docker_access_result(&combined, output.status.code())
+}
+
+fn classify_docker_access_result(combined: &str, exit_code: Option<i32>) -> DockerAccessCheck {
+    let combined_lower = combined.to_lowercase();
+
+    if combined_lower.contains("cannot connect to the docker daemon")
+        || combined_lower.contains("is the docker daemon running")
+        || combined_lower.contains("error during connect")
+        || combined_lower.contains("connection refused")
+        || combined_lower.contains("context deadline exceeded")
+    {
+        return DockerAccessCheck {
+            state: DockerAccessState::DaemonUnavailable,
+            detail: Some(if combined.is_empty() {
+                "Docker is installed, but the daemon is not ready yet.".to_string()
+            } else {
+                combined.to_string()
+            }),
+        };
+    }
+
+    if combined_lower.contains("permission denied")
+        || combined_lower.contains("got permission denied")
+        || combined_lower.contains("permission denied while trying to connect")
+        || combined_lower.contains("dial unix /var/run/docker.sock: connect: permission denied")
+    {
+        return DockerAccessCheck {
+            state: DockerAccessState::PermissionDenied,
+            detail: Some(if combined.is_empty() {
+                "Docker is installed, but this user cannot access the Docker daemon yet.".to_string()
+            } else {
+                combined.to_string()
+            }),
+        };
+    }
+
+    DockerAccessCheck {
+        state: DockerAccessState::Error,
+        detail: Some(if combined.is_empty() {
+            format!("docker info failed with exit code {:?}", exit_code)
+        } else {
+            combined.to_string()
+        }),
+    }
 }
 
 /// Check if Hub containers exist (stopped or running)
@@ -445,4 +542,194 @@ fn strip_port_vars(content: &str) -> String {
         .collect::<Vec<_>>()
         .join("\n")
         + "\n"
+}
+
+/// Install Docker Engine on Linux using the official convenience script.
+/// Uses pkexec for privilege escalation (GUI polkit prompt).
+#[cfg(target_os = "linux")]
+pub fn install_docker_linux() -> Result<String, String> {
+    use std::io::Write as IoWrite;
+    use tempfile::NamedTempFile;
+
+    let username = resolve_current_username()?;
+    let pkexec_path = find_executable("pkexec").ok_or_else(|| {
+        "pkexec is not installed or not on PATH. Install polkit/pkexec and try again."
+            .to_string()
+    })?;
+
+    let mut wrapper_script = NamedTempFile::new()
+        .map_err(|e| format!("Failed to create temporary install script: {}", e))?;
+    wrapper_script
+        .write_all(
+            br#"#!/bin/bash
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+installer_script="$(mktemp)"
+cleanup() {
+  rm -f "$installer_script"
+}
+trap cleanup EXIT
+curl -fsSL https://get.docker.com -o "$installer_script"
+sh "$installer_script"
+usermod -aG docker "$1"
+systemctl enable docker
+systemctl start docker
+"#,
+        )
+        .map_err(|e| format!("Failed to write install script: {}", e))?;
+
+    let permissions = std::fs::Permissions::from_mode(0o700);
+    wrapper_script
+        .as_file()
+        .set_permissions(permissions)
+        .map_err(|e| format!("Failed to set install script permissions: {}", e))?;
+
+    let output = Command::new(&pkexec_path)
+        .arg(wrapper_script.path())
+        .arg(&username)
+        .output()
+        .map_err(|e| format!("Failed to run pkexec installer: {}", e))?;
+
+    if output.status.success() {
+        Ok("Docker installed successfully. You may need to log out and back in for group changes to take effect.".to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let combined = format_command_output(&stdout, &stderr);
+        let combined_lower = combined.to_lowercase();
+
+        if combined_lower.contains("dismissed")
+            || combined_lower.contains("not authorized")
+            || combined_lower.contains("authorization required")
+            || combined_lower.contains("authentication failed")
+        {
+            Err("Authorization was cancelled or denied.".to_string())
+        } else if combined.is_empty() {
+            Err(format!(
+                "Docker installation failed with exit code {:?}.",
+                output.status.code()
+            ))
+        } else {
+            Err(format!("Docker installation failed: {}", combined))
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn resolve_current_username() -> Result<String, String> {
+    let output = Command::new("id")
+        .args(["-un"])
+        .output()
+        .map_err(|e| format!("Failed to resolve current username: {}", e))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "Failed to resolve current username: {}",
+            format_command_output(
+                &String::from_utf8_lossy(&output.stdout),
+                &String::from_utf8_lossy(&output.stderr)
+            )
+        ));
+    }
+
+    let username = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if username.is_empty() {
+        Err("Failed to resolve current username from current UID.".to_string())
+    } else {
+        Ok(username)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn find_executable(binary: &str) -> Option<PathBuf> {
+    Command::new("which")
+        .arg(binary)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if path.is_empty() {
+                None
+            } else {
+                Some(PathBuf::from(path))
+            }
+        })
+}
+
+#[cfg(target_os = "linux")]
+fn truncate_command_output(output: &str) -> String {
+    let trimmed = output.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let char_count = trimmed.chars().count();
+    if char_count <= MAX_COMMAND_OUTPUT_CHARS {
+        return trimmed.to_string();
+    }
+
+    let truncated: String = trimmed.chars().take(MAX_COMMAND_OUTPUT_CHARS).collect();
+    format!("{}… [truncated {} chars]", truncated, char_count - MAX_COMMAND_OUTPUT_CHARS)
+}
+
+#[cfg(target_os = "linux")]
+fn format_command_output(stdout: &str, stderr: &str) -> String {
+    let stdout = truncate_command_output(stdout);
+    let stderr = truncate_command_output(stderr);
+
+    match (stdout.is_empty(), stderr.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => stdout,
+        (true, false) => stderr,
+        (false, false) => format!("stdout: {} | stderr: {}", stdout, stderr),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{classify_docker_access_result, DockerAccessState};
+    #[cfg(target_os = "linux")]
+    use super::{format_command_output, truncate_command_output, MAX_COMMAND_OUTPUT_CHARS};
+
+    #[test]
+    fn classifies_daemon_unavailable_before_permission_denied() {
+        let result = classify_docker_access_result(
+            "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?",
+            Some(1),
+        );
+
+        assert!(matches!(result.state, DockerAccessState::DaemonUnavailable));
+    }
+
+    #[test]
+    fn classifies_explicit_permission_denied_as_permission_issue() {
+        let result = classify_docker_access_result(
+            "Got permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock",
+            Some(1),
+        );
+
+        assert!(matches!(result.state, DockerAccessState::PermissionDenied));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn truncates_long_command_output() {
+        let output = "x".repeat(MAX_COMMAND_OUTPUT_CHARS + 25);
+        let truncated = truncate_command_output(&output);
+
+        assert!(truncated.contains("[truncated 25 chars]"));
+        assert!(truncated.starts_with(&"x".repeat(MAX_COMMAND_OUTPUT_CHARS)));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn formats_stdout_and_stderr_with_truncation() {
+        let stdout = "ok";
+        let stderr = "y".repeat(MAX_COMMAND_OUTPUT_CHARS + 10);
+        let formatted = format_command_output(stdout, &stderr);
+
+        assert!(formatted.starts_with("stdout: ok | stderr: "));
+        assert!(formatted.contains("[truncated 10 chars]"));
+    }
 }

@@ -165,7 +165,7 @@ export class ServiceBuilder {
    * @example
    * ```typescript
    * const service = new ServiceBuilder();
-   * service.addNetwork('tipi_main_network');
+   * service.addNetwork('hub_main_network');
    * ```
    */
   setNetwork(network: string, priority = 0) {
@@ -581,7 +581,7 @@ export class ServiceBuilder {
    * service.setImage('nginx:latest')
    *  .setName('nginx')
    *  .setRestartPolicy('always')
-   *  .addNetwork('tipi_main_network')
+   *  .addNetwork('hub_main_network')
    *  .build();
    *  ```
    */

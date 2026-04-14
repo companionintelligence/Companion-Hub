@@ -419,7 +419,7 @@
   "MY_APPS_UPDATE_ALL_IN_PROGRESS": "Az összes alkalmazás frissítése",
   "MY_APPS_UPDATE_AVAILABLE": "Frissítés elérhető",
   "MY_APPS_PENDING_RESTART": "Az alkalmazás konfigurációja megváltozott. Indítsd újra az alkalmazást a változtatások alkalmazásához.",
-  "RUNTIPI": "Companion Hub",
+  "APP_NAME": "Companion Hub",
   "SERVER_ERROR_INVALID_LOCALE": "Érvénytelen nyelvi beállítás",
   "SERVER_ERROR_NOT_ALLOWED_IN_DEMO": "Demó üzemmódban nem engedélyezett",
   "SERVER_ERROR_NOT_ALLOWED_IN_DEV": "Dev módban nem megengedett",
