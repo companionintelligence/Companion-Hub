@@ -65,7 +65,7 @@ async function addNewApp(config: AppConfig): Promise<void> {
     // Create config.json
     const appConfig = {
       $schema: 'https://schemas.companionintelligence.com/v2/app-info.json',
-      min_tipi_version: 'v4.5.0',
+      min_hub_version: 'v0.1.0',
       name: config.name,
       id: config.id,
       available: true,

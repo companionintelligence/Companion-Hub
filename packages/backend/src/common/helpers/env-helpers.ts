@@ -241,7 +241,7 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   envMap.set('POSTGRES_USERNAME', resolve('POSTGRES_USERNAME', { envMap, fallback: DEFAULT_POSTGRES_USERNAME }));
   envMap.set('POSTGRES_PORT', resolve('POSTGRES_PORT', { envMap, fallback: DEFAULT_POSTGRES_PORT }));
 
-  // Message queue — also handle legacy hostname migration
+  // Message queue — handle legacy hostname migration (runtipi-queue was the original Runtipi hostname)
   let rabbitmqHost = resolve('RABBITMQ_HOST', { envMap, fallback: DEFAULT_RABBITMQ_HOST });
   if (rabbitmqHost === 'runtipi-queue' || rabbitmqHost === 'ci-hub-queue') {
     rabbitmqHost = DEFAULT_RABBITMQ_HOST;

@@ -231,7 +231,7 @@ fi
 chmod +x ./runtipi-cli
 
 if [[ "${ENV_FILE}" != "" ]]; then
-  echo "Starting runtipi with env file ${ENV_FILE}"
+  echo "Starting CI-Hub with env file ${ENV_FILE}"
   sudo ./runtipi-cli start --env-file "${ENV_FILE}"
 else
   sudo ./runtipi-cli start

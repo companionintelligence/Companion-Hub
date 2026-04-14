@@ -122,7 +122,7 @@ To expose your hub over the internet via CI Cloud:
 
 - **[CI App Store](https://github.com/companionintelligence/CI-App-Store)** — Open-source app catalog
 - **[CI Launcher](https://github.com/companionintelligence/companionintelligence.github.io)** — Web launcher for CI OS hubs
-- **[Runtipi](https://github.com/runtipi/runtipi)** — Original homeserver foundation (forked from)
+- **[Runtipi](https://github.com/runtipi/runtipi)** — Original homeserver foundation (originally forked from)
 
 ---
 

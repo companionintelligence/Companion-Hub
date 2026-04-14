@@ -24,15 +24,15 @@ export const getAutoTheme = (): Theme => {
 
 export const getLogo = (autoTheme: boolean) => {
   if (!autoTheme) {
-    return '/tipi.png';
+    return '/hub.png';
   }
 
   const theme = getAutoTheme();
 
   switch (theme) {
     case 'christmas':
-      return '/tipi-christmas.png';
+      return '/hub-christmas.png';
     default:
-      return '/tipi.png';
+      return '/hub.png';
   }
 };

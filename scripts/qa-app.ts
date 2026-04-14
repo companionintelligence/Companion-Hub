@@ -77,12 +77,12 @@ async function qaApp(appId: string): Promise<QAResult> {
     result.name = config.name || appId;
     result.port = config.port || 80;
 
-    // Get image from docker-compose.json (runtipi format)
+    // Get image from docker-compose.json (CI-Hub/marketplace format)
     const composeJsonPath = join(APP_STORE_DIR, appId, 'docker-compose.json');
     const composeYmlPath = join(APP_STORE_DIR, appId, 'docker-compose.yml');
 
     if (existsSync(composeJsonPath)) {
-      // Runtipi JSON format
+      // CI-Hub JSON format
       const compose = JSON.parse(readFileSync(composeJsonPath, 'utf-8'));
       const mainService = compose.services?.find((s: { isMain?: boolean }) => s.isMain) || compose.services?.[0];
       if (mainService) {
