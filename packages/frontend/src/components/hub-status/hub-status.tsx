@@ -166,10 +166,14 @@ export function HubStatus({ children }: HubStatusProps) {
       } catch {
         await checkHealthFallback();
       }
-    } else {
+    } else if (isTauri) {
+      // Only probe localhost in Tauri builds — in a regular browser the API
+      // is served from the same origin so no localhost probing is needed, and
+      // doing so triggers Private Network Access (PNA) CORS errors when the
+      // page is loaded from a public/tunnel URL.
       await checkHealthFallback();
     }
-  }, [isTauriRelease, checkHealthFallback]);
+  }, [isTauri, isTauriRelease, checkHealthFallback]);
 
   useEffect(() => {
     checkStatus();
