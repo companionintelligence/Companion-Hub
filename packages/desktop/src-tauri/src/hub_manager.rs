@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::PermissionsExt;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
@@ -88,6 +90,22 @@ pub enum HubStatus {
     Error { message: String },
 }
 
+#[derive(Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DockerAccessState {
+    Available,
+    PermissionDenied,
+    DaemonUnavailable,
+    NotInstalled,
+    Error,
+}
+
+#[derive(Clone, serde::Serialize)]
+pub struct DockerAccessCheck {
+    pub state: DockerAccessState,
+    pub detail: Option<String>,
+}
+
 /// Get the current status of the Hub by inspecting the Docker container.
 pub fn get_hub_status() -> HubStatus {
     if !is_docker_available() {
@@ -165,11 +183,83 @@ pub fn get_hub_data_dir() -> PathBuf {
 
 /// Check if Docker is available
 pub fn is_docker_available() -> bool {
-    docker_command()
-        .arg("info")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    matches!(check_docker_access().state, DockerAccessState::Available)
+}
+
+pub fn check_docker_access() -> DockerAccessCheck {
+    let output = match docker_command().arg("info").output() {
+        Ok(output) => output,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return DockerAccessCheck {
+                state: DockerAccessState::NotInstalled,
+                detail: Some("Docker CLI was not found on PATH.".to_string()),
+            };
+        }
+        Err(error) => {
+            return DockerAccessCheck {
+                state: DockerAccessState::Error,
+                detail: Some(format!("Failed to run docker info: {}", error)),
+            };
+        }
+    };
+
+    if output.status.success() {
+        return DockerAccessCheck {
+            state: DockerAccessState::Available,
+            detail: None,
+        };
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let combined = if !stderr.is_empty() && !stdout.is_empty() {
+        format!("{}\n{}", stderr, stdout)
+    } else if !stderr.is_empty() {
+        stderr.clone()
+    } else {
+        stdout.clone()
+    };
+    let combined_lower = combined.to_lowercase();
+
+    if combined_lower.contains("permission denied")
+        || combined_lower.contains("got permission denied")
+        || combined_lower.contains("docker.sock")
+            && (combined_lower.contains("permission") || combined_lower.contains("connect"))
+    {
+        return DockerAccessCheck {
+            state: DockerAccessState::PermissionDenied,
+            detail: Some(if combined.is_empty() {
+                "Docker is installed, but this user cannot access the Docker daemon yet.".to_string()
+            } else {
+                combined
+            }),
+        };
+    }
+
+    if combined_lower.contains("cannot connect to the docker daemon")
+        || combined_lower.contains("is the docker daemon running")
+        || combined_lower.contains("error during connect")
+        || combined_lower.contains("connection refused")
+        || combined_lower.contains("context deadline exceeded")
+    {
+        return DockerAccessCheck {
+            state: DockerAccessState::DaemonUnavailable,
+            detail: Some(if combined.is_empty() {
+                "Docker is installed, but the daemon is not ready yet.".to_string()
+            } else {
+                combined
+            }),
+        };
+    }
+
+    DockerAccessCheck {
+        state: DockerAccessState::Error,
+        detail: Some(if combined.is_empty() {
+            format!("docker info failed with exit code {:?}", output.status.code())
+        } else {
+            combined
+        }),
+    }
 }
 
 /// Check if Hub containers exist (stopped or running)
@@ -452,46 +542,123 @@ fn strip_port_vars(content: &str) -> String {
 #[cfg(target_os = "linux")]
 pub fn install_docker_linux() -> Result<String, String> {
     use std::io::Write as IoWrite;
+    use tempfile::NamedTempFile;
 
-    let script = format!(
-        r#"#!/bin/bash
-set -e
+    let username = resolve_current_username()?;
+    let pkexec_path = find_executable("pkexec").ok_or_else(|| {
+        "pkexec is not installed or not on PATH. Install polkit/pkexec and try again."
+            .to_string()
+    })?;
+
+    let mut wrapper_script = NamedTempFile::new()
+        .map_err(|e| format!("Failed to create temporary install script: {}", e))?;
+    wrapper_script
+        .write_all(
+            br#"#!/bin/bash
+set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
-curl -fsSL https://get.docker.com | sh
-usermod -aG docker {user}
+installer_script="$(mktemp)"
+cleanup() {
+  rm -f "$installer_script"
+}
+trap cleanup EXIT
+curl -fsSL https://get.docker.com -o "$installer_script"
+sh "$installer_script"
+usermod -aG docker "$1"
 systemctl enable docker
 systemctl start docker
 "#,
-        user = std::env::var("USER").unwrap_or_else(|_| "root".to_string())
-    );
-
-    let tmp_script = std::env::temp_dir().join("ci-hub-docker-install.sh");
-    let mut f = std::fs::File::create(&tmp_script)
-        .map_err(|e| format!("Failed to create install script: {}", e))?;
-    f.write_all(script.as_bytes())
+        )
         .map_err(|e| format!("Failed to write install script: {}", e))?;
-    drop(f);
 
-    Command::new("chmod")
-        .args(["+x", &tmp_script.to_string_lossy()])
+    let permissions = std::fs::Permissions::from_mode(0o700);
+    wrapper_script
+        .as_file()
+        .set_permissions(permissions)
+        .map_err(|e| format!("Failed to set install script permissions: {}", e))?;
+
+    let output = Command::new(&pkexec_path)
+        .arg(wrapper_script.path())
+        .arg(&username)
         .output()
-        .map_err(|e| format!("chmod failed: {}", e))?;
-
-    let output = Command::new("pkexec")
-        .args(["bash", &tmp_script.to_string_lossy()])
-        .output()
-        .map_err(|e| format!("Failed to run installer: {}", e))?;
-
-    let _ = std::fs::remove_file(&tmp_script);
+        .map_err(|e| format!("Failed to run pkexec installer: {}", e))?;
 
     if output.status.success() {
         Ok("Docker installed successfully. You may need to log out and back in for group changes to take effect.".to_string())
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        if stderr.contains("dismissed") || stderr.contains("Not authorized") {
-            Err("Authorization was cancelled.".to_string())
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let combined = format_command_output(&stdout, &stderr);
+        let combined_lower = combined.to_lowercase();
+
+        if combined_lower.contains("dismissed")
+            || combined_lower.contains("not authorized")
+            || combined_lower.contains("authorization required")
+            || combined_lower.contains("authentication failed")
+        {
+            Err("Authorization was cancelled or denied.".to_string())
+        } else if combined.is_empty() {
+            Err(format!(
+                "Docker installation failed with exit code {:?}.",
+                output.status.code()
+            ))
         } else {
-            Err(format!("Docker installation failed: {}", stderr))
+            Err(format!("Docker installation failed: {}", combined))
         }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn resolve_current_username() -> Result<String, String> {
+    let output = Command::new("id")
+        .args(["-un"])
+        .output()
+        .map_err(|e| format!("Failed to resolve current username: {}", e))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "Failed to resolve current username: {}",
+            format_command_output(
+                &String::from_utf8_lossy(&output.stdout),
+                &String::from_utf8_lossy(&output.stderr)
+            )
+        ));
+    }
+
+    let username = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if username.is_empty() {
+        Err("Failed to resolve current username from current UID.".to_string())
+    } else {
+        Ok(username)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn find_executable(binary: &str) -> Option<PathBuf> {
+    Command::new("which")
+        .arg(binary)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if path.is_empty() {
+                None
+            } else {
+                Some(PathBuf::from(path))
+            }
+        })
+}
+
+#[cfg(target_os = "linux")]
+fn format_command_output(stdout: &str, stderr: &str) -> String {
+    let stdout = stdout.trim();
+    let stderr = stderr.trim();
+
+    match (stdout.is_empty(), stderr.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => stdout.to_string(),
+        (true, false) => stderr.to_string(),
+        (false, false) => format!("stdout: {} | stderr: {}", stdout, stderr),
     }
 }

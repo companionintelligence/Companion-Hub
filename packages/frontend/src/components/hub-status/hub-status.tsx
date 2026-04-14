@@ -35,12 +35,86 @@ function isAppleSilicon(): boolean {
   }
 }
 
-type DockerInstallState = 'idle' | 'installing' | 'success' | 'error' | 'needs-logout';
+type DockerInstallState = 'idle' | 'installing' | 'success' | 'error' | 'needs-logout' | 'starting-daemon';
+type DockerAccessState = 'available' | 'permission_denied' | 'daemon_unavailable' | 'not_installed' | 'error';
+
+type DockerAccessCheck = {
+  state: DockerAccessState;
+  detail?: string | null;
+};
+
+const POST_INSTALL_POLL_ATTEMPTS = 15;
+const POST_INSTALL_POLL_DELAY_MS = 2000;
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getErrorMessage(err: unknown) {
+  return err instanceof Error ? err.message : String(err);
+}
+
+export async function pollDockerAccess(
+  invoke: (cmd: string) => Promise<unknown>,
+  options?: {
+    attempts?: number;
+    delayMs?: number;
+    sleepFn?: (ms: number) => Promise<void>;
+  },
+): Promise<DockerAccessCheck> {
+  const attempts = options?.attempts ?? POST_INSTALL_POLL_ATTEMPTS;
+  const delayMs = options?.delayMs ?? POST_INSTALL_POLL_DELAY_MS;
+  const sleepFn = options?.sleepFn ?? sleep;
+
+  let lastResult: DockerAccessCheck = {
+    state: 'error',
+    detail: 'Docker did not become ready after installation.',
+  };
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const result = (await invoke('check_docker_access_command')) as DockerAccessCheck;
+    lastResult = result;
+
+    if (result.state === 'available' || result.state === 'permission_denied' || result.state === 'error') {
+      return result;
+    }
+
+    if (attempt < attempts - 1) {
+      await sleepFn(delayMs);
+    }
+  }
+
+  return lastResult;
+}
 
 function LinuxDockerInstall() {
   const [installState, setInstallState] = useState<DockerInstallState>('idle');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const invoke = getTauriInvoke();
+
+  const checkPostInstallAccess = useCallback(async () => {
+    if (!invoke) return;
+
+    const dockerAccess = await pollDockerAccess(invoke);
+    if (dockerAccess.state === 'available') {
+      setInstallState('success');
+      return;
+    }
+
+    if (dockerAccess.state === 'permission_denied') {
+      setInstallState('needs-logout');
+      return;
+    }
+
+    if (dockerAccess.state === 'daemon_unavailable' || dockerAccess.state === 'not_installed') {
+      setErrorMessage(dockerAccess.detail ?? 'Docker was installed, but the daemon is still starting. Wait a moment, then check again.');
+      setInstallState('starting-daemon');
+      return;
+    }
+
+    setErrorMessage(dockerAccess.detail ?? 'Docker installation did not complete successfully.');
+    setInstallState('error');
+  }, [invoke]);
 
   const handleInstall = useCallback(async () => {
     if (!invoke) return;
@@ -48,14 +122,9 @@ function LinuxDockerInstall() {
     setErrorMessage(null);
     try {
       await invoke('install_docker_linux');
-      const available = (await invoke('check_docker_available')) as boolean;
-      if (available) {
-        setInstallState('success');
-      } else {
-        setInstallState('needs-logout');
-      }
+      await checkPostInstallAccess();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = getErrorMessage(err);
       if (msg.includes('cancelled') || msg.includes('Authorization')) {
         setInstallState('idle');
       } else {
@@ -63,7 +132,7 @@ function LinuxDockerInstall() {
         setInstallState('error');
       }
     }
-  }, [invoke]);
+  }, [checkPostInstallAccess, invoke]);
 
   if (installState === 'installing') {
     return (
@@ -104,6 +173,26 @@ function LinuxDockerInstall() {
           <p>Docker has been installed, but you need to log out and back in for group permissions to take effect.</p>
           <p className="text-sm">After logging back in, restart this application.</p>
         </div>
+      </>
+    );
+  }
+
+  if (installState === 'starting-daemon') {
+    return (
+      <>
+        <h1 className="text-2xl font-semibold text-foreground">Docker Installed — Finishing Startup</h1>
+        <div className="text-center max-w-md text-muted-foreground space-y-3">
+          <p>Docker was installed successfully, but the daemon is still starting.</p>
+          <p className="text-sm">Wait a moment, then check again. If this keeps happening, try restarting Docker or your machine.</p>
+          {errorMessage && <p className="text-xs break-words">{errorMessage}</p>}
+        </div>
+        <button
+          type="button"
+          onClick={checkPostInstallAccess}
+          className="inline-flex items-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+        >
+          Check Again
+        </button>
       </>
     );
   }

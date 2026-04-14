@@ -38,6 +38,12 @@ async fn check_docker_available() -> Result<bool, String> {
     Ok(hub_manager::is_docker_available())
 }
 
+/// Return richer Docker access diagnostics for post-install handling.
+#[tauri::command]
+async fn check_docker_access_command() -> Result<hub_manager::DockerAccessCheck, String> {
+    Ok(hub_manager::check_docker_access())
+}
+
 /// Install Docker Engine on Linux (uses pkexec for privilege escalation).
 #[tauri::command]
 async fn install_docker_linux() -> Result<String, String> {
@@ -76,6 +82,7 @@ pub fn run() {
             discover_hubs,
             start_hub_command,
             check_docker_available,
+            check_docker_access_command,
             get_hub_status_command,
             install_docker_linux,
         ])
