@@ -204,11 +204,11 @@ export function HubStatus({ children }: HubStatusProps) {
     }
   }, []);
 
-  // While checking initially, show nothing (brief flash)
-  if (status === null) return null;
-
   // If not in Tauri, don't block the UI — web users have the backend proxied
   if (!isTauri) return <>{children}</>;
+
+  // While checking initially, show nothing (brief flash)
+  if (status === null) return null;
 
   // Hub is running, render normally
   if (status === 'Running') return <>{children}</>;
