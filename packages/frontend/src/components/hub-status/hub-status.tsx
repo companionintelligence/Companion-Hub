@@ -92,10 +92,7 @@ function LinuxDockerInstall() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const invoke = getTauriInvoke();
 
-  const checkPostInstallAccess = useCallback(async () => {
-    if (!invoke) return;
-
-    const dockerAccess = await pollDockerAccess(invoke);
+  const applyPostInstallAccessState = useCallback((dockerAccess: DockerAccessCheck) => {
     if (dockerAccess.state === 'available') {
       setInstallState('success');
       return;
@@ -106,15 +103,36 @@ function LinuxDockerInstall() {
       return;
     }
 
-    if (dockerAccess.state === 'daemon_unavailable' || dockerAccess.state === 'not_installed') {
+    if (dockerAccess.state === 'daemon_unavailable') {
       setErrorMessage(dockerAccess.detail ?? 'Docker was installed, but the daemon is still starting. Wait a moment, then check again.');
       setInstallState('starting-daemon');
       return;
     }
 
+    if (dockerAccess.state === 'not_installed') {
+      setErrorMessage(
+        dockerAccess.detail ??
+          'Docker install completed, but the Docker CLI is still unavailable. Install Docker manually or try the installer again.',
+      );
+      setInstallState('error');
+      return;
+    }
+
     setErrorMessage(dockerAccess.detail ?? 'Docker installation did not complete successfully.');
     setInstallState('error');
-  }, [invoke]);
+  }, []);
+
+  const checkPostInstallAccess = useCallback(async () => {
+    if (!invoke) return;
+
+    try {
+      const dockerAccess = await pollDockerAccess(invoke);
+      applyPostInstallAccessState(dockerAccess);
+    } catch (err) {
+      setErrorMessage(getErrorMessage(err));
+      setInstallState('error');
+    }
+  }, [applyPostInstallAccessState, invoke]);
 
   const handleInstall = useCallback(async () => {
     if (!invoke) return;

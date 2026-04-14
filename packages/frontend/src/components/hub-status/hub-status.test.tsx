@@ -57,4 +57,19 @@ describe('pollDockerAccess', () => {
     expect(invoke).toHaveBeenCalledTimes(3);
     expect(sleepFn).toHaveBeenCalledTimes(2);
   });
+
+  it('returns the last not-installed result after a bounded poll window', async () => {
+    const invoke = vi.fn<(cmd: string) => Promise<unknown>>().mockResolvedValue({ state: 'not_installed', detail: 'docker: command not found' });
+    const sleepFn = vi.fn().mockResolvedValue(undefined);
+
+    const result = await pollDockerAccess(invoke, {
+      attempts: 3,
+      delayMs: 1,
+      sleepFn,
+    });
+
+    expect(result).toEqual({ state: 'not_installed', detail: 'docker: command not found' });
+    expect(invoke).toHaveBeenCalledTimes(3);
+    expect(sleepFn).toHaveBeenCalledTimes(2);
+  });
 });

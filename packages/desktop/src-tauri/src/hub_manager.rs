@@ -9,6 +9,9 @@ use std::os::windows::process::CommandExt;
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
+#[cfg(target_os = "linux")]
+const MAX_COMMAND_OUTPUT_CHARS: usize = 400;
+
 pub fn docker_command() -> Command {
     let docker_path = find_docker_binary();
     let mut cmd = Command::new(docker_path);
@@ -651,14 +654,57 @@ fn find_executable(binary: &str) -> Option<PathBuf> {
 }
 
 #[cfg(target_os = "linux")]
+fn truncate_command_output(output: &str) -> String {
+    let trimmed = output.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let char_count = trimmed.chars().count();
+    if char_count <= MAX_COMMAND_OUTPUT_CHARS {
+        return trimmed.to_string();
+    }
+
+    let truncated: String = trimmed.chars().take(MAX_COMMAND_OUTPUT_CHARS).collect();
+    format!("{}… [truncated {} chars]", truncated, char_count - MAX_COMMAND_OUTPUT_CHARS)
+}
+
+#[cfg(target_os = "linux")]
 fn format_command_output(stdout: &str, stderr: &str) -> String {
-    let stdout = stdout.trim();
-    let stderr = stderr.trim();
+    let stdout = truncate_command_output(stdout);
+    let stderr = truncate_command_output(stderr);
 
     match (stdout.is_empty(), stderr.is_empty()) {
         (true, true) => String::new(),
-        (false, true) => stdout.to_string(),
-        (true, false) => stderr.to_string(),
+        (false, true) => stdout,
+        (true, false) => stderr,
         (false, false) => format!("stdout: {} | stderr: {}", stdout, stderr),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(target_os = "linux")]
+    use super::{format_command_output, truncate_command_output, MAX_COMMAND_OUTPUT_CHARS};
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn truncates_long_command_output() {
+        let output = "x".repeat(MAX_COMMAND_OUTPUT_CHARS + 25);
+        let truncated = truncate_command_output(&output);
+
+        assert!(truncated.contains("[truncated 25 chars]"));
+        assert!(truncated.starts_with(&"x".repeat(MAX_COMMAND_OUTPUT_CHARS)));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn formats_stdout_and_stderr_with_truncation() {
+        let stdout = "ok";
+        let stderr = "y".repeat(MAX_COMMAND_OUTPUT_CHARS + 10);
+        let formatted = format_command_output(stdout, &stderr);
+
+        assert!(formatted.starts_with("stdout: ok | stderr: "));
+        assert!(formatted.contains("[truncated 10 chars]"));
     }
 }
