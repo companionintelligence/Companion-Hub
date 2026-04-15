@@ -209,7 +209,7 @@ jobs:
             echo "✅ Notarization complete"
           fi
       # ── Windows Code Signing (Azure Artifact Signing via GitHub OIDC) ──
-      # See DESKTOP-RELEASE-SIGNING.md for the exact Azure IDs, secrets, and
+      # See docs/DESKTOP-RELEASE-SIGNING.md for the exact Azure IDs, secrets, and
       # federated credential subjects this workflow expects.
       - name: Prepare Windows signing paths
         if: env.BUILD_ENABLED && runner.os == 'Windows' && env.WINDOWS_SIGNING_CONFIGURED == 'true'
