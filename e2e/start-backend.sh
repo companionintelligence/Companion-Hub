@@ -65,7 +65,6 @@ DISABLE_PASSWORD_RESET=${DISABLE_PASSWORD_RESET:-true}
 DNS_IP=${DNS_IP:-9.9.9.9}
 ARCHITECTURE=${ARCHITECTURE:-amd64}
 DEVICE_ID=${DEVICE_ID:-test-device-e2e}
-# Backwards-compat note: we intentionally do not export TIPI_* or RUNTIPI_* here; use CI_HUB_* names
 CI_HUB_DATA_DIR=$DATA_DIR
 CI_HUB_APP_DATA_DIR=$DATA_DIR/app-data
 CI_HUB_APP_DIR=$(pwd)
