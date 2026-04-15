@@ -2,11 +2,11 @@
  * Run backend integration tests. Starts postgres + rabbitmq via docker-compose, runs vitest, then tears down.
  *
  * Usage:
- *   bun run test:integration [-- <vitest-args>]
+ *   pnpm run test:integration [-- <vitest-args>]
  *
  * Examples:
- *   bun run test:integration
- *   bun run test:integration -- --grep "registration"
+ *   pnpm run test:integration
+ *   pnpm run test:integration -- --grep "registration"
  */
 import { spawn } from 'node:child_process';
 import { resolve } from 'node:path';
@@ -74,7 +74,7 @@ async function main() {
 
     console.log('Running tests...');
     const args = ['vitest', '--watch=false', '--config', './vitest.integration.config.mts', ...process.argv.slice(2)];
-    await runCommand('bun', args, env);
+    await runCommand('npx', args, env);
   } catch (error) {
     console.error('Test run failed:', error);
     process.exit(1);

@@ -5,7 +5,6 @@ import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable, InternalServerErrorException, Inject, forwardRef } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
-import * as Sentry from '@sentry/nestjs';
 import { AppFilesManager } from '../apps/app-files-manager';
 import { AppsService } from '../apps/apps.service';
 
@@ -55,7 +54,7 @@ export class DockerService {
     return { args, isCustomConfig };
   };
 
-  public getBaseComposeArgsRuntipi = async () => {
+  public getBaseComposeArgsHub = async () => {
     const { dataDir } = this.config.get('directories');
     const args: string[] = ['--env-file', path.join(dataDir, '.env')];
 
@@ -64,8 +63,10 @@ export class DockerService {
     const composeFile = path.join(dataDir, 'docker-compose.yml');
     args.push('-f', composeFile);
 
-    // User defined overrides
-    const userComposeFile = path.join(dataDir, 'user-config', 'tipi-compose.yml');
+    // User defined overrides (support both new and legacy filenames)
+    const hubComposeFile = path.join(dataDir, 'user-config', 'hub-compose.yml');
+    const legacyComposeFile = path.join(dataDir, 'user-config', 'tipi-compose.yml');
+    const userComposeFile = (await this.filesystem.pathExists(hubComposeFile)) ? hubComposeFile : legacyComposeFile;
     if (await this.filesystem.pathExists(userComposeFile)) {
       args.push('--file', userComposeFile);
     }
@@ -166,7 +167,7 @@ export class DockerService {
 
   public getLogsStream = async (maxLines: number, appUrn?: AppUrn) => {
     try {
-      const { args } = appUrn ? await this.getBaseComposeArgsApp(appUrn) : await this.getBaseComposeArgsRuntipi();
+      const { args } = appUrn ? await this.getBaseComposeArgsApp(appUrn) : await this.getBaseComposeArgsHub();
 
       args.push('logs', '--follow', '-n', maxLines.toString());
 
@@ -201,7 +202,6 @@ export class DockerService {
       };
     } catch (error) {
       this.logger.error('Error getting log stream', error);
-      Sentry.captureException(error, { tags: { source: 'docker log stream', appUrn } });
       throw new InternalServerErrorException('Error getting log stream');
     }
   };

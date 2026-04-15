@@ -1,71 +1,65 @@
 import { APP_STATUS } from '@/core/database/drizzle/types';
-import { AppInfoDto, MetadataDto } from '@/modules/marketplace/dto/marketplace.dto';
-import { type } from 'arktype';
-import { createArkDto } from 'nestjs-arktype';
+import { MetadataDto } from '@/modules/marketplace/dto/marketplace.dto';
+import { z } from 'zod';
+import { createZodDto } from '@/common/zod-dto';
+import { appInfoSchema } from '@ci-hub/common/schemas';
 
-const appSchema = type({
-  id: 'number',
-  port: 'number | null',
-  status: type.enumerated(...APP_STATUS),
-  createdAt: 'string?',
-  updatedAt: 'string?',
-  version: 'number',
-  exposed: 'boolean',
-  openPort: 'boolean',
-  exposedLocal: 'boolean',
-  domain: 'string | null',
-  isVisibleOnGuestDashboard: 'boolean',
-  config: 'Record<string, unknown>?',
-  enableAuth: 'boolean?',
-  localSubdomain: type('string').or('null').optional(),
-  pendingRestart: 'boolean',
-  ignoredVersion: 'number | null',
+const metadataSchema = (MetadataDto as unknown as { schema: z.ZodType }).schema;
+const appInfoSchemaRef = appInfoSchema;
+
+const appSchema = z.object({
+  id: z.number(),
+  port: z.number().nullable(),
+  status: z.enum(APP_STATUS),
+  createdAt: z.string().optional(),
+  updatedAt: z.string().optional(),
+  version: z.number(),
+  exposed: z.boolean(),
+  openPort: z.boolean(),
+  exposedLocal: z.boolean(),
+  domain: z.string().nullable(),
+  isVisibleOnGuestDashboard: z.boolean(),
+  config: z.record(z.string(), z.unknown()).optional(),
+  enableAuth: z.boolean().optional(),
+  localSubdomain: z.string().nullable().optional(),
+  pendingRestart: z.boolean(),
+  ignoredVersion: z.number().nullable(),
 });
 
-const myAppsSchema = type({
-  installed: type({
-    app: appSchema,
-    info: AppInfoDto.schema,
-    metadata: MetadataDto.schema,
-  }).array(),
+const myAppsSchema = z.object({
+  installed: z.array(
+    z.object({
+      app: appSchema,
+      info: appInfoSchemaRef,
+      metadata: metadataSchema,
+    }),
+  ),
 });
 
-const getAppSchema = type({
-  app: appSchema.or('null').optional(),
-  info: AppInfoDto.schema,
-  metadata: MetadataDto.schema,
+const getAppSchema = z.object({
+  app: appSchema.nullable().optional(),
+  info: appInfoSchemaRef,
+  metadata: metadataSchema,
 });
 
-const getRandomPortSchema = type({
-  port: 'number',
+const getRandomPortSchema = z.object({
+  port: z.number(),
 });
 
-const getComposeDiff = type({
-  current: 'string | null',
-  new: 'string | null',
+const getComposeDiff = z.object({
+  current: z.string().nullable(),
+  new: z.string().nullable(),
 });
 
-const getConfigDiffSchema = type({
-  current: 'string | null',
-  new: 'string | null',
+const getConfigDiffSchema = z.object({
+  current: z.string().nullable(),
+  new: z.string().nullable(),
 });
 
-export class AppDto extends createArkDto(appSchema, { name: 'AppDto' }) {}
-export class MyAppsDto extends createArkDto(myAppsSchema, {
-  name: 'MyAppsDto',
-}) {}
-export class GuestAppsDto extends createArkDto(myAppsSchema, {
-  name: 'GuestAppsDto',
-}) {}
-export class GetAppDto extends createArkDto(getAppSchema, {
-  name: 'GetAppDto',
-}) {}
-export class GetRandomPortDto extends createArkDto(getRandomPortSchema, {
-  name: 'GetRandomPortDto',
-}) {}
-export class GetConfigDiffDto extends createArkDto(getConfigDiffSchema, {
-  name: 'GetConfigDiffDto',
-}) {}
-export class GetComposeDiffDto extends createArkDto(getComposeDiff, {
-  name: 'GetComposeDiffDto',
-}) {}
+export class AppDto extends createZodDto(appSchema) {}
+export class MyAppsDto extends createZodDto(myAppsSchema) {}
+export class GuestAppsDto extends createZodDto(myAppsSchema) {}
+export class GetAppDto extends createZodDto(getAppSchema) {}
+export class GetRandomPortDto extends createZodDto(getRandomPortSchema) {}
+export class GetConfigDiffDto extends createZodDto(getConfigDiffSchema) {}
+export class GetComposeDiffDto extends createZodDto(getComposeDiff) {}

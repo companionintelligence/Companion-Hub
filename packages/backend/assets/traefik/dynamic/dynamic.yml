@@ -9,4 +9,4 @@ http:
         address: "http://ci-os-hub:5002/api/auth/traefik"
         trustForwardHeader: true
         authResponseHeaders:
-          - "X-Runtipi-User"
+          - "X-CI-Hub-User"

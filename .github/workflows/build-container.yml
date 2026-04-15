@@ -97,11 +97,18 @@ jobs:
           tags: |
             type=raw,value=${{ steps.tags.outputs.docker_tag }}
 
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
+          platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
@@ -130,13 +137,13 @@ jobs:
           echo "Copying ${GHCR_IMAGE} → ${PORTAL}/ci-os-hub:latest"
           crane copy "${GHCR_IMAGE}" "${PORTAL}/ci-os-hub:latest"
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
         with:
-          bun-version: '1.3.0'
+          node-version: '22'
 
       - name: Deploy to Cloudflare Containers
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: bunx wrangler deploy --env ${{ steps.tags.outputs.environment }}
+        run: npx wrangler deploy --env ${{ steps.tags.outputs.environment }}

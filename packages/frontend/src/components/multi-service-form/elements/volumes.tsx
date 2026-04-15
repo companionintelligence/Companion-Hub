@@ -3,7 +3,8 @@ import './elements.css';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/Table';
-import type { dynamicComposeSchemaArk } from '@ci-hub/common/schemas';
+import type { dynamicComposeSchema } from '@ci-hub/common/schemas';
+import type { z } from 'zod';
 import { X } from 'lucide-react';
 import clsx from 'clsx';
 import { Controller, useFieldArray, type Control, type FieldErrors, type UseFormRegister } from 'react-hook-form';
@@ -11,10 +12,10 @@ import { Tooltip } from 'react-tooltip';
 import { useTranslation } from 'react-i18next';
 
 type Props = {
-  control: Control<typeof dynamicComposeSchemaArk.infer>;
-  register: UseFormRegister<typeof dynamicComposeSchemaArk.infer>;
+  control: Control<z.infer<typeof dynamicComposeSchema>>;
+  register: UseFormRegister<z.infer<typeof dynamicComposeSchema>>;
   serviceIndex: number;
-  errors?: FieldErrors<typeof dynamicComposeSchemaArk.infer>;
+  errors?: FieldErrors<z.infer<typeof dynamicComposeSchema>>;
 };
 
 export const VolumesConfig = ({ errors, serviceIndex, control, register }: Props) => {

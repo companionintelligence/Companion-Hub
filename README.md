@@ -12,10 +12,10 @@ Part of the [CI OS](https://github.com/companionintelligence) ecosystem. License
 |-------------|---------|
 | **Docker** (v28+) | Runs the hub and all installed apps |
 | **Docker Compose** | Orchestrates services |
-| **Bun** (v1.3+) or **Node** (v22+) | For local development and scripts |
+| **pnpm** (v10+) and **Node** (v22+) | For local development and scripts |
 
 - [Install Docker Engine](https://docs.docker.com/engine/install/)
-- [Install Bun](https://bun.sh/) (or use Node 22+)
+- [Install pnpm](https://pnpm.io/installation) and Node 22+
 
 ---
 
@@ -43,7 +43,7 @@ Edit `.env.prod` and set at least:
 ### 3. Run
 
 ```bash
-bun start prod
+pnpm start:prod
 ```
 
 Open http://localhost:5002. On first run, register your device with CI Cloud (you'll get a pairing code or redirect URL). Once registered, you can install apps from the store and optionally expose them via Cloudflare Tunnel.
@@ -55,10 +55,10 @@ Open http://localhost:5002. On first run, register your device with CI Cloud (yo
 For a fast feedback loop:
 
 ```bash
-bun install
+pnpm install
 cp .env.example .env.local
 # Edit .env.local — set ROOT_FOLDER_HOST, JWT_SECRET, etc.
-bun dev
+pnpm dev
 ```
 
 - **Frontend:** http://localhost:5173  
@@ -72,12 +72,12 @@ All scripts accept an optional environment: `local` (default), `dev`, `staging`,
 
 | Command | Description |
 |---------|-------------|
-| `bun dev [env]` | Start infra + backend + frontend (hot reload) |
-| `bun start [env]` | Full stack in Docker (attached) |
-| `bun start:detached [env]` | Full stack in Docker (detached) |
-| `bun run build` | Build all packages |
-| `bun run test` | Run tests |
-| `bun run cleanup` | Stop infra, remove `.internal`, tunnel files |
+| `pnpm dev [env]` | Start infra + backend + frontend (hot reload) |
+| `pnpm start [env]` | Full stack in Docker (attached) |
+| `pnpm start:detached [env]` | Full stack in Docker (detached) |
+| `pnpm run build` | Build all packages |
+| `pnpm run test` | Run tests |
+| `pnpm run cleanup` | Stop infra, remove `.internal`, tunnel files |
 
 ---
 
@@ -128,7 +128,7 @@ To expose Headscale on a public hostname (DNS, HTTPS, Tailscale `--login-server`
 
 - **[CI App Store](https://github.com/companionintelligence/CI-App-Store)** — Open-source app catalog
 - **[CI Launcher](https://github.com/companionintelligence/companionintelligence.github.io)** — Web launcher for CI OS hubs
-- **[Runtipi](https://github.com/runtipi/runtipi)** — Original homeserver foundation (forked from)
+- **[Runtipi](https://github.com/runtipi/runtipi)** — Original homeserver foundation (originally forked from)
 
 ---
 

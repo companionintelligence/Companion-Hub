@@ -1,7 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { Inject, Injectable, type OnApplicationShutdown } from '@nestjs/common';
-import * as Sentry from '@sentry/nestjs';
 import { APP_DATA_DIR, DATA_DIR } from './common/constants';
 import { CacheService, ONE_DAY_IN_SECONDS } from './core/cache/cache.service';
 import { ConfigurationService } from './core/config/configuration.service';
@@ -54,19 +53,16 @@ export class AppService implements OnApplicationShutdown {
       await this.docker.pruneNetworks();
       this.logger.info('Docker networks pruned');
 
-      const { version, userSettings, __prod__ } = this.configuration.getConfig();
+      const { version, __prod__ } = this.configuration.getConfig();
       const config = this.configuration.getConfig();
       this.logger.info('Log level', config.userSettings.logLevel);
       this.logger.debug('Starting with configuration', config);
-
-      this.configuration.initSentry({ release: version, allowSentry: userSettings.allowErrorMonitoring });
-      this.logger.info('Sentry initialized');
 
       await this.logger.flush();
       this.logger.startPeriodicFlush();
       this.logger.info('Logger flushed, daily rotation scheduled');
 
-      this.logger.info(`Running version: ${process.env.CI_HUB_VERSION || process.env.TIPI_VERSION}`);
+      this.logger.info(`Running version: ${process.env.CI_HUB_VERSION}`);
 
       const buster = this.cache.get('buster');
       if (buster !== version) {
@@ -112,7 +108,6 @@ export class AppService implements OnApplicationShutdown {
       this.logger.info('Bootstrap completed successfully');
     } catch (e) {
       this.logger.error('Bootstrap error:', e);
-      Sentry.captureException(e, { tags: { source: 'bootstrap' } });
       throw e; // Re-throw to ensure startup fails if bootstrap fails
     }
   }
@@ -279,7 +274,7 @@ export class AppService implements OnApplicationShutdown {
           sentinelPath,
           JSON.stringify({
             createdAt: new Date().toISOString(),
-            version: process.env.CI_HUB_VERSION || process.env.TIPI_VERSION || 'unknown',
+            version: process.env.CI_HUB_VERSION || 'unknown',
           }),
         );
         this.logger.info('Created app-data sentinel file (first run or volume reset)');

@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env tsx
 /**
  * App Catalog Test Generator
  *
@@ -6,7 +6,7 @@
  * and distributes them across fleet servers for parallel testing.
  *
  * Usage:
- *   bun run scripts/generate-catalog-tests.ts
+ *   pnpm exec tsx scripts/generate-catalog-tests.ts
  */
 
 import { readdir, readFile, writeFile } from 'node:fs/promises';

@@ -17,15 +17,12 @@ jobs:
           script: |
             const body = context.payload.pull_request.body || '';
             const title = context.payload.pull_request.title || '';
-            const combined = `${title}
-${body}`;
+            const combined = title + '\n' + body;
 
-            // Match patterns like: Closes #123, Fixes #123, Resolves #123, or bare #123
             const issueRefPattern = /(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#\d+|#\d+/gi;
             const matches = combined.match(issueRefPattern);
 
             if (!matches || matches.length === 0) {
-              // Post a gentle reminder comment (only once)
               const comments = await github.rest.issues.listComments({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -33,28 +30,31 @@ ${body}`;
               });
 
               const botComment = comments.data.find(c =>
-                c.user.type === 'Bot' && c.body.includes('🔗 **Issue Reference Missing**')
+                c.user.type === 'Bot' && c.body.includes('Issue Reference Missing')
               );
 
               if (!botComment) {
+                const commentBody = [
+                  ':link: **Issue Reference Missing**',
+                  '',
+                  'This PR does not appear to reference a GitHub issue. For traceability, please link to the Task or issue this PR addresses:',
+                  '',
+                  '- `Closes #123` — closes the issue when merged',
+                  '- `Fixes #123` — same as Closes',
+                  '- `Part of #123` — references without closing',
+                  '',
+                  'If this is a small fix or chore that does not need an issue, you can ignore this reminder.',
+                ].join('\n');
+
                 await github.rest.issues.createComment({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   issue_number: context.payload.pull_request.number,
-                  body: `🔗 **Issue Reference Missing**
-
-This PR doesn't appear to reference a GitHub issue. For traceability, please link to the Task or issue this PR addresses:
-
-- \`Closes #123\` — closes the issue when merged
-- \`Fixes #123\` — same as Closes
-- \`Part of #123\` — references without closing
-
-If this is a small fix or chore that doesn't need an issue, you can ignore this reminder.`
+                  body: commentBody,
                 });
               }
 
               core.warning('No issue reference found in PR title or body. Consider linking to a Task or issue for traceability.');
             } else {
-              core.info(`Found issue references: ${matches.join(', ')}`);
+              core.info('Found issue references: ' + matches.join(', '));
             }
-

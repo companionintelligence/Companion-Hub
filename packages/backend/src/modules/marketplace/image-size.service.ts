@@ -30,7 +30,7 @@ export class ImageSizeService {
     try {
       const { content } = await this.marketplaceService.getDockerComposeJson(appUrn);
       const parsed = content as { services?: Record<string, { image?: string }> };
-      if (!parsed || !parsed.services) {
+      if (!parsed?.services) {
         return { totalBytes: null, formatted: null };
       }
 

@@ -205,8 +205,7 @@ export class AppController {
 
     // Check service availability
     const cloudflareAvailable = Boolean(this.cloudflareClientService.getTunnelToken());
-    const tailscaleAvailable =
-      (tailscaleStatus.installed && tailscaleStatus.connected) || headscaleVpnReady;
+    const tailscaleAvailable = (tailscaleStatus.installed && tailscaleStatus.connected) || headscaleVpnReady;
 
     return AppContextDto.parse(
       {
@@ -246,8 +245,6 @@ export class AppController {
       return;
     }
 
-    const version = await this.appService.getVersion();
-    this.configuration.initSentry({ release: version.current, allowSentry: body.allowErrorMonitoring });
     await this.userRepository.updateUser(req.user.id, { hasCompletedOnboarding: true });
 
     if (this.configuration.get('demoMode')) {

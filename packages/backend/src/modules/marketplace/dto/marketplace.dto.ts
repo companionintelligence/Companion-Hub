@@ -1,87 +1,87 @@
-import { APP_CATEGORIES, appInfoSchemaArk } from '@ci-hub/common/schemas';
-import { type } from 'arktype';
-import { createArkDto } from 'nestjs-arktype';
+import { APP_CATEGORIES, appInfoSchema } from '@ci-hub/common/schemas';
+import { z } from 'zod';
+import { createZodDto } from '@/common/zod-dto';
 
-const metadataSchema = type({
-  hasCustomConfig: 'boolean?',
-  latestVersion: 'number',
-  minTipiVersion: type('string').or('null').optional(),
-  latestDockerVersion: 'string?',
-  composeSchemaVersion: 'number?',
+const metadataSchema = z.object({
+  hasCustomConfig: z.boolean().optional(),
+  latestVersion: z.number(),
+  minHubVersion: z.string().nullable().optional(),
+  latestDockerVersion: z.string().optional(),
+  composeSchemaVersion: z.number().optional(),
 });
 
-const searchAppQuerySchema = type({
-  search: 'string?',
-  pageSize: type('number.integer | string.integer.parse').to('number').optional(),
-  cursor: 'string?',
-  category: type.enumerated(...APP_CATEGORIES).optional(),
-  storeId: 'string?',
+const searchAppQuerySchema = z.object({
+  search: z.string().optional(),
+  pageSize: z.union([z.number().int(), z.string().transform(Number)]).optional(),
+  cursor: z.string().optional(),
+  category: z.enum(APP_CATEGORIES).optional(),
+  storeId: z.string().optional(),
 });
 
-const simpleAppInfoSchema = appInfoSchemaArk.pick(
-  'id',
-  'urn',
-  'name',
-  'short_desc',
-  'categories',
-  'deprecated',
-  'created_at',
-  'supported_architectures',
-  'available',
-);
-
-const searchAppsResponseSchema = type({
-  data: simpleAppInfoSchema.array(),
-  nextCursor: type('string').or('null').optional(),
-  total: 'number',
+const simpleAppInfoSchema = appInfoSchema.pick({
+  id: true,
+  urn: true,
+  name: true,
+  short_desc: true,
+  categories: true,
+  deprecated: true,
+  created_at: true,
+  supported_architectures: true,
+  available: true,
 });
 
-const appDetailsSchema = type({
-  info: appInfoSchemaArk,
+const searchAppsResponseSchema = z.object({
+  data: z.array(simpleAppInfoSchema),
+  nextCursor: z.string().nullable().optional(),
+  total: z.number(),
+});
+
+const appDetailsSchema = z.object({
+  info: appInfoSchema,
   metadata: metadataSchema,
 });
 
-const successResponseSchema = type({
-  success: 'boolean',
+const successResponseSchema = z.object({
+  success: z.boolean(),
 });
 
-const appStoreSchema = type({
-  slug: 'string',
-  name: 'string',
-  url: 'string',
-  enabled: 'boolean',
+const appStoreSchema = z.object({
+  slug: z.string(),
+  name: z.string(),
+  url: z.string(),
+  enabled: z.boolean(),
 });
 
-const allAppStoresSchema = type({
-  appStores: appStoreSchema.array(),
+const allAppStoresSchema = z.object({
+  appStores: z.array(appStoreSchema),
 });
 
-const updateAppStoreBodySchema = type({
-  name: 'string',
-  enabled: 'boolean',
+const updateAppStoreBodySchema = z.object({
+  name: z.string(),
+  enabled: z.boolean(),
 });
 
-const createAppStoreBodySchema = type({
-  name: type('string').atLeastLength(1).atMostLength(16),
-  url: 'string.url',
+const createAppStoreBodySchema = z.object({
+  name: z.string().min(1).max(16),
+  url: z.string().url(),
 });
 
 // App info
-export class AppInfoSimpleDto extends createArkDto(simpleAppInfoSchema, { name: 'AppInfoSimpleDto' }) {}
-export class AppInfoDto extends createArkDto(appInfoSchemaArk, { name: 'AppInfoDto' }) {}
-export class MetadataDto extends createArkDto(metadataSchema, { name: 'MetadataDto' }) {}
+export class AppInfoSimpleDto extends createZodDto(simpleAppInfoSchema) {}
+export class AppInfoDto extends createZodDto(appInfoSchema) {}
+export class MetadataDto extends createZodDto(metadataSchema) {}
 
 // Search apps
-export class SearchAppsQueryDto extends createArkDto(searchAppQuerySchema, { name: 'SearchAppsQueryDto', input: true }) {}
-export class SearchAppsDto extends createArkDto(searchAppsResponseSchema, { name: 'SearchAppsDto' }) {}
-export class AppDetailsDto extends createArkDto(appDetailsSchema, { name: 'AppDetailsDto' }) {}
+export class SearchAppsQueryDto extends createZodDto(searchAppQuerySchema) {}
+export class SearchAppsDto extends createZodDto(searchAppsResponseSchema) {}
+export class AppDetailsDto extends createZodDto(appDetailsSchema) {}
 
 // Pull
-export class PullDto extends createArkDto(successResponseSchema, { name: 'PullDto' }) {}
+export class PullDto extends createZodDto(successResponseSchema) {}
 
 // App stores
-export class AppStoreDto extends createArkDto(appStoreSchema, { name: 'AppStoreDto' }) {}
-export class AllAppStoresDto extends createArkDto(allAppStoresSchema, { name: 'AllAppStoresDto' }) {}
-export class UpdateAppStoreBodyDto extends createArkDto(updateAppStoreBodySchema, { name: 'UpdateAppStoreBodyDto', input: true }) {}
-export class CreateAppStoreBodyDto extends createArkDto(createAppStoreBodySchema, { name: 'CreateAppStoreBodyDto', input: true }) {}
-export class UpdateAppStoreDto extends createArkDto(successResponseSchema, { name: 'UpdateAppStoreDto' }) {}
+export class AppStoreDto extends createZodDto(appStoreSchema) {}
+export class AllAppStoresDto extends createZodDto(allAppStoresSchema) {}
+export class UpdateAppStoreBodyDto extends createZodDto(updateAppStoreBodySchema) {}
+export class CreateAppStoreBodyDto extends createZodDto(createAppStoreBodySchema) {}
+export class UpdateAppStoreDto extends createZodDto(successResponseSchema) {}

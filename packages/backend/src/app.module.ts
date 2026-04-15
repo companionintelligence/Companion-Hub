@@ -7,7 +7,6 @@ import { I18nModule } from '@/modules/i18n/i18n.module';
 import { type DynamicModule, type MiddlewareConsumer, Module, type NestModule } from '@nestjs/common';
 import { APP_FILTER, APP_PIPE } from '@nestjs/core';
 import { ServeStaticModule } from '@nestjs/serve-static';
-import { SentryModule } from '@sentry/nestjs/setup';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { APP_DIR } from './common/constants';
@@ -36,14 +35,13 @@ import { UserConfigModule } from './modules/user-config/user-config.module';
 import { MutexModule } from './utils/mutex/mutex.module';
 import { DockerModule } from './modules/docker/docker.module';
 import { GithubModule } from './utils/github/github.module';
-import { ArkValidationPipe } from 'nestjs-arktype';
+import { ZodValidationPipe } from './common/zod-dto';
 import { CustomAppsModule } from './modules/custom-apps/custom-apps.module';
 import { RegistrationModule } from './modules/registration/registration.module';
 import { RegistryModule } from './utils/registry/registry.module';
 import { SystemUpdateModule } from './modules/system-update/system-update.module';
 
 const imports: (DynamicModule | typeof I18nModule)[] = [
-  SentryModule.forRoot(),
   RegistrationModule,
   SystemModule,
   I18nModule,
@@ -94,7 +92,7 @@ if (NODE_ENV === 'production') {
     AppService,
     {
       provide: APP_PIPE,
-      useClass: ArkValidationPipe,
+      useClass: ZodValidationPipe,
     },
     {
       provide: APP_FILTER,

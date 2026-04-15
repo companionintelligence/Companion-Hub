@@ -66,9 +66,12 @@ pub async fn find_hubs() -> Result<Vec<String>, Box<dyn std::error::Error + Send
 
     let _ = mdns.shutdown();
 
-    // Always include localhost default
+    // Always include localhost with the actual API port from .env
     if hubs.is_empty() {
-        hubs.push("http://localhost:5002".to_string());
+        let api_port = crate::port_manager::read_api_port(
+            &crate::hub_manager::get_hub_data_dir().join(".env"),
+        );
+        hubs.push(format!("http://localhost:{}", api_port));
     }
 
     Ok(hubs)

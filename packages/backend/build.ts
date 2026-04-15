@@ -1,14 +1,34 @@
-await Bun.build({
-  entrypoints: ['./src/main.ts'],
-  outdir: './dist',
+import { build } from 'esbuild';
+import { builtinModules } from 'node:module';
+
+const nodeExternals = builtinModules.flatMap((m) => [m, `node:${m}`]);
+
+build({
+  entryPoints: ['./dist/src/main.js'],
+  outfile: './dist/main.js',
   format: 'esm',
-  target: 'node',
+  platform: 'node',
   sourcemap: true,
   minify: false,
+  bundle: true,
+  banner: {
+    js: [
+      `import { createRequire as __createRequire } from 'module';`,
+      `import { fileURLToPath as __fileURLToPath } from 'url';`,
+      `import { dirname as __dirnameFn } from 'path';`,
+      'const require = __createRequire(import.meta.url);',
+      'const __filename = __fileURLToPath(import.meta.url);',
+      'const __dirname = __dirnameFn(__filename);',
+    ].join('\n'),
+  },
   external: [
+    ...nodeExternals,
     'argon2',
-    'class-transformer',
     '@nestjs/typeorm',
+    '@nestjs/mapped-types',
+    'class-transformer',
+    '@nestjs/mapped-types',
+    'class-transformer/storage',
     '@nestjs/mongoose',
     '@nestjs/sequelize',
     '@mikro-orm/core',
@@ -18,5 +38,8 @@ await Bun.build({
     'cpu-features',
     'drizzle-orm',
     '@opentelemetry/api',
+    'ssh2',
+    'pg',
+    'i18next-fs-backend',
   ],
-});
+}).catch(() => process.exit(1));

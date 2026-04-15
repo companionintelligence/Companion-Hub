@@ -1,11 +1,11 @@
-#!/usr/bin/env bun
+#!/usr/bin/env tsx
 /**
  * Aggregate QA Results from Fleet
  *
  * Collects results from all fleet servers via SSH and generates a unified report.
  *
  * Usage:
- *   bun run scripts/qa-aggregate.ts
+ *   pnpm exec tsx scripts/qa-aggregate.ts
  */
 
 import { execSync } from 'node:child_process';

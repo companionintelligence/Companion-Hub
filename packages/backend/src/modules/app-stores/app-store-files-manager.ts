@@ -5,9 +5,8 @@ import type { ConfigurationService } from '@/core/config/configuration.service';
 import type { AppStore } from '@/core/database/drizzle/types';
 import type { FilesystemService } from '@/core/filesystem/filesystem.service';
 import type { LoggerService } from '@/core/logger/logger.service';
-import { appInfoSchema, appInfoSchemaArk } from '@ci-hub/common/schemas';
+import { appInfoSchema } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
-import { type } from 'arktype';
 
 export class AppStoreFilesManager {
   constructor(
@@ -52,22 +51,22 @@ export class AppStoreFilesManager {
         const configFile = await this.filesystem.readTextFile(path.join(appRepoDir, 'config.json'));
 
         const config = JSON.parse(configFile ?? '{}');
-        const parsedConfig = appInfoSchemaArk({ ...config, urn: appUrn });
+        const parsedConfig = appInfoSchema.safeParse({ ...config, urn: appUrn });
 
-        if (parsedConfig instanceof type.errors) {
+        if (!parsedConfig.success) {
           this.logger.debug(`App ${appUrn} config error:`);
-          this.logger.debug(parsedConfig.summary);
+          this.logger.debug(parsedConfig.error.message);
           return null;
         }
 
-        if (parsedConfig.available) {
+        if (parsedConfig.data.available) {
           const descriptionPath = path.join(appRepoDir, 'metadata', 'description.md');
-          let description = parsedConfig.description || '';
+          let description = parsedConfig.data.description || '';
           if (await this.filesystem.pathExists(descriptionPath)) {
             const fileDesc = await this.filesystem.readTextFile(descriptionPath);
             if (fileDesc) description = fileDesc;
           }
-          return { ...parsedConfig, description };
+          return { ...parsedConfig.data, description };
         }
       } else {
         this.logger.warn(`[DEBUG] config.json not found for ${appUrn} at ${appRepoDir}`);
@@ -192,7 +191,7 @@ export class AppStoreFilesManager {
       return {
         ...paths,
         latestVersion: config.tipi_version,
-        minTipiVersion: config.min_tipi_version ?? null,
+        minHubVersion: config.min_hub_version ?? null,
         latestDockerVersion: config.version,
       };
     }
@@ -200,7 +199,7 @@ export class AppStoreFilesManager {
     return {
       latestVersion: 0,
       latestDockerVersion: '0.0.0',
-      minTipiVersion: null,
+      minHubVersion: null,
       ...paths,
     };
   }

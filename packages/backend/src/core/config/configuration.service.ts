@@ -5,11 +5,9 @@ import { APP_DATA_DIR, APP_DIR, ARCHITECTURES, DATA_DIR } from '@/common/constan
 import { TranslatableError } from '@/common/error/translatable-error';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
-import * as Sentry from '@sentry/nestjs';
 import dotenv from 'dotenv';
 import { z } from 'zod';
 import { LOG_LEVEL_ENUM, type LogLevel, LoggerService } from '../logger/logger.service';
-import { type } from 'arktype';
 
 const envSchema = z.object({
   POSTGRES_HOST: z.string(),
@@ -85,18 +83,6 @@ export class ConfigurationService {
     const envMap = this.getEnvMap();
 
     const conf = { ...Object.fromEntries(envMap), ...process.env } as Record<string, string>;
-
-    // Backward compatibility: map legacy env var names to new names (new takes precedence)
-    const legacyEnvMap: Record<string, string> = {
-      TIPI_VERSION: 'CI_HUB_VERSION',
-      RUNTIPI_APP_DATA_PATH: 'CI_HUB_APP_DATA_PATH',
-      RUNTIPI_FORWARD_AUTH_URL: 'CI_HUB_FORWARD_AUTH_URL',
-    };
-    for (const [oldName, newName] of Object.entries(legacyEnvMap)) {
-      if (!conf[newName] && conf[oldName]) {
-        conf[newName] = conf[oldName];
-      }
-    }
 
     const env = envSchema.safeParse(conf);
 
@@ -203,17 +189,15 @@ export class ConfigurationService {
     }
 
     try {
-      this.initSentry({ release: this.config.version, allowSentry: Boolean(settings.allowErrorMonitoring) });
-
       const settingsPath = path.join(DATA_DIR, 'state', 'settings.json');
 
       const fileContent = await fs.promises.readFile(settingsPath, 'utf8');
       const parsedContent = JSON.parse(fileContent);
-      const currentSettingsResult = settingsSchema.partial()(parsedContent);
-      if (currentSettingsResult instanceof type.errors) {
-        throw currentSettingsResult.summary;
+      const currentSettingsResult = settingsSchema.partial().safeParse(parsedContent);
+      if (!currentSettingsResult.success) {
+        throw currentSettingsResult.error.message;
       }
-      const currentSettings = currentSettingsResult;
+      const currentSettings = currentSettingsResult.data;
 
       await fs.promises.writeFile(settingsPath, `${JSON.stringify({ ...currentSettings, ...settings }, null, 2)}`, 'utf8');
 
@@ -259,22 +243,6 @@ export class ConfigurationService {
       this.logger.info(`Updated DOMAIN in data .env to: ${domain}`);
     } catch (error) {
       this.logger.error('Failed to update DOMAIN in .env', error);
-    }
-  }
-
-  public async initSentry(params: { release: string; allowSentry: boolean }) {
-    const { allowSentry } = params;
-
-    const client = Sentry.getClient();
-
-    if (!client) {
-      return;
-    }
-
-    if (allowSentry) {
-      client.getOptions().enabled = true;
-    } else {
-      await client.close();
     }
   }
 }

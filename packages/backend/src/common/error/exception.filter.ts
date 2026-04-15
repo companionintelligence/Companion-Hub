@@ -1,6 +1,5 @@
 import type { LoggerService } from '@/core/logger/logger.service';
 import { type ArgumentsHost, Catch, type ExceptionFilter, HttpException, HttpStatus } from '@nestjs/common';
-import * as Sentry from '@sentry/nestjs';
 import type { Request, Response } from 'express';
 import { ZodError } from 'zod';
 import { TranslatableError } from './translatable-error';
@@ -50,16 +49,6 @@ export class MainExceptionFilter implements ExceptionFilter {
     // If no message was set and it's a 500 error, use the translation key
     if (!message && status === HttpStatus.INTERNAL_SERVER_ERROR) {
       message = 'INTERNAL_SERVER_ERROR';
-    }
-
-    if (status >= 500 && !(exception instanceof TranslatableError)) {
-      Sentry.captureException(exception, {
-        tags: {
-          cause: String(cause),
-          url: request.url,
-          status,
-        },
-      });
     }
 
     response.status(status).json({

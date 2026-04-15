@@ -1,5 +1,4 @@
 import type { LoggerService } from '@/core/logger/logger.service';
-import * as Sentry from '@sentry/nestjs';
 import * as cron from 'node-cron';
 import type { ScheduledTask } from 'node-cron';
 import { AMQPConnectionError, AMQPError, type Connection, type RPCClient } from 'rabbitmq-client';
@@ -51,7 +50,6 @@ export class Queue<T extends z.ZodType, R extends z.ZodType<{ success: boolean; 
       });
     } catch (error) {
       this.logger.error(`Failed to create consumer for queue ${this.queueName}:`, error);
-      Sentry.captureException(error, { tags: { queueName: this.queueName, action: 'onEvent' } });
       throw error;
     }
   }
@@ -84,7 +82,6 @@ export class Queue<T extends z.ZodType, R extends z.ZodType<{ success: boolean; 
         return { success: false, message: err.message };
       }
 
-      Sentry.captureException(err, { tags: { queueName: this.queueName } });
       return { success: false, message: String(err) };
     }
   }
@@ -104,7 +101,6 @@ export class Queue<T extends z.ZodType, R extends z.ZodType<{ success: boolean; 
       try {
         await this.rpcClient.send(this.queueName, eventData.data);
       } catch (e) {
-        Sentry.captureException(e, { tags: { queueName: this.queueName } });
         this.logger.error('Error in cron job:', e);
       }
     });

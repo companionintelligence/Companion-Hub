@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env tsx
 /**
  * Add New App to CI App Store
  *
@@ -10,11 +10,11 @@
  * 5. Add to test catalog
  *
  * Usage:
- *   bun run scripts/add-new-app.ts <id> <name> <image> <port> [categories]
+ *   pnpm exec tsx scripts/add-new-app.ts <id> <name> <image> <port> [categories]
  *
  * Examples:
- *   bun run scripts/add-new-app.ts ghost Ghost ghost:5 2368 blog,cms
- *   bun run scripts/add-new-app.ts nextcloud Nextcloud nextcloud:28 443
+ *   pnpm exec tsx scripts/add-new-app.ts ghost Ghost ghost:5 2368 blog,cms
+ *   pnpm exec tsx scripts/add-new-app.ts nextcloud Nextcloud nextcloud:28 443
  */
 
 import { execSync } from 'node:child_process';
@@ -65,7 +65,7 @@ async function addNewApp(config: AppConfig): Promise<void> {
     // Create config.json
     const appConfig = {
       $schema: 'https://schemas.companionintelligence.com/v2/app-info.json',
-      min_tipi_version: 'v4.5.0',
+      min_hub_version: 'v0.1.0',
       name: config.name,
       id: config.id,
       available: true,
@@ -309,7 +309,7 @@ const args = process.argv.slice(2);
 
 if (args.length < 4) {
   console.log(`
-Usage: bun run add-new-app.ts <id> <name> <image> <port> [categories]
+Usage: tsx add-new-app.ts <id> <name> <image> <port> [categories]
 
 Arguments:
   id          App identifier (lowercase, hyphens)
@@ -319,9 +319,9 @@ Arguments:
   categories  Comma-separated categories (optional)
 
 Examples:
-  bun run add-new-app.ts ghost Ghost ghost:5 2368 blog,cms
-  bun run add-new-app.ts uptime-kuma "Uptime Kuma" louislam/uptime-kuma:1 3001 utilities,monitoring
-  bun run add-new-app.ts n8n n8n n8nio/n8n 5678 automation
+  tsx add-new-app.ts ghost Ghost ghost:5 2368 blog,cms
+  tsx add-new-app.ts uptime-kuma "Uptime Kuma" louislam/uptime-kuma:1 3001 utilities,monitoring
+  tsx add-new-app.ts n8n n8n n8nio/n8n 5678 automation
 `);
   process.exit(1);
 }

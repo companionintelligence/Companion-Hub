@@ -2,12 +2,12 @@
  * Initialize Traefik configuration. Copies config files and generates TLS certificates.
  *
  * Usage:
- *   bun run scripts/init-traefik.ts
+ *   pnpm exec tsx scripts/init-traefik.ts
  *
  * Environment variables:
- *   RUNTIPI_STATE_PATH - State directory path (default: .internal)
+ *   CI_HUB_STATE_PATH - State directory path (default: .internal)
  */
-import { mkdir, copyFile, writeFile, chmod, rm, stat } from 'node:fs/promises';
+import { mkdir, copyFile, writeFile, chmod, rm, stat, readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 
@@ -52,7 +52,7 @@ async function initTraefik() {
     }
     if (shouldCopy) {
       console.log(`Copying traefik.yml to ${traefikDest}`);
-      const content = await Bun.file(traefikSrc).text();
+      const content = await readFile(traefikSrc, 'utf8');
       const finalContent = content.replace('{{ACME_EMAIL}}', 'admin@localhost');
       await writeFile(traefikDest, finalContent);
     }

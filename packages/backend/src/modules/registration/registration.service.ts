@@ -848,7 +848,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       };
     }
 
-    if (!organizationName || !organizationName.trim()) {
+    if (!organizationName?.trim()) {
       return {
         success: false,
         message: 'Organization name is required.',

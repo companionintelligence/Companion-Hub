@@ -135,7 +135,7 @@ jobs:
             git reset --hard origin/dev
             
             # Install dependencies
-            bun install --frozen-lockfile 2>/dev/null || bun install
+            pnpm install --frozen-lockfile 2>/dev/null || pnpm install
             
             # Ensure directories exist
             mkdir -p e2e/screenshots/current e2e/screenshots/baselines e2e/results
@@ -176,7 +176,7 @@ jobs:
             echo "Server: ${{ matrix.server }}"
             
             # Run Playwright tests with extended timeout
-            bunx playwright test \$TEST_FILE \
+            pnpm exec playwright test \$TEST_FILE \
               --timeout=300000 \
               --reporter=json,html \
               --output=test-results-batch-${BATCH} \
@@ -234,12 +234,14 @@ jobs:
         with:
           path: all-results/
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
 
       - name: Generate unified report
         run: |
-          bun << 'SCRIPT'
+          node << 'SCRIPT'
           const fs = require('fs');
           const path = require('path');
           

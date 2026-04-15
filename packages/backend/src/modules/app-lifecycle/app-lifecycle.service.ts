@@ -7,10 +7,7 @@ import { SSEService } from '@/core/sse/sse.service';
 import { HttpStatus, Inject, Injectable, OnApplicationBootstrap } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type { AppUrn } from '@ci-hub/common/types';
-import { lt, valid } from 'semver';
-import semver from 'semver';
 import validator from 'validator';
-import { type } from 'arktype';
 import { AppFilesManager } from '../apps/app-files-manager';
 import { AppsRepository } from '../apps/apps.repository';
 import { AppsService } from '../apps/apps.service';
@@ -145,7 +142,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
 
   async installApp(params: { appUrn: AppUrn; form: unknown; skipRun?: boolean }) {
     const { appUrn, form, skipRun } = params;
-    const { demoMode, version, architecture } = this.config.getConfig();
+    const { demoMode, architecture } = this.config.getConfig();
 
     this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'installing' });
 
@@ -172,10 +169,11 @@ export class AppLifecycleService implements OnApplicationBootstrap {
 
     const app = await this.appRepository.getAppByUrn(appUrn);
 
-    const parsedForm = appFormSchema(form);
-    if (parsedForm instanceof type.errors) {
-      throw new TranslatableError('SYSTEM_ERROR_INVALID_BODY', undefined, HttpStatus.BAD_REQUEST, { cause: parsedForm });
+    const parsedFormResult = appFormSchema.safeParse(form);
+    if (!parsedFormResult.success) {
+      throw new TranslatableError('SYSTEM_ERROR_INVALID_BODY', undefined, HttpStatus.BAD_REQUEST, { cause: parsedFormResult.error });
     }
+    const parsedForm = parsedFormResult.data;
 
     if (app) {
       await this.appRepository.updateAppById(app.id, { config: parsedForm, ...parsedForm });
@@ -256,9 +254,12 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       }
     }
 
-    if (appInfo?.min_tipi_version && valid(version) && lt(version, appInfo.min_tipi_version)) {
-      throw new TranslatableError('APP_UPDATE_ERROR_MIN_TIPI_VERSION', { id: appUrn, minVersion: appInfo.min_tipi_version });
-    }
+    // TODO: Re-enable version gating once Hub versioning is stable
+    // Currently disabled during active development — Hub version scheme
+    // changed from Runtipi's 4.x to CI Hub's 0.x, breaking all app installs.
+    // if (appInfo?.min_hub_version && valid(version) && lt(version, appInfo.min_hub_version)) {
+    //   throw new TranslatableError('APP_UPDATE_ERROR_MIN_HUB_VERSION', { id: appUrn, minVersion: appInfo.min_hub_version });
+    // }
 
     const createdApp = await this.appRepository.createApp({
       appName,
@@ -449,11 +450,12 @@ export class AppLifecycleService implements OnApplicationBootstrap {
   public async updateAppConfig(params: { appUrn: AppUrn; form: unknown }) {
     const { appUrn, form } = params;
 
-    const parsedForm = appFormSchema(form);
+    const parsedFormResult = appFormSchema.safeParse(form);
 
-    if (parsedForm instanceof type.errors) {
-      throw new TranslatableError('SYSTEM_ERROR_INVALID_BODY', undefined, HttpStatus.BAD_REQUEST, { cause: parsedForm });
+    if (!parsedFormResult.success) {
+      throw new TranslatableError('SYSTEM_ERROR_INVALID_BODY', undefined, HttpStatus.BAD_REQUEST, { cause: parsedFormResult.error });
     }
+    const parsedForm = parsedFormResult.data;
 
     const { exposed, domain, exposedLocal, enableAuth, openPort, port } = parsedForm;
 
@@ -723,8 +725,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
           const orgSlug = orgInfo.slug;
           const normalized = hubSub.replace(/^hub-/, '');
           const deviceSlug = normalized.endsWith(`-${orgSlug}`) ? normalized.slice(0, -(orgSlug.length + 1)) : normalized;
-          const vpnSub =
-            deviceSlug && deviceSlug !== orgSlug ? `vpn-${deviceSlug}-${orgSlug}` : `vpn-${orgSlug}`;
+          const vpnSub = deviceSlug && deviceSlug !== orgSlug ? `vpn-${deviceSlug}-${orgSlug}` : `vpn-${orgSlug}`;
           exposedApps.splice(1, 0, {
             name: 'Headscale',
             subdomain: vpnSub,
@@ -755,12 +756,12 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn });
     }
 
-    const version = this.config.get('version');
-
-    const { minTipiVersion } = await this.marketplaceService.getAppUpdateInfo(appUrn);
-    if (minTipiVersion && semver.valid(version) && semver.lt(version, minTipiVersion)) {
-      throw new TranslatableError('APP_UPDATE_ERROR_MIN_TIPI_VERSION', { id: appUrn, minVersion: minTipiVersion });
-    }
+    // TODO: Re-enable version gating once Hub versioning is stable
+    // const version = this.config.get('version');
+    // const { minHubVersion } = await this.marketplaceService.getAppUpdateInfo(appUrn);
+    // if (minHubVersion && semver.valid(version) && semver.lt(version, minHubVersion)) {
+    //   throw new TranslatableError('APP_UPDATE_ERROR_MIN_HUB_VERSION', { id: appUrn, minVersion: minHubVersion });
+    // }
 
     await this.appRepository.updateAppById(app.id, { status: 'updating' });
 

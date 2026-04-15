@@ -31,7 +31,6 @@ import {
   DEFAULT_THEME_BASE,
   DEFAULT_THEME_COLOR,
 } from '../constants';
-import { type } from 'arktype';
 
 export const DEFAULT_REPO_URL = '';
 
@@ -79,7 +78,7 @@ const LEGACY_ENV_MAP: Record<string, string> = {
   CI_HUB_DATA_DIR: 'TIPI_DATA_DIR',
   CI_HUB_APP_DIR: 'TIPI_APP_DIR',
   CI_HUB_APP_DATA_DIR: 'TIPI_APP_DATA_DIR',
-  CI_HUB_VERSION: 'TIPI_VERSION',
+
   CI_HUB_MEDIA_PATH: 'RUNTIPI_MEDIA_PATH',
   CI_HUB_REPOS_PATH: 'RUNTIPI_REPOS_PATH',
   CI_HUB_APPS_PATH: 'RUNTIPI_APPS_PATH',
@@ -157,11 +156,12 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
 
   const settingsFile = await fs.promises.readFile(settingsFilePath, 'utf-8');
 
-  const settings = settingsSchema.partial()(JSON.parse(settingsFile));
+  const settings = settingsSchema.partial().safeParse(JSON.parse(settingsFile));
 
-  if (settings instanceof type.errors) {
-    throw new Error(`Invalid settings.json file: ${settings.summary}`);
+  if (!settings.success) {
+    throw new Error(`Invalid settings.json file: ${settings.error.message}`);
   }
+  const settingsData = settings.data;
 
   await generateSeed();
 
@@ -185,7 +185,7 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   }
 
   // Ensure that the app data path does not contain the /app-data suffix
-  let appDataPath = settings.appDataPath || resolve('CI_HUB_APP_DATA_PATH', { envMap, fallback: '' });
+  let appDataPath = settingsData.appDataPath || resolve('CI_HUB_APP_DATA_PATH', { envMap, fallback: '' });
   const appDataSegment = '/app-data';
 
   while (appDataPath?.endsWith(appDataSegment)) {
@@ -217,7 +217,7 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
 
   // --- Write resolved values into envMap ---
   // Every value uses resolve() for consistent priority:
-  //   process.env > settings.json > data .env > default
+  //   process.env > settingsData.json > data .env > default
 
   envMap.set('ROOT_FOLDER_HOST', rootFolderHost);
   envMap.set('ARCHITECTURE', getArchitecture());
@@ -225,14 +225,14 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   envMap.set('CI_HUB_APP_DATA_PATH', finalAppDataPath);
 
   // Core infrastructure
-  envMap.set('INTERNAL_IP', resolve('INTERNAL_IP', { envMap, settingsVal: settings.listenIp, fallback: '127.0.0.1' }));
-  envMap.set('TZ', resolve('TZ', { envMap, settingsVal: settings.timeZone, fallback: Intl.DateTimeFormat().resolvedOptions().timeZone }));
-  envMap.set('DNS_IP', resolve('DNS_IP', { envMap, settingsVal: settings.dnsIp, fallback: DEFAULT_DNS_IP }));
+  envMap.set('INTERNAL_IP', resolve('INTERNAL_IP', { envMap, settingsVal: settingsData.listenIp, fallback: '127.0.0.1' }));
+  envMap.set('TZ', resolve('TZ', { envMap, settingsVal: settingsData.timeZone, fallback: Intl.DateTimeFormat().resolvedOptions().timeZone }));
+  envMap.set('DNS_IP', resolve('DNS_IP', { envMap, settingsVal: settingsData.dnsIp, fallback: DEFAULT_DNS_IP }));
   envMap.set('DOMAIN', resolve('DOMAIN', { envMap, fallback: 'example.com' }));
-  envMap.set('LOCAL_DOMAIN', resolve('LOCAL_DOMAIN', { envMap, settingsVal: settings.localDomain, fallback: '' }));
+  envMap.set('LOCAL_DOMAIN', resolve('LOCAL_DOMAIN', { envMap, settingsVal: settingsData.localDomain, fallback: '' }));
   envMap.set(
     'CI_HUB_FORWARD_AUTH_URL',
-    resolve('CI_HUB_FORWARD_AUTH_URL', { envMap, settingsVal: settings.forwardAuthUrl, fallback: DEFAULT_FORWARD_AUTH_URL }),
+    resolve('CI_HUB_FORWARD_AUTH_URL', { envMap, settingsVal: settingsData.forwardAuthUrl, fallback: DEFAULT_FORWARD_AUTH_URL }),
   );
 
   // Database — these are internal Docker service names/creds; hardcoded defaults from constants
@@ -241,7 +241,7 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   envMap.set('POSTGRES_USERNAME', resolve('POSTGRES_USERNAME', { envMap, fallback: DEFAULT_POSTGRES_USERNAME }));
   envMap.set('POSTGRES_PORT', resolve('POSTGRES_PORT', { envMap, fallback: DEFAULT_POSTGRES_PORT }));
 
-  // Message queue — also handle legacy hostname migration
+  // Message queue — handle legacy hostname migration (runtipi-queue was the original Runtipi hostname)
   let rabbitmqHost = resolve('RABBITMQ_HOST', { envMap, fallback: DEFAULT_RABBITMQ_HOST });
   if (rabbitmqHost === 'runtipi-queue' || rabbitmqHost === 'ci-hub-queue') {
     rabbitmqHost = DEFAULT_RABBITMQ_HOST;
@@ -250,33 +250,33 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   envMap.set('RABBITMQ_USERNAME', resolve('RABBITMQ_USERNAME', { envMap, fallback: DEFAULT_RABBITMQ_USERNAME }));
   envMap.set('RABBITMQ_PASSWORD', resolve('RABBITMQ_PASSWORD', { envMap, fallback: DEFAULT_RABBITMQ_PASSWORD }));
 
-  // Feature flags / user preferences (settings.json booleans)
-  envMap.set('DEMO_MODE', resolve('DEMO_MODE', { envMap, settingsVal: boolStr(settings.demoMode), fallback: DEFAULT_DEMO_MODE }));
+  // Feature flags / user preferences (settingsData.json booleans)
+  envMap.set('DEMO_MODE', resolve('DEMO_MODE', { envMap, settingsVal: boolStr(settingsData.demoMode), fallback: DEFAULT_DEMO_MODE }));
   envMap.set(
     'DISABLE_PASSWORD_RESET',
-    resolve('DISABLE_PASSWORD_RESET', { envMap, settingsVal: boolStr(settings.disablePasswordReset), fallback: DEFAULT_DISABLE_PASSWORD_RESET }),
+    resolve('DISABLE_PASSWORD_RESET', { envMap, settingsVal: boolStr(settingsData.disablePasswordReset), fallback: DEFAULT_DISABLE_PASSWORD_RESET }),
   );
   envMap.set(
     'GUEST_DASHBOARD',
-    resolve('GUEST_DASHBOARD', { envMap, settingsVal: boolStr(settings.guestDashboard), fallback: DEFAULT_GUEST_DASHBOARD }),
+    resolve('GUEST_DASHBOARD', { envMap, settingsVal: boolStr(settingsData.guestDashboard), fallback: DEFAULT_GUEST_DASHBOARD }),
   );
   envMap.set(
     'ALLOW_AUTO_THEMES',
-    resolve('ALLOW_AUTO_THEMES', { envMap, settingsVal: boolStr(settings.allowAutoThemes), fallback: DEFAULT_ALLOW_AUTO_THEMES }),
+    resolve('ALLOW_AUTO_THEMES', { envMap, settingsVal: boolStr(settingsData.allowAutoThemes), fallback: DEFAULT_ALLOW_AUTO_THEMES }),
   );
   envMap.set(
     'ALLOW_ERROR_MONITORING',
-    resolve('ALLOW_ERROR_MONITORING', { envMap, settingsVal: boolStr(settings.allowErrorMonitoring), fallback: DEFAULT_ALLOW_ERROR_MONITORING }),
+    resolve('ALLOW_ERROR_MONITORING', { envMap, settingsVal: boolStr(settingsData.allowErrorMonitoring), fallback: DEFAULT_ALLOW_ERROR_MONITORING }),
   );
   envMap.set(
     'PERSIST_TRAEFIK_CONFIG',
-    resolve('PERSIST_TRAEFIK_CONFIG', { envMap, settingsVal: boolStr(settings.persistTraefikConfig), fallback: DEFAULT_PERSIST_TRAEFIK_CONFIG }),
+    resolve('PERSIST_TRAEFIK_CONFIG', { envMap, settingsVal: boolStr(settingsData.persistTraefikConfig), fallback: DEFAULT_PERSIST_TRAEFIK_CONFIG }),
   );
   envMap.set(
     'QUEUE_TIMEOUT_IN_MINUTES',
     resolve('QUEUE_TIMEOUT_IN_MINUTES', {
       envMap,
-      settingsVal: typeof settings.eventsTimeout === 'number' ? String(settings.eventsTimeout) : undefined,
+      settingsVal: typeof settingsData.eventsTimeout === 'number' ? String(settingsData.eventsTimeout) : undefined,
       fallback: DEFAULT_QUEUE_TIMEOUT_IN_MINUTES,
     }),
   );
@@ -284,27 +284,27 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
     'MAX_BACKUPS',
     resolve('MAX_BACKUPS', {
       envMap,
-      settingsVal: typeof settings.maxBackups === 'number' ? String(settings.maxBackups) : undefined,
+      settingsVal: typeof settingsData.maxBackups === 'number' ? String(settingsData.maxBackups) : undefined,
       fallback: DEFAULT_MAX_BACKUPS,
     }),
   );
   envMap.set(
     'ADVANCED_SETTINGS',
-    resolve('ADVANCED_SETTINGS', { envMap, settingsVal: boolStr(settings.advancedSettings), fallback: DEFAULT_ADVANCED_SETTINGS }),
+    resolve('ADVANCED_SETTINGS', { envMap, settingsVal: boolStr(settingsData.advancedSettings), fallback: DEFAULT_ADVANCED_SETTINGS }),
   );
-  envMap.set('LOG_LEVEL', resolve('LOG_LEVEL', { envMap, settingsVal: settings.logLevel, fallback: DEFAULT_LOG_LEVEL }));
+  envMap.set('LOG_LEVEL', resolve('LOG_LEVEL', { envMap, settingsVal: settingsData.logLevel, fallback: DEFAULT_LOG_LEVEL }));
   envMap.set(
     'EXPERIMENTAL_INSECURE_COOKIE',
     resolve('EXPERIMENTAL_INSECURE_COOKIE', {
       envMap,
-      settingsVal: boolStr(settings.experimental_insecureCookie),
+      settingsVal: boolStr(settingsData.experimental_insecureCookie),
       fallback: DEFAULT_EXPERIMENTAL_INSECURE_COOKIE,
     }),
   );
 
   // Theming
-  envMap.set('THEME_BASE', resolve('THEME_BASE', { envMap, settingsVal: settings.themeBase, fallback: DEFAULT_THEME_BASE }));
-  envMap.set('THEME_COLOR', resolve('THEME_COLOR', { envMap, settingsVal: settings.themeColor, fallback: DEFAULT_THEME_COLOR }));
+  envMap.set('THEME_BASE', resolve('THEME_BASE', { envMap, settingsVal: settingsData.themeBase, fallback: DEFAULT_THEME_BASE }));
+  envMap.set('THEME_COLOR', resolve('THEME_COLOR', { envMap, settingsVal: settingsData.themeColor, fallback: DEFAULT_THEME_COLOR }));
 
   // CI Cloud integration — REQUIRED, no fallback
   const ciCloudUrl = resolve('CI_CLOUD_URL', { envMap, fallback: '' });

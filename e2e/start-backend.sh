@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-DATA_DIR="${TIPI_DATA_DIR:-/tmp/ci-hub-e2e}"
+DATA_DIR="${CI_HUB_DATA_DIR:-/tmp/ci-hub-e2e}"
 
 # Create required directory structure
 mkdir -p "$DATA_DIR"/{state,logs,apps,app-data,repos,backups,user-config,media}
@@ -18,11 +18,11 @@ echo "e2e-mock-tunnel-token" > "$(pwd)/tunnel/token"
 
 # Build workspace dependencies (common package must be compiled before backend can start)
 echo "Building @ci-hub/common..."
-(cd packages/common && bun run build)
+(cd packages/common && pnpm run build)
 
 # Build backend (nest build uses swc, doesn't reliably copy all assets)
 echo "Building backend..."
-(cd packages/backend && bun run nest build)
+(cd packages/backend && pnpm exec nest build)
 
 # Copy migration assets that nest build may not handle
 mkdir -p packages/backend/dist/assets/migrations/meta
@@ -52,11 +52,11 @@ TZ=${TZ:-UTC}
 THEME_BASE=${THEME_BASE:-gray}
 THEME_COLOR=${THEME_COLOR:-blue}
 EXPERIMENTAL_INSECURE_COOKIE=${EXPERIMENTAL_INSECURE_COOKIE:-true}
-TIPI_VERSION=${TIPI_VERSION:-e2e}
+CI_HUB_VERSION=${CI_HUB_VERSION:-e2e}
 INTERNAL_IP=${INTERNAL_IP:-0.0.0.0}
 ROOT_FOLDER_HOST=${ROOT_FOLDER_HOST:-/tmp/ci-hub-e2e}
-RUNTIPI_APP_DATA_PATH=${RUNTIPI_APP_DATA_PATH:-/tmp/ci-hub-e2e}
-RUNTIPI_FORWARD_AUTH_URL=http://localhost:3000/api/auth/traefik
+CI_HUB_APP_DATA_PATH=${CI_HUB_APP_DATA_PATH:-/tmp/ci-hub-e2e}
+CI_HUB_FORWARD_AUTH_URL=http://localhost:3000/api/auth/traefik
 ALLOW_AUTO_THEMES=${ALLOW_AUTO_THEMES:-true}
 ALLOW_ERROR_MONITORING=${ALLOW_ERROR_MONITORING:-false}
 PERSIST_TRAEFIK_CONFIG=${PERSIST_TRAEFIK_CONFIG:-false}
@@ -65,9 +65,9 @@ DISABLE_PASSWORD_RESET=${DISABLE_PASSWORD_RESET:-true}
 DNS_IP=${DNS_IP:-9.9.9.9}
 ARCHITECTURE=${ARCHITECTURE:-amd64}
 DEVICE_ID=${DEVICE_ID:-test-device-e2e}
-TIPI_DATA_DIR=$DATA_DIR
-TIPI_APP_DATA_DIR=$DATA_DIR/app-data
-TIPI_APP_DIR=$(pwd)
+CI_HUB_DATA_DIR=$DATA_DIR
+CI_HUB_APP_DATA_DIR=$DATA_DIR/app-data
+CI_HUB_APP_DIR=$(pwd)
 EOF
 
 echo "E2E backend starting with DATA_DIR=$DATA_DIR"

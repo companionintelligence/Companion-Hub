@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env tsx
 /**
  * Fleet Test Orchestrator
  *
@@ -6,11 +6,11 @@
  * and collects results for unified reporting. Dry run by default.
  *
  * Usage:
- *   bun run scripts/run-fleet-tests.ts [--batch=<0-6>] [--execute] [--verbose]
+ *   pnpm exec tsx scripts/run-fleet-tests.ts [--batch=<0-6>] [--execute] [--verbose]
  *
  * Examples:
- *   bun run scripts/run-fleet-tests.ts
- *   bun run scripts/run-fleet-tests.ts --batch=2 --execute --verbose
+ *   pnpm exec tsx scripts/run-fleet-tests.ts
+ *   pnpm exec tsx scripts/run-fleet-tests.ts --batch=2 --execute --verbose
  */
 
 import { execSync } from 'node:child_process';
@@ -155,8 +155,8 @@ async function runTestsOnServer(server: FleetServer, _verbose: boolean): Promise
   const sshCommand = `
     cd ~/devel/CI-OS-Hub && 
     git pull --quiet origin dev 2>/dev/null || true &&
-    bun install --silent 2>/dev/null || true &&
-    bun run playwright test e2e/generated/catalog-batch-${server.batch}.spec.ts \
+    pnpm install --silent 2>/dev/null || true &&
+    pnpm exec playwright test e2e/generated/catalog-batch-${server.batch}.spec.ts \
       --reporter=json \
       --timeout=300000 \
       2>&1

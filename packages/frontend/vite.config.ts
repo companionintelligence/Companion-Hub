@@ -1,7 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { reactRouter } from '@react-router/dev/vite';
-import { sentryVitePlugin } from '@sentry/vite-plugin';
 import { defineConfig, loadEnv, type PluginOption } from 'vite';
 import tsconfigPaths from 'vite-tsconfig-paths';
 import tailwindcss from '@tailwindcss/vite';
@@ -53,19 +52,6 @@ export default defineConfig(({ mode }) => {
   const { NODE_ENV } = process.env;
   if (NODE_ENV === 'production') {
     alias['react-dom/server'] = 'react-dom/server.node';
-    // Avoid failing CI / local release builds when no Sentry auth token is configured.
-    if (process.env.SENTRY_AUTH_TOKEN) {
-      plugins.push(
-        sentryVitePlugin({
-          authToken: process.env.SENTRY_AUTH_TOKEN,
-          release: {
-            name: process.env.CI_HUB_VERSION || process.env.TIPI_VERSION,
-          },
-          org: 'companionintelligence',
-          project: 'ci-hub-frontend',
-        }) as PluginOption,
-      );
-    }
   }
 
   return {
@@ -120,15 +106,7 @@ export default defineConfig(({ mode }) => {
     },
     optimizeDeps: {
       force: false,
-      include: [
-        'i18next',
-        'react-i18next',
-        'i18next-http-backend',
-        'i18next-browser-languagedetector',
-        '@sentry/react',
-        'js-cookie',
-        '@tanstack/react-query',
-      ],
+      include: ['i18next', 'react-i18next', 'i18next-http-backend', 'i18next-browser-languagedetector', 'js-cookie', '@tanstack/react-query'],
     },
     preview: {
       port: 9091,
