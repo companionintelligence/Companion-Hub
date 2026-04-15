@@ -84,17 +84,6 @@ export class ConfigurationService {
 
     const conf = { ...Object.fromEntries(envMap), ...process.env } as Record<string, string>;
 
-    // Backward compatibility: map legacy env var names to new names (new takes precedence)
-    const legacyEnvMap: Record<string, string> = {
-      RUNTIPI_APP_DATA_PATH: 'CI_HUB_APP_DATA_PATH',
-      RUNTIPI_FORWARD_AUTH_URL: 'CI_HUB_FORWARD_AUTH_URL',
-    };
-    for (const [oldName, newName] of Object.entries(legacyEnvMap)) {
-      if (!conf[newName] && conf[oldName]) {
-        conf[newName] = conf[oldName];
-      }
-    }
-
     const env = envSchema.safeParse(conf);
 
     if (!env.success) {
