@@ -30,7 +30,7 @@ const backendEnv: Record<string, string> = {
   INTERNAL_IP: '0.0.0.0',
   ROOT_FOLDER_HOST: process.env.ROOT_FOLDER_HOST || '/tmp/ci-hub-e2e',
   CI_HUB_APP_DATA_PATH: process.env.CI_HUB_APP_DATA_PATH || '/tmp/ci-hub-e2e',
-  CI_HUB_FORWARD_AUTH_URL: 'http://localhost:3000/api/auth/traefik',
+  CI_HUB_FORWARD_AUTH_URL: process.env.CI_HUB_FORWARD_AUTH_URL || 'http://localhost:3000/api/auth/traefik',
   ALLOW_AUTO_THEMES: 'true',
   ALLOW_ERROR_MONITORING: 'false',
   PERSIST_TRAEFIK_CONFIG: 'false',

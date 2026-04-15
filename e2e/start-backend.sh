@@ -26,8 +26,8 @@ echo "Building backend..."
 
 # Copy migration assets that nest build may not handle
 mkdir -p packages/backend/dist/assets/migrations/meta
-cp packages/backend/src/core/database/drizzle/*.sql packages/backend/dist/assets/migrations/
-cp packages/backend/src/core/database/drizzle/meta/* packages/backend/dist/assets/migrations/meta/
+cp packages/backend/src/core/database/drizzle/*.sql packages/backend/dist/assets/migrations/ || true
+cp packages/backend/src/core/database/drizzle/meta/* packages/backend/dist/assets/migrations/meta/ || true
 
 # Write .env file with all required vars (backend reads this on startup)
 BACKEND_DIST="$(pwd)/packages/backend/dist"
@@ -56,7 +56,7 @@ CI_HUB_VERSION=${CI_HUB_VERSION:-e2e}
 INTERNAL_IP=${INTERNAL_IP:-0.0.0.0}
 ROOT_FOLDER_HOST=${ROOT_FOLDER_HOST:-/tmp/ci-hub-e2e}
 CI_HUB_APP_DATA_PATH=${CI_HUB_APP_DATA_PATH:-/tmp/ci-hub-e2e}
-CI_HUB_FORWARD_AUTH_URL=http://localhost:3000/api/auth/traefik
+CI_HUB_FORWARD_AUTH_URL=${CI_HUB_FORWARD_AUTH_URL:-http://localhost:3000/api/auth/traefik}
 ALLOW_AUTO_THEMES=${ALLOW_AUTO_THEMES:-true}
 ALLOW_ERROR_MONITORING=${ALLOW_ERROR_MONITORING:-false}
 PERSIST_TRAEFIK_CONFIG=${PERSIST_TRAEFIK_CONFIG:-false}
