@@ -40,6 +40,9 @@ jobs:
 
   build:
     needs: build-container
+    permissions:
+      contents: read
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
@@ -65,7 +68,10 @@ jobs:
     timeout-minutes: 45
     env:
       APPLE_SIGNING_CONFIGURED: ${{ secrets.APPLE_CERTIFICATE != '' && 'true' || '' }}
-      WINDOWS_SIGNING_CONFIGURED: ${{ secrets.AZURE_TENANT_ID != '' && 'true' || '' }}
+      # Windows signing uses GitHub OIDC + Azure login + Azure Artifact Signing.
+      # Required environment secrets: AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_SUBSCRIPTION_ID,
+      # AZURE_SIGNING_ENDPOINT, AZURE_SIGNING_ACCOUNT, AZURE_CERTIFICATE_PROFILE.
+      WINDOWS_SIGNING_CONFIGURED: ${{ secrets.AZURE_TENANT_ID != '' && secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_SUBSCRIPTION_ID != '' && secrets.AZURE_SIGNING_ENDPOINT != '' && secrets.AZURE_SIGNING_ACCOUNT != '' && secrets.AZURE_CERTIFICATE_PROFILE != '' && 'true' || '' }}
       BUILD_ENABLED: ${{ inputs.platforms == 'all' || startsWith(matrix.label, 'macOS') }}
     steps:
       - name: Checkout
@@ -202,23 +208,46 @@ jobs:
             xcrun stapler staple "$DMG_PATH"
             echo "✅ Notarization complete"
           fi
-      # ── Windows Code Signing (Azure Trusted Signing) ────────────────
-      - name: Sign Windows artifacts
-        if: env.BUILD_ENABLED && runner.os == 'Windows' && env.WINDOWS_SIGNING_CONFIGURED
-        uses: azure/trusted-signing-action@v0.5.0
+      # ── Windows Code Signing (Azure Artifact Signing via GitHub OIDC) ──
+      # See DESKTOP-RELEASE-SIGNING.md for the exact Azure IDs, secrets, and
+      # federated credential subjects this workflow expects.
+      - name: Prepare Windows signing paths
+        if: env.BUILD_ENABLED && runner.os == 'Windows' && env.WINDOWS_SIGNING_CONFIGURED == 'true'
+        shell: pwsh
+        run: |
+          $bundleDir = (Resolve-Path "packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle").Path
+          "WINDOWS_BUNDLE_DIR=$bundleDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Azure login for Artifact Signing
+        if: env.BUILD_ENABLED && runner.os == 'Windows' && env.WINDOWS_SIGNING_CONFIGURED == 'true'
+        uses: azure/login@v2
         with:
-          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Sign Windows artifacts
+        if: env.BUILD_ENABLED && runner.os == 'Windows' && env.WINDOWS_SIGNING_CONFIGURED == 'true'
+        uses: azure/artifact-signing-action@v1
+        with:
           endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
-          trusted-signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
           certificate-profile-name: ${{ secrets.AZURE_CERTIFICATE_PROFILE }}
-          files-folder: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle
+          files-folder: ${{ env.WINDOWS_BUNDLE_DIR }}
           files-folder-filter: exe,msi
+          files-folder-recurse: true
           files-folder-depth: 3
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
+          exclude-environment-credential: true
+          exclude-workload-identity-credential: true
+          exclude-managed-identity-credential: true
+          exclude-shared-token-cache-credential: true
+          exclude-visual-studio-credential: true
+          exclude-visual-studio-code-credential: true
+          exclude-azure-cli-credential: false
+          exclude-azure-powershell-credential: true
+          exclude-azure-developer-cli-credential: true
+          exclude-interactive-browser-credential: true
       - name: Collect release artifacts
         if: env.BUILD_ENABLED
         id: artifacts
