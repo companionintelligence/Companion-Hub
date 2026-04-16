@@ -855,6 +855,7 @@ dmg="$workdir/Docker.dmg"
 mount_dir="$workdir/mnt"
 mkdir -p "$mount_dir"
 curl -L --fail -o "$dmg" "{download_url}"
+spctl --assess --type open --verbose=2 "$dmg"
 hdiutil attach "$dmg" -mountpoint "$mount_dir" -nobrowse -quiet
 codesign --verify --deep --strict --verbose=2 "$mount_dir/Docker.app"
 spctl --assess --type execute --verbose=2 "$mount_dir/Docker.app"
@@ -1188,6 +1189,7 @@ mod tests {
             "hex",
         );
 
+        assert!(script.contains("spctl --assess --type open --verbose=2"));
         assert!(script.contains("codesign --verify --deep --strict --verbose=2"));
         assert!(script.contains("spctl --assess --type execute --verbose=2"));
         assert!(script.contains("--user=\"hex\""));
