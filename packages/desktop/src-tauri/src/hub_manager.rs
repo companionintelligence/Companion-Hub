@@ -11,6 +11,19 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 const MAX_COMMAND_OUTPUT_CHARS: usize = 400;
 const DESKTOP_LOG_FILENAME: &str = "desktop.log";
+const DEFAULT_TRAEFIK_ACME_EMAIL: &str = "admin@companionintelligence.com";
+const TRAEFIK_ACME_DEFAULT_CONTENT: &str = "{}";
+const TRAEFIK_CONFIG_SEED: &str = include_str!("../../../backend/assets/traefik/traefik.yml");
+const TRAEFIK_DYNAMIC_CONFIG_SEED: &str =
+    include_str!("../../../backend/assets/traefik/dynamic/dynamic.yml");
+const TRAEFIK_RECREATE_MARKER_FILENAME: &str = ".traefik-recreate-required";
+const TRAEFIK_STATE_DIR: &str = "state/traefik";
+const TRAEFIK_CONFIG_DIR: &str = "state/traefik/config";
+const TRAEFIK_DYNAMIC_DIR: &str = "state/traefik/dynamic";
+const TRAEFIK_TLS_DIR: &str = "state/traefik/tls";
+const TRAEFIK_CONFIG_FILE: &str = "state/traefik/config/traefik.yml";
+const TRAEFIK_DYNAMIC_FILE: &str = "state/traefik/dynamic/dynamic.yml";
+const TRAEFIK_ACME_FILE: &str = "state/traefik/acme_storage.json";
 
 #[cfg(target_os = "windows")]
 const DOCKER_DESKTOP_WINDOWS_INSTALLER_URL: &str =
@@ -134,6 +147,27 @@ pub struct HubPaths {
     pub data_dir: PathBuf,
     pub compose_path: PathBuf,
     pub env_path: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TraefikRuntimePreflight {
+    pub changed: bool,
+    pub repaired_conflicting_paths: bool,
+}
+
+impl TraefikRuntimePreflight {
+    fn merge(&mut self, other: Self) {
+        self.changed |= other.changed;
+        self.repaired_conflicting_paths |= other.repaired_conflicting_paths;
+    }
+}
+
+#[derive(Debug)]
+pub struct HubInitialization {
+    pub data_dir: PathBuf,
+    pub compose_path: PathBuf,
+    pub env_path: PathBuf,
+    pub traefik_preflight: TraefikRuntimePreflight,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -437,6 +471,245 @@ pub fn hub_containers_exist() -> bool {
         .unwrap_or(false)
 }
 
+fn traefik_recreate_marker_path(data_dir: &Path) -> PathBuf {
+    data_dir.join(TRAEFIK_RECREATE_MARKER_FILENAME)
+}
+
+pub(crate) fn is_traefik_recreate_required(data_dir: &Path) -> bool {
+    traefik_recreate_marker_path(data_dir).exists()
+}
+
+fn mark_traefik_recreate_required(data_dir: &Path) -> Result<(), String> {
+    let marker_path = traefik_recreate_marker_path(data_dir);
+    std::fs::write(
+        &marker_path,
+        b"Traefik container must be recreated before the next startup.\n",
+    )
+    .map_err(|error| {
+        format!(
+            "Failed to persist Traefik recreate marker at {}: {}",
+            marker_path.display(),
+            error
+        )
+    })
+}
+
+fn clear_traefik_recreate_required(data_dir: &Path) -> Result<(), String> {
+    let marker_path = traefik_recreate_marker_path(data_dir);
+    if !marker_path.exists() {
+        return Ok(());
+    }
+
+    std::fs::remove_file(&marker_path).map_err(|error| {
+        format!(
+            "Failed to clear Traefik recreate marker at {}: {}",
+            marker_path.display(),
+            error
+        )
+    })
+}
+
+fn seeded_traefik_config_contents() -> String {
+    TRAEFIK_CONFIG_SEED.replace("{{ACME_EMAIL}}", DEFAULT_TRAEFIK_ACME_EMAIL)
+}
+
+fn ensure_runtime_directory(path: &Path) -> Result<TraefikRuntimePreflight, String> {
+    let mut result = TraefikRuntimePreflight::default();
+
+    if path.exists() {
+        if path.is_dir() {
+            return Ok(result);
+        }
+
+        std::fs::remove_file(path).map_err(|error| {
+            format!(
+                "Failed to remove conflicting file at {}: {}",
+                path.display(),
+                error
+            )
+        })?;
+        result.changed = true;
+        result.repaired_conflicting_paths = true;
+    }
+
+    std::fs::create_dir_all(path)
+        .map_err(|error| format!("Failed to create directory {}: {}", path.display(), error))?;
+    result.changed = true;
+    Ok(result)
+}
+
+fn ensure_seeded_text_file(path: &Path, contents: &str) -> Result<TraefikRuntimePreflight, String> {
+    let mut result = TraefikRuntimePreflight::default();
+
+    if let Some(parent) = path.parent() {
+        result.merge(ensure_runtime_directory(parent)?);
+    }
+
+    if path.exists() {
+        if path.is_dir() {
+            std::fs::remove_dir_all(path).map_err(|error| {
+                format!(
+                    "Failed to remove conflicting directory at {}: {}",
+                    path.display(),
+                    error
+                )
+            })?;
+            result.changed = true;
+            result.repaired_conflicting_paths = true;
+        } else {
+            let existing = std::fs::read(path)
+                .map_err(|error| format!("Failed to read {}: {}", path.display(), error))?;
+            if existing == contents.as_bytes() {
+                return Ok(result);
+            }
+        }
+    }
+
+    std::fs::write(path, contents)
+        .map_err(|error| format!("Failed to write {}: {}", path.display(), error))?;
+    result.changed = true;
+    Ok(result)
+}
+
+fn ensure_runtime_file(
+    path: &Path,
+    default_contents: &str,
+    file_mode: Option<u32>,
+) -> Result<TraefikRuntimePreflight, String> {
+    let mut result = TraefikRuntimePreflight::default();
+
+    if let Some(parent) = path.parent() {
+        result.merge(ensure_runtime_directory(parent)?);
+    }
+
+    let should_write = if path.exists() {
+        if path.is_dir() {
+            std::fs::remove_dir_all(path).map_err(|error| {
+                format!(
+                    "Failed to remove conflicting directory at {}: {}",
+                    path.display(),
+                    error
+                )
+            })?;
+            result.changed = true;
+            result.repaired_conflicting_paths = true;
+            true
+        } else {
+            false
+        }
+    } else {
+        true
+    };
+
+    if should_write {
+        std::fs::write(path, default_contents)
+            .map_err(|error| format!("Failed to write {}: {}", path.display(), error))?;
+        if let Some(mode) = file_mode {
+            set_file_mode(path, mode)?;
+        }
+        result.changed = true;
+    }
+
+    Ok(result)
+}
+
+fn set_file_mode(path: &Path, mode: u32) -> Result<(), String> {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).map_err(|error| {
+            format!("Failed to set permissions on {}: {}", path.display(), error)
+        })?;
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = (path, mode);
+    }
+
+    Ok(())
+}
+
+fn prepare_traefik_runtime_state(data_dir: &Path) -> Result<TraefikRuntimePreflight, String> {
+    let mut result = TraefikRuntimePreflight::default();
+
+    for relative_dir in [
+        TRAEFIK_STATE_DIR,
+        TRAEFIK_CONFIG_DIR,
+        TRAEFIK_DYNAMIC_DIR,
+        TRAEFIK_TLS_DIR,
+    ] {
+        result.merge(ensure_runtime_directory(&data_dir.join(relative_dir))?);
+    }
+
+    result.merge(ensure_seeded_text_file(
+        &data_dir.join(TRAEFIK_CONFIG_FILE),
+        &seeded_traefik_config_contents(),
+    )?);
+    result.merge(ensure_seeded_text_file(
+        &data_dir.join(TRAEFIK_DYNAMIC_FILE),
+        TRAEFIK_DYNAMIC_CONFIG_SEED,
+    )?);
+    result.merge(ensure_runtime_file(
+        &data_dir.join(TRAEFIK_ACME_FILE),
+        TRAEFIK_ACME_DEFAULT_CONTENT,
+        Some(0o600),
+    )?);
+
+    Ok(result)
+}
+
+fn remove_existing_traefik_container(data_dir: &Path) -> Result<(), String> {
+    let output = docker_command()
+        .args(["rm", "-f", "traefik"])
+        .output()
+        .map_err(|error| {
+            format!(
+                "Failed to remove the existing Traefik container before recreate: {}",
+                error
+            )
+        })?;
+
+    let combined_output = format_command_output(
+        &String::from_utf8_lossy(&output.stdout),
+        &String::from_utf8_lossy(&output.stderr),
+    );
+    let combined_lower = combined_output.to_lowercase();
+
+    if output.status.success() {
+        let message = if combined_output.is_empty() {
+            "Removed existing Traefik container before recreate.".to_string()
+        } else {
+            format!(
+                "Removed existing Traefik container before recreate. {}",
+                combined_output
+            )
+        };
+        let _ = append_desktop_log_for(data_dir, "hub.start", &message);
+        return Ok(());
+    }
+
+    if combined_lower.contains("no such container") || combined_lower.contains("no such object") {
+        let _ = append_desktop_log_for(
+            data_dir,
+            "hub.start",
+            "Traefik recreate was requested, but no existing Traefik container was present.",
+        );
+        return Ok(());
+    }
+
+    if combined_output.is_empty() {
+        Err(format!(
+            "Failed to remove the existing Traefik container before recreate (exit code {:?}).",
+            output.status.code()
+        ))
+    } else {
+        Err(format!(
+            "Failed to remove the existing Traefik container before recreate. {}",
+            combined_output
+        ))
+    }
+}
+
 /// Start Hub using docker compose up (with port conflict resolution)
 pub fn start_hub(compose_path: &Path, env_path: &Path, data_dir: &Path) -> Result<String, String> {
     let _ = append_desktop_log_for(
@@ -448,6 +721,43 @@ pub fn start_hub(compose_path: &Path, env_path: &Path, data_dir: &Path) -> Resul
             env_path.display()
         ),
     );
+
+    let traefik_preflight = prepare_traefik_runtime_state(data_dir).map_err(|error| {
+        let message = format!("Traefik runtime preflight failed before startup: {}", error);
+        let _ = append_desktop_log_for(data_dir, "hub.start", &message);
+        with_view_logs_hint(message)
+    })?;
+
+    if traefik_preflight.changed {
+        mark_traefik_recreate_required(data_dir).map_err(|error| {
+            let message = format!(
+                "Traefik runtime preflight changed mounted state, but the recreate marker could not be written: {}",
+                error
+            );
+            let _ = append_desktop_log_for(data_dir, "hub.start", &message);
+            with_view_logs_hint(message)
+        })?;
+    }
+
+    let recreate_traefik = is_traefik_recreate_required(data_dir);
+    let _ = append_desktop_log_for(
+        data_dir,
+        "hub.start",
+        &format!(
+            "Traefik runtime preflight: changed={} repaired_conflicting_paths={} recreate_pending={}",
+            traefik_preflight.changed,
+            traefik_preflight.repaired_conflicting_paths,
+            recreate_traefik
+        ),
+    );
+
+    if recreate_traefik {
+        remove_existing_traefik_container(data_dir).map_err(|error| {
+            let message = format!("Traefik recreate preparation failed: {}", error);
+            let _ = append_desktop_log_for(data_dir, "hub.start", &message);
+            with_view_logs_hint(message)
+        })?;
+    }
 
     // Resolve port conflicts and write to .env before starting
     let resolution = crate::port_manager::refresh_ports_if_needed(env_path).map_err(|error| {
@@ -499,6 +809,19 @@ pub fn start_hub(compose_path: &Path, env_path: &Path, data_dir: &Path) -> Resul
     );
 
     if output.status.success() {
+        if recreate_traefik {
+            if let Err(error) = clear_traefik_recreate_required(data_dir) {
+                let _ = append_desktop_log_for(
+                    data_dir,
+                    "hub.start",
+                    &format!(
+                        "Hub started but the Traefik recreate marker could not be cleared: {}",
+                        error
+                    ),
+                );
+            }
+        }
+
         let message = if combined_output.is_empty() {
             "docker compose up -d succeeded.".to_string()
         } else {
@@ -507,6 +830,14 @@ pub fn start_hub(compose_path: &Path, env_path: &Path, data_dir: &Path) -> Resul
         let _ = append_desktop_log_for(data_dir, "hub.start", &message);
         Ok("Hub started successfully".to_string())
     } else {
+        if recreate_traefik {
+            let _ = append_desktop_log_for(
+                data_dir,
+                "hub.start",
+                "docker compose up -d failed while Traefik recreate was pending; the recreate marker will be kept for the next start attempt.",
+            );
+        }
+
         let failure = if combined_output.is_empty() {
             format!(
                 "docker compose up -d failed with exit code {:?}.",
@@ -632,8 +963,8 @@ fn compute_data_dir_str(data_dir: &Path) -> String {
 /// - Preserved values (read from existing .env, generated if missing): ROOT_FOLDER_HOST, JWT_SECRET, POSTGRES_PASSWORD
 /// - Derived values (always recomputed from the current binary): INTERNAL_IP, DOMAIN, CI_CLOUD_URL, CI_HUB_VERSION, CI_HUB_IMAGE, DOCKER_PLATFORM
 ///
-/// Returns (data_dir, compose_path, env_path, env_changed).
-pub fn initialize_hub(resource_dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf), String> {
+/// Returns the initialized desktop data paths and Traefik preflight result.
+pub fn initialize_hub(resource_dir: &Path) -> Result<HubInitialization, String> {
     let data_dir = get_hub_data_dir();
 
     // Create data subdirectories
@@ -776,6 +1107,29 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf)
 
     log_lines.push(format!("  .env changed: {}", env_changed));
 
+    let traefik_preflight = prepare_traefik_runtime_state(&data_dir).map_err(|error| {
+        let message = format!("Failed to prepare Traefik runtime state: {}", error);
+        let _ = append_desktop_log_for(&data_dir, "initialize", &message);
+        with_view_logs_hint(message)
+    })?;
+
+    if traefik_preflight.changed {
+        mark_traefik_recreate_required(&data_dir).map_err(|error| {
+            let message = format!(
+                "Traefik runtime state changed, but the recreate marker could not be written: {}",
+                error
+            );
+            let _ = append_desktop_log_for(&data_dir, "initialize", &message);
+            with_view_logs_hint(message)
+        })?;
+    }
+
+    let recreate_pending = is_traefik_recreate_required(&data_dir);
+    log_lines.push(format!(
+        "  traefik preflight: changed={} repaired_conflicting_paths={} recreate_pending={}",
+        traefik_preflight.changed, traefik_preflight.repaired_conflicting_paths, recreate_pending,
+    ));
+
     // Write init log (append)
     let init_summary = log_lines.join("\n");
     let _ = std::fs::OpenOptions::new()
@@ -794,7 +1148,12 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf)
         let _ = std::fs::remove_file(&legacy_docker_config);
     }
 
-    Ok((data_dir, compose_dst, env_path))
+    Ok(HubInitialization {
+        data_dir,
+        compose_path: compose_dst,
+        env_path,
+        traefik_preflight,
+    })
 }
 
 /// Strip dynamic port variables from .env content for comparison purposes.
@@ -1308,10 +1667,15 @@ mod tests {
     #[cfg(any(test, target_os = "windows"))]
     use super::docker_desktop_windows_install_script;
     use super::{
-        append_desktop_log_for, classify_docker_access_result, desktop_log_path_for,
-        format_command_output, preferred_log_target_for, truncate_command_output,
-        DockerAccessState, MAX_COMMAND_OUTPUT_CHARS,
+        append_desktop_log_for, classify_docker_access_result, clear_traefik_recreate_required,
+        desktop_log_path_for, format_command_output, is_traefik_recreate_required,
+        mark_traefik_recreate_required, preferred_log_target_for, prepare_traefik_runtime_state,
+        seeded_traefik_config_contents, truncate_command_output, DockerAccessState,
+        MAX_COMMAND_OUTPUT_CHARS, TRAEFIK_ACME_FILE, TRAEFIK_CONFIG_FILE,
+        TRAEFIK_DYNAMIC_CONFIG_SEED, TRAEFIK_DYNAMIC_FILE, TRAEFIK_TLS_DIR,
     };
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn classifies_daemon_unavailable_before_permission_denied() {
@@ -1396,6 +1760,93 @@ mod tests {
         std::fs::write(&desktop_log, "ready").expect("write desktop log");
 
         assert_eq!(preferred_log_target_for(tempdir.path()), desktop_log);
+    }
+
+    #[test]
+    fn prepares_fresh_traefik_runtime_state_for_desktop_runtime() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+
+        let result = prepare_traefik_runtime_state(tempdir.path()).expect("prepare traefik");
+
+        let config_path = tempdir.path().join(TRAEFIK_CONFIG_FILE);
+        let dynamic_path = tempdir.path().join(TRAEFIK_DYNAMIC_FILE);
+        let acme_path = tempdir.path().join(TRAEFIK_ACME_FILE);
+        let tls_dir = tempdir.path().join(TRAEFIK_TLS_DIR);
+
+        assert!(result.changed);
+        assert!(!result.repaired_conflicting_paths);
+        assert!(config_path.is_file());
+        assert!(dynamic_path.is_file());
+        assert!(acme_path.is_file());
+        assert!(tls_dir.is_dir());
+        assert_eq!(
+            std::fs::read_to_string(&config_path).expect("read traefik config"),
+            seeded_traefik_config_contents()
+        );
+        assert_eq!(
+            std::fs::read_to_string(&dynamic_path).expect("read dynamic config"),
+            TRAEFIK_DYNAMIC_CONFIG_SEED
+        );
+        assert_eq!(
+            std::fs::read_to_string(&acme_path).expect("read acme file"),
+            "{}"
+        );
+        assert!(!is_traefik_recreate_required(tempdir.path()));
+
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            let mode = std::fs::metadata(&acme_path)
+                .expect("acme metadata")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+    }
+
+    #[test]
+    fn heals_poisoned_traefik_mount_paths_back_to_files() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let config_path = tempdir.path().join(TRAEFIK_CONFIG_FILE);
+        let dynamic_path = tempdir.path().join(TRAEFIK_DYNAMIC_FILE);
+        let acme_path = tempdir.path().join(TRAEFIK_ACME_FILE);
+
+        std::fs::create_dir_all(&config_path).expect("create poisoned config directory");
+        std::fs::create_dir_all(&dynamic_path).expect("create poisoned dynamic directory");
+        std::fs::create_dir_all(&acme_path).expect("create poisoned acme directory");
+
+        let result = prepare_traefik_runtime_state(tempdir.path()).expect("prepare traefik");
+
+        assert!(result.changed);
+        assert!(result.repaired_conflicting_paths);
+        assert!(config_path.is_file());
+        assert!(dynamic_path.is_file());
+        assert!(acme_path.is_file());
+        assert_eq!(
+            std::fs::read_to_string(&config_path).expect("read healed traefik config"),
+            seeded_traefik_config_contents()
+        );
+        assert_eq!(
+            std::fs::read_to_string(&dynamic_path).expect("read healed dynamic config"),
+            TRAEFIK_DYNAMIC_CONFIG_SEED
+        );
+        assert_eq!(
+            std::fs::read_to_string(&acme_path).expect("read healed acme file"),
+            "{}"
+        );
+    }
+
+    #[test]
+    fn traefik_recreate_marker_can_be_set_and_cleared() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+
+        assert!(!is_traefik_recreate_required(tempdir.path()));
+
+        mark_traefik_recreate_required(tempdir.path()).expect("mark recreate required");
+        assert!(is_traefik_recreate_required(tempdir.path()));
+
+        clear_traefik_recreate_required(tempdir.path()).expect("clear recreate required");
+        assert!(!is_traefik_recreate_required(tempdir.path()));
     }
 
     #[test]
