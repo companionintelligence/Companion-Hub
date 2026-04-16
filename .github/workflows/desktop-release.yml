@@ -425,6 +425,7 @@ jobs:
               const file = files.find(f => f.endsWith(ext));
               if (file) {
                 const stat = fs.statSync(path.join(dir, file));
+                const encodedFile = encodeURIComponent(file);
                 let r2Path;
                 if (platform.startsWith('windows')) r2Path = 'windows/x64';
                 else if (platform === 'darwin-aarch64') r2Path = 'macos/arm';
@@ -432,7 +433,7 @@ jobs:
                 else if (platform === 'linux-x86_64') r2Path = fmt === 'appimage' ? 'linux/appimage/x64' : 'linux/' + fmt + '/x64';
                 else r2Path = fmt === 'appimage' ? 'linux/appimage/arm' : 'linux/' + fmt + '/arm';
                 platformData[fmt] = {
-                  url: 'https://dl.ci.computer/$VERSION/' + r2Path + '/' + file,
+                  url: 'https://dl.ci.computer/$VERSION/' + r2Path + '/' + encodedFile,
                   size: stat.size,
                 };
               }
