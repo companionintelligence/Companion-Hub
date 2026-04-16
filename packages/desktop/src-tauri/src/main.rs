@@ -44,17 +44,10 @@ async fn check_docker_access_command() -> Result<hub_manager::DockerAccessCheck,
     Ok(hub_manager::check_docker_access())
 }
 
-/// Install Docker Engine on Linux (uses pkexec for privilege escalation).
+/// Install Docker using the platform-native bootstrap flow.
 #[tauri::command]
-async fn install_docker_linux() -> Result<String, String> {
-    #[cfg(target_os = "linux")]
-    {
-        hub_manager::install_docker_linux()
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        Err("Docker auto-install is only supported on Linux".to_string())
-    }
+async fn install_docker_command() -> Result<hub_manager::DockerInstallResult, String> {
+    hub_manager::install_docker()
 }
 
 /// Get the current Hub status (Docker availability, container state, health).
@@ -84,7 +77,7 @@ pub fn run() {
             check_docker_available,
             check_docker_access_command,
             get_hub_status_command,
-            install_docker_linux,
+            install_docker_command,
         ])
         .setup(|app| {
             // Restore saved window geometry
@@ -109,10 +102,13 @@ pub fn run() {
             // window.open_devtools();
 
             if let Ok(store) = app.store("settings.json") {
-                if let Some(x) = store.get("window_x").and_then(|v: serde_json::Value| v.as_f64())
+                if let Some(x) = store
+                    .get("window_x")
+                    .and_then(|v: serde_json::Value| v.as_f64())
                 {
-                    if let Some(y) =
-                        store.get("window_y").and_then(|v: serde_json::Value| v.as_f64())
+                    if let Some(y) = store
+                        .get("window_y")
+                        .and_then(|v: serde_json::Value| v.as_f64())
                     {
                         let _ =
                             window.set_position(tauri::PhysicalPosition::new(x as i32, y as i32));
@@ -126,8 +122,7 @@ pub fn run() {
                         .get("window_height")
                         .and_then(|v: serde_json::Value| v.as_f64())
                     {
-                        let _ =
-                            window.set_size(tauri::PhysicalSize::new(w as u32, h as u32));
+                        let _ = window.set_size(tauri::PhysicalSize::new(w as u32, h as u32));
                     }
                 }
             }
@@ -137,8 +132,7 @@ pub fn run() {
 
             // Initialize Hub data directory and compose file
             let resource_dir = app.path().resource_dir().map_err(|e| format!("{}", e))?;
-            let (data_dir, compose_path, env_path) =
-                hub_manager::initialize_hub(&resource_dir)?;
+            let (data_dir, compose_path, env_path) = hub_manager::initialize_hub(&resource_dir)?;
 
             // Store paths in app state for tray and commands to use
             app.manage(hub_manager::HubPaths {
@@ -191,7 +185,7 @@ pub fn run() {
         .expect("error while running Companion Hub Desktop");
 }
 
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 
 /// Compute a SHA256 hash of the .env and compose file contents.
 /// Used for hash-based reconciliation — only restart containers when config changes.

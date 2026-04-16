@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::os::unix::fs::PermissionsExt;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -11,6 +11,14 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 #[cfg(target_os = "linux")]
 const MAX_COMMAND_OUTPUT_CHARS: usize = 400;
+
+#[cfg(target_os = "windows")]
+const DOCKER_DESKTOP_WINDOWS_INSTALLER_URL: &str =
+    "https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe";
+#[cfg(target_os = "macos")]
+const DOCKER_DESKTOP_MACOS_INTEL_URL: &str = "https://desktop.docker.com/mac/main/amd64/Docker.dmg";
+#[cfg(target_os = "macos")]
+const DOCKER_DESKTOP_MACOS_ARM_URL: &str = "https://desktop.docker.com/mac/main/arm64/Docker.dmg";
 
 pub fn docker_command() -> Command {
     let docker_path = find_docker_binary();
@@ -33,17 +41,37 @@ pub fn docker_command() -> Command {
     cmd
 }
 
+fn command_on_path(binary: &str) -> Option<PathBuf> {
+    let locator = if cfg!(target_os = "windows") {
+        "where"
+    } else {
+        "which"
+    };
+
+    let mut command = Command::new(locator);
+    #[cfg(target_os = "windows")]
+    command.creation_flags(CREATE_NO_WINDOW);
+
+    command
+        .arg(binary)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| {
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .map(str::trim)
+                .find(|line| !line.is_empty())
+                .map(PathBuf::from)
+        })
+}
+
 /// Find the Docker binary, checking common install locations if not in PATH.
 fn find_docker_binary() -> PathBuf {
-    // Try PATH first
-    if let Ok(output) = Command::new("which").arg("docker").output() {
-        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if !path.is_empty() && output.status.success() {
-            return PathBuf::from(path);
-        }
+    if let Some(path) = command_on_path("docker") {
+        return path;
     }
 
-    // Common macOS locations
     #[cfg(target_os = "macos")]
     {
         let candidates = [
@@ -58,7 +86,6 @@ fn find_docker_binary() -> PathBuf {
         }
     }
 
-    // Common Linux locations
     #[cfg(target_os = "linux")]
     {
         let candidates = [
@@ -73,8 +100,33 @@ fn find_docker_binary() -> PathBuf {
         }
     }
 
-    // Fallback — hope it's in PATH
-    PathBuf::from("docker")
+    #[cfg(target_os = "windows")]
+    {
+        let mut candidates: Vec<PathBuf> = Vec::new();
+        for env_var in ["ProgramFiles", "ProgramW6432"] {
+            if let Ok(root) = std::env::var(env_var) {
+                candidates.push(
+                    Path::new(&root)
+                        .join("Docker")
+                        .join("Docker")
+                        .join("resources")
+                        .join("bin")
+                        .join("docker.exe"),
+                );
+            }
+        }
+        for candidate in candidates {
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+    }
+
+    PathBuf::from(if cfg!(target_os = "windows") {
+        "docker.exe"
+    } else {
+        "docker"
+    })
 }
 
 /// Paths used by the Hub manager, stored in Tauri app state.
@@ -106,6 +158,19 @@ pub enum DockerAccessState {
 #[derive(Clone, serde::Serialize)]
 pub struct DockerAccessCheck {
     pub state: DockerAccessState,
+    pub detail: Option<String>,
+}
+
+#[derive(Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DockerInstallState {
+    Completed,
+    NeedsRestart,
+}
+
+#[derive(Clone, serde::Serialize)]
+pub struct DockerInstallResult {
+    pub state: DockerInstallState,
     pub detail: Option<String>,
 }
 
@@ -141,7 +206,12 @@ pub fn get_hub_status() -> HubStatus {
         ("restarting", _) => {
             // Check if database is still starting — if so, Hub restart is expected
             let db_status = docker_command()
-                .args(["inspect", "--format", "{{.State.Health.Status}}", "ci-hub-db"])
+                .args([
+                    "inspect",
+                    "--format",
+                    "{{.State.Health.Status}}",
+                    "ci-hub-db",
+                ])
                 .output()
                 .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
                 .unwrap_or_default();
@@ -252,7 +322,8 @@ fn classify_docker_access_result(combined: &str, exit_code: Option<i32>) -> Dock
         return DockerAccessCheck {
             state: DockerAccessState::PermissionDenied,
             detail: Some(if combined.is_empty() {
-                "Docker is installed, but this user cannot access the Docker daemon yet.".to_string()
+                "Docker is installed, but this user cannot access the Docker daemon yet."
+                    .to_string()
             } else {
                 combined.to_string()
             }),
@@ -272,7 +343,14 @@ fn classify_docker_access_result(combined: &str, exit_code: Option<i32>) -> Dock
 /// Check if Hub containers exist (stopped or running)
 pub fn hub_containers_exist() -> bool {
     docker_command()
-        .args(["ps", "-a", "--filter", "name=ci-os-hub", "--format", "{{.Names}}"])
+        .args([
+            "ps",
+            "-a",
+            "--filter",
+            "name=ci-os-hub",
+            "--format",
+            "{{.Names}}",
+        ])
         .output()
         .map(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty())
         .unwrap_or(false)
@@ -405,7 +483,15 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf)
 
     // Create data subdirectories
     let subdirs = [
-        "state", "repos", "apps", "logs", "media", "user-config", "app-data", "backups", "cache",
+        "state",
+        "repos",
+        "apps",
+        "logs",
+        "media",
+        "user-config",
+        "app-data",
+        "backups",
+        "cache",
     ];
     for sub in subdirs {
         std::fs::create_dir_all(data_dir.join(sub))
@@ -415,7 +501,9 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf)
     // Copy docker-compose.prod.yml from resources
     let compose_candidates = [
         resource_dir.join("docker-compose.prod.yml"),
-        resource_dir.join("resources").join("docker-compose.prod.yml"),
+        resource_dir
+            .join("resources")
+            .join("docker-compose.prod.yml"),
         std::env::current_exe()
             .unwrap_or_default()
             .parent()
@@ -471,7 +559,8 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf)
 
     // Derived values — always from current binary
     let domain = option_env!("CI_HUB_DOMAIN").unwrap_or("companionintelligence.com");
-    let cloud_url = option_env!("CI_HUB_CLOUD_URL").unwrap_or("https://portal.companionintelligence.com");
+    let cloud_url =
+        option_env!("CI_HUB_CLOUD_URL").unwrap_or("https://portal.companionintelligence.com");
     let hub_version = option_env!("CI_HUB_BUILD_VERSION").unwrap_or("4.7.0");
     let hub_image = image_for_domain(domain);
     let docker_platform = if cfg!(target_arch = "aarch64") {
@@ -508,8 +597,7 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf)
     let old_content = std::fs::read_to_string(&env_path).unwrap_or_default();
     // Strip port vars from old content for comparison (port manager manages those)
     let env_changed = strip_port_vars(&old_content) != env_content;
-    std::fs::write(&env_path, &env_content)
-        .map_err(|e| format!("Failed to write .env: {}", e))?;
+    std::fs::write(&env_path, &env_content).map_err(|e| format!("Failed to write .env: {}", e))?;
 
     log_lines.push(format!("  .env changed: {}", env_changed));
 
@@ -535,13 +623,362 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf)
 /// Strip dynamic port variables from .env content for comparison purposes.
 /// Port manager owns these vars and rewrites them each launch.
 fn strip_port_vars(content: &str) -> String {
-    let port_vars = ["API_PORT=", "POSTGRES_PORT=", "RABBITMQ_PORT=", "TRAEFIK_DASHBOARD_PORT=", "HTTP_PORT=", "HTTPS_PORT="];
+    let port_vars = [
+        "API_PORT=",
+        "POSTGRES_PORT=",
+        "RABBITMQ_PORT=",
+        "TRAEFIK_DASHBOARD_PORT=",
+        "HTTP_PORT=",
+        "HTTPS_PORT=",
+    ];
     content
         .lines()
         .filter(|line| !port_vars.iter().any(|pv| line.starts_with(pv)))
         .collect::<Vec<_>>()
         .join("\n")
         + "\n"
+}
+
+pub fn install_docker() -> Result<DockerInstallResult, String> {
+    #[cfg(target_os = "linux")]
+    {
+        return install_docker_linux().map(|detail| DockerInstallResult {
+            state: DockerInstallState::Completed,
+            detail: Some(detail),
+        });
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        return install_docker_windows();
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        return install_docker_macos();
+    }
+
+    #[allow(unreachable_code)]
+    Err("Docker installation is not supported on this platform".to_string())
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn docker_desktop_windows_install_script(download_url: &str) -> String {
+    format!(
+        r#"param([string]$AppUser)
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+& wsl --status | Out-Null
+if ($LASTEXITCODE -ne 0) {{
+  & wsl --install --no-distribution
+  exit 100
+}}
+$installer = [System.IO.Path]::ChangeExtension([System.IO.Path]::GetTempFileName(), '.exe')
+Remove-Item $installer -Force -ErrorAction SilentlyContinue
+try {{
+  Invoke-WebRequest -UseBasicParsing -Uri '{download_url}' -OutFile $installer
+  $signature = Get-AuthenticodeSignature $installer
+  if ($signature.Status -ne 'Valid') {{
+    throw "Downloaded Docker Desktop installer signature validation failed: $($signature.Status)"
+  }}
+  if (-not $signature.SignerCertificate -or $signature.SignerCertificate.Subject -notmatch 'Docker') {{
+    throw "Downloaded Docker Desktop installer signer was not recognized as Docker."
+  }}
+  $installProcess = Start-Process -Wait -PassThru -FilePath $installer -ArgumentList 'install','--quiet','--accept-license','--backend=wsl-2','--always-run-service'
+  if ($installProcess.ExitCode -ne 0) {{
+    exit $installProcess.ExitCode
+  }}
+  $groupResult = & net.exe localgroup docker-users "$AppUser" /add 2>&1
+  if ($LASTEXITCODE -ne 0) {{
+    $groupText = ($groupResult | Out-String)
+    if ($groupText -notmatch 'already a member') {{
+      throw "Failed to add user to docker-users: $groupText"
+    }}
+  }}
+}} finally {{
+  Remove-Item $installer -Force -ErrorAction SilentlyContinue
+}}
+exit 0
+"#,
+        download_url = download_url,
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn install_docker_windows() -> Result<DockerInstallResult, String> {
+    use std::io::Write as IoWrite;
+    use tempfile::NamedTempFile;
+
+    let username = resolve_current_username_windows()?;
+    let mut script = NamedTempFile::new()
+        .map_err(|e| format!("Failed to create temporary installer script: {}", e))?;
+    script
+        .write_all(
+            docker_desktop_windows_install_script(DOCKER_DESKTOP_WINDOWS_INSTALLER_URL).as_bytes(),
+        )
+        .map_err(|e| format!("Failed to write Windows installer script: {}", e))?;
+
+    let launch_command = format!(
+        "$process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File','{}','-AppUser','{}'); exit $process.ExitCode",
+        escape_powershell_single_quoted(&script.path().to_string_lossy()),
+        escape_powershell_single_quoted(&username),
+    );
+
+    let mut command = Command::new("powershell.exe");
+    command.creation_flags(CREATE_NO_WINDOW);
+    let output = command
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &launch_command,
+        ])
+        .output()
+        .map_err(|e| format!("Failed to launch elevated Docker Desktop installer: {}", e))?;
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let combined = if !stderr.is_empty() && !stdout.is_empty() {
+        format!("{}\n{}", stderr, stdout)
+    } else if !stderr.is_empty() {
+        stderr.clone()
+    } else {
+        stdout.clone()
+    };
+    let combined_lower = combined.to_lowercase();
+
+    match output.status.code() {
+        Some(0) => {
+            let _ = launch_docker_desktop_windows();
+            Ok(DockerInstallResult {
+                state: DockerInstallState::Completed,
+                detail: Some(
+                    "Docker Desktop installation completed. Waiting for Docker to become ready."
+                        .to_string(),
+                ),
+            })
+        }
+        Some(100) => Ok(DockerInstallResult {
+            state: DockerInstallState::NeedsRestart,
+            detail: Some(
+                "WSL was installed or enabled. Restart Windows, then reopen Companion Hub to continue Docker setup."
+                    .to_string(),
+            ),
+        }),
+        _ if combined_lower.contains("cancel") && combined_lower.contains("user") => {
+            Err("Authorization was cancelled or denied.".to_string())
+        }
+        _ if combined.is_empty() => Err(format!(
+            "Docker Desktop installation failed with exit code {:?}.",
+            output.status.code()
+        )),
+        _ => Err(format!("Docker Desktop installation failed: {}", combined)),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn resolve_current_username_windows() -> Result<String, String> {
+    if let Ok(username) = std::env::var("USERNAME") {
+        let username = username.trim();
+        if !username.is_empty() {
+            return Ok(username.to_string());
+        }
+    }
+
+    let mut command = Command::new("whoami");
+    command.creation_flags(CREATE_NO_WINDOW);
+    let output = command
+        .output()
+        .map_err(|e| format!("Failed to resolve current username: {}", e))?;
+    if !output.status.success() {
+        return Err(format!(
+            "Failed to resolve current username: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+
+    let username = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or_default()
+        .to_string();
+    if username.is_empty() {
+        Err("Failed to resolve current username.".to_string())
+    } else {
+        Ok(username)
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn escape_powershell_single_quoted(value: &str) -> String {
+    value.replace('\'', "''")
+}
+
+#[cfg(target_os = "windows")]
+fn launch_docker_desktop_windows() -> Result<(), String> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    for env_var in ["ProgramFiles", "ProgramW6432"] {
+        if let Ok(root) = std::env::var(env_var) {
+            candidates.push(
+                Path::new(&root)
+                    .join("Docker")
+                    .join("Docker")
+                    .join("Docker Desktop.exe"),
+            );
+        }
+    }
+
+    let app = candidates
+        .into_iter()
+        .find(|candidate| candidate.exists())
+        .ok_or_else(|| {
+            "Docker Desktop was installed, but the app launcher could not be found.".to_string()
+        })?;
+
+    let mut command = Command::new(app);
+    command.creation_flags(CREATE_NO_WINDOW);
+    command
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("Failed to launch Docker Desktop: {}", e))
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn docker_desktop_macos_install_script(download_url: &str, username: &str) -> String {
+    format!(
+        r#"#!/bin/bash
+set -euo pipefail
+workdir="$(mktemp -d)"
+cleanup() {{
+  if mount | grep -q "$workdir/mnt"; then
+    hdiutil detach "$workdir/mnt" -quiet || true
+  fi
+  rm -rf "$workdir"
+}}
+trap cleanup EXIT
+
+dmg="$workdir/Docker.dmg"
+mount_dir="$workdir/mnt"
+mkdir -p "$mount_dir"
+curl -L --fail -o "$dmg" "{download_url}"
+spctl --assess --type open --verbose=2 "$dmg"
+hdiutil attach "$dmg" -mountpoint "$mount_dir" -nobrowse -quiet
+codesign --verify --deep --strict --verbose=2 "$mount_dir/Docker.app"
+spctl --assess --type execute --verbose=2 "$mount_dir/Docker.app"
+"$mount_dir/Docker.app/Contents/MacOS/install" --accept-license --user="{username}"
+"#,
+        download_url = download_url,
+        username = username,
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn install_docker_macos() -> Result<DockerInstallResult, String> {
+    use std::io::Write as IoWrite;
+    use tempfile::NamedTempFile;
+
+    let username = resolve_current_username_macos()?;
+    let mut script = NamedTempFile::new()
+        .map_err(|e| format!("Failed to create temporary installer script: {}", e))?;
+    script
+        .write_all(
+            docker_desktop_macos_install_script(docker_desktop_macos_download_url(), &username)
+                .as_bytes(),
+        )
+        .map_err(|e| format!("Failed to write macOS installer script: {}", e))?;
+
+    script
+        .as_file()
+        .set_permissions(std::fs::Permissions::from_mode(0o700))
+        .map_err(|e| format!("Failed to set macOS installer script permissions: {}", e))?;
+
+    let applescript = format!(
+        "do shell script quoted form of POSIX path of \"{}\" with administrator privileges",
+        script.path().to_string_lossy().replace('"', "\\\"")
+    );
+
+    let output = Command::new("osascript")
+        .args(["-e", &applescript])
+        .output()
+        .map_err(|e| format!("Failed to launch elevated Docker Desktop installer: {}", e))?;
+
+    if output.status.success() {
+        let _ = launch_docker_desktop_macos();
+        Ok(DockerInstallResult {
+            state: DockerInstallState::Completed,
+            detail: Some(
+                "Docker Desktop installation completed. Waiting for Docker to become ready."
+                    .to_string(),
+            ),
+        })
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let combined = if !stderr.is_empty() && !stdout.is_empty() {
+            format!("{}\n{}", stderr, stdout)
+        } else if !stderr.is_empty() {
+            stderr
+        } else {
+            stdout
+        };
+        let combined_lower = combined.to_lowercase();
+
+        if combined_lower.contains("cancel") && combined_lower.contains("user") {
+            Err("Authorization was cancelled or denied.".to_string())
+        } else if combined.is_empty() {
+            Err("Docker Desktop installation failed.".to_string())
+        } else {
+            Err(format!("Docker Desktop installation failed: {}", combined))
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn docker_desktop_macos_download_url() -> &'static str {
+    if cfg!(target_arch = "aarch64") {
+        DOCKER_DESKTOP_MACOS_ARM_URL
+    } else {
+        DOCKER_DESKTOP_MACOS_INTEL_URL
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn resolve_current_username_macos() -> Result<String, String> {
+    if let Ok(username) = std::env::var("USER") {
+        let username = username.trim();
+        if !username.is_empty() {
+            return Ok(username.to_string());
+        }
+    }
+
+    let output = Command::new("id")
+        .args(["-un"])
+        .output()
+        .map_err(|e| format!("Failed to resolve current username: {}", e))?;
+    if !output.status.success() {
+        return Err(format!(
+            "Failed to resolve current username: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+
+    let username = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if username.is_empty() {
+        Err("Failed to resolve current username.".to_string())
+    } else {
+        Ok(username)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn launch_docker_desktop_macos() -> Result<(), String> {
+    Command::new("open")
+        .args(["-a", "Docker"])
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("Failed to launch Docker Desktop: {}", e))
 }
 
 /// Install Docker Engine on Linux using the official convenience script.
@@ -553,8 +990,7 @@ pub fn install_docker_linux() -> Result<String, String> {
 
     let username = resolve_current_username()?;
     let pkexec_path = find_executable("pkexec").ok_or_else(|| {
-        "pkexec is not installed or not on PATH. Install polkit/pkexec and try again."
-            .to_string()
+        "pkexec is not installed or not on PATH. Install polkit/pkexec and try again.".to_string()
     })?;
 
     let mut wrapper_script = NamedTempFile::new()
@@ -670,7 +1106,11 @@ fn truncate_command_output(output: &str) -> String {
     }
 
     let truncated: String = trimmed.chars().take(MAX_COMMAND_OUTPUT_CHARS).collect();
-    format!("{}… [truncated {} chars]", truncated, char_count - MAX_COMMAND_OUTPUT_CHARS)
+    format!(
+        "{}… [truncated {} chars]",
+        truncated,
+        char_count - MAX_COMMAND_OUTPUT_CHARS
+    )
 }
 
 #[cfg(target_os = "linux")]
@@ -688,6 +1128,10 @@ fn format_command_output(stdout: &str, stderr: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(any(test, target_os = "macos"))]
+    use super::docker_desktop_macos_install_script;
+    #[cfg(any(test, target_os = "windows"))]
+    use super::docker_desktop_windows_install_script;
     use super::{classify_docker_access_result, DockerAccessState};
     #[cfg(target_os = "linux")]
     use super::{format_command_output, truncate_command_output, MAX_COMMAND_OUTPUT_CHARS};
@@ -731,5 +1175,31 @@ mod tests {
 
         assert!(formatted.starts_with("stdout: ok | stderr: "));
         assert!(formatted.contains("[truncated 10 chars]"));
+    }
+
+    #[test]
+    fn windows_installer_script_uses_unique_temp_download_and_validates_signature() {
+        let script = docker_desktop_windows_install_script(
+            "https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe",
+        );
+
+        assert!(script.contains("GetTempFileName()"));
+        assert!(script.contains("Get-AuthenticodeSignature"));
+        assert!(script.contains("net.exe localgroup docker-users \"$AppUser\" /add"));
+        assert!(!script.contains("CompanionHub-DockerDesktopInstaller.exe"));
+        assert!(!script.contains("cmd /c"));
+    }
+
+    #[test]
+    fn macos_installer_script_verifies_downloaded_app_signature() {
+        let script = docker_desktop_macos_install_script(
+            "https://desktop.docker.com/mac/main/arm64/Docker.dmg",
+            "hex",
+        );
+
+        assert!(script.contains("spctl --assess --type open --verbose=2"));
+        assert!(script.contains("codesign --verify --deep --strict --verbose=2"));
+        assert!(script.contains("spctl --assess --type execute --verbose=2"));
+        assert!(script.contains("--user=\"hex\""));
     }
 }
