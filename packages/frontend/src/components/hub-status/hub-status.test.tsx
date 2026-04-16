@@ -1,7 +1,84 @@
-import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { HubStatus, getDockerDesktopGuideContent, pollDockerAccess, resolveDesktopPostInstallState } from './hub-status';
+import { HubStatus, getDockerDesktopGuideContent } from './hub-status';
+
+type TauriWindow = Window & {
+  __TAURI_INTERNALS__?: { invoke: (cmd: string) => Promise<unknown> };
+};
+
+type NavigatorWithUserAgentData = Navigator & {
+  userAgentData?: { architecture?: string };
+};
+
+const tauriWindow = window as TauriWindow;
+const navigatorWithUserAgentData = window.navigator as NavigatorWithUserAgentData;
+const originalUserAgent = navigator.userAgent;
+const originalUserAgentData = navigatorWithUserAgentData.userAgentData;
+
+function setUserAgent(userAgent: string, userAgentData?: { architecture?: string }) {
+  Object.defineProperty(window.navigator, 'userAgent', {
+    value: userAgent,
+    configurable: true,
+  });
+
+  if (userAgentData === undefined) {
+    delete navigatorWithUserAgentData.userAgentData;
+    return;
+  }
+
+  Object.defineProperty(window.navigator, 'userAgentData', {
+    value: userAgentData,
+    configurable: true,
+  });
+}
+
+function restoreNavigator() {
+  Object.defineProperty(window.navigator, 'userAgent', {
+    value: originalUserAgent,
+    configurable: true,
+  });
+
+  if (originalUserAgentData === undefined) {
+    delete navigatorWithUserAgentData.userAgentData;
+    return;
+  }
+
+  Object.defineProperty(window.navigator, 'userAgentData', {
+    value: originalUserAgentData,
+    configurable: true,
+  });
+}
+
+function renderWithTauriStatus(status: 'DockerNotAvailable' | 'Stopped', userAgent: string, userAgentData?: { architecture?: string }) {
+  const invoke = vi.fn<(cmd: string) => Promise<unknown>>(async (cmd: string) => {
+    if (cmd === 'get_hub_status_command') {
+      return status;
+    }
+
+    throw new Error(`Unexpected invoke command: ${cmd}`);
+  });
+
+  setUserAgent(userAgent, userAgentData);
+  Object.defineProperty(tauriWindow, '__TAURI_INTERNALS__', {
+    value: { invoke },
+    configurable: true,
+  });
+
+  render(
+    <HubStatus>
+      <div>Hub child</div>
+    </HubStatus>,
+  );
+
+  return { invoke };
+}
+
+afterEach(() => {
+  delete tauriWindow.__TAURI_INTERNALS__;
+  restoreNavigator();
+  vi.restoreAllMocks();
+});
 
 describe('getDockerDesktopGuideContent', () => {
   it('returns the Windows Docker Desktop installer guide', () => {
@@ -37,142 +114,47 @@ describe('getDockerDesktopGuideContent', () => {
   });
 });
 
-describe('resolveDesktopPostInstallState', () => {
-  it('treats not-installed after install as an error instead of a starting loop', () => {
-    expect(resolveDesktopPostInstallState({ state: 'not_installed', detail: 'docker: command not found' })).toEqual({
-      installState: 'error',
-      errorMessage: 'docker: command not found',
-    });
+describe('HubStatus Docker guidance', () => {
+  it('shows Windows manual guidance with a direct download link and no install button', async () => {
+    const { invoke } = renderWithTauriStatus('DockerNotAvailable', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)');
+
+    expect(await screen.findByRole('heading', { name: 'Docker Desktop Required' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Download Docker Desktop for Windows' })).toHaveAttribute(
+      'href',
+      'https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe',
+    );
+    expect(screen.getByText('Run the installer and follow the prompts')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Install Docker Desktop' })).not.toBeInTheDocument();
+    expect(invoke).toHaveBeenCalledWith('get_hub_status_command');
+    expect(invoke).not.toHaveBeenCalledWith('install_docker_command');
   });
 
-  it('keeps daemon-unavailable in the startup state', () => {
-    expect(resolveDesktopPostInstallState({ state: 'daemon_unavailable', detail: 'Docker daemon starting' })).toEqual({
-      installState: 'starting-daemon',
-      errorMessage: 'Docker daemon starting',
-    });
-  });
-});
+  it('shows the Apple Silicon macOS download link and no install button', async () => {
+    renderWithTauriStatus('DockerNotAvailable', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5)', { architecture: 'arm' });
 
-describe('pollDockerAccess', () => {
-  it('keeps polling until Docker becomes available', async () => {
-    const invoke = vi
-      .fn<(cmd: string) => Promise<unknown>>()
-      .mockResolvedValueOnce({ state: 'daemon_unavailable', detail: 'daemon starting' })
-      .mockResolvedValueOnce({ state: 'daemon_unavailable', detail: 'still starting' })
-      .mockResolvedValueOnce({ state: 'available' });
-    const sleepFn = vi.fn().mockResolvedValue(undefined);
-
-    const result = await pollDockerAccess(invoke, {
-      attempts: 5,
-      delayMs: 1,
-      sleepFn,
-    });
-
-    expect(result).toEqual({ state: 'available' });
-    expect(invoke).toHaveBeenCalledTimes(3);
-    expect(sleepFn).toHaveBeenCalledTimes(2);
+    expect(await screen.findByRole('heading', { name: 'Docker Desktop Required' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Download Docker Desktop for Mac' })).toHaveAttribute(
+      'href',
+      'https://desktop.docker.com/mac/main/arm64/Docker.dmg',
+    );
+    expect(screen.getByText('Open the .dmg and drag Docker to Applications')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Install Docker Desktop' })).not.toBeInTheDocument();
   });
 
-  it('returns permission denied immediately once detected', async () => {
-    const invoke = vi
-      .fn<(cmd: string) => Promise<unknown>>()
-      .mockResolvedValueOnce({ state: 'daemon_unavailable', detail: 'daemon starting' })
-      .mockResolvedValueOnce({ state: 'permission_denied', detail: 'dial unix /var/run/docker.sock: permission denied' });
-    const sleepFn = vi.fn().mockResolvedValue(undefined);
+  it('shows Linux manual guidance and docs only, with no install button', async () => {
+    renderWithTauriStatus('DockerNotAvailable', 'Mozilla/5.0 (X11; Linux x86_64)');
 
-    const result = await pollDockerAccess(invoke, {
-      attempts: 5,
-      delayMs: 1,
-      sleepFn,
-    });
-
-    expect(result).toEqual({
-      state: 'permission_denied',
-      detail: 'dial unix /var/run/docker.sock: permission denied',
-    });
-    expect(invoke).toHaveBeenCalledTimes(2);
-    expect(sleepFn).toHaveBeenCalledTimes(1);
+    expect(await screen.findByRole('heading', { name: 'Docker Engine Required' })).toBeInTheDocument();
+    expect(screen.getByText('curl -fsSL https://get.docker.com | sh')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'View Docker Install Guide' })).toHaveAttribute('href', 'https://docs.docker.com/engine/install/');
+    expect(screen.queryByRole('button', { name: 'Install Docker' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Install Docker Desktop' })).not.toBeInTheDocument();
   });
 
-  it('returns the last daemon-unavailable result after timeout', async () => {
-    const invoke = vi.fn<(cmd: string) => Promise<unknown>>().mockResolvedValue({ state: 'daemon_unavailable', detail: 'daemon still starting' });
-    const sleepFn = vi.fn().mockResolvedValue(undefined);
+  it('keeps the existing stopped-state start button flow intact', async () => {
+    renderWithTauriStatus('Stopped', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)');
 
-    const result = await pollDockerAccess(invoke, {
-      attempts: 3,
-      delayMs: 1,
-      sleepFn,
-    });
-
-    expect(result).toEqual({ state: 'daemon_unavailable', detail: 'daemon still starting' });
-    expect(invoke).toHaveBeenCalledTimes(3);
-    expect(sleepFn).toHaveBeenCalledTimes(2);
-  });
-
-  it('returns the last not-installed result after a bounded poll window', async () => {
-    const invoke = vi.fn<(cmd: string) => Promise<unknown>>().mockResolvedValue({ state: 'not_installed', detail: 'docker: command not found' });
-    const sleepFn = vi.fn().mockResolvedValue(undefined);
-
-    const result = await pollDockerAccess(invoke, {
-      attempts: 3,
-      delayMs: 1,
-      sleepFn,
-    });
-
-    expect(result).toEqual({ state: 'not_installed', detail: 'docker: command not found' });
-    expect(invoke).toHaveBeenCalledTimes(3);
-    expect(sleepFn).toHaveBeenCalledTimes(2);
-  });
-});
-
-describe('HubStatus desktop install flow', () => {
-  it('shows success copy that matches Docker already being available', async () => {
-    const invoke = vi.fn<(cmd: string) => Promise<unknown>>(async (cmd: string) => {
-      switch (cmd) {
-        case 'get_hub_status_command':
-          return 'DockerNotAvailable';
-        case 'install_docker_command':
-          return { state: 'completed' };
-        case 'check_docker_access_command':
-          return { state: 'available' };
-        default:
-          throw new Error(`Unexpected invoke command: ${cmd}`);
-      }
-    });
-
-    const tauriWindow = window as Window & {
-      __TAURI_INTERNALS__?: { invoke: (cmd: string) => Promise<unknown> };
-    };
-    const originalUserAgent = navigator.userAgent;
-
-    Object.defineProperty(window.navigator, 'userAgent', {
-      value: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-      configurable: true,
-    });
-    Object.defineProperty(tauriWindow, '__TAURI_INTERNALS__', {
-      value: { invoke },
-      configurable: true,
-    });
-
-    try {
-      render(
-        <HubStatus>
-          <div>Hub child</div>
-        </HubStatus>,
-      );
-
-      expect(await screen.findByRole('button', { name: 'Install Docker Desktop' })).toBeInTheDocument();
-
-      fireEvent.click(screen.getByRole('button', { name: 'Install Docker Desktop' }));
-
-      expect(await screen.findByText('Docker Desktop Installed')).toBeInTheDocument();
-      expect(screen.getByText('Docker Desktop is ready. Companion Hub will start automatically.')).toBeInTheDocument();
-    } finally {
-      delete tauriWindow.__TAURI_INTERNALS__;
-      Object.defineProperty(window.navigator, 'userAgent', {
-        value: originalUserAgent,
-        configurable: true,
-      });
-    }
+    expect(await screen.findByRole('heading', { name: 'Hub Not Running' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Start Hub' })).toBeInTheDocument();
   });
 });
