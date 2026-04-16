@@ -48,7 +48,11 @@ fn command_on_path(binary: &str) -> Option<PathBuf> {
         "which"
     };
 
-    Command::new(locator)
+    let mut command = Command::new(locator);
+    #[cfg(target_os = "windows")]
+    command.creation_flags(CREATE_NO_WINDOW);
+
+    command
         .arg(binary)
         .output()
         .ok()
@@ -720,7 +724,9 @@ fn install_docker_windows() -> Result<DockerInstallResult, String> {
         escape_powershell_single_quoted(&username),
     );
 
-    let output = Command::new("powershell.exe")
+    let mut command = Command::new("powershell.exe");
+    command.creation_flags(CREATE_NO_WINDOW);
+    let output = command
         .args([
             "-NoProfile",
             "-ExecutionPolicy",
@@ -780,7 +786,9 @@ fn resolve_current_username_windows() -> Result<String, String> {
         }
     }
 
-    let output = Command::new("whoami")
+    let mut command = Command::new("whoami");
+    command.creation_flags(CREATE_NO_WINDOW);
+    let output = command
         .output()
         .map_err(|e| format!("Failed to resolve current username: {}", e))?;
     if !output.status.success() {

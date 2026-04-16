@@ -454,9 +454,7 @@ function DockerDesktopInstall({ platformLabel, downloadUrl, manualSteps, footer 
     return (
       <>
         <h1 className="text-2xl font-semibold text-foreground">Docker Desktop Installed</h1>
-        <p className="text-center max-w-md text-muted-foreground">
-          Docker Desktop is installed. Waiting for Docker to become ready so the Hub can start.
-        </p>
+        <p className="text-center max-w-md text-muted-foreground">Docker Desktop is ready. Companion Hub will start automatically.</p>
       </>
     );
   }

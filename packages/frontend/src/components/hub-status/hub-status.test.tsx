@@ -1,6 +1,7 @@
+import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
-import { getDockerDesktopGuideContent, pollDockerAccess, resolveDesktopPostInstallState } from './hub-status';
+import { HubStatus, getDockerDesktopGuideContent, pollDockerAccess, resolveDesktopPostInstallState } from './hub-status';
 
 describe('getDockerDesktopGuideContent', () => {
   it('returns the Windows Docker Desktop installer guide', () => {
@@ -121,5 +122,57 @@ describe('pollDockerAccess', () => {
     expect(result).toEqual({ state: 'not_installed', detail: 'docker: command not found' });
     expect(invoke).toHaveBeenCalledTimes(3);
     expect(sleepFn).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('HubStatus desktop install flow', () => {
+  it('shows success copy that matches Docker already being available', async () => {
+    const invoke = vi.fn<(cmd: string) => Promise<unknown>>(async (cmd: string) => {
+      switch (cmd) {
+        case 'get_hub_status_command':
+          return 'DockerNotAvailable';
+        case 'install_docker_command':
+          return { state: 'completed' };
+        case 'check_docker_access_command':
+          return { state: 'available' };
+        default:
+          throw new Error(`Unexpected invoke command: ${cmd}`);
+      }
+    });
+
+    const tauriWindow = window as Window & {
+      __TAURI_INTERNALS__?: { invoke: (cmd: string) => Promise<unknown> };
+    };
+    const originalUserAgent = navigator.userAgent;
+
+    Object.defineProperty(window.navigator, 'userAgent', {
+      value: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+      configurable: true,
+    });
+    Object.defineProperty(tauriWindow, '__TAURI_INTERNALS__', {
+      value: { invoke },
+      configurable: true,
+    });
+
+    try {
+      render(
+        <HubStatus>
+          <div>Hub child</div>
+        </HubStatus>,
+      );
+
+      expect(await screen.findByRole('button', { name: 'Install Docker Desktop' })).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Install Docker Desktop' }));
+
+      expect(await screen.findByText('Docker Desktop Installed')).toBeInTheDocument();
+      expect(screen.getByText('Docker Desktop is ready. Companion Hub will start automatically.')).toBeInTheDocument();
+    } finally {
+      delete tauriWindow.__TAURI_INTERNALS__;
+      Object.defineProperty(window.navigator, 'userAgent', {
+        value: originalUserAgent,
+        configurable: true,
+      });
+    }
   });
 });
