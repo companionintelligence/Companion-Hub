@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { getDockerDesktopGuideContent, pollDockerAccess } from './hub-status';
+import { getDockerDesktopGuideContent, pollDockerAccess, resolveDesktopPostInstallState } from './hub-status';
 
 describe('getDockerDesktopGuideContent', () => {
   it('returns the Windows Docker Desktop installer guide', () => {
@@ -33,6 +33,22 @@ describe('getDockerDesktopGuideContent', () => {
 
   it('returns the Intel Docker Desktop dmg for macOS', () => {
     expect(getDockerDesktopGuideContent('macos', false).downloadUrl).toBe('https://desktop.docker.com/mac/main/amd64/Docker.dmg');
+  });
+});
+
+describe('resolveDesktopPostInstallState', () => {
+  it('treats not-installed after install as an error instead of a starting loop', () => {
+    expect(resolveDesktopPostInstallState({ state: 'not_installed', detail: 'docker: command not found' })).toEqual({
+      installState: 'error',
+      errorMessage: 'docker: command not found',
+    });
+  });
+
+  it('keeps daemon-unavailable in the startup state', () => {
+    expect(resolveDesktopPostInstallState({ state: 'daemon_unavailable', detail: 'Docker daemon starting' })).toEqual({
+      installState: 'starting-daemon',
+      errorMessage: 'Docker daemon starting',
+    });
   });
 });
 

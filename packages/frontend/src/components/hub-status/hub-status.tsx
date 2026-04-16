@@ -49,6 +49,40 @@ type DockerInstallResult = {
   detail?: string | null;
 };
 
+export function resolveDesktopPostInstallState(dockerAccess: DockerAccessCheck): {
+  installState: DockerInstallState;
+  errorMessage: string | null;
+} {
+  if (dockerAccess.state === 'available') {
+    return { installState: 'success', errorMessage: null };
+  }
+
+  if (dockerAccess.state === 'permission_denied') {
+    return { installState: 'needs-logout', errorMessage: null };
+  }
+
+  if (dockerAccess.state === 'daemon_unavailable') {
+    return {
+      installState: 'starting-daemon',
+      errorMessage: dockerAccess.detail ?? 'Docker Desktop is still starting. Wait a moment, then check again.',
+    };
+  }
+
+  if (dockerAccess.state === 'not_installed') {
+    return {
+      installState: 'error',
+      errorMessage:
+        dockerAccess.detail ??
+        'Docker Desktop was installed, but the Docker CLI is still unavailable. Restart your machine, then try again or install Docker Desktop manually.',
+    };
+  }
+
+  return {
+    installState: 'error',
+    errorMessage: dockerAccess.detail ?? 'Docker Desktop installation did not complete successfully.',
+  };
+}
+
 const POST_INSTALL_POLL_ATTEMPTS = 15;
 const POST_INSTALL_POLL_DELAY_MS = 2000;
 const MANUAL_INSTALL_COMMANDS = [
@@ -362,22 +396,9 @@ function DockerDesktopInstall({ platformLabel, downloadUrl, manualSteps, footer 
 
     try {
       const dockerAccess = await pollDockerAccess(invoke);
-      if (dockerAccess.state === 'available') {
-        setInstallState('success');
-        return;
-      }
-      if (dockerAccess.state === 'permission_denied') {
-        setInstallState('needs-logout');
-        return;
-      }
-      if (dockerAccess.state === 'daemon_unavailable' || dockerAccess.state === 'not_installed') {
-        setErrorMessage(dockerAccess.detail ?? 'Docker Desktop is still starting. Wait a moment, then check again.');
-        setInstallState('starting-daemon');
-        return;
-      }
-
-      setErrorMessage(dockerAccess.detail ?? 'Docker Desktop installation did not complete successfully.');
-      setInstallState('error');
+      const postInstallState = resolveDesktopPostInstallState(dockerAccess);
+      setErrorMessage(postInstallState.errorMessage);
+      setInstallState(postInstallState.installState);
     } catch (err) {
       setErrorMessage(getErrorMessage(err));
       setInstallState('error');

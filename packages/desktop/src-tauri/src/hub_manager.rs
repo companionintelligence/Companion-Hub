@@ -658,6 +658,48 @@ pub fn install_docker() -> Result<DockerInstallResult, String> {
     Err("Docker installation is not supported on this platform".to_string())
 }
 
+#[cfg(any(test, target_os = "windows"))]
+fn docker_desktop_windows_install_script(download_url: &str) -> String {
+    format!(
+        r#"param([string]$AppUser)
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+& wsl --status | Out-Null
+if ($LASTEXITCODE -ne 0) {{
+  & wsl --install --no-distribution
+  exit 100
+}}
+$installer = [System.IO.Path]::ChangeExtension([System.IO.Path]::GetTempFileName(), '.exe')
+Remove-Item $installer -Force -ErrorAction SilentlyContinue
+try {{
+  Invoke-WebRequest -UseBasicParsing -Uri '{download_url}' -OutFile $installer
+  $signature = Get-AuthenticodeSignature $installer
+  if ($signature.Status -ne 'Valid') {{
+    throw "Downloaded Docker Desktop installer signature validation failed: $($signature.Status)"
+  }}
+  if (-not $signature.SignerCertificate -or $signature.SignerCertificate.Subject -notmatch 'Docker') {{
+    throw "Downloaded Docker Desktop installer signer was not recognized as Docker."
+  }}
+  $installProcess = Start-Process -Wait -PassThru -FilePath $installer -ArgumentList 'install','--quiet','--accept-license','--backend=wsl-2','--always-run-service'
+  if ($installProcess.ExitCode -ne 0) {{
+    exit $installProcess.ExitCode
+  }}
+  $groupResult = & net.exe localgroup docker-users "$AppUser" /add 2>&1
+  if ($LASTEXITCODE -ne 0) {{
+    $groupText = ($groupResult | Out-String)
+    if ($groupText -notmatch 'already a member') {{
+      throw "Failed to add user to docker-users: $groupText"
+    }}
+  }}
+}} finally {{
+  Remove-Item $installer -Force -ErrorAction SilentlyContinue
+}}
+exit 0
+"#,
+        download_url = download_url,
+    )
+}
+
 #[cfg(target_os = "windows")]
 fn install_docker_windows() -> Result<DockerInstallResult, String> {
     use std::io::Write as IoWrite;
@@ -668,26 +710,7 @@ fn install_docker_windows() -> Result<DockerInstallResult, String> {
         .map_err(|e| format!("Failed to create temporary installer script: {}", e))?;
     script
         .write_all(
-            format!(
-                r#"param([string]$AppUser)
-$ErrorActionPreference = 'Stop'
-$ProgressPreference = 'SilentlyContinue'
-& wsl --status | Out-Null
-if ($LASTEXITCODE -ne 0) {{
-  & wsl --install --no-distribution
-  exit 100
-}}
-$installer = Join-Path $env:TEMP 'CompanionHub-DockerDesktopInstaller.exe'
-if (-not (Test-Path $installer)) {{
-  Invoke-WebRequest -UseBasicParsing -Uri '{download_url}' -OutFile $installer
-}}
-Start-Process -Wait -FilePath $installer -ArgumentList 'install','--quiet','--accept-license','--backend=wsl-2','--always-run-service'
-cmd /c "net localgroup docker-users \"$AppUser\" /add" | Out-Null
-exit 0
-"#,
-                download_url = DOCKER_DESKTOP_WINDOWS_INSTALLER_URL,
-            )
-            .as_bytes(),
+            docker_desktop_windows_install_script(DOCKER_DESKTOP_WINDOWS_INSTALLER_URL).as_bytes(),
         )
         .map_err(|e| format!("Failed to write Windows installer script: {}", e))?;
 
@@ -814,18 +837,10 @@ fn launch_docker_desktop_windows() -> Result<(), String> {
         .map_err(|e| format!("Failed to launch Docker Desktop: {}", e))
 }
 
-#[cfg(target_os = "macos")]
-fn install_docker_macos() -> Result<DockerInstallResult, String> {
-    use std::io::Write as IoWrite;
-    use tempfile::NamedTempFile;
-
-    let username = resolve_current_username_macos()?;
-    let mut script = NamedTempFile::new()
-        .map_err(|e| format!("Failed to create temporary installer script: {}", e))?;
-    script
-        .write_all(
-            format!(
-                r#"#!/bin/bash
+#[cfg(any(test, target_os = "macos"))]
+fn docker_desktop_macos_install_script(download_url: &str, username: &str) -> String {
+    format!(
+        r#"#!/bin/bash
 set -euo pipefail
 workdir="$(mktemp -d)"
 cleanup() {{
@@ -841,12 +856,27 @@ mount_dir="$workdir/mnt"
 mkdir -p "$mount_dir"
 curl -L --fail -o "$dmg" "{download_url}"
 hdiutil attach "$dmg" -mountpoint "$mount_dir" -nobrowse -quiet
+codesign --verify --deep --strict --verbose=2 "$mount_dir/Docker.app"
+spctl --assess --type execute --verbose=2 "$mount_dir/Docker.app"
 "$mount_dir/Docker.app/Contents/MacOS/install" --accept-license --user="{username}"
 "#,
-                download_url = docker_desktop_macos_download_url(),
-                username = username,
-            )
-            .as_bytes(),
+        download_url = download_url,
+        username = username,
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn install_docker_macos() -> Result<DockerInstallResult, String> {
+    use std::io::Write as IoWrite;
+    use tempfile::NamedTempFile;
+
+    let username = resolve_current_username_macos()?;
+    let mut script = NamedTempFile::new()
+        .map_err(|e| format!("Failed to create temporary installer script: {}", e))?;
+    script
+        .write_all(
+            docker_desktop_macos_install_script(docker_desktop_macos_download_url(), &username)
+                .as_bytes(),
         )
         .map_err(|e| format!("Failed to write macOS installer script: {}", e))?;
 
@@ -1089,6 +1119,10 @@ fn format_command_output(stdout: &str, stderr: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(any(test, target_os = "macos"))]
+    use super::docker_desktop_macos_install_script;
+    #[cfg(any(test, target_os = "windows"))]
+    use super::docker_desktop_windows_install_script;
     use super::{classify_docker_access_result, DockerAccessState};
     #[cfg(target_os = "linux")]
     use super::{format_command_output, truncate_command_output, MAX_COMMAND_OUTPUT_CHARS};
@@ -1132,5 +1166,30 @@ mod tests {
 
         assert!(formatted.starts_with("stdout: ok | stderr: "));
         assert!(formatted.contains("[truncated 10 chars]"));
+    }
+
+    #[test]
+    fn windows_installer_script_uses_unique_temp_download_and_validates_signature() {
+        let script = docker_desktop_windows_install_script(
+            "https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe",
+        );
+
+        assert!(script.contains("GetTempFileName()"));
+        assert!(script.contains("Get-AuthenticodeSignature"));
+        assert!(script.contains("net.exe localgroup docker-users \"$AppUser\" /add"));
+        assert!(!script.contains("CompanionHub-DockerDesktopInstaller.exe"));
+        assert!(!script.contains("cmd /c"));
+    }
+
+    #[test]
+    fn macos_installer_script_verifies_downloaded_app_signature() {
+        let script = docker_desktop_macos_install_script(
+            "https://desktop.docker.com/mac/main/arm64/Docker.dmg",
+            "hex",
+        );
+
+        assert!(script.contains("codesign --verify --deep --strict --verbose=2"));
+        assert!(script.contains("spctl --assess --type execute --verbose=2"));
+        assert!(script.contains("--user=\"hex\""));
     }
 }
