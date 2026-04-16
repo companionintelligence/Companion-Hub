@@ -366,12 +366,21 @@ pub fn check_docker_access() -> DockerAccessCheck {
 
 fn classify_docker_access_result(combined: &str, exit_code: Option<i32>) -> DockerAccessCheck {
     let combined_lower = combined.to_lowercase();
+    let references_windows_docker_pipe = combined_lower.contains("//./pipe/docker")
+        || combined_lower.contains("\\\\.\\pipe\\docker")
+        || combined_lower.contains("%2f%2f.%2fpipe%2fdocker");
+    let windows_pipe_not_ready = references_windows_docker_pipe
+        && (combined_lower.contains("the system cannot find the file specified")
+            || combined_lower.contains("the pipe has been ended")
+            || combined_lower.contains("the semaphore timeout period has expired"));
 
     if combined_lower.contains("cannot connect to the docker daemon")
         || combined_lower.contains("is the docker daemon running")
         || combined_lower.contains("error during connect")
         || combined_lower.contains("connection refused")
         || combined_lower.contains("context deadline exceeded")
+        || combined_lower.contains("this error may indicate that the docker daemon is not running")
+        || windows_pipe_not_ready
     {
         return DockerAccessCheck {
             state: DockerAccessState::DaemonUnavailable,
@@ -387,6 +396,9 @@ fn classify_docker_access_result(combined: &str, exit_code: Option<i32>) -> Dock
         || combined_lower.contains("got permission denied")
         || combined_lower.contains("permission denied while trying to connect")
         || combined_lower.contains("dial unix /var/run/docker.sock: connect: permission denied")
+        || combined_lower.contains("access is denied")
+        || combined_lower.contains("must be run with elevated privileges")
+        || combined_lower.contains("requested operation requires elevation")
     {
         return DockerAccessCheck {
             state: DockerAccessState::PermissionDenied,
@@ -1315,6 +1327,26 @@ mod tests {
     fn classifies_explicit_permission_denied_as_permission_issue() {
         let result = classify_docker_access_result(
             "Got permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock",
+            Some(1),
+        );
+
+        assert!(matches!(result.state, DockerAccessState::PermissionDenied));
+    }
+
+    #[test]
+    fn classifies_windows_named_pipe_not_found_as_daemon_unavailable() {
+        let result = classify_docker_access_result(
+            "open //./pipe/dockerDesktopLinuxEngine: The system cannot find the file specified.",
+            Some(1),
+        );
+
+        assert!(matches!(result.state, DockerAccessState::DaemonUnavailable));
+    }
+
+    #[test]
+    fn classifies_windows_access_denied_as_permission_issue() {
+        let result = classify_docker_access_result(
+            "open //./pipe/docker_engine: Access is denied. In the default daemon configuration on Windows, the docker client must be run with elevated privileges to connect.",
             Some(1),
         );
 

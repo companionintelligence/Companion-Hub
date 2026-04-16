@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { HubStatus, getDockerDesktopGuideContent } from './hub-status';
@@ -50,7 +50,7 @@ function restoreNavigator() {
   });
 }
 
-function renderWithTauriStatus(status: 'DockerNotAvailable' | 'Stopped', userAgent: string, userAgentData?: { architecture?: string }) {
+function renderWithTauriStatus(status: 'DockerNotAvailable' | 'Stopped' | 'Running', userAgent: string, userAgentData?: { architecture?: string }) {
   const invoke = vi.fn<(cmd: string) => Promise<unknown>>(async (cmd: string) => {
     if (cmd === 'get_hub_status_command') {
       return status;
@@ -74,9 +74,25 @@ function renderWithTauriStatus(status: 'DockerNotAvailable' | 'Stopped', userAge
   return { invoke };
 }
 
+function mockWindowsTauri(invoke: (cmd: string) => Promise<unknown>) {
+  setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64)');
+  Object.defineProperty(tauriWindow, '__TAURI_INTERNALS__', {
+    value: { invoke },
+    configurable: true,
+  });
+}
+
+async function flushAsyncWork() {
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
 afterEach(() => {
   delete tauriWindow.__TAURI_INTERNALS__;
   restoreNavigator();
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -123,6 +139,11 @@ describe('HubStatus Docker guidance', () => {
       'href',
       'https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe',
     );
+    expect(
+      screen.getByText(
+        'Download Docker Desktop for your Windows machine. Companion Hub will keep checking and continue automatically once Docker is ready.',
+      ),
+    ).toBeInTheDocument();
     expect(screen.getByText('Run the installer and follow the prompts')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Install Docker Desktop' })).not.toBeInTheDocument();
     expect(invoke).toHaveBeenCalledWith('get_hub_status_command');
@@ -151,10 +172,94 @@ describe('HubStatus Docker guidance', () => {
     expect(screen.queryByRole('button', { name: 'Install Docker Desktop' })).not.toBeInTheDocument();
   });
 
-  it('keeps the existing stopped-state start button flow intact', async () => {
-    renderWithTauriStatus('Stopped', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)');
+  it('auto-starts the hub on Windows once Docker becomes available while the app stays open', async () => {
+    vi.useFakeTimers();
 
-    expect(await screen.findByRole('heading', { name: 'Hub Not Running' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Start Hub' })).toBeInTheDocument();
+    let getHubStatusCallCount = 0;
+    const invoke = vi.fn<(cmd: string) => Promise<unknown>>(async (cmd: string) => {
+      switch (cmd) {
+        case 'get_hub_status_command':
+          getHubStatusCallCount += 1;
+          if (getHubStatusCallCount === 1) return 'DockerNotAvailable';
+          if (getHubStatusCallCount === 2) return 'Stopped';
+          return 'Running';
+        case 'start_hub_command':
+          return 'Hub started successfully';
+        default:
+          throw new Error(`Unexpected invoke command: ${cmd}`);
+      }
+    });
+
+    mockWindowsTauri(invoke);
+
+    render(
+      <HubStatus>
+        <div>Hub child</div>
+      </HubStatus>,
+    );
+
+    await flushAsyncWork();
+    expect(screen.getByRole('link', { name: 'Download Docker Desktop for Windows' })).toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    await flushAsyncWork();
+
+    expect(invoke).toHaveBeenCalledWith('start_hub_command');
+    expect(screen.getByText('Hub Starting…')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Start Hub' })).not.toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    await flushAsyncWork();
+
+    expect(screen.getByText('Hub child')).toBeInTheDocument();
+  });
+
+  it('auto-starts the hub on Windows when Docker is already available but the hub is stopped', async () => {
+    vi.useFakeTimers();
+
+    let getHubStatusCallCount = 0;
+    const invoke = vi.fn<(cmd: string) => Promise<unknown>>(async (cmd: string) => {
+      switch (cmd) {
+        case 'get_hub_status_command':
+          getHubStatusCallCount += 1;
+          return getHubStatusCallCount === 1 ? 'Stopped' : 'Running';
+        case 'start_hub_command':
+          return 'Hub started successfully';
+        default:
+          throw new Error(`Unexpected invoke command: ${cmd}`);
+      }
+    });
+
+    mockWindowsTauri(invoke);
+
+    render(
+      <HubStatus>
+        <div>Hub child</div>
+      </HubStatus>,
+    );
+
+    await flushAsyncWork();
+
+    expect(invoke).toHaveBeenCalledWith('start_hub_command');
+    expect(screen.getByText('Hub Starting…')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Start Hub' })).not.toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    await flushAsyncWork();
+
+    expect(screen.getByText('Hub child')).toBeInTheDocument();
+  });
+
+  it('renders the normal app immediately when the hub is already running', async () => {
+    renderWithTauriStatus('Running', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)');
+
+    expect(await screen.findByText('Hub child')).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Docker Desktop Required' })).not.toBeInTheDocument();
   });
 });

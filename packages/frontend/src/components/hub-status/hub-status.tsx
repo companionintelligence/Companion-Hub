@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, type ReactNode } from 'react';
+import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react';
 import { client } from '@/api-client/client.gen';
 
 interface HubStatusProps {
@@ -6,6 +6,11 @@ interface HubStatusProps {
 }
 
 type HubStatusResponse = 'DockerNotAvailable' | 'Stopped' | 'Starting' | 'Running' | { Error: { message: string } };
+
+function getErrorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  return String(err);
+}
 
 // Tauri IPC helper
 function getTauriInvoke(): ((cmd: string) => Promise<unknown>) | null {
@@ -74,14 +79,15 @@ export function getDockerDesktopGuideContent(platform: DockerDesktopGuidePlatfor
 
 interface DockerDesktopGuideProps extends DockerDesktopGuideContent {
   footer?: ReactNode;
+  description?: string;
 }
 
-function DockerDesktopGuide({ platformLabel, downloadUrl, manualSteps, footer }: DockerDesktopGuideProps) {
+function DockerDesktopGuide({ platformLabel, downloadUrl, manualSteps, footer, description }: DockerDesktopGuideProps) {
   return (
     <>
       <h1 className="text-2xl font-semibold text-foreground">Docker Desktop Required</h1>
       <div className="text-center max-w-md text-muted-foreground space-y-3">
-        <p>Companion Hub requires Docker Desktop to run.</p>
+        <p>{description ?? 'Companion Hub requires Docker Desktop to run.'}</p>
         <ol className="text-left list-decimal list-inside space-y-1">
           {manualSteps.map((step) => (
             <li key={step}>{step}</li>
@@ -133,8 +139,19 @@ function LinuxDockerGuide() {
 function DockerInstallGuide() {
   const platform = detectPlatform();
 
-  if (platform === 'windows' || platform === 'macos') {
-    const guide = getDockerDesktopGuideContent(platform, isAppleSilicon());
+  if (platform === 'windows') {
+    const guide = getDockerDesktopGuideContent('windows', false);
+    return (
+      <DockerDesktopGuide
+        {...guide}
+        description="Download Docker Desktop for your Windows machine. Companion Hub will keep checking and continue automatically once Docker is ready."
+        footer={guide.hint ? <p className="text-xs text-muted-foreground/70">{guide.hint}</p> : undefined}
+      />
+    );
+  }
+
+  if (platform === 'macos') {
+    const guide = getDockerDesktopGuideContent('macos', isAppleSilicon());
     return <DockerDesktopGuide {...guide} footer={guide.hint ? <p className="text-xs text-muted-foreground/70">{guide.hint}</p> : undefined} />;
   }
 
@@ -145,6 +162,8 @@ export function HubStatus({ children }: HubStatusProps) {
   const [status, setStatus] = useState<HubStatusResponse | null>(null);
   const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
   const isTauriRelease = isTauri && !window.location.origin.startsWith('http://localhost:');
+  const isWindows = isTauri && detectPlatform() === 'windows';
+  const shouldAutoStartWindowsHubRef = useRef(true);
 
   const checkHealthFallback = useCallback(async () => {
     for (const port of [5002, 3000]) {
@@ -163,11 +182,40 @@ export function HubStatus({ children }: HubStatusProps) {
     setStatus('Stopped');
   }, []);
 
+  const startHub = useCallback(async (logMessage: string) => {
+    const invoke = getTauriInvoke();
+    if (!invoke) return false;
+
+    setStatus('Starting');
+
+    try {
+      await invoke('start_hub_command');
+      return true;
+    } catch (err) {
+      console.error(logMessage, err);
+      setStatus({ Error: { message: getErrorMessage(err) } });
+      return false;
+    }
+  }, []);
+
   const checkStatus = useCallback(async () => {
     const invoke = getTauriInvoke();
     if (invoke) {
       try {
         const result = (await invoke('get_hub_status_command')) as HubStatusResponse;
+
+        if (isWindows) {
+          if (result === 'DockerNotAvailable') {
+            shouldAutoStartWindowsHubRef.current = true;
+          } else if (result === 'Running' || result === 'Starting' || (typeof result === 'object' && 'Error' in result)) {
+            shouldAutoStartWindowsHubRef.current = false;
+          } else if (result === 'Stopped' && shouldAutoStartWindowsHubRef.current) {
+            shouldAutoStartWindowsHubRef.current = false;
+            await startHub('Failed to auto-start hub:');
+            return;
+          }
+        }
+
         setStatus(result);
 
         // When running, configure API client for Tauri release builds
@@ -196,7 +244,7 @@ export function HubStatus({ children }: HubStatusProps) {
       // page is loaded from a public/tunnel URL.
       await checkHealthFallback();
     }
-  }, [isTauri, isTauriRelease, checkHealthFallback]);
+  }, [isTauri, isTauriRelease, isWindows, checkHealthFallback, startHub]);
 
   useEffect(() => {
     checkStatus();
@@ -205,27 +253,14 @@ export function HubStatus({ children }: HubStatusProps) {
   }, [checkStatus]);
 
   const handleStartHub = useCallback(async () => {
-    const invoke = getTauriInvoke();
-    if (!invoke) return;
-    setStatus('Starting');
-    try {
-      await invoke('start_hub_command');
-    } catch (err) {
-      console.error('Failed to start hub:', err);
-    }
-  }, []);
+    shouldAutoStartWindowsHubRef.current = false;
+    await startHub('Failed to start hub:');
+  }, [startHub]);
 
   const handleRestartHub = useCallback(async () => {
-    const invoke = getTauriInvoke();
-    if (!invoke) return;
-    setStatus('Starting');
-    try {
-      // stop then start
-      await invoke('start_hub_command');
-    } catch (err) {
-      console.error('Failed to restart hub:', err);
-    }
-  }, []);
+    shouldAutoStartWindowsHubRef.current = false;
+    await startHub('Failed to restart hub:');
+  }, [startHub]);
 
   // If not in Tauri, don't block the UI — web users have the backend proxied
   if (!isTauri) return <>{children}</>;
