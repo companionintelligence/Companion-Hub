@@ -286,8 +286,8 @@ export class AppLifecycleService implements OnApplicationBootstrap {
     this.appEventsQueue.publish({ appUrn, command: 'install', requestId, form: { ...parsedForm, skipRun } }).then(async ({ success, message }) => {
       if (success) {
         this.logger.info(`App ${appUrn} installed successfully`);
-        this.sseService.emit('app', { event: 'install_success', appUrn, appStatus: 'running' });
         await this.appRepository.updateAppById(createdApp.id, { status: 'running' });
+        this.sseService.emit('app', { event: 'install_success', appUrn, appStatus: 'running' });
 
         // Check if we need to sync Cloudflare state (if app is exposedLocal)
         if (createdApp.exposedLocal || (appInfo.exposable && !exposedLocal)) {
@@ -296,9 +296,9 @@ export class AppLifecycleService implements OnApplicationBootstrap {
           await this.syncExposure();
         }
       } else {
-        this.sseService.emit('app', { event: 'install_error', appUrn, appStatus: 'missing', error: message });
         this.logger.error(`Failed to install app ${appUrn}: ${message}`);
         await this.appRepository.deleteAppById(createdApp.id);
+        this.sseService.emit('app', { event: 'install_error', appUrn, appStatus: 'missing', error: message });
       }
     });
 

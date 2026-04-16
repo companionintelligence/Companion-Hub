@@ -283,6 +283,74 @@ describe('AppLifecycleService', () => {
 
       expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ exposureMode: 'local' }));
     });
+
+    it('MUST persist running status before emitting install_success', async () => {
+      marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue({ ...baseAppInfo, exposable: false } as any);
+
+      let persistedStatus = 'installing';
+      let statusSeenAtInstallSuccess: string | null = null;
+
+      appsRepository.updateAppById.mockImplementation(async (_id, data: any) => {
+        if (data.status) {
+          persistedStatus = data.status;
+        }
+        return { id: 1, status: persistedStatus } as any;
+      });
+
+      sseService.emit.mockImplementation((_topic, payload: any) => {
+        if (payload.event === 'install_success') {
+          statusSeenAtInstallSuccess = persistedStatus;
+        }
+      });
+
+      await service.installApp({ appUrn, form: {} });
+
+      await vi.waitFor(() => {
+        expect(statusSeenAtInstallSuccess).toBe('running');
+      });
+
+      const runningUpdateCall = appsRepository.updateAppById.mock.calls.findIndex(([, data]) => data?.status === 'running');
+      const installSuccessCall = sseService.emit.mock.calls.findIndex(([, payload]) => payload?.event === 'install_success');
+
+      expect(runningUpdateCall).toBeGreaterThanOrEqual(0);
+      expect(installSuccessCall).toBeGreaterThanOrEqual(0);
+      expect(appsRepository.updateAppById.mock.invocationCallOrder[runningUpdateCall]).toBeLessThan(
+        sseService.emit.mock.invocationCallOrder[installSuccessCall],
+      );
+    });
+
+    it('MUST delete the installing row before emitting install_error', async () => {
+      marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue({ ...baseAppInfo, exposable: false } as any);
+      appEventsQueue.publish.mockResolvedValue({ success: false, message: 'install failed' } as any);
+
+      let appExists = true;
+      let appExistsAtInstallError: boolean | null = null;
+
+      appsRepository.deleteAppById.mockImplementation(async () => {
+        appExists = false;
+      });
+
+      sseService.emit.mockImplementation((_topic, payload: any) => {
+        if (payload.event === 'install_error') {
+          appExistsAtInstallError = appExists;
+        }
+      });
+
+      await service.installApp({ appUrn, form: {} });
+
+      await vi.waitFor(() => {
+        expect(appExistsAtInstallError).toBe(false);
+      });
+
+      const deleteCall = appsRepository.deleteAppById.mock.calls.findIndex(([id]) => id === 1);
+      const installErrorCall = sseService.emit.mock.calls.findIndex(([, payload]) => payload?.event === 'install_error');
+
+      expect(deleteCall).toBeGreaterThanOrEqual(0);
+      expect(installErrorCall).toBeGreaterThanOrEqual(0);
+      expect(appsRepository.deleteAppById.mock.invocationCallOrder[deleteCall]).toBeLessThan(
+        sseService.emit.mock.invocationCallOrder[installErrorCall],
+      );
+    });
   });
 
   describe('startApp', () => {
