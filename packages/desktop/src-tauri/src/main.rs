@@ -6,10 +6,10 @@ pub mod hub_manager;
 pub mod port_manager;
 mod tray;
 
+use sha2::{Digest, Sha256};
 use tauri::Manager;
 use tauri_plugin_store::StoreExt;
 
-/// Check if the Hub backend is reachable at the given URL.
 #[tauri::command]
 async fn check_hub_status(url: String) -> Result<bool, String> {
     match reqwest::get(format!("{}/api/health", url)).await {
@@ -18,13 +18,11 @@ async fn check_hub_status(url: String) -> Result<bool, String> {
     }
 }
 
-/// Discover Hub instances on the local network via mDNS.
 #[tauri::command]
 async fn discover_hubs() -> Result<Vec<String>, String> {
     discovery::find_hubs().await.map_err(|e| e.to_string())
 }
 
-/// Start the Hub via docker compose.
 #[tauri::command]
 async fn start_hub_command(
     state: tauri::State<'_, hub_manager::HubPaths>,
@@ -32,25 +30,21 @@ async fn start_hub_command(
     hub_manager::start_hub(&state.compose_path, &state.env_path, &state.data_dir)
 }
 
-/// Check if Docker is available on this machine.
 #[tauri::command]
 async fn check_docker_available() -> Result<bool, String> {
     Ok(hub_manager::is_docker_available())
 }
 
-/// Return richer Docker access diagnostics for post-install handling.
 #[tauri::command]
 async fn check_docker_access_command() -> Result<hub_manager::DockerAccessCheck, String> {
     Ok(hub_manager::check_docker_access())
 }
 
-/// Install Docker using the platform-native bootstrap flow.
 #[tauri::command]
 async fn install_docker_command() -> Result<hub_manager::DockerInstallResult, String> {
     hub_manager::install_docker()
 }
 
-/// Get the current Hub status (Docker availability, container state, health).
 #[tauri::command]
 async fn get_hub_status_command() -> hub_manager::HubStatus {
     hub_manager::get_hub_status()
@@ -80,26 +74,14 @@ pub fn run() {
             install_docker_command,
         ])
         .setup(|app| {
-            // Restore saved window geometry
             let window = app
                 .get_webview_window("main")
                 .ok_or("main window not found")?;
 
-            // macOS: config has decorations:true + titleBarStyle:Overlay which gives
-            // native traffic lights over the WebView content. Perfect.
-            //
-            // Windows/Linux: titleBarStyle:Overlay is macOS-only, and native decorations
-            // look wrong with our custom titlebar. Turn decorations off at runtime so
-            // the custom HTML titlebar takes over.
             #[cfg(not(target_os = "macos"))]
             {
                 let _ = window.set_decorations(false);
             }
-
-            // Devtools available via right-click → Inspect Element in debug builds
-            // but don't auto-open (blocks app interaction on macOS)
-            // #[cfg(debug_assertions)]
-            // window.open_devtools();
 
             if let Ok(store) = app.store("settings.json") {
                 if let Some(x) = store
@@ -110,8 +92,7 @@ pub fn run() {
                         .get("window_y")
                         .and_then(|v: serde_json::Value| v.as_f64())
                     {
-                        let _ =
-                            window.set_position(tauri::PhysicalPosition::new(x as i32, y as i32));
+                        let _ = window.set_position(tauri::PhysicalPosition::new(x as i32, y as i32));
                     }
                 }
                 if let Some(w) = store
@@ -127,51 +108,101 @@ pub fn run() {
                 }
             }
 
-            // Build system tray (also registers close-to-hide handler)
             tray::create_tray(app)?;
 
-            // Initialize Hub data directory and compose file
             let resource_dir = app.path().resource_dir().map_err(|e| format!("{}", e))?;
-            let (data_dir, compose_path, env_path) = hub_manager::initialize_hub(&resource_dir)?;
+            let bootstrap_data_dir = hub_manager::get_hub_data_dir();
+            let _ = hub_manager::log_desktop_event(
+                &bootstrap_data_dir,
+                "startup",
+                &format!(
+                    "Desktop setup starting. resource_dir={}",
+                    resource_dir.display()
+                ),
+            );
 
-            // Store paths in app state for tray and commands to use
+            let (data_dir, compose_path, env_path) = hub_manager::initialize_hub(&resource_dir)?;
+            let _ = hub_manager::log_desktop_event(
+                &data_dir,
+                "startup",
+                &format!(
+                    "Desktop paths ready. compose={} env={}",
+                    compose_path.display(),
+                    env_path.display()
+                ),
+            );
+
             app.manage(hub_manager::HubPaths {
                 data_dir: data_dir.clone(),
                 compose_path: compose_path.clone(),
                 env_path: env_path.clone(),
             });
 
-            // Hash-based reconciliation: only start/restart when config changed
-            // or containers don't exist. Respects user intent (stopped Hub stays stopped
-            // unless config changed on upgrade).
             if hub_manager::is_docker_available() {
                 let config_hash = compute_config_hash(&compose_path, &env_path);
                 let hash_path = data_dir.join(".config-hash");
                 let saved_hash = std::fs::read_to_string(&hash_path).ok();
                 let containers_exist = hub_manager::hub_containers_exist();
 
-                let should_start = if !containers_exist {
-                    true // First launch or user stopped Hub
+                let auto_start_reason = if !containers_exist {
+                    Some("Hub containers do not exist yet.".to_string())
                 } else if saved_hash.as_deref() != Some(&config_hash) {
-                    true // Config changed (upgrade, env fix, etc.)
+                    Some("Hub configuration changed since the last launch.".to_string())
                 } else {
-                    false // Containers exist, config unchanged — do nothing
+                    None
                 };
 
-                if should_start {
-                    let compose = compose_path;
-                    let env = env_path;
-                    let data = data_dir;
+                if let Some(reason) = auto_start_reason {
+                    let _ = hub_manager::log_desktop_event(
+                        &data_dir,
+                        "startup",
+                        &format!("Auto-start scheduled. {}", reason),
+                    );
+
+                    let compose = compose_path.clone();
+                    let env = env_path.clone();
+                    let data = data_dir.clone();
                     let hash = config_hash;
                     let hp = hash_path;
                     tauri::async_runtime::spawn(async move {
                         let _ = hub_manager::start_hub(&compose, &env, &data);
-                        // Save hash regardless of compose exit status — partial starts
-                        // (e.g. Traefik port conflict) are still a valid state. Without
-                        // this, every relaunch re-runs compose because the hash is never saved.
-                        let _ = std::fs::write(&hp, &hash);
+                        match std::fs::write(&hp, &hash) {
+                            Ok(()) => {
+                                let _ = hub_manager::log_desktop_event(
+                                    &data,
+                                    "startup",
+                                    &format!(
+                                        "Persisted configuration hash after auto-start attempt at {}.",
+                                        hp.display()
+                                    ),
+                                );
+                            }
+                            Err(error) => {
+                                let _ = hub_manager::log_desktop_event(
+                                    &data,
+                                    "startup",
+                                    &format!(
+                                        "Failed to persist configuration hash at {}: {}",
+                                        hp.display(),
+                                        error
+                                    ),
+                                );
+                            }
+                        }
                     });
+                } else {
+                    let _ = hub_manager::log_desktop_event(
+                        &data_dir,
+                        "startup",
+                        "Skipping auto-start. Containers already exist and configuration hash is unchanged.",
+                    );
                 }
+            } else {
+                let _ = hub_manager::log_desktop_event(
+                    &data_dir,
+                    "startup",
+                    "Docker is unavailable during setup. Skipping auto-start reconciliation.",
+                );
             }
 
             Ok(())
@@ -185,10 +216,6 @@ pub fn run() {
         .expect("error while running Companion Hub Desktop");
 }
 
-use sha2::{Digest, Sha256};
-
-/// Compute a SHA256 hash of the .env and compose file contents.
-/// Used for hash-based reconciliation — only restart containers when config changes.
 fn compute_config_hash(compose_path: &std::path::Path, env_path: &std::path::Path) -> String {
     let mut hasher = Sha256::new();
     if let Ok(content) = std::fs::read(compose_path) {

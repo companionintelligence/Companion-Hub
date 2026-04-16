@@ -9,7 +9,6 @@ use std::os::windows::process::CommandExt;
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-#[cfg(target_os = "linux")]
 const MAX_COMMAND_OUTPUT_CHARS: usize = 400;
 
 #[cfg(target_os = "windows")]
@@ -174,6 +173,156 @@ pub struct DockerInstallResult {
     pub detail: Option<String>,
 }
 
+const DESKTOP_LOG_FILE_NAME: &str = "desktop.log";
+const INIT_LOG_FILE_NAME: &str = "init.log";
+
+pub fn desktop_logs_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join("logs")
+}
+
+fn init_log_path(data_dir: &Path) -> PathBuf {
+    desktop_logs_dir(data_dir).join(INIT_LOG_FILE_NAME)
+}
+
+pub fn desktop_log_path(data_dir: &Path) -> PathBuf {
+    desktop_logs_dir(data_dir).join(DESKTOP_LOG_FILE_NAME)
+}
+
+pub fn preferred_logs_target(data_dir: &Path) -> PathBuf {
+    let desktop_log = desktop_log_path(data_dir);
+    if desktop_log.exists() {
+        desktop_log
+    } else {
+        desktop_logs_dir(data_dir)
+    }
+}
+
+pub fn log_desktop_event(data_dir: &Path, operation: &str, message: &str) -> std::io::Result<()> {
+    append_log_entry(&desktop_log_path(data_dir), operation, message)
+}
+
+fn append_log_entry(log_path: &Path, operation: &str, message: &str) -> std::io::Result<()> {
+    use std::io::Write;
+
+    if let Some(parent) = log_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let normalized = normalize_log_message(message);
+    if normalized.is_empty() {
+        return Ok(());
+    }
+
+    let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)?;
+
+    let mut lines = normalized.lines();
+    if let Some(first_line) = lines.next() {
+        writeln!(file, "[{}] [{}] {}", timestamp, operation, first_line)?;
+        for line in lines {
+            writeln!(file, "    {}", line)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn normalize_log_message(message: &str) -> String {
+    message
+        .replace('\r', "")
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn log_hint(data_dir: &Path) -> String {
+    format!("See desktop log: {}", desktop_log_path(data_dir).display())
+}
+
+fn error_with_log_hint(message: impl Into<String>, data_dir: &Path) -> String {
+    format!("{}. {}", message.into(), log_hint(data_dir))
+}
+
+fn describe_exit_status(status: &std::process::ExitStatus) -> String {
+    match status.code() {
+        Some(code) => format!("exit code {}", code),
+        None => "terminated by signal".to_string(),
+    }
+}
+
+fn summarize_command_output(output: &std::process::Output) -> String {
+    format_command_output(
+        &String::from_utf8_lossy(&output.stdout),
+        &String::from_utf8_lossy(&output.stderr),
+    )
+}
+
+fn compose_command_description(compose_path: &Path, env_path: &Path, action: &str) -> String {
+    format!(
+        "docker compose --env-file '{}' --project-name ci-hub -f '{}' {}",
+        env_path.display(),
+        compose_path.display(),
+        action
+    )
+}
+
+fn ensure_required_file(
+    path: &Path,
+    label: &str,
+    data_dir: &Path,
+    operation: &str,
+) -> Result<(), String> {
+    if path.exists() {
+        Ok(())
+    } else {
+        let message = format!("{} not found at {}", label, path.display());
+        let _ = log_desktop_event(data_dir, operation, &message);
+        Err(error_with_log_hint(message, data_dir))
+    }
+}
+
+fn port_resolution_lines(resolution: &crate::port_manager::PortResolution) -> Vec<String> {
+    let mut lines = Vec::new();
+
+    for warning in &resolution.warnings {
+        lines.push(format!("WARN: {}", warning));
+    }
+    for info in &resolution.info {
+        lines.push(format!("INFO: {}", info));
+    }
+
+    let mut env_vars = resolution.env_vars.iter().collect::<Vec<_>>();
+    env_vars.sort_by(|(left, _), (right, _)| left.cmp(right));
+    for (var, port) in env_vars {
+        lines.push(format!("{}={}", var, port));
+    }
+
+    lines
+}
+
+fn write_port_resolution_log(
+    data_dir: &Path,
+    resolution: &crate::port_manager::PortResolution,
+) -> std::io::Result<()> {
+    let lines = port_resolution_lines(resolution);
+    let message = if lines.is_empty() {
+        "Port resolution completed with no changes.".to_string()
+    } else {
+        format!("Port resolution completed:\n{}", lines.join("\n"))
+    };
+
+    append_log_entry(
+        &desktop_logs_dir(data_dir).join("port-resolution.log"),
+        "ports",
+        &message,
+    )
+}
+
 /// Get the current status of the Hub by inspecting the Docker container.
 pub fn get_hub_status() -> HubStatus {
     if !is_docker_available() {
@@ -236,8 +385,9 @@ pub fn get_hub_status() -> HubStatus {
                 } else {
                     HubStatus::Error {
                         message: format!(
-                            "Hub has restarted {} times. Check Docker logs for details.",
-                            restart_count
+                            "Hub has restarted {} times. Check Docker logs and {} for details.",
+                            restart_count,
+                            desktop_log_path(&get_hub_data_dir()).display()
                         ),
                     }
                 }
@@ -357,26 +507,48 @@ pub fn hub_containers_exist() -> bool {
 }
 
 /// Start Hub using docker compose up (with port conflict resolution)
-pub fn start_hub(compose_path: &Path, env_path: &Path, _data_dir: &Path) -> Result<String, String> {
-    // Resolve port conflicts and write to .env before starting
-    let resolution = crate::port_manager::refresh_ports_if_needed(env_path)?;
+pub fn start_hub(compose_path: &Path, env_path: &Path, data_dir: &Path) -> Result<String, String> {
+    let _ = log_desktop_event(
+        data_dir,
+        "start",
+        &format!(
+            "Hub start requested. compose={} env={}",
+            compose_path.display(),
+            env_path.display()
+        ),
+    );
 
-    // Log warnings and info
-    let log_path = _data_dir.join("logs").join("port-resolution.log");
-    let mut log_lines = vec![format!(
-        "[{}] Port resolution:",
-        chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
-    )];
-    for w in &resolution.warnings {
-        log_lines.push(format!("  WARN: {}", w));
+    ensure_required_file(compose_path, "Compose file", data_dir, "start")?;
+    ensure_required_file(env_path, "Hub environment file", data_dir, "start")?;
+
+    let resolution = crate::port_manager::refresh_ports_if_needed(env_path).map_err(|error| {
+        let message = format!("Failed to refresh Hub ports before startup: {}", error);
+        let _ = log_desktop_event(data_dir, "start", &message);
+        error_with_log_hint(message, data_dir)
+    })?;
+
+    let port_lines = port_resolution_lines(&resolution);
+    if port_lines.is_empty() {
+        let _ = log_desktop_event(
+            data_dir,
+            "start",
+            "Port resolution completed with no changes.",
+        );
+    } else {
+        let _ = log_desktop_event(
+            data_dir,
+            "start",
+            &format!("Port resolution completed:\n{}", port_lines.join("\n")),
+        );
     }
-    for i in &resolution.info {
-        log_lines.push(format!("  INFO: {}", i));
-    }
-    for (var, port) in &resolution.env_vars {
-        log_lines.push(format!("  {}={}", var, port));
-    }
-    let _ = std::fs::write(&log_path, log_lines.join("\n") + "\n");
+    let _ = write_port_resolution_log(data_dir, &resolution);
+
+    let command_description = compose_command_description(compose_path, env_path, "up -d");
+    let _ = log_desktop_event(
+        data_dir,
+        "start",
+        &format!("Running compose command:\n{}", command_description),
+    );
 
     let output = docker_command()
         .args([
@@ -391,17 +563,63 @@ pub fn start_hub(compose_path: &Path, env_path: &Path, _data_dir: &Path) -> Resu
             "-d",
         ])
         .output()
-        .map_err(|e| format!("Failed to run docker compose: {}", e))?;
+        .map_err(|error| {
+            let message = format!("Failed to launch docker compose up: {}", error);
+            let _ = log_desktop_event(data_dir, "start", &message);
+            error_with_log_hint(message, data_dir)
+        })?;
 
+    let output_summary = summarize_command_output(&output);
     if output.status.success() {
+        let message = if output_summary.is_empty() {
+            "Hub startup completed successfully. docker compose up returned no additional output."
+                .to_string()
+        } else {
+            format!("Hub startup completed successfully. {}", output_summary)
+        };
+        let _ = log_desktop_event(data_dir, "start", &message);
         Ok("Hub started successfully".to_string())
     } else {
-        Err(String::from_utf8_lossy(&output.stderr).to_string())
+        let detail = if output_summary.is_empty() {
+            format!(
+                "docker compose up returned {}.",
+                describe_exit_status(&output.status)
+            )
+        } else {
+            format!(
+                "docker compose up returned {} with {}",
+                describe_exit_status(&output.status),
+                output_summary
+            )
+        };
+        let message = format!("Hub startup failed. {}", detail);
+        let _ = log_desktop_event(data_dir, "start", &message);
+        Err(error_with_log_hint(message, data_dir))
     }
 }
 
 /// Stop Hub containers
-pub fn stop_hub(compose_path: &Path, env_path: &Path) -> Result<String, String> {
+pub fn stop_hub(compose_path: &Path, env_path: &Path, data_dir: &Path) -> Result<String, String> {
+    let _ = log_desktop_event(
+        data_dir,
+        "stop",
+        &format!(
+            "Hub stop requested. compose={} env={}",
+            compose_path.display(),
+            env_path.display()
+        ),
+    );
+
+    ensure_required_file(compose_path, "Compose file", data_dir, "stop")?;
+    ensure_required_file(env_path, "Hub environment file", data_dir, "stop")?;
+
+    let command_description = compose_command_description(compose_path, env_path, "down");
+    let _ = log_desktop_event(
+        data_dir,
+        "stop",
+        &format!("Running compose command:\n{}", command_description),
+    );
+
     let output = docker_command()
         .args([
             "compose",
@@ -414,12 +632,138 @@ pub fn stop_hub(compose_path: &Path, env_path: &Path) -> Result<String, String> 
             "down",
         ])
         .output()
-        .map_err(|e| format!("Failed to stop hub: {}", e))?;
+        .map_err(|error| {
+            let message = format!("Failed to launch docker compose down: {}", error);
+            let _ = log_desktop_event(data_dir, "stop", &message);
+            error_with_log_hint(message, data_dir)
+        })?;
 
+    let output_summary = summarize_command_output(&output);
     if output.status.success() {
+        let message = if output_summary.is_empty() {
+            "Hub shutdown completed successfully. docker compose down returned no additional output."
+                .to_string()
+        } else {
+            format!("Hub shutdown completed successfully. {}", output_summary)
+        };
+        let _ = log_desktop_event(data_dir, "stop", &message);
         Ok("Hub stopped".to_string())
     } else {
-        Err(String::from_utf8_lossy(&output.stderr).to_string())
+        let detail = if output_summary.is_empty() {
+            format!(
+                "docker compose down returned {}.",
+                describe_exit_status(&output.status)
+            )
+        } else {
+            format!(
+                "docker compose down returned {} with {}",
+                describe_exit_status(&output.status),
+                output_summary
+            )
+        };
+        let message = format!("Hub shutdown failed. {}", detail);
+        let _ = log_desktop_event(data_dir, "stop", &message);
+        Err(error_with_log_hint(message, data_dir))
+    }
+}
+
+pub fn stop_managed_app_containers(data_dir: &Path) -> Result<Option<String>, String> {
+    let _ = log_desktop_event(
+        data_dir,
+        "stop",
+        "Checking for managed app containers after hub shutdown request.",
+    );
+
+    let output = docker_command()
+        .args(["ps", "-q", "--filter", "label=ci-hub.managed"])
+        .output()
+        .map_err(|error| {
+            let message = format!("Failed to list managed app containers: {}", error);
+            let _ = log_desktop_event(data_dir, "stop", &message);
+            error_with_log_hint(message, data_dir)
+        })?;
+
+    let query_summary = summarize_command_output(&output);
+    if !output.status.success() {
+        let detail = if query_summary.is_empty() {
+            format!(
+                "docker ps returned {}.",
+                describe_exit_status(&output.status)
+            )
+        } else {
+            format!(
+                "docker ps returned {} with {}",
+                describe_exit_status(&output.status),
+                query_summary
+            )
+        };
+        let message = format!("Failed to inspect managed app containers. {}", detail);
+        let _ = log_desktop_event(data_dir, "stop", &message);
+        return Err(error_with_log_hint(message, data_dir));
+    }
+
+    let ids = String::from_utf8_lossy(&output.stdout)
+        .split_whitespace()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+
+    if ids.is_empty() {
+        let message = "No managed app containers were running.".to_string();
+        let _ = log_desktop_event(data_dir, "stop", &message);
+        return Ok(Some(message));
+    }
+
+    let _ = log_desktop_event(
+        data_dir,
+        "stop",
+        &format!(
+            "Stopping {} managed app container(s): {}",
+            ids.len(),
+            ids.join(", ")
+        ),
+    );
+
+    let mut command = docker_command();
+    command.arg("stop");
+    for id in &ids {
+        command.arg(id);
+    }
+
+    let output = command.output().map_err(|error| {
+        let message = format!("Failed to stop managed app containers: {}", error);
+        let _ = log_desktop_event(data_dir, "stop", &message);
+        error_with_log_hint(message, data_dir)
+    })?;
+
+    let output_summary = summarize_command_output(&output);
+    if output.status.success() {
+        let message = if output_summary.is_empty() {
+            format!("Stopped {} managed app container(s).", ids.len())
+        } else {
+            format!(
+                "Stopped {} managed app container(s). {}",
+                ids.len(),
+                output_summary
+            )
+        };
+        let _ = log_desktop_event(data_dir, "stop", &message);
+        Ok(Some(message))
+    } else {
+        let detail = if output_summary.is_empty() {
+            format!(
+                "docker stop returned {}.",
+                describe_exit_status(&output.status)
+            )
+        } else {
+            format!(
+                "docker stop returned {} with {}",
+                describe_exit_status(&output.status),
+                output_summary
+            )
+        };
+        let message = format!("Failed to stop managed app containers. {}", detail);
+        let _ = log_desktop_event(data_dir, "stop", &message);
+        Err(error_with_log_hint(message, data_dir))
     }
 }
 
@@ -481,7 +825,15 @@ fn compute_data_dir_str(data_dir: &Path) -> String {
 pub fn initialize_hub(resource_dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf), String> {
     let data_dir = get_hub_data_dir();
 
-    // Create data subdirectories
+    let _ = log_desktop_event(
+        &data_dir,
+        "initialize",
+        &format!(
+            "Starting hub initialization. resource_dir={}",
+            resource_dir.display()
+        ),
+    );
+
     let subdirs = [
         "state",
         "repos",
@@ -494,11 +846,13 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf)
         "cache",
     ];
     for sub in subdirs {
-        std::fs::create_dir_all(data_dir.join(sub))
-            .map_err(|e| format!("Failed to create {}: {}", sub, e))?;
+        if let Err(error) = std::fs::create_dir_all(data_dir.join(sub)) {
+            let message = format!("Failed to create {} directory: {}", sub, error);
+            let _ = log_desktop_event(&data_dir, "initialize", &message);
+            return Err(error_with_log_hint(message, &data_dir));
+        }
     }
 
-    // Copy docker-compose.prod.yml from resources
     let compose_candidates = [
         resource_dir.join("docker-compose.prod.yml"),
         resource_dir
@@ -512,38 +866,61 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf)
             .join("docker-compose.prod.yml"),
     ];
 
-    let log_path = data_dir.join("logs").join("init.log");
-    let mut log_lines = vec![format!(
-        "[{}] initialize_hub: resource_dir = {:?}",
-        chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
-        resource_dir
-    )];
-    for (i, candidate) in compose_candidates.iter().enumerate() {
-        log_lines.push(format!(
-            "  candidate[{}]: {:?} exists={}",
-            i,
-            candidate,
-            candidate.exists()
-        ));
-    }
+    let compose_candidate_lines = compose_candidates
+        .iter()
+        .enumerate()
+        .map(|(index, candidate)| {
+            format!(
+                "candidate[{}]={} exists={}",
+                index,
+                candidate.display(),
+                candidate.exists()
+            )
+        })
+        .collect::<Vec<_>>();
+    let _ = log_desktop_event(
+        &data_dir,
+        "initialize",
+        &format!(
+            "Resolving compose file candidates:\n{}",
+            compose_candidate_lines.join("\n")
+        ),
+    );
 
-    let compose_src = compose_candidates.iter().find(|p| p.exists());
+    let compose_src = compose_candidates.iter().find(|path| path.exists());
     let compose_dst = data_dir.join("docker-compose.prod.yml");
 
-    if let Some(src) = compose_src {
-        log_lines.push(format!("  -> using: {:?}", src));
-        std::fs::copy(src, &compose_dst)
-            .map_err(|e| format!("Failed to copy compose file: {}", e))?;
-        log_lines.push("  -> updated in data_dir".to_string());
-    } else {
-        log_lines.push("  -> WARNING: no compose file found in any candidate path!".to_string());
-    }
+    let compose_source_summary = if let Some(src) = compose_src {
+        if let Err(error) = std::fs::copy(src, &compose_dst) {
+            let message = format!(
+                "Failed to copy compose file from {} to {}: {}",
+                src.display(),
+                compose_dst.display(),
+                error
+            );
+            let _ = log_desktop_event(&data_dir, "initialize", &message);
+            return Err(error_with_log_hint(message, &data_dir));
+        }
 
-    // --- Regenerate .env with preserve-and-derive approach ---
+        let message = format!(
+            "Copied compose file from {} to {}",
+            src.display(),
+            compose_dst.display()
+        );
+        let _ = log_desktop_event(&data_dir, "initialize", &message);
+        Some(src.display().to_string())
+    } else {
+        let message = format!(
+            "No compose file found in bundled resources. Expected one of:\n{}",
+            compose_candidate_lines.join("\n")
+        );
+        let _ = log_desktop_event(&data_dir, "initialize", &message);
+        None
+    };
+
     let env_path = data_dir.join(".env");
     let existing = parse_env_file(&env_path);
 
-    // Preserved values — read from existing, generate if missing
     let root_folder_host = existing
         .get("ROOT_FOLDER_HOST")
         .cloned()
@@ -557,7 +934,6 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf)
         .cloned()
         .unwrap_or_else(|| generate_hex(32));
 
-    // Derived values — always from current binary
     let domain = option_env!("CI_HUB_DOMAIN").unwrap_or("companionintelligence.com");
     let cloud_url =
         option_env!("CI_HUB_CLOUD_URL").unwrap_or("https://portal.companionintelligence.com");
@@ -569,7 +945,6 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf)
         "linux/amd64"
     };
 
-    // Build .env content with deterministic key order
     let env_content = format!(
         "# Preserved (generated once, survive upgrades)\n\
          ROOT_FOLDER_HOST={root_folder_host}\n\
@@ -593,29 +968,68 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf)
         docker_platform = docker_platform,
     );
 
-    // Write .env (port manager will append dynamic port vars after this)
     let old_content = std::fs::read_to_string(&env_path).unwrap_or_default();
-    // Strip port vars from old content for comparison (port manager manages those)
     let env_changed = strip_port_vars(&old_content) != env_content;
-    std::fs::write(&env_path, &env_content).map_err(|e| format!("Failed to write .env: {}", e))?;
+    if let Err(error) = std::fs::write(&env_path, &env_content) {
+        let message = format!("Failed to write .env at {}: {}", env_path.display(), error);
+        let _ = log_desktop_event(&data_dir, "initialize", &message);
+        return Err(error_with_log_hint(message, &data_dir));
+    }
 
-    log_lines.push(format!("  .env changed: {}", env_changed));
+    let _ = log_desktop_event(
+        &data_dir,
+        "initialize",
+        &format!(
+            "Regenerated .env at {} (changed={}, domain={}, cloud_url={}, image={})",
+            env_path.display(),
+            env_changed,
+            domain,
+            cloud_url,
+            hub_image
+        ),
+    );
 
-    // Write init log (append)
-    let _ = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .and_then(|mut f| {
-            use std::io::Write;
-            writeln!(f, "{}", log_lines.join("\n"))
-        });
-
-    // Clean up legacy .docker-config.json if it exists
     let legacy_docker_config = data_dir.join(".docker-config.json");
     if legacy_docker_config.exists() {
-        let _ = std::fs::remove_file(&legacy_docker_config);
+        match std::fs::remove_file(&legacy_docker_config) {
+            Ok(()) => {
+                let _ = log_desktop_event(
+                    &data_dir,
+                    "initialize",
+                    &format!(
+                        "Removed legacy Docker config at {}",
+                        legacy_docker_config.display()
+                    ),
+                );
+            }
+            Err(error) => {
+                let _ = log_desktop_event(
+                    &data_dir,
+                    "initialize",
+                    &format!(
+                        "Failed to remove legacy Docker config at {}: {}",
+                        legacy_docker_config.display(),
+                        error
+                    ),
+                );
+            }
+        }
     }
+
+    let init_summary = match compose_source_summary {
+        Some(source) => format!(
+            "initialize_hub completed. compose_source={} compose_destination={} env_changed={}",
+            source,
+            compose_dst.display(),
+            env_changed
+        ),
+        None => format!(
+            "initialize_hub completed without a bundled compose file. compose_destination={} env_changed={}",
+            compose_dst.display(),
+            env_changed
+        ),
+    };
+    let _ = append_log_entry(&init_log_path(&data_dir), "initialize", &init_summary);
 
     Ok((data_dir, compose_dst, env_path))
 }
@@ -1093,16 +1507,20 @@ fn find_executable(binary: &str) -> Option<PathBuf> {
         })
 }
 
-#[cfg(target_os = "linux")]
 fn truncate_command_output(output: &str) -> String {
-    let trimmed = output.trim();
+    let trimmed = output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" | ");
     if trimmed.is_empty() {
         return String::new();
     }
 
     let char_count = trimmed.chars().count();
     if char_count <= MAX_COMMAND_OUTPUT_CHARS {
-        return trimmed.to_string();
+        return trimmed;
     }
 
     let truncated: String = trimmed.chars().take(MAX_COMMAND_OUTPUT_CHARS).collect();
@@ -1113,7 +1531,6 @@ fn truncate_command_output(output: &str) -> String {
     )
 }
 
-#[cfg(target_os = "linux")]
 fn format_command_output(stdout: &str, stderr: &str) -> String {
     let stdout = truncate_command_output(stdout);
     let stderr = truncate_command_output(stderr);
@@ -1132,9 +1549,13 @@ mod tests {
     use super::docker_desktop_macos_install_script;
     #[cfg(any(test, target_os = "windows"))]
     use super::docker_desktop_windows_install_script;
-    use super::{classify_docker_access_result, DockerAccessState};
-    #[cfg(target_os = "linux")]
-    use super::{format_command_output, truncate_command_output, MAX_COMMAND_OUTPUT_CHARS};
+    use super::{
+        classify_docker_access_result, desktop_log_path, desktop_logs_dir, error_with_log_hint,
+        format_command_output, log_desktop_event, preferred_logs_target, truncate_command_output,
+        DockerAccessState, MAX_COMMAND_OUTPUT_CHARS,
+    };
+    use std::fs;
+    use tempfile::tempdir;
 
     #[test]
     fn classifies_daemon_unavailable_before_permission_denied() {
@@ -1156,7 +1577,6 @@ mod tests {
         assert!(matches!(result.state, DockerAccessState::PermissionDenied));
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn truncates_long_command_output() {
         let output = "x".repeat(MAX_COMMAND_OUTPUT_CHARS + 25);
@@ -1166,7 +1586,6 @@ mod tests {
         assert!(truncated.starts_with(&"x".repeat(MAX_COMMAND_OUTPUT_CHARS)));
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn formats_stdout_and_stderr_with_truncation() {
         let stdout = "ok";
@@ -1175,6 +1594,45 @@ mod tests {
 
         assert!(formatted.starts_with("stdout: ok | stderr: "));
         assert!(formatted.contains("[truncated 10 chars]"));
+    }
+
+    #[test]
+    fn desktop_logger_creates_log_file_and_appends_entries() {
+        let temp = tempdir().unwrap();
+        let data_dir = temp.path().join("companion-hub");
+
+        log_desktop_event(&data_dir, "start", "first entry").unwrap();
+        log_desktop_event(&data_dir, "start", "second entry").unwrap();
+
+        let log_contents = fs::read_to_string(desktop_log_path(&data_dir)).unwrap();
+        assert!(log_contents.contains("[start] first entry"));
+        assert!(log_contents.contains("[start] second entry"));
+    }
+
+    #[test]
+    fn preferred_logs_target_prefers_desktop_log_when_present() {
+        let temp = tempdir().unwrap();
+        let data_dir = temp.path().join("companion-hub");
+        let logs_dir = desktop_logs_dir(&data_dir);
+
+        fs::create_dir_all(&logs_dir).unwrap();
+        assert_eq!(preferred_logs_target(&data_dir), logs_dir);
+
+        fs::write(desktop_log_path(&data_dir), "hello").unwrap();
+        assert_eq!(
+            preferred_logs_target(&data_dir),
+            desktop_log_path(&data_dir)
+        );
+    }
+
+    #[test]
+    fn error_messages_point_to_desktop_log() {
+        let temp = tempdir().unwrap();
+        let data_dir = temp.path().join("companion-hub");
+
+        let message = error_with_log_hint("Hub startup failed", &data_dir);
+        assert!(message.contains("Hub startup failed"));
+        assert!(message.contains(&desktop_log_path(&data_dir).display().to_string()));
     }
 
     #[test]
