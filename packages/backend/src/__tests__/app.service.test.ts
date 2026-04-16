@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import { AppService } from '@/app.service';
 import { APP_DATA_DIR, APP_DIR, DATA_DIR } from '@/common/constants';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -80,6 +81,32 @@ describe('AppService', () => {
       await appService.copyAssets();
 
       expect((fs as unknown as FsMock).tree()).toMatchSnapshot();
+    });
+
+    it('should replace Traefik config directories with files during bootstrap', async () => {
+      const directories = { appDir: APP_DIR, dataDir: DATA_DIR, appDataDir: APP_DATA_DIR };
+      configurationService.getConfig.mockReturnValueOnce(fromPartial({ directories, userSettings: { persistTraefikConfig: false } }));
+
+      (fs as unknown as FsMock).__applyMockFiles({
+        [path.join(APP_DIR, 'assets', 'traefik', 'traefik.yml')]: 'certificatesResolvers:\n  letsencrypt:\n    acme:\n      email: {{ACME_EMAIL}}',
+        [path.join(APP_DIR, 'assets', 'traefik', 'dynamic', 'dynamic.yml')]: 'http:\n  middlewares: {}',
+      });
+
+      const traefikConfigPath = path.join(DATA_DIR, 'state', 'traefik', 'config', 'traefik.yml');
+      const dynamicConfigPath = path.join(DATA_DIR, 'state', 'traefik', 'dynamic', 'dynamic.yml');
+      await fs.promises.mkdir(traefikConfigPath, { recursive: true });
+      await fs.promises.mkdir(dynamicConfigPath, { recursive: true });
+
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(APP_DIR);
+
+      await appService.copyAssets();
+
+      cwdSpy.mockRestore();
+
+      expect((await fs.promises.stat(traefikConfigPath)).isFile()).toBe(true);
+      expect((await fs.promises.readFile(traefikConfigPath, 'utf8')).trim()).toContain('admin@companionintelligence.com');
+      expect((await fs.promises.stat(dynamicConfigPath)).isFile()).toBe(true);
+      expect((await fs.promises.readFile(dynamicConfigPath, 'utf8')).trim()).toBe('http:\n  middlewares: {}');
     });
   });
 });
