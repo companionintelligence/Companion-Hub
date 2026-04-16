@@ -133,6 +133,15 @@ pub fn run() {
             // Initialize Hub data directory and compose file
             let resource_dir = app.path().resource_dir().map_err(|e| format!("{}", e))?;
             let (data_dir, compose_path, env_path) = hub_manager::initialize_hub(&resource_dir)?;
+            let _ = hub_manager::append_desktop_log_for(
+                &data_dir,
+                "setup",
+                &format!(
+                    "Desktop setup completed. compose={} env={}",
+                    compose_path.display(),
+                    env_path.display()
+                ),
+            );
 
             // Store paths in app state for tray and commands to use
             app.manage(hub_manager::HubPaths {
@@ -158,6 +167,22 @@ pub fn run() {
                     false // Containers exist, config unchanged — do nothing
                 };
 
+                let reason = if !containers_exist {
+                    "containers are missing".to_string()
+                } else if saved_hash.as_deref() != Some(&config_hash) {
+                    "configuration hash changed".to_string()
+                } else {
+                    "containers exist and configuration is unchanged".to_string()
+                };
+                let _ = hub_manager::append_desktop_log_for(
+                    &data_dir,
+                    "setup",
+                    &format!(
+                        "Auto-start decision: should_start={} ({})",
+                        should_start, reason
+                    ),
+                );
+
                 if should_start {
                     let compose = compose_path;
                     let env = env_path;
@@ -165,13 +190,37 @@ pub fn run() {
                     let hash = config_hash;
                     let hp = hash_path;
                     tauri::async_runtime::spawn(async move {
-                        let _ = hub_manager::start_hub(&compose, &env, &data);
+                        match hub_manager::start_hub(&compose, &env, &data) {
+                            Ok(message) => {
+                                let _ =
+                                    hub_manager::append_desktop_log_for(&data, "setup", &message);
+                            }
+                            Err(error) => {
+                                let _ = hub_manager::append_desktop_log_for(
+                                    &data,
+                                    "setup",
+                                    &format!("Auto-start failed: {}", error),
+                                );
+                            }
+                        }
                         // Save hash regardless of compose exit status — partial starts
                         // (e.g. Traefik port conflict) are still a valid state. Without
                         // this, every relaunch re-runs compose because the hash is never saved.
-                        let _ = std::fs::write(&hp, &hash);
+                        if let Err(error) = std::fs::write(&hp, &hash) {
+                            let _ = hub_manager::append_desktop_log_for(
+                                &data,
+                                "setup",
+                                &format!("Failed to persist configuration hash: {}", error),
+                            );
+                        }
                     });
                 }
+            } else {
+                let _ = hub_manager::append_desktop_log_for(
+                    &data_dir,
+                    "setup",
+                    "Skipping auto-start because Docker is not currently available.",
+                );
             }
 
             Ok(())

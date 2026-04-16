@@ -9,8 +9,8 @@ use std::os::windows::process::CommandExt;
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-#[cfg(target_os = "linux")]
 const MAX_COMMAND_OUTPUT_CHARS: usize = 400;
+const DESKTOP_LOG_FILENAME: &str = "desktop.log";
 
 #[cfg(target_os = "windows")]
 const DOCKER_DESKTOP_WINDOWS_INSTALLER_URL: &str =
@@ -236,7 +236,7 @@ pub fn get_hub_status() -> HubStatus {
                 } else {
                     HubStatus::Error {
                         message: format!(
-                            "Hub has restarted {} times. Check Docker logs for details.",
+                            "Hub has restarted {} times. Open tray → View Logs for details.",
                             restart_count
                         ),
                     }
@@ -252,6 +252,75 @@ pub fn get_hub_status() -> HubStatus {
 pub fn get_hub_data_dir() -> PathBuf {
     let base = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
     base.join("companion-hub")
+}
+
+pub(crate) fn logs_dir_for(data_dir: &Path) -> PathBuf {
+    data_dir.join("logs")
+}
+
+pub fn logs_dir() -> PathBuf {
+    logs_dir_for(&get_hub_data_dir())
+}
+
+pub(crate) fn desktop_log_path_for(data_dir: &Path) -> PathBuf {
+    logs_dir_for(data_dir).join(DESKTOP_LOG_FILENAME)
+}
+
+pub fn desktop_log_path() -> PathBuf {
+    desktop_log_path_for(&get_hub_data_dir())
+}
+
+pub(crate) fn preferred_log_target_for(data_dir: &Path) -> PathBuf {
+    let desktop_log = desktop_log_path_for(data_dir);
+    if desktop_log.exists() {
+        desktop_log
+    } else {
+        logs_dir_for(data_dir)
+    }
+}
+
+pub fn preferred_log_target() -> PathBuf {
+    preferred_log_target_for(&get_hub_data_dir())
+}
+
+fn format_log_entry(operation: &str, message: &str) -> String {
+    let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+    let trimmed = message.trim();
+    if trimmed.is_empty() {
+        return format!("[{}] {}\n", timestamp, operation);
+    }
+
+    let mut lines = trimmed.lines();
+    let first_line = lines.next().unwrap_or_default().trim_end();
+    let mut formatted = format!("[{}] {}: {}\n", timestamp, operation, first_line);
+    for line in lines {
+        formatted.push_str(&format!("    {}\n", line.trim_end()));
+    }
+    formatted
+}
+
+pub(crate) fn append_desktop_log_for(
+    data_dir: &Path,
+    operation: &str,
+    message: &str,
+) -> std::io::Result<PathBuf> {
+    let log_path = desktop_log_path_for(data_dir);
+    std::fs::create_dir_all(logs_dir_for(data_dir))?;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)?;
+    use std::io::Write;
+    file.write_all(format_log_entry(operation, message).as_bytes())?;
+    Ok(log_path)
+}
+
+pub fn append_desktop_log(operation: &str, message: &str) -> std::io::Result<PathBuf> {
+    append_desktop_log_for(&get_hub_data_dir(), operation, message)
+}
+
+fn with_view_logs_hint(message: impl Into<String>) -> String {
+    format!("{} Open tray → View Logs for details.", message.into())
 }
 
 /// Check if Docker is available
@@ -357,12 +426,26 @@ pub fn hub_containers_exist() -> bool {
 }
 
 /// Start Hub using docker compose up (with port conflict resolution)
-pub fn start_hub(compose_path: &Path, env_path: &Path, _data_dir: &Path) -> Result<String, String> {
+pub fn start_hub(compose_path: &Path, env_path: &Path, data_dir: &Path) -> Result<String, String> {
+    let _ = append_desktop_log_for(
+        data_dir,
+        "hub.start",
+        &format!(
+            "Requested start via docker compose up -d\ncompose={}\nenv={}",
+            compose_path.display(),
+            env_path.display()
+        ),
+    );
+
     // Resolve port conflicts and write to .env before starting
-    let resolution = crate::port_manager::refresh_ports_if_needed(env_path)?;
+    let resolution = crate::port_manager::refresh_ports_if_needed(env_path).map_err(|error| {
+        let message = format!("Port resolution failed before startup: {}", error);
+        let _ = append_desktop_log_for(data_dir, "hub.start", &message);
+        with_view_logs_hint(message)
+    })?;
 
     // Log warnings and info
-    let log_path = _data_dir.join("logs").join("port-resolution.log");
+    let log_path = logs_dir_for(data_dir).join("port-resolution.log");
     let mut log_lines = vec![format!(
         "[{}] Port resolution:",
         chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
@@ -377,6 +460,7 @@ pub fn start_hub(compose_path: &Path, env_path: &Path, _data_dir: &Path) -> Resu
         log_lines.push(format!("  {}={}", var, port));
     }
     let _ = std::fs::write(&log_path, log_lines.join("\n") + "\n");
+    let _ = append_desktop_log_for(data_dir, "hub.start", &log_lines.join("\n"));
 
     let output = docker_command()
         .args([
@@ -391,17 +475,52 @@ pub fn start_hub(compose_path: &Path, env_path: &Path, _data_dir: &Path) -> Resu
             "-d",
         ])
         .output()
-        .map_err(|e| format!("Failed to run docker compose: {}", e))?;
+        .map_err(|e| {
+            let message = format!("Failed to run docker compose up -d: {}", e);
+            let _ = append_desktop_log_for(data_dir, "hub.start", &message);
+            with_view_logs_hint(message)
+        })?;
+
+    let combined_output = format_command_output(
+        &String::from_utf8_lossy(&output.stdout),
+        &String::from_utf8_lossy(&output.stderr),
+    );
 
     if output.status.success() {
+        let message = if combined_output.is_empty() {
+            "docker compose up -d succeeded.".to_string()
+        } else {
+            format!("docker compose up -d succeeded. {}", combined_output)
+        };
+        let _ = append_desktop_log_for(data_dir, "hub.start", &message);
         Ok("Hub started successfully".to_string())
     } else {
-        Err(String::from_utf8_lossy(&output.stderr).to_string())
+        let failure = if combined_output.is_empty() {
+            format!(
+                "docker compose up -d failed with exit code {:?}.",
+                output.status.code()
+            )
+        } else {
+            format!("docker compose up -d failed. {}", combined_output)
+        };
+        let _ = append_desktop_log_for(data_dir, "hub.start", &failure);
+        Err(with_view_logs_hint(failure))
     }
 }
 
 /// Stop Hub containers
 pub fn stop_hub(compose_path: &Path, env_path: &Path) -> Result<String, String> {
+    let data_dir = get_hub_data_dir();
+    let _ = append_desktop_log_for(
+        &data_dir,
+        "hub.stop",
+        &format!(
+            "Requested stop via docker compose down\ncompose={}\nenv={}",
+            compose_path.display(),
+            env_path.display()
+        ),
+    );
+
     let output = docker_command()
         .args([
             "compose",
@@ -414,12 +533,36 @@ pub fn stop_hub(compose_path: &Path, env_path: &Path) -> Result<String, String> 
             "down",
         ])
         .output()
-        .map_err(|e| format!("Failed to stop hub: {}", e))?;
+        .map_err(|e| {
+            let message = format!("Failed to run docker compose down: {}", e);
+            let _ = append_desktop_log_for(&data_dir, "hub.stop", &message);
+            with_view_logs_hint(message)
+        })?;
+
+    let combined_output = format_command_output(
+        &String::from_utf8_lossy(&output.stdout),
+        &String::from_utf8_lossy(&output.stderr),
+    );
 
     if output.status.success() {
+        let message = if combined_output.is_empty() {
+            "docker compose down succeeded.".to_string()
+        } else {
+            format!("docker compose down succeeded. {}", combined_output)
+        };
+        let _ = append_desktop_log_for(&data_dir, "hub.stop", &message);
         Ok("Hub stopped".to_string())
     } else {
-        Err(String::from_utf8_lossy(&output.stderr).to_string())
+        let failure = if combined_output.is_empty() {
+            format!(
+                "docker compose down failed with exit code {:?}.",
+                output.status.code()
+            )
+        } else {
+            format!("docker compose down failed. {}", combined_output)
+        };
+        let _ = append_desktop_log_for(&data_dir, "hub.stop", &failure);
+        Err(with_view_logs_hint(failure))
     }
 }
 
@@ -497,6 +640,14 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf)
         std::fs::create_dir_all(data_dir.join(sub))
             .map_err(|e| format!("Failed to create {}: {}", sub, e))?;
     }
+    let _ = append_desktop_log_for(
+        &data_dir,
+        "initialize",
+        &format!(
+            "Initializing desktop resources from {}",
+            resource_dir.display()
+        ),
+    );
 
     // Copy docker-compose.prod.yml from resources
     let compose_candidates = [
@@ -532,11 +683,19 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf)
 
     if let Some(src) = compose_src {
         log_lines.push(format!("  -> using: {:?}", src));
-        std::fs::copy(src, &compose_dst)
-            .map_err(|e| format!("Failed to copy compose file: {}", e))?;
+        std::fs::copy(src, &compose_dst).map_err(|e| {
+            let message = format!("Failed to copy compose file from {:?}: {}", src, e);
+            let _ = append_desktop_log_for(&data_dir, "initialize", &message);
+            with_view_logs_hint(message)
+        })?;
         log_lines.push("  -> updated in data_dir".to_string());
     } else {
         log_lines.push("  -> WARNING: no compose file found in any candidate path!".to_string());
+        let _ = append_desktop_log_for(
+            &data_dir,
+            "initialize",
+            "No docker-compose.prod.yml resource was found in any candidate path.",
+        );
     }
 
     // --- Regenerate .env with preserve-and-derive approach ---
@@ -597,19 +756,25 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<(PathBuf, PathBuf, PathBuf)
     let old_content = std::fs::read_to_string(&env_path).unwrap_or_default();
     // Strip port vars from old content for comparison (port manager manages those)
     let env_changed = strip_port_vars(&old_content) != env_content;
-    std::fs::write(&env_path, &env_content).map_err(|e| format!("Failed to write .env: {}", e))?;
+    std::fs::write(&env_path, &env_content).map_err(|e| {
+        let message = format!("Failed to write .env: {}", e);
+        let _ = append_desktop_log_for(&data_dir, "initialize", &message);
+        with_view_logs_hint(message)
+    })?;
 
     log_lines.push(format!("  .env changed: {}", env_changed));
 
     // Write init log (append)
+    let init_summary = log_lines.join("\n");
     let _ = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&log_path)
         .and_then(|mut f| {
             use std::io::Write;
-            writeln!(f, "{}", log_lines.join("\n"))
+            writeln!(f, "{}", init_summary)
         });
+    let _ = append_desktop_log_for(&data_dir, "initialize", &init_summary);
 
     // Clean up legacy .docker-config.json if it exists
     let legacy_docker_config = data_dir.join(".docker-config.json");
@@ -1093,7 +1258,6 @@ fn find_executable(binary: &str) -> Option<PathBuf> {
         })
 }
 
-#[cfg(target_os = "linux")]
 fn truncate_command_output(output: &str) -> String {
     let trimmed = output.trim();
     if trimmed.is_empty() {
@@ -1113,8 +1277,7 @@ fn truncate_command_output(output: &str) -> String {
     )
 }
 
-#[cfg(target_os = "linux")]
-fn format_command_output(stdout: &str, stderr: &str) -> String {
+pub(crate) fn format_command_output(stdout: &str, stderr: &str) -> String {
     let stdout = truncate_command_output(stdout);
     let stderr = truncate_command_output(stderr);
 
@@ -1132,9 +1295,11 @@ mod tests {
     use super::docker_desktop_macos_install_script;
     #[cfg(any(test, target_os = "windows"))]
     use super::docker_desktop_windows_install_script;
-    use super::{classify_docker_access_result, DockerAccessState};
-    #[cfg(target_os = "linux")]
-    use super::{format_command_output, truncate_command_output, MAX_COMMAND_OUTPUT_CHARS};
+    use super::{
+        append_desktop_log_for, classify_docker_access_result, desktop_log_path_for,
+        format_command_output, preferred_log_target_for, truncate_command_output,
+        DockerAccessState, MAX_COMMAND_OUTPUT_CHARS,
+    };
 
     #[test]
     fn classifies_daemon_unavailable_before_permission_denied() {
@@ -1156,7 +1321,6 @@ mod tests {
         assert!(matches!(result.state, DockerAccessState::PermissionDenied));
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn truncates_long_command_output() {
         let output = "x".repeat(MAX_COMMAND_OUTPUT_CHARS + 25);
@@ -1166,7 +1330,6 @@ mod tests {
         assert!(truncated.starts_with(&"x".repeat(MAX_COMMAND_OUTPUT_CHARS)));
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn formats_stdout_and_stderr_with_truncation() {
         let stdout = "ok";
@@ -1175,6 +1338,32 @@ mod tests {
 
         assert!(formatted.starts_with("stdout: ok | stderr: "));
         assert!(formatted.contains("[truncated 10 chars]"));
+    }
+
+    #[test]
+    fn appends_desktop_log_entries_to_the_consolidated_log() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let log_path =
+            append_desktop_log_for(tempdir.path(), "hub.start", "first line\nsecond line")
+                .expect("append desktop log");
+        let content = std::fs::read_to_string(log_path).expect("read log");
+
+        assert!(content.contains("hub.start: first line"));
+        assert!(content.contains("    second line"));
+    }
+
+    #[test]
+    fn prefers_desktop_log_when_present() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let logs_dir = tempdir.path().join("logs");
+        std::fs::create_dir_all(&logs_dir).expect("create logs dir");
+
+        assert_eq!(preferred_log_target_for(tempdir.path()), logs_dir);
+
+        let desktop_log = desktop_log_path_for(tempdir.path());
+        std::fs::write(&desktop_log, "ready").expect("write desktop log");
+
+        assert_eq!(preferred_log_target_for(tempdir.path()), desktop_log);
     }
 
     #[test]
