@@ -35,11 +35,17 @@ function isAppleSilicon(): boolean {
   }
 }
 
-type DockerInstallState = 'idle' | 'installing' | 'success' | 'error' | 'needs-logout' | 'starting-daemon';
+type DockerInstallState = 'idle' | 'installing' | 'success' | 'error' | 'needs-logout' | 'needs-restart' | 'starting-daemon';
 type DockerAccessState = 'available' | 'permission_denied' | 'daemon_unavailable' | 'not_installed' | 'error';
+type DockerInstallResultState = 'completed' | 'needs_restart';
 
 type DockerAccessCheck = {
   state: DockerAccessState;
+  detail?: string | null;
+};
+
+type DockerInstallResult = {
+  state: DockerInstallResultState;
   detail?: string | null;
 };
 
@@ -146,7 +152,12 @@ function LinuxDockerInstall() {
     setInstallState('installing');
     setErrorMessage(null);
     try {
-      await invoke('install_docker_linux');
+      const result = (await invoke('install_docker_command')) as DockerInstallResult;
+      if (result.state === 'needs_restart') {
+        setErrorMessage(result.detail ?? 'A restart is required before Docker can finish installing.');
+        setInstallState('needs-restart');
+        return;
+      }
       await checkPostInstallAccess();
     } catch (err) {
       const msg = getErrorMessage(err);
@@ -197,6 +208,18 @@ function LinuxDockerInstall() {
         <div className="text-center max-w-md text-muted-foreground space-y-3">
           <p>Docker has been installed, but you need to log out and back in for group permissions to take effect.</p>
           <p className="text-sm">After logging back in, restart this application.</p>
+        </div>
+      </>
+    );
+  }
+
+  if (installState === 'needs-restart') {
+    return (
+      <>
+        <h1 className="text-2xl font-semibold text-foreground">Restart Required</h1>
+        <div className="text-center max-w-md text-muted-foreground space-y-3">
+          <p>{errorMessage ?? 'A system restart is required before Docker can finish installing.'}</p>
+          <p className="text-sm">Restart your machine, then reopen Companion Hub.</p>
         </div>
       </>
     );
@@ -288,66 +311,254 @@ function LinuxDockerInstall() {
   );
 }
 
+export type DockerDesktopGuidePlatform = 'windows' | 'macos';
+
+export type DockerDesktopGuideContent = {
+  platformLabel: string;
+  downloadUrl: string;
+  manualSteps: string[];
+  hint?: string;
+};
+
+export function getDockerDesktopGuideContent(platform: DockerDesktopGuidePlatform, appleSilicon: boolean): DockerDesktopGuideContent {
+  if (platform === 'windows') {
+    return {
+      platformLabel: 'Windows',
+      downloadUrl: 'https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe',
+      manualSteps: [
+        'Download Docker Desktop for Windows',
+        'Run the installer and follow the prompts',
+        'Restart your computer if prompted',
+        'Start Docker Desktop',
+        'Come back here — the Hub will start automatically',
+      ],
+      hint: 'Docker Desktop requires Windows 10/11 with WSL2 enabled. If WSL is installed during setup, restart Windows before reopening Companion Hub.',
+    };
+  }
+
+  return {
+    platformLabel: 'Mac',
+    downloadUrl: appleSilicon ? 'https://desktop.docker.com/mac/main/arm64/Docker.dmg' : 'https://desktop.docker.com/mac/main/amd64/Docker.dmg',
+    manualSteps: [
+      'Download Docker Desktop for Mac',
+      'Open the .dmg and drag Docker to Applications',
+      'Launch Docker Desktop and grant permissions',
+      'Come back here — the Hub will start automatically',
+    ],
+  };
+}
+
+interface DockerDesktopInstallProps extends DockerDesktopGuideContent {
+  footer?: ReactNode;
+}
+
+function DockerDesktopInstall({ platformLabel, downloadUrl, manualSteps, footer }: DockerDesktopInstallProps) {
+  const [installState, setInstallState] = useState<DockerInstallState>('idle');
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const invoke = getTauriInvoke();
+
+  const checkPostInstallAccess = useCallback(async () => {
+    if (!invoke) return;
+
+    try {
+      const dockerAccess = await pollDockerAccess(invoke);
+      if (dockerAccess.state === 'available') {
+        setInstallState('success');
+        return;
+      }
+      if (dockerAccess.state === 'permission_denied') {
+        setInstallState('needs-logout');
+        return;
+      }
+      if (dockerAccess.state === 'daemon_unavailable' || dockerAccess.state === 'not_installed') {
+        setErrorMessage(dockerAccess.detail ?? 'Docker Desktop is still starting. Wait a moment, then check again.');
+        setInstallState('starting-daemon');
+        return;
+      }
+
+      setErrorMessage(dockerAccess.detail ?? 'Docker Desktop installation did not complete successfully.');
+      setInstallState('error');
+    } catch (err) {
+      setErrorMessage(getErrorMessage(err));
+      setInstallState('error');
+    }
+  }, [invoke]);
+
+  const handleInstall = useCallback(async () => {
+    if (!invoke) return;
+    setInstallState('installing');
+    setErrorMessage(null);
+    try {
+      const result = (await invoke('install_docker_command')) as DockerInstallResult;
+      if (result.state === 'needs_restart') {
+        setErrorMessage(result.detail ?? 'A system restart is required before Docker can finish installing.');
+        setInstallState('needs-restart');
+        return;
+      }
+      await checkPostInstallAccess();
+    } catch (err) {
+      const msg = getErrorMessage(err);
+      if (msg.includes('cancelled') || msg.includes('Authorization')) {
+        setInstallState('idle');
+      } else {
+        setErrorMessage(msg);
+        setInstallState('error');
+      }
+    }
+  }, [checkPostInstallAccess, invoke]);
+
+  if (installState === 'installing') {
+    return (
+      <>
+        <h1 className="text-2xl font-semibold text-foreground">Installing Docker Desktop…</h1>
+        <div className="flex items-center gap-3">
+          <svg
+            className="h-5 w-5 animate-spin text-primary"
+            xmlns="http://www.w3.org/2000/svg"
+            fill="none"
+            viewBox="0 0 24 24"
+            role="img"
+            aria-label="Loading"
+          >
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+          </svg>
+          <span className="text-muted-foreground">You may be prompted to allow an elevated installer.</span>
+        </div>
+      </>
+    );
+  }
+
+  if (installState === 'success') {
+    return (
+      <>
+        <h1 className="text-2xl font-semibold text-foreground">Docker Desktop Installed</h1>
+        <p className="text-center max-w-md text-muted-foreground">
+          Docker Desktop is installed. Waiting for Docker to become ready so the Hub can start.
+        </p>
+      </>
+    );
+  }
+
+  if (installState === 'needs-logout') {
+    return (
+      <>
+        <h1 className="text-2xl font-semibold text-foreground">Almost There</h1>
+        <div className="text-center max-w-md text-muted-foreground space-y-3">
+          <p>Docker Desktop is installed, but this user still needs refreshed permissions.</p>
+          <p className="text-sm">Log out and back in, then reopen Companion Hub.</p>
+        </div>
+      </>
+    );
+  }
+
+  if (installState === 'needs-restart') {
+    return (
+      <>
+        <h1 className="text-2xl font-semibold text-foreground">Restart Required</h1>
+        <div className="text-center max-w-md text-muted-foreground space-y-3">
+          <p>{errorMessage ?? 'A system restart is required before Docker can finish installing.'}</p>
+          <p className="text-sm">Restart your machine, then reopen Companion Hub.</p>
+        </div>
+      </>
+    );
+  }
+
+  if (installState === 'starting-daemon') {
+    return (
+      <>
+        <h1 className="text-2xl font-semibold text-foreground">Docker Desktop Installed — Finishing Startup</h1>
+        <div className="text-center max-w-md text-muted-foreground space-y-3">
+          <p>Docker Desktop was installed successfully, but Docker is still starting.</p>
+          <p className="text-sm">Wait a moment, then check again.</p>
+          {errorMessage && <p className="text-xs break-words">{errorMessage}</p>}
+        </div>
+        <button
+          type="button"
+          onClick={checkPostInstallAccess}
+          className="inline-flex items-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+        >
+          Check Again
+        </button>
+      </>
+    );
+  }
+
+  if (installState === 'error') {
+    return (
+      <>
+        <h1 className="text-2xl font-semibold text-foreground">Installation Failed</h1>
+        <p className="text-center max-w-md text-muted-foreground">{errorMessage}</p>
+        <div className="flex flex-col items-center gap-3">
+          {invoke && (
+            <button
+              type="button"
+              onClick={handleInstall}
+              className="inline-flex items-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+            >
+              Try Again
+            </button>
+          )}
+          <a
+            href={downloadUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-2 rounded-md border border-border px-6 py-3 text-sm font-medium text-foreground hover:bg-muted"
+          >
+            Download Docker Desktop for {platformLabel}
+          </a>
+        </div>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <h1 className="text-2xl font-semibold text-foreground">Docker Desktop Required</h1>
+      <div className="text-center max-w-md text-muted-foreground space-y-3">
+        <p>Companion Hub requires Docker Desktop to run.</p>
+        {invoke ? (
+          <>
+            <p className="text-sm">
+              Companion Hub can install Docker Desktop for your {platformLabel} machine and continue automatically once Docker is ready.
+            </p>
+            <button
+              type="button"
+              onClick={handleInstall}
+              className="inline-flex items-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+            >
+              Install Docker Desktop
+            </button>
+          </>
+        ) : (
+          <a
+            href={downloadUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+          >
+            Download Docker Desktop for {platformLabel}
+          </a>
+        )}
+        <ol className="text-left list-decimal list-inside space-y-1">
+          {manualSteps.map((step) => (
+            <li key={step}>{step}</li>
+          ))}
+        </ol>
+        {footer}
+      </div>
+    </>
+  );
+}
+
 function DockerInstallGuide() {
   const platform = detectPlatform();
 
-  if (platform === 'windows') {
-    return (
-      <>
-        <h1 className="text-2xl font-semibold text-foreground">Docker Desktop Required</h1>
-        <div className="text-center max-w-md text-muted-foreground space-y-3">
-          <p>Companion Hub requires Docker Desktop to run.</p>
-          <ol className="text-left list-decimal list-inside space-y-1">
-            <li>Download Docker Desktop for Windows</li>
-            <li>Run the installer and follow the prompts</li>
-            <li>Restart your computer if prompted</li>
-            <li>Start Docker Desktop</li>
-            <li>Come back here — the Hub will start automatically</li>
-          </ol>
-          <a
-            href="https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-          >
-            Download Docker Desktop
-          </a>
-          <p className="text-xs text-muted-foreground/70">
-            Docker Desktop requires Windows 10/11 with WSL2 enabled. If you see &quot;WSL2 is not installed&quot;, run{' '}
-            <code className="bg-muted px-1 rounded">wsl --install</code> in PowerShell as admin.
-          </p>
-        </div>
-      </>
-    );
+  if (platform === 'windows' || platform === 'macos') {
+    const guide = getDockerDesktopGuideContent(platform, isAppleSilicon());
+    return <DockerDesktopInstall {...guide} footer={guide.hint ? <p className="text-xs text-muted-foreground/70">{guide.hint}</p> : undefined} />;
   }
 
-  if (platform === 'macos') {
-    const dmgUrl = isAppleSilicon() ? 'https://desktop.docker.com/mac/main/arm64/Docker.dmg' : 'https://desktop.docker.com/mac/main/amd64/Docker.dmg';
-    return (
-      <>
-        <h1 className="text-2xl font-semibold text-foreground">Docker Desktop Required</h1>
-        <div className="text-center max-w-md text-muted-foreground space-y-3">
-          <p>Companion Hub requires Docker Desktop to run.</p>
-          <ol className="text-left list-decimal list-inside space-y-1">
-            <li>Download Docker Desktop for Mac</li>
-            <li>Open the .dmg and drag Docker to Applications</li>
-            <li>Launch Docker Desktop and grant permissions</li>
-            <li>Come back here — the Hub will start automatically</li>
-          </ol>
-          <a
-            href={dmgUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-          >
-            Download Docker Desktop
-          </a>
-        </div>
-      </>
-    );
-  }
-
-  // Linux — automatic install via Tauri IPC
   return <LinuxDockerInstall />;
 }
 

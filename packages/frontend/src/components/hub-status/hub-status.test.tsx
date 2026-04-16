@@ -1,6 +1,40 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { pollDockerAccess } from './hub-status';
+import { getDockerDesktopGuideContent, pollDockerAccess } from './hub-status';
+
+describe('getDockerDesktopGuideContent', () => {
+  it('returns the Windows Docker Desktop installer guide', () => {
+    expect(getDockerDesktopGuideContent('windows', false)).toEqual({
+      platformLabel: 'Windows',
+      downloadUrl: 'https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe',
+      manualSteps: [
+        'Download Docker Desktop for Windows',
+        'Run the installer and follow the prompts',
+        'Restart your computer if prompted',
+        'Start Docker Desktop',
+        'Come back here — the Hub will start automatically',
+      ],
+      hint: 'Docker Desktop requires Windows 10/11 with WSL2 enabled. If WSL is installed during setup, restart Windows before reopening Companion Hub.',
+    });
+  });
+
+  it('returns the Apple Silicon Docker Desktop dmg for macOS', () => {
+    expect(getDockerDesktopGuideContent('macos', true)).toEqual({
+      platformLabel: 'Mac',
+      downloadUrl: 'https://desktop.docker.com/mac/main/arm64/Docker.dmg',
+      manualSteps: [
+        'Download Docker Desktop for Mac',
+        'Open the .dmg and drag Docker to Applications',
+        'Launch Docker Desktop and grant permissions',
+        'Come back here — the Hub will start automatically',
+      ],
+    });
+  });
+
+  it('returns the Intel Docker Desktop dmg for macOS', () => {
+    expect(getDockerDesktopGuideContent('macos', false).downloadUrl).toBe('https://desktop.docker.com/mac/main/amd64/Docker.dmg');
+  });
+});
 
 describe('pollDockerAccess', () => {
   it('keeps polling until Docker becomes available', async () => {
