@@ -212,6 +212,19 @@ export class DockerService {
     }
   };
 
+  private async isDockerComposePluginAvailable() {
+    const probe = spawn('docker', ['compose', 'version'], { stdio: 'ignore' });
+
+    return await new Promise<boolean>((resolve) => {
+      probe.on('close', (code) => {
+        resolve(code === 0);
+      });
+      probe.on('error', () => {
+        resolve(false);
+      });
+    });
+  }
+
   public getLogsDownloadStream = async (appUrn?: AppUrn) => {
     try {
       const { args } = appUrn ? await this.getBaseComposeArgsApp(appUrn) : await this.getBaseComposeArgsHub();
@@ -222,13 +235,14 @@ export class DockerService {
       }
       args.push(...logArgs);
 
-      let logs: ReturnType<typeof spawn>;
-      try {
-        logs = spawn('docker', ['compose', ...args], { stdio: 'pipe' });
-      } catch (_error) {
+      const canUseDockerComposePlugin = await this.isDockerComposePluginAvailable();
+      if (!canUseDockerComposePlugin) {
         this.logger.warn('docker compose plugin not available for log download, falling back to docker-compose binary');
-        logs = spawn('docker-compose', args, { stdio: 'pipe' });
       }
+
+      const logs = canUseDockerComposePlugin
+        ? spawn('docker', ['compose', ...args], { stdio: 'pipe' })
+        : spawn('docker-compose', args, { stdio: 'pipe' });
 
       logs.on('error', (error: NodeJS.ErrnoException) => {
         if (error.code === 'ENOEXEC') {

@@ -51,11 +51,12 @@ describe('SystemController', () => {
   });
 
   describe('downloadHubLogs', () => {
-    const createResponse = () =>
+    const createResponse = (overrides: Partial<{ writableEnded: boolean }> = {}) =>
       ({
         set: vi.fn(),
         on: vi.fn().mockReturnThis(),
         writableEnded: true,
+        ...overrides,
       }) as any;
 
     it('should stream hub logs as a downloadable text file', async () => {
@@ -78,21 +79,27 @@ describe('SystemController', () => {
       expect(stderr.on).toHaveBeenCalledWith('data', expect.any(Function));
       expect(res.on).toHaveBeenCalledWith('close', expect.any(Function));
       expect(pipeline).toHaveBeenCalledWith(stdout, res);
-
-      const closeHandler = res.on.mock.calls.find(([event]: [string, unknown]) => event === 'close')?.[1] as (() => void) | undefined;
-      expect(closeHandler).toBeTypeOf('function');
-      closeHandler?.();
       expect(kill).toHaveBeenCalledTimes(1);
     });
 
-    it('ignores expected client-abort pipeline errors while cleaning up', async () => {
+    it('cleans up through the response close handler on client aborts without double-killing', async () => {
       const stdout = {} as any;
       const stderr = { on: vi.fn() } as any;
       const kill = vi.fn();
+      const clientAbortError = Object.assign(new Error('Premature close'), { code: 'ERR_STREAM_PREMATURE_CLOSE' });
       dockerService.getLogsDownloadStream.mockResolvedValue({ stdout, stderr, kill } as any);
-      vi.mocked(pipeline).mockRejectedValue(Object.assign(new Error('Premature close'), { code: 'ERR_STREAM_PREMATURE_CLOSE' }));
+      vi.mocked(pipeline).mockImplementation(async (...args: unknown[]) => {
+        const res = args[1] as ReturnType<typeof createResponse>;
+        const closeHandler = res.on.mock.calls.find(([event]: [string, unknown]) => event === 'close')?.[1] as (() => void) | undefined;
 
-      await expect(controller.downloadHubLogs(createResponse())).resolves.toBeUndefined();
+        expect(closeHandler).toBeTypeOf('function');
+        closeHandler?.();
+        expect(kill).toHaveBeenCalledTimes(1);
+
+        throw clientAbortError;
+      });
+
+      await expect(controller.downloadHubLogs(createResponse({ writableEnded: false }))).resolves.toBeUndefined();
       expect(kill).toHaveBeenCalledTimes(1);
     });
 
