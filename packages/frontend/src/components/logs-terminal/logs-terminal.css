@@ -1,7 +1,13 @@
 .log-terminal {
   height: 300px;
+  width: 100%;
+  overflow-x: auto;
   /* biome-ignore lint/complexity/noImportantStyles: Override */
   overflow-y: scroll !important;
+}
+
+.log-terminal--full-height {
+  height: auto;
 }
 
 .wrap-lines {

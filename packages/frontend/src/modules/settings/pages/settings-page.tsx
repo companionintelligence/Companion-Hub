@@ -1,6 +1,7 @@
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/DropdownMenu';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useAppContext } from '@/context/app-context';
+import { cn } from '@/lib/utils';
 import { Suspense, lazy } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router';
@@ -24,6 +25,7 @@ export default () => {
   const { userSettings, user } = useAppContext();
 
   const currentTab = tab || 'settings';
+  const isLogsTab = currentTab === 'logs';
 
   const handleTabChange = (newTab: string) => {
     setSearchParams({ tab: newTab });
@@ -62,8 +64,8 @@ export default () => {
               </DropdownMenu>
             </TabsList>
           </div>
-          <div className="p-3 flex-1 overflow-y-auto min-h-0" data-testid="settings-scroll-container">
-            <div className="max-w-3xl mx-auto w-full">
+          <div className={cn('p-3 flex-1 min-h-0', isLogsTab ? 'overflow-hidden' : 'overflow-y-auto')} data-testid="settings-scroll-container">
+            <div className={cn('mx-auto w-full', isLogsTab ? 'h-full max-w-none' : 'max-w-3xl')}>
               <TabsContent value="settings">
                 <Suspense fallback={<div>Loading...</div>}>
                   <UserSettingsContainer initialValues={userSettings} />
@@ -92,7 +94,7 @@ export default () => {
                   </div>
                 </Suspense>
               </TabsContent>
-              <TabsContent value="logs">
+              <TabsContent value="logs" className="mt-0 h-full">
                 <Suspense fallback={<div>Loading...</div>}>
                   <LogsContainer />
                 </Suspense>

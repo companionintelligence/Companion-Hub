@@ -50,6 +50,7 @@ describe('DockerService', () => {
   });
 
   afterEach(() => {
+    delete process.env.CI_HUB_COMPOSE_PROJECT_NAME;
     vi.clearAllMocks();
   });
 
@@ -110,6 +111,99 @@ describe('DockerService', () => {
       expect(result.args[userComposeIndex - 1]).toBe('--file');
 
       expect(result.isCustomConfig).toBe(true);
+    });
+  });
+
+  describe('getLogsStream', () => {
+    it('should tail and follow only the hub service logs', async () => {
+      const mockSpawnProcess = new EventEmitter() as any;
+      mockSpawnProcess.stdout = new EventEmitter();
+      mockSpawnProcess.stderr = new EventEmitter();
+      mockSpawnProcess.kill = vi.fn();
+      mockSpawnProcess.on = vi.fn().mockImplementation((_event, _handler) => mockSpawnProcess);
+
+      (child_process.spawn as any).mockReturnValue(mockSpawnProcess);
+
+      const result = await service.getLogsStream(300);
+
+      expect(child_process.spawn).toHaveBeenCalledWith(
+        'docker',
+        [
+          'compose',
+          '--env-file',
+          '/data/.env',
+          '--project-name',
+          'ci-hub',
+          '-f',
+          '/data/docker-compose.yml',
+          'logs',
+          '--follow',
+          '-n',
+          '300',
+          'ci-os-hub',
+        ],
+        { stdio: 'pipe' },
+      );
+      expect(result.on).toBeTypeOf('function');
+
+      result.kill();
+      expect(mockSpawnProcess.kill).toHaveBeenCalledWith('SIGINT');
+    });
+  });
+
+  describe('getLogsDownloadStream', () => {
+    it('should spawn docker compose for full hub log downloads', async () => {
+      const mockSpawnProcess = new EventEmitter() as any;
+      mockSpawnProcess.stdout = new EventEmitter();
+      mockSpawnProcess.stderr = new EventEmitter();
+      mockSpawnProcess.kill = vi.fn();
+      mockSpawnProcess.on = vi.fn().mockImplementation((_event, _handler) => mockSpawnProcess);
+
+      (child_process.spawn as any).mockReturnValue(mockSpawnProcess);
+
+      const result = await service.getLogsDownloadStream();
+
+      expect(child_process.spawn).toHaveBeenCalledWith(
+        'docker',
+        ['compose', '--env-file', '/data/.env', '--project-name', 'ci-hub', '-f', '/data/docker-compose.yml', 'logs', '--no-color', 'ci-os-hub'],
+        { stdio: 'pipe' },
+      );
+      expect(result.stdout).toBe(mockSpawnProcess.stdout);
+      expect(result.stderr).toBe(mockSpawnProcess.stderr);
+
+      result.kill();
+      expect(mockSpawnProcess.kill).toHaveBeenCalledWith('SIGINT');
+    });
+
+    it('should honor an overridden hub compose project name', async () => {
+      process.env.CI_HUB_COMPOSE_PROJECT_NAME = 'ci-hub-log-download';
+
+      const mockSpawnProcess = new EventEmitter() as any;
+      mockSpawnProcess.stdout = new EventEmitter();
+      mockSpawnProcess.stderr = new EventEmitter();
+      mockSpawnProcess.kill = vi.fn();
+      mockSpawnProcess.on = vi.fn().mockImplementation((_event, _handler) => mockSpawnProcess);
+
+      (child_process.spawn as any).mockReturnValue(mockSpawnProcess);
+
+      await service.getLogsDownloadStream();
+
+      expect(child_process.spawn).toHaveBeenCalledWith(
+        'docker',
+        [
+          'compose',
+          '--env-file',
+          '/data/.env',
+          '--project-name',
+          'ci-hub-log-download',
+          '-f',
+          '/data/docker-compose.yml',
+          'logs',
+          '--no-color',
+          'ci-os-hub',
+        ],
+        { stdio: 'pipe' },
+      );
     });
   });
 
