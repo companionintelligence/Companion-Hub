@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
+import { DEFAULT_HUB_CONTAINER_NAME } from '@/common/constants';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -57,8 +58,9 @@ export class DockerService {
   public getBaseComposeArgsHub = async () => {
     const { dataDir } = this.config.get('directories');
     const args: string[] = ['--env-file', path.join(dataDir, '.env')];
+    const composeProjectName = process.env.CI_HUB_COMPOSE_PROJECT_NAME || 'ci-hub';
 
-    args.push('--project-name', 'ci-hub');
+    args.push('--project-name', composeProjectName);
 
     const composeFile = path.join(dataDir, 'docker-compose.yml');
     args.push('-f', composeFile);
@@ -169,18 +171,20 @@ export class DockerService {
     try {
       const { args } = appUrn ? await this.getBaseComposeArgsApp(appUrn) : await this.getBaseComposeArgsHub();
 
-      args.push('logs', '--follow', '-n', maxLines.toString());
-
-      // Prefer docker compose (v2 plugin) over docker-compose (v1 binary)
-      let logs: ReturnType<typeof spawn>;
-      try {
-        // Try docker compose first
-        logs = spawn('docker', ['compose', ...args], { stdio: 'pipe' });
-      } catch (_error) {
-        // Fallback to docker-compose binary
-        this.logger.warn('docker compose plugin not available for logs, falling back to docker-compose binary');
-        logs = spawn('docker-compose', args, { stdio: 'pipe' });
+      const logArgs = ['logs', '--follow', '-n', maxLines.toString()];
+      if (!appUrn) {
+        logArgs.push(DEFAULT_HUB_CONTAINER_NAME);
       }
+      args.push(...logArgs);
+
+      const canUseDockerComposePlugin = await this.isDockerComposePluginAvailable();
+      if (!canUseDockerComposePlugin) {
+        this.logger.warn('docker compose plugin not available for logs, falling back to docker-compose binary');
+      }
+
+      const logs = canUseDockerComposePlugin
+        ? spawn('docker', ['compose', ...args], { stdio: 'pipe' })
+        : spawn('docker-compose', args, { stdio: 'pipe' });
 
       logs.on('error', (error: NodeJS.ErrnoException) => {
         if (error.code === 'ENOEXEC') {
@@ -203,6 +207,63 @@ export class DockerService {
     } catch (error) {
       this.logger.error('Error getting log stream', error);
       throw new InternalServerErrorException('Error getting log stream');
+    }
+  };
+
+  private async isDockerComposePluginAvailable() {
+    const probe = spawn('docker', ['compose', 'version'], { stdio: 'ignore' });
+
+    return await new Promise<boolean>((resolve) => {
+      probe.on('close', (code) => {
+        resolve(code === 0);
+      });
+      probe.on('error', () => {
+        resolve(false);
+      });
+    });
+  }
+
+  public getLogsDownloadStream = async (appUrn?: AppUrn) => {
+    try {
+      const { args } = appUrn ? await this.getBaseComposeArgsApp(appUrn) : await this.getBaseComposeArgsHub();
+
+      const logArgs = ['logs', '--no-color'];
+      if (!appUrn) {
+        logArgs.push(DEFAULT_HUB_CONTAINER_NAME);
+      }
+      args.push(...logArgs);
+
+      const canUseDockerComposePlugin = await this.isDockerComposePluginAvailable();
+      if (!canUseDockerComposePlugin) {
+        this.logger.warn('docker compose plugin not available for log download, falling back to docker-compose binary');
+      }
+
+      const logs = canUseDockerComposePlugin
+        ? spawn('docker', ['compose', ...args], { stdio: 'pipe' })
+        : spawn('docker-compose', args, { stdio: 'pipe' });
+
+      logs.on('error', (error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOEXEC') {
+          this.logger.error('docker-compose binary cannot be executed. Please ensure docker compose plugin is available.');
+        }
+      });
+
+      logs.on('error', () => {
+        logs.kill('SIGINT');
+      });
+
+      if (!logs.stdout || !logs.stderr) {
+        throw new InternalServerErrorException('Docker output stream not available');
+      }
+
+      return {
+        stdout: logs.stdout,
+        stderr: logs.stderr,
+        kill: () => logs.kill('SIGINT'),
+      };
+    } catch (error) {
+      this.logger.error('Error getting log download stream', error);
+      throw new InternalServerErrorException('Error getting log download stream');
     }
   };
 
