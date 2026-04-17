@@ -134,18 +134,17 @@ describe('DockerService', () => {
   });
 
   describe('getLogsStream', () => {
-    it('should tail and follow only the hub service logs', async () => {
-      const mockSpawnProcess = new EventEmitter() as any;
-      mockSpawnProcess.stdout = new EventEmitter();
-      mockSpawnProcess.stderr = new EventEmitter();
-      mockSpawnProcess.kill = vi.fn();
-      mockSpawnProcess.on = vi.fn().mockImplementation((_event, _handler) => mockSpawnProcess);
+    it('should tail and follow only the hub service logs with docker compose when the plugin probe succeeds', async () => {
+      const probeProcess = createComposeProbeProcess(0);
+      const mockSpawnProcess = createMockSpawnProcess();
 
-      (child_process.spawn as any).mockReturnValue(mockSpawnProcess);
+      (child_process.spawn as any).mockImplementationOnce(() => probeProcess).mockImplementationOnce(() => mockSpawnProcess);
 
       const result = await service.getLogsStream(300);
 
-      expect(child_process.spawn).toHaveBeenCalledWith(
+      expect(child_process.spawn).toHaveBeenNthCalledWith(1, 'docker', ['compose', 'version'], { stdio: 'ignore' });
+      expect(child_process.spawn).toHaveBeenNthCalledWith(
+        2,
         'docker',
         [
           'compose',
@@ -167,6 +166,26 @@ describe('DockerService', () => {
 
       result.kill();
       expect(mockSpawnProcess.kill).toHaveBeenCalledWith('SIGINT');
+    });
+
+    it('should fall back to docker-compose for log streaming when the plugin probe fails', async () => {
+      const probeProcess = createComposeProbeProcess(1);
+      const fallbackProcess = createMockSpawnProcess();
+
+      (child_process.spawn as any).mockImplementationOnce(() => probeProcess).mockImplementationOnce(() => fallbackProcess);
+
+      const result = await service.getLogsStream(300);
+
+      expect(child_process.spawn).toHaveBeenNthCalledWith(1, 'docker', ['compose', 'version'], { stdio: 'ignore' });
+      expect(child_process.spawn).toHaveBeenNthCalledWith(
+        2,
+        'docker-compose',
+        ['--env-file', '/data/.env', '--project-name', 'ci-hub', '-f', '/data/docker-compose.yml', 'logs', '--follow', '-n', '300', 'ci-os-hub'],
+        { stdio: 'pipe' },
+      );
+      expect(loggerService.warn).toHaveBeenCalledWith('docker compose plugin not available for logs, falling back to docker-compose binary');
+      expect(result.on).toBeTypeOf('function');
+      expect(result.kill).toBeTypeOf('function');
     });
   });
 

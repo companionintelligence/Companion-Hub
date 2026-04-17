@@ -177,16 +177,14 @@ export class DockerService {
       }
       args.push(...logArgs);
 
-      // Prefer docker compose (v2 plugin) over docker-compose (v1 binary)
-      let logs: ReturnType<typeof spawn>;
-      try {
-        // Try docker compose first
-        logs = spawn('docker', ['compose', ...args], { stdio: 'pipe' });
-      } catch (_error) {
-        // Fallback to docker-compose binary
+      const canUseDockerComposePlugin = await this.isDockerComposePluginAvailable();
+      if (!canUseDockerComposePlugin) {
         this.logger.warn('docker compose plugin not available for logs, falling back to docker-compose binary');
-        logs = spawn('docker-compose', args, { stdio: 'pipe' });
       }
+
+      const logs = canUseDockerComposePlugin
+        ? spawn('docker', ['compose', ...args], { stdio: 'pipe' })
+        : spawn('docker-compose', args, { stdio: 'pipe' });
 
       logs.on('error', (error: NodeJS.ErrnoException) => {
         if (error.code === 'ENOEXEC') {
