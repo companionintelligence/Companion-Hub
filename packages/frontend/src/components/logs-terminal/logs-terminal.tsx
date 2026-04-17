@@ -34,6 +34,10 @@ export const LogsTerminal = (props: Props) => {
   }, [lastLogId, follow]);
 
   const updateMaxLines = (lines: number) => {
+    if (!Number.isFinite(lines)) {
+      return;
+    }
+
     const linesToKeep = Math.max(1, lines);
     onMaxLinesChange(linesToKeep);
   };
@@ -50,8 +54,9 @@ export const LogsTerminal = (props: Props) => {
               id="max-lines"
               groupPrefix={t('APP_LOGS_TAB_MAX_LINES')}
               type="number"
+              min={1}
               value={maxLines}
-              onChange={(e) => updateMaxLines(Number.parseInt(e.target.value, 10))}
+              onChange={(e) => updateMaxLines(e.currentTarget.valueAsNumber)}
             />
           </div>
         </div>

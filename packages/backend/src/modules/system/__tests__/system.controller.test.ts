@@ -51,6 +51,13 @@ describe('SystemController', () => {
   });
 
   describe('downloadHubLogs', () => {
+    const createResponse = () =>
+      ({
+        set: vi.fn(),
+        on: vi.fn().mockReturnThis(),
+        writableEnded: true,
+      }) as any;
+
     it('should stream hub logs as a downloadable text file', async () => {
       const stdout = {} as any;
       const stderr = { on: vi.fn() } as any;
@@ -58,11 +65,7 @@ describe('SystemController', () => {
       dockerService.getLogsDownloadStream.mockResolvedValue({ stdout, stderr, kill } as any);
       vi.mocked(pipeline).mockResolvedValue(undefined);
 
-      const res = {
-        set: vi.fn(),
-        on: vi.fn().mockReturnThis(),
-        writableEnded: true,
-      } as any;
+      const res = createResponse();
 
       await controller.downloadHubLogs(res);
 
@@ -79,6 +82,29 @@ describe('SystemController', () => {
       const closeHandler = res.on.mock.calls.find(([event]: [string, unknown]) => event === 'close')?.[1] as (() => void) | undefined;
       expect(closeHandler).toBeTypeOf('function');
       closeHandler?.();
+      expect(kill).toHaveBeenCalledTimes(1);
+    });
+
+    it('ignores expected client-abort pipeline errors while cleaning up', async () => {
+      const stdout = {} as any;
+      const stderr = { on: vi.fn() } as any;
+      const kill = vi.fn();
+      dockerService.getLogsDownloadStream.mockResolvedValue({ stdout, stderr, kill } as any);
+      vi.mocked(pipeline).mockRejectedValue(Object.assign(new Error('Premature close'), { code: 'ERR_STREAM_PREMATURE_CLOSE' }));
+
+      await expect(controller.downloadHubLogs(createResponse())).resolves.toBeUndefined();
+      expect(kill).toHaveBeenCalledTimes(1);
+    });
+
+    it('rethrows unexpected pipeline errors while still cleaning up', async () => {
+      const stdout = {} as any;
+      const stderr = { on: vi.fn() } as any;
+      const kill = vi.fn();
+      const error = new Error('unexpected pipeline failure');
+      dockerService.getLogsDownloadStream.mockResolvedValue({ stdout, stderr, kill } as any);
+      vi.mocked(pipeline).mockRejectedValue(error);
+
+      await expect(controller.downloadHubLogs(createResponse())).rejects.toThrow('unexpected pipeline failure');
       expect(kill).toHaveBeenCalledTimes(1);
     });
   });

@@ -8,6 +8,14 @@ import { AuthGuard } from '../auth/auth.guard';
 import { LoadDto } from './dto/system.dto';
 import { SystemService } from './system.service';
 
+const isExpectedDownloadAbortError = (error: unknown) => {
+  if (!(error instanceof Error) || !('code' in error)) {
+    return false;
+  }
+
+  return error.code === 'ERR_STREAM_PREMATURE_CLOSE' || error.code === 'ECONNRESET' || error.code === 'EPIPE';
+};
+
 @Controller('system')
 export class SystemController {
   constructor(
@@ -60,6 +68,10 @@ export class SystemController {
 
     try {
       await pipeline(stdout, res);
+    } catch (error) {
+      if (!isExpectedDownloadAbortError(error)) {
+        throw error;
+      }
     } finally {
       cleanup();
     }
