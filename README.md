@@ -1,4 +1,4 @@
-# CI Hub
+# (Companion Hub)[https://ci.computer/hub]
 
 **Self-hosted app hub for self hosting.** Install and manage apps from the companion intelligence marketplace with one click. Runs on your machine—your data stays yours.
 
