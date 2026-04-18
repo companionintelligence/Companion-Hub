@@ -36,9 +36,16 @@ jobs:
     uses: "./.github/workflows/ci.yml"
     secrets: inherit
 
+  e2e-gate:
+    needs: determine-release-type
+    uses: "./.github/workflows/e2e.yml"
+    secrets: inherit
+    with:
+      version: ${{ needs.determine-release-type.outputs.tagname }}
+
   build-images:
     timeout-minutes: 15
-    needs: [determine-release-type, integration-tests, unit-tests]
+    needs: [determine-release-type, integration-tests, unit-tests, e2e-gate]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -176,15 +183,8 @@ jobs:
           prerelease: true
           files: latest.json
 
-  e2e-tests:
-    needs: [determine-release-type, publish-release]
-    uses: "./.github/workflows/e2e.yml"
-    secrets: inherit
-    with:
-      version: ${{ needs.determine-release-type.outputs.tagname }}
-
   promote:
-    needs: [determine-release-type, publish-release, e2e-tests]
+    needs: [determine-release-type, publish-release]
     if: needs.determine-release-type.outputs.release_type == 'release'
     runs-on: ubuntu-latest
     steps:

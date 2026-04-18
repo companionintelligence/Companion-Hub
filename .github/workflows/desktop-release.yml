@@ -31,8 +31,19 @@ concurrency:
   group: desktop-release
   cancel-in-progress: false
 jobs:
+  unit-tests:
+    name: Unit & Lint Checks
+    uses: ./.github/workflows/ci.yml
+    secrets: inherit
+
+  e2e-tests:
+    name: E2E Verification Gate
+    uses: ./.github/workflows/e2e.yml
+    secrets: inherit
+
   build-container:
     name: Build Hub Container
+    needs: [unit-tests, e2e-tests]
     uses: ./.github/workflows/build-container.yml
     with:
       environment: ${{ inputs.environment }}

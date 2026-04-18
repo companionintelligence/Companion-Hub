@@ -13,10 +13,10 @@ CI-Hub currently has two release surfaces:
 
 | Branch or trigger | Primary workflow | Result |
 | --- | --- | --- |
-| Pull request | `Hub CI`, `Integration Tests`, `PR Compliance` | Validates code before merge |
+| Pull request | `Hub CI`, `Integration Tests`, `E2E Tests`, `PR Compliance` | Validates code before merge |
 | Push to `dev` | `Build and Publish Hub Container` | Publishes `ghcr.io/...:dev`, updates dev environment |
 | Push to `staging` | `Tag Staging Release` | Computes and pushes the next semver tag |
-| Push tag `v*` | `Publish Hub Release` | Builds release images, creates GitHub release, runs e2e |
+| Push tag `v*` | `Publish Hub Release` | Runs required readiness gates, builds release images, creates GitHub release |
 | Scheduled/manual nightly | `Nightly Release` | Publishes nightly container artifacts |
 | Manual dispatch | `Desktop Release` | Builds desktop installers and publishes a desktop release |
 
@@ -26,6 +26,7 @@ CI-Hub currently has two release surfaces:
 | --- | --- | --- | --- | --- |
 | Hub CI | `.github/workflows/ci.yml` | PRs, pushes to `dev` | lint/type/test status | Keep the base branch healthy |
 | Integration Tests | `.github/workflows/integration-tests.yml` | PRs, pushes to `dev`, reusable calls | integration test status | Investigate backend/runtime regressions |
+| E2E Tests | `.github/workflows/e2e.yml` | PRs, manual dispatch, reusable calls | launch-path release-readiness status | Investigate E2E and launch-path regressions |
 | PR Compliance | `.github/workflows/pr-compliance.yml` | PR open/edit/sync | policy status | Keep PRs linked to issues |
 | Build and Publish Hub Container | `.github/workflows/build-container.yml` | pushes to `dev`/`staging`/`main`, manual, reusable | multi-arch GHCR images; optional portal registry copies; Cloudflare Containers deploy | Maintain environment secrets and approve protected production deploys |
 | Tag Staging Release | `.github/workflows/semver-tag.yml` | push to `staging`, manual | git tag `vX.Y.Z` | Promote vetted staging commits into a release tag |
@@ -44,9 +45,10 @@ PRs are expected to pass:
 
 - `Hub CI`
 - `Integration Tests`
+- `E2E Tests`
 - `PR Compliance`
 
-These workflows are the merge gate for normal code changes.
+These workflows are the merge gate for normal code changes. `E2E Tests` now runs directly on pull requests so launch-path regressions fail before release tagging.
 
 ### 2. Publish dev builds from `dev`
 
@@ -73,12 +75,12 @@ That workflow:
 Pushing a semver tag triggers `Publish Hub Release`, which:
 
 - classifies the tag as `alpha`, `beta`, or stable `release`
-- reruns unit and integration coverage
+- reruns unit, integration, and launch-critical E2E coverage
+- requires all three gates to pass before release images are built
 - builds and pushes release-tagged multi-arch images
 - writes `latest.json`
 - creates the GitHub release
-- runs e2e verification against the tagged build
-- removes the prerelease flag for stable releases after e2e passes
+- removes the prerelease flag for stable releases after all required gates succeed
 
 ## Desktop release sequence
 
@@ -86,12 +88,17 @@ Desktop releases are intentionally separate from Hub container releases.
 
 `Desktop Release` is manually dispatched and is responsible for:
 
+- running `Hub CI` and `E2E Tests` before the release container build starts
 - building the Tauri desktop app for the selected targets
 - applying signing/notarization where credentials are available
 - publishing installers to GitHub Releases
 - optionally uploading public production artifacts to R2
 
 For signing prerequisites and secrets, see [DESKTOP-RELEASE-SIGNING.md](./DESKTOP-RELEASE-SIGNING.md).
+
+## Release readiness matrix
+
+The required launch-path gate mapping, deferred suites, and local verification checklist are documented in [RELEASE-READINESS-MATRIX.md](./RELEASE-READINESS-MATRIX.md).
 
 ## Artifact map
 

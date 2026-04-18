@@ -10,6 +10,7 @@ required_files=(
   CI-CD-PIPELINE.md
   docs/DEVELOPER-SETUP.md
   docs/RELEASE-ARCHITECTURE.md
+  docs/RELEASE-READINESS-MATRIX.md
   docs/COMPATIBILITY-NOTES.md
   docs/DESKTOP-RELEASE-SIGNING.md
   packages/common/README.md
@@ -31,11 +32,17 @@ grep -Fq 'docs/RELEASE-ARCHITECTURE.md' CI-CD-PIPELINE.md
 grep -Fq '@ci-hub/common' packages/common/README.md
 grep -Fq '../../docs/RELEASE-ARCHITECTURE.md' packages/desktop/README.md
 grep -Fq '../../docs/DESKTOP-RELEASE-SIGNING.md' packages/desktop/README.md
+grep -Fq 'RELEASE-READINESS-MATRIX.md' docs/RELEASE-ARCHITECTURE.md
 
 grep -Fq 'name: Build and Publish Hub Container' .github/workflows/build-container.yml
 grep -Fq 'name: Publish Hub Release' .github/workflows/release.yml
 grep -Fq 'name: Tag Staging Release' .github/workflows/semver-tag.yml
 grep -Fq 'name: Integration Tests' .github/workflows/integration-tests.yml
+grep -Fq 'pull_request:' .github/workflows/e2e.yml
+grep -Fq 'workflow_call:' .github/workflows/e2e.yml
+grep -Fq 'e2e-gate' .github/workflows/release.yml
+grep -Fq 'e2e-gate' .github/workflows/nightly-release.yml
+grep -Fq 'e2e-tests' .github/workflows/desktop-release.yml
 
 if rg -n 'Companion Home|CI-OS-Hub\.git' README.md docs/DEVELOPER-SETUP.md docs/RELEASE-ARCHITECTURE.md CI-CD-PIPELINE.md >/dev/null; then
   echo 'Found stale end-user or operator naming in the updated docs surface.'
