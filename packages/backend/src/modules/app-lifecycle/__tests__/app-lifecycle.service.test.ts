@@ -429,4 +429,325 @@ describe('AppLifecycleService', () => {
       );
     });
   });
+
+  // ────────────────────────────────────────────────────────────────────────
+  // Issue #390 — DB-before-SSE ordering tests
+  // ────────────────────────────────────────────────────────────────────────
+  describe('lifecycle state ordering (issue #390)', () => {
+    const appUrn = 'myapp:ci-marketplace' as any;
+    const fakeApp = {
+      id: 42,
+      appName: 'myapp',
+      appStoreSlug: 'ci-marketplace',
+      status: 'running' as const,
+      config: {},
+      exposedLocal: false,
+    };
+    let callOrder: string[];
+
+    /**
+     * Helper: flush the fire-and-forget `.then()` chain that lifecycle methods use.
+     * Because publish is mocked to resolve immediately, a single microtask flush suffices.
+     */
+    const flushMicrotasks = () => new Promise<void>((r) => setTimeout(r, 0));
+
+    beforeEach(() => {
+      callOrder = [];
+
+      appsRepository.getAppByUrn.mockResolvedValue(fakeApp as any);
+      appsRepository.updateAppById.mockImplementation(async () => {
+        callOrder.push('db_update');
+        return fakeApp as any;
+      });
+      appsRepository.deleteAppById.mockImplementation(async () => {
+        callOrder.push('db_delete');
+      });
+      appsRepository.createApp.mockImplementation(async (data: any) => {
+        callOrder.push('db_create');
+        return { id: 42, ...data } as any;
+      });
+
+      sseService.emit.mockImplementation((_channel: any, payload: any) => {
+        callOrder.push(`sse:${payload.event}`);
+      });
+
+      // Default: commands succeed
+      appEventsQueue.publish.mockResolvedValue({ success: true, message: 'OK' } as any);
+
+      // Default config for install
+      configService.getConfig.mockReturnValue({
+        isProduction: false,
+        architecture: 'amd64',
+        userSettings: { localDomain: 'lan' },
+      } as any);
+
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue(null as any);
+    });
+
+    // ── startApp ──────────────────────────────────────────────────────────
+    it('startApp success: DB committed before SSE', async () => {
+      await service.startApp({ appUrn });
+      await flushMicrotasks();
+
+      const dbIdx = callOrder.indexOf('db_update');
+      const sseIdx = callOrder.indexOf('sse:start_success');
+      expect(dbIdx).toBeGreaterThanOrEqual(0);
+      expect(sseIdx).toBeGreaterThan(dbIdx);
+    });
+
+    it('startApp error: DB committed before SSE', async () => {
+      appEventsQueue.publish.mockResolvedValue({ success: false, message: 'fail' } as any);
+
+      await service.startApp({ appUrn });
+      await flushMicrotasks();
+
+      // The first db_update is the transitional 'starting', second is the error rollback
+      const updates = callOrder.reduce<number[]>((acc, v, i) => {
+        if (v === 'db_update') acc.push(i);
+        return acc;
+      }, []);
+      const sseIdx = callOrder.indexOf('sse:start_error');
+      expect(updates.length).toBeGreaterThanOrEqual(2);
+      expect(sseIdx).toBeGreaterThan(updates[1]!);
+    });
+
+    it('startApp: transitional status_change emitted after DB commit', async () => {
+      await service.startApp({ appUrn });
+
+      const dbIdx = callOrder.indexOf('db_update');
+      const sseIdx = callOrder.indexOf('sse:status_change');
+      expect(dbIdx).toBeGreaterThanOrEqual(0);
+      expect(sseIdx).toBeGreaterThan(dbIdx);
+    });
+
+    // ── stopApp ──────────────────────────────────────────────────────────
+    it('stopApp success: DB committed before SSE', async () => {
+      await service.stopApp({ appUrn });
+      await flushMicrotasks();
+
+      // Find the stop_success SSE and the DB update that precedes it
+      const updates = callOrder.reduce<number[]>((acc, v, i) => {
+        if (v === 'db_update') acc.push(i);
+        return acc;
+      }, []);
+      const sseIdx = callOrder.indexOf('sse:stop_success');
+      expect(sseIdx).toBeGreaterThan(updates[1]!);
+    });
+
+    it('stopApp error: DB committed before SSE', async () => {
+      appEventsQueue.publish.mockResolvedValue({ success: false, message: 'fail' } as any);
+
+      await service.stopApp({ appUrn });
+      await flushMicrotasks();
+
+      const updates = callOrder.reduce<number[]>((acc, v, i) => {
+        if (v === 'db_update') acc.push(i);
+        return acc;
+      }, []);
+      const sseIdx = callOrder.indexOf('sse:stop_error');
+      expect(sseIdx).toBeGreaterThan(updates[1]!);
+    });
+
+    it('stopApp: transitional status_change emitted after DB commit', async () => {
+      await service.stopApp({ appUrn });
+
+      const dbIdx = callOrder.indexOf('db_update');
+      const sseIdx = callOrder.indexOf('sse:status_change');
+      expect(sseIdx).toBeGreaterThan(dbIdx);
+    });
+
+    // ── restartApp ───────────────────────────────────────────────────────
+    it('restartApp success: DB committed before SSE', async () => {
+      await service.restartApp({ appUrn });
+      await flushMicrotasks();
+
+      const updates = callOrder.reduce<number[]>((acc, v, i) => {
+        if (v === 'db_update') acc.push(i);
+        return acc;
+      }, []);
+      const sseIdx = callOrder.indexOf('sse:restart_success');
+      expect(sseIdx).toBeGreaterThan(updates[1]!);
+    });
+
+    it('restartApp error: DB committed before SSE', async () => {
+      appEventsQueue.publish.mockResolvedValue({ success: false, message: 'fail' } as any);
+
+      await service.restartApp({ appUrn });
+      await flushMicrotasks();
+
+      const updates = callOrder.reduce<number[]>((acc, v, i) => {
+        if (v === 'db_update') acc.push(i);
+        return acc;
+      }, []);
+      const sseIdx = callOrder.indexOf('sse:restart_error');
+      expect(sseIdx).toBeGreaterThan(updates[1]!);
+    });
+
+    it('restartApp: transitional status_change emitted after DB commit', async () => {
+      await service.restartApp({ appUrn });
+
+      const dbIdx = callOrder.indexOf('db_update');
+      const sseIdx = callOrder.indexOf('sse:status_change');
+      expect(sseIdx).toBeGreaterThan(dbIdx);
+    });
+
+    // ── uninstallApp ─────────────────────────────────────────────────────
+    it('uninstallApp success: DB delete committed before SSE', async () => {
+      await service.uninstallApp({ appUrn, removeBackups: false });
+      await flushMicrotasks();
+
+      const delIdx = callOrder.indexOf('db_delete');
+      const sseIdx = callOrder.indexOf('sse:uninstall_success');
+      expect(delIdx).toBeGreaterThanOrEqual(0);
+      expect(sseIdx).toBeGreaterThan(delIdx);
+    });
+
+    it('uninstallApp error: DB committed before SSE', async () => {
+      appEventsQueue.publish.mockResolvedValue({ success: false, message: 'fail' } as any);
+
+      await service.uninstallApp({ appUrn, removeBackups: false });
+      await flushMicrotasks();
+
+      const updates = callOrder.reduce<number[]>((acc, v, i) => {
+        if (v === 'db_update') acc.push(i);
+        return acc;
+      }, []);
+      const sseIdx = callOrder.indexOf('sse:uninstall_error');
+      // The second update (after the transitional 'uninstalling') is the error rollback
+      expect(sseIdx).toBeGreaterThan(updates[1]!);
+    });
+
+    // ── resetApp ─────────────────────────────────────────────────────────
+    it('resetApp success: DB committed before SSE', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ ...fakeApp, status: 'stopped' } as any);
+
+      await service.resetApp({ appUrn });
+      await flushMicrotasks();
+
+      // For non-running apps: DB update (to prior status) then SSE
+      const updates = callOrder.reduce<number[]>((acc, v, i) => {
+        if (v === 'db_update') acc.push(i);
+        return acc;
+      }, []);
+      const sseIdx = callOrder.indexOf('sse:reset_success');
+      expect(sseIdx).toBeGreaterThan(updates[updates.length - 1]!);
+    });
+
+    it('resetApp error: DB committed before SSE', async () => {
+      appEventsQueue.publish.mockResolvedValue({ success: false, message: 'fail' } as any);
+
+      await service.resetApp({ appUrn });
+      await flushMicrotasks();
+
+      const updates = callOrder.reduce<number[]>((acc, v, i) => {
+        if (v === 'db_update') acc.push(i);
+        return acc;
+      }, []);
+      const sseIdx = callOrder.indexOf('sse:reset_error');
+      expect(sseIdx).toBeGreaterThan(updates[1]!);
+    });
+
+    it('resetApp: transitional status_change emitted after DB commit', async () => {
+      await service.resetApp({ appUrn });
+
+      const dbIdx = callOrder.indexOf('db_update');
+      const sseIdx = callOrder.indexOf('sse:status_change');
+      expect(sseIdx).toBeGreaterThan(dbIdx);
+    });
+
+    // ── installApp ───────────────────────────────────────────────────────
+    it('installApp success: DB committed before SSE', async () => {
+      const baseAppInfo = { id: 'myapp', port: 8080, tipi_version: 1, exposable: true, supported_architectures: ['amd64'] };
+      marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(baseAppInfo as any);
+      appsRepository.getAppByUrn.mockResolvedValue(null as any);
+      appsRepository.getAppsByDomain.mockResolvedValue([]);
+      appsRepository.getAppsByLocalSubdomain.mockResolvedValue([]);
+      appsRepository.getAppsByPort.mockResolvedValue([]);
+      appsRepository.getApps.mockResolvedValue([]);
+
+      await service.installApp({ appUrn, form: {} });
+      await flushMicrotasks();
+
+      const createIdx = callOrder.indexOf('db_create');
+      const statusChangeIdx = callOrder.indexOf('sse:status_change');
+      const updateIdx = callOrder.indexOf('db_update');
+      const successIdx = callOrder.indexOf('sse:install_success');
+
+      // status_change emitted after DB create
+      expect(statusChangeIdx).toBeGreaterThan(createIdx);
+      // DB update to 'running' before install_success SSE
+      expect(successIdx).toBeGreaterThan(updateIdx);
+    });
+
+    it('installApp error: DB delete committed before SSE', async () => {
+      const baseAppInfo = { id: 'myapp', port: 8080, tipi_version: 1, exposable: true, supported_architectures: ['amd64'] };
+      marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(baseAppInfo as any);
+      appsRepository.getAppByUrn.mockResolvedValue(null as any);
+      appsRepository.getAppsByDomain.mockResolvedValue([]);
+      appsRepository.getAppsByLocalSubdomain.mockResolvedValue([]);
+      appsRepository.getAppsByPort.mockResolvedValue([]);
+      appEventsQueue.publish.mockResolvedValue({ success: false, message: 'fail' } as any);
+
+      await service.installApp({ appUrn, form: {} });
+      await flushMicrotasks();
+
+      const delIdx = callOrder.indexOf('db_delete');
+      const sseIdx = callOrder.indexOf('sse:install_error');
+      expect(delIdx).toBeGreaterThanOrEqual(0);
+      expect(sseIdx).toBeGreaterThan(delIdx);
+    });
+
+    it('installApp: status_change emitted after DB create (not before)', async () => {
+      const baseAppInfo = { id: 'myapp', port: 8080, tipi_version: 1, exposable: true, supported_architectures: ['amd64'] };
+      marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(baseAppInfo as any);
+      appsRepository.getAppByUrn.mockResolvedValue(null as any);
+      appsRepository.getAppsByDomain.mockResolvedValue([]);
+      appsRepository.getAppsByLocalSubdomain.mockResolvedValue([]);
+      appsRepository.getAppsByPort.mockResolvedValue([]);
+
+      await service.installApp({ appUrn, form: {} });
+
+      const createIdx = callOrder.indexOf('db_create');
+      const sseIdx = callOrder.indexOf('sse:status_change');
+      expect(createIdx).toBeGreaterThanOrEqual(0);
+      expect(sseIdx).toBeGreaterThan(createIdx);
+    });
+
+    // ── updateApp ────────────────────────────────────────────────────────
+    it('updateApp error: DB committed before SSE', async () => {
+      appEventsQueue.publish.mockResolvedValue({ success: false, message: 'fail' } as any);
+
+      await service.updateApp({ appUrn, performBackup: false });
+      await flushMicrotasks();
+
+      const updates = callOrder.reduce<number[]>((acc, v, i) => {
+        if (v === 'db_update') acc.push(i);
+        return acc;
+      }, []);
+      const sseIdx = callOrder.indexOf('sse:update_error');
+      expect(sseIdx).toBeGreaterThan(updates[1]!);
+    });
+
+    // ── exposure sync uses committed state ───────────────────────────────
+    it('installApp success: syncExposure reads committed running state (no sleep)', async () => {
+      const baseAppInfo = { id: 'myapp', port: 8080, tipi_version: 1, exposable: true, supported_architectures: ['amd64'] };
+      marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(baseAppInfo as any);
+      appsRepository.getAppByUrn.mockResolvedValue(null as any);
+      appsRepository.getAppsByDomain.mockResolvedValue([]);
+      appsRepository.getAppsByLocalSubdomain.mockResolvedValue([]);
+      appsRepository.getAppsByPort.mockResolvedValue([]);
+      appsRepository.getApps.mockResolvedValue([]);
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue(null as any);
+
+      await service.installApp({ appUrn, form: { exposedLocal: true } });
+      await flushMicrotasks();
+
+      // syncExposure was called (via getApps inside triggerCloudflareSync)
+      // and DB was updated to 'running' BEFORE sync was triggered
+      const updateIdx = callOrder.indexOf('db_update');
+      const successIdx = callOrder.indexOf('sse:install_success');
+      expect(updateIdx).toBeGreaterThanOrEqual(0);
+      expect(successIdx).toBeGreaterThan(updateIdx);
+    });
+  });
 });
