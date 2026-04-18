@@ -106,6 +106,37 @@ describe('RegistrationService', () => {
       expect(status.degradedReasons).toEqual(['tunnel_unreachable']);
       expect(status.registered).toBe(true);
     });
+
+    it('refreshes from persisted state before returning live status', async () => {
+      deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(true);
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({
+        id: 'org-1',
+        provisioningPhase: 'locally_ready',
+        degradedReasons: '[]',
+      } as any);
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
+
+      const status = await service.getLiveRegistrationStatus();
+
+      expect(status.phase).toBe('locally_ready');
+      expect(status.registered).toBe(true);
+    });
+
+    it('resets stale operational cache to unregistered when DB row and tunnel token are both missing', async () => {
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as any);
+      deviceRegistrationRepository.updateProvisioningState.mockResolvedValue({} as any);
+      await service.setPhase('paired');
+      await service.setPhase('provisioning');
+      await service.setPhase('locally_ready');
+
+      deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(false);
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(false);
+
+      const status = await service.getLiveRegistrationStatus();
+
+      expect(status.phase).toBe('unregistered');
+      expect(status.registered).toBe(false);
+    });
   });
 
   describe('setPhase', () => {

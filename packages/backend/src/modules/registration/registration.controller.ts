@@ -39,8 +39,7 @@ export class RegistrationController {
   @ApiOperation({ summary: 'Get device registration and provisioning status' })
   @ApiResponse({ status: 200, description: 'Returns the explicit provisioning status' })
   async getStatus() {
-    const status = this.registrationService.getRegistrationStatus();
-    return status;
+    return this.registrationService.getLiveRegistrationStatus();
   }
 
   @Get('device-id')

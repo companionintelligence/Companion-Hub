@@ -25,8 +25,8 @@ export class RegistrationGuard implements CanActivate {
       return true;
     }
 
-    // Check phase-based operational status
-    const status = this.registrationService.getRegistrationStatus();
+    // Refresh from DB/disk before making access decisions so we do not gate on stale cached state.
+    const status = await this.registrationService.getLiveRegistrationStatus();
 
     if (!isOperational(status.phase)) {
       this.logger.warn(`Access denied to ${request.url} - device not operational (phase: ${status.phase})`);
