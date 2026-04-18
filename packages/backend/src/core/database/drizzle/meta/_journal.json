@@ -288,6 +288,13 @@
       "when": 1772200000000,
       "tag": "0040_add_hub_subdomain",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1776595200000,
+      "tag": "0041_add_provisioning_phase",
+      "breakpoints": true
     }
   ]
 }

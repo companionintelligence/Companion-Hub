@@ -579,6 +579,43 @@ describe('RegistrationService', () => {
     });
   });
 
+  describe('syncPhaseFromDb — bootstrap degradation', () => {
+    it('transitions a persisted operational phase to degraded when tunnel token is missing', async () => {
+      // Simulate a DB row whose provisioningPhase is 'locally_ready' but
+      // the tunnel token file is absent on disk (container restart / volume loss).
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({
+        id: 'org-1',
+        provisioningPhase: 'locally_ready',
+        degradedReasons: '[]',
+      } as any);
+      deviceRegistrationRepository.updateProvisioningState.mockResolvedValue({} as any);
+
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(false);
+
+      await (service as any).syncPhaseFromDb();
+
+      const status = service.getRegistrationStatus();
+      expect(status.phase).toBe('degraded');
+      expect(status.degradedReasons).toContain('tunnel_token_missing');
+    });
+
+    it('keeps persisted phase when tunnel token is present', async () => {
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({
+        id: 'org-1',
+        provisioningPhase: 'publicly_ready',
+        degradedReasons: '[]',
+      } as any);
+
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
+
+      await (service as any).syncPhaseFromDb();
+
+      const status = service.getRegistrationStatus();
+      expect(status.phase).toBe('publicly_ready');
+      expect(status.degradedReasons).toEqual([]);
+    });
+  });
+
   describe('validateRegistrationWithCloud — degraded state', () => {
     beforeEach(() => {
       vi.spyOn(service, 'getDeviceId').mockResolvedValue('test-device');
