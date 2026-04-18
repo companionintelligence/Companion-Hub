@@ -34,6 +34,7 @@ export class MarketplaceService {
   private miniSearch: MiniSearch<AppList[number]> | null = null;
   private cacheTimeout = 1000 * 60 * 15; // 15 minutes
   private cacheLastUpdated = 0;
+  private storeRegistrySignature = '';
 
   constructor(
     private readonly configuration: ConfigurationService,
@@ -43,33 +44,7 @@ export class MarketplaceService {
   ) {}
 
   async initialize() {
-    this.stores.clear();
-
-    const stores = await this.appStoreService.getAllAppStores();
-
-    for (const config of stores) {
-      const store = new AppStoreFilesManager(this.configuration, this.filesystem, this.logger, config);
-      this.stores.set(config.slug, store);
-    }
-
-    // TODO: This is a temporary fix to ensure that internal app stores are always present.
-    for (const reservedSlug of RESERVED_APP_STORE_SLUGS) {
-      if (!this.stores.has(reservedSlug)) {
-        const store = new AppStoreFilesManager(this.configuration, this.filesystem, this.logger, {
-          branch: 'main',
-          createdAt: '',
-          enabled: false,
-          hash: reservedSlug,
-          name: reservedSlug,
-          slug: reservedSlug,
-          url: 'https://example.com',
-          updatedAt: '',
-          type: 'git',
-        });
-        this.stores.set(reservedSlug, store);
-      }
-    }
-
+    await this.syncStores();
     await this.appStoreService.pullRepositories();
     this.invalidateCache();
 
@@ -142,6 +117,56 @@ export class MarketplaceService {
     return apps.sort(sortApps).filter(filterApp(architecture));
   }
 
+  private getStoreRegistrySignature(stores: Awaited<ReturnType<AppStoreService['getAllAppStores']>>) {
+    return stores
+      .map((store) => [store.slug, store.enabled ? '1' : '0', store.type, store.url, store.branch ?? '', store.hash].join(':'))
+      .sort()
+      .join('|');
+  }
+
+  /**
+   * Refresh the in-memory store registry when app-store config changes in the DB.
+   * This avoids a full repo pull for read-path requests while keeping E2E-seeded
+   * stores and other out-of-band DB changes visible to marketplace queries.
+   */
+  private async syncStores() {
+    const stores = await this.appStoreService.getAllAppStores();
+    const nextSignature = this.getStoreRegistrySignature(stores);
+
+    if (nextSignature === this.storeRegistrySignature) {
+      return false;
+    }
+
+    this.stores.clear();
+
+    for (const config of stores) {
+      const store = new AppStoreFilesManager(this.configuration, this.filesystem, this.logger, config);
+      this.stores.set(config.slug, store);
+    }
+
+    // TODO: This is a temporary fix to ensure that internal app stores are always present.
+    for (const reservedSlug of RESERVED_APP_STORE_SLUGS) {
+      if (!this.stores.has(reservedSlug)) {
+        const store = new AppStoreFilesManager(this.configuration, this.filesystem, this.logger, {
+          branch: 'main',
+          createdAt: '',
+          enabled: false,
+          hash: reservedSlug,
+          name: reservedSlug,
+          slug: reservedSlug,
+          url: 'https://example.com',
+          updatedAt: '',
+          type: 'git',
+        });
+        this.stores.set(reservedSlug, store);
+      }
+    }
+
+    this.storeRegistrySignature = nextSignature;
+    this.invalidateCache();
+    return true;
+  }
+
   /**
    * Invalidate the cache
    */
@@ -157,6 +182,8 @@ export class MarketplaceService {
    * @returns All available apps
    */
   public async getAvailableApps(): Promise<AppList> {
+    await this.syncStores();
+
     if (this.cacheLastUpdated && Date.now() - this.cacheLastUpdated > this.cacheTimeout) {
       this.invalidateCache();
     }

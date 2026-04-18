@@ -19,6 +19,7 @@ import { useTheme } from '@/components/providers/theme/theme-provider';
 import { useUserContext } from '@/context/user-context';
 import { useMutation } from '@tanstack/react-query';
 import { logoutMutation } from '@/api-client/@tanstack/react-query.gen';
+import { setTauriSessionId } from '@/lib/api-fetch';
 
 type HeaderProps = {
   isUpdateAvailable?: boolean;
@@ -38,6 +39,7 @@ export const Header = (props: HeaderProps) => {
   const logout = useMutation({
     ...logoutMutation(),
     onSuccess: () => {
+      setTauriSessionId(null);
       window.location.reload();
     },
   });

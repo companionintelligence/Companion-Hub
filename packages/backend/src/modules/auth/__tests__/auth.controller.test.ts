@@ -1,5 +1,6 @@
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
+import { SESSION_COOKIE_NAME } from '@/common/constants';
 import { Test } from '@nestjs/testing';
 import type { Request, Response } from 'express';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -9,9 +10,9 @@ import { AuthService } from '../auth.service';
 
 describe('AuthController', () => {
   let authController: AuthController;
-  let _authService: MockProxy<AuthService>;
+  let authService: MockProxy<AuthService>;
   let logger: MockProxy<LoggerService>;
-  let _config: MockProxy<ConfigurationService>;
+  let config: MockProxy<ConfigurationService>;
 
   beforeEach(async () => {
     const moduleRef = await Test.createTestingModule({
@@ -24,9 +25,9 @@ describe('AuthController', () => {
     }).compile();
 
     authController = moduleRef.get(AuthController);
-    _authService = moduleRef.get(AuthService);
+    authService = moduleRef.get(AuthService);
     logger = moduleRef.get(LoggerService);
-    _config = moduleRef.get(ConfigurationService);
+    config = moduleRef.get(ConfigurationService);
   });
 
   it('should be defined', () => {
@@ -83,6 +84,119 @@ describe('AuthController', () => {
         'Unauthenticated Traefik forward auth request',
         expect.objectContaining({ host: 'jellyfin-myorg.companionintelligence.com' }),
       );
+    });
+  });
+
+  describe('setSessionCookie (via login)', () => {
+    it('should use sameSite lax with secure false when insecureCookie is enabled', async () => {
+      config.get.mockImplementation((key: string) => {
+        if (key === 'userSettings') return { experimental: { insecureCookie: true } };
+        return undefined;
+      });
+      authService.login.mockResolvedValue({ sessionId: 'test-session-id', totpSessionId: undefined as unknown as string });
+
+      const req = { headers: {}, cookies: {} } as unknown as Request;
+      const cookieFn = vi.fn();
+      const res = {
+        cookie: cookieFn,
+      } as unknown as Response;
+
+      await authController.login({ username: 'u', password: 'p' }, res, req);
+
+      expect(cookieFn).toHaveBeenCalledWith(
+        SESSION_COOKIE_NAME,
+        'test-session-id',
+        expect.objectContaining({ httpOnly: true, secure: false, sameSite: 'lax' }),
+      );
+    });
+
+    it('should NOT use sameSite none (which requires secure) for insecure cookie mode', async () => {
+      config.get.mockImplementation((key: string) => {
+        if (key === 'userSettings') return { experimental: { insecureCookie: true } };
+        return undefined;
+      });
+      authService.login.mockResolvedValue({ sessionId: 'test-session-id', totpSessionId: undefined as unknown as string });
+
+      const req = { headers: {}, cookies: {} } as unknown as Request;
+      const cookieFn = vi.fn();
+      const res = { cookie: cookieFn } as unknown as Response;
+
+      await authController.login({ username: 'u', password: 'p' }, res, req);
+
+      const cookieOptions = cookieFn.mock.calls[0]?.[2];
+      expect(cookieOptions?.sameSite).not.toBe('none');
+    });
+  });
+
+  describe('logout', () => {
+    it('should invalidate session from cookie', async () => {
+      const req = {
+        cookies: { [SESSION_COOKIE_NAME]: 'cookie-session-id' },
+        headers: {},
+      } as unknown as Request;
+      const res = {
+        clearCookie: vi.fn(),
+        status: vi.fn().mockReturnThis(),
+        send: vi.fn(),
+      } as unknown as Response;
+
+      await authController.logout(res, req);
+
+      expect(res.clearCookie).toHaveBeenCalledWith(SESSION_COOKIE_NAME);
+      expect(authService.logout).toHaveBeenCalledWith('cookie-session-id');
+      expect(res.status).toHaveBeenCalledWith(204);
+    });
+
+    it('should invalidate session from x-ci-hub-session header when cookie is absent', async () => {
+      const req = {
+        cookies: {},
+        headers: { 'x-ci-hub-session': 'header-session-id' },
+      } as unknown as Request;
+      const res = {
+        clearCookie: vi.fn(),
+        status: vi.fn().mockReturnThis(),
+        send: vi.fn(),
+      } as unknown as Response;
+
+      await authController.logout(res, req);
+
+      expect(res.clearCookie).toHaveBeenCalledWith(SESSION_COOKIE_NAME);
+      expect(authService.logout).toHaveBeenCalledWith('header-session-id');
+      expect(res.status).toHaveBeenCalledWith(204);
+    });
+
+    it('should prefer cookie session over header session', async () => {
+      const req = {
+        cookies: { [SESSION_COOKIE_NAME]: 'cookie-session-id' },
+        headers: { 'x-ci-hub-session': 'header-session-id' },
+      } as unknown as Request;
+      const res = {
+        clearCookie: vi.fn(),
+        status: vi.fn().mockReturnThis(),
+        send: vi.fn(),
+      } as unknown as Response;
+
+      await authController.logout(res, req);
+
+      expect(authService.logout).toHaveBeenCalledWith('cookie-session-id');
+    });
+
+    it('should return 204 when no session is found', async () => {
+      const req = {
+        cookies: {},
+        headers: {},
+      } as unknown as Request;
+      const res = {
+        clearCookie: vi.fn(),
+        status: vi.fn().mockReturnThis(),
+        send: vi.fn(),
+      } as unknown as Response;
+
+      await authController.logout(res, req);
+
+      expect(res.clearCookie).toHaveBeenCalledWith(SESSION_COOKIE_NAME);
+      expect(authService.logout).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(204);
     });
   });
 });

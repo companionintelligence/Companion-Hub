@@ -139,6 +139,43 @@ describe('MarketplaceService', () => {
     });
   });
 
+  describe('stale store registry', () => {
+    it('should refresh the in-memory stores when a new store is added after startup, even if cached apps are empty', async () => {
+      await service.initialize();
+
+      spies.getAvailableAppUrns.mockResolvedValue([]);
+      expect(await service.getAvailableApps()).toHaveLength(0);
+
+      appStoreService.getAllAppStores.mockResolvedValue([
+        { slug: 'store-1', name: 'Store 1', url: 'http://store1.com', enabled: true, type: 'git', branch: 'main', hash: 'hash-1' } as any,
+        { slug: 'store-2', name: 'Store 2', url: 'http://store2.com', enabled: true, type: 'git', branch: 'main', hash: 'hash-2' } as any,
+      ]);
+
+      await service.getAvailableApps();
+
+      expect((service as any).stores.has('store-2')).toBe(true);
+      expect(appStoreService.pullRepositories).toHaveBeenCalledTimes(1);
+    });
+
+    it('should not rebuild the in-memory stores when the store registry is unchanged', async () => {
+      await service.initialize();
+      const initialConstructorCalls = (AppStoreFilesManager as any).mock.calls.length;
+
+      spies.getAvailableAppUrns.mockResolvedValue(['app-1:store-1' as any]);
+      spies.getAppInfoFromAppStore.mockResolvedValue({
+        urn: 'app-1:store-1' as any,
+        supported_architectures: ['amd64'],
+        name: 'App 1',
+        categories: [],
+      });
+      await service.getAvailableApps();
+      await service.getAvailableApps();
+
+      expect((AppStoreFilesManager as any).mock.calls.length).toBe(initialConstructorCalls);
+      expect(appStoreService.pullRepositories).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe('getAppImage', () => {
     it('should return app image', async () => {
       await service.initialize();

@@ -43,7 +43,7 @@ export class AuthController {
 
     if (this.config.get('userSettings').experimental.insecureCookie) {
       this.logger.warn('WARNING: Using insecure cookies. This is not recommended for production environments.');
-      res.cookie(SESSION_COOKIE_NAME, sessionId, { httpOnly: true, secure: false, sameSite: 'none', maxAge: SESSION_COOKIE_MAX_AGE });
+      res.cookie(SESSION_COOKIE_NAME, sessionId, { httpOnly: true, secure: false, sameSite: 'lax', maxAge: SESSION_COOKIE_MAX_AGE });
     } else {
       res.cookie(SESSION_COOKIE_NAME, sessionId, {
         httpOnly: true,
@@ -94,10 +94,10 @@ export class AuthController {
   @Post('/logout')
   async logout(@Res() res: Response, @Req() req: Request) {
     res.clearCookie(SESSION_COOKIE_NAME);
-    const sessionId = req.cookies[SESSION_COOKIE_NAME];
+    const sessionId = req.cookies[SESSION_COOKIE_NAME] || (req.headers['x-ci-hub-session'] as string);
 
     if (!sessionId) {
-      return;
+      return res.status(204).send();
     }
 
     await this.authService.logout(sessionId);
