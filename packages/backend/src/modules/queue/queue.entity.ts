@@ -60,7 +60,9 @@ export class Queue<T extends z.ZodType, R extends z.ZodType<{ success: boolean; 
   async publish(event: z.input<T>): Promise<{ success: boolean; message: string } | z.infer<R>> {
     try {
       if (!this.isConnectionReady()) {
-        return this.unavailableResult();
+        const result = this.unavailableResult();
+        this.logger.warn(result.message);
+        return result;
       }
 
       const eventData = this.eventSchema.safeParse(event);
@@ -123,8 +125,6 @@ export class Queue<T extends z.ZodType, R extends z.ZodType<{ success: boolean; 
   private unavailableResult(): { success: false; message: string } {
     const { status, lastError } = this.getConnectionState();
     const message = `Queue '${this.queueName}' is unavailable while RabbitMQ is ${status}.${lastError ? ` Last error: ${lastError}` : ''}`;
-
-    this.logger.warn(message);
 
     return { success: false, message };
   }
