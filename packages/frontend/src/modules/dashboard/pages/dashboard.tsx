@@ -50,6 +50,7 @@ export default () => {
                 isLoading={false}
                 title={t('DASHBOARD_CPU_TITLE')}
                 metric={`${systemData.cpuLoad.toFixed(2)}%`}
+                subtitle={systemData.cpuCores ? `${systemData.cpuCores} cores` : undefined}
                 icon={Cpu}
                 progress={systemData.cpuLoad}
                 color="red"
