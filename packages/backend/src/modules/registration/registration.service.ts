@@ -173,6 +173,15 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   }
 
   /**
+   * Refresh registration state from the durable sources of truth (DB + disk)
+   * before returning the current status snapshot.
+   */
+  public async getLiveRegistrationStatus(): Promise<RegistrationStatus> {
+    await this.isRegistered();
+    return this.getRegistrationStatus();
+  }
+
+  /**
    * If the DB has a registered org with tunnel credentials but the token file
    * is missing on disk, re-write it. This covers container restarts, volume
    * resets, and dev-mode scenarios.
@@ -473,6 +482,17 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     // Fast path: in-memory phase already operational
     if (isOperational(this._currentPhase)) {
       if (!this.hasTunnelToken()) {
+        const hasOrg = await this.deviceRegistrationRepository.hasAnyDeviceRegistration().catch((error) => {
+          this.logger.debug('Could not check organization in database:', error);
+          return true;
+        });
+
+        if (!hasOrg) {
+          this.logger.warn('Cached operational phase has no registration row and no tunnel token — resetting to unregistered');
+          await this.setPhase('unregistered');
+          return false;
+        }
+
         this.logger.warn('Tunnel token file missing — marking device as degraded');
         await this.setPhase('degraded', ['tunnel_token_missing']);
         // degraded is still operational for backward compat

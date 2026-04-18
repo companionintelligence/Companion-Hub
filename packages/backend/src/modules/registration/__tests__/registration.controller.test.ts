@@ -30,7 +30,7 @@ describe('RegistrationController', () => {
 
   describe('getStatus', () => {
     it('should return full registration status with phase', async () => {
-      registrationService.getRegistrationStatus.mockReturnValue({
+      registrationService.getLiveRegistrationStatus.mockResolvedValue({
         phase: 'locally_ready',
         degradedReasons: [],
         registered: true,
@@ -45,7 +45,7 @@ describe('RegistrationController', () => {
     });
 
     it('should return unregistered status', async () => {
-      registrationService.getRegistrationStatus.mockReturnValue({
+      registrationService.getLiveRegistrationStatus.mockResolvedValue({
         phase: 'unregistered',
         degradedReasons: [],
         registered: false,
@@ -60,7 +60,7 @@ describe('RegistrationController', () => {
     });
 
     it('should return degraded status with reasons', async () => {
-      registrationService.getRegistrationStatus.mockReturnValue({
+      registrationService.getLiveRegistrationStatus.mockResolvedValue({
         phase: 'degraded',
         degradedReasons: ['tunnel_token_missing'],
         registered: true,
