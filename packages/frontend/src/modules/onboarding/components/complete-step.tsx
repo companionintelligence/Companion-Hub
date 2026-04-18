@@ -4,15 +4,61 @@ import { Card, CardContent } from '@/components/ui/Card';
 import { useAppContext } from '@/context/app-context';
 import { useState } from 'react';
 import { useNavigate } from 'react-router';
+import type { InstallSummary } from '../helpers/types';
 
 interface CompleteStepProps {
-  installed: boolean;
+  /** undefined when no install step was executed (user skipped). */
+  installSummary?: InstallSummary;
 }
 
-export const CompleteStep = ({ installed }: CompleteStepProps) => {
+function completionCopy(summary?: InstallSummary) {
+  if (!summary || summary.total === 0) {
+    return {
+      emoji: '🚀',
+      heading: 'Your Hub Is Ready',
+      body: 'You can install apps anytime from the App Store.',
+      cta: 'Go to My Apps',
+    };
+  }
+
+  const { running, incomplete, failed, total } = summary;
+
+  if (running === total) {
+    return {
+      emoji: '🎉',
+      heading: 'All Apps Running',
+      body: `All ${total} app${total === 1 ? ' is' : 's are'} confirmed running on your Hub.`,
+      cta: 'Go to My Apps',
+    };
+  }
+
+  if (failed === total) {
+    return {
+      emoji: '⚠️',
+      heading: 'Installation Issues',
+      body: `All ${total} install${total === 1 ? '' : 's'} failed. You can retry from My Apps or the App Store.`,
+      cta: 'Go to My Apps',
+    };
+  }
+
+  const parts: string[] = [];
+  if (running > 0) parts.push(`${running} running`);
+  if (incomplete > 0) parts.push(`${incomplete} still starting`);
+  if (failed > 0) parts.push(`${failed} failed`);
+
+  return {
+    emoji: incomplete > 0 || failed > 0 ? '🔧' : '🎉',
+    heading: 'Setup Complete',
+    body: `${parts.join(', ')}. You can manage your apps from My Apps.`,
+    cta: 'Go to My Apps',
+  };
+}
+
+export const CompleteStep = ({ installSummary }: CompleteStepProps) => {
   const navigate = useNavigate();
   const { refreshAppContext } = useAppContext();
   const [loading, setLoading] = useState(false);
+  const copy = completionCopy(installSummary);
 
   const handleFinish = async () => {
     setLoading(true);
@@ -23,25 +69,24 @@ export const CompleteStep = ({ installed }: CompleteStepProps) => {
         headers: { 'Content-Type': 'application/json' },
       });
       await refreshAppContext();
-      navigate('/dashboard', { replace: true });
+      navigate('/apps', { replace: true });
     } catch {
-      // Even if the API call fails, navigate to dashboard
-      navigate('/dashboard', { replace: true });
+      navigate('/apps', { replace: true });
     }
   };
 
   return (
     <Card>
       <CardContent className="p-8 text-center">
-        <div className="text-5xl mb-4">🎉</div>
-        <h2 className="text-xl font-semibold mb-2">You're All Set!</h2>
-        <p className="text-muted-foreground max-w-md mx-auto mb-6">
-          {installed
-            ? "Your apps are being installed in the background. They'll be ready shortly on your dashboard."
-            : 'Your Hub is ready to go. You can install apps anytime from the App Store.'}
+        <div className="text-5xl mb-4">{copy.emoji}</div>
+        <h2 className="text-xl font-semibold mb-2" data-testid="complete-heading">
+          {copy.heading}
+        </h2>
+        <p className="text-muted-foreground max-w-md mx-auto mb-6" data-testid="complete-body">
+          {copy.body}
         </p>
-        <Button intent="primary" onClick={handleFinish} loading={loading} disabled={loading} className="w-64">
-          Go to Dashboard
+        <Button intent="primary" onClick={handleFinish} loading={loading} disabled={loading} className="w-64" data-testid="complete-cta">
+          {copy.cta}
         </Button>
       </CardContent>
     </Card>

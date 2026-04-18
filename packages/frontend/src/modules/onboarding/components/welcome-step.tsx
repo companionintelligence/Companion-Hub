@@ -37,14 +37,14 @@ export const WelcomeStep = ({ onDetected, onSkip }: WelcomeStepProps) => {
           <div className="text-5xl mb-4">👋</div>
           <h2 className="text-xl font-semibold mb-2">Welcome to Companion Hub</h2>
           <p className="text-muted-foreground max-w-md mx-auto">
-            Let's get your self-hosted ecosystem set up. We'll scan for existing services on your network and recommend open-source alternatives you
-            can install with one click.
+            Let's get your self-hosted ecosystem set up. We'll inspect Docker services running on this device and recommend open-source alternatives
+            you can install with one click.
           </p>
         </div>
 
         <div className="flex flex-col gap-3 items-center">
           <Button intent="primary" onClick={handleDetect} loading={loading} disabled={loading} className="w-64">
-            Scan for existing services
+            Detect running services
           </Button>
           <Button variant="ghost" onClick={onSkip} disabled={loading}>
             Skip — I'll browse the store myself
