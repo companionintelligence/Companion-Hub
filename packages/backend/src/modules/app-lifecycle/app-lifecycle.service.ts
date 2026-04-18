@@ -362,7 +362,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       } else {
         this.logger.error(`Failed to restart app ${appUrn}: ${message}`);
         await this.appRepository.updateAppById(app.id, { status: 'stopped' });
-        this.sseService.emit('app', { event: 'restart_error', appUrn, appStatus: 'running', error: message });
+        this.sseService.emit('app', { event: 'restart_error', appUrn, appStatus: 'stopped', error: message });
       }
     });
 
@@ -428,16 +428,17 @@ export class AppLifecycleService implements OnApplicationBootstrap {
     this.appEventsQueue.publish({ command: 'reset', appUrn, requestId, form: app.config }).then(async ({ success, message }) => {
       if (success) {
         this.logger.info(`App ${appUrn} reset successfully`);
-        if (appStatusBeforeReset === 'running') {
-          this.startApp({ appUrn });
-        } else {
-          await this.appRepository.updateAppById(app.id, { status: appStatusBeforeReset });
-        }
+        await this.appRepository.updateAppById(app.id, { status: 'stopped' });
         this.sseService.emit('app', { event: 'reset_success', appUrn, appStatus: 'stopped' });
+
+        if (appStatusBeforeReset === 'running') {
+          void this.startApp({ appUrn });
+        }
       } else {
         this.logger.error(`Failed to reset app ${appUrn}: ${message}`);
-        await this.appRepository.updateAppById(app.id, { status: 'running' });
-        this.sseService.emit('app', { event: 'reset_error', appUrn, appStatus: appStatusBeforeReset, error: message });
+        const restoredStatus = appStatusBeforeReset ?? 'stopped';
+        await this.appRepository.updateAppById(app.id, { status: restoredStatus });
+        this.sseService.emit('app', { event: 'reset_error', appUrn, appStatus: restoredStatus, error: message });
       }
     });
 
@@ -771,20 +772,20 @@ export class AppLifecycleService implements OnApplicationBootstrap {
     this.appEventsQueue.publish({ command: 'update', appUrn, requestId, form: app.config, performBackup }).then(async ({ success, message }) => {
       if (success) {
         const appInfo = await this.appFilesManager.getInstalledAppInfo(appUrn);
+        const restoredStatus = appStatusBeforeUpdate === 'running' ? 'stopped' : appStatusBeforeUpdate;
 
         await this.updateAppConfig({ appUrn, form: app.config });
-        await this.appRepository.updateAppById(app.id, { version: appInfo?.tipi_version });
-        this.sseService.emit('app', { event: 'update_success', appUrn });
+        await this.appRepository.updateAppById(app.id, { version: appInfo?.tipi_version, status: restoredStatus });
+        this.sseService.emit('app', { event: 'update_success', appUrn, appStatus: restoredStatus });
 
         if (appStatusBeforeUpdate === 'running') {
-          this.startApp({ appUrn });
-        } else {
-          await this.appRepository.updateAppById(app.id, { status: appStatusBeforeUpdate });
+          void this.startApp({ appUrn });
         }
       } else {
         this.logger.error(`Failed to update app ${appUrn}: ${message}`);
-        await this.appRepository.updateAppById(app.id, { status: 'stopped' });
-        this.sseService.emit('app', { event: 'update_error', appUrn, error: message });
+        const restoredStatus = appStatusBeforeUpdate === 'running' ? 'stopped' : appStatusBeforeUpdate;
+        await this.appRepository.updateAppById(app.id, { status: restoredStatus });
+        this.sseService.emit('app', { event: 'update_error', appUrn, appStatus: restoredStatus, error: message });
       }
     });
 

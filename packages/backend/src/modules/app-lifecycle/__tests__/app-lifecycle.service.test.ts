@@ -451,6 +451,26 @@ describe('AppLifecycleService', () => {
      */
     const flushMicrotasks = () => new Promise<void>((r) => setTimeout(r, 0));
 
+    const getUpdateIndexes = () =>
+      callOrder.reduce<number[]>((acc, value, index) => {
+        if (value === 'db_update') acc.push(index);
+        return acc;
+      }, []);
+
+    const expectEventAfterNthUpdate = (event: string, updateIndex: number) => {
+      const updates = getUpdateIndexes();
+      const persistedIndex = updates[updateIndex];
+      expect(persistedIndex).toBeDefined();
+      expect(callOrder.indexOf(`sse:${event}`)).toBeGreaterThan(persistedIndex ?? -1);
+    };
+
+    const expectEventAfterLastUpdate = (event: string) => {
+      const updates = getUpdateIndexes();
+      const persistedIndex = updates.at(-1);
+      expect(persistedIndex).toBeDefined();
+      expect(callOrder.indexOf(`sse:${event}`)).toBeGreaterThan(persistedIndex ?? -1);
+    };
+
     beforeEach(() => {
       callOrder = [];
 
@@ -501,14 +521,7 @@ describe('AppLifecycleService', () => {
       await service.startApp({ appUrn });
       await flushMicrotasks();
 
-      // The first db_update is the transitional 'starting', second is the error rollback
-      const updates = callOrder.reduce<number[]>((acc, v, i) => {
-        if (v === 'db_update') acc.push(i);
-        return acc;
-      }, []);
-      const sseIdx = callOrder.indexOf('sse:start_error');
-      expect(updates.length).toBeGreaterThanOrEqual(2);
-      expect(sseIdx).toBeGreaterThan(updates[1]!);
+      expectEventAfterNthUpdate('start_error', 1);
     });
 
     it('startApp: transitional status_change emitted after DB commit', async () => {
@@ -525,13 +538,7 @@ describe('AppLifecycleService', () => {
       await service.stopApp({ appUrn });
       await flushMicrotasks();
 
-      // Find the stop_success SSE and the DB update that precedes it
-      const updates = callOrder.reduce<number[]>((acc, v, i) => {
-        if (v === 'db_update') acc.push(i);
-        return acc;
-      }, []);
-      const sseIdx = callOrder.indexOf('sse:stop_success');
-      expect(sseIdx).toBeGreaterThan(updates[1]!);
+      expectEventAfterNthUpdate('stop_success', 1);
     });
 
     it('stopApp error: DB committed before SSE', async () => {
@@ -540,12 +547,7 @@ describe('AppLifecycleService', () => {
       await service.stopApp({ appUrn });
       await flushMicrotasks();
 
-      const updates = callOrder.reduce<number[]>((acc, v, i) => {
-        if (v === 'db_update') acc.push(i);
-        return acc;
-      }, []);
-      const sseIdx = callOrder.indexOf('sse:stop_error');
-      expect(sseIdx).toBeGreaterThan(updates[1]!);
+      expectEventAfterNthUpdate('stop_error', 1);
     });
 
     it('stopApp: transitional status_change emitted after DB commit', async () => {
@@ -561,12 +563,7 @@ describe('AppLifecycleService', () => {
       await service.restartApp({ appUrn });
       await flushMicrotasks();
 
-      const updates = callOrder.reduce<number[]>((acc, v, i) => {
-        if (v === 'db_update') acc.push(i);
-        return acc;
-      }, []);
-      const sseIdx = callOrder.indexOf('sse:restart_success');
-      expect(sseIdx).toBeGreaterThan(updates[1]!);
+      expectEventAfterNthUpdate('restart_success', 1);
     });
 
     it('restartApp error: DB committed before SSE', async () => {
@@ -575,12 +572,7 @@ describe('AppLifecycleService', () => {
       await service.restartApp({ appUrn });
       await flushMicrotasks();
 
-      const updates = callOrder.reduce<number[]>((acc, v, i) => {
-        if (v === 'db_update') acc.push(i);
-        return acc;
-      }, []);
-      const sseIdx = callOrder.indexOf('sse:restart_error');
-      expect(sseIdx).toBeGreaterThan(updates[1]!);
+      expectEventAfterNthUpdate('restart_error', 1);
     });
 
     it('restartApp: transitional status_change emitted after DB commit', async () => {
@@ -608,13 +600,7 @@ describe('AppLifecycleService', () => {
       await service.uninstallApp({ appUrn, removeBackups: false });
       await flushMicrotasks();
 
-      const updates = callOrder.reduce<number[]>((acc, v, i) => {
-        if (v === 'db_update') acc.push(i);
-        return acc;
-      }, []);
-      const sseIdx = callOrder.indexOf('sse:uninstall_error');
-      // The second update (after the transitional 'uninstalling') is the error rollback
-      expect(sseIdx).toBeGreaterThan(updates[1]!);
+      expectEventAfterNthUpdate('uninstall_error', 1);
     });
 
     // ── resetApp ─────────────────────────────────────────────────────────
@@ -624,13 +610,7 @@ describe('AppLifecycleService', () => {
       await service.resetApp({ appUrn });
       await flushMicrotasks();
 
-      // For non-running apps: DB update (to prior status) then SSE
-      const updates = callOrder.reduce<number[]>((acc, v, i) => {
-        if (v === 'db_update') acc.push(i);
-        return acc;
-      }, []);
-      const sseIdx = callOrder.indexOf('sse:reset_success');
-      expect(sseIdx).toBeGreaterThan(updates[updates.length - 1]!);
+      expectEventAfterLastUpdate('reset_success');
     });
 
     it('resetApp error: DB committed before SSE', async () => {
@@ -639,12 +619,17 @@ describe('AppLifecycleService', () => {
       await service.resetApp({ appUrn });
       await flushMicrotasks();
 
-      const updates = callOrder.reduce<number[]>((acc, v, i) => {
-        if (v === 'db_update') acc.push(i);
-        return acc;
-      }, []);
-      const sseIdx = callOrder.indexOf('sse:reset_error');
-      expect(sseIdx).toBeGreaterThan(updates[1]!);
+      expectEventAfterNthUpdate('reset_error', 1);
+    });
+
+    it('resetApp error restores the previous status in the SSE payload', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ ...fakeApp, status: 'stopped' } as any);
+      appEventsQueue.publish.mockResolvedValue({ success: false, message: 'fail' } as any);
+
+      await service.resetApp({ appUrn });
+      await flushMicrotasks();
+
+      expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'reset_error', appStatus: 'stopped', error: 'fail' }));
     });
 
     it('resetApp: transitional status_change emitted after DB commit', async () => {
@@ -720,12 +705,19 @@ describe('AppLifecycleService', () => {
       await service.updateApp({ appUrn, performBackup: false });
       await flushMicrotasks();
 
-      const updates = callOrder.reduce<number[]>((acc, v, i) => {
-        if (v === 'db_update') acc.push(i);
-        return acc;
-      }, []);
-      const sseIdx = callOrder.indexOf('sse:update_error');
-      expect(sseIdx).toBeGreaterThan(updates[1]!);
+      expectEventAfterNthUpdate('update_error', 1);
+    });
+
+    it('updateApp success restores stopped state before emitting update_success', async () => {
+      vi.spyOn(service, 'updateAppConfig').mockResolvedValue({ requestId: crypto.randomUUID() });
+      vi.spyOn(service, 'startApp').mockResolvedValue({ requestId: crypto.randomUUID() });
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ tipi_version: 2 } as any);
+
+      await service.updateApp({ appUrn, performBackup: false });
+      await flushMicrotasks();
+
+      expectEventAfterNthUpdate('update_success', 1);
+      expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'update_success', appStatus: 'stopped' }));
     });
 
     // ── exposure sync uses committed state ───────────────────────────────
