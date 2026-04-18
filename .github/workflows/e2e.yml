@@ -79,13 +79,6 @@ jobs:
 
       - run: pnpm exec playwright install --with-deps chromium
 
-      - name: Start mock portal
-        run: |
-          pnpm exec tsx e2e/mock-portal/server.ts &
-          echo "MOCK_PID=$!" >> $GITHUB_ENV
-          sleep 2
-          curl -sf http://localhost:4444/v2/ || echo "Warning: mock portal not responding"
-
       - name: Run E2E tests
         run: pnpm run test:e2e:ci
         env:
