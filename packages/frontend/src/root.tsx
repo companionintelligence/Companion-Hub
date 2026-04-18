@@ -11,6 +11,8 @@ import globalsStylesheet from './styles/globals.css?url';
 import { Providers } from './components/providers/providers';
 import { TranslatableError } from './types/error.types';
 import { apiFetch, getTauriSessionId } from './lib/api-fetch';
+import type { RegistrationStatus } from './lib/registration-status';
+import { isRegistrationOperational, requiresDeviceRegistration } from './lib/registration-status';
 
 // Add session header for Tauri release mode (cookies don't work cross-origin over HTTP)
 client.interceptors.request.use((request) => {
@@ -86,45 +88,64 @@ export const links: Route.LinksFunction = () => [
   { rel: 'manifest', href: '/icons/site.webmanifest' },
 ];
 
+type RegistrationLookup = { kind: 'ok'; status: RegistrationStatus } | { kind: 'unavailable' };
+
+const CACHED_OPERATIONAL_STATUS: RegistrationStatus = {
+  phase: 'locally_ready',
+  degradedReasons: [],
+  registered: true,
+};
+
+async function loadRegistrationLookup(): Promise<RegistrationLookup> {
+  const CACHE_TTL_MS = 60 * 1000;
+  const cachedAt = Number(sessionStorage.getItem('device-registered-at') || '0');
+  const cacheValid = sessionStorage.getItem('device-registered') === 'true' && Date.now() - cachedAt < CACHE_TTL_MS;
+
+  if (cacheValid) {
+    return { kind: 'ok', status: CACHED_OPERATIONAL_STATUS };
+  }
+
+  try {
+    const res = await apiFetch('/api/registration/status');
+    if (!res.ok) {
+      return { kind: 'unavailable' };
+    }
+
+    const status = (await res.json()) as RegistrationStatus;
+
+    if (isRegistrationOperational(status)) {
+      sessionStorage.setItem('device-registered', 'true');
+      sessionStorage.setItem('device-registered-at', String(Date.now()));
+    } else {
+      sessionStorage.removeItem('device-registered');
+      sessionStorage.removeItem('device-registered-at');
+    }
+
+    return { kind: 'ok', status };
+  } catch {
+    return { kind: 'unavailable' };
+  }
+}
+
 export async function clientLoader({ request }: Route.ActionArgs) {
   // In Tauri release mode, wait for the backend port probe to complete
   await tauriBaseUrlReady;
 
   const url = new URL(request.url);
+  const registration = await loadRegistrationLookup();
 
-  const CACHE_TTL_MS = 60 * 1000; // 1 min — short enough that token removal takes effect quickly
-  const cachedAt = Number(sessionStorage.getItem('device-registered-at') || '0');
-  const cacheValid = sessionStorage.getItem('device-registered') === 'true' && Date.now() - cachedAt < CACHE_TTL_MS;
-
-  const regResult = cacheValid
-    ? { ok: true, registered: true }
-    : await apiFetch('/api/registration/status')
-        .then(async (res) => {
-          if (!res.ok) return { ok: false, registered: false };
-          const data = await res.json();
-          if (data.registered) {
-            sessionStorage.setItem('device-registered', 'true');
-            sessionStorage.setItem('device-registered-at', String(Date.now()));
-          } else {
-            sessionStorage.removeItem('device-registered');
-            sessionStorage.removeItem('device-registered-at');
-          }
-          return { ok: true, registered: data.registered };
-        })
-        .catch(() => ({ ok: false, registered: false }));
-
-  // Device registration is the prerequisite gate — must be registered before login/register/dashboard
-  // If not registered (or status unknown), only allow the device-registration page
-  const mustShowDeviceRegistration = !regResult.ok || !regResult.registered;
-  if (mustShowDeviceRegistration) {
+  if (registration.kind === 'ok' && requiresDeviceRegistration(registration.status)) {
     if (url.pathname !== '/device-registration') {
       return redirect('/device-registration');
     }
     return null;
   }
 
-  // Already registered — redirect away from device-registration
-  if (url.pathname === '/device-registration') {
+  if (registration.kind === 'unavailable' && url.pathname === '/device-registration') {
+    return null;
+  }
+
+  if (registration.kind === 'ok' && isRegistrationOperational(registration.status) && url.pathname === '/device-registration') {
     return redirect('/');
   }
 

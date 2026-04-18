@@ -55,7 +55,7 @@ export default () => {
   const params = useParams<{ storeId: string }>();
   const { setCategory, category, storeId, setStoreId, search: initialSearch, setSearch } = useAppStoreState();
   const [search, setLocalSearch] = useState(initialSearch);
-  const { data: registrationStatus, isLoading: isCheckingRegistration, error: registrationError } = useRegistrationStatus();
+  const { data: registrationStatus, isLoading: isCheckingRegistration } = useRegistrationStatus();
 
   const queryClient = useQueryClient();
   const { mutate: pullApps, isPending: isPulling } = useMutation({
@@ -84,12 +84,10 @@ export default () => {
   });
 
   useEffect(() => {
-    if (!isCheckingRegistration) {
-      if (registrationError || (registrationStatus && !registrationStatus.registered)) {
-        window.location.href = '/device-registration';
-      }
+    if (!isCheckingRegistration && registrationStatus && !registrationStatus.registered) {
+      window.location.href = '/device-registration';
     }
-  }, [registrationStatus, isCheckingRegistration, registrationError]);
+  }, [registrationStatus, isCheckingRegistration]);
 
   const { data: appStores } = useQuery({
     ...getEnabledAppStoresOptions(),
