@@ -1,131 +1,88 @@
 # [Companion Hub](https://ci.computer/hub)
 
-**Self-hosted app hub for self hosting.** Install and manage apps from the companion intelligence marketplace with one click. Runs on your machine—your data stays yours.
+Companion Hub is the self-hosted app hub in the Companion Intelligence product model. This repository is the source of truth for the Hub itself, while CI Cloud handles device registration and release orchestration.
 
-Part of the [CI OS](https://github.com/companionintelligence) ecosystem. Licensed under [GNU Affero General Public License](LICENSE).
+Part of the [Companion Intelligence](https://github.com/companionintelligence) ecosystem. Licensed under the [GNU Affero General Public License](LICENSE).
 
----
+## Choose the guide that matches your job
 
-## What You Need
+| If you are… | Start here |
+| --- | --- |
+| Installing or running a Hub on a device | [Canonical first-run guide](#canonical-first-run-guide) |
+| Developing the Hub locally | [docs/DEVELOPER-SETUP.md](docs/DEVELOPER-SETUP.md) |
+| Operating releases or environments | [docs/RELEASE-ARCHITECTURE.md](docs/RELEASE-ARCHITECTURE.md) |
+| Cleaning up legacy names and compatibility surfaces | [docs/COMPATIBILITY-NOTES.md](docs/COMPATIBILITY-NOTES.md) |
+| Working on the native desktop shell | [packages/desktop/README.md](packages/desktop/README.md) |
 
-| Requirement | Purpose |
-|-------------|---------|
-| **Docker** (v28+) | Runs the hub and all installed apps |
-| **Docker Compose** | Orchestrates services |
-| **pnpm** (v10+) and **Node** (v22+) | For local development and scripts |
+## Canonical first-run guide
 
-- [Install Docker Engine](https://docs.docker.com/engine/install/)
-- [Install pnpm](https://pnpm.io/installation) and Node 22+
+This is the primary path for installing Companion Hub from this repository.
 
----
+### What you need
 
-## Quick Start
+| Requirement | Why it matters |
+| --- | --- |
+| Docker 28+ | Runs the Hub and installed apps |
+| Git | Gets the repository and bundled install script |
+| Bash, curl, openssl | Used by the install/start flow |
 
-### 1. Clone
+You do **not** need pnpm or Node just to run a Hub instance from this guide.
+
+### 1. Clone the current repository
 
 ```bash
-git clone https://github.com/companionintelligence/CI-OS-Hub.git
-cd CI-OS-Hub
+git clone https://github.com/companionintelligence/CI-Hub.git
+cd CI-Hub
 ```
 
-### 2. Configure
+### 2. Create your environment file
 
 ```bash
 cp .env.example .env.prod
 ```
 
-Edit `.env.prod` and set at least:
+Edit `.env.prod` and set the required values:
 
-- **`ROOT_FOLDER_HOST`** — Absolute path for data (e.g. `/opt/ci-os-hub/data` or `$(pwd)/.internal`)
-- **`JWT_SECRET`** — Random secret for sessions (e.g. `openssl rand -hex 32`)
-- **`CI_CLOUD_URL`** — CI Cloud portal URL (defaults work with public CI OS)
+- `ROOT_FOLDER_HOST` — absolute host path for Hub data, state, logs, and app definitions
+- `POSTGRES_PASSWORD` — password for the bundled Postgres container
+- `JWT_SECRET` — random secret for sessions and auth tokens
+- `INTERNAL_IP` — the device IP the Hub should advertise on your LAN
+- `DOMAIN` — the root domain used for Companion routing
+- `CI_CLOUD_URL` — your CI Cloud / portal URL for pairing and sync
 
-### 3. Run
-
-```bash
-pnpm start:prod
-```
-
-Open http://localhost:5002. On first run, register your device with CI Cloud (you'll get a pairing code or redirect URL). Once registered, you can install apps from the store and optionally expose them via Cloudflare Tunnel.
-
----
-
-## Local Development
-
-For a fast feedback loop:
+### 3. Install and start the Hub
 
 ```bash
-pnpm install
-cp .env.example .env.local
-# Edit .env.local — set ROOT_FOLDER_HOST, JWT_SECRET, etc.
-pnpm dev
+./scripts/install.sh --env-file .env.prod
 ```
 
-- **Frontend:** http://localhost:5173  
-- **Backend API:** http://localhost:3000  
+The installer downloads the current release CLI, prepares a local runtime directory, and starts the Hub using the environment file you provided.
 
-Infrastructure (Postgres, RabbitMQ) runs in Docker; backend and frontend run locally with hot reload.
+### 4. Finish first run in the UI
 
-### Commands
+Open <http://localhost:5002>.
 
-All scripts accept an optional environment: `local` (default), `dev`, `staging`, or `prod`.
+On first run:
 
-| Command | Description |
-|---------|-------------|
-| `pnpm dev [env]` | Start infra + backend + frontend (hot reload) |
-| `pnpm start [env]` | Full stack in Docker (attached) |
-| `pnpm start:detached [env]` | Full stack in Docker (detached) |
-| `pnpm run build` | Build all packages |
-| `pnpm run test` | Run tests |
-| `pnpm run cleanup` | Stop infra, remove `.internal`, tunnel files |
+1. Create the local admin account.
+2. Get a pairing code from CI Cloud.
+3. Enter that pairing code in Companion Hub to register the device.
+4. Wait for registration and tunnel provisioning to finish.
+5. Install apps from the marketplace.
 
----
-
-## Cloudflare Tunnel (Optional)
-
-To expose your hub over the internet via CI Cloud:
-
-1. Register your device with CI Cloud (in the hub UI).
-2. CI Cloud provisions a tunnel; the hub writes the token to `tunnel/token` automatically.
-3. For local dev with tunnels, create the token manually:
-
-   ```bash
-   echo "YOUR_TUNNEL_TOKEN" > tunnel/token
-   ```
-
-4. For HTTPS in local tunnel dev, generate CA certs:
-
-   ```bash
-   ./scripts/generate-tunnel-certs.sh
-   ```
-
----
-
-## Data & Updating
-
-| Path | Contents |
-|------|----------|
-| `ci_hub_app_data` (volume) | App data, configs, user data |
-| `ci_hub_pgdata` (volume) | Hub database |
-| `ROOT_FOLDER_HOST/state` | Traefik config, certs |
-| `ROOT_FOLDER_HOST/apps` | Installed app definitions |
-
-**Update the hub:**
+### Updating an existing Hub
 
 ```bash
 ./scripts/updater/update.sh
 ```
 
----
+## What lives where
 
-## Related Projects
-
-- **[CI App Store](https://github.com/companionintelligence/CI-App-Store)** — Open-source app catalog
-- **[CI Launcher](https://github.com/companionintelligence/companionintelligence.github.io)** — Web launcher for CI OS hubs
-- **[Runtipi](https://github.com/runtipi/runtipi)** — Original homeserver foundation (originally forked from)
-
----
+- `README.md` — end-user install and first-run truth
+- `docs/DEVELOPER-SETUP.md` — local development setup and verification
+- `docs/RELEASE-ARCHITECTURE.md` — release triggers, artifacts, environments, and operator responsibilities
+- `docs/COMPATIBILITY-NOTES.md` — explicit legacy names that still exist for compatibility
 
 ## License
 
-[GNU Affero General Public License](LICENSE) — Use, modify, and share. Derivatives must remain open source.
+[GNU Affero General Public License](LICENSE)

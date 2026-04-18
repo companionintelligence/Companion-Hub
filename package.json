@@ -35,7 +35,8 @@
     "fresh": "pnpm run cleanup && pnpm start dev",
     "fresh:local": "pnpm run cleanup && pnpm start local",
     "dev:desktop": "cd packages/desktop && cargo tauri dev",
-    "build:desktop": "cd packages/desktop && cargo tauri build"
+    "build:desktop": "cd packages/desktop && cargo tauri build",
+    "docs:check": "bash scripts/check-docs.sh"
   },
   "lint-staged": {
     "*": [

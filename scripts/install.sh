@@ -3,12 +3,12 @@ set -o errexit
 set -o nounset
 set -o pipefail
 
-echo "Installing Companion Home..."
+echo "Installing Companion Hub..."
 
 ARCHITECTURE="$(uname -m)"
 # Not supported on 32 bits systems
 if [[ "$ARCHITECTURE" == "armv7"* ]] || [[ "$ARCHITECTURE" == "i686" ]] || [[ "$ARCHITECTURE" == "i386" ]]; then
-  echo "Companion Home is not supported on 32-bit systems"
+  echo "Companion Hub is not supported on 32-bit systems"
   exit 1
 fi
 
@@ -52,6 +52,10 @@ while [ -n "${1-}" ]; do
   esac
   shift
 done
+
+if [[ -n "${ENV_FILE}" ]]; then
+  ENV_FILE="$(cd "$(dirname "${ENV_FILE}")" && pwd)/$(basename "${ENV_FILE}")"
+fi
 
 OS="$(cat $(ls -p /etc | grep -v / | grep "[A-Za-z]*[_-][rv]e[lr]" | awk '{print "/etc/" $1}') | grep "^ID=" | cut -d= -f2 | uniq | tr '[:upper:]' '[:lower:]' | tr -d '"')"
 SUB_OS="$(cat $(ls -p /etc | grep -v / | grep "[A-Za-z]*[_-][rv]e[lr]" | awk '{print "/etc/" $1}') | grep "^ID_LIKE=" | cut -d= -f2 | uniq | tr '[:upper:]' '[:lower:]' | tr -d '"' || echo 'unknown')"
@@ -201,7 +205,7 @@ function check_dependency_and_install() {
 
 # If version was not given it will install the latest version
 if [[ "${VERSION}" == "latest" ]]; then
-  LATEST_VERSION=$(curl -sL https://api.github.com/repos/companionintelligence/CI-OS-Hub/releases/latest | grep tag_name | cut -d '"' -f4)
+  LATEST_VERSION=$(curl -sL https://api.github.com/repos/companionintelligence/CI-Hub/releases/latest | grep tag_name | cut -d '"' -f4)
   VERSION="${LATEST_VERSION}"
 fi
 
@@ -209,7 +213,7 @@ if [[ "$ARCHITECTURE" == "arm64" || "$ARCHITECTURE" == "aarch64" ]]; then
   ASSET="runtipi-cli-linux-aarch64.tar.gz"
 fi
 
-URL="https://github.com/companionintelligence/CI-OS-Hub/releases/download/$VERSION/$ASSET"
+URL="https://github.com/companionintelligence/CI-Hub/releases/download/$VERSION/$ASSET"
 
 if [[ "${UPDATE}" == "false" ]]; then
   mkdir -p runtipi # TODO: rename directory when codebase migration is complete
@@ -231,8 +235,9 @@ fi
 chmod +x ./runtipi-cli
 
 if [[ "${ENV_FILE}" != "" ]]; then
-  echo "Starting CI-Hub with env file ${ENV_FILE}"
+  echo "Starting Companion Hub with env file ${ENV_FILE}"
   sudo ./runtipi-cli start --env-file "${ENV_FILE}"
 else
+  echo "Starting Companion Hub"
   sudo ./runtipi-cli start
 fi

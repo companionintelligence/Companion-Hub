@@ -1,4 +1,4 @@
-name: Auto Semver Tag
+name: Tag Staging Release
 
 on:
   push:
