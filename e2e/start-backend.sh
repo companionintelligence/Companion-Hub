@@ -6,6 +6,9 @@ set -euo pipefail
 
 DATA_DIR="${CI_HUB_DATA_DIR:-/tmp/ci-hub-e2e}"
 
+# Fail fast with a clear message if Postgres / RabbitMQ are unavailable.
+pnpm exec tsx --eval "(async () => { const mod = await import('./e2e/helpers/infra.ts'); const requireInfraReady = mod.requireInfraReady ?? mod.default?.requireInfraReady ?? mod['module.exports']?.requireInfraReady; if (typeof requireInfraReady !== 'function') throw new TypeError('requireInfraReady export not found'); await requireInfraReady(Number(process.env.E2E_INFRA_RETRIES || '15'), Number(process.env.E2E_INFRA_INTERVAL_MS || '1000')); })().catch((error) => { console.error(error); process.exit(1); });"
+
 # Create required directory structure
 mkdir -p "$DATA_DIR"/{state,logs,apps,app-data,repos,backups,user-config,media}
 mkdir -p "$DATA_DIR/state/traefik"/{config,dynamic,tls}
@@ -68,6 +71,7 @@ DEVICE_ID=${DEVICE_ID:-test-device-e2e}
 CI_HUB_DATA_DIR=$DATA_DIR
 CI_HUB_APP_DATA_DIR=$DATA_DIR/app-data
 CI_HUB_APP_DIR=$(pwd)
+E2E_TEST=${E2E_TEST:-false}
 EOF
 
 echo "E2E backend starting with DATA_DIR=$DATA_DIR"
