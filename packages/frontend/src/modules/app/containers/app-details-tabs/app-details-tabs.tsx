@@ -78,7 +78,7 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, 
       </Alert>
 
       {/* Two-column portal-style layout */}
-      <div className="grid grid-cols-1 md:grid-cols-[1fr,280px] gap-6 md:gap-8">
+      <div className="grid grid-cols-1 md:grid-cols-[1fr_280px] gap-6 md:gap-8">
         {/* Left column - About this app */}
         <div className="space-y-6">
           <div>
