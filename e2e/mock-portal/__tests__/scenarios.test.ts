@@ -166,4 +166,47 @@ describe('buildRoutes', () => {
       assert.strictEqual(result.status, 200);
     });
   });
+
+  describe('base routes present in every scenario', () => {
+    const BASE_ROUTES = ['GET /v2/', 'GET /v2/ci-os-hub/tags/list'] as const;
+
+    for (const scenario of PORTAL_SCENARIOS) {
+      it(`scenario "${scenario}" exposes all base routes`, () => {
+        const routes = buildRoutes(scenario);
+        for (const route of BASE_ROUTES) {
+          assert.ok(routes[route], `Missing base route "${route}" in scenario "${scenario}"`);
+          const result = routes[route](dummyUrl);
+          assert.strictEqual(result.status, 200, `Base route "${route}" in scenario "${scenario}" returned non-200`);
+        }
+      });
+    }
+  });
+
+  describe('registration-status semantics per scenario', () => {
+    const expectations: Record<PortalScenario, boolean> = {
+      registered: true,
+      unregistered: false,
+      delayed: true,
+      degraded: false, // 500 means the field isn't trustworthy — handler returns an error body
+    };
+
+    for (const scenario of PORTAL_SCENARIOS) {
+      it(`scenario "${scenario}" registration-status returns expected HTTP status`, () => {
+        const routes = buildRoutes(scenario);
+        const handler = routes['GET /api/devices/registration-status'];
+        assert.ok(handler, `Missing registration-status route in scenario "${scenario}"`);
+        const result = handler(dummyUrl);
+        if (scenario === 'degraded') {
+          assert.strictEqual(result.status, 500);
+        } else {
+          assert.strictEqual(result.status, 200);
+          assert.strictEqual(
+            (result.body as { registered: boolean }).registered,
+            expectations[scenario],
+            `"registered" field mismatch for scenario "${scenario}"`,
+          );
+        }
+      });
+    }
+  });
 });

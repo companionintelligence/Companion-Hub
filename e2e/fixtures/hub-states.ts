@@ -17,7 +17,7 @@ import * as schema from '../../packages/backend/src/core/database/drizzle/schema
 import { clearDatabase, db, seedOrganization } from '../helpers/db';
 import { setPortalScenario } from '../helpers/portal-client';
 
-const TUNNEL_TOKEN_PATH = path.join(process.cwd(), 'tunnel', 'token');
+const TUNNEL_TOKEN_PATH = path.join(process.env.CI_HUB_APP_DIR || process.cwd(), 'tunnel', 'token');
 const DATA_DIR = process.env.CI_HUB_DATA_DIR || '/tmp/ci-hub-e2e';
 
 /** Ensure the tunnel token file exists on disk (backend checks this). */
