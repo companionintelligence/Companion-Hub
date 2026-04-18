@@ -30,6 +30,7 @@ export const seedOrganization = async () => {
       name: 'test-org',
       slug: 'test-org',
       tunnelId: null,
+      provisioningPhase: 'locally_ready',
       domain: 'test-org.example.com',
     });
   } catch (error) {

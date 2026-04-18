@@ -56,6 +56,11 @@ describe('RegistrationService', () => {
   describe('isRegistered', () => {
     it('should return true if device is registered', async () => {
       deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(true);
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({
+        id: 'org-1',
+        provisioningPhase: 'locally_ready',
+        degradedReasons: '[]',
+      } as any);
       vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
 
       const result = await (service as any).isRegistered();
@@ -66,6 +71,72 @@ describe('RegistrationService', () => {
       deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(false);
       const result = await (service as any).isRegistered();
       expect(result).toBe(false);
+    });
+  });
+
+  describe('getRegistrationStatus', () => {
+    it('returns unregistered phase by default', () => {
+      const status = service.getRegistrationStatus();
+      expect(status.phase).toBe('unregistered');
+      expect(status.registered).toBe(false);
+      expect(status.degradedReasons).toEqual([]);
+    });
+
+    it('returns correct status after setPhase', async () => {
+      // setPhase requires a legal transition, start from unregistered → paired
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as any);
+      deviceRegistrationRepository.updateProvisioningState.mockResolvedValue({} as any);
+
+      await service.setPhase('paired');
+      const status = service.getRegistrationStatus();
+      expect(status.phase).toBe('paired');
+      expect(status.registered).toBe(false);
+    });
+
+    it('includes degradedReasons when phase is degraded', async () => {
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as any);
+      deviceRegistrationRepository.updateProvisioningState.mockResolvedValue({} as any);
+
+      await service.setPhase('paired');
+      await service.setPhase('provisioning');
+      await service.setPhase('degraded', ['tunnel_unreachable']);
+
+      const status = service.getRegistrationStatus();
+      expect(status.phase).toBe('degraded');
+      expect(status.degradedReasons).toEqual(['tunnel_unreachable']);
+      expect(status.registered).toBe(true);
+    });
+  });
+
+  describe('setPhase', () => {
+    beforeEach(() => {
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as any);
+      deviceRegistrationRepository.updateProvisioningState.mockResolvedValue({} as any);
+    });
+
+    it('persists phase to database', async () => {
+      await service.setPhase('paired');
+      expect(deviceRegistrationRepository.updateProvisioningState).toHaveBeenCalledWith('org-1', 'paired', []);
+    });
+
+    it('ignores illegal transitions', async () => {
+      // unregistered → locally_ready is illegal
+      await service.setPhase('locally_ready');
+      expect(service.getRegistrationStatus().phase).toBe('unregistered');
+    });
+
+    it('allows idempotent no-op transitions', async () => {
+      // Phase is already unregistered, setting it again should be a no-op
+      await service.setPhase('unregistered');
+      expect(deviceRegistrationRepository.updateProvisioningState).not.toHaveBeenCalled();
+    });
+
+    it('allows reset to unregistered from any phase', async () => {
+      await service.setPhase('paired');
+      await service.setPhase('provisioning');
+      await service.setPhase('locally_ready');
+      await service.setPhase('unregistered');
+      expect(service.getRegistrationStatus().phase).toBe('unregistered');
     });
   });
 
@@ -95,6 +166,8 @@ describe('RegistrationService', () => {
         ciCloudUrl: '',
         userSettings: { domain: 'example.com' },
       } as any);
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null);
+      deviceRegistrationRepository.updateProvisioningState.mockResolvedValue({} as any);
 
       const result = await (service as any).checkRegistrationWithCloud();
 
@@ -168,6 +241,7 @@ describe('RegistrationService', () => {
         userSettings: { domain: 'example.com' },
         domain: 'example.com',
       } as any);
+      deviceRegistrationRepository.updateProvisioningState.mockResolvedValue({} as any);
     });
 
     it('stores hubSubdomain when creating a new device registration', async () => {
@@ -190,6 +264,7 @@ describe('RegistrationService', () => {
         expect.objectContaining({
           id: 'org-new',
           hubSubdomain: 'device1-neworg',
+          provisioningPhase: 'locally_ready',
         }),
       );
     });
@@ -241,6 +316,31 @@ describe('RegistrationService', () => {
         expect(updateCall[1]).not.toHaveProperty('hubSubdomain');
       }
     });
+
+    it('transitions to locally_ready after successful infrastructure setup', async () => {
+      deviceRegistrationRepository.getDeviceRegistrationById.mockResolvedValue(null as any);
+      cloudflareClientService.initializeTunnel.mockResolvedValue({ tunnelId: 't1', token: 'tok1' } as any);
+      configService.setDomain.mockResolvedValue(undefined);
+      global.fetch = vi.fn().mockResolvedValue({ ok: true }) as any;
+
+      // Start from paired phase
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-new' } as any);
+      await service.setPhase('paired');
+
+      await (service as any).setupOrganizationInfrastructure('org-new', {
+        organization_name: 'New Org',
+        tunnel_id: 't1',
+        tunnel_token: 'tok1',
+        subdomain: 'device1-neworg',
+        slug: 'neworg',
+        domain: 'example.com',
+      });
+
+      // Should have reached locally_ready or publicly_ready
+      const status = service.getRegistrationStatus();
+      expect(['locally_ready', 'publicly_ready']).toContain(status.phase);
+      expect(status.registered).toBe(true);
+    });
   });
 
   describe('pairDevice', () => {
@@ -253,6 +353,8 @@ describe('RegistrationService', () => {
       } as any);
       // Device is not yet registered
       deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(false);
+      deviceRegistrationRepository.updateProvisioningState.mockResolvedValue({} as any);
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null);
     });
 
     it('succeeds with valid pairing code and stores registration data', async () => {
@@ -318,6 +420,11 @@ describe('RegistrationService', () => {
 
     it('returns error when device is already registered', async () => {
       deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(true);
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({
+        id: 'org-1',
+        provisioningPhase: 'locally_ready',
+        degradedReasons: '[]',
+      } as any);
       vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
 
       const result = await service.pairDevice('ABC123');
@@ -376,6 +483,8 @@ describe('RegistrationService', () => {
         domain: 'myhost.example.com',
       } as any);
       (si.uuid as any) = vi.fn().mockResolvedValue({ os: 'test-device' });
+      deviceRegistrationRepository.updateProvisioningState.mockResolvedValue({} as any);
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null);
     });
 
     it('returns domain in the success response', async () => {
@@ -394,6 +503,26 @@ describe('RegistrationService', () => {
 
       expect(result.success).toBe(true);
       expect(result.domain).toBe('myhost.example.com');
+      setupSpy.mockRestore();
+    });
+
+    it('transitions to paired phase on callback', async () => {
+      const setupSpy = vi.spyOn(service as any, 'setupOrganizationInfrastructure').mockResolvedValue(undefined);
+
+      await service.completeRegistrationFromCallback({
+        deviceId: 'test-device',
+        organizationId: 'org-cb',
+        organizationName: 'Callback Org',
+        slug: 'cb-org',
+        subdomain: 'hub-cb-org',
+        tunnelId: 'tunnel-cb',
+        tunnelToken: 'token-cb',
+        apiKey: 'key-cb',
+      });
+
+      // After callback, phase should be paired (infra setup is fire-and-forget)
+      const status = service.getRegistrationStatus();
+      expect(status.phase).toBe('paired');
       setupSpy.mockRestore();
     });
 
@@ -447,6 +576,68 @@ describe('RegistrationService', () => {
       expect(result.success).toBe(true);
       expect(result.domain).toBe('companionintelligence.com');
       setupSpy.mockRestore();
+    });
+  });
+
+  describe('validateRegistrationWithCloud — degraded state', () => {
+    beforeEach(() => {
+      vi.spyOn(service, 'getDeviceId').mockResolvedValue('test-device');
+      configService.getConfig.mockReturnValue({
+        ciCloudUrl: 'http://cloud.api',
+        userSettings: { domain: 'example.com' },
+      } as any);
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as any);
+      deviceRegistrationRepository.updateProvisioningState.mockResolvedValue({} as any);
+    });
+
+    it('transitions to degraded when tunnel token is missing', async () => {
+      // Manually set phase to locally_ready
+      await service.setPhase('paired');
+      await service.setPhase('provisioning');
+      await service.setPhase('locally_ready');
+
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(false);
+
+      await (service as any).validateRegistrationWithCloud();
+
+      const status = service.getRegistrationStatus();
+      expect(status.phase).toBe('degraded');
+      expect(status.degradedReasons).toContain('tunnel_token_missing');
+    });
+
+    it('transitions to degraded when CI Cloud returns error', async () => {
+      await service.setPhase('paired');
+      await service.setPhase('provisioning');
+      await service.setPhase('locally_ready');
+
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
+      const mockFetch = vi.fn().mockResolvedValue({ ok: false, status: 500 });
+      global.fetch = mockFetch as any;
+
+      await (service as any).validateRegistrationWithCloud();
+
+      const status = service.getRegistrationStatus();
+      expect(status.phase).toBe('degraded');
+      expect(status.degradedReasons).toContain('cloud_validation_failed');
+    });
+
+    it('recovers from degraded when validation passes', async () => {
+      await service.setPhase('paired');
+      await service.setPhase('provisioning');
+      await service.setPhase('degraded', ['cloud_validation_failed']);
+
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ registered: true, device_status: 'active' }),
+      });
+      global.fetch = mockFetch as any;
+
+      await (service as any).validateRegistrationWithCloud();
+
+      const status = service.getRegistrationStatus();
+      expect(status.phase).toBe('locally_ready');
+      expect(status.degradedReasons).toEqual([]);
     });
   });
 });

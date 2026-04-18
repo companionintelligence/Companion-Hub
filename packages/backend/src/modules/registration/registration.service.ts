@@ -9,13 +9,23 @@ import { CloudflareClientService } from '../cloudflare/cloudflare-client.service
 import { TraefikConfigService } from '../docker/traefik-config.service';
 import { DeviceRegistrationRepository } from './device-registration.repository';
 import { RepoEventsQueue } from '../queue/entities/repo-events';
+import {
+  type ProvisioningPhase,
+  type DegradedReason,
+  type RegistrationStatus,
+  isOperational,
+  isLegalTransition,
+  buildRegistrationStatus,
+  parseDegradedReasons,
+} from './registration-state';
 import si from 'systeminformation';
 
 const REGISTRATION_VALIDATION_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 
 @Injectable()
 export class RegistrationService implements OnApplicationBootstrap, OnApplicationShutdown {
-  private _isRegistered = false;
+  private _currentPhase: ProvisioningPhase = 'unregistered';
+  private _degradedReasons: DegradedReason[] = [];
   private checkInterval: NodeJS.Timeout | null = null;
   private weeklyValidationInterval: NodeJS.Timeout | null = null;
 
@@ -53,19 +63,19 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     // so requests through the Cloudflare tunnel reach ci-os-hub.
     await this.ensureHubRouteFromRegistration();
 
-    let isRegistered = await this.isRegistered();
+    // Sync in-memory phase from persisted DB state
+    await this.syncPhaseFromDb();
 
-    if (isRegistered) {
+    if (isOperational(this._currentPhase)) {
       await this.verifyLicense();
-      isRegistered = this._isRegistered;
 
       // Check for missing Tunnel ID and recover from CI-Cloud if needed
-      if (isRegistered) {
+      if (isOperational(this._currentPhase)) {
         await this.recoverTunnelIdFromCloud();
       }
     }
 
-    if (isRegistered) {
+    if (isOperational(this._currentPhase)) {
       this.startWeeklyValidation();
     } else {
       this.pollRegistration();
@@ -89,6 +99,74 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     } catch (e) {
       this.logger.warn('Failed to ensure hub route from registration (non-fatal)', e);
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Phase helpers
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Sync the in-memory phase from the persisted DB row.
+   * Detects disk-level degradation (e.g. missing tunnel token) and
+   * transitions accordingly.
+   */
+  private async syncPhaseFromDb(): Promise<void> {
+    try {
+      const org = await this.deviceRegistrationRepository.getFirstDeviceRegistration();
+      if (!org) {
+        this._currentPhase = 'unregistered';
+        this._degradedReasons = [];
+        return;
+      }
+
+      const persisted = (org.provisioningPhase ?? 'locally_ready') as ProvisioningPhase;
+
+      // If the DB says we should be operational, verify the tunnel token is on disk
+      if (isOperational(persisted) && !this.hasTunnelToken()) {
+        this.logger.warn('Tunnel token missing — transitioning to degraded');
+        await this.setPhase('degraded', ['tunnel_token_missing'], org.id);
+        return;
+      }
+
+      this._currentPhase = persisted;
+      this._degradedReasons = parseDegradedReasons(org.degradedReasons);
+    } catch (e) {
+      this.logger.debug('Could not sync phase from DB:', e);
+    }
+  }
+
+  /**
+   * Transition to a new provisioning phase. Persists to DB if an org exists
+   * and updates the in-memory cache. Logs the transition.
+   */
+  public async setPhase(to: ProvisioningPhase, reasons: DegradedReason[] = [], orgId?: string): Promise<void> {
+    const from = this._currentPhase;
+
+    // Allow idempotent no-ops
+    if (from === to && to !== 'degraded') return;
+
+    if (!isLegalTransition(from, to)) {
+      this.logger.warn(`Illegal phase transition ${from} → ${to} — ignoring`);
+      return;
+    }
+
+    this._currentPhase = to;
+    this._degradedReasons = to === 'degraded' ? reasons : [];
+
+    this.logger.info(`Provisioning phase: ${from} → ${to}${reasons.length ? ` (${reasons.join(', ')})` : ''}`);
+
+    // Persist when we know the org ID
+    const id = orgId ?? (await this.deviceRegistrationRepository.getFirstDeviceRegistration())?.id;
+    if (id) {
+      await this.deviceRegistrationRepository.updateProvisioningState(id, to, this._degradedReasons).catch((e) => {
+        this.logger.warn('Failed to persist provisioning phase', e);
+      });
+    }
+  }
+
+  /** Return the current in-memory registration status snapshot. */
+  public getRegistrationStatus(): RegistrationStatus {
+    return buildRegistrationStatus(this._currentPhase, this._degradedReasons);
   }
 
   /**
@@ -217,11 +295,11 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
    * reverts to the registration page.
    */
   private async validateRegistrationWithCloud(): Promise<void> {
-    if (!this._isRegistered) return;
+    if (!isOperational(this._currentPhase)) return;
 
     if (!this.hasTunnelToken()) {
-      this.logger.warn('Registration validation: tunnel token missing — revoking registration');
-      this._isRegistered = false;
+      this.logger.warn('Registration validation: tunnel token missing — transitioning to degraded');
+      await this.setPhase('degraded', ['tunnel_token_missing']);
       return;
     }
 
@@ -238,8 +316,8 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
 
       const response = await fetch(statusUrl.toString(), { method: 'GET' });
       if (!response.ok) {
-        this.logger.warn(`Registration validation: CI Cloud returned ${response.status} — revoking registration`);
-        this._isRegistered = false;
+        this.logger.warn(`Registration validation: CI Cloud returned ${response.status} — transitioning to degraded`);
+        await this.setPhase('degraded', ['cloud_validation_failed']);
         return;
       }
 
@@ -252,18 +330,25 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       const deviceStatus = data.device_status || data.status;
 
       if (!data.registered) {
-        this.logger.warn('Registration validation: device no longer registered in CI Cloud — revoking registration');
-        this._isRegistered = false;
+        this.logger.warn('Registration validation: device no longer registered in CI Cloud — transitioning to degraded');
+        await this.setPhase('degraded', ['cloud_validation_failed']);
         return;
       }
 
       if (deviceStatus && deviceStatus !== 'active') {
-        this.logger.warn(`Registration validation: device status is "${deviceStatus}" (not active) — revoking registration`);
-        this._isRegistered = false;
+        this.logger.warn(`Registration validation: device status is "${deviceStatus}" (not active) — transitioning to degraded`);
+        await this.setPhase('degraded', ['cloud_validation_failed']);
         return;
       }
 
-      this.logger.info('Registration validation passed: device is active and registered');
+      // Validation passed — recover from degraded if applicable
+      if (this._currentPhase === 'degraded') {
+        const target = this.hasTunnelToken() ? 'locally_ready' : 'locally_ready';
+        this.logger.info('Registration validation passed — recovering from degraded');
+        await this.setPhase(target);
+      } else {
+        this.logger.info('Registration validation passed: device is active and registered');
+      }
     } catch (e) {
       this.logger.error('Registration validation: failed to reach CI Cloud — keeping current state', e);
     }
@@ -276,8 +361,9 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   public async resetRegistration(): Promise<void> {
     this.logger.info('Resetting device registration...');
 
-    // Clear the in-memory registration state
-    this._isRegistered = false;
+    // Clear the in-memory phase
+    this._currentPhase = 'unregistered';
+    this._degradedReasons = [];
 
     // Stop validation intervals
     if (this.weeklyValidationInterval) {
@@ -381,17 +467,18 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   }
 
   public async isRegistered(): Promise<boolean> {
-    // If already registered, verify tunnel token still exists on disk
-    if (this._isRegistered) {
+    // Fast path: in-memory phase already operational
+    if (isOperational(this._currentPhase)) {
       if (!this.hasTunnelToken()) {
-        this.logger.warn('Tunnel token file missing — marking device as unregistered');
-        this._isRegistered = false;
-        return false;
+        this.logger.warn('Tunnel token file missing — marking device as degraded');
+        await this.setPhase('degraded', ['tunnel_token_missing']);
+        // degraded is still operational for backward compat
+        return true;
       }
       return true;
     }
 
-    // Check if we have any organization in the database (indicates successful registration)
+    // Check if we have any organization in the database (indicates pairing completed)
     try {
       const hasOrg = await this.deviceRegistrationRepository.hasAnyDeviceRegistration();
       if (hasOrg) {
@@ -399,15 +486,16 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
           this.logger.warn('Device registration found in database but tunnel token file is missing — device is not fully registered');
           return false;
         }
-        this._isRegistered = true;
-        return true;
+        // DB has an org and token is on disk — sync phase from DB
+        await this.syncPhaseFromDb();
+        return isOperational(this._currentPhase);
       }
     } catch (error) {
       // Database might not be ready, ignore error
       this.logger.debug('Could not check organization in database:', error);
     }
 
-    return this._isRegistered;
+    return isOperational(this._currentPhase);
   }
 
   private async verifyLicense() {
@@ -419,7 +507,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     this.logger.info('Starting registration check loop...');
 
     const check = async () => {
-      if (this._isRegistered) {
+      if (isOperational(this._currentPhase)) {
         if (this.checkInterval) {
           clearInterval(this.checkInterval);
           this.checkInterval = null;
@@ -430,7 +518,6 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       try {
         const registered = await this.checkRegistrationWithCloud();
         if (registered) {
-          this._isRegistered = true;
           this.logger.info('Device successfully registered!');
           if (this.checkInterval) {
             clearInterval(this.checkInterval);
@@ -449,7 +536,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     await check();
 
     // Start interval if not registered
-    if (!this._isRegistered) {
+    if (!isOperational(this._currentPhase)) {
       this.checkInterval = setInterval(check, 30000);
     }
   }
@@ -460,6 +547,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     // If CI Cloud API is not configured, allow access (backward compatibility)
     if (!ciCloudUrl) {
       this.logger.debug('CI Cloud not configured, skipping registration check.');
+      await this.setPhase('locally_ready');
       return true;
     }
 
@@ -532,7 +620,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     organizationId: string,
     activationResult: { organization_name: string; tunnel_id: string; tunnel_token: string; slug: string; subdomain: string; domain?: string },
   ): Promise<void> {
-    // Check if organization infrastructure already exists
+    // Check if organization infrastructure already exists (idempotent retry)
     const existingOrg = await this.deviceRegistrationRepository.getDeviceRegistrationById(organizationId);
     if (existingOrg) {
       this.logger.debug(`Organization infrastructure already exists for ${organizationId}`);
@@ -569,8 +657,16 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       if (hubSub && domainForRoute && domainForRoute !== 'example.com') {
         await this.traefikConfigService.writeHubRoute(hubSub, domainForRoute);
       }
+
+      // Ensure phase is at least locally_ready for idempotent retries
+      if (!isOperational(this._currentPhase)) {
+        await this.setPhase('locally_ready', [], organizationId);
+      }
       return;
     }
+
+    // Transition: paired → provisioning
+    await this.setPhase('provisioning', [], organizationId);
 
     try {
       const { userSettings } = this.config.getConfig();
@@ -664,7 +760,11 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         hubSubdomain: subdomain,
         tunnelId: tunnelId,
         tunnelToken: tunnelToken,
+        provisioningPhase: 'locally_ready',
       });
+
+      // Hub is locally functional — transition to locally_ready
+      await this.setPhase('locally_ready', [], organizationId);
 
       this.logger.info(`Successfully setup organization infrastructure: ${domain} (tunnel: ${tunnelId})`);
 
@@ -683,6 +783,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       // Verify tunnel connectivity (best-effort, don't block registration)
       if (process.env.E2E_TEST === 'true') {
         this.logger.info(`Skipping tunnel reachability probe for E2E registration at https://${domain}`);
+        await this.setPhase('publicly_ready', [], organizationId);
       } else {
         this.logger.info(`Checking tunnel connectivity at https://${domain}...`);
         const maxRetries = 60; // 1 minute
@@ -715,14 +816,21 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
           await new Promise((resolve) => setTimeout(resolve, 1000));
           if (i > 0 && i % 10 === 0) this.logger.info(`Still waiting for DNS resolution... attempt ${i}/${maxRetries}`);
         }
-        if (!tunnelReachable) {
+        if (tunnelReachable) {
+          await this.setPhase('publicly_ready', [], organizationId);
+        } else {
           this.logger.warn(
             `Tunnel not yet reachable at https://${domain} after ${maxRetries}s — DNS may still be propagating. This is normal for first-time setup.`,
           );
+          // Stay at locally_ready — tunnel will be probed again during validation
         }
       }
     } catch (error) {
       this.logger.error(`Error setting up organization infrastructure: ${error}`);
+      // Transition to degraded if we were provisioning
+      if (this._currentPhase === 'provisioning') {
+        await this.setPhase('degraded', ['tunnel_unreachable'], organizationId);
+      }
     }
   }
 
@@ -931,6 +1039,9 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       // If validation is needed before setup, we should add a validate endpoint to CI-Cloud.
 
       // Step 4: Setup organization infrastructure
+      // Transition to paired before infrastructure setup
+      await this.setPhase('paired');
+
       await this.setupOrganizationInfrastructure(organizationId, {
         // biome-ignore lint/suspicious/noExplicitAny: External API response
         ...(activateResult as any),
@@ -938,8 +1049,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         slug: sanitizedName,
       });
 
-      // Mark as registered
-      this._isRegistered = true;
+      // setupOrganizationInfrastructure handles phase transitions internally
       if (this.checkInterval) {
         clearInterval(this.checkInterval);
         this.checkInterval = null;
@@ -1013,8 +1123,8 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         };
       }
 
-      // Mark as registered immediately so the frontend can redirect
-      this._isRegistered = true;
+      // Transition to paired — the frontend can already detect forward progress
+      await this.setPhase('paired');
       if (this.checkInterval) {
         clearInterval(this.checkInterval);
         this.checkInterval = null;
