@@ -18,9 +18,9 @@ import { iconForCategory, colorSchemeForCategory } from '@/modules/app/helpers/t
 import { useAppStoreState } from '@/stores/app-store';
 import { keepPreviousData, useInfiniteQuery, useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import clsx from 'clsx';
-import { Search, ArrowRight, ArrowLeftRight, LayoutGrid, RefreshCw } from 'lucide-react';
+import { Search, ArrowRight, ArrowLeftRight, LayoutGrid, RefreshCw, Store } from 'lucide-react';
 import { useCallback, useEffect, useState, useMemo } from 'react';
-import { Navigate, useParams, Link } from 'react-router';
+import { Navigate, useParams, Link, useSearchParams } from 'react-router';
 
 interface AltEntry {
   name: string;
@@ -53,6 +53,7 @@ export const AppStorePageSuspense = () => {
 
 export default () => {
   const params = useParams<{ storeId: string }>();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { setCategory, category, storeId, setStoreId, search: initialSearch, setSearch } = useAppStoreState();
   const [search, setLocalSearch] = useState(initialSearch);
   const { data: registrationStatus, isLoading: isCheckingRegistration } = useRegistrationStatus();
@@ -118,7 +119,13 @@ export default () => {
     return new Set(allAppsData.data.filter((app) => app.available).map((app) => app.id));
   }, [allAppsData]);
 
+  // Sync ?store= query param to Zustand, or fall back to first available store
   useEffect(() => {
+    const storeParam = searchParams.get('store');
+    if (storeParam && appStores?.appStores?.some((s) => s.slug === storeParam)) {
+      if (storeId !== storeParam) setStoreId(storeParam);
+      return;
+    }
     if (appStores?.appStores) {
       if (ciCloudStore && storeId !== ciCloudStore.slug) {
         setStoreId(ciCloudStore.slug);
@@ -126,7 +133,19 @@ export default () => {
         setStoreId(appStores.appStores[0]?.slug);
       }
     }
-  }, [appStores, storeId, setStoreId, ciCloudStore]);
+  }, [appStores, storeId, setStoreId, ciCloudStore, searchParams]);
+
+  const handleStoreSwitch = useCallback(
+    (slug: string) => {
+      setStoreId(slug);
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        next.set('store', slug);
+        return next;
+      });
+    },
+    [setStoreId, setSearchParams],
+  );
 
   const onSearch = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -187,7 +206,30 @@ export default () => {
 
   return (
     <>
-      <div className="flex justify-end mb-4">
+      <div className="flex justify-between items-center mb-4">
+        <div className="flex items-center gap-2">
+          {appStores?.appStores && appStores.appStores.length > 1 ? (
+            <div className="flex items-center gap-1" data-testid="store-switcher">
+              <Store className="h-4 w-4 text-muted-foreground mr-1" />
+              {appStores.appStores.map((s) => (
+                <Button
+                  key={s.slug}
+                  variant={storeId === s.slug ? 'default' : 'outline'}
+                  size="sm"
+                  className="rounded-full"
+                  onClick={() => handleStoreSwitch(s.slug)}
+                >
+                  {s.name}
+                </Button>
+              ))}
+            </div>
+          ) : appStores?.appStores?.[0] ? (
+            <div className="flex items-center gap-1.5 text-sm text-muted-foreground" data-testid="store-label">
+              <Store className="h-4 w-4" />
+              <span>{appStores.appStores[0].name}</span>
+            </div>
+          ) : null}
+        </div>
         <Button onClick={() => pullApps()} disabled={isPulling} variant="outline" size="sm" className="gap-2">
           <RefreshCw className={clsx('h-4 w-4', isPulling && 'animate-spin')} />
           {isPulling ? 'Syncing...' : 'Check for Updates'}
