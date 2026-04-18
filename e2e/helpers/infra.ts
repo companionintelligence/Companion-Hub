@@ -27,7 +27,7 @@ const RABBITMQ: ServiceConfig = {
 };
 
 /** Attempt a TCP connection to verify a service is listening. */
-function probePort(host: string, port: number, timeoutMs = 3000): Promise<boolean> {
+export function probePort(host: string, port: number, timeoutMs = 3000): Promise<boolean> {
   return new Promise((resolve) => {
     const socket = new net.Socket();
     const timer = setTimeout(() => {
