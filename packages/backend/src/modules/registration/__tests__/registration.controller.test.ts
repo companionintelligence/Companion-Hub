@@ -29,18 +29,47 @@ describe('RegistrationController', () => {
   });
 
   describe('getStatus', () => {
-    it('should return registered status', async () => {
-      registrationService.isRegistered.mockResolvedValue(true);
+    it('should return full registration status with phase', async () => {
+      registrationService.getRegistrationStatus.mockReturnValue({
+        phase: 'locally_ready',
+        degradedReasons: [],
+        registered: true,
+      });
 
       const result = await controller.getStatus();
-      expect(result).toEqual({ registered: true });
+      expect(result).toEqual({
+        phase: 'locally_ready',
+        degradedReasons: [],
+        registered: true,
+      });
     });
 
     it('should return unregistered status', async () => {
-      registrationService.isRegistered.mockResolvedValue(false);
+      registrationService.getRegistrationStatus.mockReturnValue({
+        phase: 'unregistered',
+        degradedReasons: [],
+        registered: false,
+      });
 
       const result = await controller.getStatus();
-      expect(result).toEqual({ registered: false });
+      expect(result).toEqual({
+        phase: 'unregistered',
+        degradedReasons: [],
+        registered: false,
+      });
+    });
+
+    it('should return degraded status with reasons', async () => {
+      registrationService.getRegistrationStatus.mockReturnValue({
+        phase: 'degraded',
+        degradedReasons: ['tunnel_token_missing'],
+        registered: true,
+      });
+
+      const result = await controller.getStatus();
+      expect(result.phase).toBe('degraded');
+      expect(result.degradedReasons).toEqual(['tunnel_token_missing']);
+      expect(result.registered).toBe(true);
     });
   });
 
