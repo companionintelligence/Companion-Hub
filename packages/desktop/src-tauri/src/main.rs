@@ -56,6 +56,14 @@ async fn get_hub_status_command() -> hub_manager::HubStatus {
     hub_manager::get_hub_status()
 }
 
+/// Return the path to the logs directory for frontend "View Logs" actions.
+#[tauri::command]
+async fn get_logs_dir_command() -> String {
+    let dir = hub_manager::logs_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    dir.to_string_lossy().to_string()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
@@ -77,6 +85,7 @@ pub fn run() {
             check_docker_available,
             check_docker_access_command,
             get_hub_status_command,
+            get_logs_dir_command,
             install_docker_command,
         ])
         .setup(|app| {
@@ -167,23 +176,31 @@ pub fn run() {
                 let containers_exist = hub_manager::hub_containers_exist();
                 let traefik_recreate_required = traefik_preflight.changed
                     || hub_manager::is_traefik_recreate_required(&data_dir);
+                let desired_state = hub_manager::read_desired_state(&data_dir);
+                let config_changed = saved_hash.as_deref() != Some(&config_hash);
+                let user_stopped = desired_state == Some(hub_manager::DesiredState::Stopped);
 
-                let should_start = if !containers_exist {
-                    true // First launch or user stopped Hub
+                let should_start = if user_stopped && !config_changed && !traefik_recreate_required
+                {
+                    false // User intentionally stopped — respect across relaunch
+                } else if !containers_exist {
+                    true // First launch or containers removed
                 } else if traefik_recreate_required {
                     true // Runtime state changed and Traefik must be recreated before reuse
-                } else if saved_hash.as_deref() != Some(&config_hash) {
+                } else if config_changed {
                     true // Config changed (upgrade, env fix, etc.)
                 } else {
                     false // Containers exist, config unchanged, no runtime repair pending — do nothing
                 };
 
-                let reason = if !containers_exist {
+                let reason = if user_stopped && !config_changed && !traefik_recreate_required {
+                    "user intentionally stopped the Hub; desired state is 'stopped'".to_string()
+                } else if !containers_exist {
                     "containers are missing".to_string()
                 } else if traefik_recreate_required {
                     "Traefik runtime preflight changed mounted state and requires container recreation"
                         .to_string()
-                } else if saved_hash.as_deref() != Some(&config_hash) {
+                } else if config_changed {
                     "configuration hash changed".to_string()
                 } else {
                     "containers exist, configuration is unchanged, and no runtime repair is pending"

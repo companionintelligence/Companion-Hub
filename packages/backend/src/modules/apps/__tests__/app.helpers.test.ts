@@ -109,6 +109,72 @@ describe('AppHelpers', () => {
       expect(envMap.get('APP_DATA_DIR')).toBe('/opt/ci-hub/app-data/test-store/test-app');
     });
 
+    it('should generate APP_DATA_DIR under ROOT_FOLDER_HOST/app-data (desktop storage contract)', async () => {
+      // Simulates a desktop environment where ROOT_FOLDER_HOST is the app data dir
+      const desktopRoot = '/Users/testuser/Library/Application Support/companion-hub';
+      const envMap = new Map<string, string>();
+      envUtils.envStringToMap.mockReturnValue(envMap);
+
+      config.getConfig.mockReturnValue(
+        fromPartial({
+          internalIp: '0.0.0.0',
+          envFilePath: '/data/.env',
+          rootFolderHost: desktopRoot,
+          domain: 'companionintelligence.com',
+          userSettings: {
+            appDataPath: desktopRoot,
+            domain: 'companionintelligence.com',
+          },
+        }),
+      );
+
+      await appHelpers.generateEnvFile(testAppUrn, {});
+
+      // APP_DATA_DIR must be under ROOT_FOLDER_HOST/app-data so that the bind mount
+      // ${ROOT_FOLDER_HOST}/app-data:/app-data aligns with container path /app-data
+      expect(envMap.get('APP_DATA_DIR')).toBe(`${desktopRoot}/app-data/test-store/test-app`);
+    });
+
+    it('should align APP_DATA_DIR host path with container seeded data path', async () => {
+      // Verifies the core storage invariant: the host path in APP_DATA_DIR
+      // (used by launched app compose) shares the same suffix as the container
+      // path used by AppStoreFilesManager to seed data.
+      const rootHost = '/opt/ci-hub';
+      const envMap = new Map<string, string>();
+      envUtils.envStringToMap.mockReturnValue(envMap);
+
+      config.getConfig.mockReturnValue(
+        fromPartial({
+          internalIp: '127.0.0.1',
+          envFilePath: '/data/.env',
+          rootFolderHost: rootHost,
+          domain: 'example.com',
+          userSettings: {
+            appDataPath: rootHost,
+            domain: 'example.com',
+          },
+        }),
+      );
+
+      await appHelpers.generateEnvFile(testAppUrn, {});
+
+      const appDataDir = envMap.get('APP_DATA_DIR');
+      expect(appDataDir).toBeDefined();
+
+      if (!appDataDir) {
+        throw new Error('APP_DATA_DIR was not generated');
+      }
+
+      // The host path must be: ${ROOT_FOLDER_HOST}/app-data/{storeId}/{appName}
+      // The container path is: /app-data/{storeId}/{appName}
+      // When compose mounts ${ROOT_FOLDER_HOST}/app-data:/app-data, these align.
+      expect(appDataDir).toBe(`${rootHost}/app-data/test-store/test-app`);
+      expect(appDataDir.startsWith(rootHost)).toBe(true);
+      // Verify the suffix after ROOT_FOLDER_HOST matches the container layout
+      const suffix = appDataDir.slice(rootHost.length);
+      expect(suffix).toBe('/app-data/test-store/test-app');
+    });
+
     it('should handle form port override', async () => {
       // Arrange
       const envMap = new Map<string, string>();
