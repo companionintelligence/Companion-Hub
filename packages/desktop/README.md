@@ -2,6 +2,13 @@
 
 Native desktop wrapper for the Companion Intelligence Hub, built with [Tauri v2](https://v2.tauri.app).
 
+## Which doc to use
+
+- Use this document for local desktop development and packaging.
+- Use [`../../docs/RELEASE-ARCHITECTURE.md`](../../docs/RELEASE-ARCHITECTURE.md) for the repository release map, including the desktop release workflow.
+- Use [`../../docs/DESKTOP-RELEASE-SIGNING.md`](../../docs/DESKTOP-RELEASE-SIGNING.md) for Apple signing and Azure Artifact Signing setup.
+- Release note names are **Companion Hub Desktop**, while some workflow internals still use legacy `ci-os-hub` identifiers for compatibility.
+
 ## Features
 
 - **Native window** — Loads the Hub web UI in a performant WebView (WebKitGTK on Linux, WebView2 on Windows, WKWebView on macOS)

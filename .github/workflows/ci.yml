@@ -21,6 +21,9 @@ jobs:
       - name: Install dependencies
         uses: "./.github/actions/install-dependencies"
 
+      - name: Run docs checks
+        run: pnpm run docs:check
+
       - name: Run biome tests
         run: pnpm run lint:ci
 

@@ -11,7 +11,9 @@ required_files=(
   docs/DEVELOPER-SETUP.md
   docs/RELEASE-ARCHITECTURE.md
   docs/COMPATIBILITY-NOTES.md
+  docs/DESKTOP-RELEASE-SIGNING.md
   packages/common/README.md
+  packages/desktop/README.md
 )
 
 for file in "${required_files[@]}"; do
@@ -24,8 +26,11 @@ done
 grep -Fq 'docs/DEVELOPER-SETUP.md' README.md
 grep -Fq 'docs/RELEASE-ARCHITECTURE.md' README.md
 grep -Fq 'docs/COMPATIBILITY-NOTES.md' README.md
+grep -Fq 'packages/desktop/README.md' README.md
 grep -Fq 'docs/RELEASE-ARCHITECTURE.md' CI-CD-PIPELINE.md
 grep -Fq '@ci-hub/common' packages/common/README.md
+grep -Fq '../../docs/RELEASE-ARCHITECTURE.md' packages/desktop/README.md
+grep -Fq '../../docs/DESKTOP-RELEASE-SIGNING.md' packages/desktop/README.md
 
 grep -Fq 'name: Build and Publish Hub Container' .github/workflows/build-container.yml
 grep -Fq 'name: Publish Hub Release' .github/workflows/release.yml
