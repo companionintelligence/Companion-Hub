@@ -9,8 +9,6 @@ jobs:
   e2e-gate:
     uses: "./.github/workflows/e2e.yml"
     secrets: inherit
-    with:
-      version: nightly
 
   build-images:
     needs: [e2e-gate]

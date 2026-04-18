@@ -40,8 +40,6 @@ jobs:
     needs: determine-release-type
     uses: "./.github/workflows/e2e.yml"
     secrets: inherit
-    with:
-      version: ${{ needs.determine-release-type.outputs.tagname }}
 
   build-images:
     timeout-minutes: 15

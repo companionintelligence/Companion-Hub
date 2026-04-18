@@ -31,13 +31,36 @@ concurrency:
   group: desktop-release
   cancel-in-progress: false
 jobs:
+  validate-release-ref:
+    name: Validate release ref
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Ensure workflow is running on the requested tag
+        run: |
+          if [ "${{ github.ref_type }}" != "tag" ]; then
+            echo "This workflow must be dispatched from a tag ref."
+            echo "Expected tag: ${{ inputs.tag }}"
+            echo "Actual ref: ${{ github.ref }}"
+            exit 1
+          fi
+
+          if [ "${{ github.ref_name }}" != "${{ inputs.tag }}" ]; then
+            echo "The selected workflow ref does not match the requested release tag."
+            echo "Expected tag: ${{ inputs.tag }}"
+            echo "Actual tag: ${{ github.ref_name }}"
+            exit 1
+          fi
+
   unit-tests:
     name: Unit & Lint Checks
+    needs: validate-release-ref
     uses: ./.github/workflows/ci.yml
     secrets: inherit
 
   e2e-tests:
     name: E2E Verification Gate
+    needs: validate-release-ref
     uses: ./.github/workflows/e2e.yml
     secrets: inherit
 
