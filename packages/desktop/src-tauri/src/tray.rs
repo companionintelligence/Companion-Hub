@@ -183,7 +183,7 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                             let _ = crate::hub_manager::append_desktop_log_for(
                                 &data,
                                 "tray.stop",
-                                &format!("Failed to stop running app containers: {}", error),
+                                &format!("Managed app containers cleanup failed: {}", error),
                             );
                         }
                     }
