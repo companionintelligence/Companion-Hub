@@ -299,6 +299,7 @@ pub(crate) fn evaluate_container_readiness(state: &str, health: &str) -> Contain
     match (state, health) {
         ("running", "healthy") => ContainerReadiness::Healthy,
         ("running", "none") => ContainerReadiness::Healthy, // no healthcheck defined
+        ("running", "unhealthy") => ContainerReadiness::Unhealthy, // healthcheck permanently failing
         ("running", _) => ContainerReadiness::Starting,
         ("restarting", _) | ("created", _) => ContainerReadiness::Starting,
         ("exited", _) | ("dead", _) => ContainerReadiness::Unhealthy,
@@ -356,7 +357,7 @@ pub fn get_hub_status() -> HubStatus {
             ContainerReadiness::Unhealthy => {
                 any_found = true;
                 all_healthy = false;
-                waiting_details.push(format!("{}: {}", container, state));
+                waiting_details.push(format!("{}: {} ({})", container, state, health));
             }
             ContainerReadiness::NotFound => {
                 all_healthy = false;
@@ -2144,6 +2145,17 @@ mod tests {
         assert_eq!(
             evaluate_container_readiness("running", "none"),
             ContainerReadiness::Healthy
+        );
+    }
+
+    #[test]
+    fn evaluate_readiness_running_unhealthy() {
+        // A running container whose healthcheck is permanently failing must be
+        // classified as Unhealthy, not Starting, so the caller can escalate to
+        // an error rather than waiting forever.
+        assert_eq!(
+            evaluate_container_readiness("running", "unhealthy"),
+            ContainerReadiness::Unhealthy
         );
     }
 
