@@ -5,7 +5,14 @@ interface HubStatusProps {
   children: ReactNode;
 }
 
-type HubStatusResponse = 'DockerNotAvailable' | 'Stopped' | 'Starting' | 'Running' | { Error: { message: string } };
+type HubStatusResponse =
+  | 'DockerNotAvailable'
+  | 'Stopped'
+  | 'UserStopped'
+  | 'Starting'
+  | 'Running'
+  | { WaitingForStack: { detail: string } }
+  | { Error: { message: string } };
 
 function getErrorMessage(err: unknown): string {
   if (err instanceof Error) return err.message;
@@ -158,6 +165,47 @@ function DockerInstallGuide() {
   return <LinuxDockerGuide />;
 }
 
+function ViewLogsButton() {
+  const handleViewLogs = useCallback(async () => {
+    const invoke = getTauriInvoke();
+    if (!invoke) return;
+    try {
+      const logsDir = (await invoke('get_logs_dir_command')) as string;
+      const shell = (window as unknown as { __TAURI_INTERNALS__: { invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown> } })
+        .__TAURI_INTERNALS__;
+      await shell.invoke('plugin:shell|open', { path: logsDir });
+    } catch {
+      // Fallback: user can use tray menu
+    }
+  }, []);
+
+  return (
+    <button
+      type="button"
+      onClick={handleViewLogs}
+      className="inline-flex items-center gap-2 rounded-md border border-border px-4 py-2 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
+    >
+      View Logs
+    </button>
+  );
+}
+
+function SpinnerIcon() {
+  return (
+    <svg
+      className="h-5 w-5 animate-spin text-primary"
+      xmlns="http://www.w3.org/2000/svg"
+      fill="none"
+      viewBox="0 0 24 24"
+      role="img"
+      aria-label="Loading"
+    >
+      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+    </svg>
+  );
+}
+
 export function HubStatus({ children }: HubStatusProps) {
   const [status, setStatus] = useState<HubStatusResponse | null>(null);
   const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
@@ -207,7 +255,12 @@ export function HubStatus({ children }: HubStatusProps) {
         if (isWindows) {
           if (result === 'DockerNotAvailable') {
             shouldAutoStartWindowsHubRef.current = true;
-          } else if (result === 'Running' || result === 'Starting' || (typeof result === 'object' && 'Error' in result)) {
+          } else if (
+            result === 'Running' ||
+            result === 'Starting' ||
+            result === 'UserStopped' ||
+            (typeof result === 'object' && ('Error' in result || 'WaitingForStack' in result))
+          ) {
             shouldAutoStartWindowsHubRef.current = false;
           } else if (result === 'Stopped' && shouldAutoStartWindowsHubRef.current) {
             shouldAutoStartWindowsHubRef.current = false;
@@ -271,8 +324,9 @@ export function HubStatus({ children }: HubStatusProps) {
   // Hub is running, render normally
   if (status === 'Running') return <>{children}</>;
 
-  // Error message extraction
+  // Error and WaitingForStack message extraction
   const errorMessage = typeof status === 'object' && 'Error' in status ? status.Error.message : null;
+  const waitingDetail = typeof status === 'object' && 'WaitingForStack' in status ? status.WaitingForStack.detail : null;
 
   return (
     <div className="flex min-h-screen flex-col items-center justify-center gap-6 bg-background p-8">
@@ -284,13 +338,35 @@ export function HubStatus({ children }: HubStatusProps) {
         <>
           <h1 className="text-2xl font-semibold text-foreground">Hub Not Running</h1>
           <p className="text-center max-w-md text-muted-foreground">The Companion Hub backend is not running.</p>
-          <button
-            type="button"
-            onClick={handleStartHub}
-            className="inline-flex items-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-          >
-            Start Hub
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={handleStartHub}
+              className="inline-flex items-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+            >
+              Start Hub
+            </button>
+            <ViewLogsButton />
+          </div>
+        </>
+      )}
+
+      {status === 'UserStopped' && (
+        <>
+          <h1 className="text-2xl font-semibold text-foreground">Hub Stopped</h1>
+          <p className="text-center max-w-md text-muted-foreground">
+            The Hub was stopped intentionally and will not auto-start. Click Start to resume.
+          </p>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={handleStartHub}
+              className="inline-flex items-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+            >
+              Start Hub
+            </button>
+            <ViewLogsButton />
+          </div>
         </>
       )}
 
@@ -298,20 +374,24 @@ export function HubStatus({ children }: HubStatusProps) {
         <>
           <h1 className="text-2xl font-semibold text-foreground">Hub Starting…</h1>
           <div className="flex items-center gap-3">
-            <svg
-              className="h-5 w-5 animate-spin text-primary"
-              xmlns="http://www.w3.org/2000/svg"
-              fill="none"
-              viewBox="0 0 24 24"
-              role="img"
-              aria-label="Loading"
-            >
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-            </svg>
-            <span className="text-muted-foreground">Waiting to start…</span>
+            <SpinnerIcon />
+            <span className="text-muted-foreground">Waiting for services to start…</span>
           </div>
           <p className="text-sm text-muted-foreground">This may take a few minutes on first run while images are downloaded.</p>
+          <ViewLogsButton />
+        </>
+      )}
+
+      {waitingDetail && (
+        <>
+          <h1 className="text-2xl font-semibold text-foreground">Hub Starting…</h1>
+          <div className="flex items-center gap-3">
+            <SpinnerIcon />
+            <span className="text-muted-foreground">Waiting for stack to converge…</span>
+          </div>
+          <p className="text-xs text-muted-foreground/70 max-w-md text-center font-mono">{waitingDetail}</p>
+          <p className="text-sm text-muted-foreground">Some services are still starting. This is normal during first run or after an update.</p>
+          <ViewLogsButton />
         </>
       )}
 
@@ -319,17 +399,20 @@ export function HubStatus({ children }: HubStatusProps) {
         <>
           <h1 className="text-2xl font-semibold text-foreground">Hub Error</h1>
           <p className="text-center max-w-md text-muted-foreground">{errorMessage}</p>
-          <button
-            type="button"
-            onClick={handleRestartHub}
-            className="inline-flex items-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-          >
-            Restart Hub
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={handleRestartHub}
+              className="inline-flex items-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+            >
+              Restart Hub
+            </button>
+            <ViewLogsButton />
+          </div>
         </>
       )}
 
-      {status !== 'Starting' && status !== 'DockerNotAvailable' && !errorMessage && (
+      {status !== 'Starting' && status !== 'DockerNotAvailable' && !errorMessage && !waitingDetail && (
         <button type="button" onClick={() => checkStatus()} className="text-sm text-muted-foreground underline hover:text-foreground">
           Check again
         </button>

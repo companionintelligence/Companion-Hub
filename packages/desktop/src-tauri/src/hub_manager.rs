@@ -18,6 +18,7 @@ const TRAEFIK_ACME_DEFAULT_CONTENT: &str = "{}";
 const TRAEFIK_CONFIG_SEED: &str = include_str!("../../../backend/assets/traefik/traefik.yml");
 const TRAEFIK_DYNAMIC_CONFIG_SEED: &str =
     include_str!("../../../backend/assets/traefik/dynamic/dynamic.yml");
+const DESIRED_STATE_FILENAME: &str = ".desired-state";
 const TRAEFIK_RECREATE_MARKER_FILENAME: &str = ".traefik-recreate-required";
 const TRAEFIK_STATE_DIR: &str = "state/traefik";
 const TRAEFIK_CONFIG_DIR: &str = "state/traefik/config";
@@ -172,11 +173,62 @@ pub struct HubInitialization {
     pub traefik_preflight: TraefikRuntimePreflight,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DesiredState {
+    Running,
+    Stopped,
+}
+
+impl DesiredState {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Stopped => "stopped",
+        }
+    }
+
+    fn from_str(s: &str) -> Option<Self> {
+        match s.trim() {
+            "running" => Some(Self::Running),
+            "stopped" => Some(Self::Stopped),
+            _ => None,
+        }
+    }
+}
+
+fn desired_state_path(data_dir: &Path) -> PathBuf {
+    data_dir.join(DESIRED_STATE_FILENAME)
+}
+
+pub fn read_desired_state(data_dir: &Path) -> Option<DesiredState> {
+    std::fs::read_to_string(desired_state_path(data_dir))
+        .ok()
+        .and_then(|s| DesiredState::from_str(&s))
+}
+
+pub fn write_desired_state(data_dir: &Path, state: &DesiredState) -> Result<(), String> {
+    std::fs::write(desired_state_path(data_dir), state.as_str()).map_err(|e| {
+        format!(
+            "Failed to persist desired state to {}: {}",
+            desired_state_path(data_dir).display(),
+            e
+        )
+    })
+}
+
+/// Required containers that must be healthy for the stack to be considered ready.
+const REQUIRED_STACK_CONTAINERS: &[&str] = &["ci-os-hub", "ci-hub-db"];
+
 #[derive(Clone, serde::Serialize)]
 pub enum HubStatus {
     DockerNotAvailable,
     Stopped,
+    /// The user intentionally stopped the hub; preserved across relaunch.
+    UserStopped,
     Starting,
+    /// Stack is partially converged — some services are not yet healthy.
+    WaitingForStack { detail: String },
     Running,
     Error { message: String },
 }
@@ -210,77 +262,131 @@ pub struct DockerInstallResult {
     pub detail: Option<String>,
 }
 
-/// Get the current status of the Hub by inspecting the Docker container.
-pub fn get_hub_status() -> HubStatus {
-    if !is_docker_available() {
-        return HubStatus::DockerNotAvailable;
-    }
-
-    // Check ci-os-hub container specifically
-    let status = docker_command()
+/// Inspect a single container's state and health.
+/// Returns (state, health) e.g. ("running", "healthy") or empty strings if not found.
+fn inspect_container_state(name: &str) -> (String, String) {
+    let raw = docker_command()
         .args([
             "inspect",
             "--format",
             "{{.State.Status}}:{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}",
-            "ci-os-hub",
+            name,
         ])
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default();
 
-    if status.is_empty() || status.contains("No such object") || status.contains("Error") {
+    if raw.is_empty() || raw.contains("No such object") || raw.contains("Error") {
+        return (String::new(), String::new());
+    }
+
+    let parts: Vec<&str> = raw.split(':').collect();
+    let state = parts.first().copied().unwrap_or("").to_string();
+    let health = parts.get(1).copied().unwrap_or("").to_string();
+    (state, health)
+}
+
+/// Evaluate whether a container is healthy/ready.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ContainerReadiness {
+    Healthy,
+    Starting,
+    Unhealthy,
+    NotFound,
+}
+
+pub(crate) fn evaluate_container_readiness(state: &str, health: &str) -> ContainerReadiness {
+    match (state, health) {
+        ("running", "healthy") => ContainerReadiness::Healthy,
+        ("running", "none") => ContainerReadiness::Healthy, // no healthcheck defined
+        ("running", _) => ContainerReadiness::Starting,
+        ("restarting", _) | ("created", _) => ContainerReadiness::Starting,
+        ("exited", _) | ("dead", _) => ContainerReadiness::Unhealthy,
+        _ if state.is_empty() => ContainerReadiness::NotFound,
+        _ => ContainerReadiness::Starting,
+    }
+}
+
+/// Get the current status of the Hub by inspecting the full required stack health.
+pub fn get_hub_status() -> HubStatus {
+    if !is_docker_available() {
+        return HubStatus::DockerNotAvailable;
+    }
+
+    let data_dir = get_hub_data_dir();
+    let desired = read_desired_state(&data_dir);
+
+    let mut all_healthy = true;
+    let mut any_found = false;
+    let mut waiting_details: Vec<String> = Vec::new();
+    let mut hub_error: Option<String> = None;
+
+    for &container in REQUIRED_STACK_CONTAINERS {
+        let (state, health) = inspect_container_state(container);
+        let readiness = evaluate_container_readiness(&state, &health);
+
+        match readiness {
+            ContainerReadiness::Healthy => {
+                any_found = true;
+            }
+            ContainerReadiness::Starting => {
+                any_found = true;
+                all_healthy = false;
+                // A "restarting" container with many restarts is a restart-loop error
+                if container == "ci-os-hub" && state == "restarting" {
+                    let restart_count = docker_command()
+                        .args(["inspect", "--format", "{{.RestartCount}}", "ci-os-hub"])
+                        .output()
+                        .map(|o| {
+                            String::from_utf8_lossy(&o.stdout)
+                                .trim()
+                                .parse::<u32>()
+                                .unwrap_or(0)
+                        })
+                        .unwrap_or(0);
+                    if restart_count > 3 {
+                        hub_error = Some(format!(
+                            "Hub has restarted {} times. Check View Logs for details.",
+                            restart_count
+                        ));
+                    }
+                }
+                waiting_details.push(format!("{}: {} ({})", container, state, health));
+            }
+            ContainerReadiness::Unhealthy => {
+                any_found = true;
+                all_healthy = false;
+                waiting_details.push(format!("{}: {}", container, state));
+            }
+            ContainerReadiness::NotFound => {
+                all_healthy = false;
+            }
+        }
+    }
+
+    if let Some(error) = hub_error {
+        return HubStatus::Error { message: error };
+    }
+
+    if !any_found {
+        // No containers at all — check if user intentionally stopped
+        if desired == Some(DesiredState::Stopped) {
+            return HubStatus::UserStopped;
+        }
         return HubStatus::Stopped;
     }
 
-    let parts: Vec<&str> = status.split(':').collect();
-    let state = parts.first().copied().unwrap_or("");
-    let health = parts.get(1).copied().unwrap_or("");
+    if all_healthy {
+        return HubStatus::Running;
+    }
 
-    match (state, health) {
-        ("running", "healthy") => HubStatus::Running,
-        ("running", _) => HubStatus::Starting,
-        ("restarting", _) => {
-            // Check if database is still starting — if so, Hub restart is expected
-            let db_status = docker_command()
-                .args([
-                    "inspect",
-                    "--format",
-                    "{{.State.Health.Status}}",
-                    "ci-hub-db",
-                ])
-                .output()
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                .unwrap_or_default();
-
-            if db_status != "healthy" {
-                HubStatus::Starting // DB not ready yet, Hub restart is expected
-            } else {
-                // DB is healthy but Hub is still restarting — might be a real error
-                let restart_count = docker_command()
-                    .args(["inspect", "--format", "{{.RestartCount}}", "ci-os-hub"])
-                    .output()
-                    .map(|o| {
-                        String::from_utf8_lossy(&o.stdout)
-                            .trim()
-                            .parse::<u32>()
-                            .unwrap_or(0)
-                    })
-                    .unwrap_or(0);
-
-                if restart_count <= 3 {
-                    HubStatus::Starting
-                } else {
-                    HubStatus::Error {
-                        message: format!(
-                            "Hub has restarted {} times. Open tray → View Logs for details.",
-                            restart_count
-                        ),
-                    }
-                }
-            }
+    // Some containers exist but not all healthy
+    if waiting_details.is_empty() {
+        HubStatus::Starting
+    } else {
+        HubStatus::WaitingForStack {
+            detail: waiting_details.join("; "),
         }
-        ("created", _) | ("exited", _) => HubStatus::Stopped,
-        _ => HubStatus::Starting,
     }
 }
 
@@ -302,9 +408,6 @@ pub(crate) fn desktop_log_path_for(data_dir: &Path) -> PathBuf {
     logs_dir_for(data_dir).join(DESKTOP_LOG_FILENAME)
 }
 
-pub fn desktop_log_path() -> PathBuf {
-    desktop_log_path_for(&get_hub_data_dir())
-}
 
 pub(crate) fn logs_open_target_for(data_dir: &Path) -> PathBuf {
     logs_dir_for(data_dir)
@@ -729,6 +832,9 @@ fn remove_existing_traefik_container(data_dir: &Path) -> Result<(), String> {
 
 /// Start Hub using docker compose up (with port conflict resolution)
 pub fn start_hub(compose_path: &Path, env_path: &Path, data_dir: &Path) -> Result<String, String> {
+    // Record desired state as running
+    let _ = write_desired_state(data_dir, &DesiredState::Running);
+
     let _ = append_desktop_log_for(
         data_dir,
         "hub.start",
@@ -871,6 +977,9 @@ pub fn start_hub(compose_path: &Path, env_path: &Path, data_dir: &Path) -> Resul
 /// Stop Hub containers
 pub fn stop_hub(compose_path: &Path, env_path: &Path) -> Result<String, String> {
     let data_dir = get_hub_data_dir();
+    // Record desired state as stopped
+    let _ = write_desired_state(&data_dir, &DesiredState::Stopped);
+
     let _ = append_desktop_log_for(
         &data_dir,
         "hub.stop",
@@ -1752,11 +1861,13 @@ mod tests {
     use super::docker_desktop_windows_install_script;
     use super::{
         append_desktop_log_for, classify_docker_access_result, clear_traefik_recreate_required,
-        desktop_log_path_for, format_command_output, is_traefik_recreate_required,
-        logs_open_target_for, managed_app_container_ps_args, mark_traefik_recreate_required,
-        parse_container_ids, prepare_traefik_runtime_state, seeded_traefik_config_contents,
-        truncate_command_output, DockerAccessState, MAX_COMMAND_OUTPUT_CHARS, TRAEFIK_ACME_FILE,
-        TRAEFIK_CONFIG_FILE, TRAEFIK_DYNAMIC_CONFIG_SEED, TRAEFIK_DYNAMIC_FILE, TRAEFIK_TLS_DIR,
+        desktop_log_path_for, evaluate_container_readiness, format_command_output,
+        is_traefik_recreate_required, logs_open_target_for, managed_app_container_ps_args,
+        mark_traefik_recreate_required, parse_container_ids, prepare_traefik_runtime_state,
+        read_desired_state, seeded_traefik_config_contents, truncate_command_output,
+        write_desired_state, ContainerReadiness, DesiredState, DockerAccessState,
+        MAX_COMMAND_OUTPUT_CHARS, TRAEFIK_ACME_FILE, TRAEFIK_CONFIG_FILE,
+        TRAEFIK_DYNAMIC_CONFIG_SEED, TRAEFIK_DYNAMIC_FILE, TRAEFIK_TLS_DIR,
     };
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     use std::os::unix::fs::PermissionsExt;
@@ -1980,5 +2091,115 @@ mod tests {
         assert!(script.contains("codesign --verify --deep --strict --verbose=2"));
         assert!(script.contains("spctl --assess --type execute --verbose=2"));
         assert!(script.contains("--user=\"hex\""));
+    }
+
+    #[test]
+    fn desired_state_can_be_written_and_read_back() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+
+        assert_eq!(read_desired_state(tempdir.path()), None);
+
+        write_desired_state(tempdir.path(), &DesiredState::Running).expect("write running");
+        assert_eq!(
+            read_desired_state(tempdir.path()),
+            Some(DesiredState::Running)
+        );
+
+        write_desired_state(tempdir.path(), &DesiredState::Stopped).expect("write stopped");
+        assert_eq!(
+            read_desired_state(tempdir.path()),
+            Some(DesiredState::Stopped)
+        );
+    }
+
+    #[test]
+    fn desired_state_returns_none_for_invalid_content() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let path = tempdir.path().join(".desired-state");
+        std::fs::write(&path, "unknown").expect("write invalid");
+        assert_eq!(read_desired_state(tempdir.path()), None);
+    }
+
+    #[test]
+    fn desired_state_handles_whitespace_and_newlines() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let path = tempdir.path().join(".desired-state");
+        std::fs::write(&path, "  stopped \n").expect("write padded");
+        assert_eq!(
+            read_desired_state(tempdir.path()),
+            Some(DesiredState::Stopped)
+        );
+    }
+
+    #[test]
+    fn evaluate_readiness_running_healthy() {
+        assert_eq!(
+            evaluate_container_readiness("running", "healthy"),
+            ContainerReadiness::Healthy
+        );
+    }
+
+    #[test]
+    fn evaluate_readiness_running_no_healthcheck() {
+        assert_eq!(
+            evaluate_container_readiness("running", "none"),
+            ContainerReadiness::Healthy
+        );
+    }
+
+    #[test]
+    fn evaluate_readiness_running_starting() {
+        assert_eq!(
+            evaluate_container_readiness("running", "starting"),
+            ContainerReadiness::Starting
+        );
+    }
+
+    #[test]
+    fn evaluate_readiness_restarting() {
+        assert_eq!(
+            evaluate_container_readiness("restarting", ""),
+            ContainerReadiness::Starting
+        );
+    }
+
+    #[test]
+    fn evaluate_readiness_created() {
+        assert_eq!(
+            evaluate_container_readiness("created", ""),
+            ContainerReadiness::Starting
+        );
+    }
+
+    #[test]
+    fn evaluate_readiness_exited() {
+        assert_eq!(
+            evaluate_container_readiness("exited", ""),
+            ContainerReadiness::Unhealthy
+        );
+    }
+
+    #[test]
+    fn evaluate_readiness_dead() {
+        assert_eq!(
+            evaluate_container_readiness("dead", ""),
+            ContainerReadiness::Unhealthy
+        );
+    }
+
+    #[test]
+    fn evaluate_readiness_not_found() {
+        assert_eq!(
+            evaluate_container_readiness("", ""),
+            ContainerReadiness::NotFound
+        );
+    }
+
+    #[test]
+    fn evaluate_readiness_unknown_state_treated_as_starting() {
+        assert_eq!(
+            evaluate_container_readiness("removing", ""),
+            ContainerReadiness::Starting
+        );
     }
 }

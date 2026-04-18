@@ -50,10 +50,25 @@ function restoreNavigator() {
   });
 }
 
-function renderWithTauriStatus(status: 'DockerNotAvailable' | 'Stopped' | 'Running', userAgent: string, userAgentData?: { architecture?: string }) {
+function renderWithTauriStatus(
+  status:
+    | 'DockerNotAvailable'
+    | 'Stopped'
+    | 'Running'
+    | 'UserStopped'
+    | 'Starting'
+    | { WaitingForStack: { detail: string } }
+    | { Error: { message: string } },
+  userAgent: string,
+  userAgentData?: { architecture?: string },
+) {
   const invoke = vi.fn<(cmd: string) => Promise<unknown>>(async (cmd: string) => {
     if (cmd === 'get_hub_status_command') {
       return status;
+    }
+
+    if (cmd === 'get_logs_dir_command') {
+      return '/tmp/test-logs';
     }
 
     throw new Error(`Unexpected invoke command: ${cmd}`);
@@ -261,5 +276,94 @@ describe('HubStatus Docker guidance', () => {
 
     expect(await screen.findByText('Hub child')).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Docker Desktop Required' })).not.toBeInTheDocument();
+  });
+});
+
+describe('HubStatus startup phases and diagnostics', () => {
+  it('shows UserStopped state with intentional stop message and Start button', async () => {
+    renderWithTauriStatus('UserStopped', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5)');
+
+    expect(await screen.findByRole('heading', { name: 'Hub Stopped' })).toBeInTheDocument();
+    expect(screen.getByText('The Hub was stopped intentionally and will not auto-start. Click Start to resume.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Start Hub' })).toBeInTheDocument();
+  });
+
+  it('shows WaitingForStack state with convergence detail', async () => {
+    renderWithTauriStatus(
+      { WaitingForStack: { detail: 'ci-hub-db: running (starting); ci-os-hub: running (starting)' } },
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5)',
+    );
+
+    expect(await screen.findByRole('heading', { name: 'Hub Starting…' })).toBeInTheDocument();
+    expect(screen.getByText('Waiting for stack to converge…')).toBeInTheDocument();
+    expect(screen.getByText('ci-hub-db: running (starting); ci-os-hub: running (starting)')).toBeInTheDocument();
+  });
+
+  it('shows View Logs button on Stopped state', async () => {
+    renderWithTauriStatus('Stopped', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5)');
+
+    expect(await screen.findByRole('button', { name: 'View Logs' })).toBeInTheDocument();
+  });
+
+  it('shows View Logs button on UserStopped state', async () => {
+    renderWithTauriStatus('UserStopped', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5)');
+
+    expect(await screen.findByRole('button', { name: 'View Logs' })).toBeInTheDocument();
+  });
+
+  it('shows View Logs button on Starting state', async () => {
+    renderWithTauriStatus('Starting', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5)');
+
+    expect(await screen.findByRole('button', { name: 'View Logs' })).toBeInTheDocument();
+  });
+
+  it('shows View Logs button alongside Restart Hub on error state', async () => {
+    renderWithTauriStatus({ Error: { message: 'Hub has restarted 5 times.' } }, 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5)');
+
+    expect(await screen.findByRole('heading', { name: 'Hub Error' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Restart Hub' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'View Logs' })).toBeInTheDocument();
+  });
+
+  it('shows View Logs button on WaitingForStack state', async () => {
+    renderWithTauriStatus({ WaitingForStack: { detail: 'ci-hub-db: running (starting)' } }, 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5)');
+
+    expect(await screen.findByRole('button', { name: 'View Logs' })).toBeInTheDocument();
+  });
+
+  it('does not auto-start on Windows when status is UserStopped', async () => {
+    vi.useFakeTimers();
+
+    let getHubStatusCallCount = 0;
+    const invoke = vi.fn<(cmd: string) => Promise<unknown>>(async (cmd: string) => {
+      switch (cmd) {
+        case 'get_hub_status_command':
+          getHubStatusCallCount += 1;
+          return 'UserStopped';
+        case 'get_logs_dir_command':
+          return '/tmp/test-logs';
+        default:
+          throw new Error(`Unexpected invoke command: ${cmd}`);
+      }
+    });
+
+    mockWindowsTauri(invoke);
+
+    render(
+      <HubStatus>
+        <div>Hub child</div>
+      </HubStatus>,
+    );
+
+    await flushAsyncWork();
+    expect(screen.getByRole('heading', { name: 'Hub Stopped' })).toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    await flushAsyncWork();
+
+    expect(invoke).not.toHaveBeenCalledWith('start_hub_command');
+    expect(screen.getByRole('heading', { name: 'Hub Stopped' })).toBeInTheDocument();
   });
 });

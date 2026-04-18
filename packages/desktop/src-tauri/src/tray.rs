@@ -13,7 +13,11 @@ fn describe_hub_status(status: &crate::hub_manager::HubStatus) -> String {
     match status {
         crate::hub_manager::HubStatus::DockerNotAvailable => "docker not available".to_string(),
         crate::hub_manager::HubStatus::Stopped => "stopped".to_string(),
+        crate::hub_manager::HubStatus::UserStopped => "stopped (by user)".to_string(),
         crate::hub_manager::HubStatus::Starting => "starting".to_string(),
+        crate::hub_manager::HubStatus::WaitingForStack { detail } => {
+            format!("waiting for stack: {}", detail)
+        }
         crate::hub_manager::HubStatus::Running => "running".to_string(),
         crate::hub_manager::HubStatus::Error { message } => format!("error: {}", message),
     }
