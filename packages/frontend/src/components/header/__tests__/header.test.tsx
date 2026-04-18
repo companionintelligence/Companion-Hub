@@ -1,5 +1,5 @@
 import { render, screen } from '@testing-library/react';
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { MemoryRouter } from 'react-router';
 import { Header } from '../header';
 
@@ -21,14 +21,21 @@ vi.mock('@/components/mode-toggle', () => ({
   ModeToggle: () => <div data-testid="mode-toggle">ModeToggle</div>,
 }));
 
+let capturedMutationOptions: any = {};
 vi.mock('@tanstack/react-query', () => ({
-  useMutation: () => ({
-    mutate: vi.fn(),
-  }),
+  useMutation: (options: any) => {
+    capturedMutationOptions = options;
+    return { mutate: vi.fn() };
+  },
 }));
 
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   logoutMutation: () => ({ mutationFn: vi.fn() }),
+}));
+
+const mockSetTauriSessionId = vi.fn();
+vi.mock('@/lib/api-fetch', () => ({
+  setTauriSessionId: (...args: any[]) => mockSetTauriSessionId(...args),
 }));
 
 // Polyfill ResizeObserver for Radix UI
@@ -47,6 +54,11 @@ function renderHeader(isLoggedIn = true) {
 }
 
 describe('Header', () => {
+  beforeEach(() => {
+    capturedMutationOptions = {};
+    mockSetTauriSessionId.mockClear();
+  });
+
   it('renders My Apps link in desktop navigation when logged in', () => {
     renderHeader(true);
 
@@ -84,5 +96,18 @@ describe('Header', () => {
     // be in the DOM as well depending on Radix rendering behaviour
     expect(allMyAppsLinks.length).toBeGreaterThanOrEqual(1);
     expect(allMyAppsLinks.some((link) => link.getAttribute('href') === '/apps')).toBe(true);
+  });
+
+  it('clears Tauri session on successful logout before reloading', () => {
+    const reloadMock = vi.fn();
+    Object.defineProperty(window, 'location', { value: { reload: reloadMock }, writable: true });
+
+    renderHeader(true);
+
+    expect(capturedMutationOptions.onSuccess).toBeDefined();
+    capturedMutationOptions.onSuccess();
+
+    expect(mockSetTauriSessionId).toHaveBeenCalledWith(null);
+    expect(reloadMock).toHaveBeenCalled();
   });
 });
