@@ -1,13 +1,11 @@
 import { updateAppMetadataMutation } from '@/api-client/@tanstack/react-query.gen';
 import { Alert, AlertDescription, AlertHeading, AlertIcon } from '@/components/ui/Alert/Alert';
 import { Button } from '@/components/ui/Button';
-import { Card, CardContent, CardHeader } from '@/components/ui/Card';
-import { DataGrid, DataGridItem } from '@/components/ui/DataGrid';
 import type { AppDetails, AppInfo, AppMetadata } from '@/types/app.types';
 import { extractAppUrn } from '@/utils/app-helpers';
 import type { AppUrn } from '@ci-hub/common/types';
 import { CURRENT_SCHEMA_VERSION } from '@ci-hub/common/schemas';
-import { AlertCircle, AlertTriangle, ExternalLink, HardDrive } from 'lucide-react';
+import { AlertCircle, AlertTriangle, ExternalLink, HardDrive, Shield } from 'lucide-react';
 import { useMutation } from '@tanstack/react-query';
 import { Suspense } from 'react';
 import React from 'react';
@@ -48,6 +46,10 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, 
     },
   });
 
+  const updatedDate = info.updated_at
+    ? new Date(info.updated_at * 1000).toLocaleDateString(undefined, { year: 'numeric', month: 'numeric', day: 'numeric' })
+    : null;
+
   return (
     <div style={{ marginTop: -1 }}>
       {info.deprecated && (
@@ -75,88 +77,136 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, 
         </div>
       </Alert>
 
-      {/* Description / Notes */}
-      <Card>
-        {isUserApp && (
-          <CardHeader className="flex flex-row justify-between items-center space-y-0 p-6">
-            <h3 className="mb-0 font-semibold text-lg">{t('APP_DETAILS_NOTES')}</h3>
-            {!isEditing && (
-              <Button variant="outline" onClick={() => setIsEditing(!isEditing)}>
-                {t('EDIT')}
-              </Button>
-            )}
-            {isEditing && (
-              <div>
-                <Button
-                  variant="outline"
-                  intent="danger"
-                  onClick={() => {
-                    setIsEditing(false);
-                    setMeta(info.description);
-                  }}
-                >
-                  {t('ACTIONS_CANCEL')}
-                </Button>
-                <Button
-                  variant="outline"
-                  className="ml-2"
-                  onClick={() =>
-                    saveMetaMutation.mutate({
-                      path: { urn: info.urn },
-                      body: { data: meta },
-                    })
-                  }
-                  loading={saveMetaMutation.isPending}
-                >
-                  {t('SAVE')}
-                </Button>
+      {/* Two-column portal-style layout */}
+      <div className="grid grid-cols-1 md:grid-cols-[1fr,280px] gap-6 md:gap-8">
+        {/* Left column - About this app */}
+        <div className="space-y-6">
+          <div>
+            {isUserApp && (
+              <div className="flex justify-between items-center mb-3">
+                <h2 className="text-lg font-semibold">{t('APP_DETAILS_NOTES')}</h2>
+                {!isEditing && (
+                  <Button variant="outline" size="sm" onClick={() => setIsEditing(!isEditing)}>
+                    {t('EDIT')}
+                  </Button>
+                )}
+                {isEditing && (
+                  <div className="flex gap-2">
+                    <Button
+                      variant="outline"
+                      intent="danger"
+                      size="sm"
+                      onClick={() => {
+                        setIsEditing(false);
+                        setMeta(info.description);
+                      }}
+                    >
+                      {t('ACTIONS_CANCEL')}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() =>
+                        saveMetaMutation.mutate({
+                          path: { urn: info.urn },
+                          body: { data: meta },
+                        })
+                      }
+                      loading={saveMetaMutation.isPending}
+                    >
+                      {t('SAVE')}
+                    </Button>
+                  </div>
+                )}
               </div>
             )}
-          </CardHeader>
-        )}
-        <CardContent className="pt-6 text-sm">
-          <Suspense>
-            <AppDescriptionEditor isEditing={isEditing} meta={meta} setMeta={setMeta} />
-          </Suspense>
-        </CardContent>
-      </Card>
+            {!isUserApp && <h2 className="text-lg font-semibold mb-3">{t('APP_DETAILS_ABOUT')}</h2>}
+            <div className="text-sm text-muted-foreground leading-relaxed">
+              <Suspense>
+                <AppDescriptionEditor isEditing={isEditing} meta={meta} setMeta={setMeta} />
+              </Suspense>
+            </div>
+          </div>
+        </div>
 
-      {/* Base Info */}
-      <Card className="mt-4">
-        <CardContent className="pt-6">
-          <DataGrid>
-            <DataGridItem title={t('APP_DETAILS_SOURCE_CODE')}>
-              <a target="_blank" rel="noreferrer" className="text-blue-500 text-xs" href={info.source}>
-                {t('APP_DETAILS_LINK')}
-                <ExternalLink size={15} className="ml-1 mb-1 inline" />
-              </a>
-            </DataGridItem>
-            <DataGridItem title={t('APP_DETAILS_AUTHOR')}>{info.author}</DataGridItem>
-            <DataGridItem title={t('APP_DETAILS_CATEGORIES_TITLE')}>
-              {info.categories?.map((c) => (
-                <span key={c} className="inline-flex items-center rounded-full bg-green-500/10 px-2.5 py-0.5 text-xs font-medium text-green-500 mr-1">
-                  {t(`APP_CATEGORY_${c.toUpperCase() as Uppercase<typeof c>}`)}
+        {/* Right column - Information */}
+        <div className="space-y-6">
+          <div>
+            <h2 className="text-lg font-semibold mb-4">{t('APP_DETAILS_INFORMATION')}</h2>
+            <div className="space-y-4">
+              <div className="flex justify-between items-start">
+                <span className="text-sm text-muted-foreground">{t('APP_DETAILS_PROVIDER')}</span>
+                <span className="text-sm font-medium text-right">{info.author}</span>
+              </div>
+              <div className="border-t border-border/40" />
+              <div className="flex justify-between items-start">
+                <span className="text-sm text-muted-foreground">{t('APP_DETAILS_CATEGORIES_TITLE')}</span>
+                <span className="text-sm font-medium text-right capitalize">
+                  {info.categories?.map((c) => t(`APP_CATEGORY_${c.toUpperCase() as Uppercase<typeof c>}`)).join(', ')}
                 </span>
-              ))}
-            </DataGridItem>
-            <DataGridItem title={t('APP_DETAILS_VERSION')}>{info.version}</DataGridItem>
-            {info.website && (
-              <DataGridItem title={t('APP_DETAILS_WEBSITE')}>
-                <a target="_blank" rel="noreferrer" className="text-blue-500 text-xs" href={info.website}>
-                  {info.website}
-                  <ExternalLink size={15} className="ml-1 mb-1 inline" />
+              </div>
+              <div className="border-t border-border/40" />
+              {updatedDate && (
+                <>
+                  <div className="flex justify-between items-start">
+                    <span className="text-sm text-muted-foreground">{t('APP_DETAILS_UPDATED')}</span>
+                    <span className="text-sm font-medium">{updatedDate}</span>
+                  </div>
+                  <div className="border-t border-border/40" />
+                </>
+              )}
+              <div className="flex justify-between items-start">
+                <span className="text-sm text-muted-foreground">{t('APP_DETAILS_VERSION')}</span>
+                <span className="text-sm font-medium">{info.version}</span>
+              </div>
+              <div className="border-t border-border/40" />
+              <div className="flex justify-between items-start">
+                <span className="text-sm text-muted-foreground">{t('APP_DETAILS_SOURCE_CODE')}</span>
+                <a target="_blank" rel="noreferrer" className="text-sm text-blue-500 hover:underline" href={info.source}>
+                  {t('APP_DETAILS_LINK')}
+                  <ExternalLink size={12} className="ml-1 mb-0.5 inline" />
                 </a>
-              </DataGridItem>
-            )}
-            <DataGridItem title="Download Size">
-              <span className="flex items-center gap-1">
-                <HardDrive size={15} />
-                {imageSizeLoading ? 'Calculating...' : imageSizeFormatted ? `~${imageSizeFormatted}` : 'Unknown'}
-              </span>
-            </DataGridItem>
-          </DataGrid>
-        </CardContent>
-      </Card>
+              </div>
+              {info.website && (
+                <>
+                  <div className="border-t border-border/40" />
+                  <div className="flex justify-between items-start">
+                    <span className="text-sm text-muted-foreground">{t('APP_DETAILS_WEBSITE')}</span>
+                    <a target="_blank" rel="noreferrer" className="text-sm text-blue-500 hover:underline truncate max-w-[160px]" href={info.website}>
+                      {t('APP_DETAILS_LINK')}
+                      <ExternalLink size={12} className="ml-1 mb-0.5 inline" />
+                    </a>
+                  </div>
+                </>
+              )}
+              <div className="border-t border-border/40" />
+              <div className="flex justify-between items-start">
+                <span className="text-sm text-muted-foreground">Download Size</span>
+                <span className="text-sm font-medium flex items-center gap-1">
+                  <HardDrive size={13} />
+                  {imageSizeLoading ? 'Calculating...' : imageSizeFormatted ? `~${imageSizeFormatted}` : 'Unknown'}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* App Privacy card */}
+          <div className="rounded-xl border border-border/50 bg-muted/20 p-4">
+            <div className="flex items-center gap-2 mb-2">
+              <Shield className="h-4 w-4 text-blue-400" />
+              <span className="text-sm font-semibold">App Privacy</span>
+            </div>
+            <p className="text-xs text-muted-foreground mb-3">The developer has provided details about how this app handles your data.</p>
+            <div className="flex items-center gap-2 rounded-lg bg-muted/30 p-2.5">
+              <Shield className="h-3.5 w-3.5 text-muted-foreground" />
+              <div>
+                <p className="text-xs font-medium">Data Collection</p>
+                <p className="text-xs text-muted-foreground">No data collected</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 };
