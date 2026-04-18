@@ -113,7 +113,7 @@ export const RecommendationsStep = ({ detectedServices, onSelect, onSkip, onBack
           )}
           <p className="text-sm text-muted-foreground">
             {detectedServices.length > 0
-              ? `We detected ${detectedServices.length} service${detectedServices.length > 1 ? 's' : ''} running. Here are some open-source alternatives you might like.`
+              ? `We found ${detectedServices.length} Docker service${detectedServices.length > 1 ? 's' : ''} on this device. Here are some open-source alternatives you might like.`
               : 'Here are some popular open-source apps you can self-host.'}
           </p>
           {detectedServices.length > 0 && (

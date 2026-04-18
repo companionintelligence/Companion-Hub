@@ -8,7 +8,7 @@ import { SelectAppsStep } from '../components/select-apps-step';
 import { InstallStep } from '../components/install-step';
 import { CompleteStep } from '../components/complete-step';
 import { Stepper, StepTrigger, StepTriggerList, StepContent } from '@/components/ui/Stepper/Stepper';
-import type { OnboardingApp } from '../helpers/types';
+import type { OnboardingApp, InstallSummary } from '../helpers/types';
 import type { DetectedService } from '../helpers/service-detection';
 import { getLogo } from '@/lib/theme/theme';
 import { Suspense } from 'react';
@@ -19,7 +19,7 @@ function OnboardingWizard() {
   const [currentStep, setCurrentStep] = useState(0);
   const [detectedServices, setDetectedServices] = useState<DetectedService[]>([]);
   const [selectedApps, setSelectedApps] = useState<OnboardingApp[]>([]);
-  const [installComplete, setInstallComplete] = useState(false);
+  const [installSummary, setInstallSummary] = useState<InstallSummary | undefined>();
 
   // If already completed onboarding, redirect to dashboard
   if (user.hasCompletedOnboarding) {
@@ -106,18 +106,15 @@ function OnboardingWizard() {
               <InstallStep
                 apps={selectedApps}
                 defaultExposureMode={defaultExposureMode}
-                onComplete={() => {
-                  // Mark installs as complete (optimistic) and move to final
-                  // step. The InstallStep component itself no longer blocks the
-                  // user from continuing while installs run in the background.
-                  setInstallComplete(true);
+                onComplete={(summary) => {
+                  setInstallSummary(summary);
                   setCurrentStep(4);
                 }}
               />
             </StepContent>
 
             <StepContent step={4}>
-              <CompleteStep installed={installComplete && selectedApps.length > 0} />
+              <CompleteStep installSummary={installSummary} />
             </StepContent>
           </div>
         </Stepper>

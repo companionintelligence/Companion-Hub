@@ -12,6 +12,11 @@ test.describe('Navigation', () => {
     await page.waitForURL(/\/app-store/);
     await expect(page.getByRole('heading', { name: 'App Store' })).toBeVisible({ timeout: 30000 });
 
+    // My Apps
+    await page.getByRole('link', { name: 'My Apps' }).click();
+    await page.waitForURL(/\/apps/);
+    await expect(page.getByRole('heading', { name: 'My Apps' })).toBeVisible({ timeout: 30000 });
+
     // Settings — wait for page to stabilize after navigation (React re-renders)
     await page.getByRole('link', { name: 'Settings' }).click();
     await page.waitForURL(/\/settings/);
