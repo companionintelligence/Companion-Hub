@@ -335,7 +335,7 @@ export default function DeviceRegistrationPage() {
           </Alert>
         )}
 
-        <Button variant="outline" onClick={handleRetryStatus} disabled={isPairing}>
+        <Button variant="outline" onClick={() => void handleRetryStatus()} disabled={isPairing}>
           Check again
         </Button>
       </div>
@@ -350,7 +350,7 @@ export default function DeviceRegistrationPage() {
           <h2 className="text-xl font-semibold text-foreground">Registration status temporarily unavailable</h2>
           <p className="mt-3 text-sm text-muted-foreground">{statusError}</p>
         </div>
-        <Button onClick={handleRetryStatus}>Retry status check</Button>
+        <Button onClick={() => void handleRetryStatus()}>Retry status check</Button>
       </div>
     );
   }
@@ -434,7 +434,7 @@ export default function DeviceRegistrationPage() {
             disabled={isPairing}
             className={`flex-1 h-9 rounded-md border bg-transparent px-3 py-1 text-base font-mono tracking-widest shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 md:text-sm ${pairingError ? 'border-destructive focus-visible:ring-destructive' : 'border-input'}`}
           />
-          <Button intent="primary" onClick={handlePair} disabled={pairingCode.length !== 6 || isPairing} loading={isPairing}>
+          <Button intent="primary" onClick={() => void handlePair()} disabled={pairingCode.length !== 6 || isPairing} loading={isPairing}>
             {isPairing ? 'Registering...' : 'Register'}
           </Button>
         </div>
