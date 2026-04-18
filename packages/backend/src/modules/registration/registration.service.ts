@@ -355,9 +355,8 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
 
       // Validation passed — recover from degraded if applicable
       if (this._currentPhase === 'degraded') {
-        const target = this.hasTunnelToken() ? 'locally_ready' : 'locally_ready';
         this.logger.info('Registration validation passed — recovering from degraded');
-        await this.setPhase(target);
+        await this.setPhase('locally_ready');
       } else {
         this.logger.info('Registration validation passed: device is active and registered');
       }
