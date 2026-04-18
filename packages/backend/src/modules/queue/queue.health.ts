@@ -11,12 +11,21 @@ export class QueueHealthIndicator {
 
   async isHealthy(key: string): Promise<HealthIndicatorResult> {
     const indicator = this.healthIndicatorService.check(key);
-    const isHealthy = this.queueFactory.isReady();
+    const state = this.queueFactory.getConnectionState();
 
-    if (!isHealthy) {
-      return indicator.down();
+    if (!state.ready) {
+      return indicator.down({
+        state: state.status,
+        ready: state.ready,
+        attempts: state.attempts,
+        ...(state.lastError ? { lastError: state.lastError } : {}),
+      });
     }
 
-    return indicator.up();
+    return indicator.up({
+      state: state.status,
+      ready: state.ready,
+      attempts: state.attempts,
+    });
   }
 }
