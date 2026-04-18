@@ -8,6 +8,7 @@ import { useCallback, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router';
 
 const ALTERNATIVES_VIEW = '__alternatives__' as const;
+const STORE_INDEX_PATTERN = /^\/app-store\/?$/;
 
 export const AppStoreSidebar = () => {
   const { setCategory, category, setSearch, search: initialSearch } = useAppStoreState();
@@ -21,7 +22,7 @@ export const AppStoreSidebar = () => {
     (e: React.ChangeEvent<HTMLInputElement>) => {
       setLocalSearch(e.target.value);
       setSearch(e.target.value);
-      if (!location.pathname.match(/^\/app-store\/?$/)) {
+      if (!STORE_INDEX_PATTERN.test(location.pathname)) {
         navigate('/app-store');
       }
     },
@@ -31,7 +32,7 @@ export const AppStoreSidebar = () => {
   const handleCategoryClick = useCallback(
     (cat?: typeof category) => {
       setCategory(cat);
-      if (!location.pathname.match(/^\/app-store\/?$/)) {
+      if (!STORE_INDEX_PATTERN.test(location.pathname)) {
         navigate('/app-store');
       }
     },
