@@ -181,7 +181,7 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, 
               )}
               <div className="border-t border-border/40" />
               <div className="flex justify-between items-start">
-                <span className="text-sm text-muted-foreground">Download Size</span>
+                <span className="text-sm text-muted-foreground">{t('APP_DETAILS_DOWNLOAD_SIZE')}</span>
                 <span className="text-sm font-medium flex items-center gap-1">
                   <HardDrive size={13} />
                   {imageSizeLoading ? 'Calculating...' : imageSizeFormatted ? `~${imageSizeFormatted}` : 'Unknown'}
@@ -194,14 +194,14 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, 
           <div className="rounded-xl border border-border/50 bg-muted/20 p-4">
             <div className="flex items-center gap-2 mb-2">
               <Shield className="h-4 w-4 text-blue-400" />
-              <span className="text-sm font-semibold">App Privacy</span>
+              <span className="text-sm font-semibold">{t('APP_DETAILS_APP_PRIVACY')}</span>
             </div>
-            <p className="text-xs text-muted-foreground mb-3">The developer has provided details about how this app handles your data.</p>
+            <p className="text-xs text-muted-foreground mb-3">{t('APP_DETAILS_APP_PRIVACY_DESC')}</p>
             <div className="flex items-center gap-2 rounded-lg bg-muted/30 p-2.5">
               <Shield className="h-3.5 w-3.5 text-muted-foreground" />
               <div>
-                <p className="text-xs font-medium">Data Collection</p>
-                <p className="text-xs text-muted-foreground">No data collected</p>
+                <p className="text-xs font-medium">{t('APP_DETAILS_DATA_COLLECTION')}</p>
+                <p className="text-xs text-muted-foreground">{t('APP_DETAILS_NO_DATA_COLLECTED')}</p>
               </div>
             </div>
           </div>
