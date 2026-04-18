@@ -334,11 +334,9 @@ describe('HubStatus startup phases and diagnostics', () => {
   it('does not auto-start on Windows when status is UserStopped', async () => {
     vi.useFakeTimers();
 
-    let getHubStatusCallCount = 0;
     const invoke = vi.fn<(cmd: string) => Promise<unknown>>(async (cmd: string) => {
       switch (cmd) {
         case 'get_hub_status_command':
-          getHubStatusCallCount += 1;
           return 'UserStopped';
         case 'get_logs_dir_command':
           return '/tmp/test-logs';
