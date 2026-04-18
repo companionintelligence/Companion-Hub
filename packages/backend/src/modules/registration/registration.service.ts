@@ -121,9 +121,12 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
 
       const persisted = (org.provisioningPhase ?? 'locally_ready') as ProvisioningPhase;
 
-      // If the DB says we should be operational, verify the tunnel token is on disk
+      // If the DB says we should be operational, verify the tunnel token is on disk.
+      // Sync the in-memory phase first so the transition from an operational phase
+      // to 'degraded' is legal (unregistered → degraded is not).
       if (isOperational(persisted) && !this.hasTunnelToken()) {
         this.logger.warn('Tunnel token missing — transitioning to degraded');
+        this._currentPhase = persisted;
         await this.setPhase('degraded', ['tunnel_token_missing'], org.id);
         return;
       }
