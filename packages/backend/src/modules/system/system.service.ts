@@ -13,7 +13,7 @@ export class SystemService {
   ) {}
 
   public async getSystemLoad() {
-    const { currentLoad } = await si.currentLoad();
+    const { currentLoad, cpus } = await si.currentLoad();
 
     const memResult = { total: 0, used: 0, available: 0 };
 
@@ -44,6 +44,7 @@ export class SystemService {
       diskSize: diskSize || 0,
       percentUsed: percentUsed || 0,
       cpuLoad: currentLoad || 0,
+      cpuCores: cpus?.length || 0,
       memoryTotal: memoryTotal || 0,
       percentUsedMemory: percentUsedMemory || 0,
     };

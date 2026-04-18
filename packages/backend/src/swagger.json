@@ -5124,6 +5124,9 @@
           "cpuLoad": {
             "type": "number"
           },
+          "cpuCores": {
+            "type": "number"
+          },
           "diskSize": {
             "type": "number"
           },
@@ -5142,6 +5145,7 @@
         },
         "required": [
           "cpuLoad",
+          "cpuCores",
           "diskSize",
           "diskUsed",
           "memoryTotal",
