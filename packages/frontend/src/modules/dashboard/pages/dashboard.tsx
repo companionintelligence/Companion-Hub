@@ -24,6 +24,7 @@ export default () => {
   });
 
   const isLoading = !systemData;
+  const memoryUsed = systemData ? Math.round((systemData.memoryTotal * systemData.percentUsedMemory) / 100) : 0;
 
   return (
     <div className="h-full overflow-y-auto">
@@ -57,7 +58,7 @@ export default () => {
                 isLoading={false}
                 title={t('DASHBOARD_MEMORY_TITLE')}
                 metric={`${systemData.percentUsedMemory}%`}
-                subtitle={`${Math.round((systemData.memoryTotal * systemData.percentUsedMemory) / 100)} / ${systemData.memoryTotal} GB`}
+                subtitle={`${memoryUsed} / ${systemData.memoryTotal} GB`}
                 icon={MemoryStick}
                 progress={systemData.percentUsedMemory}
                 color="green"

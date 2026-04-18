@@ -26,7 +26,7 @@ export const CompactSystemStat = ({ title, metric, subtitle, icon: Icon, progres
         <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{title}</span>
         <Icon size={18} className="text-muted-foreground" />
       </div>
-      <div className="text-lg sm:text-2xl font-bold mb-1">{isLoading ? '...' : metric}</div>
+      <div className={clsx('text-lg sm:text-2xl font-bold', subtitle ? 'mb-1' : 'mb-3')}>{isLoading ? '...' : metric}</div>
       {subtitle && <div className="text-xs sm:text-sm text-muted-foreground mb-2">{isLoading ? '...' : subtitle}</div>}
       <div className="h-1.5 w-full rounded-full bg-white/10 overflow-hidden">
         <div
