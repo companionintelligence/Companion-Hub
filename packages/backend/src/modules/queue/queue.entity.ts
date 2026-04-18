@@ -4,6 +4,7 @@ import type { ScheduledTask } from 'node-cron';
 import { AMQPConnectionError, AMQPError, type Connection, type RPCClient } from 'rabbitmq-client';
 import { z } from 'zod';
 import type { EventPublisher } from './event.publisher';
+import type { QueueConnectionState } from './queue.factory';
 
 export class Queue<T extends z.ZodType, R extends z.ZodType<{ success: boolean; message: string }>> {
   private cronTasks: ScheduledTask[] = [];
@@ -17,6 +18,8 @@ export class Queue<T extends z.ZodType, R extends z.ZodType<{ success: boolean; 
     private eventSchema: T,
     private resultSchema: R,
     private logger: LoggerService,
+    private isConnectionReady: () => boolean = () => true,
+    private getConnectionState: () => QueueConnectionState = () => ({ status: 'ready', ready: true, attempts: 0 }),
   ) {}
 
   public onEvent(callback: (data: z.output<T> & { eventId: string }, reply: (response: z.input<R>) => Promise<void>) => Promise<void>) {
@@ -56,6 +59,10 @@ export class Queue<T extends z.ZodType, R extends z.ZodType<{ success: boolean; 
 
   async publish(event: z.input<T>): Promise<{ success: boolean; message: string } | z.infer<R>> {
     try {
+      if (!this.isConnectionReady()) {
+        return this.unavailableResult();
+      }
+
       const eventData = this.eventSchema.safeParse(event);
 
       if (!eventData.success) {
@@ -99,12 +106,27 @@ export class Queue<T extends z.ZodType, R extends z.ZodType<{ success: boolean; 
 
     const task = cron.schedule(cronPattern, async () => {
       try {
+        if (!this.isConnectionReady()) {
+          const { message } = this.unavailableResult();
+          this.logger.warn(`Skipping cron job for queue ${this.queueName}: ${message}`);
+          return;
+        }
+
         await this.rpcClient.send(this.queueName, eventData.data);
       } catch (e) {
         this.logger.error('Error in cron job:', e);
       }
     });
     this.cronTasks.push(task);
+  }
+
+  private unavailableResult(): { success: false; message: string } {
+    const { status, lastError } = this.getConnectionState();
+    const message = `Queue '${this.queueName}' is unavailable while RabbitMQ is ${status}.${lastError ? ` Last error: ${lastError}` : ''}`;
+
+    this.logger.warn(message);
+
+    return { success: false, message };
   }
 
   public stopAllCronTasks() {
