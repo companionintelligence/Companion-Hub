@@ -11,6 +11,8 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 const MAX_COMMAND_OUTPUT_CHARS: usize = 400;
 const DESKTOP_LOG_FILENAME: &str = "desktop.log";
+const MANAGED_APP_CONTAINER_LABEL_FILTER: &str = "label=ci-os-hub.managed=true";
+const MANAGED_APP_CONTAINER_URN_FILTER: &str = "label=ci-os-hub.appurn";
 const DEFAULT_TRAEFIK_ACME_EMAIL: &str = "admin@companionintelligence.com";
 const TRAEFIK_ACME_DEFAULT_CONTENT: &str = "{}";
 const TRAEFIK_CONFIG_SEED: &str = include_str!("../../../backend/assets/traefik/traefik.yml");
@@ -304,17 +306,32 @@ pub fn desktop_log_path() -> PathBuf {
     desktop_log_path_for(&get_hub_data_dir())
 }
 
-pub(crate) fn preferred_log_target_for(data_dir: &Path) -> PathBuf {
-    let desktop_log = desktop_log_path_for(data_dir);
-    if desktop_log.exists() {
-        desktop_log
-    } else {
-        logs_dir_for(data_dir)
-    }
+pub(crate) fn logs_open_target_for(data_dir: &Path) -> PathBuf {
+    logs_dir_for(data_dir)
 }
 
-pub fn preferred_log_target() -> PathBuf {
-    preferred_log_target_for(&get_hub_data_dir())
+pub fn logs_open_target() -> PathBuf {
+    logs_open_target_for(&get_hub_data_dir())
+}
+
+pub(crate) fn managed_app_container_ps_args() -> [&'static str; 6] {
+    [
+        "ps",
+        "-q",
+        "--filter",
+        MANAGED_APP_CONTAINER_LABEL_FILTER,
+        "--filter",
+        MANAGED_APP_CONTAINER_URN_FILTER,
+    ]
+}
+
+fn parse_container_ids(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
 }
 
 fn format_log_entry(operation: &str, message: &str) -> String {
@@ -906,6 +923,73 @@ pub fn stop_hub(compose_path: &Path, env_path: &Path) -> Result<String, String> 
         };
         let _ = append_desktop_log_for(&data_dir, "hub.stop", &failure);
         Err(with_view_logs_hint(failure))
+    }
+}
+
+pub fn stop_managed_app_containers() -> Result<Option<String>, String> {
+    let output = docker_command()
+        .args(managed_app_container_ps_args())
+        .output()
+        .map_err(|error| format!("Failed to list running app containers: {}", error))?;
+
+    let combined_output = format_command_output(
+        &String::from_utf8_lossy(&output.stdout),
+        &String::from_utf8_lossy(&output.stderr),
+    );
+
+    if !output.status.success() {
+        return Err(if combined_output.is_empty() {
+            format!(
+                "Listing running app containers failed with exit code {:?}.",
+                output.status.code()
+            )
+        } else {
+            format!("Listing running app containers failed. {}", combined_output)
+        });
+    }
+
+    let ids = parse_container_ids(&String::from_utf8_lossy(&output.stdout));
+    if ids.is_empty() {
+        return Ok(None);
+    }
+
+    let mut command = docker_command();
+    command.arg("stop");
+    for id in &ids {
+        command.arg(id);
+    }
+
+    let stop_output = command
+        .output()
+        .map_err(|error| format!("Failed to stop running app containers: {}", error))?;
+
+    let combined_stop_output = format_command_output(
+        &String::from_utf8_lossy(&stop_output.stdout),
+        &String::from_utf8_lossy(&stop_output.stderr),
+    );
+
+    if stop_output.status.success() {
+        Ok(Some(if combined_stop_output.is_empty() {
+            format!("Stopped {} running app container(s).", ids.len())
+        } else {
+            format!(
+                "Stopped {} running app container(s). {}",
+                ids.len(),
+                combined_stop_output
+            )
+        }))
+    } else {
+        Err(if combined_stop_output.is_empty() {
+            format!(
+                "Stopping running app containers failed with exit code {:?}.",
+                stop_output.status.code()
+            )
+        } else {
+            format!(
+                "Stopping running app containers failed. {}",
+                combined_stop_output
+            )
+        })
     }
 }
 
@@ -1669,10 +1753,10 @@ mod tests {
     use super::{
         append_desktop_log_for, classify_docker_access_result, clear_traefik_recreate_required,
         desktop_log_path_for, format_command_output, is_traefik_recreate_required,
-        mark_traefik_recreate_required, preferred_log_target_for, prepare_traefik_runtime_state,
-        seeded_traefik_config_contents, truncate_command_output, DockerAccessState,
-        MAX_COMMAND_OUTPUT_CHARS, TRAEFIK_ACME_FILE, TRAEFIK_CONFIG_FILE,
-        TRAEFIK_DYNAMIC_CONFIG_SEED, TRAEFIK_DYNAMIC_FILE, TRAEFIK_TLS_DIR,
+        logs_open_target_for, managed_app_container_ps_args, mark_traefik_recreate_required,
+        parse_container_ids, prepare_traefik_runtime_state, seeded_traefik_config_contents,
+        truncate_command_output, DockerAccessState, MAX_COMMAND_OUTPUT_CHARS, TRAEFIK_ACME_FILE,
+        TRAEFIK_CONFIG_FILE, TRAEFIK_DYNAMIC_CONFIG_SEED, TRAEFIK_DYNAMIC_FILE, TRAEFIK_TLS_DIR,
     };
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     use std::os::unix::fs::PermissionsExt;
@@ -1749,17 +1833,40 @@ mod tests {
     }
 
     #[test]
-    fn prefers_desktop_log_when_present() {
+    fn view_logs_opens_the_logs_folder_even_when_desktop_log_exists() {
         let tempdir = tempfile::tempdir().expect("tempdir");
         let logs_dir = tempdir.path().join("logs");
         std::fs::create_dir_all(&logs_dir).expect("create logs dir");
 
-        assert_eq!(preferred_log_target_for(tempdir.path()), logs_dir);
+        assert_eq!(logs_open_target_for(tempdir.path()), logs_dir);
 
         let desktop_log = desktop_log_path_for(tempdir.path());
         std::fs::write(&desktop_log, "ready").expect("write desktop log");
 
-        assert_eq!(preferred_log_target_for(tempdir.path()), desktop_log);
+        assert_eq!(logs_open_target_for(tempdir.path()), logs_dir);
+    }
+
+    #[test]
+    fn tray_stop_targets_running_app_containers_by_ci_hub_labels() {
+        assert_eq!(
+            managed_app_container_ps_args(),
+            [
+                "ps",
+                "-q",
+                "--filter",
+                "label=ci-os-hub.managed=true",
+                "--filter",
+                "label=ci-os-hub.appurn",
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_running_app_container_ids_from_docker_ps_output() {
+        assert_eq!(
+            parse_container_ids("abc123\n\n def456 \n"),
+            vec!["abc123".to_string(), "def456".to_string()]
+        );
     }
 
     #[test]

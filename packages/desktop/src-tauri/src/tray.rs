@@ -169,51 +169,22 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                             );
                         }
                     }
-                    // Also stop managed app containers
-                    if let Ok(output) = crate::hub_manager::docker_command()
-                        .args(["ps", "-q", "--filter", "label=ci-hub.managed"])
-                        .output()
-                    {
-                        let ids = String::from_utf8_lossy(&output.stdout);
-                        let ids: Vec<&str> = ids.split_whitespace().collect();
-                        if !ids.is_empty() {
-                            let mut cmd = crate::hub_manager::docker_command();
-                            cmd.arg("stop");
-                            for id in &ids {
-                                cmd.arg(id);
-                            }
-                            match cmd.output() {
-                                Ok(stop_output) => {
-                                    let combined = crate::hub_manager::format_command_output(
-                                        &String::from_utf8_lossy(&stop_output.stdout),
-                                        &String::from_utf8_lossy(&stop_output.stderr),
-                                    );
-                                    let summary = if combined.is_empty() {
-                                        format!("Stopped {} managed app container(s).", ids.len())
-                                    } else {
-                                        format!(
-                                            "Stopped {} managed app container(s). {}",
-                                            ids.len(),
-                                            combined
-                                        )
-                                    };
-                                    let _ = crate::hub_manager::append_desktop_log_for(
-                                        &data,
-                                        "tray.stop",
-                                        &summary,
-                                    );
-                                }
-                                Err(error) => {
-                                    let _ = crate::hub_manager::append_desktop_log_for(
-                                        &data,
-                                        "tray.stop",
-                                        &format!(
-                                            "Failed to stop managed app containers: {}",
-                                            error
-                                        ),
-                                    );
-                                }
-                            }
+
+                    match crate::hub_manager::stop_managed_app_containers() {
+                        Ok(Some(summary)) => {
+                            let _ = crate::hub_manager::append_desktop_log_for(
+                                &data,
+                                "tray.stop",
+                                &summary,
+                            );
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            let _ = crate::hub_manager::append_desktop_log_for(
+                                &data,
+                                "tray.stop",
+                                &format!("Managed app containers cleanup failed: {}", error),
+                            );
                         }
                     }
                 });
@@ -226,15 +197,14 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                     .open(portal_url, None::<tauri_plugin_shell::open::Program>);
             }
             "view_logs" => {
-                let log_dir = crate::hub_manager::logs_dir();
-                let _ = std::fs::create_dir_all(&log_dir);
-                let log_target = crate::hub_manager::preferred_log_target();
+                let logs_dir = crate::hub_manager::logs_open_target();
+                let _ = std::fs::create_dir_all(&logs_dir);
                 let _ = crate::hub_manager::append_desktop_log(
                     "tray.logs",
-                    &format!("Opening log target: {}", log_target.display()),
+                    &format!("Opening logs folder: {}", logs_dir.display()),
                 );
                 let _ = app.shell().open(
-                    log_target.to_string_lossy().to_string(),
+                    logs_dir.to_string_lossy().to_string(),
                     None::<tauri_plugin_shell::open::Program>,
                 );
             }
