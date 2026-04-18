@@ -38,18 +38,18 @@ The reusable `e2e.yml` workflow runs the Playwright suite in `e2e/`. These activ
 
 | Suite | File | Coverage area |
 | --- | --- | --- |
-| Authentication | `auth.spec.ts` | Account registration and login flow |
-| First-Time User Experience | `ftue.spec.ts` | First-run registration handoff and onboarding redirect |
-| Dashboard | `dashboard.spec.ts` | Authenticated dashboard rendering and key metrics |
-| App Store Browsing | `app-store-browsing.spec.ts` | Store UI, search, and category browsing |
-| Store Entry & Search | `apps.spec.ts` | Primary app-store navigation and search affordances |
-| App Lifecycle | `app-lifecycle.spec.ts` | Seeded reconciliation baseline for apps stuck mid-lifecycle |
-| Settings | `settings.spec.ts` | Settings tabs and security configuration surface |
-| Navigation | `navigation.spec.ts` | Primary navigation and logout path |
-| Error States | `error-states.spec.ts` | Auth validation and degraded-login error feedback |
-| Health API | `health-api.spec.ts` | Backend health and data-health endpoints |
-| Dev Mode | `dev-mode.spec.ts` | Multi-store configuration visibility |
-| Multi-Store Context | `multi-store-context.spec.ts` | Store-specific routing and context preservation |
+| Authentication | `auth.spec.ts` | Login, logout, and session handling |
+| First-Time User Experience | `ftue.spec.ts` | First-run registration and onboarding handoff |
+| Dashboard | `dashboard.spec.ts` | Dashboard rendering and metrics |
+| App Store Browsing | `app-store-browsing.spec.ts` | Store UI, search, and browsing |
+| App Management | `apps.spec.ts` | Installed-app listing and management affordances |
+| App Lifecycle | `app-lifecycle.spec.ts` | Install/uninstall/update state transitions |
+| Settings | `settings.spec.ts` | Configuration and app-store settings |
+| Navigation | `navigation.spec.ts` | Route guards and primary navigation |
+| Error States | `error-states.spec.ts` | Fallback UI and degraded-state handling |
+| Health API | `health-api.spec.ts` | Backend health endpoints |
+| Dev Mode | `dev-mode.spec.ts` | Dev-mode affordances |
+| Multi-Store Context | `multi-store-context.spec.ts` | Explicit store routing and context preservation |
 
 ## Release surface → gate mapping
 
