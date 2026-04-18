@@ -1,0 +1,103 @@
+import { Button } from '@/components/ui/Button';
+import { Input } from '@/components/ui/Input';
+import { iconForCategory } from '@/modules/app/helpers/table-helpers';
+import { useAppStoreState } from '@/stores/app-store';
+import clsx from 'clsx';
+import { ArrowLeftRight, LayoutGrid, Search } from 'lucide-react';
+import { useCallback, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router';
+
+const ALTERNATIVES_VIEW = '__alternatives__' as const;
+
+export const AppStoreSidebar = () => {
+  const { setCategory, category, setSearch, search: initialSearch } = useAppStoreState();
+  const [search, setLocalSearch] = useState(initialSearch);
+  const navigate = useNavigate();
+  const location = useLocation();
+
+  const isAlternativesView = category === ALTERNATIVES_VIEW;
+
+  const onSearch = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      setLocalSearch(e.target.value);
+      setSearch(e.target.value);
+      if (!location.pathname.match(/^\/app-store\/?$/)) {
+        navigate('/app-store');
+      }
+    },
+    [setSearch, navigate, location.pathname],
+  );
+
+  const handleCategoryClick = useCallback(
+    (cat?: typeof category) => {
+      setCategory(cat);
+      if (!location.pathname.match(/^\/app-store\/?$/)) {
+        navigate('/app-store');
+      }
+    },
+    [setCategory, navigate, location.pathname],
+  );
+
+  return (
+    <aside className="w-64 flex-shrink-0 border-r bg-muted/10 hidden md:flex flex-col ml-6 mb-6 rounded-2xl border">
+      <div className="p-4 border-b">
+        <div className="relative">
+          <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground z-10" />
+          <Input placeholder="Search apps..." className="pl-9 bg-muted/50" value={search} onChange={onSearch} />
+        </div>
+      </div>
+      <div className="flex-1 overflow-y-auto py-4 px-2 no-scrollbar">
+        <div className="space-y-1">
+          {/* All Apps */}
+          <Button
+            variant="ghost"
+            className={clsx(
+              'w-full justify-start font-normal text-sm gap-3 px-4 py-2 h-auto',
+              category ? 'text-muted-foreground hover:bg-muted/50' : 'bg-primary/10 text-primary font-medium hover:bg-primary/20',
+            )}
+            onClick={() => handleCategoryClick(undefined)}
+          >
+            <LayoutGrid className="h-4 w-4" />
+            <span className="truncate">All</span>
+          </Button>
+
+          {/* Alternatives - special item */}
+          <div className="my-2 mx-3 border-t border-border/50" />
+          <Button
+            variant="ghost"
+            className={clsx(
+              'w-full justify-start font-normal text-sm gap-3 px-4 py-2 h-auto',
+              isAlternativesView ? 'bg-primary/10 text-primary font-medium hover:bg-primary/20' : 'text-muted-foreground hover:bg-muted/50',
+            )}
+            onClick={() => handleCategoryClick(ALTERNATIVES_VIEW)}
+          >
+            <ArrowLeftRight className="h-4 w-4" />
+            <span className="truncate">Alternatives</span>
+          </Button>
+          <div className="my-2 mx-3 border-t border-border/50" />
+
+          {/* Categories */}
+          {iconForCategory.map((cat) => {
+            const Icon = cat.icon;
+            const isSelected = category === cat.id;
+
+            return (
+              <Button
+                key={cat.id}
+                variant="ghost"
+                className={clsx(
+                  'w-full justify-start font-normal text-sm gap-3 px-4 py-2 h-auto',
+                  isSelected ? 'bg-primary/10 text-primary font-medium hover:bg-primary/20' : 'text-muted-foreground hover:bg-muted/50',
+                )}
+                onClick={() => handleCategoryClick(cat.id)}
+              >
+                {Icon && <Icon className="h-4 w-4" />}
+                <span className="truncate">{cat.id.charAt(0).toUpperCase() + cat.id.slice(1)}</span>
+              </Button>
+            );
+          })}
+        </div>
+      </div>
+    </aside>
+  );
+};

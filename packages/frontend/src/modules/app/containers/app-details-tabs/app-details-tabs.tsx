@@ -47,7 +47,7 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, 
   });
 
   const updatedDate = info.updated_at
-    ? new Date(info.updated_at * 1000).toLocaleDateString(undefined, { year: 'numeric', month: 'numeric', day: 'numeric' })
+    ? new Date(info.updated_at).toLocaleDateString(undefined, { year: 'numeric', month: 'numeric', day: 'numeric' })
     : null;
 
   return (
