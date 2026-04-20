@@ -20,6 +20,7 @@ export const clearDatabase = async () => {
   await db.delete(schema.link);
   await db.delete(schema.user);
   await db.delete(schema.app);
+  await db.delete(schema.appStore);
   await db.delete(schema.deviceRegistration);
 };
 

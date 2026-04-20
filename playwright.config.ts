@@ -7,6 +7,7 @@ const SERVER_IP = process.env.SERVER_IP || 'localhost';
 // Common env vars needed by the backend
 const backendEnv: Record<string, string> = {
   NODE_ENV: 'development',
+  E2E_TEST: 'true',
   POSTGRES_HOST: process.env.POSTGRES_HOST || 'localhost',
   POSTGRES_PORT: process.env.POSTGRES_PORT || '6543',
   POSTGRES_USERNAME: process.env.POSTGRES_USERNAME || 'companion',
@@ -17,7 +18,7 @@ const backendEnv: Record<string, string> = {
   RABBITMQ_USERNAME: process.env.RABBITMQ_USERNAME || 'companion',
   RABBITMQ_PASSWORD: process.env.RABBITMQ_PASSWORD || 'admin',
   JWT_SECRET: process.env.JWT_SECRET || 'e2e-test-secret',
-  CI_CLOUD_URL: process.env.CI_CLOUD_URL || 'https://app.companionintelligence.com',
+  CI_CLOUD_URL: process.env.CI_CLOUD_URL || 'http://localhost:4444',
   DOMAIN: process.env.DOMAIN || 'ci.computer',
   LOCAL_DOMAIN: process.env.LOCAL_DOMAIN || 'ci.lan',
   DEMO_MODE: 'false',
@@ -63,6 +64,18 @@ export default defineConfig({
     },
   ],
   webServer: [
+    {
+      command: 'pnpm exec tsx e2e/mock-portal/server.ts',
+      url: 'http://localhost:4444/v2/',
+      reuseExistingServer: !process.env.CI,
+      timeout: 30000,
+      stdout: 'pipe',
+      stderr: 'pipe',
+      env: {
+        MOCK_PORTAL_PORT: process.env.MOCK_PORTAL_PORT || '4444',
+        MOCK_PORTAL_SCENARIO: process.env.MOCK_PORTAL_SCENARIO || 'registered',
+      },
+    },
     {
       command: 'bash e2e/start-backend.sh',
       url: `http://localhost:${BACKEND_PORT}/api/health`,
