@@ -419,9 +419,12 @@ export class DockerService {
   private async composeUpService(serviceName: string, opts: { composeFile: string; profile?: string }): Promise<void> {
     const args = ['compose'];
     const runtimeComposeFile = path.join(this.config.get('directories').dataDir, 'docker-compose.yml');
+    const spawnOptions: { cwd: string; env?: NodeJS.ProcessEnv } = { cwd: path.dirname(opts.composeFile) };
 
     if (opts.composeFile === runtimeComposeFile) {
-      args.push('--env-file', this.config.get('envFilePath'));
+      const envFilePath = this.config.get('envFilePath');
+      args.push('--env-file', envFilePath);
+      spawnOptions.env = { ...process.env, ENV_FILE: envFilePath };
     }
 
     args.push('-f', opts.composeFile);
@@ -433,7 +436,7 @@ export class DockerService {
 
     return new Promise((resolve, reject) => {
       this.logger.info(`Running: docker ${args.join(' ')}`);
-      const cmd = spawn('docker', args, { cwd: path.dirname(opts.composeFile) });
+      const cmd = spawn('docker', args, spawnOptions);
 
       let stderr = '';
       cmd.stderr?.on('data', (data: Buffer) => {

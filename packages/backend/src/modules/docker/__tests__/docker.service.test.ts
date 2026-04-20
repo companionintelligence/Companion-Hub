@@ -80,6 +80,8 @@ describe('DockerService', () => {
 
   afterEach(() => {
     delete process.env.CI_HUB_COMPOSE_PROJECT_NAME;
+    delete process.env.ENV_FILE;
+    delete process.env.UNRELATED_VAR;
     vi.clearAllMocks();
   });
 
@@ -310,6 +312,8 @@ describe('DockerService', () => {
 
   describe('ensureContainerRunning', () => {
     it('should include the hub env file when compose fallback uses the runtime hub compose file', async () => {
+      process.env.ENV_FILE = '.env.dev';
+      process.env.UNRELATED_VAR = 'still-here';
       vi.spyOn(service, 'restartContainer').mockRejectedValue(new Error('missing container'));
 
       const mockSpawnProcess = createMockSpawnProcess();
@@ -330,11 +334,18 @@ describe('DockerService', () => {
       expect(child_process.spawn).toHaveBeenCalledWith(
         'docker',
         ['compose', '--env-file', '/data/.env', '-f', '/data/docker-compose.yml', '--profile', 'cloudflare', 'up', 'cloudflared', '-d'],
-        { cwd: '/data' },
+        expect.objectContaining({
+          cwd: '/data',
+          env: expect.objectContaining({
+            ENV_FILE: '/data/.env',
+            UNRELATED_VAR: 'still-here',
+          }),
+        }),
       );
     });
 
     it('should leave source compose paths unchanged outside the mounted runtime hub compose file', async () => {
+      process.env.ENV_FILE = '.env.dev';
       vi.spyOn(service, 'restartContainer').mockRejectedValue(new Error('missing container'));
 
       const mockSpawnProcess = createMockSpawnProcess();
