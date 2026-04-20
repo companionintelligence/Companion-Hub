@@ -71,7 +71,8 @@ test.describe('Cross-Domain Device Registration', () => {
     // Remove tunnel token so Hub detects itself as unregistered
     const fs = await import('node:fs');
     const path = await import('node:path');
-    const tokenPath = path.join(process.env.CI_HUB_APP_DIR || process.cwd(), 'tunnel', 'token');
+    const hubRoot = process.env.CI_HUB_APP_DIR || path.resolve(import.meta.dirname, '..', '..');
+    const tokenPath = path.join(hubRoot, 'tunnel', 'token');
     if (fs.existsSync(tokenPath)) {
       fs.unlinkSync(tokenPath);
     }
