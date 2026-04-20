@@ -29,7 +29,8 @@ function getErrorMessage(err: unknown): string {
 // Tauri IPC helper
 function getTauriInvoke(): ((cmd: string, args?: Record<string, unknown>) => Promise<unknown>) | null {
   if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
-    return (window as unknown as { __TAURI_INTERNALS__: { invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown> } }).__TAURI_INTERNALS__.invoke;
+    return (window as unknown as { __TAURI_INTERNALS__: { invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown> } })
+      .__TAURI_INTERNALS__.invoke;
   }
   return null;
 }
@@ -215,7 +216,7 @@ function StartupScreen({ elapsedSeconds }: { elapsedSeconds: number }) {
     if (!invoke) return;
     const poll = async () => {
       try {
-        const result = await invoke('get_startup_progress_command') as StartupProgress;
+        const result = (await invoke('get_startup_progress_command')) as StartupProgress;
         setProgress(result);
       } catch {
         // ignore — hub_status polling handles recovery
@@ -248,10 +249,7 @@ function StartupScreen({ elapsedSeconds }: { elapsedSeconds: number }) {
       {/* Progress bar */}
       <div className="w-full space-y-1.5">
         <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
-          <div
-            className="h-full rounded-full bg-primary transition-all duration-700 ease-out"
-            style={{ width: `${Math.max(pct, 4)}%` }}
-          />
+          <div className="h-full rounded-full bg-primary transition-all duration-700 ease-out" style={{ width: `${Math.max(pct, 4)}%` }} />
         </div>
         <div className="flex justify-between text-xs text-muted-foreground/60 tabular-nums">
           <span>{pct}%</span>
@@ -384,10 +382,9 @@ export function HubStatus({ children }: HubStatusProps) {
         setStartupElapsed(Math.floor((Date.now() - (startupStartRef.current ?? Date.now())) / 1000));
       }, 1000);
       return () => clearInterval(id);
-    } else {
-      startupStartRef.current = null;
-      setStartupElapsed(0);
     }
+    startupStartRef.current = null;
+    setStartupElapsed(0);
   }, [status]);
 
   useEffect(() => {
