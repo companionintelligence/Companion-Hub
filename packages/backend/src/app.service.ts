@@ -158,30 +158,14 @@ export class AppService implements OnApplicationShutdown {
       // Ensure config directory exists
       await this.filesystem.createDirectory(traefikConfigDest);
 
-      // Copy traefik.yml
-      const traefikYmlSrc = path.join(assetsTraefikDir, 'traefik.yml');
-      const traefikYmlDest = path.join(traefikConfigDest, 'traefik.yml');
-      if (await this.filesystem.pathExists(traefikYmlSrc)) {
-        let content = (await this.filesystem.readTextFile(traefikYmlSrc)) as string;
-        content = content.replace('{{ACME_EMAIL}}', 'admin@companionintelligence.com');
-        await this.filesystem.writeTextFile(traefikYmlDest, content);
-        this.logger.info('Copied traefik.yml');
-      } else {
-        this.logger.warn(`Traefik config file not found at ${traefikYmlSrc}`);
-      }
+      await this.copyTraefikConfigFile(path.join(assetsTraefikDir, 'traefik.yml'), path.join(traefikConfigDest, 'traefik.yml'), (content) =>
+        content.replace('{{ACME_EMAIL}}', 'admin@companionintelligence.com'),
+      );
 
       // Copy dynamic config
-      const dynamicSrc = path.join(assetsTraefikDir, 'dynamic', 'dynamic.yml');
       const dynamicDestDir = path.join(dataDir, 'state', 'traefik', 'dynamic');
       await this.filesystem.createDirectory(dynamicDestDir);
-      const dynamicDest = path.join(dynamicDestDir, 'dynamic.yml');
-      if (await this.filesystem.pathExists(dynamicSrc)) {
-        const content = (await this.filesystem.readTextFile(dynamicSrc)) as string;
-        await this.filesystem.writeTextFile(dynamicDest, content);
-        this.logger.info('Copied dynamic.yml');
-      } else {
-        this.logger.warn(`Traefik dynamic config file not found at ${dynamicSrc}`);
-      }
+      await this.copyTraefikConfigFile(path.join(assetsTraefikDir, 'dynamic', 'dynamic.yml'), path.join(dynamicDestDir, 'dynamic.yml'));
     } catch (error) {
       this.logger.warn(`Failed to copy Traefik config files: ${error instanceof Error ? error.message : error}. Traefik may not start correctly.`);
     }
@@ -217,6 +201,40 @@ export class AppService implements OnApplicationShutdown {
       // They'll be created on-demand when needed
       this.logger.warn(`Media folder creation failed or timed out: ${error instanceof Error ? error.message : error}. Continuing startup...`);
     }
+  }
+
+  private async copyTraefikConfigFile(src: string, dest: string, transform?: (content: string) => string): Promise<void> {
+    const fileName = path.basename(dest);
+
+    if (!(await this.filesystem.pathExists(src))) {
+      this.logger.warn(`Traefik config file not found at ${src}`);
+      return;
+    }
+
+    if ((await this.filesystem.pathExists(dest)) && (await this.filesystem.isDirectory(dest))) {
+      this.logger.warn(`Traefik config destination is a directory, removing it before rewriting ${fileName}: ${dest}`);
+      const removed = await this.filesystem.removeDirectory(dest);
+      if (!removed) {
+        this.logger.warn(`Failed to remove directory at Traefik config destination ${dest}. ${fileName} was not restored.`);
+        return;
+      }
+    }
+
+    const rawContent = await this.filesystem.readTextFile(src);
+    if (rawContent == null) {
+      this.logger.warn(`Failed to read Traefik config source file at ${src}`);
+      return;
+    }
+
+    const content = transform ? transform(rawContent) : rawContent;
+    const wrote = await this.filesystem.writeTextFile(dest, content);
+
+    if (wrote) {
+      this.logger.info(`Copied ${fileName}`);
+      return;
+    }
+
+    this.logger.warn(`Failed to copy ${fileName} to ${dest}`);
   }
 
   /**

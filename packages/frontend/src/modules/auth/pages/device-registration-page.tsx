@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { Button } from '@/components/ui/Button';
 import { Alert, AlertDescription } from '@/components/ui/Alert/Alert';
@@ -21,6 +21,109 @@ export default function DeviceRegistrationPage() {
   const [pairingSuccess, setPairingSuccess] = useState(false);
   const [redirectStatus, setRedirectStatus] = useState<string>('Setting up your Hub...');
   const pairingInputRef = useRef<HTMLInputElement>(null);
+  const isTauri = '__TAURI_INTERNALS__' in window;
+
+  const doPair = useCallback(
+    async (code: string) => {
+      setIsPairing(true);
+      setPairingError(null);
+      setError(null);
+
+      try {
+        const res = await apiFetch('/api/registration/pair', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pairing_code: code }),
+        });
+
+        const data = await res.json();
+
+        if (res.ok && data.success) {
+          setPairingSuccess(true);
+          toast.success('Device registered successfully!');
+
+          const { domain, subdomain } = data as { domain?: string; subdomain?: string };
+
+          if (isTauri) {
+            setRedirectStatus('Registration complete! Loading...');
+            sessionStorage.setItem('device-registered', 'true');
+            sessionStorage.setItem('device-registered-at', String(Date.now()));
+            await new Promise((resolve) => setTimeout(resolve, 2000));
+            window.location.href = '/';
+          } else if (domain && subdomain) {
+            const fullUrl = `https://${subdomain}.${domain}`;
+            setRedirectStatus('Setting up your Hub...');
+
+            const MAX_PROBE_ATTEMPTS = 60;
+            let attempts = 0;
+            let tunnelReady = false;
+
+            while (attempts < MAX_PROBE_ATTEMPTS) {
+              try {
+                const probeRes = await apiFetch(`/api/registration/probe-domain?url=${encodeURIComponent(fullUrl)}`);
+                if (probeRes.ok) {
+                  const probeData = (await probeRes.json()) as { ready: boolean };
+                  if (probeData.ready) {
+                    tunnelReady = true;
+                    break;
+                  }
+                }
+              } catch {
+                // probe endpoint not reachable, keep trying
+              }
+
+              attempts++;
+              if (attempts >= 12) setRedirectStatus('Waiting for DNS propagation...');
+              if (attempts >= 36) setRedirectStatus('Still waiting — this can take a few minutes...');
+              await new Promise((resolve) => setTimeout(resolve, 5000));
+            }
+
+            if (tunnelReady) {
+              setRedirectStatus('Redirecting...');
+              window.location.href = `${fullUrl}/login`;
+            } else {
+              setRedirectStatus('Tunnel setup is still in progress. Redirecting to local dashboard...');
+              toast('Cloudflare tunnel is still propagating. You can access your Hub locally for now.', { duration: 8000 });
+              await new Promise((resolve) => setTimeout(resolve, 3000));
+              navigate('/', { replace: true });
+            }
+          } else {
+            setTimeout(() => navigate('/', { replace: true }), 2000);
+          }
+        } else {
+          const errorMsg = typeof data.message === 'string' ? data.message : 'Registration failed.';
+          setPairingError(errorMsg);
+          toast.error(errorMsg);
+        }
+      } catch (e) {
+        setPairingError('Failed to register device. Please try again.');
+        console.error(e);
+      } finally {
+        setIsPairing(false);
+      }
+    },
+    [isTauri, navigate],
+  );
+
+  useEffect(() => {
+    if (!isTauri) return;
+    let unlisten: (() => void) | undefined;
+    (async () => {
+      try {
+        const { listen } = await import('@tauri-apps/api/event');
+        unlisten = await listen<string>('deep-link-pair', (event) => {
+          const code = event.payload.trim().toUpperCase();
+          if (code.length === 6) {
+            setPairingCode(code);
+            doPair(code);
+          }
+        });
+      } catch {
+        // Not in Tauri
+      }
+    })();
+    return () => unlisten?.();
+  }, [isTauri, doPair]);
 
   useEffect(() => {
     if (!isLoading && deviceId && pairingInputRef.current) {
@@ -68,95 +171,7 @@ export default function DeviceRegistrationPage() {
       setPairingError('Pairing code must be exactly 6 characters.');
       return;
     }
-
-    setIsPairing(true);
-    setPairingError(null);
-    setError(null);
-
-    try {
-      const res = await apiFetch('/api/registration/pair', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pairing_code: code }),
-      });
-
-      const data = await res.json();
-
-      if (res.ok && data.success) {
-        setPairingSuccess(true);
-        toast.success('Device registered successfully!');
-
-        const { domain, subdomain } = data as { domain?: string; subdomain?: string };
-        const isTauri = '__TAURI_INTERNALS__' in window;
-
-        // In Tauri desktop mode, stay on the local app — don't redirect to the CF domain
-        if (isTauri) {
-          setRedirectStatus('Registration complete! Loading...');
-          sessionStorage.setItem('device-registered', 'true');
-          sessionStorage.setItem('device-registered-at', String(Date.now()));
-          await new Promise((resolve) => setTimeout(resolve, 2000));
-          // Full page reload to ensure root loader re-evaluates with fresh state
-          window.location.href = '/';
-        } else if (domain && subdomain) {
-          const fullUrl = `https://${subdomain}.${domain}`;
-          setRedirectStatus('Setting up your Hub...');
-
-          const MAX_PROBE_ATTEMPTS = 60; // 5 minutes at 5s intervals
-          let attempts = 0;
-          let tunnelReady = false;
-
-          while (attempts < MAX_PROBE_ATTEMPTS) {
-            try {
-              const probeRes = await apiFetch(`/api/registration/probe-domain?url=${encodeURIComponent(fullUrl)}`);
-              if (probeRes.ok) {
-                const probeData = (await probeRes.json()) as { ready: boolean };
-                if (probeData.ready) {
-                  tunnelReady = true;
-                  break;
-                }
-              }
-            } catch {
-              // probe endpoint not reachable, keep trying
-            }
-
-            attempts++;
-            if (attempts >= 12) {
-              setRedirectStatus('Waiting for DNS propagation...');
-            }
-            if (attempts >= 36) {
-              setRedirectStatus('Still waiting — this can take a few minutes...');
-            }
-
-            await new Promise((resolve) => setTimeout(resolve, 5000));
-          }
-
-          if (tunnelReady) {
-            setRedirectStatus('Redirecting...');
-            window.location.href = `${fullUrl}/login`;
-          } else {
-            // Tunnel didn't come up within 5 minutes — redirect locally instead
-            setRedirectStatus('Tunnel setup is still in progress. Redirecting to local dashboard...');
-            toast('Cloudflare tunnel is still propagating. You can access your Hub locally for now.', { duration: 8000 });
-            await new Promise((resolve) => setTimeout(resolve, 3000));
-            navigate('/', { replace: true });
-          }
-        } else {
-          // Fallback: no domain info, just redirect locally
-          setTimeout(() => {
-            navigate('/', { replace: true });
-          }, 2000);
-        }
-      } else {
-        const errorMsg = typeof data.message === 'string' ? data.message : 'Registration failed.';
-        setPairingError(errorMsg);
-        toast.error(errorMsg);
-      }
-    } catch (e) {
-      setPairingError('Failed to register device. Please try again.');
-      console.error(e);
-    } finally {
-      setIsPairing(false);
-    }
+    await doPair(code);
   };
 
   if (isLoading) {

@@ -24,6 +24,7 @@ export default () => {
   });
 
   const isLoading = !systemData;
+  const memoryUsed = systemData ? Math.round((systemData.memoryTotal * systemData.percentUsedMemory) / 100) : 0;
 
   return (
     <div className="h-full overflow-y-auto">
@@ -39,7 +40,8 @@ export default () => {
               <CompactSystemStat
                 isLoading={false}
                 title={t('DASHBOARD_DISK_SPACE_TITLE')}
-                metric={`${systemData.diskUsed} GB`}
+                metric={`${systemData.percentUsed}%`}
+                subtitle={`${systemData.diskUsed} / ${systemData.diskSize} GB`}
                 icon={Database}
                 progress={systemData.percentUsed}
                 color="blue"
@@ -48,6 +50,7 @@ export default () => {
                 isLoading={false}
                 title={t('DASHBOARD_CPU_TITLE')}
                 metric={`${systemData.cpuLoad.toFixed(2)}%`}
+                subtitle={systemData.cpuCores ? `${systemData.cpuCores} cores` : undefined}
                 icon={Cpu}
                 progress={systemData.cpuLoad}
                 color="red"
@@ -56,6 +59,7 @@ export default () => {
                 isLoading={false}
                 title={t('DASHBOARD_MEMORY_TITLE')}
                 metric={`${systemData.percentUsedMemory}%`}
+                subtitle={`${memoryUsed} / ${systemData.memoryTotal} GB`}
                 icon={MemoryStick}
                 progress={systemData.percentUsedMemory}
                 color="green"

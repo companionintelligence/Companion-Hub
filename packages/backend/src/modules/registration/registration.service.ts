@@ -681,41 +681,45 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       // triggerCloudflareSync in app-lifecycle.service.ts includes the Hub on every sync.
 
       // Verify tunnel connectivity (best-effort, don't block registration)
-      this.logger.info(`Checking tunnel connectivity at https://${domain}...`);
-      const maxRetries = 60; // 1 minute
-      let tunnelReachable = false;
-      for (let i = 0; i < maxRetries; i++) {
-        try {
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 2000);
-          /* 
-            We fetch /api/health to verify the hub itself is reachable through the tunnel.
-            Using HEAD might return 404 if the route doesn't support HEAD, so we use GET.
-          */
-          const response = await fetch(`https://${domain}/api/health`, {
-            method: 'GET',
-            signal: controller.signal,
-          });
-          clearTimeout(timeoutId);
+      if (process.env.E2E_TEST === 'true') {
+        this.logger.info(`Skipping tunnel reachability probe for E2E registration at https://${domain}`);
+      } else {
+        this.logger.info(`Checking tunnel connectivity at https://${domain}...`);
+        const maxRetries = 60; // 1 minute
+        let tunnelReachable = false;
+        for (let i = 0; i < maxRetries; i++) {
+          try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 2000);
+            /* 
+              We fetch /api/health to verify the hub itself is reachable through the tunnel.
+              Using HEAD might return 404 if the route doesn't support HEAD, so we use GET.
+            */
+            const response = await fetch(`https://${domain}/api/health`, {
+              method: 'GET',
+              signal: controller.signal,
+            });
+            clearTimeout(timeoutId);
 
-          if (response.ok) {
-            this.logger.info(`DNS resolved and Hub is reachable at https://${domain}`);
-            tunnelReachable = true;
-            break;
+            if (response.ok) {
+              this.logger.info(`DNS resolved and Hub is reachable at https://${domain}`);
+              tunnelReachable = true;
+              break;
+            }
+            this.logger.debug(`Hub reachable but returned status ${response.status}`);
+          } catch (e) {
+            if (i % 10 === 0) {
+              this.logger.debug(`Waiting for DNS/SSL propagation... Error: ${e instanceof Error ? e.message : String(e)}`);
+            }
           }
-          this.logger.debug(`Hub reachable but returned status ${response.status}`);
-        } catch (e) {
-          if (i % 10 === 0) {
-            this.logger.debug(`Waiting for DNS/SSL propagation... Error: ${e instanceof Error ? e.message : String(e)}`);
-          }
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          if (i > 0 && i % 10 === 0) this.logger.info(`Still waiting for DNS resolution... attempt ${i}/${maxRetries}`);
         }
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-        if (i > 0 && i % 10 === 0) this.logger.info(`Still waiting for DNS resolution... attempt ${i}/${maxRetries}`);
-      }
-      if (!tunnelReachable) {
-        this.logger.warn(
-          `Tunnel not yet reachable at https://${domain} after ${maxRetries}s — DNS may still be propagating. This is normal for first-time setup.`,
-        );
+        if (!tunnelReachable) {
+          this.logger.warn(
+            `Tunnel not yet reachable at https://${domain} after ${maxRetries}s — DNS may still be propagating. This is normal for first-time setup.`,
+          );
+        }
       }
     } catch (error) {
       this.logger.error(`Error setting up organization infrastructure: ${error}`);

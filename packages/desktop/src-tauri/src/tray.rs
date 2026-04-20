@@ -1,4 +1,5 @@
-use tauri_plugin_store::StoreExt;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tauri::{
     image::Image,
     menu::{Menu, MenuItem, PredefinedMenuItem},
@@ -6,8 +7,17 @@ use tauri::{
     App, Manager,
 };
 use tauri_plugin_shell::ShellExt;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use tauri_plugin_store::StoreExt;
+
+fn describe_hub_status(status: &crate::hub_manager::HubStatus) -> String {
+    match status {
+        crate::hub_manager::HubStatus::DockerNotAvailable => "docker not available".to_string(),
+        crate::hub_manager::HubStatus::Stopped => "stopped".to_string(),
+        crate::hub_manager::HubStatus::Starting => "starting".to_string(),
+        crate::hub_manager::HubStatus::Running => "running".to_string(),
+        crate::hub_manager::HubStatus::Error { message } => format!("error: {}", message),
+    }
+}
 
 pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
     let show_hide = MenuItem::with_id(app, "show_hide", "Hide Hub", true, None::<&str>)?;
@@ -21,12 +31,21 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
     let status = MenuItem::with_id(app, "status", "Status: Checking…", false, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
 
-    let menu = Menu::with_items(app, &[
-        &show_hide, &sep1,
-        &start_hub, &stop_hub, &sep2,
-        &open_portal, &view_logs, &sep3,
-        &status, &quit,
-    ])?;
+    let menu = Menu::with_items(
+        app,
+        &[
+            &show_hide,
+            &sep1,
+            &start_hub,
+            &stop_hub,
+            &sep2,
+            &open_portal,
+            &view_logs,
+            &sep3,
+            &status,
+            &quit,
+        ],
+    )?;
 
     // Track window visibility
     let window_visible = Arc::new(AtomicBool::new(true));
@@ -72,7 +91,10 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
     let show_hide_for_menu = Arc::clone(&show_hide_item);
 
     let _tray = TrayIconBuilder::new()
-        .icon(Image::from_path("icons/icon.png").unwrap_or_else(|_| Image::from_bytes(include_bytes!("../icons/icon.png")).expect("failed to load tray icon")))
+        .icon(Image::from_path("icons/icon.png").unwrap_or_else(|_| {
+            Image::from_bytes(include_bytes!("../icons/icon.png"))
+                .expect("failed to load tray icon")
+        }))
         .icon_as_template(true)
         .menu(&menu)
         .tooltip("Companion Hub")
@@ -96,50 +118,95 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                 let compose = paths.compose_path.clone();
                 let env = paths.env_path.clone();
                 let data = paths.data_dir.clone();
+                let _ = crate::hub_manager::append_desktop_log_for(
+                    &data,
+                    "tray.start",
+                    "Start Hub requested from the tray menu.",
+                );
                 tauri::async_runtime::spawn(async move {
-                    let _ = crate::hub_manager::start_hub(&compose, &env, &data);
+                    match crate::hub_manager::start_hub(&compose, &env, &data) {
+                        Ok(message) => {
+                            let _ = crate::hub_manager::append_desktop_log_for(
+                                &data,
+                                "tray.start",
+                                &message,
+                            );
+                        }
+                        Err(error) => {
+                            let _ = crate::hub_manager::append_desktop_log_for(
+                                &data,
+                                "tray.start",
+                                &format!("Tray start request failed: {}", error),
+                            );
+                        }
+                    }
                 });
             }
             "stop_hub" => {
                 let paths = app.state::<crate::hub_manager::HubPaths>();
                 let compose = paths.compose_path.clone();
                 let env = paths.env_path.clone();
+                let data = paths.data_dir.clone();
+                let _ = crate::hub_manager::append_desktop_log_for(
+                    &data,
+                    "tray.stop",
+                    "Stop Hub requested from the tray menu.",
+                );
                 tauri::async_runtime::spawn(async move {
-                    let _ = crate::hub_manager::stop_hub(&compose, &env);
-                    // Also stop managed app containers
-                    if let Ok(output) = crate::hub_manager::docker_command()
-                        .args(["ps", "-q", "--filter", "label=ci-hub.managed"])
-                        .output()
-                    {
-                        let ids = String::from_utf8_lossy(&output.stdout);
-                        let ids: Vec<&str> = ids.split_whitespace().collect();
-                        if !ids.is_empty() {
-                            let mut cmd = crate::hub_manager::docker_command();
-                            cmd.arg("stop");
-                            for id in ids {
-                                cmd.arg(id);
-                            }
-                            let _ = cmd.output();
+                    match crate::hub_manager::stop_hub(&compose, &env) {
+                        Ok(message) => {
+                            let _ = crate::hub_manager::append_desktop_log_for(
+                                &data,
+                                "tray.stop",
+                                &message,
+                            );
+                        }
+                        Err(error) => {
+                            let _ = crate::hub_manager::append_desktop_log_for(
+                                &data,
+                                "tray.stop",
+                                &format!("Tray stop request failed: {}", error),
+                            );
+                        }
+                    }
+
+                    match crate::hub_manager::stop_managed_app_containers() {
+                        Ok(Some(summary)) => {
+                            let _ = crate::hub_manager::append_desktop_log_for(
+                                &data,
+                                "tray.stop",
+                                &summary,
+                            );
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            let _ = crate::hub_manager::append_desktop_log_for(
+                                &data,
+                                "tray.stop",
+                                &format!("Managed app containers cleanup failed: {}", error),
+                            );
                         }
                     }
                 });
             }
             "open_portal" => {
-                let portal_url = option_env!("CI_HUB_CLOUD_URL").unwrap_or("https://portal.companionintelligence.com");
-                let _ = app.shell().open(portal_url, None::<tauri_plugin_shell::open::Program>);
+                let portal_url = option_env!("CI_HUB_CLOUD_URL")
+                    .unwrap_or("https://portal.companionintelligence.com");
+                let _ = app
+                    .shell()
+                    .open(portal_url, None::<tauri_plugin_shell::open::Program>);
             }
             "view_logs" => {
-                let log_dir = crate::hub_manager::get_hub_data_dir().join("logs");
-                // Create log dir if it doesn't exist
-                let _ = std::fs::create_dir_all(&log_dir);
-                let init_log = log_dir.join("init.log");
-                if init_log.exists() {
-                    // Open the log file with the system default text editor
-                    let _ = app.shell().open(init_log.to_string_lossy().to_string(), None::<tauri_plugin_shell::open::Program>);
-                } else {
-                    // Open the logs directory in the file explorer
-                    let _ = app.shell().open(log_dir.to_string_lossy().to_string(), None::<tauri_plugin_shell::open::Program>);
-                }
+                let logs_dir = crate::hub_manager::logs_open_target();
+                let _ = std::fs::create_dir_all(&logs_dir);
+                let _ = crate::hub_manager::append_desktop_log(
+                    "tray.logs",
+                    &format!("Opening logs folder: {}", logs_dir.display()),
+                );
+                let _ = app.shell().open(
+                    logs_dir.to_string_lossy().to_string(),
+                    None::<tauri_plugin_shell::open::Program>,
+                );
             }
             "quit" => {
                 app.exit(0);
@@ -160,6 +227,7 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
     let stop_ref = Arc::clone(&stop_item);
     let env_path_for_health = crate::hub_manager::get_hub_data_dir().join(".env");
     tauri::async_runtime::spawn(async move {
+        let mut last_ok: Option<bool> = None;
         loop {
             let api_port = crate::port_manager::read_api_port(&env_path_for_health);
             // Try resolved port first, then dev port
@@ -175,6 +243,38 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                     .await
                     .map(|r| r.status().is_success())
                     .unwrap_or(false);
+
+            if last_ok != Some(ok) {
+                let transition = match last_ok {
+                    Some(previous) => format!(
+                        "Hub connectivity changed: {} -> {} (api port {}).",
+                        if previous {
+                            "connected"
+                        } else {
+                            "disconnected"
+                        },
+                        if ok { "connected" } else { "disconnected" },
+                        api_port
+                    ),
+                    None => format!(
+                        "Initial hub connectivity status: {} (api port {}).",
+                        if ok { "connected" } else { "disconnected" },
+                        api_port
+                    ),
+                };
+                let _ = crate::hub_manager::append_desktop_log("tray.health", &transition);
+                if !ok {
+                    let status = crate::hub_manager::get_hub_status();
+                    let _ = crate::hub_manager::append_desktop_log(
+                        "tray.health",
+                        &format!(
+                            "Hub status snapshot while disconnected: {}",
+                            describe_hub_status(&status)
+                        ),
+                    );
+                }
+                last_ok = Some(ok);
+            }
 
             if ok {
                 let _ = status_ref.set_text("Status: Connected ✓");

@@ -126,6 +126,7 @@ export type AcknowledgeWelcomeBody = {
 
 export type LoadDto = {
     cpuLoad: number;
+    cpuCores: number;
     diskSize: number;
     diskUsed: number;
     memoryTotal: number;

@@ -1,25 +1,34 @@
+import { LoggerService } from '@/core/logger/logger.service';
+import { DockerService } from '@/modules/docker/docker.service';
 import { Test } from '@nestjs/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
+import { pipeline } from 'node:stream/promises';
 import { SystemController } from '../system.controller';
 import { SystemService } from '../system.service';
-import { LoggerService } from '@/core/logger/logger.service';
+
+vi.mock('node:stream/promises', () => ({
+  pipeline: vi.fn(),
+}));
 
 describe('SystemController', () => {
   let controller: SystemController;
   let systemService: MockProxy<SystemService>;
+  let dockerService: MockProxy<DockerService>;
 
   beforeEach(async () => {
     const moduleRef = await Test.createTestingModule({
       controllers: [SystemController],
       providers: [
         { provide: SystemService, useValue: mock<SystemService>() },
+        { provide: DockerService, useValue: mock<DockerService>() },
         { provide: LoggerService, useValue: mock<LoggerService>() },
       ],
     }).compile();
 
     controller = moduleRef.get(SystemController);
     systemService = moduleRef.get(SystemService);
+    dockerService = moduleRef.get(DockerService);
   });
 
   it('should be defined', () => {
@@ -38,6 +47,72 @@ describe('SystemController', () => {
       const result = await controller.systemLoad();
       expect(result).toBeDefined();
       expect(systemService.getSystemLoad).toHaveBeenCalled();
+    });
+  });
+
+  describe('downloadHubLogs', () => {
+    const createResponse = (overrides: Partial<{ writableEnded: boolean }> = {}) =>
+      ({
+        set: vi.fn(),
+        on: vi.fn().mockReturnThis(),
+        writableEnded: true,
+        ...overrides,
+      }) as any;
+
+    it('should stream hub logs as a downloadable text file', async () => {
+      const stdout = {} as any;
+      const stderr = { on: vi.fn() } as any;
+      const kill = vi.fn();
+      dockerService.getLogsDownloadStream.mockResolvedValue({ stdout, stderr, kill } as any);
+      vi.mocked(pipeline).mockResolvedValue(undefined);
+
+      const res = createResponse();
+
+      await controller.downloadHubLogs(res);
+
+      expect(res.set).toHaveBeenCalledWith(
+        expect.objectContaining({
+          'Content-Type': 'text/plain; charset=utf-8',
+          'Content-Disposition': expect.stringMatching(/^attachment; filename="ci-hub-logs-.+\.log"$/),
+        }),
+      );
+      expect(stderr.on).toHaveBeenCalledWith('data', expect.any(Function));
+      expect(res.on).toHaveBeenCalledWith('close', expect.any(Function));
+      expect(pipeline).toHaveBeenCalledWith(stdout, res);
+      expect(kill).toHaveBeenCalledTimes(1);
+    });
+
+    it('cleans up through the response close handler on client aborts without double-killing', async () => {
+      const stdout = {} as any;
+      const stderr = { on: vi.fn() } as any;
+      const kill = vi.fn();
+      const clientAbortError = Object.assign(new Error('Premature close'), { code: 'ERR_STREAM_PREMATURE_CLOSE' });
+      dockerService.getLogsDownloadStream.mockResolvedValue({ stdout, stderr, kill } as any);
+      vi.mocked(pipeline).mockImplementation(async (...args: unknown[]) => {
+        const res = args[1] as ReturnType<typeof createResponse>;
+        const closeHandler = res.on.mock.calls.find(([event]: [string, unknown]) => event === 'close')?.[1] as (() => void) | undefined;
+
+        expect(closeHandler).toBeTypeOf('function');
+        closeHandler?.();
+        expect(kill).toHaveBeenCalledTimes(1);
+
+        throw clientAbortError;
+      });
+
+      await expect(controller.downloadHubLogs(createResponse({ writableEnded: false }))).resolves.toBeUndefined();
+      expect(kill).toHaveBeenCalledTimes(1);
+    });
+
+    it('rethrows unexpected pipeline errors while still cleaning up', async () => {
+      const stdout = {} as any;
+      const stderr = { on: vi.fn() } as any;
+      const kill = vi.fn();
+      const error = new Error('unexpected pipeline failure');
+      dockerService.getLogsDownloadStream.mockResolvedValue({ stdout, stderr, kill } as any);
+      vi.mocked(pipeline).mockRejectedValue(error);
+
+      await expect(controller.downloadHubLogs(createResponse())).rejects.toThrow('unexpected pipeline failure');
+      expect(kill).toHaveBeenCalledTimes(1);
     });
   });
 

@@ -45,6 +45,12 @@
         "https://github.com/companionintelligence/CI-Hub/releases/latest/download/latest.json",
         "https://github.com/companionintelligence/CI-Hub/releases/download/nightly/latest.json"
       ]
+    },
+    "deep-link": {
+      "mobile": [],
+      "desktop": {
+        "schemes": ["cihub"]
+      }
     }
   }
 }

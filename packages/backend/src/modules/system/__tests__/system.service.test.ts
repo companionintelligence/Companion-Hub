@@ -23,7 +23,7 @@ describe('SystemService', () => {
     configService.get.mockReturnValue({ dataDir: '/data' } as any);
 
     // Mock systeminformation
-    (si.currentLoad as any) = vi.fn().mockResolvedValue({ currentLoad: 50 });
+    (si.currentLoad as any) = vi.fn().mockResolvedValue({ currentLoad: 50, cpus: [{}, {}, {}, {}] });
     (si.fsSize as any) = vi.fn().mockResolvedValue([{ available: 50 * 1024 * 1024 * 1024, size: 100 * 1024 * 1024 * 1024 }]);
 
     const module: TestingModule = await Test.createTestingModule({
@@ -60,6 +60,7 @@ describe('SystemService', () => {
       expect(filesystemService.readTextFile).toHaveBeenCalledWith('/host/proc/meminfo');
 
       expect(result.cpuLoad).toBe(50);
+      expect(result.cpuCores).toBe(4);
       expect(result.diskSize).toBe(100);
       expect(result.diskUsed).toBe(50);
       expect(result.memoryTotal).toBe(8);
