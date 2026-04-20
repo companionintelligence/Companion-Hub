@@ -178,13 +178,13 @@ test.describe('Cross-Domain Device Registration', () => {
   });
 
   test('Portal: device status updated after pairing', async () => {
-    // The pairing code should now be invalidated (starts with "used-")
-    try {
-      await portal.verifyPairingCode(pairingCode);
-      // If this succeeds, the code wasn't invalidated — check status
-    } catch (error) {
-      // 404 or 410 means the code was used — this is expected
-      expect(String(error)).toMatch(/40[04]|410/);
+    const result = await portal.verifyPairingCode(pairingCode).catch((e: Error) => e);
+    if (result instanceof Error) {
+      // 404/410 means code was invalidated — expected
+      expect(String(result)).toMatch(/40[04]|410/);
+    } else {
+      // If the endpoint still returns the device, status should not be 'inactive'
+      expect(result.status).not.toBe('inactive');
     }
   });
 });
