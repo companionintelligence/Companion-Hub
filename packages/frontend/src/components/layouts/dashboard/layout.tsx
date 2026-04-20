@@ -55,6 +55,14 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
     return 1;
   };
 
+  // Routes that use a layout with a persistent sidebar should share a single
+  // animation key so the outer wrapper (sidebar + header) doesn't re-mount
+  // and swipe during navigation within the same section.
+  const getAnimationKey = (path: string) => {
+    if (path.startsWith('/app-store')) return '/app-store';
+    return path;
+  };
+
   const currentDepth = getDepth(location.pathname);
   const prevDepth = getDepth(prevPathRef.current);
   let direction = 0;
@@ -86,7 +94,7 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
       <main className="flex-1 relative pt-24 px-4 container mx-auto h-full overflow-y-auto overflow-x-hidden no-scrollbar">
         <AnimatePresence mode="popLayout" custom={direction}>
           <motion.div
-            key={location.pathname}
+            key={getAnimationKey(location.pathname)}
             custom={direction}
             variants={variants}
             initial="enter"

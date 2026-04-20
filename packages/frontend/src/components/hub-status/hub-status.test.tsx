@@ -1,75 +1,265 @@
-import { describe, expect, it, vi } from 'vitest';
+import { act, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { pollDockerAccess } from './hub-status';
+import { HubStatus, getDockerDesktopGuideContent } from './hub-status';
 
-describe('pollDockerAccess', () => {
-  it('keeps polling until Docker becomes available', async () => {
-    const invoke = vi
-      .fn<(cmd: string) => Promise<unknown>>()
-      .mockResolvedValueOnce({ state: 'daemon_unavailable', detail: 'daemon starting' })
-      .mockResolvedValueOnce({ state: 'daemon_unavailable', detail: 'still starting' })
-      .mockResolvedValueOnce({ state: 'available' });
-    const sleepFn = vi.fn().mockResolvedValue(undefined);
+type TauriWindow = Window & {
+  __TAURI_INTERNALS__?: { invoke: (cmd: string) => Promise<unknown> };
+};
 
-    const result = await pollDockerAccess(invoke, {
-      attempts: 5,
-      delayMs: 1,
-      sleepFn,
-    });
+type NavigatorWithUserAgentData = Navigator & {
+  userAgentData?: { architecture?: string };
+};
 
-    expect(result).toEqual({ state: 'available' });
-    expect(invoke).toHaveBeenCalledTimes(3);
-    expect(sleepFn).toHaveBeenCalledTimes(2);
+const tauriWindow = window as TauriWindow;
+const navigatorWithUserAgentData = window.navigator as NavigatorWithUserAgentData;
+const originalUserAgent = navigator.userAgent;
+const originalUserAgentData = navigatorWithUserAgentData.userAgentData;
+
+function setUserAgent(userAgent: string, userAgentData?: { architecture?: string }) {
+  Object.defineProperty(window.navigator, 'userAgent', {
+    value: userAgent,
+    configurable: true,
   });
 
-  it('returns permission denied immediately once detected', async () => {
-    const invoke = vi
-      .fn<(cmd: string) => Promise<unknown>>()
-      .mockResolvedValueOnce({ state: 'daemon_unavailable', detail: 'daemon starting' })
-      .mockResolvedValueOnce({ state: 'permission_denied', detail: 'dial unix /var/run/docker.sock: permission denied' });
-    const sleepFn = vi.fn().mockResolvedValue(undefined);
+  if (userAgentData === undefined) {
+    delete navigatorWithUserAgentData.userAgentData;
+    return;
+  }
 
-    const result = await pollDockerAccess(invoke, {
-      attempts: 5,
-      delayMs: 1,
-      sleepFn,
-    });
+  Object.defineProperty(window.navigator, 'userAgentData', {
+    value: userAgentData,
+    configurable: true,
+  });
+}
 
-    expect(result).toEqual({
-      state: 'permission_denied',
-      detail: 'dial unix /var/run/docker.sock: permission denied',
-    });
-    expect(invoke).toHaveBeenCalledTimes(2);
-    expect(sleepFn).toHaveBeenCalledTimes(1);
+function restoreNavigator() {
+  Object.defineProperty(window.navigator, 'userAgent', {
+    value: originalUserAgent,
+    configurable: true,
   });
 
-  it('returns the last daemon-unavailable result after timeout', async () => {
-    const invoke = vi.fn<(cmd: string) => Promise<unknown>>().mockResolvedValue({ state: 'daemon_unavailable', detail: 'daemon still starting' });
-    const sleepFn = vi.fn().mockResolvedValue(undefined);
+  if (originalUserAgentData === undefined) {
+    delete navigatorWithUserAgentData.userAgentData;
+    return;
+  }
 
-    const result = await pollDockerAccess(invoke, {
-      attempts: 3,
-      delayMs: 1,
-      sleepFn,
-    });
+  Object.defineProperty(window.navigator, 'userAgentData', {
+    value: originalUserAgentData,
+    configurable: true,
+  });
+}
 
-    expect(result).toEqual({ state: 'daemon_unavailable', detail: 'daemon still starting' });
-    expect(invoke).toHaveBeenCalledTimes(3);
-    expect(sleepFn).toHaveBeenCalledTimes(2);
+function renderWithTauriStatus(status: 'DockerNotAvailable' | 'Stopped' | 'Running', userAgent: string, userAgentData?: { architecture?: string }) {
+  const invoke = vi.fn<(cmd: string) => Promise<unknown>>(async (cmd: string) => {
+    if (cmd === 'get_hub_status_command') {
+      return status;
+    }
+
+    throw new Error(`Unexpected invoke command: ${cmd}`);
   });
 
-  it('returns the last not-installed result after a bounded poll window', async () => {
-    const invoke = vi.fn<(cmd: string) => Promise<unknown>>().mockResolvedValue({ state: 'not_installed', detail: 'docker: command not found' });
-    const sleepFn = vi.fn().mockResolvedValue(undefined);
+  setUserAgent(userAgent, userAgentData);
+  Object.defineProperty(tauriWindow, '__TAURI_INTERNALS__', {
+    value: { invoke },
+    configurable: true,
+  });
 
-    const result = await pollDockerAccess(invoke, {
-      attempts: 3,
-      delayMs: 1,
-      sleepFn,
+  render(
+    <HubStatus>
+      <div>Hub child</div>
+    </HubStatus>,
+  );
+
+  return { invoke };
+}
+
+function mockWindowsTauri(invoke: (cmd: string) => Promise<unknown>) {
+  setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64)');
+  Object.defineProperty(tauriWindow, '__TAURI_INTERNALS__', {
+    value: { invoke },
+    configurable: true,
+  });
+}
+
+async function flushAsyncWork() {
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
+afterEach(() => {
+  delete tauriWindow.__TAURI_INTERNALS__;
+  restoreNavigator();
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
+
+describe('getDockerDesktopGuideContent', () => {
+  it('returns the Windows Docker Desktop installer guide', () => {
+    expect(getDockerDesktopGuideContent('windows', false)).toEqual({
+      platformLabel: 'Windows',
+      downloadUrl: 'https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe',
+      manualSteps: [
+        'Download Docker Desktop for Windows',
+        'Run the installer and follow the prompts',
+        'Restart your computer if prompted',
+        'Start Docker Desktop',
+        'Come back here — the Hub will start automatically',
+      ],
+      hint: 'Docker Desktop requires Windows 10/11 with WSL2 enabled. If WSL is installed during setup, restart Windows before reopening Companion Hub.',
+    });
+  });
+
+  it('returns the Apple Silicon Docker Desktop dmg for macOS', () => {
+    expect(getDockerDesktopGuideContent('macos', true)).toEqual({
+      platformLabel: 'Mac',
+      downloadUrl: 'https://desktop.docker.com/mac/main/arm64/Docker.dmg',
+      manualSteps: [
+        'Download Docker Desktop for Mac',
+        'Open the .dmg and drag Docker to Applications',
+        'Launch Docker Desktop and grant permissions',
+        'Come back here — the Hub will start automatically',
+      ],
+    });
+  });
+
+  it('returns the Intel Docker Desktop dmg for macOS', () => {
+    expect(getDockerDesktopGuideContent('macos', false).downloadUrl).toBe('https://desktop.docker.com/mac/main/amd64/Docker.dmg');
+  });
+});
+
+describe('HubStatus Docker guidance', () => {
+  it('shows Windows manual guidance with a direct download link and no install button', async () => {
+    const { invoke } = renderWithTauriStatus('DockerNotAvailable', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)');
+
+    expect(await screen.findByRole('heading', { name: 'Docker Desktop Required' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Download Docker Desktop for Windows' })).toHaveAttribute(
+      'href',
+      'https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe',
+    );
+    expect(
+      screen.getByText(
+        'Download Docker Desktop for your Windows machine. Companion Hub will keep checking and continue automatically once Docker is ready.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Run the installer and follow the prompts')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Install Docker Desktop' })).not.toBeInTheDocument();
+    expect(invoke).toHaveBeenCalledWith('get_hub_status_command');
+    expect(invoke).not.toHaveBeenCalledWith('install_docker_command');
+  });
+
+  it('shows the Apple Silicon macOS download link and no install button', async () => {
+    renderWithTauriStatus('DockerNotAvailable', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5)', { architecture: 'arm' });
+
+    expect(await screen.findByRole('heading', { name: 'Docker Desktop Required' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Download Docker Desktop for Mac' })).toHaveAttribute(
+      'href',
+      'https://desktop.docker.com/mac/main/arm64/Docker.dmg',
+    );
+    expect(screen.getByText('Open the .dmg and drag Docker to Applications')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Install Docker Desktop' })).not.toBeInTheDocument();
+  });
+
+  it('shows Linux manual guidance and docs only, with no install button', async () => {
+    renderWithTauriStatus('DockerNotAvailable', 'Mozilla/5.0 (X11; Linux x86_64)');
+
+    expect(await screen.findByRole('heading', { name: 'Docker Engine Required' })).toBeInTheDocument();
+    expect(screen.getByText('curl -fsSL https://get.docker.com | sh')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'View Docker Install Guide' })).toHaveAttribute('href', 'https://docs.docker.com/engine/install/');
+    expect(screen.queryByRole('button', { name: 'Install Docker' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Install Docker Desktop' })).not.toBeInTheDocument();
+  });
+
+  it('auto-starts the hub on Windows once Docker becomes available while the app stays open', async () => {
+    vi.useFakeTimers();
+
+    let getHubStatusCallCount = 0;
+    const invoke = vi.fn<(cmd: string) => Promise<unknown>>(async (cmd: string) => {
+      switch (cmd) {
+        case 'get_hub_status_command':
+          getHubStatusCallCount += 1;
+          if (getHubStatusCallCount === 1) return 'DockerNotAvailable';
+          if (getHubStatusCallCount === 2) return 'Stopped';
+          return 'Running';
+        case 'start_hub_command':
+          return 'Hub started successfully';
+        default:
+          throw new Error(`Unexpected invoke command: ${cmd}`);
+      }
     });
 
-    expect(result).toEqual({ state: 'not_installed', detail: 'docker: command not found' });
-    expect(invoke).toHaveBeenCalledTimes(3);
-    expect(sleepFn).toHaveBeenCalledTimes(2);
+    mockWindowsTauri(invoke);
+
+    render(
+      <HubStatus>
+        <div>Hub child</div>
+      </HubStatus>,
+    );
+
+    await flushAsyncWork();
+    expect(screen.getByRole('link', { name: 'Download Docker Desktop for Windows' })).toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    await flushAsyncWork();
+
+    expect(invoke).toHaveBeenCalledWith('start_hub_command');
+    expect(screen.getByText('Hub Starting…')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Start Hub' })).not.toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    await flushAsyncWork();
+
+    expect(screen.getByText('Hub child')).toBeInTheDocument();
+  });
+
+  it('auto-starts the hub on Windows when Docker is already available but the hub is stopped', async () => {
+    vi.useFakeTimers();
+
+    let getHubStatusCallCount = 0;
+    const invoke = vi.fn<(cmd: string) => Promise<unknown>>(async (cmd: string) => {
+      switch (cmd) {
+        case 'get_hub_status_command':
+          getHubStatusCallCount += 1;
+          return getHubStatusCallCount === 1 ? 'Stopped' : 'Running';
+        case 'start_hub_command':
+          return 'Hub started successfully';
+        default:
+          throw new Error(`Unexpected invoke command: ${cmd}`);
+      }
+    });
+
+    mockWindowsTauri(invoke);
+
+    render(
+      <HubStatus>
+        <div>Hub child</div>
+      </HubStatus>,
+    );
+
+    await flushAsyncWork();
+
+    expect(invoke).toHaveBeenCalledWith('start_hub_command');
+    expect(screen.getByText('Hub Starting…')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Start Hub' })).not.toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    await flushAsyncWork();
+
+    expect(screen.getByText('Hub child')).toBeInTheDocument();
+  });
+
+  it('renders the normal app immediately when the hub is already running', async () => {
+    renderWithTauriStatus('Running', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)');
+
+    expect(await screen.findByText('Hub child')).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Docker Desktop Required' })).not.toBeInTheDocument();
   });
 });

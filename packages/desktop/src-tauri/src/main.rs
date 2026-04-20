@@ -44,17 +44,10 @@ async fn check_docker_access_command() -> Result<hub_manager::DockerAccessCheck,
     Ok(hub_manager::check_docker_access())
 }
 
-/// Install Docker Engine on Linux (uses pkexec for privilege escalation).
+/// Install Docker using the platform-native bootstrap flow.
 #[tauri::command]
-async fn install_docker_linux() -> Result<String, String> {
-    #[cfg(target_os = "linux")]
-    {
-        hub_manager::install_docker_linux()
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        Err("Docker auto-install is only supported on Linux".to_string())
-    }
+async fn install_docker_command() -> Result<hub_manager::DockerInstallResult, String> {
+    hub_manager::install_docker()
 }
 
 /// Get the current Hub status (Docker availability, container state, health).
@@ -90,7 +83,7 @@ pub fn run() {
             check_docker_available,
             check_docker_access_command,
             get_hub_status_command,
-            install_docker_linux,
+            install_docker_command,
         ])
         .setup(|app| {
             // Restore saved window geometry
@@ -115,10 +108,13 @@ pub fn run() {
             // window.open_devtools();
 
             if let Ok(store) = app.store("settings.json") {
-                if let Some(x) = store.get("window_x").and_then(|v: serde_json::Value| v.as_f64())
+                if let Some(x) = store
+                    .get("window_x")
+                    .and_then(|v: serde_json::Value| v.as_f64())
                 {
-                    if let Some(y) =
-                        store.get("window_y").and_then(|v: serde_json::Value| v.as_f64())
+                    if let Some(y) = store
+                        .get("window_y")
+                        .and_then(|v: serde_json::Value| v.as_f64())
                     {
                         let _ =
                             window.set_position(tauri::PhysicalPosition::new(x as i32, y as i32));
@@ -132,8 +128,7 @@ pub fn run() {
                         .get("window_height")
                         .and_then(|v: serde_json::Value| v.as_f64())
                     {
-                        let _ =
-                            window.set_size(tauri::PhysicalSize::new(w as u32, h as u32));
+                        let _ = window.set_size(tauri::PhysicalSize::new(w as u32, h as u32));
                     }
                 }
             }
@@ -143,8 +138,22 @@ pub fn run() {
 
             // Initialize Hub data directory and compose file
             let resource_dir = app.path().resource_dir().map_err(|e| format!("{}", e))?;
-            let (data_dir, compose_path, env_path) =
-                hub_manager::initialize_hub(&resource_dir)?;
+            let initialization = hub_manager::initialize_hub(&resource_dir)?;
+            let data_dir = initialization.data_dir.clone();
+            let compose_path = initialization.compose_path.clone();
+            let env_path = initialization.env_path.clone();
+            let traefik_preflight = initialization.traefik_preflight;
+            let _ = hub_manager::append_desktop_log_for(
+                &data_dir,
+                "setup",
+                &format!(
+                    "Desktop setup completed. compose={} env={} traefik_changed={} traefik_repaired_conflicts={}",
+                    compose_path.display(),
+                    env_path.display(),
+                    traefik_preflight.changed,
+                    traefik_preflight.repaired_conflicting_paths,
+                ),
+            );
 
             // Store paths in app state for tray and commands to use
             app.manage(hub_manager::HubPaths {
@@ -153,22 +162,47 @@ pub fn run() {
                 env_path: env_path.clone(),
             });
 
-            // Hash-based reconciliation: only start/restart when config changed
-            // or containers don't exist. Respects user intent (stopped Hub stays stopped
-            // unless config changed on upgrade).
+            // Hash-based reconciliation: start/restart when containers are missing,
+            // configuration changed, or the Traefik runtime preflight changed mounted
+            // state and needs a recreate. Respects user intent as much as possible
+            // while still healing poisoned bind mounts on upgrade/relaunch.
             if hub_manager::is_docker_available() {
                 let config_hash = compute_config_hash(&compose_path, &env_path);
                 let hash_path = data_dir.join(".config-hash");
                 let saved_hash = std::fs::read_to_string(&hash_path).ok();
                 let containers_exist = hub_manager::hub_containers_exist();
+                let traefik_recreate_required = traefik_preflight.changed
+                    || hub_manager::is_traefik_recreate_required(&data_dir);
 
                 let should_start = if !containers_exist {
                     true // First launch or user stopped Hub
+                } else if traefik_recreate_required {
+                    true // Runtime state changed and Traefik must be recreated before reuse
                 } else if saved_hash.as_deref() != Some(&config_hash) {
                     true // Config changed (upgrade, env fix, etc.)
                 } else {
-                    false // Containers exist, config unchanged — do nothing
+                    false // Containers exist, config unchanged, no runtime repair pending — do nothing
                 };
+
+                let reason = if !containers_exist {
+                    "containers are missing".to_string()
+                } else if traefik_recreate_required {
+                    "Traefik runtime preflight changed mounted state and requires container recreation"
+                        .to_string()
+                } else if saved_hash.as_deref() != Some(&config_hash) {
+                    "configuration hash changed".to_string()
+                } else {
+                    "containers exist, configuration is unchanged, and no runtime repair is pending"
+                        .to_string()
+                };
+                let _ = hub_manager::append_desktop_log_for(
+                    &data_dir,
+                    "setup",
+                    &format!(
+                        "Auto-start decision: should_start={} ({})",
+                        should_start, reason
+                    ),
+                );
 
                 if should_start {
                     let compose = compose_path;
@@ -177,13 +211,37 @@ pub fn run() {
                     let hash = config_hash;
                     let hp = hash_path;
                     tauri::async_runtime::spawn(async move {
-                        let _ = hub_manager::start_hub(&compose, &env, &data);
+                        match hub_manager::start_hub(&compose, &env, &data) {
+                            Ok(message) => {
+                                let _ =
+                                    hub_manager::append_desktop_log_for(&data, "setup", &message);
+                            }
+                            Err(error) => {
+                                let _ = hub_manager::append_desktop_log_for(
+                                    &data,
+                                    "setup",
+                                    &format!("Auto-start failed: {}", error),
+                                );
+                            }
+                        }
                         // Save hash regardless of compose exit status — partial starts
                         // (e.g. Traefik port conflict) are still a valid state. Without
                         // this, every relaunch re-runs compose because the hash is never saved.
-                        let _ = std::fs::write(&hp, &hash);
+                        if let Err(error) = std::fs::write(&hp, &hash) {
+                            let _ = hub_manager::append_desktop_log_for(
+                                &data,
+                                "setup",
+                                &format!("Failed to persist configuration hash: {}", error),
+                            );
+                        }
                     });
                 }
+            } else {
+                let _ = hub_manager::append_desktop_log_for(
+                    &data_dir,
+                    "setup",
+                    "Skipping auto-start because Docker is not currently available.",
+                );
             }
 
             let app_handle = app.handle().clone();
@@ -205,7 +263,7 @@ pub fn run() {
         .expect("error while running Companion Hub Desktop");
 }
 
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 
 fn extract_pairing_code(url: &str) -> Option<String> {
     let trimmed = url.trim();

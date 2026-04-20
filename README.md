@@ -1,8 +1,8 @@
-# CI Hub
+# [Companion Hub](https://ci.computer/hub)
 
 **Self-hosted app hub for self hosting.** Install and manage apps from the companion intelligence marketplace with one click. Runs on your machine—your data stays yours.
 
-Part of the [CI OS](https://github.com/companionintelligence) ecosystem. Licensed under [GNU General Public License v3.0](LICENSE).
+Part of the [CI OS](https://github.com/companionintelligence) ecosystem. Licensed under [GNU Affero General Public License](LICENSE).
 
 ---
 
@@ -128,4 +128,4 @@ To expose your hub over the internet via CI Cloud:
 
 ## License
 
-[GNU General Public License v3.0](LICENSE) — Use, modify, and share. Derivatives must remain open source.
+[GNU Affero General Public License](LICENSE) — Use, modify, and share. Derivatives must remain open source.
