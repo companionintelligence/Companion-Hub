@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod discovery;
+pub mod docker_config;
 pub mod hub_manager;
 pub mod port_manager;
 mod tray;

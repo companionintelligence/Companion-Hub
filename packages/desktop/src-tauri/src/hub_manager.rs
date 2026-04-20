@@ -1045,7 +1045,12 @@ fn compute_data_dir_str(data_dir: &Path) -> String {
 ///
 /// Uses a regenerate-and-preserve approach:
 /// - Preserved values (read from existing .env, generated if missing): ROOT_FOLDER_HOST, JWT_SECRET, POSTGRES_PASSWORD
-/// - Derived values (always recomputed from the current binary): INTERNAL_IP, DOMAIN, CI_CLOUD_URL, CI_HUB_VERSION, CI_HUB_IMAGE, DOCKER_PLATFORM
+/// - Derived values (always recomputed from the current binary): INTERNAL_IP, DOMAIN, CI_CLOUD_URL, CI_HUB_VERSION, CI_HUB_IMAGE, DOCKER_PLATFORM, DOCKER_CONFIG_PATH
+///
+/// Also rewrites `<data_dir>/docker-config.json` by sanitizing the host's
+/// `~/.docker/config.json` so the Hub container can run `docker compose`
+/// without tripping over host-only credential helpers (desktop/osxkeychain/
+/// wincred/secretservice/pass) or contexts.
 ///
 /// Returns the initialized desktop data paths and Traefik preflight result.
 pub fn initialize_hub(resource_dir: &Path) -> Result<HubInitialization, String> {
@@ -1155,6 +1160,32 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<HubInitialization, String> 
         "linux/amd64"
     };
 
+    // Sanitize the host Docker config so the Hub container can pull images on
+    // macOS/Windows (where `credsStore: desktop`/`osxkeychain`/`wincred`
+    // helpers are not available inside the Linux container).
+    let docker_config_path = match crate::docker_config::prepare_sanitized_docker_config(&data_dir) {
+        Ok(path) => {
+            let _ = append_desktop_log_for(
+                &data_dir,
+                "initialize",
+                &format!(
+                    "Prepared sanitized Docker config at {}",
+                    path.display()
+                ),
+            );
+            path
+        }
+        Err(error) => {
+            let message = format!(
+                "Failed to prepare sanitized Docker config; falling back to empty config. {}",
+                error
+            );
+            let _ = append_desktop_log_for(&data_dir, "initialize", &message);
+            data_dir.join(crate::docker_config::SANITIZED_DOCKER_CONFIG_FILENAME)
+        }
+    };
+    let docker_config_path_str = compute_data_dir_str(&docker_config_path);
+
     // Build .env content with deterministic key order
     let env_content = format!(
         "# Preserved (generated once, survive upgrades)\n\
@@ -1168,7 +1199,8 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<HubInitialization, String> 
          CI_CLOUD_URL={cloud_url}\n\
          CI_HUB_VERSION={hub_version}\n\
          CI_HUB_IMAGE={hub_image}\n\
-         DOCKER_PLATFORM={docker_platform}\n",
+         DOCKER_PLATFORM={docker_platform}\n\
+         DOCKER_CONFIG_PATH={docker_config_path}\n",
         root_folder_host = root_folder_host,
         jwt_secret = jwt_secret,
         postgres_password = postgres_password,
@@ -1177,6 +1209,7 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<HubInitialization, String> 
         hub_version = hub_version,
         hub_image = hub_image,
         docker_platform = docker_platform,
+        docker_config_path = docker_config_path_str,
     );
 
     // Write .env (port manager will append dynamic port vars after this)
