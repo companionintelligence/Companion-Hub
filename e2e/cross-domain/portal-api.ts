@@ -147,7 +147,7 @@ export class PortalApiClient {
   /** Check Portal health endpoint. */
   async healthCheck(): Promise<boolean> {
     try {
-      const res = await fetch(`${this.baseUrl}/api/health`);
+      const res = await fetch(`${this.baseUrl}/api/health`, { signal: AbortSignal.timeout(10_000) });
       return res.ok;
     } catch {
       return false;
