@@ -417,7 +417,15 @@ export class DockerService {
   }
 
   private async composeUpService(serviceName: string, opts: { composeFile: string; profile?: string }): Promise<void> {
-    const args = ['compose', '-f', opts.composeFile];
+    const args = ['compose'];
+    const runtimeComposeFile = path.join(this.config.get('directories').dataDir, 'docker-compose.yml');
+
+    if (opts.composeFile === runtimeComposeFile) {
+      args.push('--env-file', this.config.get('envFilePath'));
+    }
+
+    args.push('-f', opts.composeFile);
+
     if (opts.profile) {
       args.push('--profile', opts.profile);
     }
