@@ -57,9 +57,39 @@ function run(cmd: string, args: string[], extraEnv: Record<string, string | unde
   if (res.status !== 0) process.exit(res.status ?? 1);
 }
 
+/**
+ * Derive the TARGETARCH build arg and DOCKER_PLATFORM runtime var from the
+ * current host architecture. docker-compose.prod.yml uses both, and Tauri
+ * derives DOCKER_PLATFORM the same way for its generated .env (see
+ * packages/desktop/src-tauri/src/hub_manager.rs::initialize_hub). Keeping the
+ * CLI path in sync means `pnpm start` on Apple Silicon builds the ARM64 image
+ * natively instead of silently falling back to the slower AMD64 emulation.
+ *
+ * Respects pre-set values so CI or cross-arch builds can still override.
+ */
+function resolvePlatformOverrides(): Record<string, string> {
+  const overrides: Record<string, string> = {};
+  const archMap: Record<string, { targetarch: string; platform: string }> = {
+    x64: { targetarch: 'amd64', platform: 'linux/amd64' },
+    arm64: { targetarch: 'arm64', platform: 'linux/arm64' },
+  };
+  const resolved = archMap[process.arch];
+  if (!resolved) {
+    console.warn(
+      `Unknown host architecture "${process.arch}"; leaving TARGETARCH/DOCKER_PLATFORM unset and relying on compose defaults.`,
+    );
+    return overrides;
+  }
+  if (!process.env.TARGETARCH) overrides.TARGETARCH = resolved.targetarch;
+  if (!process.env.DOCKER_PLATFORM) overrides.DOCKER_PLATFORM = resolved.platform;
+  return overrides;
+}
+
 async function main() {
-  // Always set ENV_FILE in the spawned environments so docker-compose can mount the right file
-  const envOverrides = { ENV_FILE: envFileStr };
+  // Always set ENV_FILE in the spawned environments so docker-compose can mount the right file.
+  // Also derive TARGETARCH/DOCKER_PLATFORM from the current host so Mac/ARM dev doesn't
+  // silently fall back to slow AMD64 emulation when the .env file omits them.
+  const envOverrides = { ENV_FILE: envFileStr, ...resolvePlatformOverrides() };
 
   if (mode === 'dev') {
     // Start infra (db + queue) using local compose
