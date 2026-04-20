@@ -64,8 +64,10 @@ const formatLastSeen = (lastSeen: string) => {
 };
 
 const VpnSection = () => {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const [copiedLoginUrl, setCopiedLoginUrl] = useState(false);
 
   const { data: vpnStatus, isLoading } = useQuery<VpnStatus>({
     queryKey: ['vpn-status'],
@@ -74,6 +76,15 @@ const VpnSection = () => {
       return res.json();
     },
     refetchInterval: 10000,
+  });
+
+  const { data: clientInfo } = useQuery<{ loginServerUrl: string; publicConfigured: boolean }>({
+    queryKey: ['headscale-client-info'],
+    queryFn: async () => {
+      const res = await apiFetch('/api/headscale/client-info', { credentials: 'include' });
+      return res.json();
+    },
+    staleTime: 60_000,
   });
 
   const { data: devicesData } = useQuery<{ success: boolean; devices: VpnDevice[] }>({
@@ -128,6 +139,12 @@ const VpnSection = () => {
     setTimeout(() => setCopiedKey(null), 2000);
   };
 
+  const copyLoginServerUrl = (text: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedLoginUrl(true);
+    setTimeout(() => setCopiedLoginUrl(false), 2000);
+  };
+
   if (isLoading) {
     return (
       <div className="flex items-center gap-2 text-muted-foreground">
@@ -157,6 +174,37 @@ const VpnSection = () => {
             ? 'Your Hub is running a private VPN. Invited devices can securely access your apps from anywhere.'
             : 'The VPN service is starting up or unavailable. It will activate automatically.'}
         </p>
+        {!healthy && (
+          <p className="text-sm text-muted-foreground mt-2">
+            The Hub enrolls the <code className="text-xs bg-muted px-1 rounded">hub-tailscale</code> container automatically (usually within a few
+            minutes after startup). Keys below are for other devices you want on this VPN, not for the Hub itself.
+          </p>
+        )}
+        {clientInfo?.loginServerUrl && (
+          <div className="mt-3 pt-3 border-t border-border">
+            <div className="text-sm font-medium mb-1.5">{t('SETTINGS_NETWORK_HEADSCALE_CLIENT_URL')}</div>
+            <div className="flex items-start gap-2">
+              <code className="text-xs bg-muted px-2 py-1.5 rounded break-all flex-1 font-mono">{clientInfo.loginServerUrl}</code>
+              <button
+                type="button"
+                onClick={() => copyLoginServerUrl(clientInfo.loginServerUrl)}
+                className="text-muted-foreground hover:text-foreground p-1.5 shrink-0 rounded-md hover:bg-muted"
+                title={t('SETTINGS_NETWORK_HEADSCALE_CLIENT_URL')}
+              >
+                {copiedLoginUrl ? (
+                  <span className="text-xs text-green-600 dark:text-green-400">{t('SETTINGS_NETWORK_COPIED')}</span>
+                ) : (
+                  <Copy className="h-4 w-4" />
+                )}
+              </button>
+            </div>
+            <p className="text-xs text-muted-foreground mt-2">
+              {clientInfo.publicConfigured
+                ? t('SETTINGS_NETWORK_HEADSCALE_CLIENT_URL_DESC_PUBLIC')
+                : t('SETTINGS_NETWORK_HEADSCALE_CLIENT_URL_DESC_PRIVATE')}
+            </p>
+          </div>
+        )}
         {vpnStatus?.tailscaleIp && (
           <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
             <div className="text-muted-foreground">Hub VPN Address</div>
@@ -225,6 +273,7 @@ const VpnSection = () => {
         <p className="text-sm text-muted-foreground mb-3">
           Generate a key and share it with the device you want to connect. Each key can be used once and expires after 24 hours.
         </p>
+        <p className="text-sm text-muted-foreground mb-3">{t('SETTINGS_NETWORK_HEADSCALE_INVITE_STEPS')}</p>
         {activeKeys.length > 0 && (
           <div className="space-y-2">
             {activeKeys.map((key) => (

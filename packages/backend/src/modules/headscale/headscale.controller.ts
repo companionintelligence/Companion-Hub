@@ -14,6 +14,12 @@ export class HeadscaleController {
     return this.headscaleService.getVpnStatus();
   }
 
+  @Get('client-info')
+  @ApiResponse({ type: Object })
+  async getClientInfo() {
+    return await this.headscaleService.getClientInfo();
+  }
+
   @Get('devices')
   @ApiResponse({ type: Object })
   async listDevices() {

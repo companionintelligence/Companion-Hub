@@ -14,6 +14,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { CloudflareClientService } from './modules/cloudflare/cloudflare-client.service';
 import { TailscaleService } from './modules/tailscale/tailscale.service';
+import { HeadscaleService } from './modules/headscale/headscale.service';
 
 @Controller()
 export class AppController {
@@ -27,6 +28,7 @@ export class AppController {
     private readonly registrationService: RegistrationService,
     private readonly cloudflareClientService: CloudflareClientService,
     private readonly tailscaleService: TailscaleService,
+    private readonly headscaleService: HeadscaleService,
   ) {}
 
   @Get('/user-context')
@@ -183,12 +185,13 @@ export class AppController {
     const { userSettings, isProduction } = this.configuration.getConfig();
 
     // Parallelize all independent async calls
-    const [version, org, apps, installedApps, tailscaleStatus] = await Promise.all([
+    const [version, org, apps, installedApps, tailscaleStatus, headscaleVpnReady] = await Promise.all([
       this.appService.getVersion(),
       this.registrationService.getDeviceRegistrationInfo(),
       this.marketplaceService.getAvailableApps(),
       this.appsService.getInstalledApps(),
       this.tailscaleService.getStatus().catch(() => ({ installed: false, connected: false })),
+      this.headscaleService.isPrivateVpnReady().catch(() => false),
     ]);
 
     const updatesAvailable = installedApps.filter(({ app, metadata }) => {
@@ -202,7 +205,7 @@ export class AppController {
 
     // Check service availability
     const cloudflareAvailable = Boolean(this.cloudflareClientService.getTunnelToken());
-    const tailscaleAvailable = tailscaleStatus.installed && tailscaleStatus.connected;
+    const tailscaleAvailable = (tailscaleStatus.installed && tailscaleStatus.connected) || headscaleVpnReady;
 
     return AppContextDto.parse(
       {
