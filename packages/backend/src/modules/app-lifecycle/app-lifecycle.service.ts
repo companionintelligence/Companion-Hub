@@ -717,7 +717,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
           protocol: 'http' as const,
           hostname: 'traefik',
           originServerName: hubHostname,
-          isHub: true,
+          privilegedKind: 'hub',
         });
 
         const headscaleFqdn = buildHeadscaleTunnelFqdn(orgInfo, publicDomain);
@@ -735,7 +735,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
             protocol: 'http' as const,
             hostname: 'headscale',
             originServerName: headscaleFqdn,
-            isVpn: true,
+            privilegedKind: 'vpn',
           });
         }
       }

@@ -14,16 +14,26 @@ export interface AppInfo {
   protocol?: 'http' | 'https';
   hostname?: string;
   originServerName?: string; // HTTP Host header to send to Traefik (e.g., n8n-bdc.companionintelligence.com)
-  /** When true, identifies this entry as the Hub itself (not a user-installed app). CI-Cloud uses this flag to distinguish Hub routes from app routes in tunnel config. */
-  isHub?: boolean;
   /**
-   * When true, identifies this entry as the org's Headscale coordination server.
-   * CI-Cloud persists matching rows with `is_vpn=1` in `application` so regular
-   * app sync (which prunes rows whose slug is missing from the payload) never
-   * deletes the VPN tunnel route external clients depend on. The tunnel targets
-   * the `headscale` container at `localPort` directly, not Traefik :80.
+   * Discriminator for infrastructure entries that CI-Cloud must preserve
+   * across regular app sync. Unset/undefined means a regular user app
+   * (eligible for stale-app cleanup on the Portal). Non-null values are
+   * persisted into `application.privileged_kind` in the Portal DB and those
+   * rows are skipped during sync pruning, so losing visibility of the entry
+   * in a later sync never deletes the Cloudflare tunnel route external
+   * clients depend on.
+   *
+   *   'hub' — the Hub's own application row. The Portal filters this entry
+   *           out of the generated ingress rules and reconstructs its route
+   *           from the DB so `host.docker.internal:{port}` always reflects
+   *           the authoritative port.
+   *   'vpn' — the org's self-hosted Headscale coordination server. Routed
+   *           normally through the ingress list but preserved across sync.
+   *
+   * Replaces the older boolean `isHub` + `isVpn` flags; see CI-Portal
+   * migration 0017.
    */
-  isVpn?: boolean;
+  privilegedKind?: 'hub' | 'vpn';
 }
 
 @Injectable()

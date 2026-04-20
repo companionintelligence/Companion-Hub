@@ -148,7 +148,7 @@ describe('AppLifecycleService', () => {
             localPort: 80,
             hostname: 'traefik',
             originServerName: 'mydevice-myorg.companionintelligence.com',
-            isHub: true,
+            privilegedKind: 'hub',
           }),
           expect.objectContaining({
             name: 'Headscale',
@@ -156,7 +156,7 @@ describe('AppLifecycleService', () => {
             localPort: 8080,
             hostname: 'headscale',
             originServerName: 'vpn-mydevice-myorg.companionintelligence.com',
-            isVpn: true,
+            privilegedKind: 'vpn',
           }),
         ]),
         'tunnel-id',
@@ -197,14 +197,19 @@ describe('AppLifecycleService', () => {
       const apps = syncCall?.[1] as any[];
 
       // Hub should be first with correct hostname
-      expect(apps[0]).toMatchObject({ name: 'OS Hub', subdomain: 'hub1', originServerName: 'hub1-acme.companionintelligence.com', isHub: true });
+      expect(apps[0]).toMatchObject({
+        name: 'OS Hub',
+        subdomain: 'hub1',
+        originServerName: 'hub1-acme.companionintelligence.com',
+        privilegedKind: 'hub',
+      });
       expect(apps[1]).toMatchObject({
         name: 'Headscale',
         subdomain: 'vpn',
         localPort: 8080,
         hostname: 'headscale',
         originServerName: 'vpn-hub1-acme.companionintelligence.com',
-        isVpn: true,
+        privilegedKind: 'vpn',
       });
       // Exposed app should follow
       expect(apps[2]).toMatchObject({ name: 'n8n', subdomain: 'n8n-abc' });
@@ -236,7 +241,7 @@ describe('AppLifecycleService', () => {
       const syncCall = cloudflareClientService.syncState.mock.calls[0];
       const apps = syncCall?.[1] as any[];
       expect(apps).toHaveLength(1);
-      expect(apps[0]).toMatchObject({ name: 'OS Hub', isHub: true });
+      expect(apps[0]).toMatchObject({ name: 'OS Hub', privilegedKind: 'hub' });
     });
 
     it('should not include Hub route when hubSubdomain is not set', async () => {
