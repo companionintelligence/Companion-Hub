@@ -147,6 +147,8 @@ services:
     labels:
       ci-os-hub.managed: true
 
+  # Cloudflare tunnel — opt-in. Requires a token file at ./tunnel/token.
+  # Enable with: docker compose --profile cloudflare up -d cloudflared
   cloudflared:
     image: cloudflare/cloudflared:2026.2.0
     pull_policy: if_not_present
@@ -162,7 +164,12 @@ services:
     depends_on:
       - ci-os-hub
       - traefik
+    profiles:
+      - cloudflare
 
+  # Headscale control server — opt-in. Requires a config file at
+  # ${ROOT_FOLDER_HOST}/state/headscale/config.yaml.
+  # Enable with: docker compose --profile tailscale up -d headscale hub-tailscale
   headscale:
     image: headscale/headscale:0.25.1
     pull_policy: if_not_present
@@ -175,7 +182,10 @@ services:
       - ci_os_hub_network
     labels:
       ci-os-hub.managed: true
+    profiles:
+      - tailscale
 
+  # Tailscale client — opt-in, depends on headscale above.
   hub-tailscale:
     image: tailscale/tailscale:v1.82.5
     pull_policy: if_not_present
@@ -199,6 +209,8 @@ services:
       - ci_os_hub_network
     labels:
       ci-os-hub.managed: true
+    profiles:
+      - tailscale
 
 networks:
   ci_os_hub_network:
