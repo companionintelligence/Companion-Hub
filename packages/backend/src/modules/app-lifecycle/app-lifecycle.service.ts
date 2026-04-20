@@ -722,18 +722,20 @@ export class AppLifecycleService implements OnApplicationBootstrap {
 
         const headscaleFqdn = buildHeadscaleTunnelFqdn(orgInfo, publicDomain);
         if (headscaleFqdn && isPrivateVpnEnabled()) {
-          const orgSlug = orgInfo.slug;
-          const normalized = hubSub.replace(/^hub-/, '');
-          const deviceSlug = normalized.endsWith(`-${orgSlug}`) ? normalized.slice(0, -(orgSlug.length + 1)) : normalized;
-          const vpnSub = deviceSlug && deviceSlug !== orgSlug ? `vpn-${deviceSlug}-${orgSlug}` : `vpn-${orgSlug}`;
+          // Send only the leaf subdomain `vpn`; CI-Cloud's tunnel sync already
+          // appends `-{deviceSlug}-{orgSlug}.{domain}` when building the public
+          // hostname, so pre-concatenating here (old behaviour) produced a
+          // double-suffixed hostname that didn't match the DNS record CI-Cloud
+          // creates. originServerName carries the full FQDN for the HTTP Host
+          // header so Headscale's server_url validation still matches.
           exposedApps.splice(1, 0, {
             name: 'Headscale',
-            subdomain: vpnSub,
+            subdomain: 'vpn',
             localPort: headscaleTunnelContainerPort(),
             protocol: 'http' as const,
             hostname: 'headscale',
             originServerName: headscaleFqdn,
-            isHeadscale: true,
+            isVpn: true,
           });
         }
       }

@@ -16,8 +16,14 @@ export interface AppInfo {
   originServerName?: string; // HTTP Host header to send to Traefik (e.g., n8n-bdc.companionintelligence.com)
   /** When true, identifies this entry as the Hub itself (not a user-installed app). CI-Cloud uses this flag to distinguish Hub routes from app routes in tunnel config. */
   isHub?: boolean;
-  /** Headscale coordination server: tunnel should target this container port (e.g. 8080), not Traefik :80. */
-  isHeadscale?: boolean;
+  /**
+   * When true, identifies this entry as the org's Headscale coordination server.
+   * CI-Cloud persists matching rows with `is_vpn=1` in `application` so regular
+   * app sync (which prunes rows whose slug is missing from the payload) never
+   * deletes the VPN tunnel route external clients depend on. The tunnel targets
+   * the `headscale` container at `localPort` directly, not Traefik :80.
+   */
+  isVpn?: boolean;
 }
 
 @Injectable()

@@ -152,11 +152,11 @@ describe('AppLifecycleService', () => {
           }),
           expect.objectContaining({
             name: 'Headscale',
-            subdomain: 'vpn-mydevice-myorg',
+            subdomain: 'vpn',
             localPort: 8080,
             hostname: 'headscale',
             originServerName: 'vpn-mydevice-myorg.companionintelligence.com',
-            isHeadscale: true,
+            isVpn: true,
           }),
         ]),
         'tunnel-id',
@@ -200,10 +200,11 @@ describe('AppLifecycleService', () => {
       expect(apps[0]).toMatchObject({ name: 'OS Hub', subdomain: 'hub1', originServerName: 'hub1-acme.companionintelligence.com', isHub: true });
       expect(apps[1]).toMatchObject({
         name: 'Headscale',
-        subdomain: 'vpn-hub1-acme',
+        subdomain: 'vpn',
         localPort: 8080,
         hostname: 'headscale',
-        isHeadscale: true,
+        originServerName: 'vpn-hub1-acme.companionintelligence.com',
+        isVpn: true,
       });
       // Exposed app should follow
       expect(apps[2]).toMatchObject({ name: 'n8n', subdomain: 'n8n-abc' });
