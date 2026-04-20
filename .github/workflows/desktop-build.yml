@@ -78,7 +78,8 @@ jobs:
             libxdo-dev \
             patchelf \
             libfuse2 \
-            rpm
+            rpm \
+            xdg-utils
 
       - name: Install pnpm
         if: runner.os == 'Linux' || true
