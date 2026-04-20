@@ -176,8 +176,8 @@ const VpnSection = () => {
         </p>
         {!healthy && (
           <p className="text-sm text-muted-foreground mt-2">
-            The Hub enrolls the <code className="text-xs bg-muted px-1 rounded">hub-tailscale</code> container automatically (usually within a few minutes after
-            startup). Keys below are for other devices you want on this VPN, not for the Hub itself.
+            The Hub enrolls the <code className="text-xs bg-muted px-1 rounded">hub-tailscale</code> container automatically (usually within a few
+            minutes after startup). Keys below are for other devices you want on this VPN, not for the Hub itself.
           </p>
         )}
         {clientInfo?.loginServerUrl && (
@@ -191,7 +191,11 @@ const VpnSection = () => {
                 className="text-muted-foreground hover:text-foreground p-1.5 shrink-0 rounded-md hover:bg-muted"
                 title={t('SETTINGS_NETWORK_HEADSCALE_CLIENT_URL')}
               >
-                {copiedLoginUrl ? <span className="text-xs text-green-600 dark:text-green-400">{t('SETTINGS_NETWORK_COPIED')}</span> : <Copy className="h-4 w-4" />}
+                {copiedLoginUrl ? (
+                  <span className="text-xs text-green-600 dark:text-green-400">{t('SETTINGS_NETWORK_COPIED')}</span>
+                ) : (
+                  <Copy className="h-4 w-4" />
+                )}
               </button>
             </div>
             <p className="text-xs text-muted-foreground mt-2">

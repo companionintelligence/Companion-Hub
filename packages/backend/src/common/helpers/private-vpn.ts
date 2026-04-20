@@ -24,7 +24,6 @@ export function buildHeadscaleTunnelFqdn(org: HeadscaleTunnelOrg | null | undefi
   const orgSlug = org.slug;
   const normalized = org.hubSubdomain.replace(/^hub-/, '');
   const deviceSlug = normalized.endsWith(`-${orgSlug}`) ? normalized.slice(0, -(orgSlug.length + 1)) : normalized;
-  const host =
-    deviceSlug && deviceSlug !== orgSlug ? `vpn-${deviceSlug}-${orgSlug}.${publicDomain.trim()}` : `vpn-${orgSlug}.${publicDomain.trim()}`;
+  const host = deviceSlug && deviceSlug !== orgSlug ? `vpn-${deviceSlug}-${orgSlug}.${publicDomain.trim()}` : `vpn-${orgSlug}.${publicDomain.trim()}`;
   return host;
 }

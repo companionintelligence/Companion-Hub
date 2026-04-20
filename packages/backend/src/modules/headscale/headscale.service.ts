@@ -76,7 +76,7 @@ export class HeadscaleService implements OnModuleInit, OnApplicationBootstrap {
     return d.replace(/^https?:\/\//, '').split('/')[0] || null;
   }
 
-   /**
+  /**
    * Public URL from env only (HEADSCALE_PUBLIC_*, headscale.<DOMAIN>). Tests and callers that
    * do not have registration context use this. Full runtime URL may add tunnel FQDN via resolveEffectiveServerUrl.
    */
@@ -162,7 +162,9 @@ export class HeadscaleService implements OnModuleInit, OnApplicationBootstrap {
     const host = await this.resolveEffectiveTraefikHost();
     await mkdir(this.traefikDynamicDir, { recursive: true });
     if (!host) {
-      await unlink(this.traefikHeadscaleRoutePath).catch(() => {});
+      await unlink(this.traefikHeadscaleRoutePath).catch(() => {
+        // Best-effort: ignore ENOENT when the route file isn't present.
+      });
       return;
     }
 
@@ -202,7 +204,9 @@ export class HeadscaleService implements OnModuleInit, OnApplicationBootstrap {
   async onModuleInit() {
     if (!isPrivateVpnEnabled()) {
       await mkdir(this.traefikDynamicDir, { recursive: true });
-      await unlink(this.traefikHeadscaleRoutePath).catch(() => {});
+      await unlink(this.traefikHeadscaleRoutePath).catch(() => {
+        // Best-effort: ignore ENOENT when the route file isn't present.
+      });
       this.logger.debug('Private VPN disabled (PRIVATE_VPN_ENABLED=false); skipping Headscale init');
       return;
     }
@@ -279,7 +283,9 @@ export class HeadscaleService implements OnModuleInit, OnApplicationBootstrap {
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       if (msg.includes('invalid') && msg.toLowerCase().includes('auth')) {
-        await unlink(this.hubTailscalePreauthPath).catch(() => {});
+        await unlink(this.hubTailscalePreauthPath).catch(() => {
+          // Best-effort: the stale key may already be gone.
+        });
         this.logger.warn('Cleared stored hub-tailscale pre-auth key after auth failure; a new key will be created on next attempt');
       }
       throw error;
@@ -300,7 +306,9 @@ export class HeadscaleService implements OnModuleInit, OnApplicationBootstrap {
       expirationHours: 24 * 365 * 10,
     });
     await writeFile(this.hubTailscalePreauthPath, pre.key, 'utf-8');
-    await chmod(this.hubTailscalePreauthPath, 0o600).catch(() => {});
+    await chmod(this.hubTailscalePreauthPath, 0o600).catch(() => {
+      // Best-effort on filesystems that don't support chmod (e.g. bind-mounted Windows volumes).
+    });
     this.logger.log('Created and stored hub-tailscale Headscale pre-auth key');
     return pre.key;
   }

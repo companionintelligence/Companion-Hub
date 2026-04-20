@@ -17,9 +17,7 @@ describe('private-vpn helpers', () => {
   });
 
   it('buildHeadscaleTunnelFqdn builds vpn device-org hostname', () => {
-    expect(
-      buildHeadscaleTunnelFqdn({ slug: 'myorg', hubSubdomain: 'mydevice-myorg' }, 'example.com'),
-    ).toBe('vpn-mydevice-myorg.example.com');
+    expect(buildHeadscaleTunnelFqdn({ slug: 'myorg', hubSubdomain: 'mydevice-myorg' }, 'example.com')).toBe('vpn-mydevice-myorg.example.com');
   });
 
   it('buildHeadscaleTunnelFqdn returns null when VPN disabled', () => {

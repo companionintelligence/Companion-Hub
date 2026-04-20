@@ -32,17 +32,19 @@ describe('TailscaleService', () => {
   });
 
   it('uses docker sidecar when host binary/socket are missing', async () => {
-    execFileMock.mockImplementation((cmd: string, args: string[], _opts: unknown, cb: (err: Error | null, stdout?: string, stderr?: string) => void) => {
-      if (cmd === 'docker' && args[1] === 'hub-tailscale' && args[3] === 'version') {
-        process.nextTick(() => cb(null, '1.82.0', ''));
-        return;
-      }
-      if (cmd === 'docker' && args[args.length - 1] === '--json') {
-        process.nextTick(() => cb(null, runningStatusJson, ''));
-        return;
-      }
-      process.nextTick(() => cb(new Error('unexpected'), '', ''));
-    });
+    execFileMock.mockImplementation(
+      (cmd: string, args: string[], _opts: unknown, cb: (err: Error | null, stdout?: string, stderr?: string) => void) => {
+        if (cmd === 'docker' && args[1] === 'hub-tailscale' && args[3] === 'version') {
+          process.nextTick(() => cb(null, '1.82.0', ''));
+          return;
+        }
+        if (cmd === 'docker' && args[args.length - 1] === '--json') {
+          process.nextTick(() => cb(null, runningStatusJson, ''));
+          return;
+        }
+        process.nextTick(() => cb(new Error('unexpected'), '', ''));
+      },
+    );
 
     const status = await service.getStatus();
     expect(status.installed).toBe(true);
@@ -55,5 +57,4 @@ describe('TailscaleService', () => {
       expect.any(Function),
     );
   });
-
 });

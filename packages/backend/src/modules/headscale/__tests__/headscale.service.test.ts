@@ -222,25 +222,23 @@ describe('HeadscaleService', () => {
 
     it('returns false when hub-tailscale is offline', async () => {
       service.setApiKey('test-key');
-      mockFetch
-        .mockResolvedValueOnce({ ok: true })
-        .mockResolvedValueOnce({
-          ok: true,
-          json: () =>
-            Promise.resolve({
-              nodes: [
-                {
-                  id: '1',
-                  name: 'hub-tailscale',
-                  ipAddresses: ['100.64.0.1'],
-                  online: false,
-                  lastSeen: '2025-01-01T00:00:00Z',
-                  createdAt: '2025-01-01T00:00:00Z',
-                  user: 'hub',
-                },
-              ],
-            }),
-        });
+      mockFetch.mockResolvedValueOnce({ ok: true }).mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            nodes: [
+              {
+                id: '1',
+                name: 'hub-tailscale',
+                ipAddresses: ['100.64.0.1'],
+                online: false,
+                lastSeen: '2025-01-01T00:00:00Z',
+                createdAt: '2025-01-01T00:00:00Z',
+                user: 'hub',
+              },
+            ],
+          }),
+      });
 
       await expect(service.isPrivateVpnReady()).resolves.toBe(false);
     });
