@@ -7,7 +7,7 @@ set -euo pipefail
 DATA_DIR="${CI_HUB_DATA_DIR:-/tmp/ci-hub-e2e}"
 
 # Fail fast with a clear message if Postgres / RabbitMQ are unavailable.
-pnpm exec tsx --eval "(async () => { const mod = await import('./e2e/helpers/infra.ts'); const requireInfraReady = mod.requireInfraReady ?? mod.default?.requireInfraReady ?? mod['module.exports']?.requireInfraReady; if (typeof requireInfraReady !== 'function') throw new TypeError('requireInfraReady export not found'); await requireInfraReady(Number(process.env.E2E_INFRA_RETRIES || '15'), Number(process.env.E2E_INFRA_INTERVAL_MS || '1000')); })().catch((error) => { console.error(error); process.exit(1); });"
+pnpm exec tsx ./e2e/helpers/require-infra-ready.ts
 
 # Create required directory structure
 mkdir -p "$DATA_DIR"/{state,logs,apps,app-data,repos,backups,user-config,media}
