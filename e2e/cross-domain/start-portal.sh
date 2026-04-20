@@ -10,11 +10,11 @@
 #
 # Environment variables:
 #   PORTAL_DIR  — path to CI-Portal repo (default: ../../CI-Portal or ../CI-Portal)
-#   PORTAL_PORT — port for wrangler dev (default: 8002)
+#   PORTAL_PORT — port for wrangler dev (default: 8012)
 
 set -euo pipefail
 
-PORTAL_PORT="${PORTAL_PORT:-8002}"
+PORTAL_PORT="${PORTAL_PORT:-8012}"
 PERSIST_DIR="db/e2e-cross-domain"
 
 # Resolve Portal directory

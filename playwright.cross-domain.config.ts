@@ -21,7 +21,7 @@
 import { defineConfig, devices } from '@playwright/test';
 
 const PORTAL_DIR = process.env.PORTAL_DIR || '';
-const PORTAL_PORT = process.env.PORTAL_PORT || '8002';
+const PORTAL_PORT = process.env.PORTAL_PORT || '8012';
 const BACKEND_PORT = process.env.BACKEND_PORT || '3000';
 const FRONTEND_PORT = process.env.FRONTEND_PORT || '9091';
 const SERVER_IP = process.env.SERVER_IP || 'localhost';

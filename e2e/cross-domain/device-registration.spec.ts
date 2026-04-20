@@ -35,7 +35,7 @@ import { test, expect } from '@playwright/test';
 import { PortalApiClient } from './portal-api';
 import { clearDatabase } from '../helpers/db';
 
-const PORTAL_URL = process.env.PORTAL_URL || 'http://localhost:8002';
+const PORTAL_URL = process.env.PORTAL_URL || 'http://localhost:8012';
 const HUB_BACKEND_URL = `http://localhost:${process.env.BACKEND_PORT || '3000'}`;
 const HUB_FRONTEND_URL = `http://localhost:${process.env.FRONTEND_PORT || '9091'}`;
 
