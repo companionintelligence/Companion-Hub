@@ -116,7 +116,7 @@ describe('AppHelpers', () => {
       expect(envMap.get('APP_DATA_DIR')).toBe('/opt/ci-hub/app-data/test-store/test-app');
       expect(envMap.get('HUB_DEVICE_ID')).toBe('hub-device-id');
       expect(envMap.get('HUB_API_KEY')).toBe('hub-api-key');
-      expect(envMap.get('HUB_PORTAL_JWT')).toBe(jsonwebtoken.sign({ sub: 'cli' }, 'hub-jwt-secret', { noTimestamp: true }));
+      expect(jsonwebtoken.verify(envMap.get('HUB_PORTAL_JWT') as string, 'hub-jwt-secret')).toMatchObject({ sub: 'cli' });
     });
 
     it('should omit unavailable hub variables without failing env generation', async () => {
