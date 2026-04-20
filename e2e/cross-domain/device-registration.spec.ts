@@ -51,7 +51,6 @@ const TEST_DEVICE_NAME = 'E2E Hub';
 test.describe('Cross-Domain Device Registration', () => {
   let portal: PortalApiClient;
   let pairingCode: string;
-  let portalOrgId: string;
 
   test.beforeAll(async () => {
     portal = new PortalApiClient(PORTAL_URL);
@@ -91,7 +90,6 @@ test.describe('Cross-Domain Device Registration', () => {
     const org = await portal.createOrganization(TEST_ORG_NAME);
     expect(org.id).toBeTruthy();
     expect(org.slug).toBeTruthy();
-    portalOrgId = org.id;
 
     // Step 3: Set it as the active org (required for device creation)
     await portal.setActiveOrganization(org.id);
