@@ -5,10 +5,12 @@ import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
+import jsonwebtoken from 'jsonwebtoken';
 import { EnvUtils } from '../env/env.utils';
 import type { AppEventFormInput } from '../queue/entities/app-events';
 import { AppFilesManager } from './app-files-manager';
 import { DeviceRegistrationRepository } from '../registration/device-registration.repository';
+import { RegistrationService } from '../registration/registration.service';
 
 @Injectable()
 export class AppHelpers {
@@ -19,6 +21,7 @@ export class AppHelpers {
     private readonly envUtils: EnvUtils,
     private readonly logger: LoggerService,
     private readonly deviceRegistrationRepository: DeviceRegistrationRepository,
+    private readonly registrationService: RegistrationService,
   ) {}
 
   /**
@@ -34,7 +37,7 @@ export class AppHelpers {
    * @throws Will throw an error if the app has an invalid config.json file or if a required variable is missing.
    */
   public generateEnvFile = async (appUrn: AppUrn, form: AppEventFormInput) => {
-    const { internalIp, envFilePath, rootFolderHost, userSettings } = this.config.getConfig();
+    const { internalIp, envFilePath, rootFolderHost, userSettings, ciHubApiKey, jwtSecret } = this.config.getConfig();
 
     const config = await this.appFilesManager.getInstalledAppInfo(appUrn);
 
@@ -49,6 +52,30 @@ export class AppHelpers {
     // Hub's .env may have NODE_ENV=development which propagates via env_file and breaks
     // apps like Rocket.Chat that try to load dev-only dependencies (e.g. pino-pretty).
     envMap.set('NODE_ENV', 'production');
+
+    try {
+      const deviceId = await this.registrationService.getDeviceId();
+      if (deviceId) {
+        envMap.set('HUB_DEVICE_ID', deviceId);
+      } else {
+        envMap.delete('HUB_DEVICE_ID');
+      }
+    } catch (error) {
+      envMap.delete('HUB_DEVICE_ID');
+      this.logger.warn('Unable to resolve HUB_DEVICE_ID for app env generation.', error);
+    }
+
+    if (ciHubApiKey) {
+      envMap.set('HUB_API_KEY', ciHubApiKey);
+    } else {
+      envMap.delete('HUB_API_KEY');
+    }
+
+    if (jwtSecret) {
+      envMap.set('HUB_PORTAL_JWT', jsonwebtoken.sign({ sub: 'cli' }, jwtSecret, { noTimestamp: true }));
+    } else {
+      envMap.delete('HUB_PORTAL_JWT');
+    }
 
     const { appName, appStoreId } = extractAppUrn(appUrn);
 

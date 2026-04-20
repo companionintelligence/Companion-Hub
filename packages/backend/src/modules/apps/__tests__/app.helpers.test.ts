@@ -2,10 +2,12 @@ import { createAppUrn } from '@/common/helpers/app-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { EnvUtils } from '@/modules/env/env.utils';
+import { RegistrationService } from '@/modules/registration/registration.service';
 import { Test } from '@nestjs/testing';
 import type { AppInfo } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import { fromPartial } from '@total-typescript/shoehorn';
+import jsonwebtoken from 'jsonwebtoken';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { mock } from 'vitest-mock-extended';
 import { AppFilesManager } from '../app-files-manager';
@@ -19,6 +21,7 @@ describe('AppHelpers', () => {
   let filesystem = mock<FilesystemService>();
   let envUtils = mock<EnvUtils>();
   let deviceRegistrationRepository = mock<DeviceRegistrationRepository>();
+  let registrationService = mock<RegistrationService>();
   const testAppUrn: AppUrn = createAppUrn('test-app', 'test-store');
 
   beforeEach(async () => {
@@ -34,6 +37,7 @@ describe('AppHelpers', () => {
     filesystem = moduleRef.get(FilesystemService);
     envUtils = moduleRef.get(EnvUtils);
     deviceRegistrationRepository = moduleRef.get(DeviceRegistrationRepository);
+    registrationService = moduleRef.get(RegistrationService);
   });
 
   describe('generateEnvFile', () => {
@@ -72,6 +76,8 @@ describe('AppHelpers', () => {
           envFilePath: '/data/.env',
           rootFolderHost: '/opt/ci-hub',
           domain: 'example.com',
+          ciHubApiKey: 'hub-api-key',
+          jwtSecret: 'hub-jwt-secret',
           userSettings: {
             appDataPath: '/opt/ci-hub',
             domain: 'example.com',
@@ -84,6 +90,7 @@ describe('AppHelpers', () => {
       appFilesManager.getInstalledAppInfo.mockResolvedValue(mockAppInfo);
       appFilesManager.getAppEnv.mockResolvedValue({ path: '/data/.env', content: '' });
       filesystem.readTextFile.mockResolvedValue('');
+      registrationService.getDeviceId.mockResolvedValue('hub-device-id');
     });
 
     it('should throw an error if app is not found', async () => {
@@ -107,6 +114,37 @@ describe('AppHelpers', () => {
       expect(envMap.get('APP_ID')).toBe('test-app-test-store');
       expect(envMap.get('ROOT_FOLDER_HOST')).toBe('/opt/ci-hub');
       expect(envMap.get('APP_DATA_DIR')).toBe('/opt/ci-hub/app-data/test-store/test-app');
+      expect(envMap.get('HUB_DEVICE_ID')).toBe('hub-device-id');
+      expect(envMap.get('HUB_API_KEY')).toBe('hub-api-key');
+      expect(envMap.get('HUB_PORTAL_JWT')).toBe(jsonwebtoken.sign({ sub: 'cli' }, 'hub-jwt-secret', { noTimestamp: true }));
+    });
+
+    it('should omit unavailable hub variables without failing env generation', async () => {
+      const envMap = new Map<string, string>([
+        ['HUB_DEVICE_ID', 'stale-device-id'],
+        ['HUB_API_KEY', 'stale-api-key'],
+        ['HUB_PORTAL_JWT', 'stale-jwt'],
+      ]);
+      envUtils.envStringToMap.mockReturnValue(envMap);
+      registrationService.getDeviceId.mockRejectedValue(new Error('lookup failed'));
+      config.getConfig.mockReturnValue(
+        fromPartial({
+          internalIp: '127.0.0.1',
+          envFilePath: '/data/.env',
+          rootFolderHost: '/opt/ci-hub',
+          domain: 'example.com',
+          userSettings: {
+            appDataPath: '/opt/ci-hub',
+            domain: 'example.com',
+          },
+        }),
+      );
+
+      await appHelpers.generateEnvFile(testAppUrn, {});
+
+      expect(envMap.has('HUB_DEVICE_ID')).toBe(false);
+      expect(envMap.has('HUB_API_KEY')).toBe(false);
+      expect(envMap.has('HUB_PORTAL_JWT')).toBe(false);
     });
 
     it('should handle form port override', async () => {
