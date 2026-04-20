@@ -7,15 +7,29 @@ interface HubStatusProps {
 
 type HubStatusResponse = 'DockerNotAvailable' | 'Stopped' | 'Starting' | 'Running' | { Error: { message: string } };
 
+type ServiceState = 'pending' | 'starting' | 'ready' | 'failed';
+
+interface ServiceStatus {
+  label: string;
+  container: string;
+  state: ServiceState;
+}
+
+interface StartupProgress {
+  services: ServiceStatus[];
+  progress_pct: number;
+  all_ready: boolean;
+}
+
 function getErrorMessage(err: unknown): string {
   if (err instanceof Error) return err.message;
   return String(err);
 }
 
 // Tauri IPC helper
-function getTauriInvoke(): ((cmd: string) => Promise<unknown>) | null {
+function getTauriInvoke(): ((cmd: string, args?: Record<string, unknown>) => Promise<unknown>) | null {
   if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
-    return (window as unknown as { __TAURI_INTERNALS__: { invoke: (cmd: string) => Promise<unknown> } }).__TAURI_INTERNALS__.invoke;
+    return (window as unknown as { __TAURI_INTERNALS__: { invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown> } }).__TAURI_INTERNALS__.invoke;
   }
   return null;
 }
@@ -28,15 +42,12 @@ function detectPlatform(): 'windows' | 'macos' | 'linux' {
 }
 
 function isAppleSilicon(): boolean {
-  // navigator.userAgentData.architecture is not available in WKWebView/Safari (Tauri's macOS webview)
-  // Fall back to checking User-Agent and platform
   try {
     const uad = (navigator as unknown as { userAgentData?: { architecture?: string } }).userAgentData;
     if (uad?.architecture) return uad.architecture === 'arm';
-    // Fallback: check for arm64/aarch64 in UA or assume Apple Silicon on modern Macs
     return /arm64|aarch64/i.test(navigator.userAgent) || /Mac/.test(navigator.platform);
   } catch {
-    return true; // Default to Apple Silicon (more common on new Macs)
+    return true;
   }
 }
 
@@ -158,8 +169,129 @@ function DockerInstallGuide() {
   return <LinuxDockerGuide />;
 }
 
+// ─── Startup progress screen ─────────────────────────────────────────────────
+
+const SERVICE_ICON: Record<ServiceState, string> = {
+  pending: '○',
+  starting: '◌',
+  ready: '●',
+  failed: '✕',
+};
+
+const SERVICE_COLOR: Record<ServiceState, string> = {
+  pending: 'text-muted-foreground/40',
+  starting: 'text-yellow-500',
+  ready: 'text-green-500',
+  failed: 'text-destructive',
+};
+
+const SERVICE_LABEL: Record<ServiceState, string> = {
+  pending: 'Waiting…',
+  starting: 'Starting…',
+  ready: 'Ready',
+  failed: 'Failed',
+};
+
+function ServiceRow({ service }: { service: ServiceStatus }) {
+  const color = SERVICE_COLOR[service.state];
+  return (
+    <div className="flex items-center justify-between gap-4 py-1.5">
+      <div className="flex items-center gap-2.5">
+        <span className={`text-sm font-medium tabular-nums ${color} ${service.state === 'starting' ? 'animate-pulse' : ''}`}>
+          {SERVICE_ICON[service.state]}
+        </span>
+        <span className="text-sm text-foreground">{service.label}</span>
+      </div>
+      <span className={`text-xs tabular-nums ${color}`}>{SERVICE_LABEL[service.state]}</span>
+    </div>
+  );
+}
+
+function StartupScreen({ elapsedSeconds }: { elapsedSeconds: number }) {
+  const invoke = getTauriInvoke();
+  const [progress, setProgress] = useState<StartupProgress | null>(null);
+
+  useEffect(() => {
+    if (!invoke) return;
+    const poll = async () => {
+      try {
+        const result = await invoke('get_startup_progress_command') as StartupProgress;
+        setProgress(result);
+      } catch {
+        // ignore — hub_status polling handles recovery
+      }
+    };
+    void poll();
+    const id = setInterval(() => void poll(), 2000);
+    return () => clearInterval(id);
+  }, [invoke]);
+
+  const pct = progress?.progress_pct ?? 0;
+  const showSlowMessage = elapsedSeconds > 90;
+  const showVerySlowMessage = elapsedSeconds > 180;
+
+  const elapsed = `${Math.floor(elapsedSeconds / 60)}:${String(elapsedSeconds % 60).padStart(2, '0')}`;
+
+  return (
+    <div className="flex flex-col items-center gap-6 w-full max-w-sm">
+      <div className="text-center space-y-1">
+        <h1 className="text-2xl font-semibold text-foreground">Starting Companion Hub</h1>
+        <p className="text-sm text-muted-foreground">
+          {showVerySlowMessage
+            ? 'Still working — Docker images may be downloading for the first time.'
+            : showSlowMessage
+              ? 'Almost there — some services are taking longer than usual.'
+              : 'Services are coming online…'}
+        </p>
+      </div>
+
+      {/* Progress bar */}
+      <div className="w-full space-y-1.5">
+        <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
+          <div
+            className="h-full rounded-full bg-primary transition-all duration-700 ease-out"
+            style={{ width: `${Math.max(pct, 4)}%` }}
+          />
+        </div>
+        <div className="flex justify-between text-xs text-muted-foreground/60 tabular-nums">
+          <span>{pct}%</span>
+          <span>{elapsed} elapsed</span>
+        </div>
+      </div>
+
+      {/* Per-service list */}
+      {progress && progress.services.length > 0 ? (
+        <div className="w-full rounded-lg border border-border bg-muted/30 px-4 divide-y divide-border/50">
+          {progress.services.map((svc) => (
+            <ServiceRow key={svc.container} service={svc} />
+          ))}
+        </div>
+      ) : (
+        <div className="flex items-center gap-2 text-muted-foreground">
+          <svg
+            className="h-4 w-4 animate-spin text-primary"
+            xmlns="http://www.w3.org/2000/svg"
+            fill="none"
+            viewBox="0 0 24 24"
+            role="img"
+            aria-label="Loading"
+          >
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+          </svg>
+          <span className="text-sm">Initialising…</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Main HubStatus gate ──────────────────────────────────────────────────────
+
 export function HubStatus({ children }: HubStatusProps) {
   const [status, setStatus] = useState<HubStatusResponse | null>(null);
+  const [startupElapsed, setStartupElapsed] = useState(0);
+  const startupStartRef = useRef<number | null>(null);
   const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
   const isTauriRelease = isTauri && !window.location.origin.startsWith('http://localhost:');
   const isWindows = isTauri && detectPlatform() === 'windows';
@@ -238,13 +370,25 @@ export function HubStatus({ children }: HubStatusProps) {
         await checkHealthFallback();
       }
     } else if (isTauri) {
-      // Only probe localhost in Tauri builds — in a regular browser the API
-      // is served from the same origin so no localhost probing is needed, and
-      // doing so triggers Private Network Access (PNA) CORS errors when the
-      // page is loaded from a public/tunnel URL.
       await checkHealthFallback();
     }
   }, [isTauri, isTauriRelease, isWindows, checkHealthFallback, startHub]);
+
+  // Track elapsed seconds while in Starting state
+  useEffect(() => {
+    if (status === 'Starting') {
+      if (startupStartRef.current === null) {
+        startupStartRef.current = Date.now();
+      }
+      const id = setInterval(() => {
+        setStartupElapsed(Math.floor((Date.now() - (startupStartRef.current ?? Date.now())) / 1000));
+      }, 1000);
+      return () => clearInterval(id);
+    } else {
+      startupStartRef.current = null;
+      setStartupElapsed(0);
+    }
+  }, [status]);
 
   useEffect(() => {
     checkStatus();
@@ -294,26 +438,7 @@ export function HubStatus({ children }: HubStatusProps) {
         </>
       )}
 
-      {status === 'Starting' && (
-        <>
-          <h1 className="text-2xl font-semibold text-foreground">Hub Starting…</h1>
-          <div className="flex items-center gap-3">
-            <svg
-              className="h-5 w-5 animate-spin text-primary"
-              xmlns="http://www.w3.org/2000/svg"
-              fill="none"
-              viewBox="0 0 24 24"
-              role="img"
-              aria-label="Loading"
-            >
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-            </svg>
-            <span className="text-muted-foreground">Waiting to start…</span>
-          </div>
-          <p className="text-sm text-muted-foreground">This may take a few minutes on first run while images are downloaded.</p>
-        </>
-      )}
+      {status === 'Starting' && <StartupScreen elapsedSeconds={startupElapsed} />}
 
       {errorMessage && (
         <>

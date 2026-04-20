@@ -56,6 +56,12 @@ async fn get_hub_status_command() -> hub_manager::HubStatus {
     hub_manager::get_hub_status()
 }
 
+/// Get per-service startup progress for the frontend loading screen.
+#[tauri::command]
+async fn get_startup_progress_command() -> hub_manager::StartupProgress {
+    hub_manager::get_startup_progress()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
@@ -83,6 +89,7 @@ pub fn run() {
             check_docker_available,
             check_docker_access_command,
             get_hub_status_command,
+            get_startup_progress_command,
             install_docker_command,
         ])
         .setup(|app| {

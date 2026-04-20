@@ -210,6 +210,149 @@ pub struct DockerInstallResult {
     pub detail: Option<String>,
 }
 
+/// A single service's startup state, reported to the frontend loading screen.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceState {
+    /// Container does not exist yet (pull / create pending).
+    Pending,
+    /// Container exists but health-check has not passed yet.
+    Starting,
+    /// Container is running and healthy (or has no health-check and is running).
+    Ready,
+    /// Container exited or is in an error state.
+    Failed,
+}
+
+/// Per-service startup info returned to the frontend.
+#[derive(Clone, serde::Serialize)]
+pub struct ServiceStatus {
+    /// Short human-readable label, e.g. "Database".
+    pub label: String,
+    /// Docker container name, e.g. "ci-hub-db".
+    pub container: String,
+    pub state: ServiceState,
+}
+
+/// Aggregate startup progress across all core Hub services.
+#[derive(Clone, serde::Serialize)]
+pub struct StartupProgress {
+    /// Per-service breakdown.
+    pub services: Vec<ServiceStatus>,
+    /// Elapsed seconds since the app started polling (approximated by caller).
+    /// 0..=100 overall progress percentage (derived from ready / total).
+    pub progress_pct: u8,
+    /// True once every service is Ready.
+    pub all_ready: bool,
+}
+
+/// Query Docker for a list of container states in one `docker inspect` call.
+/// Returns a map of container_name → (state, health).
+fn inspect_containers(names: &[&str]) -> std::collections::HashMap<String, (String, String)> {
+    let mut map = std::collections::HashMap::new();
+    if names.is_empty() {
+        return map;
+    }
+    let format = "{{.Name}}:{{.State.Status}}:{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}";
+    let output = docker_command()
+        .arg("inspect")
+        .arg("--format")
+        .arg(format)
+        .args(names)
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
+
+    for line in output.lines() {
+        // Docker prefixes the name with "/" in inspect output
+        let line = line.trim().trim_start_matches('/');
+        let parts: Vec<&str> = line.splitn(3, ':').collect();
+        if parts.len() == 3 {
+            map.insert(
+                parts[0].to_string(),
+                (parts[1].to_string(), parts[2].to_string()),
+            );
+        }
+    }
+    map
+}
+
+/// Derive a ServiceState from raw Docker state/health strings.
+fn derive_service_state(state: &str, health: &str) -> ServiceState {
+    match state {
+        "running" => {
+            if health == "healthy" || health == "none" {
+                ServiceState::Ready
+            } else {
+                ServiceState::Starting
+            }
+        }
+        "created" | "restarting" => ServiceState::Starting,
+        "exited" | "dead" => ServiceState::Failed,
+        _ => ServiceState::Pending,
+    }
+}
+
+/// Return per-service startup progress for the frontend loading screen.
+pub fn get_startup_progress() -> StartupProgress {
+    // Core services in startup order. Optional ones (cloudflared, headscale, etc.) are
+    // included for visibility but do not block the "all_ready" gate.
+    let core: &[(&str, &str, bool)] = &[
+        ("ci-hub-db",        "Database",       true),
+        ("ci-os-hub-queue",  "Message queue",  true),
+        ("ci-os-hub",        "Hub backend",    true),
+        ("traefik",          "Router",         true),
+    ];
+    let optional: &[(&str, &str, bool)] = &[
+        ("cloudflared",  "Tunnel",      false),
+        ("headscale",    "VPN server",  false),
+        ("headplane",    "VPN admin",   false),
+        ("hub-tailscale","Tailscale",   false),
+    ];
+
+    let all_names: Vec<&str> = core.iter().chain(optional.iter()).map(|(n, _, _)| *n).collect();
+    let states = inspect_containers(&all_names);
+
+    let mut services: Vec<ServiceStatus> = Vec::new();
+    let mut ready_core: usize = 0;
+
+    for (container, label, _required) in core.iter().chain(optional.iter()) {
+        let (state_str, health_str) = states
+            .get(*container)
+            .map(|(s, h)| (s.as_str(), h.as_str()))
+            .unwrap_or(("", ""));
+        let svc_state = if state_str.is_empty() {
+            ServiceState::Pending
+        } else {
+            derive_service_state(state_str, health_str)
+        };
+        services.push(ServiceStatus {
+            label: label.to_string(),
+            container: container.to_string(),
+            state: svc_state,
+        });
+    }
+
+    // Count ready core services for progress %
+    for (i, (_, _, required)) in core.iter().chain(optional.iter()).enumerate() {
+        if *required {
+            if let ServiceState::Ready = services[i].state {
+                ready_core += 1;
+            }
+        }
+    }
+
+    let core_count = core.len();
+    let progress_pct = if core_count == 0 {
+        0
+    } else {
+        ((ready_core * 100) / core_count) as u8
+    };
+    let all_ready = ready_core == core_count;
+
+    StartupProgress { services, progress_pct, all_ready }
+}
+
 /// Get the current status of the Hub by inspecting the Docker container.
 pub fn get_hub_status() -> HubStatus {
     if !is_docker_available() {
