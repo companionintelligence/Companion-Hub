@@ -207,7 +207,7 @@ describe('HubStatus Docker guidance', () => {
     await flushAsyncWork();
 
     expect(invoke).toHaveBeenCalledWith('start_hub_command');
-    expect(screen.getByText('Hub Starting…')).toBeInTheDocument();
+    expect(screen.getByText('Starting Companion Hub')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Start Hub' })).not.toBeInTheDocument();
 
     await act(async () => {
@@ -245,7 +245,7 @@ describe('HubStatus Docker guidance', () => {
     await flushAsyncWork();
 
     expect(invoke).toHaveBeenCalledWith('start_hub_command');
-    expect(screen.getByText('Hub Starting…')).toBeInTheDocument();
+    expect(screen.getByText('Starting Companion Hub')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Start Hub' })).not.toBeInTheDocument();
 
     await act(async () => {
