@@ -160,6 +160,54 @@ export function Layout({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
+  // Dev-mode safeguard: if the dev server / HMR leaves the page in a skeletal state
+  // (empty main#root) show a small overlay with a reload button so users don't see a plain blank page.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+
+    const checkAndShow = () => {
+      try {
+        const main = document.getElementById('root');
+        if (!main) return;
+        const text = (main.innerText || '').trim();
+        const shouldShow = text.length === 0 && location.pathname !== '/login';
+        if (shouldShow) {
+          if (!document.getElementById('ci-hub-dev-fallback')) {
+            const el = document.createElement('div');
+            el.id = 'ci-hub-dev-fallback';
+            el.style.position = 'fixed';
+            el.style.top = '12px';
+            el.style.right = '12px';
+            el.style.zIndex = '2147483647';
+            el.style.background = 'rgba(0,0,0,0.7)';
+            el.style.color = '#fff';
+            el.style.padding = '8px 12px';
+            el.style.borderRadius = '8px';
+            el.style.fontSize = '13px';
+            el.innerHTML =
+              '<div style="display:flex; gap:8px; align-items:center;"><span>Dev: UI modules not loaded</span><button id="ci-hub-dev-reload" style="background:#fff;color:#000;border:none;padding:6px 8px;border-radius:6px;cursor:pointer">Reload</button></div>';
+            document.body.appendChild(el);
+            const btn = document.getElementById('ci-hub-dev-reload');
+            btn?.addEventListener('click', () => location.reload());
+          }
+        } else {
+          const exist = document.getElementById('ci-hub-dev-fallback');
+          if (exist) exist.remove();
+        }
+      } catch (_e) {
+        // ignore
+      }
+    };
+
+    const id = window.setInterval(checkAndShow, 1000);
+    checkAndShow();
+    return () => {
+      window.clearInterval(id);
+      const exist = document.getElementById('ci-hub-dev-fallback');
+      if (exist) exist.remove();
+    };
+  }, []);
+
   return (
     <html lang="en">
       <head>
