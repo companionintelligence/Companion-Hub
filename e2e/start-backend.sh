@@ -71,7 +71,7 @@ DEVICE_ID=${DEVICE_ID:-test-device-e2e}
 CI_HUB_DATA_DIR=$DATA_DIR
 CI_HUB_APP_DATA_DIR=$DATA_DIR/app-data
 CI_HUB_APP_DIR=$(pwd)
-E2E_TEST=${E2E_TEST:-false}
+E2E_TEST=${E2E_TEST:-true}
 EOF
 
 echo "E2E backend starting with DATA_DIR=$DATA_DIR"
