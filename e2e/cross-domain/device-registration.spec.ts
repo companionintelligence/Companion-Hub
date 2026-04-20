@@ -53,6 +53,10 @@ test.describe('Cross-Domain Device Registration', () => {
   let pairingCode: string;
 
   test.beforeAll(async () => {
+    if (process.env.E2E_TEST !== 'true') {
+      throw new Error('Cross-domain E2E tests must run with E2E_TEST=true to prevent accidental database wipes');
+    }
+
     portal = new PortalApiClient(PORTAL_URL);
 
     // Verify Portal is reachable
