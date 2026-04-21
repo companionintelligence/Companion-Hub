@@ -25,8 +25,17 @@ if ! docker info >/dev/null 2>&1; then
   exit 1
 fi
 
-# Clean up previous run
+# Clean up previous E2E run
 "${COMPOSE_CMD[@]}" down -v 2>/dev/null || true
+
+# Stop dev containers on same ports if running (different compose project)
+for port in 3000 9091 6543 5672; do
+  pid=$(lsof -ti :"$port" 2>/dev/null || true)
+  if [ -n "$pid" ]; then
+    echo "Killing process on port $port (pid $pid)..."
+    kill $pid 2>/dev/null || true
+  fi
+done
 
 cleanup() {
   "${COMPOSE_CMD[@]}" down -v 2>/dev/null || true

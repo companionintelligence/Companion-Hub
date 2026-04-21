@@ -6,7 +6,14 @@
 #     up --build --abort-on-container-exit
 
 services:
+  ci-hub-db:
+    container_name: ci-hub-e2e-db
+
+  ci-os-hub-queue:
+    container_name: ci-hub-e2e-queue
+
   ci-os-hub:
+    container_name: ci-hub-e2e-hub
     environment:
       CI_CLOUD_URL: http://host.docker.internal:${PORTAL_PORT:-8012}
       DOMAIN: ci.localhost
