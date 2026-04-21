@@ -54,6 +54,7 @@ export PORTAL_PORT="${PORTAL_PORT:-8012}"
 
 cat > "$E2E_DIR/.env" <<EOF
 NODE_ENV=development
+ROOT_FOLDER_HOST=${PWD}/.internal-e2e
 JWT_SECRET=e2e-cross-domain-jwt-secret
 LOCAL_DOMAIN=ci.lan
 TZ=UTC
@@ -68,6 +69,12 @@ DNS_IP=9.9.9.9
 DEMO_MODE=false
 GUEST_DASHBOARD=false
 CI_HUB_FORWARD_AUTH_URL=http://localhost:3000/api/auth/traefik
+CI_CLOUD_URL=http://host.docker.internal:${PORTAL_PORT}
+DOMAIN=ci.localhost
+INTERNAL_IP=0.0.0.0
+CI_HUB_VERSION=e2e-cross-domain
+DEVICE_ID=e2e-cross-domain-device
+POSTGRES_PASSWORD=postgres
 EOF
 
 echo "Starting Hub in Docker (project=$COMPOSE_PROJECT, portal=localhost:$PORTAL_PORT)..."
