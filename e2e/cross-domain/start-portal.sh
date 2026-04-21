@@ -59,12 +59,11 @@ rm -rf "$PERSIST_DIR"
 
 # Apply D1 migrations
 echo "Applying Portal D1 migrations..."
-pnpm exec wrangler d1 migrations apply \
+pnpm exec wrangler d1 migrations apply ci-cloud-db-local \
   --local \
   --env local \
   --persist-to "$PERSIST_DIR" \
-  --env-file "$E2E_VARS_FILE" \
-  ci-cloud-db-local
+  --env-file "$E2E_VARS_FILE"
 
 # Ensure web-app dist exists (wrangler ASSETS binding expects it)
 mkdir -p ../web-app/dist
