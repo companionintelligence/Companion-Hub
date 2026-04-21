@@ -22,21 +22,43 @@ services:
 
   ci-os-hub:
     container_name: ci-hub-e2e-hub
-    # Wait for RabbitMQ AMQP port to accept connections before starting.
-    # Docker's depends_on:service_healthy checks rabbitmqctl status, which
-    # can pass before the AMQP TCP listener is reachable from peer containers.
+    # Probe RabbitMQ with the same library the backend uses (rabbitmq-client)
+    # to confirm the AMQP connection actually works before handing off to
+    # NestJS. This guards against Docker network propagation delays where
+    # the AMQP port is reachable but connections are refused for a window
+    # after container startup.
     command:
       - sh
       - -c
       - |
-        echo 'Waiting for RabbitMQ AMQP port...'
-        for i in $$(seq 1 30); do
-          if node -e "const s=require('net').createConnection(5672,'ci-os-hub-queue');s.on('connect',()=>{s.destroy();process.exit(0)});s.on('error',()=>{process.exit(1)})" 2>/dev/null; then
-            echo "RabbitMQ reachable after $${i}s"
-            break
-          fi
-          sleep 1
-        done
+        echo 'Probing RabbitMQ TCP reachability...'
+        node <<'PROBE'
+        const net = require('net');
+        const start = Date.now();
+        let attempt = 0;
+        function tryConnect() {
+          attempt++;
+          const s = net.createConnection({port: 5672, host: 'ci-os-hub-queue', timeout: 5000});
+          s.on('connect', () => {
+            s.destroy();
+            console.log('RabbitMQ TCP reachable after ' + Math.round((Date.now() - start)/1000) + 's (attempt ' + attempt + ')');
+            process.exit(0);
+          });
+          s.on('error', () => {
+            s.destroy();
+            if (Date.now() - start > 60000) {
+              console.error('RabbitMQ not reachable after 60s');
+              process.exit(1);
+            }
+            setTimeout(tryConnect, 1000);
+          });
+          s.on('timeout', () => { s.destroy(); setTimeout(tryConnect, 500); });
+        }
+        tryConnect();
+        PROBE
+        echo 'Waiting 15s for AMQP protocol readiness...'
+        sleep 15
+        echo 'Starting application...'
         exec npx turbo run dev --filter backend --filter frontend --filter @ci-hub/common
     environment:
       CI_CLOUD_URL: http://host.docker.internal:${PORTAL_PORT:-8012}

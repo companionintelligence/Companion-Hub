@@ -110,6 +110,11 @@ ln -sfn .internal-e2e .internal
 
 echo "Starting Hub in Docker (project=$COMPOSE_PROJECT, portal=localhost:$PORTAL_PORT)..."
 
+# Ensure the base compose's ${ENV_FILE:-.env}:/data/.env volume mount picks up
+# the E2E .env (with RABBITMQ_HOST=ci-os-hub-queue, POSTGRES_HOST=ci-hub-db)
+# instead of the repo-root .env (which has localhost hosts and port 6543).
+export ENV_FILE=.internal-e2e/.env
+
 # Start the full stack — Playwright manages the lifecycle
 # Start stack in detached mode — the Hub container may restart once if
 # RabbitMQ isn't ready fast enough (restart: unless-stopped handles it).
@@ -119,15 +124,15 @@ echo "Starting Hub in Docker (project=$COMPOSE_PROJECT, portal=localhost:$PORTAL
 
 # Wait for Hub backend health — the backend may restart once if RabbitMQ
 # isn't ready fast enough (restart: unless-stopped handles this).
-# Allow up to 120s to account for: Docker restart + TypeScript compilation + DB migration.
+# Allow up to 180s to account for: 15s AMQP delay + Docker restart + TypeScript compilation + DB migration.
 echo "Waiting for Hub backend to become healthy..."
-for i in $(seq 1 120); do
+for i in $(seq 1 180); do
   if curl -sf http://localhost:3000/api/health > /dev/null 2>&1; then
     echo "Hub backend healthy after ${i}s"
     break
   fi
-  if [ "$i" -eq 120 ]; then
-    echo "ERROR: Hub backend did not become healthy within 120s" >&2
+  if [ "$i" -eq 180 ]; then
+    echo "ERROR: Hub backend did not become healthy within 180s" >&2
     docker logs ci-hub-e2e-hub 2>&1 | tail -30
     "${COMPOSE_CMD[@]}" down -v
     exit 1
