@@ -114,3 +114,23 @@ services:
     #
     # Follow-up: parameterize DATA_ROOT in docker-compose.local.yml so
     # overrides can set a single variable instead of symlinking.
+
+  # Traefik reverse proxy for E2E routing verification
+  traefik:
+    image: traefik:v3.3
+    pull_policy: if_not_present
+    container_name: ci-hub-e2e-traefik
+    restart: "no"
+    ports:
+      - "8880:80"
+      - "8843:443"
+      - "8881:8080"  # Traefik dashboard/API
+    volumes:
+      - ./e2e/cross-domain/traefik.yml:/etc/traefik/traefik.yml:ro
+      - .internal-e2e/state/traefik/dynamic:/dynamic:ro
+      - .internal-e2e/state/traefik/tls:/tls:ro
+    networks:
+      - ci_os_hub_network
+    depends_on:
+      ci-os-hub:
+        condition: service_healthy

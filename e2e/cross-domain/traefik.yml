@@ -1,0 +1,21 @@
+# Traefik static configuration for E2E tests.
+# Placed at: .internal-e2e/state/traefik/config/traefik.yml
+# Mounted to: /etc/traefik/traefik.yml inside the Traefik container
+
+entryPoints:
+  web:
+    address: ":80"
+  websecure:
+    address: ":443"
+
+providers:
+  file:
+    directory: /dynamic
+    watch: true
+
+api:
+  dashboard: false
+  insecure: true
+
+log:
+  level: INFO
