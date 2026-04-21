@@ -88,6 +88,14 @@ INTERNAL_IP=0.0.0.0
 CI_HUB_VERSION=e2e-cross-domain
 DEVICE_ID=e2e-cross-domain-device
 POSTGRES_PASSWORD=postgres
+POSTGRES_HOST=ci-hub-db
+POSTGRES_PORT=5432
+POSTGRES_USERNAME=companion
+POSTGRES_DBNAME=ci-hub
+RABBITMQ_HOST=ci-os-hub-queue
+RABBITMQ_PORT=5672
+RABBITMQ_USERNAME=companion
+RABBITMQ_PASSWORD=admin
 EOF
 
 # Symlink .internal -> .internal-e2e so base compose volume mounts
