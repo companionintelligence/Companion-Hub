@@ -37,7 +37,8 @@ import dns from 'node:dns';
 import { promisify } from 'node:util';
 import { test, expect } from '@playwright/test';
 import { PortalApiClient } from './portal-api';
-import { clearDatabase } from '../helpers/db';
+import { db } from '../helpers/db';
+import * as schema from '../../packages/backend/src/core/database/drizzle/schema';
 
 const dnsLookup = promisify(dns.lookup);
 
@@ -79,8 +80,11 @@ test.describe('Cross-Domain Device Registration', () => {
       throw new Error(`Portal at ${PORTAL_URL} is not reachable. Ensure start-portal.sh is running.`);
     }
 
-    // Clear Hub database to start from fresh unregistered state
-    await clearDatabase();
+    // Clear Hub database tables (DB-only — Docker handles filesystem state)
+    await db.delete(schema.link);
+    await db.delete(schema.user);
+    await db.delete(schema.app);
+    await db.delete(schema.deviceRegistration);
   });
 
   test('Portal: create user, organization, and device with pairing code', async () => {
@@ -156,8 +160,7 @@ test.describe('Cross-Domain Device Registration', () => {
 
   test('Hub: device registration persisted in database', async () => {
     // Allow time for fire-and-forget setupOrganizationInfrastructure to create the DB record
-    const { db } = await import('../helpers/db');
-    const schema = await import('../../packages/backend/src/core/database/drizzle/schema');
+    // db and schema already imported at top level
 
     let registrations: unknown[] = [];
     for (let i = 0; i < 20; i++) {
