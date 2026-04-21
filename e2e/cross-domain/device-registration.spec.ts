@@ -138,7 +138,7 @@ test.describe('Cross-Domain Device Registration', () => {
     // Wait for success — the Hub calls Portal's /api/devices/pair endpoint
     // Portal processes with CloudflareNoopService, returns noop tunnel credentials
     // Hub stores everything and shows success
-    await expect(page.getByText('Device Registered Successfully')).toBeVisible({ timeout: 30000 });
+    await expect(page.getByRole('heading', { name: 'Device Registered Successfully' })).toBeVisible({ timeout: 30000 });
   });
 
   test('Hub: reports registered status after pairing', async ({ request }) => {
