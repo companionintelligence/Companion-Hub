@@ -14,6 +14,22 @@ services:
 
   ci-os-hub:
     container_name: ci-hub-e2e-hub
+    # Wait for RabbitMQ AMQP port to accept connections before starting.
+    # Docker's depends_on:service_healthy checks rabbitmqctl status, which
+    # can pass before the AMQP TCP listener is reachable from peer containers.
+    command:
+      - sh
+      - -c
+      - |
+        echo 'Waiting for RabbitMQ AMQP port...'
+        for i in $$(seq 1 30); do
+          if node -e "const s=require('net').createConnection(5672,'ci-os-hub-queue');s.on('connect',()=>{s.destroy();process.exit(0)});s.on('error',()=>{process.exit(1)})" 2>/dev/null; then
+            echo "RabbitMQ reachable after $${i}s"
+            break
+          fi
+          sleep 1
+        done
+        exec npx turbo run dev --filter backend --filter frontend --filter @ci-hub/common
     environment:
       CI_CLOUD_URL: http://host.docker.internal:${PORTAL_PORT:-8012}
       DOMAIN: ci.localhost
