@@ -122,8 +122,8 @@ test.describe('Cross-Domain Device Registration', () => {
     await page.goto(`${HUB_FRONTEND_URL}/device-registration`);
     await expect(page.getByRole('heading', { name: /Device Registration Required/i })).toBeVisible({ timeout: 15000 });
 
-    // Verify the Hub shows a device ID
-    await expect(page.locator('.font-mono')).toBeVisible({ timeout: 10000 });
+    // Verify the Hub shows a device ID (use p.font-mono to avoid matching the input)
+    await expect(page.locator('p.font-mono')).toBeVisible({ timeout: 10000 });
 
     // Enter pairing code from Portal
     const input = page.locator('#pairing-code');
