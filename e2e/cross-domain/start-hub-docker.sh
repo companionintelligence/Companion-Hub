@@ -5,7 +5,9 @@
 # Docker for cross-domain E2E tests. Data is isolated under .internal-e2e/.
 #
 # Environment variables:
-#   PORTAL_PORT — port the Portal is listening on (default: 8012)
+#   PORTAL_PORT              — port the Portal is listening on (default: 8012)
+#   ALLOW_KILL_PORT_PROCESSES — set to "true" to kill processes on ports used
+#                               by the E2E stack (default: disabled)
 
 set -euo pipefail
 
@@ -28,17 +30,28 @@ fi
 # Clean up previous E2E run
 "${COMPOSE_CMD[@]}" down -v 2>/dev/null || true
 
-# Stop dev containers on same ports if running (different compose project)
-for port in 3000 9091 6543 5672; do
-  pid=$(lsof -ti :"$port" 2>/dev/null || true)
-  if [ -n "$pid" ]; then
-    echo "Killing process on port $port (pid $pid)..."
-    kill $pid 2>/dev/null || true
+# Optionally stop processes bound to ports used by the E2E stack.
+# Disabled by default — set ALLOW_KILL_PORT_PROCESSES=true to enable.
+if [ "${ALLOW_KILL_PORT_PROCESSES:-}" = "true" ]; then
+  if command -v lsof >/dev/null 2>&1; then
+    for port in 3000 9091 6543 5672; do
+      pid=$(lsof -ti :"$port" 2>/dev/null || true)
+      if [ -n "$pid" ]; then
+        echo "Killing process on port $port (pid $pid)..."
+        kill "$pid" 2>/dev/null || true
+      fi
+    done
+  else
+    echo "WARNING: lsof not found — skipping port cleanup" >&2
   fi
-done
+fi
 
 cleanup() {
   "${COMPOSE_CMD[@]}" down -v 2>/dev/null || true
+  # Remove .internal symlink if we created it
+  if [ -L ".internal" ] && [ "$(readlink .internal)" = ".internal-e2e" ]; then
+    rm .internal
+  fi
 }
 trap cleanup EXIT
 
@@ -76,6 +89,16 @@ CI_HUB_VERSION=e2e-cross-domain
 DEVICE_ID=e2e-cross-domain-device
 POSTGRES_PASSWORD=postgres
 EOF
+
+# Symlink .internal -> .internal-e2e so base compose volume mounts
+# (which reference .internal/*) transparently use E2E data.
+# Docker Compose merges volume lists across -f files (appends, doesn't
+# replace), so we can't override individual mounts in the override file.
+if [ -e ".internal" ] && [ ! -L ".internal" ]; then
+  echo "WARNING: .internal/ exists and is not a symlink — backing up to .internal.bak" >&2
+  mv .internal .internal.bak
+fi
+ln -sfn .internal-e2e .internal
 
 echo "Starting Hub in Docker (project=$COMPOSE_PROJECT, portal=localhost:$PORTAL_PORT)..."
 

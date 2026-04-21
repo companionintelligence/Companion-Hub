@@ -1,14 +1,17 @@
 /**
  * Playwright configuration for cross-domain E2E tests.
  *
- * Runs a real CI-Portal via miniflare alongside the full Hub Docker stack
- * (postgres, rabbitmq, backend, built frontend behind Traefik) to test
- * cross-domain flows like device registration.
+ * Runs a real CI-Portal via miniflare alongside the Hub Docker stack
+ * to test cross-domain flows like device registration.
  *
  * Architecture:
  *   Portal:  miniflare (wrangler dev) on host
- *   Hub:     Docker Compose (ci-os-hub + postgres + rabbitmq)
- *            - backend on port 3000, frontend on port 9091
+ *   Hub:     Docker Compose (Dockerfile.dev + docker-compose.local.yml override)
+ *            - backend (NestJS) on port 3000
+ *            - frontend (Vite dev mode) on port 9091
+ *            - postgres on port 6543
+ *            - rabbitmq on port 5672
+ *            No Traefik — frontend runs in Vite dev mode, not a production build.
  *
  * Prerequisites:
  *   - Docker running

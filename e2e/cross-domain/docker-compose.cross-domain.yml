@@ -25,16 +25,12 @@ services:
     env_file:
       - path: .internal-e2e/.env
         required: false
-    volumes:
-      # Data — isolated from dev (.internal/)
-      - .internal-e2e/media:/data/media
-      - .internal-e2e/state:/data/state
-      - .internal-e2e/repos:/data/repos
-      - .internal-e2e/repos/migrated:/data/repos/migrated
-      - .internal-e2e/apps:/data/apps
-      - .internal-e2e/logs:/data/logs
-      - .internal-e2e/user-config:/data/user-config
-      - .internal-e2e/app-data:/app-data
-      - .internal-e2e/backups:/data/backups
-      - .internal-e2e/.env:/data/.env
-      - .internal-e2e/cache:/cache
+    # NOTE: Volume mounts are NOT overridden here. Docker Compose merges
+    # list items (volumes are appended, not replaced), so overriding volumes
+    # in an additional -f file results in duplicate mount targets. Instead,
+    # start-hub-docker.sh prepares .internal/ as a symlink to .internal-e2e/
+    # before starting compose, so the base file's .internal/* mounts
+    # transparently point to the E2E data directory.
+    #
+    # Follow-up: parameterize DATA_ROOT in docker-compose.local.yml so
+    # overrides can set a single variable instead of symlinking.
