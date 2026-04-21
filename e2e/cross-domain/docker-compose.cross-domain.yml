@@ -11,6 +11,14 @@ services:
 
   ci-os-hub-queue:
     container_name: ci-hub-e2e-queue
+    # Override healthcheck: rabbitmqctl status can pass before the AMQP
+    # TCP listener (5672) accepts connections from peer containers.
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 10s
 
   ci-os-hub:
     container_name: ci-hub-e2e-hub
@@ -38,6 +46,11 @@ services:
       EXPERIMENTAL_INSECURE_COOKIE: "true"
       CI_HUB_VERSION: e2e-cross-domain
       ROOT_FOLDER_HOST: ${PWD}/.internal-e2e
+      # Override host paths leaked by the repo-root .env (loaded via base
+      # compose env_file). Inside the container volumes mount to /data and
+      # /app-data; the backend reads DATA_DIR from this env var.
+      CI_HUB_DATA_DIR: /data
+      CI_HUB_APP_DATA_DIR: /app-data
     env_file:
       - path: .internal-e2e/.env
         required: false
