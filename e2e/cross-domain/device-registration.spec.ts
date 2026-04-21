@@ -60,6 +60,14 @@ test.describe('Cross-Domain Device Registration', () => {
   let pairingCode: string;
 
   test.beforeAll(async () => {
+    // Safety guard: prevent accidental database wipes outside E2E context
+    if (process.env.E2E_TEST !== 'true') {
+      throw new Error(
+        'Cross-domain E2E tests must run with E2E_TEST=true to prevent accidental database wipes. ' +
+          'Set it in playwright.cross-domain.config.ts or pass E2E_TEST=true in the environment.',
+      );
+    }
+
     portal = new PortalApiClient(PORTAL_URL);
 
     // Verify *.localhost DNS resolution (RFC 6761)
