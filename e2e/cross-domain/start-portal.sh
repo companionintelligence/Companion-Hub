@@ -10,11 +10,11 @@
 #
 # Environment variables:
 #   PORTAL_DIR  — path to CI-Portal repo (default: ../../CI-Portal or ../CI-Portal)
-#   PORTAL_PORT — port for wrangler dev (default: 8002)
+#   PORTAL_PORT — port for wrangler dev (default: 8012)
 
 set -euo pipefail
 
-PORTAL_PORT="${PORTAL_PORT:-8002}"
+PORTAL_PORT="${PORTAL_PORT:-8012}"
 PERSIST_DIR="db/e2e-cross-domain"
 
 # Resolve Portal directory
@@ -59,12 +59,11 @@ rm -rf "$PERSIST_DIR"
 
 # Apply D1 migrations
 echo "Applying Portal D1 migrations..."
-pnpm exec wrangler d1 migrations apply \
+pnpm exec wrangler d1 migrations apply ci-cloud-db-local \
   --local \
   --env local \
   --persist-to "$PERSIST_DIR" \
-  --env-file "$E2E_VARS_FILE" \
-  ci-cloud-db-local
+  --env-file "$E2E_VARS_FILE"
 
 # Ensure web-app dist exists (wrangler ASSETS binding expects it)
 mkdir -p ../web-app/dist

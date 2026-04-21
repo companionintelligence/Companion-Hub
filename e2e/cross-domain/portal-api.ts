@@ -32,11 +32,21 @@ export class PortalApiClient {
     this.baseUrl = baseUrl.replace(/\/+$/, '');
   }
 
+  /** Common JSON headers including Origin for CSRF protection. */
+  private jsonHeaders(): Record<string, string> {
+    return { 'Content-Type': 'application/json', Origin: this.baseUrl };
+  }
+
+  /** JSON headers with auth cookies. */
+  private authedHeaders(): Record<string, string> {
+    return { ...this.jsonHeaders(), Cookie: this.cookieHeader() };
+  }
+
   /** Register a new user in Portal via better-auth email sign-up. */
   async signUp(email: string, password: string, name = 'E2E Test User'): Promise<SignUpResponse> {
     const res = await fetch(`${this.baseUrl}/api/auth/sign-up/email`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: this.jsonHeaders(),
       body: JSON.stringify({ email, password, name }),
       redirect: 'manual',
     });
@@ -57,7 +67,7 @@ export class PortalApiClient {
   async signIn(email: string, password: string): Promise<void> {
     const res = await fetch(`${this.baseUrl}/api/auth/sign-in/email`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: this.jsonHeaders(),
       body: JSON.stringify({ email, password }),
       redirect: 'manual',
     });
@@ -75,10 +85,7 @@ export class PortalApiClient {
     const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
     const res = await fetch(`${this.baseUrl}/api/auth/organization/create`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Cookie: this.cookieHeader(),
-      },
+      headers: this.authedHeaders(),
       body: JSON.stringify({ name, slug }),
     });
 
@@ -99,10 +106,7 @@ export class PortalApiClient {
   async setActiveOrganization(organizationId: string): Promise<void> {
     const res = await fetch(`${this.baseUrl}/api/auth/organization/set-active`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Cookie: this.cookieHeader(),
-      },
+      headers: this.authedHeaders(),
       body: JSON.stringify({ organizationId }),
     });
 
@@ -118,10 +122,7 @@ export class PortalApiClient {
   async createDevice(organizationId: string, name: string): Promise<DeviceResponse> {
     const res = await fetch(`${this.baseUrl}/api/devices`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Cookie: this.cookieHeader(),
-      },
+      headers: this.authedHeaders(),
       body: JSON.stringify({ name, organization_id: organizationId }),
     });
 
@@ -147,7 +148,7 @@ export class PortalApiClient {
   /** Check Portal health endpoint. */
   async healthCheck(): Promise<boolean> {
     try {
-      const res = await fetch(`${this.baseUrl}/api/health`);
+      const res = await fetch(`${this.baseUrl}/api/health`, { signal: AbortSignal.timeout(10_000) });
       return res.ok;
     } catch {
       return false;

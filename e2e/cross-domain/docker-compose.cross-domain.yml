@@ -1,0 +1,116 @@
+# Compose override for cross-domain E2E tests.
+# Usage:
+#   docker compose -p ci-hub-e2e \
+#     -f docker-compose.local.yml \
+#     -f e2e/cross-domain/docker-compose.cross-domain.yml \
+#     up --build --abort-on-container-exit
+
+services:
+  ci-hub-db:
+    container_name: ci-hub-e2e-db
+
+  ci-os-hub-queue:
+    container_name: ci-hub-e2e-queue
+    # Override healthcheck: rabbitmqctl status can pass before the AMQP
+    # TCP listener (5672) accepts connections from peer containers.
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 10s
+
+  ci-os-hub:
+    container_name: ci-hub-e2e-hub
+    # Probe RabbitMQ with the same library the backend uses (rabbitmq-client)
+    # to confirm the AMQP connection actually works before handing off to
+    # NestJS. This guards against Docker network propagation delays where
+    # the AMQP port is reachable but connections are refused for a window
+    # after container startup.
+    command:
+      - sh
+      - -c
+      - |
+        echo 'Probing Postgres TCP reachability on port 6543...'
+        node <<'PGPROBE'
+        const net = require('net');
+        const start = Date.now();
+        let attempt = 0;
+        function tryConnect() {
+          attempt++;
+          const s = net.createConnection({port: 6543, host: 'ci-hub-db', timeout: 5000});
+          s.on('connect', () => {
+            s.destroy();
+            console.log('Postgres TCP reachable after ' + Math.round((Date.now() - start)/1000) + 's (attempt ' + attempt + ')');
+            process.exit(0);
+          });
+          s.on('error', () => {
+            s.destroy();
+            if (Date.now() - start > 60000) {
+              console.error('Postgres not reachable after 60s');
+              process.exit(1);
+            }
+            setTimeout(tryConnect, 1000);
+          });
+          s.on('timeout', () => { s.destroy(); setTimeout(tryConnect, 500); });
+        }
+        tryConnect();
+        PGPROBE
+        echo 'Probing RabbitMQ TCP reachability on port 5672...'
+        node <<'PROBE'
+        const net = require('net');
+        const start = Date.now();
+        let attempt = 0;
+        function tryConnect() {
+          attempt++;
+          const s = net.createConnection({port: 5672, host: 'ci-os-hub-queue', timeout: 5000});
+          s.on('connect', () => {
+            s.destroy();
+            console.log('RabbitMQ TCP reachable after ' + Math.round((Date.now() - start)/1000) + 's (attempt ' + attempt + ')');
+            process.exit(0);
+          });
+          s.on('error', () => {
+            s.destroy();
+            if (Date.now() - start > 60000) {
+              console.error('RabbitMQ not reachable after 60s');
+              process.exit(1);
+            }
+            setTimeout(tryConnect, 1000);
+          });
+          s.on('timeout', () => { s.destroy(); setTimeout(tryConnect, 500); });
+        }
+        tryConnect();
+        PROBE
+        echo 'Waiting 15s for AMQP protocol readiness...'
+        sleep 15
+        echo 'Starting application...'
+        exec npx turbo run dev --filter backend --filter frontend --filter @ci-hub/common
+    environment:
+      CI_CLOUD_URL: http://host.docker.internal:${PORTAL_PORT:-8012}
+      DOMAIN: ci.localhost
+      E2E_TEST: "true"
+      DEVICE_ID: e2e-cross-domain-device
+      EXPERIMENTAL_INSECURE_COOKIE: "true"
+      CI_HUB_VERSION: e2e-cross-domain
+      ROOT_FOLDER_HOST: ${PWD}/.internal-e2e
+      # Must match base compose's Postgres config (port 6543, db companiondb)
+      POSTGRES_HOST: ci-hub-db
+      POSTGRES_PORT: "6543"
+      POSTGRES_DBNAME: companiondb
+      # Override host paths leaked by the repo-root .env (loaded via base
+      # compose env_file). Inside the container volumes mount to /data and
+      # /app-data; the backend reads DATA_DIR from this env var.
+      CI_HUB_DATA_DIR: /data
+      CI_HUB_APP_DATA_DIR: /app-data
+    env_file:
+      - path: .internal-e2e/.env
+        required: false
+    # NOTE: Volume mounts are NOT overridden here. Docker Compose merges
+    # list items (volumes are appended, not replaced), so overriding volumes
+    # in an additional -f file results in duplicate mount targets. Instead,
+    # start-hub-docker.sh prepares .internal/ as a symlink to .internal-e2e/
+    # before starting compose, so the base file's .internal/* mounts
+    # transparently point to the E2E data directory.
+    #
+    # Follow-up: parameterize DATA_ROOT in docker-compose.local.yml so
+    # overrides can set a single variable instead of symlinking.
