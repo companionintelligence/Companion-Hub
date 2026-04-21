@@ -117,15 +117,17 @@ echo "Starting Hub in Docker (project=$COMPOSE_PROJECT, portal=localhost:$PORTAL
 # which kills everything on the first transient restart.
 "${COMPOSE_CMD[@]}" up --build -d
 
-# Wait for Hub backend health
+# Wait for Hub backend health — the backend may restart once if RabbitMQ
+# isn't ready fast enough (restart: unless-stopped handles this).
+# Allow up to 120s to account for: Docker restart + TypeScript compilation + DB migration.
 echo "Waiting for Hub backend to become healthy..."
-for i in $(seq 1 60); do
+for i in $(seq 1 120); do
   if curl -sf http://localhost:3000/api/health > /dev/null 2>&1; then
     echo "Hub backend healthy after ${i}s"
     break
   fi
-  if [ "$i" -eq 60 ]; then
-    echo "ERROR: Hub backend did not become healthy within 60s" >&2
+  if [ "$i" -eq 120 ]; then
+    echo "ERROR: Hub backend did not become healthy within 120s" >&2
     docker logs ci-hub-e2e-hub 2>&1 | tail -30
     "${COMPOSE_CMD[@]}" down -v
     exit 1
