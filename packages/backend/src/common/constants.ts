@@ -1,5 +1,17 @@
 export const APP_DIR = process.env.CI_HUB_APP_DIR || '/app';
-export const DATA_DIR = process.env.CI_HUB_DATA_DIR || '/data';
+
+/** Hub state root: `.env`, `state/`, logs. In Docker this is `/data`; locally use CI_HUB_DATA_DIR or the same tree as ROOT_FOLDER_HOST. */
+function resolveDataDir(): string {
+  const explicit = process.env.CI_HUB_DATA_DIR || process.env.TIPI_DATA_DIR;
+  if (explicit) return explicit;
+  // Local `pnpm dev`: dotenv provides ROOT_FOLDER_HOST but not CI_HUB_DATA_DIR — avoid mkdir `/data` (EACCES).
+  if (process.env.NODE_ENV === 'development' && process.env.ROOT_FOLDER_HOST) {
+    return process.env.ROOT_FOLDER_HOST;
+  }
+  return '/data';
+}
+
+export const DATA_DIR = resolveDataDir();
 export const APP_DATA_DIR = process.env.CI_HUB_APP_DATA_DIR || '/app-data';
 
 export const SESSION_COOKIE_NAME = 'ci-hub-sid';
