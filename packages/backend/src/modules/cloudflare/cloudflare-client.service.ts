@@ -104,6 +104,12 @@ export class CloudflareClientService {
 
         await this.updateTunnelFiles(this.tunnelToken);
 
+        const domain = this.configService.get('domain');
+        if (domain === 'ci.localhost') {
+          this.logger.log('Local/E2E mode — skipping cloudflared container start');
+          return { tunnelId: this.tunnelId, token: this.tunnelToken };
+        }
+
         this.logger.log('Ensuring cloudflared container is running...');
         const dockerService = this.moduleRef.get(DockerService, { strict: false });
         const composeFile = this.getComposeFile();

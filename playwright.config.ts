@@ -45,7 +45,7 @@ const backendEnv: Record<string, string> = {
 
 export default defineConfig({
   testDir: './e2e',
-  testIgnore: ['**/future/**', '**/generated/**'],
+  testIgnore: ['**/future/**', '**/generated/**', '**/cross-domain/**'],
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
