@@ -24,6 +24,8 @@
 
 import { defineConfig, devices } from '@playwright/test';
 
+// Set E2E_TEST for the spec safety guard (prevents accidental DB wipes outside E2E context)
+process.env.E2E_TEST = 'true';
 const PORTAL_DIR = process.env.PORTAL_DIR || '';
 const PORTAL_PORT = process.env.PORTAL_PORT || '8012';
 const FRONTEND_PORT = process.env.FRONTEND_PORT || '9091';
