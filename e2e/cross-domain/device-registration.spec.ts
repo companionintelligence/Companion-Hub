@@ -1,17 +1,18 @@
 /**
  * Cross-domain device registration E2E test.
  *
- * Tests the complete registration protocol between a real CI-Hub (with Docker
- * infrastructure) and a real CI-Portal (running locally via miniflare).
+ * Tests the complete registration protocol between a real CI-Hub (running in
+ * Docker, matching production) and a real CI-Portal (running locally via
+ * miniflare).
  *
  * Architecture:
  *   Portal: miniflare (wrangler dev) — D1, R2, CloudflareNoopService
- *   Hub:    postgres + rabbitmq (Docker) + backend (Node) + frontend (Vite)
+ *   Hub:    Docker Compose — postgres + rabbitmq + backend + built frontend
  *
- * The Hub's CI_CLOUD_URL points to the local Portal. When the Hub pairs via
- * POST /api/devices/pair, the Portal processes it with CloudflareNoopService
- * (no real Cloudflare API calls). The Hub stores noop tunnel credentials and
- * enters "registered" state.
+ * The Hub's CI_CLOUD_URL points to the local Portal via host.docker.internal.
+ * When the Hub pairs via POST /api/devices/pair, the Portal processes it with
+ * CloudflareNoopService (no real Cloudflare API calls). The Hub stores noop
+ * tunnel credentials and enters "registered" state.
  *
  * What IS tested end-to-end:
  *   - Portal user signup, org creation, device creation (pairing code)
@@ -20,6 +21,7 @@
  *   - Hub PostgreSQL updates (deviceRegistration, tunnel token on disk)
  *   - Hub frontend state transition to "registered"
  *   - Hub can report registered status via its own API
+ *   - Hub running in Docker with built frontend (production parity)
  *
  * What is stubbed:
  *   - Cloudflare tunnel creation (NoopService returns stub IDs)
@@ -31,9 +33,13 @@
  * only external Cloudflare infrastructure calls are stubbed.
  */
 
+import dns from 'node:dns';
+import { promisify } from 'node:util';
 import { test, expect } from '@playwright/test';
 import { PortalApiClient } from './portal-api';
 import { clearDatabase } from '../helpers/db';
+
+const dnsLookup = promisify(dns.lookup);
 
 const PORTAL_URL = process.env.PORTAL_URL || 'http://localhost:8012';
 const HUB_BACKEND_URL = `http://localhost:${process.env.BACKEND_PORT || '3000'}`;
@@ -53,11 +59,19 @@ test.describe('Cross-Domain Device Registration', () => {
   let pairingCode: string;
 
   test.beforeAll(async () => {
-    if (process.env.E2E_TEST !== 'true') {
-      throw new Error('Cross-domain E2E tests must run with E2E_TEST=true to prevent accidental database wipes');
-    }
-
     portal = new PortalApiClient(PORTAL_URL);
+
+    // Verify *.localhost DNS resolution (RFC 6761)
+    try {
+      const result = await dnsLookup('ci.localhost');
+      if (result.address !== '127.0.0.1' && result.address !== '::1') {
+        console.warn(`⚠ ci.localhost resolved to ${result.address}, expected 127.0.0.1. Some tests may behave unexpectedly.`);
+      }
+    } catch {
+      console.warn(
+        "⚠ ci.localhost does not resolve. Per RFC 6761, *.localhost should resolve to 127.0.0.1. If tests fail, add '127.0.0.1 ci.localhost' to /etc/hosts.",
+      );
+    }
 
     // Verify Portal is reachable
     const healthy = await portal.healthCheck();
@@ -67,24 +81,6 @@ test.describe('Cross-Domain Device Registration', () => {
 
     // Clear Hub database to start from fresh unregistered state
     await clearDatabase();
-
-    // Remove tunnel token so Hub detects itself as unregistered
-    const fs = await import('node:fs');
-    const path = await import('node:path');
-    const hubRoot = process.env.CI_HUB_APP_DIR || path.resolve(__dirname, '..', '..');
-    const tokenPath = path.join(hubRoot, 'tunnel', 'token');
-    if (fs.existsSync(tokenPath)) {
-      fs.unlinkSync(tokenPath);
-    }
-
-    // Ensure data directories exist
-    const dataDir = process.env.CI_HUB_DATA_DIR || '/tmp/ci-hub-e2e';
-    for (const d of ['state', 'logs', 'apps', 'app-data', 'repos', 'backups', 'user-config', 'media']) {
-      fs.mkdirSync(path.join(dataDir, d), { recursive: true });
-    }
-    for (const d of ['config', 'dynamic', 'tls']) {
-      fs.mkdirSync(path.join(dataDir, 'state', 'traefik', d), { recursive: true });
-    }
   });
 
   test('Portal: create user, organization, and device with pairing code', async () => {

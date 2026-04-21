@@ -1,0 +1,33 @@
+# Compose override for cross-domain E2E tests.
+# Usage:
+#   docker compose -p ci-hub-e2e \
+#     -f docker-compose.local.yml \
+#     -f e2e/cross-domain/docker-compose.cross-domain.yml \
+#     up --build --abort-on-container-exit
+
+services:
+  ci-os-hub:
+    environment:
+      CI_CLOUD_URL: http://host.docker.internal:${PORTAL_PORT:-8012}
+      DOMAIN: ci.localhost
+      E2E_TEST: "true"
+      DEVICE_ID: e2e-cross-domain-device
+      EXPERIMENTAL_INSECURE_COOKIE: "true"
+      CI_HUB_VERSION: e2e-cross-domain
+      ROOT_FOLDER_HOST: ${PWD}/.internal-e2e
+    env_file:
+      - path: .internal-e2e/.env
+        required: false
+    volumes:
+      # Data — isolated from dev (.internal/)
+      - .internal-e2e/media:/data/media
+      - .internal-e2e/state:/data/state
+      - .internal-e2e/repos:/data/repos
+      - .internal-e2e/repos/migrated:/data/repos/migrated
+      - .internal-e2e/apps:/data/apps
+      - .internal-e2e/logs:/data/logs
+      - .internal-e2e/user-config:/data/user-config
+      - .internal-e2e/app-data:/app-data
+      - .internal-e2e/backups:/data/backups
+      - .internal-e2e/.env:/data/.env
+      - .internal-e2e/cache:/cache
