@@ -28,15 +28,15 @@ import { writeFileSync, unlinkSync } from 'node:fs';
 
 const TRAEFIK_HTTP_PORT = process.env.TRAEFIK_HTTP_PORT || '8880';
 const TRAEFIK_API_PORT = process.env.TRAEFIK_API_PORT || '8881';
-const HUB_CONTAINER = 'ci-hub-e2e-hub';
+const TRAEFIK_CONTAINER = 'ci-hub-e2e-traefik';
 
 // The Hub uses ci.localhost as its domain in the cross-domain config.
 // We seed a test route to verify Traefik's file provider functionality.
 const HUB_DOMAIN = 'ci.localhost';
 const TEST_HOSTNAME = `e2e-traefik-test.${HUB_DOMAIN}`;
 
-// Path inside the Hub container where Traefik dynamic configs are written.
-const CONTAINER_DYNAMIC_DIR = '/data/state/traefik/dynamic';
+// Path inside the Traefik container where dynamic configs are watched.
+const TRAEFIK_DYNAMIC_DIR = '/dynamic';
 
 // The Hub backend API listens on port 9091 inside the container.
 // The compose service alias is ci-os-hub (Docker DNS name on the shared network).
@@ -76,8 +76,7 @@ function seedTestRoute() {
 `;
   const tmpFile = path.join(os.tmpdir(), `traefik-e2e-route-${Date.now()}.yml`);
   writeFileSync(tmpFile, config);
-  execSync(`docker exec ${HUB_CONTAINER} mkdir -p ${CONTAINER_DYNAMIC_DIR}`, { stdio: 'pipe' });
-  execSync(`docker cp ${tmpFile} ${HUB_CONTAINER}:${CONTAINER_DYNAMIC_DIR}/e2e-test.yml`, { stdio: 'pipe' });
+  execSync(`docker cp ${tmpFile} ${TRAEFIK_CONTAINER}:${TRAEFIK_DYNAMIC_DIR}/e2e-test.yml`, { stdio: 'pipe' });
   unlinkSync(tmpFile);
 }
 
@@ -86,7 +85,7 @@ function seedTestRoute() {
  */
 function cleanupRoutes() {
   try {
-    execSync(`docker exec ${HUB_CONTAINER} rm -f ${CONTAINER_DYNAMIC_DIR}/e2e-test.yml`, { stdio: 'pipe' });
+    execSync(`docker exec ${TRAEFIK_CONTAINER} rm -f ${TRAEFIK_DYNAMIC_DIR}/e2e-test.yml`, { stdio: 'pipe' });
   } catch {
     // Container may already be stopped during teardown
   }
