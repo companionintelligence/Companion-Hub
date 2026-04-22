@@ -11,15 +11,15 @@
  */
 
 import { test, expect } from '@playwright/test';
-import { execSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
 const PORTAL_URL = process.env.PORTAL_URL || `http://localhost:${process.env.PORTAL_PORT || '8012'}`;
 const ADMIN_API_KEY = 'e2e-cross-domain-admin-api-key-value';
 
-const TEST_APP_ID = 'e2e-test-app';
+const TEST_APP_ID = `e2e-test-app-${Date.now()}`;
 const TEST_APP_CONFIG = {
   id: TEST_APP_ID,
   name: 'E2E Test App',
@@ -51,14 +51,14 @@ function createTestBundle(): Buffer {
   const tmpDir = mkdtempSync(path.join(os.tmpdir(), 'e2e-app-bundle-'));
   const bundleDir = path.join(tmpDir, 'app');
 
-  execSync(`mkdir -p ${bundleDir}`);
+  mkdirSync(bundleDir, { recursive: true });
   writeFileSync(path.join(bundleDir, 'config.json'), JSON.stringify(TEST_APP_CONFIG));
   writeFileSync(path.join(bundleDir, 'docker-compose.json'), JSON.stringify(TEST_COMPOSE));
 
   const tarPath = path.join(tmpDir, 'bundle.tar.gz');
-  execSync(`tar -czf ${tarPath} -C ${tmpDir} app`, { stdio: 'pipe' });
+  execFileSync('tar', ['-czf', tarPath, '-C', tmpDir, 'app'], { stdio: 'pipe' });
 
-  const buffer = require('node:fs').readFileSync(tarPath);
+  const buffer = readFileSync(tarPath);
   rmSync(tmpDir, { recursive: true, force: true });
   return buffer;
 }

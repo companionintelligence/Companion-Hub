@@ -1,9 +1,9 @@
 /**
- * Portal API client for standard E2E tests.
+ * Portal API helpers for standard E2E tests.
  *
- * Re-exports the PortalApiClient from cross-domain tests for use by
- * standard E2E fixtures. The real miniflare Portal replaces the old
- * mock portal server.
+ * Wraps the PortalApiClient from cross-domain tests behind convenience
+ * functions for common E2E operations (seeding registrations, etc.).
+ * The real miniflare Portal replaces the old mock portal server.
  */
 
 import { PortalApiClient } from '../cross-domain/portal-api';

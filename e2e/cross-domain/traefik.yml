@@ -1,6 +1,6 @@
 # Traefik static configuration for E2E tests.
-# Placed at: .internal-e2e/state/traefik/config/traefik.yml
-# Mounted to: /etc/traefik/traefik.yml inside the Traefik container
+# Source: e2e/cross-domain/traefik.yml
+# Bind-mounted to /etc/traefik/traefik.yml via docker-compose.cross-domain.yml
 
 entryPoints:
   web:

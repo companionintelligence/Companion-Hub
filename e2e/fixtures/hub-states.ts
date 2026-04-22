@@ -61,11 +61,11 @@ export async function freshUnregistered() {
 }
 
 /**
- * Locally ready Hub — registered org, tunnel token, portal confirms.
+ * Locally ready Hub — registered org + tunnel token seeded in local state.
  *
- * The Hub's isRegistered() checks DB + tunnel token file. With a real
- * Portal running, the Hub's background validation may call the Portal,
- * but the initial isRegistered() check uses only local state.
+ * Seeds the DB with an organisation record and writes a tunnel token file.
+ * This fixture does NOT call Portal; it only sets up local state so that
+ * the Hub's isRegistered() check (DB + tunnel token file) returns true.
  */
 export async function locallyReady() {
   await clearDatabase();

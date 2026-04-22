@@ -21,6 +21,8 @@
 
 import { test, expect } from '@playwright/test';
 import { execSync } from 'node:child_process';
+import os from 'node:os';
+import path from 'node:path';
 
 const TRAEFIK_HTTP_PORT = process.env.TRAEFIK_HTTP_PORT || '8880';
 const TRAEFIK_API_PORT = process.env.TRAEFIK_API_PORT || '8881';
@@ -56,7 +58,7 @@ function seedHubRoute() {
         servers:
           - url: "http://${HUB_CONTAINER}:3000"
 `;
-  const tmpFile = `/tmp/traefik-hub-route-${Date.now()}.yml`;
+  const tmpFile = path.join(os.tmpdir(), `traefik-hub-route-${Date.now()}.yml`);
   const { writeFileSync, unlinkSync } = require('node:fs');
   writeFileSync(tmpFile, config);
   execSync(`docker exec ${HUB_CONTAINER} mkdir -p ${CONTAINER_DYNAMIC_DIR}`, { stdio: 'pipe' });
@@ -70,6 +72,36 @@ function cleanupRoutes() {
   } catch {
     // Container may already be stopped during teardown
   }
+}
+
+/**
+ * Poll a Traefik API list endpoint until an item matching `predicate` appears.
+ * Returns the matched item, or throws after `timeoutMs`.
+ */
+async function pollTraefikApi<T = any>(opts: {
+  request: any;
+  endpoint: string;
+  predicate: (item: T) => boolean;
+  description: string;
+  intervalMs?: number;
+  timeoutMs?: number;
+}): Promise<T | undefined> {
+  const { request, endpoint, predicate, description, intervalMs = 500, timeoutMs = 15000 } = opts;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const res = await request.get(endpoint);
+      if (res.ok()) {
+        const items = (await res.json()) as T[];
+        const match = items.find(predicate);
+        if (match) return match;
+      }
+    } catch {
+      // Traefik may not be ready yet — keep polling
+    }
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  throw new Error(`Timed out waiting for ${description} at ${endpoint} after ${timeoutMs}ms`);
 }
 
 test.describe('Traefik Routing Verification', () => {
@@ -95,16 +127,14 @@ test.describe('Traefik Routing Verification', () => {
     // Seed the hub route config
     seedHubRoute();
 
-    // Wait for Traefik file watcher to detect the new config
-    // Traefik file provider typically polls every 2s by default
-    await new Promise((r) => setTimeout(r, 5000));
+    // Poll Traefik API until the router appears (file provider polls every ~2s)
+    const hubRouter = await pollTraefikApi<{ name: string; rule: string; status: string }>({
+      request,
+      endpoint: `http://localhost:${TRAEFIK_API_PORT}/api/http/routers`,
+      predicate: (r) => r.name?.includes('hub-public'),
+      description: 'hub-public router',
+    });
 
-    // Check Traefik API for the router
-    const routersRes = await request.get(`http://localhost:${TRAEFIK_API_PORT}/api/http/routers`);
-    expect(routersRes.ok()).toBeTruthy();
-    const routers = (await routersRes.json()) as Array<{ name: string; rule: string; status: string }>;
-
-    const hubRouter = routers.find((r) => r.name?.includes('hub-public'));
     expect(hubRouter, 'Hub router not found in Traefik config').toBeTruthy();
     expect(hubRouter?.rule).toContain(HUB_HOSTNAME);
     expect(hubRouter?.status).toBe('enabled');
@@ -113,7 +143,12 @@ test.describe('Traefik Routing Verification', () => {
   test('requests through Traefik with Host header reach Hub backend', async ({ request }) => {
     // Ensure hub route exists
     seedHubRoute();
-    await new Promise((r) => setTimeout(r, 3000));
+    await pollTraefikApi({
+      request,
+      endpoint: `http://localhost:${TRAEFIK_API_PORT}/api/http/routers`,
+      predicate: (r: any) => r.name?.includes('hub-public'),
+      description: 'hub-public router',
+    });
 
     // Make a request to Traefik's HTTP port with the Hub hostname
     // Traefik should route it to the Hub backend
@@ -142,7 +177,12 @@ test.describe('Traefik Routing Verification', () => {
 
   test('Traefik services list shows hub-service', async ({ request }) => {
     seedHubRoute();
-    await new Promise((r) => setTimeout(r, 3000));
+    await pollTraefikApi({
+      request,
+      endpoint: `http://localhost:${TRAEFIK_API_PORT}/api/http/services`,
+      predicate: (s: any) => s.name?.includes('hub-service'),
+      description: 'hub-service service',
+    });
 
     const servicesRes = await request.get(`http://localhost:${TRAEFIK_API_PORT}/api/http/services`);
     expect(servicesRes.ok()).toBeTruthy();
