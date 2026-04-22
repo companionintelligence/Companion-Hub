@@ -21,12 +21,7 @@ export function createPortalClient(): import('../cross-domain/portal-api').Porta
  * Seed a "registered" state on the Portal: create user, org, device.
  * Returns the pairing code for use with Hub pairing.
  */
-export async function seedPortalRegistration(opts?: {
-  email?: string;
-  password?: string;
-  orgName?: string;
-  deviceName?: string;
-}) {
+export async function seedPortalRegistration(opts?: { email?: string; password?: string; orgName?: string; deviceName?: string }) {
   const {
     email = 'e2e-standard@test.local',
     password = 'SecureE2EPass123!',

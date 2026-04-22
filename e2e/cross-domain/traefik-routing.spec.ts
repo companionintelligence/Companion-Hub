@@ -64,31 +64,6 @@ function seedHubRoute() {
   unlinkSync(tmpFile);
 }
 
-/**
- * Write a Traefik dynamic config for an app route.
- * Simulates what generateTraefikConfig() writes for an installed app.
- */
-function seedAppRoute(appName: string, containerIp: string, port: number) {
-  const hostname = `${appName}.${HUB_HOSTNAME}`;
-  const config = `http:
-  routers:
-    ${appName}-router:
-      rule: "Host(\`${hostname}\`)"
-      service: ${appName}-service
-      entryPoints:
-        - web
-  services:
-    ${appName}-service:
-      loadBalancer:
-        servers:
-          - url: "http://${containerIp}:${port}"
-`;
-  const tmpFile = `/tmp/traefik-app-route-${Date.now()}.yml`;
-  const { writeFileSync, unlinkSync } = require('node:fs');
-  writeFileSync(tmpFile, config);
-  execSync(`docker cp ${tmpFile} ${HUB_CONTAINER}:${CONTAINER_DYNAMIC_DIR}/apps.yml`, { stdio: 'pipe' });
-  unlinkSync(tmpFile);
-}
 
 function cleanupRoutes() {
   try {

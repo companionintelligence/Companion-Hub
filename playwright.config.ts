@@ -1,5 +1,4 @@
 import { defineConfig, devices } from '@playwright/test';
-import path from 'node:path';
 
 const BACKEND_PORT = process.env.BACKEND_PORT || '3000';
 const FRONTEND_PORT = process.env.FRONTEND_PORT || '9091';
