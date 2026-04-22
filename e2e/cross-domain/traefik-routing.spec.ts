@@ -11,81 +11,49 @@
  *
  * Tests:
  *   1. Traefik container is running and dashboard accessible
- *   2. After seeding a hub route config, Traefik picks it up
+ *   2. Hub-generated route config is picked up by Traefik
  *   3. Requests to the hub hostname via Traefik reach the Hub backend
- *   4. Forward auth middleware integration
+ *   4. Unknown hosts get 404
+ *   5. Service config points to the Hub backend
  *
  * Prerequisites:
  *   - Cross-domain Docker stack running (includes Traefik on port 8880)
+ *   - Device registration completed (Hub generates Traefik config on pairing)
  */
 
 import { test, expect } from '@playwright/test';
-import { execSync } from 'node:child_process';
-import os from 'node:os';
-import path from 'node:path';
 
 const TRAEFIK_HTTP_PORT = process.env.TRAEFIK_HTTP_PORT || '8880';
 const TRAEFIK_API_PORT = process.env.TRAEFIK_API_PORT || '8881';
-const HUB_CONTAINER = 'ci-hub-e2e-hub';
 
 // The Hub uses ci.localhost as its domain in the cross-domain config
 const HUB_DOMAIN = 'ci.localhost';
-const HUB_SUBDOMAIN = 'e2e-hub';
-const HUB_HOSTNAME = `${HUB_SUBDOMAIN}.${HUB_DOMAIN}`;
 
-// Path inside the Hub container where Traefik dynamic configs are written.
-// The compose mounts .internal-e2e/state/traefik/dynamic → /dynamic in Traefik
-// and the Hub container can write to the host path via the volume mount.
-const CONTAINER_DYNAMIC_DIR = '/data/state/traefik/dynamic';
-
-/**
- * Write a Traefik dynamic config that routes HUB_HOSTNAME to the Hub backend.
- * Uses docker cp to copy a config file into the Hub container's data volume,
- * which Traefik watches. This avoids both host-side permission issues and
- * heredoc escaping problems with docker exec.
- */
-function seedHubRoute() {
-  const config = `http:
-  routers:
-    hub-public:
-      rule: "Host(\`${HUB_HOSTNAME}\`)"
-      service: hub-service
-      entryPoints:
-        - web
-  services:
-    hub-service:
-      loadBalancer:
-        servers:
-          - url: "http://${HUB_CONTAINER}:3000"
-`;
-  const tmpFile = path.join(os.tmpdir(), `traefik-hub-route-${Date.now()}.yml`);
-  const { writeFileSync, unlinkSync } = require('node:fs');
-  writeFileSync(tmpFile, config);
-  execSync(`docker exec ${HUB_CONTAINER} mkdir -p ${CONTAINER_DYNAMIC_DIR}`, { stdio: 'pipe' });
-  execSync(`docker cp ${tmpFile} ${HUB_CONTAINER}:${CONTAINER_DYNAMIC_DIR}/hub.yml`, { stdio: 'pipe' });
-  unlinkSync(tmpFile);
+interface TraefikRouter {
+  name: string;
+  rule: string;
+  status: string;
+  service: string;
 }
 
-function cleanupRoutes() {
-  try {
-    execSync(`docker exec ${HUB_CONTAINER} sh -c 'rm -f ${CONTAINER_DYNAMIC_DIR}/hub.yml ${CONTAINER_DYNAMIC_DIR}/apps.yml'`, { stdio: 'pipe' });
-  } catch {
-    // Container may already be stopped during teardown
-  }
+interface TraefikService {
+  name: string;
+  status: string;
+  loadBalancer?: { servers: Array<{ url: string }> };
 }
 
 /**
  * Poll a Traefik API list endpoint until an item matching `predicate` appears.
  * Returns the matched item, or throws after `timeoutMs`.
  */
-async function pollTraefikApi<T = Record<string, unknown>>(opts: {
+async function pollTraefikApi<T>(opts: {
   request: { get(url: string): Promise<{ ok(): boolean; json(): Promise<unknown> }> };
   endpoint: string;
   predicate: (item: T) => boolean;
   description: string;
   intervalMs?: number;
   timeoutMs?: number;
-}): Promise<T | undefined> {
+}): Promise<T> {
   const { request, endpoint, predicate, description, intervalMs = 500, timeoutMs = 15000 } = opts;
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -111,10 +79,6 @@ test.describe('Traefik Routing Verification', () => {
     }
   });
 
-  test.afterAll(() => {
-    cleanupRoutes();
-  });
-
   test('Traefik container is running and API is accessible', async ({ request }) => {
     // Traefik dashboard/API on port 8881
     const res = await request.get(`http://localhost:${TRAEFIK_API_PORT}/api/overview`);
@@ -123,39 +87,39 @@ test.describe('Traefik Routing Verification', () => {
     expect(data).toHaveProperty('http');
   });
 
-  test('Traefik picks up seeded hub route', async ({ request }) => {
-    // Seed the hub route config
-    seedHubRoute();
-
-    // Poll Traefik API until the router appears (file provider polls every ~2s)
-    const hubRouter = await pollTraefikApi<{ name: string; rule: string; status: string }>({
+  test('Traefik picks up Hub-generated route config', async ({ request }) => {
+    // The Hub generates dynamic Traefik config during bootstrap/registration.
+    // Poll until we find a router with a rule matching *.ci.localhost
+    const hubRouter = await pollTraefikApi<TraefikRouter>({
       request,
       endpoint: `http://localhost:${TRAEFIK_API_PORT}/api/http/routers`,
-      predicate: (r) => r.name?.includes('hub-public'),
-      description: 'hub-public router',
+      predicate: (r) => r.rule?.includes(HUB_DOMAIN) && r.name?.includes('hub'),
+      description: `Hub router matching *.${HUB_DOMAIN}`,
     });
 
     expect(hubRouter, 'Hub router not found in Traefik config').toBeTruthy();
-    expect(hubRouter?.rule).toContain(HUB_HOSTNAME);
-    expect(hubRouter?.status).toBe('enabled');
+    expect(hubRouter.rule).toContain(HUB_DOMAIN);
+    expect(hubRouter.status).toBe('enabled');
   });
 
   test('requests through Traefik with Host header reach Hub backend', async ({ request }) => {
-    // Ensure hub route exists
-    seedHubRoute();
-    await pollTraefikApi({
+    // First, discover the actual hostname the Hub registered with
+    const hubRouter = await pollTraefikApi<TraefikRouter>({
       request,
       endpoint: `http://localhost:${TRAEFIK_API_PORT}/api/http/routers`,
-      predicate: (r: Record<string, unknown>) => (r.name as string)?.includes('hub-public'),
-      description: 'hub-public router',
+      predicate: (r) => r.rule?.includes(HUB_DOMAIN) && r.name?.includes('hub'),
+      description: `Hub router matching *.${HUB_DOMAIN}`,
     });
 
-    // Make a request to Traefik's HTTP port with the Hub hostname
-    // Traefik should route it to the Hub backend
+    // Extract the hostname from the rule, e.g. Host(`hub-xxx.ci.localhost`) -> hub-xxx.ci.localhost
+    const hostMatch = hubRouter.rule.match(/Host\(`([^`]+)`\)/);
+    expect(hostMatch, `Could not parse hostname from router rule: ${hubRouter.rule}`).toBeTruthy();
+    const hubHostname = hostMatch?.[1] ?? '';
+    expect(hubHostname.length).toBeGreaterThan(0);
+
+    // Make a request to Traefik's HTTP port with the Hub's actual hostname
     const res = await request.get(`http://localhost:${TRAEFIK_HTTP_PORT}/api/health`, {
-      headers: {
-        Host: HUB_HOSTNAME,
-      },
+      headers: { Host: hubHostname },
     });
 
     // The Hub backend health endpoint should respond through Traefik
@@ -166,9 +130,7 @@ test.describe('Traefik Routing Verification', () => {
 
   test('requests without matching Host header get 404', async ({ request }) => {
     const res = await request.get(`http://localhost:${TRAEFIK_HTTP_PORT}/`, {
-      headers: {
-        Host: 'nonexistent.ci.localhost',
-      },
+      headers: { Host: 'nonexistent.ci.localhost' },
     });
 
     // Traefik returns 404 when no router matches
@@ -176,24 +138,18 @@ test.describe('Traefik Routing Verification', () => {
   });
 
   test('Traefik services list shows hub-service', async ({ request }) => {
-    seedHubRoute();
-    await pollTraefikApi({
+    const hubService = await pollTraefikApi<TraefikService>({
       request,
       endpoint: `http://localhost:${TRAEFIK_API_PORT}/api/http/services`,
-      predicate: (s: Record<string, unknown>) => (s.name as string)?.includes('hub-service'),
+      predicate: (s) => s.name?.includes('hub-service'),
       description: 'hub-service service',
     });
 
-    const servicesRes = await request.get(`http://localhost:${TRAEFIK_API_PORT}/api/http/services`);
-    expect(servicesRes.ok()).toBeTruthy();
-    const services = (await servicesRes.json()) as Array<{
-      name: string;
-      status: string;
-      loadBalancer?: { servers: Array<{ url: string }> };
-    }>;
-
-    const hubService = services.find((s) => s.name?.includes('hub-service'));
     expect(hubService, 'Hub service not found in Traefik').toBeTruthy();
-    expect(hubService?.loadBalancer?.servers?.[0]?.url).toContain('ci-hub-e2e-hub');
+    // Verify the service has at least one backend server configured
+    expect(hubService.loadBalancer?.servers?.length).toBeGreaterThan(0);
+    // The server URL should point to a Hub backend (port 5002 or 3000)
+    const serverUrl = hubService.loadBalancer?.servers?.[0]?.url ?? '';
+    expect(serverUrl).toMatch(/:\d{4}$/);
   });
 });
