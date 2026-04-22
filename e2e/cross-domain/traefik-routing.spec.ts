@@ -78,8 +78,8 @@ function cleanupRoutes() {
  * Poll a Traefik API list endpoint until an item matching `predicate` appears.
  * Returns the matched item, or throws after `timeoutMs`.
  */
-async function pollTraefikApi<T = any>(opts: {
-  request: any;
+async function pollTraefikApi<T = Record<string, unknown>>(opts: {
+  request: { get(url: string): Promise<{ ok(): boolean; json(): Promise<unknown> }> };
   endpoint: string;
   predicate: (item: T) => boolean;
   description: string;
@@ -146,7 +146,7 @@ test.describe('Traefik Routing Verification', () => {
     await pollTraefikApi({
       request,
       endpoint: `http://localhost:${TRAEFIK_API_PORT}/api/http/routers`,
-      predicate: (r: any) => r.name?.includes('hub-public'),
+      predicate: (r: Record<string, unknown>) => (r.name as string)?.includes('hub-public'),
       description: 'hub-public router',
     });
 
@@ -180,7 +180,7 @@ test.describe('Traefik Routing Verification', () => {
     await pollTraefikApi({
       request,
       endpoint: `http://localhost:${TRAEFIK_API_PORT}/api/http/services`,
-      predicate: (s: any) => s.name?.includes('hub-service'),
+      predicate: (s: Record<string, unknown>) => (s.name as string)?.includes('hub-service'),
       description: 'hub-service service',
     });
 
