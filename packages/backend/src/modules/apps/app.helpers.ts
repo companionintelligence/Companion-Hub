@@ -5,7 +5,6 @@ import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
-import jsonwebtoken from 'jsonwebtoken';
 import { EnvUtils } from '../env/env.utils';
 import type { AppEventFormInput } from '../queue/entities/app-events';
 import { AppFilesManager } from './app-files-manager';
@@ -37,7 +36,7 @@ export class AppHelpers {
    * @throws Will throw an error if the app has an invalid config.json file or if a required variable is missing.
    */
   public generateEnvFile = async (appUrn: AppUrn, form: AppEventFormInput) => {
-    const { internalIp, envFilePath, rootFolderHost, userSettings, ciHubApiKey, jwtSecret } = this.config.getConfig();
+    const { internalIp, envFilePath, rootFolderHost, userSettings, ciHubApiKey } = this.config.getConfig();
 
     const config = await this.appFilesManager.getInstalledAppInfo(appUrn);
 
@@ -69,12 +68,6 @@ export class AppHelpers {
       envMap.set('HUB_API_KEY', ciHubApiKey);
     } else {
       envMap.delete('HUB_API_KEY');
-    }
-
-    if (jwtSecret) {
-      envMap.set('HUB_PORTAL_JWT', jsonwebtoken.sign({ sub: 'cli' }, jwtSecret, { noTimestamp: true }));
-    } else {
-      envMap.delete('HUB_PORTAL_JWT');
     }
 
     const { appName, appStoreId } = extractAppUrn(appUrn);

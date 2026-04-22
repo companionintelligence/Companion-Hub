@@ -7,7 +7,6 @@ import { Test } from '@nestjs/testing';
 import type { AppInfo } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import { fromPartial } from '@total-typescript/shoehorn';
-import jsonwebtoken from 'jsonwebtoken';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { mock } from 'vitest-mock-extended';
 import { AppFilesManager } from '../app-files-manager';
@@ -77,7 +76,6 @@ describe('AppHelpers', () => {
           rootFolderHost: '/opt/ci-hub',
           domain: 'example.com',
           ciHubApiKey: 'hub-api-key',
-          jwtSecret: 'hub-jwt-secret',
           userSettings: {
             appDataPath: '/opt/ci-hub',
             domain: 'example.com',
@@ -116,14 +114,12 @@ describe('AppHelpers', () => {
       expect(envMap.get('APP_DATA_DIR')).toBe('/opt/ci-hub/app-data/test-store/test-app');
       expect(envMap.get('HUB_DEVICE_ID')).toBe('hub-device-id');
       expect(envMap.get('HUB_API_KEY')).toBe('hub-api-key');
-      expect(jsonwebtoken.verify(envMap.get('HUB_PORTAL_JWT') as string, 'hub-jwt-secret')).toMatchObject({ sub: 'cli' });
     });
 
     it('should omit unavailable hub variables without failing env generation', async () => {
       const envMap = new Map<string, string>([
         ['HUB_DEVICE_ID', 'stale-device-id'],
         ['HUB_API_KEY', 'stale-api-key'],
-        ['HUB_PORTAL_JWT', 'stale-jwt'],
       ]);
       envUtils.envStringToMap.mockReturnValue(envMap);
       registrationService.getDeviceId.mockRejectedValue(new Error('lookup failed'));
@@ -144,7 +140,6 @@ describe('AppHelpers', () => {
 
       expect(envMap.has('HUB_DEVICE_ID')).toBe(false);
       expect(envMap.has('HUB_API_KEY')).toBe(false);
-      expect(envMap.has('HUB_PORTAL_JWT')).toBe(false);
     });
 
     it('should handle form port override', async () => {
