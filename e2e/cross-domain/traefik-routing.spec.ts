@@ -20,45 +20,49 @@
  */
 
 import { test, expect } from '@playwright/test';
-import fs from 'node:fs';
-import path from 'node:path';
-import { db } from '../helpers/db';
-import { testUser } from '../helpers/constants';
-import * as schema from '../../packages/backend/src/core/database/drizzle/schema';
+import { execSync } from 'node:child_process';
 
 const TRAEFIK_HTTP_PORT = process.env.TRAEFIK_HTTP_PORT || '8880';
 const TRAEFIK_API_PORT = process.env.TRAEFIK_API_PORT || '8881';
-const HUB_BACKEND_URL = `http://localhost:${process.env.BACKEND_PORT || '3000'}`;
-const REPO_ROOT = path.resolve(__dirname, '../..');
-const E2E_DATA_DIR = path.join(REPO_ROOT, '.internal-e2e');
-const DYNAMIC_CONFIG_DIR = path.join(E2E_DATA_DIR, 'state', 'traefik', 'dynamic');
+const HUB_CONTAINER = 'ci-hub-e2e-hub';
 
 // The Hub uses ci.localhost as its domain in the cross-domain config
 const HUB_DOMAIN = 'ci.localhost';
 const HUB_SUBDOMAIN = 'e2e-hub';
 const HUB_HOSTNAME = `${HUB_SUBDOMAIN}.${HUB_DOMAIN}`;
 
+// Path inside the Hub container where Traefik dynamic configs are written.
+// The compose mounts .internal-e2e/state/traefik/dynamic → /dynamic in Traefik
+// and the Hub container can write to the host path via the volume mount.
+const CONTAINER_DYNAMIC_DIR = '/data/state/traefik/dynamic';
+
 /**
  * Write a Traefik dynamic config that routes HUB_HOSTNAME to the Hub backend.
- * This simulates what the Hub's TraefikConfigService.writeHubRoute() does.
+ * Uses docker exec to write inside the Hub container, which has write access
+ * to the shared volume mount. This avoids host-side permission issues when
+ * Docker created files as root.
  */
 function seedHubRoute() {
-  const configPath = path.join(DYNAMIC_CONFIG_DIR, 'hub.yml');
-  const config = `http:
-  routers:
-    hub-public:
-      rule: "Host(\\\`${HUB_HOSTNAME}\\\`)"
-      service: hub-service
-      entryPoints:
-        - web
-  services:
-    hub-service:
-      loadBalancer:
-        servers:
-          - url: "http://ci-hub-e2e-hub:3000"
-`;
-  fs.mkdirSync(DYNAMIC_CONFIG_DIR, { recursive: true });
-  fs.writeFileSync(configPath, config);
+  const config = [
+    'http:',
+    '  routers:',
+    '    hub-public:',
+    `      rule: "Host(\\\`${HUB_HOSTNAME}\\\`)"`,
+    '      service: hub-service',
+    '      entryPoints:',
+    '        - web',
+    '  services:',
+    '    hub-service:',
+    '      loadBalancer:',
+    '        servers:',
+    `          - url: "http://${HUB_CONTAINER}:3000"`,
+  ].join('\n');
+  execSync(
+    `docker exec ${HUB_CONTAINER} sh -c 'mkdir -p ${CONTAINER_DYNAMIC_DIR} && cat > ${CONTAINER_DYNAMIC_DIR}/hub.yml << "EOFCONFIG"
+${config}
+EOFCONFIG'`,
+    { stdio: 'pipe' },
+  );
 }
 
 /**
@@ -66,28 +70,37 @@ function seedHubRoute() {
  * Simulates what generateTraefikConfig() writes for an installed app.
  */
 function seedAppRoute(appName: string, containerIp: string, port: number) {
-  const configPath = path.join(DYNAMIC_CONFIG_DIR, 'apps.yml');
   const hostname = `${appName}.${HUB_HOSTNAME}`;
-  const config = `http:
-  routers:
-    ${appName}-router:
-      rule: "Host(\\\`${hostname}\\\`)"
-      service: ${appName}-service
-      entryPoints:
-        - web
-  services:
-    ${appName}-service:
-      loadBalancer:
-        servers:
-          - url: "http://${containerIp}:${port}"
-`;
-  fs.writeFileSync(configPath, config);
+  const config = [
+    'http:',
+    '  routers:',
+    `    ${appName}-router:`,
+    `      rule: "Host(\\\`${hostname}\\\`)"`,
+    `      service: ${appName}-service`,
+    '      entryPoints:',
+    '        - web',
+    '  services:',
+    `    ${appName}-service:`,
+    '      loadBalancer:',
+    '        servers:',
+    `          - url: "http://${containerIp}:${port}"`,
+  ].join('\n');
+  execSync(
+    `docker exec ${HUB_CONTAINER} sh -c 'cat > ${CONTAINER_DYNAMIC_DIR}/apps.yml << "EOFCONFIG"
+${config}
+EOFCONFIG'`,
+    { stdio: 'pipe' },
+  );
 }
 
 function cleanupRoutes() {
-  for (const f of ['hub.yml', 'apps.yml']) {
-    const p = path.join(DYNAMIC_CONFIG_DIR, f);
-    if (fs.existsSync(p)) fs.unlinkSync(p);
+  try {
+    execSync(
+      `docker exec ${HUB_CONTAINER} sh -c 'rm -f ${CONTAINER_DYNAMIC_DIR}/hub.yml ${CONTAINER_DYNAMIC_DIR}/apps.yml'`,
+      { stdio: 'pipe' },
+    );
+  } catch {
+    // Container may already be stopped during teardown
   }
 }
 

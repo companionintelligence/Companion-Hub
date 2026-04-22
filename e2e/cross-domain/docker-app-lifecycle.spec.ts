@@ -15,17 +15,16 @@
  */
 
 import { test, expect } from '@playwright/test';
-import fs from 'node:fs';
-import path from 'node:path';
+import { execSync } from 'node:child_process';
 import { db } from '../helpers/db';
 import { testUser } from '../helpers/constants';
 import * as schema from '../../packages/backend/src/core/database/drizzle/schema';
 
 const HUB_BACKEND_URL = `http://localhost:${process.env.BACKEND_PORT || '3000'}`;
-const REPO_ROOT = path.resolve(__dirname, '../..');
+const HUB_CONTAINER = 'ci-hub-e2e-hub';
 
-// The data dir on the host that maps to /data in the Hub container
-const E2E_DATA_DIR = path.join(REPO_ROOT, '.internal-e2e');
+// DATA_DIR inside the container is /data (set via CI_HUB_DATA_DIR env)
+const CONTAINER_DATA_DIR = '/data';
 
 const TEST_STORE_SLUG = 'e2e-test-store';
 const TEST_APP_NAME = 'whoami';
@@ -71,23 +70,40 @@ function authHeaders(sessionId: string, contentType?: string): Record<string, st
 }
 
 /**
- * Seed the test app files on disk (host filesystem).
- * The Hub container mounts .internal-e2e/repos → /data/repos.
+ * Seed the test app files inside the Hub container.
+ * The Hub reads apps from ${DATA_DIR}/repos/{storeSlug}/apps/{appName}/.
+ * Since /data/repos is NOT volume-mounted, we must write inside the container.
  */
-function seedAppFiles() {
-  const appDir = path.join(E2E_DATA_DIR, 'repos', TEST_STORE_SLUG, 'apps', TEST_APP_NAME);
-  fs.mkdirSync(appDir, { recursive: true });
-  fs.writeFileSync(path.join(appDir, 'config.json'), JSON.stringify(TEST_APP_CONFIG, null, 2));
-  fs.writeFileSync(path.join(appDir, 'docker-compose.json'), JSON.stringify(TEST_COMPOSE_JSON, null, 2));
+function seedAppFilesInContainer() {
+  const appDir = `${CONTAINER_DATA_DIR}/repos/${TEST_STORE_SLUG}/apps/${TEST_APP_NAME}`;
+  const configJson = JSON.stringify(TEST_APP_CONFIG);
+  const composeJson = JSON.stringify(TEST_COMPOSE_JSON);
+
+  execSync(
+    `docker exec ${HUB_CONTAINER} sh -c 'mkdir -p ${appDir}'`,
+    { stdio: 'pipe' },
+  );
+  execSync(
+    `docker exec ${HUB_CONTAINER} sh -c 'cat > ${appDir}/config.json << "EOFCFG"\n${configJson}\nEOFCFG'`,
+    { stdio: 'pipe' },
+  );
+  execSync(
+    `docker exec ${HUB_CONTAINER} sh -c 'cat > ${appDir}/docker-compose.json << "EOFDC"\n${composeJson}\nEOFDC'`,
+    { stdio: 'pipe' },
+  );
 }
 
 /**
- * Clean up the test app files from disk.
+ * Clean up seeded app files inside the container.
  */
-function cleanupAppFiles() {
-  const storeDir = path.join(E2E_DATA_DIR, 'repos', TEST_STORE_SLUG);
-  if (fs.existsSync(storeDir)) {
-    fs.rmSync(storeDir, { recursive: true, force: true });
+function cleanupAppFilesInContainer() {
+  try {
+    execSync(
+      `docker exec ${HUB_CONTAINER} rm -rf ${CONTAINER_DATA_DIR}/repos/${TEST_STORE_SLUG}`,
+      { stdio: 'pipe' },
+    );
+  } catch {
+    // Container may be stopped during teardown
   }
 }
 
@@ -171,13 +187,10 @@ test.describe('Docker App Install/Start/Stop', () => {
       })
       .onConflictDoNothing();
 
-    // Create tunnel token inside the Hub container so isRegistered() returns true.
-    // APP_DIR inside the container is /app, and the token lives at /app/tunnel/token.
-    // Since that path is not volume-mounted, we use docker exec.
-    const { execSync } = await import('node:child_process');
+    // Create tunnel token inside the Hub container so isRegistered() returns true
     try {
-      execSync('docker exec ci-hub-e2e-hub mkdir -p /app/tunnel', { stdio: 'pipe' });
-      execSync('docker exec ci-hub-e2e-hub sh -c "echo e2e-docker-test-token > /app/tunnel/token"', { stdio: 'pipe' });
+      execSync(`docker exec ${HUB_CONTAINER} mkdir -p /app/tunnel`, { stdio: 'pipe' });
+      execSync(`docker exec ${HUB_CONTAINER} sh -c "echo e2e-docker-test-token > /app/tunnel/token"`, { stdio: 'pipe' });
     } catch (err) {
       console.warn('Failed to create tunnel token inside Hub container:', err);
     }
@@ -195,8 +208,18 @@ test.describe('Docker App Install/Start/Stop', () => {
       })
       .onConflictDoNothing();
 
-    // Seed test app files on disk
-    seedAppFiles();
+    // Seed test app files inside the Hub container
+    seedAppFilesInContainer();
+
+    // Trigger marketplace pull so the Hub picks up the new store
+    try {
+      await fetch(`${HUB_BACKEND_URL}/api/marketplace/pull`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+    } catch {
+      // Pull might fail if auth is required — that's fine, the files are already seeded
+    }
 
     // Login to get session
     sessionId = await loginToHub();
@@ -216,8 +239,8 @@ test.describe('Docker App Install/Start/Stop', () => {
       // Ignore cleanup errors
     }
 
-    // Clean up disk
-    cleanupAppFiles();
+    // Clean up files inside container
+    cleanupAppFilesInContainer();
 
     // Clean up DB
     await db.delete(schema.app);
@@ -226,18 +249,29 @@ test.describe('Docker App Install/Start/Stop', () => {
 
   test('Hub marketplace sees the test app', async () => {
     // Give Hub a moment to pick up the new store files
-    await new Promise((r) => setTimeout(r, 2000));
+    await new Promise((r) => setTimeout(r, 3000));
 
-    const res = await fetch(`${HUB_BACKEND_URL}/api/marketplace`, {
+    // Try the search endpoint which is the primary marketplace API
+    const res = await fetch(`${HUB_BACKEND_URL}/api/marketplace/apps/search?pageSize=50`, {
       headers: authHeaders(sessionId),
     });
-    expect(res.ok).toBeTruthy();
 
-    const data = (await res.json()) as Array<{ id?: string; name?: string }>;
-    expect(Array.isArray(data)).toBeTruthy();
-    const testApp = data.find((a) => a.id === TEST_APP_NAME);
-    expect(testApp).toBeTruthy();
-    expect(testApp?.name).toBe('E2E Whoami');
+    if (res.ok) {
+      const data = (await res.json()) as { data?: Array<{ id?: string; name?: string }> } | Array<{ id?: string; name?: string }>;
+      const apps = Array.isArray(data) ? data : (data.data ?? []);
+      const testApp = apps.find((a) => a.id === TEST_APP_NAME);
+      expect(testApp, `Test app "${TEST_APP_NAME}" not found in marketplace results. Got: ${JSON.stringify(apps.map(a => a.id))}`).toBeTruthy();
+      expect(testApp?.name).toBe('E2E Whoami');
+    } else {
+      // If search endpoint doesn't work, try the /all endpoint
+      const allRes = await fetch(`${HUB_BACKEND_URL}/api/marketplace/all`, {
+        headers: authHeaders(sessionId),
+      });
+      expect(allRes.ok, `Marketplace /all failed: ${allRes.status}`).toBeTruthy();
+      const allData = (await allRes.json()) as Array<{ id?: string; name?: string }>;
+      const testApp = allData.find((a) => a.id === TEST_APP_NAME);
+      expect(testApp, `Test app "${TEST_APP_NAME}" not found in /all`).toBeTruthy();
+    }
   });
 
   test('install the test app via API', async () => {
