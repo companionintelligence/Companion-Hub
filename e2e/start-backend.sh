@@ -10,7 +10,7 @@ DATA_DIR="${CI_HUB_DATA_DIR:-/tmp/ci-hub-e2e}"
 # Without this, Playwright's reuseExistingServer reuses stale backends
 # that are connected to a now-destroyed database.
 if command -v lsof >/dev/null 2>&1; then
-  for port in 3000 5173; do
+  for port in 3000 5173 8012; do
     pid=$(lsof -ti :"$port" 2>/dev/null || true)
     if [ -n "$pid" ]; then
       echo "Killing stale process on port $port (pid $pid)..."
