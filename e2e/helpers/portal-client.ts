@@ -6,15 +6,15 @@
  * mock portal server.
  */
 
-export { PortalApiClient } from '../cross-domain/portal-api';
+import { PortalApiClient } from '../cross-domain/portal-api';
 
 const PORTAL_URL = `http://localhost:${process.env.PORTAL_PORT || '8012'}`;
 
 /**
  * Create a PortalApiClient connected to the E2E Portal instance.
  */
-export function createPortalClient(): import('../cross-domain/portal-api').PortalApiClient {
-  return new (require('../cross-domain/portal-api').PortalApiClient)(PORTAL_URL);
+export function createPortalClient(): PortalApiClient {
+  return new PortalApiClient(PORTAL_URL);
 }
 
 /**

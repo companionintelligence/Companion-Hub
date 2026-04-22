@@ -64,13 +64,9 @@ function seedHubRoute() {
   unlinkSync(tmpFile);
 }
 
-
 function cleanupRoutes() {
   try {
-    execSync(
-      `docker exec ${HUB_CONTAINER} sh -c 'rm -f ${CONTAINER_DYNAMIC_DIR}/hub.yml ${CONTAINER_DYNAMIC_DIR}/apps.yml'`,
-      { stdio: 'pipe' },
-    );
+    execSync(`docker exec ${HUB_CONTAINER} sh -c 'rm -f ${CONTAINER_DYNAMIC_DIR}/hub.yml ${CONTAINER_DYNAMIC_DIR}/apps.yml'`, { stdio: 'pipe' });
   } catch {
     // Container may already be stopped during teardown
   }

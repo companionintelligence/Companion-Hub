@@ -102,7 +102,7 @@ test.describe('App Store Lifecycle with Real R2', () => {
     const catalog = await catalogResponse.json();
     expect(Array.isArray(catalog)).toBeTruthy();
 
-    const testApp = catalog.find((app: any) => app.id === TEST_APP_ID);
+    const testApp = catalog.find((app: { id?: string; title?: string }) => app.id === TEST_APP_ID);
     expect(testApp, `App ${TEST_APP_ID} not found in catalog`).toBeTruthy();
     expect(testApp.title).toBe(TEST_APP_CONFIG.name);
 

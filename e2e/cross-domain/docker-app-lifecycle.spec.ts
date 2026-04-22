@@ -105,10 +105,7 @@ function seedAppFilesInContainer() {
  */
 function cleanupAppFilesInContainer() {
   try {
-    execSync(
-      `docker exec ${HUB_CONTAINER} rm -rf ${CONTAINER_DATA_DIR}/repos/${TEST_STORE_SLUG}`,
-      { stdio: 'pipe' },
-    );
+    execSync(`docker exec ${HUB_CONTAINER} rm -rf ${CONTAINER_DATA_DIR}/repos/${TEST_STORE_SLUG}`, { stdio: 'pipe' });
   } catch {
     // Container may be stopped during teardown
   }
@@ -147,12 +144,7 @@ async function loginToHub(): Promise<string> {
 }
 
 /** Helper: wait for app status to reach a target state. */
-async function waitForAppStatus(
-  sessionId: string,
-  appUrn: string,
-  targetStatus: string,
-  timeoutMs = 120000,
-): Promise<string> {
+async function waitForAppStatus(sessionId: string, appUrn: string, targetStatus: string, timeoutMs = 120000): Promise<string> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     const res = await fetch(`${HUB_BACKEND_URL}/api/apps/${encodeURIComponent(appUrn)}`, {
@@ -171,187 +163,188 @@ async function waitForAppStatus(
   throw new Error(`App did not reach status "${targetStatus}" within ${timeoutMs}ms`);
 }
 
-test.describe.skip('Docker App Install/Start/Stop', () => {
-  // SKIP: The Hub's marketplace caches stores at startup and reads app configs
-  // from git-cloned repos via `MarketplaceService.initialize()`. Seeding files
-  // inside the container after startup doesn't trigger a re-scan, and calling
-  // POST /marketplace/pull tries to git-clone the store URL (which doesn't exist).
-  //
-  // To properly test this, we need either:
-  //   1. A real git repo (or local git server) to serve as the app store
-  //   2. A pre-seeded store in the Docker image build
-  //   3. An API endpoint that triggers a local-only rescan without git pull
-  //
-  // Tracked for follow-up implementation.
-  let sessionId: string;
+test.describe
+  .skip('Docker App Install/Start/Stop', () => {
+    // SKIP: The Hub's marketplace caches stores at startup and reads app configs
+    // from git-cloned repos via `MarketplaceService.initialize()`. Seeding files
+    // inside the container after startup doesn't trigger a re-scan, and calling
+    // POST /marketplace/pull tries to git-clone the store URL (which doesn't exist).
+    //
+    // To properly test this, we need either:
+    //   1. A real git repo (or local git server) to serve as the app store
+    //   2. A pre-seeded store in the Docker image build
+    //   3. An API endpoint that triggers a local-only rescan without git pull
+    //
+    // Tracked for follow-up implementation.
+    let sessionId: string;
 
-  test.beforeAll(async () => {
-    // Safety guard
-    if (process.env.E2E_TEST !== 'true') {
-      throw new Error('Must run with E2E_TEST=true');
-    }
+    test.beforeAll(async () => {
+      // Safety guard
+      if (process.env.E2E_TEST !== 'true') {
+        throw new Error('Must run with E2E_TEST=true');
+      }
 
-    // Seed organization (required for registration status)
-    await db.delete(schema.app);
-    await db.delete(schema.appStore);
-    await db
-      .insert(schema.deviceRegistration)
-      .values({
-        id: 'test-org-docker',
-        name: 'Docker Test Org',
-        slug: 'docker-test-org',
-        tunnelId: null,
-        domain: 'docker-test.example.com',
-      })
-      .onConflictDoNothing();
+      // Seed organization (required for registration status)
+      await db.delete(schema.app);
+      await db.delete(schema.appStore);
+      await db
+        .insert(schema.deviceRegistration)
+        .values({
+          id: 'test-org-docker',
+          name: 'Docker Test Org',
+          slug: 'docker-test-org',
+          tunnelId: null,
+          domain: 'docker-test.example.com',
+        })
+        .onConflictDoNothing();
 
-    // Create tunnel token inside the Hub container so isRegistered() returns true
-    try {
-      execSync(`docker exec ${HUB_CONTAINER} mkdir -p /app/tunnel`, { stdio: 'pipe' });
-      execSync(`docker exec ${HUB_CONTAINER} sh -c "echo e2e-docker-test-token > /app/tunnel/token"`, { stdio: 'pipe' });
-    } catch (err) {
-      console.warn('Failed to create tunnel token inside Hub container:', err);
-    }
+      // Create tunnel token inside the Hub container so isRegistered() returns true
+      try {
+        execSync(`docker exec ${HUB_CONTAINER} mkdir -p /app/tunnel`, { stdio: 'pipe' });
+        execSync(`docker exec ${HUB_CONTAINER} sh -c "echo e2e-docker-test-token > /app/tunnel/token"`, { stdio: 'pipe' });
+      } catch (err) {
+        console.warn('Failed to create tunnel token inside Hub container:', err);
+      }
 
-    // Seed the app store in the DB
-    await db
-      .insert(schema.appStore)
-      .values({
-        slug: TEST_STORE_SLUG,
-        hash: 'e2e-docker-hash',
-        name: 'E2E Test Store',
-        enabled: true,
-        url: 'https://example.com/e2e-store',
-        branch: 'main',
-      })
-      .onConflictDoNothing();
+      // Seed the app store in the DB
+      await db
+        .insert(schema.appStore)
+        .values({
+          slug: TEST_STORE_SLUG,
+          hash: 'e2e-docker-hash',
+          name: 'E2E Test Store',
+          enabled: true,
+          url: 'https://example.com/e2e-store',
+          branch: 'main',
+        })
+        .onConflictDoNothing();
 
-    // Seed test app files inside the Hub container
-    seedAppFilesInContainer();
+      // Seed test app files inside the Hub container
+      seedAppFilesInContainer();
 
-    // Trigger marketplace pull so the Hub picks up the new store
-    try {
-      await fetch(`${HUB_BACKEND_URL}/api/marketplace/pull`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      // Trigger marketplace pull so the Hub picks up the new store
+      try {
+        await fetch(`${HUB_BACKEND_URL}/api/marketplace/pull`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+        });
+      } catch {
+        // Pull might fail if auth is required — that's fine, the files are already seeded
+      }
+
+      // Login to get session
+      sessionId = await loginToHub();
+    });
+
+    test.afterAll(async () => {
+      // Clean up: uninstall the app if installed
+      try {
+        await fetch(`${HUB_BACKEND_URL}/api/app-lifecycle/${encodeURIComponent(TEST_APP_URN)}/uninstall`, {
+          method: 'DELETE',
+          headers: authHeaders(sessionId, 'application/json'),
+          body: JSON.stringify({ removeBackups: true }),
+        });
+        // Wait a bit for Docker cleanup
+        await new Promise((r) => setTimeout(r, 5000));
+      } catch {
+        // Ignore cleanup errors
+      }
+
+      // Clean up files inside container
+      cleanupAppFilesInContainer();
+
+      // Clean up DB
+      await db.delete(schema.app);
+      await db.delete(schema.appStore);
+    });
+
+    test('Hub marketplace sees the test app', async () => {
+      // Give Hub a moment to pick up the new store files
+      await new Promise((r) => setTimeout(r, 3000));
+
+      // Try the search endpoint which is the primary marketplace API
+      const res = await fetch(`${HUB_BACKEND_URL}/api/marketplace/apps/search?pageSize=50`, {
+        headers: authHeaders(sessionId),
       });
-    } catch {
-      // Pull might fail if auth is required — that's fine, the files are already seeded
-    }
 
-    // Login to get session
-    sessionId = await loginToHub();
-  });
+      if (res.ok) {
+        const data = (await res.json()) as { data?: Array<{ id?: string; name?: string }> } | Array<{ id?: string; name?: string }>;
+        const apps = Array.isArray(data) ? data : (data.data ?? []);
+        const testApp = apps.find((a) => a.id === TEST_APP_NAME);
+        expect(testApp, `Test app "${TEST_APP_NAME}" not found in marketplace results. Got: ${JSON.stringify(apps.map((a) => a.id))}`).toBeTruthy();
+        expect(testApp?.name).toBe('E2E Whoami');
+      } else {
+        // If search endpoint doesn't work, try the /all endpoint
+        const allRes = await fetch(`${HUB_BACKEND_URL}/api/marketplace/all`, {
+          headers: authHeaders(sessionId),
+        });
+        expect(allRes.ok, `Marketplace /all failed: ${allRes.status}`).toBeTruthy();
+        const allData = (await allRes.json()) as Array<{ id?: string; name?: string }>;
+        const testApp = allData.find((a) => a.id === TEST_APP_NAME);
+        expect(testApp, `Test app "${TEST_APP_NAME}" not found in /all`).toBeTruthy();
+      }
+    });
 
-  test.afterAll(async () => {
-    // Clean up: uninstall the app if installed
-    try {
-      await fetch(`${HUB_BACKEND_URL}/api/app-lifecycle/${encodeURIComponent(TEST_APP_URN)}/uninstall`, {
+    test('install the test app via API', async () => {
+      const res = await fetch(`${HUB_BACKEND_URL}/api/app-lifecycle/${encodeURIComponent(TEST_APP_URN)}/install`, {
+        method: 'POST',
+        headers: authHeaders(sessionId, 'application/json'),
+        body: JSON.stringify({ port: 18080, exposureMode: 'local' }),
+      });
+
+      expect(res.ok, `Install request failed: ${await res.text()}`).toBeTruthy();
+      const body = (await res.json()) as { requestId?: string };
+      expect(body.requestId).toBeTruthy();
+
+      // Wait for the app to be running (docker pull + compose up)
+      const status = await waitForAppStatus(sessionId, TEST_APP_URN, 'running', 180000);
+      expect(status).toBe('running');
+    });
+
+    test('stop the app via API', async () => {
+      const res = await fetch(`${HUB_BACKEND_URL}/api/app-lifecycle/${encodeURIComponent(TEST_APP_URN)}/stop`, {
+        method: 'POST',
+        headers: authHeaders(sessionId),
+      });
+
+      expect(res.ok, `Stop request failed: ${await res.text()}`).toBeTruthy();
+
+      // Wait for stopped status
+      const status = await waitForAppStatus(sessionId, TEST_APP_URN, 'stopped', 60000);
+      expect(status).toBe('stopped');
+    });
+
+    test('start the app via API', async () => {
+      const res = await fetch(`${HUB_BACKEND_URL}/api/app-lifecycle/${encodeURIComponent(TEST_APP_URN)}/start`, {
+        method: 'POST',
+        headers: authHeaders(sessionId),
+      });
+
+      expect(res.ok, `Start request failed: ${await res.text()}`).toBeTruthy();
+
+      // Wait for running status
+      const status = await waitForAppStatus(sessionId, TEST_APP_URN, 'running', 120000);
+      expect(status).toBe('running');
+    });
+
+    test('uninstall the app via API', async () => {
+      const res = await fetch(`${HUB_BACKEND_URL}/api/app-lifecycle/${encodeURIComponent(TEST_APP_URN)}/uninstall`, {
         method: 'DELETE',
         headers: authHeaders(sessionId, 'application/json'),
         body: JSON.stringify({ removeBackups: true }),
       });
-      // Wait a bit for Docker cleanup
+
+      expect(res.ok, `Uninstall request failed: ${await res.text()}`).toBeTruthy();
+
+      // Verify app is removed from the apps list
       await new Promise((r) => setTimeout(r, 5000));
-    } catch {
-      // Ignore cleanup errors
-    }
-
-    // Clean up files inside container
-    cleanupAppFilesInContainer();
-
-    // Clean up DB
-    await db.delete(schema.app);
-    await db.delete(schema.appStore);
-  });
-
-  test('Hub marketplace sees the test app', async () => {
-    // Give Hub a moment to pick up the new store files
-    await new Promise((r) => setTimeout(r, 3000));
-
-    // Try the search endpoint which is the primary marketplace API
-    const res = await fetch(`${HUB_BACKEND_URL}/api/marketplace/apps/search?pageSize=50`, {
-      headers: authHeaders(sessionId),
-    });
-
-    if (res.ok) {
-      const data = (await res.json()) as { data?: Array<{ id?: string; name?: string }> } | Array<{ id?: string; name?: string }>;
-      const apps = Array.isArray(data) ? data : (data.data ?? []);
-      const testApp = apps.find((a) => a.id === TEST_APP_NAME);
-      expect(testApp, `Test app "${TEST_APP_NAME}" not found in marketplace results. Got: ${JSON.stringify(apps.map(a => a.id))}`).toBeTruthy();
-      expect(testApp?.name).toBe('E2E Whoami');
-    } else {
-      // If search endpoint doesn't work, try the /all endpoint
-      const allRes = await fetch(`${HUB_BACKEND_URL}/api/marketplace/all`, {
+      const appsRes = await fetch(`${HUB_BACKEND_URL}/api/apps`, {
         headers: authHeaders(sessionId),
       });
-      expect(allRes.ok, `Marketplace /all failed: ${allRes.status}`).toBeTruthy();
-      const allData = (await allRes.json()) as Array<{ id?: string; name?: string }>;
-      const testApp = allData.find((a) => a.id === TEST_APP_NAME);
-      expect(testApp, `Test app "${TEST_APP_NAME}" not found in /all`).toBeTruthy();
-    }
-  });
+      expect(appsRes.ok).toBeTruthy();
 
-  test('install the test app via API', async () => {
-    const res = await fetch(`${HUB_BACKEND_URL}/api/app-lifecycle/${encodeURIComponent(TEST_APP_URN)}/install`, {
-      method: 'POST',
-      headers: authHeaders(sessionId, 'application/json'),
-      body: JSON.stringify({ port: 18080, exposureMode: 'local' }),
+      const apps = (await appsRes.json()) as Array<{ id?: string; appName?: string }>;
+      const installed = apps.find((a) => a.appName === TEST_APP_NAME);
+      expect(installed).toBeFalsy();
     });
-
-    expect(res.ok, `Install request failed: ${await res.text()}`).toBeTruthy();
-    const body = (await res.json()) as { requestId?: string };
-    expect(body.requestId).toBeTruthy();
-
-    // Wait for the app to be running (docker pull + compose up)
-    const status = await waitForAppStatus(sessionId, TEST_APP_URN, 'running', 180000);
-    expect(status).toBe('running');
   });
-
-  test('stop the app via API', async () => {
-    const res = await fetch(`${HUB_BACKEND_URL}/api/app-lifecycle/${encodeURIComponent(TEST_APP_URN)}/stop`, {
-      method: 'POST',
-      headers: authHeaders(sessionId),
-    });
-
-    expect(res.ok, `Stop request failed: ${await res.text()}`).toBeTruthy();
-
-    // Wait for stopped status
-    const status = await waitForAppStatus(sessionId, TEST_APP_URN, 'stopped', 60000);
-    expect(status).toBe('stopped');
-  });
-
-  test('start the app via API', async () => {
-    const res = await fetch(`${HUB_BACKEND_URL}/api/app-lifecycle/${encodeURIComponent(TEST_APP_URN)}/start`, {
-      method: 'POST',
-      headers: authHeaders(sessionId),
-    });
-
-    expect(res.ok, `Start request failed: ${await res.text()}`).toBeTruthy();
-
-    // Wait for running status
-    const status = await waitForAppStatus(sessionId, TEST_APP_URN, 'running', 120000);
-    expect(status).toBe('running');
-  });
-
-  test('uninstall the app via API', async () => {
-    const res = await fetch(`${HUB_BACKEND_URL}/api/app-lifecycle/${encodeURIComponent(TEST_APP_URN)}/uninstall`, {
-      method: 'DELETE',
-      headers: authHeaders(sessionId, 'application/json'),
-      body: JSON.stringify({ removeBackups: true }),
-    });
-
-    expect(res.ok, `Uninstall request failed: ${await res.text()}`).toBeTruthy();
-
-    // Verify app is removed from the apps list
-    await new Promise((r) => setTimeout(r, 5000));
-    const appsRes = await fetch(`${HUB_BACKEND_URL}/api/apps`, {
-      headers: authHeaders(sessionId),
-    });
-    expect(appsRes.ok).toBeTruthy();
-
-    const apps = (await appsRes.json()) as Array<{ id?: string; appName?: string }>;
-    const installed = apps.find((a) => a.appName === TEST_APP_NAME);
-    expect(installed).toBeFalsy();
-  });
-});
