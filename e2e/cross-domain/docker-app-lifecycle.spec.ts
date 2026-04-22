@@ -76,21 +76,28 @@ function authHeaders(sessionId: string, contentType?: string): Record<string, st
  */
 function seedAppFilesInContainer() {
   const appDir = `${CONTAINER_DATA_DIR}/repos/${TEST_STORE_SLUG}/apps/${TEST_APP_NAME}`;
-  const configJson = JSON.stringify(TEST_APP_CONFIG);
-  const composeJson = JSON.stringify(TEST_COMPOSE_JSON);
+  const { writeFileSync, mkdtempSync, rmSync } = require('node:fs');
+  const { join } = require('node:path');
+  const os = require('node:os');
 
-  execSync(
-    `docker exec ${HUB_CONTAINER} sh -c 'mkdir -p ${appDir}'`,
-    { stdio: 'pipe' },
-  );
-  execSync(
-    `docker exec ${HUB_CONTAINER} sh -c 'cat > ${appDir}/config.json << "EOFCFG"\n${configJson}\nEOFCFG'`,
-    { stdio: 'pipe' },
-  );
-  execSync(
-    `docker exec ${HUB_CONTAINER} sh -c 'cat > ${appDir}/docker-compose.json << "EOFDC"\n${composeJson}\nEOFDC'`,
-    { stdio: 'pipe' },
-  );
+  // Create temp directory with app files
+  const tmpDir = mkdtempSync(join(os.tmpdir(), 'e2e-app-seed-'));
+  writeFileSync(join(tmpDir, 'config.json'), JSON.stringify(TEST_APP_CONFIG, null, 2));
+  writeFileSync(join(tmpDir, 'docker-compose.json'), JSON.stringify(TEST_COMPOSE_JSON, null, 2));
+
+  // Create target directory and copy files into container
+  execSync(`docker exec ${HUB_CONTAINER} mkdir -p ${appDir}`, { stdio: 'pipe' });
+  execSync(`docker cp ${join(tmpDir, 'config.json')} ${HUB_CONTAINER}:${appDir}/config.json`, { stdio: 'pipe' });
+  execSync(`docker cp ${join(tmpDir, 'docker-compose.json')} ${HUB_CONTAINER}:${appDir}/docker-compose.json`, { stdio: 'pipe' });
+
+  // Verify files exist
+  const check = execSync(`docker exec ${HUB_CONTAINER} ls ${appDir}/`, { encoding: 'utf-8' });
+  if (!check.includes('config.json')) {
+    throw new Error(`Failed to seed app files. Directory contents: ${check}`);
+  }
+
+  // Clean up temp dir
+  rmSync(tmpDir, { recursive: true, force: true });
 }
 
 /**

@@ -38,31 +38,30 @@ const CONTAINER_DYNAMIC_DIR = '/data/state/traefik/dynamic';
 
 /**
  * Write a Traefik dynamic config that routes HUB_HOSTNAME to the Hub backend.
- * Uses docker exec to write inside the Hub container, which has write access
- * to the shared volume mount. This avoids host-side permission issues when
- * Docker created files as root.
+ * Uses docker cp to copy a config file into the Hub container's data volume,
+ * which Traefik watches. This avoids both host-side permission issues and
+ * heredoc escaping problems with docker exec.
  */
 function seedHubRoute() {
-  const config = [
-    'http:',
-    '  routers:',
-    '    hub-public:',
-    `      rule: "Host(\\\`${HUB_HOSTNAME}\\\`)"`,
-    '      service: hub-service',
-    '      entryPoints:',
-    '        - web',
-    '  services:',
-    '    hub-service:',
-    '      loadBalancer:',
-    '        servers:',
-    `          - url: "http://${HUB_CONTAINER}:3000"`,
-  ].join('\n');
-  execSync(
-    `docker exec ${HUB_CONTAINER} sh -c 'mkdir -p ${CONTAINER_DYNAMIC_DIR} && cat > ${CONTAINER_DYNAMIC_DIR}/hub.yml << "EOFCONFIG"
-${config}
-EOFCONFIG'`,
-    { stdio: 'pipe' },
-  );
+  const config = `http:
+  routers:
+    hub-public:
+      rule: "Host(\`${HUB_HOSTNAME}\`)"
+      service: hub-service
+      entryPoints:
+        - web
+  services:
+    hub-service:
+      loadBalancer:
+        servers:
+          - url: "http://${HUB_CONTAINER}:3000"
+`;
+  const tmpFile = `/tmp/traefik-hub-route-${Date.now()}.yml`;
+  const { writeFileSync, unlinkSync } = require('node:fs');
+  writeFileSync(tmpFile, config);
+  execSync(`docker exec ${HUB_CONTAINER} mkdir -p ${CONTAINER_DYNAMIC_DIR}`, { stdio: 'pipe' });
+  execSync(`docker cp ${tmpFile} ${HUB_CONTAINER}:${CONTAINER_DYNAMIC_DIR}/hub.yml`, { stdio: 'pipe' });
+  unlinkSync(tmpFile);
 }
 
 /**
@@ -71,26 +70,24 @@ EOFCONFIG'`,
  */
 function seedAppRoute(appName: string, containerIp: string, port: number) {
   const hostname = `${appName}.${HUB_HOSTNAME}`;
-  const config = [
-    'http:',
-    '  routers:',
-    `    ${appName}-router:`,
-    `      rule: "Host(\\\`${hostname}\\\`)"`,
-    `      service: ${appName}-service`,
-    '      entryPoints:',
-    '        - web',
-    '  services:',
-    `    ${appName}-service:`,
-    '      loadBalancer:',
-    '        servers:',
-    `          - url: "http://${containerIp}:${port}"`,
-  ].join('\n');
-  execSync(
-    `docker exec ${HUB_CONTAINER} sh -c 'cat > ${CONTAINER_DYNAMIC_DIR}/apps.yml << "EOFCONFIG"
-${config}
-EOFCONFIG'`,
-    { stdio: 'pipe' },
-  );
+  const config = `http:
+  routers:
+    ${appName}-router:
+      rule: "Host(\`${hostname}\`)"
+      service: ${appName}-service
+      entryPoints:
+        - web
+  services:
+    ${appName}-service:
+      loadBalancer:
+        servers:
+          - url: "http://${containerIp}:${port}"
+`;
+  const tmpFile = `/tmp/traefik-app-route-${Date.now()}.yml`;
+  const { writeFileSync, unlinkSync } = require('node:fs');
+  writeFileSync(tmpFile, config);
+  execSync(`docker cp ${tmpFile} ${HUB_CONTAINER}:${CONTAINER_DYNAMIC_DIR}/apps.yml`, { stdio: 'pipe' });
+  unlinkSync(tmpFile);
 }
 
 function cleanupRoutes() {
