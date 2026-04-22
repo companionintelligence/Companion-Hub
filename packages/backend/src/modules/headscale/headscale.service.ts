@@ -1,9 +1,12 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import { writeFile, mkdir, readFile } from 'node:fs/promises';
+import { buildHeadscaleTunnelFqdn, isPrivateVpnEnabled } from '@/common/helpers/private-vpn';
+import { ConfigurationService } from '@/core/config/configuration.service';
+import { Injectable, Logger, OnApplicationBootstrap, OnModuleInit, Optional } from '@nestjs/common';
+import { chmod, mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { DATA_DIR } from '@/common/constants';
+import { DATA_DIR, DEFAULT_HUB_TAILSCALE_CONTAINER_NAME } from '@/common/constants';
 import { execFile } from 'node:child_process';
 import * as yaml from 'yaml';
+import { RegistrationService } from '../registration/registration.service';
 
 export interface HeadscaleDevice {
   id: string;
@@ -35,26 +38,323 @@ export interface VpnStatus {
   deviceCount: number;
 }
 
+/** Shown in Settings so users can run tailscale up / custom coordination server */
+export interface HeadscaleClientInfo {
+  /** URL Tailscale clients should use as --login-server (must match Headscale server_url) */
+  loginServerUrl: string;
+  /** True when server URL is not the internal Docker-only address (public HTTPS join path) */
+  publicConfigured: boolean;
+}
+
 @Injectable()
-export class HeadscaleService implements OnModuleInit {
+export class HeadscaleService implements OnModuleInit, OnApplicationBootstrap {
   private readonly logger = new Logger(HeadscaleService.name);
   private readonly stateDir = join(DATA_DIR, 'state', 'headscale');
   private readonly configPath = join(DATA_DIR, 'state', 'headscale', 'config.yaml');
   private readonly apiKeyPath = join(DATA_DIR, 'state', 'headscale', 'api.key');
+  /** Persisted reusable pre-auth key used to enroll hub-tailscale (no manual .env) */
+  private readonly hubTailscalePreauthPath = join(DATA_DIR, 'state', 'headscale', 'hub-tailscale.preauth.key');
+  /** Traefik file provider watches this dir (same host path as Traefik's /etc/traefik/dynamic) */
+  private readonly traefikDynamicDir = join(DATA_DIR, 'state', 'traefik', 'dynamic');
+  private readonly traefikHeadscaleRoutePath = join(DATA_DIR, 'state', 'traefik', 'dynamic', 'headscale.yml');
   private readonly defaultUser = 'hub';
   private apiKey: string | null = null;
+  private hubBootstrapAttempts = 0;
 
   // Headscale API runs on port 8080 inside the container, accessible via Docker network
   private readonly headscaleApiUrl = 'http://headscale:8080';
 
+  constructor(
+    @Optional() private readonly registrationService?: RegistrationService,
+    @Optional() private readonly configService?: ConfigurationService,
+  ) {}
+
+  /** Base hostname from DOMAIN (no scheme/path), for headscale.<DOMAIN> convention */
+  private static resolveDomainBase(): string | null {
+    const d = process.env.DOMAIN?.trim();
+    if (!d) return null;
+    return d.replace(/^https?:\/\//, '').split('/')[0] || null;
+  }
+
+  /**
+   * Public URL from env only (HEADSCALE_PUBLIC_*, headscale.<DOMAIN>). Tests and callers that
+   * do not have registration context use this. Full runtime URL may add tunnel FQDN via resolveEffectiveServerUrl.
+   */
+  static resolveHeadscaleServerUrlFromEnv(): string {
+    const full = process.env.HEADSCALE_PUBLIC_URL?.trim();
+    if (full) {
+      try {
+        const u = new URL(full);
+        return u.origin;
+      } catch {
+        return 'http://headscale:8080';
+      }
+    }
+    const host = process.env.HEADSCALE_PUBLIC_HOST?.trim();
+    if (host) {
+      const h = host.replace(/^https?:\/\//, '').split('/')[0];
+      return `https://${h}`;
+    }
+    const domainBase = HeadscaleService.resolveDomainBase();
+    if (domainBase) {
+      return `https://headscale.${domainBase}`;
+    }
+    return 'http://headscale:8080';
+  }
+
+  private async resolveEffectiveServerUrl(): Promise<string> {
+    const full = process.env.HEADSCALE_PUBLIC_URL?.trim();
+    if (full) {
+      try {
+        return new URL(full).origin;
+      } catch {
+        return 'http://headscale:8080';
+      }
+    }
+    const hostEnv = process.env.HEADSCALE_PUBLIC_HOST?.trim();
+    if (hostEnv) {
+      const h = hostEnv.replace(/^https?:\/\//, '').split('/')[0];
+      return `https://${h}`;
+    }
+    if (isPrivateVpnEnabled() && this.registrationService && this.configService) {
+      const org = await this.registrationService.getDeviceRegistrationInfo();
+      const cfg = this.configService.getConfig();
+      const publicDomain = cfg.userSettings?.domain || cfg.domain;
+      const fqdn = buildHeadscaleTunnelFqdn(org, publicDomain);
+      if (fqdn) return `https://${fqdn}`;
+    }
+    return HeadscaleService.resolveHeadscaleServerUrlFromEnv();
+  }
+
+  private async resolveEffectiveTraefikHost(): Promise<string | null> {
+    const full = process.env.HEADSCALE_PUBLIC_URL?.trim();
+    if (full) {
+      try {
+        const u = new URL(full);
+        if (u.hostname) return u.hostname;
+      } catch {
+        /* fall through */
+      }
+    }
+    const hostEnv = process.env.HEADSCALE_PUBLIC_HOST?.trim();
+    if (hostEnv) {
+      return hostEnv.replace(/^https?:\/\//, '').split('/')[0] || null;
+    }
+    if (isPrivateVpnEnabled() && this.registrationService && this.configService) {
+      const org = await this.registrationService.getDeviceRegistrationInfo();
+      const cfg = this.configService.getConfig();
+      const publicDomain = cfg.userSettings?.domain || cfg.domain;
+      const fqdn = buildHeadscaleTunnelFqdn(org, publicDomain);
+      if (fqdn) return fqdn;
+    }
+    const domainBase = HeadscaleService.resolveDomainBase();
+    if (domainBase) {
+      return `headscale.${domainBase}`;
+    }
+    return null;
+  }
+
+  /**
+   * Writes Traefik dynamic config so HTTPS clients reach headscale:8080 with correct Host() and TLS.
+   * Compose labels cannot reliably interpolate Host(`…`) with env; file provider avoids that.
+   */
+  private async ensureTraefikHeadscaleRoute(): Promise<void> {
+    const host = await this.resolveEffectiveTraefikHost();
+    await mkdir(this.traefikDynamicDir, { recursive: true });
+    if (!host) {
+      await unlink(this.traefikHeadscaleRoutePath).catch(() => {
+        // Best-effort: ignore ENOENT when the route file isn't present.
+      });
+      return;
+    }
+
+    const doc = {
+      http: {
+        routers: {
+          'headscale-public': {
+            rule: `Host(\`${host}\`)`,
+            entryPoints: ['websecure'],
+            service: 'headscale-public-svc',
+            tls: { certResolver: 'myresolver' },
+          },
+        },
+        services: {
+          'headscale-public-svc': {
+            loadBalancer: {
+              servers: [{ url: 'http://headscale:8080' }],
+            },
+          },
+        },
+      },
+    };
+
+    await writeFile(this.traefikHeadscaleRoutePath, yaml.stringify(doc), 'utf-8');
+    this.logger.log(`Traefik headscale route written for Host(\`${host}\`)`);
+  }
+
+  async getClientInfo(): Promise<HeadscaleClientInfo> {
+    if (!isPrivateVpnEnabled()) {
+      return { loginServerUrl: 'http://headscale:8080', publicConfigured: false };
+    }
+    const loginServerUrl = await this.resolveEffectiveServerUrl();
+    const publicConfigured = loginServerUrl !== 'http://headscale:8080';
+    return { loginServerUrl, publicConfigured };
+  }
+
   async onModuleInit() {
+    if (!isPrivateVpnEnabled()) {
+      await mkdir(this.traefikDynamicDir, { recursive: true });
+      await unlink(this.traefikHeadscaleRoutePath).catch(() => {
+        // Best-effort: ignore ENOENT when the route file isn't present.
+      });
+      this.logger.debug('Private VPN disabled (PRIVATE_VPN_ENABLED=false); skipping Headscale init');
+      return;
+    }
     try {
       await this.ensureConfigExists();
+      await this.ensureTraefikHeadscaleRoute();
       await this.loadOrCreateApiKey();
       await this.ensureUser();
     } catch (error) {
       this.logger.warn(`Headscale init: ${error}`);
     }
+  }
+
+  async onApplicationBootstrap() {
+    if (!isPrivateVpnEnabled()) return;
+    // headscale / hub-tailscale often start after ci-os-hub; enroll after a short delay and retry
+    setTimeout(() => void this.runHubTailscaleBootstrapLoop(), 8000);
+  }
+
+  private readonly hubBootstrapMaxAttempts = 18;
+  private readonly hubBootstrapIntervalMs = 10_000;
+
+  private async runHubTailscaleBootstrapLoop(): Promise<void> {
+    while (this.hubBootstrapAttempts < this.hubBootstrapMaxAttempts) {
+      this.hubBootstrapAttempts++;
+      try {
+        const result = await this.ensureHubTailscaleJoined();
+        if (result === 'done' || result === 'skipped') return;
+      } catch (error) {
+        this.logger.warn(`Hub tailscale bootstrap attempt ${this.hubBootstrapAttempts}: ${error}`);
+      }
+      await new Promise((r) => setTimeout(r, this.hubBootstrapIntervalMs));
+    }
+    this.logger.warn('Hub tailscale bootstrap: stopped after max attempts (container may be missing in this environment)');
+  }
+
+  /**
+   * Enroll hub-tailscale using a Headscale pre-auth key created via API and stored on disk.
+   * Avoids requiring HEADSCALE_PREAUTH_KEY in .env.
+   */
+  async ensureHubTailscaleJoined(): Promise<'done' | 'retry' | 'skipped'> {
+    if (!isPrivateVpnEnabled()) {
+      return 'skipped';
+    }
+    if (process.env.HEADSCALE_AUTO_BOOTSTRAP === 'false') {
+      return 'skipped';
+    }
+    if (!this.apiKey) {
+      return 'skipped';
+    }
+    if (!(await this.isHealthy())) {
+      return 'retry';
+    }
+    const ts = await this.getTailscaleStatus();
+    if (ts.connected) {
+      return 'done';
+    }
+
+    const container = process.env.TAILSCALE_SIDECAR_CONTAINER ?? DEFAULT_HUB_TAILSCALE_CONTAINER_NAME;
+    if (!(await this.isDockerContainerRunning(container))) {
+      return 'retry';
+    }
+
+    try {
+      const key = await this.loadOrCreateHubTailscalePreauthKey();
+      await this.execTailscaleUpInHubSidecar(key);
+      const after = await this.getTailscaleStatus();
+      if (after.connected) {
+        this.logger.log('hub-tailscale enrolled with Headscale');
+        return 'done';
+      }
+      this.logger.warn('hub-tailscale tailscale up ran but node is not online yet');
+      return 'retry';
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      if (msg.includes('invalid') && msg.toLowerCase().includes('auth')) {
+        await unlink(this.hubTailscalePreauthPath).catch(() => {
+          // Best-effort: the stale key may already be gone.
+        });
+        this.logger.warn('Cleared stored hub-tailscale pre-auth key after auth failure; a new key will be created on next attempt');
+      }
+      throw error;
+    }
+  }
+
+  private async loadOrCreateHubTailscalePreauthKey(): Promise<string> {
+    try {
+      const existing = (await readFile(this.hubTailscalePreauthPath, 'utf-8')).trim();
+      if (existing) return existing;
+    } catch {
+      /* no file */
+    }
+
+    const pre = await this.createPreAuthKey({
+      reusable: true,
+      ephemeral: false,
+      expirationHours: 24 * 365 * 10,
+    });
+    await writeFile(this.hubTailscalePreauthPath, pre.key, 'utf-8');
+    await chmod(this.hubTailscalePreauthPath, 0o600).catch(() => {
+      // Best-effort on filesystems that don't support chmod (e.g. bind-mounted Windows volumes).
+    });
+    this.logger.log('Created and stored hub-tailscale Headscale pre-auth key');
+    return pre.key;
+  }
+
+  private async isDockerContainerRunning(containerName: string): Promise<boolean> {
+    return new Promise((resolve) => {
+      execFile('docker', ['inspect', '-f', '{{.State.Running}}', containerName], { timeout: 8000 }, (err, stdout) => {
+        if (err) {
+          resolve(false);
+          return;
+        }
+        resolve(stdout.trim() === 'true');
+      });
+    });
+  }
+
+  private async execTailscaleUpInHubSidecar(authKey: string): Promise<void> {
+    const container = process.env.TAILSCALE_SIDECAR_CONTAINER ?? DEFAULT_HUB_TAILSCALE_CONTAINER_NAME;
+    const loginServer = process.env.HUB_TAILSCALE_LOGIN_SERVER ?? 'http://headscale:8080';
+    const advertise = process.env.HUB_TAILSCALE_ADVERTISE_ROUTES ?? '172.18.0.0/16';
+
+    // Tailscale 1.82+ requires every non-default flag on repeat `up`, or --reset.
+    // Match headless/container defaults: no MagicDNS inside the sidecar.
+    const tailscaleArgs = [
+      'up',
+      '--reset',
+      `--login-server=${loginServer}`,
+      '--authkey',
+      authKey,
+      '--accept-routes',
+      `--advertise-routes=${advertise}`,
+      '--accept-dns=false',
+    ];
+
+    const args = ['exec', container, 'tailscale', ...tailscaleArgs];
+
+    await new Promise<void>((resolve, reject) => {
+      execFile('docker', args, { timeout: 120_000 }, (error, stdout, stderr) => {
+        if (error) {
+          reject(new Error(stderr || error.message));
+          return;
+        }
+        if (stdout) this.logger.debug(`tailscale up: ${stdout.trim()}`);
+        resolve();
+      });
+    });
   }
 
   /**
@@ -108,8 +408,13 @@ export class HeadscaleService implements OnModuleInit {
     await mkdir(this.stateDir, { recursive: true });
     await mkdir(join(this.stateDir, 'data'), { recursive: true });
 
+    const serverUrl = await this.resolveEffectiveServerUrl();
+    if (serverUrl.startsWith('https://')) {
+      this.logger.log(`Headscale server_url (public): ${serverUrl}`);
+    }
+
     const config = {
-      server_url: 'http://headscale:8080',
+      server_url: serverUrl,
       listen_addr: '0.0.0.0:8080',
       metrics_listen_addr: '0.0.0.0:9090',
       private_key_path: '/etc/headscale/private.key',
@@ -335,6 +640,15 @@ export class HeadscaleService implements OnModuleInit {
    * Get overall VPN status
    */
   async getVpnStatus(): Promise<VpnStatus> {
+    if (!isPrivateVpnEnabled()) {
+      return {
+        enabled: false,
+        headscaleHealthy: false,
+        tailscaleConnected: false,
+        tailscaleIp: null,
+        deviceCount: 0,
+      };
+    }
     const [headscaleHealthy, tailscaleStatus, devices] = await Promise.all([
       this.isHealthy(),
       this.getTailscaleStatus(),
@@ -348,5 +662,21 @@ export class HeadscaleService implements OnModuleInit {
       tailscaleIp: tailscaleStatus.ip,
       deviceCount: devices.length,
     };
+  }
+
+  /**
+   * True when Headscale is reachable and the hub-tailscale node is online.
+   * Used with host Tailscale to decide if Private VPN app exposure is available.
+   */
+  async isPrivateVpnReady(): Promise<boolean> {
+    if (!isPrivateVpnEnabled()) return false;
+    try {
+      const healthy = await this.isHealthy();
+      if (!healthy) return false;
+      const ts = await this.getTailscaleStatus();
+      return ts.connected;
+    } catch {
+      return false;
+    }
   }
 }

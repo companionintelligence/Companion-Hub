@@ -107,6 +107,24 @@ describe('CloudflareClientService', () => {
       const result = await service.initializeTunnel('org-id', { tunnelId: '', token: '' });
       expect(result).toBeNull();
     });
+
+    it('should skip cloudflared container start in local/E2E mode (ci.localhost)', async () => {
+      configService.get.mockImplementation((key) => {
+        if (key === 'ciCloudUrl') return 'http://api.cloud';
+        if (key === 'ciHubApiKey') return 'api-key';
+        if (key === 'domain') return 'ci.localhost';
+        return null;
+      });
+
+      const result = await service.initializeTunnel('org-id', { tunnelId: 'tun-id', token: 'tok' });
+
+      // Token file should still be written
+      expect(fs.writeFile).toHaveBeenCalledWith(expect.stringContaining('tunnel/token'), 'tok', { mode: 0o644 });
+      // Docker container should NOT be started
+      expect(dockerService.ensureContainerRunning).not.toHaveBeenCalled();
+      // Should still return credentials
+      expect(result).toEqual({ tunnelId: 'tun-id', token: 'tok' });
+    });
   });
 
   describe('syncState', () => {

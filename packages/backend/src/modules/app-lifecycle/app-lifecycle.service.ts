@@ -1,5 +1,6 @@
 import { TranslatableError } from '@/common/error/translatable-error';
 import { createAppUrn, extractAppUrn } from '@/common/helpers/app-helpers';
+import { buildHeadscaleTunnelFqdn, headscaleTunnelContainerPort, isPrivateVpnEnabled } from '@/common/helpers/private-vpn';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { SSEService } from '@/core/sse/sse.service';
@@ -716,8 +717,27 @@ export class AppLifecycleService implements OnApplicationBootstrap {
           protocol: 'http' as const,
           hostname: 'traefik',
           originServerName: hubHostname,
-          isHub: true,
+          privilegedKind: 'hub',
         });
+
+        const headscaleFqdn = buildHeadscaleTunnelFqdn(orgInfo, publicDomain);
+        if (headscaleFqdn && isPrivateVpnEnabled()) {
+          // Send only the leaf subdomain `vpn`; CI-Cloud's tunnel sync already
+          // appends `-{deviceSlug}-{orgSlug}.{domain}` when building the public
+          // hostname, so pre-concatenating here (old behaviour) produced a
+          // double-suffixed hostname that didn't match the DNS record CI-Cloud
+          // creates. originServerName carries the full FQDN for the HTTP Host
+          // header so Headscale's server_url validation still matches.
+          exposedApps.splice(1, 0, {
+            name: 'Headscale',
+            subdomain: 'vpn',
+            localPort: headscaleTunnelContainerPort(),
+            protocol: 'http' as const,
+            hostname: 'headscale',
+            originServerName: headscaleFqdn,
+            privilegedKind: 'vpn',
+          });
+        }
       }
 
       await this.cloudflareClientService.syncState(orgInfo.id, exposedApps, orgInfo.tunnelId || undefined);
