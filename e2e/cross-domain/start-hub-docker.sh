@@ -28,18 +28,6 @@ fi
 # Clean up previous E2E run
 "${COMPOSE_CMD[@]}" down -v 2>/dev/null || true
 
-# Kill stale processes from previous E2E runs that hold ports we need.
-# Without this, Playwright's reuseExistingServer reuses stale backends
-# that are connected to a now-destroyed database.
-if command -v lsof >/dev/null 2>&1; then
-  for port in 3000 8012 9091 6543 5672; do
-    pid=$(lsof -ti :"$port" 2>/dev/null || true)
-    if [ -n "$pid" ]; then
-      echo "Killing stale process on port $port (pid $pid)..."
-      kill "$pid" 2>/dev/null || true
-    fi
-  done
-fi
 
 cleanup() {
   "${COMPOSE_CMD[@]}" down -v 2>/dev/null || true

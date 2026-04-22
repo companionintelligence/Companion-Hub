@@ -6,19 +6,6 @@ set -euo pipefail
 
 DATA_DIR="${CI_HUB_DATA_DIR:-/tmp/ci-hub-e2e}"
 
-# Kill stale processes from previous E2E runs that hold ports we need.
-# Without this, Playwright's reuseExistingServer reuses stale backends
-# that are connected to a now-destroyed database.
-if command -v lsof >/dev/null 2>&1; then
-  for port in 3000 5173 8012; do
-    pid=$(lsof -ti :"$port" 2>/dev/null || true)
-    if [ -n "$pid" ]; then
-      echo "Killing stale process on port $port (pid $pid)..."
-      kill "$pid" 2>/dev/null || true
-      sleep 1
-    fi
-  done
-fi
 
 # Fail fast with a clear message if Postgres / RabbitMQ are unavailable.
 pnpm exec tsx ./e2e/helpers/require-infra-ready.ts
