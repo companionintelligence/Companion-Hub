@@ -38,11 +38,10 @@ const TEST_HOSTNAME = `e2e-traefik-test.${HUB_DOMAIN}`;
 // Path inside the Hub container where Traefik dynamic configs are written.
 const CONTAINER_DYNAMIC_DIR = '/data/state/traefik/dynamic';
 
-// Discover the actual Hub backend service name from compose.
-// The compose service is always "hub" but the container may be "ci-hub-e2e-hub".
-// The internal Docker network name for the Hub is the compose service name.
+// The Hub backend API listens on port 9091 inside the container.
+// The compose service alias is ci-os-hub (Docker DNS name on the shared network).
 const HUB_INTERNAL_HOST = 'ci-os-hub';
-const HUB_INTERNAL_PORT = '5002';
+const HUB_INTERNAL_PORT = '9091';
 
 interface TraefikRouter {
   name: string;
