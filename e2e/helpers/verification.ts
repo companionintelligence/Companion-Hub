@@ -113,7 +113,7 @@ export async function verifyAppStoreNames(page: Page, expectedNames: string[]) {
   await expect(page.getByRole('tab', { name: 'App Stores' })).toBeVisible({ timeout: 30000 });
   await page.getByRole('tab', { name: 'App Stores' }).click();
   for (const name of expectedNames) {
-    await expect(page.getByRole('cell', { name })).toBeVisible({ timeout: 30000 });
+    await expect(page.getByRole('cell', { name, exact: true })).toBeVisible({ timeout: 30000 });
   }
 }
 

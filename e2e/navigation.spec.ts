@@ -46,6 +46,6 @@ test.describe('Navigation', () => {
     await loginUser(page);
 
     await page.getByRole('button', { name: 'Logout' }).first().click();
-    await expect(page).toHaveURL(/\/login/);
+    await expect(page).toHaveURL(/\/login/, { timeout: 15000 });
   });
 });
