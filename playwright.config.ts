@@ -39,6 +39,7 @@ const backendEnv: Record<string, string> = {
   ALLOW_AUTO_THEMES: 'true',
   ALLOW_ERROR_MONITORING: 'false',
   PERSIST_TRAEFIK_CONFIG: 'false',
+  PRIVATE_VPN_ENABLED: 'false',
   DEVICE_ID: process.env.DEVICE_ID || 'test-device-e2e',
   ADVANCED_SETTINGS: 'false',
   DISABLE_PASSWORD_RESET: 'true',
