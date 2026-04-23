@@ -427,16 +427,6 @@ export class DockerService {
       // Match the project name used by start.ts / package.json scripts so
       // compose attaches to the running stack instead of creating a new one.
       args.push('--project-name', 'ci-hub');
-
-      // Resolve the host-side project directory so Docker daemon mounts
-      // relative volume paths (e.g. ./tunnel) from the correct host path,
-      // not from /data/ inside the container.
-      const rootFolderHost = this.config.get('rootFolderHost');
-      if (rootFolderHost) {
-        const hostProjectDir = path.dirname(rootFolderHost);
-        args.push('--project-directory', hostProjectDir);
-      }
-
       // Override ENV_FILE to the mounted filename (.env) so compose's env_file
       // directive resolves correctly inside the container.
       spawnOptions.env = { ...process.env, ENV_FILE: '.env' };

@@ -61,10 +61,6 @@ describe('DockerService', () => {
         return '/data/.env' as any;
       }
 
-      if (key === 'rootFolderHost') {
-        return '/host/path/to/repo/.internal' as any;
-      }
-
       return null as any;
     });
 
@@ -343,8 +339,6 @@ describe('DockerService', () => {
           '/data/.env',
           '--project-name',
           'ci-hub',
-          '--project-directory',
-          '/host/path/to/repo',
           '-f',
           '/data/docker-compose.yml',
           '--profile',
