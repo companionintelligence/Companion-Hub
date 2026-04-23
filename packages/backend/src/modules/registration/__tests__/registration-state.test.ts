@@ -3,7 +3,6 @@ import {
   isLegalTransition,
   isOperational,
   buildRegistrationStatus,
-  transitionPhase,
   parseDegradedReasons,
   type ProvisioningPhase,
   PROVISIONING_PHASES,
@@ -104,22 +103,6 @@ describe('registration-state', () => {
       expect(buildRegistrationStatus('unregistered').registered).toBe(false);
       expect(buildRegistrationStatus('paired').registered).toBe(false);
       expect(buildRegistrationStatus('provisioning').registered).toBe(false);
-    });
-  });
-
-  // -----------------------------------------------------------------------
-  // transitionPhase
-  // -----------------------------------------------------------------------
-  describe('transitionPhase', () => {
-    it('returns the target phase on legal transitions', () => {
-      expect(transitionPhase('unregistered', 'paired')).toBe('paired');
-      expect(transitionPhase('paired', 'provisioning')).toBe('provisioning');
-      expect(transitionPhase('provisioning', 'locally_ready')).toBe('locally_ready');
-    });
-
-    it('throws on illegal transitions', () => {
-      expect(() => transitionPhase('publicly_ready', 'paired')).toThrow('Illegal provisioning-phase transition');
-      expect(() => transitionPhase('unregistered', 'provisioning')).toThrow('Illegal provisioning-phase transition');
     });
   });
 

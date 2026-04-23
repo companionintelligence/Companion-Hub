@@ -90,17 +90,6 @@ export function buildRegistrationStatus(phase: ProvisioningPhase, degradedReason
 }
 
 /**
- * Attempt a phase transition, returning the new phase.
- * @throws {Error} if the transition is illegal.
- */
-export function transitionPhase(from: ProvisioningPhase, to: ProvisioningPhase): ProvisioningPhase {
-  if (!isLegalTransition(from, to)) {
-    throw new Error(`Illegal provisioning-phase transition: ${from} → ${to}`);
-  }
-  return to;
-}
-
-/**
  * Parse a stored degradedReasons JSON string into a typed array.
  * Returns an empty array on invalid input.
  */

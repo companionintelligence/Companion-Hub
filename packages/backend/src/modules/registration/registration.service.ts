@@ -21,14 +21,14 @@ import {
 } from './registration-state';
 import si from 'systeminformation';
 
-const REGISTRATION_VALIDATION_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
+const PERIODIC_VALIDATION_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 
 @Injectable()
 export class RegistrationService implements OnApplicationBootstrap, OnApplicationShutdown {
   private _currentPhase: ProvisioningPhase = 'unregistered';
   private _degradedReasons: DegradedReason[] = [];
   private checkInterval: NodeJS.Timeout | null = null;
-  private weeklyValidationInterval: NodeJS.Timeout | null = null;
+  private periodicValidationInterval: NodeJS.Timeout | null = null;
 
   constructor(
     private readonly config: ConfigurationService,
@@ -44,9 +44,9 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       clearInterval(this.checkInterval);
       this.checkInterval = null;
     }
-    if (this.weeklyValidationInterval) {
-      clearInterval(this.weeklyValidationInterval);
-      this.weeklyValidationInterval = null;
+    if (this.periodicValidationInterval) {
+      clearInterval(this.periodicValidationInterval);
+      this.periodicValidationInterval = null;
     }
   }
 
@@ -77,7 +77,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     }
 
     if (isOperational(this._currentPhase)) {
-      this.startWeeklyValidation();
+      this.startPeriodicValidation();
     } else {
       this.pollRegistration();
     }
@@ -150,7 +150,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   public async setPhase(to: ProvisioningPhase, reasons: DegradedReason[] = [], orgId?: string): Promise<void> {
     const from = this._currentPhase;
 
-    // Allow idempotent no-ops
+    // Allow idempotent no-ops — except degraded→degraded which may update reasons
     if (from === to && to !== 'degraded') return;
 
     if (!isLegalTransition(from, to)) {
@@ -292,16 +292,16 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     }
   }
 
-  private startWeeklyValidation() {
-    if (this.weeklyValidationInterval) {
+  private startPeriodicValidation() {
+    if (this.periodicValidationInterval) {
       return;
     }
 
     this.validateRegistrationWithCloud().catch((e) => this.logger.error('Initial registration validation failed', e));
 
-    this.weeklyValidationInterval = setInterval(() => {
+    this.periodicValidationInterval = setInterval(() => {
       this.validateRegistrationWithCloud().catch((e) => this.logger.error('Registration validation check failed', e));
-    }, REGISTRATION_VALIDATION_INTERVAL_MS);
+    }, PERIODIC_VALIDATION_INTERVAL_MS);
   }
 
   /**
@@ -377,14 +377,14 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   public async resetRegistration(): Promise<void> {
     this.logger.info('Resetting device registration...');
 
-    // Clear the in-memory phase
-    this._currentPhase = 'unregistered';
-    this._degradedReasons = [];
+    // Transition via setPhase so the change is logged consistently.
+    // Reset → unregistered is always a legal transition.
+    await this.setPhase('unregistered');
 
     // Stop validation intervals
-    if (this.weeklyValidationInterval) {
-      clearInterval(this.weeklyValidationInterval);
-      this.weeklyValidationInterval = null;
+    if (this.periodicValidationInterval) {
+      clearInterval(this.periodicValidationInterval);
+      this.periodicValidationInterval = null;
     }
 
     // Delete the device_registration records from the database
@@ -550,7 +550,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
             clearInterval(this.checkInterval);
             this.checkInterval = null;
           }
-          this.startWeeklyValidation();
+          this.startPeriodicValidation();
         } else {
           this.logger.debug('Device not yet registered, retrying in 30s...');
         }

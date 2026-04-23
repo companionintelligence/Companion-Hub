@@ -11,6 +11,9 @@ HUB_URL="http://localhost:5002"
 TIMESTAMP=$(date +%s)
 PASS_CHARS='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%'
 
+# Track test artifacts for teardown — each entry is "email|password|org_id|device_id"
+declare -a TEARDOWN_ENTRIES=()
+
 generate_password() {
   head -c 32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9!@#' | head -c 20
   echo '1Aa!'  # ensure complexity requirements
@@ -19,6 +22,72 @@ generate_password() {
 log() { echo -e "\n=== $1 ==="; }
 ok()  { echo "  ✅ $1"; }
 fail() { echo "  ❌ $1"; exit 1; }
+
+# ── Teardown: clean up Portal artifacts ────────────────────────────────────
+# Best-effort: errors here must not mask the real test outcome.
+teardown_portal_artifacts() {
+  [ ${#TEARDOWN_ENTRIES[@]} -eq 0 ] && return 0
+
+  log "Tearing down Portal test artifacts"
+
+  for entry in "${TEARDOWN_ENTRIES[@]}"; do
+    IFS='|' read -r t_email t_password t_org_id t_device_id <<< "$entry"
+
+    local jar
+    jar=$(mktemp)
+
+    # Sign in
+    if ! curl -sf -X POST "$PORTAL_URL/api/auth/sign-in/email" \
+        -H "Content-Type: application/json" \
+        -H "Origin: $PORTAL_URL" \
+        -c "$jar" \
+        -d "{\"email\":\"$t_email\",\"password\":\"$t_password\"}" > /dev/null 2>&1; then
+      echo "  ⚠️  Could not sign in as $t_email for cleanup"
+      rm -f "$jar"
+      continue
+    fi
+
+    # Set active org so membership checks pass
+    curl -sf -X POST "$PORTAL_URL/api/auth/organization/set-active" \
+      -H "Content-Type: application/json" \
+      -H "Origin: $PORTAL_URL" \
+      -b "$jar" -c "$jar" \
+      -d "{\"organizationId\":\"$t_org_id\"}" > /dev/null 2>&1 || true
+
+    # Delete device (cleans up Cloudflare tunnel + DNS)
+    if [ -n "$t_device_id" ]; then
+      local http_code
+      http_code=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
+        "$PORTAL_URL/api/devices/$t_device_id" \
+        -H "Origin: $PORTAL_URL" \
+        -b "$jar" 2>/dev/null) || http_code="000"
+      if [ "$http_code" = "200" ] || [ "$http_code" = "207" ]; then
+        ok "Deleted device $t_device_id"
+      else
+        echo "  ⚠️  Delete device $t_device_id returned HTTP $http_code"
+      fi
+    fi
+
+    # Delete organization (now that device is removed)
+    if [ -n "$t_org_id" ]; then
+      local http_code
+      http_code=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
+        "$PORTAL_URL/api/organization/$t_org_id" \
+        -H "Origin: $PORTAL_URL" \
+        -b "$jar" 2>/dev/null) || http_code="000"
+      if [ "$http_code" = "200" ]; then
+        ok "Deleted organization $t_org_id"
+      else
+        echo "  ⚠️  Delete organization $t_org_id returned HTTP $http_code"
+      fi
+    fi
+
+    rm -f "$jar"
+  done
+}
+
+# Always run teardown on exit (success or failure)
+trap teardown_portal_artifacts EXIT
 
 # ── Preflight ──────────────────────────────────────────────────────────────
 log "Preflight checks"
@@ -154,6 +223,13 @@ print(d.get('pairingCode', d.get('pairing_code', '')))
   [ -n "$PAIRING_CODE" ] && [ ${#PAIRING_CODE} -eq 6 ] || fail "Invalid pairing code '$PAIRING_CODE' from: $DEVICE_RESP"
   ok "Got pairing code: $PAIRING_CODE"
   
+  DEVICE_ID=$(echo "$DEVICE_RESP" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print(d.get('deviceId', d.get('device_id', '')))
+" 2>/dev/null) || true
+  [ -n "$DEVICE_ID" ] && ok "Got device ID: $DEVICE_ID" || echo "  ⚠️  Could not extract device ID (teardown may be incomplete)"
+  
   rm -f "$COOKIE_JAR"
 }
 
@@ -251,6 +327,7 @@ PASS1=$(generate_password)
 
 reset_hub
 create_portal_account_and_device "$EMAIL1" "$PASS1" "E2E Org R1 $TIMESTAMP" "E2E Hub R1"
+TEARDOWN_ENTRIES+=("$EMAIL1|$PASS1|$ORG_ID|$DEVICE_ID")
 register_hub "$PAIRING_CODE"
 verify_registration
 
@@ -264,6 +341,7 @@ PASS2=$(generate_password)
 
 reset_hub
 create_portal_account_and_device "$EMAIL2" "$PASS2" "E2E Org R2 $TIMESTAMP" "E2E Hub R2"
+TEARDOWN_ENTRIES+=("$EMAIL2|$PASS2|$ORG_ID|$DEVICE_ID")
 register_hub "$PAIRING_CODE"
 verify_registration
 

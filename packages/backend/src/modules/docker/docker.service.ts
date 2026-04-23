@@ -428,9 +428,9 @@ export class DockerService {
       // compose attaches to the running stack instead of creating a new one.
       const composeProjectName = process.env.CI_HUB_COMPOSE_PROJECT_NAME || 'ci-hub';
       args.push('--project-name', composeProjectName);
-      // Override ENV_FILE to the mounted filename (.env) so compose's env_file
+      // Override ENV_FILE to just the filename so compose's env_file
       // directive resolves correctly inside the container.
-      spawnOptions.env = { ...process.env, ENV_FILE: '.env' };
+      spawnOptions.env = { ...process.env, ENV_FILE: path.basename(envFilePath) };
     }
 
     args.push('-f', opts.composeFile);
