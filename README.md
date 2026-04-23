@@ -48,7 +48,8 @@ docs/           Supplementary documentation
 tunnel/         Cloudflare tunnel token and certificates
 ```
 
-> For a deep dive into how everything fits together, see **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
+> For a deep dive into how the Hub works internally, see **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
+> For how the Hub, Portal, and App Store work together as a platform, see **[docs/PLATFORM_ARCHITECTURE.md](docs/PLATFORM_ARCHITECTURE.md)**.
 
 ---
 
