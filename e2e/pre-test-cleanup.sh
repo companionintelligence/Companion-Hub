@@ -39,6 +39,13 @@ if docker compose -f e2e/docker-compose.e2e.yml ps -q 2>/dev/null | grep -q .; t
   docker compose -f e2e/docker-compose.e2e.yml down -v 2>/dev/null || true
 fi
 
+# Remove .internal symlink left by cross-domain suite (points to .internal-e2e
+# which is owned by Docker/root — the standard suite cannot unlink its contents)
+if [ -L ".internal" ]; then
+  echo "[pre-test-cleanup] Removing stale .internal symlink"
+  rm -f .internal
+fi
+
 # Clean data dirs
 rm -rf /tmp/ci-hub-e2e test-results 2>/dev/null || true
 
