@@ -76,7 +76,9 @@ services:
     volumes:
       # Data directories — bind mounts from host (require ROOT_FOLDER_HOST)
       - ${ROOT_FOLDER_HOST:-.internal}/media:/data/media
-      # Allow Hub to configure Tunnel — absolute path so Docker-in-Docker resolves correctly
+      # Allow Hub to configure Tunnel — resolves to the sibling tunnel/ directory
+      # relative to ROOT_FOLDER_HOST (e.g. /home/user/ci-hub/.internal → /home/user/ci-hub/tunnel).
+      # When ROOT_FOLDER_HOST is unset, defaults to .internal/../tunnel (relative CWD).
       - ${ROOT_FOLDER_HOST:-.internal}/../tunnel:/app/tunnel
       - ${ROOT_FOLDER_HOST:-.internal}/app-data:/app-data
       - ${ROOT_FOLDER_HOST:-.internal}/state:/data/state
@@ -208,7 +210,7 @@ services:
   # by restarting the headscale container after GUI edits.
   # See https://github.com/tale/headplane for details.
   headplane:
-    image: ghcr.io/tale/headplane:0.6.2
+    image: ghcr.io/tale/headplane:0.7.0
     pull_policy: if_not_present
     container_name: headplane
     restart: unless-stopped

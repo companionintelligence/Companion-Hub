@@ -11,19 +11,24 @@ SUITE="${E2E_SUITE:-standard}"
 echo "[pre-test-cleanup] Cleaning up before $SUITE E2E suite..."
 
 # Kill any process on known E2E ports (except Docker proxy)
-if command -v lsof >/dev/null 2>&1; then
-  for port in 3000 5173 8012 9091 6543 5672 8880 8881 8843; do
-    pids=$(lsof -ti :$port 2>/dev/null || true)
-    for pid in $pids; do
-      [ -z "$pid" ] && continue
-      # Skip Docker proxy processes
-      cmdline=$(cat /proc/$pid/cmdline 2>/dev/null || true)
-      if echo "$cmdline" | grep -q docker-proxy; then continue; fi
-      echo "[pre-test-cleanup] Killing stale process on port $port (pid $pid)"
-      kill "$pid" 2>/dev/null || true
+# Only runs in CI or when explicitly opted-in to avoid killing unrelated local processes.
+if [ "${CI:-}" = "true" ] || [ "${E2E_CLEANUP_PORTS:-}" = "true" ]; then
+  if command -v lsof >/dev/null 2>&1; then
+    for port in 3000 5173 8012 9091 6543 5672 8880 8881 8843; do
+      pids=$(lsof -ti :$port 2>/dev/null || true)
+      for pid in $pids; do
+        [ -z "$pid" ] && continue
+        # Skip Docker proxy processes (works on both Linux and macOS)
+        procname=$(ps -p "$pid" -o comm= 2>/dev/null || true)
+        if echo "$procname" | grep -q docker-proxy; then continue; fi
+        echo "[pre-test-cleanup] Killing stale process on port $port (pid $pid)"
+        kill "$pid" 2>/dev/null || true
+      done
     done
-  done
-  sleep 1
+    sleep 1
+  fi
+else
+  echo "[pre-test-cleanup] Skipping port cleanup (set CI=true or E2E_CLEANUP_PORTS=true to enable)"
 fi
 
 # Tear down cross-domain Docker stack
