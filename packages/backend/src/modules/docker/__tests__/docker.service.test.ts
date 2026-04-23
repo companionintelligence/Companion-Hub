@@ -333,11 +333,26 @@ describe('DockerService', () => {
 
       expect(child_process.spawn).toHaveBeenCalledWith(
         'docker',
-        ['compose', '--env-file', '/data/.env', '--project-name', 'ci-hub', '-f', '/data/docker-compose.yml', '--profile', 'cloudflare', 'up', 'cloudflared', '-d', '--no-build'],
+        [
+          'compose',
+          '--env-file',
+          '/data/.env',
+          '--project-name',
+          'ci-hub',
+          '-f',
+          '/data/docker-compose.yml',
+          '--profile',
+          'cloudflare',
+          'up',
+          'cloudflared',
+          '-d',
+          '--no-build',
+          '--no-deps',
+        ],
         expect.objectContaining({
           cwd: '/data',
           env: expect.objectContaining({
-            ENV_FILE: '/data/.env',
+            ENV_FILE: '.env',
             UNRELATED_VAR: 'still-here',
           }),
         }),
@@ -365,7 +380,7 @@ describe('DockerService', () => {
 
       expect(child_process.spawn).toHaveBeenCalledWith(
         'docker',
-        ['compose', '-f', '/app/docker-compose.local.yml', '--profile', 'cloudflare', 'up', 'cloudflared', '-d', '--no-build'],
+        ['compose', '-f', '/app/docker-compose.local.yml', '--profile', 'cloudflare', 'up', 'cloudflared', '-d', '--no-build', '--no-deps'],
         { cwd: '/app' },
       );
     });
