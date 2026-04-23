@@ -24,8 +24,6 @@
 
 import { defineConfig, devices } from '@playwright/test';
 
-process.env.E2E_SUITE = 'cross-domain';
-
 // Set E2E_TEST for the spec safety guard (prevents accidental DB wipes outside E2E context)
 process.env.E2E_TEST = 'true';
 const PORTAL_DIR = process.env.PORTAL_DIR || '';
@@ -34,7 +32,6 @@ const FRONTEND_PORT = process.env.FRONTEND_PORT || '9091';
 const SERVER_IP = process.env.SERVER_IP || 'localhost';
 
 export default defineConfig({
-  globalSetup: './e2e/global-setup.ts',
   testDir: './e2e/cross-domain',
   fullyParallel: false,
   forbidOnly: !!process.env.CI,

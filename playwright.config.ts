@@ -1,7 +1,5 @@
 import { defineConfig, devices } from '@playwright/test';
 
-process.env.E2E_SUITE = 'standard';
-
 const BACKEND_PORT = process.env.BACKEND_PORT || '3000';
 const FRONTEND_PORT = process.env.FRONTEND_PORT || '9091';
 const PORTAL_PORT = process.env.PORTAL_PORT || '8012';
@@ -51,7 +49,6 @@ const backendEnv: Record<string, string> = {
 };
 
 export default defineConfig({
-  globalSetup: './e2e/global-setup.ts',
   testDir: './e2e',
   testIgnore: ['**/future/**', '**/generated/**', '**/cross-domain/**'],
   fullyParallel: false,
