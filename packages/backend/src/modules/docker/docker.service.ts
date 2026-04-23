@@ -424,6 +424,9 @@ export class DockerService {
     if (opts.composeFile === runtimeComposeFile) {
       const envFilePath = this.config.get('envFilePath');
       args.push('--env-file', envFilePath);
+      // Match the project name used by start.ts / package.json scripts so
+      // compose attaches to the running stack instead of creating a new one.
+      args.push('--project-name', 'ci-hub');
       spawnOptions.env = { ...process.env, ENV_FILE: envFilePath };
     }
 
