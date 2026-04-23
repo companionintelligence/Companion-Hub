@@ -13,6 +13,7 @@ import {
   type ProvisioningPhase,
   type DegradedReason,
   type RegistrationStatus,
+  PROVISIONING_PHASES,
   isOperational,
   isLegalTransition,
   buildRegistrationStatus,
@@ -119,7 +120,11 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         return;
       }
 
-      const persisted = (org.provisioningPhase ?? 'locally_ready') as ProvisioningPhase;
+      const rawPhase = org.provisioningPhase ?? 'locally_ready';
+      const persisted = PROVISIONING_PHASES.includes(rawPhase as ProvisioningPhase) ? (rawPhase as ProvisioningPhase) : 'unregistered';
+      if (rawPhase !== persisted) {
+        this.logger.warn(`Invalid provisioning phase "${rawPhase}" in DB — falling back to "${persisted}"`);
+      }
 
       // If the DB says we should be operational, verify the tunnel token is on disk.
       // Sync the in-memory phase first so the transition from an operational phase

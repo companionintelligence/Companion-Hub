@@ -151,8 +151,8 @@ describe('RegistrationService', () => {
     });
 
     it('ignores illegal transitions', async () => {
-      // unregistered → locally_ready is illegal
-      await service.setPhase('locally_ready');
+      // unregistered → publicly_ready is illegal
+      await service.setPhase('publicly_ready');
       expect(service.getRegistrationStatus().phase).toBe('unregistered');
     });
 

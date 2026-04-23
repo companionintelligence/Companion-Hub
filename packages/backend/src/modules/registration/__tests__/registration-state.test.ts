@@ -17,12 +17,14 @@ describe('registration-state', () => {
   describe('isLegalTransition', () => {
     const legalCases: [ProvisioningPhase, ProvisioningPhase][] = [
       ['unregistered', 'paired'],
+      ['unregistered', 'locally_ready'],
       ['paired', 'provisioning'],
       ['provisioning', 'locally_ready'],
       ['provisioning', 'degraded'],
       ['locally_ready', 'publicly_ready'],
       ['locally_ready', 'degraded'],
       ['publicly_ready', 'degraded'],
+      ['degraded', 'degraded'],
       ['degraded', 'locally_ready'],
       ['degraded', 'publicly_ready'],
       ['degraded', 'provisioning'],
@@ -40,7 +42,6 @@ describe('registration-state', () => {
 
     const illegalCases: [ProvisioningPhase, ProvisioningPhase][] = [
       ['unregistered', 'provisioning'],
-      ['unregistered', 'locally_ready'],
       ['unregistered', 'publicly_ready'],
       ['unregistered', 'degraded'],
       ['paired', 'locally_ready'],
@@ -117,8 +118,8 @@ describe('registration-state', () => {
     });
 
     it('throws on illegal transitions', () => {
-      expect(() => transitionPhase('unregistered', 'locally_ready')).toThrow('Illegal provisioning-phase transition');
       expect(() => transitionPhase('publicly_ready', 'paired')).toThrow('Illegal provisioning-phase transition');
+      expect(() => transitionPhase('unregistered', 'provisioning')).toThrow('Illegal provisioning-phase transition');
     });
   });
 

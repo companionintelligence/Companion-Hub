@@ -55,12 +55,12 @@ export interface RegistrationStatus {
  * `unregistered → *` (reset) is always legal and handled separately.
  */
 const LEGAL_TRANSITIONS: Record<ProvisioningPhase, readonly ProvisioningPhase[]> = {
-  unregistered: ['paired'],
+  unregistered: ['paired', 'locally_ready'],
   paired: ['provisioning'],
   provisioning: ['locally_ready', 'degraded'],
   locally_ready: ['publicly_ready', 'degraded'],
   publicly_ready: ['degraded'],
-  degraded: ['locally_ready', 'publicly_ready', 'provisioning'],
+  degraded: ['degraded', 'locally_ready', 'publicly_ready', 'provisioning'],
 };
 
 export function isLegalTransition(from: ProvisioningPhase, to: ProvisioningPhase): boolean {

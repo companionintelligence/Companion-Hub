@@ -30,7 +30,7 @@ export class RegistrationGuard implements CanActivate {
 
     if (!isOperational(status.phase)) {
       this.logger.warn(`Access denied to ${request.url} - device not operational (phase: ${status.phase})`);
-      throw new ForbiddenException('Device must be registered with CI Cloud to access this resource');
+      throw new ForbiddenException(`Device must be operational to access this resource (current phase: ${status.phase})`);
     }
 
     return true;

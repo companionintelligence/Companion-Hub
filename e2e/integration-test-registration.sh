@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# Integration test: Real device registration against dev Portal
-# Runs on josh@192.168.1.2 where the Hub is running via pnpm start dev
+# Integration test: Real device registration against the dev Portal.
+# Prerequisites:
+# - The Hub is running and reachable at HUB_URL.
+# - The Portal is reachable at PORTAL_URL.
+# - Docker access is available for the ci-os-hub and related containers used below.
 set -euo pipefail
 
 PORTAL_URL="https://portal.companionintelligence.com"
