@@ -52,6 +52,7 @@ export class QueueFactory implements OnApplicationShutdown {
       port,
       connectionTimeout: 30000,
       heartbeat: 60,
+      frameMax: 8192,
     });
 
     this.rabbit.on('connection', () => {
@@ -62,6 +63,15 @@ export class QueueFactory implements OnApplicationShutdown {
 
     this.rabbit.on('error', async (error) => {
       this.logger.error('Queue connection error', error);
+
+      // The library's Connection class handles reconnection internally.
+      // Only trigger manual reconnect if the connection is truly dead and
+      // the library hasn't already recovered.
+      if (this.rabbit?.ready) {
+        this.logger.warn('Queue connection recovered automatically, skipping manual reconnect');
+        return;
+      }
+
       this.isInitialized = false;
       this.reconnect(error);
     });
@@ -128,7 +138,7 @@ export class QueueFactory implements OnApplicationShutdown {
       timeout,
       confirm: true,
       maxAttempts: 3,
-      queues: [{ autoDelete: false, durable: false, queue: queueName }],
+      queues: [{ autoDelete: false, durable: true, queue: queueName }],
     });
 
     const queue = new Queue(this.rabbit, rpcClient, publisher, queueName, workers, eventSchema, resultSchema, this.logger);

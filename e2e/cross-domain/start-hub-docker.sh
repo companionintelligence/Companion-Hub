@@ -6,8 +6,6 @@
 #
 # Environment variables:
 #   PORTAL_PORT              — port the Portal is listening on (default: 8012)
-#   ALLOW_KILL_PORT_PROCESSES — set to "true" to kill processes on ports used
-#                               by the E2E stack (default: disabled)
 
 set -euo pipefail
 
@@ -30,21 +28,6 @@ fi
 # Clean up previous E2E run
 "${COMPOSE_CMD[@]}" down -v 2>/dev/null || true
 
-# Optionally stop processes bound to ports used by the E2E stack.
-# Disabled by default — set ALLOW_KILL_PORT_PROCESSES=true to enable.
-if [ "${ALLOW_KILL_PORT_PROCESSES:-}" = "true" ]; then
-  if command -v lsof >/dev/null 2>&1; then
-    for port in 3000 9091 6543 5672; do
-      pid=$(lsof -ti :"$port" 2>/dev/null || true)
-      if [ -n "$pid" ]; then
-        echo "Killing process on port $port (pid $pid)..."
-        kill "$pid" 2>/dev/null || true
-      fi
-    done
-  else
-    echo "WARNING: lsof not found — skipping port cleanup" >&2
-  fi
-fi
 
 cleanup() {
   "${COMPOSE_CMD[@]}" down -v 2>/dev/null || true

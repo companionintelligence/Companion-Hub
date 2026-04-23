@@ -6,6 +6,7 @@ set -euo pipefail
 
 DATA_DIR="${CI_HUB_DATA_DIR:-/tmp/ci-hub-e2e}"
 
+
 # Fail fast with a clear message if Postgres / RabbitMQ are unavailable.
 pnpm exec tsx ./e2e/helpers/require-infra-ready.ts
 

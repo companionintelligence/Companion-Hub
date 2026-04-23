@@ -1,4 +1,4 @@
-import { APP_DIR } from '@/common/constants';
+import { APP_DIR, DATA_DIR } from '@/common/constants';
 import { Injectable, Logger } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -112,7 +112,7 @@ export class CloudflareClientService {
 
         this.logger.log('Ensuring cloudflared container is running...');
         const dockerService = this.moduleRef.get(DockerService, { strict: false });
-        const composeFile = this.getComposeFile();
+        const composeFile = await this.getComposeFile();
         await dockerService.ensureContainerRunning('cloudflared', {
           composeFile,
           profile: 'cloudflare',
@@ -216,11 +216,23 @@ export class CloudflareClientService {
 
   /**
    * Resolve the correct docker-compose file for the current environment.
-   * Local/dev uses docker-compose.local.yml, staging uses docker-compose.staging.yml,
-   * and production uses docker-compose.prod.yml.
+   * Local/dev uses the repo-local compose file. In containerized runtime, the
+   * active hub compose file is mounted at /data/docker-compose.yml.
    */
-  private getComposeFile(): string {
+  private async getComposeFile(): Promise<string> {
     const isLocal = process.env.LOCAL === 'true' || process.env.NODE_ENV === 'development';
+
+    if (!isLocal) {
+      const runtimeComposeFile = path.join(DATA_DIR, 'docker-compose.yml');
+
+      try {
+        await fs.access(runtimeComposeFile);
+        return runtimeComposeFile;
+      } catch {
+        // Fall back to the source compose file when not running inside the hub container.
+      }
+    }
+
     const isStaging = process.env.NODE_ENV === 'staging';
 
     let filename = 'docker-compose.prod.yml';

@@ -49,10 +49,20 @@ describe('DockerService', () => {
     appFilesManager = mock<AppFilesManager>();
     appsService = mock<AppsService>();
 
-    configService.get.mockReturnValue({
-      dataDir: '/data',
-      appsDir: '/data/apps',
-    } as any);
+    configService.get.mockImplementation((key) => {
+      if (key === 'directories') {
+        return {
+          dataDir: '/data',
+          appsDir: '/data/apps',
+        } as any;
+      }
+
+      if (key === 'envFilePath') {
+        return '/data/.env' as any;
+      }
+
+      return null as any;
+    });
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -70,6 +80,8 @@ describe('DockerService', () => {
 
   afterEach(() => {
     delete process.env.CI_HUB_COMPOSE_PROJECT_NAME;
+    delete process.env.ENV_FILE;
+    delete process.env.UNRELATED_VAR;
     vi.clearAllMocks();
   });
 
@@ -294,6 +306,82 @@ describe('DockerService', () => {
         'docker',
         expect.arrayContaining(['compose', '--project-name', 'test-app', 'up', '-d']),
         expect.objectContaining({ cwd: '/apps/test-app' }),
+      );
+    });
+  });
+
+  describe('ensureContainerRunning', () => {
+    it('should include the hub env file when compose fallback uses the runtime hub compose file', async () => {
+      process.env.ENV_FILE = '.env.dev';
+      process.env.UNRELATED_VAR = 'still-here';
+      vi.spyOn(service, 'restartContainer').mockRejectedValue(new Error('missing container'));
+
+      const mockSpawnProcess = createMockSpawnProcess();
+      mockSpawnProcess.on = vi.fn().mockImplementation((event, handler) => {
+        if (event === 'close') {
+          queueMicrotask(() => handler(0));
+        }
+        return mockSpawnProcess;
+      });
+
+      (child_process.spawn as any).mockReturnValue(mockSpawnProcess);
+
+      await service.ensureContainerRunning('cloudflared', {
+        composeFile: '/data/docker-compose.yml',
+        profile: 'cloudflare',
+      });
+
+      expect(child_process.spawn).toHaveBeenCalledWith(
+        'docker',
+        [
+          'compose',
+          '--env-file',
+          '/data/.env',
+          '--project-name',
+          'ci-hub',
+          '-f',
+          '/data/docker-compose.yml',
+          '--profile',
+          'cloudflare',
+          'up',
+          'cloudflared',
+          '-d',
+          '--no-build',
+          '--no-deps',
+        ],
+        expect.objectContaining({
+          cwd: '/data',
+          env: expect.objectContaining({
+            ENV_FILE: '.env',
+            UNRELATED_VAR: 'still-here',
+          }),
+        }),
+      );
+    });
+
+    it('should leave source compose paths unchanged outside the mounted runtime hub compose file', async () => {
+      process.env.ENV_FILE = '.env.dev';
+      vi.spyOn(service, 'restartContainer').mockRejectedValue(new Error('missing container'));
+
+      const mockSpawnProcess = createMockSpawnProcess();
+      mockSpawnProcess.on = vi.fn().mockImplementation((event, handler) => {
+        if (event === 'close') {
+          queueMicrotask(() => handler(0));
+        }
+        return mockSpawnProcess;
+      });
+
+      (child_process.spawn as any).mockReturnValue(mockSpawnProcess);
+
+      await service.ensureContainerRunning('cloudflared', {
+        composeFile: '/app/docker-compose.local.yml',
+        profile: 'cloudflare',
+      });
+
+      expect(child_process.spawn).toHaveBeenCalledWith(
+        'docker',
+        ['compose', '-f', '/app/docker-compose.local.yml', '--profile', 'cloudflare', 'up', 'cloudflared', '-d', '--no-build', '--no-deps'],
+        { cwd: '/app' },
       );
     });
   });

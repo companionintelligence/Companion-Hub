@@ -126,6 +126,14 @@ export const deviceRegistration = pgTable('device_registration', {
   hubSubdomain: varchar('hub_subdomain'),
   tunnelId: varchar('tunnel_id'), // Cloudflare Tunnel ID (nullable now)
   tunnelToken: varchar('tunnel_token'),
+  /**
+   * Explicit provisioning phase — replaces the implicit registered boolean.
+   * See registration-state.ts for the full phase model.
+   * Defaults to 'locally_ready' so existing rows remain operational after migration.
+   */
+  provisioningPhase: varchar('provisioning_phase').default('locally_ready').notNull(),
+  /** JSON array of DegradedReason strings. Non-empty only when provisioningPhase = 'degraded'. */
+  degradedReasons: text('degraded_reasons').default('[]').notNull(),
   createdAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
   updatedAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
 });

@@ -18,3 +18,8 @@ services:
     environment:
       RABBITMQ_DEFAULT_USER: guest
       RABBITMQ_DEFAULT_PASS: guest
+    healthcheck:
+      test: rabbitmq-diagnostics -q check_port_connectivity
+      interval: 3s
+      timeout: 5s
+      retries: 10

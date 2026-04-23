@@ -417,15 +417,32 @@ export class DockerService {
   }
 
   private async composeUpService(serviceName: string, opts: { composeFile: string; profile?: string }): Promise<void> {
-    const args = ['compose', '-f', opts.composeFile];
+    const args = ['compose'];
+    const runtimeComposeFile = path.join(this.config.get('directories').dataDir, 'docker-compose.yml');
+    const spawnOptions: { cwd: string; env?: NodeJS.ProcessEnv } = { cwd: path.dirname(opts.composeFile) };
+
+    if (opts.composeFile === runtimeComposeFile) {
+      const envFilePath = this.config.get('envFilePath');
+      args.push('--env-file', envFilePath);
+      // Match the project name used by start.ts / package.json scripts so
+      // compose attaches to the running stack instead of creating a new one.
+      const composeProjectName = process.env.CI_HUB_COMPOSE_PROJECT_NAME || 'ci-hub';
+      args.push('--project-name', composeProjectName);
+      // Override ENV_FILE to just the filename so compose's env_file
+      // directive resolves correctly inside the container.
+      spawnOptions.env = { ...process.env, ENV_FILE: path.basename(envFilePath) };
+    }
+
+    args.push('-f', opts.composeFile);
+
     if (opts.profile) {
       args.push('--profile', opts.profile);
     }
-    args.push('up', serviceName, '-d');
+    args.push('up', serviceName, '-d', '--no-build', '--no-deps');
 
     return new Promise((resolve, reject) => {
       this.logger.info(`Running: docker ${args.join(' ')}`);
-      const cmd = spawn('docker', args, { cwd: path.dirname(opts.composeFile) });
+      const cmd = spawn('docker', args, spawnOptions);
 
       let stderr = '';
       cmd.stderr?.on('data', (data: Buffer) => {

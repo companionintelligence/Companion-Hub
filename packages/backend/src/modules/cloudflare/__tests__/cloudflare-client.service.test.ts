@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { CloudflareClientService } from '../cloudflare-client.service';
+import { APP_DIR, DATA_DIR } from '@/common/constants';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { ModuleRef } from '@nestjs/core';
 import { DockerService } from '@/modules/docker/docker.service';
@@ -16,6 +17,8 @@ describe('CloudflareClientService', () => {
   let configService: MockProxy<ConfigurationService>;
   let moduleRef: MockProxy<ModuleRef>;
   let dockerService: MockProxy<DockerService>;
+  const originalNodeEnv = process.env.NODE_ENV;
+  const originalLocal = process.env.LOCAL;
 
   // Axios mock
   const mockedAxios = vi.mocked(axios);
@@ -47,18 +50,57 @@ describe('CloudflareClientService', () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+
+    if (originalNodeEnv === undefined) {
+      delete process.env.NODE_ENV;
+    } else {
+      process.env.NODE_ENV = originalNodeEnv;
+    }
+
+    if (originalLocal === undefined) {
+      delete process.env.LOCAL;
+    } else {
+      process.env.LOCAL = originalLocal;
+    }
   });
 
   describe('initializeTunnel', () => {
-    it('should write token and ensure cloudflared is running', async () => {
+    it('should use the mounted runtime compose file when available', async () => {
+      vi.mocked(fs.access).mockResolvedValue(undefined);
+
       const result = await service.initializeTunnel('org-id', { tunnelId: 'tun-id', token: 'tok' });
 
       expect(fs.writeFile).toHaveBeenCalledWith(expect.stringContaining('tunnel/token'), 'tok', { mode: 0o644 });
+      expect(fs.access).toHaveBeenCalledWith(`${DATA_DIR}/docker-compose.yml`);
       expect(dockerService.ensureContainerRunning).toHaveBeenCalledWith('cloudflared', {
-        composeFile: expect.stringContaining('docker-compose.'),
+        composeFile: `${DATA_DIR}/docker-compose.yml`,
         profile: 'cloudflare',
       });
       expect(result).toEqual({ tunnelId: 'tun-id', token: 'tok' });
+    });
+
+    it('should fall back to the source prod compose file when the mounted runtime compose file is unavailable', async () => {
+      vi.mocked(fs.access).mockRejectedValue(new Error('missing'));
+
+      await service.initializeTunnel('org-id', { tunnelId: 'tun-id', token: 'tok' });
+
+      expect(dockerService.ensureContainerRunning).toHaveBeenCalledWith('cloudflared', {
+        composeFile: `${APP_DIR}/docker-compose.prod.yml`,
+        profile: 'cloudflare',
+      });
+    });
+
+    it('should keep using the local compose file in development mode', async () => {
+      process.env.NODE_ENV = 'development';
+      vi.mocked(fs.access).mockResolvedValue(undefined);
+
+      await service.initializeTunnel('org-id', { tunnelId: 'tun-id', token: 'tok' });
+
+      expect(fs.access).not.toHaveBeenCalled();
+      expect(dockerService.ensureContainerRunning).toHaveBeenCalledWith('cloudflared', {
+        composeFile: `${APP_DIR}/docker-compose.local.yml`,
+        profile: 'cloudflare',
+      });
     });
 
     it('should fail if no credentials', async () => {
