@@ -1066,7 +1066,10 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       // If validation is needed before setup, we should add a validate endpoint to CI-Cloud.
 
       // Step 4: Setup organization infrastructure
-      // Transition to paired before infrastructure setup
+      // Transition to paired before infrastructure setup.
+      // Note: paired/provisioning are transient in-memory phases — no DB row
+      // exists yet, so this won't survive a restart. If the process crashes
+      // during setup, it re-enters as unregistered and retries.
       await this.setPhase('paired');
 
       await this.setupOrganizationInfrastructure(organizationId, {

@@ -18,8 +18,9 @@
  *                                                      ↘       ↓
  *                                                        degraded
  *
- * `unregistered` is implicit (no DB row); the remaining phases are persisted
- * on the `device_registration` row.
+ * `unregistered` is implicit (no DB row). `paired` and `provisioning` are
+ * transient in-memory phases that do not survive restarts. Persisted state
+ * on the `device_registration` row begins at `locally_ready`.
  */
 export const PROVISIONING_PHASES = ['unregistered', 'paired', 'provisioning', 'locally_ready', 'publicly_ready', 'degraded'] as const;
 
