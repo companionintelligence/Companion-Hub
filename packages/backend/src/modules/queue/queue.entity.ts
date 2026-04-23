@@ -21,7 +21,7 @@ export class Queue<T extends z.ZodType, R extends z.ZodType<{ success: boolean; 
 
   public onEvent(callback: (data: z.output<T> & { eventId: string }, reply: (response: z.input<R>) => Promise<void>) => Promise<void>) {
     try {
-      this.rabbit.createConsumer({ queue: this.queueName, concurrency: this.workers }, async (req, reply) => {
+      this.rabbit.createConsumer({ queue: this.queueName, concurrency: this.workers, queueOptions: { durable: true } }, async (req, reply) => {
         let rpcSuccess = false;
         let rpcResultMessage = '';
 
