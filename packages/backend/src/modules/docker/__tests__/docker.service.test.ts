@@ -333,7 +333,7 @@ describe('DockerService', () => {
 
       expect(child_process.spawn).toHaveBeenCalledWith(
         'docker',
-        ['compose', '--env-file', '/data/.env', '-f', '/data/docker-compose.yml', '--profile', 'cloudflare', 'up', 'cloudflared', '-d'],
+        ['compose', '--env-file', '/data/.env', '-f', '/data/docker-compose.yml', '--profile', 'cloudflare', 'up', 'cloudflared', '-d', '--no-build'],
         expect.objectContaining({
           cwd: '/data',
           env: expect.objectContaining({
@@ -365,7 +365,7 @@ describe('DockerService', () => {
 
       expect(child_process.spawn).toHaveBeenCalledWith(
         'docker',
-        ['compose', '-f', '/app/docker-compose.local.yml', '--profile', 'cloudflare', 'up', 'cloudflared', '-d'],
+        ['compose', '-f', '/app/docker-compose.local.yml', '--profile', 'cloudflare', 'up', 'cloudflared', '-d', '--no-build'],
         { cwd: '/app' },
       );
     });

@@ -432,7 +432,7 @@ export class DockerService {
     if (opts.profile) {
       args.push('--profile', opts.profile);
     }
-    args.push('up', serviceName, '-d');
+    args.push('up', serviceName, '-d', '--no-build');
 
     return new Promise((resolve, reject) => {
       this.logger.info(`Running: docker ${args.join(' ')}`);
