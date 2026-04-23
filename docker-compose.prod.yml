@@ -207,7 +207,7 @@ services:
   # by restarting the headscale container after GUI edits.
   # See https://github.com/tale/headplane for details.
   headplane:
-    image: ghcr.io/tale/headplane:0.7.0
+    image: ghcr.io/tale/headplane:0.6.2
     pull_policy: if_not_present
     container_name: headplane
     restart: unless-stopped
