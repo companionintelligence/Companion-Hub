@@ -55,7 +55,7 @@ export default () => {
   const params = useParams<{ storeId: string }>();
   const { setCategory, category, storeId, setStoreId, search: initialSearch, setSearch } = useAppStoreState();
   const [search, setLocalSearch] = useState(initialSearch);
-  const { data: registrationStatus, isLoading: isCheckingRegistration, error: registrationError } = useRegistrationStatus();
+  const { data: registrationStatus, isLoading: isCheckingRegistration } = useRegistrationStatus();
 
   const queryClient = useQueryClient();
   const { mutate: pullApps, isPending: isPulling } = useMutation({
@@ -83,13 +83,15 @@ export default () => {
     enabled: isAlternativesView,
   });
 
+  // Redirect whenever the backend reports the hub is not operational
+  // (`registered === false`, e.g. paired/provisioning/unregistered).
+  // Fetch errors (status endpoint temporarily unreachable) are NOT treated as
+  // unregistered/non-operational — this prevents transient failures from forcing a re-pair flow.
   useEffect(() => {
-    if (!isCheckingRegistration) {
-      if (registrationError || (registrationStatus && !registrationStatus.registered)) {
-        window.location.href = '/device-registration';
-      }
+    if (!isCheckingRegistration && registrationStatus && !registrationStatus.registered) {
+      window.location.href = '/device-registration';
     }
-  }, [registrationStatus, isCheckingRegistration, registrationError]);
+  }, [registrationStatus, isCheckingRegistration]);
 
   const { data: appStores } = useQuery({
     ...getEnabledAppStoresOptions(),

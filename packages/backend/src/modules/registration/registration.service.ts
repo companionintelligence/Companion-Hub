@@ -187,8 +187,57 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
    * before returning the current status snapshot.
    */
   public async getLiveRegistrationStatus(): Promise<RegistrationStatus> {
-    await this.isRegistered();
+    await this.refreshPhaseFromSources();
     return this.getRegistrationStatus();
+  }
+
+  /**
+   * Single source of truth for refreshing the in-memory phase from DB + disk.
+   * Called by getLiveRegistrationStatus() and isRegistered().
+   *
+   * Rules:
+   *  1. If the in-memory phase is already operational AND the tunnel token
+   *     exists on disk → keep the current phase (fast path).
+   *  2. If operational but the token is missing AND there is no DB row →
+   *     reset to unregistered.
+   *  3. If operational but the token is missing AND there IS a DB row →
+   *     transition to degraded.
+   *  4. If not operational → check the DB; if an org exists with the token
+   *     on disk, sync the DB phase into memory.
+   */
+  private async refreshPhaseFromSources(): Promise<void> {
+    if (isOperational(this._currentPhase)) {
+      if (this.hasTunnelToken()) return;
+
+      const hasOrg = await this.deviceRegistrationRepository.hasAnyDeviceRegistration().catch((error) => {
+        this.logger.debug('Could not check organization in database:', error);
+        return true; // Assume org exists so we don't wipe state on transient DB errors
+      });
+
+      if (!hasOrg) {
+        this.logger.warn('Cached operational phase has no registration row and no tunnel token — resetting to unregistered');
+        await this.setPhase('unregistered');
+        return;
+      }
+
+      this.logger.warn('Tunnel token file missing — marking device as degraded');
+      await this.setPhase('degraded', ['tunnel_token_missing']);
+      return;
+    }
+
+    // Not currently operational — check DB for an existing registration
+    try {
+      const hasOrg = await this.deviceRegistrationRepository.hasAnyDeviceRegistration();
+      if (hasOrg) {
+        if (!this.hasTunnelToken()) {
+          this.logger.warn('Device registration found in database but tunnel token file is missing — device is not fully registered');
+          return;
+        }
+        await this.syncPhaseFromDb();
+      }
+    } catch (error) {
+      this.logger.debug('Could not check organization in database:', error);
+    }
   }
 
   /**
@@ -488,45 +537,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   }
 
   public async isRegistered(): Promise<boolean> {
-    // Fast path: in-memory phase already operational
-    if (isOperational(this._currentPhase)) {
-      if (!this.hasTunnelToken()) {
-        const hasOrg = await this.deviceRegistrationRepository.hasAnyDeviceRegistration().catch((error) => {
-          this.logger.debug('Could not check organization in database:', error);
-          return true;
-        });
-
-        if (!hasOrg) {
-          this.logger.warn('Cached operational phase has no registration row and no tunnel token — resetting to unregistered');
-          await this.setPhase('unregistered');
-          return false;
-        }
-
-        this.logger.warn('Tunnel token file missing — marking device as degraded');
-        await this.setPhase('degraded', ['tunnel_token_missing']);
-        // degraded is still operational for backward compat
-        return true;
-      }
-      return true;
-    }
-
-    // Check if we have any organization in the database (indicates pairing completed)
-    try {
-      const hasOrg = await this.deviceRegistrationRepository.hasAnyDeviceRegistration();
-      if (hasOrg) {
-        if (!this.hasTunnelToken()) {
-          this.logger.warn('Device registration found in database but tunnel token file is missing — device is not fully registered');
-          return false;
-        }
-        // DB has an org and token is on disk — sync phase from DB
-        await this.syncPhaseFromDb();
-        return isOperational(this._currentPhase);
-      }
-    } catch (error) {
-      // Database might not be ready, ignore error
-      this.logger.debug('Could not check organization in database:', error);
-    }
-
+    await this.refreshPhaseFromSources();
     return isOperational(this._currentPhase);
   }
 
@@ -579,7 +590,9 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     // If CI Cloud API is not configured, allow access (backward compatibility)
     if (!ciCloudUrl) {
       this.logger.debug('CI Cloud not configured, skipping registration check.');
-      await this.setPhase('locally_ready');
+      if (!isOperational(this._currentPhase)) {
+        await this.setPhase('locally_ready');
+      }
       return true;
     }
 

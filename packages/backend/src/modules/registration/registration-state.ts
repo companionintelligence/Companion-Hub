@@ -6,46 +6,10 @@
  * about local readiness, public readiness, and recovery.
  */
 
-// ---------------------------------------------------------------------------
-// Provisioning phases
-// ---------------------------------------------------------------------------
+import { PROVISIONING_PHASES, type ProvisioningPhase, DEGRADED_REASONS, type DegradedReason, type RegistrationStatus } from '@ci-hub/common/types';
 
-/**
- * Provisioning phase for a Hub device.
- *
- * Lifecycle:
- *   unregistered → paired → provisioning → locally_ready → publicly_ready
- *                                                      ↘       ↓
- *                                                        degraded
- *
- * `unregistered` is implicit (no DB row). `paired` and `provisioning` are
- * transient in-memory phases that do not survive restarts. Persisted state
- * on the `device_registration` row begins at `locally_ready`.
- */
-export const PROVISIONING_PHASES = ['unregistered', 'paired', 'provisioning', 'locally_ready', 'publicly_ready', 'degraded'] as const;
-
-export type ProvisioningPhase = (typeof PROVISIONING_PHASES)[number];
-
-// ---------------------------------------------------------------------------
-// Degraded reasons
-// ---------------------------------------------------------------------------
-
-export const DEGRADED_REASONS = ['tunnel_token_missing', 'tunnel_unreachable', 'cloud_validation_failed'] as const;
-
-export type DegradedReason = (typeof DEGRADED_REASONS)[number];
-
-// ---------------------------------------------------------------------------
-// API response shape
-// ---------------------------------------------------------------------------
-
-export interface RegistrationStatus {
-  /** Current provisioning phase. */
-  phase: ProvisioningPhase;
-  /** Non-empty only when phase === 'degraded'. */
-  degradedReasons: DegradedReason[];
-  /** Backward-compat: true when the Hub is operational (locally_ready | publicly_ready | degraded). */
-  registered: boolean;
-}
+// Re-export shared types so existing imports from this module continue to work.
+export { PROVISIONING_PHASES, type ProvisioningPhase, DEGRADED_REASONS, type DegradedReason, type RegistrationStatus };
 
 // ---------------------------------------------------------------------------
 // Transition rules

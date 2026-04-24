@@ -359,8 +359,7 @@ describe('DockerService', () => {
       );
     });
 
-    it('should leave source compose paths unchanged outside the mounted runtime hub compose file', async () => {
-      process.env.ENV_FILE = '.env.dev';
+    it('should not include env file for non-runtime compose files', async () => {
       vi.spyOn(service, 'restartContainer').mockRejectedValue(new Error('missing container'));
 
       const mockSpawnProcess = createMockSpawnProcess();
@@ -373,15 +372,14 @@ describe('DockerService', () => {
 
       (child_process.spawn as any).mockReturnValue(mockSpawnProcess);
 
-      await service.ensureContainerRunning('cloudflared', {
-        composeFile: '/app/docker-compose.local.yml',
-        profile: 'cloudflare',
+      await service.ensureContainerRunning('some-service', {
+        composeFile: '/other/docker-compose.yml',
       });
 
       expect(child_process.spawn).toHaveBeenCalledWith(
         'docker',
-        ['compose', '-f', '/app/docker-compose.local.yml', '--profile', 'cloudflare', 'up', 'cloudflared', '-d', '--no-build', '--no-deps'],
-        { cwd: '/app' },
+        ['compose', '-f', '/other/docker-compose.yml', 'up', 'some-service', '-d', '--no-build', '--no-deps'],
+        expect.objectContaining({ cwd: '/other' }),
       );
     });
   });

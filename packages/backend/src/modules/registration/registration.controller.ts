@@ -249,16 +249,30 @@ export class RegistrationController {
         redirect: 'follow',
         signal: AbortSignal.timeout(10000),
       });
+
+      // Any non-2xx status means the tunnel/DNS is not healthy yet.
+      if (!res.ok) {
+        return { ready: false };
+      }
+
       const body = await res.text();
       // Cloudflare error pages when tunnel is not connected
       if (
         body.includes('Error 1033') ||
         body.includes('Error 1003') ||
         body.includes('Error 1000') ||
+        body.includes('Error 1016') ||
         body.includes('Error 502') ||
         body.includes('Error 521') ||
-        body.includes('Error 523')
+        body.includes('Error 522') ||
+        body.includes('Error 523') ||
+        body.includes('Error 524') ||
+        body.includes('Error 530')
       ) {
+        return { ready: false };
+      }
+      // Catch-all for Cloudflare error pages we haven't listed explicitly.
+      if (body.includes('cloudflare') && body.includes('error code')) {
         return { ready: false };
       }
       return { ready: true };
