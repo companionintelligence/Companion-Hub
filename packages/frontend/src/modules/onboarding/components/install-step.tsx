@@ -98,6 +98,7 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', onComple
                 localSubdomain: app.localSubdomain || app.appSlug,
                 exposureMode: defaultExposureMode,
                 exposedLocal: defaultExposureMode === 'cloudflare',
+                openPort: false,
               }),
             }),
             minDelay(500),
