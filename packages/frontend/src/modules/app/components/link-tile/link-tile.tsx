@@ -31,7 +31,7 @@ export const LinkTile: React.FC<LinkTileProps> = ({ link }) => {
     <>
       <ContextMenu>
         <ContextMenuTrigger>
-          <a href={link.url} target="_blank" rel="noreferrer" className="block text-decoration-none">
+          <a href={link.url} target="_blank" rel="noopener noreferrer" className="block text-decoration-none">
             <Card className="hover:opacity-80 transition-opacity">
               <CardContent className="flex items-center gap-3 p-4">
                 <AppLogo url={link.iconUrl || ''} size={60} />

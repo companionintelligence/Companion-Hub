@@ -5,7 +5,7 @@ import type { AppDetails, AppInfo, AppMetadata } from '@/types/app.types';
 import { extractAppUrn } from '@/utils/app-helpers';
 import type { AppUrn } from '@ci-hub/common/types';
 import { CURRENT_SCHEMA_VERSION } from '@ci-hub/common/schemas';
-import { AlertCircle, AlertTriangle, ExternalLink, HardDrive, Shield } from 'lucide-react';
+import { AlertCircle, AlertTriangle, Cpu, ExternalLink, HardDrive, Shield } from 'lucide-react';
 import { useMutation } from '@tanstack/react-query';
 import { Suspense } from 'react';
 import React from 'react';
@@ -187,6 +187,27 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, 
                   {imageSizeLoading ? 'Calculating...' : imageSizeFormatted ? `~${imageSizeFormatted}` : 'Unknown'}
                 </span>
               </div>
+              {info.supported_architectures && info.supported_architectures.length > 0 && (
+                <>
+                  <div className="border-t border-border/40" />
+                  <div className="flex justify-between items-start" data-testid="app-architectures">
+                    <span className="text-sm text-muted-foreground">{t('APP_DETAILS_ARCHITECTURES')}</span>
+                    <span className="text-sm font-medium flex items-center gap-1">
+                      <Cpu size={13} />
+                      {info.supported_architectures.join(', ')}
+                    </span>
+                  </div>
+                </>
+              )}
+              {metadata?.minHubVersion && (
+                <>
+                  <div className="border-t border-border/40" />
+                  <div className="flex justify-between items-start" data-testid="app-min-hub-version">
+                    <span className="text-sm text-muted-foreground">{t('APP_DETAILS_MIN_HUB_VERSION')}</span>
+                    <span className="text-sm font-medium">{metadata.minHubVersion}</span>
+                  </div>
+                </>
+              )}
             </div>
           </div>
 

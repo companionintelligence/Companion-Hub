@@ -13,7 +13,7 @@ import { motion } from 'framer-motion';
 import { useMemo, useState } from 'react';
 import toast from 'react-hot-toast';
 import { Trans, useTranslation } from 'react-i18next';
-import { ArrowRight, ChevronLeft, ChevronRight, Info } from 'lucide-react';
+import { ArrowRight, Check, ChevronLeft, ChevronRight, Info, Loader2, X } from 'lucide-react';
 import { Alert, AlertDescription, AlertHeading, AlertIcon } from '@/components/ui/Alert/Alert';
 import type { TranslatableError } from '@/types/error.types';
 import { redirect, useLocation, useNavigate, useParams } from 'react-router';
@@ -85,6 +85,18 @@ export default function AppUpdatePage({ loaderData }: Route.ComponentProps) {
     [metadata?.latestDockerVersion, metadata?.latestVersion],
   );
 
+  const configChanged = useMemo(() => {
+    if (!configDiffQuery.data) return undefined;
+    return configDiffQuery.data.current !== configDiffQuery.data.new;
+  }, [configDiffQuery.data]);
+
+  const composeChanged = useMemo(() => {
+    if (!composeDiffQuery.data) return undefined;
+    return composeDiffQuery.data.current !== composeDiffQuery.data.new;
+  }, [composeDiffQuery.data]);
+
+  const LAST_STEP = 4;
+
   return (
     <Card data-testid="app-update">
       <CardHeader className="border-0 pb-0">
@@ -104,13 +116,71 @@ export default function AppUpdatePage({ loaderData }: Route.ComponentProps) {
         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
           <Stepper currentStep={currentStep}>
             <StepTriggerList>
-              <StepTrigger step={0} title={t('APP_UPDATE_INFORMATION_TITLE')} onStepChange={setCurrentStep} />
-              <StepTrigger step={1} title={t('APP_UPDATE_CONFIGURATION_TITLE')} onStepChange={setCurrentStep} />
-              <StepTrigger step={2} title={t('APP_UPDATE_COMPOSE_TITLE')} onStepChange={setCurrentStep} />
-              <StepTrigger step={3} title={t('APP_UPDATE_BACKUP_TITLE')} onStepChange={setCurrentStep} />
+              <StepTrigger step={0} title={t('APP_UPDATE_SUMMARY_TITLE')} onStepChange={setCurrentStep} />
+              <StepTrigger step={1} title={t('APP_UPDATE_INFORMATION_TITLE')} onStepChange={setCurrentStep} />
+              <StepTrigger step={2} title={t('APP_UPDATE_CONFIGURATION_TITLE')} onStepChange={setCurrentStep} />
+              <StepTrigger step={3} title={t('APP_UPDATE_COMPOSE_TITLE')} onStepChange={setCurrentStep} />
+              <StepTrigger step={4} title={t('APP_UPDATE_BACKUP_TITLE')} onStepChange={setCurrentStep} />
             </StepTriggerList>
             <div className="mt-1">
+              {/* Summary step */}
               <StepContent step={0}>
+                <div className="space-y-3" data-testid="update-summary">
+                  <div className="flex justify-between items-center" data-testid="update-summary-version">
+                    <span className="text-sm text-muted-foreground">{t('APP_UPDATE_SUMMARY_VERSION_CHANGE')}</span>
+                    <span className="text-sm font-medium">
+                      {info.version} <ArrowRight size={12} className="inline mx-1" /> {metadata.latestDockerVersion}
+                    </span>
+                  </div>
+                  {info.supported_architectures && info.supported_architectures.length > 0 && (
+                    <div className="flex justify-between items-center">
+                      <span className="text-sm text-muted-foreground">{t('APP_UPDATE_SUMMARY_ARCHITECTURES')}</span>
+                      <span className="text-sm font-medium">{info.supported_architectures.join(', ')}</span>
+                    </div>
+                  )}
+                  {metadata.minHubVersion && (
+                    <div className="flex justify-between items-center">
+                      <span className="text-sm text-muted-foreground">{t('APP_UPDATE_SUMMARY_MIN_HUB_VERSION')}</span>
+                      <span className="text-sm font-medium">{metadata.minHubVersion}</span>
+                    </div>
+                  )}
+                  <div className="border-t border-border/40 pt-2 space-y-1">
+                    <div className="flex items-center gap-2 text-sm">
+                      {configChanged === undefined ? (
+                        <Loader2 size={14} className="animate-spin text-muted-foreground" />
+                      ) : configChanged ? (
+                        <Check size={14} className="text-amber-500" />
+                      ) : (
+                        <X size={14} className="text-muted-foreground" />
+                      )}
+                      <span>
+                        {configChanged === undefined
+                          ? t('APP_UPDATE_SUMMARY_CONFIG_CHECKING')
+                          : configChanged
+                            ? t('APP_UPDATE_SUMMARY_CONFIG_CHANGED')
+                            : t('APP_UPDATE_SUMMARY_CONFIG_UNCHANGED')}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2 text-sm">
+                      {composeChanged === undefined ? (
+                        <Loader2 size={14} className="animate-spin text-muted-foreground" />
+                      ) : composeChanged ? (
+                        <Check size={14} className="text-amber-500" />
+                      ) : (
+                        <X size={14} className="text-muted-foreground" />
+                      )}
+                      <span>
+                        {composeChanged === undefined
+                          ? t('APP_UPDATE_SUMMARY_COMPOSE_CHECKING')
+                          : composeChanged
+                            ? t('APP_UPDATE_SUMMARY_COMPOSE_CHANGED')
+                            : t('APP_UPDATE_SUMMARY_COMPOSE_UNCHANGED')}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </StepContent>
+              <StepContent step={1}>
                 <div className="text-muted-foreground">
                   <Trans
                     t={t}
@@ -123,7 +193,7 @@ export default function AppUpdatePage({ loaderData }: Route.ComponentProps) {
                   />
                 </div>
               </StepContent>
-              <StepContent step={1}>
+              <StepContent step={2}>
                 <div className="text-muted-foreground">{t('APP_UPDATE_CONFIGURATION_SUBTITLE')}</div>
                 {configDiffQuery.isLoading && <LoadingBlock />}
                 {!configDiffQuery.isLoading && (
@@ -143,7 +213,7 @@ export default function AppUpdatePage({ loaderData }: Route.ComponentProps) {
                   </ScrollArea>
                 )}
               </StepContent>
-              <StepContent step={2}>
+              <StepContent step={3}>
                 <div className="text-muted-foreground">{t('APP_UPDATE_COMPOSE_SUBTITLE')}</div>
                 {composeDiffQuery.isLoading && <LoadingBlock />}
                 {!composeDiffQuery.isLoading && (
@@ -172,7 +242,7 @@ export default function AppUpdatePage({ loaderData }: Route.ComponentProps) {
                   </div>
                 </Alert>
               </StepContent>
-              <StepContent step={3}>
+              <StepContent step={4}>
                 <div className="text-muted-foreground">{t('APP_UPDATE_BACKUP_SUBTITLE')}</div>
                 <Switch checked={backupApp} onCheckedChange={setBackupApp} label={t('APP_UPDATE_FORM_BACKUP')} className="mt-3" />
               </StepContent>
@@ -191,13 +261,13 @@ export default function AppUpdatePage({ loaderData }: Route.ComponentProps) {
               {t('APP_UPDATE_FORM_BACK')}
             </Button>
           )}
-          {currentStep < 3 && (
+          {currentStep < LAST_STEP && (
             <Button onClick={() => setCurrentStep((step) => step + 1)}>
               {t('APP_UPDATE_FORM_NEXT')}
               <ChevronRight className="ms-2 text-muted" size={12} />
             </Button>
           )}
-          {currentStep === 3 && (
+          {currentStep === LAST_STEP && (
             <Button
               onClick={() =>
                 update.mutate({
