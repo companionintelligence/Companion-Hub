@@ -6,11 +6,15 @@ import { ModuleRef } from '@nestjs/core';
 import { DockerService } from '@/modules/docker/docker.service';
 import axios from 'axios';
 import * as fs from 'node:fs/promises';
+import * as fsSync from 'node:fs';
 import { mock, MockProxy } from 'vitest-mock-extended';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 
 vi.mock('axios');
 vi.mock('node:fs/promises');
+vi.mock('node:fs', () => ({
+  existsSync: vi.fn(),
+}));
 
 describe('CloudflareClientService', () => {
   let service: CloudflareClientService;
@@ -66,12 +70,12 @@ describe('CloudflareClientService', () => {
 
   describe('initializeTunnel', () => {
     it('should use the mounted runtime compose file when available', async () => {
-      vi.mocked(fs.access).mockResolvedValue(undefined);
+      vi.mocked(fsSync.existsSync).mockReturnValue(true);
 
       const result = await service.initializeTunnel('org-id', { tunnelId: 'tun-id', token: 'tok' });
 
       expect(fs.writeFile).toHaveBeenCalledWith(expect.stringContaining('tunnel/token'), 'tok', { mode: 0o644 });
-      expect(fs.access).toHaveBeenCalledWith(`${DATA_DIR}/docker-compose.yml`);
+      expect(fsSync.existsSync).toHaveBeenCalledWith(`${DATA_DIR}/docker-compose.yml`);
       expect(dockerService.ensureContainerRunning).toHaveBeenCalledWith('cloudflared', {
         composeFile: `${DATA_DIR}/docker-compose.yml`,
         profile: 'cloudflare',
@@ -80,7 +84,7 @@ describe('CloudflareClientService', () => {
     });
 
     it('should fall back to the source prod compose file when the mounted runtime compose file is unavailable', async () => {
-      vi.mocked(fs.access).mockRejectedValue(new Error('missing'));
+      vi.mocked(fsSync.existsSync).mockReturnValue(false);
 
       await service.initializeTunnel('org-id', { tunnelId: 'tun-id', token: 'tok' });
 
@@ -90,13 +94,12 @@ describe('CloudflareClientService', () => {
       });
     });
 
-    it('should keep using the local compose file in development mode', async () => {
+    it('should use the local compose file when in dev mode and no mounted compose file is present', async () => {
       process.env.NODE_ENV = 'development';
-      vi.mocked(fs.access).mockResolvedValue(undefined);
+      vi.mocked(fsSync.existsSync).mockReturnValue(false);
 
       await service.initializeTunnel('org-id', { tunnelId: 'tun-id', token: 'tok' });
 
-      expect(fs.access).not.toHaveBeenCalled();
       expect(dockerService.ensureContainerRunning).toHaveBeenCalledWith('cloudflared', {
         composeFile: `${APP_DIR}/docker-compose.local.yml`,
         profile: 'cloudflare',
