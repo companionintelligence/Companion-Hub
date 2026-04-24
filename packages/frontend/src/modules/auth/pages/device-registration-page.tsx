@@ -220,7 +220,18 @@ export default function DeviceRegistrationPage() {
   }, [refreshRegistrationStatus]);
 
   useEffect(() => {
-    if (!registrationStatus || !isRegistrationPending(registrationStatus)) {
+    // Keep polling while the phase is still in-progress (paired/provisioning),
+    // OR while we're operational but still waiting for publicly_ready before
+    // redirecting to the public URL.
+    const shouldPoll =
+      (registrationStatus && isRegistrationPending(registrationStatus)) ||
+      (registrationStatus &&
+        registrationStatus.phase === 'locally_ready' &&
+        pendingPairTargetRef.current?.domain &&
+        pendingPairTargetRef.current?.subdomain &&
+        !completionStartedRef.current);
+
+    if (!shouldPoll) {
       return;
     }
 
@@ -314,8 +325,8 @@ export default function DeviceRegistrationPage() {
         pendingPairTargetRef.current = { domain: data.domain, subdomain: data.subdomain };
         setPairingCode('');
         setRegistrationStatus({ phase: 'paired', degradedReasons: [], registered: false });
-        setRedirectStatus('Pairing accepted. Finishing local Hub setup...');
-        toast.success('Pairing code accepted. Finishing setup...');
+        setRedirectStatus('Pairing accepted. This may take a few minutes...');
+        toast.success('Pairing accepted. This may take a few minutes...');
         await refreshRegistrationStatus();
       } else {
         const errorMsg = typeof data.message === 'string' ? data.message : 'Registration failed.';
