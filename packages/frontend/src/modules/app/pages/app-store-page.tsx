@@ -83,9 +83,10 @@ export default () => {
     enabled: isAlternativesView,
   });
 
-  // Only redirect when the backend explicitly reports the hub is unregistered.
+  // Redirect whenever the backend reports the hub is not operational
+  // (`registered === false`, e.g. paired/provisioning/unregistered).
   // Fetch errors (status endpoint temporarily unreachable) are NOT treated as
-  // unregistered — this prevents transient failures from forcing a re-pair flow.
+  // unregistered/non-operational — this prevents transient failures from forcing a re-pair flow.
   useEffect(() => {
     if (!isCheckingRegistration && registrationStatus && !registrationStatus.registered) {
       window.location.href = '/device-registration';

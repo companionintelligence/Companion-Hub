@@ -84,6 +84,7 @@ export default function DeviceRegistrationPage() {
   const pendingPairTargetRef = useRef<PairingTarget | null>(null);
   const completionStartedRef = useRef(false);
   const publiclyReadyTimerRef = useRef<number | null>(null);
+  const isTauri = '__TAURI_INTERNALS__' in window;
 
   const loadDeviceInfo = useCallback(async () => {
     try {
@@ -147,7 +148,6 @@ export default function DeviceRegistrationPage() {
       pendingPairTargetRef.current = null;
       setRegisteredCache();
 
-      const isTauri = '__TAURI_INTERNALS__' in window;
       if (isTauri) {
         setRedirectStatus('Registration complete! Loading the local Hub...');
         await sleep(1500);
@@ -212,7 +212,7 @@ export default function DeviceRegistrationPage() {
       await sleep(1000);
       navigate('/', { replace: true });
     },
-    [navigate],
+    [isTauri, navigate],
   );
 
   useEffect(() => {
@@ -306,6 +306,10 @@ export default function DeviceRegistrationPage() {
       setPairingError('Pairing code must be exactly 6 characters.');
       return;
     }
+    await doPair(code);
+  };
+
+  async function doPair(code: string) {
     setIsPairing(true);
     setPairingError(null);
     setStatusError(null);
@@ -339,7 +343,29 @@ export default function DeviceRegistrationPage() {
     } finally {
       setIsPairing(false);
     }
-  };
+  }
+
+  // Tauri deep-link: listen for cihub:// pairing codes and auto-submit.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: doPair is stable (only uses refs and state setters)
+  useEffect(() => {
+    if (!isTauri) return;
+    let unlisten: (() => void) | undefined;
+    (async () => {
+      try {
+        const { listen } = await import('@tauri-apps/api/event');
+        unlisten = await listen<string>('deep-link-pair', (event) => {
+          const code = event.payload.trim().toUpperCase();
+          if (code.length === 6) {
+            setPairingCode(code);
+            void doPair(code);
+          }
+        });
+      } catch {
+        // Not in Tauri
+      }
+    })();
+    return () => unlisten?.();
+  }, [isTauri]);
 
   if (isLoading) {
     return (

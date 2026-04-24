@@ -1,11 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RegistrationStatus } from './lib/registration-status';
 
-const apiFetch = vi.fn();
-const userContext = vi.fn();
-const requestUse = vi.fn();
-const responseUse = vi.fn();
-const setConfig = vi.fn();
+const { apiFetch, userContext, requestUse, responseUse, setConfig } = vi.hoisted(() => ({
+  apiFetch: vi.fn(),
+  userContext: vi.fn(),
+  requestUse: vi.fn(),
+  responseUse: vi.fn(),
+  setConfig: vi.fn(),
+}));
 
 vi.mock('./lib/api-fetch', () => ({
   apiFetch,
