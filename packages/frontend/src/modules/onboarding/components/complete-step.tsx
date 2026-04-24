@@ -17,7 +17,7 @@ function completionCopy(summary?: InstallSummary) {
       emoji: '🚀',
       heading: 'Your Hub Is Ready',
       body: 'You can install apps anytime from the App Store.',
-      cta: 'Go to My Apps',
+      cta: 'Go to App Store',
     };
   }
 
@@ -28,7 +28,7 @@ function completionCopy(summary?: InstallSummary) {
       emoji: '🎉',
       heading: 'All Apps Running',
       body: `All ${total} app${total === 1 ? ' is' : 's are'} confirmed running on your Hub.`,
-      cta: 'Go to My Apps',
+      cta: 'Go to App Store',
     };
   }
 
@@ -36,8 +36,8 @@ function completionCopy(summary?: InstallSummary) {
     return {
       emoji: '⚠️',
       heading: 'Installation Issues',
-      body: `All ${total} install${total === 1 ? '' : 's'} failed. You can retry from My Apps or the App Store.`,
-      cta: 'Go to My Apps',
+      body: `All ${total} install${total === 1 ? '' : 's'} failed. You can retry from the App Store.`,
+      cta: 'Go to App Store',
     };
   }
 
@@ -49,8 +49,8 @@ function completionCopy(summary?: InstallSummary) {
   return {
     emoji: incomplete > 0 || failed > 0 ? '🔧' : '🎉',
     heading: 'Setup Complete',
-    body: `${parts.join(', ')}. You can manage your apps from My Apps.`,
-    cta: 'Go to My Apps',
+    body: `${parts.join(', ')}. You can manage your apps from the App Store.`,
+    cta: 'Go to App Store',
   };
 }
 
@@ -69,9 +69,9 @@ export const CompleteStep = ({ installSummary }: CompleteStepProps) => {
         headers: { 'Content-Type': 'application/json' },
       });
       await refreshAppContext();
-      navigate('/apps', { replace: true });
+      navigate('/app-store', { replace: true });
     } catch {
-      navigate('/apps', { replace: true });
+      navigate('/app-store', { replace: true });
     }
   };
 

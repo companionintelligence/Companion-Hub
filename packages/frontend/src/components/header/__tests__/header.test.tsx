@@ -47,42 +47,22 @@ function renderHeader(isLoggedIn = true) {
 }
 
 describe('Header', () => {
-  it('renders My Apps link in desktop navigation when logged in', () => {
-    renderHeader(true);
-
-    // Desktop nav (hidden lg:flex) — check for the link
-    const myAppsLinks = screen.getAllByRole('link', { name: /My Apps/i });
-    expect(myAppsLinks.length).toBeGreaterThanOrEqual(1);
-
-    // At least one link points to /apps
-    const hasCorrectHref = myAppsLinks.some((link) => link.getAttribute('href') === '/apps');
-    expect(hasCorrectHref).toBe(true);
-  });
-
-  it('renders Home, My Apps, and Store links when logged in', () => {
+  it('renders Home and Store links when logged in', () => {
     renderHeader(true);
 
     expect(screen.getAllByRole('link', { name: /Home/i }).length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByRole('link', { name: /My Apps/i }).length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByRole('link', { name: /Store/i }).length).toBeGreaterThanOrEqual(1);
   });
 
-  it('does not render My Apps link when logged out', () => {
-    renderHeader(false);
+  it('does not render My Apps link', () => {
+    renderHeader(true);
 
     expect(screen.queryByRole('link', { name: /My Apps/i })).not.toBeInTheDocument();
   });
 
-  it('renders My Apps in mobile menu when logged in', () => {
-    renderHeader(true);
+  it('does not render navigation links when logged out', () => {
+    renderHeader(false);
 
-    // Mobile dropdown renders a Link with "My Apps" text in the DOM
-    // (even if visually hidden until the dropdown is opened)
-    // Desktop nav contains a NavLink, mobile contains a Link — both are in the DOM
-    const allMyAppsLinks = screen.getAllByRole('link', { name: /My Apps/i });
-    // At minimum the desktop nav link exists; the mobile dropdown link may
-    // be in the DOM as well depending on Radix rendering behaviour
-    expect(allMyAppsLinks.length).toBeGreaterThanOrEqual(1);
-    expect(allMyAppsLinks.some((link) => link.getAttribute('href') === '/apps')).toBe(true);
+    expect(screen.queryByRole('link', { name: /Store/i })).not.toBeInTheDocument();
   });
 });

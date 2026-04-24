@@ -24,9 +24,10 @@ export default [
       ]),
     ]),
 
-    // My apps routes
+    // My apps routes — /apps index redirects to app-store; sub-routes
+    // remain for installed-app detail pages, custom apps, and updates.
     ...prefix('apps', [
-      index('./modules/app/pages/my-apps-page.tsx', { id: 'my-apps' }),
+      index('./modules/app/pages/apps-redirect.tsx', { id: 'my-apps' }),
       route('create', './modules/app/pages/custom-app-create-page.tsx', { id: 'custom-app-create' }),
       route(':appId/edit', './modules/app/pages/custom-app-edit-page.tsx', { id: 'custom-app-edit' }),
       route(':appId', './modules/app/pages/custom-app-details-page.tsx', { id: 'custom-app' }),

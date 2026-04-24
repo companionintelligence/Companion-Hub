@@ -94,17 +94,17 @@ describe('CompleteStep', () => {
     expect(body).not.toHaveTextContent('failed');
   });
 
-  it('CTA button says "Go to My Apps"', () => {
+  it('CTA button says "Go to App Store"', () => {
     render(<CompleteStep installSummary={makeSummary(1, 0, 0)} />);
 
-    expect(screen.getByTestId('complete-cta')).toHaveTextContent('Go to My Apps');
+    expect(screen.getByTestId('complete-cta')).toHaveTextContent('Go to App Store');
   });
 
-  it('navigates to /apps on click', async () => {
+  it('navigates to /app-store on click', async () => {
     render(<CompleteStep installSummary={makeSummary(1, 0, 0)} />);
 
     await userEvent.click(screen.getByTestId('complete-cta'));
-    expect(mockNavigate).toHaveBeenCalledWith('/apps', { replace: true });
+    expect(mockNavigate).toHaveBeenCalledWith('/app-store', { replace: true });
   });
 
   it('singular grammar for single app', () => {
