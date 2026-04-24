@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import { CacheModule } from '@/core/cache/cache.module';
 import { ConfigurationModule } from '@/core/config/configuration.module';
@@ -74,15 +75,21 @@ const imports: (DynamicModule | typeof I18nModule)[] = [
   SystemUpdateModule,
 ];
 
-const { NODE_ENV } = process.env;
-if (NODE_ENV === 'production') {
+// Gate on the built frontend bundle's presence, not NODE_ENV: the bundled
+// Docker image ships index.html at /app/assets/frontend but runs with
+// NODE_ENV=development (from .env.dev), which would otherwise 404 the UI.
+// Local `pnpm dev` has no bundle, so Vite serves the frontend instead.
+const frontendBundlePath = path.join(APP_DIR, 'assets', 'frontend');
+const hasFrontendBundle = fs.existsSync(path.join(frontendBundlePath, 'index.html'));
+if (hasFrontendBundle) {
   imports.push(
     ServeStaticModule.forRoot({
-      rootPath: path.join(APP_DIR, 'assets', 'frontend'),
+      rootPath: frontendBundlePath,
       exclude: ['/api*path'],
     }),
   );
-} else {
+}
+if (process.env.NODE_ENV !== 'production') {
   imports.push(DebugModule);
 }
 
