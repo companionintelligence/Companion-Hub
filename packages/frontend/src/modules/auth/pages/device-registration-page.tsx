@@ -12,6 +12,8 @@ const DEFAULT_PORTAL_URL = 'https://portal.companionintelligence.com';
 const STATUS_POLL_INTERVAL_MS = 3000;
 const DOMAIN_PROBE_INTERVAL_MS = 5000;
 const MAX_DOMAIN_PROBE_ATTEMPTS = 60;
+const REQUIRED_CONSECUTIVE_PROBES = 2;
+const PUBLICLY_READY_TIMEOUT_MS = 90_000;
 
 type PairingTarget = {
   domain?: string;
@@ -81,6 +83,7 @@ export default function DeviceRegistrationPage() {
   const pairingInputRef = useRef<HTMLInputElement>(null);
   const pendingPairTargetRef = useRef<PairingTarget | null>(null);
   const completionStartedRef = useRef(false);
+  const publiclyReadyTimerRef = useRef<number | null>(null);
 
   const loadDeviceInfo = useCallback(async () => {
     try {
@@ -164,20 +167,29 @@ export default function DeviceRegistrationPage() {
         const fullUrl = `https://${subdomain}.${domain}`;
         setRedirectStatus('Local setup is complete. Checking your public Hub URL...');
 
+        let consecutiveSuccesses = 0;
         for (let attempt = 1; attempt <= MAX_DOMAIN_PROBE_ATTEMPTS; attempt++) {
           try {
             const probeRes = await apiFetch(`/api/registration/probe-domain?url=${encodeURIComponent(fullUrl)}`);
             if (probeRes.ok) {
               const probeData = (await probeRes.json()) as { ready: boolean };
               if (probeData.ready) {
-                setRedirectStatus('Public Hub URL is ready. Redirecting...');
-                window.location.href = `${fullUrl}/login`;
-                return;
+                consecutiveSuccesses++;
+                if (consecutiveSuccesses >= REQUIRED_CONSECUTIVE_PROBES) {
+                  setRedirectStatus('Public Hub URL is ready. Redirecting...');
+                  window.location.href = `${fullUrl}/login`;
+                  return;
+                }
+                // Don't sleep — immediately re-probe for the next confirmation.
+                continue;
               }
             }
           } catch {
             // Keep retrying while the tunnel and DNS settle.
           }
+
+          // Any failure resets the streak.
+          consecutiveSuccesses = 0;
 
           if (attempt >= 12) {
             setRedirectStatus('Waiting for DNS propagation...');
@@ -226,7 +238,29 @@ export default function DeviceRegistrationPage() {
       return;
     }
 
-    if (pendingPairTargetRef.current) {
+    const target = pendingPairTargetRef.current;
+    if (target) {
+      // If a public URL is expected, wait for publicly_ready (or degraded) before
+      // starting the domain probe loop. This avoids redirecting the browser to a
+      // Cloudflare error page while the tunnel is still being established.
+      if (target.domain && target.subdomain && registrationStatus.phase === 'locally_ready') {
+        // Start a timeout: if publicly_ready doesn't arrive within the window,
+        // fall through and let finishRegistrationFlow handle the fallback.
+        if (!publiclyReadyTimerRef.current) {
+          publiclyReadyTimerRef.current = window.setTimeout(() => {
+            publiclyReadyTimerRef.current = null;
+            completionStartedRef.current = true;
+            void finishRegistrationFlow(registrationStatus);
+          }, PUBLICLY_READY_TIMEOUT_MS);
+        }
+        return;
+      }
+
+      // Phase is publicly_ready, degraded, or no public URL — proceed immediately.
+      if (publiclyReadyTimerRef.current) {
+        window.clearTimeout(publiclyReadyTimerRef.current);
+        publiclyReadyTimerRef.current = null;
+      }
       completionStartedRef.current = true;
       void finishRegistrationFlow(registrationStatus);
       return;
@@ -234,6 +268,15 @@ export default function DeviceRegistrationPage() {
 
     navigate('/', { replace: true });
   }, [finishRegistrationFlow, navigate, registrationStatus]);
+
+  // Clean up the publicly_ready timeout on unmount.
+  useEffect(() => {
+    return () => {
+      if (publiclyReadyTimerRef.current) {
+        window.clearTimeout(publiclyReadyTimerRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!isLoading && registrationStatus?.phase === 'unregistered' && deviceId && pairingInputRef.current) {
