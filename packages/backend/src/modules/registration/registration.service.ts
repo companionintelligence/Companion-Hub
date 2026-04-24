@@ -60,6 +60,11 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     // After a restart, the token file may exist on disk but CloudflareClientService starts with null.
     await this.ensureCloudflareClientHasTunnelToken();
 
+    // Covers the "registered-before, Hub restarted" case: recoverTunnelTokenFromDb
+    // only spawns cloudflared when the token file is missing, so without this call
+    // the public hub-*.$DOMAIN hostname stays DNS-resolvable but the tunnel is dead.
+    await this.cloudflareClientService.ensureCloudflaredRunning();
+
     // Ensure Traefik has a route for the hub's public hostname (e.g. devbox-core1.companionintelligence.com)
     // so requests through the Cloudflare tunnel reach ci-os-hub.
     await this.ensureHubRouteFromRegistration();

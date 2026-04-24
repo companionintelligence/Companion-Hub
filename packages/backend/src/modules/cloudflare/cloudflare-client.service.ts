@@ -5,6 +5,7 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { DockerService } from '../docker/docker.service';
 import axios, { AxiosInstance } from 'axios';
 import * as fs from 'node:fs/promises';
+import * as fsSync from 'node:fs';
 import * as path from 'node:path';
 
 export interface AppInfo {
@@ -215,24 +216,54 @@ export class CloudflareClientService {
   }
 
   /**
-   * Resolve the correct docker-compose file for the current environment.
-   * Local/dev uses the repo-local compose file. In containerized runtime, the
-   * active hub compose file is mounted at /data/docker-compose.yml.
+   * Idempotently start/restart the cloudflared container when a token is
+   * present. Called on every Hub boot: the existing `recoverTunnelTokenFromDb`
+   * path only spawns cloudflared when the token file is missing, so restarts
+   * of a previously-registered Hub would otherwise leave the tunnel down.
+   * Skipped in local/E2E mode (domain === ci.localhost).
    */
-  private async getComposeFile(): Promise<string> {
-    const isLocal = process.env.LOCAL === 'true' || process.env.NODE_ENV === 'development';
+  async ensureCloudflaredRunning(): Promise<boolean> {
+    if (!this.tunnelToken) {
+      return false;
+    }
+    const domain = this.configService.get('domain');
+    if (domain === 'ci.localhost') {
+      this.logger.log('Local/E2E mode — not ensuring cloudflared container');
+      return false;
+    }
+    try {
+      this.logger.log('Ensuring cloudflared container is running (post-boot)...');
+      const dockerService = this.moduleRef.get(DockerService, { strict: false });
+      const composeFile = this.getComposeFile();
+      await dockerService.ensureContainerRunning('cloudflared', {
+        composeFile,
+        profile: 'cloudflare',
+      });
+      this.logger.log('Cloudflared container is running.');
+      return true;
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      this.logger.error(`Failed to ensure cloudflared is running: ${msg}`);
+      return false;
+    }
+  }
 
-    if (!isLocal) {
-      const runtimeComposeFile = path.join(DATA_DIR, 'docker-compose.yml');
-
-      try {
-        await fs.access(runtimeComposeFile);
-        return runtimeComposeFile;
-      } catch {
-        // Fall back to the source compose file when not running inside the hub container.
-      }
+  /**
+   * Resolve the docker-compose file used to spawn the `cloudflared` service.
+   * Inside the bundled Hub container the active compose file is bind-mounted at
+   * `${DATA_DIR}/docker-compose.yml` (matches DockerService.getBaseComposeArgsHub);
+   * fall back to the repo-root source file for local `pnpm dev` and tests.
+   * Gating on NODE_ENV breaks here because .env.dev sets NODE_ENV=development
+   * inside the bundled image, which would point at a non-existent
+   * /app/docker-compose.local.yml.
+   */
+  private getComposeFile(): string {
+    const mounted = path.join(DATA_DIR, 'docker-compose.yml');
+    if (fsSync.existsSync(mounted)) {
+      return mounted;
     }
 
+    const isLocal = process.env.LOCAL === 'true' || process.env.NODE_ENV === 'development';
     const isStaging = process.env.NODE_ENV === 'staging';
 
     let filename = 'docker-compose.prod.yml';
