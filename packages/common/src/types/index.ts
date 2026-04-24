@@ -1,3 +1,11 @@
 import { type AppUrn, zodAppUrn } from './app-urn.js';
+import {
+  PROVISIONING_PHASES,
+  type ProvisioningPhase,
+  DEGRADED_REASONS,
+  type DegradedReason,
+  type RegistrationStatus,
+} from './registration-status.js';
 
 export { type AppUrn, zodAppUrn };
+export { PROVISIONING_PHASES, type ProvisioningPhase, DEGRADED_REASONS, type DegradedReason, type RegistrationStatus };
