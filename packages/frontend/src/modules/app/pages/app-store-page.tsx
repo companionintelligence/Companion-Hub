@@ -131,13 +131,25 @@ export default () => {
       return;
     }
     if (appStores?.appStores) {
+      let fallbackSlug: string | undefined;
       if (ciCloudStore && storeId !== ciCloudStore.slug) {
-        setStoreId(ciCloudStore.slug);
+        fallbackSlug = ciCloudStore.slug;
       } else if (!ciCloudStore && !storeId && appStores.appStores.length > 0) {
-        setStoreId(appStores.appStores[0]?.slug);
+        fallbackSlug = appStores.appStores[0]?.slug;
+      }
+      if (fallbackSlug) {
+        setStoreId(fallbackSlug);
+      }
+      // Clear invalid ?store= param from URL
+      if (storeParam) {
+        setSearchParams((prev) => {
+          const next = new URLSearchParams(prev);
+          next.delete('store');
+          return next;
+        });
       }
     }
-  }, [appStores, storeId, setStoreId, ciCloudStore, searchParams]);
+  }, [appStores, storeId, setStoreId, ciCloudStore, searchParams, setSearchParams]);
 
   const handleStoreSwitch = useCallback(
     (slug: string) => {

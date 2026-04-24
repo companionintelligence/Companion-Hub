@@ -185,4 +185,22 @@ describe('AppUpdatePage — update summary', () => {
     expect(screen.getByTestId('update-summary')).toHaveTextContent('APP_UPDATE_SUMMARY_CONFIG_UNCHANGED');
     expect(screen.getByTestId('update-summary')).toHaveTextContent('APP_UPDATE_SUMMARY_COMPOSE_CHANGED');
   });
+
+  it('shows checking state while diff queries are loading', () => {
+    mockUseQuery.mockImplementation((opts: { queryKey: readonly unknown[] }) => {
+      if (opts.queryKey[0] === 'app') {
+        return { data: APP_DATA, isLoading: false } as ReturnType<typeof useQuery>;
+      }
+      return { data: undefined, isLoading: true } as ReturnType<typeof useQuery>;
+    });
+
+    render(
+      <MemoryRouter>
+        <AppUpdatePage {...({ loaderData: APP_DATA } as any)} />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByTestId('update-summary')).toHaveTextContent('APP_UPDATE_SUMMARY_CONFIG_CHECKING');
+    expect(screen.getByTestId('update-summary')).toHaveTextContent('APP_UPDATE_SUMMARY_COMPOSE_CHECKING');
+  });
 });

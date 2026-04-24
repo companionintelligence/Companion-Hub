@@ -194,4 +194,17 @@ describe('AppStorePage — multi-store UX', () => {
     expect(mockSetStoreId).toHaveBeenCalledWith('community');
     expect(mockSetSearchParams).toHaveBeenCalled();
   });
+
+  it('clears invalid ?store= param from URL', () => {
+    capturedSearchParams = new URLSearchParams('store=nonexistent');
+    setupQueries();
+
+    render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    expect(mockSetSearchParams).toHaveBeenCalled();
+  });
 });

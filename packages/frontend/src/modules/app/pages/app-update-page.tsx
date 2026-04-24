@@ -13,7 +13,7 @@ import { motion } from 'framer-motion';
 import { useMemo, useState } from 'react';
 import toast from 'react-hot-toast';
 import { Trans, useTranslation } from 'react-i18next';
-import { ArrowRight, Check, ChevronLeft, ChevronRight, Info, X } from 'lucide-react';
+import { ArrowRight, Check, ChevronLeft, ChevronRight, Info, Loader2, X } from 'lucide-react';
 import { Alert, AlertDescription, AlertHeading, AlertIcon } from '@/components/ui/Alert/Alert';
 import type { TranslatableError } from '@/types/error.types';
 import { redirect, useLocation, useNavigate, useParams } from 'react-router';
@@ -86,12 +86,12 @@ export default function AppUpdatePage({ loaderData }: Route.ComponentProps) {
   );
 
   const configChanged = useMemo(() => {
-    if (!configDiffQuery.data) return false;
+    if (!configDiffQuery.data) return undefined;
     return configDiffQuery.data.current !== configDiffQuery.data.new;
   }, [configDiffQuery.data]);
 
   const composeChanged = useMemo(() => {
-    if (!composeDiffQuery.data) return false;
+    if (!composeDiffQuery.data) return undefined;
     return composeDiffQuery.data.current !== composeDiffQuery.data.new;
   }, [composeDiffQuery.data]);
 
@@ -146,12 +146,36 @@ export default function AppUpdatePage({ loaderData }: Route.ComponentProps) {
                   )}
                   <div className="border-t border-border/40 pt-2 space-y-1">
                     <div className="flex items-center gap-2 text-sm">
-                      {configChanged ? <Check size={14} className="text-amber-500" /> : <X size={14} className="text-muted-foreground" />}
-                      <span>{configChanged ? t('APP_UPDATE_SUMMARY_CONFIG_CHANGED') : t('APP_UPDATE_SUMMARY_CONFIG_UNCHANGED')}</span>
+                      {configChanged === undefined ? (
+                        <Loader2 size={14} className="animate-spin text-muted-foreground" />
+                      ) : configChanged ? (
+                        <Check size={14} className="text-amber-500" />
+                      ) : (
+                        <X size={14} className="text-muted-foreground" />
+                      )}
+                      <span>
+                        {configChanged === undefined
+                          ? t('APP_UPDATE_SUMMARY_CONFIG_CHECKING')
+                          : configChanged
+                            ? t('APP_UPDATE_SUMMARY_CONFIG_CHANGED')
+                            : t('APP_UPDATE_SUMMARY_CONFIG_UNCHANGED')}
+                      </span>
                     </div>
                     <div className="flex items-center gap-2 text-sm">
-                      {composeChanged ? <Check size={14} className="text-amber-500" /> : <X size={14} className="text-muted-foreground" />}
-                      <span>{composeChanged ? t('APP_UPDATE_SUMMARY_COMPOSE_CHANGED') : t('APP_UPDATE_SUMMARY_COMPOSE_UNCHANGED')}</span>
+                      {composeChanged === undefined ? (
+                        <Loader2 size={14} className="animate-spin text-muted-foreground" />
+                      ) : composeChanged ? (
+                        <Check size={14} className="text-amber-500" />
+                      ) : (
+                        <X size={14} className="text-muted-foreground" />
+                      )}
+                      <span>
+                        {composeChanged === undefined
+                          ? t('APP_UPDATE_SUMMARY_COMPOSE_CHECKING')
+                          : composeChanged
+                            ? t('APP_UPDATE_SUMMARY_COMPOSE_CHANGED')
+                            : t('APP_UPDATE_SUMMARY_COMPOSE_UNCHANGED')}
+                      </span>
                     </div>
                   </div>
                 </div>
