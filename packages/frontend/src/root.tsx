@@ -52,14 +52,17 @@ client.interceptors.response.use(async (res) => {
 // Cross-origin credentials ('include') are blocked by browsers when the server
 // responds with Access-Control-Allow-Origin: * — so we use 'omit' in Tauri mode.
 const isTauriRelease = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window && !window.location.origin.startsWith('http://localhost');
+const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 const credentialMode: RequestCredentials = isTauriRelease ? 'omit' : 'include';
 
 client.setConfig({
   credentials: credentialMode,
 });
 
-// Probe the backend port — try 5002 (prod) then 3000 (dev)
-const tauriBaseUrlReady: Promise<void> = isTauriRelease
+// Probe the backend port — needed in all Tauri modes.
+// Release mode: frontend origin differs from the API (tauri://localhost vs http://localhost:5002)
+// Dev mode: Vite proxy defaults to port 3000 which may not be the actual API port.
+const tauriBaseUrlReady: Promise<void> = isTauri
   ? (async () => {
       for (const port of [5002, 3000]) {
         try {
@@ -149,8 +152,17 @@ export async function clientLoader({ request }: Route.ActionArgs) {
     return redirect('/');
   }
 
-  // Now check user context for auth/onboarding flow
-  const userResult = await userContext();
+  // Now check user context for auth/onboarding flow.
+  // Wrap in try/catch: during startup the backend may not be ready yet;
+  // HubStatus will show the appropriate startup UI and reload when healthy.
+  let userResult: Awaited<ReturnType<typeof userContext>> | null = null;
+  try {
+    userResult = await userContext();
+  } catch {
+    // Backend is unavailable — return null so HubStatus can render its startup UI
+    // instead of the ErrorBoundary.
+    return null;
+  }
 
   // Non-root paths: let individual route loaders handle redirects
   if (url.pathname !== '/') {
@@ -158,11 +170,11 @@ export async function clientLoader({ request }: Route.ActionArgs) {
   }
 
   // Root path: determine where to send the user
-  if (!userResult.data?.isConfigured) {
+  if (!userResult?.data?.isConfigured) {
     return redirect('/register');
   }
 
-  if (!userResult.data?.isLoggedIn && !userResult.data?.isGuestDashboardEnabled) {
+  if (!userResult?.data?.isLoggedIn && !userResult?.data?.isGuestDashboardEnabled) {
     return redirect('/login');
   }
 

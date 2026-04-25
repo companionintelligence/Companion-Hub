@@ -180,6 +180,11 @@ export function HubStatus({ children }: HubStatusProps) {
   const isTauriRelease = isTauri && !window.location.origin.startsWith('http://localhost:');
   const isWindows = isTauri && detectPlatform() === 'windows';
   const shouldAutoStartWindowsHubRef = useRef(true);
+  // Track whether we've ever seen a non-Running state so we can reload when
+  // the Hub becomes healthy. Without this, clientLoader's cached error from
+  // startup (when backend wasn't ready) would persist as a stale ErrorBoundary.
+  const sawNonRunningRef = useRef(false);
+  const hasReloadedRef = useRef(false);
 
   const checkHealthFallback = useCallback(async () => {
     for (const port of [5002, 3000]) {
@@ -195,6 +200,7 @@ export function HubStatus({ children }: HubStatusProps) {
         // try next port
       }
     }
+    sawNonRunningRef.current = true;
     setStatus('Stopped');
   }, []);
 
@@ -225,6 +231,7 @@ export function HubStatus({ children }: HubStatusProps) {
           setPhase(null);
           setServices([]);
         } else {
+          sawNonRunningRef.current = true;
           try {
             const phaseResult = (await invoke('get_startup_phase_command')) as StartupPhaseResponse;
             setPhase(phaseResult.phase);
@@ -281,6 +288,21 @@ export function HubStatus({ children }: HubStatusProps) {
     const interval = setInterval(checkStatus, 3000);
     return () => clearInterval(interval);
   }, [checkStatus]);
+
+  // When the Hub transitions from a non-running state to Running, the route
+  // loaders likely failed earlier (backend wasn't ready yet). Reload the page
+  // once so React Router re-runs clientLoader against the now-healthy backend
+  // instead of showing a stale ErrorBoundary.
+  useEffect(() => {
+    if (isTauri && status === 'Running' && sawNonRunningRef.current && !hasReloadedRef.current) {
+      hasReloadedRef.current = true;
+      try {
+        window.location.reload();
+      } catch {
+        // JSDOM in tests doesn't support navigation; ignore safely.
+      }
+    }
+  }, [status, isTauri]);
 
   const handleStartHub = useCallback(async () => {
     shouldAutoStartWindowsHubRef.current = false;
