@@ -58,4 +58,65 @@ describe('Queue', () => {
     expect(result).toEqual({ success: true, message: 'ok' });
     expect(rpcClient.send).toHaveBeenCalledWith('app-events-queue', { requestId: 'req-1' });
   });
+
+  it('skips cron execution when the queue connection is not ready', async () => {
+    const logger = mock<LoggerService>();
+    const rabbit = mock<Connection>();
+    const rpcClient = mock<RPCClient>();
+    const publisher = mock<EventPublisher>();
+    const queue = new Queue(
+      rabbit,
+      rpcClient,
+      publisher,
+      'cron-queue',
+      1,
+      z.object({ requestId: z.string() }),
+      z.object({ success: z.boolean(), message: z.string() }),
+      logger,
+      () => false,
+      () => ({ status: 'degraded', ready: false, attempts: 1, lastError: 'connection lost' }),
+    );
+
+    // Use a per-second pattern and manually trigger the scheduled callback
+    queue.publishRepeatable({ requestId: 'cron-1' }, '* * * * * *');
+
+    // Wait briefly for the cron to fire (runs every second)
+    await new Promise((resolve) => global.setTimeout(resolve, 1500));
+
+    expect(rpcClient.send).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Skipping cron job for queue cron-queue'));
+
+    queue.stopAllCronTasks();
+  });
+
+  it('uses new RPC client and publisher after rebindConnection', async () => {
+    const logger = mock<LoggerService>();
+    const rabbit = mock<Connection>();
+    const rpcClient = mock<RPCClient>();
+    const publisher = mock<EventPublisher>();
+    const queue = new Queue(
+      rabbit,
+      rpcClient,
+      publisher,
+      'app-events-queue',
+      1,
+      z.object({ requestId: z.string() }),
+      z.object({ success: z.boolean(), message: z.string() }),
+      logger,
+    );
+
+    // Rebind to a new connection with new RPC client
+    const newRabbit = mock<Connection>();
+    const newRpcClient = mock<RPCClient>();
+    const newPublisher = mock<EventPublisher>();
+    newRpcClient.send.mockResolvedValue({ body: { success: true, message: 'rebound' } } as never);
+
+    queue.rebindConnection(newRabbit, newRpcClient, newPublisher);
+
+    const result = await queue.publish({ requestId: 'req-2' });
+
+    expect(result).toEqual({ success: true, message: 'rebound' });
+    expect(newRpcClient.send).toHaveBeenCalledWith('app-events-queue', { requestId: 'req-2' });
+    expect(rpcClient.send).not.toHaveBeenCalled();
+  });
 });

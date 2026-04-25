@@ -26,7 +26,7 @@ export class QueueFactory implements OnApplicationShutdown {
   private connectionStatus: QueueConnectionStatus = 'connecting';
   private lastError?: string;
   // biome-ignore lint/suspicious/noExplicitAny: heterogeneous queue schemas
-  private createdQueues: Queue<any, any>[] = [];
+  private createdQueues: { queue: Queue<any, any>; queueName: string; timeout?: number }[] = [];
 
   public constructor(
     private readonly logger: LoggerService,
@@ -85,6 +85,7 @@ export class QueueFactory implements OnApplicationShutdown {
       this.connectionStatus = 'ready';
       this.lastError = undefined;
       this.logger.info('Connected to the queue');
+      this.rebindQueues();
     });
 
     this.rabbit.on('error', async (error) => {
@@ -121,6 +122,29 @@ export class QueueFactory implements OnApplicationShutdown {
     this.isInitialized = false;
     this.connectionStatus = 'degraded';
     this.lastError = error.message;
+  }
+
+  /**
+   * Re-bind all existing queues to the current connection after a reconnect.
+   * Creates fresh RPC clients, publishers, and consumers for each queue.
+   */
+  private rebindQueues() {
+    for (const { queue, queueName, timeout } of this.createdQueues) {
+      try {
+        const rpcClient = this.rabbit.createRPCClient({
+          timeout,
+          confirm: true,
+          maxAttempts: 3,
+          queues: [{ autoDelete: false, durable: false, queue: queueName }],
+        });
+        const publisher = new EventPublisher(this.rabbit, this.logger, queueName);
+        publisher.initialize();
+        queue.rebindConnection(this.rabbit, rpcClient, publisher);
+        this.logger.info(`Rebound queue ${queueName} to new connection`);
+      } catch (e) {
+        this.logger.error(`Failed to rebind queue ${queueName} after reconnect`, e);
+      }
+    }
   }
 
   public getConnection() {
@@ -216,12 +240,12 @@ export class QueueFactory implements OnApplicationShutdown {
       () => this.isReady(),
       () => this.getConnectionState(),
     );
-    this.createdQueues.push(queue);
+    this.createdQueues.push({ queue, queueName, timeout });
     return queue;
   }
 
   async onApplicationShutdown() {
-    for (const queue of this.createdQueues) {
+    for (const { queue } of this.createdQueues) {
       queue.stopAllCronTasks();
     }
     this.createdQueues = [];

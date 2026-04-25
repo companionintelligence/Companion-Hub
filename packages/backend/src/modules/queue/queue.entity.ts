@@ -8,6 +8,7 @@ import type { QueueConnectionState } from './queue.factory';
 
 export class Queue<T extends z.ZodType, R extends z.ZodType<{ success: boolean; message: string }>> {
   private cronTasks: ScheduledTask[] = [];
+  private consumerCallback?: (data: z.output<T> & { eventId: string }, reply: (response: z.input<R>) => Promise<void>) => Promise<void>;
 
   constructor(
     private rabbit: Connection,
@@ -23,6 +24,11 @@ export class Queue<T extends z.ZodType, R extends z.ZodType<{ success: boolean; 
   ) {}
 
   public onEvent(callback: (data: z.output<T> & { eventId: string }, reply: (response: z.input<R>) => Promise<void>) => Promise<void>) {
+    this.consumerCallback = callback;
+    this.registerConsumer(callback);
+  }
+
+  private registerConsumer(callback: (data: z.output<T> & { eventId: string }, reply: (response: z.input<R>) => Promise<void>) => Promise<void>) {
     try {
       this.rabbit.createConsumer({ queue: this.queueName, concurrency: this.workers, queueOptions: { durable: true } }, async (req, reply) => {
         let rpcSuccess = false;
@@ -54,6 +60,24 @@ export class Queue<T extends z.ZodType, R extends z.ZodType<{ success: boolean; 
     } catch (error) {
       this.logger.error(`Failed to create consumer for queue ${this.queueName}:`, error);
       throw error;
+    }
+  }
+
+  /**
+   * Re-bind this queue to a new RabbitMQ connection after the factory reconnects.
+   * Replaces the stale RPC client, publisher, and consumer with fresh instances.
+   */
+  public rebindConnection(rabbit: Connection, rpcClient: RPCClient, publisher: EventPublisher) {
+    this.rabbit = rabbit;
+    this.rpcClient = rpcClient;
+    this.publisher = publisher;
+
+    if (this.consumerCallback) {
+      try {
+        this.registerConsumer(this.consumerCallback);
+      } catch (error) {
+        this.logger.error(`Failed to re-register consumer for queue ${this.queueName} after reconnect:`, error);
+      }
     }
   }
 

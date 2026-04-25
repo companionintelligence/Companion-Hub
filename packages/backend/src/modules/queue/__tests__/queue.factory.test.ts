@@ -136,4 +136,40 @@ describe('QueueFactory', () => {
     expect(connectionInstances[0]?.createRPCClient).toHaveBeenCalled();
     expect(logger.warn).toHaveBeenCalledWith('Queue connection not ready, creating queue in degraded mode.');
   });
+
+  it('rebinds queues to the new connection after reconnect', async () => {
+    const factory = new QueueFactory(logger, config);
+    const firstConnection = connectionInstances[0];
+
+    // Establish initial connection
+    await firstConnection?.emit('connection');
+    expect(factory.isReady()).toBe(true);
+
+    // Create a queue while connected
+    const queue = await factory.createQueue({
+      queueName: 'app-events-queue',
+      eventSchema: z.object({ requestId: z.string() }),
+      timeout: 1000,
+    });
+
+    expect(queue).toBeDefined();
+    const initialRpcCallCount = firstConnection?.createRPCClient.mock.calls.length ?? 0;
+    const initialPublisherCallCount = firstConnection?.createPublisher.mock.calls.length ?? 0;
+
+    // Simulate connection loss and reconnect
+    firstConnection.ready = false;
+    await firstConnection?.emit('error', new Error('socket closed'));
+
+    // A new connection should have been created
+    expect(connectionInstances.length).toBeGreaterThan(1);
+    const secondConnection = connectionInstances.at(-1);
+
+    // Emit connection event on the new connection — this should trigger rebindQueues
+    await secondConnection?.emit('connection');
+
+    // The new connection should have createRPCClient and createPublisher called for the rebound queue
+    expect(secondConnection?.createRPCClient).toHaveBeenCalled();
+    expect(secondConnection?.createPublisher).toHaveBeenCalled();
+    expect(logger.info).toHaveBeenCalledWith('Rebound queue app-events-queue to new connection');
+  });
 });
