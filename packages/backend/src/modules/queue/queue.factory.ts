@@ -135,7 +135,7 @@ export class QueueFactory implements OnApplicationShutdown {
           timeout,
           confirm: true,
           maxAttempts: 3,
-          queues: [{ autoDelete: false, durable: false, queue: queueName }],
+          queues: [{ autoDelete: false, durable: true, queue: queueName }],
         });
         const publisher = new EventPublisher(this.rabbit, this.logger, queueName);
         publisher.initialize();
