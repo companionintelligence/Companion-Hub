@@ -70,8 +70,9 @@ describe('Desktop storage contract (issue #393)', () => {
 
     // What the container volume mount resolves to on the host
     const hostMountBase = path.join(rootFolderHost, 'app-data');
-    const containerAppDataPath = path.join('/app-data', storeId, appName);
-    const resolvedHostPath = containerAppDataPath.replace('/app-data', hostMountBase);
+    const containerAppDataPath = path.posix.join('/app-data', storeId, appName);
+    const containerRelativePath = path.posix.relative('/app-data', containerAppDataPath);
+    const resolvedHostPath = path.join(hostMountBase, containerRelativePath);
 
     expect(appDataDir).toBe(resolvedHostPath);
   });
