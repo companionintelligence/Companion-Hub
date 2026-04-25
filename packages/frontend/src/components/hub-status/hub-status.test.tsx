@@ -55,6 +55,9 @@ function renderWithTauriStatus(status: 'DockerNotAvailable' | 'Stopped' | 'Runni
     if (cmd === 'get_hub_status_command') {
       return status;
     }
+    if (cmd === 'get_startup_phase_command') {
+      return { status, phase: 'test phase', services: [] };
+    }
 
     throw new Error(`Unexpected invoke command: ${cmd}`);
   });
@@ -183,6 +186,8 @@ describe('HubStatus Docker guidance', () => {
           if (getHubStatusCallCount === 1) return 'DockerNotAvailable';
           if (getHubStatusCallCount === 2) return 'Stopped';
           return 'Running';
+        case 'get_startup_phase_command':
+          return { status: 'Starting', phase: 'Waiting for health checks', services: [] };
         case 'start_hub_command':
           return 'Hub started successfully';
         default:
@@ -227,6 +232,8 @@ describe('HubStatus Docker guidance', () => {
         case 'get_hub_status_command':
           getHubStatusCallCount += 1;
           return getHubStatusCallCount === 1 ? 'Stopped' : 'Running';
+        case 'get_startup_phase_command':
+          return { status: 'Stopped', phase: 'No containers found', services: [] };
         case 'start_hub_command':
           return 'Hub started successfully';
         default:
@@ -261,5 +268,106 @@ describe('HubStatus Docker guidance', () => {
 
     expect(await screen.findByText('Hub child')).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Docker Desktop Required' })).not.toBeInTheDocument();
+  });
+});
+
+describe('HubStatus startup phase and diagnostics', () => {
+  it('shows phase-level progress during startup with service health', async () => {
+    const invoke = vi.fn<(cmd: string) => Promise<unknown>>(async (cmd: string) => {
+      switch (cmd) {
+        case 'get_hub_status_command':
+          return 'Starting';
+        case 'get_startup_phase_command':
+          return {
+            status: 'Starting',
+            phase: 'Waiting for health checks: ci-os-hub',
+            services: [
+              { name: 'ci-hub-db', state: 'running', health: 'healthy' },
+              { name: 'ci-os-hub', state: 'running', health: 'starting' },
+            ],
+          };
+        default:
+          throw new Error(`Unexpected invoke command: ${cmd}`);
+      }
+    });
+
+    setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5)');
+    Object.defineProperty(tauriWindow, '__TAURI_INTERNALS__', {
+      value: { invoke },
+      configurable: true,
+    });
+
+    render(
+      <HubStatus>
+        <div>Hub child</div>
+      </HubStatus>,
+    );
+
+    expect(await screen.findByText('Hub Starting…')).toBeInTheDocument();
+    expect(screen.getByText('Waiting for health checks: ci-os-hub')).toBeInTheDocument();
+    expect(screen.getByText('ci-hub-db')).toBeInTheDocument();
+    expect(screen.getByText('ci-os-hub')).toBeInTheDocument();
+    expect(screen.getByText('healthy')).toBeInTheDocument();
+    expect(screen.getByText('starting')).toBeInTheDocument();
+  });
+
+  it('shows View Logs and Open Logs Folder buttons during startup', async () => {
+    const invoke = vi.fn<(cmd: string) => Promise<unknown>>(async (cmd: string) => {
+      switch (cmd) {
+        case 'get_hub_status_command':
+          return 'Starting';
+        case 'get_startup_phase_command':
+          return { status: 'Starting', phase: 'Waiting to start', services: [] };
+        default:
+          throw new Error(`Unexpected invoke command: ${cmd}`);
+      }
+    });
+
+    setUserAgent('Mozilla/5.0 (X11; Linux x86_64)');
+    Object.defineProperty(tauriWindow, '__TAURI_INTERNALS__', {
+      value: { invoke },
+      configurable: true,
+    });
+
+    render(
+      <HubStatus>
+        <div>Hub child</div>
+      </HubStatus>,
+    );
+
+    expect(await screen.findByText('Hub Starting…')).toBeInTheDocument();
+    expect(screen.getByText('View Logs')).toBeInTheDocument();
+    expect(screen.getByText('Open Logs Folder')).toBeInTheDocument();
+  });
+
+  it('shows View Logs and Open Logs Folder buttons on error state', async () => {
+    const invoke = vi.fn<(cmd: string) => Promise<unknown>>(async (cmd: string) => {
+      switch (cmd) {
+        case 'get_hub_status_command':
+          return { Error: { message: 'Hub crashed' } };
+        case 'get_startup_phase_command':
+          return { status: { Error: { message: 'Hub crashed' } }, phase: 'Hub crashed', services: [] };
+        default:
+          throw new Error(`Unexpected invoke command: ${cmd}`);
+      }
+    });
+
+    setUserAgent('Mozilla/5.0 (X11; Linux x86_64)');
+    Object.defineProperty(tauriWindow, '__TAURI_INTERNALS__', {
+      value: { invoke },
+      configurable: true,
+    });
+
+    render(
+      <HubStatus>
+        <div>Hub child</div>
+      </HubStatus>,
+    );
+
+    expect(await screen.findByText('Hub Error')).toBeInTheDocument();
+    expect(screen.getAllByText('Hub crashed')).toHaveLength(2); // error message + phase detail
+    expect(screen.getByText('View Logs')).toBeInTheDocument();
+    expect(screen.getByText('Open Logs Folder')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Restart Hub' })).toBeInTheDocument();
   });
 });

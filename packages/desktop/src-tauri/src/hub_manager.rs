@@ -181,6 +181,137 @@ pub enum HubStatus {
     Error { message: String },
 }
 
+/// Detailed startup phase information for the UI to display meaningful progress.
+#[derive(Clone, serde::Serialize)]
+pub struct StartupPhase {
+    pub status: HubStatus,
+    /// A human-readable description of what the system is currently doing.
+    pub phase: String,
+    /// Per-service health snapshot (service name → health state string).
+    pub services: Vec<ServiceHealth>,
+}
+
+#[derive(Clone, serde::Serialize)]
+pub struct ServiceHealth {
+    pub name: String,
+    pub state: String,
+    pub health: String,
+}
+
+const USER_STOPPED_MARKER_FILENAME: &str = ".user-stopped";
+
+fn user_stopped_marker_path(data_dir: &Path) -> PathBuf {
+    data_dir.join(USER_STOPPED_MARKER_FILENAME)
+}
+
+/// Record that the user intentionally stopped the Hub.
+pub fn mark_user_stopped(data_dir: &Path) {
+    let _ = std::fs::write(
+        user_stopped_marker_path(data_dir),
+        b"Hub was intentionally stopped by the user.\n",
+    );
+}
+
+/// Clear the user-stopped marker (e.g. when the user explicitly starts the Hub).
+pub fn clear_user_stopped(data_dir: &Path) {
+    let _ = std::fs::remove_file(user_stopped_marker_path(data_dir));
+}
+
+/// Check if the user intentionally stopped the Hub.
+pub fn is_user_stopped(data_dir: &Path) -> bool {
+    user_stopped_marker_path(data_dir).exists()
+}
+
+/// Get detailed startup phase information by inspecting all Hub services.
+pub fn get_startup_phase() -> StartupPhase {
+    let status = get_hub_status();
+
+    if matches!(status, HubStatus::DockerNotAvailable) {
+        return StartupPhase {
+            status,
+            phase: "Docker is not available".to_string(),
+            services: vec![],
+        };
+    }
+
+    // Inspect all ci-hub project containers
+    let inspect_output = docker_command()
+        .args([
+            "compose",
+            "--project-name",
+            "ci-hub",
+            "ps",
+            "--format",
+            "{{.Name}}\t{{.State}}\t{{.Health}}",
+            "-a",
+        ])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+
+    let services: Vec<ServiceHealth> = inspect_output
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            let parts: Vec<&str> = line.split('\t').collect();
+            ServiceHealth {
+                name: parts.first().copied().unwrap_or("unknown").to_string(),
+                state: parts.get(1).copied().unwrap_or("unknown").to_string(),
+                health: parts.get(2).copied().unwrap_or("").to_string(),
+            }
+        })
+        .collect();
+
+    let phase = match &status {
+        HubStatus::Stopped => {
+            if services.is_empty() {
+                "No containers found".to_string()
+            } else {
+                "Containers exist but are not running".to_string()
+            }
+        }
+        HubStatus::Starting => {
+            // Determine which service is holding things up
+            let unhealthy: Vec<&ServiceHealth> = services
+                .iter()
+                .filter(|s| s.health != "healthy" && s.state == "running")
+                .collect();
+            if unhealthy.is_empty() {
+                "Waiting for containers to start".to_string()
+            } else {
+                let names: Vec<&str> = unhealthy.iter().map(|s| s.name.as_str()).collect();
+                format!("Waiting for health checks: {}", names.join(", "))
+            }
+        }
+        HubStatus::Running => "All services healthy".to_string(),
+        HubStatus::Error { message } => message.clone(),
+        HubStatus::DockerNotAvailable => "Docker is not available".to_string(),
+    };
+
+    StartupPhase {
+        status,
+        phase,
+        services,
+    }
+}
+
+/// Read the desktop log file contents (last N lines).
+pub fn read_desktop_logs(max_lines: usize) -> String {
+    let log_path = desktop_log_path();
+    match std::fs::read_to_string(&log_path) {
+        Ok(contents) => {
+            let lines: Vec<&str> = contents.lines().collect();
+            let start = if lines.len() > max_lines {
+                lines.len() - max_lines
+            } else {
+                0
+            };
+            lines[start..].join("\n")
+        }
+        Err(_) => String::new(),
+    }
+}
+
 #[derive(Clone, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum DockerAccessState {
@@ -729,6 +860,7 @@ fn remove_existing_traefik_container(data_dir: &Path) -> Result<(), String> {
 
 /// Start Hub using docker compose up (with port conflict resolution)
 pub fn start_hub(compose_path: &Path, env_path: &Path, data_dir: &Path) -> Result<String, String> {
+    clear_user_stopped(data_dir);
     let _ = append_desktop_log_for(
         data_dir,
         "hub.start",
@@ -871,11 +1003,12 @@ pub fn start_hub(compose_path: &Path, env_path: &Path, data_dir: &Path) -> Resul
 /// Stop Hub containers
 pub fn stop_hub(compose_path: &Path, env_path: &Path) -> Result<String, String> {
     let data_dir = get_hub_data_dir();
+    mark_user_stopped(&data_dir);
     let _ = append_desktop_log_for(
         &data_dir,
         "hub.stop",
         &format!(
-            "Requested stop via docker compose down\ncompose={}\nenv={}",
+            "Requested stop via docker compose down (user-stopped marker set)\ncompose={}\nenv={}",
             compose_path.display(),
             env_path.display()
         ),

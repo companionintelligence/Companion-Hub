@@ -7,6 +7,18 @@ interface HubStatusProps {
 
 type HubStatusResponse = 'DockerNotAvailable' | 'Stopped' | 'Starting' | 'Running' | { Error: { message: string } };
 
+interface ServiceHealth {
+  name: string;
+  state: string;
+  health: string;
+}
+
+interface StartupPhaseResponse {
+  status: HubStatusResponse;
+  phase: string;
+  services: ServiceHealth[];
+}
+
 function getErrorMessage(err: unknown): string {
   if (err instanceof Error) return err.message;
   return String(err);
@@ -160,6 +172,10 @@ function DockerInstallGuide() {
 
 export function HubStatus({ children }: HubStatusProps) {
   const [status, setStatus] = useState<HubStatusResponse | null>(null);
+  const [phase, setPhase] = useState<string | null>(null);
+  const [services, setServices] = useState<ServiceHealth[]>([]);
+  const [logs, setLogs] = useState<string | null>(null);
+  const [showLogs, setShowLogs] = useState(false);
   const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
   const isTauriRelease = isTauri && !window.location.origin.startsWith('http://localhost:');
   const isWindows = isTauri && detectPlatform() === 'windows';
@@ -203,6 +219,20 @@ export function HubStatus({ children }: HubStatusProps) {
     if (invoke) {
       try {
         const result = (await invoke('get_hub_status_command')) as HubStatusResponse;
+
+        // Fetch detailed phase info for non-running states
+        if (result === 'Running') {
+          setPhase(null);
+          setServices([]);
+        } else {
+          try {
+            const phaseResult = (await invoke('get_startup_phase_command')) as StartupPhaseResponse;
+            setPhase(phaseResult.phase);
+            setServices(phaseResult.services);
+          } catch {
+            // Phase info is optional — fall back to basic status
+          }
+        }
 
         if (isWindows) {
           if (result === 'DockerNotAvailable') {
@@ -262,6 +292,33 @@ export function HubStatus({ children }: HubStatusProps) {
     await startHub('Failed to restart hub:');
   }, [startHub]);
 
+  const handleViewLogs = useCallback(async () => {
+    const invoke = getTauriInvoke();
+    if (!invoke) return;
+    try {
+      const logContent = (await invoke('read_desktop_logs_command')) as string;
+      setLogs(logContent);
+      setShowLogs(true);
+    } catch {
+      // Fallback: open logs directory
+      try {
+        await invoke('open_logs_dir_command');
+      } catch {
+        // ignore
+      }
+    }
+  }, []);
+
+  const handleOpenLogsDir = useCallback(async () => {
+    const invoke = getTauriInvoke();
+    if (!invoke) return;
+    try {
+      await invoke('open_logs_dir_command');
+    } catch {
+      // ignore
+    }
+  }, []);
+
   // If not in Tauri, don't block the UI — web users have the backend proxied
   if (!isTauri) return <>{children}</>;
 
@@ -309,9 +366,27 @@ export function HubStatus({ children }: HubStatusProps) {
               <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
               <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
             </svg>
-            <span className="text-muted-foreground">Waiting to start…</span>
+            <span className="text-muted-foreground">{phase ?? 'Waiting to start…'}</span>
           </div>
+          {services.length > 0 && (
+            <div className="w-full max-w-md space-y-1">
+              {services.map((svc) => (
+                <div key={svc.name} className="flex items-center justify-between text-sm text-muted-foreground px-2 py-1 rounded bg-muted/50">
+                  <span className="font-mono text-xs">{svc.name}</span>
+                  <span className={svc.health === 'healthy' ? 'text-green-500' : 'text-yellow-500'}>{svc.health || svc.state}</span>
+                </div>
+              ))}
+            </div>
+          )}
           <p className="text-sm text-muted-foreground">This may take a few minutes on first run while images are downloaded.</p>
+          <div className="flex gap-3">
+            <button type="button" onClick={handleViewLogs} className="text-sm text-muted-foreground underline hover:text-foreground">
+              View Logs
+            </button>
+            <button type="button" onClick={handleOpenLogsDir} className="text-sm text-muted-foreground underline hover:text-foreground">
+              Open Logs Folder
+            </button>
+          </div>
         </>
       )}
 
@@ -319,14 +394,39 @@ export function HubStatus({ children }: HubStatusProps) {
         <>
           <h1 className="text-2xl font-semibold text-foreground">Hub Error</h1>
           <p className="text-center max-w-md text-muted-foreground">{errorMessage}</p>
-          <button
-            type="button"
-            onClick={handleRestartHub}
-            className="inline-flex items-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-          >
-            Restart Hub
-          </button>
+          {phase && <p className="text-center max-w-md text-sm text-muted-foreground/70">{phase}</p>}
+          <div className="flex gap-3">
+            <button
+              type="button"
+              onClick={handleRestartHub}
+              className="inline-flex items-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+            >
+              Restart Hub
+            </button>
+          </div>
+          <div className="flex gap-3">
+            <button type="button" onClick={handleViewLogs} className="text-sm text-muted-foreground underline hover:text-foreground">
+              View Logs
+            </button>
+            <button type="button" onClick={handleOpenLogsDir} className="text-sm text-muted-foreground underline hover:text-foreground">
+              Open Logs Folder
+            </button>
+          </div>
         </>
+      )}
+
+      {showLogs && logs !== null && (
+        <div className="w-full max-w-2xl">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-sm font-medium text-foreground">Recent Logs</span>
+            <button type="button" onClick={() => setShowLogs(false)} className="text-sm text-muted-foreground underline hover:text-foreground">
+              Hide
+            </button>
+          </div>
+          <pre className="bg-muted rounded-md p-3 text-xs font-mono text-muted-foreground max-h-64 overflow-auto whitespace-pre-wrap">
+            {logs || 'No logs available.'}
+          </pre>
+        </div>
       )}
 
       {status !== 'Starting' && status !== 'DockerNotAvailable' && !errorMessage && (

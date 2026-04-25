@@ -7,6 +7,7 @@ pub mod port_manager;
 mod tray;
 
 use tauri::{Emitter, Listener, Manager};
+use tauri_plugin_shell::ShellExt;
 use tauri_plugin_store::StoreExt;
 
 /// Check if the Hub backend is reachable at the given URL.
@@ -56,6 +57,36 @@ async fn get_hub_status_command() -> hub_manager::HubStatus {
     hub_manager::get_hub_status()
 }
 
+/// Get detailed startup phase information for the UI.
+#[tauri::command]
+async fn get_startup_phase_command() -> hub_manager::StartupPhase {
+    hub_manager::get_startup_phase()
+}
+
+/// Read recent desktop log entries for in-app diagnostics.
+#[tauri::command]
+async fn read_desktop_logs_command() -> String {
+    hub_manager::read_desktop_logs(200)
+}
+
+/// Open the logs directory in the system file manager.
+#[tauri::command]
+async fn open_logs_dir_command(app: tauri::AppHandle) -> Result<(), String> {
+    let logs_dir = hub_manager::logs_open_target();
+    let _ = std::fs::create_dir_all(&logs_dir);
+    app.shell().open(
+        logs_dir.to_string_lossy().to_string(),
+        None::<tauri_plugin_shell::open::Program>,
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// Check whether the user intentionally stopped the Hub.
+#[tauri::command]
+async fn is_user_stopped_command() -> bool {
+    hub_manager::is_user_stopped(&hub_manager::get_hub_data_dir())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
@@ -83,6 +114,10 @@ pub fn run() {
             check_docker_available,
             check_docker_access_command,
             get_hub_status_command,
+            get_startup_phase_command,
+            read_desktop_logs_command,
+            open_logs_dir_command,
+            is_user_stopped_command,
             install_docker_command,
         ])
         .setup(|app| {
@@ -173,9 +208,12 @@ pub fn run() {
                 let containers_exist = hub_manager::hub_containers_exist();
                 let traefik_recreate_required = traefik_preflight.changed
                     || hub_manager::is_traefik_recreate_required(&data_dir);
+                let user_stopped = hub_manager::is_user_stopped(&data_dir);
 
-                let should_start = if !containers_exist {
-                    true // First launch or user stopped Hub
+                let should_start = if user_stopped && containers_exist {
+                    false // User explicitly stopped the Hub — respect that across relaunches
+                } else if !containers_exist {
+                    true // First launch or containers were removed
                 } else if traefik_recreate_required {
                     true // Runtime state changed and Traefik must be recreated before reuse
                 } else if saved_hash.as_deref() != Some(&config_hash) {
@@ -184,7 +222,9 @@ pub fn run() {
                     false // Containers exist, config unchanged, no runtime repair pending — do nothing
                 };
 
-                let reason = if !containers_exist {
+                let reason = if user_stopped && containers_exist {
+                    "user intentionally stopped the Hub (respecting across relaunch)".to_string()
+                } else if !containers_exist {
                     "containers are missing".to_string()
                 } else if traefik_recreate_required {
                     "Traefik runtime preflight changed mounted state and requires container recreation"
