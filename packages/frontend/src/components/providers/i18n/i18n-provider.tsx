@@ -5,7 +5,7 @@ import { type PropsWithChildren, useEffect, useState } from 'react';
 import { I18nextProvider, initReactI18next } from 'react-i18next';
 import { client } from '@/api-client/client.gen';
 
-const isTauriRelease = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window && !window.location.origin.startsWith('http://localhost:');
+const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
 let i18nInitialized = false;
 
@@ -15,9 +15,11 @@ function initI18n() {
 
   const Backend = new HttpBackend(null, {
     loadPath: '/api/i18n/locales/{{ns}}/{{lng}}.json',
-    // Override the request function for Tauri release mode to prefix baseUrl
+    // Override the request function for Tauri mode to prefix baseUrl.
+    // In dev mode the Vite proxy may target the wrong port, so always
+    // resolve through the API client's configured baseUrl when in Tauri.
     request: (_options: object, url: string, _payload: object, callback: (err: Error | null, response: { status: number; data: string }) => void) => {
-      const fullUrl = isTauriRelease ? `${client.getConfig().baseUrl ?? ''}${url}` : url;
+      const fullUrl = isTauri ? `${client.getConfig().baseUrl ?? ''}${url}` : url;
       fetch(fullUrl, { credentials: 'include' })
         .then((res) => {
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
