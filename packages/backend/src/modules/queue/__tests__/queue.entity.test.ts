@@ -1,5 +1,5 @@
 import { LoggerService } from '@/core/logger/logger.service';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { mock } from 'vitest-mock-extended';
 import type { Connection, RPCClient } from 'rabbitmq-client';
 import { z } from 'zod';
@@ -60,6 +60,8 @@ describe('Queue', () => {
   });
 
   it('skips cron execution when the queue connection is not ready', async () => {
+    vi.useFakeTimers();
+
     const logger = mock<LoggerService>();
     const rabbit = mock<Connection>();
     const rpcClient = mock<RPCClient>();
@@ -77,16 +79,16 @@ describe('Queue', () => {
       () => ({ status: 'degraded', ready: false, attempts: 1, lastError: 'connection lost' }),
     );
 
-    // Use a per-second pattern and manually trigger the scheduled callback
     queue.publishRepeatable({ requestId: 'cron-1' }, '* * * * * *');
 
-    // Wait briefly for the cron to fire (runs every second)
-    await new Promise((resolve) => global.setTimeout(resolve, 1500));
+    // Advance past cron tick
+    await vi.advanceTimersByTimeAsync(1500);
 
     expect(rpcClient.send).not.toHaveBeenCalled();
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Skipping cron job for queue cron-queue'));
 
     queue.stopAllCronTasks();
+    vi.useRealTimers();
   });
 
   it('uses new RPC client and publisher after rebindConnection', async () => {
@@ -94,6 +96,8 @@ describe('Queue', () => {
     const rabbit = mock<Connection>();
     const rpcClient = mock<RPCClient>();
     const publisher = mock<EventPublisher>();
+    rpcClient.close.mockResolvedValue(undefined);
+    publisher.close.mockResolvedValue(undefined);
     const queue = new Queue(
       rabbit,
       rpcClient,

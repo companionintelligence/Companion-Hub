@@ -90,7 +90,6 @@ export class QueueFactory implements OnApplicationShutdown {
 
     this.rabbit.on('error', async (error) => {
       this.logger.error('Queue connection error', error);
-      this.markDegraded(error);
 
       // The library's Connection class handles reconnection internally.
       // Only trigger manual reconnect if the connection is truly dead and
@@ -100,6 +99,7 @@ export class QueueFactory implements OnApplicationShutdown {
         return;
       }
 
+      this.markDegraded(error);
       await this.reconnect(error);
     });
 
@@ -212,7 +212,9 @@ export class QueueFactory implements OnApplicationShutdown {
         this.logger.warn('Queue connection not ready, creating queue in degraded mode.');
       }
     } else if (!this.isReady()) {
-      this.logger.warn('Queue connection not ready, creating queue in degraded mode.');
+      if (this.getConnectionState().status === 'degraded') {
+        this.logger.warn('Queue connection not ready, creating queue in degraded mode.');
+      }
     }
 
     const publisher = new EventPublisher(this.rabbit, this.logger, params.queueName);

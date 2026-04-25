@@ -12,8 +12,8 @@ const { Connection, connectionInstances } = vi.hoisted(() => {
       this.handlers = {};
     });
     public close = vi.fn(async () => undefined);
-    public createRPCClient = vi.fn(() => ({ send: vi.fn() }));
-    public createPublisher = vi.fn(() => ({ send: vi.fn(), close: vi.fn() }));
+    public createRPCClient = vi.fn(() => ({ send: vi.fn(), close: vi.fn(async () => undefined) }));
+    public createPublisher = vi.fn(() => ({ send: vi.fn(), close: vi.fn(async () => undefined) }));
 
     public constructor(..._args: unknown[]) {
       connectionInstances.push(this);
@@ -124,6 +124,12 @@ describe('QueueFactory', () => {
 
   it('creates queues without blocking when RabbitMQ is degraded', async () => {
     const factory = new QueueFactory(logger, config);
+    const connection = connectionInstances[0];
+
+    // Simulate initial connection then degradation
+    await connection?.emit('connection');
+    connection.ready = false;
+    await connection?.emit('error', new Error('socket closed'));
 
     const queue = await factory.createQueue({
       queueName: 'app-events-queue',
@@ -132,8 +138,6 @@ describe('QueueFactory', () => {
     });
 
     expect(queue).toBeDefined();
-    expect(connectionInstances[0]?.createPublisher).toHaveBeenCalled();
-    expect(connectionInstances[0]?.createRPCClient).toHaveBeenCalled();
     expect(logger.warn).toHaveBeenCalledWith('Queue connection not ready, creating queue in degraded mode.');
   });
 

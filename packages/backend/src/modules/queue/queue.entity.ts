@@ -1,7 +1,7 @@
 import type { LoggerService } from '@/core/logger/logger.service';
 import * as cron from 'node-cron';
 import type { ScheduledTask } from 'node-cron';
-import { AMQPConnectionError, AMQPError, type Connection, type RPCClient } from 'rabbitmq-client';
+import { AMQPConnectionError, AMQPError, type Connection, type Consumer, type RPCClient } from 'rabbitmq-client';
 import { z } from 'zod';
 import type { EventPublisher } from './event.publisher';
 import type { QueueConnectionState } from './queue.factory';
@@ -9,6 +9,7 @@ import type { QueueConnectionState } from './queue.factory';
 export class Queue<T extends z.ZodType, R extends z.ZodType<{ success: boolean; message: string }>> {
   private cronTasks: ScheduledTask[] = [];
   private consumerCallback?: (data: z.output<T> & { eventId: string }, reply: (response: z.input<R>) => Promise<void>) => Promise<void>;
+  private activeConsumer?: Consumer;
 
   constructor(
     private rabbit: Connection,
@@ -30,33 +31,36 @@ export class Queue<T extends z.ZodType, R extends z.ZodType<{ success: boolean; 
 
   private registerConsumer(callback: (data: z.output<T> & { eventId: string }, reply: (response: z.input<R>) => Promise<void>) => Promise<void>) {
     try {
-      this.rabbit.createConsumer({ queue: this.queueName, concurrency: this.workers, queueOptions: { durable: true } }, async (req, reply) => {
-        let rpcSuccess = false;
-        let rpcResultMessage = '';
+      this.activeConsumer = this.rabbit.createConsumer(
+        { queue: this.queueName, concurrency: this.workers, queueOptions: { durable: true } },
+        async (req, reply) => {
+          let rpcSuccess = false;
+          let rpcResultMessage = '';
 
-        try {
-          await callback(req.body, reply);
-          rpcSuccess = true;
-          rpcResultMessage = 'RPC processed successfully.';
-        } catch (error) {
-          this.logger.error('Error in consumer callback:', error);
-          await reply({ success: false, message: (error as Error)?.message });
-          rpcSuccess = false;
-          rpcResultMessage = error instanceof Error ? error.message : String(error);
-        } finally {
-          const eventToPublish = {
-            queueName: this.queueName,
-            requestData: req.body,
-            rpcStatus: rpcSuccess ? 'success' : 'failure',
-            rpcMessage: rpcResultMessage,
-            requestId: req.body.requestId,
-            timestamp: new Date().toISOString(),
-          };
+          try {
+            await callback(req.body, reply);
+            rpcSuccess = true;
+            rpcResultMessage = 'RPC processed successfully.';
+          } catch (error) {
+            this.logger.error('Error in consumer callback:', error);
+            await reply({ success: false, message: (error as Error)?.message });
+            rpcSuccess = false;
+            rpcResultMessage = error instanceof Error ? error.message : String(error);
+          } finally {
+            const eventToPublish = {
+              queueName: this.queueName,
+              requestData: req.body,
+              rpcStatus: rpcSuccess ? 'success' : 'failure',
+              rpcMessage: rpcResultMessage,
+              requestId: req.body.requestId,
+              timestamp: new Date().toISOString(),
+            };
 
-          const routingKey = `rpc.${rpcSuccess ? 'processed' : 'error'}.${this.queueName}`;
-          await this.publisher.publish(routingKey, eventToPublish);
-        }
-      });
+            const routingKey = `rpc.${rpcSuccess ? 'processed' : 'error'}.${this.queueName}`;
+            await this.publisher.publish(routingKey, eventToPublish);
+          }
+        },
+      );
     } catch (error) {
       this.logger.error(`Failed to create consumer for queue ${this.queueName}:`, error);
       throw error;
@@ -68,6 +72,27 @@ export class Queue<T extends z.ZodType, R extends z.ZodType<{ success: boolean; 
    * Replaces the stale RPC client, publisher, and consumer with fresh instances.
    */
   public rebindConnection(rabbit: Connection, rpcClient: RPCClient, publisher: EventPublisher) {
+    // Only rebind if the connection instance actually changed
+    if (this.rabbit === rabbit) return;
+
+    // Close old resources (best-effort, old connection may be dead)
+    if (this.activeConsumer) {
+      this.activeConsumer.close().catch(() => {
+        /* old connection may be dead */
+      });
+      this.activeConsumer = undefined;
+    }
+    if (this.rpcClient) {
+      this.rpcClient.close().catch(() => {
+        /* old connection may be dead */
+      });
+    }
+    if (this.publisher) {
+      this.publisher.close().catch(() => {
+        /* old connection may be dead */
+      });
+    }
+
     this.rabbit = rabbit;
     this.rpcClient = rpcClient;
     this.publisher = publisher;
