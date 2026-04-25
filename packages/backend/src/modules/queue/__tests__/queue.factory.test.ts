@@ -153,8 +153,6 @@ describe('QueueFactory', () => {
     });
 
     expect(queue).toBeDefined();
-    const initialRpcCallCount = firstConnection?.createRPCClient.mock.calls.length ?? 0;
-    const initialPublisherCallCount = firstConnection?.createPublisher.mock.calls.length ?? 0;
 
     // Simulate connection loss and reconnect
     firstConnection.ready = false;
