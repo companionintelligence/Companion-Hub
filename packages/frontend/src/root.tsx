@@ -52,7 +52,6 @@ client.interceptors.response.use(async (res) => {
 // Cross-origin credentials ('include') are blocked by browsers when the server
 // responds with Access-Control-Allow-Origin: * — so we use 'omit' in all Tauri
 // modes and rely on the X-CI-Hub-Session header fallback instead.
-const isTauriRelease = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window && !window.location.origin.startsWith('http://localhost');
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 const credentialMode: RequestCredentials = isTauri ? 'omit' : 'include';
 
