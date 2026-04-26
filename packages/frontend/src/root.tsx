@@ -50,10 +50,11 @@ client.interceptors.response.use(async (res) => {
 // In Tauri release mode, the frontend is served from tauri://localhost
 // but the API is on a local HTTP port. Detect Tauri and set the baseUrl.
 // Cross-origin credentials ('include') are blocked by browsers when the server
-// responds with Access-Control-Allow-Origin: * — so we use 'omit' in Tauri mode.
+// responds with Access-Control-Allow-Origin: * — so we use 'omit' in all Tauri
+// modes and rely on the X-CI-Hub-Session header fallback instead.
 const isTauriRelease = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window && !window.location.origin.startsWith('http://localhost');
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
-const credentialMode: RequestCredentials = isTauriRelease ? 'omit' : 'include';
+const credentialMode: RequestCredentials = isTauri ? 'omit' : 'include';
 
 client.setConfig({
   credentials: credentialMode,

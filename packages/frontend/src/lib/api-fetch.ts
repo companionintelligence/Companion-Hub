@@ -1,6 +1,6 @@
 import { client } from '@/api-client/client.gen';
 
-// Session ID storage for Tauri release mode (where cookies don't work cross-origin)
+// Session ID storage for Tauri modes (where cookies don't work cross-origin)
 let tauriSessionId: string | null = null;
 
 export function setTauriSessionId(id: string | null) {
@@ -18,10 +18,12 @@ export function getTauriSessionId(): string | null {
   return tauriSessionId;
 }
 
+const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+
 /**
  * Wrapper around fetch() that prepends the API client's baseUrl.
- * In Tauri release mode, also sends the session ID as a custom header
- * since cross-origin cookies don't work in WebView2 over HTTP.
+ * In Tauri modes, sends the session ID as a custom header since
+ * cross-origin cookies don't work when the server uses Access-Control-Allow-Origin: *.
  */
 export function apiFetch(path: string, init?: RequestInit): Promise<Response> {
   const baseUrl = client.getConfig().baseUrl ?? '';
@@ -30,5 +32,6 @@ export function apiFetch(path: string, init?: RequestInit): Promise<Response> {
   if (sid) {
     headers.set('X-CI-Hub-Session', sid);
   }
-  return fetch(`${baseUrl}${path}`, { credentials: 'include', ...init, headers });
+  const credentials: RequestCredentials = isTauri ? 'omit' : 'include';
+  return fetch(`${baseUrl}${path}`, { credentials, ...init, headers });
 }
