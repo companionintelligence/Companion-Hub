@@ -20,7 +20,7 @@ function initI18n() {
     // resolve through the API client's configured baseUrl when in Tauri.
     request: (_options: object, url: string, _payload: object, callback: (err: Error | null, response: { status: number; data: string }) => void) => {
       const fullUrl = isTauri ? `${client.getConfig().baseUrl ?? ''}${url}` : url;
-      fetch(fullUrl, { credentials: 'include' })
+      fetch(fullUrl, { credentials: isTauri ? 'omit' : 'include' })
         .then((res) => {
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           return res.text();

@@ -59,8 +59,10 @@ async fn get_hub_status_command() -> hub_manager::HubStatus {
 
 /// Get detailed startup phase information for the UI.
 #[tauri::command]
-async fn get_startup_phase_command() -> hub_manager::StartupPhase {
-    hub_manager::get_startup_phase()
+async fn get_startup_phase_command(
+    state: tauri::State<'_, hub_manager::HubPaths>,
+) -> Result<hub_manager::StartupPhase, String> {
+    Ok(hub_manager::get_startup_phase(&state.compose_path, &state.env_path))
 }
 
 /// Read recent desktop log entries for in-app diagnostics.

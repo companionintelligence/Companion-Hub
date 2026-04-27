@@ -153,15 +153,19 @@ export async function clientLoader({ request }: Route.ActionArgs) {
   }
 
   // Now check user context for auth/onboarding flow.
-  // Wrap in try/catch: during startup the backend may not be ready yet;
+  // In Tauri mode, during startup the backend may not be ready yet;
   // HubStatus will show the appropriate startup UI and reload when healthy.
+  // Only swallow network/fetch errors — rethrow application-level errors
+  // (4xx/5xx) so the route logic (redirects, ErrorBoundary) works correctly.
   let userResult: Awaited<ReturnType<typeof userContext>> | null = null;
   try {
     userResult = await userContext();
-  } catch {
-    // Backend is unavailable — return null so HubStatus can render its startup UI
-    // instead of the ErrorBoundary.
-    return null;
+  } catch (err) {
+    if (isTauri && err instanceof TypeError) {
+      // TypeError from fetch = network error (backend unreachable)
+      return null;
+    }
+    throw err;
   }
 
   // Non-root paths: let individual route loaders handle redirects

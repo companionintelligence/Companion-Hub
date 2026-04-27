@@ -223,7 +223,7 @@ pub fn is_user_stopped(data_dir: &Path) -> bool {
 }
 
 /// Get detailed startup phase information by inspecting all Hub services.
-pub fn get_startup_phase() -> StartupPhase {
+pub fn get_startup_phase(compose_path: &Path, env_path: &Path) -> StartupPhase {
     let status = get_hub_status();
 
     if matches!(status, HubStatus::DockerNotAvailable) {
@@ -238,8 +238,10 @@ pub fn get_startup_phase() -> StartupPhase {
     let inspect_output = docker_command()
         .args([
             "compose",
-            "--project-name",
-            "ci-hub",
+            "-f",
+            &compose_path.to_string_lossy(),
+            "--env-file",
+            &env_path.to_string_lossy(),
             "ps",
             "--format",
             "{{.Name}}\t{{.State}}\t{{.Health}}",
@@ -271,10 +273,17 @@ pub fn get_startup_phase() -> StartupPhase {
             }
         }
         HubStatus::Starting => {
-            // Determine which service is holding things up
+            // Determine which service is holding things up.
+            // Only consider services that have a healthcheck defined (non-empty health field)
+            // and are not yet healthy. Services without a healthcheck (empty/"" health) are
+            // not blocking — they don't participate in health-gate logic.
             let unhealthy: Vec<&ServiceHealth> = services
                 .iter()
-                .filter(|s| s.health != "healthy" && s.state == "running")
+                .filter(|s| {
+                    s.state == "running"
+                        && !s.health.is_empty()
+                        && s.health != "healthy"
+                })
                 .collect();
             if unhealthy.is_empty() {
                 "Waiting for containers to start".to_string()
@@ -296,20 +305,42 @@ pub fn get_startup_phase() -> StartupPhase {
 }
 
 /// Read the desktop log file contents (last N lines).
+/// Uses a bounded tail read from the end of the file to avoid loading the
+/// entire file into memory when the log grows large.
 pub fn read_desktop_logs(max_lines: usize) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+
     let log_path = desktop_log_path();
-    match std::fs::read_to_string(&log_path) {
-        Ok(contents) => {
-            let lines: Vec<&str> = contents.lines().collect();
-            let start = if lines.len() > max_lines {
-                lines.len() - max_lines
-            } else {
-                0
-            };
-            lines[start..].join("\n")
-        }
-        Err(_) => String::new(),
+    let mut file = match std::fs::File::open(&log_path) {
+        Ok(f) => f,
+        Err(_) => return String::new(),
+    };
+
+    let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
+    if file_len == 0 {
+        return String::new();
     }
+
+    // Read at most 256 KB from the end — more than enough for 200 lines.
+    const MAX_TAIL_BYTES: u64 = 256 * 1024;
+    let read_from = file_len.saturating_sub(MAX_TAIL_BYTES);
+    let _ = file.seek(SeekFrom::Start(read_from));
+
+    let mut buf = String::new();
+    if file.read_to_string(&mut buf).is_err() {
+        return String::new();
+    }
+
+    let lines: Vec<&str> = buf.lines().collect();
+    let start = lines.len().saturating_sub(max_lines);
+    // If we seeked into the middle of the file, the first line is likely
+    // partial — skip it when we didn't read from the beginning.
+    let start = if read_from > 0 && start == 0 && lines.len() > 1 {
+        1
+    } else {
+        start
+    };
+    lines[start..].join("\n")
 }
 
 #[derive(Clone, serde::Serialize, PartialEq, Eq)]
