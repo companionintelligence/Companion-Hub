@@ -10,6 +10,7 @@ import toast from 'react-hot-toast';
 
 const DEFAULT_PORTAL_URL = 'https://portal.companionintelligence.com';
 const STATUS_POLL_INTERVAL_MS = 3000;
+const HEADLESS_POLL_INTERVAL_MS = 5000; // slower poll when idle, waiting for external registration
 const DOMAIN_PROBE_INTERVAL_MS = 5000;
 const MAX_DOMAIN_PROBE_ATTEMPTS = 60;
 const REQUIRED_CONSECUTIVE_PROBES = 2;
@@ -220,24 +221,28 @@ export default function DeviceRegistrationPage() {
   }, [refreshRegistrationStatus]);
 
   useEffect(() => {
-    // Keep polling while the phase is still in-progress (paired/provisioning),
-    // OR while we're operational but still waiting for publicly_ready before
-    // redirecting to the public URL.
+    // Keep polling while:
+    // - phase is in-progress (paired/provisioning)
+    // - waiting for publicly_ready before redirecting to the public URL
+    // - phase is unregistered — poll at a slower rate to detect headless setup completing externally
+    const isUnregistered = registrationStatus?.phase === 'unregistered';
     const shouldPoll =
       (registrationStatus && isRegistrationPending(registrationStatus)) ||
       (registrationStatus &&
         registrationStatus.phase === 'locally_ready' &&
         pendingPairTargetRef.current?.domain &&
         pendingPairTargetRef.current?.subdomain &&
-        !completionStartedRef.current);
+        !completionStartedRef.current) ||
+      isUnregistered;
 
     if (!shouldPoll) {
       return;
     }
 
+    const intervalMs = isUnregistered ? HEADLESS_POLL_INTERVAL_MS : STATUS_POLL_INTERVAL_MS;
     const intervalId = window.setInterval(() => {
       void refreshRegistrationStatus();
-    }, STATUS_POLL_INTERVAL_MS);
+    }, intervalMs);
 
     return () => {
       window.clearInterval(intervalId);
