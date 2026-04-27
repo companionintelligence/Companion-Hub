@@ -295,6 +295,74 @@ export default function DeviceRegistrationPage() {
     }
   }, [deviceId, isLoading, registrationStatus]);
 
+  const doPair = useCallback(
+    async (code: string) => {
+      setIsPairing(true);
+      setPairingError(null);
+      setStatusError(null);
+      setDeviceInfoError(null);
+      completionStartedRef.current = false;
+
+      try {
+        const res = await apiFetch('/api/registration/pair', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pairing_code: code }),
+        });
+
+        const data = (await res.json()) as { success?: boolean; message?: string; domain?: string; subdomain?: string };
+
+        if (res.ok && data.success) {
+          pendingPairTargetRef.current = { domain: data.domain, subdomain: data.subdomain };
+          setPairingCode('');
+          setRegistrationStatus({ phase: 'paired', degradedReasons: [], registered: false });
+          setRedirectStatus('Pairing accepted. This may take a few minutes...');
+          toast.success('Pairing accepted. This may take a few minutes...');
+          await refreshRegistrationStatus();
+        } else {
+          const errorMsg = typeof data.message === 'string' ? data.message : 'Registration failed.';
+          setPairingError(errorMsg);
+          toast.error(errorMsg);
+        }
+      } catch (error) {
+        console.error(error);
+        setPairingError('Failed to register device. Please try again.');
+      } finally {
+        setIsPairing(false);
+      }
+    },
+    [refreshRegistrationStatus],
+  );
+
+  useEffect(() => {
+    if (!isTauri) {
+      return;
+    }
+
+    let unlisten: (() => void) | undefined;
+
+    void (async () => {
+      try {
+        const { listen } = await import('@tauri-apps/api/event');
+        unlisten = await listen<string>('deep-link-pair', (event) => {
+          const code = event.payload.trim().toUpperCase();
+          if (code.length !== 6) {
+            return;
+          }
+
+          setPairingCode(code);
+          void doPair(code);
+        });
+      } catch {
+        // Tauri event bridge unavailable in non-desktop contexts.
+      }
+    })();
+
+    return () => {
+      void unlisten?.();
+    };
+  }, [doPair, isTauri]);
+
   const handleRetryStatus = async () => {
     setStatusError(null);
     await refreshRegistrationStatus({ loadDeviceData: registrationStatus?.phase === 'unregistered' || !registrationStatus });
@@ -308,64 +376,6 @@ export default function DeviceRegistrationPage() {
     }
     await doPair(code);
   };
-
-  async function doPair(code: string) {
-    setIsPairing(true);
-    setPairingError(null);
-    setStatusError(null);
-    setDeviceInfoError(null);
-    completionStartedRef.current = false;
-
-    try {
-      const res = await apiFetch('/api/registration/pair', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pairing_code: code }),
-      });
-
-      const data = (await res.json()) as { success?: boolean; message?: string; domain?: string; subdomain?: string };
-
-      if (res.ok && data.success) {
-        pendingPairTargetRef.current = { domain: data.domain, subdomain: data.subdomain };
-        setPairingCode('');
-        setRegistrationStatus({ phase: 'paired', degradedReasons: [], registered: false });
-        setRedirectStatus('Pairing accepted. This may take a few minutes...');
-        toast.success('Pairing accepted. This may take a few minutes...');
-        await refreshRegistrationStatus();
-      } else {
-        const errorMsg = typeof data.message === 'string' ? data.message : 'Registration failed.';
-        setPairingError(errorMsg);
-        toast.error(errorMsg);
-      }
-    } catch (error) {
-      console.error(error);
-      setPairingError('Failed to register device. Please try again.');
-    } finally {
-      setIsPairing(false);
-    }
-  }
-
-  // Tauri deep-link: listen for cihub:// pairing codes and auto-submit.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: doPair is stable (only uses refs and state setters)
-  useEffect(() => {
-    if (!isTauri) return;
-    let unlisten: (() => void) | undefined;
-    (async () => {
-      try {
-        const { listen } = await import('@tauri-apps/api/event');
-        unlisten = await listen<string>('deep-link-pair', (event) => {
-          const code = event.payload.trim().toUpperCase();
-          if (code.length === 6) {
-            setPairingCode(code);
-            void doPair(code);
-          }
-        });
-      } catch {
-        // Not in Tauri
-      }
-    })();
-    return () => unlisten?.();
-  }, [isTauri]);
 
   if (isLoading) {
     return (
