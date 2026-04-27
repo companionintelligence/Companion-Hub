@@ -1,13 +1,15 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
-import { DEFAULT_HUB_CONTAINER_NAME } from '@/common/constants';
+import { DEFAULT_HUB_CONTAINER_NAME, DEFAULT_NETWORK_NAME } from '@/common/constants';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable, InternalServerErrorException, Inject, forwardRef } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
+import type Dockerode from 'dockerode';
 import { AppFilesManager } from '../apps/app-files-manager';
 import { AppsService } from '../apps/apps.service';
+import { DOCKERODE } from './constants';
 
 @Injectable()
 export class DockerService {
@@ -17,7 +19,158 @@ export class DockerService {
     @Inject(forwardRef(() => AppFilesManager)) private readonly appFilesManager: AppFilesManager,
     private readonly filesystem: FilesystemService,
     @Inject(forwardRef(() => AppsService)) private readonly appsService: AppsService,
+    @Inject(DOCKERODE) private readonly docker: Dockerode,
   ) {}
+
+  /**
+   * Derive the Docker Compose project name used by CI-Hub for a given app URN.
+   *
+   * @param appUrn - App URN (for example, "urn:store:my-app")
+   * @returns Compose project name used for labels and docker compose --project-name
+   */
+  private getComposeProjectName(appUrn: AppUrn): string {
+    return appUrn.replace(':', '_');
+  }
+
+  /**
+   * Check if a Docker API error indicates the target resource no longer exists.
+   *
+   * @param error - Error thrown by Dockerode or command execution
+   * @returns True when the error represents a missing resource (404/not found)
+   */
+  private isResourceMissingError(error: unknown): boolean {
+    if (!(error instanceof Error)) {
+      return false;
+    }
+
+    const message = error.message.toLowerCase();
+    return message.includes('no such') || message.includes('not found') || message.includes('404');
+  }
+
+  /**
+   * Check if a Docker API error indicates the resource is currently in use.
+   *
+   * @param error - Error thrown by Dockerode or command execution
+   * @returns True when the resource cannot be removed due to active references
+   */
+  private isResourceInUseError(error: unknown): boolean {
+    if (!(error instanceof Error)) {
+      return false;
+    }
+
+    const message = error.message.toLowerCase();
+    return message.includes('is being used') || message.includes('in use') || message.includes('has active endpoints');
+  }
+
+  /**
+   * Snapshot image IDs from all containers belonging to an app compose project.
+   *
+   * This is collected before compose down so cleanup can still remove pulled
+   * images by immutable ID even if tag/ref resolution changes later.
+   *
+   * @param appUrn - App URN to inspect
+   * @returns Unique list of Docker image IDs referenced by project containers
+   */
+  public async snapshotAppImageIds(appUrn: AppUrn): Promise<string[]> {
+    const projectName = this.getComposeProjectName(appUrn);
+
+    try {
+      // Snapshot concrete image IDs from project containers before teardown so we
+      // can still remove pulled images even if compose ref resolution changes.
+      const containers = await this.docker.listContainers({
+        all: true,
+        filters: { label: [`com.docker.compose.project=${projectName}`] },
+      });
+
+      return [...new Set(containers.map((container) => container.ImageID).filter(Boolean))];
+    } catch (error) {
+      this.logger.warn(`Failed to snapshot image IDs for ${appUrn}: ${error}`);
+      return [];
+    }
+  }
+
+  /**
+   * Remove Docker images associated with an app after uninstall.
+   *
+   * Image candidates come from both:
+   * - pre-down container image snapshot IDs, and
+   * - compose-labeled images (for locally built artifacts).
+   *
+   * Missing/in-use image errors are intentionally non-fatal so uninstall can
+   * continue and finish application-level cleanup.
+   *
+   * @param appUrn - App URN being uninstalled
+   * @param snapshotImageIds - Optional pre-down image IDs collected from containers
+   */
+  public async removeAppImages(appUrn: AppUrn, snapshotImageIds: string[] = []): Promise<void> {
+    const projectName = this.getComposeProjectName(appUrn);
+
+    const labeledImages = await this.docker.listImages({ filters: { label: [`com.docker.compose.project=${projectName}`] } }).catch((error) => {
+      this.logger.warn(`Failed to list labeled images for ${appUrn}: ${error}`);
+      return [];
+    });
+
+    // Merge container-derived IDs with compose-labeled built images for
+    // best-effort cleanup across partial/failure states.
+    const imageIds = new Set<string>([...snapshotImageIds, ...labeledImages.map((image) => image.Id)].filter(Boolean));
+
+    for (const imageId of imageIds) {
+      try {
+        await this.docker.getImage(imageId).remove({ force: true });
+      } catch (error) {
+        // Missing/in-use resources are non-fatal during uninstall cleanup.
+        if (this.isResourceMissingError(error) || this.isResourceInUseError(error)) {
+          this.logger.warn(`Skipping image removal for ${imageId} (${appUrn}): ${error}`);
+          continue;
+        }
+
+        this.logger.warn(`Failed to remove image ${imageId} for ${appUrn}: ${error}`);
+      }
+    }
+  }
+
+  /**
+   * Remove app-owned Docker networks that remain after compose teardown.
+   *
+   * The shared CI-Hub network and external compose networks are skipped to
+   * avoid deleting infrastructure or user-managed resources.
+   * Missing/in-use network errors are intentionally non-fatal.
+   *
+   * @param appUrn - App URN being uninstalled
+   */
+  public async removeAppNetworks(appUrn: AppUrn): Promise<void> {
+    const projectName = this.getComposeProjectName(appUrn);
+
+    const networks = await this.docker.listNetworks({ filters: { label: [`com.docker.compose.project=${projectName}`] } }).catch((error) => {
+      this.logger.warn(`Failed to list networks for ${appUrn}: ${error}`);
+      return [];
+    });
+
+    for (const network of networks) {
+      const networkName = network.Name;
+      // Never remove the shared hub network during app-specific teardown.
+      if (!networkName || networkName === DEFAULT_NETWORK_NAME) {
+        continue;
+      }
+
+      const isExternal = network.Labels?.['com.docker.compose.network.external'] === 'true';
+      // External networks are user/host managed and should be left untouched.
+      if (isExternal) {
+        continue;
+      }
+
+      try {
+        await this.docker.getNetwork(network.Id).remove();
+      } catch (error) {
+        if (this.isResourceMissingError(error) || this.isResourceInUseError(error)) {
+          this.logger.warn(`Skipping network removal for ${networkName} (${appUrn}): ${error}`);
+          continue;
+        }
+
+        this.logger.warn(`Failed to remove network ${networkName} for ${appUrn}: ${error}`);
+      }
+    }
+  }
 
   /**
    * Get the base compose args for an app
@@ -40,7 +193,7 @@ export class DockerService {
       args.push('--env-file', userEnvFile.path);
     }
 
-    args.push('--project-name', appUrn.replace(':', '_'));
+    args.push('--project-name', this.getComposeProjectName(appUrn));
 
     const composeFile = await this.appFilesManager.getDockerComposeYaml(appUrn);
     args.push('-f', composeFile.path);
@@ -474,7 +627,7 @@ export class DockerService {
     unhealthy: Array<{ name: string; state: string; logs: string }>;
     healthy: string[];
   }> {
-    const projectName = appUrn.replace(':', '_');
+    const projectName = this.getComposeProjectName(appUrn);
     const result: { unhealthy: Array<{ name: string; state: string; logs: string }>; healthy: string[] } = {
       unhealthy: [],
       healthy: [],

@@ -5,10 +5,12 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { AppFilesManager } from '../../apps/app-files-manager';
 import { AppsService } from '../../apps/apps.service';
+import { DOCKERODE } from '../constants';
 import { mock, MockProxy } from 'vitest-mock-extended';
 import * as child_process from 'node:child_process';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'node:events';
+import type Dockerode from 'dockerode';
 
 const createMockSpawnProcess = () => {
   const process = new EventEmitter() as any;
@@ -41,6 +43,7 @@ describe('DockerService', () => {
   let filesystemService: MockProxy<FilesystemService>;
   let appFilesManager: MockProxy<AppFilesManager>;
   let appsService: MockProxy<AppsService>;
+  let dockerode: MockProxy<Dockerode>;
 
   beforeEach(async () => {
     loggerService = mock<LoggerService>();
@@ -48,6 +51,7 @@ describe('DockerService', () => {
     filesystemService = mock<FilesystemService>();
     appFilesManager = mock<AppFilesManager>();
     appsService = mock<AppsService>();
+    dockerode = mock<Dockerode>();
 
     configService.get.mockImplementation((key) => {
       if (key === 'directories') {
@@ -72,6 +76,7 @@ describe('DockerService', () => {
         { provide: FilesystemService, useValue: filesystemService },
         { provide: AppFilesManager, useValue: appFilesManager },
         { provide: AppsService, useValue: appsService },
+        { provide: DOCKERODE, useValue: dockerode },
       ],
     }).compile();
 
@@ -381,6 +386,89 @@ describe('DockerService', () => {
         ['compose', '-f', '/other/docker-compose.yml', 'up', 'some-service', '-d', '--no-build', '--no-deps'],
         expect.objectContaining({ cwd: '/other' }),
       );
+    });
+  });
+
+  describe('snapshotAppImageIds', () => {
+    it('should return unique image IDs from compose project containers', async () => {
+      dockerode.listContainers.mockResolvedValue([{ ImageID: 'sha256:a' } as any, { ImageID: 'sha256:b' } as any, { ImageID: 'sha256:a' } as any]);
+
+      const result = await service.snapshotAppImageIds('urn:store:test' as any);
+
+      expect(dockerode.listContainers).toHaveBeenCalledWith({
+        all: true,
+        filters: { label: ['com.docker.compose.project=urn_store:test'] },
+      });
+      expect(result).toEqual(['sha256:a', 'sha256:b']);
+    });
+  });
+
+  describe('removeAppImages', () => {
+    it('should remove snapshot and labeled images with dedupe', async () => {
+      dockerode.listImages.mockResolvedValue([{ Id: 'sha256:b' }, { Id: 'sha256:c' }] as any);
+
+      const removeA = vi.fn().mockResolvedValue(undefined);
+      const removeB = vi.fn().mockResolvedValue(undefined);
+      const removeC = vi.fn().mockResolvedValue(undefined);
+
+      dockerode.getImage.mockImplementation((id: string) => {
+        if (id === 'sha256:a') return { remove: removeA } as any;
+        if (id === 'sha256:b') return { remove: removeB } as any;
+        return { remove: removeC } as any;
+      });
+
+      await service.removeAppImages('urn:store:test' as any, ['sha256:a', 'sha256:b']);
+
+      expect(dockerode.listImages).toHaveBeenCalledWith({
+        filters: { label: ['com.docker.compose.project=urn_store:test'] },
+      });
+      expect(removeA).toHaveBeenCalledWith({ force: true });
+      expect(removeB).toHaveBeenCalledWith({ force: true });
+      expect(removeC).toHaveBeenCalledWith({ force: true });
+    });
+
+    it('should swallow not found and in use removal errors', async () => {
+      dockerode.listImages.mockResolvedValue([] as any);
+
+      const removeMissing = vi.fn().mockRejectedValue(new Error('No such image: sha256:a'));
+      const removeInUse = vi.fn().mockRejectedValue(new Error('image is being used by running container'));
+
+      dockerode.getImage.mockImplementation((id: string) => {
+        if (id === 'sha256:a') return { remove: removeMissing } as any;
+        return { remove: removeInUse } as any;
+      });
+
+      await expect(service.removeAppImages('urn:store:test' as any, ['sha256:a', 'sha256:b'])).resolves.toBeUndefined();
+      expect(loggerService.warn).toHaveBeenCalled();
+    });
+  });
+
+  describe('removeAppNetworks', () => {
+    it('should skip shared and external networks, and remove app-owned networks', async () => {
+      dockerode.listNetworks.mockResolvedValue([
+        { Id: '1', Name: 'urn_store_test_default', Labels: {} },
+        { Id: '2', Name: 'ci-os-hub_network', Labels: {} },
+        { Id: '3', Name: 'urn_store_test_external', Labels: { 'com.docker.compose.network.external': 'true' } },
+      ] as any);
+
+      const remove = vi.fn().mockResolvedValue(undefined);
+      dockerode.getNetwork.mockImplementation((id: string) => ({ remove: id === '1' ? remove : vi.fn() }) as any);
+
+      await service.removeAppNetworks('urn:store:test' as any);
+
+      expect(dockerode.listNetworks).toHaveBeenCalledWith({
+        filters: { label: ['com.docker.compose.project=urn_store:test'] },
+      });
+      expect(remove).toHaveBeenCalledTimes(1);
+    });
+
+    it('should swallow active endpoint errors during network removal', async () => {
+      dockerode.listNetworks.mockResolvedValue([{ Id: '1', Name: 'urn_store_test_default', Labels: {} }] as any);
+      const remove = vi.fn().mockRejectedValue(new Error('network has active endpoints'));
+      dockerode.getNetwork.mockReturnValue({ remove } as any);
+
+      await expect(service.removeAppNetworks('urn:store:test' as any)).resolves.toBeUndefined();
+      expect(loggerService.warn).toHaveBeenCalled();
     });
   });
 });
