@@ -1592,18 +1592,18 @@ fn generate_container_docker_config(
                 Ok(raw) => match serde_json::from_str(&raw) {
                     Ok(config) => config,
                     Err(e) => {
-                        eprintln!(
+                        stderr_fallback(&format!(
                             "Warning: Cannot parse host Docker config at {:?}: {}. Proceeding with an empty Docker config.",
                             host_config_path, e
-                        );
+                        ));
                         serde_json::json!({})
                     }
                 },
                 Err(e) => {
-                    eprintln!(
+                    stderr_fallback(&format!(
                         "Warning: Cannot read host Docker config at {:?}: {}. Proceeding with an empty Docker config.",
                         host_config_path, e
-                    );
+                    ));
                     serde_json::json!({})
                 }
             }
@@ -1674,7 +1674,9 @@ fn generate_container_docker_config(
     std::fs::write(&config_path, format!("{}\n", content))
         .map_err(|e| format!("Cannot write docker-config.json: {}", e))?;
 
-    // Restrict permissions (config may contain auth tokens)
+    // Restrict permissions to the current user on Unix where file modes
+    // apply (config may contain auth tokens).  On Windows, no additional
+    // ACL hardening is applied; set_file_mode is a no-op there.
     set_file_mode(&config_path, 0o600)?;
 
     Ok(())
