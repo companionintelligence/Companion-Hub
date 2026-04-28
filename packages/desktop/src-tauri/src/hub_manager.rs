@@ -1649,12 +1649,8 @@ fn generate_container_docker_config(data_dir: &Path) -> Result<(), String> {
     std::fs::write(&config_path, format!("{}\n", content))
         .map_err(|e| format!("Cannot write docker-config.json: {}", e))?;
 
-    // Restrict permissions on non-Windows (config may contain auth tokens)
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    {
-        std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o600))
-            .map_err(|e| format!("Cannot set docker-config.json permissions: {}", e))?;
-    }
+    // Restrict permissions (config may contain auth tokens)
+    set_file_mode(&config_path, 0o600)?;
 
     Ok(())
 }
