@@ -54,9 +54,13 @@ export const AppStorePageSuspense = () => {
 export default () => {
   const params = useParams<{ storeId: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
-  const { setCategory, category, storeId, setStoreId, search: initialSearch, setSearch } = useAppStoreState();
-  const [search, setLocalSearch] = useState(initialSearch);
+  const { setCategory, category, storeId, setStoreId, search, setSearch } = useAppStoreState();
+  const [localSearch, setLocalSearch] = useState(search);
   const { data: registrationStatus, isLoading: isCheckingRegistration } = useRegistrationStatus();
+
+  useEffect(() => {
+    setLocalSearch(search);
+  }, [search]);
 
   const queryClient = useQueryClient();
   const { mutate: pullApps, isPending: isPulling } = useMutation({
@@ -256,7 +260,7 @@ export default () => {
       <div className="md:hidden space-y-4 mb-6">
         <div className="relative">
           <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-          <Input placeholder="Search apps..." className="pl-9 bg-muted/50" value={search} onChange={onSearch} />
+          <Input placeholder="Search apps..." className="pl-9 bg-muted/50" value={localSearch} onChange={onSearch} />
         </div>
         <div className="flex gap-2 overflow-x-auto pb-2 no-scrollbar -mx-6 px-6">
           <Button

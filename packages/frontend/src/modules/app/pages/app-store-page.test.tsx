@@ -2,6 +2,18 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { MemoryRouter } from 'react-router';
 
+const { mockStoreState, mockSearchAppsInfiniteOptions } = vi.hoisted(() => ({
+  mockStoreState: {
+    setCategory: vi.fn(),
+    category: undefined as string | undefined,
+    storeId: 'ci-apps',
+    setStoreId: vi.fn(),
+    search: '',
+    setSearch: vi.fn(),
+  },
+  mockSearchAppsInfiniteOptions: vi.fn(() => ({ queryKey: ['searchApps'] })),
+}));
+
 const mockSetSearchParams = vi.fn();
 let capturedSearchParams = new URLSearchParams();
 
@@ -51,7 +63,7 @@ vi.mock('@tanstack/react-query', () => ({
 
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   getEnabledAppStoresOptions: () => ({ queryKey: ['enabledStores'] }),
-  searchAppsInfiniteOptions: () => ({ queryKey: ['searchApps'] }),
+  searchAppsInfiniteOptions: mockSearchAppsInfiniteOptions,
   searchAppsOptions: () => ({ queryKey: ['searchAppsAll'] }),
   getInstalledAppsOptions: () => ({ queryKey: ['installed'] }),
 }));
@@ -80,19 +92,8 @@ vi.mock('@/modules/app/components/app-card/app-card', () => ({
   AppCard: ({ app }: { app: { name: string } }) => <div data-testid={`app-card-${app.name}`} />,
 }));
 
-const mockSetStoreId = vi.fn();
-const mockSetCategory = vi.fn();
-const mockSetSearch = vi.fn();
-
 vi.mock('@/stores/app-store', () => ({
-  useAppStoreState: () => ({
-    setCategory: mockSetCategory,
-    category: undefined,
-    storeId: 'ci-apps',
-    setStoreId: mockSetStoreId,
-    search: '',
-    setSearch: mockSetSearch,
-  }),
+  useAppStoreState: () => mockStoreState,
 }));
 
 import { useQuery } from '@tanstack/react-query';
@@ -125,6 +126,9 @@ describe('AppStorePage — multi-store UX', () => {
     vi.clearAllMocks();
     mockUseParams.mockReturnValue({});
     capturedSearchParams = new URLSearchParams();
+    mockStoreState.category = undefined;
+    mockStoreState.storeId = 'ci-apps';
+    mockStoreState.search = '';
   });
 
   it('renders store switcher buttons when multiple stores are enabled', () => {
@@ -178,7 +182,7 @@ describe('AppStorePage — multi-store UX', () => {
       </MemoryRouter>,
     );
 
-    expect(mockSetStoreId).toHaveBeenCalledWith('community');
+    expect(mockStoreState.setStoreId).toHaveBeenCalledWith('community');
   });
 
   it('calls setSearchParams when switching stores', () => {
@@ -191,7 +195,7 @@ describe('AppStorePage — multi-store UX', () => {
     );
 
     fireEvent.click(screen.getByText('Community'));
-    expect(mockSetStoreId).toHaveBeenCalledWith('community');
+    expect(mockStoreState.setStoreId).toHaveBeenCalledWith('community');
     expect(mockSetSearchParams).toHaveBeenCalled();
   });
 
@@ -206,5 +210,31 @@ describe('AppStorePage — multi-store UX', () => {
     );
 
     expect(mockSetSearchParams).toHaveBeenCalled();
+  });
+
+  it('uses the shared store search value for the app query and syncs the mobile input from it', () => {
+    setupQueries();
+    mockStoreState.search = 'sidebar term';
+
+    const { rerender } = render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    expect(mockSearchAppsInfiniteOptions).toHaveBeenCalledWith({
+      query: { search: 'sidebar term', category: undefined, pageSize: 24, storeId: 'ci-apps' },
+    });
+    expect(screen.getByPlaceholderText('Search apps...')).toHaveValue('sidebar term');
+
+    mockStoreState.search = 'updated elsewhere';
+
+    rerender(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByPlaceholderText('Search apps...')).toHaveValue('updated elsewhere');
   });
 });
