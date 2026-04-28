@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::os::unix::fs::PermissionsExt;
@@ -20,6 +21,9 @@ static START_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
 const MAX_COMMAND_OUTPUT_CHARS: usize = 400;
 const DESKTOP_LOG_FILENAME: &str = "desktop.log";
+const HUB_ENV_FILENAME: &str = ".env.dev";
+const LEGACY_HUB_ENV_FILENAME: &str = ".env";
+const HUB_COMPOSE_FILENAME: &str = "docker-compose.prod.yml";
 const MANAGED_APP_CONTAINER_LABEL_FILTER: &str = "label=ci-os-hub.managed=true";
 const MANAGED_APP_CONTAINER_URN_FILTER: &str = "label=ci-os-hub.appurn";
 const DEFAULT_TRAEFIK_ACME_EMAIL: &str = "admin@companionintelligence.com";
@@ -35,6 +39,9 @@ const TRAEFIK_TLS_DIR: &str = "state/traefik/tls";
 const TRAEFIK_CONFIG_FILE: &str = "state/traefik/config/traefik.yml";
 const TRAEFIK_DYNAMIC_FILE: &str = "state/traefik/dynamic/dynamic.yml";
 const TRAEFIK_ACME_FILE: &str = "state/traefik/acme_storage.json";
+const INTERNAL_DOCKER_CONFIG_FILE: &str = ".internal/docker-config.json";
+const HUB_DOCKER_CONFIG_FILE: &str = "docker-config.json";
+const HUB_START_HEALTHY_TIMEOUT_SECS: u64 = 180;
 
 #[cfg(target_os = "windows")]
 const DOCKER_DESKTOP_WINDOWS_INSTALLER_URL: &str =
@@ -248,11 +255,50 @@ pub struct ServiceStatus {
 pub struct StartupProgress {
     /// Per-service breakdown.
     pub services: Vec<ServiceStatus>,
-    /// Elapsed seconds since the app started polling (approximated by caller).
-    /// 0..=100 overall progress percentage (derived from ready / total).
+    /// 0..=100 overall progress percentage (average of required service states).
     pub progress_pct: u8,
+    /// Number of required startup images that are present locally.
+    pub image_pulled: u8,
+    /// Total number of required startup images.
+    pub image_total: u8,
+    /// 0..=100 image pull progress percentage.
+    pub image_pull_pct: u8,
     /// True once every service is Ready.
     pub all_ready: bool,
+}
+
+fn list_local_images() -> std::collections::HashSet<String> {
+    let output = docker_command()
+        .args(["image", "ls", "--format", "{{.Repository}}:{{.Tag}}"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
+
+    output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.ends_with(":<none>"))
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn required_startup_images() -> Vec<String> {
+    let env = parse_env_file(&hub_env_path());
+    let domain = env
+        .get("DOMAIN")
+        .map(String::as_str)
+        .unwrap_or("companionintelligence.com");
+    let hub_image = env
+        .get("CI_HUB_IMAGE")
+        .cloned()
+        .unwrap_or_else(|| image_for_domain(domain).to_string());
+
+    vec![
+        hub_image,
+        "postgres:14".to_string(),
+        "rabbitmq:4-alpine".to_string(),
+        "traefik:v3.6.7".to_string(),
+    ]
 }
 
 /// Query Docker for a list of container states in one `docker inspect` call.
@@ -302,6 +348,19 @@ fn derive_service_state(state: &str, health: &str) -> ServiceState {
     }
 }
 
+/// Translate a service state to a progress score used by averaged startup progress.
+///
+/// Pending means the container likely does not exist yet (pull/create still in progress),
+/// so we keep a small non-zero floor to indicate startup has begun.
+fn service_state_score(state: &ServiceState) -> u8 {
+    match state {
+        ServiceState::Pending => 15,
+        ServiceState::Starting => 60,
+        ServiceState::Ready => 100,
+        ServiceState::Failed => 0,
+    }
+}
+
 /// Return per-service startup progress for the frontend loading screen.
 pub fn get_startup_progress() -> StartupProgress {
     // Core services in startup order. Optional ones (cloudflared, headscale, etc.) are
@@ -324,6 +383,7 @@ pub fn get_startup_progress() -> StartupProgress {
 
     let mut services: Vec<ServiceStatus> = Vec::new();
     let mut ready_core: usize = 0;
+    let mut core_score_sum: usize = 0;
 
     for (container, label, _required) in core.iter().chain(optional.iter()) {
         let (state_str, health_str) = states
@@ -342,9 +402,10 @@ pub fn get_startup_progress() -> StartupProgress {
         });
     }
 
-    // Count ready core services for progress %
+    // Count ready core services and compute average core score for progress %.
     for (i, (_, _, required)) in core.iter().chain(optional.iter()).enumerate() {
         if *required {
+            core_score_sum += service_state_score(&services[i].state) as usize;
             if let ServiceState::Ready = services[i].state {
                 ready_core += 1;
             }
@@ -355,15 +416,42 @@ pub fn get_startup_progress() -> StartupProgress {
     let progress_pct = if core_count == 0 {
         0
     } else {
-        ((ready_core * 100) / core_count) as u8
+        (core_score_sum / core_count) as u8
     };
+
+    let required_images = required_startup_images();
+    let local_images = list_local_images();
+    let image_total = required_images.len() as u8;
+    let image_pulled = required_images
+        .iter()
+        .filter(|img| local_images.contains(img.as_str()))
+        .count() as u8;
+    let image_pull_pct = if image_total == 0 {
+        100
+    } else {
+        ((image_pulled as usize * 100) / image_total as usize) as u8
+    };
+
     let all_ready = ready_core == core_count;
 
-    StartupProgress { services, progress_pct, all_ready }
+    StartupProgress {
+        services,
+        progress_pct,
+        image_pulled,
+        image_total,
+        image_pull_pct,
+        all_ready,
+    }
 }
 
 /// Get the current status of the Hub by inspecting the Docker container.
 pub fn get_hub_status() -> HubStatus {
+    // If a start operation is actively running (including first-time image pulls),
+    // report Starting so the frontend shows progress instead of a false "Stopped" state.
+    if START_IN_PROGRESS.load(Ordering::SeqCst) {
+        return HubStatus::Starting;
+    }
+
     if !is_docker_available() {
         return HubStatus::DockerNotAvailable;
     }
@@ -440,6 +528,14 @@ pub fn get_hub_status() -> HubStatus {
 pub fn get_hub_data_dir() -> PathBuf {
     let base = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
     base.join("companion-hub")
+}
+
+pub fn hub_env_path_for(data_dir: &Path) -> PathBuf {
+    data_dir.join(HUB_ENV_FILENAME)
+}
+
+pub fn hub_env_path() -> PathBuf {
+    hub_env_path_for(&get_hub_data_dir())
 }
 
 pub(crate) fn logs_dir_for(data_dir: &Path) -> PathBuf {
@@ -827,6 +923,18 @@ fn prepare_traefik_runtime_state(data_dir: &Path) -> Result<TraefikRuntimePrefli
     Ok(result)
 }
 
+fn ensure_internal_docker_config_state(data_dir: &Path) -> Result<TraefikRuntimePreflight, String> {
+    ensure_runtime_file(
+        &data_dir.join(INTERNAL_DOCKER_CONFIG_FILE),
+        "{}",
+        None,
+    )
+}
+
+fn ensure_hub_docker_config_state(data_dir: &Path) -> Result<TraefikRuntimePreflight, String> {
+    ensure_runtime_file(&data_dir.join(HUB_DOCKER_CONFIG_FILE), "{}", None)
+}
+
 fn remove_existing_traefik_container(data_dir: &Path) -> Result<(), String> {
     let output = docker_command()
         .args(["rm", "-f", "traefik"])
@@ -893,6 +1001,7 @@ pub fn cleanup_stale_project_containers(
     );
 
     let output = docker_command()
+        .env("ENV_FILE", env_path)
         .args([
             "compose",
             "--env-file",
@@ -949,6 +1058,62 @@ fn is_container_name_conflict(output: &str) -> bool {
 fn is_oci_runtime_error(output: &str) -> bool {
     let lower = output.to_lowercase();
     lower.contains("oci runtime create failed") || lower.contains("failed to create shim task")
+}
+
+fn is_docker_config_mount_path_error(output: &str) -> bool {
+    let lower = output.to_lowercase();
+    lower.contains("docker-config.json")
+        && (lower.contains("not a directory")
+            || lower.contains("is a directory")
+            || lower.contains("mount a directory onto a file"))
+}
+
+fn inspect_hub_state_health() -> String {
+    docker_command()
+        .args([
+            "inspect",
+            "--format",
+            "{{.State.Status}}:{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}",
+            "ci-os-hub",
+        ])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default()
+}
+
+fn wait_for_hub_healthy() -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_secs(HUB_START_HEALTHY_TIMEOUT_SECS);
+    let mut last_status = String::new();
+
+    while Instant::now() < deadline {
+        let status = inspect_hub_state_health();
+        if !status.is_empty() {
+            last_status = status.clone();
+        }
+
+        if status == "running:healthy" {
+            return Ok(());
+        }
+
+        let state = status.split(':').next().unwrap_or("");
+        if matches!(state, "exited" | "dead") {
+            return Err(format!(
+                "Hub container exited during startup (status: {}).",
+                status
+            ));
+        }
+
+        std::thread::sleep(Duration::from_secs(1));
+    }
+
+    Err(format!(
+        "Timed out waiting for Hub to become healthy (last status: {}).",
+        if last_status.is_empty() {
+            "unknown"
+        } else {
+            &last_status
+        }
+    ))
 }
 
 /// Start Hub using docker compose up (with port conflict resolution).
@@ -1042,7 +1207,66 @@ fn start_hub_inner(
         }
     }
 
-    // Resolve port conflicts and write to .env before starting
+    if !compose_path.exists() {
+        let recover_candidates = compose_resource_candidates(
+            std::env::current_exe()
+                .ok()
+                .and_then(|exe| exe.parent().map(Path::to_path_buf))
+                .as_deref()
+                .unwrap_or(Path::new(".")),
+        );
+
+        if let Some(src) = recover_candidates.iter().find(|candidate| candidate.exists()) {
+            std::fs::copy(src, compose_path).map_err(|error| {
+                let message = format!(
+                    "Compose file was missing and recovery copy from {} failed: {}",
+                    src.display(),
+                    error
+                );
+                let _ = append_desktop_log_for(data_dir, "hub.start", &message);
+                with_view_logs_hint(message)
+            })?;
+            let _ = append_desktop_log_for(
+                data_dir,
+                "hub.start",
+                &format!(
+                    "Recovered missing compose file at {} from {}",
+                    compose_path.display(),
+                    src.display()
+                ),
+            );
+        }
+    }
+
+    // Ensure the file-mounted Docker config path is a file, not a directory.
+    // If Docker ever created this path with the wrong type, compose startup fails
+    // with an OCI runtime mount error.
+    ensure_hub_docker_config_state(data_dir).map_err(|error| {
+        let message = format!(
+            "Failed to prepare internal docker-config file before startup: {}",
+            error
+        );
+        let _ = append_desktop_log_for(data_dir, "hub.start", &message);
+        with_view_logs_hint(message)
+    })?;
+
+    let env_changed = ensure_runtime_env_state(data_dir, env_path).map_err(|error| {
+        let message = format!("Failed to prepare runtime env state before startup: {}", error);
+        let _ = append_desktop_log_for(data_dir, "hub.start", &message);
+        with_view_logs_hint(message)
+    })?;
+    if env_changed {
+        let _ = append_desktop_log_for(
+            data_dir,
+            "hub.start",
+            &format!(
+                "Runtime env file was repaired before startup: {}",
+                env_path.display()
+            ),
+        );
+    }
+
+    // Resolve port conflicts and write to .env.dev before starting
     let resolution = crate::port_manager::refresh_ports_if_needed(env_path).map_err(|error| {
         let message = format!("Port resolution failed before startup: {}", error);
         let _ = append_desktop_log_for(data_dir, "hub.start", &message);
@@ -1079,6 +1303,7 @@ fn start_hub_inner(
         }
 
         let output = match docker_command()
+            .env("ENV_FILE", env_path)
             .args([
                 "compose",
                 "--env-file",
@@ -1106,13 +1331,36 @@ fn start_hub_inner(
         );
 
         if output.status.success() {
-            let message = if combined_output.is_empty() {
+            let compose_message = if combined_output.is_empty() {
                 "docker compose up -d succeeded.".to_string()
             } else {
                 format!("docker compose up -d succeeded. {}", combined_output)
             };
-            let _ = append_desktop_log_for(data_dir, "hub.start", &message);
-            return Ok("Hub started successfully".to_string());
+            let _ = append_desktop_log_for(data_dir, "hub.start", &compose_message);
+            let _ = append_desktop_log_for(
+                data_dir,
+                "hub.start",
+                "Waiting for ci-os-hub to report running:healthy.",
+            );
+
+            match wait_for_hub_healthy() {
+                Ok(()) => {
+                    let _ = append_desktop_log_for(
+                        data_dir,
+                        "hub.start",
+                        "Hub reached running:healthy state.",
+                    );
+                    return Ok("Hub started successfully".to_string());
+                }
+                Err(error) => {
+                    let message = format!(
+                        "docker compose up -d succeeded but Hub did not become ready: {}",
+                        error
+                    );
+                    let _ = append_desktop_log_for(data_dir, "hub.start", &message);
+                    return Err(with_view_logs_hint(message));
+                }
+            }
         }
 
         last_error = combined_output.clone();
@@ -1136,7 +1384,39 @@ fn start_hub_inner(
             continue;
         }
 
-        // OCI runtime errors indicate Docker Desktop / WSL2 issues — retrying without
+        // The host path for /root/.docker/config.json can be poisoned as a directory.
+        // Self-heal it and retry automatically.
+        if is_docker_config_mount_path_error(&combined_output) && attempt < MAX_START_RETRIES {
+            let _ = append_desktop_log_for(
+                data_dir,
+                "hub.start",
+                "Detected docker-config mount path type mismatch — attempting self-heal and retry.",
+            );
+            if let Err(error) = ensure_internal_docker_config_state(data_dir) {
+                let _ = append_desktop_log_for(
+                    data_dir,
+                    "hub.start",
+                    &format!(
+                        "Self-heal of internal docker-config path failed before retry: {}",
+                        error
+                    ),
+                );
+            }
+            if let Err(error) = ensure_hub_docker_config_state(data_dir) {
+                let _ = append_desktop_log_for(
+                    data_dir,
+                    "hub.start",
+                    &format!(
+                        "Self-heal of hub docker-config path failed before retry: {}",
+                        error
+                    ),
+                );
+            }
+            std::thread::sleep(Duration::from_secs(1));
+            continue;
+        }
+
+        // Other OCI runtime errors indicate Docker Desktop / WSL2 issues — retrying without
         // user intervention is unlikely to help.
         if is_oci_runtime_error(&combined_output) {
             let _ = append_desktop_log_for(
@@ -1176,6 +1456,7 @@ pub fn stop_hub(compose_path: &Path, env_path: &Path) -> Result<String, String> 
     );
 
     let output = docker_command()
+        .env("ENV_FILE", env_path)
         .args([
             "compose",
             "--env-file",
@@ -1304,6 +1585,87 @@ fn parse_env_file(path: &Path) -> std::collections::HashMap<String, String> {
     map
 }
 
+fn render_runtime_env_content(
+    data_dir: &Path,
+    existing: &std::collections::HashMap<String, String>,
+) -> String {
+    let root_folder_host = existing
+        .get("ROOT_FOLDER_HOST")
+        .cloned()
+        .unwrap_or_else(|| compute_data_dir_str(data_dir));
+    let jwt_secret = existing
+        .get("JWT_SECRET")
+        .cloned()
+        .unwrap_or_else(|| generate_hex(64));
+    let postgres_password = existing
+        .get("POSTGRES_PASSWORD")
+        .cloned()
+        .unwrap_or_else(|| generate_hex(32));
+
+    let domain = option_env!("CI_HUB_DOMAIN").unwrap_or("companionintelligence.com");
+    let cloud_url =
+        option_env!("CI_HUB_CLOUD_URL").unwrap_or("https://portal.companionintelligence.com");
+    let hub_version = option_env!("CI_HUB_BUILD_VERSION").unwrap_or("4.7.0");
+    let hub_image = existing
+        .get("CI_HUB_IMAGE")
+        .cloned()
+        .unwrap_or_else(|| image_for_domain(domain).to_string());
+    let docker_platform = if cfg!(target_arch = "aarch64") {
+        "linux/arm64"
+    } else {
+        "linux/amd64"
+    };
+    let docker_config_path = data_dir.join(HUB_DOCKER_CONFIG_FILE);
+
+    format!(
+        "# Preserved (generated once, survive upgrades)\n\
+         ROOT_FOLDER_HOST={root_folder_host}\n\
+         JWT_SECRET={jwt_secret}\n\
+         POSTGRES_PASSWORD={postgres_password}\n\
+         \n\
+         # Derived (recomputed every launch from the current binary)\n\
+         INTERNAL_IP=0.0.0.0\n\
+         DOMAIN={domain}\n\
+         CI_CLOUD_URL={cloud_url}\n\
+         CI_HUB_VERSION={hub_version}\n\
+         CI_HUB_IMAGE={hub_image}\n\
+         DOCKER_PLATFORM={docker_platform}\n\
+         DOCKER_CONFIG_PATH={docker_config_path}\n",
+        root_folder_host = root_folder_host,
+        jwt_secret = jwt_secret,
+        postgres_password = postgres_password,
+        domain = domain,
+        cloud_url = cloud_url,
+        hub_version = hub_version,
+        hub_image = hub_image,
+        docker_platform = docker_platform,
+        docker_config_path = docker_config_path.display(),
+    )
+}
+
+fn ensure_runtime_env_state(data_dir: &Path, env_path: &Path) -> Result<bool, String> {
+    let existing = parse_env_file(env_path);
+    let env_content = render_runtime_env_content(data_dir, &existing);
+    let previous_content = std::fs::read_to_string(env_path).unwrap_or_default();
+    let changed = strip_port_vars(&previous_content) != env_content;
+
+    if changed {
+        std::fs::write(env_path, &env_content).map_err(|e| {
+            format!(
+                "Failed to write runtime env file at {}: {}",
+                env_path.display(),
+                e
+            )
+        })?;
+    }
+
+    // Keep a legacy mirror for consumers still reading .env.
+    let legacy_env_path = data_dir.join(LEGACY_HUB_ENV_FILENAME);
+    let _ = std::fs::write(&legacy_env_path, &env_content);
+
+    Ok(changed)
+}
+
 /// Generate a random hex string of the given byte length.
 fn generate_hex(bytes: usize) -> String {
     (0..bytes)
@@ -1335,11 +1697,26 @@ fn compute_data_dir_str(data_dir: &Path) -> String {
     }
 }
 
+fn compose_resource_candidates(resource_dir: &Path) -> Vec<PathBuf> {
+    vec![
+        resource_dir.join(HUB_COMPOSE_FILENAME),
+        resource_dir.join("resources").join(HUB_COMPOSE_FILENAME),
+        std::env::current_exe()
+            .unwrap_or_default()
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join("resources")
+            .join(HUB_COMPOSE_FILENAME),
+        PathBuf::from("/usr/lib/Companion Hub/resources").join(HUB_COMPOSE_FILENAME),
+        PathBuf::from("/usr/share/companion-hub").join(HUB_COMPOSE_FILENAME),
+    ]
+}
+
 /// Initialize Hub data directory and generate .env file.
 ///
 /// Uses a regenerate-and-preserve approach:
 /// - Preserved values (read from existing .env, generated if missing): ROOT_FOLDER_HOST, JWT_SECRET, POSTGRES_PASSWORD
-/// - Derived values (always recomputed from the current binary): INTERNAL_IP, DOMAIN, CI_CLOUD_URL, CI_HUB_VERSION, CI_HUB_IMAGE, DOCKER_PLATFORM
+/// - Derived values (always recomputed from the current binary): INTERNAL_IP, DOMAIN, CI_CLOUD_URL, CI_HUB_VERSION, CI_HUB_IMAGE, DOCKER_PLATFORM, DOCKER_CONFIG_PATH
 ///
 /// Returns the initialized desktop data paths and Traefik preflight result.
 pub fn initialize_hub(resource_dir: &Path) -> Result<HubInitialization, String> {
@@ -1371,18 +1748,7 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<HubInitialization, String> 
     );
 
     // Copy docker-compose.prod.yml from resources
-    let compose_candidates = [
-        resource_dir.join("docker-compose.prod.yml"),
-        resource_dir
-            .join("resources")
-            .join("docker-compose.prod.yml"),
-        std::env::current_exe()
-            .unwrap_or_default()
-            .parent()
-            .unwrap_or(Path::new("."))
-            .join("resources")
-            .join("docker-compose.prod.yml"),
-    ];
+    let compose_candidates = compose_resource_candidates(resource_dir);
 
     let log_path = data_dir.join("logs").join("init.log");
     let mut log_lines = vec![format!(
@@ -1400,7 +1766,7 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<HubInitialization, String> 
     }
 
     let compose_src = compose_candidates.iter().find(|p| p.exists());
-    let compose_dst = data_dir.join("docker-compose.prod.yml");
+    let compose_dst = data_dir.join(HUB_COMPOSE_FILENAME);
 
     if let Some(src) = compose_src {
         log_lines.push(format!("  -> using: {:?}", src));
@@ -1419,59 +1785,12 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<HubInitialization, String> 
         );
     }
 
-    // --- Regenerate .env with preserve-and-derive approach ---
-    let env_path = data_dir.join(".env");
+    // --- Regenerate .env.dev with preserve-and-derive approach ---
+    let env_path = hub_env_path_for(&data_dir);
     let existing = parse_env_file(&env_path);
 
-    // Preserved values — read from existing, generate if missing
-    let root_folder_host = existing
-        .get("ROOT_FOLDER_HOST")
-        .cloned()
-        .unwrap_or_else(|| compute_data_dir_str(&data_dir));
-    let jwt_secret = existing
-        .get("JWT_SECRET")
-        .cloned()
-        .unwrap_or_else(|| generate_hex(64));
-    let postgres_password = existing
-        .get("POSTGRES_PASSWORD")
-        .cloned()
-        .unwrap_or_else(|| generate_hex(32));
-
-    // Derived values — always from current binary
-    let domain = option_env!("CI_HUB_DOMAIN").unwrap_or("companionintelligence.com");
-    let cloud_url =
-        option_env!("CI_HUB_CLOUD_URL").unwrap_or("https://portal.companionintelligence.com");
-    let hub_version = option_env!("CI_HUB_BUILD_VERSION").unwrap_or("4.7.0");
-    let hub_image = image_for_domain(domain);
-    let docker_platform = if cfg!(target_arch = "aarch64") {
-        "linux/arm64"
-    } else {
-        "linux/amd64"
-    };
-
     // Build .env content with deterministic key order
-    let env_content = format!(
-        "# Preserved (generated once, survive upgrades)\n\
-         ROOT_FOLDER_HOST={root_folder_host}\n\
-         JWT_SECRET={jwt_secret}\n\
-         POSTGRES_PASSWORD={postgres_password}\n\
-         \n\
-         # Derived (recomputed every launch from the current binary)\n\
-         INTERNAL_IP=0.0.0.0\n\
-         DOMAIN={domain}\n\
-         CI_CLOUD_URL={cloud_url}\n\
-         CI_HUB_VERSION={hub_version}\n\
-         CI_HUB_IMAGE={hub_image}\n\
-         DOCKER_PLATFORM={docker_platform}\n",
-        root_folder_host = root_folder_host,
-        jwt_secret = jwt_secret,
-        postgres_password = postgres_password,
-        domain = domain,
-        cloud_url = cloud_url,
-        hub_version = hub_version,
-        hub_image = hub_image,
-        docker_platform = docker_platform,
-    );
+    let env_content = render_runtime_env_content(&data_dir, &existing);
 
     // Write .env (port manager will append dynamic port vars after this)
     let old_content = std::fs::read_to_string(&env_path).unwrap_or_default();
@@ -1483,13 +1802,37 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<HubInitialization, String> 
         with_view_logs_hint(message)
     })?;
 
+    // Keep a legacy mirror for consumers still reading .env.
+    let legacy_env_path = data_dir.join(LEGACY_HUB_ENV_FILENAME);
+    let _ = std::fs::write(&legacy_env_path, &env_content);
+
     log_lines.push(format!("  .env changed: {}", env_changed));
 
-    let traefik_preflight = prepare_traefik_runtime_state(&data_dir).map_err(|error| {
+    let mut traefik_preflight = prepare_traefik_runtime_state(&data_dir).map_err(|error| {
         let message = format!("Failed to prepare Traefik runtime state: {}", error);
         let _ = append_desktop_log_for(&data_dir, "initialize", &message);
         with_view_logs_hint(message)
     })?;
+
+    let internal_preflight = ensure_internal_docker_config_state(&data_dir).map_err(|error| {
+        let message = format!(
+            "Failed to prepare internal docker-config runtime state: {}",
+            error
+        );
+        let _ = append_desktop_log_for(&data_dir, "initialize", &message);
+        with_view_logs_hint(message)
+    })?;
+    traefik_preflight.merge(internal_preflight);
+
+    let hub_docker_config_preflight = ensure_hub_docker_config_state(&data_dir).map_err(|error| {
+        let message = format!(
+            "Failed to prepare hub docker-config runtime state: {}",
+            error
+        );
+        let _ = append_desktop_log_for(&data_dir, "initialize", &message);
+        with_view_logs_hint(message)
+    })?;
+    traefik_preflight.merge(hub_docker_config_preflight);
 
     if traefik_preflight.changed {
         mark_traefik_recreate_required(&data_dir).map_err(|error| {

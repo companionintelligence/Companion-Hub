@@ -242,7 +242,7 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
     let status_ref = Arc::clone(&status_item);
     let start_ref = Arc::clone(&start_item);
     let stop_ref = Arc::clone(&stop_item);
-    let env_path_for_health = crate::hub_manager::get_hub_data_dir().join(".env");
+    let env_path_for_health = crate::hub_manager::hub_env_path();
     tauri::async_runtime::spawn(async move {
         let mut last_ok: Option<bool> = None;
         loop {
