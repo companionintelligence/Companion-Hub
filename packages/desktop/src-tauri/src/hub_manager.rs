@@ -1571,10 +1571,35 @@ fn generate_container_docker_config(
 
     // On Windows, Docker may have created a directory at this path when the
     // file was missing during a previous `docker compose up`.  Remove it so
-    // we can write a proper file.
-    if config_path.exists() && config_path.is_dir() {
-        std::fs::remove_dir_all(&config_path)
-            .map_err(|e| format!("Cannot remove stale directory at {:?}: {}", config_path, e))?;
+    // we can write a proper file.  Use symlink_metadata to avoid following
+    // symlinks — refuse to proceed if the path is a symlink.
+    match std::fs::symlink_metadata(&config_path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(format!(
+                "Refusing to remove symlink at {:?} while preparing Docker config",
+                config_path
+            ));
+        }
+        Ok(metadata) if metadata.is_dir() => {
+            match std::fs::remove_dir_all(&config_path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    return Err(format!(
+                        "Cannot remove stale directory at {:?}: {}",
+                        config_path, e
+                    ));
+                }
+            }
+        }
+        Ok(_) => {} // Regular file — will be overwritten below
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {} // Does not exist yet
+        Err(e) => {
+            return Err(format!(
+                "Cannot inspect Docker config path at {:?}: {}",
+                config_path, e
+            ));
+        }
     }
 
     // Resolve the host Docker config path.  When no explicit override is
