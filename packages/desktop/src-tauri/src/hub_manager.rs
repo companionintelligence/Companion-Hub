@@ -1429,12 +1429,9 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<HubInitialization, String> 
     // have created a *directory* at that path instead of a file, causing an
     // OCI mount error.  We detect and remove that stale directory first.
     if let Err(e) = generate_container_docker_config(&data_dir) {
-        log_lines.push(format!("  docker-config: ERROR — {}", e));
-        let _ = append_desktop_log_for(
-            &data_dir,
-            "initialize",
-            &format!("Failed to generate .internal/docker-config.json: {}", e),
-        );
+        let message = format!("Failed to generate .internal/docker-config.json: {}", e);
+        let _ = append_desktop_log_for(&data_dir, "initialize", &message);
+        return Err(with_view_logs_hint(message));
     } else {
         log_lines.push("  docker-config: .internal/docker-config.json ready".to_string());
     }
@@ -1573,14 +1570,20 @@ fn generate_container_docker_config(data_dir: &Path) -> Result<(), String> {
             .map_err(|e| format!("Cannot remove stale directory at {:?}: {}", config_path, e))?;
     }
 
-    // Read the host's Docker config
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    let host_config_path = home.join(".docker").join("config.json");
-
-    let host_config: serde_json::Value = if host_config_path.exists() {
-        match std::fs::read_to_string(&host_config_path) {
-            Ok(raw) => serde_json::from_str(&raw).unwrap_or_else(|_| serde_json::json!({})),
-            Err(_) => serde_json::json!({}),
+    // Read the host's Docker config.  If the home directory can't be
+    // resolved, skip reading and proceed with an empty config rather than
+    // accidentally reading from the current working directory.
+    let host_config: serde_json::Value = if let Some(home) = dirs::home_dir() {
+        let host_config_path = home.join(".docker").join("config.json");
+        if host_config_path.exists() {
+            let raw = std::fs::read_to_string(&host_config_path).map_err(|e| {
+                format!("Cannot read host Docker config at {:?}: {}", host_config_path, e)
+            })?;
+            serde_json::from_str(&raw).map_err(|e| {
+                format!("Cannot parse host Docker config at {:?}: {}", host_config_path, e)
+            })?
+        } else {
+            serde_json::json!({})
         }
     } else {
         serde_json::json!({})
@@ -1648,7 +1651,8 @@ fn generate_container_docker_config(data_dir: &Path) -> Result<(), String> {
     // Restrict permissions on non-Windows (config may contain auth tokens)
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
-        let _ = std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o600));
+        std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("Cannot set docker-config.json permissions: {}", e))?;
     }
 
     Ok(())
@@ -2175,6 +2179,7 @@ mod tests {
     };
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     use std::os::unix::fs::PermissionsExt;
+    use std::sync::Mutex;
 
     #[test]
     fn classifies_daemon_unavailable_before_permission_denied() {
@@ -2537,39 +2542,102 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
         );
     }
 
+    /// Mutex to serialize tests that modify HOME/USERPROFILE env vars.
+    static DOCKER_CONFIG_TEST_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Run `test_fn` with HOME/USERPROFILE pointing at a temp directory
+    /// containing the given `~/.docker/config.json` fixture.
+    fn with_host_docker_config_fixture(fixture: &str, test_fn: impl FnOnce()) {
+        let _guard = DOCKER_CONFIG_TEST_ENV_LOCK.lock().unwrap();
+        let tmp_home = tempfile::tempdir().expect("create temp home");
+        let docker_dir = tmp_home.path().join(".docker");
+        std::fs::create_dir_all(&docker_dir).expect("create .docker dir");
+        std::fs::write(docker_dir.join("config.json"), fixture).expect("write fixture");
+
+        let old_home = std::env::var_os("HOME");
+        let old_userprofile = std::env::var_os("USERPROFILE");
+
+        unsafe {
+            std::env::set_var("HOME", tmp_home.path());
+            std::env::set_var("USERPROFILE", tmp_home.path());
+        }
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(test_fn));
+
+        unsafe {
+            match old_home {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+            match old_userprofile {
+                Some(v) => std::env::set_var("USERPROFILE", v),
+                None => std::env::remove_var("USERPROFILE"),
+            }
+        }
+
+        if let Err(payload) = result {
+            std::panic::resume_unwind(payload);
+        }
+    }
+
     #[test]
-    fn generates_container_docker_config_from_scratch() {
-        let tmp = tempfile::tempdir().expect("create temp dir");
-        let data_dir = tmp.path().to_path_buf();
-        std::fs::create_dir_all(data_dir.join(".internal")).unwrap();
+    fn generates_container_docker_config_stripping_host_fields() {
+        let fixture = r#"{
+            "auths": {
+                "https://index.docker.io/v1/": { "auth": "dXNlcjpwYXNz" }
+            },
+            "credsStore": "desktop",
+            "credHelpers": { "ghcr.io": "desktop" },
+            "currentContext": "desktop-linux",
+            "plugins": { "debug": { "enabled": true } }
+        }"#;
 
-        generate_container_docker_config(&data_dir).expect("generate config");
+        with_host_docker_config_fixture(fixture, || {
+            let tmp = tempfile::tempdir().expect("create temp dir");
+            let data_dir = tmp.path().to_path_buf();
+            std::fs::create_dir_all(data_dir.join(".internal")).unwrap();
 
-        let config_path = data_dir.join(".internal").join("docker-config.json");
-        assert!(config_path.exists(), "config file should be created");
-        assert!(config_path.is_file(), "config should be a file, not a dir");
+            generate_container_docker_config(&data_dir).expect("generate config");
 
-        let content = std::fs::read_to_string(&config_path).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
-        assert!(parsed.is_object(), "config should be valid JSON object");
+            let config_path = data_dir.join(".internal").join("docker-config.json");
+            assert!(config_path.is_file(), "config should be a file");
+
+            let parsed: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+
+            assert_eq!(
+                parsed.get("auths"),
+                Some(&serde_json::json!({ "https://index.docker.io/v1/": { "auth": "dXNlcjpwYXNz" } })),
+                "inline auths should be preserved"
+            );
+            assert!(parsed.get("credsStore").is_none(), "host-only credsStore stripped");
+            assert!(parsed.get("credHelpers").is_none(), "host-only credHelpers stripped");
+            assert!(parsed.get("currentContext").is_none(), "currentContext stripped");
+            assert!(parsed.get("plugins").is_none(), "plugins stripped");
+        });
     }
 
     #[test]
     fn replaces_stale_directory_with_config_file() {
-        let tmp = tempfile::tempdir().expect("create temp dir");
-        let data_dir = tmp.path().to_path_buf();
-        let internal_dir = data_dir.join(".internal");
-        let config_path = internal_dir.join("docker-config.json");
+        let fixture = r#"{ "credsStore": "desktop" }"#;
 
-        // Simulate the stale directory Docker creates when the mount source is missing
-        std::fs::create_dir_all(&config_path).unwrap();
-        assert!(config_path.is_dir(), "precondition: should be a directory");
+        with_host_docker_config_fixture(fixture, || {
+            let tmp = tempfile::tempdir().expect("create temp dir");
+            let data_dir = tmp.path().to_path_buf();
+            let config_path = data_dir.join(".internal").join("docker-config.json");
 
-        generate_container_docker_config(&data_dir).expect("generate config");
+            // Simulate the stale directory Docker creates
+            std::fs::create_dir_all(&config_path).unwrap();
+            assert!(config_path.is_dir(), "precondition: should be a directory");
 
-        assert!(config_path.is_file(), "stale dir should be replaced with a file");
-        let parsed: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
-        assert!(parsed.is_object());
+            generate_container_docker_config(&data_dir).expect("generate config");
+
+            assert!(config_path.is_file(), "stale dir should be replaced with a file");
+            let parsed: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+            assert!(parsed.is_object());
+            // credsStore=desktop should be stripped, leaving an empty config
+            assert!(parsed.get("credsStore").is_none());
+        });
     }
 }
