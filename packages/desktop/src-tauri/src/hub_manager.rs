@@ -1593,18 +1593,22 @@ fn generate_container_docker_config(
                 Ok(raw) => match serde_json::from_str(&raw) {
                     Ok(config) => config,
                     Err(e) => {
-                        stderr_fallback(&format!(
-                            "Warning: Cannot parse host Docker config at {:?}: {}. Proceeding with an empty Docker config.",
+                        let msg = format!(
+                            "Cannot parse host Docker config at {:?}: {}. Proceeding with empty config.",
                             host_config_path, e
-                        ));
+                        );
+                        stderr_fallback(&msg);
+                        let _ = append_desktop_log_for(data_dir, "docker-config", &msg);
                         serde_json::json!({})
                     }
                 },
                 Err(e) => {
-                    stderr_fallback(&format!(
-                        "Warning: Cannot read host Docker config at {:?}: {}. Proceeding with an empty Docker config.",
+                    let msg = format!(
+                        "Cannot read host Docker config at {:?}: {}. Proceeding with empty config.",
                         host_config_path, e
-                    ));
+                    );
+                    stderr_fallback(&msg);
+                    let _ = append_desktop_log_for(data_dir, "docker-config", &msg);
                     serde_json::json!({})
                 }
             }
@@ -1664,16 +1668,18 @@ fn generate_container_docker_config(
         }
     }
 
-    // Deliberately dropped: currentContext, plugins, features, hooks —
-    // all host-specific and either unused or harmful in-container.
+    // Only auths (inline), credsStore (non-host-only), and credHelpers
+    // (non-host-only) are preserved.  Everything else is dropped:
+    // currentContext, plugins, features, hooks, aliases, experimental, etc.
+    // — all host-specific and either unused or harmful in-container.
 
     let content =
         serde_json::to_string_pretty(&serde_json::Value::Object(sanitized))
             .map_err(|e| format!("Cannot serialise docker config: {}", e))?;
     std::fs::create_dir_all(&internal_dir)
-        .map_err(|e| format!("Cannot create .internal dir: {}", e))?;
+        .map_err(|e| format!("Cannot create {}: {}", internal_dir.display(), e))?;
     std::fs::write(&config_path, format!("{}\n", content))
-        .map_err(|e| format!("Cannot write docker-config.json: {}", e))?;
+        .map_err(|e| format!("Cannot write {}: {}", config_path.display(), e))?;
 
     // Restrict permissions to the current user on Unix where file modes
     // apply (config may contain auth tokens).  On Windows, no additional
