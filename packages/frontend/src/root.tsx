@@ -149,8 +149,15 @@ export async function clientLoader({ request }: Route.ActionArgs) {
     return redirect('/');
   }
 
-  // Now check user context for auth/onboarding flow
-  const userResult = await userContext();
+  // Now check user context for auth/onboarding flow.
+  // In desktop startup races the API may be temporarily unavailable even when
+  // containers are still booting; avoid throwing into the route ErrorBoundary.
+  let userResult: Awaited<ReturnType<typeof userContext>> | null = null;
+  try {
+    userResult = await userContext();
+  } catch {
+    return null;
+  }
 
   // Non-root paths: let individual route loaders handle redirects
   if (url.pathname !== '/') {
@@ -266,6 +273,10 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
   let message = 'Oops!';
   let details = 'An unexpected error occurred.';
   let stack: string | undefined;
+
+  if (import.meta.env.DEV) {
+    console.error('Route ErrorBoundary captured error:', error);
+  }
 
   if (isRouteErrorResponse(error)) {
     message = error.status === 404 ? '404' : 'Error';

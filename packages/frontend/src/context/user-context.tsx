@@ -40,8 +40,10 @@ export const UserContextProvider: React.FC<{ children: React.ReactNode }> = ({ c
     staleTime: 30_000,
   });
 
-  if (error && !isFetching) {
-    throw error;
+  if (error && !isFetching && !userContext) {
+    // During desktop startup races, backend endpoints can briefly fail before
+    // becoming ready. Keep defaults instead of crashing the entire UI.
+    console.warn('userContext unavailable during startup, using defaults:', error);
   }
 
   const refreshUserContext = async () => {

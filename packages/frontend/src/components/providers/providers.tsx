@@ -38,6 +38,9 @@ export const Providers = ({ children }: PropsWithChildren) => {
                 <ErrorPage error={error as Error} onReset={resetErrorBoundary} />
               </PageSuspense>
             )}
+            onError={(error, info) => {
+              console.error('Global React error boundary caught error:', error, info);
+            }}
             onReset={reset}
           >
             <Suspense fallback={<PageSuspense />}>

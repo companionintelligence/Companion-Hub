@@ -18,6 +18,9 @@ interface ServiceStatus {
 interface StartupProgress {
   services: ServiceStatus[];
   progress_pct: number;
+  image_pulled: number;
+  image_total: number;
+  image_pull_pct: number;
   all_ready: boolean;
 }
 
@@ -231,6 +234,14 @@ function StartupScreen({ elapsedSeconds }: { elapsedSeconds: number }) {
   const showSlowMessage = elapsedSeconds > 90;
   const showVerySlowMessage = elapsedSeconds > 180;
 
+  const serviceCounts = (progress?.services ?? []).reduce(
+    (acc, svc) => {
+      acc[svc.state] += 1;
+      return acc;
+    },
+    { pending: 0, starting: 0, ready: 0, failed: 0 } as Record<ServiceState, number>,
+  );
+
   const elapsed = `${Math.floor(elapsedSeconds / 60)}:${String(elapsedSeconds % 60).padStart(2, '0')}`;
 
   return (
@@ -244,6 +255,7 @@ function StartupScreen({ elapsedSeconds }: { elapsedSeconds: number }) {
               ? 'Almost there — some services are taking longer than usual.'
               : 'Services are coming online…'}
         </p>
+        <p className="text-xs text-muted-foreground/80">This might take a minute on first startup while containers are pulled.</p>
       </div>
 
       {/* Progress bar */}
@@ -255,6 +267,17 @@ function StartupScreen({ elapsedSeconds }: { elapsedSeconds: number }) {
           <span>{pct}%</span>
           <span>{elapsed} elapsed</span>
         </div>
+        {progress && (
+          <div className="space-y-0.5">
+            <div className="text-xs text-muted-foreground/70">
+              {serviceCounts.ready} ready, {serviceCounts.starting} starting, {serviceCounts.pending} pending
+              {serviceCounts.failed > 0 ? `, ${serviceCounts.failed} failed` : ''}
+            </div>
+            <div className="text-xs text-muted-foreground/70">
+              Image pulls: {progress.image_pulled}/{progress.image_total} ({progress.image_pull_pct}%)
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Per-service list */}
@@ -350,6 +373,7 @@ export function HubStatus({ children }: HubStatusProps) {
 
         // When running, configure API client for Tauri release builds
         if (result === 'Running' && isTauriRelease) {
+          let ready = false;
           for (const port of [5002, 3000]) {
             try {
               const res = await fetch(`http://localhost:${port}/api/health`, {
@@ -357,11 +381,23 @@ export function HubStatus({ children }: HubStatusProps) {
               });
               if (res.ok) {
                 client.setConfig({ baseUrl: `http://localhost:${port}`, credentials: 'omit' });
-                break;
+                // Registration endpoint coming up is a better frontend-readiness signal
+                // than container health alone.
+                const reg = await fetch(`http://localhost:${port}/api/registration/status`, {
+                  signal: AbortSignal.timeout(2000),
+                });
+                if (reg.ok) {
+                  ready = true;
+                  break;
+                }
               }
             } catch {
               // try next port
             }
+          }
+
+          if (!ready) {
+            setStatus('Starting');
           }
         }
       } catch {
