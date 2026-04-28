@@ -8,8 +8,6 @@ type Store = {
   setSearch: (textSearch: string) => void;
   category?: StoreCategoryFilter;
   setCategory: (selectedCategory?: StoreCategoryFilter) => void;
-  sortDirection: 'asc' | 'desc';
-  setSortDirection: (sortDirection: 'asc' | 'desc') => void;
   storeId?: string;
   setStoreId: (storeId?: string) => void;
 };
@@ -29,9 +27,6 @@ export const useAppStoreState = create<Store>((set) => ({
   search: '',
   setSearch: debouncedSearch((search) => set({ search }), 300),
   setCategory: (category) => set({ category }),
-  sort: 'id',
-  sortDirection: 'asc',
-  setSortDirection: (sortDirection) => set({ sortDirection }),
   storeId: undefined,
   setStoreId: (storeId) => set({ storeId }),
 }));
