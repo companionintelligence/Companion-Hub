@@ -1701,35 +1701,29 @@ fn generate_container_docker_config(
     std::fs::create_dir_all(&internal_dir)
         .map_err(|e| format!("Cannot create {}: {}", internal_dir.display(), e))?;
 
-    // On Unix, remove any existing file first so that OpenOptions always
-    // creates a brand-new file with mode 0o600.  This avoids the window
-    // where a pre-existing file with broader permissions gets content
-    // before its mode is tightened.
+    // On Unix, write to a temp file with mode 0600, flush+sync, then
+    // atomically rename over the destination.  This ensures the old config
+    // stays in place if the write fails (disk full, crash).
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
-        match std::fs::remove_file(&config_path) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => {
-                return Err(format!(
-                    "Cannot remove old {}: {}",
-                    config_path.display(),
-                    e
-                ));
-            }
-        }
+        let tmp_path = internal_dir.join(".docker-config.json.tmp");
         let mut file = std::fs::OpenOptions::new()
             .write(true)
-            .create_new(true)
+            .create(true)
+            .truncate(true)
             .mode(0o600)
-            .open(&config_path)
-            .map_err(|e| format!("Cannot open {}: {}", config_path.display(), e))?;
+            .open(&tmp_path)
+            .map_err(|e| format!("Cannot open {}: {}", tmp_path.display(), e))?;
         file.write_all(format!("{}\n", content).as_bytes())
-            .map_err(|e| format!("Cannot write {}: {}", config_path.display(), e))?;
+            .map_err(|e| format!("Cannot write {}: {}", tmp_path.display(), e))?;
         file.flush()
-            .map_err(|e| format!("Cannot flush {}: {}", config_path.display(), e))?;
+            .map_err(|e| format!("Cannot flush {}: {}", tmp_path.display(), e))?;
+        file.sync_all()
+            .map_err(|e| format!("Cannot sync {}: {}", tmp_path.display(), e))?;
+        std::fs::rename(&tmp_path, &config_path)
+            .map_err(|e| format!("Cannot rename {} -> {}: {}", tmp_path.display(), config_path.display(), e))?;
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
