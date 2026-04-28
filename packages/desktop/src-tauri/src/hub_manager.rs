@@ -1704,27 +1704,35 @@ fn generate_container_docker_config(
     std::fs::create_dir_all(&internal_dir)
         .map_err(|e| format!("Cannot create {}: {}", internal_dir.display(), e))?;
 
-    // Write the file.  On Unix, set restricted permissions *before* writing
-    // content so auth tokens are never exposed with default permissions.
-    // Also enforce 0600 after write for pre-existing files whose permissions
-    // may be broader from a previous version.
+    // On Unix, remove any existing file first so that OpenOptions always
+    // creates a brand-new file with mode 0o600.  This avoids the window
+    // where a pre-existing file with broader permissions gets content
+    // before its mode is tightened.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
-        let file = std::fs::OpenOptions::new()
+        match std::fs::remove_file(&config_path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(format!(
+                    "Cannot remove old {}: {}",
+                    config_path.display(),
+                    e
+                ));
+            }
+        }
+        let mut file = std::fs::OpenOptions::new()
             .write(true)
-            .create(true)
-            .truncate(true)
+            .create_new(true)
             .mode(0o600)
             .open(&config_path)
             .map_err(|e| format!("Cannot open {}: {}", config_path.display(), e))?;
-        let mut writer = std::io::BufWriter::new(file);
-        writer
-            .write_all(format!("{}\n", content).as_bytes())
+        file.write_all(format!("{}\n", content).as_bytes())
             .map_err(|e| format!("Cannot write {}: {}", config_path.display(), e))?;
-        // Tighten permissions on pre-existing files (mode() only applies on create)
-        set_file_mode(&config_path, 0o600)?;
+        file.flush()
+            .map_err(|e| format!("Cannot flush {}: {}", config_path.display(), e))?;
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
