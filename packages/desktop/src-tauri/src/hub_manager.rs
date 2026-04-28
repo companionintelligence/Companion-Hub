@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::os::unix::fs::PermissionsExt;
@@ -18,8 +19,16 @@ const MAX_START_RETRIES: u32 = 3;
 /// Global guard: true while a `start_hub` call is in progress.
 static START_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
-const MAX_COMMAND_OUTPUT_CHARS: usize = 400;
+/// Serialize rotation + append so concurrent callers cannot interleave
+/// renames and writes to `desktop.log`.
+static LOG_WRITE_LOCK: Mutex<()> = Mutex::new(());
+
+const MAX_COMMAND_OUTPUT_CHARS: usize = 50_000;
 const DESKTOP_LOG_FILENAME: &str = "desktop.log";
+/// Maximum size of desktop.log before rotation (5 MB).
+const MAX_LOG_SIZE_BYTES: u64 = 5 * 1024 * 1024;
+/// Number of rotated log files to keep (desktop.log.1, desktop.log.2, …).
+const MAX_LOG_ROTATIONS: usize = 3;
 const MANAGED_APP_CONTAINER_LABEL_FILTER: &str = "label=ci-os-hub.managed=true";
 const MANAGED_APP_CONTAINER_URN_FILTER: &str = "label=ci-os-hub.appurn";
 const DEFAULT_TRAEFIK_ACME_EMAIL: &str = "admin@companionintelligence.com";
@@ -364,15 +373,155 @@ pub(crate) fn append_desktop_log_for(
     operation: &str,
     message: &str,
 ) -> std::io::Result<PathBuf> {
+    let logs_dir = logs_dir_for(data_dir);
     let log_path = desktop_log_path_for(data_dir);
-    std::fs::create_dir_all(logs_dir_for(data_dir))?;
-    let mut file = std::fs::OpenOptions::new()
+    let entry = format_log_entry(operation, message);
+
+    if let Err(err) = std::fs::create_dir_all(&logs_dir) {
+        // Fallback: emit to stderr so the entry is not silently lost.
+        stderr_fallback(&format!(
+            "[desktop-log-fallback] create_dir_all({}) failed: {}",
+            logs_dir.display(),
+            err
+        ));
+        stderr_fallback(&entry);
+        return Err(err);
+    }
+
+    // Hold the lock across rotation + write so concurrent callers cannot
+    // interleave renames and appends.
+    let _lock = LOG_WRITE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    rotate_log_if_needed(&log_path, &logs_dir, MAX_LOG_SIZE_BYTES);
+    match std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(&log_path)?;
-    use std::io::Write;
-    file.write_all(format_log_entry(operation, message).as_bytes())?;
+        .open(&log_path)
+    {
+        Ok(mut file) => {
+            use std::io::Write;
+            if let Err(err) = file.write_all(entry.as_bytes()) {
+                stderr_fallback(&format!(
+                    "[desktop-log-fallback] failed to append to {}: {}",
+                    log_path.display(),
+                    err
+                ));
+                stderr_fallback(&entry);
+                return Err(err);
+            }
+        }
+        Err(err) => {
+            // Last-resort fallback: write to stderr so the message is not
+            // silently lost when the log file cannot be opened.
+            stderr_fallback(&format!(
+                "[desktop-log-fallback] failed to write {}: {}",
+                log_path.display(),
+                err
+            ));
+            stderr_fallback(&entry);
+            return Err(err);
+        }
+    }
     Ok(log_path)
+}
+
+/// Write `msg` to stderr without panicking.  In a GUI desktop app stderr
+/// can be closed/missing, so we must not use `eprintln!` (which unwraps
+/// internally).
+fn stderr_fallback(msg: &str) {
+    use std::io::Write;
+    let _ = std::io::stderr().write_all(msg.as_bytes());
+    // Ensure a trailing newline so entries don't run together.
+    if !msg.ends_with('\n') {
+        let _ = std::io::stderr().write_all(b"\n");
+    }
+}
+
+/// Rotate `desktop.log` when it reaches or exceeds `max_size` bytes.
+///
+/// Checked before each append, so the active file may slightly exceed
+/// `max_size` by the size of the most recent log entry.
+///
+/// Keeps up to `MAX_LOG_ROTATIONS` historical files:
+///   desktop.log.3 → deleted
+///   desktop.log.2 → desktop.log.3
+///   desktop.log.1 → desktop.log.2
+///   desktop.log   → desktop.log.1
+fn rotate_log_if_needed(log_path: &Path, logs_dir: &Path, max_size: u64) {
+    let size = match std::fs::metadata(log_path) {
+        Ok(m) => m.len(),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return,
+        Err(err) => {
+            stderr_fallback(&format!(
+                "[log-rotate] failed to read metadata for {}: {}",
+                log_path.display(),
+                err
+            ));
+            return;
+        }
+    };
+    if size < max_size {
+        return;
+    }
+
+    // Remove the oldest rotation explicitly (it will be shifted off the end).
+    let oldest = logs_dir.join(format!("{}.{}", DESKTOP_LOG_FILENAME, MAX_LOG_ROTATIONS));
+    remove_if_exists(&oldest);
+
+    // Shift existing rotations: .2→.3, .1→.2, current→.1.
+    // Try rename first; only delete dst and retry when the error is AlreadyExists
+    // (Windows) so we don't discard a valid rotated file on other failures.
+    for i in (1..MAX_LOG_ROTATIONS).rev() {
+        let src = logs_dir.join(format!("{}.{}", DESKTOP_LOG_FILENAME, i));
+        let dst = logs_dir.join(format!("{}.{}", DESKTOP_LOG_FILENAME, i + 1));
+        rename_or_replace(&src, &dst);
+    }
+    let rotated = logs_dir.join(format!("{}.1", DESKTOP_LOG_FILENAME));
+    rename_or_replace(log_path, &rotated);
+}
+
+/// Remove a file, ignoring "not found" but logging other errors to stderr.
+fn remove_if_exists(path: &Path) {
+    if let Err(err) = std::fs::remove_file(path) {
+        if err.kind() != std::io::ErrorKind::NotFound {
+            stderr_fallback(&format!(
+                "[log-rotate] failed to remove {}: {}",
+                path.display(),
+                err
+            ));
+        }
+    }
+}
+
+/// Rename `src` to `dst`, skipping silently when `src` doesn't exist.
+/// On `AlreadyExists` (Windows), removes `dst` and retries so that the
+/// existing destination is only deleted when the rename can actually proceed.
+fn rename_or_replace(src: &Path, dst: &Path) {
+    match std::fs::rename(src, dst) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+            remove_if_exists(dst);
+            if let Err(retry_err) = std::fs::rename(src, dst) {
+                if retry_err.kind() != std::io::ErrorKind::NotFound {
+                    stderr_fallback(&format!(
+                        "[log-rotate] failed to rename {} → {}: {}",
+                        src.display(),
+                        dst.display(),
+                        retry_err
+                    ));
+                }
+            }
+        }
+        Err(err) => {
+            stderr_fallback(&format!(
+                "[log-rotate] failed to rename {} → {}: {}",
+                src.display(),
+                dst.display(),
+                err
+            ));
+        }
+    }
 }
 
 pub fn append_desktop_log(operation: &str, message: &str) -> std::io::Result<PathBuf> {
@@ -906,12 +1055,8 @@ fn start_hub_inner(
         with_view_logs_hint(message)
     })?;
 
-    // Log warnings and info
-    let log_path = logs_dir_for(data_dir).join("port-resolution.log");
-    let mut log_lines = vec![format!(
-        "[{}] Port resolution:",
-        chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
-    )];
+    // Log port resolution results (centralised into desktop.log)
+    let mut log_lines = vec!["Port resolution:".to_string()];
     for w in &resolution.warnings {
         log_lines.push(format!("  WARN: {}", w));
     }
@@ -921,7 +1066,6 @@ fn start_hub_inner(
     for (var, port) in &resolution.env_vars {
         log_lines.push(format!("  {}={}", var, port));
     }
-    let _ = std::fs::write(&log_path, log_lines.join("\n") + "\n");
     let _ = append_desktop_log_for(data_dir, "hub.start", &log_lines.join("\n"));
 
     // Attempt compose up with automatic retry on transient container conflicts.
@@ -1241,12 +1385,7 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<HubInitialization, String> 
             .join("docker-compose.prod.yml"),
     ];
 
-    let log_path = data_dir.join("logs").join("init.log");
-    let mut log_lines = vec![format!(
-        "[{}] initialize_hub: resource_dir = {:?}",
-        chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
-        resource_dir
-    )];
+    let mut log_lines = vec![format!("initialize_hub: resource_dir = {:?}", resource_dir)];
     for (i, candidate) in compose_candidates.iter().enumerate() {
         log_lines.push(format!(
             "  candidate[{}]: {:?} exists={}",
@@ -1365,22 +1504,20 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<HubInitialization, String> 
         traefik_preflight.changed, traefik_preflight.repaired_conflicting_paths, recreate_pending,
     ));
 
-    // Write init log (append)
+    // Log init summary (centralised into desktop.log)
     let init_summary = log_lines.join("\n");
-    let _ = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .and_then(|mut f| {
-            use std::io::Write;
-            writeln!(f, "{}", init_summary)
-        });
     let _ = append_desktop_log_for(&data_dir, "initialize", &init_summary);
 
-    // Clean up legacy .docker-config.json if it exists
+    // Clean up legacy files that are no longer used
     let legacy_docker_config = data_dir.join(".docker-config.json");
     if legacy_docker_config.exists() {
         let _ = std::fs::remove_file(&legacy_docker_config);
+    }
+    for legacy_log in ["init.log", "port-resolution.log"] {
+        let path = logs_dir_for(&data_dir).join(legacy_log);
+        if path.exists() {
+            let _ = std::fs::remove_file(&path);
+        }
     }
 
     Ok(HubInitialization {
@@ -2173,5 +2310,104 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
     fn does_not_treat_pull_access_denied_as_oci_runtime_error() {
         let output = "Error response from daemon: pull access denied for ci-hub-app, repository does not exist or may require 'docker login'";
         assert!(!is_oci_runtime_error(output));
+    }
+
+    #[test]
+    fn rotates_desktop_log_when_it_exceeds_max_size() {
+        use super::{rotate_log_if_needed, DESKTOP_LOG_FILENAME, MAX_LOG_ROTATIONS};
+
+        // Use a tiny threshold so the test doesn't write multi-MB files.
+        const TEST_MAX_SIZE: u64 = 64;
+
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let logs_dir = tempdir.path();
+        let log_path = logs_dir.join(DESKTOP_LOG_FILENAME);
+
+        // Create a log file that exceeds the size limit.
+        let payload_len = (TEST_MAX_SIZE + 1) as usize;
+        let payload = "x".repeat(payload_len);
+        std::fs::write(&log_path, &payload).expect("write oversized log");
+
+        rotate_log_if_needed(&log_path, logs_dir, TEST_MAX_SIZE);
+
+        // Original should no longer exist (it was rotated to .1).
+        assert!(!log_path.exists(), "original log should have been renamed");
+        let rotated = logs_dir.join(format!("{}.1", DESKTOP_LOG_FILENAME));
+        assert!(rotated.exists(), "desktop.log.1 should exist");
+        let content = std::fs::read_to_string(&rotated).expect("read rotated");
+        assert_eq!(content, payload);
+
+        // Rotate again: .1 → .2, new data → .1
+        let new_payload = "y".repeat(payload_len);
+        std::fs::write(&log_path, &new_payload).expect("write new oversized log");
+        rotate_log_if_needed(&log_path, logs_dir, TEST_MAX_SIZE);
+
+        assert!(!log_path.exists());
+        let r1 = logs_dir.join(format!("{}.1", DESKTOP_LOG_FILENAME));
+        let r2 = logs_dir.join(format!("{}.2", DESKTOP_LOG_FILENAME));
+        assert!(r1.exists());
+        assert!(r2.exists());
+        assert_eq!(
+            std::fs::read_to_string(&r1).expect("read r1"),
+            new_payload
+        );
+        assert_eq!(std::fs::read_to_string(&r2).expect("read r2"), payload);
+
+        // Repeated rotations should keep updating .1..=MAX_LOG_ROTATIONS even when
+        // those targets already exist, and the oldest entry should be evicted.
+        let mut expected_rotations = vec![new_payload.clone(), payload.clone()];
+        for i in 0..MAX_LOG_ROTATIONS {
+            // Use a short unique prefix + single-byte fill to keep total size
+            // just over the limit without allocating unnecessarily large strings.
+            let prefix = format!("z{}-", i);
+            let p = prefix.clone() + &"z".repeat(payload_len - prefix.len());
+            std::fs::write(&log_path, &p).expect("write");
+            rotate_log_if_needed(&log_path, logs_dir, TEST_MAX_SIZE);
+
+            expected_rotations.insert(0, p);
+            expected_rotations.truncate(MAX_LOG_ROTATIONS);
+        }
+
+        for rotation in 1..=MAX_LOG_ROTATIONS {
+            let rotated_path =
+                logs_dir.join(format!("{}.{}", DESKTOP_LOG_FILENAME, rotation));
+            assert!(
+                rotated_path.exists(),
+                "expected rotated log {} to exist",
+                rotated_path.display()
+            );
+            assert_eq!(
+                std::fs::read_to_string(&rotated_path).expect("read rotated log"),
+                expected_rotations[rotation - 1],
+                "unexpected contents for rotated log {}",
+                rotated_path.display()
+            );
+        }
+
+        let beyond = logs_dir.join(format!(
+            "{}.{}",
+            DESKTOP_LOG_FILENAME,
+            MAX_LOG_ROTATIONS + 1
+        ));
+        assert!(
+            !beyond.exists(),
+            "should not keep more than MAX_LOG_ROTATIONS history files"
+        );
+
+        // After rotation, a fresh active desktop.log should still be creatable
+        // and appendable.
+        std::fs::write(&log_path, "active-1").expect("write active log");
+        {
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&log_path)
+                .expect("open active log for append");
+            use std::io::Write;
+            file.write_all(b"active-2").expect("append active log");
+        }
+        assert_eq!(
+            std::fs::read_to_string(&log_path).expect("read active log"),
+            "active-1active-2"
+        );
     }
 }
