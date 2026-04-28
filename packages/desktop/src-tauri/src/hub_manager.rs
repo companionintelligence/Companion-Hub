@@ -1613,32 +1613,29 @@ fn generate_container_docker_config(
 
     let host_config: serde_json::Value = if let Some(docker_dir) = resolved_docker_dir {
         let host_config_path = docker_dir.join("config.json");
-        if host_config_path.exists() {
-            match std::fs::read_to_string(&host_config_path) {
-                Ok(raw) => match serde_json::from_str(&raw) {
-                    Ok(config) => config,
-                    Err(e) => {
-                        let msg = format!(
-                            "Cannot parse host Docker config at {:?}: {}. Proceeding with empty config.",
-                            host_config_path, e
-                        );
-                        stderr_fallback(&msg);
-                        let _ = append_desktop_log_for(data_dir, "docker-config", &msg);
-                        serde_json::json!({})
-                    }
-                },
+        match std::fs::read_to_string(&host_config_path) {
+            Ok(raw) => match serde_json::from_str(&raw) {
+                Ok(config) => config,
                 Err(e) => {
                     let msg = format!(
-                        "Cannot read host Docker config at {:?}: {}. Proceeding with empty config.",
+                        "Cannot parse host Docker config at {:?}: {}. Proceeding with empty config.",
                         host_config_path, e
                     );
                     stderr_fallback(&msg);
                     let _ = append_desktop_log_for(data_dir, "docker-config", &msg);
                     serde_json::json!({})
                 }
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
+            Err(e) => {
+                let msg = format!(
+                    "Cannot read host Docker config at {:?}: {}. Proceeding with empty config.",
+                    host_config_path, e
+                );
+                stderr_fallback(&msg);
+                let _ = append_desktop_log_for(data_dir, "docker-config", &msg);
+                serde_json::json!({})
             }
-        } else {
-            serde_json::json!({})
         }
     } else {
         serde_json::json!({})
