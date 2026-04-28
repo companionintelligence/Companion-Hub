@@ -1706,6 +1706,8 @@ fn generate_container_docker_config(
 
     // Write the file.  On Unix, set restricted permissions *before* writing
     // content so auth tokens are never exposed with default permissions.
+    // Also enforce 0600 after write for pre-existing files whose permissions
+    // may be broader from a previous version.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         use std::io::Write;
@@ -1721,6 +1723,8 @@ fn generate_container_docker_config(
         writer
             .write_all(format!("{}\n", content).as_bytes())
             .map_err(|e| format!("Cannot write {}: {}", config_path.display(), e))?;
+        // Tighten permissions on pre-existing files (mode() only applies on create)
+        set_file_mode(&config_path, 0o600)?;
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
