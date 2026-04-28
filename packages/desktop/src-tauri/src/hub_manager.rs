@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::os::unix::fs::PermissionsExt;
@@ -17,6 +18,10 @@ const MAX_START_RETRIES: u32 = 3;
 
 /// Global guard: true while a `start_hub` call is in progress.
 static START_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+/// Serialize rotation + append so concurrent callers cannot interleave
+/// renames and writes to `desktop.log`.
+static LOG_WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 const MAX_COMMAND_OUTPUT_CHARS: usize = 50_000;
 const DESKTOP_LOG_FILENAME: &str = "desktop.log";
@@ -371,8 +376,13 @@ pub(crate) fn append_desktop_log_for(
     let logs_dir = logs_dir_for(data_dir);
     std::fs::create_dir_all(&logs_dir)?;
     let log_path = desktop_log_path_for(data_dir);
-    rotate_log_if_needed(&log_path, &logs_dir);
     let entry = format_log_entry(operation, message);
+
+    // Hold the lock across rotation + write so concurrent callers cannot
+    // interleave renames and appends.
+    let _lock = LOG_WRITE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    rotate_log_if_needed(&log_path, &logs_dir);
     match std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -409,14 +419,45 @@ fn rotate_log_if_needed(log_path: &Path, logs_dir: &Path) {
         return;
     }
 
+    // Remove the oldest rotation so the shift below can proceed on
+    // Windows where `rename` fails when the destination already exists.
+    let oldest = logs_dir.join(format!("{}.{}", DESKTOP_LOG_FILENAME, MAX_LOG_ROTATIONS));
+    remove_if_exists(&oldest);
+
     // Shift existing rotations: .2→.3, .1→.2, current→.1
     for i in (1..MAX_LOG_ROTATIONS).rev() {
         let src = logs_dir.join(format!("{}.{}", DESKTOP_LOG_FILENAME, i));
         let dst = logs_dir.join(format!("{}.{}", DESKTOP_LOG_FILENAME, i + 1));
-        let _ = std::fs::rename(&src, &dst);
+        remove_if_exists(&dst);
+        rename_if_exists(&src, &dst);
     }
     let rotated = logs_dir.join(format!("{}.1", DESKTOP_LOG_FILENAME));
-    let _ = std::fs::rename(log_path, &rotated);
+    remove_if_exists(&rotated);
+    rename_if_exists(log_path, &rotated);
+}
+
+/// Remove a file, ignoring "not found" but logging other errors to stderr.
+fn remove_if_exists(path: &Path) {
+    if let Err(err) = std::fs::remove_file(path) {
+        if err.kind() != std::io::ErrorKind::NotFound {
+            eprintln!("[log-rotate] failed to remove {}: {}", path.display(), err);
+        }
+    }
+}
+
+/// Rename `src` to `dst`, skipping silently when `src` doesn't exist but
+/// logging other errors to stderr.
+fn rename_if_exists(src: &Path, dst: &Path) {
+    if let Err(err) = std::fs::rename(src, dst) {
+        if err.kind() != std::io::ErrorKind::NotFound {
+            eprintln!(
+                "[log-rotate] failed to rename {} → {}: {}",
+                src.display(),
+                dst.display(),
+                err
+            );
+        }
+    }
 }
 
 pub fn append_desktop_log(operation: &str, message: &str) -> std::io::Result<PathBuf> {
@@ -2246,16 +2287,58 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
         );
         assert_eq!(std::fs::read_to_string(&r2).expect("read r2"), payload);
 
-        // After MAX_LOG_ROTATIONS, the oldest file should be dropped.
+        // Repeated rotations should keep updating .1..=MAX_LOG_ROTATIONS even when
+        // those targets already exist, and the oldest entry should be evicted.
+        let mut expected_rotations = vec![new_payload.clone(), payload.clone()];
         for i in 0..MAX_LOG_ROTATIONS {
             let p = format!("z{}", i).repeat((MAX_LOG_SIZE_BYTES + 1) as usize);
             std::fs::write(&log_path, &p).expect("write");
             rotate_log_if_needed(&log_path, logs_dir);
+
+            expected_rotations.insert(0, p);
+            expected_rotations.truncate(MAX_LOG_ROTATIONS);
         }
-        let beyond = logs_dir.join(format!("{}.{}", DESKTOP_LOG_FILENAME, MAX_LOG_ROTATIONS + 1));
+
+        for rotation in 1..=MAX_LOG_ROTATIONS {
+            let rotated_path =
+                logs_dir.join(format!("{}.{}", DESKTOP_LOG_FILENAME, rotation));
+            assert!(
+                rotated_path.exists(),
+                "expected rotated log {} to exist",
+                rotated_path.display()
+            );
+            assert_eq!(
+                std::fs::read_to_string(&rotated_path).expect("read rotated log"),
+                expected_rotations[rotation - 1],
+                "unexpected contents for rotated log {}",
+                rotated_path.display()
+            );
+        }
+
+        let beyond = logs_dir.join(format!(
+            "{}.{}",
+            DESKTOP_LOG_FILENAME,
+            MAX_LOG_ROTATIONS + 1
+        ));
         assert!(
             !beyond.exists(),
             "should not keep more than MAX_LOG_ROTATIONS history files"
+        );
+
+        // After rotation, a fresh active desktop.log should still be creatable
+        // and appendable.
+        std::fs::write(&log_path, "active-1").expect("write active log");
+        {
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&log_path)
+                .expect("open active log for append");
+            use std::io::Write;
+            file.write_all(b"active-2").expect("append active log");
+        }
+        assert_eq!(
+            std::fs::read_to_string(&log_path).expect("read active log"),
+            "active-1active-2"
         );
     }
 }
