@@ -464,21 +464,20 @@ fn rotate_log_if_needed(log_path: &Path, logs_dir: &Path, max_size: u64) {
         return;
     }
 
-    // Remove the oldest rotation so the shift below can proceed on
-    // Windows where `rename` fails when the destination already exists.
+    // Remove the oldest rotation explicitly (it will be shifted off the end).
     let oldest = logs_dir.join(format!("{}.{}", DESKTOP_LOG_FILENAME, MAX_LOG_ROTATIONS));
     remove_if_exists(&oldest);
 
-    // Shift existing rotations: .2→.3, .1→.2, current→.1
+    // Shift existing rotations: .2→.3, .1→.2, current→.1.
+    // Try rename first; only delete dst and retry when the error is AlreadyExists
+    // (Windows) so we don't discard a valid rotated file on other failures.
     for i in (1..MAX_LOG_ROTATIONS).rev() {
         let src = logs_dir.join(format!("{}.{}", DESKTOP_LOG_FILENAME, i));
         let dst = logs_dir.join(format!("{}.{}", DESKTOP_LOG_FILENAME, i + 1));
-        remove_if_exists(&dst);
-        rename_if_exists(&src, &dst);
+        rename_or_replace(&src, &dst);
     }
     let rotated = logs_dir.join(format!("{}.1", DESKTOP_LOG_FILENAME));
-    remove_if_exists(&rotated);
-    rename_if_exists(log_path, &rotated);
+    rename_or_replace(log_path, &rotated);
 }
 
 /// Remove a file, ignoring "not found" but logging other errors to stderr.
@@ -494,11 +493,27 @@ fn remove_if_exists(path: &Path) {
     }
 }
 
-/// Rename `src` to `dst`, skipping silently when `src` doesn't exist but
-/// logging other errors to stderr.
-fn rename_if_exists(src: &Path, dst: &Path) {
-    if let Err(err) = std::fs::rename(src, dst) {
-        if err.kind() != std::io::ErrorKind::NotFound {
+/// Rename `src` to `dst`, skipping silently when `src` doesn't exist.
+/// On `AlreadyExists` (Windows), removes `dst` and retries so that the
+/// existing destination is only deleted when the rename can actually proceed.
+fn rename_or_replace(src: &Path, dst: &Path) {
+    match std::fs::rename(src, dst) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+            remove_if_exists(dst);
+            if let Err(retry_err) = std::fs::rename(src, dst) {
+                if retry_err.kind() != std::io::ErrorKind::NotFound {
+                    stderr_fallback(&format!(
+                        "[log-rotate] failed to rename {} → {}: {}",
+                        src.display(),
+                        dst.display(),
+                        retry_err
+                    ));
+                }
+            }
+        }
+        Err(err) => {
             stderr_fallback(&format!(
                 "[log-rotate] failed to rename {} → {}: {}",
                 src.display(),
