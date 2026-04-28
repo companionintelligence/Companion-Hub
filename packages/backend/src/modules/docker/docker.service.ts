@@ -25,7 +25,7 @@ export class DockerService {
   /**
    * Derive the Docker Compose project name used by CI-Hub for a given app URN.
    *
-   * @param appUrn - App URN (for example, "urn:store:my-app")
+   * @param appUrn - App URN (for example, "my-app:store")
    * @returns Compose project name used for labels and docker compose --project-name
    */
   private getComposeProjectName(appUrn: AppUrn): string {

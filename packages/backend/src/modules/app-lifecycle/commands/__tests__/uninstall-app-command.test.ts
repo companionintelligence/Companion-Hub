@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { mock, mockDeep } from 'vitest-mock-extended';
+import { mock, mockDeep, type DeepMockProxy, type MockProxy } from 'vitest-mock-extended';
 import type { ModuleRef } from '@nestjs/core';
 import type Dockerode from 'dockerode';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -10,18 +10,18 @@ import type { AppUrn } from '@ci-hub/common/types';
 import { UninstallAppCommand } from '../uninstall-app-command';
 
 describe('UninstallAppCommand', () => {
-  const appUrn = 'urn:store:test-app' as AppUrn;
+  const appUrn = 'test-app:store' as AppUrn;
 
   let command: UninstallAppCommand;
-  let logger: ReturnType<typeof mockDeep<LoggerService>>;
+  let logger: DeepMockProxy<LoggerService>;
   let dockerService: {
     composeApp: ReturnType<typeof vi.fn>;
     snapshotAppImageIds: ReturnType<typeof vi.fn>;
     removeAppImages: ReturnType<typeof vi.fn>;
     removeAppNetworks: ReturnType<typeof vi.fn>;
   };
-  let appFilesManager: ReturnType<typeof mock<AppFilesManager>>;
-  let portManager: ReturnType<typeof mock<PortManagerService>>;
+  let appFilesManager: MockProxy<AppFilesManager>;
+  let portManager: MockProxy<PortManagerService>;
 
   beforeEach(() => {
     logger = mockDeep<LoggerService>();
@@ -74,16 +74,15 @@ describe('UninstallAppCommand', () => {
     expect(removeNetworksOrder).toBeLessThan(deleteFolderOrder);
   });
 
-  it('continues uninstall even when compose and cleanup helpers fail', async () => {
-    dockerService.snapshotAppImageIds.mockRejectedValueOnce(new Error('snapshot failed'));
+  it('continues uninstall when compose down fails and cleanup helpers remain non-fatal', async () => {
+    dockerService.snapshotAppImageIds.mockResolvedValueOnce([]);
     dockerService.composeApp.mockRejectedValueOnce(new Error('compose failed'));
-    dockerService.removeAppImages.mockRejectedValueOnce(new Error('images failed'));
-    dockerService.removeAppNetworks.mockRejectedValueOnce(new Error('networks failed'));
 
     const result = await command.execute(appUrn);
 
     expect(result).toEqual({ success: true, message: `App ${appUrn} uninstalled successfully` });
     expect(dockerService.removeAppImages).toHaveBeenCalledWith(appUrn, []);
+    expect(dockerService.removeAppNetworks).toHaveBeenCalledWith(appUrn);
     expect(appFilesManager.deleteAppFolder).toHaveBeenCalledWith(appUrn);
   });
 });

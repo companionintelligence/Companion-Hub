@@ -393,11 +393,11 @@ describe('DockerService', () => {
     it('should return unique image IDs from compose project containers', async () => {
       dockerode.listContainers.mockResolvedValue([{ ImageID: 'sha256:a' } as any, { ImageID: 'sha256:b' } as any, { ImageID: 'sha256:a' } as any]);
 
-      const result = await service.snapshotAppImageIds('urn:store:test' as any);
+      const result = await service.snapshotAppImageIds('test:store' as any);
 
       expect(dockerode.listContainers).toHaveBeenCalledWith({
         all: true,
-        filters: { label: ['com.docker.compose.project=urn_store:test'] },
+        filters: { label: ['com.docker.compose.project=test_store'] },
       });
       expect(result).toEqual(['sha256:a', 'sha256:b']);
     });
@@ -417,10 +417,10 @@ describe('DockerService', () => {
         return { remove: removeC } as any;
       });
 
-      await service.removeAppImages('urn:store:test' as any, ['sha256:a', 'sha256:b']);
+      await service.removeAppImages('test:store' as any, ['sha256:a', 'sha256:b']);
 
       expect(dockerode.listImages).toHaveBeenCalledWith({
-        filters: { label: ['com.docker.compose.project=urn_store:test'] },
+        filters: { label: ['com.docker.compose.project=test_store'] },
       });
       expect(removeA).toHaveBeenCalledWith({ force: true });
       expect(removeB).toHaveBeenCalledWith({ force: true });
@@ -438,7 +438,7 @@ describe('DockerService', () => {
         return { remove: removeInUse } as any;
       });
 
-      await expect(service.removeAppImages('urn:store:test' as any, ['sha256:a', 'sha256:b'])).resolves.toBeUndefined();
+      await expect(service.removeAppImages('test:store' as any, ['sha256:a', 'sha256:b'])).resolves.toBeUndefined();
       expect(loggerService.warn).toHaveBeenCalled();
     });
   });
@@ -446,28 +446,28 @@ describe('DockerService', () => {
   describe('removeAppNetworks', () => {
     it('should skip shared and external networks, and remove app-owned networks', async () => {
       dockerode.listNetworks.mockResolvedValue([
-        { Id: '1', Name: 'urn_store_test_default', Labels: {} },
+        { Id: '1', Name: 'test_store_default', Labels: {} },
         { Id: '2', Name: 'ci-os-hub_network', Labels: {} },
-        { Id: '3', Name: 'urn_store_test_external', Labels: { 'com.docker.compose.network.external': 'true' } },
+        { Id: '3', Name: 'test_store_external', Labels: { 'com.docker.compose.network.external': 'true' } },
       ] as any);
 
       const remove = vi.fn().mockResolvedValue(undefined);
       dockerode.getNetwork.mockImplementation((id: string) => ({ remove: id === '1' ? remove : vi.fn() }) as any);
 
-      await service.removeAppNetworks('urn:store:test' as any);
+      await service.removeAppNetworks('test:store' as any);
 
       expect(dockerode.listNetworks).toHaveBeenCalledWith({
-        filters: { label: ['com.docker.compose.project=urn_store:test'] },
+        filters: { label: ['com.docker.compose.project=test_store'] },
       });
       expect(remove).toHaveBeenCalledTimes(1);
     });
 
     it('should swallow active endpoint errors during network removal', async () => {
-      dockerode.listNetworks.mockResolvedValue([{ Id: '1', Name: 'urn_store_test_default', Labels: {} }] as any);
+      dockerode.listNetworks.mockResolvedValue([{ Id: '1', Name: 'test_store_default', Labels: {} }] as any);
       const remove = vi.fn().mockRejectedValue(new Error('network has active endpoints'));
       dockerode.getNetwork.mockReturnValue({ remove } as any);
 
-      await expect(service.removeAppNetworks('urn:store:test' as any)).resolves.toBeUndefined();
+      await expect(service.removeAppNetworks('test:store' as any)).resolves.toBeUndefined();
       expect(loggerService.warn).toHaveBeenCalled();
     });
   });
