@@ -1554,7 +1554,8 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<HubInitialization, String> 
 /// Reads the host's `~/.docker/config.json`, strips host-only fields that
 /// break the Docker CLI inside Linux containers (currentContext, credsStore
 /// set to desktop/osxkeychain/wincred/secretservice/pass, plugins, features,
-/// hooks) and keeps only inline `auth` entries.
+/// hooks), preserves inline `auth` entries, and also preserves `credsStore`
+/// and `credHelpers` entries when they are not in the host-only list.
 ///
 /// If the destination path is a directory (stale Docker placeholder from a
 /// previous failed mount), it is removed first.
@@ -2610,6 +2611,13 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
         assert!(parsed.get("credHelpers").is_none(), "host-only credHelpers stripped");
         assert!(parsed.get("currentContext").is_none(), "currentContext stripped");
         assert!(parsed.get("plugins").is_none(), "plugins stripped");
+
+        // Verify file permissions are restricted on Unix
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            let mode = config_path.metadata().unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "docker-config.json should be 0600");
+        }
     }
 
     #[test]
