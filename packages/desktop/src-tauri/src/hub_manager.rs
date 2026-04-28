@@ -21,8 +21,14 @@ static START_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
 const MAX_COMMAND_OUTPUT_CHARS: usize = 400;
 const DESKTOP_LOG_FILENAME: &str = "desktop.log";
+#[cfg(target_os = "windows")]
+const HUB_ENV_FILENAME: &str = ".env";
+#[cfg(not(target_os = "windows"))]
 const HUB_ENV_FILENAME: &str = ".env.dev";
-const LEGACY_HUB_ENV_FILENAME: &str = ".env";
+#[cfg(target_os = "windows")]
+const COMPAT_HUB_ENV_FILENAME: &str = ".env.dev";
+#[cfg(not(target_os = "windows"))]
+const COMPAT_HUB_ENV_FILENAME: &str = ".env";
 const HUB_COMPOSE_FILENAME: &str = "docker-compose.prod.yml";
 const MANAGED_APP_CONTAINER_LABEL_FILTER: &str = "label=ci-os-hub.managed=true";
 const MANAGED_APP_CONTAINER_URN_FILTER: &str = "label=ci-os-hub.appurn";
@@ -536,6 +542,24 @@ pub fn hub_env_path_for(data_dir: &Path) -> PathBuf {
 
 pub fn hub_env_path() -> PathBuf {
     hub_env_path_for(&get_hub_data_dir())
+}
+
+fn compat_hub_env_path_for(data_dir: &Path) -> PathBuf {
+    data_dir.join(COMPAT_HUB_ENV_FILENAME)
+}
+
+fn load_runtime_env_values(
+    data_dir: &Path,
+    env_path: &Path,
+) -> std::collections::HashMap<String, String> {
+    let compat_path = compat_hub_env_path_for(data_dir);
+    let mut values = if compat_path != env_path {
+        parse_env_file(&compat_path)
+    } else {
+        std::collections::HashMap::new()
+    };
+    values.extend(parse_env_file(env_path));
+    values
 }
 
 pub(crate) fn logs_dir_for(data_dir: &Path) -> PathBuf {
@@ -1266,7 +1290,7 @@ fn start_hub_inner(
         );
     }
 
-    // Resolve port conflicts and write to .env.dev before starting
+    // Resolve port conflicts and write to the runtime env file before starting.
     let resolution = crate::port_manager::refresh_ports_if_needed(env_path).map_err(|error| {
         let message = format!("Port resolution failed before startup: {}", error);
         let _ = append_desktop_log_for(data_dir, "hub.start", &message);
@@ -1644,7 +1668,7 @@ fn render_runtime_env_content(
 }
 
 fn ensure_runtime_env_state(data_dir: &Path, env_path: &Path) -> Result<bool, String> {
-    let existing = parse_env_file(env_path);
+    let existing = load_runtime_env_values(data_dir, env_path);
     let env_content = render_runtime_env_content(data_dir, &existing);
     let previous_content = std::fs::read_to_string(env_path).unwrap_or_default();
     let changed = strip_port_vars(&previous_content) != env_content;
@@ -1659,9 +1683,10 @@ fn ensure_runtime_env_state(data_dir: &Path, env_path: &Path) -> Result<bool, St
         })?;
     }
 
-    // Keep a legacy mirror for consumers still reading .env.
-    let legacy_env_path = data_dir.join(LEGACY_HUB_ENV_FILENAME);
-    let _ = std::fs::write(&legacy_env_path, &env_content);
+    let compat_env_path = compat_hub_env_path_for(data_dir);
+    if compat_env_path != env_path {
+        let _ = std::fs::write(&compat_env_path, &env_content);
+    }
 
     Ok(changed)
 }
@@ -1785,28 +1810,29 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<HubInitialization, String> 
         );
     }
 
-    // --- Regenerate .env.dev with preserve-and-derive approach ---
+    // --- Regenerate the runtime env file with preserve-and-derive approach ---
     let env_path = hub_env_path_for(&data_dir);
-    let existing = parse_env_file(&env_path);
+    let existing = load_runtime_env_values(&data_dir, &env_path);
 
     // Build .env content with deterministic key order
     let env_content = render_runtime_env_content(&data_dir, &existing);
 
-    // Write .env (port manager will append dynamic port vars after this)
+    // Write the primary runtime env file (port manager will append dynamic port vars after this)
     let old_content = std::fs::read_to_string(&env_path).unwrap_or_default();
     // Strip port vars from old content for comparison (port manager manages those)
     let env_changed = strip_port_vars(&old_content) != env_content;
     std::fs::write(&env_path, &env_content).map_err(|e| {
-        let message = format!("Failed to write .env: {}", e);
+        let message = format!("Failed to write {}: {}", env_path.display(), e);
         let _ = append_desktop_log_for(&data_dir, "initialize", &message);
         with_view_logs_hint(message)
     })?;
 
-    // Keep a legacy mirror for consumers still reading .env.
-    let legacy_env_path = data_dir.join(LEGACY_HUB_ENV_FILENAME);
-    let _ = std::fs::write(&legacy_env_path, &env_content);
+    let compat_env_path = compat_hub_env_path_for(&data_dir);
+    if compat_env_path != env_path {
+        let _ = std::fs::write(&compat_env_path, &env_content);
+    }
 
-    log_lines.push(format!("  .env changed: {}", env_changed));
+    log_lines.push(format!("  {} changed: {}", env_path.display(), env_changed));
 
     let mut traefik_preflight = prepare_traefik_runtime_state(&data_dir).map_err(|error| {
         let message = format!("Failed to prepare Traefik runtime state: {}", error);
