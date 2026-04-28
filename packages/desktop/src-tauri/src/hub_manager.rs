@@ -10,7 +10,8 @@ use std::os::windows::process::CommandExt;
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-/// Maximum number of automatic retry attempts for `start_hub`.
+/// Maximum number of start attempts (1 initial + 2 retries with exponential
+/// backoff of 2 s then 4 s).
 const MAX_START_RETRIES: u32 = 3;
 
 /// Global guard: true while a `start_hub` call is in progress.
@@ -1889,11 +1890,12 @@ mod tests {
     use super::docker_desktop_windows_install_script;
     use super::{
         append_desktop_log_for, classify_docker_access_result, clear_traefik_recreate_required,
-        desktop_log_path_for, format_command_output, is_traefik_recreate_required,
-        logs_open_target_for, managed_app_container_ps_args, mark_traefik_recreate_required,
-        parse_container_ids, prepare_traefik_runtime_state, seeded_traefik_config_contents,
-        truncate_command_output, DockerAccessState, MAX_COMMAND_OUTPUT_CHARS, TRAEFIK_ACME_FILE,
-        TRAEFIK_CONFIG_FILE, TRAEFIK_DYNAMIC_CONFIG_SEED, TRAEFIK_DYNAMIC_FILE, TRAEFIK_TLS_DIR,
+        desktop_log_path_for, format_command_output, is_container_name_conflict,
+        is_oci_runtime_error, is_traefik_recreate_required, logs_open_target_for,
+        managed_app_container_ps_args, mark_traefik_recreate_required, parse_container_ids,
+        prepare_traefik_runtime_state, seeded_traefik_config_contents, truncate_command_output,
+        DockerAccessState, MAX_COMMAND_OUTPUT_CHARS, TRAEFIK_ACME_FILE, TRAEFIK_CONFIG_FILE,
+        TRAEFIK_DYNAMIC_CONFIG_SEED, TRAEFIK_DYNAMIC_FILE, TRAEFIK_TLS_DIR,
     };
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     use std::os::unix::fs::PermissionsExt;
@@ -2117,5 +2119,46 @@ mod tests {
         assert!(script.contains("codesign --verify --deep --strict --verbose=2"));
         assert!(script.contains("spctl --assess --type execute --verbose=2"));
         assert!(script.contains("--user=\"hex\""));
+    }
+
+    // --- is_container_name_conflict / is_oci_runtime_error classifiers ---
+
+    #[test]
+    fn detects_container_name_conflict_from_docker_daemon_message() {
+        let output = r#"Error response from daemon: Conflict. The container name "/ci-hub-app" is already in use by container "8dfafdbc3a40". You have to remove (or rename) that container to be able to reuse that name."#;
+        assert!(is_container_name_conflict(output));
+        assert!(!is_oci_runtime_error(output));
+    }
+
+    #[test]
+    fn detects_container_name_conflict_case_insensitively() {
+        let output = r#"service-app-1  Recreate
+Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREADY IN USE BY CONTAINER "8dfafdbc3a40"."#;
+        assert!(is_container_name_conflict(output));
+    }
+
+    #[test]
+    fn does_not_treat_port_allocation_failure_as_container_name_conflict() {
+        let output = "Error response from daemon: driver failed programming external connectivity on endpoint ci-hub-app-1: Bind for 0.0.0.0:5432 failed: port is already allocated";
+        assert!(!is_container_name_conflict(output));
+    }
+
+    #[test]
+    fn detects_oci_runtime_create_failed_message() {
+        let output = r#"Error response from daemon: failed to create task for container: failed to create shim task: OCI runtime create failed: runc create failed: unable to start container process: exec: "/app/start.sh": stat /app/start.sh: no such file or directory: unknown"#;
+        assert!(is_oci_runtime_error(output));
+        assert!(!is_container_name_conflict(output));
+    }
+
+    #[test]
+    fn detects_failed_to_create_shim_task_message() {
+        let output = "service-app-1  Starting\nError response from daemon: failed to create shim task: context deadline exceeded: unknown";
+        assert!(is_oci_runtime_error(output));
+    }
+
+    #[test]
+    fn does_not_treat_pull_access_denied_as_oci_runtime_error() {
+        let output = "Error response from daemon: pull access denied for ci-hub-app, repository does not exist or may require 'docker login'";
+        assert!(!is_oci_runtime_error(output));
     }
 }
