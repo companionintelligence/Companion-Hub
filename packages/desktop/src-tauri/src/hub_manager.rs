@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -19,7 +20,11 @@ const MAX_START_RETRIES: u32 = 3;
 /// Global guard: true while a `start_hub` call is in progress.
 static START_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
-const MAX_COMMAND_OUTPUT_CHARS: usize = 400;
+/// Serialize rotation + append so concurrent callers cannot interleave
+/// renames and writes to `desktop.log`.
+static LOG_WRITE_LOCK: Mutex<()> = Mutex::new(());
+
+const MAX_COMMAND_OUTPUT_CHARS: usize = 50_000;
 const DESKTOP_LOG_FILENAME: &str = "desktop.log";
 #[cfg(target_os = "windows")]
 const HUB_ENV_FILENAME: &str = ".env";
@@ -30,6 +35,10 @@ const COMPAT_HUB_ENV_FILENAME: &str = ".env.dev";
 #[cfg(not(target_os = "windows"))]
 const COMPAT_HUB_ENV_FILENAME: &str = ".env";
 const HUB_COMPOSE_FILENAME: &str = "docker-compose.prod.yml";
+/// Maximum size of desktop.log before rotation (5 MB).
+const MAX_LOG_SIZE_BYTES: u64 = 5 * 1024 * 1024;
+/// Number of rotated log files to keep (desktop.log.1, desktop.log.2, ...).
+const MAX_LOG_ROTATIONS: usize = 3;
 const MANAGED_APP_CONTAINER_LABEL_FILTER: &str = "label=ci-os-hub.managed=true";
 const MANAGED_APP_CONTAINER_URN_FILTER: &str = "label=ci-os-hub.appurn";
 const DEFAULT_TRAEFIK_ACME_EMAIL: &str = "admin@companionintelligence.com";
@@ -627,15 +636,132 @@ pub(crate) fn append_desktop_log_for(
     operation: &str,
     message: &str,
 ) -> std::io::Result<PathBuf> {
+    let logs_dir = logs_dir_for(data_dir);
     let log_path = desktop_log_path_for(data_dir);
-    std::fs::create_dir_all(logs_dir_for(data_dir))?;
-    let mut file = std::fs::OpenOptions::new()
+    let entry = format_log_entry(operation, message);
+
+    if let Err(err) = std::fs::create_dir_all(&logs_dir) {
+        stderr_fallback(&format!(
+            "[desktop-log-fallback] create_dir_all({}) failed: {}",
+            logs_dir.display(),
+            err
+        ));
+        stderr_fallback(&entry);
+        return Err(err);
+    }
+
+    let _lock = LOG_WRITE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    rotate_log_if_needed(&log_path, &logs_dir, MAX_LOG_SIZE_BYTES);
+
+    match std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(&log_path)?;
-    use std::io::Write;
-    file.write_all(format_log_entry(operation, message).as_bytes())?;
+        .open(&log_path)
+    {
+        Ok(mut file) => {
+            use std::io::Write;
+            if let Err(err) = file.write_all(entry.as_bytes()) {
+                stderr_fallback(&format!(
+                    "[desktop-log-fallback] failed to append to {}: {}",
+                    log_path.display(),
+                    err
+                ));
+                stderr_fallback(&entry);
+                return Err(err);
+            }
+        }
+        Err(err) => {
+            stderr_fallback(&format!(
+                "[desktop-log-fallback] failed to write {}: {}",
+                log_path.display(),
+                err
+            ));
+            stderr_fallback(&entry);
+            return Err(err);
+        }
+    }
+
     Ok(log_path)
+}
+
+fn stderr_fallback(msg: &str) {
+    use std::io::Write;
+    let _ = std::io::stderr().write_all(msg.as_bytes());
+    if !msg.ends_with('\n') {
+        let _ = std::io::stderr().write_all(b"\n");
+    }
+}
+
+fn rotate_log_if_needed(log_path: &Path, logs_dir: &Path, max_size: u64) {
+    let size = match std::fs::metadata(log_path) {
+        Ok(metadata) => metadata.len(),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return,
+        Err(err) => {
+            stderr_fallback(&format!(
+                "[log-rotate] failed to read metadata for {}: {}",
+                log_path.display(),
+                err
+            ));
+            return;
+        }
+    };
+    if size < max_size {
+        return;
+    }
+
+    let oldest = logs_dir.join(format!("{}.{}", DESKTOP_LOG_FILENAME, MAX_LOG_ROTATIONS));
+    remove_if_exists(&oldest);
+
+    for i in (1..MAX_LOG_ROTATIONS).rev() {
+        let src = logs_dir.join(format!("{}.{}", DESKTOP_LOG_FILENAME, i));
+        let dst = logs_dir.join(format!("{}.{}", DESKTOP_LOG_FILENAME, i + 1));
+        rename_or_replace(&src, &dst);
+    }
+    let rotated = logs_dir.join(format!("{}.1", DESKTOP_LOG_FILENAME));
+    rename_or_replace(log_path, &rotated);
+}
+
+fn remove_if_exists(path: &Path) {
+    if let Err(err) = std::fs::remove_file(path) {
+        if err.kind() != std::io::ErrorKind::NotFound {
+            stderr_fallback(&format!(
+                "[log-rotate] failed to remove {}: {}",
+                path.display(),
+                err
+            ));
+        }
+    }
+}
+
+fn rename_or_replace(src: &Path, dst: &Path) {
+    match std::fs::rename(src, dst) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+            remove_if_exists(dst);
+            if let Err(retry_err) = std::fs::rename(src, dst) {
+                if retry_err.kind() != std::io::ErrorKind::NotFound {
+                    stderr_fallback(&format!(
+                        "[log-rotate] failed to rename {} -> {}: {}",
+                        src.display(),
+                        dst.display(),
+                        retry_err
+                    ));
+                }
+            }
+        }
+        Err(err) => {
+            stderr_fallback(&format!(
+                "[log-rotate] failed to rename {} -> {}: {}",
+                src.display(),
+                dst.display(),
+                err
+            ));
+        }
+    }
 }
 
 pub fn append_desktop_log(operation: &str, message: &str) -> std::io::Result<PathBuf> {
@@ -1297,12 +1423,8 @@ fn start_hub_inner(
         with_view_logs_hint(message)
     })?;
 
-    // Log warnings and info
-    let log_path = logs_dir_for(data_dir).join("port-resolution.log");
-    let mut log_lines = vec![format!(
-        "[{}] Port resolution:",
-        chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
-    )];
+    // Log port resolution results into desktop.log.
+    let mut log_lines = vec!["Port resolution:".to_string()];
     for w in &resolution.warnings {
         log_lines.push(format!("  WARN: {}", w));
     }
@@ -1312,7 +1434,6 @@ fn start_hub_inner(
     for (var, port) in &resolution.env_vars {
         log_lines.push(format!("  {}={}", var, port));
     }
-    let _ = std::fs::write(&log_path, log_lines.join("\n") + "\n");
     let _ = append_desktop_log_for(data_dir, "hub.start", &log_lines.join("\n"));
 
     // Attempt compose up with automatic retry on transient container conflicts.
@@ -1758,6 +1879,7 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<HubInitialization, String> 
         "app-data",
         "backups",
         "cache",
+        ".internal",
     ];
     for sub in subdirs {
         std::fs::create_dir_all(data_dir.join(sub))
@@ -1775,12 +1897,7 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<HubInitialization, String> 
     // Copy docker-compose.prod.yml from resources
     let compose_candidates = compose_resource_candidates(resource_dir);
 
-    let log_path = data_dir.join("logs").join("init.log");
-    let mut log_lines = vec![format!(
-        "[{}] initialize_hub: resource_dir = {:?}",
-        chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
-        resource_dir
-    )];
+    let mut log_lines = vec![format!("initialize_hub: resource_dir = {:?}", resource_dir)];
     for (i, candidate) in compose_candidates.iter().enumerate() {
         log_lines.push(format!(
             "  candidate[{}]: {:?} exists={}",
@@ -1877,16 +1994,7 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<HubInitialization, String> 
         traefik_preflight.changed, traefik_preflight.repaired_conflicting_paths, recreate_pending,
     ));
 
-    // Write init log (append)
     let init_summary = log_lines.join("\n");
-    let _ = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .and_then(|mut f| {
-            use std::io::Write;
-            writeln!(f, "{}", init_summary)
-        });
     let _ = append_desktop_log_for(&data_dir, "initialize", &init_summary);
 
     // Clean up legacy .docker-config.json if it exists
