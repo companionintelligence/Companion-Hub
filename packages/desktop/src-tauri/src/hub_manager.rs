@@ -1357,6 +1357,7 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<HubInitialization, String> 
         "app-data",
         "backups",
         "cache",
+        ".internal",
     ];
     for sub in subdirs {
         std::fs::create_dir_all(data_dir.join(sub))
@@ -1413,6 +1414,26 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<HubInitialization, String> 
             "initialize",
             "No docker-compose.prod.yml resource was found in any candidate path.",
         );
+    }
+
+    // --- Generate container-safe Docker config ---
+    //
+    // docker-compose.prod.yml bind-mounts .internal/docker-config.json into
+    // the Hub container at /root/.docker/config.json.  The TS init script
+    // (scripts/init-docker-config.ts) handles this for dev/server flows, but
+    // the desktop app must do it itself.  We read the host's config, strip
+    // host-only fields that break the in-container Docker CLI, and write a
+    // sanitised version.
+    //
+    // On Windows, if the file was missing during a previous run, Docker may
+    // have created a *directory* at that path instead of a file, causing an
+    // OCI mount error.  We detect and remove that stale directory first.
+    if let Err(e) = generate_container_docker_config(&data_dir, None) {
+        let message = format!("Failed to generate .internal/docker-config.json: {}", e);
+        let _ = append_desktop_log_for(&data_dir, "initialize", &message);
+        return Err(with_view_logs_hint(message));
+    } else {
+        log_lines.push("  docker-config: .internal/docker-config.json ready".to_string());
     }
 
     // --- Regenerate .env with preserve-and-derive approach ---
@@ -1526,6 +1547,191 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<HubInitialization, String> 
         env_path,
         traefik_preflight,
     })
+}
+
+/// Generate a container-safe Docker config at `.internal/docker-config.json`.
+///
+/// Reads the host's `~/.docker/config.json`, strips host-only fields that
+/// break the Docker CLI inside Linux containers (currentContext, credsStore
+/// set to desktop/osxkeychain/wincred/secretservice/pass, plugins, features,
+/// hooks), preserves inline `auth` entries, and also preserves `credsStore`
+/// and `credHelpers` entries when they are not in the host-only list.
+///
+/// If the destination path is a directory (stale Docker placeholder from a
+/// previous failed mount), it is removed first.
+///
+/// `host_docker_dir` overrides the default `~/.docker` directory (used by
+/// tests to avoid mutating global environment variables).
+fn generate_container_docker_config(
+    data_dir: &Path,
+    host_docker_dir: Option<&Path>,
+) -> Result<(), String> {
+    let internal_dir = data_dir.join(".internal");
+    let config_path = internal_dir.join("docker-config.json");
+
+    // On Windows, Docker may have created a directory at this path when the
+    // file was missing during a previous `docker compose up`.  Remove it so
+    // we can write a proper file.  Use symlink_metadata to avoid following
+    // symlinks — refuse to proceed if the path is a symlink.
+    match std::fs::symlink_metadata(&config_path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(format!(
+                "Refusing to write Docker config at {:?} because the destination is a symlink",
+                config_path
+            ));
+        }
+        Ok(metadata) if metadata.is_dir() => {
+            match std::fs::remove_dir_all(&config_path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    return Err(format!(
+                        "Cannot remove stale directory at {:?}: {}",
+                        config_path, e
+                    ));
+                }
+            }
+        }
+        Ok(_) => {} // Regular file — will be overwritten below
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {} // Does not exist yet
+        Err(e) => {
+            return Err(format!(
+                "Cannot inspect Docker config path at {:?}: {}",
+                config_path, e
+            ));
+        }
+    }
+
+    // Resolve the host Docker config path.  When no explicit override is
+    // given, fall back to `~/.docker/config.json`.  If the home directory
+    // can't be resolved, proceed with an empty config rather than
+    // accidentally reading from the current working directory.
+    let resolved_docker_dir: Option<PathBuf> = match host_docker_dir {
+        Some(d) => Some(d.to_path_buf()),
+        None => dirs::home_dir().map(|h| h.join(".docker")),
+    };
+
+    let host_config: serde_json::Value = if let Some(docker_dir) = resolved_docker_dir {
+        let host_config_path = docker_dir.join("config.json");
+        match std::fs::read_to_string(&host_config_path) {
+            Ok(raw) => match serde_json::from_str(&raw) {
+                Ok(config) => config,
+                Err(e) => {
+                    let msg = format!(
+                        "Cannot parse host Docker config at {:?}: {}. Proceeding with empty config.",
+                        host_config_path, e
+                    );
+                    stderr_fallback(&msg);
+                    let _ = append_desktop_log_for(data_dir, "docker-config", &msg);
+                    serde_json::json!({})
+                }
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
+            Err(e) => {
+                let msg = format!(
+                    "Cannot read host Docker config at {:?}: {}. Proceeding with empty config.",
+                    host_config_path, e
+                );
+                stderr_fallback(&msg);
+                let _ = append_desktop_log_for(data_dir, "docker-config", &msg);
+                serde_json::json!({})
+            }
+        }
+    } else {
+        serde_json::json!({})
+    };
+
+    // Credential-store values that rely on host-only binaries
+    let host_only_credstores = ["desktop", "osxkeychain", "wincred", "secretservice", "pass"];
+
+    let mut sanitized = serde_json::Map::new();
+
+    // Preserve auths that carry inline `auth` tokens (the only kind that
+    // works without a host-side credential helper binary).
+    if let Some(auths) = host_config.get("auths").and_then(|v| v.as_object()) {
+        let mut kept = serde_json::Map::new();
+        for (registry, entry) in auths {
+            if let Some(auth) = entry.get("auth").and_then(|a| a.as_str()) {
+                if !auth.is_empty() {
+                    kept.insert(
+                        registry.clone(),
+                        serde_json::json!({ "auth": auth }),
+                    );
+                }
+            }
+        }
+        if !kept.is_empty() {
+            sanitized.insert("auths".to_string(), serde_json::Value::Object(kept));
+        }
+    }
+
+    // Keep credsStore only if it isn't a host-only helper
+    if let Some(creds_store) = host_config.get("credsStore").and_then(|v| v.as_str()) {
+        if !host_only_credstores.contains(&creds_store) {
+            sanitized.insert(
+                "credsStore".to_string(),
+                serde_json::Value::String(creds_store.to_string()),
+            );
+        }
+    }
+
+    // Keep per-registry credHelpers that aren't host-only
+    if let Some(helpers) = host_config.get("credHelpers").and_then(|v| v.as_object()) {
+        let mut kept = serde_json::Map::new();
+        for (registry, helper) in helpers {
+            if let Some(h) = helper.as_str() {
+                if !host_only_credstores.contains(&h) {
+                    kept.insert(registry.clone(), serde_json::Value::String(h.to_string()));
+                }
+            }
+        }
+        if !kept.is_empty() {
+            sanitized.insert("credHelpers".to_string(), serde_json::Value::Object(kept));
+        }
+    }
+
+    // Only auths (inline), credsStore (non-host-only), and credHelpers
+    // (non-host-only) are preserved.  Everything else is dropped:
+    // currentContext, plugins, features, hooks, aliases, experimental, etc.
+    // — all host-specific and either unused or harmful in-container.
+
+    let content =
+        serde_json::to_string_pretty(&serde_json::Value::Object(sanitized))
+            .map_err(|e| format!("Cannot serialise docker config: {}", e))?;
+    std::fs::create_dir_all(&internal_dir)
+        .map_err(|e| format!("Cannot create {}: {}", internal_dir.display(), e))?;
+
+    // On Unix, write to a temp file with mode 0600, flush+sync, then
+    // atomically rename over the destination.  This ensures the old config
+    // stays in place if the write fails (disk full, crash).
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let tmp_path = internal_dir.join(".docker-config.json.tmp");
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp_path)
+            .map_err(|e| format!("Cannot open {}: {}", tmp_path.display(), e))?;
+        file.write_all(format!("{}\n", content).as_bytes())
+            .map_err(|e| format!("Cannot write {}: {}", tmp_path.display(), e))?;
+        file.flush()
+            .map_err(|e| format!("Cannot flush {}: {}", tmp_path.display(), e))?;
+        file.sync_all()
+            .map_err(|e| format!("Cannot sync {}: {}", tmp_path.display(), e))?;
+        std::fs::rename(&tmp_path, &config_path)
+            .map_err(|e| format!("Cannot rename {} -> {}: {}", tmp_path.display(), config_path.display(), e))?;
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        std::fs::write(&config_path, format!("{}\n", content))
+            .map_err(|e| format!("Cannot write {}: {}", config_path.display(), e))?;
+    }
+
+    Ok(())
 }
 
 /// Strip dynamic port variables from .env content for comparison purposes.
@@ -2040,15 +2246,16 @@ mod tests {
     use super::docker_desktop_windows_install_script;
     use super::{
         append_desktop_log_for, classify_docker_access_result, clear_traefik_recreate_required,
-        desktop_log_path_for, format_command_output, is_container_name_conflict,
-        is_oci_runtime_error, is_traefik_recreate_required, logs_open_target_for,
-        managed_app_container_ps_args, mark_traefik_recreate_required, parse_container_ids,
-        prepare_traefik_runtime_state, seeded_traefik_config_contents, truncate_command_output,
-        DockerAccessState, MAX_COMMAND_OUTPUT_CHARS, TRAEFIK_ACME_FILE, TRAEFIK_CONFIG_FILE,
-        TRAEFIK_DYNAMIC_CONFIG_SEED, TRAEFIK_DYNAMIC_FILE, TRAEFIK_TLS_DIR,
+        desktop_log_path_for, format_command_output, generate_container_docker_config,
+        is_container_name_conflict, is_oci_runtime_error, is_traefik_recreate_required,
+        logs_open_target_for, managed_app_container_ps_args, mark_traefik_recreate_required,
+        parse_container_ids, prepare_traefik_runtime_state, seeded_traefik_config_contents,
+        truncate_command_output, DockerAccessState, MAX_COMMAND_OUTPUT_CHARS, TRAEFIK_ACME_FILE,
+        TRAEFIK_CONFIG_FILE, TRAEFIK_DYNAMIC_CONFIG_SEED, TRAEFIK_DYNAMIC_FILE, TRAEFIK_TLS_DIR,
     };
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
 
     #[test]
     fn classifies_daemon_unavailable_before_permission_denied() {
@@ -2408,6 +2615,119 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
         assert_eq!(
             std::fs::read_to_string(&log_path).expect("read active log"),
             "active-1active-2"
+        );
+    }
+
+    /// Write a `~/.docker/config.json` fixture into a temp directory and
+    /// return the `.docker` path for use as `host_docker_dir`.
+    fn write_docker_config_fixture(fixture: &str) -> (tempfile::TempDir, PathBuf) {
+        let tmp_home = tempfile::tempdir().expect("create temp home");
+        let docker_dir = tmp_home.path().join(".docker");
+        std::fs::create_dir_all(&docker_dir).expect("create .docker dir");
+        std::fs::write(docker_dir.join("config.json"), fixture).expect("write fixture");
+        (tmp_home, docker_dir)
+    }
+
+    #[test]
+    fn generates_container_docker_config_stripping_host_fields() {
+        let fixture = r#"{
+            "auths": {
+                "https://index.docker.io/v1/": { "auth": "dXNlcjpwYXNz" }
+            },
+            "credsStore": "desktop",
+            "credHelpers": { "ghcr.io": "desktop" },
+            "currentContext": "desktop-linux",
+            "plugins": { "debug": { "enabled": true } }
+        }"#;
+
+        let (_tmp_home, docker_dir) = write_docker_config_fixture(fixture);
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let data_dir = tmp.path().to_path_buf();
+        std::fs::create_dir_all(data_dir.join(".internal")).unwrap();
+
+        generate_container_docker_config(&data_dir, Some(&docker_dir)).expect("generate config");
+
+        let config_path = data_dir.join(".internal").join("docker-config.json");
+        assert!(config_path.is_file(), "config should be a file");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+
+        assert_eq!(
+            parsed.get("auths"),
+            Some(&serde_json::json!({ "https://index.docker.io/v1/": { "auth": "dXNlcjpwYXNz" } })),
+            "inline auths should be preserved"
+        );
+        assert!(parsed.get("credsStore").is_none(), "host-only credsStore stripped");
+        assert!(parsed.get("credHelpers").is_none(), "host-only credHelpers stripped");
+        assert!(parsed.get("currentContext").is_none(), "currentContext stripped");
+        assert!(parsed.get("plugins").is_none(), "plugins stripped");
+
+        // Verify file permissions are restricted on Unix
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            let mode = config_path.metadata().unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "docker-config.json should be 0600");
+        }
+    }
+
+    #[test]
+    fn replaces_stale_directory_with_config_file() {
+        let fixture = r#"{ "credsStore": "desktop" }"#;
+
+        let (_tmp_home, docker_dir) = write_docker_config_fixture(fixture);
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let data_dir = tmp.path().to_path_buf();
+        let config_path = data_dir.join(".internal").join("docker-config.json");
+
+        // Simulate the stale directory Docker creates
+        std::fs::create_dir_all(&config_path).unwrap();
+        assert!(config_path.is_dir(), "precondition: should be a directory");
+
+        generate_container_docker_config(&data_dir, Some(&docker_dir)).expect("generate config");
+
+        assert!(config_path.is_file(), "stale dir should be replaced with a file");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+        assert!(parsed.is_object());
+        assert!(parsed.get("credsStore").is_none());
+    }
+
+    #[test]
+    fn preserves_non_host_only_cred_helpers() {
+        let fixture = r#"{
+            "credsStore": "ecr-login",
+            "credHelpers": {
+                "ghcr.io": "desktop",
+                "123456789.dkr.ecr.us-east-1.amazonaws.com": "ecr-login"
+            }
+        }"#;
+
+        let (_tmp_home, docker_dir) = write_docker_config_fixture(fixture);
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let data_dir = tmp.path().to_path_buf();
+        std::fs::create_dir_all(data_dir.join(".internal")).unwrap();
+
+        generate_container_docker_config(&data_dir, Some(&docker_dir)).expect("generate config");
+
+        let config_path = data_dir.join(".internal").join("docker-config.json");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+
+        assert_eq!(
+            parsed.get("credsStore"),
+            Some(&serde_json::json!("ecr-login")),
+            "non-host-only credsStore should be preserved"
+        );
+        let helpers = parsed.get("credHelpers").expect("credHelpers should exist");
+        assert!(
+            helpers.get("ghcr.io").is_none(),
+            "host-only credHelper should be stripped"
+        );
+        assert_eq!(
+            helpers.get("123456789.dkr.ecr.us-east-1.amazonaws.com"),
+            Some(&serde_json::json!("ecr-login")),
+            "non-host-only credHelper should be preserved"
         );
     }
 }
