@@ -400,7 +400,15 @@ pub(crate) fn append_desktop_log_for(
     {
         Ok(mut file) => {
             use std::io::Write;
-            file.write_all(entry.as_bytes())?;
+            if let Err(err) = file.write_all(entry.as_bytes()) {
+                stderr_fallback(&format!(
+                    "[desktop-log-fallback] failed to append to {}: {}",
+                    log_path.display(),
+                    err
+                ));
+                stderr_fallback(&entry);
+                return Err(err);
+            }
         }
         Err(err) => {
             // Last-resort fallback: write to stderr so the message is not
@@ -431,6 +439,9 @@ fn stderr_fallback(msg: &str) {
 
 /// Rotate `desktop.log` when it reaches or exceeds `max_size` bytes.
 ///
+/// Checked before each append, so the active file may slightly exceed
+/// `max_size` by the size of the most recent log entry.
+///
 /// Keeps up to `MAX_LOG_ROTATIONS` historical files:
 ///   desktop.log.3 → deleted
 ///   desktop.log.2 → desktop.log.3
@@ -439,7 +450,15 @@ fn stderr_fallback(msg: &str) {
 fn rotate_log_if_needed(log_path: &Path, logs_dir: &Path, max_size: u64) {
     let size = match std::fs::metadata(log_path) {
         Ok(m) => m.len(),
-        Err(_) => return, // file doesn't exist yet — nothing to rotate
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return,
+        Err(err) => {
+            stderr_fallback(&format!(
+                "[log-rotate] failed to read metadata for {}: {}",
+                log_path.display(),
+                err
+            ));
+            return;
+        }
     };
     if size < max_size {
         return;
