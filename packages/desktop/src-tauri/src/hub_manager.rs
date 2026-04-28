@@ -762,7 +762,11 @@ pub fn cleanup_stale_project_containers(
             "--remove-orphans",
         ])
         .output()
-        .map_err(|e| format!("Failed to run cleanup compose down: {}", e))?;
+        .map_err(|e| {
+            let message = format!("Failed to run cleanup compose down: {}", e);
+            let _ = append_desktop_log_for(data_dir, "hub.cleanup", &message);
+            message
+        })?;
 
     let combined_output = format_command_output(
         &String::from_utf8_lossy(&output.stdout),
@@ -807,6 +811,7 @@ fn is_oci_runtime_error(output: &str) -> bool {
 /// Start Hub using docker compose up (with port conflict resolution).
 ///
 /// Uses a global `AtomicBool` guard to prevent concurrent invocations.
+/// A `Drop` guard ensures the flag is cleared even if the inner logic panics.
 pub fn start_hub(compose_path: &Path, env_path: &Path, data_dir: &Path) -> Result<String, String> {
     // Prevent concurrent start attempts.
     if START_IN_PROGRESS.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err()
@@ -816,9 +821,16 @@ pub fn start_hub(compose_path: &Path, env_path: &Path, data_dir: &Path) -> Resul
         return Ok(message.to_string());
     }
 
-    let result = start_hub_inner(compose_path, env_path, data_dir);
-    START_IN_PROGRESS.store(false, Ordering::SeqCst);
-    result
+    // RAII guard: always clear the flag when the function exits, including panics.
+    struct StartGuard;
+    impl Drop for StartGuard {
+        fn drop(&mut self) {
+            START_IN_PROGRESS.store(false, Ordering::SeqCst);
+        }
+    }
+    let _guard = StartGuard;
+
+    start_hub_inner(compose_path, env_path, data_dir)
 }
 
 /// Inner start logic, called under the `START_IN_PROGRESS` guard.

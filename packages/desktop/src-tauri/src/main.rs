@@ -34,7 +34,13 @@ async fn start_hub_command(
     let data = state.data_dir.clone();
     tokio::task::spawn_blocking(move || hub_manager::start_hub(&compose, &env, &data))
         .await
-        .map_err(|e| format!("start_hub task panicked: {}", e))?
+        .map_err(|e| {
+            if e.is_panic() {
+                format!("start_hub task panicked: {}", e)
+            } else {
+                format!("start_hub task was cancelled: {}", e)
+            }
+        })?
 }
 
 /// Check if Docker is available on this machine.
@@ -213,11 +219,17 @@ pub fn run() {
                     // Pre-cleanup: remove stale containers from a previous install
                     // before attempting compose up.  This prevents "container name
                     // already in use" errors after an uninstall/reinstall cycle.
-                    let _ = hub_manager::cleanup_stale_project_containers(
+                    if let Err(err) = hub_manager::cleanup_stale_project_containers(
                         &compose_path,
                         &env_path,
                         &data_dir,
-                    );
+                    ) {
+                        let _ = hub_manager::append_desktop_log_for(
+                            &data_dir,
+                            "setup",
+                            &format!("Pre-start cleanup failed (non-fatal): {}", err),
+                        );
+                    }
 
                     let compose = compose_path;
                     let env = env_path;
@@ -245,11 +257,16 @@ pub fn run() {
                                     &format!("Auto-start failed: {}", error),
                                 );
                             }
-                            Err(panic_err) => {
+                            Err(join_err) => {
+                                let msg = if join_err.is_panic() {
+                                    format!("start_hub task panicked: {}", join_err)
+                                } else {
+                                    format!("start_hub task was cancelled: {}", join_err)
+                                };
                                 let _ = hub_manager::append_desktop_log_for(
                                     &data_for_log,
                                     "setup",
-                                    &format!("start_hub task panicked: {}", panic_err),
+                                    &msg,
                                 );
                             }
                         }

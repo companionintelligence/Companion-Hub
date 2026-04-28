@@ -144,11 +144,16 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                                 &format!("Tray start request failed: {}", error),
                             );
                         }
-                        Err(panic_err) => {
+                        Err(join_err) => {
+                            let msg = if join_err.is_panic() {
+                                format!("start_hub task panicked: {}", join_err)
+                            } else {
+                                format!("start_hub task was cancelled: {}", join_err)
+                            };
                             let _ = crate::hub_manager::append_desktop_log_for(
                                 &data_for_log,
                                 "tray.start",
-                                &format!("start_hub task panicked: {}", panic_err),
+                                &msg,
                             );
                         }
                     }
