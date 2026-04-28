@@ -1642,7 +1642,8 @@ fn generate_container_docker_config(data_dir: &Path) -> Result<(), String> {
     // all host-specific and either unused or harmful in-container.
 
     let content =
-        serde_json::to_string_pretty(&serde_json::Value::Object(sanitized)).unwrap_or_default();
+        serde_json::to_string_pretty(&serde_json::Value::Object(sanitized))
+            .map_err(|e| format!("Cannot serialise docker config: {}", e))?;
     std::fs::create_dir_all(&internal_dir)
         .map_err(|e| format!("Cannot create .internal dir: {}", e))?;
     std::fs::write(&config_path, format!("{}\n", content))
@@ -2548,7 +2549,7 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
     /// Run `test_fn` with HOME/USERPROFILE pointing at a temp directory
     /// containing the given `~/.docker/config.json` fixture.
     fn with_host_docker_config_fixture(fixture: &str, test_fn: impl FnOnce()) {
-        let _guard = DOCKER_CONFIG_TEST_ENV_LOCK.lock().unwrap();
+        let _guard = DOCKER_CONFIG_TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp_home = tempfile::tempdir().expect("create temp home");
         let docker_dir = tmp_home.path().join(".docker");
         std::fs::create_dir_all(&docker_dir).expect("create .docker dir");
