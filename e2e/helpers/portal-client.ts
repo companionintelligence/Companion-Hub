@@ -1,46 +1,50 @@
 /**
- * Client helper for switching the mock portal scenario at runtime.
+ * Portal API helpers for standard E2E tests.
  *
- * Used by E2E fixtures to configure the portal before each test.
+ * Wraps the PortalApiClient from cross-domain tests behind convenience
+ * functions for common E2E operations (seeding registrations, etc.).
+ * The real miniflare Portal replaces the old mock portal server.
  */
 
-import { PORTAL_SCENARIOS, type PortalScenario } from '../mock-portal/scenarios.js';
+import { PortalApiClient } from '../cross-domain/portal-api';
 
-const MOCK_PORTAL_URL = `http://localhost:${process.env.MOCK_PORTAL_PORT || '4444'}`;
+const PORTAL_URL = `http://localhost:${process.env.PORTAL_PORT || '8012'}`;
 
-/** Switch the running mock portal to a different scenario. */
-export async function setPortalScenario(scenario: PortalScenario) {
-  const res = await fetch(`${MOCK_PORTAL_URL}/___control`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ scenario }),
-  });
-  if (!res.ok) {
-    throw new Error(`Failed to set portal scenario to "${scenario}": ${res.status}`);
-  }
+/**
+ * Create a PortalApiClient connected to the E2E Portal instance.
+ */
+export function createPortalClient(): PortalApiClient {
+  return new PortalApiClient(PORTAL_URL);
 }
 
-function isPortalScenario(value: unknown): value is PortalScenario {
-  return typeof value === 'string' && PORTAL_SCENARIOS.includes(value as PortalScenario);
-}
+/**
+ * Seed a "registered" state on the Portal: create user, org, device.
+ * Returns the pairing code for use with Hub pairing.
+ */
+export async function seedPortalRegistration(opts?: { email?: string; password?: string; orgName?: string; deviceName?: string }) {
+  const {
+    email = 'e2e-standard@test.local',
+    password = 'SecureE2EPass123!',
+    orgName = 'E2E Standard Org',
+    deviceName = 'E2E Standard Hub',
+  } = opts ?? {};
 
-/** Get the current scenario of the running mock portal. */
-export async function getPortalScenario(): Promise<PortalScenario> {
-  const res = await fetch(`${MOCK_PORTAL_URL}/___control`);
+  const portal = createPortalClient();
 
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    const detail = body ? ` — ${body}` : '';
-    throw new Error(`Failed to get portal scenario: ${res.status} ${res.statusText}${detail}`);
-  }
+  // Create user
+  await portal.signUp(email, password, 'E2E User');
 
-  const data = (await res.json()) as unknown;
-  const scenario = typeof data === 'object' && data !== null && 'scenario' in data ? (data as { scenario?: unknown }).scenario : undefined;
+  // Create organization
+  const org = await portal.createOrganization(orgName);
+  await portal.setActiveOrganization(org.id);
 
-  if (!isPortalScenario(scenario)) {
-    const received = JSON.stringify(data);
-    throw new Error(`Mock portal returned invalid scenario payload: ${received}. Expected one of: ${PORTAL_SCENARIOS.join(', ')}`);
-  }
+  // Create device
+  const device = await portal.createDevice(org.id, deviceName);
 
-  return scenario;
+  return {
+    portal,
+    org,
+    device,
+    pairingCode: device.pairingCode,
+  };
 }

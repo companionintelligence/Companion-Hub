@@ -1,0 +1,21 @@
+# Traefik static configuration for E2E tests.
+# Source: e2e/cross-domain/traefik.yml
+# Bind-mounted to /etc/traefik/traefik.yml via docker-compose.cross-domain.yml
+
+entryPoints:
+  web:
+    address: ":80"
+  websecure:
+    address: ":443"
+
+providers:
+  file:
+    directory: /dynamic
+    watch: true
+
+api:
+  dashboard: false
+  insecure: true
+
+log:
+  level: INFO

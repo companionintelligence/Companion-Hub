@@ -88,6 +88,7 @@ docs/jira/
 docs/jira/
 
 .internal/
+.internal*
 .internal-*/
 .internal/cache/*
 .internal/apps/*

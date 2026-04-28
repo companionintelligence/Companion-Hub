@@ -6,6 +6,7 @@ set -euo pipefail
 
 DATA_DIR="${CI_HUB_DATA_DIR:-/tmp/ci-hub-e2e}"
 
+
 # Fail fast with a clear message if Postgres / RabbitMQ are unavailable.
 pnpm exec tsx ./e2e/helpers/require-infra-ready.ts
 
@@ -63,6 +64,7 @@ CI_HUB_FORWARD_AUTH_URL=${CI_HUB_FORWARD_AUTH_URL:-http://localhost:3000/api/aut
 ALLOW_AUTO_THEMES=${ALLOW_AUTO_THEMES:-true}
 ALLOW_ERROR_MONITORING=${ALLOW_ERROR_MONITORING:-false}
 PERSIST_TRAEFIK_CONFIG=${PERSIST_TRAEFIK_CONFIG:-false}
+PRIVATE_VPN_ENABLED=false
 ADVANCED_SETTINGS=${ADVANCED_SETTINGS:-false}
 DISABLE_PASSWORD_RESET=${DISABLE_PASSWORD_RESET:-true}
 DNS_IP=${DNS_IP:-9.9.9.9}

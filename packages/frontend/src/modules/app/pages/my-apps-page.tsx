@@ -37,24 +37,31 @@ export default () => {
 
     const [appName, storeId] = info.urn.split(':');
 
-    if (info.available) {
-      return (
-        <Link key={app.id} to={`/apps/${storeId}/${appName}`} className="app-link" data-testid={`installed-app-${appName}`}>
-          <AppTile key={info.urn} status={app.status} info={info} updateAvailable={updateAvailable} pendingRestart={app.pendingRestart} />
-        </Link>
-      );
-    }
-
-    return null;
+    return (
+      <Link key={app.id} to={`/apps/${storeId}/${appName}`} className="app-link" data-testid={`installed-app-${appName}`}>
+        <AppTile
+          key={info.urn}
+          status={app.status}
+          info={info}
+          updateAvailable={updateAvailable}
+          pendingRestart={app.pendingRestart}
+          available={info.available}
+        />
+      </Link>
+    );
   };
 
   const renderLink = (link: CustomLink) => {
     return (
-      <Link key={link.id} to={link.url} target="_blank" className="app-link">
+      <div key={link.id} data-testid={`custom-link-${link.id}`}>
         <LinkTile key={link.id} link={link} />
-      </Link>
+      </div>
     );
   };
+
+  const hasApps = installed.length > 0;
+  const hasLinks = customLinks.length > 0;
+  const hasBoth = hasApps && hasLinks;
 
   return (
     <div className="h-full flex flex-col px-6 pt-4">
@@ -65,7 +72,7 @@ export default () => {
       <div className="flex-1 overflow-y-auto min-h-0" data-testid="my-apps-scroll-container">
         {(appsLoading || linksLoading) && !apps && !links ? (
           <LoadingSpinner />
-        ) : installed.length === 0 && customLinks.length === 0 ? (
+        ) : !hasApps && !hasLinks ? (
           <EmptyPage
             title="MY_APPS_EMPTY_TITLE"
             subtitle="MY_APPS_EMPTY_SUBTITLE"
@@ -91,21 +98,63 @@ export default () => {
             }
           />
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4" data-testid="apps-list">
-            {installed.map(renderApp)}
-            {customLinks.map(renderLink)}
-            <ButtonTile
-              title={t('CUSTOM_APP_ADD_TITLE')}
-              subtitle={t('CUSTOM_APP_ADD_SUBTITLE')}
-              action={() => navigate('/apps/create')}
-              icon={<AppWindow size={50} strokeWidth={1.5} />}
-            />
-            <ButtonTile
-              title={t('LINKS_ADD_TITLE')}
-              subtitle={t('LINKS_ADD_SUBTITLE')}
-              action={() => addLinkDisclosure.open()}
-              icon={<LinkIcon size={50} strokeWidth={1.5} />}
-            />
+          <div className="space-y-6">
+            {hasApps && (
+              <div>
+                {hasBoth && (
+                  <h3 className="text-lg font-semibold mb-3 text-foreground" data-testid="section-apps">
+                    {t('MY_APPS_SECTION_APPS')}
+                  </h3>
+                )}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4" data-testid="apps-list">
+                  {installed.map(renderApp)}
+                  <ButtonTile
+                    title={t('CUSTOM_APP_ADD_TITLE')}
+                    subtitle={t('CUSTOM_APP_ADD_SUBTITLE')}
+                    action={() => navigate('/apps/create')}
+                    icon={<AppWindow size={50} strokeWidth={1.5} />}
+                  />
+                </div>
+              </div>
+            )}
+            {hasLinks && (
+              <div>
+                {hasBoth && (
+                  <h3 className="text-lg font-semibold mb-3 text-foreground" data-testid="section-links">
+                    {t('MY_APPS_SECTION_LINKS')}
+                  </h3>
+                )}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4" data-testid="links-list">
+                  {customLinks.map(renderLink)}
+                  <ButtonTile
+                    title={t('LINKS_ADD_TITLE')}
+                    subtitle={t('LINKS_ADD_SUBTITLE')}
+                    action={() => addLinkDisclosure.open()}
+                    icon={<LinkIcon size={50} strokeWidth={1.5} />}
+                  />
+                </div>
+              </div>
+            )}
+            {!hasBoth && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                {!hasApps && (
+                  <ButtonTile
+                    title={t('CUSTOM_APP_ADD_TITLE')}
+                    subtitle={t('CUSTOM_APP_ADD_SUBTITLE')}
+                    action={() => navigate('/apps/create')}
+                    icon={<AppWindow size={50} strokeWidth={1.5} />}
+                  />
+                )}
+                {!hasLinks && (
+                  <ButtonTile
+                    title={t('LINKS_ADD_TITLE')}
+                    subtitle={t('LINKS_ADD_SUBTITLE')}
+                    action={() => addLinkDisclosure.open()}
+                    icon={<LinkIcon size={50} strokeWidth={1.5} />}
+                  />
+                )}
+              </div>
+            )}
           </div>
         )}
       </div>

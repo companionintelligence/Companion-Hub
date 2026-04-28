@@ -4,25 +4,33 @@ import { Card, CardContent } from '@/components/ui/Card';
 import { useEffect, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { getInstalledAppsQueryKey } from '@/api-client/@tanstack/react-query.gen';
-import type { OnboardingApp } from '../helpers/types';
+import type { OnboardingApp, AppInstallStatus, InstallSummary } from '../helpers/types';
 
 interface InstallStepProps {
   apps: OnboardingApp[];
   /** Exposure mode to use for all onboarding installs. Defaults to 'cloudflare'. */
   defaultExposureMode?: 'cloudflare' | 'tailscale' | 'local';
-  onComplete: () => void;
+  onComplete: (summary: InstallSummary) => void;
 }
-
-type InstallStatus = 'pending' | 'installing' | 'success' | 'error';
 
 interface AppInstallState {
   app: OnboardingApp;
-  status: InstallStatus;
+  status: AppInstallStatus;
   error?: string;
 }
 
+function buildSummary(states: AppInstallState[]): InstallSummary {
+  return {
+    results: states.map((s) => ({ app: s.app, status: s.status, error: s.error })),
+    running: states.filter((s) => s.status === 'running').length,
+    incomplete: states.filter((s) => s.status === 'incomplete').length,
+    failed: states.filter((s) => s.status === 'failed').length,
+    total: states.length,
+  };
+}
+
 export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', onComplete }: InstallStepProps) => {
-  const [states, setStates] = useState<AppInstallState[]>(apps.map((app) => ({ app, status: 'pending' })));
+  const [states, setStates] = useState<AppInstallState[]>(apps.map((app) => ({ app, status: 'queued' })));
   const [done, setDone] = useState(false);
   const started = useRef(false);
   const onCompleteRef = useRef(onComplete);
@@ -36,25 +44,29 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', onComple
 
     const installAll = async () => {
       const minDelay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+      const finalStates: AppInstallState[] = apps.map((app) => ({ app, status: 'queued' as AppInstallStatus }));
+      const stateAt = (index: number, app: OnboardingApp): AppInstallState => finalStates[index] ?? { app, status: 'queued' };
 
       for (let i = 0; i < apps.length; i++) {
         const app = apps[i];
         if (!app) continue;
 
         if (!app.urn) {
-          setStates((prev) => prev.map((s, idx) => (idx === i ? { ...s, status: 'error', error: 'Not available in store' } : s)));
+          finalStates[i] = { ...stateAt(i, app), status: 'failed', error: 'Not available in store' };
+          setStates([...finalStates]);
           await minDelay(500);
           continue;
         }
 
-        setStates((prev) => prev.map((s, idx) => (idx === i ? { ...s, status: 'installing' } : s)));
+        finalStates[i] = { ...stateAt(i, app), status: 'installing' };
+        setStates([...finalStates]);
+
         // Add an optimistic entry to the installed apps cache so the dashboard
         // and other pages show the app as "installing" while the server
         // processes the request.
         try {
           const installedKey = getInstalledAppsQueryKey();
           const existing = (queryClient.getQueryData(installedKey) as Record<string, unknown>) || { installed: [] };
-          // Remove any prior optimistic entry for this urn
           const installedList = (existing.installed ?? []) as Array<Record<string, Record<string, unknown>>>;
           const filtered = installedList.filter((it) => it.info?.urn !== app.urn);
           const tempId = `pending-${app.appSlug}-${Date.now()}`;
@@ -73,16 +85,10 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', onComple
           };
           queryClient.setQueryData(installedKey, { installed: [optimistic, ...filtered] });
         } catch (_e) {
-          // Non-fatal; proceed without optimistic cache if something fails
-          // (e.g., no query client available)
-          // console.warn('Failed to set optimistic installed app', e);
+          // Non-fatal; proceed without optimistic cache
         }
 
         try {
-          // Trigger the install on the server. The install endpoint may only
-          // enqueue the install so treat this as "started" and then poll the
-          // installed apps list to confirm the app appears there before
-          // marking it as fully installed.
           const [res] = await Promise.all([
             apiFetch(`/api/app-lifecycle/${encodeURIComponent(app.urn)}/install`, {
               method: 'POST',
@@ -92,6 +98,7 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', onComple
                 localSubdomain: app.localSubdomain || app.appSlug,
                 exposureMode: defaultExposureMode,
                 exposedLocal: defaultExposureMode === 'cloudflare',
+                openPort: false,
               }),
             }),
             minDelay(500),
@@ -102,67 +109,60 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', onComple
             throw new Error(data.message || `HTTP ${res.status}`);
           }
 
-          // Start polling to confirm the app shows up in the installed apps
-          // list. Give it a reasonable timeout (e.g. 60s) and poll interval.
+          // Poll to confirm the app shows up in the installed apps list with
+          // a status that indicates it is actually running / healthy.
           const pollInterval = 1000;
           const timeoutMs = 60_000;
           const start = Date.now();
 
-          const checkInstalled = async (): Promise<boolean> => {
+          const checkRunning = async (): Promise<'running' | 'installing' | false> => {
             try {
               const installedRes = await apiFetch('/api/apps/installed', { credentials: 'include' });
               if (!installedRes.ok) return false;
               const data = await installedRes.json().catch(() => ({}));
               const installed = data.installed || [];
-              return installed.some((a: Record<string, Record<string, unknown>>) => a.info?.urn === app.urn);
+              const match = installed.find((a: Record<string, Record<string, unknown>>) => a.info?.urn === app.urn);
+              if (!match) return false;
+              const appStatus = (match.app?.status as string) ?? '';
+              if (appStatus === 'running') return 'running';
+              // Present in list but not yet running
+              return 'installing';
             } catch {
               return false;
             }
           };
 
-          // While polling, keep the state in 'installing'
-          let confirmed = false;
-          // Ensure UI shows installing immediately
-          setStates((prev) => prev.map((s, idx) => (idx === i ? { ...s, status: 'installing' } : s)));
+          let confirmedStatus: 'running' | 'installing' | false = false;
 
           while (Date.now() - start < timeoutMs) {
-            // small delay between polls
-            // eslint-disable-next-line no-await-in-loop
             await minDelay(pollInterval);
-            // eslint-disable-next-line no-await-in-loop
-            if (await checkInstalled()) {
-              confirmed = true;
-              break;
-            }
+            confirmedStatus = await checkRunning();
+            if (confirmedStatus === 'running') break;
           }
 
-          if (confirmed) {
-            setStates((prev) => prev.map((s, idx) => (idx === i ? { ...s, status: 'success' } : s)));
-            // Installation confirmed — refresh installed apps list to replace
-            // the optimistic entry with the real one.
+          if (confirmedStatus === 'running') {
+            finalStates[i] = { ...stateAt(i, app), status: 'running' };
+            setStates([...finalStates]);
             try {
               queryClient.invalidateQueries({ queryKey: getInstalledAppsQueryKey() });
             } catch (_e) {
               // ignore
             }
           } else {
-            // If we never confirmed installation, mark as error but include
-            // a helpful message so users know it may still be processing.
-            setStates((prev) => prev.map((s, idx) => (idx === i ? { ...s, status: 'error', error: 'Installation not confirmed (timed out)' } : s)));
-            // Remove optimistic installed entry on error/timeout so dashboard
-            // doesn't keep showing a phantom installing app.
-            try {
-              const installedKey = getInstalledAppsQueryKey();
-              const existing = (queryClient.getQueryData(installedKey) as Record<string, unknown>) || { installed: [] };
-              const installedList = (existing.installed ?? []) as Array<Record<string, Record<string, unknown>>>;
-              const filtered = installedList.filter((it) => it.info?.urn !== app.urn);
-              queryClient.setQueryData(installedKey, { installed: filtered });
-            } catch (_e) {
-              // ignore
-            }
+            // The install request was accepted but the app was not confirmed
+            // running within the timeout. Mark as incomplete, not success.
+            finalStates[i] = {
+              ...stateAt(i, app),
+              status: 'incomplete',
+              error: 'Install started but not yet confirmed running',
+            };
+            setStates([...finalStates]);
+            // Keep optimistic cache entry — the app likely still exists on
+            // the server, just hasn't fully converged yet.
           }
         } catch (e) {
-          setStates((prev) => prev.map((s, idx) => (idx === i ? { ...s, status: 'error', error: (e as Error).message } : s)));
+          finalStates[i] = { ...stateAt(i, app), status: 'failed', error: (e as Error).message };
+          setStates([...finalStates]);
           try {
             const installedKey = getInstalledAppsQueryKey();
             const existing = (queryClient.getQueryData(installedKey) as Record<string, unknown>) || { installed: [] };
@@ -181,33 +181,70 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', onComple
     installAll();
   }, [apps]);
 
-  const statusIcon = (status: InstallStatus) => {
+  const statusIcon = (status: AppInstallStatus) => {
     switch (status) {
-      case 'pending':
-        return <span className="text-muted-foreground">○</span>;
+      case 'queued':
+        return (
+          <span className="text-muted-foreground" data-testid="status-queued">
+            ○
+          </span>
+        );
       case 'installing':
-        return <div className="animate-spin w-4 h-4 border-2 border-primary border-t-transparent rounded-full" />;
-      case 'success':
-        return <span className="text-green-500">✓</span>;
-      case 'error':
-        return <span className="text-destructive">✕</span>;
+        return <div className="animate-spin w-4 h-4 border-2 border-primary border-t-transparent rounded-full" data-testid="status-installing" />;
+      case 'running':
+        return (
+          <span className="text-green-500" data-testid="status-running">
+            ✓
+          </span>
+        );
+      case 'incomplete':
+        return (
+          <span className="text-yellow-500" data-testid="status-incomplete">
+            ⏳
+          </span>
+        );
+      case 'failed':
+        return (
+          <span className="text-destructive" data-testid="status-failed">
+            ✕
+          </span>
+        );
     }
   };
 
-  const completedCount = states.filter((s) => s.status === 'success').length;
-  const errorCount = states.filter((s) => s.status === 'error').length;
-  const processedCount = completedCount + errorCount;
+  const statusLabel = (status: AppInstallStatus) => {
+    switch (status) {
+      case 'queued':
+        return 'Queued';
+      case 'installing':
+        return 'Installing…';
+      case 'running':
+        return 'Running';
+      case 'incomplete':
+        return 'Not yet confirmed';
+      case 'failed':
+        return 'Failed';
+    }
+  };
+
+  const runningCount = states.filter((s) => s.status === 'running').length;
+  const failedCount = states.filter((s) => s.status === 'failed').length;
+  const incompleteCount = states.filter((s) => s.status === 'incomplete').length;
+  const processedCount = runningCount + failedCount + incompleteCount;
   const progress = apps.length > 0 ? Math.round((processedCount / apps.length) * 100) : 0;
+
+  const summaryParts: string[] = [];
+  if (runningCount > 0) summaryParts.push(`${runningCount} running`);
+  if (incompleteCount > 0) summaryParts.push(`${incompleteCount} not yet confirmed`);
+  if (failedCount > 0) summaryParts.push(`${failedCount} failed`);
 
   return (
     <Card>
       <CardContent className="p-6">
         <div className="mb-4">
           <h2 className="text-xl font-semibold mb-1">{done ? 'Installation Complete' : 'Installing Apps'}</h2>
-          <p className="text-sm text-muted-foreground">
-            {done
-              ? `${completedCount} installed${errorCount > 0 ? `, ${errorCount} failed` : ''}.`
-              : `Installing ${processedCount + 1} of ${apps.length}...`}
+          <p className="text-sm text-muted-foreground" data-testid="install-progress-text">
+            {done ? `${summaryParts.join(', ')}.` : `Installing ${processedCount + 1} of ${apps.length}…`}
           </p>
         </div>
 
@@ -215,9 +252,13 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', onComple
           <div className="bg-primary h-2 rounded-full transition-all duration-500 ease-out" style={{ width: `${progress}%` }} />
         </div>
 
-        <div className="space-y-1 max-h-[350px] overflow-y-auto pr-2">
+        <div className="space-y-1 max-h-[350px] overflow-y-auto pr-2" data-testid="install-app-list">
           {states.map((state) => (
-            <div key={state.app.appSlug} className="flex items-center gap-3 px-3 py-2 rounded-lg transition-colors">
+            <div
+              key={state.app.appSlug}
+              className="flex items-center gap-3 px-3 py-2 rounded-lg transition-colors"
+              data-testid={`install-row-${state.app.appSlug}`}
+            >
               <span className="w-5 h-5 flex items-center justify-center text-sm font-semibold">{statusIcon(state.status)}</span>
               <img
                 src={state.app.icon}
@@ -229,6 +270,7 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', onComple
               />
               <div className="flex-1 min-w-0">
                 <div className="text-sm font-medium">{state.app.name}</div>
+                <div className="text-xs text-muted-foreground">{statusLabel(state.status)}</div>
                 {state.error && <div className="text-xs text-destructive">{state.error}</div>}
               </div>
             </div>
@@ -236,11 +278,7 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', onComple
         </div>
 
         <div className="flex justify-end mt-6">
-          {/* Allow users to continue even while installs are running. This button
-              is intentionally always enabled (unless loading) so onboarding does
-              not block the user. If installation completes naturally the
-              original onComplete will also be called by the parent flow. */}
-          <Button intent="primary" onClick={() => onCompleteRef.current()}>
+          <Button intent="primary" onClick={() => onCompleteRef.current(buildSummary(states))} data-testid="install-continue-btn">
             {done ? 'Continue' : 'Continue (apps installing in background)'}
           </Button>
         </div>

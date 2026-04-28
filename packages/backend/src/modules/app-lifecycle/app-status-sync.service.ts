@@ -55,20 +55,21 @@ export class AppStatusSyncService {
         filters: { label: ['ci-os-hub.managed=true'] },
       });
 
-      const dockerStatusMap = new Map<string, { running: number; total: number }>();
+      const dockerStatusMap = new Map<string, { running: number; exitZero: number; total: number }>();
 
       for (const container of containers) {
         const appUrn = container.Labels?.['ci-os-hub.appurn'];
         if (!appUrn) continue;
 
         if (!dockerStatusMap.has(appUrn)) {
-          dockerStatusMap.set(appUrn, { running: 0, total: 0 });
+          dockerStatusMap.set(appUrn, { running: 0, exitZero: 0, total: 0 });
         }
 
         const status = dockerStatusMap.get(appUrn);
         if (status) {
           status.total++;
           if (container.State === 'running') status.running++;
+          if (container.State === 'exited' && /Exited \(0\)/.test(container.Status)) status.exitZero++;
         }
       }
 
@@ -94,7 +95,7 @@ export class AppStatusSyncService {
 
         if (!dockerStatus || dockerStatus.total === 0) {
           newStatus = 'missing';
-        } else if (dockerStatus.running === dockerStatus.total) {
+        } else if (dockerStatus.running + dockerStatus.exitZero === dockerStatus.total) {
           newStatus = 'running';
         } else {
           newStatus = 'stopped';

@@ -2,7 +2,7 @@ import { AppLogo } from '@/components/app-logo/app-logo';
 import { Card, CardContent } from '@/components/ui/Card';
 import { limitText } from '@/lib/helpers/text-helpers';
 import type { AppInfo, AppStatus as AppStatusType } from '@/types/app.types';
-import { AlertCircle, Download, RotateCw } from 'lucide-react';
+import { AlertCircle, CloudOff, Download, RotateCw } from 'lucide-react';
 import type React from 'react';
 import { useTranslation } from 'react-i18next';
 import { Tooltip } from 'react-tooltip';
@@ -16,13 +16,27 @@ export const AppTile: React.FC<{
   status: AppStatusType;
   updateAvailable: boolean;
   pendingRestart?: boolean;
-}> = ({ info, status, updateAvailable, pendingRestart }) => {
+  available?: boolean;
+}> = ({ info, status, updateAvailable, pendingRestart, available = true }) => {
   const { t } = useTranslation();
 
   let badge = null;
 
-  // Using if-else sets the badge once while rendering them in the return causes badges to stack
-  if (pendingRestart) {
+  if (!available) {
+    badge = (
+      <>
+        <Tooltip className="tooltip" anchorSelect=".storeUnavailable">
+          {t('MY_APPS_STORE_UNAVAILABLE')}
+        </Tooltip>
+        <div
+          className="storeUnavailable absolute top-0 right-0 rounded-tr-lg rounded-bl-lg bg-gray-500 text-white p-1.5"
+          data-testid="badge-unavailable"
+        >
+          <CloudOff size={20} />
+        </div>
+      </>
+    );
+  } else if (pendingRestart) {
     badge = (
       <>
         <Tooltip className="tooltip" anchorSelect=".pendingRestart">
@@ -60,7 +74,7 @@ export const AppTile: React.FC<{
   return (
     <Card className="relative hover:bg-accent/50 transition-colors">
       <CardContent className="flex items-center gap-3 p-4">
-        <AppLogo alt={`${info.name} logo`} urn={info.urn} size={60} />
+        <AppLogo alt={`${info.name} logo`} urn={info.urn} size={60} className={available ? undefined : 'opacity-50 grayscale'} />
         <div className="flex flex-col justify-center">
           <div className="flex items-center gap-2">
             <span className="font-bold">{info.name}</span>

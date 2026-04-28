@@ -11,32 +11,35 @@ const ALTERNATIVES_VIEW = '__alternatives__' as const;
 const STORE_INDEX_PATTERN = /^\/app-store\/?$/;
 
 export const AppStoreSidebar = () => {
-  const { setCategory, category, setSearch, search: initialSearch } = useAppStoreState();
+  const { setCategory, category, setSearch, search: initialSearch, storeId } = useAppStoreState();
   const [search, setLocalSearch] = useState(initialSearch);
   const navigate = useNavigate();
   const location = useLocation();
 
   const isAlternativesView = category === ALTERNATIVES_VIEW;
 
+  const navigatePreservingStore = useCallback(() => {
+    if (!STORE_INDEX_PATTERN.test(location.pathname)) {
+      const target = storeId ? `/app-store?store=${storeId}` : '/app-store';
+      navigate(target);
+    }
+  }, [navigate, location.pathname, storeId]);
+
   const onSearch = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       setLocalSearch(e.target.value);
       setSearch(e.target.value);
-      if (!STORE_INDEX_PATTERN.test(location.pathname)) {
-        navigate('/app-store');
-      }
+      navigatePreservingStore();
     },
-    [setSearch, navigate, location.pathname],
+    [setSearch, navigatePreservingStore],
   );
 
   const handleCategoryClick = useCallback(
     (cat?: typeof category) => {
       setCategory(cat);
-      if (!STORE_INDEX_PATTERN.test(location.pathname)) {
-        navigate('/app-store');
-      }
+      navigatePreservingStore();
     },
-    [setCategory, navigate, location.pathname],
+    [setCategory, navigatePreservingStore],
   );
 
   return (

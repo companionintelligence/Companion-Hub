@@ -97,6 +97,13 @@ test.describe('Hub State: Publicly Delayed', () => {
     await createTestUser();
     await verifyLoginScreen(page);
   });
+
+  test('direct navigation to device registration does not force re-pair while the public route is delayed', async ({ page }) => {
+    await createTestUser();
+    await page.goto('/device-registration');
+    await expect(page).toHaveURL(/\/login/, { timeout: 15000 });
+    await expect(page.getByRole('heading', { name: /Login to your account/i })).toBeVisible({ timeout: 15000 });
+  });
 });
 
 test.describe('Hub State: Degraded', () => {

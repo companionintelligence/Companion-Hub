@@ -123,20 +123,37 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                     "tray.start",
                     "Start Hub requested from the tray menu.",
                 );
+                let data_for_log = data.clone();
                 tauri::async_runtime::spawn(async move {
-                    match crate::hub_manager::start_hub(&compose, &env, &data) {
-                        Ok(message) => {
+                    match tokio::task::spawn_blocking(move || {
+                        crate::hub_manager::start_hub(&compose, &env, &data)
+                    })
+                    .await
+                    {
+                        Ok(Ok(message)) => {
                             let _ = crate::hub_manager::append_desktop_log_for(
-                                &data,
+                                &data_for_log,
                                 "tray.start",
                                 &message,
                             );
                         }
-                        Err(error) => {
+                        Ok(Err(error)) => {
                             let _ = crate::hub_manager::append_desktop_log_for(
-                                &data,
+                                &data_for_log,
                                 "tray.start",
                                 &format!("Tray start request failed: {}", error),
+                            );
+                        }
+                        Err(join_err) => {
+                            let msg = if join_err.is_panic() {
+                                format!("start_hub task panicked: {}", join_err)
+                            } else {
+                                format!("start_hub task was cancelled: {}", join_err)
+                            };
+                            let _ = crate::hub_manager::append_desktop_log_for(
+                                &data_for_log,
+                                "tray.start",
+                                &msg,
                             );
                         }
                     }

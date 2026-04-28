@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::os::unix::fs::PermissionsExt;
@@ -8,6 +9,14 @@ use std::os::windows::process::CommandExt;
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+/// Maximum number of start attempts (1 initial + 2 retries with exponential
+/// backoff of 2 s then 4 s).  `start_hub` / `start_hub_inner` are blocking
+/// functions — callers from async contexts should use `spawn_blocking`.
+const MAX_START_RETRIES: u32 = 3;
+
+/// Global guard: true while a `start_hub` call is in progress.
+static START_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
 const MAX_COMMAND_OUTPUT_CHARS: usize = 400;
 const DESKTOP_LOG_FILENAME: &str = "desktop.log";
@@ -870,8 +879,109 @@ fn remove_existing_traefik_container(data_dir: &Path) -> Result<(), String> {
     }
 }
 
-/// Start Hub using docker compose up (with port conflict resolution)
+/// Remove stale project containers left behind by a previous installation.
+/// Runs `docker compose down --remove-orphans` to clean up before a fresh start.
+pub fn cleanup_stale_project_containers(
+    compose_path: &Path,
+    env_path: &Path,
+    data_dir: &Path,
+) -> Result<(), String> {
+    let _ = append_desktop_log_for(
+        data_dir,
+        "hub.cleanup",
+        "Cleaning up stale containers before start.",
+    );
+
+    let output = docker_command()
+        .args([
+            "compose",
+            "--env-file",
+            &env_path.to_string_lossy(),
+            "--project-name",
+            "ci-hub",
+            "-f",
+            &compose_path.to_string_lossy(),
+            "down",
+            "--remove-orphans",
+        ])
+        .output()
+        .map_err(|e| {
+            let message = format!("Failed to run cleanup compose down: {}", e);
+            let _ = append_desktop_log_for(data_dir, "hub.cleanup", &message);
+            message
+        })?;
+
+    let combined_output = format_command_output(
+        &String::from_utf8_lossy(&output.stdout),
+        &String::from_utf8_lossy(&output.stderr),
+    );
+
+    // Log result but treat non-zero exit as non-fatal — the subsequent start
+    // will surface any real problem.
+    if output.status.success() {
+        let _ = append_desktop_log_for(
+            data_dir,
+            "hub.cleanup",
+            &format!("Stale container cleanup succeeded. {}", combined_output),
+        );
+    } else {
+        let _ = append_desktop_log_for(
+            data_dir,
+            "hub.cleanup",
+            &format!(
+                "Stale container cleanup returned non-zero (non-fatal). {}",
+                combined_output
+            ),
+        );
+    }
+
+    Ok(())
+}
+
+/// Returns `true` if the error output indicates a Docker container name conflict
+/// ("is already in use by container").
+fn is_container_name_conflict(output: &str) -> bool {
+    let lower = output.to_lowercase();
+    lower.contains("is already in use by container")
+}
+
+/// Returns `true` if the error output indicates an OCI runtime creation failure.
+fn is_oci_runtime_error(output: &str) -> bool {
+    let lower = output.to_lowercase();
+    lower.contains("oci runtime create failed") || lower.contains("failed to create shim task")
+}
+
+/// Start Hub using docker compose up (with port conflict resolution).
+///
+/// Uses a global `AtomicBool` guard to prevent concurrent invocations.
+/// A `Drop` guard ensures the flag is cleared even if the inner logic panics.
 pub fn start_hub(compose_path: &Path, env_path: &Path, data_dir: &Path) -> Result<String, String> {
+    // Prevent concurrent start attempts.
+    if START_IN_PROGRESS.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err()
+    {
+        let message = "A Hub start operation is already in progress — skipping duplicate request.";
+        let _ = append_desktop_log_for(data_dir, "hub.start", message);
+        return Ok(message.to_string());
+    }
+
+    // RAII guard: always clear the flag when the function exits, including panics.
+    struct StartGuard;
+    impl Drop for StartGuard {
+        fn drop(&mut self) {
+            START_IN_PROGRESS.store(false, Ordering::SeqCst);
+        }
+    }
+    let _guard = StartGuard;
+
+    start_hub_inner(compose_path, env_path, data_dir)
+}
+
+/// Inner start logic, called under the `START_IN_PROGRESS` guard.
+fn start_hub_inner(
+    compose_path: &Path,
+    env_path: &Path,
+    data_dir: &Path,
+) -> Result<String, String> {
     let _ = append_desktop_log_for(
         data_dir,
         "hub.start",
@@ -917,6 +1027,19 @@ pub fn start_hub(compose_path: &Path, env_path: &Path, data_dir: &Path) -> Resul
             let _ = append_desktop_log_for(data_dir, "hub.start", &message);
             with_view_logs_hint(message)
         })?;
+        // Traefik container has been removed — clear the marker now regardless of
+        // whether compose-up succeeds.  The marker's purpose ("Traefik must be
+        // recreated") is satisfied once the old container is gone.
+        if let Err(error) = clear_traefik_recreate_required(data_dir) {
+            let _ = append_desktop_log_for(
+                data_dir,
+                "hub.start",
+                &format!(
+                    "Traefik container removed but the recreate marker could not be cleared: {}",
+                    error
+                ),
+            );
+        }
     }
 
     // Resolve port conflicts and write to .env before starting
@@ -944,71 +1067,99 @@ pub fn start_hub(compose_path: &Path, env_path: &Path, data_dir: &Path) -> Resul
     let _ = std::fs::write(&log_path, log_lines.join("\n") + "\n");
     let _ = append_desktop_log_for(data_dir, "hub.start", &log_lines.join("\n"));
 
-    let output = docker_command()
-        .args([
-            "compose",
-            "--env-file",
-            &env_path.to_string_lossy(),
-            "--project-name",
-            "ci-hub",
-            "-f",
-            &compose_path.to_string_lossy(),
-            "up",
-            "-d",
-        ])
-        .output()
-        .map_err(|e| {
-            let message = format!("Failed to run docker compose up -d: {}", e);
-            let _ = append_desktop_log_for(data_dir, "hub.start", &message);
-            with_view_logs_hint(message)
-        })?;
-
-    let combined_output = format_command_output(
-        &String::from_utf8_lossy(&output.stdout),
-        &String::from_utf8_lossy(&output.stderr),
-    );
-
-    if output.status.success() {
-        if recreate_traefik {
-            if let Err(error) = clear_traefik_recreate_required(data_dir) {
-                let _ = append_desktop_log_for(
-                    data_dir,
-                    "hub.start",
-                    &format!(
-                        "Hub started but the Traefik recreate marker could not be cleared: {}",
-                        error
-                    ),
-                );
-            }
-        }
-
-        let message = if combined_output.is_empty() {
-            "docker compose up -d succeeded.".to_string()
-        } else {
-            format!("docker compose up -d succeeded. {}", combined_output)
-        };
-        let _ = append_desktop_log_for(data_dir, "hub.start", &message);
-        Ok("Hub started successfully".to_string())
-    } else {
-        if recreate_traefik {
+    // Attempt compose up with automatic retry on transient container conflicts.
+    let mut last_error = String::new();
+    for attempt in 1..=MAX_START_RETRIES {
+        if attempt > 1 {
             let _ = append_desktop_log_for(
                 data_dir,
                 "hub.start",
-                "docker compose up -d failed while Traefik recreate was pending; the recreate marker will be kept for the next start attempt.",
+                &format!("Retry attempt {}/{} after transient failure.", attempt, MAX_START_RETRIES),
             );
         }
 
-        let failure = if combined_output.is_empty() {
-            format!(
-                "docker compose up -d failed with exit code {:?}.",
-                output.status.code()
-            )
-        } else {
-            format!("docker compose up -d failed. {}", combined_output)
+        let output = match docker_command()
+            .args([
+                "compose",
+                "--env-file",
+                &env_path.to_string_lossy(),
+                "--project-name",
+                "ci-hub",
+                "-f",
+                &compose_path.to_string_lossy(),
+                "up",
+                "-d",
+            ])
+            .output()
+        {
+            Ok(output) => output,
+            Err(e) => {
+                let message = format!("Failed to run docker compose up -d: {}", e);
+                let _ = append_desktop_log_for(data_dir, "hub.start", &message);
+                return Err(with_view_logs_hint(message));
+            }
         };
-        let _ = append_desktop_log_for(data_dir, "hub.start", &failure);
-        Err(with_view_logs_hint(failure))
+
+        let combined_output = format_command_output(
+            &String::from_utf8_lossy(&output.stdout),
+            &String::from_utf8_lossy(&output.stderr),
+        );
+
+        if output.status.success() {
+            let message = if combined_output.is_empty() {
+                "docker compose up -d succeeded.".to_string()
+            } else {
+                format!("docker compose up -d succeeded. {}", combined_output)
+            };
+            let _ = append_desktop_log_for(data_dir, "hub.start", &message);
+            return Ok("Hub started successfully".to_string());
+        }
+
+        last_error = combined_output.clone();
+        let _ = append_desktop_log_for(
+            data_dir,
+            "hub.start",
+            &format!("docker compose up -d failed (attempt {}). {}", attempt, combined_output),
+        );
+
+        // Container name conflicts are self-healable: run compose down to clear them,
+        // then retry.
+        if is_container_name_conflict(&combined_output) && attempt < MAX_START_RETRIES {
+            let _ = append_desktop_log_for(
+                data_dir,
+                "hub.start",
+                "Detected stale container name conflict — running compose down to self-heal.",
+            );
+            let _ = cleanup_stale_project_containers(compose_path, env_path, data_dir);
+            // Brief pause to let Docker release resources.
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            continue;
+        }
+
+        // OCI runtime errors indicate Docker Desktop / WSL2 issues — retrying without
+        // user intervention is unlikely to help.
+        if is_oci_runtime_error(&combined_output) {
+            let _ = append_desktop_log_for(
+                data_dir,
+                "hub.start",
+                "OCI runtime error detected — Docker Desktop may need to be restarted. Stopping retries.",
+            );
+            break;
+        }
+
+        // Any other transient failure — wait a moment and retry.
+        if attempt < MAX_START_RETRIES {
+            std::thread::sleep(std::time::Duration::from_secs(2u64.pow(attempt)));
+        }
     }
+
+    let failure = if last_error.is_empty() {
+        "docker compose up -d failed after all retry attempts.".to_string()
+    } else {
+        format!("docker compose up -d failed. {}", last_error)
+    };
+    let _ = append_desktop_log_for(data_dir, "hub.start", &failure);
+    Err(with_view_logs_hint(failure))
 }
 
 /// Stop Hub containers
@@ -1895,11 +2046,12 @@ mod tests {
     use super::docker_desktop_windows_install_script;
     use super::{
         append_desktop_log_for, classify_docker_access_result, clear_traefik_recreate_required,
-        desktop_log_path_for, format_command_output, is_traefik_recreate_required,
-        logs_open_target_for, managed_app_container_ps_args, mark_traefik_recreate_required,
-        parse_container_ids, prepare_traefik_runtime_state, seeded_traefik_config_contents,
-        truncate_command_output, DockerAccessState, MAX_COMMAND_OUTPUT_CHARS, TRAEFIK_ACME_FILE,
-        TRAEFIK_CONFIG_FILE, TRAEFIK_DYNAMIC_CONFIG_SEED, TRAEFIK_DYNAMIC_FILE, TRAEFIK_TLS_DIR,
+        desktop_log_path_for, format_command_output, is_container_name_conflict,
+        is_oci_runtime_error, is_traefik_recreate_required, logs_open_target_for,
+        managed_app_container_ps_args, mark_traefik_recreate_required, parse_container_ids,
+        prepare_traefik_runtime_state, seeded_traefik_config_contents, truncate_command_output,
+        DockerAccessState, MAX_COMMAND_OUTPUT_CHARS, TRAEFIK_ACME_FILE, TRAEFIK_CONFIG_FILE,
+        TRAEFIK_DYNAMIC_CONFIG_SEED, TRAEFIK_DYNAMIC_FILE, TRAEFIK_TLS_DIR,
     };
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     use std::os::unix::fs::PermissionsExt;
@@ -2123,5 +2275,46 @@ mod tests {
         assert!(script.contains("codesign --verify --deep --strict --verbose=2"));
         assert!(script.contains("spctl --assess --type execute --verbose=2"));
         assert!(script.contains("--user=\"hex\""));
+    }
+
+    // --- is_container_name_conflict / is_oci_runtime_error classifiers ---
+
+    #[test]
+    fn detects_container_name_conflict_from_docker_daemon_message() {
+        let output = r#"Error response from daemon: Conflict. The container name "/ci-hub-app" is already in use by container "8dfafdbc3a40". You have to remove (or rename) that container to be able to reuse that name."#;
+        assert!(is_container_name_conflict(output));
+        assert!(!is_oci_runtime_error(output));
+    }
+
+    #[test]
+    fn detects_container_name_conflict_case_insensitively() {
+        let output = r#"service-app-1  Recreate
+Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREADY IN USE BY CONTAINER "8dfafdbc3a40"."#;
+        assert!(is_container_name_conflict(output));
+    }
+
+    #[test]
+    fn does_not_treat_port_allocation_failure_as_container_name_conflict() {
+        let output = "Error response from daemon: driver failed programming external connectivity on endpoint ci-hub-app-1: Bind for 0.0.0.0:5432 failed: port is already allocated";
+        assert!(!is_container_name_conflict(output));
+    }
+
+    #[test]
+    fn detects_oci_runtime_create_failed_message() {
+        let output = r#"Error response from daemon: failed to create task for container: failed to create shim task: OCI runtime create failed: runc create failed: unable to start container process: exec: "/app/start.sh": stat /app/start.sh: no such file or directory: unknown"#;
+        assert!(is_oci_runtime_error(output));
+        assert!(!is_container_name_conflict(output));
+    }
+
+    #[test]
+    fn detects_failed_to_create_shim_task_message() {
+        let output = "service-app-1  Starting\nError response from daemon: failed to create shim task: context deadline exceeded: unknown";
+        assert!(is_oci_runtime_error(output));
+    }
+
+    #[test]
+    fn does_not_treat_pull_access_denied_as_oci_runtime_error() {
+        let output = "Error response from daemon: pull access denied for ci-hub-app, repository does not exist or may require 'docker login'";
+        assert!(!is_oci_runtime_error(output));
     }
 }

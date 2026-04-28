@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { DatabaseService } from '@/core/database/database.service';
 import { deviceRegistration } from '@/core/database/drizzle/schema';
 import { eq, type InferInsertModel } from 'drizzle-orm';
+import type { DegradedReason, ProvisioningPhase } from './registration-state';
 
 @Injectable()
 export class DeviceRegistrationRepository {
@@ -20,6 +21,8 @@ export class DeviceRegistrationRepository {
     hubSubdomain?: string | null;
     tunnelId: string | null;
     tunnelToken?: string | null;
+    provisioningPhase?: ProvisioningPhase;
+    degradedReasons?: string;
   }) {
     const result = await this.databaseService.db.insert(deviceRegistration).values(data).returning();
 
@@ -34,6 +37,13 @@ export class DeviceRegistrationRepository {
       .returning();
 
     return result[0] || null;
+  }
+
+  async updateProvisioningState(orgId: string, phase: ProvisioningPhase, degradedReasons: DegradedReason[] = []) {
+    return this.updateDeviceRegistration(orgId, {
+      provisioningPhase: phase,
+      degradedReasons: JSON.stringify(degradedReasons),
+    });
   }
 
   async hasAnyDeviceRegistration(): Promise<boolean> {

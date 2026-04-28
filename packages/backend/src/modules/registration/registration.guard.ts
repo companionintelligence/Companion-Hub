@@ -3,6 +3,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { type CanActivate, type ExecutionContext, ForbiddenException, Injectable } from '@nestjs/common';
 import type { Request } from 'express';
 import { RegistrationService } from './registration.service';
+import { isOperational } from './registration-state';
 
 @Injectable()
 export class RegistrationGuard implements CanActivate {
@@ -24,12 +25,12 @@ export class RegistrationGuard implements CanActivate {
       return true;
     }
 
-    // Check if device is registered (checks database for organization)
-    const isRegistered = await this.registrationService.isRegistered();
+    // Refresh from DB/disk before making access decisions so we do not gate on stale cached state.
+    const status = await this.registrationService.getLiveRegistrationStatus();
 
-    if (!isRegistered) {
-      this.logger.warn(`Access denied to ${request.url} - device not registered`);
-      throw new ForbiddenException('Device must be registered with CI Cloud to access this resource');
+    if (!isOperational(status.phase)) {
+      this.logger.warn(`Access denied to ${request.url} - device not operational (phase: ${status.phase})`);
+      throw new ForbiddenException(`Device must be operational to access this resource (current phase: ${status.phase})`);
     }
 
     return true;

@@ -2,7 +2,11 @@ import { defineConfig, devices } from '@playwright/test';
 
 const BACKEND_PORT = process.env.BACKEND_PORT || '3000';
 const FRONTEND_PORT = process.env.FRONTEND_PORT || '9091';
+const PORTAL_PORT = process.env.PORTAL_PORT || '8012';
 const SERVER_IP = process.env.SERVER_IP || 'localhost';
+
+// Resolve Portal directory (same logic as cross-domain config)
+const PORTAL_DIR = process.env.PORTAL_DIR || '';
 
 // Common env vars needed by the backend
 const backendEnv: Record<string, string> = {
@@ -18,7 +22,7 @@ const backendEnv: Record<string, string> = {
   RABBITMQ_USERNAME: process.env.RABBITMQ_USERNAME || 'companion',
   RABBITMQ_PASSWORD: process.env.RABBITMQ_PASSWORD || 'admin',
   JWT_SECRET: process.env.JWT_SECRET || 'e2e-test-secret',
-  CI_CLOUD_URL: process.env.CI_CLOUD_URL || 'http://localhost:4444',
+  CI_CLOUD_URL: process.env.CI_CLOUD_URL || `http://localhost:${PORTAL_PORT}`,
   DOMAIN: process.env.DOMAIN || 'ci.computer',
   LOCAL_DOMAIN: process.env.LOCAL_DOMAIN || 'ci.lan',
   DEMO_MODE: 'false',
@@ -35,6 +39,7 @@ const backendEnv: Record<string, string> = {
   ALLOW_AUTO_THEMES: 'true',
   ALLOW_ERROR_MONITORING: 'false',
   PERSIST_TRAEFIK_CONFIG: 'false',
+  PRIVATE_VPN_ENABLED: 'false',
   DEVICE_ID: process.env.DEVICE_ID || 'test-device-e2e',
   ADVANCED_SETTINGS: 'false',
   DISABLE_PASSWORD_RESET: 'true',
@@ -45,7 +50,7 @@ const backendEnv: Record<string, string> = {
 
 export default defineConfig({
   testDir: './e2e',
-  testIgnore: ['**/future/**', '**/generated/**'],
+  testIgnore: ['**/future/**', '**/generated/**', '**/cross-domain/**'],
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
@@ -64,16 +69,17 @@ export default defineConfig({
     },
   ],
   webServer: [
+    // 1. CI-Portal via miniflare (wrangler dev) — real Portal, no mock
     {
-      command: 'pnpm exec tsx e2e/mock-portal/server.ts',
-      url: 'http://localhost:4444/v2/',
+      command: 'bash e2e/cross-domain/start-portal.sh',
+      url: `http://localhost:${PORTAL_PORT}/api/health`,
       reuseExistingServer: !process.env.CI,
-      timeout: 30000,
+      timeout: 120000,
       stdout: 'pipe',
       stderr: 'pipe',
       env: {
-        MOCK_PORTAL_PORT: process.env.MOCK_PORTAL_PORT || '4444',
-        MOCK_PORTAL_SCENARIO: process.env.MOCK_PORTAL_SCENARIO || 'registered',
+        PORTAL_DIR,
+        PORTAL_PORT,
       },
     },
     {

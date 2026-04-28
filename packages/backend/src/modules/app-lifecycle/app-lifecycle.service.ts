@@ -121,8 +121,8 @@ export class AppLifecycleService implements OnApplicationBootstrap {
     this.appEventsQueue.publish({ appUrn, command: 'start', requestId, form: { ...app.config, skipPull } }).then(async ({ success, message }) => {
       if (success) {
         this.logger.info(`App ${appUrn} started successfully`);
-        this.sseService.emit('app', { event: 'start_success', appUrn, appStatus: 'running' });
         await this.appRepository.updateAppById(app.id, { status: 'running', pendingRestart: false });
+        this.sseService.emit('app', { event: 'start_success', appUrn, appStatus: 'running' });
 
         // Check if we need to sync Cloudflare state (if app is exposedLocal and production)
         const { isProduction: isProdEnv } = this.config.getConfig();
@@ -132,8 +132,8 @@ export class AppLifecycleService implements OnApplicationBootstrap {
         }
       } else {
         this.logger.error(`Failed to start app ${appUrn}: ${message}`);
-        this.sseService.emit('app', { event: 'start_error', appUrn, appStatus: 'stopped', error: message });
         await this.appRepository.updateAppById(app.id, { status: 'stopped' });
+        this.sseService.emit('app', { event: 'start_error', appUrn, appStatus: 'stopped', error: message });
       }
     });
 
@@ -143,8 +143,6 @@ export class AppLifecycleService implements OnApplicationBootstrap {
   async installApp(params: { appUrn: AppUrn; form: unknown; skipRun?: boolean }) {
     const { appUrn, form, skipRun } = params;
     const { demoMode, architecture } = this.config.getConfig();
-
-    this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'installing' });
 
     // Check if we need to download files from CI Cloud
     const { appStoreId, appName } = extractAppUrn(appUrn);
@@ -263,7 +261,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
 
     const createdApp = await this.appRepository.createApp({
       appName,
-      status: 'installing',
+      status: 'installing' as const,
       config: parsedForm,
       // Port semantics:
       // - When openPort=true: Host port (exposed on host, checked for conflicts)
@@ -282,24 +280,24 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       enableAuth: enableAuth ?? false,
     });
 
+    this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'installing' });
+
     const requestId = crypto.randomUUID();
 
     this.appEventsQueue.publish({ appUrn, command: 'install', requestId, form: { ...parsedForm, skipRun } }).then(async ({ success, message }) => {
       if (success) {
         this.logger.info(`App ${appUrn} installed successfully`);
-        this.sseService.emit('app', { event: 'install_success', appUrn, appStatus: 'running' });
         await this.appRepository.updateAppById(createdApp.id, { status: 'running' });
+        this.sseService.emit('app', { event: 'install_success', appUrn, appStatus: 'running' });
 
         // Check if we need to sync Cloudflare state (if app is exposedLocal)
         if (createdApp.exposedLocal || (appInfo.exposable && !exposedLocal)) {
-          // Wait for DB consistency/propagation
-          await new Promise((r) => setTimeout(r, 2000));
           await this.syncExposure();
         }
       } else {
-        this.sseService.emit('app', { event: 'install_error', appUrn, appStatus: 'missing', error: message });
         this.logger.error(`Failed to install app ${appUrn}: ${message}`);
         await this.appRepository.deleteAppById(createdApp.id);
+        this.sseService.emit('app', { event: 'install_error', appUrn, appStatus: 'missing', error: message });
       }
     });
 
@@ -317,25 +315,24 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn }, HttpStatus.NOT_FOUND);
     }
 
-    this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'stopping' });
-
     await this.appRepository.updateAppById(app.id, { status: 'stopping' });
+    this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'stopping' });
 
     const requestId = crypto.randomUUID();
     this.appEventsQueue.publish({ command: 'stop', appUrn, requestId, form: app.config }).then(async ({ success, message }) => {
       if (success) {
+        await this.appRepository.updateAppById(app.id, { status: 'stopped' });
         this.sseService.emit('app', { event: 'stop_success', appUrn, appStatus: 'stopped' });
         this.logger.info(`App ${appUrn} stopped successfully`);
-        await this.appRepository.updateAppById(app.id, { status: 'stopped' });
 
         // Trigger sync to remove route if exposedLocal
         if (app.exposedLocal) {
           await this.syncExposure();
         }
       } else {
-        this.sseService.emit('app', { event: 'stop_error', appUrn, appStatus: 'running', error: message });
         this.logger.error(`Failed to stop app ${appUrn}: ${message}`);
         await this.appRepository.updateAppById(app.id, { status: 'running' });
+        this.sseService.emit('app', { event: 'stop_error', appUrn, appStatus: 'running', error: message });
       }
     });
 
@@ -353,19 +350,19 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       throw new TranslatableError('APP_ERROR_APP_NOT_FOUND');
     }
 
-    this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'restarting' });
     await this.appRepository.updateAppById(app.id, { status: 'restarting' });
+    this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'restarting' });
 
     const requestId = crypto.randomUUID();
     this.appEventsQueue.publish({ command: 'restart', appUrn, requestId, form: { ...app.config, skipPull } }).then(async ({ success, message }) => {
       if (success) {
         this.logger.info(`App ${appUrn} restarted successfully`);
-        this.sseService.emit('app', { event: 'restart_success', appUrn, appStatus: 'running' });
         await this.appRepository.updateAppById(app.id, { status: 'running', pendingRestart: false });
+        this.sseService.emit('app', { event: 'restart_success', appUrn, appStatus: 'running' });
       } else {
         this.logger.error(`Failed to restart app ${appUrn}: ${message}`);
-        this.sseService.emit('app', { event: 'restart_error', appUrn, appStatus: 'running', error: message });
         await this.appRepository.updateAppById(app.id, { status: 'stopped' });
+        this.sseService.emit('app', { event: 'restart_error', appUrn, appStatus: 'stopped', error: message });
       }
     });
 
@@ -404,8 +401,8 @@ export class AppLifecycleService implements OnApplicationBootstrap {
         }
       } else {
         this.logger.error(`Failed to uninstall app ${appUrn}: ${message}`);
-        this.sseService.emit('app', { event: 'uninstall_error', appUrn, appStatus: 'stopped', error: message });
         await this.appRepository.updateAppById(app.id, { status: 'stopped' });
+        this.sseService.emit('app', { event: 'uninstall_error', appUrn, appStatus: 'stopped', error: message });
       }
     });
 
@@ -424,23 +421,24 @@ export class AppLifecycleService implements OnApplicationBootstrap {
     }
 
     const appStatusBeforeReset = app?.status;
-    this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'resetting' });
     await this.appRepository.updateAppById(app.id, { status: 'resetting' });
+    this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'resetting' });
 
     const requestId = crypto.randomUUID();
     this.appEventsQueue.publish({ command: 'reset', appUrn, requestId, form: app.config }).then(async ({ success, message }) => {
       if (success) {
         this.logger.info(`App ${appUrn} reset successfully`);
+        await this.appRepository.updateAppById(app.id, { status: 'stopped' });
         this.sseService.emit('app', { event: 'reset_success', appUrn, appStatus: 'stopped' });
+
         if (appStatusBeforeReset === 'running') {
-          this.startApp({ appUrn });
-        } else {
-          await this.appRepository.updateAppById(app.id, { status: appStatusBeforeReset });
+          void this.startApp({ appUrn });
         }
       } else {
         this.logger.error(`Failed to reset app ${appUrn}: ${message}`);
-        this.sseService.emit('app', { event: 'reset_error', appUrn, appStatus: appStatusBeforeReset, error: message });
-        await this.appRepository.updateAppById(app.id, { status: 'running' });
+        const restoredStatus = appStatusBeforeReset ?? 'stopped';
+        await this.appRepository.updateAppById(app.id, { status: restoredStatus });
+        this.sseService.emit('app', { event: 'reset_error', appUrn, appStatus: restoredStatus, error: message });
       }
     });
 
@@ -774,20 +772,20 @@ export class AppLifecycleService implements OnApplicationBootstrap {
     this.appEventsQueue.publish({ command: 'update', appUrn, requestId, form: app.config, performBackup }).then(async ({ success, message }) => {
       if (success) {
         const appInfo = await this.appFilesManager.getInstalledAppInfo(appUrn);
+        const restoredStatus = appStatusBeforeUpdate === 'running' ? 'stopped' : appStatusBeforeUpdate;
 
         await this.updateAppConfig({ appUrn, form: app.config });
-        await this.appRepository.updateAppById(app.id, { version: appInfo?.tipi_version });
-        this.sseService.emit('app', { event: 'update_success', appUrn });
+        await this.appRepository.updateAppById(app.id, { version: appInfo?.tipi_version, status: restoredStatus });
+        this.sseService.emit('app', { event: 'update_success', appUrn, appStatus: restoredStatus });
 
         if (appStatusBeforeUpdate === 'running') {
-          this.startApp({ appUrn });
-        } else {
-          await this.appRepository.updateAppById(app.id, { status: appStatusBeforeUpdate });
+          void this.startApp({ appUrn });
         }
       } else {
         this.logger.error(`Failed to update app ${appUrn}: ${message}`);
-        this.sseService.emit('app', { event: 'update_error', appUrn, error: message });
-        await this.appRepository.updateAppById(app.id, { status: 'stopped' });
+        const restoredStatus = appStatusBeforeUpdate === 'running' ? 'stopped' : appStatusBeforeUpdate;
+        await this.appRepository.updateAppById(app.id, { status: restoredStatus });
+        this.sseService.emit('app', { event: 'update_error', appUrn, appStatus: restoredStatus, error: message });
       }
     });
 

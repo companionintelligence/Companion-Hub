@@ -1,9 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-fetch';
-
-interface RegistrationStatus {
-  registered: boolean;
-}
+import type { RegistrationStatus } from '@/lib/registration-status';
 
 export const useRegistrationStatus = () => {
   return useQuery<RegistrationStatus>({
@@ -15,7 +12,8 @@ export const useRegistrationStatus = () => {
       }
       return res.json();
     },
-    refetchInterval: 5000, // Check every 5 seconds
-    retry: false,
+    refetchInterval: 5000,
+    retry: 2,
+    retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 5000),
   });
 };

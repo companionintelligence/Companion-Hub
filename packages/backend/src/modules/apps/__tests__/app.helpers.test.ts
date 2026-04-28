@@ -2,6 +2,7 @@ import { createAppUrn } from '@/common/helpers/app-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { EnvUtils } from '@/modules/env/env.utils';
+import { RegistrationService } from '@/modules/registration/registration.service';
 import { Test } from '@nestjs/testing';
 import type { AppInfo } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
@@ -19,6 +20,7 @@ describe('AppHelpers', () => {
   let filesystem = mock<FilesystemService>();
   let envUtils = mock<EnvUtils>();
   let deviceRegistrationRepository = mock<DeviceRegistrationRepository>();
+  let registrationService = mock<RegistrationService>();
   const testAppUrn: AppUrn = createAppUrn('test-app', 'test-store');
 
   beforeEach(async () => {
@@ -34,6 +36,7 @@ describe('AppHelpers', () => {
     filesystem = moduleRef.get(FilesystemService);
     envUtils = moduleRef.get(EnvUtils);
     deviceRegistrationRepository = moduleRef.get(DeviceRegistrationRepository);
+    registrationService = moduleRef.get(RegistrationService);
   });
 
   describe('generateEnvFile', () => {
@@ -72,6 +75,7 @@ describe('AppHelpers', () => {
           envFilePath: '/data/.env',
           rootFolderHost: '/opt/ci-hub',
           domain: 'example.com',
+          ciHubApiKey: 'hub-api-key',
           userSettings: {
             appDataPath: '/opt/ci-hub',
             domain: 'example.com',
@@ -84,6 +88,7 @@ describe('AppHelpers', () => {
       appFilesManager.getInstalledAppInfo.mockResolvedValue(mockAppInfo);
       appFilesManager.getAppEnv.mockResolvedValue({ path: '/data/.env', content: '' });
       filesystem.readTextFile.mockResolvedValue('');
+      registrationService.getDeviceId.mockResolvedValue('hub-device-id');
     });
 
     it('should throw an error if app is not found', async () => {
@@ -107,6 +112,100 @@ describe('AppHelpers', () => {
       expect(envMap.get('APP_ID')).toBe('test-app-test-store');
       expect(envMap.get('ROOT_FOLDER_HOST')).toBe('/opt/ci-hub');
       expect(envMap.get('APP_DATA_DIR')).toBe('/opt/ci-hub/app-data/test-store/test-app');
+      expect(envMap.get('HUB_DEVICE_ID')).toBe('hub-device-id');
+      expect(envMap.get('HUB_API_KEY')).toBe('hub-api-key');
+    });
+
+    it('should omit unavailable hub variables without failing env generation', async () => {
+      const envMap = new Map<string, string>([
+        ['HUB_DEVICE_ID', 'stale-device-id'],
+        ['HUB_API_KEY', 'stale-api-key'],
+      ]);
+      envUtils.envStringToMap.mockReturnValue(envMap);
+      registrationService.getDeviceId.mockRejectedValue(new Error('lookup failed'));
+      config.getConfig.mockReturnValue(
+        fromPartial({
+          internalIp: '127.0.0.1',
+          envFilePath: '/data/.env',
+          rootFolderHost: '/opt/ci-hub',
+          domain: 'example.com',
+          userSettings: {
+            appDataPath: '/opt/ci-hub',
+            domain: 'example.com',
+          },
+        }),
+      );
+
+      await appHelpers.generateEnvFile(testAppUrn, {});
+
+      expect(envMap.has('HUB_DEVICE_ID')).toBe(false);
+      expect(envMap.has('HUB_API_KEY')).toBe(false);
+    });
+
+    it('should generate APP_DATA_DIR under ROOT_FOLDER_HOST/app-data (desktop storage contract)', async () => {
+      // Simulates a desktop environment where ROOT_FOLDER_HOST is the app data dir
+      const desktopRoot = '/Users/testuser/Library/Application Support/companion-hub';
+      const envMap = new Map<string, string>();
+      envUtils.envStringToMap.mockReturnValue(envMap);
+
+      config.getConfig.mockReturnValue(
+        fromPartial({
+          internalIp: '0.0.0.0',
+          envFilePath: '/data/.env',
+          rootFolderHost: desktopRoot,
+          domain: 'companionintelligence.com',
+          userSettings: {
+            appDataPath: desktopRoot,
+            domain: 'companionintelligence.com',
+          },
+        }),
+      );
+
+      await appHelpers.generateEnvFile(testAppUrn, {});
+
+      // APP_DATA_DIR must be under ROOT_FOLDER_HOST/app-data so that the bind mount
+      // ${ROOT_FOLDER_HOST}/app-data:/app-data aligns with container path /app-data
+      expect(envMap.get('APP_DATA_DIR')).toBe(`${desktopRoot}/app-data/test-store/test-app`);
+    });
+
+    it('should align APP_DATA_DIR host path with container seeded data path', async () => {
+      // Verifies the core storage invariant: the host path in APP_DATA_DIR
+      // (used by launched app compose) shares the same suffix as the container
+      // path used by AppStoreFilesManager to seed data.
+      const rootHost = '/opt/ci-hub';
+      const envMap = new Map<string, string>();
+      envUtils.envStringToMap.mockReturnValue(envMap);
+
+      config.getConfig.mockReturnValue(
+        fromPartial({
+          internalIp: '127.0.0.1',
+          envFilePath: '/data/.env',
+          rootFolderHost: rootHost,
+          domain: 'example.com',
+          userSettings: {
+            appDataPath: rootHost,
+            domain: 'example.com',
+          },
+        }),
+      );
+
+      await appHelpers.generateEnvFile(testAppUrn, {});
+
+      const appDataDir = envMap.get('APP_DATA_DIR');
+      expect(appDataDir).toBeDefined();
+
+      if (!appDataDir) {
+        throw new Error('APP_DATA_DIR was not generated');
+      }
+
+      // The host path must be: ${ROOT_FOLDER_HOST}/app-data/{storeId}/{appName}
+      // The container path is: /app-data/{storeId}/{appName}
+      // When compose mounts ${ROOT_FOLDER_HOST}/app-data:/app-data, these align.
+      expect(appDataDir).toBe(`${rootHost}/app-data/test-store/test-app`);
+      expect(appDataDir.startsWith(rootHost)).toBe(true);
+      // Verify the suffix after ROOT_FOLDER_HOST matches the container layout
+      const suffix = appDataDir.slice(rootHost.length);
+      expect(suffix).toBe('/app-data/test-store/test-app');
     });
 
     it('should handle form port override', async () => {
