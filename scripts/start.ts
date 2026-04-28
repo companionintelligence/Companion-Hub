@@ -11,8 +11,8 @@
  * Modes: dev, start, start:detached
  * Envs:  local, dev, staging, prod (default: local)
  */
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
+import path, { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 const allowedModes = ['dev', 'start', 'start:detached'];
@@ -45,26 +45,17 @@ if (!envFile) {
 }
 const envFileStr = envFile;
 
-/**
- * Merge `private-vpn` into COMPOSE_PROFILES when PRIVATE_VPN_ENABLED is not `false` (default on).
- * Reads PRIVATE_VPN_ENABLED and COMPOSE_PROFILES from the env file and merges with process.env.
- */
-function mergeComposeProfilesFromEnvFile(envFileName: string): string {
+function parseEnvFile(envFileName: string): Record<string, string> {
   const abs = join(process.cwd(), envFileName);
+  const vars: Record<string, string> = {};
   let fileContent = '';
+
   try {
     fileContent = readFileSync(abs, 'utf-8');
   } catch {
-    const fromProc = (process.env.COMPOSE_PROFILES || '')
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean);
-    const set = new Set(fromProc);
-    set.add('private-vpn');
-    return [...set].join(',');
+    return vars;
   }
 
-  const vars: Record<string, string> = {};
   for (const line of fileContent.split('\n')) {
     const t = line.trim();
     if (!t || t.startsWith('#')) continue;
@@ -76,6 +67,109 @@ function mergeComposeProfilesFromEnvFile(envFileName: string): string {
       val = val.slice(1, -1);
     }
     vars[key] = val;
+  }
+
+  return vars;
+}
+
+function formatSpawnOutput(result: ReturnType<typeof spawnSync>): string {
+  const stdout = (result.stdout || '').toString().trim();
+  const stderr = (result.stderr || '').toString().trim();
+
+  if (!stdout && !stderr) return '';
+  if (stdout && stderr) return `stdout: ${stdout} | stderr: ${stderr}`;
+  return stdout || stderr;
+}
+
+function resolveRootFolderHost(envFileName: string): string {
+  const vars = parseEnvFile(envFileName);
+  const configured = process.env.ROOT_FOLDER_HOST || vars.ROOT_FOLDER_HOST || '.internal';
+  return path.isAbsolute(configured) ? configured : path.resolve(process.cwd(), configured);
+}
+
+function ensureRootFolderOwnership(envFileName: string) {
+  if (process.platform !== 'linux' && process.platform !== 'darwin') {
+    return;
+  }
+
+  const uid = typeof process.getuid === 'function' ? process.getuid() : undefined;
+  const gid = typeof process.getgid === 'function' ? process.getgid() : undefined;
+  if (uid === undefined || gid === undefined) {
+    return;
+  }
+
+  const rootFolderHost = resolveRootFolderHost(envFileName);
+  if (!existsSync(rootFolderHost)) {
+    mkdirSync(rootFolderHost, { recursive: true });
+  }
+
+  let stat: ReturnType<typeof statSync>;
+  try {
+    stat = statSync(rootFolderHost);
+  } catch (error) {
+    throw new Error(`Failed to stat ${rootFolderHost}: ${String(error)}`);
+  }
+
+  if (stat.uid === uid && stat.gid === gid) {
+    return;
+  }
+
+  const desiredOwner = `${uid}:${gid}`;
+  console.warn(`Ownership mismatch detected for ${rootFolderHost} (current ${stat.uid}:${stat.gid}, expected ${desiredOwner}). Attempting repair...`);
+
+  const directChown = spawnSync('chown', ['-R', desiredOwner, rootFolderHost], {
+    stdio: 'pipe',
+    encoding: 'utf-8',
+  });
+  if (directChown.status === 0) {
+    return;
+  }
+
+  // Fall back to a root container chown so users in the docker group can recover ownership
+  // without requiring sudo. This addresses root-owned .internal/ trees created by containers.
+  const dockerChown = spawnSync(
+    'docker',
+    ['run', '--rm', '--user', '0:0', '-v', `${rootFolderHost}:/target`, 'busybox:1.36', 'sh', '-c', `chown -R ${desiredOwner} /target`],
+    {
+      stdio: 'pipe',
+      encoding: 'utf-8',
+    },
+  );
+
+  if (dockerChown.status === 0) {
+    return;
+  }
+
+  const hostErr = formatSpawnOutput(directChown);
+  const dockerErr = formatSpawnOutput(dockerChown);
+  throw new Error(
+    [
+      `Failed to repair ownership for ${rootFolderHost}.`,
+      hostErr ? `host chown output: ${hostErr}` : '',
+      dockerErr ? `docker chown output: ${dockerErr}` : '',
+      `Please run: sudo chown -R $USER:$USER ${rootFolderHost}`,
+    ]
+      .filter(Boolean)
+      .join(' '),
+  );
+}
+
+/**
+ * Merge `private-vpn` into COMPOSE_PROFILES when PRIVATE_VPN_ENABLED is not `false` (default on).
+ * Reads PRIVATE_VPN_ENABLED and COMPOSE_PROFILES from the env file and merges with process.env.
+ */
+function mergeComposeProfilesFromEnvFile(envFileName: string): string {
+  const vars = parseEnvFile(envFileName);
+  const hasEnvFile = Object.keys(vars).length > 0;
+
+  if (!hasEnvFile) {
+    const fromProc = (process.env.COMPOSE_PROFILES || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const set = new Set(fromProc);
+    set.add('private-vpn');
+    return [...set].join(',');
   }
 
   const vpnOn = vars.PRIVATE_VPN_ENABLED !== 'false';
@@ -108,6 +202,8 @@ function run(cmd: string, args: string[], extraEnv: Record<string, string | unde
 }
 
 async function main() {
+  ensureRootFolderOwnership(envFileStr);
+
   const composeProfiles = mergeComposeProfilesFromEnvFile(envFileStr);
   // Always set ENV_FILE in the spawned environments so docker-compose can mount the right file
   const envOverrides: Record<string, string | undefined> = { ENV_FILE: envFileStr };

@@ -68,9 +68,7 @@ pub async fn find_hubs() -> Result<Vec<String>, Box<dyn std::error::Error + Send
 
     // Always include localhost with the actual API port from .env
     if hubs.is_empty() {
-        let api_port = crate::port_manager::read_api_port(
-            &crate::hub_manager::get_hub_data_dir().join(".env"),
-        );
+        let api_port = crate::port_manager::read_api_port(&crate::hub_manager::hub_env_path());
         hubs.push(format!("http://localhost:{}", api_port));
     }
 

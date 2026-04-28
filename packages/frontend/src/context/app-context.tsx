@@ -48,7 +48,9 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   });
 
   if (error && !isFetching && !appContext) {
-    throw error;
+    // During desktop startup races, backend endpoints can briefly fail before
+    // becoming ready. Keep defaults instead of crashing the entire UI.
+    console.warn('appContext unavailable during startup, using defaults:', error);
   }
 
   const refreshAppContext = async () => {
