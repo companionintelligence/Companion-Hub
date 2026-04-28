@@ -18,8 +18,12 @@ const MAX_START_RETRIES: u32 = 3;
 /// Global guard: true while a `start_hub` call is in progress.
 static START_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
-const MAX_COMMAND_OUTPUT_CHARS: usize = 400;
+const MAX_COMMAND_OUTPUT_CHARS: usize = 50_000;
 const DESKTOP_LOG_FILENAME: &str = "desktop.log";
+/// Maximum size of desktop.log before rotation (5 MB).
+const MAX_LOG_SIZE_BYTES: u64 = 5 * 1024 * 1024;
+/// Number of rotated log files to keep (desktop.log.1, desktop.log.2, …).
+const MAX_LOG_ROTATIONS: usize = 3;
 const MANAGED_APP_CONTAINER_LABEL_FILTER: &str = "label=ci-os-hub.managed=true";
 const MANAGED_APP_CONTAINER_URN_FILTER: &str = "label=ci-os-hub.appurn";
 const DEFAULT_TRAEFIK_ACME_EMAIL: &str = "admin@companionintelligence.com";
@@ -364,15 +368,55 @@ pub(crate) fn append_desktop_log_for(
     operation: &str,
     message: &str,
 ) -> std::io::Result<PathBuf> {
+    let logs_dir = logs_dir_for(data_dir);
+    std::fs::create_dir_all(&logs_dir)?;
     let log_path = desktop_log_path_for(data_dir);
-    std::fs::create_dir_all(logs_dir_for(data_dir))?;
-    let mut file = std::fs::OpenOptions::new()
+    rotate_log_if_needed(&log_path, &logs_dir);
+    let entry = format_log_entry(operation, message);
+    match std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(&log_path)?;
-    use std::io::Write;
-    file.write_all(format_log_entry(operation, message).as_bytes())?;
+        .open(&log_path)
+    {
+        Ok(mut file) => {
+            use std::io::Write;
+            file.write_all(entry.as_bytes())?;
+        }
+        Err(err) => {
+            // Last-resort fallback: print to stderr so the message is not
+            // silently lost when the log file cannot be written.
+            eprintln!("[desktop-log-fallback] failed to write {}: {}", log_path.display(), err);
+            eprint!("{}", entry);
+            return Err(err);
+        }
+    }
     Ok(log_path)
+}
+
+/// Rotate `desktop.log` when it exceeds `MAX_LOG_SIZE_BYTES`.
+///
+/// Keeps up to `MAX_LOG_ROTATIONS` historical files:
+///   desktop.log.3 → deleted
+///   desktop.log.2 → desktop.log.3
+///   desktop.log.1 → desktop.log.2
+///   desktop.log   → desktop.log.1
+fn rotate_log_if_needed(log_path: &Path, logs_dir: &Path) {
+    let size = match std::fs::metadata(log_path) {
+        Ok(m) => m.len(),
+        Err(_) => return, // file doesn't exist yet — nothing to rotate
+    };
+    if size < MAX_LOG_SIZE_BYTES {
+        return;
+    }
+
+    // Shift existing rotations: .2→.3, .1→.2, current→.1
+    for i in (1..MAX_LOG_ROTATIONS).rev() {
+        let src = logs_dir.join(format!("{}.{}", DESKTOP_LOG_FILENAME, i));
+        let dst = logs_dir.join(format!("{}.{}", DESKTOP_LOG_FILENAME, i + 1));
+        let _ = std::fs::rename(&src, &dst);
+    }
+    let rotated = logs_dir.join(format!("{}.1", DESKTOP_LOG_FILENAME));
+    let _ = std::fs::rename(log_path, &rotated);
 }
 
 pub fn append_desktop_log(operation: &str, message: &str) -> std::io::Result<PathBuf> {
@@ -906,12 +950,8 @@ fn start_hub_inner(
         with_view_logs_hint(message)
     })?;
 
-    // Log warnings and info
-    let log_path = logs_dir_for(data_dir).join("port-resolution.log");
-    let mut log_lines = vec![format!(
-        "[{}] Port resolution:",
-        chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
-    )];
+    // Log port resolution results (centralised into desktop.log)
+    let mut log_lines = vec!["Port resolution:".to_string()];
     for w in &resolution.warnings {
         log_lines.push(format!("  WARN: {}", w));
     }
@@ -921,7 +961,6 @@ fn start_hub_inner(
     for (var, port) in &resolution.env_vars {
         log_lines.push(format!("  {}={}", var, port));
     }
-    let _ = std::fs::write(&log_path, log_lines.join("\n") + "\n");
     let _ = append_desktop_log_for(data_dir, "hub.start", &log_lines.join("\n"));
 
     // Attempt compose up with automatic retry on transient container conflicts.
@@ -1241,12 +1280,7 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<HubInitialization, String> 
             .join("docker-compose.prod.yml"),
     ];
 
-    let log_path = data_dir.join("logs").join("init.log");
-    let mut log_lines = vec![format!(
-        "[{}] initialize_hub: resource_dir = {:?}",
-        chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
-        resource_dir
-    )];
+    let mut log_lines = vec![format!("initialize_hub: resource_dir = {:?}", resource_dir)];
     for (i, candidate) in compose_candidates.iter().enumerate() {
         log_lines.push(format!(
             "  candidate[{}]: {:?} exists={}",
@@ -1365,22 +1399,20 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<HubInitialization, String> 
         traefik_preflight.changed, traefik_preflight.repaired_conflicting_paths, recreate_pending,
     ));
 
-    // Write init log (append)
+    // Log init summary (centralised into desktop.log)
     let init_summary = log_lines.join("\n");
-    let _ = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .and_then(|mut f| {
-            use std::io::Write;
-            writeln!(f, "{}", init_summary)
-        });
     let _ = append_desktop_log_for(&data_dir, "initialize", &init_summary);
 
-    // Clean up legacy .docker-config.json if it exists
+    // Clean up legacy files that are no longer used
     let legacy_docker_config = data_dir.join(".docker-config.json");
     if legacy_docker_config.exists() {
         let _ = std::fs::remove_file(&legacy_docker_config);
+    }
+    for legacy_log in ["init.log", "port-resolution.log"] {
+        let path = logs_dir_for(&data_dir).join(legacy_log);
+        if path.exists() {
+            let _ = std::fs::remove_file(&path);
+        }
     }
 
     Ok(HubInitialization {
@@ -2173,5 +2205,57 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
     fn does_not_treat_pull_access_denied_as_oci_runtime_error() {
         let output = "Error response from daemon: pull access denied for ci-hub-app, repository does not exist or may require 'docker login'";
         assert!(!is_oci_runtime_error(output));
+    }
+
+    #[test]
+    fn rotates_desktop_log_when_it_exceeds_max_size() {
+        use super::{
+            rotate_log_if_needed, DESKTOP_LOG_FILENAME, MAX_LOG_ROTATIONS, MAX_LOG_SIZE_BYTES,
+        };
+
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let logs_dir = tempdir.path();
+        let log_path = logs_dir.join(DESKTOP_LOG_FILENAME);
+
+        // Create a log file that exceeds the size limit.
+        let payload = "x".repeat((MAX_LOG_SIZE_BYTES + 1) as usize);
+        std::fs::write(&log_path, &payload).expect("write oversized log");
+
+        rotate_log_if_needed(&log_path, logs_dir);
+
+        // Original should no longer exist (it was rotated to .1).
+        assert!(!log_path.exists(), "original log should have been renamed");
+        let rotated = logs_dir.join(format!("{}.1", DESKTOP_LOG_FILENAME));
+        assert!(rotated.exists(), "desktop.log.1 should exist");
+        let content = std::fs::read_to_string(&rotated).expect("read rotated");
+        assert_eq!(content, payload);
+
+        // Rotate again: .1 → .2, new data → .1
+        let new_payload = "y".repeat((MAX_LOG_SIZE_BYTES + 1) as usize);
+        std::fs::write(&log_path, &new_payload).expect("write new oversized log");
+        rotate_log_if_needed(&log_path, logs_dir);
+
+        assert!(!log_path.exists());
+        let r1 = logs_dir.join(format!("{}.1", DESKTOP_LOG_FILENAME));
+        let r2 = logs_dir.join(format!("{}.2", DESKTOP_LOG_FILENAME));
+        assert!(r1.exists());
+        assert!(r2.exists());
+        assert_eq!(
+            std::fs::read_to_string(&r1).expect("read r1"),
+            new_payload
+        );
+        assert_eq!(std::fs::read_to_string(&r2).expect("read r2"), payload);
+
+        // After MAX_LOG_ROTATIONS, the oldest file should be dropped.
+        for i in 0..MAX_LOG_ROTATIONS {
+            let p = format!("z{}", i).repeat((MAX_LOG_SIZE_BYTES + 1) as usize);
+            std::fs::write(&log_path, &p).expect("write");
+            rotate_log_if_needed(&log_path, logs_dir);
+        }
+        let beyond = logs_dir.join(format!("{}.{}", DESKTOP_LOG_FILENAME, MAX_LOG_ROTATIONS + 1));
+        assert!(
+            !beyond.exists(),
+            "should not keep more than MAX_LOG_ROTATIONS history files"
+        );
     }
 }
