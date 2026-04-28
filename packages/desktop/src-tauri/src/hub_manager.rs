@@ -11,7 +11,8 @@ use std::os::windows::process::CommandExt;
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 /// Maximum number of start attempts (1 initial + 2 retries with exponential
-/// backoff of 2 s then 4 s).
+/// backoff of 2 s then 4 s).  `start_hub` / `start_hub_inner` are blocking
+/// functions — callers from async contexts should use `spawn_blocking`.
 const MAX_START_RETRIES: u32 = 3;
 
 /// Global guard: true while a `start_hub` call is in progress.

@@ -25,11 +25,11 @@ const OUR_CONTAINERS: &[&str] = &[
     "hub-tailscale",
 ];
 
-/// Container statuses that indicate a container is actually *using* its port.
+/// Container statuses that indicate a container is genuinely holding its port.
 /// Stopped / exited containers still appear in `docker ps -a` and may hold
 /// stale port registrations on Docker Desktop for Windows, so we only trust
 /// ports from containers in these states.
-const RUNNING_STATUSES: &[&str] = &["running", "restarting", "created"];
+const RUNNING_STATUSES: &[&str] = &["running", "restarting"];
 
 /// Check if a port is available by attempting a TCP bind.
 pub fn is_port_available(port: u16) -> bool {
@@ -254,7 +254,8 @@ pub fn refresh_ports_if_needed(env_path: &Path) -> Result<PortResolution, String
         info,
     };
 
-    // Always write so .env is authoritative — idempotent update/append.
+    // Only write when a dynamic port assignment changed, so existing .env
+    // values remain authoritative until a conflict requires reassignment.
     if changed {
         write_ports_to_env(env_path, &resolution)?;
     }

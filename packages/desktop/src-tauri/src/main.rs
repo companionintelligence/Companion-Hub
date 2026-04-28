@@ -29,7 +29,12 @@ async fn discover_hubs() -> Result<Vec<String>, String> {
 async fn start_hub_command(
     state: tauri::State<'_, hub_manager::HubPaths>,
 ) -> Result<String, String> {
-    hub_manager::start_hub(&state.compose_path, &state.env_path, &state.data_dir)
+    let compose = state.compose_path.clone();
+    let env = state.env_path.clone();
+    let data = state.data_dir.clone();
+    tokio::task::spawn_blocking(move || hub_manager::start_hub(&compose, &env, &data))
+        .await
+        .map_err(|e| format!("start_hub task panicked: {}", e))?
 }
 
 /// Check if Docker is available on this machine.
@@ -219,17 +224,32 @@ pub fn run() {
                     let data = data_dir;
                     let hash = config_hash;
                     let hp = hash_path;
+                    let data_for_log = data.clone();
                     tauri::async_runtime::spawn(async move {
-                        match hub_manager::start_hub(&compose, &env, &data) {
-                            Ok(message) => {
-                                let _ =
-                                    hub_manager::append_desktop_log_for(&data, "setup", &message);
-                            }
-                            Err(error) => {
+                        let result = tokio::task::spawn_blocking(move || {
+                            hub_manager::start_hub(&compose, &env, &data)
+                        })
+                        .await;
+                        match result {
+                            Ok(Ok(message)) => {
                                 let _ = hub_manager::append_desktop_log_for(
-                                    &data,
+                                    &data_for_log,
+                                    "setup",
+                                    &message,
+                                );
+                            }
+                            Ok(Err(error)) => {
+                                let _ = hub_manager::append_desktop_log_for(
+                                    &data_for_log,
                                     "setup",
                                     &format!("Auto-start failed: {}", error),
+                                );
+                            }
+                            Err(panic_err) => {
+                                let _ = hub_manager::append_desktop_log_for(
+                                    &data_for_log,
+                                    "setup",
+                                    &format!("start_hub task panicked: {}", panic_err),
                                 );
                             }
                         }
@@ -238,7 +258,7 @@ pub fn run() {
                         // this, every relaunch re-runs compose because the hash is never saved.
                         if let Err(error) = std::fs::write(&hp, &hash) {
                             let _ = hub_manager::append_desktop_log_for(
-                                &data,
+                                &data_for_log,
                                 "setup",
                                 &format!("Failed to persist configuration hash: {}", error),
                             );

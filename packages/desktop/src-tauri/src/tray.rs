@@ -123,20 +123,32 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                     "tray.start",
                     "Start Hub requested from the tray menu.",
                 );
+                let data_for_log = data.clone();
                 tauri::async_runtime::spawn(async move {
-                    match crate::hub_manager::start_hub(&compose, &env, &data) {
-                        Ok(message) => {
+                    match tokio::task::spawn_blocking(move || {
+                        crate::hub_manager::start_hub(&compose, &env, &data)
+                    })
+                    .await
+                    {
+                        Ok(Ok(message)) => {
                             let _ = crate::hub_manager::append_desktop_log_for(
-                                &data,
+                                &data_for_log,
                                 "tray.start",
                                 &message,
                             );
                         }
-                        Err(error) => {
+                        Ok(Err(error)) => {
                             let _ = crate::hub_manager::append_desktop_log_for(
-                                &data,
+                                &data_for_log,
                                 "tray.start",
                                 &format!("Tray start request failed: {}", error),
+                            );
+                        }
+                        Err(panic_err) => {
+                            let _ = crate::hub_manager::append_desktop_log_for(
+                                &data_for_log,
+                                "tray.start",
+                                &format!("start_hub task panicked: {}", panic_err),
                             );
                         }
                     }
