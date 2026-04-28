@@ -392,7 +392,7 @@ pub(crate) fn append_desktop_log_for(
     // interleave renames and appends.
     let _lock = LOG_WRITE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
 
-    rotate_log_if_needed(&log_path, &logs_dir);
+    rotate_log_if_needed(&log_path, &logs_dir, MAX_LOG_SIZE_BYTES);
     match std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -429,19 +429,19 @@ fn stderr_fallback(msg: &str) {
     }
 }
 
-/// Rotate `desktop.log` when it reaches or exceeds `MAX_LOG_SIZE_BYTES`.
+/// Rotate `desktop.log` when it reaches or exceeds `max_size` bytes.
 ///
 /// Keeps up to `MAX_LOG_ROTATIONS` historical files:
 ///   desktop.log.3 → deleted
 ///   desktop.log.2 → desktop.log.3
 ///   desktop.log.1 → desktop.log.2
 ///   desktop.log   → desktop.log.1
-fn rotate_log_if_needed(log_path: &Path, logs_dir: &Path) {
+fn rotate_log_if_needed(log_path: &Path, logs_dir: &Path, max_size: u64) {
     let size = match std::fs::metadata(log_path) {
         Ok(m) => m.len(),
         Err(_) => return, // file doesn't exist yet — nothing to rotate
     };
-    if size < MAX_LOG_SIZE_BYTES {
+    if size < max_size {
         return;
     }
 
@@ -2280,20 +2280,21 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
 
     #[test]
     fn rotates_desktop_log_when_it_exceeds_max_size() {
-        use super::{
-            rotate_log_if_needed, DESKTOP_LOG_FILENAME, MAX_LOG_ROTATIONS, MAX_LOG_SIZE_BYTES,
-        };
+        use super::{rotate_log_if_needed, DESKTOP_LOG_FILENAME, MAX_LOG_ROTATIONS};
+
+        // Use a tiny threshold so the test doesn't write multi-MB files.
+        const TEST_MAX_SIZE: u64 = 64;
 
         let tempdir = tempfile::tempdir().expect("tempdir");
         let logs_dir = tempdir.path();
         let log_path = logs_dir.join(DESKTOP_LOG_FILENAME);
 
         // Create a log file that exceeds the size limit.
-        let payload_len = (MAX_LOG_SIZE_BYTES + 1) as usize;
+        let payload_len = (TEST_MAX_SIZE + 1) as usize;
         let payload = "x".repeat(payload_len);
         std::fs::write(&log_path, &payload).expect("write oversized log");
 
-        rotate_log_if_needed(&log_path, logs_dir);
+        rotate_log_if_needed(&log_path, logs_dir, TEST_MAX_SIZE);
 
         // Original should no longer exist (it was rotated to .1).
         assert!(!log_path.exists(), "original log should have been renamed");
@@ -2305,7 +2306,7 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
         // Rotate again: .1 → .2, new data → .1
         let new_payload = "y".repeat(payload_len);
         std::fs::write(&log_path, &new_payload).expect("write new oversized log");
-        rotate_log_if_needed(&log_path, logs_dir);
+        rotate_log_if_needed(&log_path, logs_dir, TEST_MAX_SIZE);
 
         assert!(!log_path.exists());
         let r1 = logs_dir.join(format!("{}.1", DESKTOP_LOG_FILENAME));
@@ -2327,7 +2328,7 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
             let prefix = format!("z{}-", i);
             let p = prefix.clone() + &"z".repeat(payload_len - prefix.len());
             std::fs::write(&log_path, &p).expect("write");
-            rotate_log_if_needed(&log_path, logs_dir);
+            rotate_log_if_needed(&log_path, logs_dir, TEST_MAX_SIZE);
 
             expected_rotations.insert(0, p);
             expected_rotations.truncate(MAX_LOG_ROTATIONS);
