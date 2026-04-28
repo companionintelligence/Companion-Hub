@@ -29,7 +29,18 @@ async fn discover_hubs() -> Result<Vec<String>, String> {
 async fn start_hub_command(
     state: tauri::State<'_, hub_manager::HubPaths>,
 ) -> Result<String, String> {
-    hub_manager::start_hub(&state.compose_path, &state.env_path, &state.data_dir)
+    let compose = state.compose_path.clone();
+    let env = state.env_path.clone();
+    let data = state.data_dir.clone();
+    tokio::task::spawn_blocking(move || hub_manager::start_hub(&compose, &env, &data))
+        .await
+        .map_err(|e| {
+            if e.is_panic() {
+                format!("start_hub task panicked: {}", e)
+            } else {
+                format!("start_hub task was cancelled: {}", e)
+            }
+        })?
 }
 
 /// Check if Docker is available on this machine.
@@ -205,22 +216,57 @@ pub fn run() {
                 );
 
                 if should_start {
+                    // Pre-cleanup: remove stale containers from a previous install
+                    // before attempting compose up.  This prevents "container name
+                    // already in use" errors after an uninstall/reinstall cycle.
+                    if let Err(err) = hub_manager::cleanup_stale_project_containers(
+                        &compose_path,
+                        &env_path,
+                        &data_dir,
+                    ) {
+                        let _ = hub_manager::append_desktop_log_for(
+                            &data_dir,
+                            "setup",
+                            &format!("Pre-start cleanup failed (non-fatal): {}", err),
+                        );
+                    }
+
                     let compose = compose_path;
                     let env = env_path;
                     let data = data_dir;
                     let hash = config_hash;
                     let hp = hash_path;
+                    let data_for_log = data.clone();
                     tauri::async_runtime::spawn(async move {
-                        match hub_manager::start_hub(&compose, &env, &data) {
-                            Ok(message) => {
-                                let _ =
-                                    hub_manager::append_desktop_log_for(&data, "setup", &message);
-                            }
-                            Err(error) => {
+                        let result = tokio::task::spawn_blocking(move || {
+                            hub_manager::start_hub(&compose, &env, &data)
+                        })
+                        .await;
+                        match result {
+                            Ok(Ok(message)) => {
                                 let _ = hub_manager::append_desktop_log_for(
-                                    &data,
+                                    &data_for_log,
+                                    "setup",
+                                    &message,
+                                );
+                            }
+                            Ok(Err(error)) => {
+                                let _ = hub_manager::append_desktop_log_for(
+                                    &data_for_log,
                                     "setup",
                                     &format!("Auto-start failed: {}", error),
+                                );
+                            }
+                            Err(join_err) => {
+                                let msg = if join_err.is_panic() {
+                                    format!("start_hub task panicked: {}", join_err)
+                                } else {
+                                    format!("start_hub task was cancelled: {}", join_err)
+                                };
+                                let _ = hub_manager::append_desktop_log_for(
+                                    &data_for_log,
+                                    "setup",
+                                    &msg,
                                 );
                             }
                         }
@@ -229,7 +275,7 @@ pub fn run() {
                         // this, every relaunch re-runs compose because the hash is never saved.
                         if let Err(error) = std::fs::write(&hp, &hash) {
                             let _ = hub_manager::append_desktop_log_for(
-                                &data,
+                                &data_for_log,
                                 "setup",
                                 &format!("Failed to persist configuration hash: {}", error),
                             );

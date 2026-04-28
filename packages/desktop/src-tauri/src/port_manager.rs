@@ -25,6 +25,12 @@ const OUR_CONTAINERS: &[&str] = &[
     "hub-tailscale",
 ];
 
+/// Container statuses that indicate a container is genuinely holding its port.
+/// Stopped / exited containers still appear in `docker ps -a` and may hold
+/// stale port registrations on Docker Desktop for Windows, so we only trust
+/// ports from containers in these states.
+const RUNNING_STATUSES: &[&str] = &["running", "restarting"];
+
 /// Check if a port is available by attempting a TCP bind.
 pub fn is_port_available(port: u16) -> bool {
     TcpListener::bind(("127.0.0.1", port)).is_ok()
@@ -37,18 +43,28 @@ fn is_port_available_or_ours(port: u16, our_ports: &HashSet<u16>) -> bool {
     is_port_available(port) || our_ports.contains(&port)
 }
 
-/// Query Docker for host ports currently bound by our managed containers.
-/// Returns the set of host ports that our stack is using.
+/// Query Docker for host ports currently bound by our *running* managed
+/// containers.  Only running/restarting containers are genuinely holding
+/// their ports; stopped containers may leave ghost port registrations on
+/// Docker Desktop for Windows that confuse `is_port_available_or_ours`.
 fn get_our_container_ports() -> HashSet<u16> {
     let mut ports = HashSet::new();
 
-    // Build filter args for our containers
+    // Build filter args for our containers — only include running ones.
     let mut args: Vec<&str> = vec!["ps", "--format", "{{.Ports}}"];
     let filters: Vec<String> = OUR_CONTAINERS
         .iter()
         .map(|name| format!("name={}", name))
         .collect();
+    let status_filters: Vec<String> = RUNNING_STATUSES
+        .iter()
+        .map(|s| format!("status={}", s))
+        .collect();
     for f in &filters {
+        args.push("--filter");
+        args.push(f);
+    }
+    for f in &status_filters {
         args.push("--filter");
         args.push(f);
     }
@@ -170,6 +186,9 @@ pub fn read_api_port(env_path: &Path) -> u16 {
 
 /// Re-check saved ports. If a previously saved dynamic port is now occupied,
 /// re-resolve only that port and update .env.
+///
+/// `get_our_container_ports()` now only returns ports from *running* containers,
+/// so stopped/zombie containers no longer mask real port conflicts.
 pub fn refresh_ports_if_needed(env_path: &Path) -> Result<PortResolution, String> {
     let existing = std::fs::read_to_string(env_path).unwrap_or_default();
 
@@ -185,7 +204,10 @@ pub fn refresh_ports_if_needed(env_path: &Path) -> Result<PortResolution, String
         return Ok(res);
     }
 
-    // Subsequent run — only re-resolve ports that are now occupied
+    // Subsequent run — only re-resolve ports that are now occupied.
+    // `our_ports` only contains ports from running containers, so stopped
+    // zombie containers left by Docker Desktop on Windows won't mask
+    // real conflicts.
     let our_ports = get_our_container_ports();
     let mut env_vars: HashMap<String, u16> = HashMap::new();
     let mut warnings = Vec::new();
@@ -232,6 +254,8 @@ pub fn refresh_ports_if_needed(env_path: &Path) -> Result<PortResolution, String
         info,
     };
 
+    // Only write when a dynamic port assignment changed, so existing .env
+    // values remain authoritative until a conflict requires reassignment.
     if changed {
         write_ports_to_env(env_path, &resolution)?;
     }
