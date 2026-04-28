@@ -374,9 +374,19 @@ pub(crate) fn append_desktop_log_for(
     message: &str,
 ) -> std::io::Result<PathBuf> {
     let logs_dir = logs_dir_for(data_dir);
-    std::fs::create_dir_all(&logs_dir)?;
     let log_path = desktop_log_path_for(data_dir);
     let entry = format_log_entry(operation, message);
+
+    if let Err(err) = std::fs::create_dir_all(&logs_dir) {
+        // Fallback: emit to stderr so the entry is not silently lost.
+        stderr_fallback(&format!(
+            "[desktop-log-fallback] create_dir_all({}) failed: {}",
+            logs_dir.display(),
+            err
+        ));
+        stderr_fallback(&entry);
+        return Err(err);
+    }
 
     // Hold the lock across rotation + write so concurrent callers cannot
     // interleave renames and appends.
@@ -393,14 +403,30 @@ pub(crate) fn append_desktop_log_for(
             file.write_all(entry.as_bytes())?;
         }
         Err(err) => {
-            // Last-resort fallback: print to stderr so the message is not
-            // silently lost when the log file cannot be written.
-            eprintln!("[desktop-log-fallback] failed to write {}: {}", log_path.display(), err);
-            eprint!("{}", entry);
+            // Last-resort fallback: write to stderr so the message is not
+            // silently lost when the log file cannot be opened.
+            stderr_fallback(&format!(
+                "[desktop-log-fallback] failed to write {}: {}",
+                log_path.display(),
+                err
+            ));
+            stderr_fallback(&entry);
             return Err(err);
         }
     }
     Ok(log_path)
+}
+
+/// Write `msg` to stderr without panicking.  In a GUI desktop app stderr
+/// can be closed/missing, so we must not use `eprintln!` (which unwraps
+/// internally).
+fn stderr_fallback(msg: &str) {
+    use std::io::Write;
+    let _ = std::io::stderr().write_all(msg.as_bytes());
+    // Ensure a trailing newline so entries don't run together.
+    if !msg.ends_with('\n') {
+        let _ = std::io::stderr().write_all(b"\n");
+    }
 }
 
 /// Rotate `desktop.log` when it exceeds `MAX_LOG_SIZE_BYTES`.
@@ -440,7 +466,11 @@ fn rotate_log_if_needed(log_path: &Path, logs_dir: &Path) {
 fn remove_if_exists(path: &Path) {
     if let Err(err) = std::fs::remove_file(path) {
         if err.kind() != std::io::ErrorKind::NotFound {
-            eprintln!("[log-rotate] failed to remove {}: {}", path.display(), err);
+            stderr_fallback(&format!(
+                "[log-rotate] failed to remove {}: {}",
+                path.display(),
+                err
+            ));
         }
     }
 }
@@ -450,12 +480,12 @@ fn remove_if_exists(path: &Path) {
 fn rename_if_exists(src: &Path, dst: &Path) {
     if let Err(err) = std::fs::rename(src, dst) {
         if err.kind() != std::io::ErrorKind::NotFound {
-            eprintln!(
+            stderr_fallback(&format!(
                 "[log-rotate] failed to rename {} → {}: {}",
                 src.display(),
                 dst.display(),
                 err
-            );
+            ));
         }
     }
 }
