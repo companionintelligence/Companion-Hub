@@ -170,6 +170,10 @@ pub fn read_api_port(env_path: &Path) -> u16 {
 
 /// Re-check saved ports. If a previously saved dynamic port is now occupied,
 /// re-resolve only that port and update .env.
+///
+/// When our own containers are not running (i.e. `get_our_container_ports()`
+/// returns nothing), every saved port is verified with a real TCP bind so that
+/// zombie port bindings left behind by Docker Desktop on Windows are detected.
 pub fn refresh_ports_if_needed(env_path: &Path) -> Result<PortResolution, String> {
     let existing = std::fs::read_to_string(env_path).unwrap_or_default();
 
@@ -202,6 +206,11 @@ pub fn refresh_ports_if_needed(env_path: &Path) -> Result<PortResolution, String
         }
     }
 
+    // When our containers aren't running, don't trust the "our_ports" set —
+    // verify every port with a real TCP bind.  This catches zombie port
+    // bindings left behind by Docker Desktop on Windows after uninstall.
+    let trust_our_ports = !our_ports.is_empty();
+
     for &(default_port, var) in DYNAMIC_PORTS {
         // Read current assignment from .env
         let current: u16 = existing
@@ -211,7 +220,13 @@ pub fn refresh_ports_if_needed(env_path: &Path) -> Result<PortResolution, String
             .and_then(|v| v.trim().parse().ok())
             .unwrap_or(default_port);
 
-        if is_port_available_or_ours(current, &our_ports) {
+        let port_ok = if trust_our_ports {
+            is_port_available_or_ours(current, &our_ports)
+        } else {
+            is_port_available(current)
+        };
+
+        if port_ok {
             env_vars.insert(var.to_string(), current);
         } else {
             // Need to find a new port
@@ -232,7 +247,9 @@ pub fn refresh_ports_if_needed(env_path: &Path) -> Result<PortResolution, String
         info,
     };
 
-    if changed {
+    // Always write port vars so .env is authoritative even on first boot
+    // after a reinstall where port vars may have been stripped.
+    if changed || !has_port_vars {
         write_ports_to_env(env_path, &resolution)?;
     }
 

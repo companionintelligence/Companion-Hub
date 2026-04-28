@@ -205,6 +205,15 @@ pub fn run() {
                 );
 
                 if should_start {
+                    // Pre-cleanup: remove stale containers from a previous install
+                    // before attempting compose up.  This prevents "container name
+                    // already in use" errors after an uninstall/reinstall cycle.
+                    let _ = hub_manager::cleanup_stale_project_containers(
+                        &compose_path,
+                        &env_path,
+                        &data_dir,
+                    );
+
                     let compose = compose_path;
                     let env = env_path;
                     let data = data_dir;
