@@ -73,21 +73,43 @@ fn get_our_container_ports() -> HashSet<u16> {
         .args(&args)
         .output();
 
-    if let Ok(out) = output {
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        // Parse port mappings like "0.0.0.0:5002->5002/tcp, :::5002->5002/tcp"
-        for line in stdout.lines() {
-            for mapping in line.split(',') {
-                // Extract host port from "0.0.0.0:5002->5002/tcp" or ":::5002->5002/tcp"
-                if let Some(arrow_pos) = mapping.find("->") {
-                    let before_arrow = mapping[..arrow_pos].trim();
-                    if let Some(colon_pos) = before_arrow.rfind(':') {
-                        if let Ok(port) = before_arrow[colon_pos + 1..].parse::<u16>() {
-                            ports.insert(port);
+    match output {
+        Ok(out) => {
+            if !out.status.success() {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                let _ = crate::hub_manager::append_desktop_log(
+                    "port_manager",
+                    &format!(
+                        "docker ps for port discovery exited with {:?}: {}",
+                        out.status.code(),
+                        stderr.trim()
+                    ),
+                );
+                // Don't parse stdout from a failed command — it may be
+                // partial or garbled.
+            } else {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                // Parse port mappings like "0.0.0.0:5002->5002/tcp, :::5002->5002/tcp"
+                for line in stdout.lines() {
+                    for mapping in line.split(',') {
+                        // Extract host port from "0.0.0.0:5002->5002/tcp" or ":::5002->5002/tcp"
+                        if let Some(arrow_pos) = mapping.find("->") {
+                            let before_arrow = mapping[..arrow_pos].trim();
+                            if let Some(colon_pos) = before_arrow.rfind(':') {
+                                if let Ok(port) = before_arrow[colon_pos + 1..].parse::<u16>() {
+                                    ports.insert(port);
+                                }
+                            }
                         }
                     }
                 }
             }
+        }
+        Err(err) => {
+            let _ = crate::hub_manager::append_desktop_log(
+                "port_manager",
+                &format!("docker ps for port discovery failed: {}", err),
+            );
         }
     }
 
