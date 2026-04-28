@@ -429,7 +429,7 @@ fn stderr_fallback(msg: &str) {
     }
 }
 
-/// Rotate `desktop.log` when it exceeds `MAX_LOG_SIZE_BYTES`.
+/// Rotate `desktop.log` when it reaches or exceeds `MAX_LOG_SIZE_BYTES`.
 ///
 /// Keeps up to `MAX_LOG_ROTATIONS` historical files:
 ///   desktop.log.3 → deleted
@@ -2289,7 +2289,8 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
         let log_path = logs_dir.join(DESKTOP_LOG_FILENAME);
 
         // Create a log file that exceeds the size limit.
-        let payload = "x".repeat((MAX_LOG_SIZE_BYTES + 1) as usize);
+        let payload_len = (MAX_LOG_SIZE_BYTES + 1) as usize;
+        let payload = "x".repeat(payload_len);
         std::fs::write(&log_path, &payload).expect("write oversized log");
 
         rotate_log_if_needed(&log_path, logs_dir);
@@ -2302,7 +2303,7 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
         assert_eq!(content, payload);
 
         // Rotate again: .1 → .2, new data → .1
-        let new_payload = "y".repeat((MAX_LOG_SIZE_BYTES + 1) as usize);
+        let new_payload = "y".repeat(payload_len);
         std::fs::write(&log_path, &new_payload).expect("write new oversized log");
         rotate_log_if_needed(&log_path, logs_dir);
 
@@ -2321,7 +2322,10 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
         // those targets already exist, and the oldest entry should be evicted.
         let mut expected_rotations = vec![new_payload.clone(), payload.clone()];
         for i in 0..MAX_LOG_ROTATIONS {
-            let p = format!("z{}", i).repeat((MAX_LOG_SIZE_BYTES + 1) as usize);
+            // Use a short unique prefix + single-byte fill to keep total size
+            // just over the limit without allocating unnecessarily large strings.
+            let prefix = format!("z{}-", i);
+            let p = prefix.clone() + &"z".repeat(payload_len - prefix.len());
             std::fs::write(&log_path, &p).expect("write");
             rotate_log_if_needed(&log_path, logs_dir);
 
