@@ -27,12 +27,18 @@ async fn discover_hubs() -> Result<Vec<String>, String> {
 /// Start the Hub via docker compose.
 #[tauri::command]
 async fn start_hub_command(
+    app_handle: tauri::AppHandle,
     state: tauri::State<'_, hub_manager::HubPaths>,
 ) -> Result<String, String> {
     let compose = state.compose_path.clone();
     let env = state.env_path.clone();
     let data = state.data_dir.clone();
-    tokio::task::spawn_blocking(move || hub_manager::start_hub(&compose, &env, &data))
+    let progress_emitter: hub_manager::StartupProgressCallback = std::sync::Arc::new(move |event| {
+        let _ = app_handle.emit(hub_manager::HUB_STARTUP_PROGRESS_EVENT, event);
+    });
+    tokio::task::spawn_blocking(move || {
+        hub_manager::start_hub_with_progress(&compose, &env, &data, Some(progress_emitter))
+    })
         .await
         .map_err(|e| {
             if e.is_panic() {
@@ -67,6 +73,12 @@ async fn get_hub_status_command() -> hub_manager::HubStatus {
     hub_manager::get_hub_status()
 }
 
+/// Return the latest startup progress snapshot for frontend recovery on missed events.
+#[tauri::command]
+async fn get_startup_progress_command() -> Option<hub_manager::StartupProgressEvent> {
+    hub_manager::get_startup_progress_snapshot()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
@@ -94,6 +106,7 @@ pub fn run() {
             check_docker_available,
             check_docker_access_command,
             get_hub_status_command,
+            get_startup_progress_command,
             install_docker_command,
         ])
         .setup(|app| {
@@ -237,9 +250,19 @@ pub fn run() {
                     let hash = config_hash;
                     let hp = hash_path;
                     let data_for_log = data.clone();
+                    let app_handle = app.handle().clone();
                     tauri::async_runtime::spawn(async move {
+                        let progress_emitter: hub_manager::StartupProgressCallback =
+                            std::sync::Arc::new(move |event| {
+                                let _ = app_handle.emit(hub_manager::HUB_STARTUP_PROGRESS_EVENT, event);
+                            });
                         let result = tokio::task::spawn_blocking(move || {
-                            hub_manager::start_hub(&compose, &env, &data)
+                            hub_manager::start_hub_with_progress(
+                                &compose,
+                                &env,
+                                &data,
+                                Some(progress_emitter),
+                            )
                         })
                         .await;
                         match result {

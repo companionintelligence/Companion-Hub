@@ -1,4 +1,4 @@
-import { act, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { HubStatus, getDockerDesktopGuideContent } from './hub-status';
@@ -15,6 +15,30 @@ const tauriWindow = window as TauriWindow;
 const navigatorWithUserAgentData = window.navigator as NavigatorWithUserAgentData;
 const originalUserAgent = navigator.userAgent;
 const originalUserAgentData = navigatorWithUserAgentData.userAgentData;
+const { startupEventListeners, mockListen } = vi.hoisted(() => {
+  const listeners = new Map<string, (event: { payload: unknown }) => void>();
+  const listenMock = vi.fn(async (eventName: string, callback: (event: { payload: unknown }) => void) => {
+    listeners.set(eventName, callback);
+    return () => {
+      listeners.delete(eventName);
+    };
+  });
+  return {
+    startupEventListeners: listeners,
+    mockListen: listenMock,
+  };
+});
+
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: mockListen,
+}));
+
+function emitStartupProgress(payload: unknown) {
+  const listener = startupEventListeners.get('hub-startup-progress');
+  if (listener) {
+    listener({ payload });
+  }
+}
 
 function setUserAgent(userAgent: string, userAgentData?: { architecture?: string }) {
   Object.defineProperty(window.navigator, 'userAgent', {
@@ -56,6 +80,10 @@ function renderWithTauriStatus(status: 'DockerNotAvailable' | 'Stopped' | 'Runni
       return status;
     }
 
+    if (cmd === 'get_startup_progress_command') {
+      return null;
+    }
+
     throw new Error(`Unexpected invoke command: ${cmd}`);
   });
 
@@ -91,6 +119,7 @@ async function flushAsyncWork() {
 
 afterEach(() => {
   delete tauriWindow.__TAURI_INTERNALS__;
+  startupEventListeners.clear();
   restoreNavigator();
   vi.useRealTimers();
   vi.restoreAllMocks();
@@ -185,6 +214,8 @@ describe('HubStatus Docker guidance', () => {
           return 'Running';
         case 'start_hub_command':
           return 'Hub started successfully';
+        case 'get_startup_progress_command':
+          return null;
         default:
           throw new Error(`Unexpected invoke command: ${cmd}`);
       }
@@ -207,7 +238,7 @@ describe('HubStatus Docker guidance', () => {
     await flushAsyncWork();
 
     expect(invoke).toHaveBeenCalledWith('start_hub_command');
-    expect(screen.getByText('Hub Starting…')).toBeInTheDocument();
+    expect(screen.queryByText('Hub Starting…') ?? screen.queryByText('Hub child')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Start Hub' })).not.toBeInTheDocument();
 
     await act(async () => {
@@ -229,6 +260,8 @@ describe('HubStatus Docker guidance', () => {
           return getHubStatusCallCount === 1 ? 'Stopped' : 'Running';
         case 'start_hub_command':
           return 'Hub started successfully';
+        case 'get_startup_progress_command':
+          return null;
         default:
           throw new Error(`Unexpected invoke command: ${cmd}`);
       }
@@ -245,7 +278,7 @@ describe('HubStatus Docker guidance', () => {
     await flushAsyncWork();
 
     expect(invoke).toHaveBeenCalledWith('start_hub_command');
-    expect(screen.getByText('Hub Starting…')).toBeInTheDocument();
+    expect(screen.queryByText('Hub Starting…') ?? screen.queryByText('Hub child')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Start Hub' })).not.toBeInTheDocument();
 
     await act(async () => {
@@ -261,5 +294,124 @@ describe('HubStatus Docker guidance', () => {
 
     expect(await screen.findByText('Hub child')).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Docker Desktop Required' })).not.toBeInTheDocument();
+  });
+
+  it('keeps startup UI visible while polling still reports Stopped and renders pull-stage progress updates', async () => {
+    vi.useFakeTimers();
+
+    let allowRunning = false;
+    const invoke = vi.fn<(cmd: string) => Promise<unknown>>(async (cmd: string) => {
+      switch (cmd) {
+        case 'get_hub_status_command':
+          return allowRunning ? 'Running' : 'Stopped';
+        case 'start_hub_command':
+          return 'Hub started successfully';
+        case 'get_startup_progress_command':
+          return null;
+        default:
+          throw new Error(`Unexpected invoke command: ${cmd}`);
+      }
+    });
+
+    setUserAgent('Mozilla/5.0 (X11; Linux x86_64)');
+    Object.defineProperty(tauriWindow, '__TAURI_INTERNALS__', {
+      value: { invoke },
+      configurable: true,
+    });
+
+    render(
+      <HubStatus>
+        <div>Hub child</div>
+      </HubStatus>,
+    );
+
+    await flushAsyncWork();
+    expect(screen.getByRole('button', { name: 'Start Hub' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Start Hub' }));
+
+    await flushAsyncWork();
+    expect(screen.getByText('Hub Starting…')).toBeInTheDocument();
+
+    await act(async () => {
+      emitStartupProgress({
+        session_id: 'startup-1',
+        phase: 'pulling_images',
+        status_text: 'Pulling images: ci-hub-db Pulling',
+        current_item: 'ci-hub-db',
+        attempt: 1,
+        terminal_state: null,
+      });
+    });
+
+    expect(screen.getByText('Pulling images')).toBeInTheDocument();
+    expect(screen.getByText('Current item: ci-hub-db')).toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    await flushAsyncWork();
+
+    expect(screen.getByText('Hub Starting…')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Start Hub' })).not.toBeInTheDocument();
+
+    await act(async () => {
+      emitStartupProgress({
+        session_id: 'startup-1',
+        phase: 'completed',
+        status_text: 'Hub startup completed successfully.',
+        current_item: null,
+        attempt: 1,
+        terminal_state: 'success',
+      });
+      allowRunning = true;
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    await flushAsyncWork();
+
+    expect(screen.getByText('Hub child')).toBeInTheDocument();
+  });
+
+  it('transitions to error state when startup emits terminal error progress', async () => {
+    const invoke = vi.fn<(cmd: string) => Promise<unknown>>(async (cmd: string) => {
+      switch (cmd) {
+        case 'get_hub_status_command':
+          return 'Stopped';
+        case 'start_hub_command':
+          return 'Hub started successfully';
+        case 'get_startup_progress_command':
+          return null;
+        default:
+          throw new Error(`Unexpected invoke command: ${cmd}`);
+      }
+    });
+
+    setUserAgent('Mozilla/5.0 (X11; Linux x86_64)');
+    Object.defineProperty(tauriWindow, '__TAURI_INTERNALS__', {
+      value: { invoke },
+      configurable: true,
+    });
+
+    render(
+      <HubStatus>
+        <div>Hub child</div>
+      </HubStatus>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Start Hub' }));
+
+    await act(async () => {
+      emitStartupProgress({
+        session_id: 'startup-2',
+        phase: 'failed',
+        status_text: 'docker compose up -d failed after all retry attempts.',
+        current_item: null,
+        attempt: 3,
+        terminal_state: 'error',
+      });
+    });
+
+    expect(await screen.findByText('Hub Error')).toBeInTheDocument();
+    expect(screen.getByText('docker compose up -d failed after all retry attempts.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Restart Hub' })).toBeInTheDocument();
   });
 });

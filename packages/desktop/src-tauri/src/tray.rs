@@ -124,9 +124,19 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                     "Start Hub requested from the tray menu.",
                 );
                 let data_for_log = data.clone();
+                let app_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
+                    let progress_emitter: crate::hub_manager::StartupProgressCallback =
+                        std::sync::Arc::new(move |event| {
+                            let _ = app_handle.emit(crate::hub_manager::HUB_STARTUP_PROGRESS_EVENT, event);
+                        });
                     match tokio::task::spawn_blocking(move || {
-                        crate::hub_manager::start_hub(&compose, &env, &data)
+                        crate::hub_manager::start_hub_with_progress(
+                            &compose,
+                            &env,
+                            &data,
+                            Some(progress_emitter),
+                        )
                     })
                     .await
                     {

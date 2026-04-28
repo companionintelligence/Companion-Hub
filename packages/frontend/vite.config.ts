@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { reactRouter } from '@react-router/dev/vite';
 import { defineConfig, loadEnv, type PluginOption } from 'vite';
@@ -10,6 +10,8 @@ const hubRoot = path.resolve(__dirname, '../..');
 /** CI-Hub uses `.env.dev` / `.env.local` at repo root; Vite's loadEnv only reads `.env.[mode]` etc. */
 function parseDotEnvFile(filePath: string): Record<string, string> {
   if (!existsSync(filePath)) return {};
+  // Some CI-Hub environments use a `.env` directory; skip non-file paths.
+  if (!statSync(filePath).isFile()) return {};
   const out: Record<string, string> = {};
   for (const line of readFileSync(filePath, 'utf8').split('\n')) {
     const t = line.trim();

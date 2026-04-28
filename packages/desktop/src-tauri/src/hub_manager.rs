@@ -1,7 +1,9 @@
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, ExitStatus, Stdio};
+use std::io::{BufRead, BufReader};
+use std::sync::mpsc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::os::unix::fs::PermissionsExt;
@@ -18,6 +20,9 @@ const MAX_START_RETRIES: u32 = 3;
 
 /// Global guard: true while a `start_hub` call is in progress.
 static START_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+/// Snapshot of the latest startup progress event for in-flight startup sessions.
+static STARTUP_PROGRESS_STATE: Mutex<Option<StartupProgressEvent>> = Mutex::new(None);
 
 /// Serialize rotation + append so concurrent callers cannot interleave
 /// renames and writes to `desktop.log`.
@@ -44,6 +49,12 @@ const TRAEFIK_TLS_DIR: &str = "state/traefik/tls";
 const TRAEFIK_CONFIG_FILE: &str = "state/traefik/config/traefik.yml";
 const TRAEFIK_DYNAMIC_FILE: &str = "state/traefik/dynamic/dynamic.yml";
 const TRAEFIK_ACME_FILE: &str = "state/traefik/acme_storage.json";
+
+/// Tauri event name used to push startup progress updates to the frontend.
+pub const HUB_STARTUP_PROGRESS_EVENT: &str = "hub-startup-progress";
+
+/// Callback type used by desktop runtime entry points to forward startup progress.
+pub type StartupProgressCallback = Arc<dyn Fn(StartupProgressEvent) + Send + Sync + 'static>;
 
 #[cfg(target_os = "windows")]
 const DOCKER_DESKTOP_WINDOWS_INSTALLER_URL: &str =
@@ -199,6 +210,262 @@ pub enum HubStatus {
     Error { message: String },
 }
 
+#[derive(Clone, Copy, Debug, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StartupPhase {
+    Preparing,
+    PullingImages,
+    StartingServices,
+    WaitingHealth,
+    Completed,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StartupTerminalState {
+    Success,
+    Error,
+}
+
+/// Structured startup progress snapshot consumed by the frontend event stream.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct StartupProgressEvent {
+    pub session_id: String,
+    pub phase: StartupPhase,
+    pub status_text: String,
+    pub current_item: Option<String>,
+    pub attempt: u32,
+    pub terminal_state: Option<StartupTerminalState>,
+}
+
+fn new_startup_session_id() -> String {
+    format!("startup-{}", chrono::Utc::now().timestamp_millis())
+}
+
+/// Return the last startup progress event snapshot if startup has emitted progress.
+pub fn get_startup_progress_snapshot() -> Option<StartupProgressEvent> {
+    STARTUP_PROGRESS_STATE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+}
+
+/// Publish a startup progress event to state, desktop logs, and optional callbacks.
+fn publish_startup_progress(
+    data_dir: &Path,
+    callback: Option<&StartupProgressCallback>,
+    event: StartupProgressEvent,
+) {
+    {
+        let mut progress_state = STARTUP_PROGRESS_STATE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *progress_state = Some(event.clone());
+    }
+
+    let mut progress_lines = vec![format!(
+        "session={} phase={:?} attempt={} terminal={:?}",
+        event.session_id, event.phase, event.attempt, event.terminal_state
+    )];
+    progress_lines.push(format!("status={}", event.status_text));
+    if let Some(item) = &event.current_item {
+        progress_lines.push(format!("item={}", item));
+    }
+    let _ = append_desktop_log_for(data_dir, "hub.start.progress", &progress_lines.join("\n"));
+
+    if let Some(progress_callback) = callback {
+        progress_callback(event);
+    }
+}
+
+/// Extract a compose item token (service/image/container hint) from a progress line.
+/// Docker Compose v2 often prefixes lines with box-drawing characters such as
+/// `⠿` or `✔`, so we skip any leading tokens that contain no ASCII alphanumeric
+/// characters and return the first meaningful token instead.
+fn extract_startup_item(line: &str) -> Option<String> {
+    let token = line
+        .split_whitespace()
+        .find(|t| t.chars().any(|c| c.is_alphanumeric()))
+        .unwrap_or_default()
+        .trim_matches(':')
+        .trim();
+
+    if token.is_empty() || token.len() > 80 {
+        return None;
+    }
+
+    Some(token.to_string())
+}
+
+/// Infer startup phase and UI text from incremental docker compose output lines.
+fn map_startup_line_to_progress(
+    line: &str,
+    current_phase: StartupPhase,
+) -> (StartupPhase, Option<String>, String) {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return (
+            current_phase,
+            None,
+            "Waiting for startup output...".to_string(),
+        );
+    }
+
+    let lower = trimmed.to_lowercase();
+    let inferred_phase = if lower.contains("pulling")
+        || lower.contains("pull complete")
+        || lower.contains("download")
+        || lower.contains("extracting")
+        || lower.contains("layer")
+    {
+        StartupPhase::PullingImages
+    } else if lower.contains("creating")
+        || lower.contains("created")
+        || lower.contains("starting")
+        || lower.contains("started")
+        || lower.contains("recreate")
+    {
+        StartupPhase::StartingServices
+    } else if lower.contains("healthy")
+        || lower.contains("health")
+        || lower.contains("readiness")
+        || lower.contains("waiting")
+    {
+        StartupPhase::WaitingHealth
+    } else {
+        current_phase
+    };
+
+    // status_text is the raw compose line trimmed to a concise description.
+    // The phase label (e.g. "Pulling images") is rendered separately in the
+    // frontend; prefixing the status_text with the same phrase would be
+    // redundant in the UI.
+    let status_text = match inferred_phase {
+        StartupPhase::Preparing => "Preparing startup...".to_string(),
+        StartupPhase::PullingImages => trimmed.to_string(),
+        StartupPhase::StartingServices => trimmed.to_string(),
+        StartupPhase::WaitingHealth => trimmed.to_string(),
+        StartupPhase::Completed => "Hub startup completed.".to_string(),
+        StartupPhase::Failed => trimmed.to_string(),
+    };
+
+    (inferred_phase, extract_startup_item(trimmed), status_text)
+}
+
+/// Build and return a terminal failure with a final failed startup progress event.
+fn finalize_startup_failure(
+    data_dir: &Path,
+    session_id: &str,
+    callback: Option<&StartupProgressCallback>,
+    attempt: u32,
+    message: String,
+) -> String {
+    publish_startup_progress(
+        data_dir,
+        callback,
+        StartupProgressEvent {
+            session_id: session_id.to_string(),
+            phase: StartupPhase::Failed,
+            status_text: message.clone(),
+            current_item: None,
+            attempt,
+            terminal_state: Some(StartupTerminalState::Error),
+        },
+    );
+    with_view_logs_hint(message)
+}
+
+/// Run `docker compose up -d` and process output incrementally for startup progress.
+fn run_compose_up_with_progress(
+    compose_path: &Path,
+    env_path: &Path,
+    data_dir: &Path,
+    session_id: &str,
+    callback: Option<&StartupProgressCallback>,
+    attempt: u32,
+) -> Result<(ExitStatus, String), String> {
+    let mut command = docker_command();
+    command
+        .args([
+            "compose",
+            "--env-file",
+            &env_path.to_string_lossy(),
+            "--project-name",
+            "ci-hub",
+            "-f",
+            &compose_path.to_string_lossy(),
+            "up",
+            "-d",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("Failed to run docker compose up -d: {}", error))?;
+
+    publish_startup_progress(
+        data_dir,
+        callback,
+        StartupProgressEvent {
+            session_id: session_id.to_string(),
+            phase: StartupPhase::PullingImages,
+            status_text: "Pulling images and starting services...".to_string(),
+            current_item: None,
+            attempt,
+            terminal_state: None,
+        },
+    );
+
+    let (sender, receiver) = mpsc::channel::<String>();
+    if let Some(stdout) = child.stdout.take() {
+        let stdout_sender = sender.clone();
+        std::thread::spawn(move || {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines().map_while(Result::ok) {
+                let _ = stdout_sender.send(line);
+            }
+        });
+    }
+    if let Some(stderr) = child.stderr.take() {
+        let stderr_sender = sender.clone();
+        std::thread::spawn(move || {
+            let reader = BufReader::new(stderr);
+            for line in reader.lines().map_while(Result::ok) {
+                let _ = stderr_sender.send(line);
+            }
+        });
+    }
+    drop(sender);
+
+    let mut all_lines: Vec<String> = Vec::new();
+    let mut current_phase = StartupPhase::PullingImages;
+    for line in receiver {
+        all_lines.push(line.clone());
+        let (next_phase, current_item, status_text) =
+            map_startup_line_to_progress(&line, current_phase);
+        current_phase = next_phase;
+        publish_startup_progress(
+            data_dir,
+            callback,
+            StartupProgressEvent {
+                session_id: session_id.to_string(),
+                phase: next_phase,
+                status_text,
+                current_item,
+                attempt,
+                terminal_state: None,
+            },
+        );
+    }
+
+    let status = child
+        .wait()
+        .map_err(|error| format!("Failed waiting on docker compose up -d: {}", error))?;
+    Ok((status, truncate_command_output(&all_lines.join("\n"))))
+}
+
 #[derive(Clone, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum DockerAccessState {
@@ -232,6 +499,16 @@ pub struct DockerInstallResult {
 pub fn get_hub_status() -> HubStatus {
     if !is_docker_available() {
         return HubStatus::DockerNotAvailable;
+    }
+
+    // Keep startup status stable while an explicit startup session is active.
+    if START_IN_PROGRESS.load(Ordering::SeqCst) {
+        return HubStatus::Starting;
+    }
+    if let Some(progress) = get_startup_progress_snapshot() {
+        if progress.terminal_state.is_none() {
+            return HubStatus::Starting;
+        }
     }
 
     // Check ci-os-hub container specifically
@@ -962,6 +1239,16 @@ fn is_oci_runtime_error(output: &str) -> bool {
 /// Uses a global `AtomicBool` guard to prevent concurrent invocations.
 /// A `Drop` guard ensures the flag is cleared even if the inner logic panics.
 pub fn start_hub(compose_path: &Path, env_path: &Path, data_dir: &Path) -> Result<String, String> {
+    start_hub_with_progress(compose_path, env_path, data_dir, None)
+}
+
+/// Start Hub and optionally publish structured startup progress callbacks.
+pub fn start_hub_with_progress(
+    compose_path: &Path,
+    env_path: &Path,
+    data_dir: &Path,
+    callback: Option<StartupProgressCallback>,
+) -> Result<String, String> {
     // Prevent concurrent start attempts.
     if START_IN_PROGRESS.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err()
     {
@@ -979,7 +1266,21 @@ pub fn start_hub(compose_path: &Path, env_path: &Path, data_dir: &Path) -> Resul
     }
     let _guard = StartGuard;
 
-    start_hub_inner(compose_path, env_path, data_dir)
+    let session_id = new_startup_session_id();
+    publish_startup_progress(
+        data_dir,
+        callback.as_ref(),
+        StartupProgressEvent {
+            session_id: session_id.clone(),
+            phase: StartupPhase::Preparing,
+            status_text: "Preparing startup resources...".to_string(),
+            current_item: None,
+            attempt: 1,
+            terminal_state: None,
+        },
+    );
+
+    start_hub_inner(compose_path, env_path, data_dir, &session_id, callback.as_ref())
 }
 
 /// Inner start logic, called under the `START_IN_PROGRESS` guard.
@@ -987,6 +1288,8 @@ fn start_hub_inner(
     compose_path: &Path,
     env_path: &Path,
     data_dir: &Path,
+    session_id: &str,
+    callback: Option<&StartupProgressCallback>,
 ) -> Result<String, String> {
     let _ = append_desktop_log_for(
         data_dir,
@@ -1001,7 +1304,7 @@ fn start_hub_inner(
     let traefik_preflight = prepare_traefik_runtime_state(data_dir).map_err(|error| {
         let message = format!("Traefik runtime preflight failed before startup: {}", error);
         let _ = append_desktop_log_for(data_dir, "hub.start", &message);
-        with_view_logs_hint(message)
+        finalize_startup_failure(data_dir, session_id, callback, 1, message)
     })?;
 
     if traefik_preflight.changed {
@@ -1011,7 +1314,7 @@ fn start_hub_inner(
                 error
             );
             let _ = append_desktop_log_for(data_dir, "hub.start", &message);
-            with_view_logs_hint(message)
+            finalize_startup_failure(data_dir, session_id, callback, 1, message)
         })?;
     }
 
@@ -1031,7 +1334,7 @@ fn start_hub_inner(
         remove_existing_traefik_container(data_dir).map_err(|error| {
             let message = format!("Traefik recreate preparation failed: {}", error);
             let _ = append_desktop_log_for(data_dir, "hub.start", &message);
-            with_view_logs_hint(message)
+            finalize_startup_failure(data_dir, session_id, callback, 1, message)
         })?;
         // Traefik container has been removed — clear the marker now regardless of
         // whether compose-up succeeds.  The marker's purpose ("Traefik must be
@@ -1052,7 +1355,7 @@ fn start_hub_inner(
     let resolution = crate::port_manager::refresh_ports_if_needed(env_path).map_err(|error| {
         let message = format!("Port resolution failed before startup: {}", error);
         let _ = append_desktop_log_for(data_dir, "hub.start", &message);
-        with_view_logs_hint(message)
+        finalize_startup_failure(data_dir, session_id, callback, 1, message)
     })?;
 
     // Log port resolution results (centralised into desktop.log)
@@ -1071,6 +1374,19 @@ fn start_hub_inner(
     // Attempt compose up with automatic retry on transient container conflicts.
     let mut last_error = String::new();
     for attempt in 1..=MAX_START_RETRIES {
+        publish_startup_progress(
+            data_dir,
+            callback,
+            StartupProgressEvent {
+                session_id: session_id.to_string(),
+                phase: StartupPhase::Preparing,
+                status_text: format!("Preparing startup attempt {}/{}...", attempt, MAX_START_RETRIES),
+                current_item: None,
+                attempt,
+                terminal_state: None,
+            },
+        );
+
         if attempt > 1 {
             let _ = append_desktop_log_for(
                 data_dir,
@@ -1079,40 +1395,47 @@ fn start_hub_inner(
             );
         }
 
-        let output = match docker_command()
-            .args([
-                "compose",
-                "--env-file",
-                &env_path.to_string_lossy(),
-                "--project-name",
-                "ci-hub",
-                "-f",
-                &compose_path.to_string_lossy(),
-                "up",
-                "-d",
-            ])
-            .output()
-        {
+        let (status, combined_output) = match run_compose_up_with_progress(
+            compose_path,
+            env_path,
+            data_dir,
+            session_id,
+            callback,
+            attempt,
+        ) {
             Ok(output) => output,
             Err(e) => {
                 let message = format!("Failed to run docker compose up -d: {}", e);
                 let _ = append_desktop_log_for(data_dir, "hub.start", &message);
-                return Err(with_view_logs_hint(message));
+                return Err(finalize_startup_failure(
+                    data_dir,
+                    session_id,
+                    callback,
+                    attempt,
+                    message,
+                ));
             }
         };
 
-        let combined_output = format_command_output(
-            &String::from_utf8_lossy(&output.stdout),
-            &String::from_utf8_lossy(&output.stderr),
-        );
-
-        if output.status.success() {
+        if status.success() {
             let message = if combined_output.is_empty() {
                 "docker compose up -d succeeded.".to_string()
             } else {
                 format!("docker compose up -d succeeded. {}", combined_output)
             };
             let _ = append_desktop_log_for(data_dir, "hub.start", &message);
+            publish_startup_progress(
+                data_dir,
+                callback,
+                StartupProgressEvent {
+                    session_id: session_id.to_string(),
+                    phase: StartupPhase::Completed,
+                    status_text: "Hub startup completed successfully.".to_string(),
+                    current_item: None,
+                    attempt,
+                    terminal_state: Some(StartupTerminalState::Success),
+                },
+            );
             return Ok("Hub started successfully".to_string());
         }
 
@@ -1160,7 +1483,13 @@ fn start_hub_inner(
         format!("docker compose up -d failed. {}", last_error)
     };
     let _ = append_desktop_log_for(data_dir, "hub.start", &failure);
-    Err(with_view_logs_hint(failure))
+    Err(finalize_startup_failure(
+        data_dir,
+        session_id,
+        callback,
+        MAX_START_RETRIES,
+        failure,
+    ))
 }
 
 /// Stop Hub containers
@@ -2247,11 +2576,13 @@ mod tests {
     use super::{
         append_desktop_log_for, classify_docker_access_result, clear_traefik_recreate_required,
         desktop_log_path_for, format_command_output, generate_container_docker_config,
-        is_container_name_conflict, is_oci_runtime_error, is_traefik_recreate_required,
+        get_startup_progress_snapshot, is_container_name_conflict, is_oci_runtime_error,
+        is_traefik_recreate_required, map_startup_line_to_progress, publish_startup_progress,
         logs_open_target_for, managed_app_container_ps_args, mark_traefik_recreate_required,
         parse_container_ids, prepare_traefik_runtime_state, seeded_traefik_config_contents,
-        truncate_command_output, DockerAccessState, MAX_COMMAND_OUTPUT_CHARS, TRAEFIK_ACME_FILE,
-        TRAEFIK_CONFIG_FILE, TRAEFIK_DYNAMIC_CONFIG_SEED, TRAEFIK_DYNAMIC_FILE, TRAEFIK_TLS_DIR,
+        truncate_command_output, DockerAccessState, StartupPhase, StartupProgressEvent,
+        StartupTerminalState, MAX_COMMAND_OUTPUT_CHARS, TRAEFIK_ACME_FILE, TRAEFIK_CONFIG_FILE,
+        TRAEFIK_DYNAMIC_CONFIG_SEED, TRAEFIK_DYNAMIC_FILE, TRAEFIK_TLS_DIR,
     };
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     use std::os::unix::fs::PermissionsExt;
@@ -2729,5 +3060,78 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
             Some(&serde_json::json!("ecr-login")),
             "non-host-only credHelper should be preserved"
         );
+    }
+
+    #[test]
+    fn maps_pull_output_lines_to_pulling_images_phase() {
+        let (phase, item, status_text) =
+            map_startup_line_to_progress("ci-hub-db Pulling", StartupPhase::Preparing);
+
+        assert_eq!(phase, StartupPhase::PullingImages);
+        assert_eq!(item, Some("ci-hub-db".to_string()));
+        // status_text is now the raw compose line — no phase-name prefix.
+        assert_eq!(status_text, "ci-hub-db Pulling");
+    }
+
+    #[test]
+    fn maps_health_output_lines_to_waiting_health_phase() {
+        let (phase, item, status_text) =
+            map_startup_line_to_progress("ci-os-hub Healthy", StartupPhase::StartingServices);
+
+        assert_eq!(phase, StartupPhase::WaitingHealth);
+        assert_eq!(item, Some("ci-os-hub".to_string()));
+        // status_text is now the raw compose line — no phase-name prefix.
+        assert_eq!(status_text, "ci-os-hub Healthy");
+    }
+
+    #[test]
+    fn startup_snapshot_tracks_terminal_success_and_error_events() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+
+        let in_progress = StartupProgressEvent {
+            session_id: "startup-test".to_string(),
+            phase: StartupPhase::PullingImages,
+            status_text: "Pulling images...".to_string(),
+            current_item: Some("ci-hub-db".to_string()),
+            attempt: 1,
+            terminal_state: None,
+        };
+        publish_startup_progress(tempdir.path(), None, in_progress.clone());
+
+        let saved_in_progress = get_startup_progress_snapshot().expect("in-progress snapshot");
+        assert_eq!(saved_in_progress.session_id, in_progress.session_id);
+        assert_eq!(saved_in_progress.phase, StartupPhase::PullingImages);
+        assert_eq!(saved_in_progress.terminal_state, None);
+
+        let completed = StartupProgressEvent {
+            session_id: "startup-test".to_string(),
+            phase: StartupPhase::Completed,
+            status_text: "Hub startup completed successfully.".to_string(),
+            current_item: None,
+            attempt: 1,
+            terminal_state: Some(StartupTerminalState::Success),
+        };
+        publish_startup_progress(tempdir.path(), None, completed.clone());
+
+        let saved_completed = get_startup_progress_snapshot().expect("completed snapshot");
+        assert_eq!(saved_completed.phase, StartupPhase::Completed);
+        assert_eq!(
+            saved_completed.terminal_state,
+            Some(StartupTerminalState::Success)
+        );
+
+        let failed = StartupProgressEvent {
+            session_id: "startup-test".to_string(),
+            phase: StartupPhase::Failed,
+            status_text: "docker compose failed".to_string(),
+            current_item: None,
+            attempt: 3,
+            terminal_state: Some(StartupTerminalState::Error),
+        };
+        publish_startup_progress(tempdir.path(), None, failed.clone());
+
+        let saved_failed = get_startup_progress_snapshot().expect("failed snapshot");
+        assert_eq!(saved_failed.phase, StartupPhase::Failed);
+        assert_eq!(saved_failed.terminal_state, Some(StartupTerminalState::Error));
     }
 }
