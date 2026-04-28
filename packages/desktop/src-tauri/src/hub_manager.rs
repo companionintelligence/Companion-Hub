@@ -1576,7 +1576,7 @@ fn generate_container_docker_config(
     match std::fs::symlink_metadata(&config_path) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
             return Err(format!(
-                "Refusing to remove symlink at {:?} while preparing Docker config",
+                "Refusing to write Docker config at {:?} because the destination is a symlink",
                 config_path
             ));
         }
@@ -1703,13 +1703,30 @@ fn generate_container_docker_config(
             .map_err(|e| format!("Cannot serialise docker config: {}", e))?;
     std::fs::create_dir_all(&internal_dir)
         .map_err(|e| format!("Cannot create {}: {}", internal_dir.display(), e))?;
-    std::fs::write(&config_path, format!("{}\n", content))
-        .map_err(|e| format!("Cannot write {}: {}", config_path.display(), e))?;
 
-    // Restrict permissions to the current user on Unix where file modes
-    // apply (config may contain auth tokens).  On Windows, no additional
-    // ACL hardening is applied; set_file_mode is a no-op there.
-    set_file_mode(&config_path, 0o600)?;
+    // Write the file.  On Unix, set restricted permissions *before* writing
+    // content so auth tokens are never exposed with default permissions.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&config_path)
+            .map_err(|e| format!("Cannot open {}: {}", config_path.display(), e))?;
+        let mut writer = std::io::BufWriter::new(file);
+        writer
+            .write_all(format!("{}\n", content).as_bytes())
+            .map_err(|e| format!("Cannot write {}: {}", config_path.display(), e))?;
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        std::fs::write(&config_path, format!("{}\n", content))
+            .map_err(|e| format!("Cannot write {}: {}", config_path.display(), e))?;
+    }
 
     Ok(())
 }
@@ -2671,5 +2688,43 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
             serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
         assert!(parsed.is_object());
         assert!(parsed.get("credsStore").is_none());
+    }
+
+    #[test]
+    fn preserves_non_host_only_cred_helpers() {
+        let fixture = r#"{
+            "credsStore": "ecr-login",
+            "credHelpers": {
+                "ghcr.io": "desktop",
+                "123456789.dkr.ecr.us-east-1.amazonaws.com": "ecr-login"
+            }
+        }"#;
+
+        let (_tmp_home, docker_dir) = write_docker_config_fixture(fixture);
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let data_dir = tmp.path().to_path_buf();
+        std::fs::create_dir_all(data_dir.join(".internal")).unwrap();
+
+        generate_container_docker_config(&data_dir, Some(&docker_dir)).expect("generate config");
+
+        let config_path = data_dir.join(".internal").join("docker-config.json");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+
+        assert_eq!(
+            parsed.get("credsStore"),
+            Some(&serde_json::json!("ecr-login")),
+            "non-host-only credsStore should be preserved"
+        );
+        let helpers = parsed.get("credHelpers").expect("credHelpers should exist");
+        assert!(
+            helpers.get("ghcr.io").is_none(),
+            "host-only credHelper should be stripped"
+        );
+        assert_eq!(
+            helpers.get("123456789.dkr.ecr.us-east-1.amazonaws.com"),
+            Some(&serde_json::json!("ecr-login")),
+            "non-host-only credHelper should be preserved"
+        );
     }
 }
