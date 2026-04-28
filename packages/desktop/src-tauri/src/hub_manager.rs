@@ -1588,12 +1588,25 @@ fn generate_container_docker_config(
     let host_config: serde_json::Value = if let Some(docker_dir) = resolved_docker_dir {
         let host_config_path = docker_dir.join("config.json");
         if host_config_path.exists() {
-            let raw = std::fs::read_to_string(&host_config_path).map_err(|e| {
-                format!("Cannot read host Docker config at {:?}: {}", host_config_path, e)
-            })?;
-            serde_json::from_str(&raw).map_err(|e| {
-                format!("Cannot parse host Docker config at {:?}: {}", host_config_path, e)
-            })?
+            match std::fs::read_to_string(&host_config_path) {
+                Ok(raw) => match serde_json::from_str(&raw) {
+                    Ok(config) => config,
+                    Err(e) => {
+                        eprintln!(
+                            "Warning: Cannot parse host Docker config at {:?}: {}. Proceeding with an empty Docker config.",
+                            host_config_path, e
+                        );
+                        serde_json::json!({})
+                    }
+                },
+                Err(e) => {
+                    eprintln!(
+                        "Warning: Cannot read host Docker config at {:?}: {}. Proceeding with an empty Docker config.",
+                        host_config_path, e
+                    );
+                    serde_json::json!({})
+                }
+            }
         } else {
             serde_json::json!({})
         }
