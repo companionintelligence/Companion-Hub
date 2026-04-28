@@ -73,12 +73,6 @@ async fn get_hub_status_command() -> hub_manager::HubStatus {
     hub_manager::get_hub_status()
 }
 
-/// Return the latest startup progress snapshot for frontend recovery on missed events.
-#[tauri::command]
-async fn get_startup_progress_command() -> Option<hub_manager::StartupProgressEvent> {
-    hub_manager::get_startup_progress_snapshot()
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
@@ -106,7 +100,6 @@ pub fn run() {
             check_docker_available,
             check_docker_access_command,
             get_hub_status_command,
-            get_startup_progress_command,
             install_docker_command,
         ])
         .setup(|app| {

@@ -251,20 +251,23 @@ export function HubStatus({ children }: HubStatusProps) {
   useEffect(() => {
     if (!isTauri) return;
 
+    let unlisten: (() => void) | undefined;
+
     void (async () => {
       try {
         const { listen } = await import('@tauri-apps/api/event');
-        const unlisten = await listen<{ terminal_state?: string | null }>('hub-startup-progress', (event) => {
+        unlisten = await listen<{ terminal_state?: string | null }>('hub-startup-progress', (event) => {
           // Startup is in progress if terminal_state is null
           setIsStartupInProgress(event.payload.terminal_state === null);
         });
-        return () => {
-          void unlisten();
-        };
       } catch {
         // Event bridge unavailable in non-desktop or non-Tauri test contexts
       }
     })();
+
+    return () => {
+      void unlisten?.();
+    };
   }, [isTauri]);
 
   useEffect(() => {

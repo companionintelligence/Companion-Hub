@@ -1234,14 +1234,6 @@ fn is_oci_runtime_error(output: &str) -> bool {
     lower.contains("oci runtime create failed") || lower.contains("failed to create shim task")
 }
 
-/// Start Hub using docker compose up (with port conflict resolution).
-///
-/// Uses a global `AtomicBool` guard to prevent concurrent invocations.
-/// A `Drop` guard ensures the flag is cleared even if the inner logic panics.
-pub fn start_hub(compose_path: &Path, env_path: &Path, data_dir: &Path) -> Result<String, String> {
-    start_hub_with_progress(compose_path, env_path, data_dir, None)
-}
-
 /// Start Hub and optionally publish structured startup progress callbacks.
 pub fn start_hub_with_progress(
     compose_path: &Path,
