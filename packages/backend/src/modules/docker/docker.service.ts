@@ -428,6 +428,17 @@ export class DockerService {
       // compose attaches to the running stack instead of creating a new one.
       const composeProjectName = process.env.CI_HUB_COMPOSE_PROJECT_NAME || 'ci-hub';
       args.push('--project-name', composeProjectName);
+
+      // When running inside the Hub container, docker compose resolves relative
+      // binds (e.g. ./tunnel) against /data. The host daemon then interprets
+      // those as /data/* on the host, which is not the real Hub data dir.
+      // Point compose at the host project directory so relative binds resolve
+      // to ROOT_FOLDER_HOST (for example /home/.../.local/share/companion-hub).
+      const hostProjectDir = process.env.ROOT_FOLDER_HOST?.trim();
+      if (hostProjectDir) {
+        args.push('--project-directory', hostProjectDir);
+      }
+
       // Override ENV_FILE to just the filename so compose's env_file
       // directive resolves correctly inside the container.
       spawnOptions.env = { ...process.env, ENV_FILE: path.basename(envFilePath) };
