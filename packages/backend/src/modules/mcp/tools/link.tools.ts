@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { LinksService } from '@/modules/links/links.service';
+import type { LinkBodyDto, EditLinkBodyDto } from '@/modules/links/dto/links.dto';
 
 @Injectable()
 export class LinkTools {
@@ -11,7 +12,14 @@ export class LinkTools {
   }
 
   async createLink(params: { title: string; url: string; description?: string; iconUrl?: string; isVisibleOnGuestDashboard?: boolean }) {
-    return this.linksService.add(params as any, 1);
+    const dto: LinkBodyDto = {
+      title: params.title,
+      url: params.url,
+      description: params.description,
+      iconUrl: params.iconUrl,
+      isVisibleOnGuestDashboard: params.isVisibleOnGuestDashboard ?? false,
+    };
+    return this.linksService.add(dto, 1);
   }
 
   async editLink(params: {
@@ -23,7 +31,14 @@ export class LinkTools {
     isVisibleOnGuestDashboard?: boolean;
   }) {
     const { linkId, ...data } = params;
-    return this.linksService.edit(linkId, data as any, 1);
+    const dto: EditLinkBodyDto = {
+      title: data.title ?? '',
+      url: data.url ?? '',
+      description: data.description,
+      iconUrl: data.iconUrl,
+      isVisibleOnGuestDashboard: data.isVisibleOnGuestDashboard,
+    };
+    return this.linksService.edit(linkId, dto, 1);
   }
 
   async deleteLink(params: { linkId: number }) {

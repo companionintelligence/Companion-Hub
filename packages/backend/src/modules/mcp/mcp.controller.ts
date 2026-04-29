@@ -22,9 +22,10 @@ export class McpController {
 
     this.sseClients.add(res);
 
-    req.on('close', () => {
-      this.sseClients.delete(res);
-    });
+    const cleanup = () => this.sseClients.delete(res);
+    req.on('close', cleanup);
+    res.on('error', cleanup);
+    res.on('finish', cleanup);
   }
 
   @Post('messages')

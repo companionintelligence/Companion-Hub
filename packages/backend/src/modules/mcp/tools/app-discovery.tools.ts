@@ -23,11 +23,19 @@ export class AppDiscoveryTools {
     const maxLines = Math.max(1, Math.min(params.maxLines ?? 100, 1000));
     const appUrn = castAppUrn(params.appUrn) as AppUrn;
 
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve) => {
       const lines: string[] = [];
+      let resolved = false;
+      const finish = (result: { lines: string[] }) => {
+        if (resolved) return;
+        resolved = true;
+        clearTimeout(timeout);
+        resolve(result);
+      };
+
       const timeout = setTimeout(() => {
         stream?.kill();
-        resolve({ lines });
+        finish({ lines });
       }, 5000);
 
       let stream: { on: (event: string, cb: (data: Buffer) => void) => void; kill: () => void } | null = null;
@@ -45,13 +53,14 @@ export class AppDiscoveryTools {
             }
           });
           s.on('end' as string, () => {
-            clearTimeout(timeout);
-            resolve({ lines: lines.slice(-maxLines) });
+            finish({ lines: lines.slice(-maxLines) });
+          });
+          s.on('error' as string, () => {
+            finish({ lines });
           });
         })
-        .catch((err) => {
-          clearTimeout(timeout);
-          resolve({ lines: [], error: err instanceof Error ? err.message : 'App is not running' } as { lines: string[] });
+        .catch((_err) => {
+          finish({ lines: [] });
         });
     });
   }

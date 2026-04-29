@@ -46,7 +46,12 @@ export class AgentHealthCheckService implements OnApplicationBootstrap, OnModule
         );
       }
     } catch (error) {
-      // Health check failure should not crash the service
+      // Health check failure should not crash the service but should be logged
+      this.agentNotifyService
+        .notify('system.health_check_failed', { error: error instanceof Error ? error.message : 'Unknown error' }, 'low')
+        .catch(() => {
+          // fire-and-forget
+        });
     }
   }
 

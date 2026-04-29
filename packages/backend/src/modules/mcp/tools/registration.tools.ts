@@ -22,12 +22,21 @@ export class RegistrationTools {
     };
   }
 
+  private validateUrl(url: string): void {
+    const parsed = new URL(url);
+    if (!['http:', 'https:'].includes(parsed.protocol)) {
+      throw new Error('Only http and https protocols are allowed');
+    }
+  }
+
   async probeDomain(params: { url: string }) {
+    this.validateUrl(params.url);
     const res = await fetch(params.url, { signal: AbortSignal.timeout(10000) }).catch(() => null);
-    return { ready: res !== null && res.ok };
+    return { ready: res?.ok };
   }
 
   async checkUrlAvailability(params: { url: string }) {
+    this.validateUrl(params.url);
     try {
       const res = await fetch(params.url, { signal: AbortSignal.timeout(10000) });
       return {

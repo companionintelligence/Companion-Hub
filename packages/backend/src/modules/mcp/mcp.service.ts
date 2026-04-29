@@ -33,6 +33,14 @@ export class McpService {
   }
 
   async handleMessage(request: JsonRpcRequest): Promise<JsonRpcResponse> {
+    if (request.jsonrpc !== '2.0') {
+      return {
+        jsonrpc: '2.0',
+        id: request.id ?? null,
+        error: { code: -32600, message: 'Invalid Request: missing jsonrpc 2.0' },
+      };
+    }
+
     switch (request.method) {
       case 'initialize':
         return {
@@ -79,7 +87,7 @@ export class McpService {
           return {
             jsonrpc: '2.0',
             id: request.id,
-            error: { code: -32603, message: error instanceof Error ? error.message : 'Internal error' },
+            error: { code: -32603, message: 'Internal error' },
           };
         }
       }

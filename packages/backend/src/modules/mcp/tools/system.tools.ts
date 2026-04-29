@@ -20,9 +20,17 @@ export class SystemTools {
 
     return new Promise((resolve) => {
       const lines: string[] = [];
+      let resolved = false;
+      const finish = (result: { lines: string[] }) => {
+        if (resolved) return;
+        resolved = true;
+        clearTimeout(timeout);
+        resolve(result);
+      };
+
       const timeout = setTimeout(() => {
         stream?.kill();
-        resolve({ lines });
+        finish({ lines });
       }, 5000);
 
       let stream: { on: (event: string, cb: (data: Buffer) => void) => void; kill: () => void } | null = null;
@@ -40,13 +48,14 @@ export class SystemTools {
             }
           });
           s.on('end' as string, () => {
-            clearTimeout(timeout);
-            resolve({ lines: lines.slice(-maxLines) });
+            finish({ lines: lines.slice(-maxLines) });
+          });
+          s.on('error' as string, () => {
+            finish({ lines });
           });
         })
         .catch(() => {
-          clearTimeout(timeout);
-          resolve({ lines: [] });
+          finish({ lines: [] });
         });
     });
   }

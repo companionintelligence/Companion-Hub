@@ -31,6 +31,7 @@ describe('McpController', () => {
         },
         flushHeaders: () => {},
         write: () => {},
+        on: () => {},
       } as any;
       const req = { protocol: 'http', get: () => 'localhost:5002', on: () => {} } as any;
 
@@ -46,6 +47,7 @@ describe('McpController', () => {
         write: (data: string) => {
           written += data;
         },
+        on: () => {},
       } as any;
       const req = { protocol: 'http', get: () => 'localhost:5002', on: () => {} } as any;
 
@@ -55,7 +57,7 @@ describe('McpController', () => {
     });
 
     it('should track active SSE connections', () => {
-      const res = { setHeader: () => {}, flushHeaders: () => {}, write: () => {} } as any;
+      const res = { setHeader: () => {}, flushHeaders: () => {}, write: () => {}, on: () => {} } as any;
       const req = { protocol: 'http', get: () => 'localhost', on: () => {} } as any;
 
       controller.sse(req, res);

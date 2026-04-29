@@ -1,4 +1,5 @@
 import { type CanActivate, type ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common';
+import { timingSafeEqual } from 'node:crypto';
 
 @Injectable()
 export class McpAuthGuard implements CanActivate {
@@ -20,7 +21,9 @@ export class McpAuthGuard implements CanActivate {
       throw new UnauthorizedException('Malformed Authorization header');
     }
 
-    if (parts[1] !== apiKey) {
+    const tokenBuffer = Buffer.from(parts[1]);
+    const keyBuffer = Buffer.from(apiKey);
+    if (tokenBuffer.length !== keyBuffer.length || !timingSafeEqual(tokenBuffer, keyBuffer)) {
       throw new UnauthorizedException('Invalid API key');
     }
 
