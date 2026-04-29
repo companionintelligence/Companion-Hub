@@ -369,9 +369,10 @@ export function HubStatus({ children }: HubStatusProps) {
           }
         }
 
-        setStatus(result);
-
-        // When running, configure API client for Tauri release builds
+        // When running in Tauri release builds, verify the HTTP endpoints
+        // are actually reachable before declaring 'Running'. This avoids a
+        // flicker where children mount briefly then hide again when the
+        // health-check fails.
         if (result === 'Running' && isTauriRelease) {
           let ready = false;
           for (const port of [5002, 3000]) {
@@ -396,9 +397,9 @@ export function HubStatus({ children }: HubStatusProps) {
             }
           }
 
-          if (!ready) {
-            setStatus('Starting');
-          }
+          setStatus(ready ? 'Running' : 'Starting');
+        } else {
+          setStatus(result);
         }
       } catch {
         await checkHealthFallback();
