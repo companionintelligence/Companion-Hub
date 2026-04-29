@@ -1,8 +1,8 @@
 import { Titlebar } from './components/titlebar/titlebar';
 import { HubStatus } from './components/hub-status/hub-status';
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { Toaster } from 'react-hot-toast';
-import { Links, Meta, Outlet, Scripts, ScrollRestoration, isRouteErrorResponse, redirect } from 'react-router';
+import { Links, Meta, Outlet, Scripts, ScrollRestoration, isRouteErrorResponse, redirect, useLocation, useRevalidator } from 'react-router';
 import type { Route } from './+types/root';
 import { userContext } from './api-client';
 import { client } from './api-client/client.gen';
@@ -260,7 +260,23 @@ export function Layout({ children }: { children: React.ReactNode }) {
   );
 }
 
-export default function App({ loaderData: _loaderData }: Route.ComponentProps) {
+export default function App({ loaderData }: Route.ComponentProps) {
+  const { revalidate } = useRevalidator();
+  const location = useLocation();
+  const hasRevalidatedRef = useRef(false);
+
+  // When the root clientLoader runs during startup before the backend is
+  // ready, it returns null (no redirect). HubStatus hides children until
+  // the hub is Running, so by the time this component mounts the backend
+  // is available. Trigger a one-shot revalidation to re-run the loader
+  // and perform the correct redirect.
+  useEffect(() => {
+    if (location.pathname === '/' && loaderData == null && !hasRevalidatedRef.current) {
+      hasRevalidatedRef.current = true;
+      revalidate();
+    }
+  }, [location.pathname, loaderData, revalidate]);
+
   return (
     <Providers>
       <Outlet />

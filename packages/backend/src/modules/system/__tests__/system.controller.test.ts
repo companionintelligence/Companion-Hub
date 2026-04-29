@@ -51,11 +51,14 @@ describe('SystemController', () => {
   });
 
   describe('downloadHubLogs', () => {
-    const createResponse = (overrides: Partial<{ writableEnded: boolean }> = {}) =>
+    const createResponse = (overrides: Partial<{ writableEnded: boolean; headersSent: boolean }> = {}) =>
       ({
         set: vi.fn(),
         on: vi.fn().mockReturnThis(),
+        status: vi.fn().mockReturnThis(),
+        json: vi.fn().mockReturnThis(),
         writableEnded: true,
+        headersSent: false,
         ...overrides,
       }) as any;
 
@@ -103,7 +106,7 @@ describe('SystemController', () => {
       expect(kill).toHaveBeenCalledTimes(1);
     });
 
-    it('rethrows unexpected pipeline errors while still cleaning up', async () => {
+    it('sends 500 response for unexpected pipeline errors while still cleaning up', async () => {
       const stdout = {} as any;
       const stderr = { on: vi.fn() } as any;
       const kill = vi.fn();
@@ -111,8 +114,20 @@ describe('SystemController', () => {
       dockerService.getLogsDownloadStream.mockResolvedValue({ stdout, stderr, kill } as any);
       vi.mocked(pipeline).mockRejectedValue(error);
 
-      await expect(controller.downloadHubLogs(createResponse())).rejects.toThrow('unexpected pipeline failure');
+      const res = createResponse();
+      await controller.downloadHubLogs(res);
+      expect(res.status).toHaveBeenCalledWith(500);
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ statusCode: 500 }));
       expect(kill).toHaveBeenCalledTimes(1);
+    });
+
+    it('sends 500 response when getLogsDownloadStream fails', async () => {
+      dockerService.getLogsDownloadStream.mockRejectedValue(new Error('Docker socket not available'));
+
+      const res = createResponse();
+      await controller.downloadHubLogs(res);
+      expect(res.status).toHaveBeenCalledWith(500);
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ statusCode: 500, message: 'Failed to start log download stream' }));
     });
   });
 
