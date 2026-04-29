@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
+import { McpToolRegistry } from '../../mcp-tool-registry.service';
 import { RegistrationTools } from '../../tools/registration.tools';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { CloudflareClientService } from '@/modules/cloudflare/cloudflare-client.service';
@@ -16,6 +17,7 @@ describe('RegistrationTools', () => {
         RegistrationTools,
         { provide: RegistrationService, useValue: mock<RegistrationService>() },
         { provide: CloudflareClientService, useValue: mock<CloudflareClientService>() },
+        { provide: McpToolRegistry, useValue: mock<McpToolRegistry>() },
       ],
     }).compile();
     tools = module.get<RegistrationTools>(RegistrationTools);

@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { McpController } from '../mcp.controller';
 import { McpService } from '../mcp.service';
+import { McpAuthGuard } from '../mcp-auth.guard';
+import { LoggerService } from '@/core/logger/logger.service';
 
 describe('McpController', () => {
   let controller: McpController;
@@ -11,7 +13,11 @@ describe('McpController', () => {
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [McpController],
-      providers: [{ provide: McpService, useValue: mock<McpService>() }],
+      providers: [
+        { provide: McpService, useValue: mock<McpService>() },
+        { provide: McpAuthGuard, useValue: mock<McpAuthGuard>() },
+        { provide: LoggerService, useValue: mock<LoggerService>() },
+      ],
     }).compile();
 
     controller = module.get<McpController>(McpController);

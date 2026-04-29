@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
+import { McpToolRegistry } from '../../mcp-tool-registry.service';
 import { BackupTools } from '../../tools/backup.tools';
 import { BackupsService } from '@/modules/backups/backups.service';
 
@@ -10,7 +11,11 @@ describe('BackupTools', () => {
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
-      providers: [BackupTools, { provide: BackupsService, useValue: mock<BackupsService>() }],
+      providers: [
+        BackupTools,
+        { provide: BackupsService, useValue: mock<BackupsService>() },
+        { provide: McpToolRegistry, useValue: mock<McpToolRegistry>() },
+      ],
     }).compile();
     tools = module.get<BackupTools>(BackupTools);
     backupsService = module.get(BackupsService);

@@ -1,11 +1,12 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
-import { Injectable, OnApplicationBootstrap, type OnApplicationShutdown } from '@nestjs/common';
+import { Injectable, OnApplicationBootstrap, type OnApplicationShutdown, Optional } from '@nestjs/common';
 import { DATA_DIR } from '@/common/constants';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { RegistryService } from '@/utils/registry/registry.service';
+import { AgentNotifyService } from '../agent-notify/agent-notify.service';
 
 @Injectable()
 export class SystemUpdateService implements OnApplicationBootstrap, OnApplicationShutdown {
@@ -16,6 +17,7 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
     private readonly logger: LoggerService,
     private readonly config: ConfigurationService,
     private readonly registryService: RegistryService,
+    @Optional() private readonly agentNotifyService?: AgentNotifyService,
   ) {}
 
   onApplicationBootstrap() {
@@ -44,6 +46,10 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
 
     const latest = releases[0]?.version ?? currentVersion;
     const updateAvailable = currentVersion !== latest && releases.length > 0;
+
+    if (updateAvailable) {
+      this.agentNotifyService?.notify('system.update_available', { current: currentVersion, latest }, 'low');
+    }
 
     return {
       current: currentVersion,

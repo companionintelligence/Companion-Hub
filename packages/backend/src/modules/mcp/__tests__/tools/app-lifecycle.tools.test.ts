@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
+import { McpToolRegistry } from '../../mcp-tool-registry.service';
 import { AppLifecycleTools } from '../../tools/app-lifecycle.tools';
 import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
 
@@ -10,7 +11,11 @@ describe('AppLifecycleTools', () => {
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
-      providers: [AppLifecycleTools, { provide: AppLifecycleService, useValue: mock<AppLifecycleService>() }],
+      providers: [
+        AppLifecycleTools,
+        { provide: AppLifecycleService, useValue: mock<AppLifecycleService>() },
+        { provide: McpToolRegistry, useValue: mock<McpToolRegistry>() },
+      ],
     }).compile();
     tools = module.get<AppLifecycleTools>(AppLifecycleTools);
     lifecycleService = module.get(AppLifecycleService);

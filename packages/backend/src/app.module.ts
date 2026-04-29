@@ -41,6 +41,8 @@ import { CustomAppsModule } from './modules/custom-apps/custom-apps.module';
 import { RegistrationModule } from './modules/registration/registration.module';
 import { RegistryModule } from './utils/registry/registry.module';
 import { SystemUpdateModule } from './modules/system-update/system-update.module';
+import { McpModule } from './modules/mcp/mcp.module';
+import { AgentNotifyModule } from './modules/agent-notify/agent-notify.module';
 
 const imports: (DynamicModule | typeof I18nModule)[] = [
   RegistrationModule,
@@ -73,6 +75,7 @@ const imports: (DynamicModule | typeof I18nModule)[] = [
   RegistryModule,
   CustomAppsModule,
   SystemUpdateModule,
+  AgentNotifyModule,
 ];
 
 // Gate on the built frontend bundle's presence, not NODE_ENV: the bundled
@@ -91,6 +94,9 @@ if (hasFrontendBundle) {
 }
 if (process.env.NODE_ENV !== 'production') {
   imports.push(DebugModule);
+}
+if (process.env.MCP_ENABLED !== 'false') {
+  imports.push(McpModule);
 }
 
 @Module({

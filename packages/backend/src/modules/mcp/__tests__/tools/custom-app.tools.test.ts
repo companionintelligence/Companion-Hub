@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
+import { McpToolRegistry } from '../../mcp-tool-registry.service';
 import { CustomAppTools } from '../../tools/custom-app.tools';
 import { CustomAppService } from '@/modules/custom-apps/custom-apps.service';
 
@@ -10,7 +11,11 @@ describe('CustomAppTools', () => {
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
-      providers: [CustomAppTools, { provide: CustomAppService, useValue: mock<CustomAppService>() }],
+      providers: [
+        CustomAppTools,
+        { provide: CustomAppService, useValue: mock<CustomAppService>() },
+        { provide: McpToolRegistry, useValue: mock<McpToolRegistry>() },
+      ],
     }).compile();
     tools = module.get<CustomAppTools>(CustomAppTools);
     customAppService = module.get(CustomAppService);

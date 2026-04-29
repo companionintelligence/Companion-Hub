@@ -1,4 +1,19 @@
-import { Module } from '@nestjs/common';
+import { Module, type OnModuleInit } from '@nestjs/common';
+import { LoggerModule } from '@/core/logger/logger.module';
+import { AgentNotifyModule } from '@/modules/agent-notify/agent-notify.module';
+import { AppsModule } from '@/modules/apps/apps.module';
+import { DockerModule } from '@/modules/docker/docker.module';
+import { AppLifecycleModule } from '@/modules/app-lifecycle/app-lifecycle.module';
+import { UserConfigModule } from '@/modules/user-config/user-config.module';
+import { MarketplaceModule } from '@/modules/marketplace/marketplace.module';
+import { AppStoreModule } from '@/modules/app-stores/app-store.module';
+import { CustomAppsModule } from '@/modules/custom-apps/custom-apps.module';
+import { BackupsModule } from '@/modules/backups/backups.module';
+import { SystemModule } from '@/modules/system/system.module';
+import { SystemUpdateModule } from '@/modules/system-update/system-update.module';
+import { RegistrationModule } from '@/modules/registration/registration.module';
+import { CloudflareModule } from '@/modules/cloudflare/cloudflare.module';
+import { LinksModule } from '@/modules/links/links.module';
 import { McpController } from './mcp.controller';
 import { McpService } from './mcp.service';
 import { McpToolRegistry } from './mcp-tool-registry.service';
@@ -14,6 +29,23 @@ import { RegistrationTools } from './tools/registration.tools';
 import { LinkTools } from './tools/link.tools';
 
 @Module({
+  imports: [
+    LoggerModule,
+    AgentNotifyModule,
+    AppsModule,
+    DockerModule,
+    AppLifecycleModule,
+    UserConfigModule,
+    MarketplaceModule,
+    AppStoreModule,
+    CustomAppsModule,
+    BackupsModule,
+    SystemModule,
+    SystemUpdateModule,
+    RegistrationModule,
+    CloudflareModule,
+    LinksModule,
+  ],
   controllers: [McpController],
   providers: [
     McpService,

@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
+import { McpToolRegistry } from '../../mcp-tool-registry.service';
 import { MarketplaceTools } from '../../tools/marketplace.tools';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import { AppStoreService } from '@/modules/app-stores/app-store.service';
@@ -16,6 +17,7 @@ describe('MarketplaceTools', () => {
         MarketplaceTools,
         { provide: MarketplaceService, useValue: mock<MarketplaceService>() },
         { provide: AppStoreService, useValue: mock<AppStoreService>() },
+        { provide: McpToolRegistry, useValue: mock<McpToolRegistry>() },
       ],
     }).compile();
     tools = module.get<MarketplaceTools>(MarketplaceTools);

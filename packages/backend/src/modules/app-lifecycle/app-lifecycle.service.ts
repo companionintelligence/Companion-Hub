@@ -4,7 +4,7 @@ import { buildHeadscaleTunnelFqdn, headscaleTunnelContainerPort, isPrivateVpnEna
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { SSEService } from '@/core/sse/sse.service';
-import { HttpStatus, Inject, Injectable, OnApplicationBootstrap } from '@nestjs/common';
+import { HttpStatus, Inject, Injectable, OnApplicationBootstrap, Optional } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type { AppUrn } from '@ci-hub/common/types';
 import validator from 'validator';
@@ -24,6 +24,7 @@ import { appFormSchema } from './dto/app-lifecycle.dto';
 import { APP_ASYNC_MUTEX } from '@/utils/mutex/mutex.module';
 import type { AsyncMutex } from '@/utils/mutex/async-mutex';
 import type { z } from 'zod';
+import { AgentNotifyService } from '../agent-notify/agent-notify.service';
 
 @Injectable()
 export class AppLifecycleService implements OnApplicationBootstrap {
@@ -44,6 +45,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
     private readonly appStoreService: AppStoreService,
     private readonly moduleRef: ModuleRef,
     @Inject(APP_ASYNC_MUTEX) private mutex: AsyncMutex,
+    @Optional() private readonly agentNotifyService?: AgentNotifyService,
   ) {
     this.logger.debug('Subscribing to app events...');
     this.appEventsQueue.onEvent((data, reply) => this.invokeCommand(data, reply));
@@ -134,6 +136,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
         this.logger.error(`Failed to start app ${appUrn}: ${message}`);
         await this.appRepository.updateAppById(app.id, { status: 'stopped' });
         this.sseService.emit('app', { event: 'start_error', appUrn, appStatus: 'stopped', error: message });
+        this.agentNotifyService?.notify('start_error', { appUrn }, 'high');
       }
     });
 
@@ -161,6 +164,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
           appStatus: 'uninstalled',
           error: error instanceof Error ? error.message : String(error),
         });
+        this.agentNotifyService?.notify('install_error', { appUrn }, 'high');
         throw error;
       }
     }
@@ -298,6 +302,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
         this.logger.error(`Failed to install app ${appUrn}: ${message}`);
         await this.appRepository.deleteAppById(createdApp.id);
         this.sseService.emit('app', { event: 'install_error', appUrn, appStatus: 'missing', error: message });
+        this.agentNotifyService?.notify('install_error', { appUrn }, 'high');
       }
     });
 
@@ -333,6 +338,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
         this.logger.error(`Failed to stop app ${appUrn}: ${message}`);
         await this.appRepository.updateAppById(app.id, { status: 'running' });
         this.sseService.emit('app', { event: 'stop_error', appUrn, appStatus: 'running', error: message });
+        this.agentNotifyService?.notify('stop_error', { appUrn }, 'high');
       }
     });
 
@@ -363,6 +369,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
         this.logger.error(`Failed to restart app ${appUrn}: ${message}`);
         await this.appRepository.updateAppById(app.id, { status: 'stopped' });
         this.sseService.emit('app', { event: 'restart_error', appUrn, appStatus: 'stopped', error: message });
+        this.agentNotifyService?.notify('restart_error', { appUrn }, 'high');
       }
     });
 
@@ -403,6 +410,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
         this.logger.error(`Failed to uninstall app ${appUrn}: ${message}`);
         await this.appRepository.updateAppById(app.id, { status: 'stopped' });
         this.sseService.emit('app', { event: 'uninstall_error', appUrn, appStatus: 'stopped', error: message });
+        this.agentNotifyService?.notify('uninstall_error', { appUrn }, 'high');
       }
     });
 
@@ -439,6 +447,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
         const restoredStatus = appStatusBeforeReset ?? 'stopped';
         await this.appRepository.updateAppById(app.id, { status: restoredStatus });
         this.sseService.emit('app', { event: 'reset_error', appUrn, appStatus: restoredStatus, error: message });
+        this.agentNotifyService?.notify('reset_error', { appUrn }, 'high');
       }
     });
 
@@ -777,6 +786,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
         await this.updateAppConfig({ appUrn, form: app.config });
         await this.appRepository.updateAppById(app.id, { version: appInfo?.tipi_version, status: restoredStatus });
         this.sseService.emit('app', { event: 'update_success', appUrn, appStatus: restoredStatus });
+        this.agentNotifyService?.notify('update_success', { appUrn }, 'info');
 
         if (appStatusBeforeUpdate === 'running') {
           void this.startApp({ appUrn });
@@ -786,6 +796,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
         const restoredStatus = appStatusBeforeUpdate === 'running' ? 'stopped' : appStatusBeforeUpdate;
         await this.appRepository.updateAppById(app.id, { status: restoredStatus });
         this.sseService.emit('app', { event: 'update_error', appUrn, appStatus: restoredStatus, error: message });
+        this.agentNotifyService?.notify('update_error', { appUrn }, 'high');
       }
     });
 

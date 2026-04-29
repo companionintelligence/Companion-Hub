@@ -40,7 +40,7 @@ export class McpToolRegistry {
 }
 
 export class McpToolNotFoundError extends Error {
-  public readonly code = -32601;
+  public readonly code = -32602;
   constructor(toolName: string) {
     super(`Unknown tool: ${toolName}`);
     this.name = 'McpToolNotFoundError';

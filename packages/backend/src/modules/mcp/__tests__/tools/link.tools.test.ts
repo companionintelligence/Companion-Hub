@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
+import { McpToolRegistry } from '../../mcp-tool-registry.service';
 import { LinkTools } from '../../tools/link.tools';
 import { LinksService } from '@/modules/links/links.service';
 
@@ -10,7 +11,11 @@ describe('LinkTools', () => {
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
-      providers: [LinkTools, { provide: LinksService, useValue: mock<LinksService>() }],
+      providers: [
+        LinkTools,
+        { provide: LinksService, useValue: mock<LinksService>() },
+        { provide: McpToolRegistry, useValue: mock<McpToolRegistry>() },
+      ],
     }).compile();
     tools = module.get<LinkTools>(LinkTools);
     linksService = module.get(LinksService);

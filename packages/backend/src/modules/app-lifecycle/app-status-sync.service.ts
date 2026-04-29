@@ -1,6 +1,6 @@
 import { LoggerService } from '@/core/logger/logger.service';
 import { SSEService } from '@/core/sse/sse.service';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
 import type Dockerode from 'dockerode';
 import { DOCKERODE } from '../docker/docker.module';
@@ -8,6 +8,7 @@ import { AppsRepository } from '../apps/apps.repository';
 import type { AppStatus } from '@/core/database/drizzle/types';
 import { SystemEventsQueue } from '../queue/entities/system-events';
 import { ConfigurationService } from '@/core/config/configuration.service';
+import { AgentNotifyService } from '../agent-notify/agent-notify.service';
 
 const TRANSITIONAL_STATES: AppStatus[] = [
   'installing',
@@ -30,6 +31,7 @@ export class AppStatusSyncService {
     private readonly systemEventsQueue: SystemEventsQueue,
     private readonly configuration: ConfigurationService,
     @Inject(DOCKERODE) private readonly docker: Dockerode,
+    @Optional() private readonly agentNotifyService?: AgentNotifyService,
   ) {
     if (this.configuration.get('userSettings').eventsTimeout > 5) {
       this.logger.warn(
@@ -108,6 +110,11 @@ export class AppStatusSyncService {
           await this.appRepository.updateAppById(app.id, { status: newStatus });
           this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: newStatus });
           this.logger.info(`Synced ${appUrn}: '${app.status}' -> '${newStatus}'`);
+
+          // Detect crash: running → stopped or missing
+          if (app.status === 'running' && (newStatus === 'stopped' || newStatus === 'missing')) {
+            this.agentNotifyService?.notify('app.crashed', { appUrn, previousStatus: app.status, newStatus }, 'high');
+          }
           syncedCount++;
         }
       }

@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
+import { McpToolRegistry } from '../../mcp-tool-registry.service';
 import { AppConfigTools } from '../../tools/app-config.tools';
 import { UserConfigService } from '@/modules/user-config/user-config.service';
 import { AppsService } from '@/modules/apps/apps.service';
@@ -16,6 +17,7 @@ describe('AppConfigTools', () => {
         AppConfigTools,
         { provide: UserConfigService, useValue: mock<UserConfigService>() },
         { provide: AppsService, useValue: mock<AppsService>() },
+        { provide: McpToolRegistry, useValue: mock<McpToolRegistry>() },
       ],
     }).compile();
     tools = module.get<AppConfigTools>(AppConfigTools);

@@ -1,7 +1,9 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { mock } from 'vitest-mock-extended';
 import { McpAuthGuard } from '../mcp-auth.guard';
 import { UnauthorizedException } from '@nestjs/common';
+import { LoggerService } from '@/core/logger/logger.service';
 
 function mockExecutionContext(authHeader?: string) {
   return {
@@ -20,7 +22,7 @@ describe('McpAuthGuard', () => {
   beforeEach(async () => {
     process.env.MCP_API_KEY = 'test-secret-key';
     const module: TestingModule = await Test.createTestingModule({
-      providers: [McpAuthGuard],
+      providers: [McpAuthGuard, { provide: LoggerService, useValue: mock<LoggerService>() }],
     }).compile();
 
     guard = module.get<McpAuthGuard>(McpAuthGuard);

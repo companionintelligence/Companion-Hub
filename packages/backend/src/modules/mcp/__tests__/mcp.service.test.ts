@@ -1,7 +1,9 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { beforeEach, describe, expect, it } from 'vitest';
+import { mock } from 'vitest-mock-extended';
 import { McpToolRegistry } from '../mcp-tool-registry.service';
 import { McpService } from '../mcp.service';
+import { LoggerService } from '@/core/logger/logger.service';
 
 describe('McpService', () => {
   let service: McpService;
@@ -9,7 +11,7 @@ describe('McpService', () => {
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
-      providers: [McpService, McpToolRegistry],
+      providers: [McpService, McpToolRegistry, { provide: LoggerService, useValue: mock<LoggerService>() }],
     }).compile();
 
     service = module.get<McpService>(McpService);
@@ -72,10 +74,10 @@ describe('McpService', () => {
   });
 
   describe('tools/call — unknown tool', () => {
-    it('should return JSON-RPC error with code -32601 for unknown tool name', async () => {
+    it('should return JSON-RPC error with code -32602 for unknown tool name', async () => {
       const res = await service.handleMessage({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'nonexistent', arguments: {} } });
       expect(res.error).toBeDefined();
-      expect(res.error?.code).toBe(-32601);
+      expect(res.error?.code).toBe(-32602);
     });
   });
 

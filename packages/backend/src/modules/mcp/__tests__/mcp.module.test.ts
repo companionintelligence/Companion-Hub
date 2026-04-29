@@ -27,6 +27,7 @@ import { SystemUpdateService } from '@/modules/system-update/system-update.servi
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { CloudflareClientService } from '@/modules/cloudflare/cloudflare-client.service';
 import { LinksService } from '@/modules/links/links.service';
+import { LoggerService } from '@/core/logger/logger.service';
 
 describe('McpModule', () => {
   it('should compile as a standalone NestJS module without the full application', async () => {
@@ -58,6 +59,7 @@ describe('McpModule', () => {
         { provide: RegistrationService, useValue: mock<RegistrationService>() },
         { provide: CloudflareClientService, useValue: mock<CloudflareClientService>() },
         { provide: LinksService, useValue: mock<LinksService>() },
+        { provide: LoggerService, useValue: mock<LoggerService>() },
       ],
     }).compile();
 

@@ -1,7 +1,7 @@
 import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { Injectable, type OnApplicationBootstrap, type OnApplicationShutdown, Inject, forwardRef } from '@nestjs/common';
+import { Injectable, type OnApplicationBootstrap, type OnApplicationShutdown, Inject, forwardRef, Optional } from '@nestjs/common';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { APP_DIR } from '@/common/constants';
@@ -9,6 +9,7 @@ import { CloudflareClientService } from '../cloudflare/cloudflare-client.service
 import { TraefikConfigService } from '../docker/traefik-config.service';
 import { DeviceRegistrationRepository } from './device-registration.repository';
 import { RepoEventsQueue } from '../queue/entities/repo-events';
+import { AgentNotifyService } from '../agent-notify/agent-notify.service';
 import {
   type ProvisioningPhase,
   type DegradedReason,
@@ -37,6 +38,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     @Inject(forwardRef(() => TraefikConfigService)) private readonly traefikConfigService: TraefikConfigService,
     private readonly deviceRegistrationRepository: DeviceRegistrationRepository,
     readonly _repoQueue: RepoEventsQueue,
+    @Optional() private readonly agentNotifyService?: AgentNotifyService,
   ) {}
 
   onApplicationShutdown() {
@@ -167,6 +169,10 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     this._degradedReasons = to === 'degraded' ? reasons : [];
 
     this.logger.info(`Provisioning phase: ${from} → ${to}${reasons.length ? ` (${reasons.join(', ')})` : ''}`);
+
+    // Notify agent of phase transitions
+    const urgency = to === 'degraded' ? 'high' : 'medium';
+    this.agentNotifyService?.notify('registration.state_changed', { from, to, reasons }, urgency as 'high' | 'medium');
 
     // Persist when we know the org ID
     const id = orgId ?? (await this.deviceRegistrationRepository.getFirstDeviceRegistration())?.id;

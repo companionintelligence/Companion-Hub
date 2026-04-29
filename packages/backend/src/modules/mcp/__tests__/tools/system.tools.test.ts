@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
+import { McpToolRegistry } from '../../mcp-tool-registry.service';
 import { SystemTools } from '../../tools/system.tools';
 import { SystemService } from '@/modules/system/system.service';
 import { SystemUpdateService } from '@/modules/system-update/system-update.service';
@@ -19,6 +20,7 @@ describe('SystemTools', () => {
         { provide: SystemService, useValue: mock<SystemService>() },
         { provide: SystemUpdateService, useValue: mock<SystemUpdateService>() },
         { provide: DockerService, useValue: mock<DockerService>() },
+        { provide: McpToolRegistry, useValue: mock<McpToolRegistry>() },
       ],
     }).compile();
     tools = module.get<SystemTools>(SystemTools);
