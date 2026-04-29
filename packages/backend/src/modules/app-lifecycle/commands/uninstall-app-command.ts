@@ -28,12 +28,20 @@ export class UninstallAppCommand extends AppLifecycleCommand {
         logger.warn(`Failed to release ports for ${appUrn}: ${err}`);
       }
 
+      // Capture image IDs before compose down so we can remove pulled images by
+      // immutable ID even when tags/compose refs are no longer resolvable.
+      const snapshotImageIds = await dockerService.snapshotAppImageIds(appUrn);
+
       try {
-        await dockerService.composeApp(appUrn, 'down --remove-orphans -v --rmi local');
+        await dockerService.composeApp(appUrn, 'down --remove-orphans -v --rmi all');
         logger.info(`Successfully cleaned up all Docker resources for ${appUrn}`);
       } catch (err) {
         logger.warn('Error taking down app', appUrn, err);
       }
+
+      // Explicit post-down cleanup is a safety net for partial teardown states.
+      await dockerService.removeAppImages(appUrn, snapshotImageIds);
+      await dockerService.removeAppNetworks(appUrn);
 
       // Sync Cloudflare state (app removal will be reflected)
       try {
