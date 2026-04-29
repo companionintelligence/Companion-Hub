@@ -15,7 +15,7 @@ export function formatToolError(error: unknown, appUrn?: string): McpToolResult 
   let message: string;
 
   if (error instanceof Error) {
-    const statusCode = (error as any).status ?? (error as any).statusCode;
+    const statusCode = (error as unknown as Record<string, number>).status ?? (error as unknown as Record<string, number>).statusCode;
 
     if (statusCode === HttpStatus.NOT_FOUND) {
       message = appUrn ? `App ${appUrn} not found. Use hub_search_apps to find available apps.` : `Resource not found. ${error.message}`;

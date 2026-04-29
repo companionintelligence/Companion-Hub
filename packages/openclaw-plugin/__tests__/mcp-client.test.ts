@@ -23,7 +23,7 @@ function createSseStream(messagesUrl: string) {
 
 /** Build a mock fetch that handles SSE connect + JSON-RPC messages */
 function mockSseThenJsonRpc(messagesUrl: string, jsonRpcResult: unknown) {
-  return vi.fn().mockImplementation(async (url: string, opts?: RequestInit) => {
+  return vi.fn().mockImplementation(async (url: string, _opts?: RequestInit) => {
     if (url.includes('/api/mcp/sse')) {
       return { ok: true, body: createSseStream(messagesUrl) };
     }

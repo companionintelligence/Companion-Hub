@@ -26,7 +26,8 @@ export class McpAuthGuard implements CanActivate {
       throw new UnauthorizedException('Malformed Authorization header');
     }
 
-    const tokenBuffer = Buffer.from(parts[1]);
+    const token = parts[1] as string;
+    const tokenBuffer = Buffer.from(token);
     const keyBuffer = Buffer.from(apiKey);
     if (tokenBuffer.length !== keyBuffer.length || !timingSafeEqual(tokenBuffer, keyBuffer)) {
       this.logger.warn('MCP auth failure: invalid API key');

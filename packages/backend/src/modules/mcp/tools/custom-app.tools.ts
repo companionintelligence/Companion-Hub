@@ -50,11 +50,11 @@ export class CustomAppTools implements OnModuleInit {
   }
 
   async createCustomApp(params: { name: string; config: Record<string, unknown> }) {
-    const dto: CreateCustomAppDto = { name: params.name, config: params.config };
+    const dto = { name: params.name, config: params.config } as CreateCustomAppDto;
     return this.customAppService.createCustomApp(dto);
   }
   async updateCustomApp(params: { appUrn: string; config: Record<string, unknown> }) {
-    const config: UpdateCustomAppDto['config'] = params.config;
+    const config = params.config as UpdateCustomAppDto['config'];
     await this.customAppService.updateCustomApp(castAppUrn(params.appUrn), config);
     return { success: true };
   }

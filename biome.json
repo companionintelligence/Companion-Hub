@@ -94,7 +94,8 @@
             "noEmptyBlockStatements": {
               "level": "off"
             },
-            "noExplicitAny": "off"
+            "noExplicitAny": "off",
+            "noTemplateCurlyInString": "off"
           }
         }
       }

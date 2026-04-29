@@ -133,7 +133,7 @@ export class McpClient {
         return { error: response.error.message };
       }
       return response.result;
-    } catch (error) {
+    } catch {
       this.connected = false;
       this.scheduleReconnect();
       return { error: 'Hub MCP server is not connected' };
