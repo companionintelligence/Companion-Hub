@@ -10,6 +10,6 @@ import { DockerModule } from '../docker/docker.module';
   imports: [NetworkModule, DockerModule],
   controllers: [SystemController, SystemInspectorController],
   providers: [SystemService, SystemInspectorService],
-  exports: [],
+  exports: [SystemService],
 })
 export class SystemModule {}
