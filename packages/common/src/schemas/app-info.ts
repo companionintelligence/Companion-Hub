@@ -2,6 +2,17 @@ import { z } from 'zod';
 import { zodAppUrn } from '../types/app-urn.js';
 import { agentConfigSchema } from './agent-config.js';
 
+export const hubIntegrationSchema = z
+  .object({
+    mcp_client: z.boolean().default(false),
+    wake_endpoint: z.string().optional().default('/hooks/hub-wake'),
+    wake_port: z.number().optional(),
+    sse_events: z.boolean().default(false),
+  })
+  .optional();
+
+export type HubIntegration = z.output<typeof hubIntegrationSchema>;
+
 export const APP_CATEGORIES = [
   'network',
   'media',
@@ -87,6 +98,7 @@ export const appInfoSchema = z.object({
     .default(0),
   force_pull: z.boolean().optional().default(false),
   agents: agentConfigSchema,
+  hub_integration: hubIntegrationSchema,
 });
 
 // Derived types

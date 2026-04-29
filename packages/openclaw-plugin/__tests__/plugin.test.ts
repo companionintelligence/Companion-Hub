@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest';
 import { register } from '../src/index';
 import type { OpenClawPluginApi, PluginConfig } from '../src/types';
 
@@ -36,6 +36,15 @@ describe('CI-Hub Plugin', () => {
   beforeEach(() => {
     api = createMockApi();
     vi.restoreAllMocks();
+    delete process.env.HUB_URL;
+    delete process.env.HUB_API_KEY;
+    delete process.env.HUB_WAKE_SECRET;
+  });
+
+  afterEach(() => {
+    delete process.env.HUB_URL;
+    delete process.env.HUB_API_KEY;
+    delete process.env.HUB_WAKE_SECRET;
   });
 
   it('should export a register function', () => {
@@ -104,5 +113,51 @@ describe('CI-Hub Plugin', () => {
     await register(api, baseConfig);
 
     expect(api.log.warn).toHaveBeenCalled();
+  });
+
+  describe('R-PLG: Env var fallback', () => {
+    it('R-PLG-1: should fall back to HUB_URL env var when config.hubUrl is not provided', async () => {
+      process.env.HUB_URL = 'http://ci-os-hub:3000';
+      process.env.HUB_API_KEY = 'env-api-key';
+
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockImplementation(async (url: string) => {
+          if (url.includes('/api/health')) return { ok: true };
+          if (url.includes('/api/mcp/sse')) return { ok: true, body: createSseStream('http://ci-os-hub:3000/api/mcp/messages') };
+          return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: { serverInfo: {} } }) };
+        }),
+      );
+
+      await register(api, {});
+
+      expect(api.log.info).toHaveBeenCalledWith(expect.stringContaining('ci-os-hub:3000'));
+    });
+
+    it('R-PLG-1: should prefer config values over env vars', async () => {
+      process.env.HUB_URL = 'http://env-hub:3000';
+      process.env.HUB_API_KEY = 'env-key';
+
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockImplementation(async (url: string) => {
+          if (url.includes('/api/health')) return { ok: true };
+          if (url.includes('/api/mcp/sse')) return { ok: true, body: createSseStream('http://localhost:5002/api/mcp/messages') };
+          return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: { serverInfo: {} } }) };
+        }),
+      );
+
+      await register(api, baseConfig);
+
+      // Should use config.hubUrl, not env
+      expect(api.log.info).toHaveBeenCalledWith(expect.stringContaining('localhost:5002'));
+    });
+
+    it('R-PLG-1: should log error and return when neither config nor env provides hubUrl', async () => {
+      await register(api, {});
+
+      expect(api.log.error).toHaveBeenCalledWith(expect.stringContaining('requires hubUrl and hubApiKey'));
+      expect(api.registerHttpRoute).not.toHaveBeenCalled();
+    });
   });
 });

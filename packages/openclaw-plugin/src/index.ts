@@ -8,20 +8,30 @@ import { SseListenerService } from './sse-listener';
  * Registers Hub MCP tools, wake webhook endpoint, and optional SSE listener.
  */
 export async function register(api: OpenClawPluginApi, config: PluginConfig): Promise<void> {
-  api.log.info(`CI-Hub plugin initializing (hub: ${config.hubUrl})`);
+  // Fall back to env vars for zero-config when running inside CI-Hub (R-PLG-1)
+  const hubUrl = config.hubUrl || process.env.HUB_URL;
+  const hubApiKey = config.hubApiKey || process.env.HUB_API_KEY;
+  const wakeSecret = config.wakeSecret || process.env.HUB_WAKE_SECRET;
+
+  if (!hubUrl || !hubApiKey) {
+    api.log.error('CI-Hub plugin requires hubUrl and hubApiKey (via config or HUB_URL/HUB_API_KEY env vars)');
+    return;
+  }
+
+  api.log.info(`CI-Hub plugin initializing (hub: ${hubUrl})`);
 
   // Validate Hub is reachable
   try {
-    const healthResponse = await fetch(`${config.hubUrl.replace(/\/$/, '')}/api/health`);
+    const healthResponse = await fetch(`${hubUrl.replace(/\/$/, '')}/api/health`);
     if (!healthResponse.ok) {
       api.log.warn(`Hub health check failed: ${healthResponse.status}`);
     }
   } catch (error) {
-    api.log.warn(`Hub unreachable at ${config.hubUrl}: ${error instanceof Error ? error.message : String(error)}`);
+    api.log.warn(`Hub unreachable at ${hubUrl}: ${error instanceof Error ? error.message : String(error)}`);
   }
 
   // Connect to Hub MCP server and register tools
-  const mcpClient = new McpClient(config.hubUrl, config.hubApiKey, api.log);
+  const mcpClient = new McpClient(hubUrl, hubApiKey, api.log);
   await mcpClient.connect();
 
   if (mcpClient.isConnected()) {
@@ -42,7 +52,7 @@ export async function register(api: OpenClawPluginApi, config: PluginConfig): Pr
   }
 
   // Register wake webhook endpoint
-  const wakeHandler = createWakeEndpointHandler(api, config.wakeSecret, config.wakeFilter);
+  const wakeHandler = createWakeEndpointHandler(api, wakeSecret, config.wakeFilter);
   api.registerHttpRoute({
     method: 'POST',
     path: '/hooks/hub-wake',
@@ -52,7 +62,7 @@ export async function register(api: OpenClawPluginApi, config: PluginConfig): Pr
 
   // Start SSE listener if enabled
   if (config.sseEnabled) {
-    const sseListener = new SseListenerService(config.hubUrl, config.hubApiKey, api, config.wakeFilter);
+    const sseListener = new SseListenerService(hubUrl, hubApiKey, api, config.wakeFilter);
     await sseListener.start();
   }
 }

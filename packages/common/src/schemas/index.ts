@@ -2,8 +2,17 @@ import { dynamicComposeSchema, serviceSchema, MIN_SCHEMA_VERSION, CURRENT_SCHEMA
 import { parseComposeJson } from './utils/convert-legacy-schema.js';
 import type { DependsOn, DynamicCompose, Service, ServiceInput } from './dynamic-compose.js';
 
-import { APP_CATEGORIES, ARCHITECTURES, FIELD_TYPES, RANDOM_ENCODINGS, appInfoSchema, formFieldSchema, frontmatterSchema } from './app-info.js';
-import type { AppCategory, AppInfo, AppInfoInput, FieldType, FormField, RandomEncoding } from './app-info.js';
+import {
+  APP_CATEGORIES,
+  ARCHITECTURES,
+  FIELD_TYPES,
+  RANDOM_ENCODINGS,
+  appInfoSchema,
+  formFieldSchema,
+  frontmatterSchema,
+  hubIntegrationSchema,
+} from './app-info.js';
+import type { AppCategory, AppInfo, AppInfoInput, FieldType, FormField, HubIntegration, RandomEncoding } from './app-info.js';
 
 import { agentConfigSchema, agentMcpConfigSchema, agentOpenApiAuthSchema, agentOpenApiConfigSchema, agentSkillConfigSchema } from './agent-config.js';
 import type { AgentConfig, AgentMcpConfig, AgentOpenApiAuth, AgentOpenApiConfig, AgentSkillConfig } from './agent-config.js';
@@ -30,6 +39,7 @@ export {
   agentOpenApiAuthSchema,
   agentOpenApiConfigSchema,
   agentSkillConfigSchema,
+  hubIntegrationSchema,
   sseSchema,
   frontmatterSchema,
   type AgentConfig,
@@ -37,6 +47,7 @@ export {
   type AgentOpenApiAuth,
   type AgentOpenApiConfig,
   type AgentSkillConfig,
+  type HubIntegration,
   type ServiceInput,
   type DependsOn,
   type Service,

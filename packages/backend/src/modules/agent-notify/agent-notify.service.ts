@@ -3,11 +3,18 @@ import { LoggerService } from '@/core/logger/logger.service';
 
 type Urgency = 'high' | 'medium' | 'low' | 'info';
 
+export interface WebhookTarget {
+  url: string;
+  token?: string;
+  appUrn: string;
+}
+
 @Injectable()
 export class AgentNotifyService implements OnModuleDestroy {
   private debounceMap = new Map<string, number>();
   private debounceWindowMs = 30_000;
   private cleanupInterval: ReturnType<typeof setInterval> | null = null;
+  private webhooks = new Map<string, WebhookTarget>();
 
   constructor(private readonly logger: LoggerService) {
     this.cleanupInterval = setInterval(() => this.cleanupDebounceMap(), 60_000);
@@ -19,11 +26,48 @@ export class AgentNotifyService implements OnModuleDestroy {
     }
   }
 
-  async notify(event: string, data: Record<string, unknown>, urgency: Urgency): Promise<void> {
-    const webhookUrl = process.env.AGENT_WEBHOOK_URL;
-    const enabled = process.env.AGENT_WEBHOOK_ENABLED !== 'false';
+  registerWebhook(appUrn: string, url: string, token?: string): void {
+    this.webhooks.set(appUrn, { url, token, appUrn });
+    this.logger.info(`Registered agent webhook for ${appUrn}: ${url}`);
+  }
 
-    if (!webhookUrl || !enabled) {
+  unregisterWebhook(appUrn: string): boolean {
+    const removed = this.webhooks.delete(appUrn);
+    if (removed) {
+      this.logger.info(`Unregistered agent webhook for ${appUrn}`);
+    }
+    return removed;
+  }
+
+  getRegisteredWebhooks(): WebhookTarget[] {
+    return [...this.webhooks.values()];
+  }
+
+  private getAllTargets(): Array<{ url: string; token?: string }> {
+    const targets: Array<{ url: string; token?: string }> = [];
+
+    // Backward compat: env-based webhook
+    const envUrl = process.env.AGENT_WEBHOOK_URL;
+    if (envUrl) {
+      targets.push({ url: envUrl, token: process.env.AGENT_WEBHOOK_TOKEN });
+    }
+
+    // Registered webhooks
+    for (const wh of this.webhooks.values()) {
+      targets.push({ url: wh.url, token: wh.token });
+    }
+
+    return targets;
+  }
+
+  async notify(event: string, data: Record<string, unknown>, urgency: Urgency): Promise<void> {
+    const enabled = process.env.AGENT_WEBHOOK_ENABLED !== 'false';
+    if (!enabled) {
+      return;
+    }
+
+    const targets = this.getAllTargets();
+    if (targets.length === 0) {
       return;
     }
 
@@ -33,33 +77,37 @@ export class AgentNotifyService implements OnModuleDestroy {
     }
     this.debounceMap.set(debounceKey, Date.now());
 
-    const token = process.env.AGENT_WEBHOOK_TOKEN;
     const payload = {
       event,
       data,
       urgency,
       timestamp: new Date().toISOString(),
     };
+    const body = JSON.stringify(payload);
 
-    try {
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (token) {
-        headers.Authorization = `Bearer ${token}`;
-      }
+    await Promise.allSettled(
+      targets.map(async (target) => {
+        try {
+          const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+          if (target.token) {
+            headers.Authorization = `Bearer ${target.token}`;
+          }
 
-      const response = await fetch(webhookUrl, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(10_000),
-      });
+          const response = await fetch(target.url, {
+            method: 'POST',
+            headers,
+            body,
+            signal: AbortSignal.timeout(10_000),
+          });
 
-      if (!response.ok) {
-        this.logger.error(`Agent webhook returned ${response.status}: ${response.statusText}`);
-      }
-    } catch (error) {
-      this.logger.error('Agent webhook POST failed:', error);
-    }
+          if (!response.ok) {
+            this.logger.error(`Agent webhook ${target.url} returned ${response.status}: ${response.statusText}`);
+          }
+        } catch (error) {
+          this.logger.error(`Agent webhook POST to ${target.url} failed:`, error);
+        }
+      }),
+    );
   }
 
   private buildDebounceKey(event: string, data: Record<string, unknown>): string {

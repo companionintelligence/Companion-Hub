@@ -62,7 +62,7 @@ describe('AgentNotifyService', () => {
       expect(headers.Authorization).toBe('Bearer test-token');
     });
 
-    it('should be a no-op when AGENT_WEBHOOK_URL is not set', async () => {
+    it('should be a no-op when no targets and AGENT_WEBHOOK_URL is not set', async () => {
       delete process.env.AGENT_WEBHOOK_URL;
       await service.notify('test', {}, 'info');
       expect(fetch).not.toHaveBeenCalled();
@@ -119,6 +119,118 @@ describe('AgentNotifyService', () => {
       await service.notify('app.crashed', { appUrn: 'ci-store:test' }, 'high');
       await service.notify('app.crashed', { appUrn: 'ci-store:test' }, 'high');
       expect(fetch).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('R-MW: Multi-webhook registry', () => {
+    it('R-MW-2: should register a webhook for an app', () => {
+      service.registerWebhook('ci-store:openclaw', 'http://openclaw-ci-store:3000/hooks/hub-wake', 'secret-1');
+
+      const webhooks = service.getRegisteredWebhooks();
+      expect(webhooks).toHaveLength(1);
+      expect(webhooks[0]).toEqual({
+        url: 'http://openclaw-ci-store:3000/hooks/hub-wake',
+        token: 'secret-1',
+        appUrn: 'ci-store:openclaw',
+      });
+    });
+
+    it('R-MW-2: should unregister a webhook', () => {
+      service.registerWebhook('ci-store:openclaw', 'http://openclaw-ci-store:3000/hooks/hub-wake', 'secret-1');
+      const removed = service.unregisterWebhook('ci-store:openclaw');
+
+      expect(removed).toBe(true);
+      expect(service.getRegisteredWebhooks()).toHaveLength(0);
+    });
+
+    it('R-MW-2: unregisterWebhook returns false for unknown app', () => {
+      const removed = service.unregisterWebhook('ci-store:nonexistent');
+      expect(removed).toBe(false);
+    });
+
+    it('R-MW-3: should fan-out to env webhook AND registered webhook', async () => {
+      service.registerWebhook('ci-store:openclaw', 'http://openclaw-ci-store:3000/hooks/hub-wake', 'oc-secret');
+
+      await service.notify('app.crashed', { appUrn: 'ci-store:test' }, 'high');
+
+      // Should call both env webhook and registered webhook
+      expect(fetch).toHaveBeenCalledTimes(2);
+
+      const urls = vi.mocked(fetch).mock.calls.map((c) => c[0]);
+      expect(urls).toContain('http://localhost:18789/hooks/hub-wake');
+      expect(urls).toContain('http://openclaw-ci-store:3000/hooks/hub-wake');
+    });
+
+    it('R-MW-3: registered webhook uses its own token', async () => {
+      service.registerWebhook('ci-store:openclaw', 'http://openclaw-ci-store:3000/hooks/hub-wake', 'oc-secret');
+
+      await service.notify('test.event', {}, 'info');
+
+      const calls = vi.mocked(fetch).mock.calls;
+      const registeredCall = calls.find((c) => (c[0] as string).includes('openclaw'));
+      const headers = registeredCall?.[1]?.headers as Record<string, string>;
+      expect(headers.Authorization).toBe('Bearer oc-secret');
+    });
+
+    it('R-MW-4: should use env webhook as fallback when no registered webhooks', async () => {
+      await service.notify('test', {}, 'info');
+
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(fetch).toHaveBeenCalledWith('http://localhost:18789/hooks/hub-wake', expect.anything());
+    });
+
+    it('R-MW-4: env webhook and registered webhooks coexist', async () => {
+      service.registerWebhook('ci-store:hermes', 'http://hermes-ci-store:8080/wake', 'h-secret');
+
+      await service.notify('test', {}, 'info');
+
+      expect(fetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('R-MW-3: should notify via registered webhooks when no env webhook', async () => {
+      delete process.env.AGENT_WEBHOOK_URL;
+      service.registerWebhook('ci-store:openclaw', 'http://openclaw-ci-store:3000/hooks/hub-wake', 'secret');
+
+      await service.notify('test', {}, 'info');
+
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(fetch).toHaveBeenCalledWith('http://openclaw-ci-store:3000/hooks/hub-wake', expect.anything());
+    });
+
+    it('R-MW-3: should continue notifying other targets if one fails', async () => {
+      service.registerWebhook('ci-store:openclaw', 'http://openclaw:3000/wake', 'secret');
+
+      let callCount = 0;
+      vi.mocked(fetch).mockImplementation(async () => {
+        callCount++;
+        if (callCount === 1) throw new Error('Network error');
+        return new Response('OK', { status: 200 });
+      });
+
+      await service.notify('test', {}, 'info');
+
+      expect(fetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('should support multiple registered webhooks', async () => {
+      delete process.env.AGENT_WEBHOOK_URL;
+      service.registerWebhook('ci-store:openclaw', 'http://openclaw:3000/wake', 's1');
+      service.registerWebhook('ci-store:hermes', 'http://hermes:8080/wake', 's2');
+      service.registerWebhook('ci-store:picoclaw', 'http://picoclaw:4000/wake', 's3');
+
+      await service.notify('test', {}, 'info');
+
+      expect(fetch).toHaveBeenCalledTimes(3);
+    });
+
+    it('should replace webhook on re-register for same appUrn', () => {
+      service.registerWebhook('ci-store:openclaw', 'http://old:3000/wake', 'old-secret');
+      service.registerWebhook('ci-store:openclaw', 'http://new:3000/wake', 'new-secret');
+
+      const webhooks = service.getRegisteredWebhooks();
+      expect(webhooks).toHaveLength(1);
+      expect(webhooks[0]?.url).toBe('http://new:3000/wake');
+      expect(webhooks[0]?.token).toBe('new-secret');
     });
   });
 });
