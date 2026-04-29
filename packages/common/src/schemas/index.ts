@@ -5,6 +5,9 @@ import type { DependsOn, DynamicCompose, Service, ServiceInput } from './dynamic
 import { APP_CATEGORIES, ARCHITECTURES, FIELD_TYPES, RANDOM_ENCODINGS, appInfoSchema, formFieldSchema, frontmatterSchema } from './app-info.js';
 import type { AppCategory, AppInfo, AppInfoInput, FieldType, FormField, RandomEncoding } from './app-info.js';
 
+import { agentConfigSchema, agentMcpConfigSchema, agentOpenApiAuthSchema, agentOpenApiConfigSchema, agentSkillConfigSchema } from './agent-config.js';
+import type { AgentConfig, AgentMcpConfig, AgentOpenApiAuth, AgentOpenApiConfig, AgentSkillConfig } from './agent-config.js';
+
 import { type SSE, type Topic, sseSchema } from './sse.js';
 
 import { toJsonSchema } from './utils/to-json-schema.js';
@@ -22,8 +25,18 @@ export {
   FIELD_TYPES,
   ARCHITECTURES,
   appInfoSchema,
+  agentConfigSchema,
+  agentMcpConfigSchema,
+  agentOpenApiAuthSchema,
+  agentOpenApiConfigSchema,
+  agentSkillConfigSchema,
   sseSchema,
   frontmatterSchema,
+  type AgentConfig,
+  type AgentMcpConfig,
+  type AgentOpenApiAuth,
+  type AgentOpenApiConfig,
+  type AgentSkillConfig,
   type ServiceInput,
   type DependsOn,
   type Service,

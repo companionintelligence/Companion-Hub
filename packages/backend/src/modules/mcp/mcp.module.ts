@@ -1,4 +1,4 @@
-import { Module, type OnModuleInit } from '@nestjs/common';
+import { Module } from '@nestjs/common';
 import { LoggerModule } from '@/core/logger/logger.module';
 import { AgentNotifyModule } from '@/modules/agent-notify/agent-notify.module';
 import { AppsModule } from '@/modules/apps/apps.module';
@@ -27,6 +27,13 @@ import { BackupTools } from './tools/backup.tools';
 import { SystemTools } from './tools/system.tools';
 import { RegistrationTools } from './tools/registration.tools';
 import { LinkTools } from './tools/link.tools';
+import { AppAgentTools } from './tools/app-agent.tools';
+import { AppApiProxyTools } from './tools/app-api-proxy.tools';
+import { AgentConfigService } from './agents/agent-config.service';
+import { SkillResolverService } from './agents/skill-resolver.service';
+import { OpenApiBridgeService } from './agents/openapi-bridge.service';
+import { McpBridgeService } from './agents/mcp-bridge.service';
+import { ApiProxyService } from './agents/api-proxy.service';
 
 @Module({
   imports: [
@@ -60,6 +67,13 @@ import { LinkTools } from './tools/link.tools';
     SystemTools,
     RegistrationTools,
     LinkTools,
+    AppAgentTools,
+    AppApiProxyTools,
+    AgentConfigService,
+    SkillResolverService,
+    OpenApiBridgeService,
+    McpBridgeService,
+    ApiProxyService,
   ],
   exports: [McpService, McpToolRegistry],
 })

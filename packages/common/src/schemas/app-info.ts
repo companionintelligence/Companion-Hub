@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { zodAppUrn } from '../types/app-urn.js';
+import { agentConfigSchema } from './agent-config.js';
 
 export const APP_CATEGORIES = [
   'network',
@@ -85,6 +86,7 @@ export const appInfoSchema = z.object({
     .optional()
     .default(0),
   force_pull: z.boolean().optional().default(false),
+  agents: agentConfigSchema,
 });
 
 // Derived types
