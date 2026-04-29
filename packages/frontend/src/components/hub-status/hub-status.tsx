@@ -7,15 +7,33 @@ interface HubStatusProps {
 
 type HubStatusResponse = 'DockerNotAvailable' | 'Stopped' | 'Starting' | 'Running' | { Error: { message: string } };
 
+type ServiceState = 'pending' | 'starting' | 'ready' | 'failed';
+
+interface ServiceStatus {
+  label: string;
+  container: string;
+  state: ServiceState;
+}
+
+interface StartupProgress {
+  services: ServiceStatus[];
+  progress_pct: number;
+  image_pulled: number;
+  image_total: number;
+  image_pull_pct: number;
+  all_ready: boolean;
+}
+
 function getErrorMessage(err: unknown): string {
   if (err instanceof Error) return err.message;
   return String(err);
 }
 
 // Tauri IPC helper
-function getTauriInvoke(): ((cmd: string) => Promise<unknown>) | null {
+function getTauriInvoke(): ((cmd: string, args?: Record<string, unknown>) => Promise<unknown>) | null {
   if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
-    return (window as unknown as { __TAURI_INTERNALS__: { invoke: (cmd: string) => Promise<unknown> } }).__TAURI_INTERNALS__.invoke;
+    return (window as unknown as { __TAURI_INTERNALS__: { invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown> } })
+      .__TAURI_INTERNALS__.invoke;
   }
   return null;
 }
@@ -28,15 +46,12 @@ function detectPlatform(): 'windows' | 'macos' | 'linux' {
 }
 
 function isAppleSilicon(): boolean {
-  // navigator.userAgentData.architecture is not available in WKWebView/Safari (Tauri's macOS webview)
-  // Fall back to checking User-Agent and platform
   try {
     const uad = (navigator as unknown as { userAgentData?: { architecture?: string } }).userAgentData;
     if (uad?.architecture) return uad.architecture === 'arm';
-    // Fallback: check for arm64/aarch64 in UA or assume Apple Silicon on modern Macs
     return /arm64|aarch64/i.test(navigator.userAgent) || /Mac/.test(navigator.platform);
   } catch {
-    return true; // Default to Apple Silicon (more common on new Macs)
+    return true;
   }
 }
 
@@ -158,9 +173,146 @@ function DockerInstallGuide() {
   return <LinuxDockerGuide />;
 }
 
+// ─── Startup progress screen ─────────────────────────────────────────────────
+
+const SERVICE_ICON: Record<ServiceState, string> = {
+  pending: '○',
+  starting: '◌',
+  ready: '●',
+  failed: '✕',
+};
+
+const SERVICE_COLOR: Record<ServiceState, string> = {
+  pending: 'text-muted-foreground/40',
+  starting: 'text-yellow-500',
+  ready: 'text-green-500',
+  failed: 'text-destructive',
+};
+
+const SERVICE_LABEL: Record<ServiceState, string> = {
+  pending: 'Waiting…',
+  starting: 'Starting…',
+  ready: 'Ready',
+  failed: 'Failed',
+};
+
+function ServiceRow({ service }: { service: ServiceStatus }) {
+  const color = SERVICE_COLOR[service.state];
+  return (
+    <div className="flex items-center justify-between gap-4 py-1.5">
+      <div className="flex items-center gap-2.5">
+        <span className={`text-sm font-medium tabular-nums ${color} ${service.state === 'starting' ? 'animate-pulse' : ''}`}>
+          {SERVICE_ICON[service.state]}
+        </span>
+        <span className="text-sm text-foreground">{service.label}</span>
+      </div>
+      <span className={`text-xs tabular-nums ${color}`}>{SERVICE_LABEL[service.state]}</span>
+    </div>
+  );
+}
+
+function StartupScreen({ elapsedSeconds }: { elapsedSeconds: number }) {
+  const invoke = getTauriInvoke();
+  const [progress, setProgress] = useState<StartupProgress | null>(null);
+
+  useEffect(() => {
+    if (!invoke) return;
+    const poll = async () => {
+      try {
+        const result = (await invoke('get_startup_progress_command')) as StartupProgress;
+        setProgress(result);
+      } catch {
+        // ignore — hub_status polling handles recovery
+      }
+    };
+    void poll();
+    const id = setInterval(() => void poll(), 2000);
+    return () => clearInterval(id);
+  }, [invoke]);
+
+  const pct = progress?.progress_pct ?? 0;
+  const showSlowMessage = elapsedSeconds > 90;
+  const showVerySlowMessage = elapsedSeconds > 180;
+
+  const serviceCounts = (progress?.services ?? []).reduce(
+    (acc, svc) => {
+      acc[svc.state] += 1;
+      return acc;
+    },
+    { pending: 0, starting: 0, ready: 0, failed: 0 } as Record<ServiceState, number>,
+  );
+
+  const elapsed = `${Math.floor(elapsedSeconds / 60)}:${String(elapsedSeconds % 60).padStart(2, '0')}`;
+
+  return (
+    <div className="flex flex-col items-center gap-6 w-full max-w-sm">
+      <div className="text-center space-y-1">
+        <h1 className="text-2xl font-semibold text-foreground">Starting Companion Hub</h1>
+        <p className="text-sm text-muted-foreground">
+          {showVerySlowMessage
+            ? 'Still working — Docker images may be downloading for the first time.'
+            : showSlowMessage
+              ? 'Almost there — some services are taking longer than usual.'
+              : 'Services are coming online…'}
+        </p>
+        <p className="text-xs text-muted-foreground/80">This might take a minute on first startup while containers are pulled.</p>
+      </div>
+
+      {/* Progress bar */}
+      <div className="w-full space-y-1.5">
+        <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
+          <div className="h-full rounded-full bg-primary transition-all duration-700 ease-out" style={{ width: `${Math.max(pct, 4)}%` }} />
+        </div>
+        <div className="flex justify-between text-xs text-muted-foreground/60 tabular-nums">
+          <span>{pct}%</span>
+          <span>{elapsed} elapsed</span>
+        </div>
+        {progress && (
+          <div className="space-y-0.5">
+            <div className="text-xs text-muted-foreground/70">
+              {serviceCounts.ready} ready, {serviceCounts.starting} starting, {serviceCounts.pending} pending
+              {serviceCounts.failed > 0 ? `, ${serviceCounts.failed} failed` : ''}
+            </div>
+            <div className="text-xs text-muted-foreground/70">
+              Image pulls: {progress.image_pulled}/{progress.image_total} ({progress.image_pull_pct}%)
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Per-service list */}
+      {progress && progress.services.length > 0 ? (
+        <div className="w-full rounded-lg border border-border bg-muted/30 px-4 divide-y divide-border/50">
+          {progress.services.map((svc) => (
+            <ServiceRow key={svc.container} service={svc} />
+          ))}
+        </div>
+      ) : (
+        <div className="flex items-center gap-2 text-muted-foreground">
+          <svg
+            className="h-4 w-4 animate-spin text-primary"
+            xmlns="http://www.w3.org/2000/svg"
+            fill="none"
+            viewBox="0 0 24 24"
+            role="img"
+            aria-label="Loading"
+          >
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+          </svg>
+          <span className="text-sm">Initialising…</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Main HubStatus gate ──────────────────────────────────────────────────────
+
 export function HubStatus({ children }: HubStatusProps) {
   const [status, setStatus] = useState<HubStatusResponse | null>(null);
-  const [isStartupInProgress, setIsStartupInProgress] = useState(false);
+  const [startupElapsed, setStartupElapsed] = useState(0);
+  const startupStartRef = useRef<number | null>(null);
   const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
   const isTauriRelease = isTauri && !window.location.origin.startsWith('http://localhost:');
   const isWindows = isTauri && detectPlatform() === 'windows';
@@ -217,10 +369,12 @@ export function HubStatus({ children }: HubStatusProps) {
           }
         }
 
-        setStatus(result);
-
-        // When running, configure API client for Tauri release builds
+        // When running in Tauri release builds, verify the HTTP endpoints
+        // are actually reachable before declaring 'Running'. This avoids a
+        // flicker where children mount briefly then hide again when the
+        // health-check fails.
         if (result === 'Running' && isTauriRelease) {
+          let ready = false;
           for (const port of [5002, 3000]) {
             try {
               const res = await fetch(`http://localhost:${port}/api/health`, {
@@ -228,47 +382,47 @@ export function HubStatus({ children }: HubStatusProps) {
               });
               if (res.ok) {
                 client.setConfig({ baseUrl: `http://localhost:${port}`, credentials: 'omit' });
-                break;
+                // Registration endpoint coming up is a better frontend-readiness signal
+                // than container health alone.
+                const reg = await fetch(`http://localhost:${port}/api/registration/status`, {
+                  signal: AbortSignal.timeout(2000),
+                });
+                if (reg.ok) {
+                  ready = true;
+                  break;
+                }
               }
             } catch {
               // try next port
             }
           }
+
+          setStatus(ready ? 'Running' : 'Starting');
+        } else {
+          setStatus(result);
         }
       } catch {
         await checkHealthFallback();
       }
     } else if (isTauri) {
-      // Only probe localhost in Tauri builds — in a regular browser the API
-      // is served from the same origin so no localhost probing is needed, and
-      // doing so triggers Private Network Access (PNA) CORS errors when the
-      // page is loaded from a public/tunnel URL.
       await checkHealthFallback();
     }
   }, [isTauri, isTauriRelease, isWindows, checkHealthFallback, startHub]);
 
-  // Listen for startup progress events to detect when startup is in progress
+  // Track elapsed seconds while in Starting state
   useEffect(() => {
-    if (!isTauri) return;
-
-    let unlisten: (() => void) | undefined;
-
-    void (async () => {
-      try {
-        const { listen } = await import('@tauri-apps/api/event');
-        unlisten = await listen<{ terminal_state?: string | null }>('hub-startup-progress', (event) => {
-          // Startup is in progress if terminal_state is null
-          setIsStartupInProgress(event.payload.terminal_state === null);
-        });
-      } catch {
-        // Event bridge unavailable in non-desktop or non-Tauri test contexts
+    if (status === 'Starting') {
+      if (startupStartRef.current === null) {
+        startupStartRef.current = Date.now();
       }
-    })();
-
-    return () => {
-      void unlisten?.();
-    };
-  }, [isTauri]);
+      const id = setInterval(() => {
+        setStartupElapsed(Math.floor((Date.now() - (startupStartRef.current ?? Date.now())) / 1000));
+      }, 1000);
+      return () => clearInterval(id);
+    }
+    startupStartRef.current = null;
+    setStartupElapsed(0);
+  }, [status]);
 
   useEffect(() => {
     checkStatus();
@@ -308,54 +462,17 @@ export function HubStatus({ children }: HubStatusProps) {
         <>
           <h1 className="text-2xl font-semibold text-foreground">Hub Not Running</h1>
           <p className="text-center max-w-md text-muted-foreground">The Companion Hub backend is not running.</p>
-          {!isStartupInProgress && (
-            <button
-              type="button"
-              onClick={handleStartHub}
-              className="inline-flex items-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-            >
-              Start Hub
-            </button>
-          )}
-          {isStartupInProgress && (
-            <div className="flex items-center gap-3">
-              <svg
-                className="h-5 w-5 animate-spin text-primary"
-                xmlns="http://www.w3.org/2000/svg"
-                fill="none"
-                viewBox="0 0 24 24"
-                role="img"
-                aria-label="Loading"
-              >
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-              </svg>
-              <span className="text-muted-foreground">Fetching data…</span>
-            </div>
-          )}
+          <button
+            type="button"
+            onClick={handleStartHub}
+            className="inline-flex items-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+          >
+            Start Hub
+          </button>
         </>
       )}
 
-      {status === 'Starting' && (
-        <>
-          <h1 className="text-2xl font-semibold text-foreground">Hub Starting…</h1>
-          <div className="flex items-center gap-3">
-            <svg
-              className="h-5 w-5 animate-spin text-primary"
-              xmlns="http://www.w3.org/2000/svg"
-              fill="none"
-              viewBox="0 0 24 24"
-              role="img"
-              aria-label="Loading"
-            >
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-            </svg>
-            <span className="text-muted-foreground">Waiting to start…</span>
-          </div>
-          <p className="text-sm text-muted-foreground">This may take a few minutes on first run while images are downloaded.</p>
-        </>
-      )}
+      {status === 'Starting' && <StartupScreen elapsedSeconds={startupElapsed} />}
 
       {errorMessage && (
         <>
@@ -371,7 +488,7 @@ export function HubStatus({ children }: HubStatusProps) {
         </>
       )}
 
-      {status !== 'Starting' && status !== 'DockerNotAvailable' && !errorMessage && !isStartupInProgress && (
+      {status !== 'Starting' && status !== 'DockerNotAvailable' && !errorMessage && (
         <button type="button" onClick={() => checkStatus()} className="text-sm text-muted-foreground underline hover:text-foreground">
           Check again
         </button>

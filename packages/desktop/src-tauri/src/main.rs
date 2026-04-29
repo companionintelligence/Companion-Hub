@@ -27,18 +27,12 @@ async fn discover_hubs() -> Result<Vec<String>, String> {
 /// Start the Hub via docker compose.
 #[tauri::command]
 async fn start_hub_command(
-    app_handle: tauri::AppHandle,
     state: tauri::State<'_, hub_manager::HubPaths>,
 ) -> Result<String, String> {
     let compose = state.compose_path.clone();
     let env = state.env_path.clone();
     let data = state.data_dir.clone();
-    let progress_emitter: hub_manager::StartupProgressCallback = std::sync::Arc::new(move |event| {
-        let _ = app_handle.emit(hub_manager::HUB_STARTUP_PROGRESS_EVENT, event);
-    });
-    tokio::task::spawn_blocking(move || {
-        hub_manager::start_hub_with_progress(&compose, &env, &data, Some(progress_emitter))
-    })
+    tokio::task::spawn_blocking(move || hub_manager::start_hub(&compose, &env, &data))
         .await
         .map_err(|e| {
             if e.is_panic() {
@@ -250,19 +244,9 @@ pub fn run() {
                     let hash = config_hash;
                     let hp = hash_path;
                     let data_for_log = data.clone();
-                    let app_handle = app.handle().clone();
                     tauri::async_runtime::spawn(async move {
-                        let progress_emitter: hub_manager::StartupProgressCallback =
-                            std::sync::Arc::new(move |event| {
-                                let _ = app_handle.emit(hub_manager::HUB_STARTUP_PROGRESS_EVENT, event);
-                            });
                         let result = tokio::task::spawn_blocking(move || {
-                            hub_manager::start_hub_with_progress(
-                                &compose,
-                                &env,
-                                &data,
-                                Some(progress_emitter),
-                            )
+                            hub_manager::start_hub(&compose, &env, &data)
                         })
                         .await;
                         match result {
