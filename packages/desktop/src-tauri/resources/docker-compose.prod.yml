@@ -50,6 +50,7 @@ services:
     platform: ${DOCKER_PLATFORM:-linux/amd64}
     privileged: true
     image: ${CI_HUB_IMAGE:-ghcr.io/companionintelligence/ci-hub:dev}
+    pull_policy: always
     depends_on:
       ci-hub-db:
         condition: service_healthy

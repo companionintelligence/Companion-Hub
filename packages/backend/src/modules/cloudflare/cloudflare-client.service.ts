@@ -206,11 +206,12 @@ export class CloudflareClientService {
       const trimmed = token?.trim();
       if (trimmed) {
         this.tunnelToken = trimmed;
-        this.logger.log('Loaded tunnel token from disk');
+        this.logger.warn(`Loaded tunnel token from disk (${trimmed.length} chars, tunnelId=${tunnelId ?? 'none'})`);
         return true;
       }
-    } catch {
-      // File missing or unreadable — token stays null
+      this.logger.warn('Tunnel token file exists but is empty');
+    } catch (err) {
+      this.logger.error(`Failed to read tunnel token from disk: ${err instanceof Error ? err.message : String(err)}`);
     }
     return false;
   }
@@ -224,22 +225,23 @@ export class CloudflareClientService {
    */
   async ensureCloudflaredRunning(): Promise<boolean> {
     if (!this.tunnelToken) {
+      this.logger.warn('ensureCloudflaredRunning: skipped — no tunnel token in memory');
       return false;
     }
     const domain = this.configService.get('domain');
     if (domain === 'ci.localhost') {
-      this.logger.log('Local/E2E mode — not ensuring cloudflared container');
+      this.logger.warn('Local/E2E mode — not ensuring cloudflared container');
       return false;
     }
     try {
-      this.logger.log('Ensuring cloudflared container is running (post-boot)...');
+      this.logger.warn('Ensuring cloudflared container is running (post-boot)...');
       const dockerService = this.moduleRef.get(DockerService, { strict: false });
       const composeFile = this.getComposeFile();
       await dockerService.ensureContainerRunning('cloudflared', {
         composeFile,
         profile: 'cloudflare',
       });
-      this.logger.log('Cloudflared container is running.');
+      this.logger.warn('Cloudflared container is running.');
       return true;
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);

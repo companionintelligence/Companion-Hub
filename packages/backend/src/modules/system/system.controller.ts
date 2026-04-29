@@ -36,7 +36,21 @@ export class SystemController {
   @Get('/logs/download')
   @ApiResponse({ status: 200, description: 'Hub logs download' })
   async downloadHubLogs(@Res() res: Response) {
-    const { stdout, stderr, kill } = await this.dockerService.getLogsDownloadStream();
+    // @Res() bypasses NestJS exception filters, so errors must be caught
+    // manually. Without this, unhandled throws propagate to Express's error
+    // handler chain where @nestjs/serve-static converts them into 404s.
+    let stdout: NodeJS.ReadableStream;
+    let stderr: NodeJS.ReadableStream;
+    let kill: () => void;
+
+    try {
+      ({ stdout, stderr, kill } = await this.dockerService.getLogsDownloadStream());
+    } catch (error) {
+      this.logger.error('Failed to start log download stream', error);
+      res.status(500).json({ statusCode: 500, message: 'Failed to start log download stream' });
+      return;
+    }
+
     const timestamp = new Date().toISOString().replaceAll(':', '-');
     let cleanedUp = false;
 
@@ -70,7 +84,10 @@ export class SystemController {
       await pipeline(stdout, res);
     } catch (error) {
       if (!isExpectedDownloadAbortError(error)) {
-        throw error;
+        this.logger.error('Log download pipeline failed', error);
+        if (!res.headersSent) {
+          res.status(500).json({ statusCode: 500, message: 'Log download failed' });
+        }
       }
     } finally {
       cleanup();
