@@ -1,10 +1,83 @@
 import { Injectable } from '@nestjs/common';
+import type { AppUrn } from '@ci-hub/common/types';
+import { AppsService } from '@/modules/apps/apps.service';
+import { DockerService } from '@/modules/docker/docker.service';
+import { castAppUrn } from '@/common/helpers/app-helpers';
 
-/**
- * App Discovery MCP tools.
- * Tools: hub_list_installed_apps, hub_get_app, hub_get_app_logs,
- *        hub_check_app_availability, hub_resolve_app_availability,
- *        hub_get_compose_diff, hub_get_config_diff
- */
 @Injectable()
-export class AppDiscoveryTools {}
+export class AppDiscoveryTools {
+  constructor(
+    private readonly appsService: AppsService,
+    private readonly dockerService: DockerService,
+  ) {}
+
+  async listInstalledApps() {
+    return this.appsService.getInstalledApps();
+  }
+
+  async getApp(params: { appUrn: string }) {
+    return this.appsService.getApp(castAppUrn(params.appUrn));
+  }
+
+  async getAppLogs(params: { appUrn: string; maxLines?: number }): Promise<{ lines: string[] }> {
+    const maxLines = Math.max(1, Math.min(params.maxLines ?? 100, 1000));
+    const appUrn = castAppUrn(params.appUrn) as AppUrn;
+
+    return new Promise((resolve, reject) => {
+      const lines: string[] = [];
+      const timeout = setTimeout(() => {
+        stream?.kill();
+        resolve({ lines });
+      }, 5000);
+
+      let stream: { on: (event: string, cb: (data: Buffer) => void) => void; kill: () => void } | null = null;
+
+      this.dockerService
+        .getLogsStream(maxLines, appUrn)
+        .then((s) => {
+          stream = s;
+          s.on('data', (data: Buffer) => {
+            const text = data.toString().trim();
+            if (text) {
+              for (const line of text.split('\n')) {
+                lines.push(line);
+              }
+            }
+          });
+          s.on('end' as string, () => {
+            clearTimeout(timeout);
+            resolve({ lines: lines.slice(-maxLines) });
+          });
+        })
+        .catch((err) => {
+          clearTimeout(timeout);
+          resolve({ lines: [], error: err instanceof Error ? err.message : 'App is not running' } as { lines: string[] });
+        });
+    });
+  }
+
+  async checkAppAvailability(params: { appUrn: string }) {
+    const result = await this.appsService.checkAppAvailability(castAppUrn(params.appUrn));
+    return {
+      available: result.available,
+      url: result.appUrl,
+      error: result.reason,
+    };
+  }
+
+  async resolveAppAvailability(params: { appUrn: string }) {
+    const result = await this.appsService.resolveAppAvailability(castAppUrn(params.appUrn));
+    return {
+      success: result.success,
+      message: result.detail,
+    };
+  }
+
+  async getComposeDiff(params: { appUrn: string }) {
+    return this.appsService.getAppComposeDiff(castAppUrn(params.appUrn));
+  }
+
+  async getConfigDiff(params: { appUrn: string }) {
+    return this.appsService.getAppConfigDiff(castAppUrn(params.appUrn));
+  }
+}

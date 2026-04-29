@@ -1,82 +1,109 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { mock } from 'vitest-mock-extended';
+import { mock, type MockProxy } from 'vitest-mock-extended';
 import { SystemTools } from '../../tools/system.tools';
+import { SystemService } from '@/modules/system/system.service';
+import { SystemUpdateService } from '@/modules/system-update/system-update.service';
+import { DockerService } from '@/modules/docker/docker.service';
 
 describe('SystemTools', () => {
   let tools: SystemTools;
+  let systemService: MockProxy<SystemService>;
+  let systemUpdateService: MockProxy<SystemUpdateService>;
+  let dockerService: MockProxy<DockerService>;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
-      providers: [SystemTools],
+      providers: [
+        SystemTools,
+        { provide: SystemService, useValue: mock<SystemService>() },
+        { provide: SystemUpdateService, useValue: mock<SystemUpdateService>() },
+        { provide: DockerService, useValue: mock<DockerService>() },
+      ],
     }).compile();
-
     tools = module.get<SystemTools>(SystemTools);
+    systemService = module.get(SystemService);
+    systemUpdateService = module.get(SystemUpdateService);
+    dockerService = module.get(DockerService);
   });
 
   it('should be defined', () => {
     expect(tools).toBeDefined();
   });
 
-  // --- SY-1: hub_system_load ---
-
   describe('hub_system_load', () => {
-    // S-SY-1.1: returns disk, cpu, memory metrics
-    it.todo('should return diskUsed, diskSize, percentUsed');
-    it.todo('should return cpuLoad, cpuCores');
-    it.todo('should return memoryTotal, percentUsedMemory');
-    it.todo('should return all values as numbers');
+    it('should return system metrics as numbers', async () => {
+      systemService.getSystemLoad.mockResolvedValue({
+        diskUsed: 50,
+        diskSize: 100,
+        percentUsed: 50,
+        cpuLoad: 25,
+        cpuCores: 4,
+        memoryTotal: 8192,
+        percentUsedMemory: 60,
+      });
+      const result = await tools.getSystemLoad();
+      expect(result.diskUsed).toBe(50);
+      expect(result.cpuCores).toBe(4);
+      expect(result.percentUsedMemory).toBe(60);
+    });
   });
-
-  // --- SY-2: hub_get_hub_logs ---
-
-  describe('hub_get_hub_logs', () => {
-    // S-SY-2.1: returns { lines: string[] }
-    it.todo('should return Hub container recent logs as string array');
-
-    // S-SY-2.2: maxLines defaults to 100, accepts 1-1000
-    it.todo('should default maxLines to 100');
-    it.todo('should accept maxLines between 1 and 1000');
-  });
-
-  // --- SY-3: hub_detect_services ---
 
   describe('hub_detect_services', () => {
-    // S-SY-3.1: returns list of detected Docker services
-    it.todo('should return a list of detected Docker services on the host');
+    it('should return a list of detected Docker services', async () => {
+      systemService.detectDockerServices.mockResolvedValue({ services: [{ name: 'nginx', image: 'nginx:latest', status: 'running' }] } as any);
+      const result = await tools.detectServices();
+      expect(result.services).toHaveLength(1);
+    });
   });
-
-  // --- SY-4: hub_check_for_updates ---
 
   describe('hub_check_for_updates', () => {
-    // S-SY-4.1: returns { updateAvailable, currentVersion, latestVersion? }
-    it.todo('should return updateAvailable: false when up to date');
-    it.todo('should return updateAvailable: true with latestVersion when update available');
-    it.todo('should always include currentVersion');
+    it('should return updateAvailable: false when up to date', async () => {
+      systemUpdateService.checkForUpdates.mockResolvedValue({ current: '4.0.0', latest: '4.0.0', updateAvailable: false, releases: [] } as any);
+      const result = await tools.checkForUpdates();
+      expect(result.updateAvailable).toBe(false);
+      expect(result.currentVersion).toBe('4.0.0');
+    });
+    it('should return updateAvailable: true with latestVersion when update available', async () => {
+      systemUpdateService.checkForUpdates.mockResolvedValue({ current: '3.9.0', latest: '4.0.0', updateAvailable: true, releases: [] } as any);
+      const result = await tools.checkForUpdates();
+      expect(result.updateAvailable).toBe(true);
+      expect(result.latestVersion).toBe('4.0.0');
+    });
   });
-
-  // --- SY-5: hub_perform_update ---
 
   describe('hub_perform_update', () => {
-    // S-SY-5.1: initiates Hub update
-    it.todo('should initiate a Hub update');
-
-    // S-SY-5.2: defaults to latest version when targetVersion not provided
-    it.todo('should update to latest when no targetVersion specified');
-    it.todo('should update to specific targetVersion when provided');
+    it('should update to latest when no targetVersion specified', async () => {
+      systemUpdateService.performUpdate.mockResolvedValue({ success: true, message: 'Updated' } as any);
+      await tools.performUpdate({});
+      expect(systemUpdateService.performUpdate).toHaveBeenCalledWith(undefined);
+    });
+    it('should update to specific targetVersion when provided', async () => {
+      systemUpdateService.performUpdate.mockResolvedValue({ success: true, message: 'Updated' } as any);
+      await tools.performUpdate({ targetVersion: '4.1.0' });
+      expect(systemUpdateService.performUpdate).toHaveBeenCalledWith('4.1.0');
+    });
   });
 
-  // --- SY-6: hub_get_auto_updates / hub_set_auto_updates ---
-
   describe('hub_get_auto_updates', () => {
-    // S-SY-6.1: returns { enabled: boolean }
-    it.todo('should return current auto-update setting');
+    it('should return current auto-update setting', async () => {
+      systemUpdateService.getAutoUpdatesEnabled.mockReturnValue(true);
+      const result = await tools.getAutoUpdates();
+      expect(result).toEqual({ enabled: true });
+    });
   });
 
   describe('hub_set_auto_updates', () => {
-    // S-SY-6.2: persists setting and returns { enabled: boolean }
-    it.todo('should enable auto-updates when enabled: true');
-    it.todo('should disable auto-updates when enabled: false');
-    it.todo('should persist the setting and return the new value');
+    it('should enable auto-updates', async () => {
+      systemUpdateService.setAutoUpdatesEnabled.mockResolvedValue(undefined);
+      const result = await tools.setAutoUpdates({ enabled: true });
+      expect(systemUpdateService.setAutoUpdatesEnabled).toHaveBeenCalledWith(true);
+      expect(result).toEqual({ enabled: true });
+    });
+    it('should disable auto-updates', async () => {
+      systemUpdateService.setAutoUpdatesEnabled.mockResolvedValue(undefined);
+      const result = await tools.setAutoUpdates({ enabled: false });
+      expect(result).toEqual({ enabled: false });
+    });
   });
 });

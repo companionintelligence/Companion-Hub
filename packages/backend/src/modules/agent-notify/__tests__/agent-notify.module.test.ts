@@ -1,15 +1,34 @@
+import { Test } from '@nestjs/testing';
 import { describe, expect, it } from 'vitest';
-import { AgentNotifyModule } from '../agent-notify.module';
+import { mock } from 'vitest-mock-extended';
+import { AgentNotifyService } from '../agent-notify.service';
+import { AgentHealthCheckService } from '../agent-health-check.service';
+import { SystemService } from '@/modules/system/system.service';
+import { LoggerService } from '@/core/logger/logger.service';
 
 describe('AgentNotifyModule', () => {
-  describe('module configuration', () => {
-    it.todo('should compile as a standalone NestJS module');
-    it.todo('should export AgentNotifyService for use by other modules');
+  it('should compile as a standalone NestJS module', async () => {
+    const module = await Test.createTestingModule({
+      providers: [
+        AgentNotifyService,
+        AgentHealthCheckService,
+        { provide: SystemService, useValue: mock<SystemService>() },
+        { provide: LoggerService, useValue: mock<LoggerService>() },
+      ],
+    }).compile();
+    expect(module).toBeDefined();
   });
 
-  describe('conditional activation', () => {
-    it.todo('should be a no-op when AGENT_WEBHOOK_URL is not configured');
-    it.todo('should be a no-op when AGENT_WEBHOOK_ENABLED is false');
-    it.todo('should activate normally when AGENT_WEBHOOK_URL is set and AGENT_WEBHOOK_ENABLED is true');
+  it('should export AgentNotifyService for use by other modules', async () => {
+    const module = await Test.createTestingModule({
+      providers: [
+        AgentNotifyService,
+        AgentHealthCheckService,
+        { provide: SystemService, useValue: mock<SystemService>() },
+        { provide: LoggerService, useValue: mock<LoggerService>() },
+      ],
+      exports: [AgentNotifyService],
+    }).compile();
+    expect(module.get(AgentNotifyService)).toBeDefined();
   });
 });

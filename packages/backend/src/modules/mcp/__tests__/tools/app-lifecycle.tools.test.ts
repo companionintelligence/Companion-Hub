@@ -1,121 +1,147 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { mock } from 'vitest-mock-extended';
+import { mock, type MockProxy } from 'vitest-mock-extended';
 import { AppLifecycleTools } from '../../tools/app-lifecycle.tools';
+import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
 
 describe('AppLifecycleTools', () => {
   let tools: AppLifecycleTools;
+  let lifecycleService: MockProxy<AppLifecycleService>;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
-      providers: [AppLifecycleTools],
+      providers: [AppLifecycleTools, { provide: AppLifecycleService, useValue: mock<AppLifecycleService>() }],
     }).compile();
-
     tools = module.get<AppLifecycleTools>(AppLifecycleTools);
+    lifecycleService = module.get(AppLifecycleService);
   });
 
   it('should be defined', () => {
     expect(tools).toBeDefined();
   });
 
-  // --- AL-1: hub_install_app ---
-
   describe('hub_install_app', () => {
-    // S-AL-1.1: enqueues install command and returns { requestId }
-    it.todo('should enqueue an install command and return a requestId');
-
-    // S-AL-1.2: form accepts all appFormSchema fields plus app-specific env variables
-    it.todo('should accept port, exposed, exposedLocal, openPort, domain fields');
-    it.todo('should accept isVisibleOnGuestDashboard, enableAuth, localSubdomain fields');
-    it.todo('should accept maxBackups, skipEnv, skipPull, skipRun fields');
-    it.todo('should accept app-specific form field env variables');
-
-    // S-AL-1.3: already installed app returns error
-    it.todo('should return error when app is already installed');
+    it('should enqueue an install command and return a requestId', async () => {
+      lifecycleService.installApp.mockResolvedValue({ requestId: 'uuid-1' });
+      const result = await tools.installApp({ appUrn: 'ci-store:nextcloud', form: { port: 8080 } });
+      expect(lifecycleService.installApp).toHaveBeenCalled();
+      expect(result).toEqual({ requestId: 'uuid-1' });
+    });
+    it('should return error when app is already installed', async () => {
+      lifecycleService.installApp.mockRejectedValue(new Error('Already installed'));
+      await expect(tools.installApp({ appUrn: 'ci-store:nextcloud' })).rejects.toThrow();
+    });
   });
 
-  // --- AL-2: hub_start_app, hub_stop_app, hub_restart_app ---
-
   describe('hub_start_app', () => {
-    // S-AL-2.1: accepts { appUrn } and returns { requestId }
-    it.todo('should accept appUrn and return requestId');
-
-    // S-AL-2.2: not installed app returns error
-    it.todo('should return error when app is not installed');
+    it('should accept appUrn and return requestId', async () => {
+      lifecycleService.startApp.mockResolvedValue({ requestId: 'uuid-2' });
+      const result = await tools.startApp({ appUrn: 'ci-store:test' });
+      expect(result).toEqual({ requestId: 'uuid-2' });
+    });
+    it('should return error when app is not installed', async () => {
+      lifecycleService.startApp.mockRejectedValue(new Error('Not found'));
+      await expect(tools.startApp({ appUrn: 'ci-store:test' })).rejects.toThrow();
+    });
   });
 
   describe('hub_stop_app', () => {
-    // S-AL-2.1: accepts { appUrn } and returns { requestId }
-    it.todo('should accept appUrn and return requestId');
-
-    // S-AL-2.3: already stopped app returns error
-    it.todo('should return error when app is already stopped');
+    it('should accept appUrn and return requestId', async () => {
+      lifecycleService.stopApp.mockResolvedValue({ requestId: 'uuid-3' });
+      const result = await tools.stopApp({ appUrn: 'ci-store:test' });
+      expect(result).toEqual({ requestId: 'uuid-3' });
+    });
   });
 
   describe('hub_restart_app', () => {
-    // S-AL-2.1: accepts { appUrn } and returns { requestId }
-    it.todo('should accept appUrn and return requestId');
+    it('should accept appUrn and return requestId', async () => {
+      lifecycleService.restartApp.mockResolvedValue({ requestId: 'uuid-4' });
+      const result = await tools.restartApp({ appUrn: 'ci-store:test' });
+      expect(result).toEqual({ requestId: 'uuid-4' });
+    });
   });
-
-  // --- AL-3: hub_uninstall_app ---
 
   describe('hub_uninstall_app', () => {
-    // S-AL-3.1: accepts { appUrn, removeBackups? } with default false
-    it.todo('should enqueue uninstall command with removeBackups defaulting to false');
-    it.todo('should pass removeBackups: true when specified');
-
-    // S-AL-3.2: returns { requestId }
-    it.todo('should return a requestId');
+    it('should enqueue uninstall command with removeBackups defaulting to false', async () => {
+      lifecycleService.uninstallApp.mockResolvedValue({ requestId: 'uuid-5' });
+      await tools.uninstallApp({ appUrn: 'ci-store:test' });
+      expect(lifecycleService.uninstallApp).toHaveBeenCalledWith(expect.objectContaining({ removeBackups: false }));
+    });
+    it('should pass removeBackups: true when specified', async () => {
+      lifecycleService.uninstallApp.mockResolvedValue({ requestId: 'uuid-5' });
+      await tools.uninstallApp({ appUrn: 'ci-store:test', removeBackups: true });
+      expect(lifecycleService.uninstallApp).toHaveBeenCalledWith(expect.objectContaining({ removeBackups: true }));
+    });
+    it('should return a requestId', async () => {
+      lifecycleService.uninstallApp.mockResolvedValue({ requestId: 'uuid-5' });
+      const result = await tools.uninstallApp({ appUrn: 'ci-store:test' });
+      expect(result.requestId).toBe('uuid-5');
+    });
   });
-
-  // --- AL-4: hub_reset_app ---
 
   describe('hub_reset_app', () => {
-    // S-AL-4.1: enqueues reset and returns { requestId }
-    it.todo('should enqueue a reset command and return requestId');
+    it('should enqueue a reset command and return requestId', async () => {
+      lifecycleService.resetApp.mockResolvedValue({ requestId: 'uuid-6' });
+      const result = await tools.resetApp({ appUrn: 'ci-store:test' });
+      expect(result).toEqual({ requestId: 'uuid-6' });
+    });
   });
-
-  // --- AL-5: hub_update_app ---
 
   describe('hub_update_app', () => {
-    // S-AL-5.1: accepts { appUrn, performBackup? } with default true
-    it.todo('should enqueue update command with performBackup defaulting to true');
-    it.todo('should pass performBackup: false when specified');
-
-    // S-AL-5.2: returns { requestId }
-    it.todo('should return a requestId');
+    it('should enqueue update command with performBackup defaulting to true', async () => {
+      lifecycleService.updateApp.mockResolvedValue({ requestId: 'uuid-7' });
+      await tools.updateApp({ appUrn: 'ci-store:test' });
+      expect(lifecycleService.updateApp).toHaveBeenCalledWith(expect.objectContaining({ performBackup: true }));
+    });
+    it('should pass performBackup: false when specified', async () => {
+      lifecycleService.updateApp.mockResolvedValue({ requestId: 'uuid-7' });
+      await tools.updateApp({ appUrn: 'ci-store:test', performBackup: false });
+      expect(lifecycleService.updateApp).toHaveBeenCalledWith(expect.objectContaining({ performBackup: false }));
+    });
   });
-
-  // --- AL-6: hub_update_app_config ---
 
   describe('hub_update_app_config', () => {
-    // S-AL-6.1: accepts { appUrn, form } and returns { requestId }
-    it.todo('should enqueue config update and return requestId');
-    it.todo('should pass form values to the lifecycle service');
+    it('should enqueue config update and return requestId', async () => {
+      lifecycleService.updateAppConfig.mockResolvedValue({ requestId: 'uuid-8' });
+      const result = await tools.updateAppConfig({ appUrn: 'ci-store:test', form: { port: 9090 } });
+      expect(result).toEqual({ requestId: 'uuid-8' });
+    });
+    it('should pass form values to the lifecycle service', async () => {
+      lifecycleService.updateAppConfig.mockResolvedValue({ requestId: 'uuid-8' });
+      await tools.updateAppConfig({ appUrn: 'ci-store:test', form: { port: 9090, exposed: true } });
+      expect(lifecycleService.updateAppConfig).toHaveBeenCalledWith(expect.objectContaining({ form: { port: 9090, exposed: true } }));
+    });
   });
 
-  // --- AL-7: bulk lifecycle tools ---
-
   describe('hub_update_all_apps', () => {
-    // S-AL-7.1: accepts no arguments
-    it.todo('should accept no arguments');
-
-    // S-AL-7.2: invokes service and returns summary
-    it.todo('should invoke bulk update and return summary result');
+    it('should invoke bulk update', async () => {
+      lifecycleService.updateAllApps.mockResolvedValue(undefined);
+      await tools.updateAllApps();
+      expect(lifecycleService.updateAllApps).toHaveBeenCalled();
+    });
   });
 
   describe('hub_start_all_apps', () => {
-    it.todo('should accept no arguments');
-    it.todo('should invoke bulk start and return summary result');
+    it('should invoke bulk start', async () => {
+      lifecycleService.startAllApps.mockResolvedValue(undefined);
+      await tools.startAllApps();
+      expect(lifecycleService.startAllApps).toHaveBeenCalled();
+    });
   });
 
   describe('hub_stop_all_apps', () => {
-    it.todo('should accept no arguments');
-    it.todo('should invoke bulk stop and return summary result');
+    it('should invoke bulk stop', async () => {
+      lifecycleService.stopAllApps.mockResolvedValue(undefined);
+      await tools.stopAllApps();
+      expect(lifecycleService.stopAllApps).toHaveBeenCalled();
+    });
   });
 
   describe('hub_restart_all_apps', () => {
-    it.todo('should accept no arguments');
-    it.todo('should invoke bulk restart and return summary result');
+    it('should invoke bulk restart', async () => {
+      lifecycleService.restartAllApps.mockResolvedValue(undefined);
+      await tools.restartAllApps();
+      expect(lifecycleService.restartAllApps).toHaveBeenCalled();
+    });
   });
 });

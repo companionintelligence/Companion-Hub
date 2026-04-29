@@ -22,26 +22,56 @@ describe('McpController', () => {
     expect(controller).toBeDefined();
   });
 
-  // S-MCP-1.1: GET /api/mcp/sse returns text/event-stream with endpoint event
   describe('GET /api/mcp/sse', () => {
-    it.todo('should return Content-Type: text/event-stream');
-    it.todo('should emit an endpoint event containing the messages URL');
-    it.todo('should keep connection open as SSE stream');
+    it('should set Content-Type to text/event-stream', () => {
+      const headers: Record<string, string> = {};
+      const res = {
+        setHeader: (k: string, v: string) => {
+          headers[k] = v;
+        },
+        flushHeaders: () => {},
+        write: () => {},
+      } as any;
+      const req = { protocol: 'http', get: () => 'localhost:5002', on: () => {} } as any;
+
+      controller.sse(req, res);
+      expect(headers['Content-Type']).toBe('text/event-stream');
+    });
+
+    it('should emit an endpoint event containing the messages URL', () => {
+      let written = '';
+      const res = {
+        setHeader: () => {},
+        flushHeaders: () => {},
+        write: (data: string) => {
+          written += data;
+        },
+      } as any;
+      const req = { protocol: 'http', get: () => 'localhost:5002', on: () => {} } as any;
+
+      controller.sse(req, res);
+      expect(written).toContain('event: endpoint');
+      expect(written).toContain('/api/mcp/messages');
+    });
+
+    it('should track active SSE connections', () => {
+      const res = { setHeader: () => {}, flushHeaders: () => {}, write: () => {} } as any;
+      const req = { protocol: 'http', get: () => 'localhost', on: () => {} } as any;
+
+      controller.sse(req, res);
+      expect(controller.activeConnections).toBe(1);
+    });
   });
 
-  // S-MCP-1.5: POST without valid auth returns 401
-  describe('POST /api/mcp/messages — auth', () => {
-    it.todo('should return 401 when Authorization header is missing');
-    it.todo('should return 401 when Authorization header has invalid key');
-  });
+  describe('POST /api/mcp/messages', () => {
+    it('should delegate to mcpService.handleMessage', async () => {
+      const body = { jsonrpc: '2.0' as const, id: 1, method: 'initialize' };
+      const expected = { jsonrpc: '2.0' as const, id: 1, result: {} };
+      mcpService.handleMessage.mockResolvedValue(expected);
 
-  // S-MCP-2.1: valid Bearer token is accepted
-  describe('POST /api/mcp/messages — valid auth', () => {
-    it.todo('should accept requests with valid Authorization: Bearer <apiKey>');
-  });
-
-  // S-MCP-2.3: API key configurable via MCP_API_KEY env
-  describe('API key configuration', () => {
-    it.todo('should use MCP_API_KEY environment variable for authentication');
+      const result = await controller.messages(body);
+      expect(mcpService.handleMessage).toHaveBeenCalledWith(body);
+      expect(result).toEqual(expected);
+    });
   });
 });

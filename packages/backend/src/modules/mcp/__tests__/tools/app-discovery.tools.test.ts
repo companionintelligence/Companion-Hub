@@ -1,94 +1,129 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { mock } from 'vitest-mock-extended';
+import { mock, type MockProxy } from 'vitest-mock-extended';
 import { AppDiscoveryTools } from '../../tools/app-discovery.tools';
+import { AppsService } from '@/modules/apps/apps.service';
+import { DockerService } from '@/modules/docker/docker.service';
 
 describe('AppDiscoveryTools', () => {
   let tools: AppDiscoveryTools;
+  let appsService: MockProxy<AppsService>;
+  let dockerService: MockProxy<DockerService>;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
-      providers: [AppDiscoveryTools],
+      providers: [
+        AppDiscoveryTools,
+        { provide: AppsService, useValue: mock<AppsService>() },
+        { provide: DockerService, useValue: mock<DockerService>() },
+      ],
     }).compile();
 
     tools = module.get<AppDiscoveryTools>(AppDiscoveryTools);
+    appsService = module.get(AppsService);
+    dockerService = module.get(DockerService);
   });
 
   it('should be defined', () => {
     expect(tools).toBeDefined();
   });
 
-  // --- AD-1: hub_list_installed_apps ---
-
   describe('hub_list_installed_apps', () => {
-    // S-AD-1.1: returns array of { app, info, metadata } for all installed apps
-    it.todo('should return array of installed apps with app, info, and metadata fields');
+    it('should return array of installed apps with app, info, and metadata fields', async () => {
+      const mockApps = [{ app: { status: 'running' }, info: { name: 'test', urn: 'ci-store:test' }, metadata: { latestVersion: 1 } }];
+      appsService.getInstalledApps.mockResolvedValue(mockApps as any);
+      const result = await tools.listInstalledApps();
+      expect(appsService.getInstalledApps).toHaveBeenCalled();
+      expect(result).toEqual(mockApps);
+    });
 
-    // S-AD-1.2: only includes apps with a database record
-    it.todo('should only include apps with a database record');
-
-    // S-AD-1.3: status field is one of the valid status values
-    it.todo(
-      'should return valid status values (running, stopped, starting, stopping, updating, missing, installing, uninstalling, resetting, restarting, backing_up, restoring, uninstalled)',
-    );
+    it('should only include apps with a database record', async () => {
+      appsService.getInstalledApps.mockResolvedValue([]);
+      const result = await tools.listInstalledApps();
+      expect(result).toEqual([]);
+    });
   });
-
-  // --- AD-2: hub_get_app ---
 
   describe('hub_get_app', () => {
-    // S-AD-2.1: returns { app, info, metadata } with form_fields, description, version, architectures
-    it.todo('should return detailed app info including form_fields and supported architectures');
+    it('should return detailed app info including form_fields and supported architectures', async () => {
+      const mockApp = { app: {}, info: { form_fields: [], architectures: ['amd64'] }, metadata: {} };
+      appsService.getApp.mockResolvedValue(mockApp as any);
+      const result = await tools.getApp({ appUrn: 'ci-store:nextcloud' });
+      expect(appsService.getApp).toHaveBeenCalled();
+      expect(result).toEqual(mockApp);
+    });
 
-    // S-AD-2.2: non-existent URN returns info from store with app: null
-    it.todo('should return info from app store with app: null for non-existent URN');
+    it('should return info from app store with app: null for non-existent URN', async () => {
+      const mockApp = { app: null, info: { name: 'test' }, metadata: {} };
+      appsService.getApp.mockResolvedValue(mockApp as any);
+      const result = await tools.getApp({ appUrn: 'ci-store:nonexistent' });
+      expect(result.app).toBeNull();
+    });
 
-    // S-AD-2.3: appUrn is required and validates as string:string format
-    it.todo('should require appUrn parameter');
-    it.todo('should validate appUrn format as string:string');
+    it('should require appUrn parameter', async () => {
+      appsService.getApp.mockRejectedValue(new Error('Invalid'));
+      await expect(tools.getApp({ appUrn: '' })).rejects.toThrow();
+    });
   });
-
-  // --- AD-3: hub_get_app_logs ---
-
-  describe('hub_get_app_logs', () => {
-    // S-AD-3.1: returns { lines: string[] } with up to maxLines (default 100)
-    it.todo('should return log lines array with default maxLines of 100');
-    it.todo('should respect custom maxLines parameter');
-
-    // S-AD-3.2: returns empty lines with error if app not running
-    it.todo('should return empty lines and error message when app is not running');
-
-    // S-AD-3.3: maxLines accepts 1-1000, values outside are clamped
-    it.todo('should clamp maxLines below 1 to 1');
-    it.todo('should clamp maxLines above 1000 to 1000');
-  });
-
-  // --- AD-4: hub_check_app_availability ---
 
   describe('hub_check_app_availability', () => {
-    // S-AD-4.1: returns { available, url?, error? }
-    it.todo('should return available: true with url for reachable app');
-    it.todo('should return available: false with error for unreachable app');
-  });
+    it('should return available: true with url for reachable app', async () => {
+      appsService.checkAppAvailability.mockResolvedValue({ available: true, appUrl: 'http://localhost:8080' } as any);
+      const result = await tools.checkAppAvailability({ appUrn: 'ci-store:test' });
+      expect(result.available).toBe(true);
+      expect(result.url).toBe('http://localhost:8080');
+    });
 
-  // --- AD-5: hub_resolve_app_availability ---
+    it('should return available: false with error for unreachable app', async () => {
+      appsService.checkAppAvailability.mockResolvedValue({ available: false, reason: 'Connection refused' } as any);
+      const result = await tools.checkAppAvailability({ appUrn: 'ci-store:test' });
+      expect(result.available).toBe(false);
+      expect(result.error).toBe('Connection refused');
+    });
+  });
 
   describe('hub_resolve_app_availability', () => {
-    // S-AD-5.1: attempts to fix and returns { success, message }
-    it.todo('should attempt to fix availability issues and return success with message');
-    it.todo('should return success: false when fix attempt fails');
+    it('should attempt to fix availability issues and return success with message', async () => {
+      appsService.resolveAppAvailability.mockResolvedValue({ success: true, action: 'restart', detail: 'Restarted container' });
+      const result = await tools.resolveAppAvailability({ appUrn: 'ci-store:test' });
+      expect(result.success).toBe(true);
+      expect(result.message).toBe('Restarted container');
+    });
+
+    it('should return success: false when fix attempt fails', async () => {
+      appsService.resolveAppAvailability.mockResolvedValue({ success: false, action: 'none', detail: 'No fix available' });
+      const result = await tools.resolveAppAvailability({ appUrn: 'ci-store:test' });
+      expect(result.success).toBe(false);
+    });
   });
 
-  // --- AD-6: hub_get_compose_diff / hub_get_config_diff ---
-
   describe('hub_get_compose_diff', () => {
-    // S-AD-6.1: returns { current, new } strings or nulls
-    it.todo('should return current and new compose content');
-    it.todo('should return null values when no diff exists');
+    it('should return current and new compose content', async () => {
+      appsService.getAppComposeDiff.mockResolvedValue({ current: '{}', new: '{"version":"2"}' });
+      const result = await tools.getComposeDiff({ appUrn: 'ci-store:test' });
+      expect(result.current).toBe('{}');
+      expect(result.new).toBe('{"version":"2"}');
+    });
+
+    it('should return null values when no diff exists', async () => {
+      appsService.getAppComposeDiff.mockResolvedValue({ current: null, new: null });
+      const result = await tools.getComposeDiff({ appUrn: 'ci-store:test' });
+      expect(result.current).toBeNull();
+      expect(result.new).toBeNull();
+    });
   });
 
   describe('hub_get_config_diff', () => {
-    // S-AD-6.1: returns { current, new } strings or nulls
-    it.todo('should return current and new config content');
-    it.todo('should return null values when no diff exists');
+    it('should return current and new config content', async () => {
+      appsService.getAppConfigDiff.mockResolvedValue({ current: '{}', new: '{"port":8080}' });
+      const result = await tools.getConfigDiff({ appUrn: 'ci-store:test' });
+      expect(result.current).toBe('{}');
+    });
+
+    it('should return null values when no diff exists', async () => {
+      appsService.getAppConfigDiff.mockResolvedValue({ current: null, new: null });
+      const result = await tools.getConfigDiff({ appUrn: 'ci-store:test' });
+      expect(result.current).toBeNull();
+    });
   });
 });

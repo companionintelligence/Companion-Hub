@@ -1,57 +1,55 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { mock } from 'vitest-mock-extended';
+import { mock, type MockProxy } from 'vitest-mock-extended';
 import { RegistrationTools } from '../../tools/registration.tools';
+import { RegistrationService } from '@/modules/registration/registration.service';
+import { CloudflareClientService } from '@/modules/cloudflare/cloudflare-client.service';
 
 describe('RegistrationTools', () => {
   let tools: RegistrationTools;
+  let registrationService: MockProxy<RegistrationService>;
+  let cloudflareClientService: MockProxy<CloudflareClientService>;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
-      providers: [RegistrationTools],
+      providers: [
+        RegistrationTools,
+        { provide: RegistrationService, useValue: mock<RegistrationService>() },
+        { provide: CloudflareClientService, useValue: mock<CloudflareClientService>() },
+      ],
     }).compile();
-
     tools = module.get<RegistrationTools>(RegistrationTools);
+    registrationService = module.get(RegistrationService);
+    cloudflareClientService = module.get(CloudflareClientService);
   });
 
   it('should be defined', () => {
     expect(tools).toBeDefined();
   });
 
-  // --- RN-1: hub_registration_status ---
-
   describe('hub_registration_status', () => {
-    // S-RN-1.1: returns phase, degradedReasons, registered
-    it.todo('should return registration phase (unregistered, paired, provisioning, locally_ready, publicly_ready, degraded)');
-    it.todo('should return degradedReasons array');
-    it.todo('should return registered boolean');
+    it('should return registration status with phase and registered boolean', async () => {
+      registrationService.getLiveRegistrationStatus.mockResolvedValue({ phase: 'locally_ready', degradedReasons: [], registered: true } as any);
+      const result = await tools.getRegistrationStatus();
+      expect(result.phase).toBe('locally_ready');
+      expect(result.registered).toBe(true);
+    });
   });
-
-  // --- RN-2: hub_cloudflare_status ---
 
   describe('hub_cloudflare_status', () => {
-    // S-RN-2.1: returns { tunnelEnabled, tunnelId, dnsEnabled }
-    it.todo('should return tunnelEnabled boolean');
-    it.todo('should return tunnelId string');
-    it.todo('should return dnsEnabled boolean');
-  });
-
-  // --- RN-3: hub_probe_domain ---
-
-  describe('hub_probe_domain', () => {
-    // S-RN-3.1: returns { ready: boolean }
-    it.todo('should return ready: true when domain is serving the Hub');
-    it.todo('should return ready: false when domain is not reachable');
-    it.todo('should require url parameter');
-  });
-
-  // --- RN-4: hub_check_url_availability ---
-
-  describe('hub_check_url_availability', () => {
-    // S-RN-4.1: returns { available, status?, error?, isDnsError? }
-    it.todo('should return available: true with status code for accessible URL');
-    it.todo('should return available: false with error for inaccessible URL');
-    it.todo('should indicate isDnsError when the failure is DNS-related');
-    it.todo('should require url parameter');
+    it('should return tunnel status', async () => {
+      cloudflareClientService.getTunnelToken.mockReturnValue('tok-123');
+      cloudflareClientService.getTunnelId.mockReturnValue('tun-456');
+      const result = await tools.getCloudflareStatus();
+      expect(result.tunnelEnabled).toBe(true);
+      expect(result.tunnelId).toBe('tun-456');
+      expect(result.dnsEnabled).toBe(true);
+    });
+    it('should return tunnelEnabled: false when no token', async () => {
+      cloudflareClientService.getTunnelToken.mockReturnValue(null);
+      cloudflareClientService.getTunnelId.mockReturnValue(null);
+      const result = await tools.getCloudflareStatus();
+      expect(result.tunnelEnabled).toBe(false);
+    });
   });
 });

@@ -1,61 +1,82 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { mock } from 'vitest-mock-extended';
+import { mock, type MockProxy } from 'vitest-mock-extended';
 import { AppConfigTools } from '../../tools/app-config.tools';
+import { UserConfigService } from '@/modules/user-config/user-config.service';
+import { AppsService } from '@/modules/apps/apps.service';
 
 describe('AppConfigTools', () => {
   let tools: AppConfigTools;
+  let userConfigService: MockProxy<UserConfigService>;
+  let appsService: MockProxy<AppsService>;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
-      providers: [AppConfigTools],
+      providers: [
+        AppConfigTools,
+        { provide: UserConfigService, useValue: mock<UserConfigService>() },
+        { provide: AppsService, useValue: mock<AppsService>() },
+      ],
     }).compile();
-
     tools = module.get<AppConfigTools>(AppConfigTools);
+    userConfigService = module.get(UserConfigService);
+    appsService = module.get(AppsService);
   });
 
   it('should be defined', () => {
     expect(tools).toBeDefined();
   });
 
-  // --- AC-1: hub_get_user_config ---
-
   describe('hub_get_user_config', () => {
-    // S-AC-1.1: returns { dockerCompose, appEnv, isEnabled }
-    it.todo('should return dockerCompose string or null');
-    it.todo('should return appEnv string or null');
-    it.todo('should return isEnabled boolean');
+    it('should return dockerCompose, appEnv, and isEnabled', async () => {
+      userConfigService.getUserConfig.mockResolvedValue({ dockerCompose: 'yaml', appEnv: 'KEY=val', isEnabled: true });
+      const result = await tools.getUserConfig({ appUrn: 'ci-store:test' });
+      expect(result.dockerCompose).toBe('yaml');
+      expect(result.appEnv).toBe('KEY=val');
+      expect(result.isEnabled).toBe(true);
+    });
   });
-
-  // --- AC-2: hub_update_user_config ---
 
   describe('hub_update_user_config', () => {
-    // S-AC-2.1: accepts { appUrn, dockerCompose, appEnv } and returns { success: true }
-    it.todo('should update user config files and return success');
-    it.todo('should require appUrn, dockerCompose, and appEnv parameters');
+    it('should update user config files and return success', async () => {
+      userConfigService.updateUserConfig.mockResolvedValue(undefined);
+      const result = await tools.updateUserConfig({ appUrn: 'ci-store:test', dockerCompose: 'new-yaml', appEnv: 'NEW=val' });
+      expect(userConfigService.updateUserConfig).toHaveBeenCalled();
+      expect(result).toEqual({ success: true });
+    });
   });
 
-  // --- AC-3: hub_enable_user_config / hub_disable_user_config ---
-
   describe('hub_enable_user_config', () => {
-    // S-AC-3.1: accepts { appUrn } and toggles enabled state
-    it.todo('should enable user config for the specified app');
+    it('should enable user config for the specified app', async () => {
+      userConfigService.enableUserConfig.mockResolvedValue(undefined);
+      const result = await tools.enableUserConfig({ appUrn: 'ci-store:test' });
+      expect(userConfigService.enableUserConfig).toHaveBeenCalled();
+      expect(result).toEqual({ success: true });
+    });
   });
 
   describe('hub_disable_user_config', () => {
-    // S-AC-3.1: accepts { appUrn } and toggles enabled state
-    it.todo('should disable user config for the specified app');
+    it('should disable user config for the specified app', async () => {
+      userConfigService.disableUserConfig.mockResolvedValue(undefined);
+      const result = await tools.disableUserConfig({ appUrn: 'ci-store:test' });
+      expect(userConfigService.disableUserConfig).toHaveBeenCalled();
+      expect(result).toEqual({ success: true });
+    });
   });
 
-  // --- AC-4: hub_ignore_app_version / hub_unignore_app_version ---
-
   describe('hub_ignore_app_version', () => {
-    // S-AC-4.1: accepts { appUrn } and updates ignored version state
-    it.todo('should mark the app version as ignored');
+    it('should mark the app version as ignored', async () => {
+      appsService.ignoreAppVersion.mockResolvedValue(undefined as any);
+      await tools.ignoreAppVersion({ appUrn: 'ci-store:test' });
+      expect(appsService.ignoreAppVersion).toHaveBeenCalled();
+    });
   });
 
   describe('hub_unignore_app_version', () => {
-    // S-AC-4.1: accepts { appUrn } and updates ignored version state
-    it.todo('should unmark the app version as ignored');
+    it('should unmark the app version as ignored', async () => {
+      appsService.unignoreAppVersion.mockResolvedValue(undefined as any);
+      await tools.unignoreAppVersion({ appUrn: 'ci-store:test' });
+      expect(appsService.unignoreAppVersion).toHaveBeenCalled();
+    });
   });
 });

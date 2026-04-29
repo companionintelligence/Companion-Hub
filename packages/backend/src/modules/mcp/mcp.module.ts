@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { McpController } from './mcp.controller';
 import { McpService } from './mcp.service';
 import { McpToolRegistry } from './mcp-tool-registry.service';
+import { McpAuthGuard } from './mcp-auth.guard';
 import { AppDiscoveryTools } from './tools/app-discovery.tools';
 import { AppLifecycleTools } from './tools/app-lifecycle.tools';
 import { AppConfigTools } from './tools/app-config.tools';
@@ -13,11 +14,11 @@ import { RegistrationTools } from './tools/registration.tools';
 import { LinkTools } from './tools/link.tools';
 
 @Module({
-  imports: [],
   controllers: [McpController],
   providers: [
     McpService,
     McpToolRegistry,
+    McpAuthGuard,
     AppDiscoveryTools,
     AppLifecycleTools,
     AppConfigTools,
@@ -28,6 +29,6 @@ import { LinkTools } from './tools/link.tools';
     RegistrationTools,
     LinkTools,
   ],
-  exports: [McpService],
+  exports: [McpService, McpToolRegistry],
 })
 export class McpModule {}

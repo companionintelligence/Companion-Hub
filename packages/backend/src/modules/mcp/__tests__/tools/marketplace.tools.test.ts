@@ -1,92 +1,97 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { mock } from 'vitest-mock-extended';
+import { mock, type MockProxy } from 'vitest-mock-extended';
 import { MarketplaceTools } from '../../tools/marketplace.tools';
+import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
+import { AppStoreService } from '@/modules/app-stores/app-store.service';
 
 describe('MarketplaceTools', () => {
   let tools: MarketplaceTools;
+  let marketplaceService: MockProxy<MarketplaceService>;
+  let appStoreService: MockProxy<AppStoreService>;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
-      providers: [MarketplaceTools],
+      providers: [
+        MarketplaceTools,
+        { provide: MarketplaceService, useValue: mock<MarketplaceService>() },
+        { provide: AppStoreService, useValue: mock<AppStoreService>() },
+      ],
     }).compile();
-
     tools = module.get<MarketplaceTools>(MarketplaceTools);
+    marketplaceService = module.get(MarketplaceService);
+    appStoreService = module.get(AppStoreService);
   });
 
   it('should be defined', () => {
     expect(tools).toBeDefined();
   });
 
-  // --- MK-1: hub_search_apps ---
-
   describe('hub_search_apps', () => {
-    // S-MK-1.1: returns { data, nextCursor, total }
-    it.todo('should return paginated search results with data, nextCursor, and total');
-
-    // S-MK-1.2: pageSize defaults to 24, accepts 1-100
-    it.todo('should default pageSize to 24');
-    it.todo('should accept pageSize values between 1 and 100');
-    it.todo('should reject pageSize values outside 1-100');
-
-    // S-MK-1.3: category validates against APP_CATEGORIES enum
-    it.todo(
-      'should accept valid category values (network, media, development, automation, social, utilities, photography, security, featured, books, data, music, finance, gaming, ai)',
-    );
-    it.todo('should reject invalid category values');
-
-    it.todo('should support text search filter');
-    it.todo('should support storeId filter');
-    it.todo('should support cursor-based pagination');
+    it('should return paginated search results', async () => {
+      marketplaceService.searchApps.mockResolvedValue({ data: [], total: 0, nextCursor: null } as any);
+      const result = await tools.searchApps({});
+      expect(marketplaceService.searchApps).toHaveBeenCalled();
+      expect(result).toEqual({ data: [], total: 0, nextCursor: null });
+    });
+    it('should default pageSize to 24', async () => {
+      marketplaceService.searchApps.mockResolvedValue({ data: [], total: 0, nextCursor: null } as any);
+      await tools.searchApps({});
+      expect(marketplaceService.searchApps).toHaveBeenCalledWith(expect.objectContaining({ pageSize: 24 }));
+    });
+    it('should support text search filter', async () => {
+      marketplaceService.searchApps.mockResolvedValue({ data: [], total: 0, nextCursor: null } as any);
+      await tools.searchApps({ search: 'nextcloud' });
+      expect(marketplaceService.searchApps).toHaveBeenCalledWith(expect.objectContaining({ search: 'nextcloud' }));
+    });
   });
 
-  // --- MK-2: hub_list_app_stores / hub_list_enabled_stores ---
-
   describe('hub_list_app_stores', () => {
-    // S-MK-2.1: returns { appStores: [{ slug, name, url, enabled }] }
-    it.todo('should return all app stores with slug, name, url, enabled fields');
+    it('should return all app stores', async () => {
+      appStoreService.getAllAppStores.mockResolvedValue([{ slug: 'ci', name: 'CI Store', url: 'https://example.com', enabled: true }] as any);
+      const result = await tools.listAppStores();
+      expect(result.appStores).toHaveLength(1);
+    });
   });
 
   describe('hub_list_enabled_stores', () => {
-    // S-MK-2.2: only includes stores where enabled === true
-    it.todo('should only return enabled app stores');
+    it('should only return enabled app stores', async () => {
+      appStoreService.getEnabledAppStores.mockResolvedValue([{ slug: 'ci', enabled: true }] as any);
+      const result = await tools.listEnabledStores();
+      expect(result.appStores).toHaveLength(1);
+    });
   });
-
-  // --- MK-3: hub_add_app_store ---
 
   describe('hub_add_app_store', () => {
-    // S-MK-3.1: creates store and returns created object
-    it.todo('should create a new app store and return the created object');
-
-    // S-MK-3.2: name 1-16 chars, url is valid URL
-    it.todo('should validate name is 1-16 characters');
-    it.todo('should validate url is a valid URL');
-
-    // S-MK-3.3: duplicate URLs rejected
-    it.todo('should reject duplicate store URLs with an error');
+    it('should create a new app store', async () => {
+      appStoreService.createAppStore.mockResolvedValue({ slug: 'new', name: 'New', url: 'https://new.com' } as any);
+      const result = await tools.addAppStore({ name: 'New', url: 'https://new.com' });
+      expect(appStoreService.createAppStore).toHaveBeenCalledWith({ name: 'New', url: 'https://new.com' });
+      expect(result).toBeDefined();
+    });
   });
-
-  // --- MK-4: hub_update_app_store ---
 
   describe('hub_update_app_store', () => {
-    // S-MK-4.1: updates store and returns { success: true }
-    it.todo('should update store name and enabled status');
-    it.todo('should return success: true on successful update');
+    it('should update store and return success', async () => {
+      appStoreService.updateAppStore.mockResolvedValue({} as any);
+      const result = await tools.updateAppStore({ storeId: 'ci', name: 'Updated', enabled: false });
+      expect(result).toEqual({ success: true });
+    });
   });
-
-  // --- MK-5: hub_delete_app_store ---
 
   describe('hub_delete_app_store', () => {
-    // S-MK-5.1: deletes store, does not uninstall apps
-    it.todo('should delete the app store');
-    it.todo('should not uninstall apps from the deleted store');
+    it('should delete the app store', async () => {
+      appStoreService.deleteAppStore.mockResolvedValue({ success: true });
+      const result = await tools.deleteAppStore({ storeId: 'ci' });
+      expect(appStoreService.deleteAppStore).toHaveBeenCalledWith('ci');
+    });
   });
 
-  // --- MK-6: hub_pull_app_stores ---
-
   describe('hub_pull_app_stores', () => {
-    // S-MK-6.1: pulls latest definitions from all enabled stores
-    it.todo('should pull latest definitions from all enabled stores');
-    it.todo('should return success boolean');
+    it('should pull latest definitions and return success', async () => {
+      appStoreService.pullRepositories.mockResolvedValue({ success: true });
+      const result = await tools.pullAppStores();
+      expect(result).toEqual({ success: true });
+    });
   });
 });

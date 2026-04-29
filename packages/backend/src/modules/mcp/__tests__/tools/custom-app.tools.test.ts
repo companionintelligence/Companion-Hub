@@ -1,52 +1,49 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { mock } from 'vitest-mock-extended';
+import { mock, type MockProxy } from 'vitest-mock-extended';
 import { CustomAppTools } from '../../tools/custom-app.tools';
+import { CustomAppService } from '@/modules/custom-apps/custom-apps.service';
 
 describe('CustomAppTools', () => {
   let tools: CustomAppTools;
+  let customAppService: MockProxy<CustomAppService>;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
-      providers: [CustomAppTools],
+      providers: [CustomAppTools, { provide: CustomAppService, useValue: mock<CustomAppService>() }],
     }).compile();
-
     tools = module.get<CustomAppTools>(CustomAppTools);
+    customAppService = module.get(CustomAppService);
   });
 
   it('should be defined', () => {
     expect(tools).toBeDefined();
   });
 
-  // --- CA-1: hub_create_custom_app ---
-
   describe('hub_create_custom_app', () => {
-    // S-CA-1.1: creates custom app and returns { appUrn, appName, storeId }
-    it.todo('should create a custom app and return appUrn, appName, storeId');
-
-    // S-CA-1.2: name matches /^[a-z0-9-]+$/, length 1-50
-    it.todo('should validate name matches /^[a-z0-9-]+$/');
-    it.todo('should validate name length is 1-50 characters');
-    it.todo('should reject names with uppercase or special characters');
-
-    // S-CA-1.3: config conforms to dynamicComposeSchema
-    it.todo('should validate config against dynamicComposeSchema');
-    it.todo('should accept valid service definitions with ports, volumes, environment');
+    it('should create a custom app and return appUrn, appName, storeId', async () => {
+      customAppService.createCustomApp.mockResolvedValue({ appUrn: 'custom:myapp', appName: 'myapp', storeId: 'custom' } as any);
+      const result = await tools.createCustomApp({ name: 'myapp', config: { services: {} } });
+      expect(customAppService.createCustomApp).toHaveBeenCalled();
+      expect(result).toEqual({ appUrn: 'custom:myapp', appName: 'myapp', storeId: 'custom' });
+    });
   });
-
-  // --- CA-2: hub_update_custom_app ---
 
   describe('hub_update_custom_app', () => {
-    // S-CA-2.1: updates compose configuration
-    it.todo('should update the custom app compose configuration');
-    it.todo('should require appUrn and config parameters');
+    it('should update the custom app compose configuration', async () => {
+      customAppService.updateCustomApp.mockResolvedValue(undefined);
+      const result = await tools.updateCustomApp({ appUrn: 'custom:myapp', config: { services: {} } });
+      expect(customAppService.updateCustomApp).toHaveBeenCalled();
+      expect(result).toEqual({ success: true });
+    });
   });
 
-  // --- CA-3: hub_update_app_metadata ---
-
   describe('hub_update_app_metadata', () => {
-    // S-CA-3.1: updates frontmatter metadata
-    it.todo('should update the app frontmatter metadata');
-    it.todo('should require appUrn and data parameters');
+    it('should update the app frontmatter metadata', async () => {
+      customAppService.updateAppMetadata.mockResolvedValue(undefined);
+      const result = await tools.updateAppMetadata({ appUrn: 'custom:myapp', data: 'description: My App' });
+      expect(customAppService.updateAppMetadata).toHaveBeenCalled();
+      expect(result).toEqual({ success: true });
+    });
   });
 });

@@ -1,58 +1,69 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { mock } from 'vitest-mock-extended';
+import { mock, type MockProxy } from 'vitest-mock-extended';
 import { BackupTools } from '../../tools/backup.tools';
+import { BackupsService } from '@/modules/backups/backups.service';
 
 describe('BackupTools', () => {
   let tools: BackupTools;
+  let backupsService: MockProxy<BackupsService>;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
-      providers: [BackupTools],
+      providers: [BackupTools, { provide: BackupsService, useValue: mock<BackupsService>() }],
     }).compile();
-
     tools = module.get<BackupTools>(BackupTools);
+    backupsService = module.get(BackupsService);
   });
 
   it('should be defined', () => {
     expect(tools).toBeDefined();
   });
 
-  // --- BK-1: hub_backup_app ---
-
   describe('hub_backup_app', () => {
-    // S-BK-1.1: enqueues backup and returns { requestId }
-    it.todo('should enqueue a backup and return requestId');
-    it.todo('should require appUrn parameter');
+    it('should enqueue a backup and return requestId', async () => {
+      backupsService.backupApp.mockResolvedValue({ requestId: 'bk-1' });
+      const result = await tools.backupApp({ appUrn: 'ci-store:test' });
+      expect(result).toEqual({ requestId: 'bk-1' });
+    });
   });
-
-  // --- BK-2: hub_restore_app_backup ---
 
   describe('hub_restore_app_backup', () => {
-    // S-BK-2.1: enqueues restore and returns { requestId }
-    it.todo('should enqueue a restore and return requestId');
-
-    // S-BK-2.2: non-existent filename returns error
-    it.todo('should return error when backup filename does not exist');
+    it('should enqueue a restore and return requestId', async () => {
+      backupsService.restoreApp.mockResolvedValue({ requestId: 'rs-1' });
+      const result = await tools.restoreAppBackup({ appUrn: 'ci-store:test', filename: 'backup-1.tar.gz' });
+      expect(result).toEqual({ requestId: 'rs-1' });
+    });
+    it('should return error when backup filename does not exist', async () => {
+      backupsService.restoreApp.mockRejectedValue(new Error('Backup not found'));
+      await expect(tools.restoreAppBackup({ appUrn: 'ci-store:test', filename: 'nonexistent.tar.gz' })).rejects.toThrow();
+    });
   });
-
-  // --- BK-3: hub_list_app_backups ---
 
   describe('hub_list_app_backups', () => {
-    // S-BK-3.1: returns { data, total, currentPage, lastPage }
-    it.todo('should return paginated backup list with data, total, currentPage, lastPage');
-    it.todo('should return backup entries with id, size, date fields');
-
-    // S-BK-3.2: page defaults to 0, pageSize defaults to 10
-    it.todo('should default page to 0');
-    it.todo('should default pageSize to 10');
+    it('should return paginated backup list', async () => {
+      backupsService.getAppBackups.mockResolvedValue({
+        data: [{ id: '1', size: 1024, date: '2024-01-01' }],
+        total: 1,
+        currentPage: 0,
+        lastPage: 0,
+      } as any);
+      const result = await tools.listAppBackups({ appUrn: 'ci-store:test' });
+      expect(result.data).toHaveLength(1);
+      expect(result.total).toBe(1);
+    });
+    it('should default page to 0 and pageSize to 10', async () => {
+      backupsService.getAppBackups.mockResolvedValue({ data: [], total: 0, currentPage: 0, lastPage: 0 } as any);
+      await tools.listAppBackups({ appUrn: 'ci-store:test' });
+      expect(backupsService.getAppBackups).toHaveBeenCalledWith(expect.objectContaining({ page: 0, pageSize: 10 }));
+    });
   });
 
-  // --- BK-4: hub_delete_backup ---
-
   describe('hub_delete_backup', () => {
-    // S-BK-4.1: deletes backup file and returns { success: true }
-    it.todo('should delete the backup file and return success');
-    it.todo('should require appUrn and filename parameters');
+    it('should delete the backup file and return success', async () => {
+      backupsService.deleteAppBackup.mockResolvedValue(undefined);
+      const result = await tools.deleteBackup({ appUrn: 'ci-store:test', filename: 'backup-1.tar.gz' });
+      expect(result).toEqual({ success: true });
+    });
   });
 });
