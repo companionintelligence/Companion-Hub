@@ -16,6 +16,16 @@ function createMockApi(): OpenClawPluginApi {
   };
 }
 
+/** Create a ReadableStream that emits SSE data with the endpoint event */
+function createSseStream(messagesUrl: string) {
+  const data = `event: endpoint\ndata: ${messagesUrl}\n\n`;
+  return new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(data));
+    },
+  });
+}
+
 describe('CI-Hub Plugin', () => {
   let api: OpenClawPluginApi;
   const baseConfig: PluginConfig = {
@@ -33,8 +43,14 @@ describe('CI-Hub Plugin', () => {
   });
 
   it('should register wake HTTP route on /hooks/hub-wake', async () => {
-    // Mock fetch to simulate Hub health check + MCP init
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: { serverInfo: {} } }) }));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (url: string) => {
+        if (url.includes('/api/health')) return { ok: true };
+        if (url.includes('/api/mcp/sse')) return { ok: true, body: createSseStream('http://localhost:5002/api/mcp/messages') };
+        return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: { serverInfo: {} } }) };
+      }),
+    );
 
     await register(api, baseConfig);
 
@@ -60,17 +76,16 @@ describe('CI-Hub Plugin', () => {
       { name: 'hub_start_app', description: 'Start an app', inputSchema: { type: 'object' } },
     ];
 
-    let callCount = 0;
+    let jsonRpcCallCount = 0;
     vi.stubGlobal(
       'fetch',
       vi.fn().mockImplementation(async (url: string) => {
         if (url.includes('/api/health')) return { ok: true };
-        callCount++;
-        if (callCount === 1) {
-          // initialize
+        if (url.includes('/api/mcp/sse')) return { ok: true, body: createSseStream('http://localhost:5002/api/mcp/messages') };
+        jsonRpcCallCount++;
+        if (jsonRpcCallCount === 1) {
           return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: { serverInfo: {} } }) };
         }
-        // tools/list
         return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 2, result: { tools: mockTools } }) };
       }),
     );

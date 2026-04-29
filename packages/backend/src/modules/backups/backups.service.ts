@@ -2,7 +2,7 @@ import { TranslatableError } from '@/common/error/translatable-error';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { SSEService } from '@/core/sse/sse.service';
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
 import { AppLifecycleService } from '../app-lifecycle/app-lifecycle.service';
 import { AppFilesManager } from '../apps/app-files-manager';
@@ -10,6 +10,7 @@ import { AppsRepository } from '../apps/apps.repository';
 import { AppEventsQueue } from '../queue/entities/app-events';
 import { BackupManager } from './backup.manager';
 import { createAppUrn } from '@/common/helpers/app-helpers';
+import { AgentNotifyService } from '../agent-notify/agent-notify.service';
 
 @Injectable()
 export class BackupsService {
@@ -22,6 +23,7 @@ export class BackupsService {
     private appFilesManager: AppFilesManager,
     private backupManager: BackupManager,
     private readonly sseService: SSEService,
+    @Optional() private readonly agentNotifyService?: AgentNotifyService,
   ) {}
 
   public async backupApp(params: { appUrn: AppUrn }) {
@@ -55,6 +57,7 @@ export class BackupsService {
       } else {
         this.logger.error(`Failed to backup app ${appUrn}: ${message}`);
         await this.appsRepository.updateAppById(app.id, { status: 'stopped' });
+        this.agentNotifyService?.notify('backup_error', { appUrn }, 'high');
       }
     });
 
@@ -94,6 +97,7 @@ export class BackupsService {
       } else {
         this.logger.error(`Failed to restore app ${appUrn}: ${message}`);
         await this.appsRepository.updateAppById(app.id, { status: 'stopped' });
+        this.agentNotifyService?.notify('restore_error', { appUrn }, 'high');
       }
     });
 

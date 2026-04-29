@@ -10,6 +10,28 @@ function createMockLog() {
   };
 }
 
+/** Create a ReadableStream that emits SSE data with the endpoint event */
+function createSseStream(messagesUrl: string) {
+  const data = `event: endpoint\ndata: ${messagesUrl}\n\n`;
+  return new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(data));
+      // Don't close — SSE streams stay open
+    },
+  });
+}
+
+/** Build a mock fetch that handles SSE connect + JSON-RPC messages */
+function mockSseThenJsonRpc(messagesUrl: string, jsonRpcResult: unknown) {
+  return vi.fn().mockImplementation(async (url: string, opts?: RequestInit) => {
+    if (url.includes('/api/mcp/sse')) {
+      return { ok: true, body: createSseStream(messagesUrl) };
+    }
+    // JSON-RPC POST
+    return { ok: true, json: async () => jsonRpcResult };
+  });
+}
+
 describe('McpClient', () => {
   let client: McpClient;
   let log: ReturnType<typeof createMockLog>;
@@ -28,35 +50,58 @@ describe('McpClient', () => {
     expect(client.isConnected()).toBe(false);
   });
 
-  it('should connect successfully with valid MCP response', async () => {
+  it('should connect via SSE then initialize successfully', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({ jsonrpc: '2.0', id: 1, result: { serverInfo: { name: 'ci-hub' } } }),
+      mockSseThenJsonRpc('http://localhost:5002/api/mcp/messages', {
+        jsonrpc: '2.0',
+        id: 1,
+        result: { serverInfo: { name: 'ci-hub' } },
       }),
     );
 
     await client.connect();
     expect(client.isConnected()).toBe(true);
+    expect(log.info).toHaveBeenCalledWith(expect.stringContaining('Discovered MCP messages endpoint'));
     expect(log.info).toHaveBeenCalledWith('MCP client connected to Hub');
   });
 
-  it('should send Authorization header with API key', async () => {
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ jsonrpc: '2.0', id: 1, result: {} }),
+  it('should first connect to SSE endpoint, then POST to messages URL', async () => {
+    const mockFetch = mockSseThenJsonRpc('http://localhost:5002/api/mcp/messages', {
+      jsonrpc: '2.0',
+      id: 1,
+      result: {},
     });
     vi.stubGlobal('fetch', mockFetch);
 
     await client.connect();
 
-    expect(mockFetch).toHaveBeenCalledWith(
-      'http://localhost:5002/api/mcp/messages',
+    // First call: SSE endpoint
+    expect(mockFetch.mock.calls[0][0]).toBe('http://localhost:5002/api/mcp/sse');
+    // Second call: messages endpoint with initialize
+    expect(mockFetch.mock.calls[1][0]).toBe('http://localhost:5002/api/mcp/messages');
+  });
+
+  it('should send Authorization header with API key', async () => {
+    const mockFetch = mockSseThenJsonRpc('http://localhost:5002/api/mcp/messages', {
+      jsonrpc: '2.0',
+      id: 1,
+      result: {},
+    });
+    vi.stubGlobal('fetch', mockFetch);
+
+    await client.connect();
+
+    // SSE call should have auth
+    expect(mockFetch.mock.calls[0][1]).toEqual(
       expect.objectContaining({
-        headers: expect.objectContaining({
-          Authorization: 'Bearer test-key',
-        }),
+        headers: expect.objectContaining({ Authorization: 'Bearer test-key' }),
+      }),
+    );
+    // Messages call should have auth
+    expect(mockFetch.mock.calls[1][1]).toEqual(
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: 'Bearer test-key' }),
       }),
     );
   });
@@ -72,16 +117,22 @@ describe('McpClient', () => {
 
   it('should list tools when connected', async () => {
     const mockTools = [{ name: 'test_tool', description: 'Test', inputSchema: {} }];
+    let callCount = 0;
 
     vi.stubGlobal(
       'fetch',
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({ jsonrpc: '2.0', id: 1, result: { tools: mockTools } }),
+      vi.fn().mockImplementation(async (url: string) => {
+        if (url.includes('/api/mcp/sse')) {
+          return { ok: true, body: createSseStream('http://localhost:5002/api/mcp/messages') };
+        }
+        callCount++;
+        if (callCount === 1) {
+          return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: { serverInfo: {} } }) };
+        }
+        return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 2, result: { tools: mockTools } }) };
       }),
     );
 
-    // Manually set connected
     await client.connect();
     const tools = await client.listTools();
 
@@ -99,12 +150,19 @@ describe('McpClient', () => {
 
   it('should call tool and return result when connected', async () => {
     const toolResult = { content: [{ type: 'text', text: '{"ok":true}' }] };
+    let callCount = 0;
 
     vi.stubGlobal(
       'fetch',
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({ jsonrpc: '2.0', id: 1, result: toolResult }),
+      vi.fn().mockImplementation(async (url: string) => {
+        if (url.includes('/api/mcp/sse')) {
+          return { ok: true, body: createSseStream('http://localhost:5002/api/mcp/messages') };
+        }
+        callCount++;
+        if (callCount === 1) {
+          return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: {} }) };
+        }
+        return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 2, result: toolResult }) };
       }),
     );
 
@@ -115,23 +173,26 @@ describe('McpClient', () => {
 
   it('should strip trailing slash from hubUrl', async () => {
     const c = new McpClient('http://localhost:5002/', 'key', log);
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ jsonrpc: '2.0', id: 1, result: {} }),
+    const mockFetch = mockSseThenJsonRpc('http://localhost:5002/api/mcp/messages', {
+      jsonrpc: '2.0',
+      id: 1,
+      result: {},
     });
     vi.stubGlobal('fetch', mockFetch);
 
     await c.connect();
 
-    expect(mockFetch).toHaveBeenCalledWith('http://localhost:5002/api/mcp/messages', expect.anything());
+    expect(mockFetch.mock.calls[0][0]).toBe('http://localhost:5002/api/mcp/sse');
+    expect(mockFetch.mock.calls[1][0]).toBe('http://localhost:5002/api/mcp/messages');
   });
 
   it('should disconnect and set connected to false', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({ jsonrpc: '2.0', id: 1, result: {} }),
+      mockSseThenJsonRpc('http://localhost:5002/api/mcp/messages', {
+        jsonrpc: '2.0',
+        id: 1,
+        result: {},
       }),
     );
 
