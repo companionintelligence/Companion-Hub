@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { McpAuthGuard } from '../mcp-auth.guard';
 import { UnauthorizedException } from '@nestjs/common';
 

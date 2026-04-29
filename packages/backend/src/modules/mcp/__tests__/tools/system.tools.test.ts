@@ -10,7 +10,7 @@ describe('SystemTools', () => {
   let tools: SystemTools;
   let systemService: MockProxy<SystemService>;
   let systemUpdateService: MockProxy<SystemUpdateService>;
-  let dockerService: MockProxy<DockerService>;
+  let _dockerService: MockProxy<DockerService>;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -24,7 +24,7 @@ describe('SystemTools', () => {
     tools = module.get<SystemTools>(SystemTools);
     systemService = module.get(SystemService);
     systemUpdateService = module.get(SystemUpdateService);
-    dockerService = module.get(DockerService);
+    _dockerService = module.get(DockerService);
   });
 
   it('should be defined', () => {

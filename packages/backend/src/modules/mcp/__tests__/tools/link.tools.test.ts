@@ -45,7 +45,7 @@ describe('LinkTools', () => {
   describe('hub_edit_link', () => {
     it('should update an existing link', async () => {
       linksService.edit.mockResolvedValue({ id: 1, title: 'Updated' } as any);
-      const result = await tools.editLink({ linkId: 1, title: 'Updated' });
+      const _result = await tools.editLink({ linkId: 1, title: 'Updated' });
       expect(linksService.edit).toHaveBeenCalledWith(1, expect.objectContaining({ title: 'Updated' }), 1);
     });
   });

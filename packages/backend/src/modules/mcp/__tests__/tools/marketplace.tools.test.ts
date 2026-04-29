@@ -82,7 +82,7 @@ describe('MarketplaceTools', () => {
   describe('hub_delete_app_store', () => {
     it('should delete the app store', async () => {
       appStoreService.deleteAppStore.mockResolvedValue({ success: true });
-      const result = await tools.deleteAppStore({ storeId: 'ci' });
+      const _result = await tools.deleteAppStore({ storeId: 'ci' });
       expect(appStoreService.deleteAppStore).toHaveBeenCalledWith('ci');
     });
   });

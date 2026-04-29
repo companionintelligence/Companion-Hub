@@ -8,7 +8,7 @@ import { DockerService } from '@/modules/docker/docker.service';
 describe('AppDiscoveryTools', () => {
   let tools: AppDiscoveryTools;
   let appsService: MockProxy<AppsService>;
-  let dockerService: MockProxy<DockerService>;
+  let _dockerService: MockProxy<DockerService>;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -21,7 +21,7 @@ describe('AppDiscoveryTools', () => {
 
     tools = module.get<AppDiscoveryTools>(AppDiscoveryTools);
     appsService = module.get(AppsService);
-    dockerService = module.get(DockerService);
+    _dockerService = module.get(DockerService);
   });
 
   it('should be defined', () => {
