@@ -10,8 +10,13 @@ const hubRoot = path.resolve(__dirname, '../..');
 /** CI-Hub uses `.env.dev` / `.env.local` at repo root; Vite's loadEnv only reads `.env.[mode]` etc. */
 function parseDotEnvFile(filePath: string): Record<string, string> {
   if (!existsSync(filePath)) return {};
-  // Some CI-Hub environments use a `.env` directory; skip non-file paths.
-  if (!statSync(filePath).isFile()) return {};
+
+  try {
+    if (!statSync(filePath).isFile()) return {};
+  } catch {
+    return {};
+  }
+
   const out: Record<string, string> = {};
   for (const line of readFileSync(filePath, 'utf8').split('\n')) {
     const t = line.trim();
