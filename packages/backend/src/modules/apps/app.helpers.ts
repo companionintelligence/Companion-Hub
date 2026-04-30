@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -336,6 +337,30 @@ export class AppHelpers {
         envMap.set('TUNNEL_ID', org.tunnelId);
       } else {
         this.logger.warn('cloudflared app installation requested, but no organization/tunnel information found.');
+      }
+    }
+
+    // --- MCP Integration for Agent Harness Apps (R-ENV) ---
+    if (config.hub_integration?.mcp_client) {
+      const hubContainerName = process.env.HUB_CONTAINER_NAME || 'ci-os-hub';
+      const hubPort = process.env.API_PORT || '3000';
+      const hubInternalUrl = `http://${hubContainerName}:${hubPort}`;
+
+      envMap.set('HUB_URL', hubInternalUrl);
+      envMap.set('HUB_MCP_URL', `${hubInternalUrl}/api/mcp/sse`);
+      envMap.set('HUB_MCP_MESSAGES_URL', `${hubInternalUrl}/api/mcp/messages`);
+
+      // Inject MCP API key so the agent can authenticate with the Hub MCP endpoint
+      if (process.env.MCP_API_KEY) {
+        envMap.set('HUB_MCP_API_KEY', process.env.MCP_API_KEY);
+      }
+
+      // Generate or preserve wake secret
+      const existingSecret = existingAppEnvMap.get('HUB_WAKE_SECRET');
+      if (existingSecret) {
+        envMap.set('HUB_WAKE_SECRET', existingSecret);
+      } else {
+        envMap.set('HUB_WAKE_SECRET', randomBytes(32).toString('hex'));
       }
     }
 

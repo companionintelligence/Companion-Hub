@@ -168,6 +168,7 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   // --- Resolve all values using the standard priority chain ---
 
   const jwtSecret = envMap.get('JWT_SECRET') || envUtils.deriveEntropy('jwt_secret');
+  const mcpApiKey = envMap.get('MCP_API_KEY') || envUtils.deriveEntropy('mcp_api_key');
 
   const rootFolderHost = resolve('ROOT_FOLDER_HOST', { envMap, fallback: '' });
 
@@ -222,6 +223,7 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   envMap.set('ROOT_FOLDER_HOST', rootFolderHost);
   envMap.set('ARCHITECTURE', getArchitecture());
   envMap.set('JWT_SECRET', jwtSecret);
+  envMap.set('MCP_API_KEY', mcpApiKey);
   envMap.set('CI_HUB_APP_DATA_PATH', finalAppDataPath);
 
   // Core infrastructure

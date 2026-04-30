@@ -46,6 +46,7 @@ const backendEnv: Record<string, string> = {
   CI_HUB_DATA_DIR: process.env.CI_HUB_DATA_DIR || '/tmp/ci-hub-e2e',
   CI_HUB_APP_DATA_DIR: process.env.CI_HUB_APP_DATA_DIR || '/tmp/ci-hub-e2e/app-data',
   CI_HUB_APP_DIR: process.env.CI_HUB_APP_DIR || process.cwd(),
+  MCP_API_KEY: process.env.MCP_API_KEY || 'test-mcp-api-key-e2e',
 };
 
 export default defineConfig({

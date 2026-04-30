@@ -14,6 +14,7 @@ import type { AppUrn } from '@ci-hub/common/types';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { AppLifecycleCommand } from './command';
 import { parseComposeJson } from '@ci-hub/common/schemas';
+import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -284,6 +285,47 @@ export class InstallAppCommand extends AppLifecycleCommand {
           logger.debug(`Regenerating Traefik config for newly installed exposed app ${appUrn}`);
           // Wait longer for container to fully start and network to be attached
           await traefikConfigService.regenerateTraefikConfig(5000); // Wait 5s for container to fully start
+        }
+      }
+
+      // Register agent webhook if this is an MCP client app (R-HOOK-1)
+      if (appInfo.hub_integration?.mcp_client) {
+        try {
+          const agentNotifyService = this.moduleRef.get(AgentNotifyService, { strict: false });
+          if (agentNotifyService) {
+            const wakeEndpoint = appInfo.hub_integration.wake_endpoint || '/hooks/hub-wake';
+            const wakePort = appInfo.hub_integration.wake_port || appInfo.port || 3000;
+
+            // Resolve the Docker DNS name for the agent container.
+            // On the shared ci-os-hub_network, containers are reachable by their
+            // Docker Compose service name (from docker-compose.json), NOT by
+            // {appName}-{storeId}. Read the main service name from the compose config.
+            let serviceName = appName;
+            try {
+              const composeJson = await appFilesManager.getDockerComposeJson(appUrn);
+              if (composeJson.content) {
+                const parsed = parseComposeJson(composeJson.content);
+                const mainService = parsed.services.find((s) => s.isMain) || parsed.services[0];
+                if (mainService?.name) {
+                  serviceName = mainService.name;
+                }
+              }
+            } catch (_parseErr) {
+              logger.debug(`Could not parse compose for service name, using appName: ${appName}`);
+            }
+
+            const webhookUrl = `http://${serviceName}:${wakePort}${wakeEndpoint}`;
+
+            // Read the generated wake secret from the app env
+            const agentEnvData = await appFilesManager.getAppEnv(appUrn);
+            const agentEnvMap = envUtils.envStringToMap(agentEnvData.content);
+            const wakeSecret = agentEnvMap.get('HUB_WAKE_SECRET');
+
+            agentNotifyService.registerWebhook(appUrn, webhookUrl, wakeSecret);
+            logger.info(`Registered agent webhook for ${appUrn}: ${webhookUrl}`);
+          }
+        } catch (hookErr) {
+          logger.warn(`Failed to register agent webhook for ${appUrn}: ${hookErr}`);
         }
       }
 

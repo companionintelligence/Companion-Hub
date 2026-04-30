@@ -663,5 +663,127 @@ describe('AppHelpers', () => {
         expect(envMap.get('APP_PUBLIC_HOSTNAME')).toBe('element-myorg.example.com');
       });
     });
+
+    describe('R-ENV: MCP env injection for agent harness apps', () => {
+      it('R-ENV-1/2/3: should inject HUB_URL, HUB_MCP_URL, and HUB_MCP_MESSAGES_URL when hub_integration.mcp_client is true', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        const agentApp = { ...mockAppInfo, hub_integration: { mcp_client: true, wake_endpoint: '/hooks/hub-wake', sse_events: false } };
+        appFilesManager.getInstalledAppInfo.mockResolvedValue(agentApp);
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(envMap.get('HUB_URL')).toBe('http://ci-os-hub:3000');
+        expect(envMap.get('HUB_MCP_URL')).toBe('http://ci-os-hub:3000/api/mcp/sse');
+        expect(envMap.get('HUB_MCP_MESSAGES_URL')).toBe('http://ci-os-hub:3000/api/mcp/messages');
+      });
+
+      it('R-ENV-1: should use HUB_CONTAINER_NAME env var when set', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        const agentApp = { ...mockAppInfo, hub_integration: { mcp_client: true, wake_endpoint: '/hooks/hub-wake', sse_events: false } };
+        appFilesManager.getInstalledAppInfo.mockResolvedValue(agentApp);
+
+        process.env.HUB_CONTAINER_NAME = 'my-custom-hub';
+        try {
+          await appHelpers.generateEnvFile(testAppUrn, {});
+          expect(envMap.get('HUB_URL')).toBe('http://my-custom-hub:3000');
+          expect(envMap.get('HUB_MCP_URL')).toBe('http://my-custom-hub:3000/api/mcp/sse');
+        } finally {
+          delete process.env.HUB_CONTAINER_NAME;
+        }
+      });
+
+      it('R-ENV-1: should use API_PORT env var for Hub URL', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        const agentApp = { ...mockAppInfo, hub_integration: { mcp_client: true, wake_endpoint: '/hooks/hub-wake', sse_events: false } };
+        appFilesManager.getInstalledAppInfo.mockResolvedValue(agentApp);
+
+        process.env.API_PORT = '5002';
+        try {
+          await appHelpers.generateEnvFile(testAppUrn, {});
+          expect(envMap.get('HUB_URL')).toBe('http://ci-os-hub:5002');
+          expect(envMap.get('HUB_MCP_URL')).toBe('http://ci-os-hub:5002/api/mcp/sse');
+          expect(envMap.get('HUB_MCP_MESSAGES_URL')).toBe('http://ci-os-hub:5002/api/mcp/messages');
+        } finally {
+          delete process.env.API_PORT;
+        }
+      });
+
+      it('R-ENV: should inject HUB_MCP_API_KEY when MCP_API_KEY is set', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        const agentApp = { ...mockAppInfo, hub_integration: { mcp_client: true, wake_endpoint: '/hooks/hub-wake', sse_events: false } };
+        appFilesManager.getInstalledAppInfo.mockResolvedValue(agentApp);
+
+        process.env.MCP_API_KEY = 'test-mcp-key-12345';
+        try {
+          await appHelpers.generateEnvFile(testAppUrn, {});
+          expect(envMap.get('HUB_MCP_API_KEY')).toBe('test-mcp-key-12345');
+        } finally {
+          delete process.env.MCP_API_KEY;
+        }
+      });
+
+      it('R-ENV: should NOT inject HUB_MCP_API_KEY when MCP_API_KEY is not set', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        const agentApp = { ...mockAppInfo, hub_integration: { mcp_client: true, wake_endpoint: '/hooks/hub-wake', sse_events: false } };
+        appFilesManager.getInstalledAppInfo.mockResolvedValue(agentApp);
+
+        delete process.env.MCP_API_KEY;
+        await appHelpers.generateEnvFile(testAppUrn, {});
+        expect(envMap.has('HUB_MCP_API_KEY')).toBe(false);
+      });
+
+      it('R-ENV-4: should generate a HUB_WAKE_SECRET', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        const agentApp = { ...mockAppInfo, hub_integration: { mcp_client: true, wake_endpoint: '/hooks/hub-wake', sse_events: false } };
+        appFilesManager.getInstalledAppInfo.mockResolvedValue(agentApp);
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        const secret = envMap.get('HUB_WAKE_SECRET');
+        expect(secret).toBeDefined();
+        expect(secret).toHaveLength(64); // 32 bytes hex = 64 chars
+      });
+
+      it('R-ENV-4: should preserve existing HUB_WAKE_SECRET on restart/update', async () => {
+        const envMap = new Map<string, string>();
+        const existingEnv = new Map<string, string>([['HUB_WAKE_SECRET', 'existing-secret-value']]);
+        envUtils.envStringToMap.mockReturnValueOnce(envMap).mockReturnValueOnce(existingEnv);
+        const agentApp = { ...mockAppInfo, hub_integration: { mcp_client: true, wake_endpoint: '/hooks/hub-wake', sse_events: false } };
+        appFilesManager.getInstalledAppInfo.mockResolvedValue(agentApp);
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(envMap.get('HUB_WAKE_SECRET')).toBe('existing-secret-value');
+      });
+
+      it('R-ENV-5: should NOT inject MCP vars when hub_integration is not set', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(envMap.has('HUB_MCP_URL')).toBe(false);
+        expect(envMap.has('HUB_MCP_MESSAGES_URL')).toBe(false);
+        expect(envMap.has('HUB_WAKE_SECRET')).toBe(false);
+      });
+
+      it('R-ENV-5: should NOT inject MCP vars when mcp_client is false', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        const nonAgentApp = { ...mockAppInfo, hub_integration: { mcp_client: false, wake_endpoint: '/hooks/hub-wake', sse_events: false } };
+        appFilesManager.getInstalledAppInfo.mockResolvedValue(nonAgentApp);
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(envMap.has('HUB_MCP_URL')).toBe(false);
+        expect(envMap.has('HUB_WAKE_SECRET')).toBe(false);
+      });
+    });
   });
 });
