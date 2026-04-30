@@ -7,7 +7,17 @@ import remarkGfm from 'remark-gfm';
 
 export const Markdown: React.FC<{ content: string; className: string }> = ({ content, className }) => (
   <div className={clsx('markdown', className)}>
-    <ReactMarkdown remarkPlugins={[remarkBreaks, remarkGfm]} rehypePlugins={[rehypeRaw]}>
+    <ReactMarkdown
+      remarkPlugins={[remarkBreaks, remarkGfm]}
+      rehypePlugins={[rehypeRaw]}
+      components={{
+        a: ({ href, children }) => (
+          <a href={href} target="_blank" rel="noopener noreferrer">
+            {children}
+          </a>
+        ),
+      }}
+    >
       {content}
     </ReactMarkdown>
   </div>

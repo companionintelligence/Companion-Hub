@@ -163,6 +163,25 @@ export class ReposHelpers {
         const appDir = path.join(appsPath, appSlug);
         await this.ensureDirectoryWithPermissions(appDir);
 
+        let markdownDescription: string | null = null;
+        try {
+          const descriptionRes = await fetch(`${url}/store/${appSlug}/metadata/description.md`);
+          if (descriptionRes.ok) {
+            const contentType = descriptionRes.headers.get('content-type') || '';
+            if (contentType.includes('text/plain') || contentType.includes('text/markdown')) {
+              const descriptionText = await descriptionRes.text();
+              if (descriptionText.trim().length > 0) {
+                markdownDescription = descriptionText;
+                const metadataDir = path.join(appDir, 'metadata');
+                await this.ensureDirectoryWithPermissions(metadataDir);
+                await fs.promises.writeFile(path.join(metadataDir, 'description.md'), descriptionText);
+              }
+            }
+          }
+        } catch {
+          // Non-fatal: description will fall back to API payload/config.
+        }
+
         // Enrich app metadata with default required fields if missing
         const enrichedApp = {
           ...app,
@@ -175,7 +194,7 @@ export class ReposHelpers {
               ? app.short_desc
               : (typeof app.shortDescription === 'string' ? app.shortDescription : null) || (app.description as string) || 'No description provided',
           title: typeof app.title === 'string' ? app.title : (app.name as string) || appSlug,
-          description: typeof app.description === 'string' ? app.description : 'No full description.',
+          description: markdownDescription ?? (typeof app.description === 'string' ? app.description : 'No full description.'),
           categories: Array.isArray(app.categories) ? app.categories : ['utilities'],
           port: typeof app.port === 'number' ? app.port : 8080,
           version: typeof app.version === 'string' ? app.version : '0.0.1',
