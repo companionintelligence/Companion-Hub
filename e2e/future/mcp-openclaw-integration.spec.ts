@@ -493,11 +493,15 @@ test.describe('Full OpenClaw install with GitHub Copilot provider', () => {
     expect(envContent).toContain('HUB_MCP_MESSAGES_URL=');
     expect(envContent).toContain('HUB_WAKE_SECRET=');
 
+    // Verify MCP API key is injected (GAP 1 fix: agent needs this to auth with MCP endpoint)
+    expect(envContent).toContain('HUB_MCP_API_KEY=');
+
     // Verify GitHub Copilot provider config
     expect(envContent).toContain('LLM_PROVIDER=github-copilot');
     expect(envContent).toContain('LLM_API_KEY=test-copilot-api-key');
 
-    // Verify MCP URLs point to Hub's internal address
+    // Verify MCP URLs use the correct Hub port (GAP 3 fix: uses API_PORT, not hardcoded 3000)
+    const backendPort = process.env.BACKEND_PORT || '3000';
     expect(envContent).toMatch(/HUB_MCP_URL=http:\/\/.+\/api\/mcp\/sse/);
     expect(envContent).toMatch(/HUB_MCP_MESSAGES_URL=http:\/\/.+\/api\/mcp\/messages/);
 
@@ -505,6 +509,11 @@ test.describe('Full OpenClaw install with GitHub Copilot provider', () => {
     const secretMatch = envContent.match(/HUB_WAKE_SECRET=([a-f0-9]+)/);
     expect(secretMatch).toBeTruthy();
     expect(secretMatch?.[1]?.length).toBe(64);
+
+    // Verify the MCP API key matches what the Hub is configured with
+    const mcpKeyMatch = envContent.match(/HUB_MCP_API_KEY=(.+)/);
+    expect(mcpKeyMatch).toBeTruthy();
+    expect(mcpKeyMatch?.[1]).toBe(MCP_API_KEY);
   });
 
   test('verify MCP tools are accessible from agent perspective', async () => {

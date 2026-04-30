@@ -11,10 +11,12 @@ export async function register(api: OpenClawPluginApi, config: PluginConfig): Pr
   // Fall back to env vars for zero-config when running inside CI-Hub (R-PLG-1)
   const hubUrl = config.hubUrl || process.env.HUB_URL;
   const hubApiKey = config.hubApiKey || process.env.HUB_API_KEY;
+  // MCP endpoint uses a separate key from the REST API (R-PLG-1)
+  const mcpApiKey = config.mcpApiKey || process.env.HUB_MCP_API_KEY || hubApiKey;
   const wakeSecret = config.wakeSecret || process.env.HUB_WAKE_SECRET;
 
-  if (!hubUrl || !hubApiKey) {
-    api.log.error('CI-Hub plugin requires hubUrl and hubApiKey (via config or HUB_URL/HUB_API_KEY env vars)');
+  if (!hubUrl || !mcpApiKey) {
+    api.log.error('CI-Hub plugin requires hubUrl and mcpApiKey (via config or HUB_URL/HUB_MCP_API_KEY env vars)');
     return;
   }
 
@@ -31,7 +33,7 @@ export async function register(api: OpenClawPluginApi, config: PluginConfig): Pr
   }
 
   // Connect to Hub MCP server and register tools
-  const mcpClient = new McpClient(hubUrl, hubApiKey, api.log);
+  const mcpClient = new McpClient(hubUrl, mcpApiKey, api.log);
   await mcpClient.connect();
 
   if (mcpClient.isConnected()) {
@@ -62,7 +64,7 @@ export async function register(api: OpenClawPluginApi, config: PluginConfig): Pr
 
   // Start SSE listener if enabled
   if (config.sseEnabled) {
-    const sseListener = new SseListenerService(hubUrl, hubApiKey, api, config.wakeFilter);
+    const sseListener = new SseListenerService(hubUrl, mcpApiKey, api, config.wakeFilter);
     await sseListener.start();
   }
 }

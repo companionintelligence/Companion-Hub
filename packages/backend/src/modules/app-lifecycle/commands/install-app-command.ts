@@ -295,7 +295,26 @@ export class InstallAppCommand extends AppLifecycleCommand {
           if (agentNotifyService) {
             const wakeEndpoint = appInfo.hub_integration.wake_endpoint || '/hooks/hub-wake';
             const wakePort = appInfo.hub_integration.wake_port || appInfo.port || 3000;
-            const webhookUrl = `http://${appName}-${appStoreId}:${wakePort}${wakeEndpoint}`;
+
+            // Resolve the Docker DNS name for the agent container.
+            // On the shared ci-os-hub_network, containers are reachable by their
+            // Docker Compose service name (from docker-compose.json), NOT by
+            // {appName}-{storeId}. Read the main service name from the compose config.
+            let serviceName = appName;
+            try {
+              const composeJson = await appFilesManager.getDockerComposeJson(appUrn);
+              if (composeJson.content) {
+                const parsed = parseComposeJson(composeJson.content);
+                const mainService = parsed.services.find((s) => s.isMain) || parsed.services[0];
+                if (mainService?.name) {
+                  serviceName = mainService.name;
+                }
+              }
+            } catch (_parseErr) {
+              logger.debug(`Could not parse compose for service name, using appName: ${appName}`);
+            }
+
+            const webhookUrl = `http://${serviceName}:${wakePort}${wakeEndpoint}`;
 
             // Read the generated wake secret from the app env
             const agentEnvData = await appFilesManager.getAppEnv(appUrn);

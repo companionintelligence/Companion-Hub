@@ -37,6 +37,7 @@ export interface OpenClawHttpResponse {
 export interface PluginConfig {
   hubUrl?: string;
   hubApiKey?: string;
+  mcpApiKey?: string;
   wakeSecret?: string;
   sseEnabled?: boolean;
   wakeFilter?: {

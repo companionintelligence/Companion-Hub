@@ -343,11 +343,17 @@ export class AppHelpers {
     // --- MCP Integration for Agent Harness Apps (R-ENV) ---
     if (config.hub_integration?.mcp_client) {
       const hubContainerName = process.env.HUB_CONTAINER_NAME || 'ci-os-hub';
-      const hubInternalUrl = `http://${hubContainerName}:3000`;
+      const hubPort = process.env.API_PORT || '3000';
+      const hubInternalUrl = `http://${hubContainerName}:${hubPort}`;
 
       envMap.set('HUB_URL', hubInternalUrl);
       envMap.set('HUB_MCP_URL', `${hubInternalUrl}/api/mcp/sse`);
       envMap.set('HUB_MCP_MESSAGES_URL', `${hubInternalUrl}/api/mcp/messages`);
+
+      // Inject MCP API key so the agent can authenticate with the Hub MCP endpoint
+      if (process.env.MCP_API_KEY) {
+        envMap.set('HUB_MCP_API_KEY', process.env.MCP_API_KEY);
+      }
 
       // Generate or preserve wake secret
       const existingSecret = existingAppEnvMap.get('HUB_WAKE_SECRET');
