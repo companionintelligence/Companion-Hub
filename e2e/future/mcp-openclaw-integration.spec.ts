@@ -501,7 +501,6 @@ test.describe('Full OpenClaw install with GitHub Copilot provider', () => {
     expect(envContent).toContain('LLM_API_KEY=test-copilot-api-key');
 
     // Verify MCP URLs use the correct Hub port (GAP 3 fix: uses API_PORT, not hardcoded 3000)
-    const backendPort = process.env.BACKEND_PORT || '3000';
     expect(envContent).toMatch(/HUB_MCP_URL=http:\/\/.+\/api\/mcp\/sse/);
     expect(envContent).toMatch(/HUB_MCP_MESSAGES_URL=http:\/\/.+\/api\/mcp\/messages/);
 
