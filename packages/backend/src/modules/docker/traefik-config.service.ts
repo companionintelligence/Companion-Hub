@@ -17,6 +17,7 @@ interface TraefikRouter {
 interface TraefikService {
   loadBalancer: {
     servers: Array<{ url: string }>;
+    serversTransport?: string;
   };
 }
 
@@ -25,6 +26,7 @@ interface TraefikConfig {
     routers: Record<string, TraefikRouter>;
     services: Record<string, TraefikService>;
     middlewares?: Record<string, Record<string, unknown>>;
+    serversTransports?: Record<string, { insecureSkipVerify: boolean }>;
   };
 }
 
@@ -132,6 +134,7 @@ export class TraefikConfigService {
         const routers: Record<string, TraefikRouter> = {};
         const services: Record<string, TraefikService> = {};
         const middlewares: Record<string, Record<string, unknown>> = {};
+        const serviceSchemes: Record<string, string> = {};
 
         // Find all router labels
         for (const [key, value] of Object.entries(labels)) {
@@ -185,6 +188,12 @@ export class TraefikConfigService {
             }
           }
 
+          // Capture per-service backend scheme (e.g. https for KasmVNC containers)
+          if (key.startsWith('traefik.http.services.') && key.endsWith('.loadbalancer.server.scheme')) {
+            const serviceName = key.replace('traefik.http.services.', '').replace('.loadbalancer.server.scheme', '');
+            serviceSchemes[serviceName] = String(value);
+          }
+
           // Parse middleware definitions
           // Label format: traefik.http.middlewares.<name>.<type>.<property>[.<sub>...]
           if (key.startsWith('traefik.http.middlewares.')) {
@@ -199,6 +208,21 @@ export class TraefikConfigService {
             }
 
             setNestedValue(middlewares[middlewareName], nestedPath, String(value));
+          }
+        }
+
+        // Apply scheme overrides: rewrite service URLs and add insecureSkipVerify transport for HTTPS backends
+        for (const [serviceName, scheme] of Object.entries(serviceSchemes)) {
+          if (scheme === 'https' && services[serviceName]) {
+            const existing = services[serviceName].loadBalancer.servers[0]?.url;
+            if (existing) {
+              services[serviceName].loadBalancer.servers[0] = { url: existing.replace(/^http:\/\//, 'https://') };
+            }
+            services[serviceName].loadBalancer.serversTransport = 'insecureTransport';
+            if (!config.http.serversTransports) {
+              config.http.serversTransports = {};
+            }
+            config.http.serversTransports.insecureTransport = { insecureSkipVerify: true };
           }
         }
 
@@ -242,9 +266,10 @@ export class TraefikConfigService {
       const routerCount = Object.keys(config.http.routers).length;
       const serviceCount = Object.keys(config.http.services).length;
       const middlewareCount = Object.keys(config.http.middlewares ?? {}).length;
+      const serversTransportCount = Object.keys(config.http.serversTransports ?? {}).length;
 
       // Traefik doesn't accept empty routers/services objects - only write file if we have content
-      if (routerCount === 0 && serviceCount === 0 && middlewareCount === 0) {
+      if (routerCount === 0 && serviceCount === 0 && middlewareCount === 0 && serversTransportCount === 0) {
         // Delete the file if it exists to avoid stale/invalid config
         if (await this.filesystem.pathExists(configPath)) {
           this.logger.debug(`No routers/services/middlewares found, deleting stale Traefik config at ${configPath}`);
@@ -272,6 +297,9 @@ export class TraefikConfigService {
       if (middlewareCount > 0 && validConfig.http) {
         validConfig.http.middlewares = config.http.middlewares;
       }
+      if (serversTransportCount > 0 && validConfig.http) {
+        validConfig.http.serversTransports = config.http.serversTransports;
+      }
 
       const yamlContent = yaml.stringify(validConfig, { indent: 2 });
 
@@ -285,7 +313,7 @@ export class TraefikConfigService {
       }
 
       this.logger.info(
-        `Generated Traefik config with ${routerCount} routers, ${serviceCount} services, and ${middlewareCount} middlewares and wrote to ${configPath}`,
+        `Generated Traefik config with ${routerCount} routers, ${serviceCount} services, ${middlewareCount} middlewares, and ${serversTransportCount} serversTransports and wrote to ${configPath}`,
       );
 
       // Log router names for debugging

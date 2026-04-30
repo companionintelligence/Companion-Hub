@@ -10,6 +10,7 @@ interface TraefikLabelsArgs {
   publicDomain?: string;
   localDomain?: string;
   tailscaleHostname?: string;
+  httpsBackend?: boolean;
 }
 
 export class TraefikLabelsBuilder {
@@ -27,6 +28,9 @@ export class TraefikLabelsBuilder {
       'traefik.enable': false,
       'traefik.docker.network': mainNetworkName,
       [`traefik.http.services.${params.appId}-${params.storeId}.loadbalancer.server.port`]: `${params.internalPort}`,
+      ...(params.httpsBackend && {
+        [`traefik.http.services.${params.appId}-${params.storeId}.loadbalancer.server.scheme`]: 'https',
+      }),
     };
   }
 

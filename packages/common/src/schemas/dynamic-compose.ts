@@ -163,6 +163,7 @@ export const serviceSchemaV2 = z.object({
   user: z.string().optional(),
   workingDir: z.string().optional(),
   shmSize: z.string().optional(),
+  httpsBackend: z.boolean().optional(),
   capDrop: z.array(z.string('CUSTOM_APP_ERROR_CAP_DROP_INVALID')).optional(),
   logging: z
     .object({
