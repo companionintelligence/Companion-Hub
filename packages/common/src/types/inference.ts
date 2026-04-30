@@ -118,6 +118,7 @@ export interface CloudProviderConfig {
 export interface InferenceModelInfo {
   id: string;
   object: 'model';
+  created: number;
   owned_by: string;
   state: ModelState | 'available';
   backend: InferenceBackendType | 'cloud';

@@ -45,14 +45,21 @@ export class InferenceController {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.error(`[Inference] Chat completion error: ${message}`);
-      res.status(500).json({ error: { message, type: 'server_error' } });
+      res.status(500).json({ error: { message, type: 'server_error', param: null, code: null } });
     }
   }
 
   @Post('v1/completions')
-  async completions(@Body() body: Record<string, unknown>, @Res() res: Response) {
-    // Route through the same path as chat completions
-    return this.chatCompletions(body, res);
+  async completions(@Body() _body: Record<string, unknown>, @Res() res: Response) {
+    // Legacy completions API not supported — use /v1/chat/completions instead
+    res.status(404).json({
+      error: {
+        message: 'The completions API is not supported. Use /v1/chat/completions instead.',
+        type: 'invalid_request_error',
+        param: null,
+        code: 'unsupported_endpoint',
+      },
+    });
   }
 
   @Post('v1/audio/speech')
@@ -65,7 +72,7 @@ export class InferenceController {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.error(`[Inference] TTS error: ${message}`);
-      res.status(500).json({ error: { message, type: 'server_error' } });
+      res.status(500).json({ error: { message, type: 'server_error', param: null, code: null } });
     }
   }
 
@@ -79,7 +86,7 @@ export class InferenceController {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.error(`[Inference] STT error: ${message}`);
-      res.status(500).json({ error: { message, type: 'server_error' } });
+      res.status(500).json({ error: { message, type: 'server_error', param: null, code: null } });
     }
   }
 
@@ -92,7 +99,7 @@ export class InferenceController {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.error(`[Inference] Embeddings error: ${message}`);
-      res.status(500).json({ error: { message, type: 'server_error' } });
+      res.status(500).json({ error: { message, type: 'server_error', param: null, code: null } });
     }
   }
 
@@ -100,17 +107,16 @@ export class InferenceController {
   async imageGen(@Body() body: Record<string, unknown>, @Res() res: Response) {
     try {
       // Image gen only available via Lemonade or cloud
-      // For now, proxy to cloud
       const provider = this.cloudFallback.getEnabledProviders()[0];
       if (!provider) {
-        res.status(503).json({ error: { message: 'No image generation backend available', type: 'server_error' } });
+        res.status(503).json({ error: { message: 'No image generation backend available', type: 'server_error', param: null, code: null } });
         return;
       }
-      const result = await this.cloudFallback.proxyChatCompletion(provider, body);
+      const result = await this.cloudFallback.proxyImageGeneration(provider, body);
       res.json(result.data);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      res.status(500).json({ error: { message, type: 'server_error' } });
+      res.status(500).json({ error: { message, type: 'server_error', param: null, code: null } });
     }
   }
 

@@ -77,6 +77,7 @@ export class InferenceRouterService {
   /** List all available models (local + cloud) */
   async listModels(): Promise<InferenceModelInfo[]> {
     const models: InferenceModelInfo[] = [];
+    const now = Math.floor(Date.now() / 1000);
 
     // Local models from tracked state
     for (const tracked of this.modelRegistry.getTrackedModels()) {
@@ -84,6 +85,7 @@ export class InferenceRouterService {
       models.push({
         id: tracked.catalogId,
         object: 'model',
+        created: now,
         owned_by: `local:${tracked.backend}`,
         state: tracked.state,
         backend: tracked.backend,
@@ -100,6 +102,7 @@ export class InferenceRouterService {
         models.push({
           id: curated.id,
           object: 'model',
+          created: now,
           owned_by: `catalog:${curated.backend}`,
           state: 'available',
           backend: curated.backend,
@@ -116,12 +119,37 @@ export class InferenceRouterService {
       models.push({
         id: provider.defaultModel,
         object: 'model',
+        created: now,
         owned_by: `cloud:${provider.provider}`,
         state: 'available',
         backend: 'cloud',
         modality: ['text'],
         local: false,
       });
+    }
+
+    // Discovered models from backends (not in curated catalog or tracked)
+    const knownIds = new Set(models.map((m) => m.id));
+    for (const backendType of ['ollama', 'vllm', 'lemonade'] as InferenceBackendType[]) {
+      const backend = this.getBackend(backendType);
+      const health = await backend.healthCheck();
+      if (health.running && health.healthy) {
+        for (const modelName of health.modelsLoaded) {
+          if (!knownIds.has(modelName)) {
+            models.push({
+              id: modelName,
+              object: 'model',
+              created: now,
+              owned_by: `local:${backendType}`,
+              state: 'loaded',
+              backend: backendType,
+              modality: ['text'],
+              local: true,
+            });
+            knownIds.add(modelName);
+          }
+        }
+      }
     }
 
     return models;
@@ -136,15 +164,15 @@ export class InferenceRouterService {
   }> {
     const requestedModel = (body.model as string) || 'auto';
 
-    // 1. Resolve "auto" to default pinned LLM
-    const resolvedModel = requestedModel === 'auto' ? this.getDefaultModel() : requestedModel;
+    // 1. Resolve "auto" to default pinned LLM (checks curated catalog + discovered backends)
+    const resolvedModel = requestedModel === 'auto' ? await this.resolveAutoModel() : requestedModel;
 
     if (!resolvedModel) {
       // No local model, try cloud
       const provider = this.cloudFallback.getEnabledProviders()[0];
       if (provider) {
         const result = await this.cloudFallback.proxyChatCompletion(provider, { ...body, model: provider.defaultModel });
-        return { data: result.data, headers: result.headers, backend: `cloud:${provider.provider}` };
+        return { data: result.data, stream: result.stream, headers: result.headers, backend: `cloud:${provider.provider}` };
       }
       throw new Error('No models available — no local models loaded and no cloud providers configured');
     }
@@ -178,11 +206,23 @@ export class InferenceRouterService {
       }
     }
 
-    // 4. Check if it's a cloud model
+    // 4. Check if model is directly available on a local backend (not tracked/curated)
+    for (const backendType of ['ollama', 'vllm', 'lemonade'] as InferenceBackendType[]) {
+      const backend = this.getBackend(backendType);
+      const health = await backend.healthCheck();
+      if (health.running && health.healthy) {
+        const modelNames = health.modelsLoaded;
+        if (modelNames.some((m) => m === resolvedModel || m.startsWith(`${resolvedModel}:`))) {
+          return this.proxyToBackend(backendType, resolvedModel, body);
+        }
+      }
+    }
+
+    // 5. Check if it's a cloud model
     const provider = this.cloudFallback.resolveProvider(resolvedModel);
     if (provider) {
       const result = await this.cloudFallback.proxyChatCompletion(provider, body);
-      return { data: result.data, headers: result.headers, backend: `cloud:${provider.provider}` };
+      return { data: result.data, stream: result.stream, headers: result.headers, backend: `cloud:${provider.provider}` };
     }
 
     throw new Error(`Model ${resolvedModel} not found or not available`);
@@ -258,13 +298,34 @@ export class InferenceRouterService {
     });
     if (llmPinned) return llmPinned.catalogId;
 
-    // Any loaded LLM
+    // Any loaded LLM from curated catalog
     const loaded = this.modelRegistry.getLoadedModels();
     const llmLoaded = loaded.find((m) => {
       const curated = this.modelRegistry.getCuratedModel(m.catalogId);
       return curated?.modality === 'llm';
     });
-    return llmLoaded?.catalogId;
+    if (llmLoaded) return llmLoaded.catalogId;
+
+    // Fallback: pick the first discovered model from any running backend
+    // This handles cases where Ollama has models pulled but they aren't in the curated catalog
+    return undefined;
+  }
+
+  /** Resolve 'auto' model by also checking running backends */
+  private async resolveAutoModel(): Promise<string | undefined> {
+    const defaultModel = this.getDefaultModel();
+    if (defaultModel) return defaultModel;
+
+    // Check running backends for any available model
+    for (const backendType of ['ollama', 'vllm', 'lemonade'] as InferenceBackendType[]) {
+      const backend = this.getBackend(backendType);
+      const health = await backend.healthCheck();
+      if (health.running && health.healthy && health.modelsLoaded.length > 0) {
+        return health.modelsLoaded[0];
+      }
+    }
+
+    return undefined;
   }
 
   /** Proxy request to a local backend */
@@ -276,7 +337,7 @@ export class InferenceRouterService {
     const backend = this.getBackend(backendType);
     const url = `${backend.getBaseUrl()}/v1/chat/completions`;
 
-    const requestBody = { ...body, model: backendModelId };
+    const requestBody: Record<string, unknown> = { ...body, model: backendModelId };
 
     // Find catalog ID for recording usage
     const allTracked = this.modelRegistry.getTrackedModels();
@@ -285,7 +346,30 @@ export class InferenceRouterService {
       this.modelRegistry.recordUsage(tracked.catalogId);
     }
 
-    if (body.stream) {
+    try {
+      return await this.sendToBackend(url, requestBody, backendType, !!body.stream);
+    } catch (err) {
+      // If the backend rejects tools (e.g. model doesn't support function calling),
+      // retry without tools/tool_choice so basic chat still works
+      if (axios.isAxiosError(err) && err.response?.status === 400 && (requestBody.tools || requestBody.tool_choice)) {
+        const errMsg = typeof err.response?.data === 'object' ? JSON.stringify(err.response.data) : String(err.response?.data ?? '');
+        if (errMsg.includes('does not support tools') || errMsg.includes('tool')) {
+          this._logger.warn(`[Inference] Model ${backendModelId} does not support tools, retrying without`);
+          const { tools: _t, tool_choice: _tc, ...bodyWithoutTools } = requestBody;
+          return await this.sendToBackend(url, bodyWithoutTools, backendType, !!body.stream);
+        }
+      }
+      throw err;
+    }
+  }
+
+  private async sendToBackend(
+    url: string,
+    requestBody: Record<string, unknown>,
+    backendType: InferenceBackendType,
+    stream: boolean,
+  ): Promise<{ data: unknown; headers?: Record<string, string>; stream?: NodeJS.ReadableStream; backend: string }> {
+    if (stream) {
       const response = await axios.post(url, requestBody, {
         responseType: 'stream',
         timeout: 0,

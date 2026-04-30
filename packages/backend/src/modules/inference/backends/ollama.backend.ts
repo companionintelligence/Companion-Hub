@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
-import type { InferenceBackend } from './backends/backend.interface';
+import type { InferenceBackend } from './backend.interface';
 import type { BackendHealthStatus, BackendModelInfo, PullProgress } from '@ci-hub/common/types';
 import axios from 'axios';
 

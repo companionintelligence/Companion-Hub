@@ -104,6 +104,7 @@ services:
       INTERNAL_IP: 127.0.0.1
       CI_HUB_VERSION: 4.5.0
       LOG_LEVEL: debug
+      OLLAMA_URL: http://host.docker.internal:11434
     extra_hosts:
       - "host.docker.internal:host-gateway"
     env_file:
