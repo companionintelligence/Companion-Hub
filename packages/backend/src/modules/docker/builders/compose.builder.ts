@@ -175,6 +175,7 @@ export class DockerComposeBuilder {
         localSubdomain: subdomainToUse, // Use full subdomain (with org slug) from APP_PUBLIC_HOSTNAME
         publicDomain: publicDomainToUse,
         localDomain: this.localDomain,
+        httpsBackend: params.httpsBackend,
       });
       traefikBuilder.addExposedLocalLabels();
       traefikBuilder.addTailscaleLabels();
