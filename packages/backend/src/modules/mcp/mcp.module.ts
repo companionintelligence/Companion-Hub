@@ -34,6 +34,8 @@ import { SkillResolverService } from './agents/skill-resolver.service';
 import { OpenApiBridgeService } from './agents/openapi-bridge.service';
 import { McpBridgeService } from './agents/mcp-bridge.service';
 import { ApiProxyService } from './agents/api-proxy.service';
+import { InferenceModule } from '@/modules/inference/inference.module';
+import { InferenceTools } from './tools/inference.tools';
 
 @Module({
   imports: [
@@ -52,6 +54,7 @@ import { ApiProxyService } from './agents/api-proxy.service';
     RegistrationModule,
     CloudflareModule,
     LinksModule,
+    InferenceModule,
   ],
   controllers: [McpController],
   providers: [
@@ -69,6 +72,7 @@ import { ApiProxyService } from './agents/api-proxy.service';
     LinkTools,
     AppAgentTools,
     AppApiProxyTools,
+    InferenceTools,
     AgentConfigService,
     SkillResolverService,
     OpenApiBridgeService,

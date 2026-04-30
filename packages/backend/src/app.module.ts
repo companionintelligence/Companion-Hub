@@ -43,6 +43,7 @@ import { RegistryModule } from './utils/registry/registry.module';
 import { SystemUpdateModule } from './modules/system-update/system-update.module';
 import { McpModule } from './modules/mcp/mcp.module';
 import { AgentNotifyModule } from './modules/agent-notify/agent-notify.module';
+import { InferenceModule } from './modules/inference/inference.module';
 
 const imports: (DynamicModule | typeof I18nModule)[] = [
   RegistrationModule,
@@ -76,6 +77,7 @@ const imports: (DynamicModule | typeof I18nModule)[] = [
   CustomAppsModule,
   SystemUpdateModule,
   AgentNotifyModule,
+  InferenceModule,
 ];
 
 // Gate on the built frontend bundle's presence, not NODE_ENV: the bundled
