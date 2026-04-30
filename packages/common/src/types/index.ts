@@ -9,3 +9,22 @@ import {
 
 export { type AppUrn, zodAppUrn };
 export { PROVISIONING_PHASES, type ProvisioningPhase, DEGRADED_REASONS, type DegradedReason, type RegistrationStatus };
+export type {
+  HardwareProfile,
+  HardwareTier,
+  MemoryBudget,
+  InferenceBackendType,
+  ModelModality,
+  ModelPurpose,
+  ModelState,
+  TierRecommendation,
+  CuratedModel,
+  TrackedModel,
+  CloudProviderType,
+  CloudProviderConfig,
+  InferenceModelInfo,
+  InferenceStatus,
+  BackendHealthStatus,
+  BackendModelInfo,
+  PullProgress,
+} from './inference.js';

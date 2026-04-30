@@ -1,0 +1,170 @@
+// ─── Hardware Detection ─────────────────────────────────────────────────────
+
+export interface HardwareProfile {
+  gpu: {
+    available: boolean;
+    vendor: 'nvidia' | 'amd' | 'intel' | 'apple' | 'none';
+    model: string;
+    vramMb: number;
+    unifiedMemory: boolean;
+    driverVersion: string;
+    runtimeAvailable: boolean;
+  };
+  npu: {
+    available: boolean;
+    model: string;
+  };
+  ram: {
+    totalMb: number;
+    availableMb: number;
+  };
+  cpu: {
+    arch: 'x86_64' | 'arm64';
+    cores: number;
+    model: string;
+  };
+  effectiveInferenceMemoryMb: number;
+  tier: HardwareTier;
+}
+
+export type HardwareTier = 'high' | 'medium' | 'low' | 'cpu-only' | 'insufficient';
+
+// ─── Memory Management ─────────────────────────────────────────────────────
+
+export interface MemoryBudget {
+  totalVramMb: number;
+  totalRamMb: number;
+  systemReservedRamMb: number;
+  dockerOverheadMb: number;
+  appContainerBudgetMb: number;
+  modelBudgetVramMb: number;
+  modelBudgetRamMb: number;
+  modelUsedVramMb: number;
+  modelUsedRamMb: number;
+  pinnedVramMb: number;
+  pinnedRamMb: number;
+}
+
+// ─── Model Registry ─────────────────────────────────────────────────────────
+
+export type InferenceBackendType = 'ollama' | 'vllm' | 'lemonade';
+
+export type ModelModality = 'llm' | 'tts' | 'stt' | 'image-gen' | 'embedding';
+export type ModelPurpose = 'general' | 'coding' | 'reasoning' | 'fast' | 'voice' | 'transcription' | 'image' | 'embedding';
+
+export type ModelState = 'available' | 'pulling' | 'pulled' | 'loading' | 'loaded' | 'pinned' | 'unloading' | 'error';
+
+export type TierRecommendation = 'recommended' | 'available' | 'not-recommended';
+
+export interface CuratedModel {
+  id: string;
+  backend: InferenceBackendType;
+  backendModelId: string;
+  modality: ModelModality;
+  purpose: ModelPurpose;
+  displayName: string;
+  description: string;
+  requirements: {
+    minVramMb: number;
+    recommendedVramMb: number;
+    minRamMb: number;
+    diskMb: number;
+    gpuVendors: ('nvidia' | 'amd' | 'intel' | 'apple' | 'cpu')[];
+    npuRequired: boolean;
+    minTier: HardwareTier;
+  };
+  runtime: {
+    contextWindow: number;
+    maxTokens: number;
+    reasoning: boolean;
+    input: ('text' | 'image' | 'audio')[];
+    quantization?: string;
+    pinnedByDefault: boolean;
+    memoryFootprintMb: number;
+  };
+  tiers: {
+    high: TierRecommendation;
+    medium: TierRecommendation;
+    low: TierRecommendation;
+    cpuOnly: TierRecommendation;
+  };
+}
+
+export interface TrackedModel {
+  catalogId: string;
+  backend: InferenceBackendType;
+  backendModelId: string;
+  state: ModelState;
+  pinned: boolean;
+  pullProgress?: number;
+  memoryUsedMb: number;
+  lastUsedAt?: number;
+  requestCount: number;
+  errorMessage?: string;
+}
+
+// ─── Inference Router ───────────────────────────────────────────────────────
+
+export type CloudProviderType = 'openai' | 'anthropic' | 'google' | 'github-copilot';
+
+export interface CloudProviderConfig {
+  provider: CloudProviderType;
+  apiKey?: string;
+  baseUrl?: string;
+  defaultModel: string;
+  enabled: boolean;
+}
+
+export interface InferenceModelInfo {
+  id: string;
+  object: 'model';
+  owned_by: string;
+  state: ModelState | 'available';
+  backend: InferenceBackendType | 'cloud';
+  modality: string[];
+  local: boolean;
+  context_window?: number;
+  max_tokens?: number;
+}
+
+export interface InferenceStatus {
+  hardwareTier: HardwareTier;
+  backends: Array<{
+    type: InferenceBackendType;
+    running: boolean;
+    healthy: boolean;
+    url: string;
+    modelsLoaded: number;
+  }>;
+  models: InferenceModelInfo[];
+  memoryBudget: MemoryBudget;
+  cloudProviders: Array<{
+    provider: CloudProviderType;
+    enabled: boolean;
+    configured: boolean;
+  }>;
+}
+
+// ─── Backend Interface ──────────────────────────────────────────────────────
+
+export interface BackendHealthStatus {
+  running: boolean;
+  healthy: boolean;
+  modelsLoaded: string[];
+  error?: string;
+}
+
+export interface BackendModelInfo {
+  id: string;
+  name: string;
+  size: number;
+  loaded: boolean;
+}
+
+export interface PullProgress {
+  status: string;
+  digest?: string;
+  total?: number;
+  completed?: number;
+  percent: number;
+}
