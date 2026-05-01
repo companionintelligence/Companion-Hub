@@ -71,7 +71,7 @@ export const ModelSelectionCard = ({ tier, recommendedModels, availableModels, s
                       />
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
-                          <span className="text-sm font-medium">{model.name}</span>
+                          <span className="text-sm font-medium">{model.displayName}</span>
                           {isRecommended && (
                             <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary/10 text-primary font-medium">Recommended</span>
                           )}
