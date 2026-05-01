@@ -4,11 +4,13 @@ import { Card, CardContent } from '@/components/ui/Card';
 import { useAppContext } from '@/context/app-context';
 import { useState } from 'react';
 import { useNavigate } from 'react-router';
-import type { InstallSummary } from '../helpers/types';
+import type { InstallSummary, AiSetupConfig } from '../helpers/types';
 
 interface CompleteStepProps {
   /** undefined when no install step was executed (user skipped). */
   installSummary?: InstallSummary;
+  /** AI setup configuration from the AI step. */
+  aiSetupConfig?: AiSetupConfig;
 }
 
 function completionCopy(summary?: InstallSummary) {
@@ -54,7 +56,7 @@ function completionCopy(summary?: InstallSummary) {
   };
 }
 
-export const CompleteStep = ({ installSummary }: CompleteStepProps) => {
+export const CompleteStep = ({ installSummary, aiSetupConfig }: CompleteStepProps) => {
   const navigate = useNavigate();
   const { refreshAppContext } = useAppContext();
   const [loading, setLoading] = useState(false);
@@ -85,6 +87,29 @@ export const CompleteStep = ({ installSummary }: CompleteStepProps) => {
         <p className="text-muted-foreground max-w-md mx-auto mb-6" data-testid="complete-body">
           {copy.body}
         </p>
+
+        {/* AI Setup Summary */}
+        {aiSetupConfig && (
+          <div className="text-sm text-muted-foreground mb-6 max-w-md mx-auto" data-testid="ai-summary">
+            {aiSetupConfig.skipped ? (
+              <p>AI not configured. You can set it up anytime in Settings → AI.</p>
+            ) : (
+              <div className="space-y-1">
+                {aiSetupConfig.selectedModels.length > 0 && (
+                  <p>
+                    🧠 {aiSetupConfig.selectedModels.length} AI model{aiSetupConfig.selectedModels.length === 1 ? '' : 's'} configured
+                  </p>
+                )}
+                {aiSetupConfig.cloudProviders.length > 0 && (
+                  <p>
+                    ☁️ {aiSetupConfig.cloudProviders.length} cloud provider{aiSetupConfig.cloudProviders.length === 1 ? '' : 's'} configured
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
         <Button intent="primary" onClick={handleFinish} loading={loading} disabled={loading} className="w-64" data-testid="complete-cta">
           {copy.cta}
         </Button>
