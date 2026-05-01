@@ -7,6 +7,7 @@ import { ModelRegistryService } from './model-registry.service';
 import { ModelPullerService } from './model-puller.service';
 import { CloudFallbackService } from './cloud-fallback.service';
 import { LoggerService } from '@/core/logger/logger.service';
+import type { CloudProviderType } from '@ci-hub/common/types';
 
 /**
  * Inference controller — exposes OpenAI-compatible inference endpoints.
@@ -228,9 +229,9 @@ export class InferenceController {
   }
 
   @Post('cloud-providers')
-  async setCloudProvider(@Body() body: { provider: string; apiKey: string; enabled: boolean; baseUrl?: string; defaultModel?: string }) {
+  async setCloudProvider(@Body() body: { provider: CloudProviderType; apiKey: string; enabled: boolean; baseUrl?: string; defaultModel?: string }) {
     this.cloudFallback.setProvider({
-      provider: body.provider as any,
+      provider: body.provider,
       apiKey: body.apiKey,
       enabled: body.enabled,
       baseUrl: body.baseUrl,
