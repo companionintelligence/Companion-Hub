@@ -194,6 +194,10 @@ describe('ReposHelpers', () => {
       );
       expect(fs.promises.writeFile).toHaveBeenCalledWith(expect.stringContaining('multi-file-app/config.json'), '{"name":"multi"}');
       expect(fs.promises.writeFile).toHaveBeenCalledWith(expect.stringContaining('multi-file-app/data/settings.json'), '{"key":"value"}');
+
+      // Verify mkdir is called for nested paths (data/ subdirectory)
+      const mkdirCalls = (fs.promises.mkdir as any).mock.calls.map((c: any[]) => c[0]);
+      expect(mkdirCalls).toContainEqual(expect.stringContaining('multi-file-app/data'));
     });
 
     it('should reject responses that do not contain a files object', async () => {

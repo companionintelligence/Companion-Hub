@@ -274,7 +274,9 @@ export class ReposHelpers {
 
       if (Object.keys(files).length > 0) {
         for (const [filename, content] of Object.entries(files)) {
-          await fs.promises.writeFile(path.join(appPath, filename), typeof content === 'string' ? content : JSON.stringify(content, null, 2));
+          const filePath = path.join(appPath, filename);
+          await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+          await fs.promises.writeFile(filePath, typeof content === 'string' ? content : JSON.stringify(content, null, 2));
         }
       } else {
         this.logger.warn(`No app files found in response for ${appSlug}`);
