@@ -18,14 +18,15 @@ interface AiSetupStepProps {
 
 export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) => {
   const [loading, setLoading] = useState(true);
+  const [rescanning, setRescanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [profile, setProfile] = useState<HardwareProfileResponse | null>(null);
   const [selectedModelIds, setSelectedModelIds] = useState<string[]>([]);
   const [selectedBackend, setSelectedBackend] = useState<InferenceBackendType>('ollama');
   const [cloudProviders, setCloudProviders] = useState<CloudProviderInput[]>([]);
 
-  const fetchProfile = async () => {
-    setLoading(true);
+  const fetchProfile = async (isRescan = false) => {
+    if (!isRescan) setLoading(true);
     setError(null);
     try {
       const res = await apiFetch('/api/inference/onboarding-profile', { credentials: 'include' });
@@ -37,7 +38,8 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
     } catch (e) {
       setError((e as Error).message);
     } finally {
-      setLoading(false);
+      if (!isRescan) setLoading(false);
+      setRescanning(false);
     }
   };
 
@@ -47,8 +49,9 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
   }, []);
 
   const handleRescan = async () => {
+    setRescanning(true);
     await apiFetch('/api/inference/hardware/rescan', { method: 'POST', credentials: 'include' });
-    await fetchProfile();
+    await fetchProfile(true);
   };
 
   const handleToggleModel = (modelId: string) => {
@@ -83,7 +86,7 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
       <div className="text-center py-8" data-testid="ai-setup-error">
         <p className="text-destructive mb-4">Failed to detect hardware: {error}</p>
         <div className="flex gap-2 justify-center">
-          <Button variant="outline" onClick={fetchProfile}>
+          <Button variant="outline" onClick={() => fetchProfile()}>
             Retry
           </Button>
           <Button variant="ghost" onClick={handleSkip}>
@@ -100,7 +103,7 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
 
   return (
     <div className="space-y-4" data-testid="ai-setup-step">
-      <HardwareProfileCard hardware={profile.hardware} tier={profile.tier} onRescan={handleRescan} />
+      <HardwareProfileCard hardware={profile.hardware} tier={profile.tier} onRescan={handleRescan} rescanning={rescanning} />
 
       {!isInsufficient && (
         <>

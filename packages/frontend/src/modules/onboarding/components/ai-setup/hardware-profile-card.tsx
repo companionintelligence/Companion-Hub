@@ -1,12 +1,12 @@
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent } from '@/components/ui/Card';
 import type { HardwareProfile, HardwareTier } from '@ci-hub/common/types';
-import { useState } from 'react';
 
 interface HardwareProfileCardProps {
   hardware: HardwareProfile;
   tier: HardwareTier;
   onRescan: () => Promise<void>;
+  rescanning?: boolean;
 }
 
 const TIER_BADGES: Record<HardwareTier, { label: string; color: string; emoji: string }> = {
@@ -22,18 +22,8 @@ function formatMemory(mb: number): string {
   return `${mb} MB`;
 }
 
-export const HardwareProfileCard = ({ hardware, tier, onRescan }: HardwareProfileCardProps) => {
-  const [rescanning, setRescanning] = useState(false);
+export const HardwareProfileCard = ({ hardware, tier, onRescan, rescanning = false }: HardwareProfileCardProps) => {
   const badge = TIER_BADGES[tier];
-
-  const handleRescan = async () => {
-    setRescanning(true);
-    try {
-      await onRescan();
-    } finally {
-      setRescanning(false);
-    }
-  };
 
   return (
     <Card>
@@ -46,7 +36,7 @@ export const HardwareProfileCard = ({ hardware, tier, onRescan }: HardwareProfil
             <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${badge.color}`} data-testid="tier-badge">
               {badge.emoji} {badge.label}
             </span>
-            <Button variant="ghost" size="sm" onClick={handleRescan} loading={rescanning} data-testid="rescan-btn">
+            <Button variant="ghost" size="sm" onClick={onRescan} loading={rescanning} data-testid="rescan-btn">
               Rescan
             </Button>
           </div>
