@@ -99,7 +99,7 @@ describe('InferenceController — onboarding-profile', () => {
     expect(result.resourceEstimate.availableMemoryMb).toBeGreaterThanOrEqual(0);
   });
 
-  it('should recommend ollama for non-nvidia GPU', async () => {
+  it('should recommend vllm for AMD GPU with runtime', async () => {
     const amdProfile = { ...fakeProfile, gpu: { ...fakeProfile.gpu, vendor: 'amd' as const } };
     hardwareInspector.getProfile.mockResolvedValue(amdProfile);
     modelRegistry.getRecommendedModels.mockReturnValue([]);
@@ -108,7 +108,7 @@ describe('InferenceController — onboarding-profile', () => {
     router.getStatus.mockResolvedValue(fakeStatus);
 
     const result = await controller.getOnboardingProfile();
-    expect(result.backends.recommended).toBe('ollama');
+    expect(result.backends.recommended).toBe('vllm');
   });
 
   it('should recommend ollama for nvidia without runtime', async () => {
@@ -125,8 +125,8 @@ describe('InferenceController — onboarding-profile', () => {
 
   it('should calculate resource estimates from recommended models', async () => {
     const fakeModels = [
-      { id: 'm1', runtime: { memoryFootprintMb: 4096 } },
-      { id: 'm2', runtime: { memoryFootprintMb: 2048 } },
+      { id: 'm1', runtime: { memoryFootprintMb: 4096 }, requirements: { diskMb: 3000 } },
+      { id: 'm2', runtime: { memoryFootprintMb: 2048 }, requirements: { diskMb: 1500 } },
     ] as any;
 
     hardwareInspector.getProfile.mockResolvedValue(fakeProfile);
@@ -137,7 +137,7 @@ describe('InferenceController — onboarding-profile', () => {
 
     const result = await controller.getOnboardingProfile();
     expect(result.resourceEstimate.totalMemoryMb).toBe(6144);
-    expect(result.resourceEstimate.totalDiskMb).toBe(6144);
+    expect(result.resourceEstimate.totalDiskMb).toBe(4500);
   });
 
   it('should use RAM budget for unified memory systems', async () => {

@@ -9,7 +9,7 @@ import { ModelPullerService } from './model-puller.service';
 import { CloudFallbackService } from './cloud-fallback.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AuthGuard } from '@/modules/auth/auth.guard';
-import type { CloudProviderType } from '@ci-hub/common/types';
+import type { CloudProviderType, InferenceBackendType } from '@ci-hub/common/types';
 
 /**
  * Inference controller — exposes OpenAI-compatible inference endpoints.
@@ -290,7 +290,13 @@ export class InferenceController {
     const budget = this.memoryManager.calculateBudget(profile);
     const status = await this.router.getStatus();
 
-    const recommendedBackend: string = profile.gpu.vendor === 'nvidia' && profile.gpu.runtimeAvailable ? 'vllm' : 'ollama';
+    const recommendedBackend: InferenceBackendType = profile.npu.available
+      ? 'lemonade'
+      : profile.gpu.vendor === 'nvidia' && profile.gpu.runtimeAvailable
+        ? 'vllm'
+        : profile.gpu.vendor === 'amd' && profile.gpu.runtimeAvailable
+          ? 'vllm'
+          : 'ollama';
 
     const totalMemoryMb = recommendedModels.reduce((sum, m) => sum + m.runtime.memoryFootprintMb, 0);
     const availableMemoryMb =
@@ -309,7 +315,7 @@ export class InferenceController {
         available: status.backends.map((b) => ({ type: b.type, running: b.running, healthy: b.healthy })),
       },
       resourceEstimate: {
-        totalDiskMb: recommendedModels.reduce((sum, m) => sum + m.runtime.memoryFootprintMb, 0),
+        totalDiskMb: recommendedModels.reduce((sum, m) => sum + m.requirements.diskMb, 0),
         totalMemoryMb,
         availableMemoryMb: Math.max(0, availableMemoryMb),
       },

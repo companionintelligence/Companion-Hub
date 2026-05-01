@@ -10,7 +10,7 @@ function deriveKey(secret: string): Buffer {
 
 /**
  * Encrypt a plaintext string using AES-256-GCM.
- * Returns `iv:ciphertext:tag` as a single base64 string.
+ * Returns a single base64 string of the concatenated bytes: `iv || ciphertext || tag`.
  */
 export function encryptValue(plaintext: string, secret: string): string {
   const key = deriveKey(secret);

@@ -6,7 +6,7 @@ import { Brain, RefreshCw } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import type { CloudProviderInput, HardwareProfileResponse } from '@/modules/onboarding/helpers/ai-setup-types';
-import type { InferenceBackendType } from '@ci-hub/common/types';
+import type { CloudProviderType, InferenceBackendType } from '@ci-hub/common/types';
 import { HardwareProfileCard } from '@/modules/onboarding/components/ai-setup/hardware-profile-card';
 import { ModelSelectionCard } from '@/modules/onboarding/components/ai-setup/model-selection-card';
 import { BackendSelectionCard } from '@/modules/onboarding/components/ai-setup/backend-selection-card';
@@ -66,7 +66,7 @@ export const AiSettingsContainer = () => {
         const providers = await cloudRes.json();
         const configured: CloudProviderInput[] = providers
           .filter((p: { configured: boolean }) => p.configured)
-          .map((p: { provider: string; enabled: boolean }) => ({
+          .map((p: { provider: CloudProviderType; enabled: boolean }) => ({
             provider: p.provider,
             apiKey: '••••••••', // Don't expose the actual key
             enabled: p.enabled,
@@ -90,8 +90,13 @@ export const AiSettingsContainer = () => {
 
   const handleRescan = async () => {
     setRescanning(true);
-    await apiFetch('/api/inference/hardware/rescan', { method: 'POST', credentials: 'include' });
-    await fetchProfile(true);
+    try {
+      await apiFetch('/api/inference/hardware/rescan', { method: 'POST', credentials: 'include' });
+      await fetchProfile(true);
+    } catch (e) {
+      toast.error(`Rescan failed: ${(e as Error).message}`);
+      setRescanning(false);
+    }
   };
 
   const handleToggleModel = (modelId: string) => {
@@ -101,7 +106,8 @@ export const AiSettingsContainer = () => {
   const handleSave = async () => {
     setSaving(true);
     try {
-      // Save cloud providers (only those with real keys, not masked ones)
+      // Save cloud providers — for already-configured providers (masked key),
+      // always persist enabled state; for new/changed keys, send the full config.
       for (const cp of cloudProviders) {
         if (cp.apiKey.trim() && !cp.apiKey.startsWith('••')) {
           await apiFetch('/api/inference/cloud-providers', {
@@ -110,18 +116,34 @@ export const AiSettingsContainer = () => {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ provider: cp.provider, apiKey: cp.apiKey, enabled: cp.enabled }),
           });
+        } else if (cp.apiKey.startsWith('••')) {
+          // Already-configured provider — update enabled state without re-sending key
+          await apiFetch('/api/inference/cloud-providers', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ provider: cp.provider, enabled: cp.enabled }),
+          });
         }
       }
 
-      // Pin newly selected models that aren't already pinned
+      // Pull and pin newly selected models
       for (const modelId of selectedModelIds) {
         if (!pinnedModelIds.has(modelId)) {
-          await apiFetch('/api/inference/models/pull', {
+          const pullRes = await apiFetch('/api/inference/models/pull', {
             method: 'POST',
             credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ modelId }),
           });
+          if (pullRes.ok) {
+            await apiFetch('/api/inference/models/pin', {
+              method: 'POST',
+              credentials: 'include',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ modelId }),
+            });
+          }
         }
       }
 

@@ -70,12 +70,15 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
           setAiPhase((prev) => ({ ...prev, status: 'configuring-cloud' }));
           for (const cp of aiSetupConfig.cloudProviders) {
             try {
-              await apiFetch('/api/inference/cloud-providers', {
+              const res = await apiFetch('/api/inference/cloud-providers', {
                 method: 'POST',
                 credentials: 'include',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ provider: cp.provider, apiKey: cp.apiKey, enabled: cp.enabled }),
               });
+              if (!res.ok) {
+                setAiPhase((prev) => ({ ...prev, error: `Failed to configure ${cp.provider}: HTTP ${res.status}` }));
+              }
             } catch {
               // Non-fatal — continue with other providers
             }
@@ -88,12 +91,15 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
           setAiPhase((prev) => ({ ...prev, status: 'pulling-models' }));
           for (const modelId of aiSetupConfig.selectedModels) {
             try {
-              await apiFetch('/api/inference/models/pull', {
+              const res = await apiFetch('/api/inference/models/pull', {
                 method: 'POST',
                 credentials: 'include',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ modelId }),
               });
+              if (!res.ok) {
+                setAiPhase((prev) => ({ ...prev, error: `Failed to pull model ${modelId}: HTTP ${res.status}` }));
+              }
             } catch {
               // Non-fatal
             }
@@ -123,25 +129,35 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
             }
           };
 
-          const pullTimeout = 300_000; // 5 min
+          const pullTimeout = 600_000; // 10 min
           const pullStart = Date.now();
+          let pullsComplete = false;
           while (Date.now() - pullStart < pullTimeout) {
             await minDelay(2000);
-            if (await pollPullProgress()) break;
+            if (await pollPullProgress()) {
+              pullsComplete = true;
+              break;
+            }
           }
 
-          // Pin models
-          setAiPhase((prev) => ({ ...prev, status: 'pinning-models' }));
-          for (const modelId of aiSetupConfig.selectedModels) {
-            try {
-              await apiFetch('/api/inference/models/pin', {
-                method: 'POST',
-                credentials: 'include',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ modelId }),
-              });
-            } catch {
-              // Non-fatal
+          if (!pullsComplete) {
+            setAiPhase((prev) => ({ ...prev, error: 'Model pulls are still in progress — they will complete in the background.' }));
+          }
+
+          // Pin models only if pulls completed
+          if (pullsComplete) {
+            setAiPhase((prev) => ({ ...prev, status: 'pinning-models' }));
+            for (const modelId of aiSetupConfig.selectedModels) {
+              try {
+                await apiFetch('/api/inference/models/pin', {
+                  method: 'POST',
+                  credentials: 'include',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ modelId }),
+                });
+              } catch {
+                // Non-fatal
+              }
             }
           }
         }

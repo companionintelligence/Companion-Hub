@@ -1,7 +1,7 @@
 import { apiFetch } from '@/lib/api-fetch';
 import { Button } from '@/components/ui/Button';
 import { useEffect, useState } from 'react';
-import type { AiSetupConfig, CloudProviderInput, HardwareProfileResponse } from '../helpers/ai-setup-types';
+import { validateCloudKey, type AiSetupConfig, type CloudProviderInput, type HardwareProfileResponse } from '../helpers/ai-setup-types';
 import type { InferenceBackendType } from '@ci-hub/common/types';
 import { HardwareProfileCard } from './ai-setup/hardware-profile-card';
 import { ModelSelectionCard } from './ai-setup/model-selection-card';
@@ -50,8 +50,13 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
 
   const handleRescan = async () => {
     setRescanning(true);
-    await apiFetch('/api/inference/hardware/rescan', { method: 'POST', credentials: 'include' });
-    await fetchProfile(true);
+    try {
+      await apiFetch('/api/inference/hardware/rescan', { method: 'POST', credentials: 'include' });
+      await fetchProfile(true);
+    } catch (e) {
+      setError((e as Error).message);
+      setRescanning(false);
+    }
   };
 
   const handleToggleModel = (modelId: string) => {
@@ -59,10 +64,14 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
   };
 
   const handleContinue = () => {
+    const validProviders = cloudProviders.filter((p) => {
+      if (!p.apiKey.trim()) return false;
+      return !validateCloudKey(p.provider, p.apiKey);
+    });
     onComplete({
       selectedModels: selectedModelIds,
       backend: selectedBackend,
-      cloudProviders: cloudProviders.filter((p) => p.apiKey.trim()),
+      cloudProviders: validProviders,
       skipped: false,
     });
   };

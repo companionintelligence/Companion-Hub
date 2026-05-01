@@ -15,12 +15,11 @@ function formatSize(mb: number): string {
 }
 
 const MODALITY_LABELS: Record<string, string> = {
-  'text-generation': 'Language Model',
-  'code-generation': 'Code Model',
+  llm: 'Language Model',
   tts: 'Text-to-Speech',
   stt: 'Speech-to-Text',
   embedding: 'Embedding',
-  'image-generation': 'Image Generation',
+  'image-gen': 'Image Generation',
 };
 
 function groupByModality(models: CuratedModel[]): Record<string, CuratedModel[]> {
