@@ -53,7 +53,10 @@
         "CI_CLOUD_URL",
         "LOCAL_DOMAIN",
         "DOMAIN",
-        "APPS_REPO_URL"
+        "APPS_REPO_URL",
+        "OLLAMA_URL",
+        "VLLM_URL",
+        "LEMONADE_URL"
       ]
     },
     "test": {

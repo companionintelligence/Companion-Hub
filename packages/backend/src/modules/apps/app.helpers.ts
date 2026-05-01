@@ -364,6 +364,14 @@ export class AppHelpers {
       }
     }
 
+    // --- Inference Integration for all Hub apps ---
+    // Inject inference endpoint URL so any app can use Hub-managed inference
+    {
+      const hubContainerName = process.env.HUB_CONTAINER_NAME || 'ci-os-hub';
+      const hubPort = process.env.API_PORT || '3000';
+      envMap.set('HUB_INFERENCE_URL', `http://${hubContainerName}:${hubPort}/api/inference/v1`);
+    }
+
     await this.appFilesManager.writeAppEnv(appUrn, this.envUtils.envMapToString(envMap));
   };
 }

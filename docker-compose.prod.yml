@@ -103,11 +103,16 @@ services:
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
       - /etc/machine-id:/etc/machine-id:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       ci_os_hub_network:
         aliases:
           - host.docker.internal
     environment:
+      OLLAMA_URL: http://host.docker.internal:11434
+      VLLM_URL: ${VLLM_URL:-http://ci-hub-vllm:8000}
+      LEMONADE_URL: ${LEMONADE_URL:-http://ci-hub-lemonade:13305}
       API_PORT: 5002
       LOCAL: ${LOCAL:-false}
       NODE_ENV: ${NODE_ENV:-production}
