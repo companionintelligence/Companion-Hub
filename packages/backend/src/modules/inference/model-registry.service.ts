@@ -5,7 +5,7 @@ import { CURATED_MODELS } from './catalog/curated-models';
 
 @Injectable()
 export class ModelRegistryService implements OnModuleInit {
-  /** Tracked model states (in-memory, persisted to disk on changes) */
+  /** Tracked model states (in-memory only; does not survive process restarts) */
   private readonly trackedModels = new Map<string, TrackedModel>();
 
   constructor(private readonly logger: LoggerService) {}

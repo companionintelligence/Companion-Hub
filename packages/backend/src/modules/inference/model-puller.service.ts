@@ -65,7 +65,12 @@ export class ModelPullerService {
 
     const backend = this.getBackend(curated.backend);
 
-    this.modelRegistry.updateModelState(catalogId, 'loading');
+    // Ensure the model is tracked before transitioning state
+    if (this.modelRegistry.getTrackedModel(catalogId)) {
+      this.modelRegistry.updateModelState(catalogId, 'loading');
+    } else {
+      this.modelRegistry.trackModel(catalogId, 'loading');
+    }
     this.logger.info(`[ModelPuller] Loading ${catalogId} into memory`);
 
     try {

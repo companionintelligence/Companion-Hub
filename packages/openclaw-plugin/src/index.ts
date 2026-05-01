@@ -184,6 +184,13 @@ async function autoConfigureInference(api: OpenClawPluginApi, hubUrl: string, ap
               voice: req.voice ?? 'default',
             }),
           });
+
+          if (!response.ok) {
+            const errorText = await response.text().catch(() => 'Unknown error');
+            api.log.error(`CI Hub TTS request failed (${response.status}): ${errorText.slice(0, 500)}`);
+            throw new Error(`CI Hub TTS request failed: ${response.status} ${response.statusText}`);
+          }
+
           const audioBuffer = Buffer.from(await response.arrayBuffer());
           return {
             audioBuffer,

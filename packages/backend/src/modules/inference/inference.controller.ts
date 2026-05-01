@@ -1,5 +1,6 @@
-import { Body, Controller, Get, Post, Req, Res } from '@nestjs/common';
-import type { Request, Response } from 'express';
+import { Body, Controller, Get, Post, Res, UseGuards, UseInterceptors, UploadedFile } from '@nestjs/common';
+import type { Response } from 'express';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { InferenceRouterService } from './inference-router.service';
 import { HardwareInspectorService } from './hardware-inspector.service';
 import { MemoryManagerService } from './memory-manager.service';
@@ -7,6 +8,7 @@ import { ModelRegistryService } from './model-registry.service';
 import { ModelPullerService } from './model-puller.service';
 import { CloudFallbackService } from './cloud-fallback.service';
 import { LoggerService } from '@/core/logger/logger.service';
+import { AuthGuard } from '@/modules/auth/auth.guard';
 import type { CloudProviderType } from '@ci-hub/common/types';
 
 /**
@@ -78,10 +80,27 @@ export class InferenceController {
   }
 
   @Post('v1/audio/transcriptions')
-  async stt(@Req() req: Request, @Res() res: Response) {
+  @UseInterceptors(FileInterceptor('file'))
+  async stt(
+    @UploadedFile() file: { buffer: Buffer; originalname: string; mimetype: string } | undefined,
+    @Body() body: Record<string, string>,
+    @Res() res: Response,
+  ) {
     try {
-      // Forward the multipart form as-is
-      const result = await this.router.routeStt(req.body);
+      if (!file) {
+        res.status(400).json({ error: { message: 'No audio file provided', type: 'invalid_request_error', param: 'file', code: null } });
+        return;
+      }
+
+      // Rebuild FormData with the uploaded file for backend forwarding
+      const formData = new FormData();
+      const blob = new Blob([file.buffer], { type: file.mimetype || 'application/octet-stream' });
+      formData.append('file', blob, file.originalname);
+      for (const [key, value] of Object.entries(body)) {
+        formData.append(key, value);
+      }
+
+      const result = await this.router.routeStt(formData);
       res.setHeader('X-Inference-Backend', result.backend);
       res.json(result.data);
     } catch (err) {
@@ -143,27 +162,32 @@ export class InferenceController {
 
   // ─── Management Endpoints ─────────────────────────────────────────────
 
+  @UseGuards(AuthGuard)
   @Get('status')
   async getStatus() {
     return this.router.getStatus();
   }
 
+  @UseGuards(AuthGuard)
   @Get('hardware')
   async getHardware() {
     return this.hardwareInspector.getProfile();
   }
 
+  @UseGuards(AuthGuard)
   @Post('hardware/rescan')
   async rescanHardware() {
     return this.hardwareInspector.rescan();
   }
 
+  @UseGuards(AuthGuard)
   @Get('memory')
   async getMemory() {
     const profile = await this.hardwareInspector.getProfile();
     return this.memoryManager.calculateBudget(profile);
   }
 
+  @UseGuards(AuthGuard)
   @Get('models/catalog')
   async getCatalog() {
     const profile = await this.hardwareInspector.getProfile();
@@ -174,29 +198,34 @@ export class InferenceController {
     };
   }
 
+  @UseGuards(AuthGuard)
   @Get('models/tracked')
   async getTrackedModels() {
     return this.modelRegistry.getTrackedModels();
   }
 
+  @UseGuards(AuthGuard)
   @Post('models/pull')
   async pullModel(@Body() body: { modelId: string }) {
     await this.modelPuller.pullModel(body.modelId);
     return { success: true, message: `Model ${body.modelId} pulled` };
   }
 
+  @UseGuards(AuthGuard)
   @Post('models/load')
   async loadModel(@Body() body: { modelId: string }) {
     await this.modelPuller.loadModel(body.modelId);
     return { success: true, message: `Model ${body.modelId} loaded` };
   }
 
+  @UseGuards(AuthGuard)
   @Post('models/unload')
   async unloadModel(@Body() body: { modelId: string }) {
     await this.modelPuller.unloadModel(body.modelId);
     return { success: true, message: `Model ${body.modelId} unloaded` };
   }
 
+  @UseGuards(AuthGuard)
   @Post('models/pin')
   async pinModel(@Body() body: { modelId: string }) {
     const profile = await this.hardwareInspector.getProfile();
@@ -208,16 +237,24 @@ export class InferenceController {
       return { success: false, message: canPin.reason };
     }
 
+    // Ensure model is loaded before pinning
+    const tracked = this.modelRegistry.getTrackedModel(body.modelId);
+    if (!tracked || (tracked.state !== 'loaded' && tracked.state !== 'pinned')) {
+      await this.modelPuller.loadModel(body.modelId);
+    }
+
     this.modelRegistry.pinModel(body.modelId);
     return { success: true, message: `Model ${body.modelId} pinned` };
   }
 
+  @UseGuards(AuthGuard)
   @Post('models/unpin')
   async unpinModel(@Body() body: { modelId: string }) {
     this.modelRegistry.unpinModel(body.modelId);
     return { success: true, message: `Model ${body.modelId} unpinned` };
   }
 
+  @UseGuards(AuthGuard)
   @Get('cloud-providers')
   async getCloudProviders() {
     return this.cloudFallback.listProviders().map((p) => ({
@@ -228,6 +265,7 @@ export class InferenceController {
     }));
   }
 
+  @UseGuards(AuthGuard)
   @Post('cloud-providers')
   async setCloudProvider(@Body() body: { provider: CloudProviderType; apiKey: string; enabled: boolean; baseUrl?: string; defaultModel?: string }) {
     this.cloudFallback.setProvider({
@@ -235,7 +273,7 @@ export class InferenceController {
       apiKey: body.apiKey,
       enabled: body.enabled,
       baseUrl: body.baseUrl,
-      defaultModel: body.defaultModel || body.provider,
+      defaultModel: body.defaultModel || this.cloudFallback.getDefaultModel(body.provider),
     });
     return { success: true };
   }

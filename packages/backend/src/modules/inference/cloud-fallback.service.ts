@@ -10,7 +10,7 @@ const CLOUD_BASE_URLS: Record<CloudProviderType, string> = {
   'github-copilot': 'https://api.githubcopilot.com',
 };
 
-const _CLOUD_DEFAULTS: Record<CloudProviderType, string> = {
+const CLOUD_DEFAULTS: Record<CloudProviderType, string> = {
   openai: 'gpt-4o',
   anthropic: 'claude-opus-4',
   google: 'gemini-2.5-pro',
@@ -22,6 +22,11 @@ export class CloudFallbackService {
   private providers = new Map<CloudProviderType, CloudProviderConfig>();
 
   constructor(private readonly logger: LoggerService) {}
+
+  /** Get the default model for a cloud provider */
+  getDefaultModel(provider: CloudProviderType): string {
+    return CLOUD_DEFAULTS[provider] ?? 'gpt-4o';
+  }
 
   /** Configure a cloud provider */
   setProvider(config: CloudProviderConfig): void {

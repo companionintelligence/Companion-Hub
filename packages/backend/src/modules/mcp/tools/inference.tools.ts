@@ -168,7 +168,7 @@ export class InferenceTools implements OnModuleInit {
     // ─── hub_pin_model ──────────────────────────────────────────────
     this.registry.register({
       name: 'hub_pin_model',
-      description: 'Pin a model in memory (prevent eviction). Pinned models stay loaded across backend restarts.',
+      description: 'Pin a model in memory (prevent eviction while the backend is running). Pinning is not persisted across backend restarts.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -253,7 +253,7 @@ export class InferenceTools implements OnModuleInit {
           apiKey: params.apiKey as string,
           enabled: params.enabled as boolean,
           baseUrl: params.baseUrl as string | undefined,
-          defaultModel: (params.defaultModel as string) || (params.provider as string),
+          defaultModel: (params.defaultModel as string) || this.cloudFallback.getDefaultModel(params.provider as CloudProviderType),
         });
         return { success: true };
       },
@@ -358,6 +358,6 @@ export class InferenceTools implements OnModuleInit {
       },
     });
 
-    this.logger.info('[InferenceTools] Registered 16 inference MCP tools');
+    this.logger.info('[InferenceTools] Registered 17 inference MCP tools');
   }
 }
