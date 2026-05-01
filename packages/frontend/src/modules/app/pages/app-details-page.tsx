@@ -17,6 +17,8 @@ export async function clientLoader({ params }: Route.ClientLoaderArgs) {
   if (storeId === '_user') {
     return redirect(`/apps/${params.appId}`);
   }
+
+  return null;
 }
 
 export default () => {
@@ -46,7 +48,8 @@ export default () => {
   }
 
   const { info, app, metadata } = getApp.data;
-  const logoUrl = info?.urn ? `/api/marketplace/apps/${info.urn}/image` : '/app-not-found.jpg';
+  const logoUrn = info?.urn ?? appUrn;
+  const logoUrl = `/api/marketplace/apps/${encodeURIComponent(logoUrn)}/image`;
   const primaryCategory = info?.categories?.[0];
 
   return (
