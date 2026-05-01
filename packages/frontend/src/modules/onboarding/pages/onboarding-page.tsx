@@ -5,10 +5,11 @@ import { Navigate } from 'react-router';
 import { WelcomeStep } from '../components/welcome-step';
 import { RecommendationsStep } from '../components/recommendations-step';
 import { SelectAppsStep } from '../components/select-apps-step';
+import { AiSetupStep } from '../components/ai-setup-step';
 import { InstallStep } from '../components/install-step';
 import { CompleteStep } from '../components/complete-step';
 import { Stepper, StepTrigger, StepTriggerList, StepContent } from '@/components/ui/Stepper/Stepper';
-import type { OnboardingApp, InstallSummary } from '../helpers/types';
+import type { OnboardingApp, InstallSummary, AiSetupConfig } from '../helpers/types';
 import type { DetectedService } from '../helpers/service-detection';
 import { getLogo } from '@/lib/theme/theme';
 import { Suspense } from 'react';
@@ -19,6 +20,7 @@ function OnboardingWizard() {
   const [currentStep, setCurrentStep] = useState(0);
   const [detectedServices, setDetectedServices] = useState<DetectedService[]>([]);
   const [selectedApps, setSelectedApps] = useState<OnboardingApp[]>([]);
+  const [aiSetupConfig, setAiSetupConfig] = useState<AiSetupConfig | undefined>();
   const [installSummary, setInstallSummary] = useState<InstallSummary | undefined>();
 
   // If already completed onboarding, redirect to dashboard
@@ -26,7 +28,7 @@ function OnboardingWizard() {
     return <Navigate to="/dashboard" replace />;
   }
 
-  const stepTitles = ['Welcome', 'Discover', 'Select', 'Install', 'Done'];
+  const stepTitles = ['Welcome', 'Discover', 'Select', 'AI Setup', 'Install', 'Done'];
 
   return (
     <div className="flex items-center justify-center bg-background px-4 py-8" style={{ minHeight: 'calc(100vh - var(--titlebar-height, 0px))' }}>
@@ -71,7 +73,7 @@ function OnboardingWizard() {
                   setDetectedServices(services);
                   setCurrentStep(1);
                 }}
-                onSkip={() => setCurrentStep(4)}
+                onSkip={() => setCurrentStep(5)}
               />
             </StepContent>
 
@@ -82,7 +84,7 @@ function OnboardingWizard() {
                   setSelectedApps(apps);
                   setCurrentStep(2);
                 }}
-                onSkip={() => setCurrentStep(4)}
+                onSkip={() => setCurrentStep(5)}
                 onBack={() => setCurrentStep(0)}
               />
             </StepContent>
@@ -93,7 +95,7 @@ function OnboardingWizard() {
                 onConfirm={(apps) => {
                   setSelectedApps(apps);
                   if (apps.length === 0) {
-                    setCurrentStep(4);
+                    setCurrentStep(5);
                   } else {
                     setCurrentStep(3);
                   }
@@ -103,18 +105,33 @@ function OnboardingWizard() {
             </StepContent>
 
             <StepContent step={3}>
-              <InstallStep
-                apps={selectedApps}
-                defaultExposureMode={defaultExposureMode}
-                onComplete={(summary) => {
-                  setInstallSummary(summary);
+              <AiSetupStep
+                onComplete={(config) => {
+                  setAiSetupConfig(config);
                   setCurrentStep(4);
                 }}
+                onSkip={() => {
+                  setAiSetupConfig({ selectedModels: [], backend: 'ollama', cloudProviders: [], skipped: true });
+                  setCurrentStep(4);
+                }}
+                onBack={() => setCurrentStep(2)}
               />
             </StepContent>
 
             <StepContent step={4}>
-              <CompleteStep installSummary={installSummary} />
+              <InstallStep
+                apps={selectedApps}
+                defaultExposureMode={defaultExposureMode}
+                aiSetupConfig={aiSetupConfig}
+                onComplete={(summary) => {
+                  setInstallSummary(summary);
+                  setCurrentStep(5);
+                }}
+              />
+            </StepContent>
+
+            <StepContent step={5}>
+              <CompleteStep installSummary={installSummary} aiSetupConfig={aiSetupConfig} />
             </StepContent>
           </div>
         </Stepper>
