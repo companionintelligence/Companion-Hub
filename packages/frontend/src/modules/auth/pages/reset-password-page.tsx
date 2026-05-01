@@ -16,7 +16,7 @@ export default () => {
   const navigate = useNavigate();
   const { isPasswordResetDisabled, domain } = useUserContext();
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError } = useQuery({
     ...checkResetPasswordRequestOptions(),
     staleTime: 30_000,
   });
@@ -34,6 +34,28 @@ export default () => {
       toast.error(t(e.message, e.intlParams));
     },
   });
+
+  if (isError) {
+    return (
+      <>
+        <h2 className="text-xl font-semibold text-center mb-4">{t('AUTH_RESET_PASSWORD_TITLE')}</h2>
+        <Alert className="mb-4 text-left">
+          <AlertDescription>
+            <div className="flex items-start gap-2">
+              <Info className="h-4 w-4 mt-0.5 flex-shrink-0" />
+              <div>{t('AUTH_RESET_PASSWORD_INSTRUCTIONS')}</div>
+            </div>
+          </AlertDescription>
+        </Alert>
+        <pre className="bg-muted/50 rounded-lg p-3 text-sm mb-4">
+          <code>./ci-hub-cli reset-password</code>
+        </pre>
+        <Button onClick={() => navigate('/login')} type="button" intent="primary" className="w-full">
+          {t('AUTH_RESET_PASSWORD_BACK_TO_LOGIN')}
+        </Button>
+      </>
+    );
+  }
 
   if (isLoading || !data) {
     return (
