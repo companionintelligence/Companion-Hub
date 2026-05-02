@@ -34,35 +34,36 @@
  *   verdict "dns-timeout" and a fix-request is written for the agent.
  */
 
+import type { Page } from '@playwright/test';
 import { test, expect } from '@playwright/test';
 import * as path from 'node:path';
 
-import { loadAppConfig, resolveAppId }  from './lib/config';
-import { Reporter }                      from './lib/reporter';
-import { installApp }                    from './lib/install-form';
-import { attemptAppAuth }                from './lib/app-auth';
-import { exploreApp }                    from './lib/ai-explorer';
+import { loadAppConfig, resolveAppId } from './lib/config';
+import { Reporter } from './lib/reporter';
+import { installApp } from './lib/install-form';
+import { attemptAppAuth } from './lib/app-auth';
+import { exploreApp } from './lib/ai-explorer';
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
-const APP_NAME    = process.env.APP_NAME ?? '';
-const HUB_URL     = process.env.HUB_URL  ?? 'http://localhost:9091';
-const TEST_EMAIL  = process.env.TEST_EMAIL    ?? 'test@ci.computer';
+const APP_NAME = process.env.APP_NAME ?? '';
+const HUB_URL = process.env.HUB_URL ?? 'http://localhost:9091';
+const TEST_EMAIL = process.env.TEST_EMAIL ?? 'test@ci.computer';
 const TEST_PASSWORD = process.env.TEST_PASSWORD ?? 'testpassword123';
-const APP_DOMAIN  = process.env.APP_DOMAIN ?? 'ci.computer';
+const APP_DOMAIN = process.env.APP_DOMAIN ?? 'ci.computer';
 
-const EXPLORE_MS      = parseInt(process.env.EXPLORE_MINUTES    ?? '5')  * 60_000;
-const DNS_TIMEOUT_MS  = parseInt(process.env.DNS_TIMEOUT_MINUTES ?? '10') * 60_000;
-const DNS_POLL_MS     = 10_000;
+const EXPLORE_MS = Number.parseInt(process.env.EXPLORE_MINUTES ?? '5', 10) * 60_000;
+const DNS_TIMEOUT_MS = Number.parseInt(process.env.DNS_TIMEOUT_MINUTES ?? '10', 10) * 60_000;
+const DNS_POLL_MS = 10_000;
 
-const REPORT_DIR     = process.env.REPORT_DIR     ?? path.join(__dirname, '../reports');
+const REPORT_DIR = process.env.REPORT_DIR ?? path.join(__dirname, '../reports');
 const SCREENSHOT_DIR = process.env.SCREENSHOT_DIR ?? path.join(__dirname, '../screenshots');
 
 if (!APP_NAME) throw new Error('APP_NAME env var is required');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-async function loginHub(page: any) {
+async function loginHub(page: Page) {
   await page.goto(`${HUB_URL}/login`);
   await page.getByPlaceholder(/email/i).fill(TEST_EMAIL);
   await page.getByPlaceholder(/password/i).fill(TEST_PASSWORD);
@@ -73,8 +74,8 @@ async function loginHub(page: any) {
 // ─── Test suite ───────────────────────────────────────────────────────────────
 
 test.describe(`App Explorer: ${APP_NAME}`, () => {
-  const appId   = resolveAppId(APP_NAME) ?? APP_NAME.toLowerCase().replace(/\s+/g, '-');
-  const config  = loadAppConfig(appId);
+  const appId = resolveAppId(APP_NAME) ?? APP_NAME.toLowerCase().replace(/\s+/g, '-');
+  const config = loadAppConfig(appId);
   const reporter = new Reporter(APP_NAME, appId, { screenshotDir: SCREENSHOT_DIR, reportDir: REPORT_DIR });
 
   if (config?.version) reporter.report.version = config.version;
@@ -88,16 +89,16 @@ test.describe(`App Explorer: ${APP_NAME}`, () => {
     }
 
     const result = await installApp(page, APP_NAME, config ?? { id: appId, name: APP_NAME }, reporter, {
-      hubUrl:           HUB_URL,
+      hubUrl: HUB_URL,
       installTimeoutMs: 180_000,
     });
 
     reporter.step('install', {
-      status:           result.status === 'pass' ? 'pass' : 'fail',
+      status: result.status === 'pass' ? 'pass' : 'fail',
       filledFieldCount: result.filledFields.length,
-      unfillableFields: result.unfillableFields.map(f => f.env_variable),
-      appUrl:           result.appUrl,
-      notes:            result.notes,
+      unfillableFields: result.unfillableFields.map((f) => f.env_variable),
+      appUrl: result.appUrl,
+      notes: result.notes,
     });
 
     if (result.status === 'timeout') {
@@ -105,52 +106,48 @@ test.describe(`App Explorer: ${APP_NAME}`, () => {
     }
 
     if (result.unfillableFields.length) {
-      reporter.issue(`Could not fill required fields: ${result.unfillableFields.map(f => f.label).join(', ')}`);
+      reporter.issue(`Could not fill required fields: ${result.unfillableFields.map((f) => f.label).join(', ')}`);
     }
   });
 
   // ── 2 · DNS wait + load ──────────────────────────────────────────────────────
-  test('2. Wait for app to become reachable', async ({ page, context }) => {
-    const appUrl = (reporter.report.steps.install as any)?.appUrl
-      ?? `https://${appId}.${APP_DOMAIN}`;
-
-    console.log(`[dns] Polling ${appUrl} (up to ${DNS_TIMEOUT_MS / 60_000} min)...`);
+  test('2. Wait for app to become reachable', async ({ page }) => {
+    const appUrl = (reporter.report.steps.install as { appUrl?: string })?.appUrl ?? `https://${appId}.${APP_DOMAIN}`;
     reporter.step('dns', { status: 'running', appUrl });
 
     const deadline = Date.now() + DNS_TIMEOUT_MS;
-    let reachable  = false;
-    let attempts   = 0;
-    let lastError  = '';
+    let reachable = false;
+    let attempts = 0;
+    let lastError = '';
 
     while (Date.now() < deadline) {
       attempts++;
       try {
-        const res    = await page.goto(appUrl, { timeout: 15_000, waitUntil: 'domcontentloaded' });
+        const res = await page.goto(appUrl, { timeout: 15_000, waitUntil: 'domcontentloaded' });
         const status = res?.status() ?? 0;
         if (status > 0 && status < 500) {
           reachable = true;
-          console.log(`[dns] Reachable after ${attempts} attempt(s) — HTTP ${status}`);
           break;
         }
         lastError = `HTTP ${status}`;
-      } catch (e: any) {
-        lastError = e.message?.split('\n')[0] ?? String(e);
-        console.log(`[dns] Attempt ${attempts}: ${lastError}`);
+      } catch (e: unknown) {
+        lastError = (e as Error).message?.split('\n')[0] ?? String(e);
       }
       await page.waitForTimeout(DNS_POLL_MS);
     }
 
     if (!reachable) {
       reporter.step('dns', {
-        status:    'fail',
-        reason:    'dns-timeout',
+        status: 'fail',
+        reason: 'dns-timeout',
         appUrl,
         attempts,
         waitedMin: DNS_TIMEOUT_MS / 60_000,
         lastError,
-        note:      `App URL did not become reachable within ${DNS_TIMEOUT_MS / 60_000} minutes. ` +
-                   `DNS propagation may still be in progress, or the container failed to start. ` +
-                   `Check container health and image availability.`,
+        note:
+          `App URL did not become reachable within ${DNS_TIMEOUT_MS / 60_000} minutes. ` +
+          'DNS propagation may still be in progress, or the container failed to start. ' +
+          'Check container health and image availability.',
       });
       reporter.report.verdict = 'dns-timeout';
       reporter.issue(`DNS/boot timeout after ${DNS_TIMEOUT_MS / 60_000} min (${attempts} attempts): ${appUrl} — last error: ${lastError}`);
@@ -165,8 +162,7 @@ test.describe(`App Explorer: ${APP_NAME}`, () => {
 
   // ── 3 · Auth ─────────────────────────────────────────────────────────────────
   test('3. Create account / log in', async ({ page }) => {
-    const appUrl = (reporter.report.steps.install as any)?.appUrl
-      ?? `https://${appId}.${APP_DOMAIN}`;
+    const appUrl = (reporter.report.steps.install as { appUrl?: string })?.appUrl ?? `https://${appId}.${APP_DOMAIN}`;
 
     await page.goto(appUrl, { timeout: 20_000, waitUntil: 'domcontentloaded' });
 
@@ -175,7 +171,7 @@ test.describe(`App Explorer: ${APP_NAME}`, () => {
     reporter.step('auth', {
       status: auth.success ? 'pass' : 'warn',
       method: auth.method,
-      notes:  auth.notes,
+      notes: auth.notes,
     });
 
     if (!auth.success) {
@@ -186,29 +182,23 @@ test.describe(`App Explorer: ${APP_NAME}`, () => {
   });
 
   // ── 4 · Explore ──────────────────────────────────────────────────────────────
-  test('4. Explore app', async ({ page, context }) => {
-    const appUrl    = (reporter.report.steps.install as any)?.appUrl
-      ?? `https://${appId}.${APP_DOMAIN}`;
-    const authMethod = (reporter.report.steps.auth as any)?.method ?? 'unknown';
+  test('4. Explore app', async ({ context }) => {
+    const appUrl = (reporter.report.steps.install as { appUrl?: string })?.appUrl ?? `https://${appId}.${APP_DOMAIN}`;
+    const authMethod = (reporter.report.steps.auth as { method?: string })?.method ?? 'unknown';
 
     const appPage = await context.newPage();
     await appPage.goto(appUrl, { timeout: 20_000, waitUntil: 'domcontentloaded' });
 
-    const result = await exploreApp(
-      appPage,
-      authMethod,
-      EXPLORE_MS,
-      label => reporter.screenshot(appPage, label),
-    );
+    const result = await exploreApp(appPage, authMethod, EXPLORE_MS, (label) => reporter.screenshot(appPage, label));
 
     reporter.report.session = result.session;
     reporter.step('explore', {
-      status:       result.errorsCount > result.actionsCount / 2 ? 'warn' : 'pass',
-      actionsCount:      result.actionsCount,
+      status: result.errorsCount > result.actionsCount / 2 ? 'warn' : 'pass',
+      actionsCount: result.actionsCount,
       observationsCount: result.observationsCount,
-      errorsCount:       result.errorsCount,
-      durationMs:        result.durationMs,
-      errors:            result.errors.slice(0, 10),
+      errorsCount: result.errorsCount,
+      durationMs: result.durationMs,
+      errors: result.errors.slice(0, 10),
     });
 
     await reporter.screenshot(appPage, 'explore-end');
@@ -217,26 +207,8 @@ test.describe(`App Explorer: ${APP_NAME}`, () => {
 
   // ── Finalise ─────────────────────────────────────────────────────────────────
   test.afterAll(async () => {
-    const verdict    = reporter.finalise();
+    reporter.finalise();
     const reportPath = reporter.write();
     reporter.writeFixRequest(reportPath);
-
-    console.log(`\n[explorer] ═══════════════════════════════`);
-    console.log(`[explorer] App:     ${APP_NAME} (${appId})`);
-    console.log(`[explorer] Verdict: ${verdict.toUpperCase()}`);
-
-    if (reporter.report.userVisibleConfig.length) {
-      console.log(`[explorer] ── User-visible config (review before production) ──`);
-      for (const f of reporter.report.userVisibleConfig) {
-        const display = /password|secret|key|token/i.test(f.env_variable) ? '***' : f.value;
-        console.log(`[explorer]   ${f.env_variable} = ${display}  (${f.reason})`);
-      }
-    }
-
-    const steps = reporter.report.steps;
-    for (const [name, step] of Object.entries(steps)) {
-      console.log(`[explorer]   step/${name}: ${(step as any).status}`);
-    }
-    console.log(`[explorer] ═══════════════════════════════`);
   });
 });

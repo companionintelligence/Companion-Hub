@@ -24,14 +24,22 @@ import { resolveAllFields } from './config';
 import type { Reporter } from './reporter';
 
 const USER_MEANINGFUL_PATTERNS = [
-  /admin.?email/i, /admin.?user/i, /username/i,
-  /domain/i, /host(?!name)/i, /smtp/i, /s3.?bucket/i,
-  /api.?key/i, /oauth/i, /ldap/i, /saml/i,
+  /admin.?email/i,
+  /admin.?user/i,
+  /username/i,
+  /domain/i,
+  /host(?!name)/i,
+  /smtp/i,
+  /s3.?bucket/i,
+  /api.?key/i,
+  /oauth/i,
+  /ldap/i,
+  /saml/i,
 ];
 
 function isUserMeaningful(field: FormField): boolean {
-  const haystack = field.label + ' ' + field.env_variable;
-  return USER_MEANINGFUL_PATTERNS.some(p => p.test(haystack));
+  const haystack = `${field.label} ${field.env_variable}`;
+  return USER_MEANINGFUL_PATTERNS.some((p) => p.test(haystack));
 }
 
 /**
@@ -39,7 +47,7 @@ function isUserMeaningful(field: FormField): boolean {
  * regardless of whether they have a default.
  */
 function resolveFields(fields: FormField[]): FieldResolution[] {
-  return resolveAllFields(fields).map(r => {
+  return resolveAllFields(fields).map((r) => {
     if (!r.showToUser && isUserMeaningful(r.field)) {
       return { ...r, showToUser: true, reason: 'User-configurable setting — review before production use' };
     }
@@ -77,7 +85,9 @@ async function fillField(page: Page, field: FormField, value: string): Promise<b
         }
         return true;
       }
-    } catch {}
+    } catch {
+      // selector not found — skip this field
+    }
   }
   return false;
 }
@@ -97,7 +107,7 @@ export async function installApp(
   appName: string,
   config: AppConfig,
   reporter: Reporter,
-  opts: { hubUrl: string; installTimeoutMs?: number }
+  opts: { hubUrl: string; installTimeoutMs?: number },
 ): Promise<InstallResult> {
   const { hubUrl, installTimeoutMs = 180_000 } = opts;
   const notes: string[] = [];
@@ -154,9 +164,7 @@ export async function installApp(
     const filled = await fillField(page, resolution.field, resolution.value);
     if (filled) {
       filledFields.push(resolution);
-      notes.push(`Filled: ${resolution.field.label} = ${
-        ['password','random'].includes(resolution.field.type) ? '***' : resolution.value
-      }`);
+      notes.push(`Filled: ${resolution.field.label} = ${['password', 'random'].includes(resolution.field.type) ? '***' : resolution.value}`);
     } else if (resolution.field.required) {
       unfillableFields.push(resolution.field);
       notes.push(`Could not fill required field: ${resolution.field.label}`);
@@ -167,7 +175,7 @@ export async function installApp(
   try {
     const exposureSelect = page.locator('select[name*="exposure"], [data-testid*="exposure"]').first();
     if (await exposureSelect.isVisible({ timeout: 2000 }).catch(() => false)) {
-      await exposureSelect.selectOption({ label: /public web/i } as any);
+      await exposureSelect.selectOption({ label: 'Public Web' });
       notes.push('Selected: Public Web exposure');
     } else {
       // Try radio/button pattern
@@ -177,7 +185,9 @@ export async function installApp(
         notes.push('Selected: Public Web exposure (radio)');
       }
     }
-  } catch {}
+  } catch {
+    // exposure selector not present — default exposure used
+  }
 
   await reporter.screenshot(page, '04-install-form-filled');
 
@@ -192,7 +202,8 @@ export async function installApp(
 
   // ── Wait for running state ──
   const runningIndicator = page.getByText(/running|installed|ready|active/i);
-  const started = await runningIndicator.waitFor({ timeout: installTimeoutMs, state: 'visible' })
+  const started = await runningIndicator
+    .waitFor({ timeout: installTimeoutMs, state: 'visible' })
     .then(() => true)
     .catch(() => false);
 
@@ -207,9 +218,11 @@ export async function installApp(
   let appUrl: string | undefined;
   try {
     const appSection = page.locator(`text=${appName}`).locator('..').locator('..');
-    const openLink   = appSection.getByRole('link', { name: /open|launch|visit/i }).first();
-    appUrl = await openLink.getAttribute('href') ?? undefined;
-  } catch {}
+    const openLink = appSection.getByRole('link', { name: /open|launch|visit/i }).first();
+    appUrl = (await openLink.getAttribute('href')) ?? undefined;
+  } catch {
+    // could not extract app URL from hub
+  }
 
   if (!appUrl && config.exposable) {
     const appId = config.id.toLowerCase().replace(/\s+/g, '-');

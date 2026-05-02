@@ -24,23 +24,24 @@
  *   WATCH=true              watch reports/ for new requests
  */
 
-import * as fs   from 'node:fs';
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { execSync } from 'node:child_process';
 
+import type { AppConfig, DockerCompose } from '../e2e/lib/config';
 import { loadAppConfig, loadDockerCompose, resolveAppId } from '../e2e/lib/config';
 import { diagnose } from './lib/diagnostics';
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
-const COMPANION_DIR   = path.resolve(__dirname, '..');
+const COMPANION_DIR = path.resolve(__dirname, '..');
 const MARKETPLACE_DIR = process.env.MARKETPLACE_DIR ?? path.join(COMPANION_DIR, 'ci-marketplace');
-const REPORT_DIR      = process.env.REPORT_DIR      ?? path.join(COMPANION_DIR, 'reports');
-const LOG_DIR         = process.env.LOG_DIR         ?? path.join(COMPANION_DIR, 'logs');
-const STATUS_FILE     = process.env.STATUS_FILE     ?? path.join(__dirname, 'results', 'status.json');
-const PR_BASE         = process.env.GITHUB_PR_BASE_BRANCH ?? 'main';
-const DRY_RUN         = process.env.DRY_RUN === 'true';
-const WATCH_MODE      = process.env.WATCH  === 'true';
+const REPORT_DIR = process.env.REPORT_DIR ?? path.join(COMPANION_DIR, 'reports');
+const LOG_DIR = process.env.LOG_DIR ?? path.join(COMPANION_DIR, 'logs');
+const STATUS_FILE = process.env.STATUS_FILE ?? path.join(__dirname, 'results', 'status.json');
+const PR_BASE = process.env.GITHUB_PR_BASE_BRANCH ?? 'main';
+const DRY_RUN = process.env.DRY_RUN === 'true';
+const WATCH_MODE = process.env.WATCH === 'true';
 
 fs.mkdirSync(LOG_DIR, { recursive: true });
 fs.mkdirSync(path.dirname(STATUS_FILE), { recursive: true });
@@ -48,16 +49,19 @@ fs.mkdirSync(path.dirname(STATUS_FILE), { recursive: true });
 // ─── Status ───────────────────────────────────────────────────────────────────
 
 interface AgentStatus {
-  lastUpdated:  string;
-  queue:        string[];
-  processing:   string | null;
-  completed:    Array<{ app: string; result: 'fixed'|'failed'|'skipped'; pr?: string; at: string }>;
-  errors:       Array<{ app: string; error: string; at: string }>;
+  lastUpdated: string;
+  queue: string[];
+  processing: string | null;
+  completed: Array<{ app: string; result: 'fixed' | 'failed' | 'skipped'; pr?: string; at: string }>;
+  errors: Array<{ app: string; error: string; at: string }>;
 }
 
 const status: AgentStatus = (() => {
-  try { return JSON.parse(fs.readFileSync(STATUS_FILE, 'utf8')); }
-  catch { return { lastUpdated: '', queue: [], processing: null, completed: [], errors: [] }; }
+  try {
+    return JSON.parse(fs.readFileSync(STATUS_FILE, 'utf8'));
+  } catch {
+    return { lastUpdated: '', queue: [], processing: null, completed: [], errors: [] };
+  }
 })();
 
 function saveStatus() {
@@ -69,16 +73,15 @@ function saveStatus() {
 
 const LOG_FILE = path.join(LOG_DIR, 'fix-agent.log');
 
-function log(msg: string, level: 'info'|'warn'|'error' = 'info') {
+function log(msg: string, level: 'info' | 'warn' | 'error' = 'info') {
   const line = `[${new Date().toISOString()}] [${level.toUpperCase()}] ${msg}`;
-  console.log(line);
-  fs.appendFileSync(LOG_FILE, line + '\n');
+  fs.appendFileSync(LOG_FILE, `${line}\n`);
 }
 
 // ─── Fix pipeline ─────────────────────────────────────────────────────────────
 
 async function processRequest(fixRequestPath: string) {
-  const req  = JSON.parse(fs.readFileSync(fixRequestPath, 'utf8'));
+  const req = JSON.parse(fs.readFileSync(fixRequestPath, 'utf8'));
   const { app, appId: rawAppId, version, issues, steps, sessionErrors, userVisibleConfig } = req;
 
   const appId = rawAppId ?? resolveAppId(app) ?? app.toLowerCase().replace(/\s+/g, '-');
@@ -88,8 +91,8 @@ async function processRequest(fixRequestPath: string) {
   saveStatus();
 
   // ── Load marketplace files ──
-  const config       = loadAppConfig(appId);
-  const dockerCompose = loadDockerCompose(appId);
+  const config: AppConfig | null = loadAppConfig(appId);
+  const dockerCompose: DockerCompose | null = loadDockerCompose(appId);
 
   if (!config || !dockerCompose) {
     const msg = `App not found in marketplace: ${appId}`;
@@ -103,20 +106,22 @@ async function processRequest(fixRequestPath: string) {
 
   // ── Diagnose ──
   log('Running diagnostics...');
-  let result;
+  let result: Awaited<ReturnType<typeof diagnose>>;
   try {
     result = await diagnose({
-      appId, appName: app, version,
-      verdict:  req.verdict,
-      issues:   issues ?? [],
-      steps:    steps  ?? {},
+      appId,
+      appName: app,
+      version,
+      verdict: req.verdict,
+      issues: issues ?? [],
+      steps: steps ?? {},
       sessionErrors: sessionErrors ?? [],
       userVisibleConfig: userVisibleConfig ?? [],
       config,
       dockerCompose,
     });
-  } catch (e: any) {
-    log(`Diagnosis failed: ${e.message}`, 'error');
+  } catch (e: unknown) {
+    log(`Diagnosis failed: ${(e as Error).message}`, 'error');
     status.errors.push({ app: appId, error: e.message, at: new Date().toISOString() });
     status.processing = null;
     saveStatus();
@@ -136,9 +141,9 @@ async function processRequest(fixRequestPath: string) {
   }
 
   // ── Apply patch ──
-  const appDir    = path.join(MARKETPLACE_DIR, 'apps', appId);
+  const appDir = path.join(MARKETPLACE_DIR, 'apps', appId);
   const targetPath = path.join(appDir, result.fix.file);
-  const backupPath = targetPath + '.bak';
+  const backupPath = `${targetPath}.bak`;
   fs.copyFileSync(targetPath, backupPath);
 
   log(`Patching ${result.fix.file}: ${result.fix.summary}`);
@@ -149,12 +154,14 @@ async function processRequest(fixRequestPath: string) {
   let verified = false;
   try {
     execSync(`cd "${MARKETPLACE_DIR}" && bun run verify:app -- ${appId}`, {
-      stdio: 'pipe', timeout: 60_000,
+      stdio: 'pipe',
+      timeout: 60_000,
     });
     verified = true;
     log('Verification passed');
-  } catch (e: any) {
-    log(`Verification failed: ${e.stderr?.toString().slice(0, 200) ?? e.message}`, 'warn');
+  } catch (e: unknown) {
+    const err = e as NodeJS.ErrnoException & { stderr?: Buffer };
+    log(`Verification failed: ${err.stderr?.toString().slice(0, 200) ?? err.message}`, 'warn');
     fs.copyFileSync(backupPath, targetPath); // restore
   }
   fs.unlinkSync(backupPath);
@@ -175,12 +182,12 @@ async function processRequest(fixRequestPath: string) {
   } else {
     const branch = `fix/e2e-${appId}-${Date.now()}`;
     try {
-      execSync(`cd "${MARKETPLACE_DIR}" && git checkout -b ${branch}`,            { stdio: 'pipe' });
-      execSync(`cd "${MARKETPLACE_DIR}" && git add apps/${appId}/`,               { stdio: 'pipe' });
+      execSync(`cd "${MARKETPLACE_DIR}" && git checkout -b ${branch}`, { stdio: 'pipe' });
+      execSync(`cd "${MARKETPLACE_DIR}" && git add apps/${appId}/`, { stdio: 'pipe' });
 
       const commitMsg = `fix(${appId}): ${result.fix.summary}\n\n${result.diagnosis}`;
       execSync(`cd "${MARKETPLACE_DIR}" && git commit -m ${JSON.stringify(commitMsg)}`, { stdio: 'pipe' });
-      execSync(`cd "${MARKETPLACE_DIR}" && git push origin ${branch}`,             { stdio: 'pipe' });
+      execSync(`cd "${MARKETPLACE_DIR}" && git push origin ${branch}`, { stdio: 'pipe' });
 
       const prBody = [
         `## E2E Fix: ${app}`,
@@ -188,18 +195,20 @@ async function processRequest(fixRequestPath: string) {
         `**Categories:** ${result.categories.join(', ')}`,
         `**Confidence:** ${result.confidence}`,
         '',
-        `**Diagnosis:**`,
+        '**Diagnosis:**',
         result.diagnosis,
         '',
-        result.suggestions.length ? `**Notes:**\n${result.suggestions.map(s => `- ${s}`).join('\n')}` : '',
+        result.suggestions.length ? `**Notes:**\n${result.suggestions.map((s) => `- ${s}`).join('\n')}` : '',
         '',
         userVisibleConfig?.length
-          ? `**User-visible config fields (should be reviewed):**\n${userVisibleConfig.map((f: any) => `- \`${f.env_variable}\` — ${f.reason}`).join('\n')}`
+          ? `**User-visible config fields (should be reviewed):**\n${(userVisibleConfig as Array<{ env_variable: string; reason: string }>).map((f) => `- \`${f.env_variable}\` — ${f.reason}`).join('\n')}`
           : '',
         '',
         '---',
         '*Auto-generated by companion fix-agent*',
-      ].filter(Boolean).join('\n');
+      ]
+        .filter(Boolean)
+        .join('\n');
 
       const prOut = execSync(
         `cd "${MARKETPLACE_DIR}" && gh pr create --title ${JSON.stringify(`fix(${appId}): ${result.fix.summary}`)} --body ${JSON.stringify(prBody)} --base ${PR_BASE}`,
@@ -208,8 +217,8 @@ async function processRequest(fixRequestPath: string) {
 
       log(`PR: ${prOut}`);
       status.completed.push({ app: appId, result: 'fixed', pr: prOut, at: new Date().toISOString() });
-    } catch (e: any) {
-      log(`Git/PR failed: ${e.message}`, 'error');
+    } catch (e: unknown) {
+      log(`Git/PR failed: ${(e as Error).message}`, 'error');
       status.errors.push({ app: appId, error: `git/PR: ${e.message}`, at: new Date().toISOString() });
       status.completed.push({ app: appId, result: 'failed', at: new Date().toISOString() });
     }
@@ -224,7 +233,7 @@ async function processRequest(fixRequestPath: string) {
 // ─── Entry ───────────────────────────────────────────────────────────────────
 
 async function scan() {
-  const files = fs.readdirSync(REPORT_DIR).filter(f => f.startsWith('fix-request-') && f.endsWith('.json'));
+  const files = fs.readdirSync(REPORT_DIR).filter((f) => f.startsWith('fix-request-') && f.endsWith('.json'));
   if (!files.length) return;
   status.queue = files;
   saveStatus();
@@ -245,4 +254,7 @@ async function main() {
   }
 }
 
-main().catch(e => { log(`Fatal: ${e.message}`, 'error'); process.exit(1); });
+main().catch((e: unknown) => {
+  log(`Fatal: ${(e as Error).message}`, 'error');
+  process.exit(1);
+});

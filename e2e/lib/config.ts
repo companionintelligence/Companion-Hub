@@ -5,15 +5,13 @@
  * for field types, defaults, and what the hub install form needs.
  */
 
-import * as fs   from 'node:fs';
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 
 // ─── Field schema (matches ci-marketplace config.json) ────────────────────────
 
-export type FieldType =
-  | 'text' | 'password' | 'email' | 'url'
-  | 'number' | 'boolean' | 'fqdnip' | 'random';
+export type FieldType = 'text' | 'password' | 'email' | 'url' | 'number' | 'boolean' | 'fqdnip' | 'random';
 
 export interface FormField {
   type: FieldType;
@@ -67,8 +65,7 @@ export interface DockerCompose {
 
 // ─── Loader ────────────────────────────────────────────────────────────────────
 
-const MARKETPLACE_DIR = process.env.MARKETPLACE_DIR
-  || path.resolve(__dirname, '../../../../ci-marketplace');
+const MARKETPLACE_DIR = process.env.MARKETPLACE_DIR || path.resolve(__dirname, '../../../../ci-marketplace');
 
 export function loadAppConfig(appId: string): AppConfig | null {
   const p = path.join(MARKETPLACE_DIR, 'apps', appId, 'config.json');
@@ -94,7 +91,7 @@ export function resolveAppId(appName: string): string | null {
   if (apps.includes(slug)) return slug;
 
   // Contains match
-  const contains = apps.find(a => a.includes(slug) || slug.includes(a));
+  const contains = apps.find((a) => a.includes(slug) || slug.includes(a));
   if (contains) return contains;
 
   // Config name match
@@ -102,7 +99,9 @@ export function resolveAppId(appName: string): string | null {
     try {
       const cfg = JSON.parse(fs.readFileSync(path.join(appsDir, app, 'config.json'), 'utf8'));
       if (cfg.name?.toLowerCase() === appName.toLowerCase()) return app;
-    } catch {}
+    } catch {
+      // skip unreadable config files
+    }
   }
 
   return null;
@@ -153,7 +152,7 @@ export function resolveFieldValue(field: FormField): FieldResolution {
       field,
       value: generated,
       showToUser: true,
-      reason: `Required field with no default — generated value used`,
+      reason: 'Required field with no default — generated value used',
     };
   }
 
@@ -169,22 +168,29 @@ function betterDefault(field: FormField): string {
   const envVar = field.env_variable.toLowerCase();
 
   switch (field.type) {
-    case 'email':    return 'admin@ci.computer';
-    case 'password': return generatePassword(field.min ?? 16);
-    case 'boolean':  return 'false';
-    case 'number':   return String(field.min ?? 1);
-    case 'url':      return field.placeholder || 'http://localhost:8080';
-    case 'fqdnip':   return field.placeholder || 'localhost';
+    case 'email':
+      return 'admin@ci.computer';
+    case 'password':
+      return generatePassword(field.min ?? 16);
+    case 'boolean':
+      return 'false';
+    case 'number':
+      return String(field.min ?? 1);
+    case 'url':
+      return field.placeholder || 'http://localhost:8080';
+    case 'fqdnip':
+      return field.placeholder || 'localhost';
     case 'text': {
       // Contextual text defaults
-      if (/email/i.test(label + envVar))    return 'admin@ci.computer';
+      if (/email/i.test(label + envVar)) return 'admin@ci.computer';
       if (/user(name)?/i.test(label + envVar)) return 'admin';
       if (/domain|host/i.test(label + envVar)) return 'ci.computer';
-      if (/cron/i.test(label + envVar))     return field.placeholder || '@daily';
+      if (/cron/i.test(label + envVar)) return field.placeholder || '@daily';
       if (/key|secret|token/i.test(label + envVar)) return generatePassword(32);
-      return field.placeholder || field.default as string || '';
+      return field.placeholder || (field.default as string) || '';
     }
-    default: return '';
+    default:
+      return '';
   }
 }
 
@@ -192,13 +198,13 @@ function generatePassword(len: number): string {
   // Avoids $ which breaks env var interpolation in docker-compose
   const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#%^&*';
   return Array.from(crypto.randomBytes(len))
-    .map(b => chars[b % chars.length])
+    .map((b) => chars[b % chars.length])
     .join('');
 }
 
 /** All fields that should be surfaced to the user in the report. */
 export function getUserVisibleFields(fields: FormField[]): FieldResolution[] {
-  return fields.map(resolveFieldValue).filter(r => r.showToUser);
+  return fields.map(resolveFieldValue).filter((r) => r.showToUser);
 }
 
 /** All resolved field values for filling the install form. */

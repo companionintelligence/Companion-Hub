@@ -15,46 +15,59 @@
  * Port: STATUS_PORT (default 3099)
  */
 
-import * as fs   from 'node:fs';
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as http from 'node:http';
 
-const PORT           = parseInt(process.env.STATUS_PORT || '3099');
-const COMPANION_DIR  = path.resolve(__dirname, '..');
-const STATUS_FILE    = path.join(COMPANION_DIR, 'agent', 'results', 'status.json');
-const REPORT_DIR     = path.join(COMPANION_DIR, 'reports');
-const LOG_FILE       = path.join(COMPANION_DIR, 'logs', 'fix-agent.log');
+const PORT = Number.parseInt(process.env.STATUS_PORT || '3099', 10);
+const COMPANION_DIR = path.resolve(__dirname, '..');
+const STATUS_FILE = path.join(COMPANION_DIR, 'agent', 'results', 'status.json');
+const REPORT_DIR = path.join(COMPANION_DIR, 'reports');
+const LOG_FILE = path.join(COMPANION_DIR, 'logs', 'fix-agent.log');
 const SCREENSHOT_DIR = path.join(COMPANION_DIR, 'screenshots');
 
 function readStatus() {
-  try { return JSON.parse(fs.readFileSync(STATUS_FILE, 'utf8')); }
-  catch { return { lastUpdated: null, queue: [], processing: null, completed: [], errors: [] }; }
+  try {
+    return JSON.parse(fs.readFileSync(STATUS_FILE, 'utf8'));
+  } catch {
+    return { lastUpdated: null, queue: [], processing: null, completed: [], errors: [] };
+  }
 }
 
 function listReports() {
   try {
-    return fs.readdirSync(REPORT_DIR)
-      .filter(f => f.endsWith('.json') && !f.startsWith('fix-request') && !f.startsWith('processed') && !f.startsWith('failed') && !f.startsWith('skipped'))
-      .map(f => {
+    return fs
+      .readdirSync(REPORT_DIR)
+      .filter(
+        (f) =>
+          f.endsWith('.json') && !f.startsWith('fix-request') && !f.startsWith('processed') && !f.startsWith('failed') && !f.startsWith('skipped'),
+      )
+      .map((f) => {
         try {
           const d = JSON.parse(fs.readFileSync(path.join(REPORT_DIR, f), 'utf8'));
           return { id: f, app: d.app, verdict: d.verdict, startedAt: d.startedAt, finishedAt: d.finishedAt };
-        } catch { return { id: f }; }
+        } catch {
+          return { id: f };
+        }
       })
       .sort((a, b) => (b.startedAt || '').localeCompare(a.startedAt || ''));
-  } catch { return []; }
+  } catch {
+    return [];
+  }
 }
 
 function lastLogLines(n = 200) {
   try {
     const lines = fs.readFileSync(LOG_FILE, 'utf8').split('\n');
     return lines.slice(-n).join('\n');
-  } catch { return ''; }
+  } catch {
+    return '';
+  }
 }
 
 function listScreenshots() {
   try {
-    const dates = fs.readdirSync(SCREENSHOT_DIR).filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d));
+    const dates = fs.readdirSync(SCREENSHOT_DIR).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d));
     const result: Record<string, Record<string, string[]>> = {};
     for (const date of dates) {
       result[date] = {};
@@ -64,11 +77,29 @@ function listScreenshots() {
       }
     }
     return result;
-  } catch { return {}; }
+  } catch {
+    return {};
+  }
 }
 
-function dashboard(status: any, reports: any[]): string {
-  const verdictColor = (v: string) => ({ healthy: '#1AC8B4', degraded: '#f87171', partial: '#fbbf24', unknown: '#6b7280' }[v] || '#6b7280');
+interface AgentStatus {
+  lastUpdated: string | null;
+  queue: string[];
+  processing: string | null;
+  completed: Array<{ app: string; result: string; pr?: string }>;
+  errors: Array<{ app: string; error: string }>;
+}
+
+interface ReportSummary {
+  id: string;
+  app?: string;
+  verdict?: string;
+  startedAt?: string;
+  finishedAt?: string;
+}
+
+function dashboard(status: AgentStatus, reports: ReportSummary[]): string {
+  const verdictColor = (v: string) => ({ healthy: '#1AC8B4', degraded: '#f87171', partial: '#fbbf24', unknown: '#6b7280' })[v] || '#6b7280';
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -102,9 +133,11 @@ function dashboard(status: any, reports: any[]): string {
       <h2>Agent State</h2>
       <div class="row">
         <span>Processing</span>
-        <span>${status.processing
-          ? `<span class="status-pill" style="background:#fbbf24;color:#000">${status.processing}</span>`
-          : `<span class="status-pill" style="background:#2A4A40;color:#6b7280">idle</span>`}</span>
+        <span>${
+          status.processing
+            ? `<span class="status-pill" style="background:#fbbf24;color:#000">${status.processing}</span>`
+            : `<span class="status-pill" style="background:#2A4A40;color:#6b7280">idle</span>`
+        }</span>
       </div>
       <div class="row"><span>Queue</span><span>${status.queue?.length || 0} pending</span></div>
       <div class="row"><span>Completed</span><span>${status.completed?.length || 0}</span></div>
@@ -114,33 +147,56 @@ function dashboard(status: any, reports: any[]): string {
 
     <div class="card">
       <h2>Recent Fixes</h2>
-      ${(status.completed || []).slice(-5).reverse().map((c: any) => `
+      ${
+        (status.completed || [])
+          .slice(-5)
+          .reverse()
+          .map(
+            (c) => `
         <div class="row">
           <span>${c.app}</span>
           <div style="display:flex;gap:8px;align-items:center">
             <span class="status-pill" style="background:${c.result === 'fixed' ? '#14532d' : '#450a0a'};color:${c.result === 'fixed' ? '#1AC8B4' : '#f87171'}">${c.result}</span>
             ${c.pr && c.pr !== 'dry-run' ? `<a href="${c.pr}" style="color:#60a5fa;font-size:0.7rem" target="_blank">PR</a>` : ''}
           </div>
-        </div>`).join('') || '<p class="empty">No fixes yet</p>'}
+        </div>`,
+          )
+          .join('') || '<p class="empty">No fixes yet</p>'
+      }
     </div>
 
     <div class="card">
       <h2>Test Reports</h2>
-      ${reports.slice(0, 8).map(r => `
+      ${
+        reports
+          .slice(0, 8)
+          .map(
+            (r) => `
         <div class="row">
           <span>${r.app || r.id}</span>
           <span class="status-pill" style="background:${verdictColor(r.verdict)}22;color:${verdictColor(r.verdict)}">${r.verdict || '?'}</span>
-        </div>`).join('') || '<p class="empty">No reports yet</p>'}
+        </div>`,
+          )
+          .join('') || '<p class="empty">No reports yet</p>'
+      }
     </div>
   </div>
 
   <div class="card" style="margin-bottom:16px">
     <h2>Recent Errors</h2>
-    ${(status.errors || []).slice(-5).reverse().map((e: any) => `
+    ${
+      (status.errors || [])
+        .slice(-5)
+        .reverse()
+        .map(
+          (e) => `
       <div class="row">
         <span style="color:#f87171">${e.app}</span>
         <span class="mono">${e.error?.slice(0, 80)}</span>
-      </div>`).join('') || '<p class="empty">No errors</p>'}
+      </div>`,
+        )
+        .join('') || '<p class="empty">No errors</p>'
+    }
   </div>
 
   <div class="card">
@@ -165,31 +221,27 @@ const server = http.createServer((req, res) => {
   if (url === '/api/status') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(readStatus(), null, 2));
-
   } else if (url === '/api/reports') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(listReports(), null, 2));
-
   } else if (url.startsWith('/api/reports/')) {
     const id = decodeURIComponent(url.slice('/api/reports/'.length));
-    const p  = path.join(REPORT_DIR, id);
+    const p = path.join(REPORT_DIR, id);
     if (fs.existsSync(p)) {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(fs.readFileSync(p));
     } else {
-      res.writeHead(404); res.end('Not found');
+      res.writeHead(404);
+      res.end('Not found');
     }
-
   } else if (url === '/api/logs') {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end(lastLogLines());
-
   } else if (url === '/api/screenshots') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(listScreenshots(), null, 2));
-
   } else {
-    const status  = readStatus();
+    const status = readStatus();
     const reports = listReports();
     res.writeHead(200, { 'Content-Type': 'text/html' });
     res.end(dashboard(status, reports));
@@ -197,5 +249,5 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`[status-server] http://localhost:${PORT}  (Tailscale: http://100.79.67.15:${PORT})`);
+  // listening
 });

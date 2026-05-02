@@ -19,30 +19,30 @@
 import type { AppConfig, DockerCompose, FormField } from '../e2e/lib/config';
 
 export interface DiagnosticContext {
-  appId:           string;
-  appName:         string;
-  version?:        string;
-  verdict:         string;
-  issues:          string[];
-  steps:           Record<string, any>;
-  sessionErrors:   string[];
+  appId: string;
+  appName: string;
+  version?: string;
+  verdict: string;
+  issues: string[];
+  steps: Record<string, unknown>;
+  sessionErrors: string[];
   userVisibleConfig: Array<{ label: string; env_variable: string; value: string; reason: string }>;
-  config:          AppConfig;
-  dockerCompose:   DockerCompose;
+  config: AppConfig;
+  dockerCompose: DockerCompose;
 }
 
 export interface Fix {
-  file:    'config.json' | 'docker-compose.json';
-  patch:   object;
+  file: 'config.json' | 'docker-compose.json';
+  patch: object;
   summary: string;
 }
 
 export interface DiagnosisResult {
-  categories:   string[];
-  diagnosis:    string;
-  fix:          Fix | null;
-  confidence:   'high' | 'medium' | 'low';
-  suggestions:  string[];   // human-readable notes for the PR description
+  categories: string[];
+  diagnosis: string;
+  fix: Fix | null;
+  confidence: 'high' | 'medium' | 'low';
+  suggestions: string[]; // human-readable notes for the PR description
 }
 
 // ─── Local heuristics (no API call needed for these) ─────────────────────────
@@ -50,16 +50,16 @@ export interface DiagnosisResult {
 function detectCategories(ctx: DiagnosticContext): string[] {
   const cats = new Set<string>();
 
-  if (ctx.verdict === 'dns-timeout')                       cats.add('dns-timeout');
-  if (ctx.steps.install?.status === 'timeout')             cats.add('install-timeout');
-  if (ctx.steps.auth?.method === 'failed')                 cats.add('auth-failed');
-  if (ctx.userVisibleConfig.some(f => f.reason?.includes('Required'))) cats.add('missing-required');
-  if (ctx.userVisibleConfig.some(f => f.reason?.includes('Weak')))     cats.add('user-visible-var');
+  if (ctx.verdict === 'dns-timeout') cats.add('dns-timeout');
+  if (ctx.steps.install?.status === 'timeout') cats.add('install-timeout');
+  if (ctx.steps.auth?.method === 'failed') cats.add('auth-failed');
+  if (ctx.userVisibleConfig.some((f) => f.reason?.includes('Required'))) cats.add('missing-required');
+  if (ctx.userVisibleConfig.some((f) => f.reason?.includes('Weak'))) cats.add('user-visible-var');
 
   const errors = [...ctx.issues, ...ctx.sessionErrors].join(' ').toLowerCase();
   if (/unhealthy|health.?check|container.*(exit|restart|crash)/i.test(errors)) cats.add('container-unhealthy');
-  if (/not found|pull.*error|no such image|manifest unknown|403/i.test(errors))  cats.add('wrong-image');
-  if (/env.*missing|required.*variable|undefined.*env/i.test(errors))           cats.add('bad-env-var');
+  if (/not found|pull.*error|no such image|manifest unknown|403/i.test(errors)) cats.add('wrong-image');
+  if (/env.*missing|required.*variable|undefined.*env/i.test(errors)) cats.add('bad-env-var');
 
   return Array.from(cats);
 }
@@ -78,17 +78,15 @@ function findProblematicFields(config: AppConfig): FormField[] {
 
 /** Find docker services with no healthcheck defined. */
 function findUnhealthyServices(compose: DockerCompose): string[] {
-  return compose.services
-    .filter(s => s.isMain && !s.healthcheck)
-    .map(s => s.name);
+  return compose.services.filter((s) => s.isMain && !s.healthcheck).map((s) => s.name);
 }
 
 /** Find env vars in docker-compose that reference form fields with bad defaults. */
 function findBadEnvVars(config: AppConfig, compose: DockerCompose): Array<{ service: string; key: string; value: string }> {
-  const badDefaults = new Set(
+  const _badDefaults = new Set(
     (config.form_fields ?? [])
-      .filter(f => f.default !== undefined && /changeme|password|secret|example\.com/i.test(String(f.default)))
-      .map(f => f.env_variable)
+      .filter((f) => f.default !== undefined && /changeme|password|secret|example\.com/i.test(String(f.default)))
+      .map((f) => f.env_variable),
   );
 
   const results: Array<{ service: string; key: string; value: string }> = [];
@@ -107,7 +105,7 @@ function findBadEnvVars(config: AppConfig, compose: DockerCompose): Array<{ serv
 function patchConfigFields(config: AppConfig, overrides: Array<{ env_variable: string; default: string }>): AppConfig {
   const patched = structuredClone(config) as AppConfig;
   for (const override of overrides) {
-    const field = (patched.form_fields ?? []).find(f => f.env_variable === override.env_variable);
+    const field = (patched.form_fields ?? []).find((f) => f.env_variable === override.env_variable);
     if (field) field.default = override.default;
   }
   return patched;
@@ -115,13 +113,13 @@ function patchConfigFields(config: AppConfig, overrides: Array<{ env_variable: s
 
 function addHealthcheck(compose: DockerCompose, serviceName: string): DockerCompose {
   const patched = structuredClone(compose) as DockerCompose;
-  const svc = patched.services.find(s => s.name === serviceName);
+  const svc = patched.services.find((s) => s.name === serviceName);
   if (svc) {
     svc.healthcheck = {
-      test:     ['CMD-SHELL', 'wget -qO- http://localhost/health || curl -f http://localhost/health || exit 1'],
+      test: ['CMD-SHELL', 'wget -qO- http://localhost/health || curl -f http://localhost/health || exit 1'],
       interval: '30s',
-      timeout:  '10s',
-      retries:  5,
+      timeout: '10s',
+      retries: 5,
     };
   }
   return patched;
@@ -130,29 +128,27 @@ function addHealthcheck(compose: DockerCompose, serviceName: string): DockerComp
 // ─── AI diagnosis ─────────────────────────────────────────────────────────────
 
 export async function diagnose(ctx: DiagnosticContext): Promise<DiagnosisResult> {
-  const categories  = detectCategories(ctx);
-  const badFields   = findProblematicFields(ctx.config);
+  const categories = detectCategories(ctx);
+  const badFields = findProblematicFields(ctx.config);
   const badServices = findUnhealthyServices(ctx.dockerCompose);
-  const badEnvVars  = findBadEnvVars(ctx.config, ctx.dockerCompose);
+  const _badEnvVars = findBadEnvVars(ctx.config, ctx.dockerCompose);
   const suggestions: string[] = [];
 
   // ── High-confidence local fixes (no AI needed) ──
 
   // Missing required fields with no defaults → add sensible defaults to config.json
   if (categories.includes('missing-required') && badFields.length) {
-    const overrides = badFields.map(f => ({
+    const overrides = badFields.map((f) => ({
       env_variable: f.env_variable,
-      default:      f.type === 'email' ? 'admin@ci.computer'
-                  : f.type === 'password' ? 'ChangeMe123!'
-                  : f.placeholder ?? 'default-value',
+      default: f.type === 'email' ? 'admin@ci.computer' : f.type === 'password' ? 'ChangeMe123!' : (f.placeholder ?? 'default-value'),
     }));
     const patched = patchConfigFields(ctx.config, overrides);
-    suggestions.push(`Added sensible defaults for ${badFields.length} required field(s): ${badFields.map(f => f.label).join(', ')}`);
-    suggestions.push(`⚠️ User-visible fields need review: ${ctx.userVisibleConfig.map(f => f.label).join(', ')}`);
+    suggestions.push(`Added sensible defaults for ${badFields.length} required field(s): ${badFields.map((f) => f.label).join(', ')}`);
+    suggestions.push(`⚠️ User-visible fields need review: ${ctx.userVisibleConfig.map((f) => f.label).join(', ')}`);
     return {
       categories,
       diagnosis: `${badFields.length} required form field(s) have no default, causing install to fail silently or require user input the hub UI may not surface properly.`,
-      fix:        { file: 'config.json', patch: patched, summary: `Add defaults for: ${badFields.map(f => f.env_variable).join(', ')}` },
+      fix: { file: 'config.json', patch: patched, summary: `Add defaults for: ${badFields.map((f) => f.env_variable).join(', ')}` },
       confidence: 'high',
       suggestions,
     };
@@ -166,7 +162,7 @@ export async function diagnose(ctx: DiagnosticContext): Promise<DiagnosisResult>
     return {
       categories,
       diagnosis: `Main service(s) [${badServices.join(', ')}] have no healthcheck. The hub may never mark the app as running.`,
-      fix:        { file: 'docker-compose.json', patch: patched, summary: 'Add healthcheck to main service' },
+      fix: { file: 'docker-compose.json', patch: patched, summary: 'Add healthcheck to main service' },
       confidence: 'high',
       suggestions,
     };
@@ -177,9 +173,9 @@ export async function diagnose(ctx: DiagnosticContext): Promise<DiagnosisResult>
   if (!apiKey) {
     return {
       categories,
-      diagnosis:   'No OPENAI_API_KEY — local heuristics did not find a clear fix.',
-      fix:         null,
-      confidence:  'low',
+      diagnosis: 'No OPENAI_API_KEY — local heuristics did not find a clear fix.',
+      fix: null,
+      confidence: 'low',
       suggestions: ['Set OPENAI_API_KEY to enable AI-assisted diagnosis'],
     };
   }
@@ -239,8 +235,8 @@ Respond with JSON:
 If no fix can be determined, set "fix": null.`;
 
   const response = await client.chat.completions.create({
-    model:           'gpt-4o',
-    max_tokens:      3000,
+    model: 'gpt-4o',
+    max_tokens: 3000,
     response_format: { type: 'json_object' },
     messages: [{ role: 'user', content: prompt }],
   });
