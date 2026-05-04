@@ -208,7 +208,7 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
             }
             "open_portal" => {
                 let portal_url = option_env!("CI_HUB_CLOUD_URL")
-                    .unwrap_or("https://portal.companionintelligence.com");
+                    .unwrap_or("https://hub.companionintelligence.com");
                 let _ = app
                     .shell()
                     .open(portal_url, None::<tauri_plugin_shell::open::Program>);

@@ -86,7 +86,7 @@ jobs:
           else
             echo "docker_tag=dev" >> $GITHUB_OUTPUT
             echo "container_tag=ci-os-hub:dev" >> $GITHUB_OUTPUT
-            echo "portal_registry=portal.companionintelligence.com" >> $GITHUB_OUTPUT
+            echo "portal_registry=hub.companionintelligence.com" >> $GITHUB_OUTPUT
           fi
 
       - name: Extract metadata (tags, labels) for Docker

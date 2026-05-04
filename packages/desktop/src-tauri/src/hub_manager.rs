@@ -1772,7 +1772,7 @@ fn render_runtime_env_content(
 
     let domain = option_env!("CI_HUB_DOMAIN").unwrap_or("companionintelligence.com");
     let cloud_url =
-        option_env!("CI_HUB_CLOUD_URL").unwrap_or("https://portal.companionintelligence.com");
+        option_env!("CI_HUB_CLOUD_URL").unwrap_or("https://hub.companionintelligence.com");
     let hub_version = option_env!("CI_HUB_BUILD_VERSION").unwrap_or("4.7.0");
     let hub_image = existing
         .get("CI_HUB_IMAGE")

@@ -575,7 +575,7 @@ App data, configuration files, Docker volumes, database contents, and backups al
 | Environment | Portal Domain | Hub Compose | Portal D1 | Portal R2 | Registry |
 |-------------|--------------|-------------|-----------|-----------|----------|
 | Local dev | `localhost:8415` | `docker-compose.local.yml` | `ci-cloud-db-local` | `ci-registry-local` | local /v2 |
-| Dev | `portal.companionintelligence.com` | `.env.dev` | `ci-cloud-db-dev` | `ci-registry-dev` | dev /v2 |
+| Dev | `hub.companionintelligence.com` | `.env.dev` | `ci-cloud-db-dev` | `ci-registry-dev` | dev /v2 |
 | Staging | `portal.companionintel.com` | `.env.staging` | `ci-cloud-db-staging` | `ci-registry-staging` | staging /v2 |
 | Production | `portal.ci.computer` | `.env.prod` | `ci-cloud-db-prod` | `ci-registry-prod` | prod /v2 |
 

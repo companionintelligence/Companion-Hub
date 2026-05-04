@@ -49,7 +49,7 @@ export class CloudflareClientService {
     private configService: ConfigurationService,
     private moduleRef: ModuleRef,
   ) {
-    const ciCloudUrl = this.configService.get('ciCloudUrl') || 'https://portal.companionintelligence.com';
+    const ciCloudUrl = this.configService.get('ciCloudUrl') || 'https://hub.companionintelligence.com';
     this.cloudApiUrl = `${ciCloudUrl}/api`;
 
     this.client = axios.create({

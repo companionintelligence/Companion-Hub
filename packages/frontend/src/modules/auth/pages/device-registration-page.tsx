@@ -8,7 +8,7 @@ import type { RegistrationStatus } from '@/lib/registration-status';
 import { isRegistrationOperational, isRegistrationPending } from '@/lib/registration-status';
 import toast from 'react-hot-toast';
 
-const DEFAULT_PORTAL_URL = 'https://portal.companionintelligence.com';
+const DEFAULT_PORTAL_URL = 'https://hub.companionintelligence.com';
 const STATUS_POLL_INTERVAL_MS = 3000;
 const HEADLESS_POLL_INTERVAL_MS = 5000; // slower poll when idle, waiting for external registration
 const DOMAIN_PROBE_INTERVAL_MS = 5000;
