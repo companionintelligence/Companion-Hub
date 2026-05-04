@@ -17,6 +17,7 @@ const SystemInspectorContainer = lazy(() =>
   import('../containers/system-inspector').then((module) => ({ default: module.SystemInspectorContainer })),
 );
 const GeneralActionsContainer = lazy(() => import('../containers/general-actions').then((module) => ({ default: module.GeneralActionsContainer })));
+const AiSettingsContainer = lazy(() => import('../containers/ai-settings').then((module) => ({ default: module.AiSettingsContainer })));
 
 export default () => {
   const { t } = useTranslation();
@@ -45,6 +46,9 @@ export default () => {
               <TabsTrigger value="network" className="hidden md:inline-flex">
                 {t('SETTINGS_NETWORK_TAB_TITLE')}
               </TabsTrigger>
+              <TabsTrigger value="ai" className="hidden md:inline-flex">
+                AI
+              </TabsTrigger>
               <TabsTrigger value="system" className="hidden md:inline-flex">
                 System
               </TabsTrigger>
@@ -58,6 +62,7 @@ export default () => {
                 <DropdownMenuContent>
                   <DropdownMenuItem onClick={() => handleTabChange('appstores')}>{t('SETTINGS_APPSTORES_TAB_TITLE')}</DropdownMenuItem>
                   <DropdownMenuItem onClick={() => handleTabChange('network')}>{t('SETTINGS_NETWORK_TAB_TITLE')}</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handleTabChange('ai')}>AI</DropdownMenuItem>
                   <DropdownMenuItem onClick={() => handleTabChange('system')}>System</DropdownMenuItem>
                   <DropdownMenuItem onClick={() => handleTabChange('logs')}>{t('SETTINGS_LOGS_TAB_TITLE')}</DropdownMenuItem>
                 </DropdownMenuContent>
@@ -84,6 +89,11 @@ export default () => {
               <TabsContent value="network">
                 <Suspense fallback={<div>Loading...</div>}>
                   <NetworkSettingsContainer />
+                </Suspense>
+              </TabsContent>
+              <TabsContent value="ai">
+                <Suspense fallback={<div>Loading...</div>}>
+                  <AiSettingsContainer />
                 </Suspense>
               </TabsContent>
               <TabsContent value="system">

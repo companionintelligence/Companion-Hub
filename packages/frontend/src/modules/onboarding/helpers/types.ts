@@ -51,3 +51,6 @@ export interface InstallSummary {
   /** Total number of apps that were submitted for install. */
   total: number;
 }
+
+// Re-export AiSetupConfig from the dedicated AI setup types module
+export type { AiSetupConfig } from './ai-setup-types';

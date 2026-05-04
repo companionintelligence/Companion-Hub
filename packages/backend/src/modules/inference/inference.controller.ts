@@ -9,7 +9,7 @@ import { ModelPullerService } from './model-puller.service';
 import { CloudFallbackService } from './cloud-fallback.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AuthGuard } from '@/modules/auth/auth.guard';
-import type { CloudProviderType } from '@ci-hub/common/types';
+import type { CloudProviderType, InferenceBackendType } from '@ci-hub/common/types';
 
 /**
  * Inference controller — exposes OpenAI-compatible inference endpoints.
@@ -276,5 +276,49 @@ export class InferenceController {
       defaultModel: body.defaultModel || this.cloudFallback.getDefaultModel(body.provider),
     });
     return { success: true };
+  }
+
+  // ─── Onboarding Aggregated Endpoint ───────────────────────────────────
+
+  @UseGuards(AuthGuard)
+  @Get('onboarding-profile')
+  async getOnboardingProfile() {
+    const profile = await this.hardwareInspector.getProfile();
+    const tier = profile.tier;
+    const recommendedModels = this.modelRegistry.getRecommendedModels(tier);
+    const availableModels = this.modelRegistry.getModelsForTier(tier);
+    const budget = this.memoryManager.calculateBudget(profile);
+    const status = await this.router.getStatus();
+
+    const recommendedBackend: InferenceBackendType = profile.npu.available
+      ? 'lemonade'
+      : profile.gpu.vendor === 'nvidia' && profile.gpu.runtimeAvailable
+        ? 'vllm'
+        : profile.gpu.vendor === 'amd' && profile.gpu.runtimeAvailable
+          ? 'vllm'
+          : 'ollama';
+
+    const totalMemoryMb = recommendedModels.reduce((sum, m) => sum + m.runtime.memoryFootprintMb, 0);
+    const availableMemoryMb =
+      profile.gpu.available && !profile.gpu.unifiedMemory
+        ? budget.modelBudgetVramMb - budget.modelUsedVramMb
+        : budget.modelBudgetRamMb - budget.modelUsedRamMb;
+
+    return {
+      hardware: profile,
+      tier,
+      recommendedModels,
+      availableModels,
+      memoryBudget: budget,
+      backends: {
+        recommended: recommendedBackend,
+        available: status.backends.map((b) => ({ type: b.type, running: b.running, healthy: b.healthy })),
+      },
+      resourceEstimate: {
+        totalDiskMb: recommendedModels.reduce((sum, m) => sum + m.requirements.diskMb, 0),
+        totalMemoryMb,
+        availableMemoryMb: Math.max(0, availableMemoryMb),
+      },
+    };
   }
 }
