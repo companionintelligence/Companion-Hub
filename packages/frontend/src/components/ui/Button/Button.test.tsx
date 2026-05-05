@@ -2,6 +2,13 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { Button } from './Button';
 
+// Minimal link stub so asChild tests don't need a full router context
+const FakeLink = ({ children, href, className }: { children: React.ReactNode; href: string; className?: string }) => (
+  <a href={href} className={className}>
+    {children}
+  </a>
+);
+
 describe('Button component', () => {
   it('should render without crashing', () => {
     render(<Button>Click me</Button>);
@@ -50,5 +57,41 @@ describe('Button component', () => {
 
     // assert
     expect(onClick).toHaveBeenCalled();
+  });
+
+  describe('asChild', () => {
+    it('renders a single child element without crashing (regression: React.Children.only)', () => {
+      // @radix-ui/react-slot v1.2.4 throws "React.Children.only expected to receive a single
+      // React element child" when Slot receives more than one child. This test ensures the
+      // Button asChild path forwards exactly one child to Slot.
+      expect(() =>
+        render(
+          <Button asChild>
+            <FakeLink href="/login">Back to Login</FakeLink>
+          </Button>,
+        ),
+      ).not.toThrow();
+    });
+
+    it('renders the child element as the root node', () => {
+      render(
+        <Button asChild>
+          <FakeLink href="/login">Back to Login</FakeLink>
+        </Button>,
+      );
+      const link = screen.getByRole('link', { name: 'Back to Login' });
+      expect(link).toBeInTheDocument();
+      expect(link).toHaveAttribute('href', '/login');
+    });
+
+    it('applies Button class variants to the child element', () => {
+      render(
+        <Button asChild className="custom-class">
+          <FakeLink href="/login">Back to Login</FakeLink>
+        </Button>,
+      );
+      const link = screen.getByRole('link', { name: 'Back to Login' });
+      expect(link).toHaveClass('custom-class');
+    });
   });
 });
