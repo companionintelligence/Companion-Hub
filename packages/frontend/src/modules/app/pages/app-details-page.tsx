@@ -34,7 +34,7 @@ export default () => {
   const imageSize = useQuery({
     queryKey: ['app-image-size', appUrn],
     queryFn: async () => {
-      const { data } = await client.get({ url: `/api/marketplace/apps/${appUrn}/image-size` });
+      const { data } = await client.get({ url: `/api/marketplace/apps/${encodeURIComponent(appUrn)}/image-size` });
       return data as { totalBytes: number | null; formatted: string | null };
     },
     staleTime: 1000 * 60 * 60, // 1 hour
