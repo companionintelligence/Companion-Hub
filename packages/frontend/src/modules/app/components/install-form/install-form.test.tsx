@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 import { MemoryRouter } from 'react-router';
 import type { AppInfo } from '@/types/app.types';
@@ -36,6 +36,27 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
 }));
 
 describe('InstallForm', () => {
+  const createContext = (advancedMode: boolean) => ({
+    userSettings: {
+      ciHubOrganizationSlug: undefined,
+      localDomain: 'ci.lan',
+      domain: 'example.com',
+      maxBackups: 5,
+      guestDashboard: false,
+    },
+    user: { advancedMode },
+    isProduction: true,
+    cloudflareAvailable: true,
+    tailscaleAvailable: false,
+  });
+
+  const baseInfo = {
+    urn: 'app:store',
+    form_fields: [],
+    exposable: false,
+    dynamic_config: false,
+  } as unknown as AppInfo;
+
   it('should display organization slug in subdomain suffix when present', () => {
     vi.mocked(useAppContext).mockReturnValue({
       userSettings: {
@@ -130,5 +151,129 @@ describe('InstallForm', () => {
 
     const link = screen.getByRole('link', { name: 'APP_INSTALL_FORM_EXPOSURE_TAILSCALE_SETUP_LINK' });
     expect(link).toHaveAttribute('href', '/settings?tab=network');
+  });
+
+  it('shows advanced settings toggle in simple mode when optional fields exist', () => {
+    vi.mocked(useAppContext).mockReturnValue(createContext(false) as unknown as ReturnType<typeof useAppContext>);
+
+    const formFields = [
+      {
+        env_variable: 'REQUIRED_FIELD',
+        label: 'Required field',
+        type: 'text',
+        required: true,
+      },
+      {
+        env_variable: 'OPTIONAL_FIELD',
+        label: 'Optional field',
+        type: 'text',
+        required: false,
+      },
+    ] as never[];
+
+    render(
+      <MemoryRouter>
+        <InstallForm info={baseInfo} onSubmit={vi.fn()} formId="test-form" formFields={formFields} />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole('switch', { name: 'APP_INSTALL_FORM_SHOW_ADVANCED_SETTINGS' })).toBeInTheDocument();
+    expect(screen.getByText('Required field')).toBeInTheDocument();
+    expect(screen.queryByText('Optional field')).not.toBeInTheDocument();
+  });
+
+  it('reveals optional fields when advanced settings toggle is enabled in simple mode', () => {
+    vi.mocked(useAppContext).mockReturnValue(createContext(false) as unknown as ReturnType<typeof useAppContext>);
+
+    const formFields = [
+      {
+        env_variable: 'OPTIONAL_FIELD',
+        label: 'Optional field',
+        type: 'text',
+        required: false,
+      },
+    ] as never[];
+
+    render(
+      <MemoryRouter>
+        <InstallForm info={baseInfo} onSubmit={vi.fn()} formId="test-form" formFields={formFields} />
+      </MemoryRouter>,
+    );
+
+    const toggle = screen.getByRole('switch', { name: 'APP_INSTALL_FORM_SHOW_ADVANCED_SETTINGS' });
+    fireEvent.click(toggle);
+
+    expect(screen.getByText('Optional field')).toBeInTheDocument();
+  });
+
+  it('shows optional fields by default and hides toggle in advanced mode', () => {
+    vi.mocked(useAppContext).mockReturnValue(createContext(true) as unknown as ReturnType<typeof useAppContext>);
+
+    const formFields = [
+      {
+        env_variable: 'OPTIONAL_FIELD',
+        label: 'Optional field',
+        type: 'text',
+        required: false,
+      },
+    ] as never[];
+
+    render(
+      <MemoryRouter>
+        <InstallForm info={baseInfo} onSubmit={vi.fn()} formId="test-form" formFields={formFields} />
+      </MemoryRouter>,
+    );
+
+    expect(screen.queryByRole('switch', { name: 'APP_INSTALL_FORM_SHOW_ADVANCED_SETTINGS' })).not.toBeInTheDocument();
+    expect(screen.getByText('Optional field')).toBeInTheDocument();
+  });
+
+  it('does not show advanced settings toggle when there are no optional fields', () => {
+    vi.mocked(useAppContext).mockReturnValue(createContext(false) as unknown as ReturnType<typeof useAppContext>);
+
+    const formFields = [
+      {
+        env_variable: 'REQUIRED_FIELD',
+        label: 'Required field',
+        type: 'text',
+        required: true,
+      },
+    ] as never[];
+
+    render(
+      <MemoryRouter>
+        <InstallForm info={baseInfo} onSubmit={vi.fn()} formId="test-form" formFields={formFields} />
+      </MemoryRouter>,
+    );
+
+    expect(screen.queryByRole('switch', { name: 'APP_INSTALL_FORM_SHOW_ADVANCED_SETTINGS' })).not.toBeInTheDocument();
+    expect(screen.getByText('Required field')).toBeInTheDocument();
+  });
+
+  it('shows advanced settings toggle for exposable apps without optional fields in simple mode', () => {
+    vi.mocked(useAppContext).mockReturnValue(createContext(false) as unknown as ReturnType<typeof useAppContext>);
+
+    const exposableInfo = {
+      ...baseInfo,
+      exposable: true,
+      dynamic_config: true,
+    } as unknown as AppInfo;
+
+    const formFields = [
+      {
+        env_variable: 'REQUIRED_FIELD',
+        label: 'Required field',
+        type: 'text',
+        required: true,
+      },
+    ] as never[];
+
+    render(
+      <MemoryRouter>
+        <InstallForm info={exposableInfo} onSubmit={vi.fn()} formId="test-form" formFields={formFields} />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole('switch', { name: 'APP_INSTALL_FORM_SHOW_ADVANCED_SETTINGS' })).toBeInTheDocument();
   });
 });
