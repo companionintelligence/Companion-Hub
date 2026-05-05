@@ -1,7 +1,7 @@
 /**
  * Lightweight scenario-configurable mock portal server for e2e tests.
  *
- * Replaces https://portal.companionintelligence.com so CI doesn't hit the
+ * Replaces https://hub.companionintelligence.com so CI doesn't hit the
  * real portal (which returns 403 due to Cloudflare Bot Fight Mode).
  *
  * Scenarios are controlled via the MOCK_PORTAL_SCENARIO env var or the

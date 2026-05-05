@@ -6,7 +6,7 @@
 # - Docker access is available for the ci-os-hub and related containers used below.
 set -euo pipefail
 
-PORTAL_URL="https://portal.companionintelligence.com"
+PORTAL_URL="https://hub.companionintelligence.com"
 HUB_URL="http://localhost:5002"
 TIMESTAMP=$(date +%s)
 PASS_CHARS='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%'

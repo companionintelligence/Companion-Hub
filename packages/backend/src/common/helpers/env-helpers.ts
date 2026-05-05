@@ -311,7 +311,7 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   // CI Cloud integration — REQUIRED, no fallback
   const ciCloudUrl = resolve('CI_CLOUD_URL', { envMap, fallback: '' });
   if (!ciCloudUrl) {
-    throw new Error('CI_CLOUD_URL is required. Please set it in your .env file (e.g. CI_CLOUD_URL=https://portal.companionintelligence.com)');
+    throw new Error('CI_CLOUD_URL is required. Please set it in your .env file (e.g. CI_CLOUD_URL=https://hub.companionintelligence.com)');
   }
   envMap.set('CI_CLOUD_URL', ciCloudUrl);
 

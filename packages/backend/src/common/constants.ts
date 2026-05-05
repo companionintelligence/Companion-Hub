@@ -61,7 +61,7 @@ export const DEFAULT_FORWARD_AUTH_URL = 'http://ci-os-hub:3000/api/auth/traefik'
 export const DEFAULT_DNS_IP = '9.9.9.9';
 
 // CI Cloud
-export const DEFAULT_CI_CLOUD_URL = 'https://portal.companionintelligence.com';
+export const DEFAULT_CI_CLOUD_URL = 'https://hub.companionintelligence.com';
 
 // Version
 export const DEFAULT_CI_HUB_VERSION = '4.5.0';

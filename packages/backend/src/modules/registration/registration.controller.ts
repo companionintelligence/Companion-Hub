@@ -136,7 +136,7 @@ export class RegistrationController {
       envFileLines: envFileLines.length > 0 ? envFileLines : null,
       // Also check process.env directly
       processEnv: {
-        CI_CLOUD_URL: process.env.CI_CLOUD_URL || 'https://portal.companionintelligence.com',
+        CI_CLOUD_URL: process.env.CI_CLOUD_URL || 'https://hub.companionintelligence.com',
       },
     };
   }
