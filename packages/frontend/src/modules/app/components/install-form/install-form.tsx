@@ -454,7 +454,8 @@ export const InstallForm: React.FC<IProps> = ({
   };
 
   const hasOptionalFields = formFields.some((field) => !field.required && typeFilter(field));
-  const shouldShowAdvancedSettingsToggle = !isAdvancedMode && hasOptionalFields;
+  const hasAdvancedSimpleModeOptions = hasOptionalFields || (info.exposable && info.dynamic_config);
+  const shouldShowAdvancedSettingsToggle = !isAdvancedMode && hasAdvancedSimpleModeOptions;
   const visibleFields =
     isAdvancedMode || showAdvancedSettings ? formFields.filter(typeFilter) : formFields.filter((field) => field.required && typeFilter(field));
   const hasConfigSection = visibleFields.length > 0 || shouldShowAdvancedSettingsToggle || (guestDashboard && isAdvancedMode) || isAdvancedMode;

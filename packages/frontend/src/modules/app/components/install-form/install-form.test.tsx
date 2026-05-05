@@ -249,4 +249,31 @@ describe('InstallForm', () => {
     expect(screen.queryByRole('switch', { name: 'APP_INSTALL_FORM_SHOW_ADVANCED_SETTINGS' })).not.toBeInTheDocument();
     expect(screen.getByText('Required field')).toBeInTheDocument();
   });
+
+  it('shows advanced settings toggle for exposable apps without optional fields in simple mode', () => {
+    vi.mocked(useAppContext).mockReturnValue(createContext(false) as unknown as ReturnType<typeof useAppContext>);
+
+    const exposableInfo = {
+      ...baseInfo,
+      exposable: true,
+      dynamic_config: true,
+    } as unknown as AppInfo;
+
+    const formFields = [
+      {
+        env_variable: 'REQUIRED_FIELD',
+        label: 'Required field',
+        type: 'text',
+        required: true,
+      },
+    ] as never[];
+
+    render(
+      <MemoryRouter>
+        <InstallForm info={exposableInfo} onSubmit={vi.fn()} formId="test-form" formFields={formFields} />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole('switch', { name: 'APP_INSTALL_FORM_SHOW_ADVANCED_SETTINGS' })).toBeInTheDocument();
+  });
 });
