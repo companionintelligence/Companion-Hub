@@ -98,6 +98,7 @@ export const InstallForm: React.FC<IProps> = ({
   const dnsCheckTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const [isCheckingDns, setIsCheckingDns] = useState(false);
   const [dnsAvailabilityError, setDnsAvailabilityError] = useState<string | null>(null);
+  const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
 
   // Track form validity for parent components
   useEffect(() => {
@@ -330,7 +331,7 @@ export const InstallForm: React.FC<IProps> = ({
   };
 
   const renderAdvancedExposureOptions = () => {
-    if (!info.exposable || !isAdvancedMode) return null;
+    if (!info.exposable || (!isAdvancedMode && !showAdvancedSettings)) return null;
 
     return (
       <>
@@ -452,11 +453,11 @@ export const InstallForm: React.FC<IProps> = ({
     }
   };
 
-  // In simple mode (when user.advancedMode is false) we completely hide
-  // all app configuration form fields from the DOM. Only render fields
-  // when the user is in advanced mode.
-  const visibleFields = isAdvancedMode ? formFields.filter(typeFilter) : formFields.filter((field) => field.required);
-  const hasConfigSection = visibleFields.length > 0 || (guestDashboard && isAdvancedMode) || isAdvancedMode;
+  const hasOptionalFields = formFields.some((field) => !field.required && typeFilter(field));
+  const shouldShowAdvancedSettingsToggle = !isAdvancedMode && hasOptionalFields;
+  const visibleFields =
+    isAdvancedMode || showAdvancedSettings ? formFields.filter(typeFilter) : formFields.filter((field) => field.required && typeFilter(field));
+  const hasConfigSection = visibleFields.length > 0 || shouldShowAdvancedSettingsToggle || (guestDashboard && isAdvancedMode) || isAdvancedMode;
 
   return (
     <form className="flex flex-col" onSubmit={handleSubmit(validate)} id={formId}>
@@ -466,7 +467,15 @@ export const InstallForm: React.FC<IProps> = ({
       {/* Configuration section — scrollable when in a dialog */}
       {hasConfigSection && (
         <ConfigSection scrollable={scrollable}>
-          {visibleFields.length > 0 && <h3>{t('APP_INSTALL_FORM_GENERAL')}</h3>}
+          {visibleFields.length > 0 && <h3 className="text-base font-bold tracking-wide text-foreground mb-3">{t('APP_INSTALL_FORM_GENERAL')}</h3>}
+          {shouldShowAdvancedSettingsToggle && (
+            <Switch
+              className="mb-3"
+              checked={showAdvancedSettings}
+              onCheckedChange={setShowAdvancedSettings}
+              label={t('APP_INSTALL_FORM_SHOW_ADVANCED_SETTINGS')}
+            />
+          )}
           {visibleFields.map(renderField)}
           {guestDashboard && isAdvancedMode && (
             <Controller
