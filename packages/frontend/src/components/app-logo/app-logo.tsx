@@ -13,7 +13,7 @@ export const AppLogo: React.FC<{
   placeholder?: boolean;
 }> = ({ urn, url, size = 80, className = '', alt = '' }) => {
   const baseUrl = client.getConfig().baseUrl ?? '';
-  const logoUrl = urn ? `${baseUrl}/api/marketplace/apps/${urn}/image` : '/app-not-found.jpg';
+  const logoUrl = urn ? `${baseUrl}/api/marketplace/apps/${encodeURIComponent(urn)}/image` : '/app-not-found.jpg';
   const maskId = useId();
 
   return (

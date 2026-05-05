@@ -5,6 +5,7 @@ import { limitText } from '@/lib/helpers/text-helpers';
 import type { AppInfoSimple } from '@/types/app.types';
 import { Check, Download } from 'lucide-react';
 import type React from 'react';
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router';
 
 interface AppCardProps {
@@ -14,6 +15,25 @@ interface AppCardProps {
 }
 
 export const AppCard: React.FC<AppCardProps> = ({ app, isLoading, isInstalled }) => {
+  const [appId, storeId] = app.urn.split(':');
+  const logoUrl = `/api/marketplace/apps/${encodeURIComponent(app.urn)}/image`;
+  const [imgSrc, setImgSrc] = useState(logoUrl);
+  const [showAvatarFallback, setShowAvatarFallback] = useState(false);
+
+  useEffect(() => {
+    setImgSrc(logoUrl);
+    setShowAvatarFallback(false);
+  }, [logoUrl]);
+
+  const handleImageError = () => {
+    if (imgSrc !== '/app-not-found.jpg') {
+      setImgSrc('/app-not-found.jpg');
+      return;
+    }
+
+    setShowAvatarFallback(true);
+  };
+
   if (isLoading) {
     return (
       <GlassContainer className="h-full p-4 flex flex-col min-h-[220px]" intensity="low">
@@ -28,9 +48,6 @@ export const AppCard: React.FC<AppCardProps> = ({ app, isLoading, isInstalled })
     );
   }
 
-  const [appId, storeId] = app.urn.split(':');
-  const logoUrl = `/api/marketplace/apps/${app.urn}/image`;
-
   return (
     <Link to={`/app-store/${storeId}/${appId}`} className="block h-full group">
       <GlassContainer
@@ -38,21 +55,21 @@ export const AppCard: React.FC<AppCardProps> = ({ app, isLoading, isInstalled })
         intensity="low"
       >
         <div className="flex items-start justify-between mb-3 sm:mb-4">
-          <img
-            src={logoUrl}
-            alt={app.name}
-            className="w-12 h-12 sm:w-16 sm:h-16 rounded-xl shadow-lg object-cover"
-            width={64}
-            height={64}
-            loading="lazy"
-            onError={(e) => {
-              e.currentTarget.style.display = 'none';
-              e.currentTarget.nextElementSibling?.classList.remove('hidden');
-            }}
-          />
-          <div className="w-12 h-12 sm:w-16 sm:h-16 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-500 flex items-center justify-center text-white text-xl sm:text-2xl font-bold shadow-lg hidden">
-            {app.name.charAt(0)}
-          </div>
+          {showAvatarFallback ? (
+            <div className="w-12 h-12 sm:w-16 sm:h-16 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-500 flex items-center justify-center text-white text-xl sm:text-2xl font-bold shadow-lg">
+              {app.name.charAt(0)}
+            </div>
+          ) : (
+            <img
+              src={imgSrc}
+              alt={app.name}
+              className="w-12 h-12 sm:w-16 sm:h-16 rounded-xl shadow-lg object-cover"
+              width={64}
+              height={64}
+              loading="lazy"
+              onError={handleImageError}
+            />
+          )}
 
           <span className="px-2 py-1 rounded-full bg-emerald-500/20 text-emerald-400 text-xs font-semibold">Free</span>
         </div>

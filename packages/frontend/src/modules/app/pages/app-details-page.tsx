@@ -17,6 +17,8 @@ export async function clientLoader({ params }: Route.ClientLoaderArgs) {
   if (storeId === '_user') {
     return redirect(`/apps/${params.appId}`);
   }
+
+  return null;
 }
 
 export default () => {
@@ -32,7 +34,7 @@ export default () => {
   const imageSize = useQuery({
     queryKey: ['app-image-size', appUrn],
     queryFn: async () => {
-      const { data } = await client.get({ url: `/api/marketplace/apps/${appUrn}/image-size` });
+      const { data } = await client.get({ url: `/api/marketplace/apps/${encodeURIComponent(appUrn)}/image-size` });
       return data as { totalBytes: number | null; formatted: string | null };
     },
     staleTime: 1000 * 60 * 60, // 1 hour
@@ -46,7 +48,8 @@ export default () => {
   }
 
   const { info, app, metadata } = getApp.data;
-  const logoUrl = info?.urn ? `/api/marketplace/apps/${info.urn}/image` : '/app-not-found.jpg';
+  const logoUrn = info?.urn ?? appUrn;
+  const logoUrl = `/api/marketplace/apps/${encodeURIComponent(logoUrn)}/image`;
   const primaryCategory = info?.categories?.[0];
 
   return (
