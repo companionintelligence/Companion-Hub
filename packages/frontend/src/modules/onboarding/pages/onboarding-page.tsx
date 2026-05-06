@@ -94,11 +94,7 @@ function OnboardingWizard() {
                 selectedApps={selectedApps}
                 onConfirm={(apps) => {
                   setSelectedApps(apps);
-                  if (apps.length === 0) {
-                    setCurrentStep(5);
-                  } else {
-                    setCurrentStep(3);
-                  }
+                  setCurrentStep(3);
                 }}
                 onBack={() => setCurrentStep(1)}
               />
