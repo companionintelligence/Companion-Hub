@@ -1,7 +1,7 @@
 import clsx from 'clsx';
 import { useId } from 'react';
 import type React from 'react';
-import { client } from '@/api-client/client.gen';
+import { getMarketplaceAppImageUrl } from '@/lib/marketplace-image-url';
 import './app-logo.css';
 
 export const AppLogo: React.FC<{
@@ -12,8 +12,7 @@ export const AppLogo: React.FC<{
   alt?: string;
   placeholder?: boolean;
 }> = ({ urn, url, size = 80, className = '', alt = '' }) => {
-  const baseUrl = client.getConfig().baseUrl ?? '';
-  const logoUrl = urn ? `${baseUrl}/api/marketplace/apps/${encodeURIComponent(urn)}/image` : '/app-not-found.jpg';
+  const logoUrl = getMarketplaceAppImageUrl(urn);
   const maskId = useId();
 
   return (

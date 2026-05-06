@@ -7,6 +7,7 @@ import { Card, CardHeader } from '@/components/ui/Card';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { getAppOptions, uploadAppImageMutation } from '@/api-client/@tanstack/react-query.gen';
 import { useAppContext } from '@/context/app-context';
+import { getMarketplaceAppImageUrl } from '@/lib/marketplace-image-url';
 import { useTranslation } from 'react-i18next';
 import toast from 'react-hot-toast';
 import type { TranslatableError } from '@/types/error.types';
@@ -26,7 +27,7 @@ export const CustomAppDetailsPage = () => {
   const [searchParams] = useSearchParams();
   const [bust, setBust] = useState(searchParams.get('bust'));
 
-  const imageUrl = new URL(`/api/marketplace/apps/${params.appId}:_user/image`, window.location.origin);
+  const imageUrl = new URL(getMarketplaceAppImageUrl(`${params.appId}:_user`), window.location.origin);
 
   const uploadImage = useMutation({
     ...uploadAppImageMutation(),

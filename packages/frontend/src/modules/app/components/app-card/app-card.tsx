@@ -2,6 +2,7 @@ import { Button } from '@/components/ui/Button';
 import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
 import { GlassContainer } from '@/components/ui/glass-container';
 import { limitText } from '@/lib/helpers/text-helpers';
+import { getMarketplaceAppImageUrl } from '@/lib/marketplace-image-url';
 import type { AppInfoSimple } from '@/types/app.types';
 import { Check, Download } from 'lucide-react';
 import type React from 'react';
@@ -16,7 +17,7 @@ interface AppCardProps {
 
 export const AppCard: React.FC<AppCardProps> = ({ app, isLoading, isInstalled }) => {
   const [appId, storeId] = app.urn.split(':');
-  const logoUrl = `/api/marketplace/apps/${encodeURIComponent(app.urn)}/image`;
+  const logoUrl = getMarketplaceAppImageUrl(app.urn);
   const [imgSrc, setImgSrc] = useState(logoUrl);
   const [showAvatarFallback, setShowAvatarFallback] = useState(false);
 
