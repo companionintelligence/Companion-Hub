@@ -8,6 +8,7 @@ import { AppActions } from '../containers/app-actions/app-actions';
 import { AppDetailsTabs } from '../containers/app-details-tabs/app-details-tabs';
 import type { Route } from './+types/app-details-page';
 import { PageLoadingSpinner } from '@/components/ui/LoadingSpinner/loading-spinner';
+import { getMarketplaceAppImageUrl } from '@/lib/marketplace-image-url';
 import { Star } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
@@ -49,7 +50,7 @@ export default () => {
 
   const { info, app, metadata } = getApp.data;
   const logoUrn = info?.urn ?? appUrn;
-  const logoUrl = `/api/marketplace/apps/${encodeURIComponent(logoUrn)}/image`;
+  const logoUrl = getMarketplaceAppImageUrl(logoUrn);
   const primaryCategory = info?.categories?.[0];
 
   return (
