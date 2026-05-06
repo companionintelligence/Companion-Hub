@@ -4,6 +4,7 @@ import { Card, CardContent } from '@/components/ui/Card';
 import { useEffect, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { getInstalledAppsQueryKey } from '@/api-client/@tanstack/react-query.gen';
+import { Loader2 } from 'lucide-react';
 import type { OnboardingApp, AppInstallStatus, InstallSummary, AiSetupConfig } from '../helpers/types';
 
 interface InstallStepProps {
@@ -312,7 +313,7 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
           </span>
         );
       case 'installing':
-        return <div className="animate-spin w-4 h-4 border-2 border-primary border-t-transparent rounded-full" data-testid="status-installing" />;
+        return <Loader2 className="w-4 h-4 animate-spin text-primary" data-testid="status-installing" />;
       case 'running':
         return (
           <span className="text-green-500" data-testid="status-running">
