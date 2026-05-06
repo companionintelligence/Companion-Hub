@@ -96,4 +96,13 @@ describe('InstallStep', () => {
 
     expect(screen.getByTestId('install-app-list')).toBeInTheDocument();
   });
+
+  it('shows clear text when no apps are selected', async () => {
+    render(
+      <InstallStep apps={[]} onComplete={onComplete} aiSetupConfig={{ selectedModels: [], backend: 'ollama', cloudProviders: [], skipped: true }} />,
+    );
+
+    expect(await screen.findByText('No apps selected for installation.')).toBeInTheDocument();
+    expect(screen.queryByText(/Installing 1 of 0/)).not.toBeInTheDocument();
+  });
 });
