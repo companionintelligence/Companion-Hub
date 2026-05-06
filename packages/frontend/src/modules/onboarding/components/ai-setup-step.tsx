@@ -9,6 +9,7 @@ import { BackendSelectionCard } from './ai-setup/backend-selection-card';
 import { CloudProviderCard } from './ai-setup/cloud-provider-card';
 import { ResourceSummaryBar } from './ai-setup/resource-summary-bar';
 import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
+import { LoadingSpinner } from '@/components/ui/LoadingSpinner/loading-spinner';
 
 interface AiSetupStepProps {
   onComplete: (config: AiSetupConfig) => void;
@@ -83,6 +84,10 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
   if (loading) {
     return (
       <div className="space-y-4" data-testid="ai-setup-loading">
+        <div className="flex flex-col items-center gap-3 py-4">
+          <LoadingSpinner className="p-0" />
+          <p className="text-sm text-muted-foreground">Detecting your hardware…</p>
+        </div>
         <Skeleton className="h-24 w-full rounded-lg" />
         <Skeleton className="h-48 w-full rounded-lg" />
         <Skeleton className="h-32 w-full rounded-lg" />
