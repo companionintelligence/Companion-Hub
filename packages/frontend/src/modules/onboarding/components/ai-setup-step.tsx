@@ -9,6 +9,7 @@ import { BackendSelectionCard } from './ai-setup/backend-selection-card';
 import { CloudProviderCard } from './ai-setup/cloud-provider-card';
 import { ResourceSummaryBar } from './ai-setup/resource-summary-bar';
 import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
+import { LoadingSpinner } from '@/components/ui/LoadingSpinner/loading-spinner';
 
 interface AiSetupStepProps {
   onComplete: (config: AiSetupConfig) => void;
@@ -82,7 +83,11 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
 
   if (loading) {
     return (
-      <div className="space-y-4" data-testid="ai-setup-loading">
+      <div className="space-y-4 max-h-[62vh] overflow-y-auto pr-2" data-testid="ai-setup-loading">
+        <div className="flex flex-col items-center gap-1 py-4">
+          <LoadingSpinner className="p-0" />
+          <p className="text-sm text-muted-foreground">Detecting your hardware…</p>
+        </div>
         <Skeleton className="h-24 w-full rounded-lg" />
         <Skeleton className="h-48 w-full rounded-lg" />
         <Skeleton className="h-32 w-full rounded-lg" />
@@ -111,7 +116,7 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
   const availableMemoryMb = profile.resourceEstimate.availableMemoryMb;
 
   return (
-    <div className="space-y-4" data-testid="ai-setup-step">
+    <div className="space-y-4 max-h-[62vh] overflow-y-auto pr-2" data-testid="ai-setup-step">
       <HardwareProfileCard hardware={profile.hardware} tier={profile.tier} onRescan={handleRescan} rescanning={rescanning} />
 
       {!isInsufficient && (

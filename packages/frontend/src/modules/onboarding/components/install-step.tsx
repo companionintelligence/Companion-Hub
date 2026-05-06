@@ -57,7 +57,7 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: queryClient is stable from useQueryClient
   useEffect(() => {
-    if (started.current || apps.length === 0) return;
+    if (started.current) return;
     started.current = true;
 
     const installAll = async () => {
@@ -354,25 +354,57 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
   const incompleteCount = states.filter((s) => s.status === 'incomplete').length;
   const processedCount = runningCount + failedCount + incompleteCount;
   const progress = apps.length > 0 ? Math.round((processedCount / apps.length) * 100) : 0;
+  const hasAiWork = aiPhase.status !== 'skipped';
+  const aiInProgress = hasAiWork && aiPhase.status !== 'done';
 
   const summaryParts: string[] = [];
   if (runningCount > 0) summaryParts.push(`${runningCount} running`);
   if (incompleteCount > 0) summaryParts.push(`${incompleteCount} not yet confirmed`);
   if (failedCount > 0) summaryParts.push(`${failedCount} failed`);
 
+  const progressText = (() => {
+    if (done) {
+      if (apps.length === 0) {
+        return hasAiWork ? 'AI setup complete. No apps selected for installation.' : 'No apps selected for installation.';
+      }
+      return summaryParts.length > 0 ? `${summaryParts.join(', ')}.` : 'No app installs were needed.';
+    }
+
+    if (apps.length === 0) {
+      return aiInProgress ? 'Configuring AI setup…' : 'No apps selected for installation.';
+    }
+
+    return `Installing ${processedCount + 1} of ${apps.length}…`;
+  })();
+
+  const hasAppWork = apps.length > 0 && !done;
+  const continueButtonLabel = done
+    ? 'Continue'
+    : hasAppWork && aiInProgress
+      ? 'Continue (apps and AI setup in background)'
+      : hasAppWork
+        ? 'Continue (apps installing in background)'
+        : aiInProgress
+          ? 'Continue (AI setup in background)'
+          : 'Continue';
+
   return (
     <Card>
       <CardContent className="p-6">
         <div className="mb-4">
-          <h2 className="text-xl font-semibold mb-1">{done ? 'Installation Complete' : 'Installing Apps'}</h2>
+          <h2 className="text-xl font-semibold mb-1">
+            {apps.length === 0 ? 'No Apps Selected' : done ? 'Installation Complete' : 'Installing Apps'}
+          </h2>
           <p className="text-sm text-muted-foreground" data-testid="install-progress-text">
-            {done ? `${summaryParts.join(', ')}.` : `Installing ${processedCount + 1} of ${apps.length}…`}
+            {progressText}
           </p>
         </div>
 
-        <div className="w-full bg-muted rounded-full h-2 mb-4 overflow-hidden">
-          <div className="bg-primary h-2 rounded-full transition-all duration-500 ease-out" style={{ width: `${progress}%` }} />
-        </div>
+        {apps.length > 0 && (
+          <div className="w-full bg-muted rounded-full h-2 mb-4 overflow-hidden">
+            <div className="bg-primary h-2 rounded-full transition-all duration-500 ease-out" style={{ width: `${progress}%` }} />
+          </div>
+        )}
 
         {/* AI Setup Phase */}
         {aiPhase.status !== 'skipped' && (
@@ -433,7 +465,7 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
 
         <div className="flex justify-end mt-6">
           <Button intent="primary" onClick={() => onCompleteRef.current(buildSummary(states))} data-testid="install-continue-btn">
-            {done ? 'Continue' : 'Continue (apps installing in background)'}
+            {continueButtonLabel}
           </Button>
         </div>
       </CardContent>

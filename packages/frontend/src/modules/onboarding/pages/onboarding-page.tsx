@@ -73,7 +73,7 @@ function OnboardingWizard() {
                   setDetectedServices(services);
                   setCurrentStep(1);
                 }}
-                onSkip={() => setCurrentStep(5)}
+                onSkip={() => setCurrentStep(3)}
               />
             </StepContent>
 
@@ -84,7 +84,7 @@ function OnboardingWizard() {
                   setSelectedApps(apps);
                   setCurrentStep(2);
                 }}
-                onSkip={() => setCurrentStep(5)}
+                onSkip={() => setCurrentStep(3)}
                 onBack={() => setCurrentStep(0)}
               />
             </StepContent>
@@ -94,11 +94,7 @@ function OnboardingWizard() {
                 selectedApps={selectedApps}
                 onConfirm={(apps) => {
                   setSelectedApps(apps);
-                  if (apps.length === 0) {
-                    setCurrentStep(5);
-                  } else {
-                    setCurrentStep(3);
-                  }
+                  setCurrentStep(3);
                 }}
                 onBack={() => setCurrentStep(1)}
               />

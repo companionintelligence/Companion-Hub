@@ -47,7 +47,7 @@ export const WelcomeStep = ({ onDetected, onSkip }: WelcomeStepProps) => {
             Detect running services
           </Button>
           <Button variant="ghost" onClick={onSkip} disabled={loading}>
-            Skip — I'll browse the store myself
+            Skip service detection
           </Button>
         </div>
 

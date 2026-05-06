@@ -8,6 +8,7 @@ import toast from 'react-hot-toast';
 import type { CloudProviderInput, HardwareProfileResponse } from '@/modules/onboarding/helpers/ai-setup-types';
 import type { CloudProviderType, InferenceBackendType } from '@ci-hub/common/types';
 import { HardwareProfileCard } from '@/modules/onboarding/components/ai-setup/hardware-profile-card';
+import { LoadingSpinner } from '@/components/ui/LoadingSpinner/loading-spinner';
 import { ModelSelectionCard } from '@/modules/onboarding/components/ai-setup/model-selection-card';
 import { BackendSelectionCard } from '@/modules/onboarding/components/ai-setup/backend-selection-card';
 import { CloudProviderCard } from '@/modules/onboarding/components/ai-setup/cloud-provider-card';
@@ -181,6 +182,10 @@ export const AiSettingsContainer = () => {
           </CardHeader>
           <CardContent>
             <div className="space-y-4">
+              <div className="flex flex-col items-center gap-1 py-2">
+                <LoadingSpinner className="p-0" />
+                <p className="text-sm text-muted-foreground">Detecting your hardware…</p>
+              </div>
               <Skeleton className="h-24 w-full rounded-lg" />
               <Skeleton className="h-48 w-full rounded-lg" />
               <Skeleton className="h-32 w-full rounded-lg" />
