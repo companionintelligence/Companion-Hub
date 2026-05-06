@@ -392,15 +392,19 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
     <Card>
       <CardContent className="p-6">
         <div className="mb-4">
-          <h2 className="text-xl font-semibold mb-1">{done ? 'Installation Complete' : 'Installing Apps'}</h2>
+          <h2 className="text-xl font-semibold mb-1">
+            {apps.length === 0 ? 'No Apps Selected' : done ? 'Installation Complete' : 'Installing Apps'}
+          </h2>
           <p className="text-sm text-muted-foreground" data-testid="install-progress-text">
             {progressText}
           </p>
         </div>
 
-        <div className="w-full bg-muted rounded-full h-2 mb-4 overflow-hidden">
-          <div className="bg-primary h-2 rounded-full transition-all duration-500 ease-out" style={{ width: `${progress}%` }} />
-        </div>
+        {apps.length > 0 && (
+          <div className="w-full bg-muted rounded-full h-2 mb-4 overflow-hidden">
+            <div className="bg-primary h-2 rounded-full transition-all duration-500 ease-out" style={{ width: `${progress}%` }} />
+          </div>
+        )}
 
         {/* AI Setup Phase */}
         {aiPhase.status !== 'skipped' && (
