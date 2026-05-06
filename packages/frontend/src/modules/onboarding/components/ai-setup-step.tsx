@@ -9,7 +9,7 @@ import { BackendSelectionCard } from './ai-setup/backend-selection-card';
 import { CloudProviderCard } from './ai-setup/cloud-provider-card';
 import { ResourceSummaryBar } from './ai-setup/resource-summary-bar';
 import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
-import { LoadingSpinner } from '@/components/ui/LoadingSpinner/loading-spinner';
+import { Loader2 } from 'lucide-react';
 
 interface AiSetupStepProps {
   onComplete: (config: AiSetupConfig) => void;
@@ -84,8 +84,8 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
   if (loading) {
     return (
       <div className="space-y-4 max-h-[62vh] overflow-y-auto pr-2" data-testid="ai-setup-loading">
-        <div className="flex flex-col items-center gap-1 py-4">
-          <LoadingSpinner className="p-0" />
+        <div className="flex flex-col items-center gap-4 py-4 text-center">
+          <Loader2 role="img" aria-label="loading" className="h-8 w-8 animate-spin text-primary" />
           <p className="text-sm text-muted-foreground">Detecting your hardware…</p>
         </div>
         <Skeleton className="h-24 w-full rounded-lg" />
