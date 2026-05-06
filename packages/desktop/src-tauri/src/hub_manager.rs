@@ -57,6 +57,7 @@ const TRAEFIK_ACME_FILE: &str = "state/traefik/acme_storage.json";
 const INTERNAL_DOCKER_CONFIG_FILE: &str = ".internal/docker-config.json";
 const HUB_DOCKER_CONFIG_FILE: &str = "docker-config.json";
 const HUB_START_HEALTHY_TIMEOUT_SECS: u64 = 180;
+const DB_START_HEALTHY_TIMEOUT_SECS: u64 = 180;
 
 #[cfg(target_os = "windows")]
 const DOCKER_DESKTOP_WINDOWS_INSTALLER_URL: &str =
@@ -1241,25 +1242,29 @@ fn is_docker_config_mount_path_error(output: &str) -> bool {
             || lower.contains("mount a directory onto a file"))
 }
 
-fn inspect_hub_state_health() -> String {
+fn inspect_container_state_health(container_name: &str) -> String {
     docker_command()
         .args([
             "inspect",
             "--format",
             "{{.State.Status}}:{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}",
-            "ci-os-hub",
+            container_name,
         ])
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default()
 }
 
-fn wait_for_hub_healthy() -> Result<(), String> {
-    let deadline = Instant::now() + Duration::from_secs(HUB_START_HEALTHY_TIMEOUT_SECS);
+fn wait_for_container_healthy(
+    container_name: &str,
+    display_name: &str,
+    timeout_secs: u64,
+) -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
     let mut last_status = String::new();
 
     while Instant::now() < deadline {
-        let status = inspect_hub_state_health();
+        let status = inspect_container_state_health(container_name);
         if !status.is_empty() {
             last_status = status.clone();
         }
@@ -1271,8 +1276,8 @@ fn wait_for_hub_healthy() -> Result<(), String> {
         let state = status.split(':').next().unwrap_or("");
         if matches!(state, "exited" | "dead") {
             return Err(format!(
-                "Hub container exited during startup (status: {}).",
-                status
+                "{} container exited during startup (status: {}).",
+                display_name, status
             ));
         }
 
@@ -1280,13 +1285,79 @@ fn wait_for_hub_healthy() -> Result<(), String> {
     }
 
     Err(format!(
-        "Timed out waiting for Hub to become healthy (last status: {}).",
+        "Timed out waiting for {} to become healthy (last status: {}).",
+        display_name,
         if last_status.is_empty() {
             "unknown"
         } else {
             &last_status
         }
     ))
+}
+
+fn wait_for_hub_healthy() -> Result<(), String> {
+    wait_for_container_healthy("ci-os-hub", "Hub", HUB_START_HEALTHY_TIMEOUT_SECS)
+}
+
+fn start_database_first(compose_path: &Path, env_path: &Path, data_dir: &Path) -> Result<(), String> {
+    let _ = append_desktop_log_for(
+        data_dir,
+        "hub.start",
+        "Starting database service first to ensure initialization before full stack startup.",
+    );
+
+    let output = docker_command()
+        .env("ENV_FILE", env_path)
+        .args([
+            "compose",
+            "--env-file",
+            &env_path.to_string_lossy(),
+            "--project-name",
+            "ci-hub",
+            "-f",
+            &compose_path.to_string_lossy(),
+            "up",
+            "-d",
+            "ci-hub-db",
+        ])
+        .output()
+        .map_err(|error| {
+            let message = format!("Failed to start database service: {}", error);
+            let _ = append_desktop_log_for(data_dir, "hub.start", &message);
+            with_view_logs_hint(message)
+        })?;
+
+    let combined_output = format_command_output(
+        &String::from_utf8_lossy(&output.stdout),
+        &String::from_utf8_lossy(&output.stderr),
+    );
+
+    if !output.status.success() {
+        let failure = if combined_output.is_empty() {
+            format!(
+                "Database bootstrap failed with exit code {:?}.",
+                output.status.code()
+            )
+        } else {
+            format!("Database bootstrap failed. {}", combined_output)
+        };
+        let _ = append_desktop_log_for(data_dir, "hub.start", &failure);
+        return Err(with_view_logs_hint(failure));
+    }
+
+    let _ = append_desktop_log_for(
+        data_dir,
+        "hub.start",
+        "Database bootstrap command succeeded. Waiting for ci-hub-db health.",
+    );
+
+    wait_for_container_healthy("ci-hub-db", "Database", DB_START_HEALTHY_TIMEOUT_SECS).map_err(
+        |error| {
+            let message = format!("Database did not become healthy after bootstrap: {}", error);
+            let _ = append_desktop_log_for(data_dir, "hub.start", &message);
+            with_view_logs_hint(message)
+        },
+    )
 }
 
 /// Start Hub using docker compose up (with port conflict resolution).
@@ -1458,6 +1529,10 @@ fn start_hub_inner(
         log_lines.push(format!("  {}={}", var, port));
     }
     let _ = append_desktop_log_for(data_dir, "hub.start", &log_lines.join("\n"));
+
+    // Bring up PostgreSQL first and wait for health so role/database initialization
+    // completes before the rest of the stack starts.
+    start_database_first(compose_path, env_path, data_dir)?;
 
     // Attempt compose up with automatic retry on transient container conflicts.
     let mut last_error = String::new();
@@ -1753,30 +1828,33 @@ fn parse_env_file(path: &Path) -> std::collections::HashMap<String, String> {
     map
 }
 
+fn get_non_empty_env_value(
+    existing: &std::collections::HashMap<String, String>,
+    key: &str,
+) -> Option<String> {
+    existing
+        .get(key)
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+}
+
 fn render_runtime_env_content(
     data_dir: &Path,
     existing: &std::collections::HashMap<String, String>,
 ) -> String {
-    let root_folder_host = existing
-        .get("ROOT_FOLDER_HOST")
-        .cloned()
+    let root_folder_host = get_non_empty_env_value(existing, "ROOT_FOLDER_HOST")
         .unwrap_or_else(|| compute_data_dir_str(data_dir));
-    let jwt_secret = existing
-        .get("JWT_SECRET")
-        .cloned()
-        .unwrap_or_else(|| generate_hex(64));
-    let postgres_password = existing
-        .get("POSTGRES_PASSWORD")
-        .cloned()
+    let jwt_secret =
+        get_non_empty_env_value(existing, "JWT_SECRET").unwrap_or_else(|| generate_hex(64));
+    let postgres_password = get_non_empty_env_value(existing, "POSTGRES_PASSWORD")
         .unwrap_or_else(|| generate_hex(32));
 
     let domain = option_env!("CI_HUB_DOMAIN").unwrap_or("companionintelligence.com");
     let cloud_url =
         option_env!("CI_HUB_CLOUD_URL").unwrap_or("https://hub.companionintelligence.com");
     let hub_version = option_env!("CI_HUB_BUILD_VERSION").unwrap_or("4.7.0");
-    let hub_image = existing
-        .get("CI_HUB_IMAGE")
-        .cloned()
+    let hub_image = get_non_empty_env_value(existing, "CI_HUB_IMAGE")
         .unwrap_or_else(|| image_for_domain(domain).to_string());
     let docker_platform = if cfg!(target_arch = "aarch64") {
         "linux/arm64"
