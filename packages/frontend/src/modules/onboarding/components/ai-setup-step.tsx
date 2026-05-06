@@ -83,8 +83,8 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
 
   if (loading) {
     return (
-      <div className="space-y-4" data-testid="ai-setup-loading">
-        <div className="flex flex-col items-center gap-3 py-4">
+      <div className="space-y-4 max-h-[62vh] overflow-y-auto pr-2" data-testid="ai-setup-loading">
+        <div className="flex flex-col items-center gap-1 py-4">
           <LoadingSpinner className="p-0" />
           <p className="text-sm text-muted-foreground">Detecting your hardware…</p>
         </div>
@@ -116,7 +116,7 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
   const availableMemoryMb = profile.resourceEstimate.availableMemoryMb;
 
   return (
-    <div className="space-y-4" data-testid="ai-setup-step">
+    <div className="space-y-4 max-h-[62vh] overflow-y-auto pr-2" data-testid="ai-setup-step">
       <HardwareProfileCard hardware={profile.hardware} tier={profile.tier} onRescan={handleRescan} rescanning={rescanning} />
 
       {!isInsufficient && (
