@@ -59,8 +59,6 @@ const DNS_POLL_MS = 10_000;
 const REPORT_DIR = process.env.REPORT_DIR ?? path.join(__dirname, '../reports');
 const SCREENSHOT_DIR = process.env.SCREENSHOT_DIR ?? path.join(__dirname, '../screenshots');
 
-if (!APP_NAME) throw new Error('APP_NAME env var is required');
-
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 async function loginHub(page: Page) {
@@ -73,7 +71,9 @@ async function loginHub(page: Page) {
 
 // ─── Test suite ───────────────────────────────────────────────────────────────
 
-test.describe(`App Explorer: ${APP_NAME}`, () => {
+test.describe(`App Explorer: ${APP_NAME || 'unset'}`, () => {
+  test.skip(!APP_NAME, 'APP_NAME env var is required to run app explorer tests');
+
   const appId = resolveAppId(APP_NAME) ?? APP_NAME.toLowerCase().replace(/\s+/g, '-');
   const config = loadAppConfig(appId);
   const reporter = new Reporter(APP_NAME, appId, { screenshotDir: SCREENSHOT_DIR, reportDir: REPORT_DIR });
