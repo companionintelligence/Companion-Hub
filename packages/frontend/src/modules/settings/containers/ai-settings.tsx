@@ -3,7 +3,7 @@ import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/Card';
 import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
 import { Brain, RefreshCw, Loader2 } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import type {
   CloudProviderInput,
@@ -31,11 +31,12 @@ export const AiSettingsContainer = () => {
   const [runtimeModels, setRuntimeModels] = useState<RuntimeModelInfo[]>([]);
   const [runtimeModelsLoading, setRuntimeModelsLoading] = useState(false);
   const [runtimeDiscoveryUnavailable, setRuntimeDiscoveryUnavailable] = useState(false);
+  const suppressBackendEffectRef = useRef(true);
 
   const fetchRuntimeModels = useCallback(async (backend: InferenceBackendType, preferredIds?: string[]) => {
     setRuntimeModelsLoading(true);
     try {
-      const runtimeRes = await apiFetch(`/api/inference/models/runtime?backend=${backend}`, { credentials: 'include' });
+      const runtimeRes = await apiFetch(`/api/inference/models/runtime?backend=${encodeURIComponent(backend)}`, { credentials: 'include' });
       if (!runtimeRes.ok) {
         throw new Error(`HTTP ${runtimeRes.status}`);
       }
@@ -73,6 +74,8 @@ export const AiSettingsContainer = () => {
         const prefData: InferencePreferencesResponse = await prefRes.json();
         preferredBackend = prefData.preferredBackend ?? data.backends.recommended;
       }
+      // fetchProfile handles initial runtime model fetch to avoid duplicate effect calls.
+      suppressBackendEffectRef.current = true;
       setSelectedBackend(preferredBackend);
 
       // Load currently tracked/pinned models
@@ -144,6 +147,10 @@ export const AiSettingsContainer = () => {
   // Refresh runtime model list whenever user changes inference backend in settings.
   useEffect(() => {
     if (!profile) return;
+    if (suppressBackendEffectRef.current) {
+      suppressBackendEffectRef.current = false;
+      return;
+    }
     fetchRuntimeModels(selectedBackend);
   }, [selectedBackend, fetchRuntimeModels, profile]);
 

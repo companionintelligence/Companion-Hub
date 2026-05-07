@@ -72,7 +72,7 @@ describe('InferenceController — preferences', () => {
     ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['mistral:latest'] } as any);
     ollamaBackend.listModels.mockResolvedValue([{ id: 'mistral:latest', name: 'mistral:latest', size: 0, loaded: true }]);
 
-    const result = await controller.getRuntimeModels('ollama');
+    const result = await controller.getRuntimeModels({ backend: 'ollama' });
 
     expect(result).toEqual({
       backend: 'ollama',
@@ -84,7 +84,7 @@ describe('InferenceController — preferences', () => {
   it('returns empty model list when selected backend is unavailable', async () => {
     ollamaBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] } as any);
 
-    const result = await controller.getRuntimeModels('ollama');
+    const result = await controller.getRuntimeModels({ backend: 'ollama' });
 
     expect(result).toEqual({
       backend: 'ollama',

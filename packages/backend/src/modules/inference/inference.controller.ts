@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Get, Patch, Post, Query, Res, UseGuards, UseInterceptors, UploadedFile } from '@nestjs/common';
+import { Body, Controller, Get, Patch, Post, Query, Res, UseGuards, UseInterceptors, UploadedFile } from '@nestjs/common';
 import type { Response } from 'express';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { InferenceRouterService } from './inference-router.service';
@@ -11,7 +11,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { AuthGuard } from '@/modules/auth/auth.guard';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import type { CloudProviderType, InferenceBackendType } from '@ci-hub/common/types';
-import { inferenceBackendSchema, UpdateInferencePreferencesBody } from './inference.dto';
+import { RuntimeModelsQueryDto, UpdateInferencePreferencesBody } from './inference.dto';
 import { OllamaBackend } from './backends/ollama.backend';
 import { VllmBackend } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
@@ -185,13 +185,8 @@ export class InferenceController {
 
   @UseGuards(AuthGuard)
   @Get('models/runtime')
-  async getRuntimeModels(@Query('backend') backendParam: string) {
-    const parsed = inferenceBackendSchema.safeParse(backendParam);
-    if (!parsed.success) {
-      throw new BadRequestException('Invalid backend query parameter');
-    }
-
-    const backend = parsed.data;
+  async getRuntimeModels(@Query() query: RuntimeModelsQueryDto) {
+    const backend = query.backend;
     const backendService = backend === 'ollama' ? this.ollamaBackend : backend === 'vllm' ? this.vllmBackend : this.lemonadeBackend;
 
     const health = await backendService.healthCheck();

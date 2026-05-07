@@ -12,3 +12,5 @@ export class UpdateInferencePreferencesBody extends createZodDto(inferencePrefer
 export const runtimeModelsQuerySchema = z.object({
   backend: inferenceBackendSchema,
 });
+
+export class RuntimeModelsQueryDto extends createZodDto(runtimeModelsQuerySchema) {}
