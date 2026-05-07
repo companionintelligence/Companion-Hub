@@ -2,11 +2,10 @@ import { defineConfig, devices } from '@playwright/test';
 
 const BACKEND_PORT = process.env.BACKEND_PORT || '3000';
 const FRONTEND_PORT = process.env.FRONTEND_PORT || '9091';
+const USE_REAL_PORTAL = process.env.E2E_USE_REAL_PORTAL === 'true';
 const PORTAL_PORT = process.env.PORTAL_PORT || '8012';
+const MOCK_PORTAL_PORT = process.env.MOCK_PORTAL_PORT || '4444';
 const SERVER_IP = process.env.SERVER_IP || 'localhost';
-
-// Resolve Portal directory (same logic as cross-domain config)
-const PORTAL_DIR = process.env.PORTAL_DIR || '';
 
 // Common env vars needed by the backend
 const backendEnv: Record<string, string> = {
@@ -22,7 +21,7 @@ const backendEnv: Record<string, string> = {
   RABBITMQ_USERNAME: process.env.RABBITMQ_USERNAME || 'companion',
   RABBITMQ_PASSWORD: process.env.RABBITMQ_PASSWORD || 'admin',
   JWT_SECRET: process.env.JWT_SECRET || 'e2e-test-secret',
-  CI_CLOUD_URL: process.env.CI_CLOUD_URL || `http://localhost:${PORTAL_PORT}`,
+  CI_CLOUD_URL: process.env.CI_CLOUD_URL || `http://localhost:${USE_REAL_PORTAL ? PORTAL_PORT : MOCK_PORTAL_PORT}`,
   DOMAIN: process.env.DOMAIN || 'ci.computer',
   LOCAL_DOMAIN: process.env.LOCAL_DOMAIN || 'ci.lan',
   DEMO_MODE: 'false',
@@ -51,7 +50,7 @@ const backendEnv: Record<string, string> = {
 
 export default defineConfig({
   testDir: './e2e',
-  testIgnore: ['**/future/**', '**/generated/**', '**/cross-domain/**'],
+  testIgnore: ['**/future/**', '**/generated/**', '**/cross-domain/**', ...(USE_REAL_PORTAL ? [] : ['**/app-store-lifecycle.spec.ts'])],
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
@@ -70,19 +69,23 @@ export default defineConfig({
     },
   ],
   webServer: [
-    // 1. CI-Portal via miniflare (wrangler dev) — real Portal, no mock
-    {
-      command: 'bash e2e/cross-domain/start-portal.sh',
-      url: `http://localhost:${PORTAL_PORT}/api/health`,
-      reuseExistingServer: !process.env.CI,
-      timeout: 120000,
-      stdout: 'pipe',
-      stderr: 'pipe',
-      env: {
-        PORTAL_DIR,
-        PORTAL_PORT,
-      },
-    },
+    ...(USE_REAL_PORTAL
+      ? [
+          {
+            // Real CI-Portal for explicit cross-repo runs only.
+            command: 'bash e2e/cross-domain/start-portal.sh',
+            url: `http://localhost:${PORTAL_PORT}/api/health`,
+            reuseExistingServer: !process.env.CI,
+            timeout: 120000,
+            stdout: 'pipe',
+            stderr: 'pipe',
+            env: {
+              PORTAL_DIR: process.env.PORTAL_DIR || '',
+              PORTAL_PORT,
+            },
+          },
+        ]
+      : []),
     {
       command: 'bash e2e/start-backend.sh',
       url: `http://localhost:${BACKEND_PORT}/api/health`,

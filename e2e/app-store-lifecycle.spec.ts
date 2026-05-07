@@ -64,6 +64,8 @@ function createTestBundle(): Buffer {
 }
 
 test.describe('App Store Lifecycle with Real R2', () => {
+  test.skip(process.env.E2E_USE_REAL_PORTAL !== 'true', 'Requires real CI-Portal (start-portal.sh)');
+
   test('ingest, publish, and fetch app from Portal store', async ({ request }) => {
     // Step 1: Upload the app bundle to Portal
     const bundle = createTestBundle();
