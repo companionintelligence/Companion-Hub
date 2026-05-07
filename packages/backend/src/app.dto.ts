@@ -37,6 +37,7 @@ export const settingsSchema = z.object({
   ciHubOrganizationSlug: z.string().trim().optional(),
   ciHubOrganizationLabel: z.string().trim().optional(),
   ciHubDeviceSlug: z.string().trim().optional(),
+  inferenceBackend: z.enum(['ollama', 'vllm', 'lemonade']).optional(),
 });
 
 const simpleAppInfoSchema = appInfoSchema.pick({

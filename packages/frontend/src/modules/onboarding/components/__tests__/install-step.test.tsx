@@ -1,10 +1,12 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { InstallStep } from '../install-step';
 import type { OnboardingApp } from '../../helpers/types';
 
+const mockApiFetch = vi.fn();
+
 vi.mock('@/lib/api-fetch', () => ({
-  apiFetch: vi.fn(),
+  apiFetch: (...args: unknown[]) => mockApiFetch(...args),
 }));
 
 vi.mock('@tanstack/react-query', () => ({
@@ -34,6 +36,7 @@ describe('InstallStep', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockApiFetch.mockResolvedValue({ ok: true, json: async () => ({}) });
   });
 
   it('renders all apps in queued state initially', () => {
@@ -104,5 +107,30 @@ describe('InstallStep', () => {
 
     expect(await screen.findByText('No apps selected for installation.')).toBeInTheDocument();
     expect(screen.queryByText(/Installing 1 of 0/)).not.toBeInTheDocument();
+  });
+
+  it('persists selected backend preference during AI setup', async () => {
+    render(
+      <InstallStep
+        apps={[]}
+        onComplete={onComplete}
+        aiSetupConfig={{
+          selectedModels: [],
+          backend: 'vllm',
+          cloudProviders: [],
+          skipped: false,
+        }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(mockApiFetch).toHaveBeenCalledWith(
+        '/api/inference/preferences',
+        expect.objectContaining({
+          method: 'PATCH',
+          body: JSON.stringify({ backend: 'vllm' }),
+        }),
+      );
+    });
   });
 });

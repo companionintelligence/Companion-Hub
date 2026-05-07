@@ -3,12 +3,17 @@ import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/Card';
 import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
 import { Brain, RefreshCw, Loader2 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
-import type { CloudProviderInput, HardwareProfileResponse } from '@/modules/onboarding/helpers/ai-setup-types';
+import type {
+  CloudProviderInput,
+  HardwareProfileResponse,
+  InferencePreferencesResponse,
+  RuntimeModelInfo,
+  RuntimeModelsResponse,
+} from '@/modules/onboarding/helpers/ai-setup-types';
 import type { CloudProviderType, InferenceBackendType } from '@ci-hub/common/types';
 import { HardwareProfileCard } from '@/modules/onboarding/components/ai-setup/hardware-profile-card';
-import { ModelSelectionCard } from '@/modules/onboarding/components/ai-setup/model-selection-card';
 import { BackendSelectionCard } from '@/modules/onboarding/components/ai-setup/backend-selection-card';
 import { CloudProviderCard } from '@/modules/onboarding/components/ai-setup/cloud-provider-card';
 import { ResourceSummaryBar } from '@/modules/onboarding/components/ai-setup/resource-summary-bar';
@@ -23,6 +28,35 @@ export const AiSettingsContainer = () => {
   const [selectedBackend, setSelectedBackend] = useState<InferenceBackendType>('ollama');
   const [cloudProviders, setCloudProviders] = useState<CloudProviderInput[]>([]);
   const [pinnedModelIds, setPinnedModelIds] = useState<Set<string>>(new Set());
+  const [runtimeModels, setRuntimeModels] = useState<RuntimeModelInfo[]>([]);
+  const [runtimeModelsLoading, setRuntimeModelsLoading] = useState(false);
+  const [runtimeDiscoveryUnavailable, setRuntimeDiscoveryUnavailable] = useState(false);
+
+  const fetchRuntimeModels = useCallback(async (backend: InferenceBackendType, preferredIds?: string[]) => {
+    setRuntimeModelsLoading(true);
+    try {
+      const runtimeRes = await apiFetch(`/api/inference/models/runtime?backend=${backend}`, { credentials: 'include' });
+      if (!runtimeRes.ok) {
+        throw new Error(`HTTP ${runtimeRes.status}`);
+      }
+
+      const runtimeData: RuntimeModelsResponse = await runtimeRes.json();
+      const modelIds = new Set(runtimeData.models.map((model) => model.id));
+
+      setRuntimeModels(runtimeData.models);
+      setRuntimeDiscoveryUnavailable(runtimeData.discoveryUnavailable);
+      setSelectedModelIds((prev) => {
+        const source = preferredIds ?? prev;
+        return source.filter((id) => modelIds.has(id));
+      });
+    } catch {
+      setRuntimeModels([]);
+      setRuntimeDiscoveryUnavailable(true);
+      setSelectedModelIds([]);
+    } finally {
+      setRuntimeModelsLoading(false);
+    }
+  }, []);
 
   const fetchProfile = async (isRescan = false) => {
     if (!isRescan) setLoading(true);
@@ -33,7 +67,16 @@ export const AiSettingsContainer = () => {
       const data: HardwareProfileResponse = await res.json();
       setProfile(data);
 
+      let preferredBackend = data.backends.recommended;
+      const prefRes = await apiFetch('/api/inference/preferences', { credentials: 'include' });
+      if (prefRes.ok) {
+        const prefData: InferencePreferencesResponse = await prefRes.json();
+        preferredBackend = prefData.preferredBackend ?? data.backends.recommended;
+      }
+      setSelectedBackend(preferredBackend);
+
       // Load currently tracked/pinned models
+      let trackedSelectedIds: string[] = [];
       const trackedRes = await apiFetch('/api/inference/models/tracked', { credentials: 'include' });
       if (trackedRes.ok) {
         const tracked = await trackedRes.json();
@@ -48,17 +91,12 @@ export const AiSettingsContainer = () => {
           }
         }
         setPinnedModelIds(pinned);
-        // If we have tracked models, use those; otherwise use recommended
-        if (selectedIds.length > 0) {
-          setSelectedModelIds(selectedIds);
-        } else {
-          setSelectedModelIds(data.recommendedModels.map((m) => m.id));
-        }
+        trackedSelectedIds = selectedIds;
       } else {
-        setSelectedModelIds(data.recommendedModels.map((m) => m.id));
+        trackedSelectedIds = [];
       }
 
-      setSelectedBackend(data.backends.recommended);
+      await fetchRuntimeModels(preferredBackend, trackedSelectedIds);
 
       // Load configured cloud providers
       const cloudRes = await apiFetch('/api/inference/cloud-providers', { credentials: 'include' });
@@ -103,9 +141,25 @@ export const AiSettingsContainer = () => {
     setSelectedModelIds((prev) => (prev.includes(modelId) ? prev.filter((id) => id !== modelId) : [...prev, modelId]));
   };
 
+  // Refresh runtime model list whenever user changes inference backend in settings.
+  useEffect(() => {
+    if (!profile) return;
+    fetchRuntimeModels(selectedBackend);
+  }, [selectedBackend, fetchRuntimeModels, profile]);
+
   const handleSave = async () => {
     setSaving(true);
     try {
+      const backendRes = await apiFetch('/api/inference/preferences', {
+        method: 'PATCH',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ backend: selectedBackend }),
+      });
+      if (!backendRes.ok) {
+        throw new Error(`Failed to save preferred backend: HTTP ${backendRes.status}`);
+      }
+
       // Save cloud providers — for already-configured providers (masked key),
       // always persist enabled state; for new/changed keys, send the full config.
       for (const cp of cloudProviders) {
@@ -238,13 +292,49 @@ export const AiSettingsContainer = () => {
 
           {!isInsufficient && (
             <>
-              <ModelSelectionCard
-                tier={profile.tier}
-                recommendedModels={profile.recommendedModels}
-                availableModels={profile.availableModels}
-                selectedModelIds={selectedModelIds}
-                onToggleModel={handleToggleModel}
-              />
+              <Card>
+                <CardContent className="p-4">
+                  <h3 className="text-sm font-semibold mb-1">Runtime Models</h3>
+                  <p className="text-xs text-muted-foreground mb-3">Settings fetch models directly from the selected inference backend at runtime.</p>
+
+                  {runtimeModelsLoading && <p className="text-xs text-muted-foreground">Loading runtime models…</p>}
+
+                  {!runtimeModelsLoading && runtimeDiscoveryUnavailable && (
+                    <p className="text-xs text-amber-600">Runtime model discovery unavailable for the selected inference backend.</p>
+                  )}
+
+                  {!runtimeModelsLoading && !runtimeDiscoveryUnavailable && runtimeModels.length === 0 && (
+                    <p className="text-xs text-muted-foreground">No runtime models found for the selected inference backend.</p>
+                  )}
+
+                  {!runtimeModelsLoading && runtimeModels.length > 0 && (
+                    <div className="space-y-2">
+                      {runtimeModels.map((model) => {
+                        const selected = selectedModelIds.includes(model.id);
+                        return (
+                          <label
+                            key={model.id}
+                            className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-muted/50 cursor-pointer transition-colors"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={selected}
+                              onChange={() => handleToggleModel(model.id)}
+                              className="rounded border-border"
+                              data-testid={`runtime-model-checkbox-${model.id}`}
+                            />
+                            <div className="flex-1 min-w-0">
+                              <div className="text-sm font-medium">{model.name}</div>
+                              <div className="text-xs text-muted-foreground">{model.id}</div>
+                            </div>
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary/10 text-primary font-medium">{model.state}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
 
               <BackendSelectionCard
                 recommended={profile.backends.recommended}

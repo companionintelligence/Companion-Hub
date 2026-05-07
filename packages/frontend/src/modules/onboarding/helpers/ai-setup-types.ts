@@ -14,6 +14,22 @@ export interface CloudProviderInput {
   enabled: boolean;
 }
 
+export interface InferencePreferencesResponse {
+  preferredBackend: InferenceBackendType | null;
+}
+
+export interface RuntimeModelInfo {
+  id: string;
+  name: string;
+  state: 'loaded' | 'unknown';
+}
+
+export interface RuntimeModelsResponse {
+  backend: InferenceBackendType;
+  discoveryUnavailable: boolean;
+  models: RuntimeModelInfo[];
+}
+
 /** Response shape from GET /api/inference/onboarding-profile */
 export interface HardwareProfileResponse {
   hardware: HardwareProfile;
