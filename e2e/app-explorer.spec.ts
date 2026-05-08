@@ -46,7 +46,7 @@ import { exploreApp } from './lib/ai-explorer';
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
-const APP_NAME = process.env.APP_NAME ?? '';
+const APP_NAME = (process.env.APP_NAME ?? '').trim();
 const HUB_URL = process.env.HUB_URL ?? 'http://localhost:9091';
 const TEST_EMAIL = process.env.TEST_EMAIL ?? 'test@ci.computer';
 const TEST_PASSWORD = process.env.TEST_PASSWORD ?? 'testpassword123';
@@ -58,8 +58,6 @@ const DNS_POLL_MS = 10_000;
 
 const REPORT_DIR = process.env.REPORT_DIR ?? path.join(__dirname, '../reports');
 const SCREENSHOT_DIR = process.env.SCREENSHOT_DIR ?? path.join(__dirname, '../screenshots');
-
-if (!APP_NAME) throw new Error('APP_NAME env var is required');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -73,15 +71,37 @@ async function loginHub(page: Page) {
 
 // ─── Test suite ───────────────────────────────────────────────────────────────
 
-test.describe(`App Explorer: ${APP_NAME}`, () => {
-  const appId = resolveAppId(APP_NAME) ?? APP_NAME.toLowerCase().replace(/\s+/g, '-');
-  const config = loadAppConfig(appId);
-  const reporter = new Reporter(APP_NAME, appId, { screenshotDir: SCREENSHOT_DIR, reportDir: REPORT_DIR });
+test.describe(`App Explorer: ${APP_NAME || 'unset'}`, () => {
+  test.skip(!APP_NAME, 'APP_NAME env var is required to run app explorer tests');
 
-  if (config?.version) reporter.report.version = config.version;
+  let appId = '';
+  let config: ReturnType<typeof loadAppConfig>;
+  let reporter: Reporter;
+
+  const getCtx = () => {
+    if (!appId || !reporter) {
+      throw new Error('App Explorer context not initialized');
+    }
+    return { appId, config, reporter };
+  };
+
+  test.beforeAll(() => {
+    if (!APP_NAME) {
+      return;
+    }
+
+    appId = resolveAppId(APP_NAME) ?? APP_NAME.toLowerCase().replace(/\s+/g, '-');
+    config = loadAppConfig(appId);
+    reporter = new Reporter(APP_NAME, appId, { screenshotDir: SCREENSHOT_DIR, reportDir: REPORT_DIR });
+
+    if (config?.version) {
+      reporter.report.version = config.version;
+    }
+  });
 
   // ── 1 · Install ─────────────────────────────────────────────────────────────
   test('1. Install app from hub store', async ({ page }) => {
+    const { appId, config, reporter } = getCtx();
     await loginHub(page);
 
     if (!config) {
@@ -112,6 +132,7 @@ test.describe(`App Explorer: ${APP_NAME}`, () => {
 
   // ── 2 · DNS wait + load ──────────────────────────────────────────────────────
   test('2. Wait for app to become reachable', async ({ page }) => {
+    const { appId, reporter } = getCtx();
     const appUrl = (reporter.report.steps.install as { appUrl?: string })?.appUrl ?? `https://${appId}.${APP_DOMAIN}`;
     reporter.step('dns', { status: 'running', appUrl });
 
@@ -162,6 +183,7 @@ test.describe(`App Explorer: ${APP_NAME}`, () => {
 
   // ── 3 · Auth ─────────────────────────────────────────────────────────────────
   test('3. Create account / log in', async ({ page }) => {
+    const { appId, reporter } = getCtx();
     const appUrl = (reporter.report.steps.install as { appUrl?: string })?.appUrl ?? `https://${appId}.${APP_DOMAIN}`;
 
     await page.goto(appUrl, { timeout: 20_000, waitUntil: 'domcontentloaded' });
@@ -183,6 +205,7 @@ test.describe(`App Explorer: ${APP_NAME}`, () => {
 
   // ── 4 · Explore ──────────────────────────────────────────────────────────────
   test('4. Explore app', async ({ context }) => {
+    const { appId, reporter } = getCtx();
     const appUrl = (reporter.report.steps.install as { appUrl?: string })?.appUrl ?? `https://${appId}.${APP_DOMAIN}`;
     const authMethod = (reporter.report.steps.auth as { method?: string })?.method ?? 'unknown';
 
@@ -207,6 +230,10 @@ test.describe(`App Explorer: ${APP_NAME}`, () => {
 
   // ── Finalise ─────────────────────────────────────────────────────────────────
   test.afterAll(async () => {
+    if (!reporter) {
+      return;
+    }
+
     reporter.finalise();
     const reportPath = reporter.write();
     reporter.writeFixRequest(reportPath);
