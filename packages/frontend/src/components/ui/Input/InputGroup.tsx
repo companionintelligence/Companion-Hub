@@ -28,7 +28,7 @@ export const InputGroup = React.forwardRef<HTMLInputElement, InputGroupProps>(
       if (!groupSuffix) return null;
       if (typeof groupSuffix === 'string') {
         return (
-          <div className="flex shrink-0 items-center whitespace-nowrap rounded-r-md border border-l-0 border-input bg-muted px-3 text-sm text-muted-foreground">
+          <div className="flex max-w-[50%] min-w-0 items-center whitespace-normal break-all rounded-r-md border border-l-0 border-input bg-muted px-3 py-1 text-sm leading-tight text-muted-foreground">
             {groupSuffix}
           </div>
         );
