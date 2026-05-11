@@ -10,6 +10,10 @@ import { ModelRegistryService } from '../model-registry.service';
 import { ModelPullerService } from '../model-puller.service';
 import { CloudFallbackService } from '../cloud-fallback.service';
 import type { HardwareProfile, InferenceStatus } from '@ci-hub/common/types';
+import { ConfigurationService } from '@/core/config/configuration.service';
+import { OllamaBackend } from '../backends/ollama.backend';
+import { VllmBackend } from '../backends/vllm.backend';
+import { LemonadeBackend } from '../backends/lemonade.backend';
 
 describe('InferenceController — onboarding-profile', () => {
   let controller: InferenceController;
@@ -68,6 +72,10 @@ describe('InferenceController — onboarding-profile', () => {
         { provide: ModelRegistryService, useValue: mock<ModelRegistryService>() },
         { provide: ModelPullerService, useValue: mock<ModelPullerService>() },
         { provide: CloudFallbackService, useValue: mock<CloudFallbackService>() },
+        { provide: ConfigurationService, useValue: mock<ConfigurationService>() },
+        { provide: OllamaBackend, useValue: mock<OllamaBackend>() },
+        { provide: VllmBackend, useValue: mock<VllmBackend>() },
+        { provide: LemonadeBackend, useValue: mock<LemonadeBackend>() },
         { provide: LoggerService, useValue: mock<LoggerService>() },
       ],
     }).compile();

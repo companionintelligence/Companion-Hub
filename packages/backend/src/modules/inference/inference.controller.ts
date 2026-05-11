@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, Res, UseGuards, UseInterceptors, UploadedFile } from '@nestjs/common';
+import { Body, Controller, Get, Patch, Post, Query, Res, UseGuards, UseInterceptors, UploadedFile } from '@nestjs/common';
 import type { Response } from 'express';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { InferenceRouterService } from './inference-router.service';
@@ -9,7 +9,12 @@ import { ModelPullerService } from './model-puller.service';
 import { CloudFallbackService } from './cloud-fallback.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AuthGuard } from '@/modules/auth/auth.guard';
+import { ConfigurationService } from '@/core/config/configuration.service';
 import type { CloudProviderType, InferenceBackendType } from '@ci-hub/common/types';
+import { RuntimeModelsQueryDto, UpdateInferencePreferencesBody } from './inference.dto';
+import { OllamaBackend } from './backends/ollama.backend';
+import { VllmBackend } from './backends/vllm.backend';
+import { LemonadeBackend } from './backends/lemonade.backend';
 
 /**
  * Inference controller — exposes OpenAI-compatible inference endpoints.
@@ -24,6 +29,10 @@ export class InferenceController {
     private readonly modelRegistry: ModelRegistryService,
     private readonly modelPuller: ModelPullerService,
     private readonly cloudFallback: CloudFallbackService,
+    private readonly configurationService: ConfigurationService,
+    private readonly ollamaBackend: OllamaBackend,
+    private readonly vllmBackend: VllmBackend,
+    private readonly lemonadeBackend: LemonadeBackend,
     private readonly logger: LoggerService,
   ) {}
 
@@ -161,6 +170,46 @@ export class InferenceController {
   }
 
   // ─── Management Endpoints ─────────────────────────────────────────────
+
+  @UseGuards(AuthGuard)
+  @Get('preferences')
+  async getPreferences() {
+    return this.configurationService.getInferencePreferences();
+  }
+
+  @UseGuards(AuthGuard)
+  @Patch('preferences')
+  async updatePreferences(@Body() body: UpdateInferencePreferencesBody) {
+    return this.configurationService.setInferencePreferences(body.backend);
+  }
+
+  @UseGuards(AuthGuard)
+  @Get('models/runtime')
+  async getRuntimeModels(@Query() query: RuntimeModelsQueryDto) {
+    const backend = query.backend;
+    const backendService = backend === 'ollama' ? this.ollamaBackend : backend === 'vllm' ? this.vllmBackend : this.lemonadeBackend;
+
+    const health = await backendService.healthCheck();
+    if (!health.running || !health.healthy) {
+      return {
+        backend,
+        discoveryUnavailable: true,
+        models: [],
+      };
+    }
+
+    const models = await backendService.listModels();
+
+    return {
+      backend,
+      discoveryUnavailable: false,
+      models: models.map((model) => ({
+        id: model.id,
+        name: model.name,
+        state: model.loaded ? 'loaded' : 'unknown',
+      })),
+    };
+  }
 
   @UseGuards(AuthGuard)
   @Get('status')

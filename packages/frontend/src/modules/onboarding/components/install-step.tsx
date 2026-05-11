@@ -66,6 +66,21 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
 
       // ─── AI Setup Phase ───────────────────────────────────────────────
       if (aiSetupConfig && !aiSetupConfig.skipped) {
+        // Persist selected backend preference for future settings loads.
+        try {
+          const preferenceRes = await apiFetch('/api/inference/preferences', {
+            method: 'PATCH',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ backend: aiSetupConfig.backend }),
+          });
+          if (!preferenceRes.ok) {
+            setAiPhase((prev) => ({ ...prev, error: `Failed to save preferred backend: HTTP ${preferenceRes.status}` }));
+          }
+        } catch {
+          // Non-fatal — do not block onboarding install progress
+        }
+
         // Configure cloud providers
         if (aiSetupConfig.cloudProviders.length > 0) {
           setAiPhase((prev) => ({ ...prev, status: 'configuring-cloud' }));

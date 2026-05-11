@@ -5,6 +5,7 @@ import { APP_DATA_DIR, APP_DIR, ARCHITECTURES, DATA_DIR } from '@/common/constan
 import { TranslatableError } from '@/common/error/translatable-error';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
+import type { InferenceBackendType } from '@ci-hub/common/types';
 import dotenv from 'dotenv';
 import { z } from 'zod';
 import { LOG_LEVEL_ENUM, type LogLevel, LoggerService } from '../logger/logger.service';
@@ -96,14 +97,20 @@ export class ConfigurationService {
     const { NODE_ENV } = process.env;
 
     // Load settings.json manually to get credentials, bypassing .env
-    let settingsCreds = { ciHubApiKey: null, ciHubOrganizationId: null };
+    let settingsValues: { ciHubApiKey: string | null; ciHubOrganizationId: string | null; inferenceBackend: InferenceBackendType | undefined } = {
+      ciHubApiKey: null,
+      ciHubOrganizationId: null,
+      inferenceBackend: undefined,
+    };
     try {
       const settingsPath = path.join(DATA_DIR, 'state', 'settings.json');
       if (fs.existsSync(settingsPath)) {
-        const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-        settingsCreds = {
+        const parsed = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+        const settings = settingsSchema.partial().parse(parsed);
+        settingsValues = {
           ciHubApiKey: settings.ciHubApiKey || null,
           ciHubOrganizationId: settings.ciHubOrganizationId || null,
+          inferenceBackend: settings.inferenceBackend,
         };
       }
     } catch (_e) {
@@ -156,6 +163,7 @@ export class ConfigurationService {
         maxBackups: env.data.MAX_BACKUPS,
         themeBase: env.data.THEME_BASE,
         themeColor: env.data.THEME_COLOR,
+        inferenceBackend: settingsValues.inferenceBackend,
         experimental: {
           insecureCookie: env.data.EXPERIMENTAL_INSECURE_COOKIE,
         },
@@ -163,8 +171,8 @@ export class ConfigurationService {
       domain: env.data.DOMAIN,
       localDomain: env.data.LOCAL_DOMAIN,
       ciCloudUrl: env.data.CI_CLOUD_URL,
-      ciHubOrganizationId: settingsCreds.ciHubOrganizationId,
-      ciHubApiKey: settingsCreds.ciHubApiKey,
+      ciHubOrganizationId: settingsValues.ciHubOrganizationId,
+      ciHubApiKey: settingsValues.ciHubApiKey,
       architecture: env.data.ARCHITECTURE,
       demoMode: env.data.DEMO_MODE,
       rootFolderHost: env.data.ROOT_FOLDER_HOST,
@@ -205,17 +213,26 @@ export class ConfigurationService {
 
       // Update in-memory config for runtime changes
       if (settings.ciHubApiKey) {
-        // @ts-expect-error
-        this.config.ciHubApiKey = settings.ciHubApiKey;
+        (this.config as Record<string, unknown>).ciHubApiKey = settings.ciHubApiKey;
       }
       if (settings.ciHubOrganizationId) {
-        // @ts-expect-error
-        this.config.ciHubOrganizationId = settings.ciHubOrganizationId;
+        (this.config as Record<string, unknown>).ciHubOrganizationId = settings.ciHubOrganizationId;
       }
     } catch (error) {
       this.logger.error('Failed to set user settings', error);
       throw new InternalServerErrorException('Failed to set user settings');
     }
+  }
+
+  public getInferencePreferences() {
+    return {
+      preferredBackend: this.config.userSettings.inferenceBackend ?? null,
+    };
+  }
+
+  public async setInferencePreferences(backend: InferenceBackendType) {
+    await this.setUserSettings({ inferenceBackend: backend });
+    return this.getInferencePreferences();
   }
 
   /**
