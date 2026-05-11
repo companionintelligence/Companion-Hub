@@ -12,7 +12,7 @@ import type {
   RuntimeModelInfo,
   RuntimeModelsResponse,
 } from '@/modules/onboarding/helpers/ai-setup-types';
-import type { CloudProviderType, InferenceBackendType } from '@ci-hub/common/types';
+import type { CloudProviderType, InferenceBackendType, TrackedModel } from '@ci-hub/common/types';
 import { HardwareProfileCard } from '@/modules/onboarding/components/ai-setup/hardware-profile-card';
 import { BackendSelectionCard } from '@/modules/onboarding/components/ai-setup/backend-selection-card';
 import { CloudProviderCard } from '@/modules/onboarding/components/ai-setup/cloud-provider-card';
@@ -28,12 +28,44 @@ export const AiSettingsContainer = () => {
   const [selectedBackend, setSelectedBackend] = useState<InferenceBackendType>('ollama');
   const [cloudProviders, setCloudProviders] = useState<CloudProviderInput[]>([]);
   const [pinnedModelIds, setPinnedModelIds] = useState<Set<string>>(new Set());
+  const [trackedModels, setTrackedModels] = useState<Record<string, TrackedModel>>({});
   const [runtimeModels, setRuntimeModels] = useState<RuntimeModelInfo[]>([]);
   const [runtimeModelsLoading, setRuntimeModelsLoading] = useState(false);
   const [runtimeDiscoveryUnavailable, setRuntimeDiscoveryUnavailable] = useState(false);
   const suppressBackendEffectRef = useRef(true);
 
-  const fetchRuntimeModels = useCallback(async (backend: InferenceBackendType, preferredIds?: string[]) => {
+  const applyTrackedModels = useCallback((tracked: TrackedModel[]) => {
+    const trackedById = Object.fromEntries(tracked.map((model) => [model.catalogId, model]));
+    const pinned = new Set<string>();
+    const selectedIds: string[] = [];
+
+    for (const model of tracked) {
+      if (['pulling', 'pulled', 'loading', 'loaded', 'pinned'].includes(model.state)) {
+        selectedIds.push(model.catalogId);
+      }
+      if (model.state === 'pinned') {
+        pinned.add(model.catalogId);
+      }
+    }
+
+    setTrackedModels(trackedById);
+    setPinnedModelIds(pinned);
+    setSelectedModelIds(selectedIds);
+  }, []);
+
+  const fetchTrackedModels = useCallback(async () => {
+    const trackedRes = await apiFetch('/api/inference/models/tracked', { credentials: 'include' });
+    if (!trackedRes.ok) {
+      applyTrackedModels([]);
+      return [] as TrackedModel[];
+    }
+
+    const tracked: TrackedModel[] = await trackedRes.json();
+    applyTrackedModels(tracked);
+    return tracked;
+  }, [applyTrackedModels]);
+
+  const fetchRuntimeModels = useCallback(async (backend: InferenceBackendType) => {
     setRuntimeModelsLoading(true);
     try {
       const runtimeRes = await apiFetch(`/api/inference/models/runtime?backend=${encodeURIComponent(backend)}`, { credentials: 'include' });
@@ -42,18 +74,12 @@ export const AiSettingsContainer = () => {
       }
 
       const runtimeData: RuntimeModelsResponse = await runtimeRes.json();
-      const modelIds = new Set(runtimeData.models.map((model) => model.id));
 
       setRuntimeModels(runtimeData.models);
       setRuntimeDiscoveryUnavailable(runtimeData.discoveryUnavailable);
-      setSelectedModelIds((prev) => {
-        const source = preferredIds ?? prev;
-        return source.filter((id) => modelIds.has(id));
-      });
     } catch {
       setRuntimeModels([]);
       setRuntimeDiscoveryUnavailable(true);
-      setSelectedModelIds([]);
     } finally {
       setRuntimeModelsLoading(false);
     }
@@ -78,28 +104,8 @@ export const AiSettingsContainer = () => {
       suppressBackendEffectRef.current = true;
       setSelectedBackend(preferredBackend);
 
-      // Load currently tracked/pinned models
-      let trackedSelectedIds: string[] = [];
-      const trackedRes = await apiFetch('/api/inference/models/tracked', { credentials: 'include' });
-      if (trackedRes.ok) {
-        const tracked = await trackedRes.json();
-        const pinned = new Set<string>();
-        const selectedIds: string[] = [];
-        for (const model of tracked) {
-          if (model.state === 'pinned' || model.state === 'loaded' || model.state === 'pulled') {
-            selectedIds.push(model.catalogId);
-          }
-          if (model.state === 'pinned') {
-            pinned.add(model.catalogId);
-          }
-        }
-        setPinnedModelIds(pinned);
-        trackedSelectedIds = selectedIds;
-      } else {
-        trackedSelectedIds = [];
-      }
-
-      await fetchRuntimeModels(preferredBackend, trackedSelectedIds);
+      await fetchTrackedModels();
+      await fetchRuntimeModels(preferredBackend);
 
       // Load configured cloud providers
       const cloudRes = await apiFetch('/api/inference/cloud-providers', { credentials: 'include' });
@@ -154,9 +160,29 @@ export const AiSettingsContainer = () => {
     fetchRuntimeModels(selectedBackend);
   }, [selectedBackend, fetchRuntimeModels, profile]);
 
+  const hasActiveTransfers = Object.values(trackedModels).some((model) => ['pulling', 'loading', 'unloading'].includes(model.state));
+
+  useEffect(() => {
+    if (!saving && !hasActiveTransfers) return;
+
+    void fetchTrackedModels();
+    const intervalId = window.setInterval(() => {
+      void fetchTrackedModels();
+    }, 2000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [fetchTrackedModels, hasActiveTransfers, saving]);
+
   const handleSave = async () => {
     setSaving(true);
     try {
+      if (!profile) {
+        toast.error('AI profile is not loaded yet. Please retry in a moment.');
+        return;
+      }
+
       const backendRes = await apiFetch('/api/inference/preferences', {
         method: 'PATCH',
         credentials: 'include',
@@ -188,39 +214,69 @@ export const AiSettingsContainer = () => {
         }
       }
 
+      const availableModelById = new Map(profile.availableModels.map((model) => [model.id, model]));
+      const compatibleSelectedModelIds = selectedModelIds.filter((modelId) => availableModelById.get(modelId)?.backend === selectedBackend);
+      const compatiblePinnedModelIds = [...pinnedModelIds].filter((modelId) => availableModelById.get(modelId)?.backend === selectedBackend);
+      const modelOperationErrors: string[] = [];
+
       // Pull and pin newly selected models
-      for (const modelId of selectedModelIds) {
-        if (!pinnedModelIds.has(modelId)) {
+      for (const modelId of compatibleSelectedModelIds) {
+        if (compatiblePinnedModelIds.includes(modelId)) {
+          continue;
+        }
+
+        try {
           const pullRes = await apiFetch('/api/inference/models/pull', {
             method: 'POST',
             credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ modelId }),
           });
-          if (pullRes.ok) {
-            await apiFetch('/api/inference/models/pin', {
-              method: 'POST',
-              credentials: 'include',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ modelId }),
-            });
-          }
-        }
-      }
 
-      // Unpin models that were deselected
-      for (const modelId of pinnedModelIds) {
-        if (!selectedModelIds.includes(modelId)) {
-          await apiFetch('/api/inference/models/unpin', {
+          if (!pullRes.ok) {
+            modelOperationErrors.push(`Failed to pull ${modelId}: HTTP ${pullRes.status}`);
+            continue;
+          }
+
+          const pinRes = await apiFetch('/api/inference/models/pin', {
             method: 'POST',
             credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ modelId }),
           });
+
+          if (!pinRes.ok) {
+            modelOperationErrors.push(`Failed to pin ${modelId}: HTTP ${pinRes.status}`);
+          }
+        } catch (e) {
+          modelOperationErrors.push(`Failed to pull/pin ${modelId}: ${(e as Error).message}`);
         }
       }
 
-      toast.success('AI settings saved');
+      // Unpin models that were deselected
+      for (const modelId of compatiblePinnedModelIds) {
+        if (!compatibleSelectedModelIds.includes(modelId)) {
+          try {
+            const unpinRes = await apiFetch('/api/inference/models/unpin', {
+              method: 'POST',
+              credentials: 'include',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ modelId }),
+            });
+            if (!unpinRes.ok) {
+              modelOperationErrors.push(`Failed to unpin ${modelId}: HTTP ${unpinRes.status}`);
+            }
+          } catch (e) {
+            modelOperationErrors.push(`Failed to unpin ${modelId}: ${(e as Error).message}`);
+          }
+        }
+      }
+
+      if (modelOperationErrors.length > 0) {
+        toast.success(`AI settings saved with ${modelOperationErrors.length} model issue(s).`);
+      } else {
+        toast.success('AI settings saved');
+      }
       // Refresh to show updated state
       await fetchProfile(true);
     } catch (e) {
@@ -281,7 +337,8 @@ export const AiSettingsContainer = () => {
   }
 
   const isInsufficient = profile.tier === 'insufficient';
-  const selectedModels = profile.availableModels.filter((m) => selectedModelIds.includes(m.id));
+  const backendCompatibleRecommendedModels = profile.recommendedModels.filter((model) => model.backend === selectedBackend);
+  const selectedModels = profile.availableModels.filter((model) => selectedModelIds.includes(model.id) && model.backend === selectedBackend);
   const availableMemoryMb = profile.resourceEstimate.availableMemoryMb;
 
   return (
@@ -301,23 +358,26 @@ export const AiSettingsContainer = () => {
             <>
               <Card>
                 <CardContent className="p-4">
-                  <h3 className="text-sm font-semibold mb-1">Runtime Models</h3>
-                  <p className="text-xs text-muted-foreground mb-3">Settings fetch models directly from the selected inference backend at runtime.</p>
+                  <h3 className="text-sm font-semibold mb-1">Recommended Models</h3>
+                  <p className="text-xs text-muted-foreground mb-3">
+                    Select curated models optimized for your hardware tier ({profile.tier}). Saving will pull and pin selected models.
+                  </p>
 
-                  {runtimeModelsLoading && <p className="text-xs text-muted-foreground">Loading runtime models…</p>}
-
-                  {!runtimeModelsLoading && runtimeDiscoveryUnavailable && (
-                    <p className="text-xs text-amber-600">Runtime model discovery unavailable for the selected inference backend.</p>
+                  {backendCompatibleRecommendedModels.length === 0 && (
+                    <p className="text-xs text-muted-foreground">No models recommended for your hardware tier.</p>
                   )}
 
-                  {!runtimeModelsLoading && !runtimeDiscoveryUnavailable && runtimeModels.length === 0 && (
-                    <p className="text-xs text-muted-foreground">No runtime models found for the selected inference backend.</p>
-                  )}
-
-                  {!runtimeModelsLoading && runtimeModels.length > 0 && (
+                  {backendCompatibleRecommendedModels.length > 0 && (
                     <div className="space-y-2">
-                      {runtimeModels.map((model) => {
+                      {backendCompatibleRecommendedModels.map((model) => {
                         const selected = selectedModelIds.includes(model.id);
+                        const memoryMb = model.runtime.memoryFootprintMb;
+                        const trackedModel = trackedModels[model.id];
+                        const statusLabel = trackedModel
+                          ? trackedModel.state === 'pulling' && typeof trackedModel.pullProgress === 'number'
+                            ? `Downloading ${trackedModel.pullProgress}%`
+                            : trackedModel.state.charAt(0).toUpperCase() + trackedModel.state.slice(1)
+                          : null;
                         return (
                           <label
                             key={model.id}
@@ -328,14 +388,54 @@ export const AiSettingsContainer = () => {
                               checked={selected}
                               onChange={() => handleToggleModel(model.id)}
                               className="rounded border-border"
-                              data-testid={`runtime-model-checkbox-${model.id}`}
+                              data-testid={`recommended-model-checkbox-${model.id}`}
                             />
+                            <div className="flex-1 min-w-0">
+                              <div className="text-sm font-medium">{model.displayName}</div>
+                              <div className="text-xs text-muted-foreground">{model.id}</div>
+                            </div>
+                            {statusLabel && (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 font-medium">{statusLabel}</span>
+                            )}
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 font-medium">
+                              {(memoryMb / 1024).toFixed(1)}GB
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardContent className="p-4">
+                  <h3 className="text-sm font-semibold mb-1">Loaded Models</h3>
+                  <p className="text-xs text-muted-foreground mb-3">
+                    Read-only list of models currently loaded in the selected inference backend at runtime.
+                  </p>
+
+                  {runtimeModelsLoading && <p className="text-xs text-muted-foreground">Loading runtime models…</p>}
+
+                  {!runtimeModelsLoading && runtimeDiscoveryUnavailable && (
+                    <p className="text-xs text-amber-600">Runtime model discovery unavailable for the selected inference backend.</p>
+                  )}
+
+                  {!runtimeModelsLoading && !runtimeDiscoveryUnavailable && runtimeModels.length === 0 && (
+                    <p className="text-xs text-muted-foreground">No models loaded in the selected inference backend.</p>
+                  )}
+
+                  {!runtimeModelsLoading && runtimeModels.length > 0 && (
+                    <div className="space-y-2">
+                      {runtimeModels.map((model) => {
+                        return (
+                          <div key={model.id} className="flex items-center gap-3 px-3 py-2 rounded-lg bg-muted/20">
                             <div className="flex-1 min-w-0">
                               <div className="text-sm font-medium">{model.name}</div>
                               <div className="text-xs text-muted-foreground">{model.id}</div>
                             </div>
-                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary/10 text-primary font-medium">{model.state}</span>
-                          </label>
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-100 text-green-700 font-medium">{model.state}</span>
+                          </div>
                         );
                       })}
                     </div>

@@ -73,8 +73,8 @@ const profile = {
     tier: 'medium',
   },
   tier: 'medium',
-  recommendedModels: [{ id: 'm1', runtime: { memoryFootprintMb: 1024 }, requirements: { diskMb: 1000 } }],
-  availableModels: [{ id: 'm1', runtime: { memoryFootprintMb: 1024 }, requirements: { diskMb: 1000 } }],
+  recommendedModels: [{ id: 'm1', backend: 'vllm', displayName: 'Model 1', runtime: { memoryFootprintMb: 1024 }, requirements: { diskMb: 1000 } }],
+  availableModels: [{ id: 'm1', backend: 'vllm', displayName: 'Model 1', runtime: { memoryFootprintMb: 1024 }, requirements: { diskMb: 1000 } }],
   memoryBudget: {
     totalVramMb: 8192,
     totalRamMb: 16384,
@@ -113,7 +113,14 @@ describe('AiSettingsContainer', () => {
         return Promise.resolve({ ok: true, json: async () => [] });
       }
       if (url.includes('/api/inference/models/runtime?backend=')) {
-        return Promise.resolve({ ok: true, json: async () => ({ backend: 'vllm', discoveryUnavailable: false, models: [] }) });
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            backend: 'vllm',
+            discoveryUnavailable: false,
+            models: [{ id: 'llama3.2:latest', name: 'llama3.2:latest', state: 'loaded' }],
+          }),
+        });
       }
       if (url === '/api/inference/cloud-providers') {
         return Promise.resolve({ ok: true, json: async () => [] });
@@ -152,6 +159,184 @@ describe('AiSettingsContainer', () => {
           method: 'PATCH',
           body: JSON.stringify({ backend: 'lemonade' }),
         }),
+      );
+    });
+  });
+
+  it('keeps runtime models read-only', async () => {
+    render(<AiSettingsContainer />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Recommended Models')).toBeInTheDocument();
+    });
+
+    expect(screen.getByTestId('recommended-model-checkbox-m1')).toBeInTheDocument();
+    expect(screen.queryByTestId('runtime-model-checkbox-llama3.2:latest')).not.toBeInTheDocument();
+    expect(screen.getByText('Read-only list of models currently loaded in the selected inference backend at runtime.')).toBeInTheDocument();
+  });
+
+  it('keeps curated model selection independent of runtime model discovery', async () => {
+    mockApiFetch.mockImplementation((url: string) => {
+      if (url === '/api/inference/onboarding-profile') {
+        return Promise.resolve({ ok: true, json: async () => profile });
+      }
+      if (url === '/api/inference/preferences') {
+        return Promise.resolve({ ok: true, json: async () => ({ preferredBackend: 'vllm' }) });
+      }
+      if (url === '/api/inference/models/tracked') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => [
+            { catalogId: 'm1', backend: 'ollama', backendModelId: 'qwen3:8b', state: 'pinned', pinned: true, memoryUsedMb: 1024, requestCount: 0 },
+          ],
+        });
+      }
+      if (url.includes('/api/inference/models/runtime?backend=')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            backend: 'vllm',
+            discoveryUnavailable: false,
+            models: [{ id: 'llama3.2:latest', name: 'llama3.2:latest', state: 'loaded' }],
+          }),
+        });
+      }
+      if (url === '/api/inference/cloud-providers') {
+        return Promise.resolve({ ok: true, json: async () => [] });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) });
+    });
+
+    render(<AiSettingsContainer />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('recommended-model-checkbox-m1')).toBeChecked();
+    });
+  });
+
+  it('shows tracked download progress for recommended models', async () => {
+    mockApiFetch.mockImplementation((url: string) => {
+      if (url === '/api/inference/onboarding-profile') {
+        return Promise.resolve({ ok: true, json: async () => profile });
+      }
+      if (url === '/api/inference/preferences') {
+        return Promise.resolve({ ok: true, json: async () => ({ preferredBackend: 'vllm' }) });
+      }
+      if (url === '/api/inference/models/tracked') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => [
+            {
+              catalogId: 'm1',
+              backend: 'ollama',
+              backendModelId: 'qwen3:8b',
+              state: 'pulling',
+              pinned: false,
+              pullProgress: 42,
+              memoryUsedMb: 1024,
+              requestCount: 0,
+            },
+          ],
+        });
+      }
+      if (url.includes('/api/inference/models/runtime?backend=')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            backend: 'vllm',
+            discoveryUnavailable: false,
+            models: [{ id: 'llama3.2:latest', name: 'llama3.2:latest', state: 'loaded' }],
+          }),
+        });
+      }
+      if (url === '/api/inference/cloud-providers') {
+        return Promise.resolve({ ok: true, json: async () => [] });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) });
+    });
+
+    render(<AiSettingsContainer />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Downloading 42%')).toBeInTheDocument();
+    });
+  });
+
+  it('only pulls models compatible with the selected backend', async () => {
+    mockApiFetch.mockImplementation((url: string) => {
+      if (url === '/api/inference/onboarding-profile') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            ...profile,
+            recommendedModels: [
+              { id: 'm1', backend: 'vllm', displayName: 'Model 1', runtime: { memoryFootprintMb: 1024 }, requirements: { diskMb: 1000 } },
+              {
+                id: 'whisper-base',
+                backend: 'lemonade',
+                displayName: 'Whisper Base',
+                runtime: { memoryFootprintMb: 512 },
+                requirements: { diskMb: 500 },
+              },
+            ],
+            availableModels: [
+              { id: 'm1', backend: 'vllm', displayName: 'Model 1', runtime: { memoryFootprintMb: 1024 }, requirements: { diskMb: 1000 } },
+              {
+                id: 'whisper-base',
+                backend: 'lemonade',
+                displayName: 'Whisper Base',
+                runtime: { memoryFootprintMb: 512 },
+                requirements: { diskMb: 500 },
+              },
+            ],
+          }),
+        });
+      }
+      if (url === '/api/inference/preferences') {
+        return Promise.resolve({ ok: true, json: async () => ({ preferredBackend: 'vllm' }) });
+      }
+      if (url === '/api/inference/models/tracked') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => [
+            { catalogId: 'm1', backend: 'vllm', backendModelId: 'model-1', state: 'pinned', pinned: true, memoryUsedMb: 1024, requestCount: 0 },
+            {
+              catalogId: 'whisper-base',
+              backend: 'lemonade',
+              backendModelId: 'whisper-base',
+              state: 'pinned',
+              pinned: true,
+              memoryUsedMb: 512,
+              requestCount: 0,
+            },
+          ],
+        });
+      }
+      if (url.includes('/api/inference/models/runtime?backend=')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ backend: 'vllm', discoveryUnavailable: false, models: [] }),
+        });
+      }
+      if (url === '/api/inference/cloud-providers') {
+        return Promise.resolve({ ok: true, json: async () => [] });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) });
+    });
+
+    const user = userEvent.setup();
+    render(<AiSettingsContainer />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('recommended-model-checkbox-m1')).toBeChecked();
+    });
+
+    await user.click(screen.getByTestId('ai-settings-save-btn'));
+
+    await waitFor(() => {
+      expect(mockApiFetch).not.toHaveBeenCalledWith(
+        '/api/inference/models/pull',
+        expect.objectContaining({ body: JSON.stringify({ modelId: 'whisper-base' }) }),
       );
     });
   });

@@ -94,6 +94,8 @@ services:
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
       - /etc/machine-id:/etc/machine-id:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       ci_os_hub_network:
         aliases:
@@ -119,6 +121,12 @@ services:
       CI_CLOUD_URL: ${CI_CLOUD_URL:-https://hub.companionintelligence.com}
       DOMAIN: ${DOMAIN:-companionintelligence.com}
       JWT_SECRET: ${JWT_SECRET}
+      # Inference backend URLs — default to host machine via host.docker.internal.
+      # Override via OLLAMA_URL / VLLM_URL / LEMONADE_URL env vars if the backends
+      # are running elsewhere (e.g. a dedicated GPU server).
+      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
+      VLLM_URL: ${VLLM_URL:-http://host.docker.internal:8000}
+      LEMONADE_URL: ${LEMONADE_URL:-http://host.docker.internal:13305}
     labels:
       traefik.enable: true
       ci-os-hub.managed: true
