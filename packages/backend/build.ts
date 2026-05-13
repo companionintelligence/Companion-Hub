@@ -1,7 +1,14 @@
 import { build } from 'esbuild';
 import { builtinModules } from 'node:module';
+import { copyFileSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 
 const nodeExternals = builtinModules.flatMap((m) => [m, `node:${m}`]);
+
+// Copy non-TypeScript asset files
+const assetsDir = join(__dirname, 'dist/modules/app-lifecycle/data');
+mkdirSync(assetsDir, { recursive: true });
+copyFileSync(join(__dirname, 'src/modules/app-lifecycle/data/openclaw-ci-entrypoint.sh'), join(assetsDir, 'openclaw-ci-entrypoint.sh'));
 
 build({
   entryPoints: ['./dist/src/main.js'],
