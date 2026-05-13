@@ -431,6 +431,79 @@ describe('AppLifecycleService', () => {
   });
 
   // ────────────────────────────────────────────────────────────────────────
+  // Issue #498 — updateAppConfig auto-restart tests
+  // ────────────────────────────────────────────────────────────────────────
+  describe('updateAppConfig — auto-restart on settings save', () => {
+    const appUrn = 'myapp:ci-marketplace' as any;
+    const baseAppInfo = {
+      id: 'myapp',
+      port: 8080,
+      tipi_version: 1,
+      exposable: true,
+      supported_architectures: ['amd64'],
+    };
+
+    beforeEach(() => {
+      configService.getConfig.mockReturnValue({
+        isProduction: false,
+        userSettings: { localDomain: 'lan' },
+      } as any);
+      appFilesManager.getInstalledAppInfo.mockResolvedValue(baseAppInfo as any);
+      appEventsQueue.publish.mockResolvedValue({ success: true, message: 'OK' } as any);
+      appsRepository.getAppsByDomain.mockResolvedValue([]);
+      appsRepository.getAppsByLocalSubdomain.mockResolvedValue([]);
+      appsRepository.getAppsByPort.mockResolvedValue([]);
+      appsRepository.updateAppById.mockImplementation(async (_id, patch) => ({ id: 1, ...patch }) as any);
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue(null as any);
+      appsRepository.getApps.mockResolvedValue([]);
+    });
+
+    it.each(['running', 'starting', 'restarting'] as const)('triggers restartApp({ skipPull: true }) when app status is "%s"', async (status) => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status, config: {} } as any);
+      const restartSpy = vi.spyOn(service, 'restartApp').mockResolvedValue({ requestId: crypto.randomUUID() });
+
+      await service.updateAppConfig({ appUrn, form: {} });
+
+      expect(restartSpy).toHaveBeenCalledWith({ appUrn, skipPull: true });
+    });
+
+    it.each([
+      'stopped',
+      'stopping',
+      'installing',
+      'uninstalling',
+      'resetting',
+      'updating',
+      'missing',
+    ] as const)('does NOT trigger restartApp when app status is "%s"', async (status) => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status, config: {} } as any);
+      const restartSpy = vi.spyOn(service, 'restartApp').mockResolvedValue({ requestId: crypto.randomUUID() });
+
+      await service.updateAppConfig({ appUrn, form: {} });
+
+      expect(restartSpy).not.toHaveBeenCalled();
+    });
+
+    it('returns a requestId even when auto-restart fires', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'running', config: {} } as any);
+      vi.spyOn(service, 'restartApp').mockResolvedValue({ requestId: crypto.randomUUID() });
+
+      const result = await service.updateAppConfig({ appUrn, form: {} });
+
+      expect(result).toHaveProperty('requestId');
+      expect(typeof result.requestId).toBe('string');
+    });
+
+    it('does not restart when app is not found (throws before restart logic)', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue(null as any);
+      const restartSpy = vi.spyOn(service, 'restartApp').mockResolvedValue({ requestId: crypto.randomUUID() });
+
+      await expect(service.updateAppConfig({ appUrn, form: {} })).rejects.toThrow('APP_ERROR_APP_NOT_FOUND');
+      expect(restartSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  // ────────────────────────────────────────────────────────────────────────
   // Issue #390 — DB-before-SSE ordering tests
   // ────────────────────────────────────────────────────────────────────────
   describe('lifecycle state ordering (issue #390)', () => {
