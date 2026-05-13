@@ -18,9 +18,13 @@ interface IProps {
   status?: AppStatus;
 }
 
+const RUNNING_STATUSES: AppStatus[] = ['running', 'starting', 'restarting'];
+
 export const UpdateSettingsDialog: React.FC<IProps> = ({ info, config, isOpen, onClose, status }) => {
   const { t } = useTranslation();
   const formId = useId();
+
+  const isRunning = status != null && RUNNING_STATUSES.includes(status);
 
   const updateConfig = useMutation({
     ...updateAppConfigMutation(),
@@ -31,7 +35,7 @@ export const UpdateSettingsDialog: React.FC<IProps> = ({ info, config, isOpen, o
       onClose();
     },
     onSuccess: () => {
-      toast.success(t('APP_UPDATE_CONFIG_SUCCESS'));
+      toast.success(isRunning ? t('APP_UPDATE_CONFIG_SUCCESS') : t('APP_UPDATE_CONFIG_SUCCESS_STOPPED'));
     },
   });
 
@@ -49,6 +53,9 @@ export const UpdateSettingsDialog: React.FC<IProps> = ({ info, config, isOpen, o
       <DialogContent className="max-h-[85vh] flex flex-col">
         <DialogHeader>
           <DialogTitle>{t('APP_UPDATE_SETTINGS_FORM_TITLE', { name: info.id })}</DialogTitle>
+          <p className="text-sm text-muted-foreground mt-1">
+            {isRunning ? t('APP_UPDATE_SETTINGS_RESTART_HINT') : t('APP_UPDATE_SETTINGS_STOPPED_HINT')}
+          </p>
         </DialogHeader>
         <div className="flex-1 overflow-y-auto">
           <InstallForm

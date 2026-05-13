@@ -585,6 +585,15 @@ export class AppLifecycleService implements OnApplicationBootstrap {
     this.logger.info(`[Cloudflare] Config updated for ${appUrn}. Triggering state sync.`);
     await this.syncExposure();
 
+    // If the app is currently running, automatically restart it so the new
+    // environment variables take effect immediately. The restart is fire-and-
+    // forget — the config write has already succeeded at this point.
+    const runningStatuses = ['running', 'starting', 'restarting'] as const;
+    if (runningStatuses.includes(app.status as (typeof runningStatuses)[number])) {
+      this.logger.info(`App ${appUrn} is running — triggering automatic restart after config update`);
+      void this.restartApp({ appUrn, skipPull: true });
+    }
+
     return { requestId };
   }
 
