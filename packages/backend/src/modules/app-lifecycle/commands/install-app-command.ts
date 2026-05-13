@@ -24,11 +24,13 @@ import path from 'node:path';
  * is missing from the app payload.
  */
 async function getOpenclawFallbackEntrypoint(): Promise<string> {
-  const scriptPath = path.join(__dirname, '../data/openclaw-ci-entrypoint.sh');
+  // At runtime, __dirname is the bundle root (/app). The asset is placed at
+  // modules/app-lifecycle/data/ by build.ts, matching dist/ → /app layout.
+  const scriptPath = path.join(__dirname, 'modules/app-lifecycle/data/openclaw-ci-entrypoint.sh');
   try {
     return await fs.promises.readFile(scriptPath, 'utf-8');
   } catch (err) {
-    throw new Error(`Failed to load OpenClaw fallback entrypoint from ${scriptPath}: ${err}`);
+    throw new Error(`Failed to load OpenClaw fallback entrypoint from ${scriptPath}: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
@@ -207,17 +209,27 @@ export class InstallAppCommand extends AppLifecycleCommand {
           await fs.promises.copyFile(sourcePath, targetPath);
           restoredFromSource = true;
           logger.info(`[OpenClaw] Restored ci-entrypoint.sh from ${sourcePath}`);
-        } catch {
-          // Source file not found, will use fallback.
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+            // Unexpected error (e.g. permission denied, I/O error) — log it but still fall back.
+            logger.warn(
+              `[OpenClaw] Unexpected error restoring ci-entrypoint.sh from ${sourcePath}: ${
+                err instanceof Error ? err.message : String(err)
+              }. Falling back to bundled script.`,
+            );
+          }
+          // ENOENT is expected when the app payload is incomplete — proceed to fallback.
         }
 
-        if (!restoredFromSource) {
+        if (restoredFromSource) {
+          // Ensure the restored file is executable regardless of source permissions.
+          await fs.promises.chmod(targetPath, 0o755);
+        } else {
           const fallbackContent = await getOpenclawFallbackEntrypoint();
+          // mode: 0o755 sets executable permissions at write time.
           await fs.promises.writeFile(targetPath, fallbackContent, { mode: 0o755 });
           logger.warn('[OpenClaw] ci-entrypoint.sh missing from app payload. Wrote fallback script to preserve startup and Hub inference bootstrap.');
         }
-
-        await fs.promises.chmod(targetPath, 0o755);
       }
 
       emitProgress(45);
