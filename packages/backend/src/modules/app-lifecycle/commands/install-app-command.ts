@@ -18,6 +18,20 @@ import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service'
 import fs from 'node:fs';
 import path from 'node:path';
 
+/**
+ * Load the Openclaw fallback entrypoint script from file.
+ * This script is used as a last resort if the original ci-entrypoint.sh
+ * is missing from the app payload.
+ */
+async function getOpenclawFallbackEntrypoint(): Promise<string> {
+  const scriptPath = path.join(__dirname, '../data/openclaw-ci-entrypoint.sh');
+  try {
+    return await fs.promises.readFile(scriptPath, 'utf-8');
+  } catch (err) {
+    throw new Error(`Failed to load OpenClaw fallback entrypoint from ${scriptPath}: ${err}`);
+  }
+}
+
 export class InstallAppCommand extends AppLifecycleCommand {
   public async execute(appUrn: AppUrn, form: AppEventFormInput): Promise<{ success: boolean; message: string }> {
     const logger = this.moduleRef.get(LoggerService, { strict: false });
@@ -176,6 +190,35 @@ export class InstallAppCommand extends AppLifecycleCommand {
 
       logger.info(`Copying data dir for app ${appUrn}`);
       await marketplaceService.copyDataDir(appUrn, envMap);
+
+      // OpenClaw requires a custom bootstrap entrypoint at /data/ci-entrypoint.sh.
+      // Ensure the file exists even if copyDataDir was skipped or app payload was incomplete.
+      if (appName === 'openclaw') {
+        const { appInstalledDir } = appFilesManager.getAppPaths(appUrn);
+        const targetDir = path.join(containerAppDataPath, 'data');
+        const targetPath = path.join(targetDir, 'ci-entrypoint.sh');
+        const sourcePath = path.join(appInstalledDir, 'data', 'ci-entrypoint.sh');
+
+        await fs.promises.mkdir(targetDir, { recursive: true });
+
+        let restoredFromSource = false;
+        try {
+          await fs.promises.access(sourcePath);
+          await fs.promises.copyFile(sourcePath, targetPath);
+          restoredFromSource = true;
+          logger.info(`[OpenClaw] Restored ci-entrypoint.sh from ${sourcePath}`);
+        } catch {
+          // Source file not found, will use fallback.
+        }
+
+        if (!restoredFromSource) {
+          const fallbackContent = await getOpenclawFallbackEntrypoint();
+          await fs.promises.writeFile(targetPath, fallbackContent, { mode: 0o755 });
+          logger.warn('[OpenClaw] ci-entrypoint.sh missing from app payload. Wrote fallback script to preserve startup and Hub inference bootstrap.');
+        }
+
+        await fs.promises.chmod(targetPath, 0o755);
+      }
 
       emitProgress(45);
 
