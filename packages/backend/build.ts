@@ -8,7 +8,12 @@ const nodeExternals = builtinModules.flatMap((m) => [m, `node:${m}`]);
 // Copy non-TypeScript asset files
 const assetsDir = join(__dirname, 'dist/modules/app-lifecycle/data');
 mkdirSync(assetsDir, { recursive: true });
-copyFileSync(join(__dirname, 'src/modules/app-lifecycle/data/openclaw-ci-entrypoint.sh'), join(assetsDir, 'openclaw-ci-entrypoint.sh'));
+try {
+  copyFileSync(join(__dirname, 'src/modules/app-lifecycle/data/openclaw-ci-entrypoint.sh'), join(assetsDir, 'openclaw-ci-entrypoint.sh'));
+} catch (err) {
+  console.error('[Build Error] Failed to bundle OpenClaw fallback entrypoint:', err instanceof Error ? err.message : String(err));
+  process.exit(1);
+}
 
 build({
   entryPoints: ['./dist/src/main.js'],

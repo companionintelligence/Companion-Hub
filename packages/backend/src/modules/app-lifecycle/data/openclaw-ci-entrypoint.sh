@@ -2,8 +2,12 @@
 # CI Hub OpenClaw entrypoint — auto-configures the gateway to use
 # Hub-managed inference so the onboarding wizard is skipped entirely.
 #
-# Bundled with the marketplace app listing and copied into the container's
-# /data volume by the Hub install pipeline (copyDataDir).
+# Distributed via two paths:
+#   1. Marketplace app listing — preferred path; copied into /data volume
+#      by the Hub install pipeline (copyDataDir).
+#   2. Backend bundle fallback — bundled with packages/backend via build.ts
+#      and written by install-app-command.ts when the app payload is missing
+#      the file (e.g. copyDataDir was skipped because app-data already exists).
 #
 # Environment variables consumed:
 #   HUB_INFERENCE_URL          — OpenAI-compatible inference endpoint (injected by Hub)
@@ -32,9 +36,9 @@ if [ -n "${HUB_INFERENCE_URL}" ] && [ ! -f "${CONFIG_FILE}" ]; then
 
   # ── Discover models from the Hub inference API ──────────────────────────
   # Build the models JSON array by querying the Hub's OpenAI-compatible
-  # /v1/models endpoint.  Falls back to a single "auto" entry if the Hub
-  # isn't reachable yet (the gateway will still work — it just won't list
-  # individual models until the next restart).
+  # models endpoint. HUB_INFERENCE_URL already includes /v1, so this fetches
+  # ${HUB_INFERENCE_URL}/models (i.e. /v1/models). Falls back to a single
+  # "auto" entry if the Hub isn't reachable yet.
   MODELS_JSON=""
   MODELS_MAP="{}"
   if command -v node >/dev/null 2>&1; then
