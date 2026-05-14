@@ -1,13 +1,15 @@
 import { apiFetch } from '@/lib/api-fetch';
 import type { GetRandomPortResponse } from '@/api-client';
 import { getRandomPortMutation } from '@/api-client/@tanstack/react-query.gen';
+import { getAvailableDomainsQueryOptions } from '@/api-client/domains-query';
 import { Input, InputGroup } from '@/components/ui/Input';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/Select';
 import { ScrollArea } from '@/components/ui/ScrollArea';
 import { Switch } from '@/components/ui/Switch';
 import { useAppContext } from '@/context/app-context';
 import type { AppInfo, AppStatus, FormField } from '@/types/app.types';
 import type { TranslatableError } from '@/types/error.types';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import clsx from 'clsx';
 import type React from 'react';
 import { useEffect, useRef, useState } from 'react';
@@ -39,6 +41,7 @@ export type FormValues = {
   openPort: boolean;
   domain?: string;
   localSubdomain?: string;
+  publicDomain?: string;
   isVisibleOnGuestDashboard?: boolean;
   enableAuth: boolean;
   maxBackups?: number;
@@ -91,6 +94,10 @@ export const InstallForm: React.FC<IProps> = ({
   const _watchExposedLocal = watch('exposedLocal', false);
   const watchLocalSubdomain = watch('localSubdomain', '');
   const watchExposureMode = watch('exposureMode');
+  const watchPublicDomain = watch('publicDomain', domain);
+
+  const { data: availableDomainsData } = useQuery(getAvailableDomainsQueryOptions());
+  const availableDomains = availableDomainsData?.domains ?? [];
 
   const requiredFieldNames = formFields.filter((f) => f.required && !hiddenTypes.includes(f.type)).map((f) => f.env_variable);
   const watchedRequiredValues = watch(requiredFieldNames);
@@ -148,6 +155,9 @@ export const InstallForm: React.FC<IProps> = ({
       if (!watchLocalSubdomain) {
         setValue('localSubdomain', defaultSubdomain);
       }
+      if (!initialValues?.publicDomain && domain) {
+        setValue('publicDomain', domain);
+      }
     }
   }, [
     initialValues,
@@ -161,9 +171,20 @@ export const InstallForm: React.FC<IProps> = ({
     // include the urn string itself (not the split function) so the effect
     // re-runs when the app urn changes
     info.urn,
+    initialValues?.publicDomain,
     cloudflareAvailable,
+    domain,
     tailscaleAvailable,
   ]);
+
+  useEffect(() => {
+    if (watchExposureMode !== 'cloudflare' || availableDomains.length === 0 || watchPublicDomain) {
+      return;
+    }
+
+    const defaultDomain = availableDomains.find((entry) => entry.isDefault)?.domain;
+    setValue('publicDomain', defaultDomain || domain || availableDomains[0]?.domain);
+  }, [availableDomains, domain, setValue, watchExposureMode, watchPublicDomain]);
 
   const _randomPortMutation = useMutation({
     ...getRandomPortMutation(),
@@ -192,6 +213,7 @@ export const InstallForm: React.FC<IProps> = ({
     // Determine which subdomain to check
     // If localSubdomain is empty, use the default (appName-appStoreId format)
     const subdomainToCheck = watchLocalSubdomain || info.urn.split(':')[0];
+    const selectedDomain = watchExposureMode === 'cloudflare' ? watchPublicDomain || domain : undefined;
 
     if (!subdomainToCheck) {
       setDnsAvailabilityError(null);
@@ -205,7 +227,12 @@ export const InstallForm: React.FC<IProps> = ({
     // Debounce the DNS check
     dnsCheckTimeoutRef.current = setTimeout(async () => {
       try {
-        const response = await apiFetch(`/api/cloudflare/check-dns-availability?subdomain=${encodeURIComponent(subdomainToCheck)}`, {
+        const query = new URLSearchParams({ subdomain: subdomainToCheck });
+        if (selectedDomain) {
+          query.set('domain', selectedDomain);
+        }
+
+        const response = await apiFetch(`/api/cloudflare/check-dns-availability?${query.toString()}`, {
           credentials: 'include',
         });
 
@@ -240,7 +267,7 @@ export const InstallForm: React.FC<IProps> = ({
         clearTimeout(dnsCheckTimeoutRef.current);
       }
     };
-  }, [watchLocalSubdomain, info.exposable, info.urn, isProduction, setError, clearErrors, t]);
+  }, [watchExposureMode, watchPublicDomain, domain, watchLocalSubdomain, info.exposable, info.urn, isProduction, setError, clearErrors, t]);
 
   const renderField = (field: FormField) => {
     return (
@@ -338,13 +365,35 @@ export const InstallForm: React.FC<IProps> = ({
         {/* Subdomain input — shown for cloudflare and tailscale modes */}
         {watchExposureMode !== 'local' && (
           <div className="mb-3">
+            {watchExposureMode === 'cloudflare' && availableDomains.length > 0 && (
+              <Controller
+                control={control}
+                name="publicDomain"
+                defaultValue={watchPublicDomain || domain}
+                render={({ field: { onChange, value } }) => (
+                  <Select value={value || ''} onValueChange={onChange}>
+                    <SelectTrigger className="mb-3" label={t('APP_INSTALL_FORM_PUBLIC_DOMAIN')}>
+                      <SelectValue placeholder={t('APP_INSTALL_FORM_PUBLIC_DOMAIN')} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {availableDomains.map((entry) => (
+                        <SelectItem key={entry.id} value={entry.domain}>
+                          {entry.domain}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              />
+            )}
+
             <InputGroup
               groupPrefix="https://"
               groupSuffix={
                 watchExposureMode === 'tailscale'
                   ? `.${localDomain || 'tailnet'}`
                   : orgSlug
-                    ? `-${ciHubDeviceSlug ? `${ciHubDeviceSlug}-` : ''}${orgSlug}.${domain}`
+                    ? `-${ciHubDeviceSlug ? `${ciHubDeviceSlug}-` : ''}${orgSlug}.${watchPublicDomain || domain}`
                     : `-${localDomain}`
               }
               {...register('localSubdomain')}
@@ -422,7 +471,13 @@ export const InstallForm: React.FC<IProps> = ({
       } else if (isProduction) {
         // Perform a final DNS check before submission
         try {
-          const response = await apiFetch(`/api/cloudflare/check-dns-availability?subdomain=${encodeURIComponent(formValues.localSubdomain)}`, {
+          const query = new URLSearchParams({ subdomain: formValues.localSubdomain });
+          const selectedDomain = formValues.exposureMode === 'cloudflare' ? formValues.publicDomain || domain : undefined;
+          if (selectedDomain) {
+            query.set('domain', selectedDomain);
+          }
+
+          const response = await apiFetch(`/api/cloudflare/check-dns-availability?${query.toString()}`, {
             credentials: 'include',
           });
 

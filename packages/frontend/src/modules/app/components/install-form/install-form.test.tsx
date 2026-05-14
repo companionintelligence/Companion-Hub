@@ -28,6 +28,11 @@ vi.mock('@tanstack/react-query', () => ({
     mutateAsync: vi.fn().mockResolvedValue({}),
     isPending: false,
   }),
+  useQuery: () => ({
+    data: { domains: [] },
+    isLoading: false,
+  }),
+  queryOptions: (options: unknown) => options,
 }));
 
 // Mock API client if needed
