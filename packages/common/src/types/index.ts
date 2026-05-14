@@ -10,6 +10,10 @@ import {
 export { type AppUrn, zodAppUrn };
 export { PROVISIONING_PHASES, type ProvisioningPhase, DEGRADED_REASONS, type DegradedReason, type RegistrationStatus };
 export type {
+  AvailableDomain,
+  AvailableDomainsResponse,
+} from './domains.js';
+export type {
   HardwareProfile,
   HardwareTier,
   MemoryBudget,

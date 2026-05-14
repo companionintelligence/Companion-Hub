@@ -1,17 +1,7 @@
 import { queryOptions } from '@tanstack/react-query';
+import type { AvailableDomainsResponse } from '@ci-hub/common/types';
 
 import { apiFetch } from '@/lib/api-fetch';
-
-export interface AvailableDomain {
-  id: string;
-  domain: string;
-  isDefault: boolean;
-  scope?: string;
-}
-
-export interface AvailableDomainsResponse {
-  domains: AvailableDomain[];
-}
 
 export const getAvailableDomainsQueryOptions = () =>
   queryOptions({

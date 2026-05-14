@@ -3,6 +3,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { DockerService } from '../docker/docker.service';
+import type { AvailableDomain, AvailableDomainsResponse } from '@ci-hub/common/types';
 import axios, { AxiosInstance } from 'axios';
 import * as fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
@@ -184,12 +185,20 @@ export class CloudflareClientService {
     }
   }
 
-  async fetchAvailableDomains(): Promise<{
-    domains: Array<{ id: string; domain: string; isDefault: boolean; scope?: string }>;
-  }> {
+  async fetchAvailableDomains(): Promise<AvailableDomainsResponse> {
     try {
       const response = await this.client.get('domains', this.getRequestConfig());
-      const domains = Array.isArray(response.data?.domains) ? response.data.domains : [];
+      const domains: AvailableDomain[] = Array.isArray(response.data?.domains)
+        ? response.data.domains.filter(
+            (entry: unknown): entry is AvailableDomain =>
+              typeof entry === 'object' &&
+              entry !== null &&
+              typeof (entry as AvailableDomain).id === 'string' &&
+              typeof (entry as AvailableDomain).domain === 'string' &&
+              typeof (entry as AvailableDomain).isDefault === 'boolean' &&
+              (typeof (entry as AvailableDomain).scope === 'string' || typeof (entry as AvailableDomain).scope === 'undefined'),
+          )
+        : [];
 
       this.logger.debug(`Fetched ${domains.length} domain(s) from CI-Cloud`);
 
