@@ -15,15 +15,21 @@ import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import { PortManagerService } from '@/modules/network/port-manager.service';
 import { CloudflareClientService } from '@/modules/cloudflare/cloudflare-client.service';
 import type { AppUrn } from '@ci-hub/common/types';
+import { parseComposeJson } from '@ci-hub/common/schemas';
+import fs from 'node:fs';
 
 // Mock fs
 vi.mock('node:fs', async () => ({
   default: {
+    constants: {
+      F_OK: 0,
+    },
     promises: {
       mkdir: vi.fn(),
       chmod: vi.fn(),
       writeFile: vi.fn(),
       readFile: vi.fn().mockResolvedValue(''),
+      access: vi.fn().mockResolvedValue(undefined),
     },
   },
 }));
@@ -41,6 +47,9 @@ describe('InstallAppCommand — pull policy', () => {
   const appUrn = 'urn:store:test-app' as AppUrn;
 
   beforeEach(() => {
+    vi.mocked(parseComposeJson).mockReturnValue({ services: [], overrides: [] } as any);
+    vi.mocked(fs.promises.access).mockResolvedValue(undefined as any);
+
     composeArgs = [];
     dockerService = {
       composeApp: vi.fn(async (_urn: string, args: string) => {
@@ -181,5 +190,41 @@ describe('InstallAppCommand — pull policy', () => {
     expect(upCommand).toContain('--detach');
     expect(upCommand).toContain('--force-recreate');
     expect(upCommand).toContain('--remove-orphans');
+  });
+
+  it('SHOULD return friendly guidance when /dev/kfd is missing', async () => {
+    vi.mocked(parseComposeJson).mockReturnValue({
+      services: [{ name: 'comfyui', image: 'docker.io/example/comfyui:latest', devices: ['/dev/kfd:/dev/kfd'] }],
+      overrides: [],
+    } as any);
+
+    dockerService.composeApp = vi.fn(async (_urn: string, args: string) => {
+      if (args.includes('up --detach')) {
+        throw new Error(
+          'Error response from daemon: error gathering device information while adding custom device "/dev/kfd": no such file or directory',
+        );
+      }
+    });
+
+    const result = await command.execute('comfyui:store' as AppUrn, {});
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain('requires an AMD GPU with ROCm drivers');
+    expect(result.message).toContain('(/dev/kfd)');
+  });
+
+  it('SHOULD fail fast before compose up when /dev/kfd is required but missing', async () => {
+    vi.mocked(parseComposeJson).mockReturnValue({
+      services: [{ name: 'comfyui', image: 'docker.io/example/comfyui:latest', devices: ['/dev/kfd:/dev/kfd'] }],
+      overrides: [],
+    } as any);
+    vi.mocked(fs.promises.access).mockRejectedValueOnce(new Error('ENOENT'));
+
+    const result = await command.execute('comfyui:store' as AppUrn, {});
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain('requires an AMD GPU with ROCm drivers');
+    expect(result.message).toContain('(/dev/kfd)');
+    expect(composeArgs.some((a) => a.includes('up --detach'))).toBe(false);
   });
 });

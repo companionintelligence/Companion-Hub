@@ -35,6 +35,38 @@ async function getOpenclawFallbackEntrypoint(): Promise<string> {
 }
 
 export class InstallAppCommand extends AppLifecycleCommand {
+  private async assertRequiredHostDevices(appUrn: AppUrn): Promise<void> {
+    const appFilesManager = this.moduleRef.get(AppFilesManager, { strict: false });
+    const composeJson = await appFilesManager.getDockerComposeJson(appUrn);
+
+    if (!composeJson.content) {
+      return;
+    }
+
+    const { services } = parseComposeJson(composeJson.content);
+    const requiresKfd = services.some((service) =>
+      service.devices?.some((device) => {
+        if (typeof device !== 'string') {
+          return false;
+        }
+
+        return device.includes('/dev/kfd');
+      }),
+    );
+
+    if (!requiresKfd) {
+      return;
+    }
+
+    try {
+      await fs.promises.access('/dev/kfd', fs.constants.F_OK);
+    } catch {
+      throw new Error(
+        'This app requires an AMD GPU with ROCm drivers. The ROCm compute device (/dev/kfd) was not found on this machine. Verify that you have a supported AMD GPU and ROCm drivers installed before installing this app.',
+      );
+    }
+  }
+
   public async execute(appUrn: AppUrn, form: AppEventFormInput): Promise<{ success: boolean; message: string }> {
     const logger = this.moduleRef.get(LoggerService, { strict: false });
     const _config = this.moduleRef.get(ConfigurationService, { strict: false });
@@ -276,6 +308,9 @@ export class InstallAppCommand extends AppLifecycleCommand {
       } catch (_) {
         logger.warn(`No prior containers to remove for app ${appUrn}`);
       }
+
+      emitProgress(55);
+      await this.assertRequiredHostDevices(appUrn);
 
       const appInfo = await appFilesManager.getInstalledAppInfo(appUrn);
 

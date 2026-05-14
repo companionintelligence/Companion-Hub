@@ -81,9 +81,27 @@ export class AppLifecycleCommand {
 
   protected handleAppError = async (err: unknown, _appId: string, _event: string): Promise<{ success: false; message: string }> => {
     if (err instanceof Error) {
-      return { success: false, message: err.message };
+      const translatedMessage = this.translateKnownInstallError(err.message);
+      return { success: false, message: translatedMessage };
     }
 
     return { success: false, message: `An error occurred: ${String(err)}` };
   };
+
+  private translateKnownInstallError(message: string): string {
+    const normalizedMessage = message.toLowerCase();
+    const referencesKfd = normalizedMessage.includes('/dev/kfd');
+    const missingRocmDevice =
+      normalizedMessage.includes('error gathering device information') && normalizedMessage.includes('no such file or directory');
+    const blockedKfdPath = normalizedMessage.includes('file path') && normalizedMessage.includes('is not allowed');
+
+    if (referencesKfd && (missingRocmDevice || blockedKfdPath)) {
+      return (
+        'This app requires an AMD GPU with ROCm drivers. The ROCm compute device (/dev/kfd) was not found on this machine. ' +
+        'Verify that you have a supported AMD GPU and ROCm drivers installed before installing this app.'
+      );
+    }
+
+    return message;
+  }
 }
