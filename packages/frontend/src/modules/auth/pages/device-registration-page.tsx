@@ -463,13 +463,13 @@ export default function DeviceRegistrationPage() {
 
   return (
     <>
-      <h2 className="mb-4 text-center text-xl font-semibold">Device Registration Required</h2>
+      <h2 className="mb-4 text-center text-xl font-semibold">Connect this device to your account</h2>
       <p className="mb-6 text-center text-sm text-muted-foreground">
-        Enter the 6-character pairing code from{' '}
+        Enter the 6-character pairing code shown in your{' '}
         <a href={portalBaseUrl || DEFAULT_PORTAL_URL} target="_blank" rel="noopener noreferrer" className="text-primary underline hover:no-underline">
-          CI Portal
+          Companion account
         </a>{' '}
-        to register this device.
+        to claim this device and start managing it remotely.
       </p>
 
       {deviceId && (
@@ -536,11 +536,16 @@ export default function DeviceRegistrationPage() {
       </div>
 
       <p className="text-center text-xs text-muted-foreground">
-        Don&apos;t have a pairing code?{' '}
-        <a href={portalBaseUrl || DEFAULT_PORTAL_URL} target="_blank" rel="noopener noreferrer" className="text-primary underline hover:no-underline">
-          Visit CI Portal
+        Don&apos;t have an account yet?{' '}
+        <a
+          href={`${portalBaseUrl || DEFAULT_PORTAL_URL}/signup`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-primary underline hover:no-underline"
+        >
+          Create one free
         </a>{' '}
-        to create an account and add a device.
+        — it only takes a moment, and your data stays on this device.
       </p>
     </>
   );
