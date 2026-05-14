@@ -228,6 +228,26 @@ describe('InstallAppCommand — pull policy', () => {
     expect(composeArgs.some((a) => a.includes('up --detach'))).toBe(false);
   });
 
+  it('SHOULD honor architecture overrides when checking /dev/kfd preflight', async () => {
+    vi.mocked(parseComposeJson).mockReturnValue({
+      services: [{ name: 'comfyui', image: 'docker.io/example/comfyui:latest' }],
+      overrides: [
+        {
+          architecture: 'amd64',
+          services: [{ name: 'comfyui', devices: ['/dev/kfd:/dev/kfd'] }],
+        },
+      ],
+    } as any);
+    vi.mocked(fs.promises.access).mockRejectedValueOnce(new Error('ENOENT'));
+
+    const result = await command.execute('comfyui:store' as AppUrn, {});
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain('requires an AMD GPU with ROCm drivers');
+    expect(result.message).toContain('(/dev/kfd)');
+    expect(composeArgs.some((a) => a.includes('up --detach'))).toBe(false);
+  });
+
   it('SHOULD skip /dev/kfd preflight when skipRun is true', async () => {
     vi.mocked(parseComposeJson).mockReturnValue({
       services: [{ name: 'comfyui', image: 'docker.io/example/comfyui:latest', devices: ['/dev/kfd:/dev/kfd'] }],

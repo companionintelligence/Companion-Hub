@@ -13,7 +13,7 @@ import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import type { AppUrn } from '@ci-hub/common/types';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { mergeArchitectureOverrides } from '@/common/helpers/compose-helpers';
-import { AppLifecycleCommand } from './command';
+import { AppLifecycleCommand, ROCM_KFD_MISSING_MESSAGE } from './command';
 import { parseComposeJson } from '@ci-hub/common/schemas';
 import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
 import fs from 'node:fs';
@@ -36,6 +36,11 @@ async function getOpenclawFallbackEntrypoint(): Promise<string> {
 }
 
 export class InstallAppCommand extends AppLifecycleCommand {
+  private isKfdHostDevice(device: string): boolean {
+    const hostDevice = device.split(':')[0]?.trim();
+    return hostDevice === '/dev/kfd';
+  }
+
   private async assertRequiredHostDevices(appUrn: AppUrn): Promise<void> {
     const config = this.moduleRef.get(ConfigurationService, { strict: false });
     const appFilesManager = this.moduleRef.get(AppFilesManager, { strict: false });
@@ -55,7 +60,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
           return false;
         }
 
-        return device.includes('/dev/kfd');
+        return this.isKfdHostDevice(device);
       }),
     );
 
@@ -66,9 +71,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
     try {
       await fs.promises.access('/dev/kfd', fs.constants.F_OK);
     } catch {
-      throw new Error(
-        'This app requires an AMD GPU with ROCm drivers. The ROCm compute device (/dev/kfd) was not found on this machine. Verify that you have a supported AMD GPU and ROCm drivers installed before installing this app.',
-      );
+      throw new Error(ROCM_KFD_MISSING_MESSAGE);
     }
   }
 
@@ -307,13 +310,6 @@ export class InstallAppCommand extends AppLifecycleCommand {
         logger.warn(`[AppDiag] Pre-set permissions failed for ${appUrn}: ${permErr}`);
       }
 
-      emitProgress(50);
-      try {
-        await dockerService.composeApp(appUrn, 'down --rmi local --remove-orphans');
-      } catch (_) {
-        logger.warn(`No prior containers to remove for app ${appUrn}`);
-      }
-
       const appInfo = await appFilesManager.getInstalledAppInfo(appUrn);
 
       if (!appInfo) {
@@ -331,6 +327,13 @@ export class InstallAppCommand extends AppLifecycleCommand {
 
       emitProgress(55);
       await this.assertRequiredHostDevices(appUrn);
+
+      emitProgress(57);
+      try {
+        await dockerService.composeApp(appUrn, 'down --rmi local --remove-orphans');
+      } catch (_) {
+        logger.warn(`No prior containers to remove for app ${appUrn}`);
+      }
 
       emitProgress(60);
       await dockerService.composeApp(appUrn, `up --detach --force-recreate --remove-orphans ${forcePull ? '--pull always' : ''}`);

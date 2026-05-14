@@ -14,6 +14,9 @@ import Dockerode from 'dockerode';
 import { ZodError } from 'zod';
 import { fromError } from 'zod-validation-error';
 
+export const ROCM_KFD_MISSING_MESSAGE =
+  'This app requires an AMD GPU with ROCm drivers. The ROCm compute device (/dev/kfd) was not found on this machine. Verify that you have a supported AMD GPU and ROCm drivers installed before running this app.';
+
 export class AppLifecycleCommand {
   constructor(
     protected moduleRef: ModuleRef,
@@ -96,10 +99,7 @@ export class AppLifecycleCommand {
     const blockedKfdPath = normalizedMessage.includes('file path') && normalizedMessage.includes('is not allowed');
 
     if (referencesKfd && (missingRocmDevice || blockedKfdPath)) {
-      return (
-        'This app requires an AMD GPU with ROCm drivers. The ROCm compute device (/dev/kfd) was not found on this machine. ' +
-        'Verify that you have a supported AMD GPU and ROCm drivers installed before installing this app.'
-      );
+      return ROCM_KFD_MISSING_MESSAGE;
     }
 
     return message;
