@@ -257,7 +257,8 @@ export class AppHelpers {
       let subdomain = form.localSubdomain ? form.localSubdomain : `${appName}-${appStoreId}`;
       const configDomain = this.config.getConfig().domain;
       // User-selected domain from install form; falls back to current device domain.
-      let selectedDomain = form.publicDomain || envMap.get('DOMAIN') || configDomain;
+      const selectedPublicDomain = typeof form.publicDomain === 'string' && form.publicDomain.trim().length > 0 ? form.publicDomain : undefined;
+      let selectedDomain = selectedPublicDomain ?? envMap.get('DOMAIN') ?? configDomain;
 
       if (selectedDomain.endsWith(`.${configDomain}`)) {
         selectedDomain = configDomain;
