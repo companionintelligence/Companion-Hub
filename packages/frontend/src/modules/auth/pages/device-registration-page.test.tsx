@@ -70,10 +70,10 @@ describe('DeviceRegistrationPage', () => {
 
     render(<DeviceRegistrationPage />);
 
-    expect(await screen.findByRole('heading', { name: 'Device Registration Required' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Connect this device to your account' })).toBeInTheDocument();
     expect(screen.getByText('device-123')).toBeInTheDocument();
     expect(screen.getByLabelText('Pairing Code')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'CI Portal' })).toHaveAttribute('href', 'https://portal.example.com');
+    expect(screen.getByRole('link', { name: 'Companion account' })).toHaveAttribute('href', 'https://portal.example.com');
     expect(navigate).not.toHaveBeenCalled();
   });
 
@@ -113,7 +113,7 @@ describe('DeviceRegistrationPage', () => {
     render(<DeviceRegistrationPage />);
     await flushAsyncWork();
 
-    expect(screen.getByRole('heading', { name: 'Device Registration Required' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Connect this device to your account' })).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText('Pairing Code'), { target: { value: 'ABC123' } });
     fireEvent.click(screen.getByRole('button', { name: 'Register' }));
