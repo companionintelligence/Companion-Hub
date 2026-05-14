@@ -538,7 +538,7 @@ export default function DeviceRegistrationPage() {
       <p className="text-center text-xs text-muted-foreground">
         Don&apos;t have an account yet?{' '}
         <a
-          href={`${portalBaseUrl || DEFAULT_PORTAL_URL}/login`}
+          href={`${portalBaseUrl || DEFAULT_PORTAL_URL}/signup`}
           target="_blank"
           rel="noopener noreferrer"
           className="text-primary underline hover:no-underline"
