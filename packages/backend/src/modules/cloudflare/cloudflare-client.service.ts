@@ -72,6 +72,21 @@ export class CloudflareClientService {
     };
   }
 
+  private isAvailableDomain(entry: unknown): entry is AvailableDomain {
+    if (!entry || typeof entry !== 'object') {
+      return false;
+    }
+
+    const candidate = entry as Partial<AvailableDomain>;
+
+    return (
+      typeof candidate.id === 'string' &&
+      typeof candidate.domain === 'string' &&
+      typeof candidate.isDefault === 'boolean' &&
+      (typeof candidate.scope === 'string' || typeof candidate.scope === 'undefined')
+    );
+  }
+
   private async updateTunnelFiles(token: string) {
     // APP_DIR is configured to be the repo root in dev, and /app in prod
     const tunnelDir = path.join(APP_DIR, 'tunnel');
@@ -188,16 +203,8 @@ export class CloudflareClientService {
   async fetchAvailableDomains(): Promise<AvailableDomainsResponse> {
     try {
       const response = await this.client.get('domains', this.getRequestConfig());
-      const domains: AvailableDomain[] = Array.isArray(response.data?.domains)
-        ? response.data.domains.filter(
-            (entry: unknown): entry is AvailableDomain =>
-              typeof entry === 'object' &&
-              entry !== null &&
-              typeof (entry as AvailableDomain).id === 'string' &&
-              typeof (entry as AvailableDomain).domain === 'string' &&
-              typeof (entry as AvailableDomain).isDefault === 'boolean' &&
-              (typeof (entry as AvailableDomain).scope === 'string' || typeof (entry as AvailableDomain).scope === 'undefined'),
-          )
+      const domains = Array.isArray(response.data?.domains)
+        ? response.data.domains.filter((entry: unknown): entry is AvailableDomain => this.isAvailableDomain(entry))
         : [];
 
       this.logger.debug(`Fetched ${domains.length} domain(s) from CI-Cloud`);
