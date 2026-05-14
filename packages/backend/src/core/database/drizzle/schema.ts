@@ -60,6 +60,7 @@ export const app = pgTable('app', {
   enableAuth: boolean('enable_auth').default(false).notNull(),
   subnet: varchar().unique(),
   localSubdomain: varchar('local_subdomain'),
+  publicDomain: varchar('public_domain'),
   pendingRestart: boolean('pending_restart').default(false).notNull(),
   userConfigEnabled: boolean('user_config_enabled').default(true).notNull(),
   maxBackups: integer('max_backups'),

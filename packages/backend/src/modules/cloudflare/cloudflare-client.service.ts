@@ -11,6 +11,7 @@ import * as path from 'node:path';
 export interface AppInfo {
   name: string;
   subdomain: string; // Full subdomain (e.g., n8n-bdc) - used for Cloudflare public hostname
+  publicDomain?: string; // Selected public root domain for this app hostname
   localPort: number;
   protocol?: 'http' | 'https';
   hostname?: string;
@@ -180,6 +181,30 @@ export class CloudflareClientService {
         this.logger.error(`Error Response: ${JSON.stringify(error.response.data)}`);
       }
       return false;
+    }
+  }
+
+  async fetchAvailableDomains(): Promise<{
+    domains: Array<{ id: string; domain: string; isDefault: boolean; scope?: string }>;
+  }> {
+    try {
+      const response = await this.client.get('domains', this.getRequestConfig());
+      const domains = Array.isArray(response.data?.domains) ? response.data.domains : [];
+
+      this.logger.debug(`Fetched ${domains.length} domain(s) from CI-Cloud`);
+
+      return { domains };
+    } catch (error) {
+      if (error instanceof Error) {
+        this.logger.error(`Failed to fetch available domains: ${error.message}`);
+      } else {
+        this.logger.error(`Failed to fetch available domains: ${String(error)}`);
+      }
+      if (axios.isAxiosError(error) && error.response) {
+        this.logger.error(`Domain fetch error response: ${JSON.stringify(error.response.data)}`);
+      }
+
+      return { domains: [] };
     }
   }
 

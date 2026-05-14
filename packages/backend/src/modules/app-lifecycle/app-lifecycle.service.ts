@@ -223,6 +223,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       parsedForm.exposedLocal = false;
       parsedForm.enableAuth = false;
       parsedForm.domain = undefined;
+      parsedForm.publicDomain = undefined;
     }
 
     if (appInfo.force_expose && !exposed) {
@@ -276,6 +277,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       exposed: exposed ?? false,
       domain: domain ?? null,
       localSubdomain: parsedForm.localSubdomain ?? null,
+      publicDomain: parsedForm.publicDomain ?? null,
       openPort: openPort ?? false,
       exposedLocal: exposedLocal ?? !!appInfo.exposable,
       exposureMode: parsedForm.exposureMode ?? 'local',
@@ -502,6 +504,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       parsedForm.exposedLocal = false;
       parsedForm.enableAuth = false;
       parsedForm.domain = undefined;
+      parsedForm.publicDomain = undefined;
     }
 
     if (appInfo.force_expose && !exposed) {
@@ -556,6 +559,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       port: parsedForm.port ?? appInfo.port,
       domain: domain ?? null,
       localSubdomain: parsedForm.localSubdomain ?? null,
+      publicDomain: parsedForm.publicDomain ?? null,
       config: parsedForm,
       isVisibleOnGuestDashboard: parsedForm.isVisibleOnGuestDashboard ?? false,
       enableAuth: parsedForm.enableAuth ?? false,
@@ -684,7 +688,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
 
       const apps = await this.appRepository.getApps();
       const userSettings = this.config.getConfig().userSettings;
-      const publicDomain = userSettings.domain || this.config.getConfig().domain;
+      const defaultPublicDomain = userSettings.domain || this.config.getConfig().domain;
 
       type AppFromDb = Awaited<ReturnType<typeof this.appRepository.getApps>>[number];
 
@@ -695,17 +699,19 @@ export class AppLifecycleService implements OnApplicationBootstrap {
           })
           .map(async (app: AppFromDb) => {
             const subdomain = app.localSubdomain || `${app.appName}-${app.appStoreSlug}`;
+            const appPublicDomain = app.publicDomain || defaultPublicDomain;
             const orgSlug = orgInfo.slug;
             const hubSub = orgInfo.hubSubdomain;
             const deviceSlug = hubSub ? hubSub.replace(/^hub-/, '').replace(new RegExp(`-${orgSlug}$`), '') : null;
             const publicHostname =
               deviceSlug && deviceSlug !== orgSlug
-                ? `${subdomain}-${deviceSlug}-${orgSlug}.${publicDomain}`
-                : `${subdomain}-${orgSlug}.${publicDomain}`;
+                ? `${subdomain}-${deviceSlug}-${orgSlug}.${appPublicDomain}`
+                : `${subdomain}-${orgSlug}.${appPublicDomain}`;
 
             return {
               name: app.appName,
               subdomain,
+              publicDomain: appPublicDomain,
               localPort: 80,
               protocol: 'http' as const,
               hostname: 'traefik',
@@ -720,15 +726,16 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       // root domain for app hostname construction, not the Hub prefix.
       // When hubSubdomain is null (e.g. pre-migration records), the Hub entry is omitted from sync.
       const hubSub = orgInfo.hubSubdomain;
-      if (hubSub && publicDomain) {
+      if (hubSub && defaultPublicDomain) {
         const orgSlug = orgInfo.slug;
         const orgSuffix = `-${orgSlug}`;
         const deviceName = hubSub.endsWith(orgSuffix) ? hubSub.slice(0, -orgSuffix.length) : hubSub;
-        const hubHostname = `${hubSub}.${publicDomain}`;
+        const hubHostname = `${hubSub}.${defaultPublicDomain}`;
 
         exposedApps.unshift({
           name: 'OS Hub',
           subdomain: deviceName,
+          publicDomain: defaultPublicDomain,
           localPort: 80,
           protocol: 'http' as const,
           hostname: 'traefik',
@@ -736,7 +743,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
           privilegedKind: 'hub',
         });
 
-        const headscaleFqdn = buildHeadscaleTunnelFqdn(orgInfo, publicDomain);
+        const headscaleFqdn = buildHeadscaleTunnelFqdn(orgInfo, defaultPublicDomain);
         if (headscaleFqdn && isPrivateVpnEnabled()) {
           // Send only the leaf subdomain `vpn`; CI-Cloud's tunnel sync already
           // appends `-{deviceSlug}-{orgSlug}.{domain}` when building the public
@@ -747,6 +754,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
           exposedApps.splice(1, 0, {
             name: 'Headscale',
             subdomain: 'vpn',
+            publicDomain: defaultPublicDomain,
             localPort: headscaleTunnelContainerPort(),
             protocol: 'http' as const,
             hostname: 'headscale',

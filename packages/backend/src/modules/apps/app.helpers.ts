@@ -256,10 +256,11 @@ export class AppHelpers {
     if (form.exposedLocal) {
       let subdomain = form.localSubdomain ? form.localSubdomain : `${appName}-${appStoreId}`;
       const configDomain = this.config.getConfig().domain;
-      let publicDomain = envMap.get('DOMAIN') || configDomain;
+      // User-selected domain from install form; falls back to current device domain.
+      let selectedDomain = form.publicDomain || envMap.get('DOMAIN') || configDomain;
 
-      if (publicDomain.endsWith(`.${configDomain}`)) {
-        publicDomain = configDomain;
+      if (selectedDomain.endsWith(`.${configDomain}`)) {
+        selectedDomain = configDomain;
       }
 
       if (org?.slug) {
@@ -279,7 +280,7 @@ export class AppHelpers {
       if (!form.openPort) {
         isExposed = true;
         scheme = 'https';
-        publicHostname = `${subdomain}.${publicDomain}`;
+        publicHostname = `${subdomain}.${selectedDomain}`;
         publicUrl = `https://${publicHostname}`;
       }
     }

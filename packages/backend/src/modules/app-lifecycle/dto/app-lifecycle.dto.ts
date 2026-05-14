@@ -15,6 +15,7 @@ export const appFormSchema = z
       .string()
       .regex(/^[a-zA-Z0-9-]{1,63}$/)
       .optional(),
+    publicDomain: z.string().optional(),
     maxBackups: z.number().min(0).max(100).optional(),
     skipEnv: z.boolean().default(false),
     skipPull: z.boolean().default(false),
