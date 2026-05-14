@@ -227,4 +227,18 @@ describe('InstallAppCommand — pull policy', () => {
     expect(result.message).toContain('(/dev/kfd)');
     expect(composeArgs.some((a) => a.includes('up --detach'))).toBe(false);
   });
+
+  it('SHOULD skip /dev/kfd preflight when skipRun is true', async () => {
+    vi.mocked(parseComposeJson).mockReturnValue({
+      services: [{ name: 'comfyui', image: 'docker.io/example/comfyui:latest', devices: ['/dev/kfd:/dev/kfd'] }],
+      overrides: [],
+    } as any);
+    vi.mocked(fs.promises.access).mockRejectedValueOnce(new Error('ENOENT'));
+
+    const result = await command.execute('comfyui:store' as AppUrn, { skipRun: true });
+
+    expect(result.success).toBe(true);
+    expect(result.message).toContain('installed successfully (skipped run)');
+    expect(composeArgs.some((a) => a.includes('up --detach'))).toBe(false);
+  });
 });

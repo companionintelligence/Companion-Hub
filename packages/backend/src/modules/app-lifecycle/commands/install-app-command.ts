@@ -12,6 +12,7 @@ import { PortManagerService } from '@/modules/network/port-manager.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import type { AppUrn } from '@ci-hub/common/types';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
+import { mergeArchitectureOverrides } from '@/common/helpers/compose-helpers';
 import { AppLifecycleCommand } from './command';
 import { parseComposeJson } from '@ci-hub/common/schemas';
 import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
@@ -36,6 +37,7 @@ async function getOpenclawFallbackEntrypoint(): Promise<string> {
 
 export class InstallAppCommand extends AppLifecycleCommand {
   private async assertRequiredHostDevices(appUrn: AppUrn): Promise<void> {
+    const config = this.moduleRef.get(ConfigurationService, { strict: false });
     const appFilesManager = this.moduleRef.get(AppFilesManager, { strict: false });
     const composeJson = await appFilesManager.getDockerComposeJson(appUrn);
 
@@ -43,8 +45,11 @@ export class InstallAppCommand extends AppLifecycleCommand {
       return;
     }
 
-    const { services } = parseComposeJson(composeJson.content);
-    const requiresKfd = services.some((service) =>
+    const { services, overrides } = parseComposeJson(composeJson.content);
+    const architecture = config.get('architecture');
+    const mergedServices = mergeArchitectureOverrides(services, overrides, architecture);
+
+    const requiresKfd = mergedServices.some((service) =>
       service.devices?.some((device) => {
         if (typeof device !== 'string') {
           return false;
@@ -309,9 +314,6 @@ export class InstallAppCommand extends AppLifecycleCommand {
         logger.warn(`No prior containers to remove for app ${appUrn}`);
       }
 
-      emitProgress(55);
-      await this.assertRequiredHostDevices(appUrn);
-
       const appInfo = await appFilesManager.getInstalledAppInfo(appUrn);
 
       if (!appInfo) {
@@ -326,6 +328,9 @@ export class InstallAppCommand extends AppLifecycleCommand {
         emitProgress(99);
         return { success: true, message: `App ${appUrn} installed successfully (skipped run)` };
       }
+
+      emitProgress(55);
+      await this.assertRequiredHostDevices(appUrn);
 
       emitProgress(60);
       await dockerService.composeApp(appUrn, `up --detach --force-recreate --remove-orphans ${forcePull ? '--pull always' : ''}`);
