@@ -5,6 +5,7 @@
   "type": "module",
   "main": "src/index.ts",
   "scripts": {
+    "bundle": "node -e \"process.exit(0)\"",
     "test": "vitest run",
     "test:watch": "vitest"
   },

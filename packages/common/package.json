@@ -34,6 +34,7 @@
     "prepublishOnly": "npm run ci",
     "dev": "tsc --noEmit --watch --preserveWatchOutput",
     "build": "rm -rf dist && tsc && cp package.json dist/",
+    "bundle": "node -e \"process.exit(0)\"",
     "build:schemas": "tsx ./script/gen-json-schema.ts",
     "ci": "npm run build && npm run check-exports",
     "check-exports": "attw --pack . --ignore-rules=cjs-resolves-to-esm",
