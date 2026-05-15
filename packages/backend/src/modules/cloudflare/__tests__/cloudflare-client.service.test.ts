@@ -155,4 +155,26 @@ describe('CloudflareClientService', () => {
       expect(result).toBe(false);
     });
   });
+
+  describe('fetchAvailableDomains', () => {
+    it('should normalize numeric domain ids to strings', async () => {
+      mockAxiosInstance.get.mockResolvedValue({
+        data: {
+          domains: [
+            { id: 1, domain: 'example.com', isDefault: true, scope: 'org' },
+            { id: '2', domain: 'ci.computer', isDefault: false },
+          ],
+        },
+      });
+
+      const result = await service.fetchAvailableDomains();
+
+      expect(result).toEqual({
+        domains: [
+          { id: '1', domain: 'example.com', isDefault: true, scope: 'org' },
+          { id: '2', domain: 'ci.computer', isDefault: false },
+        ],
+      });
+    });
+  });
 });

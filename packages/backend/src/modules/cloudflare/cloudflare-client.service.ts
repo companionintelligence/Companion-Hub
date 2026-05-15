@@ -77,10 +77,10 @@ export class CloudflareClientService {
       return false;
     }
 
-    const candidate = entry as Partial<AvailableDomain>;
+    const candidate = entry as Partial<AvailableDomain> & { id?: string | number };
 
     return (
-      typeof candidate.id === 'string' &&
+      (typeof candidate.id === 'string' || typeof candidate.id === 'number') &&
       typeof candidate.domain === 'string' &&
       typeof candidate.isDefault === 'boolean' &&
       (typeof candidate.scope === 'string' || typeof candidate.scope === 'undefined')
@@ -204,7 +204,9 @@ export class CloudflareClientService {
     try {
       const response = await this.client.get('domains', this.getRequestConfig());
       const domains = Array.isArray(response.data?.domains)
-        ? response.data.domains.filter((entry: unknown): entry is AvailableDomain => this.isAvailableDomain(entry))
+        ? response.data.domains
+            .filter((entry: unknown): entry is AvailableDomain => this.isAvailableDomain(entry))
+            .map((entry: AvailableDomain) => ({ ...entry, id: String(entry.id) }))
         : [];
 
       this.logger.debug(`Fetched ${domains.length} domain(s) from CI-Cloud`);
