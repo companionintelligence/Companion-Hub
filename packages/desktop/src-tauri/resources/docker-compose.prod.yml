@@ -182,9 +182,14 @@ services:
     profiles:
       - cloudflare
 
-  # Headscale control server — opt-in via the `private-vpn` compose profile
-  # (scripts/start.ts and the desktop Hub merge that profile automatically
-  # whenever PRIVATE_VPN_ENABLED is not "false"). Requires a config file at
+  # --- Private VPN (Headscale + Headplane + Tailscale client) -----------------
+  # Gated by the Compose profile `private-vpn`. The desktop Hub writes
+  # `COMPOSE_PROFILES=private-vpn` into `.env` by default so Headscale,
+  # Headplane, and hub-tailscale start with the stack. Set
+  # `PRIVATE_VPN_ENABLED=false` in `.env` to drop `private-vpn` from
+  # `COMPOSE_PROFILES` and skip these services.
+  #
+  # Headscale control server — requires config under
   # ${ROOT_FOLDER_HOST}/state/headscale/config.yaml, which the backend's
   # HeadscaleService generates on boot.
   headscale:
