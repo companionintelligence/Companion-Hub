@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -504,7 +505,7 @@ pub fn get_hub_status() -> HubStatus {
 
     match (state, health) {
         ("running", "healthy") => {
-            if is_private_vpn_enabled() && !vpn_sidecars_running() {
+            if is_private_vpn_enabled() && !vpn_sidecars_ready() {
                 HubStatus::Starting
             } else {
                 HubStatus::Running
@@ -1855,6 +1856,18 @@ fn is_private_vpn_enabled() -> bool {
     private_vpn_enabled_from_map(&parse_env_file(&hub_env_path()))
 }
 
+/// Deduplicate comma-separated profile names while preserving first-seen order (stable across repeated merges).
+fn dedupe_compose_profile_tokens(tokens: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::<String>::new();
+    let mut out = Vec::new();
+    for t in tokens {
+        if seen.insert(t.clone()) {
+            out.push(t);
+        }
+    }
+    out
+}
+
 /// Ensures the `private-vpn` Compose profile is active when VPN is enabled, without dropping other profiles (e.g. `cloudflare`).
 fn merge_compose_profiles(
     existing: &std::collections::HashMap<String, String>,
@@ -1865,11 +1878,13 @@ fn merge_compose_profiles(
         .map(|s| s.as_str())
         .unwrap_or("")
         .trim();
-    let mut parts: Vec<String> = raw
+    let tokens: Vec<String> = raw
         .split(',')
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect();
+    let mut parts = dedupe_compose_profile_tokens(tokens);
+
     if vpn_on {
         if !parts.iter().any(|p| p == "private-vpn") {
             parts.push("private-vpn".into());
@@ -1880,13 +1895,19 @@ fn merge_compose_profiles(
     parts.join(",")
 }
 
-fn vpn_sidecars_running() -> bool {
+/// Headscale + hub-tailscale must be [`ServiceState::Ready`] per [`derive_service_state`]: running and either no healthcheck (`none`) or `healthy`.
+fn vpn_sidecars_ready() -> bool {
     let names = ["headscale", "hub-tailscale"];
     let states = inspect_containers(&names);
     for name in names {
         match states.get(name) {
-            Some((state, _)) if state == "running" => {}
-            _ => return false,
+            Some((state, health)) => {
+                let svc_state = derive_service_state(state.as_str(), health.as_str());
+                if !matches!(svc_state, ServiceState::Ready) {
+                    return false;
+                }
+            }
+            None => return false,
         }
     }
     true
