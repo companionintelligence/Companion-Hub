@@ -33,7 +33,14 @@ describe('CloudflareController', () => {
     });
 
     it('should delegate to CI-Cloud for non-empty subdomain', async () => {
+      cfService.checkDnsAvailability.mockResolvedValue({
+        available: true,
+        message: 'Availability check delegated to CI-Cloud',
+      });
+
       const result = await controller.checkDnsAvailability('test');
+
+      expect(cfService.checkDnsAvailability).toHaveBeenCalledWith('test', undefined);
       expect(result.available).toBe(true);
       expect(result.message).toContain('CI-Cloud');
     });
