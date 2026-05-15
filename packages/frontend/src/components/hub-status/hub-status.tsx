@@ -29,6 +29,34 @@ function getErrorMessage(err: unknown): string {
   return String(err);
 }
 
+/**
+ * Hub listens on 5002 (Docker / typical) or 3000 (some dev setups). We probe both **in parallel**
+ * with one Abort deadline each (`TAURI_HUB_HEALTH_PROBE_MS`), so one poll cycle stays bounded by ~that
+ * duration—not twice it as with sequential tries—while the outer `checkStatus` interval stays ~3s.
+ */
+const TAURI_HUB_HEALTH_PROBE_PORTS = [5002, 3000] as const;
+const TAURI_HUB_HEALTH_PROBE_MS = 4000;
+
+async function fetchFirstHealthyHubPort(): Promise<number | null> {
+  const outcomes = await Promise.all(
+    TAURI_HUB_HEALTH_PROBE_PORTS.map(async (port) => {
+      try {
+        const res = await fetch(`http://localhost:${port}/api/health`, {
+          signal: AbortSignal.timeout(TAURI_HUB_HEALTH_PROBE_MS),
+        });
+        return res.ok ? port : null;
+      } catch {
+        return null;
+      }
+    }),
+  );
+  for (let i = 0; i < TAURI_HUB_HEALTH_PROBE_PORTS.length; i++) {
+    const port = outcomes[i];
+    if (port !== null) return port;
+  }
+  return null;
+}
+
 // Tauri IPC helper
 function getTauriInvoke(): ((cmd: string, args?: Record<string, unknown>) => Promise<unknown>) | null {
   if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
@@ -319,18 +347,11 @@ export function HubStatus({ children }: HubStatusProps) {
   const shouldAutoStartWindowsHubRef = useRef(true);
 
   const checkHealthFallback = useCallback(async () => {
-    for (const port of [5002, 3000]) {
-      try {
-        const res = await fetch(`http://localhost:${port}/api/health`, {
-          signal: AbortSignal.timeout(3000),
-        });
-        if (res.ok) {
-          setStatus('Running');
-          return;
-        }
-      } catch {
-        // try next port
-      }
+    const port = await fetchFirstHealthyHubPort();
+    if (port !== null) {
+      client.setConfig({ baseUrl: `http://localhost:${port}`, credentials: 'omit' });
+      setStatus('Running');
+      return;
     }
     setStatus('Stopped');
   }, []);
@@ -373,28 +394,14 @@ export function HubStatus({ children }: HubStatusProps) {
         // are actually reachable before declaring 'Running'. This avoids a
         // flicker where children mount briefly then hide again when the
         // health-check fails.
+        // Match Docker's ci-os-hub healthcheck (`/api/health` only — not `/api/registration/status`,
+        // which can lag right after boot and wedge the loading UI).
         if (result === 'Running' && isTauriRelease) {
-          let ready = false;
-          for (const port of [5002, 3000]) {
-            try {
-              // Match Docker's ci-os-hub healthcheck (`curl -f …/api/health`). Do not
-              // additionally gate on /api/registration/status: that handler can be
-              // slow right after boot (DB + phase refresh) and caused the Tauri loading
-              // screen to stick at 100% even when the Hub was already healthy.
-              const res = await fetch(`http://localhost:${port}/api/health`, {
-                signal: AbortSignal.timeout(8000),
-              });
-              if (res.ok) {
-                client.setConfig({ baseUrl: `http://localhost:${port}`, credentials: 'omit' });
-                ready = true;
-                break;
-              }
-            } catch {
-              // try next port
-            }
+          const alivePort = await fetchFirstHealthyHubPort();
+          if (alivePort !== null) {
+            client.setConfig({ baseUrl: `http://localhost:${alivePort}`, credentials: 'omit' });
           }
-
-          setStatus(ready ? 'Running' : 'Starting');
+          setStatus(alivePort === null ? 'Starting' : 'Running');
         } else {
           setStatus(result);
         }
