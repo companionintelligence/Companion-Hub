@@ -18,6 +18,7 @@ import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
 import { Tooltip } from 'react-tooltip';
+import type { AvailableDomain } from '@ci-hub/common/types';
 import { hiddenTypes, validateAppConfig } from './form-validators';
 import { InstallFormField } from './install-form-field';
 
@@ -49,7 +50,7 @@ export type FormValues = {
 };
 
 const typeFilter = (field: FormField) => !hiddenTypes.includes(field.type);
-const EMPTY_AVAILABLE_DOMAINS: Array<{ id: string; domain: string; isDefault: boolean; scope?: string }> = [];
+const EMPTY_AVAILABLE_DOMAINS: AvailableDomain[] = [];
 
 const ConfigSection: React.FC<{ scrollable?: boolean; children: React.ReactNode }> = ({ scrollable, children }) => {
   if (scrollable) {
