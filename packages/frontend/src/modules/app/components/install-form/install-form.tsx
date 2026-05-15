@@ -362,40 +362,55 @@ export const InstallForm: React.FC<IProps> = ({
   const renderAdvancedExposureOptions = () => {
     if (!info.exposable || (!isAdvancedMode && !showAdvancedSettings)) return null;
 
+    const cloudflareSuffix = orgSlug ? `${ciHubDeviceSlug ? `${ciHubDeviceSlug}-` : ''}${orgSlug}` : localDomain;
+
     return (
       <>
         {/* Subdomain input — shown for cloudflare and tailscale modes */}
         {watchExposureMode !== 'local' && (
           <div className="mb-3">
-            {watchExposureMode === 'cloudflare' && availableDomains.length > 0 && (
-              <Controller
-                control={control}
-                name="publicDomain"
-                render={({ field: { onChange, value } }) => (
-                  <Select value={value || ''} onValueChange={onChange}>
-                    <SelectTrigger className="mb-3" label={t('APP_INSTALL_FORM_PUBLIC_DOMAIN')}>
-                      <SelectValue placeholder={t('APP_INSTALL_FORM_PUBLIC_DOMAIN')} />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {availableDomains.map((entry) => (
-                        <SelectItem key={entry.id} value={entry.domain}>
-                          {entry.domain}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                )}
-              />
-            )}
-
             <InputGroup
               groupPrefix="https://"
+              groupSuffixClassName={watchExposureMode === 'cloudflare' ? 'max-w-[55%] flex-1 basis-0 overflow-hidden' : undefined}
               groupSuffix={
-                watchExposureMode === 'tailscale'
-                  ? `.${localDomain || 'tailnet'}`
-                  : orgSlug
-                    ? `-${ciHubDeviceSlug ? `${ciHubDeviceSlug}-` : ''}${orgSlug}.${watchPublicDomain || domain}`
-                    : `-${localDomain}`
+                watchExposureMode === 'tailscale' ? (
+                  `.${localDomain || 'tailnet'}`
+                ) : availableDomains.length > 0 ? (
+                  <Controller
+                    control={control}
+                    name="publicDomain"
+                    render={({ field: { onChange, value } }) => {
+                      const prefixText = `-${cloudflareSuffix}.`;
+                      const selectedDomain = value || watchPublicDomain || domain || '';
+
+                      return (
+                        <div className="flex h-11 w-full min-w-0 overflow-hidden items-stretch rounded-r-md border border-l-0 border-input bg-muted text-sm text-muted-foreground">
+                          <div title={prefixText} className="flex min-w-0 max-w-[52%] shrink-0 items-center px-3 overflow-hidden">
+                            <span className="block w-full min-w-0 truncate">{prefixText}</span>
+                          </div>
+                          <Select value={value || ''} onValueChange={onChange}>
+                            <SelectTrigger
+                              title={selectedDomain}
+                              aria-label={t('APP_INSTALL_FORM_PUBLIC_DOMAIN')}
+                              className="h-11 min-w-0 w-0 flex-1 basis-0 rounded-r-md rounded-l-none border-0 bg-muted px-3 text-sm text-foreground shadow-none focus:ring-0 overflow-hidden gap-2 [&>span]:min-w-0 [&>span]:flex-1 [&>span]:truncate [&>span]:text-left [&>svg]:shrink-0"
+                            >
+                              <SelectValue placeholder={t('APP_INSTALL_FORM_PUBLIC_DOMAIN')} />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {availableDomains.map((entry) => (
+                                <SelectItem key={entry.id} value={entry.domain}>
+                                  {entry.domain}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      );
+                    }}
+                  />
+                ) : (
+                  `-${cloudflareSuffix}.${watchPublicDomain || domain}`
+                )
               }
               {...register('localSubdomain')}
               label={t('APP_INSTALL_FORM_LOCAL_SUBDOMAIN')}
