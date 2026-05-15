@@ -39,7 +39,7 @@ export const InputGroup = React.forwardRef<HTMLInputElement, InputGroupProps>(
           </div>
         );
       }
-      return <div className={cn('flex min-w-0 items-stretch', groupSuffixClassName)}>{groupSuffix}</div>;
+      return <div className={cn('flex shrink-0 items-center whitespace-nowrap', groupSuffixClassName)}>{groupSuffix}</div>;
     };
 
     return (
@@ -49,7 +49,7 @@ export const InputGroup = React.forwardRef<HTMLInputElement, InputGroupProps>(
             {label}
           </label>
         )}
-        <div className={cn('flex min-w-0 w-full flex-nowrap overflow-hidden shadow-sm', groupClassName)}>
+        <div className={cn('flex min-w-0 w-full flex-nowrap shadow-sm', groupClassName)}>
           {renderPrefix()}
           <input
             ref={ref}

@@ -4,7 +4,7 @@ import { ModuleRef } from '@nestjs/core';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { DockerService } from '../docker/docker.service';
 import type { AvailableDomain, AvailableDomainsResponse } from '@ci-hub/common/types';
-import axios, { AxiosInstance } from 'axios';
+import axios, { AxiosInstance, type AxiosResponse } from 'axios';
 import * as fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
 import * as path from 'node:path';
@@ -202,7 +202,23 @@ export class CloudflareClientService {
 
   async fetchAvailableDomains(): Promise<AvailableDomainsResponse> {
     try {
-      const response = await this.client.get('domains', this.getRequestConfig());
+      const requestConfig = this.getRequestConfig();
+      let response: AxiosResponse<{ domains?: unknown[] }>;
+
+      // CI-Portal serves domain listing at /api/domains. Keep a namespaced
+      // fallback for compatibility if CI-Cloud route topology changes.
+      try {
+        response = await this.client.get('domains', requestConfig);
+      } catch (error) {
+        const status = (error as { response?: { status?: number } })?.response?.status;
+        if (status !== 404) {
+          throw error;
+        }
+
+        this.logger.warn('CI-Cloud domains endpoint returned 404, retrying cloudflare/domains fallback');
+        response = await this.client.get('cloudflare/domains', requestConfig);
+      }
+
       const domains = Array.isArray(response.data?.domains)
         ? response.data.domains
             .filter((entry: unknown): entry is AvailableDomain => this.isAvailableDomain(entry))

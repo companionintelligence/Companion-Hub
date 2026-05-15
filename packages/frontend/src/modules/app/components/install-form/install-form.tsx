@@ -87,6 +87,7 @@ export const InstallForm: React.FC<IProps> = ({
     formState: { errors, isDirty },
     setValue,
     watch,
+    getValues,
     setError,
     clearErrors,
     control,
@@ -96,7 +97,8 @@ export const InstallForm: React.FC<IProps> = ({
   const _watchExposedLocal = watch('exposedLocal', false);
   const watchLocalSubdomain = watch('localSubdomain', '');
   const watchExposureMode = watch('exposureMode');
-  const watchPublicDomain = watch('publicDomain', domain);
+  const watchPublicDomainRaw = watch('publicDomain');
+  const watchPublicDomain = watchPublicDomainRaw || domain;
 
   const { data: availableDomainsData } = useQuery(getAvailableDomainsQueryOptions());
   const availableDomains = useMemo(() => availableDomainsData?.domains ?? EMPTY_AVAILABLE_DOMAINS, [availableDomainsData?.domains]);
@@ -180,13 +182,24 @@ export const InstallForm: React.FC<IProps> = ({
   ]);
 
   useEffect(() => {
-    if (watchExposureMode !== 'cloudflare' || availableDomains.length === 0 || watchPublicDomain) {
+    if (watchExposureMode !== 'cloudflare' || availableDomains.length === 0) {
       return;
     }
 
+    const currentPublicDomain = getValues('publicDomain');
     const defaultDomain = availableDomains.find((entry) => entry.isDefault)?.domain;
-    setValue('publicDomain', defaultDomain || domain || availableDomains[0]?.domain);
-  }, [availableDomains, domain, setValue, watchExposureMode, watchPublicDomain]);
+    const fallbackDomain = defaultDomain || availableDomains[0]?.domain;
+    if (!fallbackDomain) {
+      return;
+    }
+
+    // Preserve explicit user/form values; only replace the implicit device-domain fallback.
+    if (currentPublicDomain && currentPublicDomain !== domain) {
+      return;
+    }
+
+    setValue('publicDomain', fallbackDomain);
+  }, [availableDomains, domain, getValues, setValue, watchExposureMode]);
 
   const _randomPortMutation = useMutation({
     ...getRandomPortMutation(),
@@ -371,7 +384,10 @@ export const InstallForm: React.FC<IProps> = ({
           <div className="mb-3">
             <InputGroup
               groupPrefix="https://"
-              groupSuffixClassName={watchExposureMode === 'cloudflare' ? 'max-w-[55%] flex-1 basis-0 overflow-hidden' : undefined}
+              groupClassName={watchExposureMode === 'cloudflare' ? 'overflow-hidden' : undefined}
+              groupSuffixClassName={
+                watchExposureMode === 'cloudflare' ? 'shrink min-w-0 max-w-[55%] flex-1 basis-0 overflow-hidden items-stretch' : undefined
+              }
               groupSuffix={
                 watchExposureMode === 'tailscale' ? (
                   `.${localDomain || 'tailnet'}`

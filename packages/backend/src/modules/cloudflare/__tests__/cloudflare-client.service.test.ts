@@ -176,5 +176,21 @@ describe('CloudflareClientService', () => {
         ],
       });
     });
+
+    it('should retry cloudflare/domains when domains endpoint returns 404', async () => {
+      mockAxiosInstance.get.mockRejectedValueOnce({ response: { status: 404 } }).mockResolvedValueOnce({
+        data: {
+          domains: [{ id: '1', domain: 'example.com', isDefault: true }],
+        },
+      });
+
+      const result = await service.fetchAvailableDomains();
+
+      expect(mockAxiosInstance.get).toHaveBeenNthCalledWith(1, 'domains', expect.anything());
+      expect(mockAxiosInstance.get).toHaveBeenNthCalledWith(2, 'cloudflare/domains', expect.anything());
+      expect(result).toEqual({
+        domains: [{ id: '1', domain: 'example.com', isDefault: true }],
+      });
+    });
   });
 });
