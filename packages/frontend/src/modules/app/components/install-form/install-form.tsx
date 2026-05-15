@@ -12,7 +12,7 @@ import type { TranslatableError } from '@/types/error.types';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import clsx from 'clsx';
 import type React from 'react';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Controller, useForm } from 'react-hook-form';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
@@ -49,6 +49,7 @@ export type FormValues = {
 };
 
 const typeFilter = (field: FormField) => !hiddenTypes.includes(field.type);
+const EMPTY_AVAILABLE_DOMAINS: Array<{ id: string; domain: string; isDefault: boolean; scope?: string }> = [];
 
 const ConfigSection: React.FC<{ scrollable?: boolean; children: React.ReactNode }> = ({ scrollable, children }) => {
   if (scrollable) {
@@ -97,7 +98,7 @@ export const InstallForm: React.FC<IProps> = ({
   const watchPublicDomain = watch('publicDomain', domain);
 
   const { data: availableDomainsData } = useQuery(getAvailableDomainsQueryOptions());
-  const availableDomains = availableDomainsData?.domains ?? [];
+  const availableDomains = useMemo(() => availableDomainsData?.domains ?? EMPTY_AVAILABLE_DOMAINS, [availableDomainsData?.domains]);
 
   const requiredFieldNames = formFields.filter((f) => f.required && !hiddenTypes.includes(f.type)).map((f) => f.env_variable);
   const watchedRequiredValues = watch(requiredFieldNames);
@@ -369,7 +370,6 @@ export const InstallForm: React.FC<IProps> = ({
               <Controller
                 control={control}
                 name="publicDomain"
-                defaultValue={watchPublicDomain || domain}
                 render={({ field: { onChange, value } }) => (
                   <Select value={value || ''} onValueChange={onChange}>
                     <SelectTrigger className="mb-3" label={t('APP_INSTALL_FORM_PUBLIC_DOMAIN')}>

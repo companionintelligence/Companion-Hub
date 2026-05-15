@@ -12,12 +12,12 @@ export class CloudflareController {
 
   @Get('check-dns-availability')
   @ApiResponse({ type: Object })
-  async checkDnsAvailability(@Query('subdomain') subdomain: string, @Query('domain') _domain?: string) {
+  async checkDnsAvailability(@Query('subdomain') subdomain: string, @Query('domain') domain?: string) {
     if (!subdomain) {
       return { available: true };
     }
 
-    return { available: true, message: 'Availability check delegated to CI-Cloud (Not implemented yet)' };
+    return this.cloudflareClientService.checkDnsAvailability(subdomain, domain);
   }
 
   @Get('domains')

@@ -224,6 +224,41 @@ export class CloudflareClientService {
     }
   }
 
+  async checkDnsAvailability(subdomain: string, domain?: string): Promise<{ available: boolean; message?: string }> {
+    try {
+      const response = await this.client.get('cloudflare/check-dns-availability', {
+        ...this.getRequestConfig(),
+        params: {
+          subdomain,
+          ...(domain ? { domain } : {}),
+        },
+      });
+
+      if (typeof response.data?.available === 'boolean') {
+        return {
+          available: response.data.available,
+          message: typeof response.data?.message === 'string' ? response.data.message : undefined,
+        };
+      }
+
+      return {
+        available: true,
+        message: 'Availability check delegated to CI-Cloud (response shape unknown)',
+      };
+    } catch (error) {
+      if (error instanceof Error) {
+        this.logger.error(`Failed to check DNS availability: ${error.message}`);
+      } else {
+        this.logger.error(`Failed to check DNS availability: ${String(error)}`);
+      }
+
+      return {
+        available: true,
+        message: 'Availability check delegated to CI-Cloud (fallback)',
+      };
+    }
+  }
+
   getTunnelId(): string | null {
     return this.tunnelId;
   }

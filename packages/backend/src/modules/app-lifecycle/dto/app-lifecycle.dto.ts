@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { createZodDto } from '@/common/zod-dto';
+import isFQDN from 'validator/lib/isFQDN';
 
 export const appFormSchema = z
   .object({
@@ -15,7 +16,12 @@ export const appFormSchema = z
       .string()
       .regex(/^[a-zA-Z0-9-]{1,63}$/)
       .optional(),
-    publicDomain: z.string().optional(),
+    publicDomain: z
+      .string()
+      .trim()
+      .min(1)
+      .refine((value) => isFQDN(value), { message: 'Invalid public domain' })
+      .optional(),
     maxBackups: z.number().min(0).max(100).optional(),
     skipEnv: z.boolean().default(false),
     skipPull: z.boolean().default(false),

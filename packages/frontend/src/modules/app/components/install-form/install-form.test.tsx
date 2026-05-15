@@ -23,15 +23,18 @@ vi.mock('react-i18next', () => ({
   }),
 }));
 
+const MOCK_AVAILABLE_DOMAINS = { domains: [] as Array<{ id: string; domain: string; isDefault: boolean; scope?: string }> };
+const MOCK_USE_QUERY_RESULT = {
+  data: MOCK_AVAILABLE_DOMAINS,
+  isLoading: false,
+};
+
 vi.mock('@tanstack/react-query', () => ({
   useMutation: () => ({
     mutateAsync: vi.fn().mockResolvedValue({}),
     isPending: false,
   }),
-  useQuery: () => ({
-    data: { domains: [] },
-    isLoading: false,
-  }),
+  useQuery: () => MOCK_USE_QUERY_RESULT,
   queryOptions: (options: unknown) => options,
 }));
 
