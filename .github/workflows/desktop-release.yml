@@ -186,9 +186,14 @@ jobs:
         env:
           # Ad-hoc sign on macOS when no Apple certificate is configured
           APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && '-' || '' }}
+        shell: bash
         run: |
           cd packages/desktop
-          npx --yes @tauri-apps/cli@2 build --target ${{ matrix.target }} -c '{"bundle":{"createUpdaterArtifacts":false}}'
+          args=(--target "${{ matrix.target }}" -c '{"bundle":{"createUpdaterArtifacts":false}}')
+          if [[ "${{ runner.os }}" == "Linux" ]]; then
+            args+=(-b deb,rpm,appimage)
+          fi
+          npx --yes @tauri-apps/cli@2 build "${args[@]}"
       # ── macOS Notarization ──────────────────────────────────────────
       - name: Notarize macOS DMG
         if: env.BUILD_ENABLED && runner.os == 'macOS' && env.APPLE_SIGNING_CONFIGURED
