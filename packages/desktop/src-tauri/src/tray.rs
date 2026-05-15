@@ -6,7 +6,7 @@ use tauri::{
     tray::TrayIconBuilder,
     App, Manager,
 };
-use tauri_plugin_shell::ShellExt;
+use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_store::StoreExt;
 
 fn describe_hub_status(status: &crate::hub_manager::HubStatus) -> String {
@@ -209,9 +209,7 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
             "open_portal" => {
                 let portal_url = option_env!("CI_HUB_CLOUD_URL")
                     .unwrap_or("https://hub.companionintelligence.com");
-                let _ = app
-                    .shell()
-                    .open(portal_url, None::<tauri_plugin_shell::open::Program>);
+                let _ = app.opener().open_url(portal_url, None::<&str>);
             }
             "view_logs" => {
                 let logs_dir = crate::hub_manager::logs_open_target();
@@ -220,10 +218,8 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                     "tray.logs",
                     &format!("Opening logs folder: {}", logs_dir.display()),
                 );
-                let _ = app.shell().open(
-                    logs_dir.to_string_lossy().to_string(),
-                    None::<tauri_plugin_shell::open::Program>,
-                );
+                let path = logs_dir.display().to_string();
+                let _ = app.opener().open_path(path, None::<&str>);
             }
             "quit" => {
                 app.exit(0);

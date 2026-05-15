@@ -5,7 +5,8 @@
   "description": "Companion Hub Desktop — Tauri v2 native wrapper",
   "scripts": {
     "dev": "cargo tauri dev",
-    "build": "command -v cargo >/dev/null 2>&1 && cargo tauri --version >/dev/null 2>&1 && cargo tauri build || echo \"Skipping desktop build (cargo tauri not available)\"",
+    "build": "sh -c 'if ! command -v cargo >/dev/null 2>&1 || ! cargo tauri --version >/dev/null 2>&1; then echo \"Skipping desktop build (Rust / cargo-tauri not installed)\"; exit 0; fi; cargo tauri build'",
+    "bundle": "node -e \"process.exit(0)\"",
     "icons": "cargo tauri icon"
   }
 }

@@ -22,6 +22,7 @@ const OUR_CONTAINERS: &[&str] = &[
     "traefik",
     "cloudflared",
     "headscale",
+    "headplane",
     "hub-tailscale",
 ];
 

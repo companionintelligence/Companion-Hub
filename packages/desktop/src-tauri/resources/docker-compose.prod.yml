@@ -182,9 +182,14 @@ services:
     profiles:
       - cloudflare
 
-  # Headscale control server — opt-in via the `private-vpn` compose profile
-  # (scripts/start.ts and the desktop Hub merge that profile automatically
-  # whenever PRIVATE_VPN_ENABLED is not "false"). Requires a config file at
+  # --- Private VPN (Headscale + Headplane + Tailscale client) -----------------
+  # Gated by the Compose profile `private-vpn`. The desktop Hub writes
+  # `COMPOSE_PROFILES=private-vpn` into `.env` by default so Headscale,
+  # Headplane, and hub-tailscale start with the stack. Set
+  # `PRIVATE_VPN_ENABLED=false` in `.env` to drop `private-vpn` from
+  # `COMPOSE_PROFILES` and skip these services.
+  #
+  # Headscale control server — requires config under
   # ${ROOT_FOLDER_HOST}/state/headscale/config.yaml, which the backend's
   # HeadscaleService generates on boot.
   headscale:
@@ -199,6 +204,12 @@ services:
       - ci_os_hub_network
     labels:
       ci-os-hub.managed: true
+    healthcheck:
+      test: ["CMD", "headscale", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 25s
     profiles:
       - private-vpn
 
@@ -215,7 +226,8 @@ services:
     container_name: headplane
     restart: unless-stopped
     depends_on:
-      - headscale
+      headscale:
+        condition: service_healthy
     environment:
       HEADSCALE_URL: http://headscale:8080
       # Path inside the headplane container; matches the shared volume mount
@@ -264,7 +276,8 @@ services:
     volumes:
       - hub_tailscale_state:/var/lib/tailscale
     depends_on:
-      - headscale
+      headscale:
+        condition: service_healthy
     networks:
       - ci_os_hub_network
     labels:

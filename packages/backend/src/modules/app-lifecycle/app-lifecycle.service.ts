@@ -26,6 +26,18 @@ import type { AsyncMutex } from '@/utils/mutex/async-mutex';
 import type { z } from 'zod';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
 
+type AppFormForSubdomain = Pick<z.infer<typeof appFormSchema>, 'exposedLocal' | 'exposureMode' | 'localSubdomain'>;
+
+/** Trimmed subdomain when Cloudflare or Private VPN routing requires it to be globally unique on this Hub. */
+function uniqueRoutingLocalSubdomain(parsedForm: AppFormForSubdomain): string | undefined {
+  const trimmed = parsedForm.localSubdomain?.trim();
+  if (!trimmed) return undefined;
+  if (parsedForm.exposedLocal || parsedForm.exposureMode === 'tailscale' || parsedForm.exposureMode === 'cloudflare') {
+    return trimmed;
+  }
+  return undefined;
+}
+
 @Injectable()
 export class AppLifecycleService implements OnApplicationBootstrap {
   constructor(
@@ -237,12 +249,13 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       }
     }
 
-    if (exposedLocal && parsedForm.localSubdomain) {
-      const appsWithSameLocalSubdomain = await this.appRepository.getAppsByLocalSubdomain(parsedForm.localSubdomain);
+    const routingSubdomain = uniqueRoutingLocalSubdomain(parsedForm);
+    if (routingSubdomain) {
+      const appsWithSameLocalSubdomain = await this.appRepository.getAppsByLocalSubdomain(routingSubdomain);
 
       if (appsWithSameLocalSubdomain.length > 0) {
         throw new TranslatableError('APP_ERROR_LOCAL_SUBDOMAIN_ALREADY_IN_USE', {
-          subdomain: parsedForm.localSubdomain,
+          subdomain: routingSubdomain,
           id: appsWithSameLocalSubdomain[0]?.appName,
         });
       }
@@ -516,12 +529,13 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       }
     }
 
-    if (exposedLocal && parsedForm.localSubdomain) {
-      const appsWithSameLocalSubdomain = await this.appRepository.getAppsByLocalSubdomain(parsedForm.localSubdomain, app.id);
+    const routingSubdomain = uniqueRoutingLocalSubdomain(parsedForm);
+    if (routingSubdomain) {
+      const appsWithSameLocalSubdomain = await this.appRepository.getAppsByLocalSubdomain(routingSubdomain, app.id);
 
       if (appsWithSameLocalSubdomain.length > 0) {
         throw new TranslatableError('APP_ERROR_LOCAL_SUBDOMAIN_ALREADY_IN_USE', {
-          subdomain: parsedForm.localSubdomain,
+          subdomain: routingSubdomain,
           id: appsWithSameLocalSubdomain[0]?.appName,
         });
       }

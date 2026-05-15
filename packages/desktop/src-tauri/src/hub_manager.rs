@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,6 +20,24 @@ const MAX_START_RETRIES: u32 = 3;
 
 /// Global guard: true while a `start_hub` call is in progress.
 static START_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+/// `(hub .env mtime, is_private_vpn)` — avoids parsing the env file on every hub status poll (~3s).
+static PRIVATE_VPN_ENV_CACHE: Mutex<Option<(Option<std::time::SystemTime>, bool)>> = Mutex::new(None);
+
+/// After the hub container is healthy and VPN sidecars have been verified once, keep inspecting them
+/// until this grace elapses; then skip docker inspect on steady-state polls.
+const VPN_SIDECARS_STATUS_POLL_GRACE: Duration = Duration::from_secs(90);
+
+#[derive(Debug, Clone, Copy)]
+enum VpnSidecarPollPhase {
+    /// Hub reports healthy but sidecars have not yet passed [`vpn_sidecars_ready`] in this cycle.
+    PendingReady,
+    /// Sidecars were ready at least once at `verified_at`.
+    VerifiedSince(Instant),
+}
+
+static VPN_SIDECAR_STATUS_POLL_PHASE: Mutex<VpnSidecarPollPhase> =
+    Mutex::new(VpnSidecarPollPhase::PendingReady);
 
 /// Serialize rotation + append so concurrent callers cannot interleave
 /// renames and writes to `desktop.log`.
@@ -309,12 +328,17 @@ fn required_startup_images() -> Vec<String> {
         .cloned()
         .unwrap_or_else(|| image_for_domain(domain).to_string());
 
-    vec![
+    let mut out = vec![
         hub_image,
         "postgres:14".to_string(),
         "rabbitmq:4-alpine".to_string(),
         "traefik:v3.6.7".to_string(),
-    ]
+    ];
+    if private_vpn_enabled_from_map(&env) {
+        out.push("headscale/headscale:0.25.1".to_string());
+        out.push("tailscale/tailscale:v1.82.5".to_string());
+    }
+    out
 }
 
 /// Query Docker for a list of container states in one `docker inspect` call.
@@ -379,20 +403,25 @@ fn service_state_score(state: &ServiceState) -> u8 {
 
 /// Return per-service startup progress for the frontend loading screen.
 pub fn get_startup_progress() -> StartupProgress {
-    // Core services in startup order. Optional ones (cloudflared, headscale, etc.) are
-    // included for visibility but do not block the "all_ready" gate.
-    let core: &[(&str, &str, bool)] = &[
-        ("ci-hub-db",        "Database",       true),
-        ("ci-os-hub-queue",  "Message queue",  true),
-        ("ci-os-hub",        "Hub backend",    true),
-        ("traefik",          "Router",         true),
+    let vpn_on = is_private_vpn_enabled();
+
+    // Core services in startup order. Optional ones are included for visibility but do not block
+    // the "all_ready" gate. When Private VPN is enabled, Headscale + hub-tailscale are required.
+    let mut core: Vec<(&str, &str, bool)> = vec![
+        ("ci-hub-db", "Database", true),
+        ("ci-os-hub-queue", "Message queue", true),
+        ("ci-os-hub", "Hub backend", true),
+        ("traefik", "Router", true),
     ];
-    let optional: &[(&str, &str, bool)] = &[
-        ("cloudflared",  "Tunnel",      false),
-        ("headscale",    "VPN server",  false),
-        ("headplane",    "VPN admin",   false),
-        ("hub-tailscale","Tailscale",   false),
-    ];
+    if vpn_on {
+        core.push(("headscale", "Private VPN", true));
+        core.push(("hub-tailscale", "Tailscale", true));
+    }
+
+    let mut optional: Vec<(&str, &str, bool)> = vec![("cloudflared", "Tunnel", false)];
+    if vpn_on {
+        optional.push(("headplane", "VPN admin", false));
+    }
 
     let all_names: Vec<&str> = core.iter().chain(optional.iter()).map(|(n, _, _)| *n).collect();
     let states = inspect_containers(&all_names);
@@ -465,10 +494,12 @@ pub fn get_hub_status() -> HubStatus {
     // If a start operation is actively running (including first-time image pulls),
     // report Starting so the frontend shows progress instead of a false "Stopped" state.
     if START_IN_PROGRESS.load(Ordering::SeqCst) {
+        reset_vpn_sidecar_status_poll_phase();
         return HubStatus::Starting;
     }
 
     if !is_docker_available() {
+        reset_vpn_sidecar_status_poll_phase();
         return HubStatus::DockerNotAvailable;
     }
 
@@ -485,6 +516,7 @@ pub fn get_hub_status() -> HubStatus {
         .unwrap_or_default();
 
     if status.is_empty() || status.contains("No such object") || status.contains("Error") {
+        reset_vpn_sidecar_status_poll_phase();
         return HubStatus::Stopped;
     }
 
@@ -492,8 +524,53 @@ pub fn get_hub_status() -> HubStatus {
     let state = parts.first().copied().unwrap_or("");
     let health = parts.get(1).copied().unwrap_or("");
 
+    if !(state == "running" && health == "healthy") {
+        reset_vpn_sidecar_status_poll_phase();
+    }
+
     match (state, health) {
-        ("running", "healthy") => HubStatus::Running,
+        ("running", "healthy") => {
+            let vpn_on = is_private_vpn_enabled();
+            if !vpn_on {
+                reset_vpn_sidecar_status_poll_phase();
+                HubStatus::Running
+            } else {
+                let skip_sidecar_inspect = {
+                    let phase = VPN_SIDECAR_STATUS_POLL_PHASE.lock().unwrap();
+                    matches!(
+                        *phase,
+                        VpnSidecarPollPhase::VerifiedSince(since)
+                            if since.elapsed() >= VPN_SIDECARS_STATUS_POLL_GRACE
+                    )
+                };
+                if skip_sidecar_inspect {
+                    HubStatus::Running
+                } else {
+                    let ready = vpn_sidecars_ready();
+                    let mut phase = VPN_SIDECAR_STATUS_POLL_PHASE.lock().unwrap();
+                    match *phase {
+                        VpnSidecarPollPhase::PendingReady => {
+                            if ready {
+                                *phase = VpnSidecarPollPhase::VerifiedSince(Instant::now());
+                                HubStatus::Running
+                            } else {
+                                HubStatus::Starting
+                            }
+                        }
+                        VpnSidecarPollPhase::VerifiedSince(since) => {
+                            if since.elapsed() >= VPN_SIDECARS_STATUS_POLL_GRACE {
+                                HubStatus::Running
+                            } else if ready {
+                                HubStatus::Running
+                            } else {
+                                *phase = VpnSidecarPollPhase::PendingReady;
+                                HubStatus::Starting
+                            }
+                        }
+                    }
+                }
+            }
+        }
         ("running", _) => HubStatus::Starting,
         ("restarting", _) => {
             // Check if database is still starting — if so, Hub restart is expected
@@ -1828,6 +1905,92 @@ fn parse_env_file(path: &Path) -> std::collections::HashMap<String, String> {
     map
 }
 
+/// Matches backend `isPrivateVpnEnabled` (`packages/backend/src/common/helpers/private-vpn.ts`): disabled only
+/// when the value is exactly `"false"` (case-sensitive). Missing key ⇒ enabled.
+/// `.env` values are trimmed when parsed; backend `process.env` is not trimmed — avoid relying on
+/// leading/trailing spaces in `.env` for toggling VPN.
+fn private_vpn_enabled_from_map(env: &std::collections::HashMap<String, String>) -> bool {
+    env.get("PRIVATE_VPN_ENABLED")
+        .map(|v| v.as_str() != "false")
+        .unwrap_or(true)
+}
+
+fn reset_vpn_sidecar_status_poll_phase() {
+    *VPN_SIDECAR_STATUS_POLL_PHASE.lock().unwrap() = VpnSidecarPollPhase::PendingReady;
+}
+
+/// Cached by hub `.env` file mtime so frequent [`get_hub_status`] polls do not re-read and parse the file.
+fn is_private_vpn_enabled() -> bool {
+    let path = hub_env_path();
+    let mtime = std::fs::metadata(&path).ok().and_then(|m| m.modified().ok());
+    let mut guard = PRIVATE_VPN_ENV_CACHE.lock().unwrap();
+    if let Some((cached_mtime, cached_val)) = guard.as_ref() {
+        if *cached_mtime == mtime {
+            return *cached_val;
+        }
+    }
+    let val = private_vpn_enabled_from_map(&parse_env_file(&path));
+    *guard = Some((mtime, val));
+    val
+}
+
+/// Deduplicate comma-separated profile names while preserving first-seen order (stable across repeated merges).
+fn dedupe_compose_profile_tokens(tokens: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::<String>::new();
+    let mut out = Vec::new();
+    for t in tokens {
+        if seen.insert(t.clone()) {
+            out.push(t);
+        }
+    }
+    out
+}
+
+/// Ensures the `private-vpn` Compose profile is active when VPN is enabled, without dropping other profiles (e.g. `cloudflare`).
+fn merge_compose_profiles(
+    existing: &std::collections::HashMap<String, String>,
+    vpn_on: bool,
+) -> String {
+    let raw = existing
+        .get("COMPOSE_PROFILES")
+        .map(|s| s.as_str())
+        .unwrap_or("")
+        .trim();
+    let tokens: Vec<String> = raw
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let mut parts = dedupe_compose_profile_tokens(tokens);
+
+    if vpn_on {
+        if !parts.iter().any(|p| p == "private-vpn") {
+            parts.push("private-vpn".into());
+        }
+    } else {
+        parts.retain(|p| p != "private-vpn");
+    }
+    parts.join(",")
+}
+
+/// Headscale + hub-tailscale must be [`ServiceState::Ready`] per [`derive_service_state`]: running and either no healthcheck (`none`) or `healthy`.
+fn vpn_sidecars_ready() -> bool {
+    let names = ["headscale", "hub-tailscale"];
+    let states = inspect_containers(&names);
+    for name in names {
+        match states.get(name) {
+            Some((state, health)) => {
+                let svc_state = derive_service_state(state.as_str(), health.as_str());
+                if !matches!(svc_state, ServiceState::Ready) {
+                    return false;
+                }
+            }
+            None => return false,
+        }
+    }
+    true
+}
+
 fn get_non_empty_env_value(
     existing: &std::collections::HashMap<String, String>,
     key: &str,
@@ -1849,6 +2012,22 @@ fn render_runtime_env_content(
         get_non_empty_env_value(existing, "JWT_SECRET").unwrap_or_else(|| generate_hex(64));
     let postgres_password = get_non_empty_env_value(existing, "POSTGRES_PASSWORD")
         .unwrap_or_else(|| generate_hex(32));
+    // Private VPN — Headscale + Tailscale sidecar; desktop enables by default (matches backend:
+    // disabled only when `PRIVATE_VPN_ENABLED` is exactly `false`). Set PRIVATE_VPN_ENABLED=false to disable.
+    let vpn_on = private_vpn_enabled_from_map(existing);
+    let private_vpn_enabled = if vpn_on {
+        "true".to_string()
+    } else {
+        "false".to_string()
+    };
+    let compose_profiles = merge_compose_profiles(existing, vpn_on);
+    // Omit when empty: Compose treats unset COMPOSE_PROFILES like "", but a bare `COMPOSE_PROFILES=`
+    // line is noisy and can unintentionally override a user-defined shell value with emptiness.
+    let compose_profiles_line = if compose_profiles.is_empty() {
+        String::new()
+    } else {
+        format!("COMPOSE_PROFILES={compose_profiles}\n")
+    };
 
     let domain = option_env!("CI_HUB_DOMAIN").unwrap_or("companionintelligence.com");
     let cloud_url =
@@ -1876,7 +2055,9 @@ fn render_runtime_env_content(
          CI_HUB_VERSION={hub_version}\n\
          CI_HUB_IMAGE={hub_image}\n\
          DOCKER_PLATFORM={docker_platform}\n\
-         DOCKER_CONFIG_PATH={docker_config_path}\n",
+         DOCKER_CONFIG_PATH={docker_config_path}\n\
+         PRIVATE_VPN_ENABLED={private_vpn_enabled}\n\
+         {compose_profiles_line}",
         root_folder_host = root_folder_host,
         jwt_secret = jwt_secret,
         postgres_password = postgres_password,
@@ -1886,6 +2067,8 @@ fn render_runtime_env_content(
         hub_image = hub_image,
         docker_platform = docker_platform,
         docker_config_path = docker_config_path.display(),
+        private_vpn_enabled = private_vpn_enabled,
+        compose_profiles_line = compose_profiles_line,
     )
 }
 

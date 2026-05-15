@@ -1,11 +1,38 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { reactRouter } from '@react-router/dev/vite';
-import { defineConfig, loadEnv, type PluginOption } from 'vite';
+import { createLogger, defineConfig, loadEnv, type Logger, type PluginOption } from 'vite';
 import tsconfigPaths from 'vite-tsconfig-paths';
 import tailwindcss from '@tailwindcss/vite';
 
 const hubRoot = path.resolve(__dirname, '../..');
+
+const ORIGINAL_LOCATION_NOISE = "Can't resolve original location of error";
+
+/** True when Vite/Rollup emitted the known sourcemap noise warning (plain string or object with `message`). */
+function isOriginalLocationNoise(msg: unknown): boolean {
+  if (typeof msg === 'string') return msg.includes(ORIGINAL_LOCATION_NOISE);
+  if (msg && typeof msg === 'object') {
+    const m = (msg as { message?: unknown }).message;
+    if (typeof m === 'string' && m.includes(ORIGINAL_LOCATION_NOISE)) return true;
+  }
+  try {
+    return JSON.stringify(msg).includes(ORIGINAL_LOCATION_NOISE);
+  } catch {
+    return String(msg).includes(ORIGINAL_LOCATION_NOISE);
+  }
+}
+
+/** Rollup sometimes prints this when a plugin reports a warning with a bad sourcemap; it is noise-only. */
+function createFilteredViteLogger(): Logger {
+  const logger = createLogger();
+  const origWarn = logger.warn.bind(logger);
+  logger.warn = (msg, options) => {
+    if (isOriginalLocationNoise(msg)) return;
+    origWarn(msg, options);
+  };
+  return logger;
+}
 
 /** CI-Hub uses `.env.dev` / `.env.local` at repo root; Vite's loadEnv only reads `.env.[mode]` etc. */
 function parseDotEnvFile(filePath: string): Record<string, string> {
@@ -62,6 +89,7 @@ export default defineConfig(({ mode }) => {
   }
 
   return {
+    customLogger: createFilteredViteLogger(),
     plugins,
     define: {
       'import.meta.env.CI_CLOUD_URL': JSON.stringify(ciCloudUrl),
@@ -125,7 +153,9 @@ export default defineConfig(({ mode }) => {
       },
     },
     build: {
-      sourcemap: true,
+      // Off by default: production client maps are noisy (Rollup/Tailwind "Can't resolve
+      // original location") and expose server code. Set VITE_BUILD_SOURCEMAPS=1 to enable.
+      sourcemap: process.env.VITE_BUILD_SOURCEMAPS === '1',
     },
     esbuild: {
       jsxInject: isVitest ? `import React from 'react'` : undefined,
