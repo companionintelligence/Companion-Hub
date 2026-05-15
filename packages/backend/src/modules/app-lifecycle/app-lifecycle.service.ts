@@ -26,6 +26,16 @@ import type { AsyncMutex } from '@/utils/mutex/async-mutex';
 import type { z } from 'zod';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
 
+type AppFormForSubdomain = Pick<z.infer<typeof appFormSchema>, 'exposedLocal' | 'exposureMode' | 'localSubdomain'>;
+
+/** Cloudflare and Private VPN both route apps by `localSubdomain`; enforce uniqueness even when `exposedLocal` is false (Tailscale mode). */
+function requiresUniqueLocalSubdomain(parsedForm: AppFormForSubdomain): boolean {
+  if (!parsedForm.localSubdomain?.trim()) {
+    return false;
+  }
+  return Boolean(parsedForm.exposedLocal || parsedForm.exposureMode === 'tailscale' || parsedForm.exposureMode === 'cloudflare');
+}
+
 @Injectable()
 export class AppLifecycleService implements OnApplicationBootstrap {
   constructor(
@@ -237,8 +247,8 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       }
     }
 
-    if (exposedLocal && parsedForm.localSubdomain) {
-      const appsWithSameLocalSubdomain = await this.appRepository.getAppsByLocalSubdomain(parsedForm.localSubdomain);
+    if (requiresUniqueLocalSubdomain(parsedForm)) {
+      const appsWithSameLocalSubdomain = await this.appRepository.getAppsByLocalSubdomain(parsedForm.localSubdomain!);
 
       if (appsWithSameLocalSubdomain.length > 0) {
         throw new TranslatableError('APP_ERROR_LOCAL_SUBDOMAIN_ALREADY_IN_USE', {
@@ -516,8 +526,8 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       }
     }
 
-    if (exposedLocal && parsedForm.localSubdomain) {
-      const appsWithSameLocalSubdomain = await this.appRepository.getAppsByLocalSubdomain(parsedForm.localSubdomain, app.id);
+    if (requiresUniqueLocalSubdomain(parsedForm)) {
+      const appsWithSameLocalSubdomain = await this.appRepository.getAppsByLocalSubdomain(parsedForm.localSubdomain!, app.id);
 
       if (appsWithSameLocalSubdomain.length > 0) {
         throw new TranslatableError('APP_ERROR_LOCAL_SUBDOMAIN_ALREADY_IN_USE', {

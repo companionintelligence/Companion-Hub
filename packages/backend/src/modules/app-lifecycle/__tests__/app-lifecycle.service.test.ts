@@ -323,6 +323,16 @@ describe('AppLifecycleService', () => {
       expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ exposureMode: 'tailscale' }));
     });
 
+    it('MUST reject duplicate localSubdomain for tailscale when exposedLocal is false', async () => {
+      appsRepository.getAppsByLocalSubdomain.mockResolvedValue([{ appName: 'taken' }] as any);
+      await expect(
+        service.installApp({
+          appUrn,
+          form: { exposureMode: 'tailscale', exposedLocal: false, localSubdomain: 'mysvc' },
+        }),
+      ).rejects.toThrow('APP_ERROR_LOCAL_SUBDOMAIN_ALREADY_IN_USE');
+    });
+
     it('MUST default exposureMode to local when not provided', async () => {
       await service.installApp({ appUrn, form: {} });
 
