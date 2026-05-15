@@ -1,11 +1,24 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { reactRouter } from '@react-router/dev/vite';
-import { defineConfig, loadEnv, type PluginOption } from 'vite';
+import { createLogger, defineConfig, loadEnv, type Logger, type PluginOption } from 'vite';
 import tsconfigPaths from 'vite-tsconfig-paths';
 import tailwindcss from '@tailwindcss/vite';
 
 const hubRoot = path.resolve(__dirname, '../..');
+
+/** Rollup sometimes prints this when a plugin reports a warning with a bad sourcemap; it is noise-only. */
+function createFilteredViteLogger(): Logger {
+  const logger = createLogger();
+  const origWarn = logger.warn.bind(logger);
+  logger.warn = (msg, options) => {
+    if (typeof msg === 'string' && msg.includes("Can't resolve original location of error")) {
+      return;
+    }
+    origWarn(msg, options);
+  };
+  return logger;
+}
 
 /** CI-Hub uses `.env.dev` / `.env.local` at repo root; Vite's loadEnv only reads `.env.[mode]` etc. */
 function parseDotEnvFile(filePath: string): Record<string, string> {
@@ -62,6 +75,7 @@ export default defineConfig(({ mode }) => {
   }
 
   return {
+    customLogger: createFilteredViteLogger(),
     plugins,
     define: {
       'import.meta.env.CI_CLOUD_URL': JSON.stringify(ciCloudUrl),
@@ -125,7 +139,9 @@ export default defineConfig(({ mode }) => {
       },
     },
     build: {
-      sourcemap: true,
+      // Off by default: production client maps are noisy (Rollup/Tailwind "Can't resolve
+      // original location") and expose server code. Set VITE_BUILD_SOURCEMAPS=1 to enable.
+      sourcemap: process.env.VITE_BUILD_SOURCEMAPS === '1',
     },
     esbuild: {
       jsxInject: isVitest ? `import React from 'react'` : undefined,
