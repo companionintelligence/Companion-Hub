@@ -377,20 +377,17 @@ export function HubStatus({ children }: HubStatusProps) {
           let ready = false;
           for (const port of [5002, 3000]) {
             try {
+              // Match Docker's ci-os-hub healthcheck (`curl -f …/api/health`). Do not
+              // additionally gate on /api/registration/status: that handler can be
+              // slow right after boot (DB + phase refresh) and caused the Tauri loading
+              // screen to stick at 100% even when the Hub was already healthy.
               const res = await fetch(`http://localhost:${port}/api/health`, {
-                signal: AbortSignal.timeout(2000),
+                signal: AbortSignal.timeout(8000),
               });
               if (res.ok) {
                 client.setConfig({ baseUrl: `http://localhost:${port}`, credentials: 'omit' });
-                // Registration endpoint coming up is a better frontend-readiness signal
-                // than container health alone.
-                const reg = await fetch(`http://localhost:${port}/api/registration/status`, {
-                  signal: AbortSignal.timeout(2000),
-                });
-                if (reg.ok) {
-                  ready = true;
-                  break;
-                }
+                ready = true;
+                break;
               }
             } catch {
               // try next port
