@@ -309,12 +309,17 @@ fn required_startup_images() -> Vec<String> {
         .cloned()
         .unwrap_or_else(|| image_for_domain(domain).to_string());
 
-    vec![
+    let mut out = vec![
         hub_image,
         "postgres:14".to_string(),
         "rabbitmq:4-alpine".to_string(),
         "traefik:v3.6.7".to_string(),
-    ]
+    ];
+    if private_vpn_enabled_from_map(&env) {
+        out.push("headscale/headscale:0.25.1".to_string());
+        out.push("tailscale/tailscale:v1.82.5".to_string());
+    }
+    out
 }
 
 /// Query Docker for a list of container states in one `docker inspect` call.
@@ -379,20 +384,25 @@ fn service_state_score(state: &ServiceState) -> u8 {
 
 /// Return per-service startup progress for the frontend loading screen.
 pub fn get_startup_progress() -> StartupProgress {
-    // Core services in startup order. Optional ones (cloudflared, headscale, etc.) are
-    // included for visibility but do not block the "all_ready" gate.
-    let core: &[(&str, &str, bool)] = &[
-        ("ci-hub-db",        "Database",       true),
-        ("ci-os-hub-queue",  "Message queue",  true),
-        ("ci-os-hub",        "Hub backend",    true),
-        ("traefik",          "Router",         true),
+    let vpn_on = is_private_vpn_enabled();
+
+    // Core services in startup order. Optional ones are included for visibility but do not block
+    // the "all_ready" gate. When Private VPN is enabled, Headscale + hub-tailscale are required.
+    let mut core: Vec<(&str, &str, bool)> = vec![
+        ("ci-hub-db", "Database", true),
+        ("ci-os-hub-queue", "Message queue", true),
+        ("ci-os-hub", "Hub backend", true),
+        ("traefik", "Router", true),
     ];
-    let optional: &[(&str, &str, bool)] = &[
-        ("cloudflared",  "Tunnel",      false),
-        ("headscale",    "VPN server",  false),
-        ("headplane",    "VPN admin",   false),
-        ("hub-tailscale","Tailscale",   false),
-    ];
+    if vpn_on {
+        core.push(("headscale", "Private VPN", true));
+        core.push(("hub-tailscale", "Tailscale", true));
+    }
+
+    let mut optional: Vec<(&str, &str, bool)> = vec![("cloudflared", "Tunnel", false)];
+    if vpn_on {
+        optional.push(("headplane", "VPN admin", false));
+    }
 
     let all_names: Vec<&str> = core.iter().chain(optional.iter()).map(|(n, _, _)| *n).collect();
     let states = inspect_containers(&all_names);
@@ -493,7 +503,13 @@ pub fn get_hub_status() -> HubStatus {
     let health = parts.get(1).copied().unwrap_or("");
 
     match (state, health) {
-        ("running", "healthy") => HubStatus::Running,
+        ("running", "healthy") => {
+            if is_private_vpn_enabled() && !vpn_sidecars_running() {
+                HubStatus::Starting
+            } else {
+                HubStatus::Running
+            }
+        }
         ("running", _) => HubStatus::Starting,
         ("restarting", _) => {
             // Check if database is still starting — if so, Hub restart is expected
@@ -1828,6 +1844,54 @@ fn parse_env_file(path: &Path) -> std::collections::HashMap<String, String> {
     map
 }
 
+/// Aligns with backend `PRIVATE_VPN_ENABLED !== 'false'`: enabled unless explicitly set to `false`.
+fn private_vpn_enabled_from_map(env: &std::collections::HashMap<String, String>) -> bool {
+    env.get("PRIVATE_VPN_ENABLED")
+        .map(|v| !v.trim().eq_ignore_ascii_case("false"))
+        .unwrap_or(true)
+}
+
+fn is_private_vpn_enabled() -> bool {
+    private_vpn_enabled_from_map(&parse_env_file(&hub_env_path()))
+}
+
+/// Ensures the `private-vpn` Compose profile is active when VPN is enabled, without dropping other profiles (e.g. `cloudflare`).
+fn merge_compose_profiles(
+    existing: &std::collections::HashMap<String, String>,
+    vpn_on: bool,
+) -> String {
+    let raw = existing
+        .get("COMPOSE_PROFILES")
+        .map(|s| s.as_str())
+        .unwrap_or("")
+        .trim();
+    let mut parts: Vec<String> = raw
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if vpn_on {
+        if !parts.iter().any(|p| p == "private-vpn") {
+            parts.push("private-vpn".into());
+        }
+    } else {
+        parts.retain(|p| p != "private-vpn");
+    }
+    parts.join(",")
+}
+
+fn vpn_sidecars_running() -> bool {
+    let names = ["headscale", "hub-tailscale"];
+    let states = inspect_containers(&names);
+    for name in names {
+        match states.get(name) {
+            Some((state, _)) if state == "running" => {}
+            _ => return false,
+        }
+    }
+    true
+}
+
 fn get_non_empty_env_value(
     existing: &std::collections::HashMap<String, String>,
     key: &str,
@@ -1849,6 +1913,15 @@ fn render_runtime_env_content(
         get_non_empty_env_value(existing, "JWT_SECRET").unwrap_or_else(|| generate_hex(64));
     let postgres_password = get_non_empty_env_value(existing, "POSTGRES_PASSWORD")
         .unwrap_or_else(|| generate_hex(32));
+    // Private VPN — Headscale + Tailscale sidecar; desktop enables by default (matches backend
+    // `PRIVATE_VPN_ENABLED !== 'false'`). Set PRIVATE_VPN_ENABLED=false to disable.
+    let vpn_on = private_vpn_enabled_from_map(existing);
+    let private_vpn_enabled = if vpn_on {
+        "true".to_string()
+    } else {
+        "false".to_string()
+    };
+    let compose_profiles = merge_compose_profiles(existing, vpn_on);
 
     let domain = option_env!("CI_HUB_DOMAIN").unwrap_or("companionintelligence.com");
     let cloud_url =
@@ -1876,7 +1949,9 @@ fn render_runtime_env_content(
          CI_HUB_VERSION={hub_version}\n\
          CI_HUB_IMAGE={hub_image}\n\
          DOCKER_PLATFORM={docker_platform}\n\
-         DOCKER_CONFIG_PATH={docker_config_path}\n",
+         DOCKER_CONFIG_PATH={docker_config_path}\n\
+         PRIVATE_VPN_ENABLED={private_vpn_enabled}\n\
+         COMPOSE_PROFILES={compose_profiles}\n",
         root_folder_host = root_folder_host,
         jwt_secret = jwt_secret,
         postgres_password = postgres_password,
@@ -1886,6 +1961,8 @@ fn render_runtime_env_content(
         hub_image = hub_image,
         docker_platform = docker_platform,
         docker_config_path = docker_config_path.display(),
+        private_vpn_enabled = private_vpn_enabled,
+        compose_profiles = compose_profiles,
     )
 }
 
