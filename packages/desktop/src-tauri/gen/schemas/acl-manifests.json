@@ -2026,6 +2026,97 @@
     "permission_sets": {},
     "global_scope_schema": null
   },
+  "opener": {
+    "default_permission": {
+      "identifier": "default",
+      "description": "This permission set allows opening `mailto:`, `tel:`, `https://` and `http://` urls using their default application\nas well as reveal file in directories using default file explorer",
+      "permissions": ["allow-open-url", "allow-reveal-item-in-dir", "allow-default-urls"]
+    },
+    "permissions": {
+      "allow-default-urls": {
+        "identifier": "allow-default-urls",
+        "description": "This enables opening `mailto:`, `tel:`, `https://` and `http://` urls using their default application.",
+        "commands": { "allow": [], "deny": [] },
+        "scope": { "allow": [{ "url": "mailto:*" }, { "url": "tel:*" }, { "url": "http://*" }, { "url": "https://*" }] }
+      },
+      "allow-open-path": {
+        "identifier": "allow-open-path",
+        "description": "Enables the open_path command without any pre-configured scope.",
+        "commands": { "allow": ["open_path"], "deny": [] }
+      },
+      "allow-open-url": {
+        "identifier": "allow-open-url",
+        "description": "Enables the open_url command without any pre-configured scope.",
+        "commands": { "allow": ["open_url"], "deny": [] }
+      },
+      "allow-reveal-item-in-dir": {
+        "identifier": "allow-reveal-item-in-dir",
+        "description": "Enables the reveal_item_in_dir command without any pre-configured scope.",
+        "commands": { "allow": ["reveal_item_in_dir"], "deny": [] }
+      },
+      "deny-open-path": {
+        "identifier": "deny-open-path",
+        "description": "Denies the open_path command without any pre-configured scope.",
+        "commands": { "allow": [], "deny": ["open_path"] }
+      },
+      "deny-open-url": {
+        "identifier": "deny-open-url",
+        "description": "Denies the open_url command without any pre-configured scope.",
+        "commands": { "allow": [], "deny": ["open_url"] }
+      },
+      "deny-reveal-item-in-dir": {
+        "identifier": "deny-reveal-item-in-dir",
+        "description": "Denies the reveal_item_in_dir command without any pre-configured scope.",
+        "commands": { "allow": [], "deny": ["reveal_item_in_dir"] }
+      }
+    },
+    "permission_sets": {},
+    "global_scope_schema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "anyOf": [
+        {
+          "properties": {
+            "app": {
+              "allOf": [{ "$ref": "#/definitions/Application" }],
+              "description": "An application to open this url with, for example: firefox."
+            },
+            "url": {
+              "description": "A URL that can be opened by the webview when using the Opener APIs.\n\nWildcards can be used following the UNIX glob pattern.\n\nExamples:\n\n- \"https://*\" : allows all HTTPS origin\n\n- \"https://*.github.com/tauri-apps/tauri\": allows any subdomain of \"github.com\" with the \"tauri-apps/api\" path\n\n- \"https://myapi.service.com/users/*\": allows access to any URLs that begins with \"https://myapi.service.com/users/\"",
+              "type": "string"
+            }
+          },
+          "required": ["url"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "app": {
+              "allOf": [{ "$ref": "#/definitions/Application" }],
+              "description": "An application to open this path with, for example: xdg-open."
+            },
+            "path": {
+              "description": "A path that can be opened by the webview when using the Opener APIs.\n\nThe pattern can start with a variable that resolves to a system base directory. The variables are: `$AUDIO`, `$CACHE`, `$CONFIG`, `$DATA`, `$LOCALDATA`, `$DESKTOP`, `$DOCUMENT`, `$DOWNLOAD`, `$EXE`, `$FONT`, `$HOME`, `$PICTURE`, `$PUBLIC`, `$RUNTIME`, `$TEMPLATE`, `$VIDEO`, `$RESOURCE`, `$APP`, `$LOG`, `$TEMP`, `$APPCONFIG`, `$APPDATA`, `$APPLOCALDATA`, `$APPCACHE`, `$APPLOG`.",
+              "type": "string"
+            }
+          },
+          "required": ["path"],
+          "type": "object"
+        }
+      ],
+      "definitions": {
+        "Application": {
+          "anyOf": [
+            { "description": "Open in default application.", "type": "null" },
+            { "description": "If true, allow open with any application.", "type": "boolean" },
+            { "description": "Allow specific application to open with.", "type": "string" }
+          ],
+          "description": "Opener scope application."
+        }
+      },
+      "description": "Opener scope entry.",
+      "title": "OpenerScopeEntry"
+    }
+  },
   "os": {
     "default_permission": {
       "identifier": "default",
@@ -2116,144 +2207,6 @@
     },
     "permission_sets": {},
     "global_scope_schema": null
-  },
-  "shell": {
-    "default_permission": {
-      "identifier": "default",
-      "description": "This permission set configures which\nshell functionality is exposed by default.\n\n#### Granted Permissions\n\nIt allows to use the `open` functionality with a reasonable\nscope pre-configured. It will allow opening `http(s)://`,\n`tel:` and `mailto:` links.\n",
-      "permissions": ["allow-open"]
-    },
-    "permissions": {
-      "allow-execute": {
-        "identifier": "allow-execute",
-        "description": "Enables the execute command without any pre-configured scope.",
-        "commands": { "allow": ["execute"], "deny": [] }
-      },
-      "allow-kill": {
-        "identifier": "allow-kill",
-        "description": "Enables the kill command without any pre-configured scope.",
-        "commands": { "allow": ["kill"], "deny": [] }
-      },
-      "allow-open": {
-        "identifier": "allow-open",
-        "description": "Enables the open command without any pre-configured scope.",
-        "commands": { "allow": ["open"], "deny": [] }
-      },
-      "allow-spawn": {
-        "identifier": "allow-spawn",
-        "description": "Enables the spawn command without any pre-configured scope.",
-        "commands": { "allow": ["spawn"], "deny": [] }
-      },
-      "allow-stdin-write": {
-        "identifier": "allow-stdin-write",
-        "description": "Enables the stdin_write command without any pre-configured scope.",
-        "commands": { "allow": ["stdin_write"], "deny": [] }
-      },
-      "deny-execute": {
-        "identifier": "deny-execute",
-        "description": "Denies the execute command without any pre-configured scope.",
-        "commands": { "allow": [], "deny": ["execute"] }
-      },
-      "deny-kill": {
-        "identifier": "deny-kill",
-        "description": "Denies the kill command without any pre-configured scope.",
-        "commands": { "allow": [], "deny": ["kill"] }
-      },
-      "deny-open": {
-        "identifier": "deny-open",
-        "description": "Denies the open command without any pre-configured scope.",
-        "commands": { "allow": [], "deny": ["open"] }
-      },
-      "deny-spawn": {
-        "identifier": "deny-spawn",
-        "description": "Denies the spawn command without any pre-configured scope.",
-        "commands": { "allow": [], "deny": ["spawn"] }
-      },
-      "deny-stdin-write": {
-        "identifier": "deny-stdin-write",
-        "description": "Denies the stdin_write command without any pre-configured scope.",
-        "commands": { "allow": [], "deny": ["stdin_write"] }
-      }
-    },
-    "permission_sets": {},
-    "global_scope_schema": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "anyOf": [
-        {
-          "additionalProperties": false,
-          "properties": {
-            "args": {
-              "allOf": [{ "$ref": "#/definitions/ShellScopeEntryAllowedArgs" }],
-              "description": "The allowed arguments for the command execution."
-            },
-            "cmd": {
-              "description": "The command name. It can start with a variable that resolves to a system base directory. The variables are: `$AUDIO`, `$CACHE`, `$CONFIG`, `$DATA`, `$LOCALDATA`, `$DESKTOP`, `$DOCUMENT`, `$DOWNLOAD`, `$EXE`, `$FONT`, `$HOME`, `$PICTURE`, `$PUBLIC`, `$RUNTIME`, `$TEMPLATE`, `$VIDEO`, `$RESOURCE`, `$LOG`, `$TEMP`, `$APPCONFIG`, `$APPDATA`, `$APPLOCALDATA`, `$APPCACHE`, `$APPLOG`.",
-              "type": "string"
-            },
-            "name": {
-              "description": "The name for this allowed shell command configuration.\n\nThis name will be used inside of the webview API to call this command along with any specified arguments.",
-              "type": "string"
-            }
-          },
-          "required": ["cmd", "name"],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "args": {
-              "allOf": [{ "$ref": "#/definitions/ShellScopeEntryAllowedArgs" }],
-              "description": "The allowed arguments for the command execution."
-            },
-            "name": {
-              "description": "The name for this allowed shell command configuration.\n\nThis name will be used inside of the webview API to call this command along with any specified arguments.",
-              "type": "string"
-            },
-            "sidecar": { "description": "If this command is a sidecar command.", "type": "boolean" }
-          },
-          "required": ["name", "sidecar"],
-          "type": "object"
-        }
-      ],
-      "definitions": {
-        "ShellScopeEntryAllowedArg": {
-          "anyOf": [
-            { "description": "A non-configurable argument that is passed to the command in the order it was specified.", "type": "string" },
-            {
-              "additionalProperties": false,
-              "description": "A variable that is set while calling the command from the webview API.",
-              "properties": {
-                "raw": {
-                  "default": false,
-                  "description": "Marks the validator as a raw regex, meaning the plugin should not make any modification at runtime.\n\nThis means the regex will not match on the entire string by default, which might be exploited if your regex allow unexpected input to be considered valid. When using this option, make sure your regex is correct.",
-                  "type": "boolean"
-                },
-                "validator": {
-                  "description": "[regex] validator to require passed values to conform to an expected input.\n\nThis will require the argument value passed to this variable to match the `validator` regex before it will be executed.\n\nThe regex string is by default surrounded by `^...$` to match the full string. For example the `https?://\\w+` regex would be registered as `^https?://\\w+$`.\n\n[regex]: <https://docs.rs/regex/latest/regex/#syntax>",
-                  "type": "string"
-                }
-              },
-              "required": ["validator"],
-              "type": "object"
-            }
-          ],
-          "description": "A command argument allowed to be executed by the webview API."
-        },
-        "ShellScopeEntryAllowedArgs": {
-          "anyOf": [
-            { "description": "Use a simple boolean to allow all or disable all arguments to this command configuration.", "type": "boolean" },
-            {
-              "description": "A specific set of [`ShellScopeEntryAllowedArg`] that are valid to call for the command configuration.",
-              "items": { "$ref": "#/definitions/ShellScopeEntryAllowedArg" },
-              "type": "array"
-            }
-          ],
-          "description": "A set of command arguments allowed to be executed by the webview API.\n\nA value of `true` will allow any arguments to be passed to the command. `false` will disable all arguments. A list of [`ShellScopeEntryAllowedArg`] will set those arguments as the only valid arguments to be passed to the attached command configuration."
-        }
-      },
-      "description": "Shell scope entry.",
-      "title": "ShellScopeEntry"
-    }
   },
   "store": {
     "default_permission": {

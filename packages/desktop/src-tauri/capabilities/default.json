@@ -16,7 +16,7 @@
     "core:window:allow-outer-size",
     "core:window:allow-set-size",
     "core:window:allow-set-position",
-    "shell:allow-open",
+    "opener:default",
     "notification:default",
     "store:default",
     "os:default",
