@@ -7,14 +7,28 @@ import tailwindcss from '@tailwindcss/vite';
 
 const hubRoot = path.resolve(__dirname, '../..');
 
+const ORIGINAL_LOCATION_NOISE = "Can't resolve original location of error";
+
+/** True when Vite/Rollup emitted the known sourcemap noise warning (plain string or object with `message`). */
+function isOriginalLocationNoise(msg: unknown): boolean {
+  if (typeof msg === 'string') return msg.includes(ORIGINAL_LOCATION_NOISE);
+  if (msg && typeof msg === 'object') {
+    const m = (msg as { message?: unknown }).message;
+    if (typeof m === 'string' && m.includes(ORIGINAL_LOCATION_NOISE)) return true;
+  }
+  try {
+    return JSON.stringify(msg).includes(ORIGINAL_LOCATION_NOISE);
+  } catch {
+    return String(msg).includes(ORIGINAL_LOCATION_NOISE);
+  }
+}
+
 /** Rollup sometimes prints this when a plugin reports a warning with a bad sourcemap; it is noise-only. */
 function createFilteredViteLogger(): Logger {
   const logger = createLogger();
   const origWarn = logger.warn.bind(logger);
   logger.warn = (msg, options) => {
-    if (typeof msg === 'string' && msg.includes("Can't resolve original location of error")) {
-      return;
-    }
+    if (isOriginalLocationNoise(msg)) return;
     origWarn(msg, options);
   };
   return logger;
