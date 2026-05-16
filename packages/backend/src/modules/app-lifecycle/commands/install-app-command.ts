@@ -12,11 +12,13 @@ import { PortManagerService } from '@/modules/network/port-manager.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import type { AppUrn } from '@ci-hub/common/types';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
-import { AppLifecycleCommand } from './command';
+import { mergeArchitectureOverrides } from '@/common/helpers/compose-helpers';
+import { AppLifecycleCommand, ROCM_KFD_MISSING_MESSAGE } from './command';
 import { parseComposeJson } from '@ci-hub/common/schemas';
 import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
 import fs from 'node:fs';
 import path from 'node:path';
+import * as yaml from 'yaml';
 
 /**
  * Load the Openclaw fallback entrypoint script from file.
@@ -35,6 +37,69 @@ async function getOpenclawFallbackEntrypoint(): Promise<string> {
 }
 
 export class InstallAppCommand extends AppLifecycleCommand {
+  private isKfdHostDevice(device: string): boolean {
+    const hostDevice = device.split(':')[0]?.trim();
+    return hostDevice === '/dev/kfd';
+  }
+
+  /**
+   * Returns true if any service in the raw user docker-compose.yml override
+   * declares /dev/kfd as a device. Failures to parse are silently ignored so
+   * a malformed override never blocks an otherwise-valid install.
+   */
+  private userComposeRequiresKfd(composeYaml: string): boolean {
+    try {
+      const parsed = yaml.parse(composeYaml) as { services?: Record<string, { devices?: unknown[] } | null> } | null;
+      if (!parsed?.services) return false;
+      return Object.values(parsed.services).some((svc) => svc?.devices?.some((device) => typeof device === 'string' && this.isKfdHostDevice(device)));
+    } catch {
+      return false;
+    }
+  }
+
+  private async assertRequiredHostDevices(appUrn: AppUrn): Promise<void> {
+    const config = this.moduleRef.get(ConfigurationService, { strict: false });
+    const appFilesManager = this.moduleRef.get(AppFilesManager, { strict: false });
+
+    // Check the base installed compose (docker-compose.json) with architecture overrides applied.
+    let requiresKfd = false;
+    const composeJson = await appFilesManager.getDockerComposeJson(appUrn);
+    if (composeJson.content) {
+      const { services, overrides } = parseComposeJson(composeJson.content);
+      const architecture = config.get('architecture');
+      const mergedServices = mergeArchitectureOverrides(services, overrides, architecture);
+      requiresKfd = mergedServices.some((service) =>
+        service.devices?.some((device) => {
+          if (typeof device !== 'string') {
+            return false;
+          }
+          return this.isKfdHostDevice(device);
+        }),
+      );
+    }
+
+    // Also check the user compose override (user-config/{store}/{app}/docker-compose.yml).
+    // composeApp layers this file on top of the generated docker-compose.yml via an additional
+    // -f flag. Docker Compose appends list fields across -f files, so an override that adds
+    // /dev/kfd will be present in the effective compose even when the base does not require it.
+    if (!requiresKfd) {
+      const userCompose = await appFilesManager.getUserComposeFile(appUrn);
+      if (userCompose.content) {
+        requiresKfd = this.userComposeRequiresKfd(userCompose.content);
+      }
+    }
+
+    if (!requiresKfd) {
+      return;
+    }
+
+    try {
+      await fs.promises.access('/dev/kfd', fs.constants.F_OK);
+    } catch {
+      throw new Error(ROCM_KFD_MISSING_MESSAGE);
+    }
+  }
+
   public async execute(appUrn: AppUrn, form: AppEventFormInput): Promise<{ success: boolean; message: string }> {
     const logger = this.moduleRef.get(LoggerService, { strict: false });
     const _config = this.moduleRef.get(ConfigurationService, { strict: false });
@@ -69,6 +134,12 @@ export class InstallAppCommand extends AppLifecycleCommand {
 
       emitProgress(15);
       await marketplaceService.copyAppFromRepoToInstalled(appUrn);
+
+      // Host-device preflight — run before any port/env mutation so a failed
+      // check is side-effect free (no stale port allocations or env rewrites).
+      if (!form.skipRun) {
+        await this.assertRequiredHostDevices(appUrn);
+      }
 
       // Create app.env file
       emitProgress(25);
@@ -270,13 +341,6 @@ export class InstallAppCommand extends AppLifecycleCommand {
         logger.warn(`[AppDiag] Pre-set permissions failed for ${appUrn}: ${permErr}`);
       }
 
-      emitProgress(50);
-      try {
-        await dockerService.composeApp(appUrn, 'down --rmi local --remove-orphans');
-      } catch (_) {
-        logger.warn(`No prior containers to remove for app ${appUrn}`);
-      }
-
       const appInfo = await appFilesManager.getInstalledAppInfo(appUrn);
 
       if (!appInfo) {
@@ -290,6 +354,13 @@ export class InstallAppCommand extends AppLifecycleCommand {
         logger.info(`Skipping docker-compose up for app ${appUrn} as per request`);
         emitProgress(99);
         return { success: true, message: `App ${appUrn} installed successfully (skipped run)` };
+      }
+
+      emitProgress(55);
+      try {
+        await dockerService.composeApp(appUrn, 'down --rmi local --remove-orphans');
+      } catch (_) {
+        logger.warn(`No prior containers to remove for app ${appUrn}`);
       }
 
       emitProgress(60);
