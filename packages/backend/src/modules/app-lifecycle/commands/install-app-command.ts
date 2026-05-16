@@ -18,6 +18,7 @@ import { parseComposeJson } from '@ci-hub/common/schemas';
 import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
 import fs from 'node:fs';
 import path from 'node:path';
+import * as yaml from 'yaml';
 
 /**
  * Load the Openclaw fallback entrypoint script from file.
@@ -41,28 +42,52 @@ export class InstallAppCommand extends AppLifecycleCommand {
     return hostDevice === '/dev/kfd';
   }
 
+  /**
+   * Returns true if any service in the raw user docker-compose.yml override
+   * declares /dev/kfd as a device. Failures to parse are silently ignored so
+   * a malformed override never blocks an otherwise-valid install.
+   */
+  private userComposeRequiresKfd(composeYaml: string): boolean {
+    try {
+      const parsed = yaml.parse(composeYaml) as { services?: Record<string, { devices?: unknown[] } | null> } | null;
+      if (!parsed?.services) return false;
+      return Object.values(parsed.services).some((svc) => svc?.devices?.some((device) => typeof device === 'string' && this.isKfdHostDevice(device)));
+    } catch {
+      return false;
+    }
+  }
+
   private async assertRequiredHostDevices(appUrn: AppUrn): Promise<void> {
     const config = this.moduleRef.get(ConfigurationService, { strict: false });
     const appFilesManager = this.moduleRef.get(AppFilesManager, { strict: false });
-    const composeJson = await appFilesManager.getDockerComposeJson(appUrn);
 
-    if (!composeJson.content) {
-      return;
+    // Check the base installed compose (docker-compose.json) with architecture overrides applied.
+    let requiresKfd = false;
+    const composeJson = await appFilesManager.getDockerComposeJson(appUrn);
+    if (composeJson.content) {
+      const { services, overrides } = parseComposeJson(composeJson.content);
+      const architecture = config.get('architecture');
+      const mergedServices = mergeArchitectureOverrides(services, overrides, architecture);
+      requiresKfd = mergedServices.some((service) =>
+        service.devices?.some((device) => {
+          if (typeof device !== 'string') {
+            return false;
+          }
+          return this.isKfdHostDevice(device);
+        }),
+      );
     }
 
-    const { services, overrides } = parseComposeJson(composeJson.content);
-    const architecture = config.get('architecture');
-    const mergedServices = mergeArchitectureOverrides(services, overrides, architecture);
-
-    const requiresKfd = mergedServices.some((service) =>
-      service.devices?.some((device) => {
-        if (typeof device !== 'string') {
-          return false;
-        }
-
-        return this.isKfdHostDevice(device);
-      }),
-    );
+    // Also check the user compose override (user-config/{store}/{app}/docker-compose.yml).
+    // composeApp layers this file on top of the generated docker-compose.yml via an additional
+    // -f flag. Docker Compose appends list fields across -f files, so an override that adds
+    // /dev/kfd will be present in the effective compose even when the base does not require it.
+    if (!requiresKfd) {
+      const userCompose = await appFilesManager.getUserComposeFile(appUrn);
+      if (userCompose.content) {
+        requiresKfd = this.userComposeRequiresKfd(userCompose.content);
+      }
+    }
 
     if (!requiresKfd) {
       return;
@@ -109,6 +134,12 @@ export class InstallAppCommand extends AppLifecycleCommand {
 
       emitProgress(15);
       await marketplaceService.copyAppFromRepoToInstalled(appUrn);
+
+      // Host-device preflight — run before any port/env mutation so a failed
+      // check is side-effect free (no stale port allocations or env rewrites).
+      if (!form.skipRun) {
+        await this.assertRequiredHostDevices(appUrn);
+      }
 
       // Create app.env file
       emitProgress(25);
@@ -326,9 +357,6 @@ export class InstallAppCommand extends AppLifecycleCommand {
       }
 
       emitProgress(55);
-      await this.assertRequiredHostDevices(appUrn);
-
-      emitProgress(57);
       try {
         await dockerService.composeApp(appUrn, 'down --rmi local --remove-orphans');
       } catch (_) {
