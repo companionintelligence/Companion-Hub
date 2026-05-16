@@ -319,7 +319,7 @@ export default () => {
           )}
           {isAlternativesDataError && (
             <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-              Could not load alternatives from the portal
+              Could not load app recommendations
               {alternativesDataError instanceof Error ? `: ${alternativesDataError.message}` : ''}.{' '}
               <button type="button" className="underline font-medium" onClick={() => refetchAlternatives()}>
                 Retry
