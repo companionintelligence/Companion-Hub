@@ -9,12 +9,12 @@ import { AuthGuard } from './modules/auth/auth.guard';
 import { MarketplaceService } from './modules/marketplace/marketplace.service';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import type { UserDto } from './modules/user/dto/user.dto';
-import { ApiResponse } from '@nestjs/swagger';
+import { ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { LoggerService } from '@/core/logger/logger.service';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { CloudflareClientService } from './modules/cloudflare/cloudflare-client.service';
 import { TailscaleService } from './modules/tailscale/tailscale.service';
-import { HeadscaleService } from './modules/headscale/headscale.service';
+import { AppStoreService } from './modules/app-stores/app-store.service';
 
 @Controller()
 export class AppController {
@@ -28,7 +28,7 @@ export class AppController {
     private readonly registrationService: RegistrationService,
     private readonly cloudflareClientService: CloudflareClientService,
     private readonly tailscaleService: TailscaleService,
-    private readonly headscaleService: HeadscaleService,
+    private readonly appStoreService: AppStoreService,
   ) {}
 
   @Get('/user-context')
@@ -178,6 +178,14 @@ export class AppController {
     }
   }
 
+  @Get('store/alternatives')
+  @ApiOperation({ summary: 'Open-source app alternatives catalog (proxied from CI Cloud)' })
+  @ApiResponse({ status: 200, description: 'Alternatives JSON' })
+  @ApiResponse({ status: 503, description: 'CI Cloud unreachable or CI_CLOUD_URL not set' })
+  async getStoreAlternatives() {
+    return this.appStoreService.fetchCiCloudStoreAlternatives();
+  }
+
   @Get('/app-context')
   @UseGuards(AuthGuard)
   @ApiResponse({ type: AppContextDto })
@@ -185,13 +193,12 @@ export class AppController {
     const { userSettings, isProduction } = this.configuration.getConfig();
 
     // Parallelize all independent async calls
-    const [version, org, apps, installedApps, tailscaleStatus, headscaleVpnReady] = await Promise.all([
+    const [version, org, apps, installedApps, tailscaleStatus] = await Promise.all([
       this.appService.getVersion(),
       this.registrationService.getDeviceRegistrationInfo(),
       this.marketplaceService.getAvailableApps(),
       this.appsService.getInstalledApps(),
       this.tailscaleService.getStatus().catch(() => ({ installed: false, connected: false })),
-      this.headscaleService.isPrivateVpnReady().catch(() => false),
     ]);
 
     const updatesAvailable = installedApps.filter(({ app, metadata }) => {
@@ -205,7 +212,7 @@ export class AppController {
 
     // Check service availability
     const cloudflareAvailable = Boolean(this.cloudflareClientService.getTunnelToken());
-    const tailscaleAvailable = (tailscaleStatus.installed && tailscaleStatus.connected) || headscaleVpnReady;
+    const tailscaleAvailable = tailscaleStatus.installed && tailscaleStatus.connected;
 
     return AppContextDto.parse(
       {

@@ -1,39 +1,9 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Globe, Loader2, Trash2, Copy, Plus, Monitor, Shield } from 'lucide-react';
+import { Globe, Loader2, Shield } from 'lucide-react';
 import { useState } from 'react';
 import { apiFetch } from '@/lib/api-fetch';
 import toast from 'react-hot-toast';
-
-interface VpnStatus {
-  enabled: boolean;
-  headscaleHealthy: boolean;
-  tailscaleConnected: boolean;
-  tailscaleIp: string | null;
-  deviceCount: number;
-}
-
-interface VpnDevice {
-  id: string;
-  name: string;
-  givenName: string;
-  ipAddresses: string[];
-  online: boolean;
-  lastSeen: string;
-  createdAt: string;
-  user: string;
-}
-
-interface PreAuthKey {
-  id: string;
-  key: string;
-  reusable: boolean;
-  ephemeral: boolean;
-  used: boolean;
-  expiration: string;
-  createdAt: string;
-  user: string;
-}
 
 interface CloudflareStatus {
   tunnelEnabled: boolean;
@@ -50,254 +20,59 @@ const StatusBadge = ({ connected, label }: { connected: boolean; label: string }
   </span>
 );
 
-const formatLastSeen = (lastSeen: string) => {
-  if (!lastSeen) return 'Never';
-  const date = new Date(lastSeen);
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffMins = Math.floor(diffMs / 60000);
-  if (diffMins < 1) return 'Just now';
-  if (diffMins < 60) return `${diffMins}m ago`;
-  const diffHours = Math.floor(diffMins / 60);
-  if (diffHours < 24) return `${diffHours}h ago`;
-  return `${Math.floor(diffHours / 24)}d ago`;
-};
+interface TailscaleApiStatus {
+  installed: boolean;
+  connected: boolean;
+  ip: string | null;
+  hostname: string | null;
+  backendState: string | null;
+}
 
-const VpnSection = () => {
+const TailscaleSidecarSection = () => {
   const { t } = useTranslation();
-  const queryClient = useQueryClient();
-  const [copiedKey, setCopiedKey] = useState<string | null>(null);
-  const [copiedLoginUrl, setCopiedLoginUrl] = useState(false);
-
-  const { data: vpnStatus, isLoading } = useQuery<VpnStatus>({
-    queryKey: ['vpn-status'],
+  const { data, isLoading } = useQuery<TailscaleApiStatus>({
+    queryKey: ['tailscale-status'],
     queryFn: async () => {
-      const res = await apiFetch('/api/headscale/status', { credentials: 'include' });
+      const res = await apiFetch('/api/tailscale/status', { credentials: 'include' });
       return res.json();
     },
     refetchInterval: 10000,
   });
 
-  const { data: clientInfo } = useQuery<{ loginServerUrl: string; publicConfigured: boolean }>({
-    queryKey: ['headscale-client-info'],
-    queryFn: async () => {
-      const res = await apiFetch('/api/headscale/client-info', { credentials: 'include' });
-      return res.json();
-    },
-    staleTime: 60_000,
-  });
-
-  const { data: devicesData } = useQuery<{ success: boolean; devices: VpnDevice[] }>({
-    queryKey: ['vpn-devices'],
-    queryFn: async () => {
-      const res = await apiFetch('/api/headscale/devices', { credentials: 'include' });
-      return res.json();
-    },
-    refetchInterval: 15000,
-  });
-
-  const { data: keysData, refetch: refetchKeys } = useQuery<{ success: boolean; keys: PreAuthKey[] }>({
-    queryKey: ['vpn-preauthkeys'],
-    queryFn: async () => {
-      const res = await apiFetch('/api/headscale/preauthkeys', { credentials: 'include' });
-      return res.json();
-    },
-  });
-
-  const createKey = useMutation({
-    mutationFn: async () => {
-      const res = await apiFetch('/api/headscale/preauthkey', {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reusable: false, ephemeral: false, expirationHours: 24 }),
-      });
-      return res.json();
-    },
-    onSuccess: () => {
-      refetchKeys();
-    },
-  });
-
-  const removeDevice = useMutation({
-    mutationFn: async (id: string) => {
-      const res = await apiFetch(`/api/headscale/devices/${id}`, {
-        method: 'DELETE',
-        credentials: 'include',
-      });
-      return res.json();
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vpn-devices'] });
-      queryClient.invalidateQueries({ queryKey: ['vpn-status'] });
-    },
-  });
-
-  const copyToClipboard = (text: string) => {
-    navigator.clipboard.writeText(text);
-    setCopiedKey(text);
-    setTimeout(() => setCopiedKey(null), 2000);
-  };
-
-  const copyLoginServerUrl = (text: string) => {
-    navigator.clipboard.writeText(text);
-    setCopiedLoginUrl(true);
-    setTimeout(() => setCopiedLoginUrl(false), 2000);
-  };
-
   if (isLoading) {
     return (
       <div className="flex items-center gap-2 text-muted-foreground">
         <Loader2 className="h-4 w-4 animate-spin" />
-        Loading VPN...
+        {t('SETTINGS_NETWORK_LOADING')}
       </div>
     );
   }
 
-  const healthy = vpnStatus?.headscaleHealthy && vpnStatus?.tailscaleConnected;
-  const devices = devicesData?.devices || [];
-  const activeKeys = (keysData?.keys || []).filter((k) => !k.used && new Date(k.expiration) > new Date());
+  const active = data?.installed && data?.connected;
 
   return (
-    <div className="space-y-4">
-      {/* Status */}
-      <div className="rounded-lg border p-4">
-        <div className="flex items-center justify-between mb-3">
-          <div className="flex items-center gap-2">
-            <Shield className="h-5 w-5 text-primary" />
-            <span className="font-medium">Private VPN</span>
-          </div>
-          <StatusBadge connected={!!healthy} label={healthy ? 'Active' : 'Inactive'} />
+    <div className="rounded-lg border p-4 space-y-3">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Shield className="h-5 w-5 text-primary" />
+          <span className="font-medium">{t('SETTINGS_NETWORK_PRIVATE_VPN_TITLE')}</span>
         </div>
-        <p className="text-sm text-muted-foreground">
-          {healthy
-            ? 'Your Hub is running a private VPN. Invited devices can securely access your apps from anywhere.'
-            : 'The VPN service is starting up or unavailable. It will activate automatically.'}
-        </p>
-        {!healthy && (
-          <p className="text-sm text-muted-foreground mt-2">
-            The Hub enrolls the <code className="text-xs bg-muted px-1 rounded">hub-tailscale</code> container automatically (usually within a few
-            minutes after startup). Keys below are for other devices you want on this VPN, not for the Hub itself.
-          </p>
-        )}
-        {clientInfo?.loginServerUrl && (
-          <div className="mt-3 pt-3 border-t border-border">
-            <div className="text-sm font-medium mb-1.5">{t('SETTINGS_NETWORK_HEADSCALE_CLIENT_URL')}</div>
-            <div className="flex items-start gap-2">
-              <code className="text-xs bg-muted px-2 py-1.5 rounded break-all flex-1 font-mono">{clientInfo.loginServerUrl}</code>
-              <button
-                type="button"
-                onClick={() => copyLoginServerUrl(clientInfo.loginServerUrl)}
-                className="text-muted-foreground hover:text-foreground p-1.5 shrink-0 rounded-md hover:bg-muted"
-                title={t('SETTINGS_NETWORK_HEADSCALE_CLIENT_URL')}
-              >
-                {copiedLoginUrl ? (
-                  <span className="text-xs text-green-600 dark:text-green-400">{t('SETTINGS_NETWORK_COPIED')}</span>
-                ) : (
-                  <Copy className="h-4 w-4" />
-                )}
-              </button>
-            </div>
-            <p className="text-xs text-muted-foreground mt-2">
-              {clientInfo.publicConfigured
-                ? t('SETTINGS_NETWORK_HEADSCALE_CLIENT_URL_DESC_PUBLIC')
-                : t('SETTINGS_NETWORK_HEADSCALE_CLIENT_URL_DESC_PRIVATE')}
-            </p>
-          </div>
-        )}
-        {vpnStatus?.tailscaleIp && (
-          <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
-            <div className="text-muted-foreground">Hub VPN Address</div>
-            <div className="font-mono">{vpnStatus.tailscaleIp}</div>
-            <div className="text-muted-foreground">Connected Devices</div>
-            <div>{vpnStatus.deviceCount}</div>
-          </div>
-        )}
+        <StatusBadge connected={!!active} label={active ? t('SETTINGS_NETWORK_ACTIVE') : t('SETTINGS_NETWORK_INACTIVE')} />
       </div>
-
-      {/* Devices */}
-      <div className="rounded-lg border p-4">
-        <div className="flex items-center justify-between mb-3">
-          <h4 className="font-medium flex items-center gap-2">
-            <Monitor className="h-4 w-4" />
-            Devices
-          </h4>
-          <span className="text-xs text-muted-foreground">{devices.length} connected</span>
+      <p className="text-sm text-muted-foreground">{t('SETTINGS_NETWORK_PRIVATE_VPN_DESC')}</p>
+      {data?.ip && (
+        <div className="grid grid-cols-2 gap-2 text-sm">
+          <div className="text-muted-foreground">{t('SETTINGS_NETWORK_TAILSCALE_IP')}</div>
+          <div className="font-mono">{data.ip}</div>
+          {data.hostname && (
+            <>
+              <div className="text-muted-foreground">Hostname</div>
+              <div className="font-mono">{data.hostname}</div>
+            </>
+          )}
         </div>
-        {devices.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No devices connected yet. Generate an invite key below to add one.</p>
-        ) : (
-          <div className="space-y-2">
-            {devices.map((device) => (
-              <div key={device.id} className="flex items-center justify-between rounded-md border px-3 py-2 text-sm">
-                <div className="flex items-center gap-3">
-                  <span className={`h-2 w-2 rounded-full ${device.online ? 'bg-green-500' : 'bg-gray-400'}`} />
-                  <div>
-                    <div className="font-medium">{device.givenName || device.name}</div>
-                    <div className="text-xs text-muted-foreground">
-                      <span className="font-mono">{device.ipAddresses[0]}</span>
-                      <span className="mx-1.5">·</span>
-                      {device.online ? 'Online' : `Last seen ${formatLastSeen(device.lastSeen)}`}
-                    </div>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => removeDevice.mutate(device.id)}
-                  disabled={removeDevice.isPending}
-                  className="text-muted-foreground hover:text-destructive p-1 disabled:opacity-50"
-                  title="Remove device"
-                >
-                  <Trash2 className="h-4 w-4" />
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Invite */}
-      <div className="rounded-lg border p-4">
-        <div className="flex items-center justify-between mb-3">
-          <h4 className="font-medium">Invite a Device</h4>
-          <button
-            type="button"
-            onClick={() => createKey.mutate()}
-            disabled={createKey.isPending}
-            className="inline-flex items-center gap-1.5 rounded-md bg-primary px-2.5 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-          >
-            {createKey.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Plus className="h-3 w-3" />}
-            Generate Key
-          </button>
-        </div>
-        <p className="text-sm text-muted-foreground mb-3">
-          Generate a key and share it with the device you want to connect. Each key can be used once and expires after 24 hours.
-        </p>
-        <p className="text-sm text-muted-foreground mb-3">{t('SETTINGS_NETWORK_HEADSCALE_INVITE_STEPS')}</p>
-        {activeKeys.length > 0 && (
-          <div className="space-y-2">
-            {activeKeys.map((key) => (
-              <div key={key.id} className="flex items-center justify-between rounded-md bg-muted/50 border px-3 py-2 text-sm">
-                <div>
-                  <div className="font-mono text-xs select-all">{key.key}</div>
-                  <div className="text-xs text-muted-foreground mt-0.5">
-                    Expires {new Date(key.expiration).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}
-                    {key.reusable && ' · Reusable'}
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => copyToClipboard(key.key)}
-                  className="text-muted-foreground hover:text-foreground p-1 ml-2 shrink-0"
-                  title="Copy key"
-                >
-                  {copiedKey === key.key ? <span className="text-xs text-green-500">Copied!</span> : <Copy className="h-4 w-4" />}
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+      )}
+      {!data?.installed && <p className="text-xs text-muted-foreground">{t('SETTINGS_NETWORK_TAILSCALE_NOT_INSTALLED_DESC')}</p>}
     </div>
   );
 };
@@ -395,7 +170,7 @@ export const NetworkSettingsContainer = () => {
         <p className="text-sm text-muted-foreground">{t('SETTINGS_NETWORK_DESC')}</p>
       </div>
 
-      <VpnSection />
+      <TailscaleSidecarSection />
       <CloudflareSection />
     </div>
   );

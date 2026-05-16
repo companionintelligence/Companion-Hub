@@ -24,15 +24,15 @@ static START_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 /// `(hub .env mtime, is_private_vpn)` — avoids parsing the env file on every hub status poll (~3s).
 static PRIVATE_VPN_ENV_CACHE: Mutex<Option<(Option<std::time::SystemTime>, bool)>> = Mutex::new(None);
 
-/// After the hub container is healthy and VPN sidecars have been verified once, keep inspecting them
+/// After the hub container is healthy and the Tailscale sidecar has been verified once, keep inspecting it
 /// until this grace elapses; then skip docker inspect on steady-state polls.
 const VPN_SIDECARS_STATUS_POLL_GRACE: Duration = Duration::from_secs(90);
 
 #[derive(Debug, Clone, Copy)]
 enum VpnSidecarPollPhase {
-    /// Hub reports healthy but sidecars have not yet passed [`vpn_sidecars_ready`] in this cycle.
+    /// Hub reports healthy but `hub-tailscale` has not yet passed [`vpn_sidecars_ready`] in this cycle.
     PendingReady,
-    /// Sidecars were ready at least once at `verified_at`.
+    /// Sidecar was ready at least once at `verified_at`.
     VerifiedSince(Instant),
 }
 
@@ -335,7 +335,6 @@ fn required_startup_images() -> Vec<String> {
         "traefik:v3.6.7".to_string(),
     ];
     if private_vpn_enabled_from_map(&env) {
-        out.push("headscale/headscale:0.25.1".to_string());
         out.push("tailscale/tailscale:v1.82.5".to_string());
     }
     out
@@ -406,7 +405,7 @@ pub fn get_startup_progress() -> StartupProgress {
     let vpn_on = is_private_vpn_enabled();
 
     // Core services in startup order. Optional ones are included for visibility but do not block
-    // the "all_ready" gate. When Private VPN is enabled, Headscale + hub-tailscale are required.
+    // the "all_ready" gate. When Private VPN is enabled, `hub-tailscale` is required.
     let mut core: Vec<(&str, &str, bool)> = vec![
         ("ci-hub-db", "Database", true),
         ("ci-os-hub-queue", "Message queue", true),
@@ -414,14 +413,10 @@ pub fn get_startup_progress() -> StartupProgress {
         ("traefik", "Router", true),
     ];
     if vpn_on {
-        core.push(("headscale", "Private VPN", true));
-        core.push(("hub-tailscale", "Tailscale", true));
+        core.push(("hub-tailscale", "Private VPN", true));
     }
 
-    let mut optional: Vec<(&str, &str, bool)> = vec![("cloudflared", "Tunnel", false)];
-    if vpn_on {
-        optional.push(("headplane", "VPN admin", false));
-    }
+    let optional: Vec<(&str, &str, bool)> = vec![("cloudflared", "Tunnel", false)];
 
     let all_names: Vec<&str> = core.iter().chain(optional.iter()).map(|(n, _, _)| *n).collect();
     let states = inspect_containers(&all_names);
@@ -1907,8 +1902,6 @@ fn parse_env_file(path: &Path) -> std::collections::HashMap<String, String> {
 
 /// Matches backend `isPrivateVpnEnabled` (`packages/backend/src/common/helpers/private-vpn.ts`): disabled only
 /// when the value is exactly `"false"` (case-sensitive). Missing key ⇒ enabled.
-/// `.env` values are trimmed when parsed; backend `process.env` is not trimmed — avoid relying on
-/// leading/trailing spaces in `.env` for toggling VPN.
 fn private_vpn_enabled_from_map(env: &std::collections::HashMap<String, String>) -> bool {
     env.get("PRIVATE_VPN_ENABLED")
         .map(|v| v.as_str() != "false")
@@ -1973,9 +1966,9 @@ fn merge_compose_profiles(
     parts.join(",")
 }
 
-/// Headscale + hub-tailscale must be [`ServiceState::Ready`] per [`derive_service_state`]: running and either no healthcheck (`none`) or `healthy`.
+/// `hub-tailscale` must be [`ServiceState::Ready`]: running (no healthcheck → `none` counts as ready).
 fn vpn_sidecars_ready() -> bool {
-    let names = ["headscale", "hub-tailscale"];
+    let names = ["hub-tailscale"];
     let states = inspect_containers(&names);
     for name in names {
         match states.get(name) {
@@ -2012,8 +2005,7 @@ fn render_runtime_env_content(
         get_non_empty_env_value(existing, "JWT_SECRET").unwrap_or_else(|| generate_hex(64));
     let postgres_password = get_non_empty_env_value(existing, "POSTGRES_PASSWORD")
         .unwrap_or_else(|| generate_hex(32));
-    // Private VPN — Headscale + Tailscale sidecar; desktop enables by default (matches backend:
-    // disabled only when `PRIVATE_VPN_ENABLED` is exactly `false`). Set PRIVATE_VPN_ENABLED=false to disable.
+    // Private VPN — Tailscale sidecar; disabled only when `PRIVATE_VPN_ENABLED` is exactly `false`.
     let vpn_on = private_vpn_enabled_from_map(existing);
     let private_vpn_enabled = if vpn_on {
         "true".to_string()

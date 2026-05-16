@@ -35,7 +35,7 @@ type ExecStrategy = 'host' | 'sidecar';
 export class TailscaleService {
   private readonly logger = new Logger(TailscaleService.name);
   private readonly binaryPath = '/usr/bin/tailscale';
-  /** Docker sidecar (Headscale deployment) — same network as Traefik */
+  /** Docker sidecar for Tailscale (`hub-tailscale`, `private-vpn` profile) when the host has no Tailscale socket */
   private readonly sidecarContainer = process.env.TAILSCALE_SIDECAR_CONTAINER ?? 'hub-tailscale';
   /** Upstream for `tailscale serve` when using sidecar (Traefik service name:port) */
   private readonly serveUpstreamSidecar = process.env.TAILSCALE_SERVE_UPSTREAM ?? 'traefik:80';
@@ -62,7 +62,7 @@ export class TailscaleService {
   }
 
   /**
-   * Host Tailscale (binary + socket in this process namespace) or hub-tailscale sidecar via docker exec.
+   * Host Tailscale (binary + socket in this process namespace) or a Tailscale container via `docker exec`.
    */
   private async resolveStrategy(): Promise<ExecStrategy | null> {
     const now = Date.now();

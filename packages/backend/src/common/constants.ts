@@ -44,7 +44,6 @@ export const DEFAULT_DB_CONTAINER_NAME = 'ci-hub-db';
 export const DEFAULT_QUEUE_CONTAINER_NAME = 'ci-os-hub-queue';
 export const DEFAULT_TRAEFIK_CONTAINER_NAME = 'traefik';
 export const DEFAULT_CLOUDFLARED_CONTAINER_NAME = 'cloudflared';
-export const DEFAULT_HEADSCALE_CONTAINER_NAME = 'headscale';
 export const DEFAULT_HUB_TAILSCALE_CONTAINER_NAME = 'hub-tailscale';
 export const DEFAULT_NETWORK_NAME = 'ci-os-hub_network';
 export const DEFAULT_DB_VOLUME_NAME = 'ci_hub_pgdata';
