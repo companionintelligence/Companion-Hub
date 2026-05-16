@@ -105,6 +105,9 @@ jobs:
       # Release jobs that set TAURI_SIGNING_PRIVATE_KEY can omit `-c` to emit .tar.gz + .sig for the updater.
       # Linux merge-target (tauri.linux.conf.json): deb + rpm only by default so local builds do not require linuxdeploy / librsvg2-dev for AppImage. CI passes -b deb,rpm,appimage on Ubuntu runners where deps are installed.
       - name: Build Tauri app
+        env:
+          # CI sets CI=true; tauri-bundler skips DMG background/layout unless this is set (tauri#592).
+          TAURI_BUNDLER_DMG_IGNORE_CI: ${{ runner.os == 'macOS' && 'true' || '' }}
         shell: bash
         run: |
           cd packages/desktop
