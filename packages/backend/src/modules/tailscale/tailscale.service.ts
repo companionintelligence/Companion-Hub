@@ -100,6 +100,12 @@ export class TailscaleService {
     this.strategyCache = null;
   }
 
+  /** Same flags as `connectWithAuthKey`: env override or default Docker bridge advertisement. */
+  private getTailscaleUpExtraArgs(): string[] {
+    const extra = (process.env.HUB_TAILSCALE_EXTRA_ARGS || '').trim();
+    return extra ? extra.split(/\s+/).filter(Boolean) : ['--accept-routes', '--advertise-routes=172.18.0.0/16'];
+  }
+
   private async execTailscale(args: string[], timeoutMs = 15000): Promise<{ stdout: string; stderr: string }> {
     const strategy = await this.resolveStrategy();
     if (strategy === 'host') {
@@ -212,7 +218,7 @@ export class TailscaleService {
    * Initiate Tailscale auth — returns URL for browser OAuth redirect (host or sidecar).
    */
   async startAuth(operator?: string): Promise<{ authUrl: string }> {
-    const args = ['up', '--json'];
+    const args = ['up', '--json', ...this.getTailscaleUpExtraArgs()];
     if (operator) {
       args.push(`--operator=${operator}`);
     }
@@ -243,9 +249,7 @@ export class TailscaleService {
       throw new Error('Expected a Tailscale pre-authentication key (tskey-auth-…)');
     }
 
-    const extra = (process.env.HUB_TAILSCALE_EXTRA_ARGS || '').trim();
-    const extraArgs = extra ? extra.split(/\s+/).filter(Boolean) : ['--accept-routes', '--advertise-routes=172.18.0.0/16'];
-    await this.execTailscale(['up', '--auth-key', key, ...extraArgs], 120_000);
+    await this.execTailscale(['up', '--auth-key', key, ...this.getTailscaleUpExtraArgs()], 120_000);
     this.invalidateStrategyCache();
   }
 
