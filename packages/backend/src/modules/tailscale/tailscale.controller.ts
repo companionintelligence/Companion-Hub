@@ -1,4 +1,4 @@
-import { Controller, Get, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '../auth/auth.guard';
 import { TailscaleService } from './tailscale.service';
 import { ApiResponse } from '@nestjs/swagger';
@@ -17,19 +17,12 @@ export class TailscaleController {
   @Post('auth/start')
   @ApiResponse({ type: Object })
   async startAuth() {
-    const installed = await this.tailscaleService.isInstalled();
-    if (!installed) {
+    const cliAvailable = await this.tailscaleService.isCliAvailable();
+    if (!cliAvailable) {
       return {
         success: false,
-        error: 'Tailscale is not installed on this device',
-      };
-    }
-
-    const socketAvailable = await this.tailscaleService.isSocketAvailable();
-    if (!socketAvailable) {
-      return {
-        success: false,
-        error: 'Tailscale daemon socket is not accessible. Ensure tailscaled.sock is mounted into the container.',
+        error:
+          'Tailscale CLI is not available. Start the hub-tailscale sidecar (private-vpn compose profile) or install Tailscale on the host with the daemon socket mounted into the Hub container.',
       };
     }
 
@@ -43,6 +36,28 @@ export class TailscaleController {
       return {
         success: false,
         error: error instanceof Error ? error.message : 'Failed to start Tailscale auth',
+      };
+    }
+  }
+
+  @Post('auth/key')
+  @ApiResponse({ type: Object })
+  async connectWithAuthKey(@Body() body: { authKey?: string }) {
+    const cliAvailable = await this.tailscaleService.isCliAvailable();
+    if (!cliAvailable) {
+      return {
+        success: false,
+        error: 'Tailscale CLI is not available. Start the hub-tailscale sidecar (private-vpn compose profile) or install Tailscale on the host.',
+      };
+    }
+
+    try {
+      await this.tailscaleService.connectWithAuthKey(body?.authKey || '');
+      return { success: true };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to connect with auth key',
       };
     }
   }

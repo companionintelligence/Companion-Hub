@@ -111,6 +111,11 @@ export class TailscaleService {
     throw new Error('Tailscale CLI unavailable (no host socket and no sidecar)');
   }
 
+  /** True when Tailscale can be invoked (host CLI + socket, or `docker exec` into the sidecar). */
+  async isCliAvailable(): Promise<boolean> {
+    return (await this.resolveStrategy()) !== null;
+  }
+
   async isInstalled(): Promise<boolean> {
     try {
       await access(this.binaryPath, constants.X_OK);
@@ -204,7 +209,7 @@ export class TailscaleService {
   }
 
   /**
-   * Initiate Tailscale auth — returns URL for browser OAuth redirect (host Tailscale only).
+   * Initiate Tailscale auth — returns URL for browser OAuth redirect (host or sidecar).
    */
   async startAuth(operator?: string): Promise<{ authUrl: string }> {
     const args = ['up', '--json'];
@@ -212,7 +217,7 @@ export class TailscaleService {
       args.push(`--operator=${operator}`);
     }
 
-    const { stdout } = await this.execHost(args, 30000);
+    const { stdout } = await this.execTailscale(args, 30000);
     const result = JSON.parse(stdout) as Record<string, unknown>;
 
     if (result.AuthURL) {
@@ -227,10 +232,29 @@ export class TailscaleService {
   }
 
   /**
-   * Disconnect from Tailscale (host only)
+   * Join the tailnet using a [pre-auth key](https://login.tailscale.com/admin/settings/keys) (typical for the hub-tailscale sidecar).
+   */
+  async connectWithAuthKey(authKey: string): Promise<void> {
+    const key = authKey.trim();
+    if (!key) {
+      throw new Error('Auth key is required');
+    }
+    if (!key.startsWith('tskey-auth-')) {
+      throw new Error('Expected a Tailscale pre-authentication key (tskey-auth-…)');
+    }
+
+    const extra = (process.env.HUB_TAILSCALE_EXTRA_ARGS || '').trim();
+    const extraArgs = extra ? extra.split(/\s+/).filter(Boolean) : ['--accept-routes', '--advertise-routes=172.18.0.0/16'];
+    await this.execTailscale(['up', '--auth-key', key, ...extraArgs], 120_000);
+    this.invalidateStrategyCache();
+  }
+
+  /**
+   * Disconnect from Tailscale (host or sidecar)
    */
   async disconnect(): Promise<void> {
-    await this.execHost(['down']);
+    await this.execTailscale(['down']);
+    this.invalidateStrategyCache();
   }
 
   private async getServeUpstreamTarget(localPort: number): Promise<string> {
