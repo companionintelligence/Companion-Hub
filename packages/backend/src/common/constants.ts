@@ -59,6 +59,9 @@ export const DEFAULT_FORWARD_AUTH_URL = 'http://ci-os-hub:3000/api/auth/traefik'
 // DNS
 export const DEFAULT_DNS_IP = '9.9.9.9';
 
+/** mDNS / LAN hostname used for local Traefik routes (e.g. `hub.ci.lan`) */
+export const DEFAULT_LOCAL_DOMAIN = 'ci.lan';
+
 // CI Cloud
 export const DEFAULT_CI_CLOUD_URL = 'https://hub.companionintelligence.com';
 

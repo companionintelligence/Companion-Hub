@@ -11,6 +11,7 @@ import { RegistrationService } from '@/modules/registration/registration.service
 import type { UserDto } from './modules/user/dto/user.dto';
 import { ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { LoggerService } from '@/core/logger/logger.service';
+import { DEFAULT_LOCAL_DOMAIN } from '@/common/constants';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { CloudflareClientService } from './modules/cloudflare/cloudflare-client.service';
 import { TailscaleService } from './modules/tailscale/tailscale.service';
@@ -44,8 +45,7 @@ export class AppController {
       allowErrorMonitoring: false,
       themeColor: 'blue',
       themeBase: 'gray',
-      // No fallback for localDomain - it must be configured in .env
-      localDomain: '',
+      localDomain: DEFAULT_LOCAL_DOMAIN,
       domain: '',
       sslPort: 443,
       version: {
