@@ -16,9 +16,11 @@ import { Tooltip } from 'react-tooltip';
 
 type Props = {
   initialValues?: SettingsFormValues;
+  /** hub-{device}-{org}.{domain} from registration + settings; display-only */
+  publicHubHostname?: string;
 };
 
-export const UserSettingsContainer = ({ initialValues }: Props) => {
+export const UserSettingsContainer = ({ initialValues, publicHubHostname }: Props) => {
   const currentLocale = i18next.language;
   const { t } = useTranslation();
   const { refreshAppContext, user } = useAppContext();
@@ -91,7 +93,12 @@ export const UserSettingsContainer = ({ initialValues }: Props) => {
           />
         </CardContent>
       </Card>
-      <UserSettingsForm initialValues={initialValues} currentLocale={currentLocale as Locale} onSubmit={onSubmit} />
+      <UserSettingsForm
+        initialValues={initialValues}
+        currentLocale={currentLocale as Locale}
+        onSubmit={onSubmit}
+        publicHubHostname={publicHubHostname}
+      />
     </div>
   );
 };

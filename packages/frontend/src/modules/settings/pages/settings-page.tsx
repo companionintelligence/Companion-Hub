@@ -2,7 +2,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useAppContext } from '@/context/app-context';
 import { cn } from '@/lib/utils';
-import { Suspense, lazy } from 'react';
+import { Suspense, lazy, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router';
 import { AppStoresContainer } from '../containers/app-stores-container';
@@ -24,6 +24,14 @@ export default () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const tab = searchParams.get('tab');
   const { userSettings, user } = useAppContext();
+
+  const publicHubHostname = useMemo(() => {
+    const domain = userSettings?.domain?.trim();
+    const org = userSettings?.ciHubOrganizationSlug?.trim();
+    const dev = userSettings?.ciHubDeviceSlug?.trim();
+    if (!domain || !org || !dev) return '';
+    return `hub-${dev}-${org}.${domain}`;
+  }, [userSettings?.domain, userSettings?.ciHubOrganizationSlug, userSettings?.ciHubDeviceSlug]);
 
   const currentTab = tab || 'settings';
   const isLogsTab = currentTab === 'logs';
@@ -73,7 +81,7 @@ export default () => {
             <div className={cn('mx-auto w-full', isLogsTab ? 'h-full max-w-none' : 'max-w-3xl')}>
               <TabsContent value="settings">
                 <Suspense fallback={<div>Loading...</div>}>
-                  <UserSettingsContainer initialValues={userSettings} />
+                  <UserSettingsContainer initialValues={userSettings} publicHubHostname={publicHubHostname} />
                 </Suspense>
               </TabsContent>
               <TabsContent value="security">
