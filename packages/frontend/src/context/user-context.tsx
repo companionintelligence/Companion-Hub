@@ -17,7 +17,7 @@ const USER_CONTEXT_DEFAULTS: UserContextDto = {
   isGuestDashboardEnabled: false,
   isConfigured: false,
   domain: '',
-  localDomain: '',
+  localDomain: 'ci.lan',
   sslPort: 443,
   allowErrorMonitoring: false,
   allowAutoThemes: false,

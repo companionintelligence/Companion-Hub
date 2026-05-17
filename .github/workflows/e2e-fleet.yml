@@ -27,10 +27,11 @@ on:
           - app-lifecycle
 
 env:
-  # Server IPs on Tailscale
-  CORE_5_IP: 100.118.2.90
-  CORE_6_IP: 100.95.23.128
-  CORE_7_IP: 100.74.95.94
+  # Fleet server Tailscale IPs — stored as GitHub Actions secrets (not hardcoded).
+  # Add FLEET_CORE_5_IP, FLEET_CORE_6_IP, FLEET_CORE_7_IP under Settings → Secrets and variables → Actions.
+  CORE_5_IP: ${{ secrets.FLEET_CORE_5_IP }}
+  CORE_6_IP: ${{ secrets.FLEET_CORE_6_IP }}
+  CORE_7_IP: ${{ secrets.FLEET_CORE_7_IP }}
 
 jobs:
   e2e-fleet:

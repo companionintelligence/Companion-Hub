@@ -57,4 +57,72 @@ describe('TailscaleService', () => {
       expect.any(Function),
     );
   });
+
+  it('startAuth uses docker sidecar when host unavailable', async () => {
+    execFileMock.mockImplementation(
+      (cmd: string, args: string[], _opts: unknown, cb: (err: Error | null, stdout?: string, stderr?: string) => void) => {
+        if (cmd === 'docker' && args[1] === 'hub-tailscale' && args[3] === 'version') {
+          process.nextTick(() => cb(null, '1.82.0', ''));
+          return;
+        }
+        if (cmd === 'docker' && args.includes('up') && args.includes('--json')) {
+          process.nextTick(() => cb(null, JSON.stringify({ AuthURL: 'https://login.test/auth' }), ''));
+          return;
+        }
+        process.nextTick(() => cb(new Error('unexpected'), '', ''));
+      },
+    );
+
+    const result = await service.startAuth();
+    expect(result.authUrl).toBe('https://login.test/auth');
+  });
+
+  it('connectWithAuthKey invokes tailscale up via sidecar', async () => {
+    execFileMock.mockImplementation(
+      (cmd: string, args: string[], _opts: unknown, cb: (err: Error | null, stdout?: string, stderr?: string) => void) => {
+        if (cmd === 'docker' && args[1] === 'hub-tailscale' && args[3] === 'version') {
+          process.nextTick(() => cb(null, '1.82.0', ''));
+          return;
+        }
+        if (cmd === 'docker' && args.includes('up') && args.includes('--auth-key')) {
+          process.nextTick(() => cb(null, '', ''));
+          return;
+        }
+        process.nextTick(() => cb(new Error('unexpected'), '', ''));
+      },
+    );
+
+    await service.connectWithAuthKey('tskey-auth-testkey');
+
+    expect(execFileMock).toHaveBeenCalledWith(
+      'docker',
+      ['exec', 'hub-tailscale', 'tailscale', 'up', '--auth-key', 'tskey-auth-testkey', '--accept-routes', '--advertise-routes=172.18.0.0/16'],
+      expect.objectContaining({ timeout: 120_000 }),
+      expect.any(Function),
+    );
+  });
+
+  it('connectWithAuthKey rejects invalid key prefix', async () => {
+    await expect(service.connectWithAuthKey('not-a-key')).rejects.toThrow(/tskey-auth/);
+  });
+
+  it('disconnect uses docker sidecar when host unavailable', async () => {
+    execFileMock.mockImplementation(
+      (cmd: string, args: string[], _opts: unknown, cb: (err: Error | null, stdout?: string, stderr?: string) => void) => {
+        if (cmd === 'docker' && args[1] === 'hub-tailscale' && args[3] === 'version') {
+          process.nextTick(() => cb(null, '1.82.0', ''));
+          return;
+        }
+        if (cmd === 'docker' && args[args.length - 1] === 'down') {
+          process.nextTick(() => cb(null, '', ''));
+          return;
+        }
+        process.nextTick(() => cb(new Error('unexpected'), '', ''));
+      },
+    );
+
+    await service.disconnect();
+
+    expect(execFileMock).toHaveBeenCalledWith('docker', ['exec', 'hub-tailscale', 'tailscale', 'down'], expect.any(Object), expect.any(Function));
+  });
 });

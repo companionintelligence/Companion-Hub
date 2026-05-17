@@ -96,10 +96,9 @@ The backend has ~30 NestJS modules organized into **core infrastructure** and **
 | **Queue** | `QueueFactory`, `AppEventsQueue`, `RepoEventsQueue`, `SystemEventsQueue` | Generic `Queue<EventSchema, ResultSchema>` abstraction over `rabbitmq-client`. Implements an **RPC pattern**: publish a command → worker processes it → reply is correlated back to the caller. `AppEventsQueue` runs 3 concurrent workers for install/start/stop/update operations. `RepoEventsQueue` runs 3 workers for git clone/pull. `SystemEventsQueue` runs 1 worker for status reconciliation. All messages validated with Zod schemas. Configurable timeout (default 5 minutes via `QUEUE_TIMEOUT_IN_MINUTES`). Supports cron scheduling for repeatable tasks. Includes exponential backoff on reconnection failures. |
 | **Marketplace** | `MarketplaceService`, `AppStoreFilesManager` | Provides the app catalog search API. Loads app metadata from all configured app stores (git repos cloned to `$DATA_DIR/repos/`). Builds a **MiniSearch** full-text index over app name, description, and categories with fuzzy matching. Index is cached per CPU architecture with a 15-minute TTL (invalidated on store updates). App loading uses `pLimit(10)` to bound concurrent filesystem reads. |
 | **App Stores** | `AppStoreService`, `AppStoreRepository` | Manages app store sources. Each store is a git repository (cloned via `isomorphic-git`) with a specific branch. Supports store types `git` and `ci_cloud_api`. Stores have a unique slug used in app URNs. Repository updates are triggered via the `RepoEventsQueue`. |
-| **Cloudflare** | `CloudflareClientService` | Manages the Cloudflare Tunnel integration. Syncs local app exposure state to the CI Cloud Portal API, which in turn configures Cloudflare DNS ingress rules. Maintains the tunnel token on disk (`tunnel/token`) and in memory. Constructs `AppInfo` payloads (name, subdomain, localPort, protocol) with a `privilegedKind` field for special services (`hub` for the Hub itself, `vpn` for Headscale). Token overwrites on initialization to recover from invalid state. |
+| **Cloudflare** | `CloudflareClientService` | Manages the Cloudflare Tunnel integration. Syncs local app exposure state to the CI Cloud Portal API, which in turn configures Cloudflare DNS ingress rules. Maintains the tunnel token on disk (`tunnel/token`) and in memory. Constructs `AppInfo` payloads (name, subdomain, localPort, protocol) with a `privilegedKind` field for special services (`hub` for the Hub itself). Token overwrites on initialization to recover from invalid state. |
 | **Registration** | `RegistrationService` | Handles the device registration flow with CI Cloud. On first run, the Hub displays a pairing code or redirect URL. The user completes registration on the Portal, which calls back with organization ID, tunnel credentials, and subdomain mapping. Stores everything in the `device_registration` table. On startup, recovers tunnel state from the database and reinitializes the Cloudflare tunnel if needed. Polls every 5 seconds when unregistered. Writes a Traefik dynamic YAML route for the Hub's public FQDN. |
-| **Headscale** | `HeadscaleService` | Manages the Headscale coordination server for private VPN access. Generates server config at `$DATA_DIR/state/headscale/config.yaml`. Manages API keys, pre-auth keys (reusable and ephemeral), and device enrollment. Writes Traefik dynamic YAML for HTTPS access. Resolves the public URL from `HEADSCALE_PUBLIC_*` environment variables or falls back to the Cloudflare tunnel FQDN. |
-| **Tailscale** | `TailscaleService` | Manages a Tailscale client (either a host binary or a `hub-tailscale` Docker sidecar). Supports dual execution modes (`execHost()` for native binary, `execDocker()` for container). Configures `tailscale serve` to map services through the Traefik upstream. |
+| **Tailscale** | `TailscaleService` | When the host has the Tailscale CLI and socket, manages `tailscale` commands and `tailscale serve`. Can fall back to `docker exec` into an optional sidecar named by `TAILSCALE_SIDECAR_CONTAINER` (legacy stacks used `hub-tailscale`). |
 | **Backups** | `BackupsService` | Creates, lists, restores, deletes, and uploads per-app backups. Backups are tar.gz archives of the app's data directory. Flow: set app status to `backing_up` → stop containers → archive → restart. Restore reverses the process. Respects `app.maxBackups` for automatic retention. Tracks `tipi_version` in backup metadata for version compatibility. |
 | **Custom Apps** | `CustomAppService` | Lets users define their own Docker Compose apps without an app store. Files are created under the reserved `_user` store slug. Generates `docker-compose.json`, `config.json`, and metadata files (description.md, logo). Validates metadata via the shared frontmatter schema from `@ci-hub/common`. |
 | **System** | `SystemService` | Reports system metrics: CPU load, memory usage (reads `/host/proc/meminfo` from the bind mount), disk usage. Retrieves TLS certificates from Traefik's ACME storage. Lists running Docker services. Powers the dashboard system info panel. |
@@ -503,8 +502,7 @@ The Hub orchestrates its infrastructure and all user-installed apps via Docker C
 | Service | Image | Profile | Purpose |
 |---------|-------|---------|---------|
 | `cloudflared` | `cloudflare/cloudflared:2026.2.0` | `cloudflare` | Tunnel to Cloudflare edge |
-| `headscale` | `headscale/headscale:0.25.1` | `private-vpn` | Tailscale coordination server |
-| `hub-tailscale` | (sidecar) | `private-vpn` | Tailscale client for Hub |
+| `hub-tailscale` | `tailscale/tailscale:v1.82.5` | `private-vpn` | Tailscale sidecar ([private-vpn.md](./private-vpn.md)) |
 
 **User-installed apps** run as separate Docker Compose stacks managed by the backend's `DockerService`. Each app gets its own compose file, network, and data directory.
 
@@ -516,7 +514,6 @@ Traefik provides automatic routing and TLS for all services:
 Internet → Cloudflare → cloudflared → Traefik (443/80)
                                           │
                                           ├── ci-os-hub (Hub UI/API)
-                                          ├── headscale (VPN server)
                                           ├── app-a (user app)
                                           ├── app-b (user app)
                                           └── ...
@@ -524,7 +521,7 @@ Internet → Cloudflare → cloudflared → Traefik (443/80)
 
 **Configuration sources:**
 1. **Static config** (`traefik.yml`) — Generated by `scripts/init-traefik.ts` at startup. Defines entrypoints (web:80, websecure:443), file providers, Docker provider, and ACME settings.
-2. **Dynamic file config** (`$DATA_DIR/state/traefik/dynamic/`) — YAML files written by the backend for Hub, Headscale, and per-app routes.
+2. **Dynamic file config** (`$DATA_DIR/state/traefik/dynamic/`) — YAML files written by the backend for the Hub and per-app routes.
 3. **Docker labels** — Apps can declare Traefik labels in their compose files for automatic discovery.
 
 **Forward auth:** Traefik's `forwardauth` middleware sends every request to `/api/auth/traefik` before proxying. The backend validates the session and returns an `X-CI-Hub-User` header. This lets installed apps be protected behind Hub authentication without implementing auth themselves.
@@ -547,12 +544,7 @@ Apps can be exposed through three modes:
 - `cloudflared` container bridges traffic from the Cloudflare edge to Traefik
 - Public URL: `{app}.{org_slug}.{domain}` (e.g., `nextcloud.myorg.ci.computer`)
 
-**3. Tailscale / Headscale VPN**
-- `headscale` container runs as a self-hosted Tailscale control server
-- `hub-tailscale` sidecar connects to the Headscale server
-- Other devices join the private network using a pre-auth key
-- Apps accessible via Tailscale IP addresses with end-to-end encryption
-- No public DNS records needed
+**3. Tailscale sidecar (`hub-tailscale`)** — optional `private-vpn` profile: joins [Tailscale](https://tailscale.com) using a pre-auth key and can advertise the Docker bridge so tailnet devices reach Hub services. Not a self-hosted coordination server; see **docs/private-vpn.md**.
 
 ### Filesystem Layout
 
@@ -585,10 +577,6 @@ $ROOT_FOLDER_HOST/
 │   │   ├── dynamic/                Dynamic route YAML files
 │   │   ├── acme_storage.json       Let's Encrypt certificates
 │   │   └── tls/                    Custom TLS certificates
-│   └── headscale/
-│       ├── config.yaml             Headscale server config
-│       ├── api.key                 API key
-│       └── hub-tailscale.preauth.key
 ├── backups/                        Compressed app backup archives (.tar.gz)
 ├── logs/                           Winston log files (JSON, rotated daily)
 ├── user-config/                    Per-app user overrides
@@ -820,17 +808,9 @@ Vitest runs unit tests in backend and frontend packages. Tests are co-located wi
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PRIVATE_VPN_ENABLED` | `true` | Enable Headscale/Tailscale VPN |
+| `PRIVATE_VPN_ENABLED` | `true` (unset) | When not `false`, enables Compose profile `private-vpn` (`hub-tailscale`) |
 | `DEMO_MODE` | `false` | Read-only demo mode |
 | `GUEST_DASHBOARD` | `false` | Allow unauthenticated dashboard access |
 | `ADVANCED_SETTINGS` | `false` | Show advanced settings in UI |
 | `ALLOW_AUTO_THEMES` | `true` | Allow automatic theme switching |
 | `DISABLE_PASSWORD_RESET` | `false` | Disable password reset flow |
-
-### VPN
-
-| Variable | Description |
-|----------|-------------|
-| `HEADSCALE_PUBLIC_HOSTNAME` | Public hostname for Headscale server |
-| `HEADSCALE_PUBLIC_PORT` | Public port for Headscale |
-| `TAILSCALE_AUTHKEY` | Pre-auth key for Tailscale enrollment |

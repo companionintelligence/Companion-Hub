@@ -18,9 +18,11 @@ export interface AuthResult {
   notes: string[];
 }
 
-// Test credentials for the self-hosted app (separate from hub credentials)
-const EMAIL = process.env.APP_TEST_EMAIL || 'explorer@ci.computer';
-const PASSWORD = process.env.APP_TEST_PASSWORD || 'Explorer123!';
+// Test credentials for the self-hosted app (separate from hub credentials).
+// Always set APP_TEST_EMAIL / APP_TEST_PASSWORD via environment — the defaults below are
+// generic placeholders and will not work against a real app instance.
+const EMAIL = process.env.APP_TEST_EMAIL || 'admin@localhost.local';
+const PASSWORD = process.env.APP_TEST_PASSWORD || 'ChangeMe123!';
 const NAME = process.env.APP_TEST_NAME || 'CI Explorer';
 
 // Signals that we're already past auth

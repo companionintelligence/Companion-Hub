@@ -5,12 +5,13 @@ import { Input } from '@/components/ui/Input';
 import { Switch } from '@/components/ui/Switch';
 import { useDisclosure } from '@/lib/hooks/use-disclosure';
 import type { Locale } from '@/lib/i18n/locales';
-import { SlidersHorizontal, Sliders, Info, User } from 'lucide-react';
+import { SlidersHorizontal, Sliders, Info, User, Copy } from 'lucide-react';
 import clsx from 'clsx';
 import type React from 'react';
 import { Suspense, lazy, useEffect } from 'react';
 import { Controller, useForm } from 'react-hook-form';
 import { useTranslation } from 'react-i18next';
+import toast from 'react-hot-toast';
 import { Tooltip } from 'react-tooltip';
 import validator from 'validator';
 import { z } from 'zod';
@@ -89,10 +90,12 @@ interface IProps {
   initialValues?: Partial<SettingsFormValues>;
   loading?: boolean;
   submitErrors?: Record<string, string>;
+  /** Read-only hub-{device}-{org}.{domain} from app context */
+  publicHubHostname?: string;
 }
 
 export const UserSettingsForm = (props: IProps) => {
-  const { onSubmit, initialValues, loading, currentLocale = 'en-US', submitErrors } = props;
+  const { onSubmit, initialValues, loading, currentLocale = 'en-US', submitErrors, publicHubHostname } = props;
   const { t } = useTranslation();
   const advancedSettingsDisclosure = useDisclosure();
 
@@ -115,6 +118,7 @@ export const UserSettingsForm = (props: IProps) => {
     handleSubmit,
     setError,
     control,
+    watch,
     formState: { errors, isDirty },
   } = useForm<SettingsFormValues>({ values: initialValues });
 
@@ -143,6 +147,19 @@ export const UserSettingsForm = (props: IProps) => {
   const downloadCertificate = (e: React.MouseEvent<HTMLButtonElement>) => {
     e.preventDefault();
     window.open('/api/system/certificate');
+  };
+
+  const localDomainValue = watch('localDomain') ?? '';
+
+  const copyToClipboard = async (text: string) => {
+    const v = text.trim();
+    if (!v) return;
+    try {
+      await navigator.clipboard.writeText(v);
+      toast.success(t('SETTINGS_NETWORK_COPIED'));
+    } catch {
+      toast.error(t('SETTINGS_GENERAL_COPY_FAILED'));
+    }
   };
 
   return (
@@ -352,28 +369,90 @@ export const UserSettingsForm = (props: IProps) => {
                 )}
               />
             </div>
-            <div className="mb-3">
-              <Input
-                {...register('localDomain')}
-                label={
-                  <>
+            <div className="mb-3 space-y-4">
+              <div className="space-y-2">
+                <div className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">
+                  <label htmlFor="settings-local-domain" className="inline">
                     {t('SETTINGS_GENERAL_LOCAL_DOMAIN')}
                     <Tooltip className="tooltip" anchorSelect=".local-domain-hint">
                       {t('SETTINGS_GENERAL_LOCAL_DOMAIN_HINT')}
                     </Tooltip>
                     <span
                       className={clsx(
-                        'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help local-domain-hint',
+                        'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help local-domain-hint align-middle',
                       )}
                     >
                       ?
                     </span>
-                  </>
-                }
-                error={errors.localDomain?.message}
-                placeholder="example.local"
-                disabled={initialValues?.advancedSettings === false}
-              />
+                  </label>
+                </div>
+                <div className="flex gap-2 items-start">
+                  <div className="flex-1 min-w-0">
+                    <Input
+                      id="settings-local-domain"
+                      {...register('localDomain')}
+                      error={errors.localDomain?.message}
+                      placeholder="ci.lan"
+                      readOnly={initialValues?.advancedSettings === false}
+                      className={initialValues?.advancedSettings === false ? '[&_input]:cursor-default [&_input]:bg-muted/50' : undefined}
+                    />
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="h-9 w-9 shrink-0 p-0"
+                    disabled={!localDomainValue.trim()}
+                    onClick={() => copyToClipboard(localDomainValue)}
+                    title={t('SETTINGS_GENERAL_COPY')}
+                    aria-label={t('SETTINGS_GENERAL_COPY')}
+                  >
+                    <Copy className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <div className="text-sm font-medium leading-none">
+                  <label htmlFor="public-hub-hostname" className="inline">
+                    {t('SETTINGS_GENERAL_PUBLIC_DOMAIN')}
+                    <Tooltip className="tooltip" anchorSelect=".public-domain-hint">
+                      {t('SETTINGS_GENERAL_PUBLIC_DOMAIN_HINT')}
+                    </Tooltip>
+                    <span
+                      className={clsx(
+                        'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help public-domain-hint align-middle',
+                      )}
+                    >
+                      ?
+                    </span>
+                  </label>
+                </div>
+                <div className="flex gap-2 items-start">
+                  <div className="flex-1 min-w-0">
+                    <Input
+                      id="public-hub-hostname"
+                      name="public-hub-hostname"
+                      value={publicHubHostname ?? ''}
+                      placeholder={t('SETTINGS_GENERAL_PUBLIC_DOMAIN_PENDING')}
+                      readOnly
+                      className="[&_input]:cursor-default [&_input]:bg-muted/50"
+                      onChange={() => {
+                        /* display-only; value is derived from app context */
+                      }}
+                    />
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="h-9 w-9 shrink-0 p-0"
+                    disabled={!publicHubHostname?.trim()}
+                    onClick={() => copyToClipboard(publicHubHostname ?? '')}
+                    title={t('SETTINGS_GENERAL_COPY')}
+                    aria-label={t('SETTINGS_GENERAL_COPY')}
+                  >
+                    <Copy className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
               <Button className="mt-2 mb-2" onClick={downloadCertificate}>
                 {t('SETTINGS_GENERAL_DOWNLOAD_CERTIFICATE')}
               </Button>

@@ -136,9 +136,9 @@ echo "YOUR_TUNNEL_TOKEN" > tunnel/token
 ./scripts/generate-tunnel-certs.sh   # HTTPS certs for local tunnel
 ```
 
-### Private VPN (optional)
+### Private VPN (Tailscale, optional)
 
-Headscale runs as an opt-in Docker profile for encrypted peer-to-peer access. See **[docs/private-vpn.md](docs/private-vpn.md)**.
+The **`hub-tailscale`** Docker sidecar joins your Tailscale tailnet for private access to the Hub network. See **[docs/private-vpn.md](docs/private-vpn.md)**.
 
 ---
 

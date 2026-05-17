@@ -2,6 +2,7 @@ import path from 'node:path';
 import { Injectable } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
+import { DEFAULT_LOCAL_DOMAIN } from '@/common/constants';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import type { AppUrn } from '@ci-hub/common/types';
@@ -91,7 +92,7 @@ export class SkillResolverService {
       APP_HOST: appEnvVars?.APP_HOST ?? `${appName}-${storeSlug}`,
       APP_PORT: appEnvVars?.APP_PORT ?? '',
       APP_DOMAIN: appEnvVars?.APP_DOMAIN ?? '',
-      APP_LOCAL_DOMAIN: appEnvVars?.LOCAL_DOMAIN ?? userSettings?.localDomain ?? '',
+      APP_LOCAL_DOMAIN: appEnvVars?.LOCAL_DOMAIN ?? userSettings?.localDomain ?? this.config.getConfig().localDomain ?? DEFAULT_LOCAL_DOMAIN,
       APP_URN: appUrn,
       APP_DATA_DIR: appEnvVars?.APP_DATA_DIR ?? '',
     };

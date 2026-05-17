@@ -31,14 +31,16 @@ on:
           - core-7
 
 env:
-  CORE_1_IP: 100.108.17.53
-  CORE_2_IP: 100.101.156.33
-  CORE_3_IP: 100.108.125.105
-  CORE_4_IP: 100.76.114.122
-  CORE_5_IP: 100.118.2.90
-  CORE_6_IP: 100.95.23.128
-  CORE_7_IP: 100.74.95.94
-  SSH_USER: ci
+  # Fleet server Tailscale IPs — stored as GitHub Actions secrets (not hardcoded).
+  # Add FLEET_CORE_1_IP … FLEET_CORE_7_IP under Settings → Secrets and variables → Actions.
+  CORE_1_IP: ${{ secrets.FLEET_CORE_1_IP }}
+  CORE_2_IP: ${{ secrets.FLEET_CORE_2_IP }}
+  CORE_3_IP: ${{ secrets.FLEET_CORE_3_IP }}
+  CORE_4_IP: ${{ secrets.FLEET_CORE_4_IP }}
+  CORE_5_IP: ${{ secrets.FLEET_CORE_5_IP }}
+  CORE_6_IP: ${{ secrets.FLEET_CORE_6_IP }}
+  CORE_7_IP: ${{ secrets.FLEET_CORE_7_IP }}
+  SSH_USER: ${{ secrets.FLEET_SSH_USER }}
 
 jobs:
   prepare:
@@ -55,38 +57,38 @@ jobs:
           MODE="${{ github.event.inputs.mode || 'full' }}"
           
           if [[ "$MODE" == "full" ]] || [[ "$MODE" == "" ]]; then
-            # Full fleet - all 7 servers
-            echo 'matrix={"include":[
-              {"server":"core-1","ip":"100.108.17.53","batch":0},
-              {"server":"core-2","ip":"100.101.156.33","batch":1},
-              {"server":"core-3","ip":"100.108.125.105","batch":2},
-              {"server":"core-4","ip":"100.76.114.122","batch":3},
-              {"server":"core-5","ip":"100.118.2.90","batch":4},
-              {"server":"core-6","ip":"100.95.23.128","batch":5},
-              {"server":"core-7","ip":"100.74.95.94","batch":6}
-            ]}' >> $GITHUB_OUTPUT
+            # Full fleet - all 7 servers (IPs injected from env vars sourced from secrets)
+            echo "matrix={\"include\":[
+              {\"server\":\"core-1\",\"ip\":\"$CORE_1_IP\",\"batch\":0},
+              {\"server\":\"core-2\",\"ip\":\"$CORE_2_IP\",\"batch\":1},
+              {\"server\":\"core-3\",\"ip\":\"$CORE_3_IP\",\"batch\":2},
+              {\"server\":\"core-4\",\"ip\":\"$CORE_4_IP\",\"batch\":3},
+              {\"server\":\"core-5\",\"ip\":\"$CORE_5_IP\",\"batch\":4},
+              {\"server\":\"core-6\",\"ip\":\"$CORE_6_IP\",\"batch\":5},
+              {\"server\":\"core-7\",\"ip\":\"$CORE_7_IP\",\"batch\":6}
+            ]}" >> $GITHUB_OUTPUT
             echo "total_apps=602" >> $GITHUB_OUTPUT
             
           elif [[ "$MODE" == "high-priority" ]]; then
             # High priority apps only (12 apps, single server)
-            echo 'matrix={"include":[
-              {"server":"core-1","ip":"100.108.17.53","batch":"high"}
-            ]}' >> $GITHUB_OUTPUT
+            echo "matrix={\"include\":[
+              {\"server\":\"core-1\",\"ip\":\"$CORE_1_IP\",\"batch\":\"high\"}
+            ]}" >> $GITHUB_OUTPUT
             echo "total_apps=12" >> $GITHUB_OUTPUT
             
           elif [[ "$MODE" == "single-batch" ]]; then
             SERVER="${{ github.event.inputs.server || 'core-1' }}"
             BATCH="${{ github.event.inputs.batch || '0' }}"
             
-            # Map server to IP
+            # Map server to IP via env vars (values come from secrets)
             case $SERVER in
-              core-1) IP="100.108.17.53" ;;
-              core-2) IP="100.101.156.33" ;;
-              core-3) IP="100.108.125.105" ;;
-              core-4) IP="100.76.114.122" ;;
-              core-5) IP="100.118.2.90" ;;
-              core-6) IP="100.95.23.128" ;;
-              core-7) IP="100.74.95.94" ;;
+              core-1) IP="$CORE_1_IP" ;;
+              core-2) IP="$CORE_2_IP" ;;
+              core-3) IP="$CORE_3_IP" ;;
+              core-4) IP="$CORE_4_IP" ;;
+              core-5) IP="$CORE_5_IP" ;;
+              core-6) IP="$CORE_6_IP" ;;
+              core-7) IP="$CORE_7_IP" ;;
             esac
             
             echo "matrix={\"include\":[{\"server\":\"$SERVER\",\"ip\":\"$IP\",\"batch\":$BATCH}]}" >> $GITHUB_OUTPUT
@@ -94,9 +96,9 @@ jobs:
             
           elif [[ "$MODE" == "quick" ]]; then
             # Quick smoke test - 10 essential apps on one server
-            echo 'matrix={"include":[
-              {"server":"core-1","ip":"100.108.17.53","batch":"quick"}
-            ]}' >> $GITHUB_OUTPUT
+            echo "matrix={\"include\":[
+              {\"server\":\"core-1\",\"ip\":\"$CORE_1_IP\",\"batch\":\"quick\"}
+            ]}" >> $GITHUB_OUTPUT
             echo "total_apps=10" >> $GITHUB_OUTPUT
           fi
 

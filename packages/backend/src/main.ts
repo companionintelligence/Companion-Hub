@@ -1,34 +1,20 @@
-import fs from 'node:fs';
-import path from 'node:path';
 import { type INestApplication, ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
-import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import { SwaggerModule } from '@nestjs/swagger';
 import cookieParser from 'cookie-parser';
 import { AppModule } from './app.module';
 import { AppService } from './app.service';
-import { APP_DIR } from './common/constants';
 import { generateSystemEnvFile } from './common/helpers/env-helpers';
+import { buildSwaggerDocument, writeSwaggerJsonFile } from './swagger-setup';
 
 async function setupSwagger(app: INestApplication) {
-  const config = new DocumentBuilder()
-    .setTitle('CI Hub API')
-    .setDescription('API specs for CI Hub')
-    .setVersion('1.0')
-    .setOpenAPIVersion('3.1.0')
-    .build();
-
-  const document = SwaggerModule.createDocument(app, config, {
-    operationIdFactory: (_: string, methodKey: string) => methodKey,
-  });
+  const document = buildSwaggerDocument(app);
   SwaggerModule.setup('api/docs', app, document);
 
   const { NODE_ENV } = process.env;
-  // write the swagger.json file to the assets folder
   if (NODE_ENV !== 'production') {
     try {
-      const swaggerPath = path.join(APP_DIR, 'packages', 'backend', 'src', 'swagger.json');
-      await fs.promises.mkdir(path.dirname(swaggerPath), { recursive: true });
-      await fs.promises.writeFile(swaggerPath, JSON.stringify(document, null, 2));
+      await writeSwaggerJsonFile(document);
     } catch (error) {
       // Non-fatal — swagger.json is just for API docs during development
       const message = error instanceof Error ? error.message : String(error);

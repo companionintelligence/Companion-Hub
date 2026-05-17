@@ -32,6 +32,12 @@ export class QueueFactory implements OnApplicationShutdown {
     private readonly logger: LoggerService,
     private readonly config: ConfigurationService,
   ) {
+    if (process.env.CI_HUB_OPENAPI_GENERATE === '1') {
+      this.connectionStatus = 'degraded';
+      this.lastError = 'skipped for OpenAPI generation';
+      return;
+    }
+
     void this.initializeConnection().catch(async (error) => {
       this.logger.error('Initial queue connection failed', error);
       await this.reconnect(error instanceof Error ? error : new Error(String(error)));
@@ -205,6 +211,24 @@ export class QueueFactory implements OnApplicationShutdown {
   }
 
   public async createQueue<T extends z.ZodType>(params: { queueName: string; workers?: number; eventSchema: T; timeout?: number }) {
+    if (process.env.CI_HUB_OPENAPI_GENERATE === '1') {
+      return {
+        onEvent: () => {
+          /* OpenAPI generation: queue unused */
+        },
+        publish: async () => ({ success: true, message: 'openapi-stub' }),
+        publishRepeatable: () => {
+          /* no-op */
+        },
+        stopAllCronTasks: () => {
+          /* no-op */
+        },
+        rebindConnection: () => {
+          /* no-op */
+        },
+      } as unknown as Queue<T, z.ZodType<{ success: boolean; message: string }>>;
+    }
+
     if (!this.rabbit) {
       try {
         await this.initializeConnection();

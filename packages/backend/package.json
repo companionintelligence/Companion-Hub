@@ -16,7 +16,8 @@
     "test:watch": "vitest",
     "test:db": "docker compose -f ./src/tests/db.compose.yml up -d",
     "studio": "drizzle-kit studio",
-    "gen:migrations": "drizzle-kit generate"
+    "gen:migrations": "drizzle-kit generate",
+    "gen:swagger": "nest build && node -r ./scripts/register-swagger-env.cjs dist/scripts/generate-swagger.js"
   },
   "dependencies": {
     "@ci-hub/common": "workspace:*",

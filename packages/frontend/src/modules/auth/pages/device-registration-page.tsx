@@ -46,13 +46,14 @@ function getProgressCopy(status: RegistrationStatus | null, redirectStatus: stri
   switch (status.phase) {
     case 'paired':
       return {
-        title: 'Pairing accepted',
-        description: 'Your pairing code worked. We are finishing local Hub setup before moving on.',
+        title: 'Provisioning your domain',
+        description:
+          'Your pairing code worked. We are finishing DNS and secure routing for your Hub so it can be reached on the web. That often takes a few minutes—please keep this window open.',
       };
     case 'provisioning':
       return {
         title: 'Setting up your Hub',
-        description: 'We are configuring local services and your public route. This can take a minute.',
+        description: 'We are turning on local services and your public connection. DNS propagation can add another minute or two.',
       };
     case 'degraded':
       return {
@@ -321,8 +322,10 @@ export default function DeviceRegistrationPage() {
           pendingPairTargetRef.current = { domain: data.domain, subdomain: data.subdomain };
           setPairingCode('');
           setRegistrationStatus({ phase: 'paired', degradedReasons: [], registered: false });
-          setRedirectStatus('Pairing accepted. This may take a few minutes...');
-          toast.success('Pairing accepted. This may take a few minutes...');
+          setRedirectStatus(
+            'Provisioning your domain and secure connection. DNS and tunnel setup can take a few minutes—please wait on this screen.',
+          );
+          toast.success('Pairing accepted. Provisioning your domain—this usually takes a few minutes.');
           await refreshRegistrationStatus();
         } else {
           const errorMsg = typeof data.message === 'string' ? data.message : 'Registration failed.';

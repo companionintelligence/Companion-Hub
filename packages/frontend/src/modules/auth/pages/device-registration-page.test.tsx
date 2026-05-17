@@ -119,7 +119,7 @@ describe('DeviceRegistrationPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Register' }));
     await flushAsyncWork();
 
-    expect(screen.getByRole('heading', { name: 'Pairing accepted' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Provisioning your domain' })).toBeInTheDocument();
     expect(navigate).not.toHaveBeenCalled();
 
     await act(async () => {
