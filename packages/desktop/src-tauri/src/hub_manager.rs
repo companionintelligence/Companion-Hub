@@ -60,7 +60,7 @@ const MAX_LOG_SIZE_BYTES: u64 = 5 * 1024 * 1024;
 const MAX_LOG_ROTATIONS: usize = 3;
 const MANAGED_APP_CONTAINER_LABEL_FILTER: &str = "label=ci-os-hub.managed=true";
 const MANAGED_APP_CONTAINER_URN_FILTER: &str = "label=ci-os-hub.appurn";
-const DEFAULT_TRAEFIK_ACME_EMAIL: &str = "admin@companionintelligence.com";
+const DEFAULT_TRAEFIK_ACME_EMAIL: &str = "admin@example.com";
 const TRAEFIK_ACME_DEFAULT_CONTENT: &str = "{}";
 const TRAEFIK_CONFIG_SEED: &str = include_str!("../../../backend/assets/traefik/traefik.yml");
 const TRAEFIK_DYNAMIC_CONFIG_SEED: &str =
@@ -1021,7 +1021,8 @@ fn clear_traefik_recreate_required(data_dir: &Path) -> Result<(), String> {
 }
 
 fn seeded_traefik_config_contents() -> String {
-    TRAEFIK_CONFIG_SEED.replace("{{ACME_EMAIL}}", DEFAULT_TRAEFIK_ACME_EMAIL)
+    let acme_email = std::env::var("ACME_EMAIL").unwrap_or_else(|_| DEFAULT_TRAEFIK_ACME_EMAIL.to_string());
+    TRAEFIK_CONFIG_SEED.replace("{{ACME_EMAIL}}", &acme_email)
 }
 
 fn ensure_runtime_directory(path: &Path) -> Result<TraefikRuntimePreflight, String> {

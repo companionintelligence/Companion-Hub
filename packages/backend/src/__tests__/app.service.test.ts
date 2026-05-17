@@ -104,7 +104,7 @@ describe('AppService', () => {
       cwdSpy.mockRestore();
 
       expect((await fs.promises.stat(traefikConfigPath)).isFile()).toBe(true);
-      expect((await fs.promises.readFile(traefikConfigPath, 'utf8')).trim()).toContain('admin@companionintelligence.com');
+      expect((await fs.promises.readFile(traefikConfigPath, 'utf8')).trim()).toContain('admin@example.com');
       expect((await fs.promises.stat(dynamicConfigPath)).isFile()).toBe(true);
       expect((await fs.promises.readFile(dynamicConfigPath, 'utf8')).trim()).toBe('http:\n  middlewares: {}');
     });

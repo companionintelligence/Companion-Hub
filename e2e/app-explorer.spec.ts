@@ -16,7 +16,7 @@
  *   HUB_URL               ci-hub frontend (default: http://localhost:9091)
  *   TEST_EMAIL            Hub login email
  *   TEST_PASSWORD         Hub login password
- *   APP_TEST_EMAIL        Email for account creation on the app (default: explorer@ci.computer)
+ *   APP_TEST_EMAIL        Email for account creation on the app (default: admin@localhost.local)
  *   APP_TEST_PASSWORD     Password for account on the app     (default: Explorer123!)
  *   APP_TEST_NAME         Display name for account            (default: CI Explorer)
  *   APP_DOMAIN            Base domain for app subdomains      (default: ci.computer)
