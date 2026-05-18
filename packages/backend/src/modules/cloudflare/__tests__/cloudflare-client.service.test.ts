@@ -155,4 +155,80 @@ describe('CloudflareClientService', () => {
       expect(result).toBe(false);
     });
   });
+
+  describe('fetchAvailableDomains', () => {
+    it('should normalize numeric domain ids to strings', async () => {
+      mockAxiosInstance.get.mockResolvedValue({
+        data: {
+          domains: [
+            { id: 1, domain: 'example.com', isDefault: true, scope: 'org' },
+            { id: '2', domain: 'ci.computer', isDefault: false },
+          ],
+        },
+      });
+
+      const result = await service.fetchAvailableDomains();
+
+      expect(result).toEqual({
+        domains: [
+          { id: '1', domain: 'example.com', isDefault: true, scope: 'org' },
+          { id: '2', domain: 'ci.computer', isDefault: false },
+        ],
+      });
+    });
+
+    it('should retry cloudflare/domains when domains endpoint returns 404', async () => {
+      mockAxiosInstance.get.mockRejectedValueOnce({ response: { status: 404 } }).mockResolvedValueOnce({
+        data: {
+          domains: [{ id: '1', domain: 'example.com', isDefault: true }],
+        },
+      });
+
+      const result = await service.fetchAvailableDomains();
+
+      expect(mockAxiosInstance.get).toHaveBeenNthCalledWith(1, 'domains', expect.anything());
+      expect(mockAxiosInstance.get).toHaveBeenNthCalledWith(2, 'cloudflare/domains', expect.anything());
+      expect(result).toEqual({
+        domains: [{ id: '1', domain: 'example.com', isDefault: true }],
+      });
+    });
+  });
+
+  describe('checkDnsAvailability', () => {
+    it('should return delegated availability result when CI-Cloud responds with expected shape', async () => {
+      mockAxiosInstance.get.mockResolvedValue({
+        data: {
+          available: true,
+          message: 'ok',
+        },
+      });
+
+      const result = await service.checkDnsAvailability('test-subdomain', 'example.com');
+
+      expect(mockAxiosInstance.get).toHaveBeenCalledWith(
+        'cloudflare/check-dns-availability',
+        expect.objectContaining({
+          params: {
+            subdomain: 'test-subdomain',
+            domain: 'example.com',
+          },
+        }),
+      );
+      expect(result).toEqual({ available: true, message: 'ok' });
+    });
+
+    it('should fail closed when CI-Cloud availability check errors', async () => {
+      mockAxiosInstance.get.mockRejectedValue({
+        response: {
+          data: {
+            message: 'CI-Cloud unavailable',
+          },
+        },
+      });
+
+      const result = await service.checkDnsAvailability('test-subdomain', 'example.com');
+
+      expect(result).toEqual({ available: false, message: 'CI-Cloud unavailable' });
+    });
+  });
 });

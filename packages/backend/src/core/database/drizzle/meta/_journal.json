@@ -295,6 +295,13 @@
       "when": 1776595200000,
       "tag": "0041_add_provisioning_phase",
       "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1778800000000,
+      "tag": "0042_add_public_domain",
+      "breakpoints": true
     }
   ]
 }

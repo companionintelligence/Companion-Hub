@@ -8,10 +8,11 @@ interface InputGroupProps extends React.InputHTMLAttributes<HTMLInputElement> {
   groupPrefix?: string | React.ReactNode;
   groupSuffix?: string | React.ReactNode;
   groupClassName?: string;
+  groupSuffixClassName?: string;
 }
 
 export const InputGroup = React.forwardRef<HTMLInputElement, InputGroupProps>(
-  ({ name, label, error, type = 'text', className, isInvalid, groupPrefix, groupSuffix, groupClassName, id, ...rest }, ref) => {
+  ({ name, label, error, type = 'text', className, isInvalid, groupPrefix, groupSuffix, groupClassName, groupSuffixClassName, id, ...rest }, ref) => {
     const renderPrefix = () => {
       if (!groupPrefix) return null;
       if (typeof groupPrefix === 'string') {
@@ -28,12 +29,17 @@ export const InputGroup = React.forwardRef<HTMLInputElement, InputGroupProps>(
       if (!groupSuffix) return null;
       if (typeof groupSuffix === 'string') {
         return (
-          <div className="flex max-w-[50%] min-w-0 items-center whitespace-normal break-all rounded-r-md border border-l-0 border-input bg-muted px-3 py-1 text-sm leading-tight text-muted-foreground">
+          <div
+            className={cn(
+              'flex max-w-[50%] min-w-0 items-center whitespace-normal break-all rounded-r-md border border-l-0 border-input bg-muted px-3 py-1 text-sm leading-tight text-muted-foreground',
+              groupSuffixClassName,
+            )}
+          >
             {groupSuffix}
           </div>
         );
       }
-      return <div className="flex shrink-0 items-center whitespace-nowrap">{groupSuffix}</div>;
+      return <div className={cn('flex shrink-0 items-center whitespace-nowrap', groupSuffixClassName)}>{groupSuffix}</div>;
     };
 
     return (
@@ -43,7 +49,7 @@ export const InputGroup = React.forwardRef<HTMLInputElement, InputGroupProps>(
             {label}
           </label>
         )}
-        <div className={cn('flex min-w-0 flex-nowrap w-full shadow-sm', groupClassName)}>
+        <div className={cn('flex min-w-0 w-full flex-nowrap shadow-sm', groupClassName)}>
           {renderPrefix()}
           <input
             ref={ref}

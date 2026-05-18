@@ -3,7 +3,8 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { DockerService } from '../docker/docker.service';
-import axios, { AxiosInstance } from 'axios';
+import type { AvailableDomain, AvailableDomainsResponse } from '@ci-hub/common/types';
+import axios, { AxiosInstance, type AxiosResponse } from 'axios';
 import * as fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
 import * as path from 'node:path';
@@ -11,6 +12,7 @@ import * as path from 'node:path';
 export interface AppInfo {
   name: string;
   subdomain: string; // Full subdomain (e.g., n8n-bdc) - used for Cloudflare public hostname
+  publicDomain?: string; // Selected public root domain for this app hostname
   localPort: number;
   protocol?: 'http' | 'https';
   hostname?: string;
@@ -68,6 +70,21 @@ export class CloudflareClientService {
         'x-device-key': authToken,
       },
     };
+  }
+
+  private isAvailableDomain(entry: unknown): entry is AvailableDomain {
+    if (!entry || typeof entry !== 'object') {
+      return false;
+    }
+
+    const candidate = entry as Partial<AvailableDomain> & { id?: string | number };
+
+    return (
+      (typeof candidate.id === 'string' || typeof candidate.id === 'number') &&
+      typeof candidate.domain === 'string' &&
+      typeof candidate.isDefault === 'boolean' &&
+      (typeof candidate.scope === 'string' || typeof candidate.scope === 'undefined')
+    );
   }
 
   private async updateTunnelFiles(token: string) {
@@ -180,6 +197,94 @@ export class CloudflareClientService {
         this.logger.error(`Error Response: ${JSON.stringify(error.response.data)}`);
       }
       return false;
+    }
+  }
+
+  async fetchAvailableDomains(): Promise<AvailableDomainsResponse> {
+    try {
+      const requestConfig = this.getRequestConfig();
+      let response: AxiosResponse<{ domains?: unknown[] }>;
+
+      // CI-Portal serves domain listing at /api/domains. Keep a namespaced
+      // fallback for compatibility if CI-Cloud route topology changes.
+      try {
+        response = await this.client.get('domains', requestConfig);
+      } catch (error) {
+        const status = (error as { response?: { status?: number } })?.response?.status;
+        if (status !== 404) {
+          throw error;
+        }
+
+        this.logger.warn('CI-Cloud domains endpoint returned 404, retrying cloudflare/domains fallback');
+        response = await this.client.get('cloudflare/domains', requestConfig);
+      }
+
+      const domains = Array.isArray(response.data?.domains)
+        ? response.data.domains
+            .filter((entry: unknown): entry is AvailableDomain => this.isAvailableDomain(entry))
+            .map((entry: AvailableDomain) => ({ ...entry, id: String(entry.id) }))
+        : [];
+
+      this.logger.debug(`Fetched ${domains.length} domain(s) from CI-Cloud`);
+
+      return { domains };
+    } catch (error) {
+      if (error instanceof Error) {
+        this.logger.error(`Failed to fetch available domains: ${error.message}`);
+      } else {
+        this.logger.error(`Failed to fetch available domains: ${String(error)}`);
+      }
+      if (axios.isAxiosError(error) && error.response) {
+        this.logger.error(`Domain fetch error response: ${JSON.stringify(error.response.data)}`);
+      }
+
+      return { domains: [] };
+    }
+  }
+
+  async checkDnsAvailability(subdomain: string, domain?: string): Promise<{ available: boolean; message?: string }> {
+    try {
+      const response = await this.client.get('cloudflare/check-dns-availability', {
+        ...this.getRequestConfig(),
+        params: {
+          subdomain,
+          ...(domain ? { domain } : {}),
+        },
+      });
+
+      if (typeof response.data?.available === 'boolean') {
+        return {
+          available: response.data.available,
+          message: typeof response.data?.message === 'string' ? response.data.message : undefined,
+        };
+      }
+
+      return {
+        available: false,
+        message: 'Unable to verify DNS availability (unexpected CI-Cloud response)',
+      };
+    } catch (error) {
+      if (error instanceof Error) {
+        this.logger.error(`Failed to check DNS availability: ${error.message}`);
+      } else {
+        this.logger.error(`Failed to check DNS availability: ${String(error)}`);
+      }
+
+      if (axios.isAxiosError(error) && error.response) {
+        this.logger.error(`DNS availability error response: ${JSON.stringify(error.response.data)}`);
+      }
+
+      const responseMessage =
+        typeof (error as { response?: { data?: { message?: unknown } } })?.response?.data?.message === 'string'
+          ? ((error as { response?: { data?: { message?: string } } }).response?.data?.message ?? '')
+          : '';
+
+      const message = responseMessage || 'Unable to verify DNS availability right now. Please try again.';
+
+      return {
+        available: false,
+        message,
+      };
     }
   }
 

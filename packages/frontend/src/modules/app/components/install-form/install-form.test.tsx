@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { MemoryRouter } from 'react-router';
 import type { AppInfo } from '@/types/app.types';
 import { InstallForm } from './install-form';
@@ -23,11 +23,19 @@ vi.mock('react-i18next', () => ({
   }),
 }));
 
+const MOCK_AVAILABLE_DOMAINS = { domains: [] as Array<{ id: string; domain: string; isDefault: boolean; scope?: string }> };
+const MOCK_USE_QUERY_RESULT = {
+  data: MOCK_AVAILABLE_DOMAINS,
+  isLoading: false,
+};
+
 vi.mock('@tanstack/react-query', () => ({
   useMutation: () => ({
     mutateAsync: vi.fn().mockResolvedValue({}),
     isPending: false,
   }),
+  useQuery: () => MOCK_USE_QUERY_RESULT,
+  queryOptions: (options: unknown) => options,
 }));
 
 // Mock API client if needed
@@ -36,6 +44,10 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
 }));
 
 describe('InstallForm', () => {
+  afterEach(() => {
+    MOCK_AVAILABLE_DOMAINS.domains = [];
+  });
+
   const createContext = (advancedMode: boolean) => ({
     userSettings: {
       ciHubOrganizationSlug: undefined,
@@ -275,5 +287,28 @@ describe('InstallForm', () => {
     );
 
     expect(screen.getByRole('switch', { name: 'APP_INSTALL_FORM_SHOW_ADVANCED_SETTINGS' })).toBeInTheDocument();
+  });
+
+  it('renders the public domain selector inside the subdomain field instead of a separate row', () => {
+    vi.mocked(useAppContext).mockReturnValue(createContext(true) as unknown as ReturnType<typeof useAppContext>);
+    MOCK_AVAILABLE_DOMAINS.domains = [{ id: 'd1', domain: 'ci.computer', isDefault: true }];
+
+    const exposableInfo = {
+      ...baseInfo,
+      exposable: true,
+      dynamic_config: true,
+      urn: 'activepieces:gitstore',
+    } as unknown as AppInfo;
+
+    render(
+      <MemoryRouter>
+        <InstallForm info={exposableInfo} onSubmit={vi.fn()} formId="test-form" formFields={[]} />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByLabelText('APP_INSTALL_FORM_PUBLIC_DOMAIN')).toBeInTheDocument();
+    expect(screen.queryByText('APP_INSTALL_FORM_PUBLIC_DOMAIN')).not.toBeInTheDocument();
+
+    MOCK_AVAILABLE_DOMAINS.domains = [];
   });
 });
