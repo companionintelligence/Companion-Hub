@@ -30,6 +30,7 @@ import {
   DEFAULT_EXPERIMENTAL_INSECURE_COOKIE,
   DEFAULT_THEME_BASE,
   DEFAULT_THEME_COLOR,
+  DEFAULT_LOCAL_DOMAIN,
 } from '../constants';
 
 export const DEFAULT_REPO_URL = '';
@@ -103,8 +104,8 @@ function resolve(
   if (legacyKey && process.env[legacyKey] !== undefined && process.env[legacyKey] !== '') {
     return process.env[legacyKey] as string;
   }
-  // 2. settings.json value (if provided and not undefined)
-  if (opts.settingsVal !== undefined) {
+  // 2. settings.json value (if provided and non-empty)
+  if (opts.settingsVal !== undefined && opts.settingsVal !== '') {
     return opts.settingsVal;
   }
   // 3. Previously persisted value in data .env — check new name first, then legacy
@@ -231,7 +232,14 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   envMap.set('TZ', resolve('TZ', { envMap, settingsVal: settingsData.timeZone, fallback: Intl.DateTimeFormat().resolvedOptions().timeZone }));
   envMap.set('DNS_IP', resolve('DNS_IP', { envMap, settingsVal: settingsData.dnsIp, fallback: DEFAULT_DNS_IP }));
   envMap.set('DOMAIN', resolve('DOMAIN', { envMap, fallback: 'example.com' }));
-  envMap.set('LOCAL_DOMAIN', resolve('LOCAL_DOMAIN', { envMap, settingsVal: settingsData.localDomain, fallback: '' }));
+  envMap.set(
+    'LOCAL_DOMAIN',
+    resolve('LOCAL_DOMAIN', {
+      envMap,
+      settingsVal: settingsData.localDomain?.trim() || undefined,
+      fallback: DEFAULT_LOCAL_DOMAIN,
+    }),
+  );
   envMap.set(
     'CI_HUB_FORWARD_AUTH_URL',
     resolve('CI_HUB_FORWARD_AUTH_URL', { envMap, settingsVal: settingsData.forwardAuthUrl, fallback: DEFAULT_FORWARD_AUTH_URL }),

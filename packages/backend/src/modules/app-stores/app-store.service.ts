@@ -1,7 +1,15 @@
 import { TranslatableError } from '@/common/error/translatable-error';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import { HttpStatus, Injectable, Inject, forwardRef, OnApplicationBootstrap, type OnApplicationShutdown } from '@nestjs/common';
+import {
+  HttpStatus,
+  Injectable,
+  Inject,
+  forwardRef,
+  OnApplicationBootstrap,
+  type OnApplicationShutdown,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import slugify from 'slugify';
 import type { UpdateAppStoreBodyDto } from '../marketplace/dto/marketplace.dto';
 import { RepoEventsQueue } from '../queue/entities/repo-events';
@@ -127,6 +135,27 @@ export class AppStoreService implements OnApplicationBootstrap, OnApplicationShu
       enabled: true,
       type: 'ci_cloud_api',
     });
+  }
+
+  /** Proxies CI Cloud `GET /api/store/alternatives` (used by onboarding / app store UI). */
+  public async fetchCiCloudStoreAlternatives(): Promise<unknown> {
+    const { ciCloudUrl } = this.config.getConfig();
+    const base = ciCloudUrl?.trim().replace(/\/$/, '');
+    if (!base) {
+      throw new ServiceUnavailableException('CI_CLOUD_URL is not configured on this Hub.');
+    }
+    const url = `${base}/api/store/alternatives`;
+    let res: Response;
+    try {
+      res = await fetch(url, { signal: AbortSignal.timeout(30_000) });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'unknown error';
+      throw new ServiceUnavailableException(`Could not reach CI Cloud store catalog (${msg}).`);
+    }
+    if (!res.ok) {
+      throw new ServiceUnavailableException(`CI Cloud store catalog returned HTTP ${res.status}.`);
+    }
+    return res.json() as Promise<unknown>;
   }
 
   public async getEnabledAppStores() {

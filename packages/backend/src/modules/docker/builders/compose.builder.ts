@@ -1,3 +1,4 @@
+import { DEFAULT_LOCAL_DOMAIN } from '@/common/constants';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import { type Service, type ServiceInput, serviceSchema } from '@ci-hub/common/schemas';
@@ -202,7 +203,7 @@ export class DockerComposeBuilder {
 
     // Store domain values for use in buildService
     this.domain = domain || process.env.DOMAIN || 'example.com';
-    this.localDomain = localDomain || process.env.LOCAL_DOMAIN || 'ci.lan';
+    this.localDomain = localDomain || process.env.LOCAL_DOMAIN || DEFAULT_LOCAL_DOMAIN;
 
     // Read full subdomain (with org slug) and public domain from env file if available (set by app.helpers.ts)
     // APP_PUBLIC_HOSTNAME format: appname-deviceslug-orgslug.publicdomain.com

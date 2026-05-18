@@ -30,8 +30,8 @@ export interface AppInfo {
    *           out of the generated ingress rules and reconstructs its route
    *           from the DB so `host.docker.internal:{port}` always reflects
    *           the authoritative port.
-   *   'vpn' — the org's self-hosted Headscale coordination server. Routed
-   *           normally through the ingress list but preserved across sync.
+   *   'vpn' — legacy discriminator; retained for backward compatibility with
+   *           older Portal rows. The Hub no longer syncs Headscale routes.
    *
    * Replaces the older boolean `isHub` + `isVpn` flags; see CI-Portal
    * migration 0017.

@@ -27,6 +27,7 @@
     "e2e:cross-domain": "bash e2e/pre-test-cleanup.sh && E2E_SUITE=cross-domain pnpm exec playwright test --config playwright.cross-domain.config.ts",
     "check:all": "pnpm run lint && turbo run tsc && turbo run build && turbo run test",
     "gen:api-client": "openapi-ts",
+    "gen:swagger": "pnpm --filter backend run gen:swagger",
     "lint:ci": "biome ci . --error-on-warnings --no-errors-on-unmatched",
     "lint": "biome check",
     "lint:fix": "biome check --write --no-errors-on-unmatched",

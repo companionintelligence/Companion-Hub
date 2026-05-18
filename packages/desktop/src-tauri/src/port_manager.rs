@@ -21,7 +21,6 @@ const OUR_CONTAINERS: &[&str] = &[
     "ci-os-hub-queue",
     "traefik",
     "cloudflared",
-    "headscale",
     "hub-tailscale",
 ];
 

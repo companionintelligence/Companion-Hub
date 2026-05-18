@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { type UserSettingsBody, settingsSchema } from '@/app.dto';
-import { APP_DATA_DIR, APP_DIR, ARCHITECTURES, DATA_DIR } from '@/common/constants';
+import { APP_DATA_DIR, APP_DIR, ARCHITECTURES, DATA_DIR, DEFAULT_LOCAL_DOMAIN } from '@/common/constants';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
@@ -27,7 +27,7 @@ const envSchema = z.object({
   APPS_REPO_URL: z.string().optional(),
   CI_CLOUD_URL: z.string(),
   DOMAIN: z.string(),
-  LOCAL_DOMAIN: z.string().default('ci.lan'),
+  LOCAL_DOMAIN: z.preprocess((val) => (typeof val === 'string' && val.trim() === '' ? undefined : val), z.string().default(DEFAULT_LOCAL_DOMAIN)),
   DNS_IP: z.string().default('9.9.9.9'),
   CI_HUB_APP_DATA_PATH: z.string(),
   CI_HUB_FORWARD_AUTH_URL: z.string(),

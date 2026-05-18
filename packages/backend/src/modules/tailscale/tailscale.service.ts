@@ -35,7 +35,7 @@ type ExecStrategy = 'host' | 'sidecar';
 export class TailscaleService {
   private readonly logger = new Logger(TailscaleService.name);
   private readonly binaryPath = '/usr/bin/tailscale';
-  /** Docker sidecar (Headscale deployment) — same network as Traefik */
+  /** Docker sidecar for Tailscale (`hub-tailscale`, `private-vpn` profile) when the host has no Tailscale socket */
   private readonly sidecarContainer = process.env.TAILSCALE_SIDECAR_CONTAINER ?? 'hub-tailscale';
   /** Upstream for `tailscale serve` when using sidecar (Traefik service name:port) */
   private readonly serveUpstreamSidecar = process.env.TAILSCALE_SERVE_UPSTREAM ?? 'traefik:80';
@@ -62,7 +62,7 @@ export class TailscaleService {
   }
 
   /**
-   * Host Tailscale (binary + socket in this process namespace) or hub-tailscale sidecar via docker exec.
+   * Host Tailscale (binary + socket in this process namespace) or a Tailscale container via `docker exec`.
    */
   private async resolveStrategy(): Promise<ExecStrategy | null> {
     const now = Date.now();
@@ -100,6 +100,12 @@ export class TailscaleService {
     this.strategyCache = null;
   }
 
+  /** Same flags as `connectWithAuthKey`: env override or default Docker bridge advertisement. */
+  private getTailscaleUpExtraArgs(): string[] {
+    const extra = (process.env.HUB_TAILSCALE_EXTRA_ARGS || '').trim();
+    return extra ? extra.split(/\s+/).filter(Boolean) : ['--accept-routes', '--advertise-routes=172.18.0.0/16'];
+  }
+
   private async execTailscale(args: string[], timeoutMs = 15000): Promise<{ stdout: string; stderr: string }> {
     const strategy = await this.resolveStrategy();
     if (strategy === 'host') {
@@ -109,6 +115,11 @@ export class TailscaleService {
       return this.execDocker(args, timeoutMs);
     }
     throw new Error('Tailscale CLI unavailable (no host socket and no sidecar)');
+  }
+
+  /** True when Tailscale can be invoked (host CLI + socket, or `docker exec` into the sidecar). */
+  async isCliAvailable(): Promise<boolean> {
+    return (await this.resolveStrategy()) !== null;
   }
 
   async isInstalled(): Promise<boolean> {
@@ -204,15 +215,15 @@ export class TailscaleService {
   }
 
   /**
-   * Initiate Tailscale auth — returns URL for browser OAuth redirect (host Tailscale only).
+   * Initiate Tailscale auth — returns URL for browser OAuth redirect (host or sidecar).
    */
   async startAuth(operator?: string): Promise<{ authUrl: string }> {
-    const args = ['up', '--json'];
+    const args = ['up', '--json', ...this.getTailscaleUpExtraArgs()];
     if (operator) {
       args.push(`--operator=${operator}`);
     }
 
-    const { stdout } = await this.execHost(args, 30000);
+    const { stdout } = await this.execTailscale(args, 30000);
     const result = JSON.parse(stdout) as Record<string, unknown>;
 
     if (result.AuthURL) {
@@ -227,10 +238,27 @@ export class TailscaleService {
   }
 
   /**
-   * Disconnect from Tailscale (host only)
+   * Join the tailnet using a [pre-auth key](https://login.tailscale.com/admin/settings/keys) (typical for the hub-tailscale sidecar).
+   */
+  async connectWithAuthKey(authKey: string): Promise<void> {
+    const key = authKey.trim();
+    if (!key) {
+      throw new Error('Auth key is required');
+    }
+    if (!key.startsWith('tskey-auth-')) {
+      throw new Error('Expected a Tailscale pre-authentication key (tskey-auth-…)');
+    }
+
+    await this.execTailscale(['up', '--auth-key', key, ...this.getTailscaleUpExtraArgs()], 120_000);
+    this.invalidateStrategyCache();
+  }
+
+  /**
+   * Disconnect from Tailscale (host or sidecar)
    */
   async disconnect(): Promise<void> {
-    await this.execHost(['down']);
+    await this.execTailscale(['down']);
+    this.invalidateStrategyCache();
   }
 
   private async getServeUpstreamTarget(localPort: number): Promise<string> {

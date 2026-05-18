@@ -51,17 +51,22 @@ interface AppResult {
   };
 }
 
-const FLEET: FleetServer[] = [
-  { name: 'core-1', ip: '100.108.17.53', batch: 0 },
-  { name: 'core-2', ip: '100.101.156.33', batch: 1 },
-  { name: 'core-3', ip: '100.108.125.105', batch: 2 },
-  { name: 'core-4', ip: '100.76.114.122', batch: 3 },
-  { name: 'core-5', ip: '100.118.2.90', batch: 4 },
-  { name: 'core-6', ip: '100.95.23.128', batch: 5 },
-  { name: 'core-7', ip: '100.74.95.94', batch: 6 },
-];
+/**
+ * Fleet server config is loaded from the FLEET_CONFIG_JSON environment variable.
+ * Set it before running, e.g.:
+ *   export FLEET_CONFIG_JSON='[{"name":"core-1","ip":"100.x.x.x","batch":0},...]'
+ *
+ * IPs are Tailscale addresses — keep them out of source control.
+ */
+const FLEET_CONFIG_JSON = process.env.FLEET_CONFIG_JSON;
+if (!FLEET_CONFIG_JSON) {
+  console.error('ERROR: FLEET_CONFIG_JSON environment variable is not set.');
+  console.error('  export FLEET_CONFIG_JSON=\'[{"name":"core-1","ip":"100.x.x.x","batch":0},...]\' ');
+  process.exit(1);
+}
+const FLEET: FleetServer[] = JSON.parse(FLEET_CONFIG_JSON);
 
-const SSH_USER = 'ci';
+const SSH_USER = process.env.FLEET_SSH_USER ?? 'ci';
 const SSH_OPTIONS = '-o StrictHostKeyChecking=no -o ConnectTimeout=30';
 const RESULTS_DIR = 'e2e/results';
 const SCREENSHOTS_DIR = 'e2e/screenshots';

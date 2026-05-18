@@ -15,15 +15,21 @@ import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import { PortManagerService } from '@/modules/network/port-manager.service';
 import { CloudflareClientService } from '@/modules/cloudflare/cloudflare-client.service';
 import type { AppUrn } from '@ci-hub/common/types';
+import { parseComposeJson } from '@ci-hub/common/schemas';
+import fs from 'node:fs';
 
 // Mock fs
 vi.mock('node:fs', async () => ({
   default: {
+    constants: {
+      F_OK: 0,
+    },
     promises: {
       mkdir: vi.fn(),
       chmod: vi.fn(),
       writeFile: vi.fn(),
       readFile: vi.fn().mockResolvedValue(''),
+      access: vi.fn().mockResolvedValue(undefined),
     },
   },
 }));
@@ -41,6 +47,9 @@ describe('InstallAppCommand — pull policy', () => {
   const appUrn = 'urn:store:test-app' as AppUrn;
 
   beforeEach(() => {
+    vi.mocked(parseComposeJson).mockReturnValue({ services: [], overrides: [] } as any);
+    vi.mocked(fs.promises.access).mockResolvedValue(undefined as any);
+
     composeArgs = [];
     dockerService = {
       composeApp: vi.fn(async (_urn: string, args: string) => {
@@ -71,6 +80,7 @@ describe('InstallAppCommand — pull policy', () => {
     const appFilesManager = mock<AppFilesManager>();
     appFilesManager.getDockerComposeJson.mockResolvedValue({ content: '{}', path: '/tmp/compose.json' });
     appFilesManager.getAppEnv.mockResolvedValue({ content: '', path: '/tmp/.env' });
+    appFilesManager.getUserComposeFile.mockResolvedValue({ content: null, path: '/tmp/user-compose.yml' });
     appFilesManager.setAppDataDirPermissions.mockResolvedValue();
     appFilesManager.writeDockerComposeYml.mockResolvedValue();
 
@@ -181,5 +191,112 @@ describe('InstallAppCommand — pull policy', () => {
     expect(upCommand).toContain('--detach');
     expect(upCommand).toContain('--force-recreate');
     expect(upCommand).toContain('--remove-orphans');
+  });
+
+  it('SHOULD return friendly guidance when /dev/kfd is missing', async () => {
+    vi.mocked(parseComposeJson).mockReturnValue({
+      services: [{ name: 'comfyui', image: 'docker.io/example/comfyui:latest', devices: ['/dev/kfd:/dev/kfd'] }],
+      overrides: [],
+    } as any);
+
+    dockerService.composeApp = vi.fn(async (_urn: string, args: string) => {
+      if (args.includes('up --detach')) {
+        throw new Error(
+          'Error response from daemon: error gathering device information while adding custom device "/dev/kfd": no such file or directory',
+        );
+      }
+    });
+
+    const result = await command.execute('comfyui:store' as AppUrn, {});
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain('requires an AMD GPU with ROCm drivers');
+    expect(result.message).toContain('(/dev/kfd)');
+  });
+
+  it('SHOULD fail fast before compose up when /dev/kfd is required but missing', async () => {
+    vi.mocked(parseComposeJson).mockReturnValue({
+      services: [{ name: 'comfyui', image: 'docker.io/example/comfyui:latest', devices: ['/dev/kfd:/dev/kfd'] }],
+      overrides: [],
+    } as any);
+    vi.mocked(fs.promises.access).mockRejectedValueOnce(new Error('ENOENT'));
+
+    const result = await command.execute('comfyui:store' as AppUrn, {});
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain('requires an AMD GPU with ROCm drivers');
+    expect(result.message).toContain('(/dev/kfd)');
+    expect(composeArgs.some((a) => a.includes('up --detach'))).toBe(false);
+    // The destructive down must not run before the preflight either.
+    expect(composeArgs.some((a) => a.includes('down'))).toBe(false);
+
+    // Preflight must fire before port/env mutations — no allocations should have occurred.
+    const portManager = (command as any).moduleRef.get(PortManagerService);
+    expect(portManager.releaseAll).not.toHaveBeenCalled();
+    expect(portManager.allocatePorts).not.toHaveBeenCalled();
+  });
+
+  it('SHOULD honor architecture overrides when checking /dev/kfd preflight', async () => {
+    vi.mocked(parseComposeJson).mockReturnValue({
+      services: [{ name: 'comfyui', image: 'docker.io/example/comfyui:latest' }],
+      overrides: [
+        {
+          architecture: 'amd64',
+          services: [{ name: 'comfyui', devices: ['/dev/kfd:/dev/kfd'] }],
+        },
+      ],
+    } as any);
+    vi.mocked(fs.promises.access).mockRejectedValueOnce(new Error('ENOENT'));
+
+    const result = await command.execute('comfyui:store' as AppUrn, {});
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain('requires an AMD GPU with ROCm drivers');
+    expect(result.message).toContain('(/dev/kfd)');
+    expect(composeArgs.some((a) => a.includes('up --detach'))).toBe(false);
+    // The destructive down must not run before the preflight either.
+    expect(composeArgs.some((a) => a.includes('down'))).toBe(false);
+
+    // Preflight must fire before port/env mutations — no allocations should have occurred.
+    const portManager = (command as any).moduleRef.get(PortManagerService);
+    expect(portManager.releaseAll).not.toHaveBeenCalled();
+    expect(portManager.allocatePorts).not.toHaveBeenCalled();
+  });
+
+  it('SHOULD fail fast when user compose override adds /dev/kfd and it is missing', async () => {
+    // Base compose has no /dev/kfd requirement…
+    vi.mocked(parseComposeJson).mockReturnValue({
+      services: [{ name: 'comfyui', image: 'docker.io/example/comfyui:latest' }],
+      overrides: [],
+    } as any);
+    // …but the user compose override introduces it.
+    const afm = (command as any).moduleRef.get(AppFilesManager);
+    afm.getUserComposeFile.mockResolvedValue({
+      content: 'services:\n  comfyui:\n    devices:\n      - /dev/kfd:/dev/kfd\n      - /dev/dri:/dev/dri',
+      path: '/tmp/user-compose.yml',
+    });
+    vi.mocked(fs.promises.access).mockRejectedValueOnce(new Error('ENOENT'));
+
+    const result = await command.execute('comfyui:store' as AppUrn, {});
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain('requires an AMD GPU with ROCm drivers');
+    expect(result.message).toContain('(/dev/kfd)');
+    expect(composeArgs.some((a) => a.includes('up --detach'))).toBe(false);
+    expect(composeArgs.some((a) => a.includes('down'))).toBe(false);
+  });
+
+  it('SHOULD skip /dev/kfd preflight when skipRun is true', async () => {
+    vi.mocked(parseComposeJson).mockReturnValue({
+      services: [{ name: 'comfyui', image: 'docker.io/example/comfyui:latest', devices: ['/dev/kfd:/dev/kfd'] }],
+      overrides: [],
+    } as any);
+    vi.mocked(fs.promises.access).mockRejectedValueOnce(new Error('ENOENT'));
+
+    const result = await command.execute('comfyui:store' as AppUrn, { skipRun: true });
+
+    expect(result.success).toBe(true);
+    expect(result.message).toContain('installed successfully (skipped run)');
+    expect(composeArgs.some((a) => a.includes('up --detach'))).toBe(false);
   });
 });

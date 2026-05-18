@@ -104,7 +104,7 @@ export const RecommendationsStep = ({ detectedServices, onSelect, onSkip, onBack
           <h2 className="text-xl font-semibold mb-1">Recommended Apps</h2>
           {isAltsError && (
             <div className="mb-3 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-              Could not load alternatives from the portal
+              Could not load app recommendations
               {altsError instanceof Error ? `: ${altsError.message}` : ''}.{' '}
               <button type="button" className="underline font-medium" onClick={() => refetch()}>
                 Retry

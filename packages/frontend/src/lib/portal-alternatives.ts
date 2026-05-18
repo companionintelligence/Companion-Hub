@@ -2,27 +2,34 @@ import type { AltAlternative, AltEntry, AltProprietary, AltsCategory } from '@/m
 import { apiFetch } from '@/lib/api-fetch';
 
 /**
- * Portal base URL (no trailing slash).
- * 1) `import.meta.env.CI_CLOUD_URL` from Vite (process env + `.env.*` at build / dev server start).
- * 2) Same-origin `GET /api/registration/device-id` → `ci_cloud_url` (runtime Hub config), so Docker images
- *    still work if the bundle was built without `CI_CLOUD_URL` baked in.
+ * Public CI Cloud catalog (no trailing slash). Used when the Hub image predates `GET /api/store/alternatives`.
  */
-async function resolvePortalBaseUrl(): Promise<string> {
+async function resolveCiCloudCatalogBaseUrl(): Promise<string> {
   const baked = (import.meta.env.CI_CLOUD_URL as string | undefined)?.trim();
   if (baked) return baked.replace(/\/$/, '');
 
   const res = await apiFetch('/api/registration/device-id');
   if (!res.ok) {
     throw new Error(
-      `Could not resolve portal URL (GET /api/registration/device-id → ${res.status}). Set CI_CLOUD_URL in the Hub environment (e.g. .env.dev) and restart.`,
+      `Could not resolve CI Cloud URL for alternatives (${res.status}). Set CI_CLOUD_URL on the Hub and restart, or update the Hub image.`,
     );
   }
   const data = (await res.json()) as { ci_cloud_url?: string | null };
   const fromApi = data.ci_cloud_url?.trim();
   if (!fromApi) {
-    throw new Error('CI_CLOUD_URL is not set on the Hub server. Add it to your env file (see .env.example) and restart the Hub.');
+    throw new Error('CI_CLOUD_URL is not set on this Hub. Add it to your env file and restart.');
   }
   return fromApi.replace(/\/$/, '');
+}
+
+async function fetchAlternativesFromCiCloud(): Promise<AltsCategory> {
+  const base = await resolveCiCloudCatalogBaseUrl();
+  const res = await fetch(`${base}/api/store/alternatives`, { credentials: 'omit' });
+  if (!res.ok) {
+    throw new Error(`CI Cloud returned HTTP ${res.status} for the alternatives catalog.`);
+  }
+  const json: unknown = await res.json();
+  return normalizeAlternativesPayload(json);
 }
 
 function normalizeProprietary(p: Partial<AltProprietary> & { name: string }): AltProprietary {
@@ -76,14 +83,34 @@ export function normalizeAlternativesPayload(raw: unknown): AltsCategory {
 }
 
 export async function fetchPortalAlternatives(): Promise<AltsCategory> {
-  const base = await resolvePortalBaseUrl();
-  const url = `${base}/api/store/alternatives`;
-  const res = await fetch(url, { credentials: 'omit' });
-  if (!res.ok) {
-    throw new Error(`Failed to load alternatives (${res.status})`);
+  const res = await apiFetch('/api/store/alternatives');
+  if (res.ok) {
+    const json: unknown = await res.json();
+    return normalizeAlternativesPayload(json);
   }
-  const json: unknown = await res.json();
-  return normalizeAlternativesPayload(json);
+
+  /** Desktop releases pull `ghcr.io/.../ci-hub:*` by default; older tags have no proxy route. */
+  if (res.status === 404) {
+    console.warn('[alternatives] Hub returned 404 for /api/store/alternatives (older image or missing route); trying CI Cloud directly.');
+    try {
+      return await fetchAlternativesFromCiCloud();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      throw new Error(
+        `This Hub build does not expose /api/store/alternatives yet, and loading the catalog from CI Cloud failed: ${msg}. Update CI_HUB_IMAGE / rebuild the Hub container, or check network access to your CI Cloud URL.`,
+      );
+    }
+  }
+
+  let detail = '';
+  try {
+    const body = (await res.json()) as { message?: string | string[] };
+    const m = body?.message;
+    detail = Array.isArray(m) ? m.join(' ') : typeof m === 'string' ? `: ${m}` : '';
+  } catch {
+    /* ignore */
+  }
+  throw new Error(`Failed to load alternatives (${res.status})${detail}`);
 }
 
 export const portalAlternativesQueryKey = ['portal', 'store-alternatives'] as const;

@@ -173,6 +173,8 @@ jobs:
       - name: Build Tauri app (signed)
         if: env.BUILD_ENABLED && runner.os == 'macOS' && env.APPLE_SIGNING_CONFIGURED
         env:
+          # CI sets CI=true; tauri-bundler would skip DMG background/layout without this (tauri#592).
+          TAURI_BUNDLER_DMG_IGNORE_CI: "true"
           # macOS signing — Tauri reads these automatically (only meaningful on macOS)
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -184,11 +186,18 @@ jobs:
       - name: Build Tauri app
         if: env.BUILD_ENABLED && (runner.os != 'macOS' || env.APPLE_SIGNING_CONFIGURED != 'true')
         env:
+          # CI sets CI=true; tauri-bundler would skip DMG background/layout without this (tauri#592).
+          TAURI_BUNDLER_DMG_IGNORE_CI: ${{ runner.os == 'macOS' && 'true' || '' }}
           # Ad-hoc sign on macOS when no Apple certificate is configured
           APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && '-' || '' }}
+        shell: bash
         run: |
           cd packages/desktop
-          npx --yes @tauri-apps/cli@2 build --target ${{ matrix.target }} -c '{"bundle":{"createUpdaterArtifacts":false}}'
+          args=(--target "${{ matrix.target }}" -c '{"bundle":{"createUpdaterArtifacts":false}}')
+          if [[ "${{ runner.os }}" == "Linux" ]]; then
+            args+=(-b deb,rpm,appimage)
+          fi
+          npx --yes @tauri-apps/cli@2 build "${args[@]}"
       # ── macOS Notarization ──────────────────────────────────────────
       - name: Notarize macOS DMG
         if: env.BUILD_ENABLED && runner.os == 'macOS' && env.APPLE_SIGNING_CONFIGURED

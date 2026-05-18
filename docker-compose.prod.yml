@@ -187,70 +187,10 @@ services:
     profiles:
       - cloudflare
 
-  # Headscale control server — opt-in via the `private-vpn` compose profile
-  # (scripts/start.ts and the desktop Hub merge that profile automatically
-  # whenever PRIVATE_VPN_ENABLED is not "false"). Requires a config file at
-  # ${ROOT_FOLDER_HOST}/state/headscale/config.yaml, which the backend's
-  # HeadscaleService generates on boot.
-  headscale:
-    image: headscale/headscale:0.25.1
-    pull_policy: if_not_present
-    container_name: headscale
-    restart: unless-stopped
-    command: serve
-    volumes:
-      - ${ROOT_FOLDER_HOST:-.internal}/state/headscale:/etc/headscale
-    networks:
-      - ci_os_hub_network
-    labels:
-      ci-os-hub.managed: true
-    profiles:
-      - private-vpn
-
-  # Headplane — web UI for Headscale. Runs alongside the Headscale container
-  # and shares its /etc/headscale volume so it can read the generated
-  # config.yaml + SQLite DB. Exposed via Traefik at headscale-admin.${DOMAIN}
-  # (dynamic Traefik route is written by the backend once a public host is
-  # known). Uses the docker socket to drive Headscale's config-reload endpoint
-  # by restarting the headscale container after GUI edits.
-  # See https://github.com/tale/headplane for details.
-  headplane:
-    image: ghcr.io/tale/headplane:0.6.2
-    pull_policy: if_not_present
-    container_name: headplane
-    restart: unless-stopped
-    depends_on:
-      - headscale
-    environment:
-      HEADSCALE_URL: http://headscale:8080
-      # Path inside the headplane container; matches the shared volume mount
-      # point. Headplane reads this YAML for UI-driven config edits.
-      HEADSCALE_CONFIG_PATH: /etc/headscale/config.yaml
-      HEADSCALE_INTEGRATION: docker
-      HEADSCALE_CONTAINER: headscale
-      COOKIE_SECRET: ${HEADPLANE_COOKIE_SECRET:-change-me-32-bytes-minimum-please-rotate}
-      # Optional OIDC gate for the admin UI. Leave unset for open-access local
-      # dev; set all three (and the Headscale config.yaml `oidc.*` keys) in
-      # shared envs so only the workspace admin can reach the dashboard.
-      OIDC_ISSUER: ${HEADPLANE_OIDC_ISSUER:-}
-      OIDC_CLIENT_ID: ${HEADPLANE_OIDC_CLIENT_ID:-}
-      OIDC_CLIENT_SECRET: ${HEADPLANE_OIDC_CLIENT_SECRET:-}
-    volumes:
-      - ${ROOT_FOLDER_HOST:-.internal}/state/headscale:/etc/headscale
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    networks:
-      - ci_os_hub_network
-    labels:
-      ci-os-hub.managed: true
-      traefik.enable: true
-      traefik.http.routers.headplane.rule: "Host(`headscale-admin.${DOMAIN:-ci.localhost}`)"
-      traefik.http.routers.headplane.entrypoints: websecure
-      traefik.http.routers.headplane.tls.certresolver: myresolver
-      traefik.http.services.headplane.loadbalancer.server.port: "3000"
-    profiles:
-      - private-vpn
-
-  # Tailscale client — opt-in, depends on headscale above.
+  # --- Private VPN (Tailscale sidecar) -----------------------------------------
+  # Profile `private-vpn`. The `hub-tailscale` container joins your tailnet via
+  # tailscale.com using TS_AUTHKEY (set TAILSCALE_AUTHKEY in `.env`; HEADSCALE_PREAUTH_KEY is still read as a fallback for old configs).
+  # Advertises the Docker bridge by default so tailnet devices can reach the Hub network.
   hub-tailscale:
     image: tailscale/tailscale:v1.82.5
     pull_policy: if_not_present
@@ -261,15 +201,13 @@ services:
       - NET_ADMIN
       - SYS_MODULE
     environment:
-      TS_AUTHKEY: ${HEADSCALE_PREAUTH_KEY:-}
-      TS_EXTRA_ARGS: --login-server=http://headscale:8080 --advertise-routes=172.18.0.0/16 --accept-routes
+      TS_AUTHKEY: ${TAILSCALE_AUTHKEY:-${HEADSCALE_PREAUTH_KEY:-}}
+      TS_EXTRA_ARGS: ${HUB_TAILSCALE_EXTRA_ARGS:---accept-routes --advertise-routes=172.18.0.0/16}
       TS_STATE_DIR: /var/lib/tailscale
       TS_USERSPACE: "false"
       TS_SOCKET: /var/run/tailscale/tailscaled.sock
     volumes:
       - hub_tailscale_state:/var/lib/tailscale
-    depends_on:
-      - headscale
     networks:
       - ci_os_hub_network
     labels:
