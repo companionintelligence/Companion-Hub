@@ -237,6 +237,10 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       parsedForm.publicDomain = undefined;
     }
 
+    if (parsedForm.exposureMode !== 'cloudflare') {
+      parsedForm.publicDomain = undefined;
+    }
+
     if (appInfo.force_expose && !exposed) {
       throw new TranslatableError('APP_ERROR_APP_FORCE_EXPOSED', { id: appUrn });
     }
@@ -516,6 +520,10 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       parsedForm.exposedLocal = false;
       parsedForm.enableAuth = false;
       parsedForm.domain = undefined;
+      parsedForm.publicDomain = undefined;
+    }
+
+    if (parsedForm.exposureMode !== 'cloudflare') {
       parsedForm.publicDomain = undefined;
     }
 

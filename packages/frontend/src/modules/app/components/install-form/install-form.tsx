@@ -84,7 +84,7 @@ export const InstallForm: React.FC<IProps> = ({
   const {
     register,
     handleSubmit,
-    formState: { errors, isDirty },
+    formState: { errors, isDirty, dirtyFields },
     setValue,
     watch,
     getValues,
@@ -193,13 +193,17 @@ export const InstallForm: React.FC<IProps> = ({
       return;
     }
 
+    if (dirtyFields.publicDomain) {
+      return;
+    }
+
     // Preserve explicit user/form values; only replace the implicit device-domain fallback.
     if (currentPublicDomain && currentPublicDomain !== domain) {
       return;
     }
 
     setValue('publicDomain', fallbackDomain);
-  }, [availableDomains, domain, getValues, setValue, watchExposureMode]);
+  }, [availableDomains, dirtyFields.publicDomain, domain, getValues, setValue, watchExposureMode]);
 
   const _randomPortMutation = useMutation({
     ...getRandomPortMutation(),

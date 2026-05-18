@@ -193,4 +193,42 @@ describe('CloudflareClientService', () => {
       });
     });
   });
+
+  describe('checkDnsAvailability', () => {
+    it('should return delegated availability result when CI-Cloud responds with expected shape', async () => {
+      mockAxiosInstance.get.mockResolvedValue({
+        data: {
+          available: true,
+          message: 'ok',
+        },
+      });
+
+      const result = await service.checkDnsAvailability('test-subdomain', 'example.com');
+
+      expect(mockAxiosInstance.get).toHaveBeenCalledWith(
+        'cloudflare/check-dns-availability',
+        expect.objectContaining({
+          params: {
+            subdomain: 'test-subdomain',
+            domain: 'example.com',
+          },
+        }),
+      );
+      expect(result).toEqual({ available: true, message: 'ok' });
+    });
+
+    it('should fail closed when CI-Cloud availability check errors', async () => {
+      mockAxiosInstance.get.mockRejectedValue({
+        response: {
+          data: {
+            message: 'CI-Cloud unavailable',
+          },
+        },
+      });
+
+      const result = await service.checkDnsAvailability('test-subdomain', 'example.com');
+
+      expect(result).toEqual({ available: false, message: 'CI-Cloud unavailable' });
+    });
+  });
 });

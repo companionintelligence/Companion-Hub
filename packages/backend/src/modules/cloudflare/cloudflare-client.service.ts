@@ -260,8 +260,8 @@ export class CloudflareClientService {
       }
 
       return {
-        available: true,
-        message: 'Availability check delegated to CI-Cloud (response shape unknown)',
+        available: false,
+        message: 'Unable to verify DNS availability (unexpected CI-Cloud response)',
       };
     } catch (error) {
       if (error instanceof Error) {
@@ -270,9 +270,20 @@ export class CloudflareClientService {
         this.logger.error(`Failed to check DNS availability: ${String(error)}`);
       }
 
+      if (axios.isAxiosError(error) && error.response) {
+        this.logger.error(`DNS availability error response: ${JSON.stringify(error.response.data)}`);
+      }
+
+      const responseMessage =
+        typeof (error as { response?: { data?: { message?: unknown } } })?.response?.data?.message === 'string'
+          ? ((error as { response?: { data?: { message?: string } } }).response?.data?.message ?? '')
+          : '';
+
+      const message = responseMessage || 'Unable to verify DNS availability right now. Please try again.';
+
       return {
-        available: true,
-        message: 'Availability check delegated to CI-Cloud (fallback)',
+        available: false,
+        message,
       };
     }
   }

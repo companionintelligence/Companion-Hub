@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { MemoryRouter } from 'react-router';
 import type { AppInfo } from '@/types/app.types';
 import { InstallForm } from './install-form';
@@ -44,6 +44,10 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
 }));
 
 describe('InstallForm', () => {
+  afterEach(() => {
+    MOCK_AVAILABLE_DOMAINS.domains = [];
+  });
+
   const createContext = (advancedMode: boolean) => ({
     userSettings: {
       ciHubOrganizationSlug: undefined,
