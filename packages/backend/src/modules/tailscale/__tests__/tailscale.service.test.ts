@@ -34,6 +34,10 @@ describe('TailscaleService', () => {
   it('uses docker sidecar when host binary/socket are missing', async () => {
     execFileMock.mockImplementation(
       (cmd: string, args: string[], _opts: unknown, cb: (err: Error | null, stdout?: string, stderr?: string) => void) => {
+        if (cmd === 'docker' && args[0] === 'inspect') {
+          process.nextTick(() => cb(null, 'true\n', ''));
+          return;
+        }
         if (cmd === 'docker' && args[1] === 'hub-tailscale' && args[3] === 'version') {
           process.nextTick(() => cb(null, '1.82.0', ''));
           return;
@@ -50,6 +54,8 @@ describe('TailscaleService', () => {
     expect(status.installed).toBe(true);
     expect(status.connected).toBe(true);
     expect(status.ip).toBe('100.1.1.1');
+    expect(status.sidecarAuthKeyConfigured).toBe(false);
+    expect(status.sidecarContainerRunning).toBe(true);
     expect(execFileMock).toHaveBeenCalledWith(
       'docker',
       ['exec', 'hub-tailscale', 'tailscale', 'status', '--json'],
@@ -104,6 +110,63 @@ describe('TailscaleService', () => {
 
   it('connectWithAuthKey rejects invalid key prefix', async () => {
     await expect(service.connectWithAuthKey('not-a-key')).rejects.toThrow(/tskey-auth/);
+  });
+
+  it('getStatus sets sidecarAuthKeyConfigured when TS_AUTHKEY is present in the sidecar', async () => {
+    execFileMock.mockImplementation(
+      (cmd: string, args: string[], _opts: unknown, cb: (err: Error | null, stdout?: string, stderr?: string) => void) => {
+        if (cmd === 'docker' && args[0] === 'inspect') {
+          process.nextTick(() => cb(null, 'true\n', ''));
+          return;
+        }
+        if (cmd === 'docker' && args[1] === 'hub-tailscale' && args[3] === 'version') {
+          process.nextTick(() => cb(null, '1.82.0', ''));
+          return;
+        }
+        if (cmd === 'docker' && args[2] === 'printenv' && args[3] === 'TS_AUTHKEY') {
+          process.nextTick(() => cb(null, 'tskey-auth-example', ''));
+          return;
+        }
+        if (cmd === 'docker' && args[args.length - 1] === '--json') {
+          process.nextTick(() => cb(null, runningStatusJson, ''));
+          return;
+        }
+        process.nextTick(() => cb(new Error('unexpected'), '', ''));
+      },
+    );
+
+    const status = await service.getStatus();
+    expect(status.sidecarAuthKeyConfigured).toBe(true);
+    expect(status.sidecarContainerRunning).toBe(true);
+  });
+
+  it('connectUsingSidecarEnvAuthKey uses TS_AUTHKEY from the sidecar', async () => {
+    execFileMock.mockImplementation(
+      (cmd: string, args: string[], _opts: unknown, cb: (err: Error | null, stdout?: string, stderr?: string) => void) => {
+        if (cmd === 'docker' && args[1] === 'hub-tailscale' && args[3] === 'version') {
+          process.nextTick(() => cb(null, '1.82.0', ''));
+          return;
+        }
+        if (cmd === 'docker' && args[2] === 'printenv' && args[3] === 'TS_AUTHKEY') {
+          process.nextTick(() => cb(null, 'tskey-auth-from-env', ''));
+          return;
+        }
+        if (cmd === 'docker' && args.includes('up') && args.includes('--auth-key')) {
+          process.nextTick(() => cb(null, '', ''));
+          return;
+        }
+        process.nextTick(() => cb(new Error('unexpected'), '', ''));
+      },
+    );
+
+    await service.connectUsingSidecarEnvAuthKey();
+
+    expect(execFileMock).toHaveBeenCalledWith(
+      'docker',
+      ['exec', 'hub-tailscale', 'tailscale', 'up', '--auth-key', 'tskey-auth-from-env', '--accept-routes', '--advertise-routes=172.18.0.0/16'],
+      expect.objectContaining({ timeout: 120_000 }),
+      expect.any(Function),
+    );
   });
 
   it('disconnect uses docker sidecar when host unavailable', async () => {

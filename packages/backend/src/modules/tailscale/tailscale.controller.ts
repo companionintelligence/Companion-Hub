@@ -40,6 +40,31 @@ export class TailscaleController {
     }
   }
 
+  /**
+   * Connect using TS_AUTHKEY from the running hub-tailscale container (set via TAILSCALE_AUTHKEY in compose `.env`).
+   */
+  @Post('auth/env')
+  @ApiResponse({ type: Object })
+  async connectWithEnv() {
+    const cliAvailable = await this.tailscaleService.isCliAvailable();
+    if (!cliAvailable) {
+      return {
+        success: false,
+        error: 'Tailscale CLI is not available. Start the hub-tailscale sidecar (private-vpn compose profile) or install Tailscale on the host.',
+      };
+    }
+
+    try {
+      await this.tailscaleService.connectUsingSidecarEnvAuthKey();
+      return { success: true };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to connect using Docker auth key',
+      };
+    }
+  }
+
   @Post('auth/key')
   @ApiResponse({ type: Object })
   async connectWithAuthKey(@Body() body: { authKey?: string }) {

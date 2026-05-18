@@ -11,6 +11,10 @@ export interface TailscaleStatus {
   ip: string | null;
   supportsServices: boolean;
   backendState: string | null;
+  /** Hub-tailscale sidecar only: `TAILSCALE_AUTHKEY` / `TS_AUTHKEY` is non-empty in the container */
+  sidecarAuthKeyConfigured: boolean;
+  /** `docker inspect` reports the sidecar container exists and is running (does not imply CLI exec works). */
+  sidecarContainerRunning: boolean;
 }
 
 export interface TailscaleServeEntry {
@@ -85,10 +89,18 @@ export class TailscaleService {
 
     if (value === null) {
       try {
-        await this.execDocker(['version'], 5000);
+        await this.execDocker(['version'], 15_000);
         value = 'sidecar';
-      } catch {
-        value = null;
+      } catch (firstErr) {
+        this.logger.warn(`Sidecar Tailscale version check failed (first try): ${firstErr}`);
+        await new Promise((r) => setTimeout(r, 2000));
+        try {
+          await this.execDocker(['version'], 20_000);
+          value = 'sidecar';
+        } catch (retryErr) {
+          this.logger.warn(`Sidecar Tailscale version check failed (retry): ${retryErr}`);
+          value = null;
+        }
       }
     }
 
@@ -140,7 +152,26 @@ export class TailscaleService {
     }
   }
 
-  private parseStatusJson(stdout: string, installed: boolean): TailscaleStatus {
+  /** True if `docker inspect` says the sidecar container is up (helps diagnose socket/exec issues). */
+  private async isSidecarContainerRunning(): Promise<boolean> {
+    try {
+      const { stdout } = await new Promise<{ stdout: string }>((resolve, reject) => {
+        execFile('docker', ['inspect', '-f', '{{.State.Running}}', this.sidecarContainer], { timeout: 8000 }, (err, stdout, stderr) => {
+          if (err) {
+            reject(err);
+            return;
+          }
+          void stderr;
+          resolve({ stdout: stdout.toString() });
+        });
+      });
+      return stdout.trim() === 'true';
+    } catch {
+      return false;
+    }
+  }
+
+  private parseStatusJson(stdout: string, installed: boolean, sidecarAuthKeyConfigured = false, sidecarContainerRunning = false): TailscaleStatus {
     const notInstalled: TailscaleStatus = {
       installed: false,
       connected: false,
@@ -150,6 +181,8 @@ export class TailscaleService {
       ip: null,
       supportsServices: false,
       backendState: null,
+      sidecarAuthKeyConfigured: false,
+      sidecarContainerRunning: false,
     };
 
     try {
@@ -179,11 +212,50 @@ export class TailscaleService {
         ip: (self.TailscaleIPs as string[])?.[0] || null,
         supportsServices,
         backendState: (status.BackendState as string) || null,
+        sidecarAuthKeyConfigured,
+        sidecarContainerRunning,
       };
     } catch (error) {
       this.logger.warn(`Failed to parse tailscale status JSON: ${error}`);
-      return { ...notInstalled, installed };
+      return { ...notInstalled, installed, sidecarAuthKeyConfigured, sidecarContainerRunning };
     }
+  }
+
+  /** Non-secret: whether the sidecar container has TS_AUTHKEY set */
+  private async readSidecarEnvAuthKey(): Promise<string | null> {
+    try {
+      const { stdout } = await new Promise<{ stdout: string }>((resolve, reject) => {
+        execFile('docker', ['exec', this.sidecarContainer, 'printenv', 'TS_AUTHKEY'], { timeout: 8000 }, (err, stdout, stderr) => {
+          if (err) {
+            reject(err);
+            return;
+          }
+          void stderr;
+          resolve({ stdout: stdout.toString() });
+        });
+      });
+      const key = stdout.trim();
+      return key.length > 0 ? key : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Use TS_AUTHKEY from the running hub-tailscale container (from compose `.env`).
+   * Does not expose the key to the client; joins via the same path as manual pre-auth.
+   */
+  async connectUsingSidecarEnvAuthKey(): Promise<void> {
+    if ((await this.resolveStrategy()) !== 'sidecar') {
+      throw new Error('Saved Docker key login only works when the Hub uses the hub-tailscale sidecar (enable the private-vpn compose profile).');
+    }
+    const key = await this.readSidecarEnvAuthKey();
+    if (!key) {
+      throw new Error(
+        'No TAILSCALE_AUTHKEY is set for the Tailscale container. Add it to your Hub .env (same place as other Hub secrets), recreate the stack, or use browser sign-in and paste a pre-auth key below.',
+      );
+    }
+    await this.connectWithAuthKey(key);
   }
 
   async getStatus(): Promise<TailscaleStatus> {
@@ -196,21 +268,34 @@ export class TailscaleService {
       ip: null,
       supportsServices: false,
       backendState: null,
+      sidecarAuthKeyConfigured: false,
+      sidecarContainerRunning: false,
     };
 
+    const sidecarProbe = await this.isSidecarContainerRunning();
     const strategy = await this.resolveStrategy();
     if (strategy === null) {
-      return notInstalled;
+      return { ...notInstalled, sidecarContainerRunning: sidecarProbe };
+    }
+
+    let sidecarAuth = false;
+    if (strategy === 'sidecar') {
+      sidecarAuth = (await this.readSidecarEnvAuthKey()) !== null;
     }
 
     try {
       const execFn = strategy === 'host' ? this.execHost.bind(this) : this.execDocker.bind(this);
       const { stdout } = await execFn(['status', '--json']);
-      return this.parseStatusJson(stdout, true);
+      return this.parseStatusJson(stdout, true, sidecarAuth, sidecarProbe);
     } catch (error) {
       this.logger.warn(`Failed to get Tailscale status: ${error}`);
       this.invalidateStrategyCache();
-      return { ...notInstalled, installed: true };
+      return {
+        ...notInstalled,
+        installed: true,
+        sidecarAuthKeyConfigured: sidecarAuth,
+        sidecarContainerRunning: sidecarProbe,
+      };
     }
   }
 
@@ -223,8 +308,27 @@ export class TailscaleService {
       args.push(`--operator=${operator}`);
     }
 
-    const { stdout } = await this.execTailscale(args, 30000);
-    const result = JSON.parse(stdout) as Record<string, unknown>;
+    let stdout: string;
+    try {
+      ({ stdout } = await this.execTailscale(args, 120_000));
+    } catch (e) {
+      const strategy = await this.resolveStrategy();
+      const hint =
+        strategy === 'sidecar'
+          ? ' If TAILSCALE_AUTHKEY is set in your .env, try “Connect using saved Docker key” first, or paste a pre-auth key below.'
+          : '';
+      const msg = e instanceof Error ? e.message : String(e);
+      throw new Error(`Could not start Tailscale browser sign-in (${msg}).${hint}`);
+    }
+
+    let result: Record<string, unknown>;
+    try {
+      result = JSON.parse(stdout) as Record<string, unknown>;
+    } catch {
+      throw new Error(
+        'Tailscale returned an unexpected response while starting sign-in. Check that Tailscale is running (hub-tailscale sidecar or host daemon).',
+      );
+    }
 
     if (result.AuthURL) {
       return { authUrl: result.AuthURL as string };
@@ -234,7 +338,9 @@ export class TailscaleService {
       return { authUrl: '' };
     }
 
-    throw new Error('Failed to get Tailscale auth URL');
+    throw new Error(
+      'Tailscale did not return a sign-in link. On servers without a browser, use a pre-auth key from the Tailscale admin console (or connect using a saved Docker key when configured).',
+    );
   }
 
   /**
