@@ -6,7 +6,7 @@ Native desktop wrapper for the Companion Intelligence Hub, built with [Tauri v2]
 
 - **Native window** — Loads the Hub web UI in a performant WebView (WebKitGTK on Linux, WebView2 on Windows, WKWebView on macOS)
 - **Custom titlebar** — Platform-aware window controls (minimize/maximize/close) with drag region
-- **System tray** — Hub health status, start/stop Docker containers, show/hide window, open Portal
+- **System tray** — Hub health status, start/stop Docker containers, show/hide window, Account Management (opens cloud platform)
 - **Single instance** — Second launch focuses the existing window instead of opening a duplicate
 - **mDNS discovery** — Auto-discovers Hub instances on the local network
 - **Window state** — Remembers size and position between sessions
