@@ -62,39 +62,38 @@ describe('I18nService', () => {
   });
 
   describe('getTranslation', () => {
-    it('should return cached bundle if available', async () => {
-      (i18n.getResourceBundle as any).mockReturnValue({ hello: 'world' });
+    it('should load en from disk without going through i18next cache', async () => {
+      (fs.existsSync as any).mockImplementation((p: string) => String(p).endsWith(`${'en'}.json`));
+      (fs.readFileSync as any).mockReturnValue('{"A":"a","B":"b"}');
 
       const result = await service.getTranslation('en', 'translation');
-      expect(result).toEqual({ hello: 'world' });
+      expect(result).toEqual({ A: 'a', B: 'b' });
     });
 
-    it('should fallback to file system if not in cache', async () => {
-      (i18n.getResourceBundle as any).mockReturnValue(undefined);
-
-      // Mock fs for fallback logic
-      (fs.existsSync as any).mockImplementation((path: string) => path.endsWith('en.json'));
-      (fs.readFileSync as any).mockReturnValue('{"hello": "fs-world"}');
-
-      const result = await service.getTranslation('en', 'translation');
-      expect(result).toEqual({ hello: 'fs-world' });
-    });
-
-    it('should normalize language code', async () => {
-      (i18n.getResourceBundle as any).mockImplementation((lang: any) => {
-        if (lang === 'en') return { hello: 'normalized' };
-        return undefined;
+    it('should merge en with en-US overlays', async () => {
+      (fs.existsSync as any).mockImplementation((p: string) => String(p).endsWith('en.json') || String(p).endsWith('en-US.json'));
+      (fs.readFileSync as any).mockImplementation((p: string) => {
+        if (String(p).endsWith('en.json')) return '{"SHARED":"from-en","ONLY_EN":"x"}';
+        if (String(p).endsWith('en-US.json')) return '{"SHARED":"from-us"}';
+        return '{}';
       });
 
       const result = await service.getTranslation('en-US', 'translation');
-      expect(result).toEqual({ hello: 'normalized' });
+      expect(result).toEqual({ SHARED: 'from-us', ONLY_EN: 'x' });
     });
 
-    it('should return empty object if nothing found', async () => {
-      (i18n.getResourceBundle as any).mockReturnValue(undefined);
+    it('should fall back to en for unknown locales when overlay is missing', async () => {
+      (fs.existsSync as any).mockImplementation((p: string) => String(p).endsWith('en.json'));
+      (fs.readFileSync as any).mockReturnValue('{"ONLY":"en"}');
+
+      const result = await service.getTranslation('xx', 'translation');
+      expect(result).toEqual({ ONLY: 'en' });
+    });
+
+    it('should return empty object when en.json is missing', async () => {
       (fs.existsSync as any).mockReturnValue(false);
 
-      const result = await service.getTranslation('xx', 'invalid');
+      const result = await service.getTranslation('en', 'translation');
       expect(result).toEqual({});
     });
   });

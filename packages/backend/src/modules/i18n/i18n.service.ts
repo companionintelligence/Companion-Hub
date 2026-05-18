@@ -58,45 +58,52 @@ export class I18nService {
     }
   }
 
+  private getTranslationsDirectory(): string {
+    const { NODE_ENV } = process.env;
+    if (NODE_ENV !== 'production') {
+      return path.join(process.cwd(), 'src', 'modules', 'i18n', 'translations');
+    }
+    return path.join(process.cwd(), 'assets', 'translations');
+  }
+
+  private readLocaleFile(directory: string, lng: string): Record<string, string> | null {
+    const filePath = path.join(directory, `${lng}.json`);
+    if (!fs.existsSync(filePath)) {
+      return null;
+    }
+    try {
+      return JSON.parse(fs.readFileSync(filePath, 'utf-8')) as Record<string, string>;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Serve locale bundles from disk and merge `en` with region/locale files.
+   * Do not rely on i18next's in-memory cache here: it can return a partial bundle
+   * for `en-US`, which caused the UI to show raw i18n keys for newer strings.
+   */
   async getTranslation(language: string, namespace: string) {
     try {
-      // Normalize language code (e.g., 'en-US' -> 'en')
+      void namespace;
+
+      const directory = this.getTranslationsDirectory();
       const normalizedLang = language.split('-')[0] ?? language;
 
-      // If namespace is 'translation' (default), try to get the resource bundle
-      // Otherwise, try to load it directly from the file system
-      if (namespace === 'translation') {
-        // Try to get from i18next cache first
-        const bundle = i18n.getResourceBundle(language, namespace) || i18n.getResourceBundle(normalizedLang, namespace);
+      const base = this.readLocaleFile(directory, 'en') ?? {};
 
-        if (bundle) {
-          return bundle;
-        }
+      if (language === 'en') {
+        return base;
       }
 
-      // Fallback: Load directly from file system
-      let directory = path.join(process.cwd(), 'assets', 'translations');
-      const { NODE_ENV } = process.env;
-      if (NODE_ENV !== 'production') {
-        directory = path.join(process.cwd(), 'src', 'modules', 'i18n', 'translations');
-      }
+      const exact = this.readLocaleFile(directory, language);
+      const regional = language !== normalizedLang && language.includes('-') ? this.readLocaleFile(directory, normalizedLang) : null;
 
-      // Try the exact language first, then normalized
-      const possibleFiles = [
-        path.join(directory, `${language}.json`),
-        path.join(directory, `${normalizedLang}.json`),
-        path.join(directory, 'en.json'), // Final fallback
-      ];
-
-      for (const filePath of possibleFiles) {
-        if (fs.existsSync(filePath)) {
-          const content = fs.readFileSync(filePath, 'utf-8');
-          return JSON.parse(content);
-        }
-      }
-
-      // If nothing found, return empty object
-      return {};
+      return {
+        ...base,
+        ...(regional ?? {}),
+        ...(exact ?? {}),
+      };
     } catch (error) {
       console.error(`Failed to get translation for ${language}/${namespace}:`, error);
       return {};
