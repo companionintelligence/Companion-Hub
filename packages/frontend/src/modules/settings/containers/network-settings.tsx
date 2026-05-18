@@ -1,10 +1,12 @@
 import { appContextQueryKey } from '@/api-client/@tanstack/react-query.gen';
+import { Alert, AlertDescription } from '@/components/ui/Alert/Alert';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { ExternalLink, Globe, Loader2, Shield } from 'lucide-react';
-import { useState } from 'react';
+import type { TFunction } from 'i18next';
+import { ExternalLink, Globe, Loader2, Shield, Copy } from 'lucide-react';
+import { useEffect, useState } from 'react';
 import { apiFetch } from '@/lib/api-fetch';
 import toast from 'react-hot-toast';
 
@@ -29,6 +31,9 @@ interface TailscaleApiStatus {
   ip: string | null;
   hostname: string | null;
   backendState: string | null;
+  sidecarAuthKeyConfigured: boolean;
+  /** Present on newer Hub builds; used to explain Docker vs CLI mismatch */
+  sidecarContainerRunning?: boolean;
 }
 
 interface AuthStartResponse {
@@ -43,19 +48,51 @@ interface AuthKeyResponse {
   error?: string;
 }
 
+function isMissingI18n(value: string): boolean {
+  return value.startsWith('SETTINGS_NETWORK_') || value.startsWith('SETTINGS_');
+}
+
+function formatBackendState(state: string | null, t: TFunction): string {
+  const raw = state?.trim();
+  if (!raw) {
+    const idle = t('SETTINGS_NETWORK_TAILSCALE_BS_NoState');
+    return isMissingI18n(idle) ? 'Idle' : idle;
+  }
+  const key = `SETTINGS_NETWORK_TAILSCALE_BS_${raw}`;
+  const translated = t(key);
+  if (translated !== key && !isMissingI18n(translated)) {
+    return translated;
+  }
+  const withVar = t('SETTINGS_NETWORK_TAILSCALE_BS_fallback', { state: raw });
+  if (!isMissingI18n(withVar) && withVar !== 'SETTINGS_NETWORK_TAILSCALE_BS_fallback') {
+    return withVar;
+  }
+  return raw;
+}
+
 const TailscaleSidecarSection = () => {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [authKey, setAuthKey] = useState('');
+  const [pendingAuthUrl, setPendingAuthUrl] = useState<string | null>(null);
 
   const { data, isLoading } = useQuery<TailscaleApiStatus>({
     queryKey: ['tailscale-status'],
     queryFn: async () => {
       const res = await apiFetch('/api/tailscale/status', { credentials: 'include' });
+      if (!res.ok) {
+        throw new Error('Failed to load Tailscale status');
+      }
       return res.json();
     },
     refetchInterval: 10_000,
   });
+
+  useEffect(() => {
+    if (data?.connected) {
+      setPendingAuthUrl(null);
+    }
+  }, [data?.connected]);
 
   const invalidateTailscaleAndAppContext = () => {
     void queryClient.invalidateQueries({ queryKey: ['tailscale-status'] });
@@ -65,25 +102,41 @@ const TailscaleSidecarSection = () => {
   const browserAuthMutation = useMutation({
     mutationFn: async () => {
       const res = await apiFetch('/api/tailscale/auth/start', { method: 'POST', credentials: 'include' });
-      return res.json() as Promise<AuthStartResponse>;
+      const payload = (await res.json()) as AuthStartResponse;
+      if (!res.ok || !payload.success) {
+        throw new Error(payload.error ?? t('SETTINGS_NETWORK_TAILSCALE_NOT_INSTALLED'));
+      }
+      return payload;
     },
     onSuccess: (payload) => {
-      if (!payload.success) {
-        toast.error(payload.error ?? t('SETTINGS_NETWORK_TAILSCALE_NOT_INSTALLED'));
-        return;
-      }
       if (payload.alreadyAuthenticated) {
         toast.success(t('SETTINGS_NETWORK_TAILSCALE_ALREADY_CONNECTED'));
         invalidateTailscaleAndAppContext();
         return;
       }
       if (payload.authUrl) {
+        setPendingAuthUrl(payload.authUrl);
         window.open(payload.authUrl, '_blank', 'noopener,noreferrer');
         toast.success(t('SETTINGS_NETWORK_TAILSCALE_AUTH_OPENING'));
         invalidateTailscaleAndAppContext();
       }
     },
-    onError: () => toast.error(t('SETTINGS_NETWORK_TAILSCALE_BROWSER_FAILED')),
+    onError: (e: Error) => toast.error(e.message || t('SETTINGS_NETWORK_TAILSCALE_BROWSER_FAILED')),
+  });
+
+  const envKeyMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiFetch('/api/tailscale/auth/env', { method: 'POST', credentials: 'include' });
+      const json = (await res.json()) as AuthKeyResponse;
+      if (!res.ok || !json.success) {
+        throw new Error(json.error ?? t('SETTINGS_NETWORK_TAILSCALE_BROWSER_FAILED'));
+      }
+    },
+    onSuccess: () => {
+      toast.success(t('SETTINGS_NETWORK_CONNECTED'));
+      invalidateTailscaleAndAppContext();
+    },
+    onError: (e: Error) => toast.error(e.message),
   });
 
   const keyAuthMutation = useMutation({
@@ -95,7 +148,7 @@ const TailscaleSidecarSection = () => {
         body: JSON.stringify({ authKey: key }),
       });
       const json = (await res.json()) as AuthKeyResponse;
-      if (!json.success) {
+      if (!res.ok || !json.success) {
         throw new Error(json.error ?? 'Failed to connect');
       }
     },
@@ -111,7 +164,7 @@ const TailscaleSidecarSection = () => {
     mutationFn: async () => {
       const res = await apiFetch('/api/tailscale/disconnect', { method: 'POST', credentials: 'include' });
       const json = (await res.json()) as AuthKeyResponse;
-      if (!json.success) {
+      if (!res.ok || !json.success) {
         throw new Error(json.error ?? 'Failed to disconnect');
       }
     },
@@ -134,9 +187,11 @@ const TailscaleSidecarSection = () => {
   const active = data?.installed && data?.connected;
   const cliUnavailable = data && !data.installed;
   const canConnectFlow = data?.installed && !active;
+  const showDockerEnv = !!data?.installed && data.sidecarAuthKeyConfigured;
+  const showDockerSocketWarning = !!data && !data.installed && data.sidecarContainerRunning === true;
 
   return (
-    <div className="rounded-lg border p-4 space-y-3">
+    <div className="rounded-lg border p-4 space-y-4">
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <div className="flex items-center gap-2">
           <Shield className="h-5 w-5 text-primary" />
@@ -144,16 +199,53 @@ const TailscaleSidecarSection = () => {
         </div>
         <StatusBadge connected={!!active} label={active ? t('SETTINGS_NETWORK_ACTIVE') : t('SETTINGS_NETWORK_INACTIVE')} />
       </div>
-      <p className="text-sm text-muted-foreground">{t('SETTINGS_NETWORK_PRIVATE_VPN_DESC')}</p>
 
-      {data?.backendState && !active && (
-        <p className="text-xs text-muted-foreground font-mono">
-          {t('SETTINGS_NETWORK_TAILSCALE_STATE')}: {data.backendState}
-        </p>
+      <p className="text-sm text-muted-foreground leading-relaxed">{t('SETTINGS_NETWORK_PRIVATE_VPN_DESC')}</p>
+
+      {pendingAuthUrl && (
+        <Alert variant="info" className="space-y-3">
+          <AlertDescription className="space-y-3">
+            <p className="font-semibold">{t('SETTINGS_NETWORK_TAILSCALE_AUTH_CARD_TITLE')}</p>
+            <p className="text-sm opacity-90">{t('SETTINGS_NETWORK_TAILSCALE_AUTH_CARD_BODY')}</p>
+            <div className="flex flex-wrap gap-2 items-center">
+              <Button type="button" variant="default" size="sm" asChild>
+                <a href={pendingAuthUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5">
+                  {t('SETTINGS_NETWORK_TAILSCALE_AUTH_OPEN_LINK')}
+                  <ExternalLink className="h-3.5 w-3.5" />
+                </a>
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  void navigator.clipboard.writeText(pendingAuthUrl).then(
+                    () => toast.success(t('SETTINGS_NETWORK_COPIED')),
+                    () => toast.error('Could not copy'),
+                  );
+                }}
+              >
+                <Copy className="h-3.5 w-3.5 mr-1.5" />
+                {t('SETTINGS_NETWORK_TAILSCALE_AUTH_COPY_LINK')}
+              </Button>
+              <Button type="button" variant="ghost" size="sm" onClick={() => setPendingAuthUrl(null)}>
+                {t('SETTINGS_NETWORK_TAILSCALE_AUTH_DISMISS')}
+              </Button>
+            </div>
+            <p className="text-xs font-mono break-all opacity-80">{pendingAuthUrl}</p>
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {data?.backendState && (
+        <div className="rounded-md bg-muted/50 px-3 py-2 text-sm">
+          <span className="text-muted-foreground">{t('SETTINGS_NETWORK_TAILSCALE_STATE')}: </span>
+          <span className="font-medium">{formatBackendState(data.backendState, t)}</span>
+        </div>
       )}
 
       {data?.ip && (
-        <div className="grid grid-cols-2 gap-2 text-sm">
+        <div className="grid grid-cols-2 gap-2 text-sm max-w-md">
           <div className="text-muted-foreground">{t('SETTINGS_NETWORK_TAILSCALE_IP')}</div>
           <div className="font-mono">{data.ip}</div>
           {data.hostname && (
@@ -165,36 +257,76 @@ const TailscaleSidecarSection = () => {
         </div>
       )}
 
-      {cliUnavailable && <p className="text-xs text-muted-foreground">{t('SETTINGS_NETWORK_TAILSCALE_NOT_INSTALLED_DESC')}</p>}
+      {showDockerSocketWarning && (
+        <Alert variant="warning">
+          <AlertDescription>
+            <p className="font-semibold mb-1">{t('SETTINGS_NETWORK_TAILSCALE_DOCKER_WARN_TITLE')}</p>
+            <p className="text-sm">{t('SETTINGS_NETWORK_TAILSCALE_DOCKER_WARN_BODY')}</p>
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {cliUnavailable && !showDockerSocketWarning && (
+        <p className="text-sm text-muted-foreground">{t('SETTINGS_NETWORK_TAILSCALE_NOT_INSTALLED_DESC')}</p>
+      )}
 
       {canConnectFlow && (
-        <div className="space-y-3 pt-2 border-t">
-          <p className="text-sm text-muted-foreground">{t('SETTINGS_NETWORK_TAILSCALE_CONNECT_DESC')}</p>
-          <div className="flex flex-wrap gap-2">
-            <Button type="button" variant="default" disabled={browserAuthMutation.isPending} onClick={() => browserAuthMutation.mutate()}>
-              {browserAuthMutation.isPending ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                  {t('SETTINGS_NETWORK_LOADING')}
-                </>
-              ) : (
-                t('SETTINGS_NETWORK_TAILSCALE_CONNECT')
-              )}
-            </Button>
-            <Button type="button" variant="outline" asChild>
-              <a
-                href="https://login.tailscale.com/admin/settings/keys"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5"
-              >
-                {t('SETTINGS_NETWORK_TAILSCALE_GET_KEY')}
-                <ExternalLink className="h-3.5 w-3.5" />
-              </a>
-            </Button>
-          </div>
+        <div className="space-y-5 pt-2 border-t">
+          {showDockerEnv && (
+            <div className="space-y-2">
+              <h4 className="text-sm font-semibold">{t('SETTINGS_NETWORK_TAILSCALE_SECTION_DOCKER_KEY')}</h4>
+              <p className="text-xs text-muted-foreground">{t('SETTINGS_NETWORK_TAILSCALE_CONNECT_ENV_DESC')}</p>
+              <div className="flex flex-wrap gap-2">
+                <Button type="button" variant="default" disabled={envKeyMutation.isPending} onClick={() => envKeyMutation.mutate()}>
+                  {envKeyMutation.isPending ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                      {t('SETTINGS_NETWORK_LOADING')}
+                    </>
+                  ) : (
+                    t('SETTINGS_NETWORK_TAILSCALE_CONNECT_ENV')
+                  )}
+                </Button>
+              </div>
+            </div>
+          )}
+
           <div className="space-y-2">
-            <label className="text-sm font-medium" htmlFor="tailscale-preauth-key">
+            <h4 className="text-sm font-semibold">{t('SETTINGS_NETWORK_TAILSCALE_SECTION_SIGNIN')}</h4>
+            <p className="text-sm text-muted-foreground">{t('SETTINGS_NETWORK_TAILSCALE_CONNECT_DESC')}</p>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant={showDockerEnv ? 'secondary' : 'default'}
+                disabled={browserAuthMutation.isPending}
+                onClick={() => browserAuthMutation.mutate()}
+              >
+                {browserAuthMutation.isPending ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                    {t('SETTINGS_NETWORK_LOADING')}
+                  </>
+                ) : (
+                  t('SETTINGS_NETWORK_TAILSCALE_CONNECT')
+                )}
+              </Button>
+              <Button type="button" variant="outline" asChild>
+                <a
+                  href="https://login.tailscale.com/admin/settings/keys"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5"
+                >
+                  {t('SETTINGS_NETWORK_TAILSCALE_GET_KEY')}
+                  <ExternalLink className="h-3.5 w-3.5" />
+                </a>
+              </Button>
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <h4 className="text-sm font-semibold">{t('SETTINGS_NETWORK_TAILSCALE_SECTION_PASTE_KEY')}</h4>
+            <label className="text-sm font-medium sr-only" htmlFor="tailscale-preauth-key">
               {t('SETTINGS_NETWORK_TAILSCALE_PREAUTH_KEY_LABEL')}
             </label>
             <p className="text-xs text-muted-foreground">{t('SETTINGS_NETWORK_TAILSCALE_PREAUTH_HELP')}</p>
@@ -205,10 +337,11 @@ const TailscaleSidecarSection = () => {
               placeholder={t('SETTINGS_NETWORK_TAILSCALE_PREAUTH_PLACEHOLDER')}
               value={authKey}
               onChange={(e) => setAuthKey(e.target.value)}
+              className="max-w-lg"
             />
             <Button
               type="button"
-              variant="secondary"
+              variant="outline"
               disabled={keyAuthMutation.isPending || !authKey.trim()}
               onClick={() => keyAuthMutation.mutate(authKey)}
             >

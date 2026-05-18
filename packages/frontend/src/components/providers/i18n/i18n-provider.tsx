@@ -5,9 +5,27 @@ import { type PropsWithChildren, useEffect, useState } from 'react';
 import { I18nextProvider, initReactI18next } from 'react-i18next';
 import { client } from '@/api-client/client.gen';
 
+/** Shipped with the UI bundle so labels never devolve to raw i18n keys if the API is down, partial, or cached. */
+import baseEnglishTranslations from '../../../../../backend/src/modules/i18n/translations/en.json';
+
+const baseEn = baseEnglishTranslations as Record<string, string>;
+
 const isTauriRelease = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window && !window.location.origin.startsWith('http://localhost:');
 
 let i18nInitialized = false;
+
+function mergeLocaleWithEnglishFallback(remoteText: string): string {
+  let remote: Record<string, string> = {};
+  try {
+    const parsed = JSON.parse(remoteText || '{}') as unknown;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      remote = parsed as Record<string, string>;
+    }
+  } catch {
+    remote = {};
+  }
+  return JSON.stringify({ ...baseEn, ...remote });
+}
 
 function initI18n() {
   if (i18nInitialized) return;
@@ -23,8 +41,8 @@ function initI18n() {
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           return res.text();
         })
-        .then((data) => callback(null, { status: 200, data }))
-        .catch((err) => callback(err, { status: 500, data: '' }));
+        .then((data) => callback(null, { status: 200, data: mergeLocaleWithEnglishFallback(data) }))
+        .catch(() => callback(null, { status: 200, data: JSON.stringify(baseEn) }));
     },
   });
 
@@ -39,6 +57,12 @@ function initI18n() {
       },
       fallbackLng: 'en',
       load: 'currentOnly',
+      partialBundledLanguages: true,
+      resources: {
+        en: {
+          translation: baseEn,
+        },
+      },
       interpolation: {
         escapeValue: false,
       },
