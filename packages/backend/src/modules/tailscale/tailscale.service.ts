@@ -118,6 +118,37 @@ export class TailscaleService {
     return extra ? extra.split(/\s+/).filter(Boolean) : ['--accept-routes', '--advertise-routes=172.18.0.0/16'];
   }
 
+  /**
+   * Tailscale requires every non-default persisted pref to appear on each `tailscale up`
+   * (e.g. sidecar/image often runs with corp DNS off → must pass `--accept-dns=false`).
+   * Source of truth is `debug prefs`; on failure returns [] so callers behave as before.
+   */
+  private async tailscaleUpArgsFromPersistedPrefs(): Promise<string[]> {
+    try {
+      const { stdout } = await this.execTailscale(['debug', 'prefs', '--json'], 10_000);
+      const prefs = JSON.parse(stdout) as Record<string, unknown>;
+      /** ipn.Prefs field; CLI exposes it as `--accept-dns`. */
+      if (typeof prefs.CorpDNS === 'boolean') {
+        return prefs.CorpDNS ? ['--accept-dns=true'] : ['--accept-dns=false'];
+      }
+    } catch (e) {
+      this.logger.debug(`Could not read tailscale prefs for up flags (${e}); continuing without prefs merge`);
+    }
+    return [];
+  }
+
+  /** Dedup `--accept-dns` so env/extra-args and persisted prefs agree (prefs wins). */
+  private mergeTailscaleUpExtras(base: string[], fromPrefs: string[]): string[] {
+    const noAcceptDns = base.filter((a) => !a.startsWith('--accept-dns'));
+    return [...noAcceptDns, ...fromPrefs];
+  }
+
+  private async getTailscaleUpExtraArgsResolved(): Promise<string[]> {
+    const base = this.getTailscaleUpExtraArgs();
+    const fromPrefs = await this.tailscaleUpArgsFromPersistedPrefs();
+    return fromPrefs.length ? this.mergeTailscaleUpExtras(base, fromPrefs) : base;
+  }
+
   private async execTailscale(args: string[], timeoutMs = 15000): Promise<{ stdout: string; stderr: string }> {
     const strategy = await this.resolveStrategy();
     if (strategy === 'host') {
@@ -303,7 +334,7 @@ export class TailscaleService {
    * Initiate Tailscale auth — returns URL for browser OAuth redirect (host or sidecar).
    */
   async startAuth(operator?: string): Promise<{ authUrl: string }> {
-    const args = ['up', '--json', ...this.getTailscaleUpExtraArgs()];
+    const args = ['up', '--json', ...(await this.getTailscaleUpExtraArgsResolved())];
     if (operator) {
       args.push(`--operator=${operator}`);
     }
@@ -355,7 +386,7 @@ export class TailscaleService {
       throw new Error('Expected a Tailscale pre-authentication key (tskey-auth-…)');
     }
 
-    await this.execTailscale(['up', '--auth-key', key, ...this.getTailscaleUpExtraArgs()], 120_000);
+    await this.execTailscale(['up', '--auth-key', key, ...(await this.getTailscaleUpExtraArgsResolved())], 120_000);
     this.invalidateStrategyCache();
   }
 

@@ -71,6 +71,10 @@ describe('TailscaleService', () => {
           process.nextTick(() => cb(null, '1.82.0', ''));
           return;
         }
+        if (cmd === 'docker' && args.includes('debug') && args.includes('prefs')) {
+          process.nextTick(() => cb(null, '{}', ''));
+          return;
+        }
         if (cmd === 'docker' && args.includes('up') && args.includes('--json')) {
           process.nextTick(() => cb(null, JSON.stringify({ AuthURL: 'https://login.test/auth' }), ''));
           return;
@@ -83,11 +87,43 @@ describe('TailscaleService', () => {
     expect(result.authUrl).toBe('https://login.test/auth');
   });
 
+  it('startAuth merges --accept-dns=false when persisted CorpDNS is disabled', async () => {
+    execFileMock.mockImplementation(
+      (cmd: string, args: string[], _opts: unknown, cb: (err: Error | null, stdout?: string, stderr?: string) => void) => {
+        if (cmd === 'docker' && args[1] === 'hub-tailscale' && args[3] === 'version') {
+          process.nextTick(() => cb(null, '1.82.0', ''));
+          return;
+        }
+        if (cmd === 'docker' && args.includes('debug') && args.includes('prefs')) {
+          process.nextTick(() => cb(null, JSON.stringify({ CorpDNS: false }), ''));
+          return;
+        }
+        if (cmd === 'docker' && args.includes('up') && args.includes('--json')) {
+          process.nextTick(() => cb(null, JSON.stringify({ AuthURL: 'https://login.test/auth' }), ''));
+          return;
+        }
+        process.nextTick(() => cb(new Error('unexpected'), '', ''));
+      },
+    );
+
+    await service.startAuth();
+    expect(execFileMock).toHaveBeenCalledWith(
+      'docker',
+      ['exec', 'hub-tailscale', 'tailscale', 'up', '--json', '--accept-routes', '--advertise-routes=172.18.0.0/16', '--accept-dns=false'],
+      expect.objectContaining({ timeout: 120_000 }),
+      expect.any(Function),
+    );
+  });
+
   it('connectWithAuthKey invokes tailscale up via sidecar', async () => {
     execFileMock.mockImplementation(
       (cmd: string, args: string[], _opts: unknown, cb: (err: Error | null, stdout?: string, stderr?: string) => void) => {
         if (cmd === 'docker' && args[1] === 'hub-tailscale' && args[3] === 'version') {
           process.nextTick(() => cb(null, '1.82.0', ''));
+          return;
+        }
+        if (cmd === 'docker' && args.includes('debug') && args.includes('prefs')) {
+          process.nextTick(() => cb(null, '{}', ''));
           return;
         }
         if (cmd === 'docker' && args.includes('up') && args.includes('--auth-key')) {
@@ -149,6 +185,10 @@ describe('TailscaleService', () => {
         }
         if (cmd === 'docker' && args[2] === 'printenv' && args[3] === 'TS_AUTHKEY') {
           process.nextTick(() => cb(null, 'tskey-auth-from-env', ''));
+          return;
+        }
+        if (cmd === 'docker' && args.includes('debug') && args.includes('prefs')) {
+          process.nextTick(() => cb(null, '{}', ''));
           return;
         }
         if (cmd === 'docker' && args.includes('up') && args.includes('--auth-key')) {
