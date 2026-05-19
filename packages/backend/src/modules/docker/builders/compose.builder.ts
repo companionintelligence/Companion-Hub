@@ -240,7 +240,7 @@ export class DockerComposeBuilder {
           const resolvedDomain =
             appPublicDomain ||
             (() => {
-              const parts = appPublicHostname!.split('.');
+              const parts = appPublicHostname?.split('.');
               return parts.length >= 2 ? parts.slice(-2).join('.') : undefined;
             })();
 
