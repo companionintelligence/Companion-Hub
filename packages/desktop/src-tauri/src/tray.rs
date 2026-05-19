@@ -28,6 +28,14 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
     let open_portal = MenuItem::with_id(app, "open_portal", "Open Portal", true, None::<&str>)?;
     let view_logs = MenuItem::with_id(app, "view_logs", "View Logs", true, None::<&str>)?;
     let sep3 = PredefinedMenuItem::separator(app)?;
+    let reset_hub = MenuItem::with_id(
+        app,
+        "reset_hub",
+        "Reset Hub & Clear Tunnel Token",
+        true,
+        None::<&str>,
+    )?;
+    let sep4 = PredefinedMenuItem::separator(app)?;
     let status = MenuItem::with_id(app, "status", "Status: Checking…", false, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
 
@@ -42,6 +50,8 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
             &open_portal,
             &view_logs,
             &sep3,
+            &reset_hub,
+            &sep4,
             &status,
             &quit,
         ],
@@ -201,6 +211,75 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                                 &data,
                                 "tray.stop",
                                 &format!("Managed app containers cleanup failed: {}", error),
+                            );
+                        }
+                    }
+                });
+            }
+            "reset_hub" => {
+                let paths = app.state::<crate::hub_manager::HubPaths>();
+                let compose = paths.compose_path.clone();
+                let env = paths.env_path.clone();
+                let data = paths.data_dir.clone();
+                let _ = crate::hub_manager::append_desktop_log_for(
+                    &data,
+                    "tray.reset",
+                    "Reset Hub requested from the tray menu — will stop containers and clear tunnel token.",
+                );
+                tauri::async_runtime::spawn(async move {
+                    // 1. Stop the Hub compose project (best-effort — keep going on error).
+                    match crate::hub_manager::stop_hub(&compose, &env) {
+                        Ok(message) => {
+                            let _ = crate::hub_manager::append_desktop_log_for(
+                                &data,
+                                "tray.reset",
+                                &message,
+                            );
+                        }
+                        Err(error) => {
+                            let _ = crate::hub_manager::append_desktop_log_for(
+                                &data,
+                                "tray.reset",
+                                &format!("stop_hub during reset failed: {}", error),
+                            );
+                        }
+                    }
+
+                    // 2. Stop any managed app containers (best-effort).
+                    match crate::hub_manager::stop_managed_app_containers() {
+                        Ok(Some(summary)) => {
+                            let _ = crate::hub_manager::append_desktop_log_for(
+                                &data,
+                                "tray.reset",
+                                &summary,
+                            );
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            let _ = crate::hub_manager::append_desktop_log_for(
+                                &data,
+                                "tray.reset",
+                                &format!("Managed app containers cleanup failed: {}", error),
+                            );
+                        }
+                    }
+
+                    // 3. Clear the Cloudflare tunnel token from disk. Local-only;
+                    // server-side tunnel invalidation requires a Portal call that is
+                    // not wired here yet — tracked in issue #453.
+                    match crate::hub_manager::clear_tunnel_token(&data) {
+                        Ok(message) => {
+                            let _ = crate::hub_manager::append_desktop_log_for(
+                                &data,
+                                "tray.reset",
+                                &message,
+                            );
+                        }
+                        Err(error) => {
+                            let _ = crate::hub_manager::append_desktop_log_for(
+                                &data,
+                                "tray.reset",
+                                &format!("Tunnel token cleanup failed: {}", error),
                             );
                         }
                     }
