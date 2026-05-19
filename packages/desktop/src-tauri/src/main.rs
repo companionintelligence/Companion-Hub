@@ -73,6 +73,29 @@ async fn get_startup_progress_command() -> hub_manager::StartupProgress {
     hub_manager::get_startup_progress()
 }
 
+/// Read recent desktop log lines for in-app diagnostics (last 200 lines).
+#[tauri::command]
+async fn read_desktop_logs_command() -> String {
+    hub_manager::read_desktop_logs(200)
+}
+
+/// Open the logs directory in the system file manager.
+#[tauri::command]
+async fn open_logs_dir_command(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let logs_dir = hub_manager::logs_open_target();
+    let _ = std::fs::create_dir_all(&logs_dir);
+    app.opener()
+        .open_path(logs_dir.to_string_lossy().to_string(), None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
+/// Returns `true` if the user intentionally stopped the Hub on last use.
+#[tauri::command]
+async fn is_user_stopped_command() -> bool {
+    hub_manager::is_user_stopped(&hub_manager::get_hub_data_dir())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
@@ -101,6 +124,9 @@ pub fn run() {
             check_docker_access_command,
             get_hub_status_command,
             get_startup_progress_command,
+            read_desktop_logs_command,
+            open_logs_dir_command,
+            is_user_stopped_command,
             install_docker_command,
         ])
         .setup(|app| {
@@ -191,9 +217,15 @@ pub fn run() {
                 let containers_exist = hub_manager::hub_containers_exist();
                 let traefik_recreate_required = traefik_preflight.changed
                     || hub_manager::is_traefik_recreate_required(&data_dir);
+                // Respect the user's explicit decision to stop the Hub: if they clicked
+                // "Stop Hub" last time, don't auto-restart on the next launch until they
+                // explicitly click "Start Hub" again.
+                let user_stopped = hub_manager::is_user_stopped(&data_dir);
 
-                let should_start = if !containers_exist {
-                    true // First launch or user stopped Hub
+                let should_start = if user_stopped && containers_exist {
+                    false // User explicitly stopped — honour the decision across relaunches
+                } else if !containers_exist {
+                    true // First launch or containers were removed
                 } else if traefik_recreate_required {
                     true // Runtime state changed and Traefik must be recreated before reuse
                 } else if saved_hash.as_deref() != Some(&config_hash) {
@@ -202,7 +234,10 @@ pub fn run() {
                     false // Containers exist, config unchanged, no runtime repair pending — do nothing
                 };
 
-                let reason = if !containers_exist {
+                let reason = if user_stopped && containers_exist {
+                    "user intentionally stopped the Hub — respecting decision across relaunch"
+                        .to_string()
+                } else if !containers_exist {
                     "containers are missing".to_string()
                 } else if traefik_recreate_required {
                     "Traefik runtime preflight changed mounted state and requires container recreation"
