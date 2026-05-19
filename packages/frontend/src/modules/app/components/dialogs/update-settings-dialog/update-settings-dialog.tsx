@@ -1,4 +1,4 @@
-import { updateAppConfigMutation } from '@/api-client/@tanstack/react-query.gen';
+import { restartAppMutation, updateAppConfigMutation } from '@/api-client/@tanstack/react-query.gen';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
 import type { AppInfo, AppStatus } from '@/types/app.types';
 import type { TranslatableError } from '@/types/error.types';
@@ -26,6 +26,15 @@ export const UpdateSettingsDialog: React.FC<IProps> = ({ info, config, isOpen, o
 
   const isRunning = status != null && RUNNING_STATUSES.includes(status);
 
+  const restartApp = useMutation({
+    ...restartAppMutation(),
+    onError: (e: TranslatableError) => {
+      // Config saved successfully even if the restart failed; surface the restart error
+      // separately so the user knows their changes are persisted but not yet applied.
+      toast.error(t(e.message, e.intlParams));
+    },
+  });
+
   const updateConfig = useMutation({
     ...updateAppConfigMutation(),
     onError: (e: TranslatableError) => {
@@ -35,7 +44,15 @@ export const UpdateSettingsDialog: React.FC<IProps> = ({ info, config, isOpen, o
       onClose();
     },
     onSuccess: () => {
-      toast.success(isRunning ? t('APP_UPDATE_CONFIG_SUCCESS') : t('APP_UPDATE_CONFIG_SUCCESS_STOPPED'));
+      if (isRunning) {
+        toast.success(t('APP_UPDATE_CONFIG_SUCCESS'));
+        // The dialog hint already promises a restart on save; chain the restart so
+        // env-var and form-field changes actually take effect without forcing the
+        // user to find and click Restart elsewhere in the UI.
+        restartApp.mutate({ path: { urn: info.urn } });
+      } else {
+        toast.success(t('APP_UPDATE_CONFIG_SUCCESS_STOPPED'));
+      }
     },
   });
 
