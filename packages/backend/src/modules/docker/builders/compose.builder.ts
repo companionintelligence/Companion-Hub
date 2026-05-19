@@ -234,14 +234,19 @@ export class DockerComposeBuilder {
 
         if (appPublicHostname) {
           // Derive fullSubdomain from APP_PUBLIC_HOSTNAME.
-          // The domain portion is taken from APP_PUBLIC_DOMAIN when available;
-          // otherwise fall back to extracting the last two dot-separated segments
-          // (works for simple 2-part TLDs like lifescope.io / companionintelligence.com).
+          // Priority order for the domain portion:
+          //   1. APP_PUBLIC_DOMAIN (written alongside APP_PUBLIC_HOSTNAME for new installs)
+          //   2. form.publicDomain (DB-stored value; covers apps whose env predates APP_PUBLIC_DOMAIN,
+          //      including multi-label domains like my.lifescope.io that the slice(-2) heuristic
+          //      would truncate incorrectly)
+          //   3. Slice-last-2 heuristic (backward-compat for simple 2-part TLDs only)
+          const formPublicDomain = typeof form.publicDomain === 'string' ? form.publicDomain.trim() || undefined : undefined;
           const resolvedDomain =
             appPublicDomain ||
+            formPublicDomain ||
             (() => {
               const parts = appPublicHostname?.split('.');
-              return parts.length >= 2 ? parts.slice(-2).join('.') : undefined;
+              return parts && parts.length >= 2 ? parts.slice(-2).join('.') : undefined;
             })();
 
           if (resolvedDomain) {
