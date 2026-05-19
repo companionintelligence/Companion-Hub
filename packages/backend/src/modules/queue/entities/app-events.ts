@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { zodAppUrn } from '@ci-hub/common/types';
 import { z } from 'zod';
+import isFQDN from 'validator/lib/isFQDN';
 import { Queue } from '../queue.entity';
 
 const queueAppFormSchema = z
@@ -21,8 +22,15 @@ const queueAppFormSchema = z
     skipRun: z.boolean().default(false),
     // Explicit fields for public domain selection — previously passed through catchall as unknown.
     // These must be typed explicitly so generateEnvFile and triggerCloudflareSync receive them correctly.
+    // Validation mirrors appFormSchema in app-lifecycle.dto.ts for consistency.
     exposureMode: z.enum(['local', 'cloudflare', 'tailscale']).optional(),
-    publicDomain: z.string().min(1).optional().nullable(),
+    publicDomain: z
+      .string()
+      .trim()
+      .min(1)
+      .refine((value) => isFQDN(value), { message: 'Invalid public domain' })
+      .optional()
+      .nullable(),
   })
   .catchall(z.unknown());
 
