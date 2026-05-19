@@ -230,8 +230,8 @@ export const TailscaleSetupStep = ({ onComplete, onSkip, onBack }: TailscaleSetu
           <Button type="button" variant="ghost" onClick={onSkip}>
             {t('ONBOARDING_TAILSCALE_SKIP')}
           </Button>
-          <Button type="button" onClick={onComplete} disabled={!isConnected && cliAvailable !== false && !isError}>
-            {isConnected ? t('COMMON_CONTINUE') : t('ONBOARDING_TAILSCALE_CONTINUE_WITHOUT')}
+          <Button type="button" onClick={onComplete} disabled={isLoading}>
+            {isConnected ? t('COMMON_CONTINUE') : t('ONBOARDING_TAILSCALE_SKIP')}
           </Button>
         </div>
       </div>
