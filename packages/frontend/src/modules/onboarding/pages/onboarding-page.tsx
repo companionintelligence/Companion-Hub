@@ -74,7 +74,7 @@ function OnboardingWizard() {
                   setDetectedServices(services);
                   setCurrentStep(1);
                 }}
-                onSkip={() => setCurrentStep(4)}
+                onSkip={() => setCurrentStep(3)}
               />
             </StepContent>
 
@@ -85,7 +85,7 @@ function OnboardingWizard() {
                   setSelectedApps(apps);
                   setCurrentStep(2);
                 }}
-                onSkip={() => setCurrentStep(4)}
+                onSkip={() => setCurrentStep(3)}
                 onBack={() => setCurrentStep(0)}
               />
             </StepContent>

@@ -67,6 +67,10 @@ vi.mock('../components/ai-setup-step', () => ({
   AiSetupStep: () => <div data-testid="ai-setup-step">AI Setup</div>,
 }));
 
+vi.mock('../components/tailscale-setup-step', () => ({
+  TailscaleSetupStep: () => <div data-testid="tailscale-setup-step">Tailscale Setup</div>,
+}));
+
 vi.mock('../components/install-step', () => ({
   InstallStep: () => <div data-testid="install-step">Install</div>,
 }));
