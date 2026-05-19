@@ -541,7 +541,13 @@ export const InstallForm: React.FC<IProps> = ({
 
     if (Object.keys(validationErrors).length === 0) {
       onSubmit(formValues);
+    } else {
+      toast.error(t('APP_INSTALL_FORM_ERROR_INVALID'));
     }
+  };
+
+  const onInvalid = () => {
+    toast.error(t('APP_INSTALL_FORM_ERROR_INVALID'));
   };
 
   const hasOptionalFields = formFields.some((field) => !field.required && typeFilter(field));
@@ -552,7 +558,7 @@ export const InstallForm: React.FC<IProps> = ({
   const hasConfigSection = visibleFields.length > 0 || shouldShowAdvancedSettingsToggle || (guestDashboard && isAdvancedMode) || isAdvancedMode;
 
   return (
-    <form className="flex flex-col" onSubmit={handleSubmit(validate)} id={formId}>
+    <form className="flex flex-col" onSubmit={handleSubmit(validate, onInvalid)} id={formId}>
       {/* Exposure mode selector — always shown when applicable, even in simple mode */}
       {info.exposable && info.dynamic_config && renderExposureModeSelector()}
 

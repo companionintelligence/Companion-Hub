@@ -274,10 +274,9 @@ export class CloudflareClientService {
         this.logger.error(`DNS availability error response: ${JSON.stringify(error.response.data)}`);
       }
 
+      const errorData = (error as { response?: { data?: { message?: unknown; error?: unknown } } })?.response?.data;
       const responseMessage =
-        typeof (error as { response?: { data?: { message?: unknown } } })?.response?.data?.message === 'string'
-          ? ((error as { response?: { data?: { message?: string } } }).response?.data?.message ?? '')
-          : '';
+        typeof errorData?.message === 'string' ? errorData.message : typeof errorData?.error === 'string' ? errorData.error : '';
 
       const message = responseMessage || 'Unable to verify DNS availability right now. Please try again.';
 
