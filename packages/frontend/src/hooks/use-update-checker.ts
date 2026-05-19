@@ -5,6 +5,17 @@ const UPDATE_CHECK_URL = 'https://dl.ci.computer/latest.json';
 const MANIFEST_URL = (version: string) => `https://dl.ci.computer/v${version}/manifest.json`;
 const POLL_INTERVAL_MS = 4 * 60 * 60 * 1000; // 4 hours
 const DISMISSED_KEY = 'ci-hub-update-dismissed-version';
+const ALLOWED_DOWNLOAD_HOST = 'dl.ci.computer';
+
+/** Rejects anything that isn't an https URL on the known download host. */
+function isTrustedDownloadUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'https:' && parsed.hostname === ALLOWED_DOWNLOAD_HOST;
+  } catch {
+    return false;
+  }
+}
 
 interface LatestJson {
   version: string;
@@ -92,7 +103,7 @@ export function useUpdateChecker(): UseUpdateCheckerResult {
 
       const manifest = (await manifestRes.json()) as ManifestJson;
       const downloadUrl = getDownloadUrl(manifest, osPlatform, osArch);
-      if (!downloadUrl) return;
+      if (!downloadUrl || !isTrustedDownloadUrl(downloadUrl)) return;
 
       setUpdate({ currentVersion, latestVersion, downloadUrl });
     } catch {
