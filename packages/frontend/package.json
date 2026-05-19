@@ -13,6 +13,7 @@
     "tsc": "react-router typegen && tsc --noEmit"
   },
   "dependencies": {
+    "@ci-hub/common": "workspace:*",
     "@codemirror/lang-json": "^6.0.2",
     "@codemirror/lang-markdown": "^6.4.0",
     "@codemirror/lang-yaml": "^6.1.2",
@@ -27,10 +28,10 @@
     "@radix-ui/react-slot": "^1.2.2",
     "@radix-ui/react-switch": "^1.2.4",
     "@radix-ui/react-tabs": "^1.1.11",
-    "@ci-hub/common": "workspace:*",
     "@react-router/node": "7.14.0",
     "@tanstack/react-query": "^5.75.7",
     "@tauri-apps/api": "^2.10.1",
+    "@tauri-apps/plugin-opener": "^2.5.4",
     "@tauri-apps/plugin-os": "^2.3.2",
     "@uidotdev/usehooks": "^2.4.1",
     "@uiw/codemirror-theme-copilot": "^4.23.13",
@@ -45,6 +46,7 @@
     "i18next-browser-languagedetector": "^8.1.0",
     "i18next-http-backend": "^3.0.2",
     "immer": "^10.1.1",
+    "isbot": "^5",
     "let-it-go": "^1.1.0",
     "lucide-react": "^0.475.0",
     "qrcode.react": "^4.2.0",
@@ -65,8 +67,7 @@
     "tailwind-merge": "^3.4.0",
     "validator": "^13.15.0",
     "zod": "^4.1.5",
-    "zustand": "5.0.8",
-    "isbot": "^5"
+    "zustand": "5.0.8"
   },
   "devDependencies": {
     "@faker-js/faker": "^10.1.0",
