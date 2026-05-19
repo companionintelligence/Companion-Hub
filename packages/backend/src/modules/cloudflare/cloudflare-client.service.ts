@@ -1,5 +1,5 @@
 import { APP_DIR, DATA_DIR } from '@/common/constants';
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { DockerService } from '../docker/docker.service';
@@ -8,6 +8,8 @@ import axios, { AxiosInstance, type AxiosResponse } from 'axios';
 import * as fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
 import * as path from 'node:path';
+import type { CustomDomainsService } from '../custom-domains/custom-domains.service';
+import type { CustomDomainStatus } from '../custom-domains/custom-domains.dto';
 
 export interface AppInfo {
   name: string;
@@ -50,6 +52,12 @@ export class CloudflareClientService {
   constructor(
     private configService: ConfigurationService,
     private moduleRef: ModuleRef,
+    /**
+     * Optional: injected when CustomDomainsModule is available (i.e. always in
+     * production). The optional injection avoids a circular-module dependency in
+     * unit tests that mock only the Cloudflare module.
+     */
+    @Optional() private customDomainsService?: CustomDomainsService,
   ) {
     const ciCloudUrl = this.configService.get('ciCloudUrl') || 'https://hub.companionintelligence.com';
     this.cloudApiUrl = `${ciCloudUrl}/api`;
@@ -184,6 +192,14 @@ export class CloudflareClientService {
 
       if (response.data.success) {
         this.logger.log('State sync successful');
+
+        // H1.2: consume customDomains[] from the Portal response and update the
+        // custom-domains cache so the UI can render status without an extra round-trip.
+        const rawDomains = (response.data as { customDomains?: unknown }).customDomains;
+        if (Array.isArray(rawDomains) && this.customDomainsService) {
+          this.customDomainsService.updateFromSyncState(rawDomains as CustomDomainStatus[]);
+        }
+
         return true;
       }
       return false;
