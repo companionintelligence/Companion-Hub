@@ -21,6 +21,16 @@ import { type SSE, type Topic, sseSchema } from './sse.js';
 
 import { toJsonSchema } from './utils/to-json-schema.js';
 
+import {
+  appCompatibilitySchema,
+  hubCompatibilitySchema,
+  checkAppCompatibility,
+  meetsMinVersion,
+  extractAppCompatibility,
+  LEGACY_TIPI_VERSION_KEY,
+} from './compatibility.js';
+import type { AppCompatibility, AppCompatibilityInput, HubCompatibility } from './compatibility.js';
+
 export {
   dynamicComposeSchema,
   parseComposeJson,
@@ -42,6 +52,13 @@ export {
   hubIntegrationSchema,
   sseSchema,
   frontmatterSchema,
+  // Canonical compatibility contracts (#419)
+  appCompatibilitySchema,
+  hubCompatibilitySchema,
+  checkAppCompatibility,
+  meetsMinVersion,
+  extractAppCompatibility,
+  LEGACY_TIPI_VERSION_KEY,
   type AgentConfig,
   type AgentMcpConfig,
   type AgentOpenApiAuth,
@@ -60,4 +77,8 @@ export {
   type AppCategory,
   type SSE,
   type Topic,
+  // Canonical compatibility types (#419)
+  type AppCompatibility,
+  type AppCompatibilityInput,
+  type HubCompatibility,
 };

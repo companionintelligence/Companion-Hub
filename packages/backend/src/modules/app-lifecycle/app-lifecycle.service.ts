@@ -289,7 +289,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       // - When exposedLocal=true and openPort=false: Internal port (for APP_PORT env var, not used for host port mapping)
       // - Traefik routing uses params.internalPort from service definition, not this database field
       port: parsedForm.port ?? appInfo.port,
-      version: appInfo.tipi_version,
+      version: appInfo.hub_version ?? appInfo.tipi_version,
       exposed: exposed ?? false,
       domain: domain ?? null,
       localSubdomain: parsedForm.localSubdomain ?? null,

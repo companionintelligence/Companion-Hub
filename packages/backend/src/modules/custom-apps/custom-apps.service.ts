@@ -135,7 +135,7 @@ export class CustomAppService {
       exposable: true,
       no_gui: false,
       supported_architectures: ['amd64', 'arm64'],
-      tipi_version: 1,
+      hub_version: 1,
       version: '1.0.0',
       dynamic_config: true,
       deprecated: false,

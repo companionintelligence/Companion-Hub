@@ -190,7 +190,9 @@ export class AppStoreFilesManager {
     if (config) {
       return {
         ...paths,
-        latestVersion: config.tipi_version,
+        // Use canonical hub_version; fall back to legacy tipi_version for manifests
+        // that haven't been migrated yet (both fields are present in AppInfo).
+        latestVersion: config.hub_version ?? config.tipi_version,
         minHubVersion: config.min_hub_version ?? null,
         latestDockerVersion: config.version,
       };

@@ -84,8 +84,10 @@ export class BackupsService {
       if (success) {
         const restoredAppConfig = await this.appFilesManager.getInstalledAppInfo(appUrn);
 
-        if (typeof restoredAppConfig?.tipi_version === 'number') {
-          await this.appsRepository.updateAppById(app.id, { version: restoredAppConfig?.tipi_version });
+        // Use canonical hub_version; fall back to legacy tipi_version for older backups.
+        const restoredVersion = restoredAppConfig?.hub_version ?? restoredAppConfig?.tipi_version;
+        if (typeof restoredVersion === 'number') {
+          await this.appsRepository.updateAppById(app.id, { version: restoredVersion });
         }
 
         if (appStatusBeforeUpdate === 'running') {

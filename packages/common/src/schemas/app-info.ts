@@ -64,7 +64,18 @@ export const appInfoSchema = z.object({
   name: z.string(),
   description: z.string().optional().default(''),
   version: z.string().optional().default('latest'),
-  tipi_version: z.number(),
+  /**
+   * Canonical manifest schema version (formerly `tipi_version` in the legacy Runtipi format).
+   * Both `hub_version` and `tipi_version` are accepted as input; `hub_version` takes precedence.
+   * Use `extractAppCompatibility()` from `@ci-hub/common/schemas/compatibility` for raw ingestion.
+   */
+  hub_version: z.number().default(1),
+  /**
+   * Legacy alias for `hub_version` — kept so existing on-disk `config.json` files that only
+   * have `tipi_version` still parse without errors. Prefer `hub_version` in all new code.
+   * @deprecated Use `hub_version` instead.
+   */
+  tipi_version: z.number().optional(),
   short_desc: z.string(),
   author: z.string(),
   source: z.string(),

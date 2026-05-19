@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { extractAppCompatibility } from '@ci-hub/common/schemas';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -182,6 +183,9 @@ export class ReposHelpers {
           // Non-fatal: description will fall back to API payload/config.
         }
 
+        // Extract canonical compatibility fields (normalises legacy `tipi_version` → `hub_version`)
+        const compat = extractAppCompatibility(app as Record<string, unknown>);
+
         // Enrich app metadata with default required fields if missing
         const enrichedApp = {
           ...app,
@@ -198,9 +202,10 @@ export class ReposHelpers {
           categories: Array.isArray(app.categories) ? app.categories : ['utilities'],
           port: typeof app.port === 'number' ? app.port : 8080,
           version: typeof app.version === 'string' ? app.version : '0.0.1',
-          tipi_version: typeof app.tipi_version === 'number' ? app.tipi_version : 1,
+          // Canonical field — replaces the legacy `tipi_version` key from the on-disk format.
+          hub_version: compat.hub_version,
           source: typeof app.source === 'string' ? app.source : 'https://github.com/example/repo',
-          supported_architectures: Array.isArray(app.supported_architectures) ? app.supported_architectures : ['amd64', 'arm64'],
+          supported_architectures: compat.supported_architectures ?? ['amd64', 'arm64'],
         };
 
         await fs.promises.writeFile(path.join(appDir, 'config.json'), JSON.stringify(enrichedApp, null, 2));
