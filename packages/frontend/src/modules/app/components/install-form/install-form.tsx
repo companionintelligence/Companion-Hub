@@ -107,6 +107,9 @@ export const InstallForm: React.FC<IProps> = ({
   const watchedRequiredValues = watch(requiredFieldNames);
 
   const dnsCheckTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  // Track the previously-rendered app URN so the init effect can detect when
+  // the form is reused for a different app and force-reset stale field values.
+  const prevUrnRef = useRef<string | undefined>(undefined);
   const [isCheckingDns, setIsCheckingDns] = useState(false);
   const [dnsAvailabilityError, setDnsAvailabilityError] = useState<string | null>(null);
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
@@ -134,6 +137,11 @@ export const InstallForm: React.FC<IProps> = ({
   }, [onValidityChange, info.exposable, info.dynamic_config, watchExposureMode, formFields, watchedRequiredValues]);
 
   useEffect(() => {
+    // Detect when the form is reused for a different app so we can force-reset
+    // stale values (e.g. publicDomain left over from the previous app).
+    const appChanged = prevUrnRef.current !== undefined && prevUrnRef.current !== info.urn;
+    prevUrnRef.current = info.urn;
+
     if (initialValues && !isDirty) {
       for (const [key, value] of Object.entries(initialValues)) {
         setValue(key, value as string);
@@ -154,32 +162,40 @@ export const InstallForm: React.FC<IProps> = ({
       if (info.port) {
         setValue('port', info.port.toString());
       }
-      // Set default subdomain if not provided
-      const defaultSubdomain = info.urn.split(':')[0]; // Use app name as default subdomain
-      if (!watchLocalSubdomain) {
-        setValue('localSubdomain', defaultSubdomain);
-      }
-      if (!initialValues?.publicDomain && domain) {
+      // Reset publicDomain when switching apps (appChanged) so stale values
+      // from a previous app don't carry over; otherwise only write the default
+      // when the field hasn't been customised yet.
+      const currentPD = getValues('publicDomain');
+      if (!initialValues?.publicDomain && domain && (appChanged || !currentPD || currentPD === domain)) {
         setValue('publicDomain', domain);
       }
     }
   }, [
     initialValues,
     isDirty,
+    getValues,
     setValue,
+    info.urn,
     info.force_expose,
     info.exposable,
     info.dynamic_config,
     info.port,
-    watchLocalSubdomain,
-    // include the urn string itself (not the split function) so the effect
-    // re-runs when the app urn changes
-    info.urn,
     initialValues?.publicDomain,
     cloudflareAvailable,
     domain,
     tailscaleAvailable,
   ]);
+
+  // Separate effect: only responsible for setting the default localSubdomain.
+  // Isolated from the initialisation effect above so that typing in the
+  // subdomain field does not re-run that effect and clobber user choices such
+  // as exposureMode, openPort, or enableAuth.
+  useEffect(() => {
+    if (info.exposable && info.dynamic_config && !watchLocalSubdomain) {
+      const defaultSubdomain = info.urn.split(':')[0];
+      setValue('localSubdomain', defaultSubdomain);
+    }
+  }, [info.exposable, info.dynamic_config, info.urn, watchLocalSubdomain, setValue]);
 
   useEffect(() => {
     if (watchExposureMode !== 'cloudflare' || availableDomains.length === 0) {

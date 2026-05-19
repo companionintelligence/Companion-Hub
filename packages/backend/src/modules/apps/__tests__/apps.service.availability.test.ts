@@ -253,4 +253,49 @@ describe('AppsService.checkAppAvailability', () => {
     expect(result.available).toBe(false);
     expect(mockedAxiosGet).not.toHaveBeenCalled();
   });
+
+  // Test 14: app.publicDomain overrides userSettings.domain in the constructed URL
+  it('cloudflare mode → app.publicDomain used in appUrl instead of userSettings.domain', async () => {
+    ctx.mockApp.exposureMode = 'cloudflare';
+    ctx.mockApp.localSubdomain = 'myapp';
+    (ctx.mockApp as any).publicDomain = 'lifescope.io';
+
+    mockedAxiosGet.mockResolvedValue({ status: 200, data: 'OK' });
+
+    const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+    expect(result.available).toBe(true);
+    expect(result.appUrl).toBe('https://myapp-device1-myorg.lifescope.io');
+    // Should NOT use the device-default example.com
+    expect(result.appUrl).not.toContain('example.com');
+  });
+
+  // Test 15: app.publicDomain absent → falls back to userSettings.domain
+  it('cloudflare mode → falls back to userSettings.domain when app.publicDomain is absent', async () => {
+    ctx.mockApp.exposureMode = 'cloudflare';
+    ctx.mockApp.localSubdomain = 'myapp';
+    (ctx.mockApp as any).publicDomain = null;
+
+    mockedAxiosGet.mockResolvedValue({ status: 200, data: 'OK' });
+
+    const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+    expect(result.available).toBe(true);
+    expect(result.appUrl).toBe('https://myapp-device1-myorg.example.com');
+  });
+
+  // Test 16: app.publicDomain set but no userSettings.domain → still works
+  it('cloudflare mode → available when only app.publicDomain is set (no device default domain)', async () => {
+    ctx.mockApp.exposureMode = 'cloudflare';
+    ctx.mockApp.localSubdomain = 'myapp';
+    (ctx.mockApp as any).publicDomain = 'lifescope.io';
+    ctx.mockConfig.userSettings.domain = '';
+
+    mockedAxiosGet.mockResolvedValue({ status: 200, data: 'OK' });
+
+    const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+    expect(result.available).toBe(true);
+    expect(result.appUrl).toContain('lifescope.io');
+  });
 });

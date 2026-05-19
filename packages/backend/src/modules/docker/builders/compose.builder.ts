@@ -217,20 +217,50 @@ export class DockerComposeBuilder {
         const envContent = await fs.readFile(envFile, 'utf-8');
         const envLines = envContent.split('\n');
 
-        // Extract full subdomain and public domain from APP_PUBLIC_HOSTNAME
-        // Format: appname-deviceslug-orgslug.publicdomain.com
+        // Parse all relevant env vars in a single pass.
+        // Prefer APP_PUBLIC_DOMAIN (set since it was added to avoid fragile hostname parsing)
+        // and fall back to splitting APP_PUBLIC_HOSTNAME for backward-compatibility with
+        // older app installations that pre-date APP_PUBLIC_DOMAIN.
+        let appPublicHostname: string | undefined;
+        let appPublicDomain: string | undefined;
+
         for (const line of envLines) {
-          if (line.startsWith('APP_PUBLIC_HOSTNAME=')) {
-            const exposedDomain = line.split('=')[1]?.trim();
-            if (exposedDomain) {
-              const parts = exposedDomain.split('.');
-              if (parts.length >= 2) {
-                this.publicDomain = parts.slice(-2).join('.'); // Get last two parts (e.g., companionintelligence.com)
-                // Extract full subdomain (everything before the last two dots, e.g., mattermost-test1-bdc)
-                this.fullSubdomain = parts.slice(0, -2).join('.');
-              }
+          if (line.startsWith('APP_PUBLIC_DOMAIN=')) {
+            appPublicDomain = line.split('=')[1]?.trim();
+          } else if (line.startsWith('APP_PUBLIC_HOSTNAME=')) {
+            appPublicHostname = line.split('=')[1]?.trim();
+          }
+        }
+
+        if (appPublicHostname) {
+          // Derive fullSubdomain from APP_PUBLIC_HOSTNAME.
+          // Priority order for the domain portion:
+          //   1. APP_PUBLIC_DOMAIN (written alongside APP_PUBLIC_HOSTNAME for new installs)
+          //   2. form.publicDomain (DB-stored value; covers apps whose env predates APP_PUBLIC_DOMAIN,
+          //      including multi-label domains like my.lifescope.io that the slice(-2) heuristic
+          //      would truncate incorrectly)
+          //   3. Slice-last-2 heuristic (backward-compat for simple 2-part TLDs only)
+          const formPublicDomain = typeof form.publicDomain === 'string' ? form.publicDomain.trim() || undefined : undefined;
+          const resolvedDomain =
+            appPublicDomain ||
+            formPublicDomain ||
+            (() => {
+              const parts = appPublicHostname?.split('.');
+              return parts && parts.length >= 2 ? parts.slice(-2).join('.') : undefined;
+            })();
+
+          if (resolvedDomain) {
+            this.publicDomain = resolvedDomain;
+            // Full subdomain is everything before the first occurrence of the domain suffix.
+            const domainSuffix = `.${resolvedDomain}`;
+            if (appPublicHostname.endsWith(domainSuffix)) {
+              this.fullSubdomain = appPublicHostname.slice(0, -domainSuffix.length);
+            } else {
+              // Fallback: strip as many trailing segments as the domain has parts.
+              const parts = appPublicHostname.split('.');
+              const domainParts = resolvedDomain.split('.').length;
+              this.fullSubdomain = parts.slice(0, -domainParts).join('.');
             }
-            break;
           }
         }
       } catch (_error) {
