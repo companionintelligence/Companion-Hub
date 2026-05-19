@@ -160,7 +160,7 @@ export class AppsService {
     const userSettings = config.userSettings;
     const org = await this.registrationService.getDeviceRegistrationInfo();
     const organizationSlug = org?.slug;
-    const exposureMode = ((app as Record<string, unknown>).exposureMode as string) || 'local';
+    const exposureMode = app.exposureMode || 'local';
     const baseSubdomain = app.localSubdomain;
     const urlSuffix = info.url_suffix || '';
 
@@ -178,8 +178,7 @@ export class AppsService {
       }
     } else {
       // Cloudflare/Tailscale: use public domain
-      const appPublicDomain = (app as Record<string, unknown>).publicDomain as string | null | undefined;
-      const resolvedDomain = appPublicDomain?.trim() || userSettings.domain;
+      const resolvedDomain = app.publicDomain?.trim() || userSettings.domain;
       if (!organizationSlug || !resolvedDomain) {
         return { available: false, appUrl, stage: 'error' };
       }
@@ -362,7 +361,7 @@ export class AppsService {
       return { success: false, action: 'none', detail: 'App not found.' };
     }
 
-    const exposureMode = ((app as Record<string, unknown>).exposureMode as string) || 'local';
+    const exposureMode = app.exposureMode || 'local';
     const actions: string[] = [];
 
     try {
