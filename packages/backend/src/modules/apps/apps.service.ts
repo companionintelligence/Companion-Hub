@@ -178,7 +178,9 @@ export class AppsService {
       }
     } else {
       // Cloudflare/Tailscale: use public domain
-      if (!organizationSlug || !userSettings.domain) {
+      const appPublicDomain = (app as Record<string, unknown>).publicDomain as string | null | undefined;
+      const resolvedDomain = appPublicDomain?.trim() || userSettings.domain;
+      if (!organizationSlug || !resolvedDomain) {
         return { available: false, appUrl, stage: 'error' };
       }
 
@@ -195,10 +197,6 @@ export class AppsService {
       }
       const deviceSlug = org.hubSubdomain.replace(/^hub-/, '').replace(new RegExp(`-${organizationSlug}$`), '');
       const subdomain = `${baseSubdomain}-${deviceSlug}-${organizationSlug}`;
-      // Use the app-specific public domain if set (user selected a domain during install),
-      // otherwise fall back to the device default domain.
-      const appPublicDomain = (app as Record<string, unknown>).publicDomain as string | null | undefined;
-      const resolvedDomain = appPublicDomain?.trim() || userSettings.domain;
       appUrl = `https://${subdomain}.${resolvedDomain}${urlSuffix}`;
     }
 
