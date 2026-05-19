@@ -19,6 +19,10 @@ const queueAppFormSchema = z
     skipEnv: z.boolean().default(false),
     skipPull: z.boolean().default(false),
     skipRun: z.boolean().default(false),
+    // Explicit fields for public domain selection — previously passed through catchall as unknown.
+    // These must be typed explicitly so generateEnvFile and triggerCloudflareSync receive them correctly.
+    exposureMode: z.enum(['local', 'cloudflare', 'tailscale']).optional(),
+    publicDomain: z.string().min(1).optional().nullable(),
   })
   .catchall(z.unknown());
 

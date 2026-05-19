@@ -195,7 +195,11 @@ export class AppsService {
       }
       const deviceSlug = org.hubSubdomain.replace(/^hub-/, '').replace(new RegExp(`-${organizationSlug}$`), '');
       const subdomain = `${baseSubdomain}-${deviceSlug}-${organizationSlug}`;
-      appUrl = `https://${subdomain}.${userSettings.domain}${urlSuffix}`;
+      // Use the app-specific public domain if set (user selected a domain during install),
+      // otherwise fall back to the device default domain.
+      const appPublicDomain = (app as Record<string, unknown>).publicDomain as string | null | undefined;
+      const resolvedDomain = appPublicDomain?.trim() || userSettings.domain;
+      appUrl = `https://${subdomain}.${resolvedDomain}${urlSuffix}`;
     }
 
     // Helper to determine stage from error code

@@ -159,13 +159,17 @@ export const InstallForm: React.FC<IProps> = ({
       if (!watchLocalSubdomain) {
         setValue('localSubdomain', defaultSubdomain);
       }
-      if (!initialValues?.publicDomain && domain) {
+      // Only set default publicDomain if the user hasn't explicitly chosen one yet.
+      // Without this guard, typing in the subdomain field re-runs this effect and
+      // resets any domain the user already selected back to the device default.
+      if (!initialValues?.publicDomain && domain && !dirtyFields.publicDomain) {
         setValue('publicDomain', domain);
       }
     }
   }, [
     initialValues,
     isDirty,
+    dirtyFields.publicDomain,
     setValue,
     info.force_expose,
     info.exposable,
