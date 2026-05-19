@@ -599,7 +599,7 @@
   "SETTINGS_NETWORK_VERSION": "Version",
   "SETTINGS_NETWORK_TUNNEL_ID": "Tunnel ID",
   "SETTINGS_NETWORK_TAILSCALE_NOT_INSTALLED": "Tailscale not installed",
-  "SETTINGS_NETWORK_TAILSCALE_NOT_INSTALLED_DESC": "The Hub could not run Tailscale (no host CLI/socket and no hub-tailscale sidecar). Ensure the private-vpn compose profile is enabled, PRIVATE_VPN_ENABLED is not false, and the sidecar container is running. You can also install Tailscale on the host and mount tailscaled.sock into the Hub container.",
+  "SETTINGS_NETWORK_TAILSCALE_NOT_INSTALLED_DESC": "The Tailscale sidecar container is not running. This usually means the private-vpn Docker Compose profile is not enabled. You can skip this and set up Tailscale later in Settings, or install Tailscale on the host and mount tailscaled.sock into the Hub container.",
   "SETTINGS_NETWORK_TAILSCALE_INSTALL_LINK": "Install Tailscale",
   "SETTINGS_NETWORK_TAILSCALE_CONNECT": "Sign in with browser",
   "SETTINGS_NETWORK_TAILSCALE_CONNECT_DESC": "Open Tailscale login in a new tab to join your tailnet (works with the hub-tailscale sidecar or host Tailscale).",

@@ -6,6 +6,7 @@ import { WelcomeStep } from '../components/welcome-step';
 import { RecommendationsStep } from '../components/recommendations-step';
 import { SelectAppsStep } from '../components/select-apps-step';
 import { AiSetupStep } from '../components/ai-setup-step';
+import { TailscaleSetupStep } from '../components/tailscale-setup-step';
 import { InstallStep } from '../components/install-step';
 import { CompleteStep } from '../components/complete-step';
 import { Stepper, StepTrigger, StepTriggerList, StepContent } from '@/components/ui/Stepper/Stepper';
@@ -28,7 +29,7 @@ function OnboardingWizard() {
     return <Navigate to="/dashboard" replace />;
   }
 
-  const stepTitles = ['Welcome', 'Discover', 'Select', 'AI Setup', 'Install', 'Done'];
+  const stepTitles = ['Welcome', 'Discover', 'Select', 'AI Setup', 'Private VPN', 'Install', 'Done'];
 
   return (
     <div className="flex items-center justify-center bg-background px-4 py-8" style={{ minHeight: 'calc(100vh - var(--titlebar-height, 0px))' }}>
@@ -73,7 +74,7 @@ function OnboardingWizard() {
                   setDetectedServices(services);
                   setCurrentStep(1);
                 }}
-                onSkip={() => setCurrentStep(3)}
+                onSkip={() => setCurrentStep(4)}
               />
             </StepContent>
 
@@ -84,7 +85,7 @@ function OnboardingWizard() {
                   setSelectedApps(apps);
                   setCurrentStep(2);
                 }}
-                onSkip={() => setCurrentStep(3)}
+                onSkip={() => setCurrentStep(4)}
                 onBack={() => setCurrentStep(0)}
               />
             </StepContent>
@@ -115,18 +116,22 @@ function OnboardingWizard() {
             </StepContent>
 
             <StepContent step={4}>
+              <TailscaleSetupStep onComplete={() => setCurrentStep(5)} onSkip={() => setCurrentStep(5)} onBack={() => setCurrentStep(3)} />
+            </StepContent>
+
+            <StepContent step={5}>
               <InstallStep
                 apps={selectedApps}
                 defaultExposureMode={defaultExposureMode}
                 aiSetupConfig={aiSetupConfig}
                 onComplete={(summary) => {
                   setInstallSummary(summary);
-                  setCurrentStep(5);
+                  setCurrentStep(6);
                 }}
               />
             </StepContent>
 
-            <StepContent step={5}>
+            <StepContent step={6}>
               <CompleteStep installSummary={installSummary} aiSetupConfig={aiSetupConfig} />
             </StepContent>
           </div>

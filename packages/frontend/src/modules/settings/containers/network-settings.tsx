@@ -1,6 +1,5 @@
 import { appContextQueryKey } from '@/api-client/@tanstack/react-query.gen';
 import { Button } from '@/components/ui/Button';
-import { Input } from '@/components/ui/Input';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { ExternalLink, Globe, Loader2, Shield } from 'lucide-react';
@@ -38,15 +37,9 @@ interface AuthStartResponse {
   error?: string;
 }
 
-interface AuthKeyResponse {
-  success: boolean;
-  error?: string;
-}
-
 const TailscaleSidecarSection = () => {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  const [authKey, setAuthKey] = useState('');
 
   const { data, isLoading } = useQuery<TailscaleApiStatus>({
     queryKey: ['tailscale-status'],
@@ -86,31 +79,10 @@ const TailscaleSidecarSection = () => {
     onError: () => toast.error(t('SETTINGS_NETWORK_TAILSCALE_BROWSER_FAILED')),
   });
 
-  const keyAuthMutation = useMutation({
-    mutationFn: async (key: string) => {
-      const res = await apiFetch('/api/tailscale/auth/key', {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ authKey: key }),
-      });
-      const json = (await res.json()) as AuthKeyResponse;
-      if (!json.success) {
-        throw new Error(json.error ?? 'Failed to connect');
-      }
-    },
-    onSuccess: () => {
-      toast.success(t('SETTINGS_NETWORK_CONNECTED'));
-      setAuthKey('');
-      invalidateTailscaleAndAppContext();
-    },
-    onError: (e: Error) => toast.error(e.message),
-  });
-
   const disconnectMutation = useMutation({
     mutationFn: async () => {
       const res = await apiFetch('/api/tailscale/disconnect', { method: 'POST', credentials: 'include' });
-      const json = (await res.json()) as AuthKeyResponse;
+      const json = (await res.json()) as { success: boolean; error?: string };
       if (!json.success) {
         throw new Error(json.error ?? 'Failed to disconnect');
       }
@@ -165,63 +137,39 @@ const TailscaleSidecarSection = () => {
         </div>
       )}
 
-      {cliUnavailable && <p className="text-xs text-muted-foreground">{t('SETTINGS_NETWORK_TAILSCALE_NOT_INSTALLED_DESC')}</p>}
+      {cliUnavailable && (
+        <div className="space-y-3">
+          <p className="text-xs text-muted-foreground">{t('SETTINGS_NETWORK_TAILSCALE_NOT_INSTALLED_DESC')}</p>
+          <p className="text-xs text-muted-foreground">
+            <strong>Note:</strong> You can also install Tailscale on the host and mount tailscaled.sock into the Hub container.
+          </p>
+        </div>
+      )}
 
       {canConnectFlow && (
         <div className="space-y-3 pt-2 border-t">
-          <p className="text-sm text-muted-foreground">{t('SETTINGS_NETWORK_TAILSCALE_CONNECT_DESC')}</p>
-          <div className="flex flex-wrap gap-2">
-            <Button type="button" variant="default" disabled={browserAuthMutation.isPending} onClick={() => browserAuthMutation.mutate()}>
-              {browserAuthMutation.isPending ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                  {t('SETTINGS_NETWORK_LOADING')}
-                </>
-              ) : (
-                t('SETTINGS_NETWORK_TAILSCALE_CONNECT')
-              )}
-            </Button>
-            <Button type="button" variant="outline" asChild>
-              <a
-                href="https://login.tailscale.com/admin/settings/keys"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5"
-              >
-                {t('SETTINGS_NETWORK_TAILSCALE_GET_KEY')}
-                <ExternalLink className="h-3.5 w-3.5" />
-              </a>
-            </Button>
-          </div>
-          <div className="space-y-2">
-            <label className="text-sm font-medium" htmlFor="tailscale-preauth-key">
-              {t('SETTINGS_NETWORK_TAILSCALE_PREAUTH_KEY_LABEL')}
-            </label>
-            <p className="text-xs text-muted-foreground">{t('SETTINGS_NETWORK_TAILSCALE_PREAUTH_HELP')}</p>
-            <Input
-              id="tailscale-preauth-key"
-              type="password"
-              autoComplete="off"
-              placeholder={t('SETTINGS_NETWORK_TAILSCALE_PREAUTH_PLACEHOLDER')}
-              value={authKey}
-              onChange={(e) => setAuthKey(e.target.value)}
-            />
-            <Button
-              type="button"
-              variant="secondary"
-              disabled={keyAuthMutation.isPending || !authKey.trim()}
-              onClick={() => keyAuthMutation.mutate(authKey)}
-            >
-              {keyAuthMutation.isPending ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                  {t('SETTINGS_NETWORK_LOADING')}
-                </>
-              ) : (
-                t('SETTINGS_NETWORK_TAILSCALE_CONNECT_KEY_SUBMIT')
-              )}
-            </Button>
-          </div>
+          <p className="text-sm text-muted-foreground">Click the button below to log in with your Tailscale account and connect your Hub.</p>
+          <Button
+            type="button"
+            variant="default"
+            size="lg"
+            className="w-full"
+            disabled={browserAuthMutation.isPending}
+            onClick={() => browserAuthMutation.mutate()}
+          >
+            {browserAuthMutation.isPending ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                {t('SETTINGS_NETWORK_LOADING')}
+              </>
+            ) : (
+              <>
+                <Shield className="h-4 w-4 mr-2" />
+                Log In with Tailscale
+              </>
+            )}
+          </Button>
+          <p className="text-xs text-muted-foreground text-center">Don't have a Tailscale account? You can create one for free during login.</p>
         </div>
       )}
 
