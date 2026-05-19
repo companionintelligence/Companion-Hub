@@ -14,7 +14,6 @@ const HEADLESS_POLL_INTERVAL_MS = 5000; // slower poll when idle, waiting for ex
 const DOMAIN_PROBE_INTERVAL_MS = 5000;
 const MAX_DOMAIN_PROBE_ATTEMPTS = 60;
 const REQUIRED_CONSECUTIVE_PROBES = 2;
-const PUBLICLY_READY_TIMEOUT_MS = 90_000;
 
 type PairingTarget = {
   domain?: string;
@@ -85,7 +84,6 @@ export default function DeviceRegistrationPage() {
   const pairingInputRef = useRef<HTMLInputElement>(null);
   const pendingPairTargetRef = useRef<PairingTarget | null>(null);
   const completionStartedRef = useRef(false);
-  const publiclyReadyTimerRef = useRef<number | null>(null);
   const isTauri = '__TAURI_INTERNALS__' in window;
 
   const loadDeviceInfo = useCallback(async () => {
@@ -224,17 +222,9 @@ export default function DeviceRegistrationPage() {
   useEffect(() => {
     // Keep polling while:
     // - phase is in-progress (paired/provisioning)
-    // - waiting for publicly_ready before redirecting to the public URL
     // - phase is unregistered — poll at a slower rate to detect headless setup completing externally
     const isUnregistered = registrationStatus?.phase === 'unregistered';
-    const shouldPoll =
-      (registrationStatus && isRegistrationPending(registrationStatus)) ||
-      (registrationStatus &&
-        registrationStatus.phase === 'locally_ready' &&
-        pendingPairTargetRef.current?.domain &&
-        pendingPairTargetRef.current?.subdomain &&
-        !completionStartedRef.current) ||
-      isUnregistered;
+    const shouldPoll = (registrationStatus && isRegistrationPending(registrationStatus)) || isUnregistered;
 
     if (!shouldPoll) {
       return;
@@ -257,27 +247,7 @@ export default function DeviceRegistrationPage() {
 
     const target = pendingPairTargetRef.current;
     if (target) {
-      // If a public URL is expected, wait for publicly_ready (or degraded) before
-      // starting the domain probe loop. This avoids redirecting the browser to a
-      // Cloudflare error page while the tunnel is still being established.
-      if (target.domain && target.subdomain && registrationStatus.phase === 'locally_ready') {
-        // Start a timeout: if publicly_ready doesn't arrive within the window,
-        // fall through and let finishRegistrationFlow handle the fallback.
-        if (!publiclyReadyTimerRef.current) {
-          publiclyReadyTimerRef.current = window.setTimeout(() => {
-            publiclyReadyTimerRef.current = null;
-            completionStartedRef.current = true;
-            void finishRegistrationFlow(registrationStatus);
-          }, PUBLICLY_READY_TIMEOUT_MS);
-        }
-        return;
-      }
-
-      // Phase is publicly_ready, degraded, or no public URL — proceed immediately.
-      if (publiclyReadyTimerRef.current) {
-        window.clearTimeout(publiclyReadyTimerRef.current);
-        publiclyReadyTimerRef.current = null;
-      }
+      // Phase is operational (locally_ready, publicly_ready, or degraded) — proceed immediately.
       completionStartedRef.current = true;
       void finishRegistrationFlow(registrationStatus);
       return;
@@ -285,15 +255,6 @@ export default function DeviceRegistrationPage() {
 
     navigate('/', { replace: true });
   }, [finishRegistrationFlow, navigate, registrationStatus]);
-
-  // Clean up the publicly_ready timeout on unmount.
-  useEffect(() => {
-    return () => {
-      if (publiclyReadyTimerRef.current) {
-        window.clearTimeout(publiclyReadyTimerRef.current);
-      }
-    };
-  }, []);
 
   useEffect(() => {
     if (!isLoading && registrationStatus?.phase === 'unregistered' && deviceId && pairingInputRef.current) {
