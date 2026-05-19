@@ -159,17 +159,20 @@ export const InstallForm: React.FC<IProps> = ({
       if (!watchLocalSubdomain) {
         setValue('localSubdomain', defaultSubdomain);
       }
-      // Only set default publicDomain if the user hasn't explicitly chosen one yet.
-      // Without this guard, typing in the subdomain field re-runs this effect and
-      // resets any domain the user already selected back to the device default.
-      if (!initialValues?.publicDomain && domain && !dirtyFields.publicDomain) {
+      // Only set default publicDomain if it hasn't already been customised.
+      // Guard against resetting a domain the user (or the second effect) already
+      // selected: if the current value is non-empty AND different from the device
+      // default, leave it alone.  Using getValues() here (instead of dirtyFields)
+      // avoids changing the RHF subscription graph and keeps the effect deps stable.
+      const currentPD = getValues('publicDomain');
+      if (!initialValues?.publicDomain && domain && (!currentPD || currentPD === domain)) {
         setValue('publicDomain', domain);
       }
     }
   }, [
     initialValues,
     isDirty,
-    dirtyFields.publicDomain,
+    getValues,
     setValue,
     info.force_expose,
     info.exposable,
