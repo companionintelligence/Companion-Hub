@@ -154,11 +154,6 @@ export const InstallForm: React.FC<IProps> = ({
       if (info.port) {
         setValue('port', info.port.toString());
       }
-      // Set default subdomain if not provided
-      const defaultSubdomain = info.urn.split(':')[0]; // Use app name as default subdomain
-      if (!watchLocalSubdomain) {
-        setValue('localSubdomain', defaultSubdomain);
-      }
       // Only set default publicDomain if it hasn't already been customised.
       // Guard against resetting a domain the user (or the second effect) already
       // selected: if the current value is non-empty AND different from the device
@@ -178,15 +173,22 @@ export const InstallForm: React.FC<IProps> = ({
     info.exposable,
     info.dynamic_config,
     info.port,
-    watchLocalSubdomain,
-    // include the urn string itself (not the split function) so the effect
-    // re-runs when the app urn changes
-    info.urn,
     initialValues?.publicDomain,
     cloudflareAvailable,
     domain,
     tailscaleAvailable,
   ]);
+
+  // Separate effect: only responsible for setting the default localSubdomain.
+  // Isolated from the initialisation effect above so that typing in the
+  // subdomain field does not re-run that effect and clobber user choices such
+  // as exposureMode, openPort, or enableAuth.
+  useEffect(() => {
+    if (info.exposable && info.dynamic_config && !watchLocalSubdomain) {
+      const defaultSubdomain = info.urn.split(':')[0];
+      setValue('localSubdomain', defaultSubdomain);
+    }
+  }, [info.exposable, info.dynamic_config, info.urn, watchLocalSubdomain, setValue]);
 
   useEffect(() => {
     if (watchExposureMode !== 'cloudflare' || availableDomains.length === 0) {
