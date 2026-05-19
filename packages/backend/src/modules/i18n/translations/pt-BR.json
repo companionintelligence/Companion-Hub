@@ -124,7 +124,6 @@
   "CUSTOM_APP_ERROR_CONTAINER_PORT_INVALID": "A porta interna deve ser um número",
   "CUSTOM_APP_ERROR_CONTAINER_PORT_MIN": "A porta interna deve ser um número",
   "CUSTOM_APP_ERROR_CONTAINER_PORT_MAX": "A porta interna deve ser no máximo 65535",
-  "CUSTOM_APP_ERROR_HOST_PORT_INVALID": "",
   "CUSTOM_APP_ERROR_HOST_PORT_MIN": "Porta interna deve ser pelo menos 1",
   "CUSTOM_APP_ERROR_HOST_PORT_MAX": "A porta interna deve ser no máximo 65535",
   "CUSTOM_APP_ERROR_COMMAND_INVALID": "Host extra deve ser uma cadeia de caracteres válida",
