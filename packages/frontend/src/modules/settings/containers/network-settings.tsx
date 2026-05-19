@@ -2,7 +2,7 @@ import { appContextQueryKey } from '@/api-client/@tanstack/react-query.gen';
 import { Button } from '@/components/ui/Button';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { ExternalLink, Globe, Loader2, Shield } from 'lucide-react';
+import { Globe, Loader2, Shield } from 'lucide-react';
 import { useState } from 'react';
 import { apiFetch } from '@/lib/api-fetch';
 import toast from 'react-hot-toast';
