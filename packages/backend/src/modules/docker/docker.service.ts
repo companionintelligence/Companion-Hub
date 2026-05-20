@@ -555,6 +555,20 @@ export class DockerService {
   }
 
   /**
+   * Returns true if the named container exists and is currently running
+   * (i.e. not exited, paused, or in a restarting state).
+   */
+  public async isContainerRunning(containerName: string): Promise<boolean> {
+    return new Promise((resolve) => {
+      const cmd = spawn('docker', ['inspect', '--format', '{{.State.Running}}', containerName]);
+      const chunks: string[] = [];
+      cmd.stdout.on('data', (data: Buffer) => chunks.push(String(data)));
+      cmd.on('close', (code) => resolve(code === 0 && chunks.join('').trim() === 'true'));
+      cmd.on('error', () => resolve(false));
+    });
+  }
+
+  /**
    * Ensure a container is running, starting it via docker compose if needed.
    * Tries `docker restart` first; if the container doesn't exist, falls back to
    * `docker compose --profile <profile> up <service> -d` using the appropriate
