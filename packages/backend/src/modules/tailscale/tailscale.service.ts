@@ -218,7 +218,7 @@ export class TailscaleService {
    * Initiate Tailscale auth — returns URL for browser OAuth redirect (host or sidecar).
    */
   async startAuth(operator?: string): Promise<{ authUrl: string }> {
-    const args = ['up', '--json', ...this.getTailscaleUpExtraArgs()];
+    const args = ['up', '--reset', '--json', ...this.getTailscaleUpExtraArgs()];
     if (operator) {
       args.push(`--operator=${operator}`);
     }
@@ -249,7 +249,7 @@ export class TailscaleService {
       throw new Error('Expected a Tailscale pre-authentication key (tskey-auth-…)');
     }
 
-    await this.execTailscale(['up', '--auth-key', key, ...this.getTailscaleUpExtraArgs()], 120_000);
+    await this.execTailscale(['up', '--reset', '--auth-key', key, ...this.getTailscaleUpExtraArgs()], 120_000);
     this.invalidateStrategyCache();
   }
 

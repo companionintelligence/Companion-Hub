@@ -96,7 +96,17 @@ describe('TailscaleService', () => {
 
     expect(execFileMock).toHaveBeenCalledWith(
       'docker',
-      ['exec', 'hub-tailscale', 'tailscale', 'up', '--auth-key', 'tskey-auth-testkey', '--accept-routes', '--advertise-routes=172.18.0.0/16'],
+      [
+        'exec',
+        'hub-tailscale',
+        'tailscale',
+        'up',
+        '--reset',
+        '--auth-key',
+        'tskey-auth-testkey',
+        '--accept-routes',
+        '--advertise-routes=172.18.0.0/16',
+      ],
       expect.objectContaining({ timeout: 120_000 }),
       expect.any(Function),
     );
