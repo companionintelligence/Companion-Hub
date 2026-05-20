@@ -215,15 +215,61 @@ export class TailscaleService {
   }
 
   /**
+   * Poll the tailscaled daemon inside the sidecar container until it is ready
+   * to accept commands. The daemon initializes its Unix socket asynchronously
+   * after container start, so `tailscale up` can return EOF if called too soon.
+   *
+   * We treat any response that is NOT a "socket not ready" error (EOF, no such
+   * file, connection refused) as "daemon is up" — including NeedsLogin / NoState
+   * exit-1 responses, which are valid daemon states for our purposes.
+   */
+  private async waitForSidecarDaemon(maxAttempts = 10, delayMs = 2000): Promise<void> {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        await this.execDocker(['status', '--json'], 5000);
+        return; // daemon responded — ready
+      } catch (err: unknown) {
+        const msg = String(err);
+        const isDaemonNotReady = msg.includes('EOF') || msg.includes('no such file') || msg.includes('connection refused');
+
+        if (!isDaemonNotReady) {
+          // Daemon responded with a non-zero exit (e.g. NeedsLogin) — ready enough for `tailscale up`
+          return;
+        }
+
+        if (attempt === maxAttempts) {
+          throw new Error(`Tailscale sidecar daemon not ready after ${(attempt * delayMs) / 1000}s`);
+        }
+
+        this.logger.debug(`tailscaled not ready yet (attempt ${attempt}/${maxAttempts}), retrying in ${delayMs}ms…`);
+        await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+  }
+
+  /**
    * Initiate Tailscale auth — returns URL for browser OAuth redirect (host or sidecar).
    */
   async startAuth(operator?: string): Promise<{ authUrl: string }> {
+    const strategy = await this.resolveStrategy();
+    if (strategy === null) {
+      throw new Error('Tailscale CLI unavailable (no host socket and no sidecar)');
+    }
+
+    // The sidecar's tailscaled daemon initializes its Unix socket asynchronously
+    // after container start. Wait for it to be ready before running `tailscale up`
+    // to avoid an immediate EOF from a not-yet-ready daemon.
+    if (strategy === 'sidecar') {
+      await this.waitForSidecarDaemon();
+    }
+
     const args = ['up', '--reset', '--json', ...this.getTailscaleUpExtraArgs()];
     if (operator) {
       args.push(`--operator=${operator}`);
     }
 
-    const { stdout } = await this.execTailscale(args, 30000);
+    const execFn = strategy === 'host' ? this.execHost.bind(this) : this.execDocker.bind(this);
+    const { stdout } = await execFn(args, 30000);
     const result = JSON.parse(stdout) as Record<string, unknown>;
 
     if (result.AuthURL) {
