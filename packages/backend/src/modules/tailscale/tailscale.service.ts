@@ -263,7 +263,10 @@ export class TailscaleService {
       await this.waitForSidecarDaemon();
     }
 
-    const args = ['up', '--reset', '--json', ...this.getTailscaleUpExtraArgs()];
+    // --reset resets persisted non-default preferences to defaults before applying
+    // the provided flags. Only safe for the sidecar (isolated daemon); on the host
+    // it would mutate the user's existing Tailscale configuration.
+    const args = ['up', ...(strategy === 'sidecar' ? ['--reset'] : []), '--json', ...this.getTailscaleUpExtraArgs()];
     if (operator) {
       args.push(`--operator=${operator}`);
     }
@@ -306,7 +309,10 @@ export class TailscaleService {
       await this.waitForSidecarDaemon();
     }
 
-    await this.execTailscale(['up', '--reset', '--auth-key', key, ...this.getTailscaleUpExtraArgs()], 120_000);
+    // --reset is scoped to the sidecar only — same rationale as startAuth.
+    const upArgs = ['up', ...(strategy === 'sidecar' ? ['--reset'] : []), '--auth-key', key, ...this.getTailscaleUpExtraArgs()];
+    const execFn = strategy === 'host' ? this.execHost.bind(this) : this.execDocker.bind(this);
+    await execFn(upArgs, 120_000);
     this.invalidateStrategyCache();
   }
 
