@@ -386,19 +386,20 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       // hostname is not yet resolving (tunnel may still be stabilising after a restart).
       if (this._currentPhase === 'locally_ready') {
         const org = await this.deviceRegistrationRepository.getFirstDeviceRegistration();
-        if (org?.hubSubdomain) {
+        const { domain } = this.config.getConfig();
+
+        if (org?.hubSubdomain && domain && domain !== 'example.com') {
+          const hostname = `${org.hubSubdomain}.${domain}`;
           try {
-            const dnsCheck = await fetch(`https://${org.hubSubdomain}`, {
+            const dnsCheck = await fetch(`https://${hostname}`, {
               method: 'HEAD',
               signal: AbortSignal.timeout(5_000),
             });
             if (!dnsCheck.ok && dnsCheck.status !== 401 && dnsCheck.status !== 403) {
-              this.logger.warn(
-                `Registration validation: public hostname ${org.hubSubdomain} returned ${dnsCheck.status} — tunnel may still be stabilising`,
-              );
+              this.logger.warn(`Registration validation: public hostname ${hostname} returned ${dnsCheck.status} — tunnel may still be stabilising`);
             }
           } catch {
-            this.logger.warn(`Registration validation: public hostname ${org.hubSubdomain} not yet reachable — tunnel may still be stabilising`);
+            this.logger.warn(`Registration validation: public hostname ${hostname} not yet reachable — tunnel may still be stabilising`);
           }
         }
       }
