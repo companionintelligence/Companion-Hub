@@ -53,8 +53,9 @@ const envSchema = z.object({
   // Experimental flags
   EXPERIMENTAL_INSECURE_COOKIE: z.string().transform((val) => val.toLowerCase() === 'true'),
   // Tunnel configuration
-  TUNNEL_PROVIDER: z.enum(['cloudflare', 'octelium', 'tailscale']).default('cloudflare').optional(),
+  TUNNEL_PROVIDER: z.enum(['cloudflare', 'octelium', 'tailscale', 'ci-ingress']).default('cloudflare').optional(),
   OCTELIUM_CLUSTER_URL: z.string().optional(),
+  CI_INGRESS_API_URL: z.string().optional(),
 });
 
 @Injectable()

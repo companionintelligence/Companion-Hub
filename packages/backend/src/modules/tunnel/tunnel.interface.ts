@@ -5,7 +5,7 @@
  * allowing the CI-Hub to work with multiple tunnel implementations.
  */
 
-export type TunnelProvider = 'cloudflare' | 'octelium' | 'tailscale';
+export type TunnelProvider = 'cloudflare' | 'octelium' | 'tailscale' | 'ci-ingress';
 
 export interface TunnelCredentials {
   provider: TunnelProvider;

@@ -248,6 +248,36 @@ services:
     profiles:
       - octelium
 
+  ci-ingress-wireguard:
+    container_name: ci-ingress-wireguard
+    image: linuxserver/wireguard:latest
+    pull_policy: if_not_present
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    environment:
+      PUID: 1000
+      PGID: 1000
+      TZ: ${TZ:-Etc/UTC}
+    volumes:
+      - ${ROOT_FOLDER_HOST:-.internal}/ci-ingress:/config
+      - /lib/modules:/lib/modules:ro
+    networks:
+      - ci_os_hub_network
+    sysctls:
+      - net.ipv4.conf.all.src_valid_mark=1
+    healthcheck:
+      test: ["CMD-SHELL", "wg show | grep -q 'interface: wg0'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    labels:
+      ci-os-hub.managed: true
+    profiles:
+      - ci-ingress
+
 networks:
   ci_os_hub_network:
     driver: bridge
