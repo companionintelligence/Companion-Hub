@@ -309,11 +309,11 @@ export class InstallAppCommand extends AppLifecycleCommand {
           '# CI Hub OpenClaw startup wrapper — ensures ci-entrypoint.sh exists before execution.',
           'set -e',
           'ENTRYPOINT_PATH="/data/ci-entrypoint.sh"',
-          'if [ ! -f "${ENTRYPOINT_PATH}" ]; then',
-          '  echo "FATAL: ${ENTRYPOINT_PATH} not found. Reinstall the app from CI Hub."',
+          `if [ ! -f "\${ENTRYPOINT_PATH}" ]; then`,
+          `  echo "FATAL: \${ENTRYPOINT_PATH} not found. Reinstall the app from CI Hub."`,
           '  exit 1',
           'fi',
-          'exec "${ENTRYPOINT_PATH}"',
+          `exec "\${ENTRYPOINT_PATH}"`,
           '',
         ].join('\n');
 
