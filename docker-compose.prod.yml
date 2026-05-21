@@ -214,7 +214,7 @@ services:
       # Passes as soon as tailscaled is accepting commands (any BackendState).
       # grep for "BackendState" in the JSON output — present whenever the daemon
       # is up, even if not yet authenticated (NeedsLogin / NoState).
-      test: ["CMD-SHELL", "tailscale status --json 2>&1 | grep -q '\"BackendState\"'"]
+      test: ["CMD-SHELL", "tailscale status --json 2>&1 | grep -q 'BackendState'"]
       interval: 5s
       timeout: 5s
       retries: 12
