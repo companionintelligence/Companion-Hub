@@ -94,9 +94,7 @@ describe('TailscaleService', () => {
 
     await service.startAuth();
 
-    const upCall = execFileMock.mock.calls.find(
-      ([cmd, args]: [string, string[]]) => cmd === 'docker' && args.includes('up'),
-    );
+    const upCall = execFileMock.mock.calls.find(([cmd, args]: [string, string[]]) => cmd === 'docker' && args.includes('up'));
     expect(upCall[1]).toContain('--reset');
   });
 
@@ -120,9 +118,7 @@ describe('TailscaleService', () => {
     const result = await service.startAuth();
     expect(result.authUrl).toBe('https://login.test/auth');
 
-    const upCall = execFileMock.mock.calls.find(
-      ([cmd, args]: [string, string[]]) => cmd === '/usr/bin/tailscale' && args.includes('up'),
-    );
+    const upCall = execFileMock.mock.calls.find(([cmd, args]: [string, string[]]) => cmd === '/usr/bin/tailscale' && args.includes('up'));
     expect(upCall).toBeDefined();
     expect(upCall[1]).not.toContain('--reset');
   });
@@ -181,9 +177,7 @@ describe('TailscaleService', () => {
 
     await service.connectWithAuthKey('tskey-auth-testkey');
 
-    const upCall = execFileMock.mock.calls.find(
-      ([cmd, args]: [string, string[]]) => cmd === '/usr/bin/tailscale' && args.includes('up'),
-    );
+    const upCall = execFileMock.mock.calls.find(([cmd, args]: [string, string[]]) => cmd === '/usr/bin/tailscale' && args.includes('up'));
     expect(upCall).toBeDefined();
     expect(upCall[1]).toContain('--auth-key');
     expect(upCall[1]).not.toContain('--reset');
