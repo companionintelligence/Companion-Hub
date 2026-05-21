@@ -1,0 +1,34 @@
+# Octelium Terraform Variables Example
+#
+# Copy this file to terraform.tfvars and fill in your values
+
+# DigitalOcean API token (get from: https://cloud.digitalocean.com/account/api/tokens)
+do_token = "dop_v1_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+# Cloudflare API token (get from: https://dash.cloudflare.com/profile/api-tokens)
+cloudflare_api_token = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+# Cloudflare Zone ID for your domain (found in domain overview)
+cloudflare_zone_id = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+# Domain name for Octelium cluster
+domain = "octelium.yourdomain.com"
+
+# Cluster name
+cluster_name = "ci-hub-octelium"
+
+# Admin email
+admin_email = "admin@yourdomain.com"
+
+# DigitalOcean region (see: doctl compute region list)
+region = "nyc3"
+
+# Number of nodes (2-4 recommended for production)
+node_count = 2
+
+# Droplet size (see: doctl compute size list)
+# s-2vcpu-4gb = $24/month per node
+droplet_size = "s-2vcpu-4gb"
+
+# SSH key IDs (get from: doctl compute ssh-key list)
+ssh_key_ids = [12345678, 87654321]

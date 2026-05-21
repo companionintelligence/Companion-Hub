@@ -224,6 +224,30 @@ services:
     profiles:
       - private-vpn
 
+  octelium-client:
+    container_name: octelium-client
+    image: octelium/client:latest
+    pull_policy: if_not_present
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    environment:
+      OCTELIUM_CONFIG_PATH: /etc/octelium
+    volumes:
+      - ${ROOT_FOLDER_HOST:-.internal}/octelium:/etc/octelium
+    networks:
+      - ci_os_hub_network
+    healthcheck:
+      test: ["CMD-SHELL", "octelium status 2>&1 | grep -q 'connected'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    labels:
+      ci-os-hub.managed: true
+    profiles:
+      - octelium
+
 networks:
   ci_os_hub_network:
     driver: bridge
