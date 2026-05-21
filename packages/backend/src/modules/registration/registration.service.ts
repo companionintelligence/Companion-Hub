@@ -416,10 +416,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     } catch (e) {
       // Network/timeout errors are transient — count toward the 3-strike threshold.
       this.consecutiveValidationFailures++;
-      this.logger.error(
-        `Registration validation: failed to reach CI Portal (failure ${this.consecutiveValidationFailures}/3)`,
-        e,
-      );
+      this.logger.error(`Registration validation: failed to reach CI Portal (failure ${this.consecutiveValidationFailures}/3)`, e);
       if (this.consecutiveValidationFailures >= 3) {
         await this.setPhase('degraded', ['cloud_validation_failed']);
       }
