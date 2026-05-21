@@ -264,43 +264,66 @@ export class InstallAppCommand extends AppLifecycleCommand {
       logger.info(`Copying data dir for app ${appUrn}`);
       await marketplaceService.copyDataDir(appUrn, envMap);
 
-      // OpenClaw requires a custom bootstrap entrypoint at /data/ci-entrypoint.sh.
-      // Ensure the file exists even if copyDataDir was skipped or app payload was incomplete.
+      // OpenClaw requires two bootstrap scripts at /data/:
+      //   ci-wrapper.sh    — the docker-compose entrypoint; validates ci-entrypoint.sh then execs it
+      //   ci-entrypoint.sh — the actual Hub inference auto-config script
+      // Ensure both exist even if copyDataDir was skipped or the app payload was incomplete.
       if (appName === 'openclaw') {
         const { appInstalledDir } = appFilesManager.getAppPaths(appUrn);
         const targetDir = path.join(containerAppDataPath, 'data');
-        const targetPath = path.join(targetDir, 'ci-entrypoint.sh');
-        const sourcePath = path.join(appInstalledDir, 'data', 'ci-entrypoint.sh');
-
         await fs.promises.mkdir(targetDir, { recursive: true });
 
-        let restoredFromSource = false;
-        try {
-          await fs.promises.access(sourcePath);
-          await fs.promises.copyFile(sourcePath, targetPath);
-          restoredFromSource = true;
-          logger.info(`[OpenClaw] Restored ci-entrypoint.sh from ${sourcePath}`);
-        } catch (err) {
-          if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-            // Unexpected error (e.g. permission denied, I/O error) — log it but still fall back.
-            logger.warn(
-              `[OpenClaw] Unexpected error restoring ci-entrypoint.sh from ${sourcePath}: ${
-                err instanceof Error ? err.message : String(err)
-              }. Falling back to bundled script.`,
-            );
+        // Helper: copy a file from the installed app payload to the data volume,
+        // falling back to the provided content string if the source is absent.
+        const ensureScript = async (filename: string, fallbackContent: string, fallbackWarning: string) => {
+          const targetPath = path.join(targetDir, filename);
+          const sourcePath = path.join(appInstalledDir, 'data', filename);
+          let restoredFromSource = false;
+          try {
+            await fs.promises.access(sourcePath);
+            await fs.promises.copyFile(sourcePath, targetPath);
+            restoredFromSource = true;
+            logger.info(`[OpenClaw] Restored ${filename} from ${sourcePath}`);
+          } catch (err) {
+            if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+              logger.warn(
+                `[OpenClaw] Unexpected error restoring ${filename} from ${sourcePath}: ${
+                  err instanceof Error ? err.message : String(err)
+                }. Falling back to bundled script.`,
+              );
+            }
           }
-          // ENOENT is expected when the app payload is incomplete — proceed to fallback.
-        }
+          if (restoredFromSource) {
+            await fs.promises.chmod(targetPath, 0o755);
+          } else {
+            await fs.promises.writeFile(targetPath, fallbackContent, { mode: 0o755 });
+            logger.warn(fallbackWarning);
+          }
+        };
 
-        if (restoredFromSource) {
-          // Ensure the restored file is executable regardless of source permissions.
-          await fs.promises.chmod(targetPath, 0o755);
-        } else {
-          const fallbackContent = await getOpenclawFallbackEntrypoint();
-          // mode: 0o755 sets executable permissions at write time.
-          await fs.promises.writeFile(targetPath, fallbackContent, { mode: 0o755 });
-          logger.warn('[OpenClaw] ci-entrypoint.sh missing from app payload. Wrote fallback script to preserve startup and Hub inference bootstrap.');
-        }
+        // ci-wrapper.sh — thin shell wrapper that is the docker-compose entrypoint.
+        // It validates ci-entrypoint.sh is present before exec-ing it, giving a clear
+        // error message on misconfiguration instead of a cryptic shell failure.
+        const wrapperFallback = [
+          '#!/bin/sh',
+          '# CI Hub OpenClaw startup wrapper — ensures ci-entrypoint.sh exists before execution.',
+          'set -e',
+          'ENTRYPOINT_PATH="/data/ci-entrypoint.sh"',
+          'if [ ! -f "${ENTRYPOINT_PATH}" ]; then',
+          '  echo "FATAL: ${ENTRYPOINT_PATH} not found. Reinstall the app from CI Hub."',
+          '  exit 1',
+          'fi',
+          'exec "${ENTRYPOINT_PATH}"',
+          '',
+        ].join('\n');
+
+        await ensureScript('ci-wrapper.sh', wrapperFallback, '[OpenClaw] ci-wrapper.sh missing from app payload. Wrote fallback wrapper script.');
+
+        await ensureScript(
+          'ci-entrypoint.sh',
+          await getOpenclawFallbackEntrypoint(),
+          '[OpenClaw] ci-entrypoint.sh missing from app payload. Wrote fallback script to preserve startup and Hub inference bootstrap.',
+        );
       }
 
       emitProgress(45);
