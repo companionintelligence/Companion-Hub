@@ -1,0 +1,38 @@
+# CI Ingress Terraform Variables Example
+#
+# Copy this file to terraform.tfvars and fill in your values
+
+# DigitalOcean API token (get from: https://cloud.digitalocean.com/account/api/tokens)
+do_token = "dop_v1_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+# Cloudflare API token (get from: https://dash.cloudflare.com/profile/api-tokens)
+cloudflare_api_token = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+# Cloudflare Zone ID for your domain (found in domain overview)
+cloudflare_zone_id = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+# Root domain for CI Ingress
+domain = "ci.computer"
+
+# Ingress endpoint subdomain (will be: ingress-us-west.ci.computer)
+ingress_subdomain = "ingress-us-west"
+
+# WireGuard endpoint subdomain (will be: wg-us-west.ci.computer)
+wireguard_subdomain = "wg-us-west"
+
+# DigitalOcean region (see: doctl compute region list)
+region = "nyc3"
+
+# Droplet size (see: doctl compute size list)
+# s-2vcpu-4gb = $24/month
+droplet_size = "s-2vcpu-4gb"
+
+# SSH key IDs (get from: doctl compute ssh-key list)
+ssh_key_ids = [12345678]
+
+# Admin email for Let's Encrypt certificates
+admin_email = "admin@ci.computer"
+
+# WireGuard network configuration
+wireguard_network = "10.44.0.0/24"
+wireguard_server_ip = "10.44.0.1"
