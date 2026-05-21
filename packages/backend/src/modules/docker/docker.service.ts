@@ -555,15 +555,20 @@ export class DockerService {
   }
 
   /**
-   * Returns true if the named container exists and is currently running
-   * (i.e. not exited, paused, or in a restarting state).
+   * Returns true if the named container exists and its status is exactly
+   * "running" (i.e. not paused, restarting, exited, or in any other state).
+   *
+   * `.State.Status` is the canonical status string Docker maintains and is
+   * set to "running" only when the container is fully up and not paused or
+   * mid-restart — unlike `.State.Running`, which remains `true` for paused
+   * and restarting containers as well.
    */
   public async isContainerRunning(containerName: string): Promise<boolean> {
     return new Promise((resolve) => {
-      const cmd = spawn('docker', ['inspect', '--format', '{{.State.Running}}', containerName]);
+      const cmd = spawn('docker', ['inspect', '--format', '{{.State.Status}}', containerName]);
       const chunks: string[] = [];
       cmd.stdout.on('data', (data: Buffer) => chunks.push(String(data)));
-      cmd.on('close', (code) => resolve(code === 0 && chunks.join('').trim() === 'true'));
+      cmd.on('close', (code) => resolve(code === 0 && chunks.join('').trim() === 'running'));
       cmd.on('error', () => resolve(false));
     });
   }
