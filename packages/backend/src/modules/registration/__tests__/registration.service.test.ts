@@ -214,6 +214,36 @@ describe('RegistrationService', () => {
       expect(result).toBe(false);
     });
 
+    it('returns false when registration is incomplete (missing tunnelId)', async () => {
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({
+        id: 'org-123',
+        name: 'Test Org',
+        slug: 'test-org',
+        hubSubdomain: 'hub-test-org',
+        tunnelId: null,
+        tunnelToken: 'token-123',
+      } as any);
+
+      const result = await (service as any).checkRegistrationWithCloud();
+
+      expect(result).toBe(false);
+    });
+
+    it('returns false when registration is incomplete (missing hubSubdomain)', async () => {
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({
+        id: 'org-123',
+        name: 'Test Org',
+        slug: 'test-org',
+        hubSubdomain: null,
+        tunnelId: 'tunnel-123',
+        tunnelToken: 'token-123',
+      } as any);
+
+      const result = await (service as any).checkRegistrationWithCloud();
+
+      expect(result).toBe(false);
+    });
+
     it('returns false when registration has no tunnel token', async () => {
       deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({
         id: 'org-123',
@@ -688,6 +718,41 @@ describe('RegistrationService', () => {
       const status = service.getRegistrationStatus();
       expect(status.phase).toBe('degraded');
       expect(status.degradedReasons).toContain('cloud_validation_failed');
+    });
+
+    it('transitions to degraded immediately on 400 (device inactive)', async () => {
+      await service.setPhase('paired');
+      await service.setPhase('provisioning');
+      await service.setPhase('locally_ready');
+
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
+      global.fetch = vi.fn().mockResolvedValue({ ok: false, status: 400 }) as any;
+
+      // Single call should be enough — 400 is definitive
+      await (service as any).validateRegistrationWithCloud();
+
+      const status = service.getRegistrationStatus();
+      expect(status.phase).toBe('degraded');
+      expect(status.degradedReasons).toContain('cloud_validation_failed');
+    });
+
+    it('counts network/timeout errors toward the failure threshold', async () => {
+      await service.setPhase('paired');
+      await service.setPhase('provisioning');
+      await service.setPhase('locally_ready');
+
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
+      global.fetch = vi.fn().mockRejectedValue(new Error('Network error')) as any;
+
+      await (service as any).validateRegistrationWithCloud();
+      expect(service.getRegistrationStatus().phase).toBe('locally_ready');
+
+      await (service as any).validateRegistrationWithCloud();
+      expect(service.getRegistrationStatus().phase).toBe('locally_ready');
+
+      // Third failure (network error) should trigger degraded
+      await (service as any).validateRegistrationWithCloud();
+      expect(service.getRegistrationStatus().phase).toBe('degraded');
     });
 
     it('recovers from degraded when validation passes', async () => {

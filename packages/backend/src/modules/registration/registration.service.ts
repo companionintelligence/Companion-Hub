@@ -363,7 +363,17 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         signal: AbortSignal.timeout(10_000),
       });
 
+      if (response.status === 400) {
+        // 400 is a definitive "device inactive/unregistered" signal from CI Portal —
+        // degrade immediately rather than waiting for 3 strikes.
+        this.consecutiveValidationFailures = 0;
+        this.logger.warn('Registration validation: device is no longer active in CI Portal (400) — transitioning to degraded immediately');
+        await this.setPhase('degraded', ['cloud_validation_failed']);
+        return;
+      }
+
       if (!response.ok) {
+        // Transient failure (5xx, etc.) — count toward the 3-strike threshold.
         this.consecutiveValidationFailures++;
         this.logger.warn(`Registration validation: CI Portal check-in returned ${response.status} (failure ${this.consecutiveValidationFailures}/3)`);
         if (this.consecutiveValidationFailures >= 3) {
@@ -404,7 +414,15 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         }
       }
     } catch (e) {
-      this.logger.error('Registration validation: failed to reach CI Portal — keeping current state', e);
+      // Network/timeout errors are transient — count toward the 3-strike threshold.
+      this.consecutiveValidationFailures++;
+      this.logger.error(
+        `Registration validation: failed to reach CI Portal (failure ${this.consecutiveValidationFailures}/3)`,
+        e,
+      );
+      if (this.consecutiveValidationFailures >= 3) {
+        await this.setPhase('degraded', ['cloud_validation_failed']);
+      }
     }
   }
 
@@ -595,16 +613,25 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         return false;
       }
 
-      // We have a local registration — ensure infra is set up if phase hasn't
-      // transitioned yet (e.g. hub restarted between callback and phase write).
+      // We have a local registration — require all fields needed by
+      // setupOrganizationInfrastructure before proceeding. If any are absent
+      // (callback may still be in progress), return false and let the poll
+      // loop retry rather than calling infra setup with empty strings.
+      if (!org.tunnelId || !org.tunnelToken || !org.hubSubdomain || !org.name || !org.slug) {
+        this.logger.debug(
+          'checkRegistrationWithCloud: local registration exists but is incomplete (missing tunnelId/subdomain/name/slug), waiting for callback to finish',
+        );
+        return false;
+      }
+
       if (!isOperational(this._currentPhase)) {
-        this.logger.info('checkRegistrationWithCloud: found local registration, setting up infrastructure');
+        this.logger.info('checkRegistrationWithCloud: found complete local registration, setting up infrastructure');
         const config = this.config.getConfig();
         await this.setupOrganizationInfrastructure(org.id, {
           organization_name: org.name,
-          tunnel_id: org.tunnelId ?? '',
+          tunnel_id: org.tunnelId,
           tunnel_token: org.tunnelToken,
-          subdomain: org.hubSubdomain ?? '',
+          subdomain: org.hubSubdomain,
           slug: org.slug,
           domain: config.domain,
         });
