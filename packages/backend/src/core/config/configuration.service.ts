@@ -52,6 +52,9 @@ const envSchema = z.object({
   MAX_BACKUPS: z.coerce.number().default(0),
   // Experimental flags
   EXPERIMENTAL_INSECURE_COOKIE: z.string().transform((val) => val.toLowerCase() === 'true'),
+  // Tunnel configuration
+  TUNNEL_PROVIDER: z.enum(['cloudflare', 'octelium', 'tailscale']).default('cloudflare').optional(),
+  OCTELIUM_CLUSTER_URL: z.string().optional(),
 });
 
 @Injectable()
