@@ -338,8 +338,18 @@ export class CloudflareClientService {
       return false;
     }
     try {
-      this.logger.warn('Ensuring cloudflared container is running (post-boot)...');
       const dockerService = this.moduleRef.get(DockerService, { strict: false });
+
+      // Skip restart if cloudflared is already running — prevents the double-restart
+      // boot scenario where the container is running with the current token but would
+      // be unnecessarily stopped and re-started, causing a 40-second connection storm.
+      const alreadyRunning = await dockerService.isContainerRunning('cloudflared');
+      if (alreadyRunning) {
+        this.logger.debug('ensureCloudflaredRunning: cloudflared is already running, skipping restart');
+        return true;
+      }
+
+      this.logger.warn('Ensuring cloudflared container is running (post-boot)...');
       const composeFile = this.getComposeFile();
       await dockerService.ensureContainerRunning('cloudflared', {
         composeFile,
