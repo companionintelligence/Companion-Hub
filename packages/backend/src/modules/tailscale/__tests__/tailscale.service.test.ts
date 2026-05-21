@@ -112,6 +112,33 @@ describe('TailscaleService', () => {
     );
   });
 
+  it('connectWithAuthKey waits for sidecar daemon before running tailscale up', async () => {
+    const callOrder: string[] = [];
+    execFileMock.mockImplementation(
+      (cmd: string, args: string[], _opts: unknown, cb: (err: Error | null, stdout?: string, stderr?: string) => void) => {
+        if (cmd === 'docker' && args[1] === 'hub-tailscale' && args[3] === 'version') {
+          process.nextTick(() => cb(null, '1.82.0', ''));
+          return;
+        }
+        if (cmd === 'docker' && args.includes('status') && args.includes('--json')) {
+          callOrder.push('status');
+          process.nextTick(() => cb(null, JSON.stringify({ BackendState: 'NeedsLogin' }), ''));
+          return;
+        }
+        if (cmd === 'docker' && args.includes('up') && args.includes('--auth-key')) {
+          callOrder.push('up');
+          process.nextTick(() => cb(null, '', ''));
+          return;
+        }
+        process.nextTick(() => cb(new Error('unexpected'), '', ''));
+      },
+    );
+
+    await service.connectWithAuthKey('tskey-auth-testkey');
+
+    expect(callOrder).toEqual(['status', 'up']);
+  });
+
   it('connectWithAuthKey rejects invalid key prefix', async () => {
     await expect(service.connectWithAuthKey('not-a-key')).rejects.toThrow(/tskey-auth/);
   });

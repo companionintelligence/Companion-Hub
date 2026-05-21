@@ -295,6 +295,17 @@ export class TailscaleService {
       throw new Error('Expected a Tailscale pre-authentication key (tskey-auth-…)');
     }
 
+    const strategy = await this.resolveStrategy();
+    if (strategy === null) {
+      throw new Error('Tailscale CLI unavailable (no host socket and no sidecar)');
+    }
+
+    // Same race as startAuth: the sidecar daemon initialises its Unix socket
+    // asynchronously — wait until it's ready before running tailscale up.
+    if (strategy === 'sidecar') {
+      await this.waitForSidecarDaemon();
+    }
+
     await this.execTailscale(['up', '--reset', '--auth-key', key, ...this.getTailscaleUpExtraArgs()], 120_000);
     this.invalidateStrategyCache();
   }
