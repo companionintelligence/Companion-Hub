@@ -36,7 +36,7 @@ export const Providers = ({ children }: PropsWithChildren) => {
       const anchor = (e.target as Element).closest('a');
       if (!anchor) return;
       const href = anchor.getAttribute('href');
-      if (!href || !href.startsWith('http')) return;
+      if (!href?.startsWith('http')) return;
       e.preventDefault();
       openExternal(href);
     };
