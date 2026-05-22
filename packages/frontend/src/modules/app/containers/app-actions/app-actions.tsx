@@ -39,19 +39,9 @@ import { useInstallationProgress } from '../../helpers/use-installation-progress
 import { DropdownMenuSeparator } from '@/components/ui/DropdownMenu/DropdownMenu';
 import { useLocation, useNavigate } from 'react-router';
 import type { AppUrn } from '@ci-hub/common/types';
+import { openExternal } from '@/lib/helpers/open-external';
 
-const openExternalUrl = async (url: string) => {
-  if ('__TAURI_INTERNALS__' in window) {
-    try {
-      const tauri = window as unknown as { __TAURI_INTERNALS__: { invoke: (cmd: string, args: Record<string, unknown>) => Promise<void> } };
-      await tauri.__TAURI_INTERNALS__.invoke('plugin:shell|open', { path: url });
-    } catch {
-      window.open(url, '_blank');
-    }
-  } else {
-    window.open(url, '_blank');
-  }
-};
+const openExternalUrl = (url: string) => openExternal(url);
 
 interface IProps {
   app?: AppDetails | null;

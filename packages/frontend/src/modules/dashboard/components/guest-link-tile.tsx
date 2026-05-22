@@ -2,6 +2,7 @@ import { AppLogo } from '@/components/app-logo/app-logo';
 import { Card, CardContent } from '@/components/ui/Card';
 import type { CustomLink } from '@/types/app.types';
 import type React from 'react';
+import { openExternal } from '@/lib/helpers/open-external';
 import './guest-link-tile.css';
 
 type GuestLinkTileProps = {
@@ -10,7 +11,7 @@ type GuestLinkTileProps = {
 
 export const GuestLinkTile: React.FC<GuestLinkTileProps> = ({ link }) => {
   const handleClick = () => {
-    window.open(link.url, '_blank', 'noreferrer');
+    openExternal(link.url);
   };
 
   return (
