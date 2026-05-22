@@ -1,5 +1,6 @@
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent } from '@/components/ui/Card';
+import { AlertTriangle } from 'lucide-react';
 import type { HardwareProfile, HardwareTier } from '@ci-hub/common/types';
 
 interface HardwareProfileCardProps {
@@ -24,6 +25,8 @@ function formatMemory(mb: number): string {
 
 export const HardwareProfileCard = ({ hardware, tier, onRescan, rescanning = false }: HardwareProfileCardProps) => {
   const badge = TIER_BADGES[tier];
+  const noGpu = !hardware.gpu.available;
+  const gpuNoRuntime = hardware.gpu.available && !hardware.gpu.runtimeAvailable;
 
   return (
     <Card>
@@ -42,7 +45,7 @@ export const HardwareProfileCard = ({ hardware, tier, onRescan, rescanning = fal
           </div>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm mb-3">
           <div data-testid="hw-gpu">
             <div className="text-muted-foreground text-xs">GPU</div>
             <div className="font-medium">{hardware.gpu.available ? `${hardware.gpu.model}` : 'No GPU detected'}</div>
@@ -67,6 +70,27 @@ export const HardwareProfileCard = ({ hardware, tier, onRescan, rescanning = fal
             </div>
           </div>
         </div>
+
+        {/* Warning message when GPU is missing or runtime unavailable */}
+        {(noGpu || gpuNoRuntime) && (
+          <div className="flex items-start gap-2 p-2.5 bg-yellow-50 dark:bg-yellow-950 border border-yellow-200 dark:border-yellow-800 rounded-md">
+            <AlertTriangle className="h-4 w-4 text-yellow-600 dark:text-yellow-400 flex-shrink-0 mt-0.5" />
+            <div className="text-xs text-yellow-800 dark:text-yellow-200">
+              {noGpu && (
+                <span>
+                  <strong>No GPU detected.</strong> AI services will run on CPU only. Performance may be slower. Consider installing a graphics card
+                  for better performance.
+                </span>
+              )}
+              {gpuNoRuntime && (
+                <span>
+                  <strong>GPU driver not available.</strong> Your {hardware.gpu.vendor} GPU was detected but the runtime is not available. Please
+                  install the appropriate drivers ({hardware.gpu.vendor === 'nvidia' ? 'NVIDIA CUDA' : 'AMD ROCm'}).
+                </span>
+              )}
+            </div>
+          </div>
+        )}
       </CardContent>
     </Card>
   );
