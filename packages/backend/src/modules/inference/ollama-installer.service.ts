@@ -21,14 +21,14 @@ export class OllamaInstallerService {
 
   /**
    * Check if Ollama is installed and get version info
+   * Checks both container PATH and host system
    */
   async checkInstallation(): Promise<OllamaInstallStatus> {
+    // First try: Check if Ollama is accessible in container PATH
     try {
-      // Try to get Ollama version
       const { stdout } = await execAsync('ollama --version', { timeout: 5000 });
       const version = stdout.trim();
 
-      // Get installation path
       let installPath: string | undefined;
       try {
         const { stdout: whichOutput } = await execAsync(os.platform() === 'win32' ? 'where ollama' : 'which ollama');
@@ -43,13 +43,42 @@ export class OllamaInstallerService {
         installPath,
         needsInstall: false,
       };
-    } catch (_err) {
-      this.logger.info('[OllamaInstaller] Ollama not found in PATH');
-      return {
-        installed: false,
-        needsInstall: true,
-      };
+    } catch {
+      // Container PATH check failed
     }
+
+    // Second try: Check common host installation paths
+    const commonPaths = [
+      '/usr/local/bin/ollama',
+      '/usr/bin/ollama',
+      '/opt/homebrew/bin/ollama', // macOS Homebrew (Apple Silicon)
+      '/home/linuxbrew/.linuxbrew/bin/ollama', // Linux Homebrew
+      '/usr/local/opt/ollama/bin/ollama', // macOS Homebrew (Intel)
+    ];
+
+    for (const ollamaPath of commonPaths) {
+      try {
+        const { stdout } = await execAsync(`${ollamaPath} --version`, { timeout: 5000 });
+        const version = stdout.trim();
+
+        this.logger.info(`[OllamaInstaller] Found Ollama at ${ollamaPath}`);
+        return {
+          installed: true,
+          version,
+          installPath: ollamaPath,
+          needsInstall: false,
+        };
+      } catch {
+        // This path doesn't have Ollama, try next
+      }
+    }
+
+    // Not found anywhere
+    this.logger.info('[OllamaInstaller] Ollama not found in PATH or common installation locations');
+    return {
+      installed: false,
+      needsInstall: true,
+    };
   }
 
   /**
@@ -140,15 +169,27 @@ export class OllamaInstallerService {
 
   /**
    * Install Ollama on Linux using official install script
+   * NOTE: This runs in a container and attempts to install on the host system.
+   * It requires the backend to have sufficient permissions.
    */
   private async installLinux(): Promise<{ success: boolean; message: string }> {
     try {
       this.logger.info('[OllamaInstaller] Installing Ollama on Linux...');
 
-      // Use official install script
-      await execAsync('curl -fsSL https://ollama.com/install.sh | sh', {
+      // Use official install script with sudo (non-interactive)
+      // The OLLAMA_VERSION env var can be set to install a specific version
+      const installCmd = 'curl -fsSL https://ollama.com/install.sh | NONINTERACTIVE=1 sh';
+
+      await execAsync(installCmd, {
         timeout: 300000, // 5 minute timeout
+        env: {
+          ...process.env,
+          NONINTERACTIVE: '1', // Skip prompts
+        },
       });
+
+      // Wait a moment for installation to complete and PATH to update
+      await new Promise((resolve) => setTimeout(resolve, 2000));
 
       // Verify installation
       const status = await this.checkInstallation();
@@ -161,11 +202,20 @@ export class OllamaInstallerService {
 
       return {
         success: false,
-        message: 'Installation script completed but Ollama is not available in PATH',
+        message: 'Installation script completed but Ollama is not available. You may need to add /usr/local/bin to PATH or restart the Hub.',
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.error(`[OllamaInstaller] Linux installation failed: ${message}`);
+
+      // Provide helpful error message
+      if (message.includes('Permission denied') || message.includes('EACCES')) {
+        return {
+          success: false,
+          message: 'Installation requires administrator permissions. Please install Ollama manually: curl -fsSL https://ollama.com/install.sh | sh',
+        };
+      }
+
       return {
         success: false,
         message: `Linux installation failed: ${message}`,
