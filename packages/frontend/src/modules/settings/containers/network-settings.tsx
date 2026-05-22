@@ -6,6 +6,7 @@ import { Globe, Loader2, Shield } from 'lucide-react';
 import { useState } from 'react';
 import { apiFetch } from '@/lib/api-fetch';
 import toast from 'react-hot-toast';
+import { openExternal } from '@/lib/helpers/open-external';
 
 interface CloudflareStatus {
   tunnelEnabled: boolean;
@@ -71,7 +72,7 @@ const TailscaleSidecarSection = () => {
         return;
       }
       if (payload.authUrl) {
-        window.open(payload.authUrl, '_blank', 'noopener,noreferrer');
+        openExternal(payload.authUrl);
         toast.success(t('SETTINGS_NETWORK_TAILSCALE_AUTH_OPENING'));
         invalidateTailscaleAndAppContext();
       }

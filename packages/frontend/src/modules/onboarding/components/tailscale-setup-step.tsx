@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-fetch';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
+import { openExternal } from '@/lib/helpers/open-external';
 
 interface TailscaleSetupStepProps {
   onComplete: () => void;
@@ -65,7 +66,7 @@ export const TailscaleSetupStep = ({ onComplete, onSkip, onBack }: TailscaleSetu
         return;
       }
       if (payload.authUrl) {
-        window.open(payload.authUrl, '_blank', 'noopener,noreferrer');
+        openExternal(payload.authUrl);
         toast.success(t('ONBOARDING_TAILSCALE_AUTH_OPENING'));
         setHasAttemptedConnection(true);
         void queryClient.invalidateQueries({ queryKey: ['tailscale-status'] });

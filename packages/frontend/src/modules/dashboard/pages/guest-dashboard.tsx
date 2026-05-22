@@ -10,6 +10,7 @@ import { EmptyPage } from '@/components/empty-page/empty-page';
 import { useUserContext } from '@/context/user-context';
 import { GuestLinkTile } from '../components/guest-link-tile';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner/loading-spinner';
+import { openExternal } from '@/lib/helpers/open-external';
 
 const Tile = ({ data, localDomain, sslPort }: { data: GuestAppsDto['installed'][number]; localDomain: string; sslPort: number }) => {
   const { info, app } = data;
@@ -35,7 +36,7 @@ const Tile = ({ data, localDomain, sslPort }: { data: GuestAppsDto['installed'][
       url = `https://${app.localSubdomain}.${localDomain}${sslPort === 443 ? '' : `:${sslPort}`}${info.url_suffix || ''}`;
     }
 
-    window.open(url, '_blank', 'noreferrer');
+    openExternal(url);
   };
 
   return (

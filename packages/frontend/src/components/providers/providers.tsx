@@ -1,12 +1,13 @@
 import { UserContextProvider } from '@/context/user-context';
 import { MutationCache, QueryClient, QueryClientProvider, QueryErrorResetBoundary } from '@tanstack/react-query';
-import { type PropsWithChildren, Suspense } from 'react';
+import { type PropsWithChildren, Suspense, useEffect } from 'react';
 import { ErrorBoundary } from 'react-error-boundary';
 import { ErrorPage } from '../error/error-page';
 import { I18nProvider } from './i18n/i18n-provider';
 import { AutoThemeProvider } from './theme/auto-theme-provider';
 import { ThemeProvider } from './theme/theme-provider';
 import { DebugPanel } from '../debug-panel/debug-panel';
+import { openExternal } from '@/lib/helpers/open-external';
 
 const queryClient = new QueryClient({
   mutationCache: new MutationCache({
@@ -28,6 +29,22 @@ const PageSuspense = ({ children }: PropsWithChildren) => {
 };
 
 export const Providers = ({ children }: PropsWithChildren) => {
+  useEffect(() => {
+    if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) return;
+
+    const handleClick = (e: MouseEvent) => {
+      const anchor = (e.target as Element).closest('a');
+      if (!anchor) return;
+      const href = anchor.getAttribute('href');
+      if (!href || !href.startsWith('http')) return;
+      e.preventDefault();
+      openExternal(href);
+    };
+
+    document.addEventListener('click', handleClick);
+    return () => document.removeEventListener('click', handleClick);
+  }, []);
+
   return (
     <QueryClientProvider client={queryClient}>
       <QueryErrorResetBoundary>
