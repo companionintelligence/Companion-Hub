@@ -164,7 +164,7 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
   const isInsufficient = profile.tier === 'insufficient';
   const selectedModels = profile.availableModels.filter((m) => selectedModelIds.includes(m.id));
   const availableMemoryMb = profile.resourceEstimate.availableMemoryMb;
-  const needsOllama = selectedBackend === 'ollama' && ollamaStatus && !ollamaStatus.installed;
+  const needsOllama = selectedBackend === 'ollama' && ollamaStatus !== null && !ollamaStatus.installed;
 
   return (
     <div className="space-y-4 max-h-[62vh] overflow-y-auto pr-2" data-testid="ai-setup-step">
