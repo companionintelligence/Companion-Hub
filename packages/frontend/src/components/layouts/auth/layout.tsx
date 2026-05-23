@@ -5,8 +5,13 @@ import type { Locale } from '@/lib/i18n/locales';
 import { getLogo } from '@/lib/theme/theme';
 import i18next from 'i18next';
 import type { PropsWithChildren } from 'react';
+import { cn } from '@/lib/utils';
 
-export const AuthLayout = ({ children }: PropsWithChildren) => {
+type AuthLayoutProps = PropsWithChildren<{
+  wide?: boolean;
+}>;
+
+export const AuthLayout = ({ children, wide = false }: AuthLayoutProps) => {
   const locale = i18next.language;
 
   const { allowAutoThemes } = useUserContext();
@@ -18,8 +23,8 @@ export const AuthLayout = ({ children }: PropsWithChildren) => {
       <div className="absolute right-3" style={{ top: 'calc(var(--titlebar-height, 0px) + 0.25rem)' }}>
         <LanguageSelector locale={locale as Locale} />
       </div>
-      <div className="w-full max-w-md">
-        <div className="text-center mb-6">
+      <div className={cn('w-full', wide ? 'max-w-4xl' : 'max-w-md')}>
+        <div className="mb-6 text-center">
           <img
             alt="Companion Hub logo"
             src={getLogo(allowAutoThemes)}
@@ -32,8 +37,8 @@ export const AuthLayout = ({ children }: PropsWithChildren) => {
             }}
           />
         </div>
-        <Card className="w-full">
-          <CardContent className="p-6">{children}</CardContent>
+        <Card className={cn('w-full', wide && 'border-primary/30 shadow-[0_0_48px_-12px] shadow-primary/25 ring-1 ring-primary/20')}>
+          <CardContent className={cn('p-6', wide && 'md:p-8')}>{children}</CardContent>
         </Card>
       </div>
     </div>
