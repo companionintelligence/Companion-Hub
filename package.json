@@ -33,6 +33,7 @@
     "lint:fix": "biome check --write --no-errors-on-unmatched",
     "prepare": "husky",
     "device-id": "pnpm exec tsx scripts/get-device-id.ts",
+    "hub": "pnpm exec tsx scripts/start.ts",
     "version": "echo $npm_package_version",
     "start:detached": "pnpm exec tsx scripts/start.ts start:detached",
     "fresh": "pnpm run cleanup && pnpm start dev",

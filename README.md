@@ -115,6 +115,14 @@ Infrastructure (PostgreSQL, RabbitMQ) runs in Docker; backend and frontend run l
 | `pnpm dev` | Start infra + backend + frontend with hot reload |
 | `pnpm start [env]` | Full stack in Docker (attached) |
 | `pnpm start:detached [env]` | Full stack in Docker (background) |
+| `pnpm run hub -- --help` | Show CLI commands and arguments |
+| `pnpm run hub -- wizard [env]` | Interactive setup/start wizard |
+| `pnpm run hub -- setup [env]` | Initialize Traefik and docker config |
+| `pnpm run hub -- register [env]` | Print cloud portal registration URL |
+| `pnpm run hub -- mcp setup|shutdown|config [env]` | MCP lifecycle commands |
+| `pnpm run hub -- app list|add|edit|start|stop|restart|delete ...` | Container app lifecycle commands |
+| `pnpm run hub -- shutdown [env]` | Stop hub docker stack |
+| `pnpm run hub -- man` | Show manual-style CLI reference |
 | `pnpm run build` | Build all packages via Turborepo |
 | `pnpm run test` | Unit tests |
 | `pnpm test:e2e` | Playwright end-to-end tests |
