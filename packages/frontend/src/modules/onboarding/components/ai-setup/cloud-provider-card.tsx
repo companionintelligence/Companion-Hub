@@ -12,9 +12,17 @@ interface CloudProviderCardProps {
 }
 
 const PROVIDER_ORDER: CloudProviderType[] = ['openai', 'anthropic', 'google', 'github-copilot'];
+const RECOMMENDED_PROVIDERS: CloudProviderType[] = ['openai', 'anthropic'];
+const PROVIDER_PRESENTATION: Record<CloudProviderType, { title: string; subtitle?: string }> = {
+  openai: { title: 'OpenClaude', subtitle: 'Recommended personal AI service' },
+  anthropic: { title: 'Hermes', subtitle: 'Recommended personal AI service' },
+  google: { title: 'Google AI' },
+  'github-copilot': { title: 'GitHub Copilot' },
+};
 
 export const CloudProviderCard = ({ providers, insufficientHardware, onUpdate }: CloudProviderCardProps) => {
   const [expanded, setExpanded] = useState(insufficientHardware);
+  const [otherExpanded, setOtherExpanded] = useState(false);
   const [errors, setErrors] = useState<Record<string, string | null>>({});
 
   const getProvider = (type: CloudProviderType): CloudProviderInput =>
@@ -60,16 +68,25 @@ export const CloudProviderCard = ({ providers, insufficientHardware, onUpdate }:
 
         {(expanded || insufficientHardware) && (
           <div className="space-y-3" data-testid="cloud-inputs">
-            {PROVIDER_ORDER.map((type) => {
+            {RECOMMENDED_PROVIDERS.map((type) => {
               const pattern = CLOUD_KEY_PATTERNS[type];
+              const presentation = PROVIDER_PRESENTATION[type];
               const current = getProvider(type);
               const error = errors[type];
 
               return (
-                <div key={type} data-testid={`cloud-provider-${type}`}>
-                  <label className="text-xs font-medium" htmlFor={`cloud-key-input-${type}`}>
-                    {pattern.label}
-                  </label>
+                <div key={type} className="rounded-xl border-2 border-primary/40 bg-primary/5 p-4" data-testid={`cloud-provider-${type}`}>
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <div>
+                      <label className="text-sm font-semibold" htmlFor={`cloud-key-input-${type}`}>
+                        {presentation.title}
+                      </label>
+                      {presentation.subtitle && <p className="text-xs text-muted-foreground">{presentation.subtitle}</p>}
+                    </div>
+                    <span className="rounded-full bg-primary/15 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-primary">
+                      Recommended
+                    </span>
+                  </div>
                   <Input
                     id={`cloud-key-input-${type}`}
                     type="password"
@@ -87,6 +104,45 @@ export const CloudProviderCard = ({ providers, insufficientHardware, onUpdate }:
                 </div>
               );
             })}
+
+            <div className="rounded-lg border border-dashed border-muted-foreground/30 p-3">
+              <Button variant="ghost" size="sm" onClick={() => setOtherExpanded(!otherExpanded)} data-testid="other-services-toggle">
+                {otherExpanded ? 'Hide other AI services' : 'Other AI services'}
+              </Button>
+
+              {otherExpanded && (
+                <div className="mt-3 space-y-3">
+                  {PROVIDER_ORDER.filter((type) => !RECOMMENDED_PROVIDERS.includes(type)).map((type) => {
+                    const pattern = CLOUD_KEY_PATTERNS[type];
+                    const presentation = PROVIDER_PRESENTATION[type];
+                    const current = getProvider(type);
+                    const error = errors[type];
+
+                    return (
+                      <div key={type} className="rounded-lg border border-muted/70 p-3 opacity-85" data-testid={`cloud-provider-${type}`}>
+                        <label className="text-xs font-medium" htmlFor={`cloud-key-input-${type}`}>
+                          {presentation.title}
+                        </label>
+                        <Input
+                          id={`cloud-key-input-${type}`}
+                          type="password"
+                          placeholder={pattern.prefix ? `${pattern.prefix}...` : 'API key'}
+                          value={current.apiKey}
+                          onChange={(e) => handleKeyChange(type, e.target.value)}
+                          className="mt-1"
+                          data-testid={`cloud-key-${type}`}
+                        />
+                        {error && (
+                          <p className="text-xs text-destructive mt-1" data-testid={`cloud-error-${type}`}>
+                            {error}
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           </div>
         )}
       </CardContent>

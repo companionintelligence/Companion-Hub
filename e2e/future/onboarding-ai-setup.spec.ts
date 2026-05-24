@@ -8,7 +8,7 @@ const BACKEND_URL = `http://localhost:${process.env.BACKEND_PORT || '3000'}`;
  * E2E tests for the onboarding AI setup flow.
  *
  * These tests exercise the full wizard path from registration through
- * AI Setup (step 3) to Install (step 4) and Complete (step 5).
+ * AI Setup (step 2) to Install (step 5) and Complete (step 6).
  *
  * The Hub's inference module must be running with Ollama available.
  * The hardware-inspector, model-registry, memory-manager, and
@@ -28,7 +28,7 @@ async function registerAndStartOnboarding(page: import('@playwright/test').Page)
   await expect(page.getByText('Set Up Your Hub')).toBeVisible({ timeout: 15000 });
 }
 
-/** Advance through Welcome → Discover → Select to reach the AI Setup step. */
+/** Advance through Welcome → Discover to reach the AI Setup step. */
 async function navigateToAiSetupStep(page: import('@playwright/test').Page) {
   await registerAndStartOnboarding(page);
 
@@ -44,16 +44,7 @@ async function navigateToAiSetupStep(page: import('@playwright/test').Page) {
     .first()
     .click();
 
-  // Step 2: Select Apps — confirm selection (even empty) to advance
-  await expect(page.getByRole('button', { name: /confirm|next|continue/i }).first()).toBeVisible({
-    timeout: 15000,
-  });
-  await page
-    .getByRole('button', { name: /confirm|next|continue/i })
-    .first()
-    .click();
-
-  // Step 3: AI Setup — wait for the loading skeleton or the step content
+  // Step 2: AI Setup — wait for the loading skeleton or the step content
   await expect(page.getByTestId('ai-setup-step').or(page.getByTestId('ai-setup-loading')).or(page.getByTestId('ai-setup-error'))).toBeVisible({
     timeout: 30000,
   });
@@ -65,14 +56,14 @@ test.describe('Onboarding AI Setup', () => {
     await seedOrganization();
   });
 
-  test('AI Setup step is shown after Select Apps', async ({ page }) => {
+  test('AI Setup step is shown after Discover', async ({ page }) => {
     await navigateToAiSetupStep(page);
 
     // The AI Setup step should be visible — either loaded or in loading state
     const stepVisible = await page.getByTestId('ai-setup-step').or(page.getByTestId('ai-setup-loading')).isVisible();
     expect(stepVisible).toBe(true);
 
-    // The stepper should show "AI Setup" as the active step (index 3)
+    // The stepper should show "AI Setup" as the active step
     await expect(page.getByText('AI Setup')).toBeVisible();
   });
 
@@ -262,7 +253,7 @@ test.describe('Onboarding AI Setup', () => {
     // Click "Skip AI Setup"
     await page.getByTestId('ai-skip-btn').click();
 
-    // Should advance to Install step (step 4)
+    // Should advance to Install step (step 5)
     await expect(page.getByTestId('install-progress-text')).toBeVisible({ timeout: 15000 });
 
     // AI phase section should NOT be present when skipped
@@ -287,16 +278,15 @@ test.describe('Onboarding AI Setup', () => {
     await expect(page.getByTestId('ai-summary')).toContainText('Settings');
   });
 
-  test('back button returns to Select Apps step', async ({ page }) => {
+  test('back button returns to Discover step', async ({ page }) => {
     await navigateToAiSetupStep(page);
     await expect(page.getByTestId('ai-setup-step')).toBeVisible({ timeout: 30000 });
 
     // Click Back
     await page.getByTestId('ai-back-btn').click();
 
-    // Should return to the Select Apps step (step 2)
-    // The stepper should show "Select" as active
-    await expect(page.getByRole('button', { name: /confirm|next|continue/i }).first()).toBeVisible({
+    // Should return to Discover step and show next controls there
+    await expect(page.getByRole('button', { name: /skip|next|continue/i }).first()).toBeVisible({
       timeout: 15000,
     });
   });

@@ -64,7 +64,14 @@ vi.mock('../components/select-apps-step', () => ({
 }));
 
 vi.mock('../components/ai-setup-step', () => ({
-  AiSetupStep: () => <div data-testid="ai-setup-step">AI Setup</div>,
+  AiSetupStep: ({ onComplete }: { onComplete: (config: unknown) => void }) => (
+    <div data-testid="ai-setup-step">
+      AI Setup
+      <button type="button" onClick={() => onComplete({ selectedModels: [], backend: 'ollama', cloudProviders: [], skipped: false })}>
+        ai-next
+      </button>
+    </div>
+  ),
 }));
 
 vi.mock('../components/tailscale-setup-step', () => ({
@@ -94,7 +101,7 @@ vi.mock('@/components/ui/Stepper/Stepper', () => ({
 }));
 
 describe('OnboardingPage', () => {
-  it('routes empty app selection to AI Setup instead of Done', async () => {
+  it('routes Discover continue to AI Setup instead of App setup', async () => {
     const user = userEvent.setup();
 
     render(
@@ -105,7 +112,6 @@ describe('OnboardingPage', () => {
 
     await user.click(screen.getByRole('button', { name: 'welcome-next' }));
     await user.click(screen.getByRole('button', { name: 'recommend-next' }));
-    await user.click(screen.getByRole('button', { name: 'finish-setup' }));
 
     expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument();
     expect(screen.queryByTestId('complete-step')).not.toBeInTheDocument();

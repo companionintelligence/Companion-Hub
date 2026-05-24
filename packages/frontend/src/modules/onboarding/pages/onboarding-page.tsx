@@ -29,7 +29,7 @@ function OnboardingWizard() {
     return <Navigate to="/dashboard" replace />;
   }
 
-  const stepTitles = ['Welcome', 'Discover', 'Select', 'AI Setup', 'Private VPN', 'Install', 'Done'];
+  const stepTitles = ['Welcome', 'Discover', 'AI Setup', 'Select', 'Private VPN', 'Install', 'Done'];
 
   return (
     <div className="flex items-center justify-center bg-background px-4 py-8" style={{ minHeight: 'calc(100vh - var(--titlebar-height, 0px))' }}>
@@ -74,7 +74,7 @@ function OnboardingWizard() {
                   setDetectedServices(services);
                   setCurrentStep(1);
                 }}
-                onSkip={() => setCurrentStep(3)}
+                onSkip={() => setCurrentStep(2)}
               />
             </StepContent>
 
@@ -85,16 +85,19 @@ function OnboardingWizard() {
                   setSelectedApps(apps);
                   setCurrentStep(2);
                 }}
-                onSkip={() => setCurrentStep(3)}
+                onSkip={() => setCurrentStep(2)}
                 onBack={() => setCurrentStep(0)}
               />
             </StepContent>
 
             <StepContent step={2}>
-              <SelectAppsStep
-                selectedApps={selectedApps}
-                onConfirm={(apps) => {
-                  setSelectedApps(apps);
+              <AiSetupStep
+                onComplete={(config) => {
+                  setAiSetupConfig(config);
+                  setCurrentStep(3);
+                }}
+                onSkip={() => {
+                  setAiSetupConfig({ selectedModels: [], backend: 'ollama', cloudProviders: [], skipped: true });
                   setCurrentStep(3);
                 }}
                 onBack={() => setCurrentStep(1)}
@@ -102,13 +105,10 @@ function OnboardingWizard() {
             </StepContent>
 
             <StepContent step={3}>
-              <AiSetupStep
-                onComplete={(config) => {
-                  setAiSetupConfig(config);
-                  setCurrentStep(4);
-                }}
-                onSkip={() => {
-                  setAiSetupConfig({ selectedModels: [], backend: 'ollama', cloudProviders: [], skipped: true });
+              <SelectAppsStep
+                selectedApps={selectedApps}
+                onConfirm={(apps) => {
+                  setSelectedApps(apps);
                   setCurrentStep(4);
                 }}
                 onBack={() => setCurrentStep(2)}

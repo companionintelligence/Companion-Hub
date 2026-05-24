@@ -259,6 +259,22 @@ describe('AiSetupStep', () => {
     expect(screen.getByTestId('cloud-error-openai')).toHaveTextContent('should start with "sk-"');
   });
 
+  it('highlights OpenClaude and Hermes before other AI services', async () => {
+    const user = userEvent.setup();
+    mockApiFetch.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(highTierProfile) });
+    render(<AiSetupStep onComplete={onComplete} onSkip={onSkip} onBack={onBack} />);
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+    await user.click(screen.getByTestId('cloud-toggle'));
+
+    expect(screen.getByText('OpenClaude')).toBeInTheDocument();
+    expect(screen.getByText('Hermes')).toBeInTheDocument();
+    expect(screen.queryByTestId('cloud-provider-google')).not.toBeInTheDocument();
+
+    await user.click(screen.getByTestId('other-services-toggle'));
+    expect(screen.getByTestId('cloud-provider-google')).toBeInTheDocument();
+  });
+
   it('triggers rescan when Rescan button is clicked', async () => {
     const user = userEvent.setup();
     mockApiFetch
