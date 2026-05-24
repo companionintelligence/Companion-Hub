@@ -1,22 +1,43 @@
 # CI-Hub CLI
 
-The Hub CLI is available via:
+The preferred packaged executable is:
+
+```bash
+cihub <command> [args]
+```
+
+Compatibility command while developing inside the repository:
 
 ```bash
 pnpm run hub -- <command> [args]
 ```
 
+## Package-manager installs
+
+```bash
+npm install -g ci-hub
+cihub --help
+```
+
+One-off execution with NPX:
+
+```bash
+npx --package ci-hub cihub --help
+```
+
+Homebrew and other package managers should expose the same `cihub` executable on the user's `PATH`.
+
 ## Help and MAN
 
-- `pnpm run hub -- --help` (or `-h`) prints command help
-- `pnpm run hub -- man` prints a manual-style command reference
+- `cihub --help` (or `-h`) prints command help
+- `cihub man` prints a manual-style command reference
 
 ## Commands
 
 ### Wizard
 
 ```bash
-pnpm run hub -- wizard [env]
+cihub wizard [env]
 ```
 
 Runs a guided interactive flow for setup/start/register/config actions.
@@ -24,7 +45,7 @@ Runs a guided interactive flow for setup/start/register/config actions.
 ### Setup
 
 ```bash
-pnpm run hub -- setup [env]
+cihub setup [env]
 ```
 
 Initializes Traefik and Docker auth config.
@@ -32,7 +53,7 @@ Initializes Traefik and Docker auth config.
 ### Register with Cloud Portal
 
 ```bash
-pnpm run hub -- register [env]
+cihub register [env]
 ```
 
 Prints a registration URL containing your machine device ID for CI Cloud pairing.
@@ -40,9 +61,9 @@ Prints a registration URL containing your machine device ID for CI Cloud pairing
 ### Hub lifecycle
 
 ```bash
-pnpm run hub -- up [env] [--detached]
-pnpm run hub -- shutdown [env]
-pnpm run hub -- config [env]
+cihub up [env] [--detached]
+cihub shutdown [env]
+cihub config [env]
 ```
 
 Starts/stops the Hub stack and prints resolved config values.
@@ -50,9 +71,9 @@ Starts/stops the Hub stack and prints resolved config values.
 ### MCP lifecycle
 
 ```bash
-pnpm run hub -- mcp setup [env]
-pnpm run hub -- mcp shutdown [env]
-pnpm run hub -- mcp config [env]
+cihub mcp setup [env]
+cihub mcp shutdown [env]
+cihub mcp config [env]
 ```
 
 Enables/disables MCP in the env file and ensures `MCP_API_KEY` exists when enabled.
@@ -60,13 +81,13 @@ Enables/disables MCP in the env file and ensures `MCP_API_KEY` exists when enabl
 ### Container app lifecycle (local Docker)
 
 ```bash
-pnpm run hub -- app list
-pnpm run hub -- app add <name> <image> [--port host:container] [--env KEY=VALUE]
-pnpm run hub -- app edit <name> <image> [--port host:container] [--env KEY=VALUE]
-pnpm run hub -- app start <name>
-pnpm run hub -- app stop <name>
-pnpm run hub -- app restart <name>
-pnpm run hub -- app delete <name>
+cihub app list
+cihub app add <name> <image> [--port host:container] [--env KEY=VALUE]
+cihub app edit <name> <image> [--port host:container] [--env KEY=VALUE]
+cihub app start <name>
+cihub app stop <name>
+cihub app restart <name>
+cihub app delete <name>
 ```
 
 These commands manage local Docker containers directly.

@@ -96,6 +96,26 @@ Open **http://localhost:5002**. Register your device with CI Cloud on first run,
 
 ---
 
+## CLI / TUI
+
+The packaged executable name is **`cihub`**.
+
+```bash
+cihub --help
+cihub wizard
+```
+
+Package-manager install patterns:
+
+```bash
+npm install -g ci-hub
+npx --package ci-hub cihub --help
+```
+
+Homebrew and other package managers should expose the same `cihub` executable on your `PATH`.
+
+---
+
 ## Development
 
 ```bash
@@ -117,6 +137,7 @@ Infrastructure (PostgreSQL, RabbitMQ) runs in Docker; backend and frontend run l
 | `pnpm start:detached [env]` | Full stack in Docker (background) |
 | `pnpm run hub -- --help` | Show CLI commands and arguments |
 | `pnpm run hub -- wizard [env]` | Interactive setup/start wizard |
+| `pnpm run test:cli` | Run focused CLI/TUI tests |
 | `pnpm run hub -- setup [env]` | Initialize Traefik and docker config |
 | `pnpm run hub -- register [env]` | Print cloud portal registration URL |
 | `pnpm run hub -- mcp setup|shutdown|config [env]` | MCP lifecycle commands |

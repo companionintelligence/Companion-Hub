@@ -1,7 +1,7 @@
 {
   "name": "ci-hub",
   "version": "0.1.0",
-  "description": "",
+  "description": "Companion Intelligence Hub CLI and self-hosted app platform runtime.",
   "packageManager": "pnpm@10.33.0",
   "scripts": {
     "dev": "pnpm exec tsx scripts/start.ts dev",
@@ -12,7 +12,7 @@
     "bundle": "turbo bundle",
     "build": "turbo run build",
     "tsc": "turbo run tsc",
-    "test": "turbo test",
+    "test": "turbo test && pnpm run test:cli",
     "test:integration": "turbo run test:integration",
     "start": "pnpm exec tsx scripts/start.ts start",
     "start:docker": "ENV_FILE=.env.local docker compose --env-file .env.local --project-name ci-hub -f docker-compose.local.yml up --build",
@@ -39,7 +39,8 @@
     "fresh": "pnpm run cleanup && pnpm start dev",
     "fresh:local": "pnpm run cleanup && pnpm start local",
     "dev:desktop": "cd packages/desktop && cargo tauri dev",
-    "build:desktop": "cd packages/desktop && cargo tauri build"
+    "build:desktop": "cd packages/desktop && cargo tauri build",
+    "test:cli": "pnpm exec vitest run scripts/__tests__/cihub-cli.test.ts"
   },
   "lint-staged": {
     "*": [
@@ -47,7 +48,14 @@
       "git add"
     ]
   },
-  "keywords": [],
+  "keywords": [
+    "cihub",
+    "companion-intelligence",
+    "cli",
+    "docker",
+    "self-hosted",
+    "mcp"
+  ],
   "author": "",
   "license": "GNU General Public License v3.0",
   "devDependencies": {
@@ -57,9 +65,9 @@
     "husky": "^9.1.7",
     "lint-staged": "^16.2.7",
     "turbo": "^2.8.17",
-    "tsx": "^4.19.2"
+    "vitest": "^4.1.4"
   },
-  "private": true,
+  "private": false,
   "peerDependencies": {
     "typescript": "^5"
   },
@@ -74,5 +82,15 @@
       "cpu-features",
       "@nestjs/core"
     ]
+  },
+  "preferGlobal": true,
+  "bin": {
+    "cihub": "./bin/cihub.cjs"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "tsx": "^4.19.2"
   }
 }
