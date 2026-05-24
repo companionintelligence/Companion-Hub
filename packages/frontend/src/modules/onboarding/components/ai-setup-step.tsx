@@ -117,7 +117,13 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
 
   return (
     <div className="space-y-4 max-h-[62vh] overflow-y-auto pr-2" data-testid="ai-setup-step">
-      <HardwareProfileCard hardware={profile.hardware} tier={profile.tier} onRescan={handleRescan} rescanning={rescanning} />
+      <HardwareProfileCard
+        hardware={profile.hardware}
+        tier={profile.tier}
+        onRescan={handleRescan}
+        rescanning={rescanning}
+        maxConcurrentApps={profile.appLimits?.maxConcurrentApps}
+      />
 
       {!isInsufficient && (
         <>

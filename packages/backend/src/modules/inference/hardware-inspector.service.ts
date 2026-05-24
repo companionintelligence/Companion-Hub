@@ -6,6 +6,8 @@ import si from 'systeminformation';
 import os from 'node:os';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
+import path from 'node:path';
+import { DATA_DIR } from '@/common/constants';
 
 const execAsync = promisify(exec);
 
@@ -53,12 +55,12 @@ export class HardwareInspectorService implements OnModuleInit {
       this.detectRocmSupport(),
     ]);
 
-    const isAppleSilicon = cpuInfo.arch === 'arm64' && os.platform() === 'darwin';
+    const isAppleSilicon = (cpuInfo.arch === 'arm64' && os.platform() === 'darwin') || gpuInfo.vendor === 'apple';
 
     const gpu: HardwareProfile['gpu'] = {
-      available: gpuInfo.available,
+      available: isAppleSilicon ? true : gpuInfo.available,
       vendor: isAppleSilicon ? 'apple' : gpuInfo.vendor,
-      model: isAppleSilicon ? `${cpuInfo.model} (Apple Silicon)` : gpuInfo.model,
+      model: isAppleSilicon ? `${cpuInfo.model || gpuInfo.model} (Apple Silicon)` : gpuInfo.model,
       vramMb: isAppleSilicon ? ramInfo.totalMb : gpuInfo.vramMb,
       unifiedMemory: isAppleSilicon,
       driverVersion: gpuInfo.driverVersion,
@@ -69,7 +71,7 @@ export class HardwareInspectorService implements OnModuleInit {
 
     const tier = this.computeTier(gpu, ramInfo);
 
-    return {
+    const profile = {
       gpu,
       npu: { available: false, model: '' },
       ram: ramInfo,
@@ -77,6 +79,15 @@ export class HardwareInspectorService implements OnModuleInit {
       effectiveInferenceMemoryMb,
       tier,
     };
+
+    const profilePath = path.join(DATA_DIR, 'state', 'hardware-profile.json');
+    try {
+      await this.filesystem.writeJsonFile(profilePath, profile);
+    } catch {
+      // best-effort cache persistence
+    }
+
+    return profile;
   }
 
   computeTier(gpu: HardwareProfile['gpu'], ram: HardwareProfile['ram']): HardwareTier {
@@ -98,14 +109,19 @@ export class HardwareInspectorService implements OnModuleInit {
 
   private async detectGpu(): Promise<{
     available: boolean;
-    vendor: 'nvidia' | 'amd' | 'intel' | 'none';
+    vendor: 'nvidia' | 'amd' | 'intel' | 'apple' | 'none';
     model: string;
     vramMb: number;
     driverVersion: string;
   }> {
     try {
       const graphics = await si.graphics();
-      const controller = graphics.controllers?.[0];
+      const controllers = graphics.controllers ?? [];
+      const controller =
+        controllers
+          .map((c) => ({ ...c, vram: Number(c.vram) || 0 }))
+          .sort((a, b) => (b.vram || 0) - (a.vram || 0))
+          .find((c) => c.model || c.vendor) || controllers[0];
 
       if (!controller?.model) {
         return { available: false, vendor: 'none', model: '', vramMb: 0, driverVersion: '' };
@@ -115,7 +131,7 @@ export class HardwareInspectorService implements OnModuleInit {
       const vramMb = controller.vram || 0;
       const driverVersion = controller.driverVersion || '';
 
-      let vendor: 'nvidia' | 'amd' | 'intel' | 'none' = 'none';
+      let vendor: 'nvidia' | 'amd' | 'intel' | 'apple' | 'none' = 'none';
       const vendorStr = (controller.vendor || '').toLowerCase();
       if (
         vendorStr.includes('nvidia') ||
@@ -129,9 +145,12 @@ export class HardwareInspectorService implements OnModuleInit {
         vendor = 'amd';
       } else if (vendorStr.includes('intel')) {
         vendor = 'intel';
+      } else if (vendorStr.includes('apple') || model.toLowerCase().includes('apple')) {
+        vendor = 'apple';
       }
 
-      return { available: vendor !== 'none' && vramMb > 0, vendor, model, vramMb, driverVersion };
+      const available = vendor === 'apple' ? true : vendor !== 'none' && vramMb > 0;
+      return { available, vendor, model, vramMb, driverVersion };
     } catch (err) {
       this.logger.warn(`[HardwareInspector] GPU detection failed: ${err}`);
       return { available: false, vendor: 'none', model: '', vramMb: 0, driverVersion: '' };
@@ -140,24 +159,41 @@ export class HardwareInspectorService implements OnModuleInit {
 
   private async detectRam(): Promise<{ totalMb: number; availableMb: number }> {
     try {
-      const content = await this.filesystem.readTextFile('/host/proc/meminfo');
-      if (!content) throw new Error('Empty meminfo');
-      const lines = content.split('\n');
-      let totalKb = 0;
-      let availKb = 0;
-      for (const line of lines) {
-        if (line.startsWith('MemTotal:')) {
-          totalKb = Number.parseInt(line.split(/\s+/)[1] ?? '0', 10);
-        } else if (line.startsWith('MemAvailable:')) {
-          availKb = Number.parseInt(line.split(/\s+/)[1] ?? '0', 10);
+      if (os.platform() === 'linux') {
+        const content = await this.filesystem.readTextFile('/host/proc/meminfo');
+        if (content) {
+          const lines = content.split('\n');
+          let totalKb = 0;
+          let availKb = 0;
+          for (const line of lines) {
+            if (line.startsWith('MemTotal:')) {
+              totalKb = Number.parseInt(line.split(/\s+/)[1] ?? '0', 10);
+            } else if (line.startsWith('MemAvailable:')) {
+              availKb = Number.parseInt(line.split(/\s+/)[1] ?? '0', 10);
+            }
+          }
+          if (totalKb > 0 && availKb > 0) {
+            return {
+              totalMb: Math.floor(totalKb / 1024),
+              availableMb: Math.floor(availKb / 1024),
+            };
+          }
         }
       }
+
+      const mem = await si.mem();
+      if (mem.total > 0 && mem.available > 0) {
+        return {
+          totalMb: Math.floor(mem.total / (1024 * 1024)),
+          availableMb: Math.floor(mem.available / (1024 * 1024)),
+        };
+      }
+
       return {
-        totalMb: Math.floor(totalKb / 1024),
-        availableMb: Math.floor(availKb / 1024),
+        totalMb: Math.floor(os.totalmem() / (1024 * 1024)),
+        availableMb: Math.floor(os.freemem() / (1024 * 1024)),
       };
     } catch {
-      // Fallback to os module
       const totalMb = Math.floor(os.totalmem() / (1024 * 1024));
       const availMb = Math.floor(os.freemem() / (1024 * 1024));
       return { totalMb, availableMb: availMb };

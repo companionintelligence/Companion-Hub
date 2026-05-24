@@ -14,6 +14,7 @@ import { AppLifecycleCommandFactory } from './app-lifecycle-command.factory';
 import { AppLifecycleController } from './app-lifecycle.controller';
 import { AppLifecycleService } from './app-lifecycle.service';
 import { AppStatusSyncService } from './app-status-sync.service';
+import { InferenceModule } from '../inference/inference.module';
 
 @Module({
   imports: [
@@ -28,6 +29,7 @@ import { AppStatusSyncService } from './app-status-sync.service';
     CloudflareModule,
     RegistrationModule,
     TailscaleModule,
+    InferenceModule,
   ],
   providers: [AppLifecycleService, AppLifecycleCommandFactory, AppStatusSyncService],
   controllers: [AppLifecycleController],

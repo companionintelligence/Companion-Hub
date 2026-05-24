@@ -24,6 +24,8 @@ import { APP_ASYNC_MUTEX } from '@/utils/mutex/mutex.module';
 import type { AsyncMutex } from '@/utils/mutex/async-mutex';
 import type { z } from 'zod';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
+import { HardwareInspectorService } from '../inference/hardware-inspector.service';
+import { calculateMaxConcurrentApps } from '../inference/resource-limits';
 
 type AppFormForSubdomain = Pick<z.infer<typeof appFormSchema>, 'exposedLocal' | 'exposureMode' | 'localSubdomain'>;
 
@@ -54,6 +56,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
     private readonly registrationService: RegistrationService,
     private readonly repoHelpers: ReposHelpers,
     private readonly appStoreService: AppStoreService,
+    private readonly hardwareInspector: HardwareInspectorService,
     private readonly moduleRef: ModuleRef,
     @Inject(APP_ASYNC_MUTEX) private mutex: AsyncMutex,
     @Optional() private readonly agentNotifyService?: AgentNotifyService,
@@ -119,12 +122,31 @@ export class AppLifecycleService implements OnApplicationBootstrap {
     return oldJSON !== newJSON;
   }
 
+  private isAppCountedAsActive(status: string): boolean {
+    return ['running', 'starting', 'restarting', 'installing'].includes(status);
+  }
+
+  private async assertAppLimitNotExceeded(extraApps: number, excludeAppId?: number): Promise<void> {
+    const [profile, apps] = await Promise.all([this.hardwareInspector.getProfile(), this.appRepository.getApps()]);
+    const maxConcurrentApps = calculateMaxConcurrentApps(profile.ram.totalMb);
+    const activeApps = apps.filter((app) => this.isAppCountedAsActive(app.status) && app.id !== excludeAppId).length;
+    const projectedTotal = activeApps + extraApps;
+
+    if (projectedTotal > maxConcurrentApps) {
+      throw new TranslatableError('APP_ERROR_MAX_CONCURRENT_APPS_EXCEEDED', { limit: String(maxConcurrentApps), active: String(activeApps) });
+    }
+  }
+
   async startApp(params: { appUrn: AppUrn; skipPull?: boolean }) {
     const { appUrn, skipPull } = params;
     const app = await this.appRepository.getAppByUrn(appUrn);
 
     if (!app) {
       throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn }, HttpStatus.NOT_FOUND);
+    }
+
+    if (!this.isAppCountedAsActive(app.status)) {
+      await this.assertAppLimitNotExceeded(1, app.id);
     }
 
     await this.appRepository.updateAppById(app.id, { status: 'starting' });
@@ -199,6 +221,8 @@ export class AppLifecycleService implements OnApplicationBootstrap {
     if (demoMode && apps.length >= 6) {
       throw new TranslatableError('SYSTEM_ERROR_DEMO_MODE_LIMIT');
     }
+
+    await this.assertAppLimitNotExceeded(1);
 
     // Prevent exposing to internet in production - use exposedLocal with Cloudflare tunnel instead
     const { isProduction } = this.config.getConfig();

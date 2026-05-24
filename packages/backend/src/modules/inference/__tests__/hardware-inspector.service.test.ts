@@ -94,6 +94,21 @@ describe('HardwareInspectorService', () => {
       expect(profile.gpu.vendor).toBe('amd');
       expect(profile.gpu.available).toBe(true);
     });
+
+    it('should treat Apple GPU as available unified memory', async () => {
+      (si.graphics as any) = vi.fn().mockResolvedValue({
+        controllers: [{ vendor: 'Apple', model: 'Apple M3 Max', vram: 0, driverVersion: '' }],
+      });
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 14, brand: 'Apple M3 Max' });
+      filesystemService.readTextFile.mockResolvedValue('MemTotal: 67108864\nMemAvailable: 50331648');
+
+      const profile = await service.detect();
+
+      expect(profile.gpu.vendor).toBe('apple');
+      expect(profile.gpu.available).toBe(true);
+      expect(profile.gpu.unifiedMemory).toBe(true);
+      expect(profile.gpu.vramMb).toBe(65536);
+    });
   });
 
   // ─── S-HW-3: Hardware Tiers ────────────────────────────────────────

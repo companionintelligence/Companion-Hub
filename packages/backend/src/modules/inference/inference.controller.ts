@@ -15,6 +15,7 @@ import { RuntimeModelsQueryDto, UpdateInferencePreferencesBody } from './inferen
 import { OllamaBackend } from './backends/ollama.backend';
 import { VllmBackend } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
+import { calculateMaxConcurrentApps } from './resource-limits';
 
 /**
  * Inference controller — exposes OpenAI-compatible inference endpoints.
@@ -352,6 +353,7 @@ export class InferenceController {
       profile.gpu.available && !profile.gpu.unifiedMemory
         ? budget.modelBudgetVramMb - budget.modelUsedVramMb
         : budget.modelBudgetRamMb - budget.modelUsedRamMb;
+    const maxConcurrentApps = calculateMaxConcurrentApps(profile.ram.totalMb);
 
     return {
       hardware: profile,
@@ -367,6 +369,9 @@ export class InferenceController {
         totalDiskMb: recommendedModels.reduce((sum, m) => sum + m.requirements.diskMb, 0),
         totalMemoryMb,
         availableMemoryMb: Math.max(0, availableMemoryMb),
+      },
+      appLimits: {
+        maxConcurrentApps,
       },
     };
   }

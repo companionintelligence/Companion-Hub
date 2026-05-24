@@ -17,6 +17,7 @@ import { AppStoreService } from '@/modules/app-stores/app-store.service';
 import { APP_ASYNC_MUTEX } from '@/utils/mutex/mutex.module';
 import { mock, MockProxy } from 'vitest-mock-extended';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { HardwareInspectorService } from '@/modules/inference/hardware-inspector.service';
 
 describe('AppLifecycleService', () => {
   let service: AppLifecycleService;
@@ -34,6 +35,7 @@ describe('AppLifecycleService', () => {
   let registrationService: MockProxy<RegistrationService>;
   let reposHelpers: MockProxy<ReposHelpers>;
   let appStoreService: MockProxy<AppStoreService>;
+  let hardwareInspector: MockProxy<HardwareInspectorService>;
   let mutex: any;
 
   beforeEach(async () => {
@@ -51,6 +53,7 @@ describe('AppLifecycleService', () => {
     registrationService = mock<RegistrationService>();
     reposHelpers = mock<ReposHelpers>();
     appStoreService = mock<AppStoreService>();
+    hardwareInspector = mock<HardwareInspectorService>();
 
     const release = vi.fn();
     mutex = {
@@ -74,11 +77,16 @@ describe('AppLifecycleService', () => {
         { provide: RegistrationService, useValue: registrationService },
         { provide: ReposHelpers, useValue: reposHelpers },
         { provide: AppStoreService, useValue: appStoreService },
+        { provide: HardwareInspectorService, useValue: hardwareInspector },
         { provide: APP_ASYNC_MUTEX, useValue: mutex },
       ],
     }).compile();
 
     configService.getConfig.mockReturnValue({ isProduction: false, userSettings: { localDomain: 'lan' } } as any);
+    appsRepository.getApps.mockResolvedValue([]);
+    hardwareInspector.getProfile.mockResolvedValue({
+      ram: { totalMb: 32768, availableMb: 16384 },
+    } as any);
 
     service = module.get<AppLifecycleService>(AppLifecycleService);
   });
@@ -297,6 +305,15 @@ describe('AppLifecycleService', () => {
 
       expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ exposureMode: 'local' }));
     });
+
+    it('MUST reject install when max concurrent app limit is exceeded', async () => {
+      hardwareInspector.getProfile.mockResolvedValueOnce({ ram: { totalMb: 16384, availableMb: 8192 } } as any);
+      appsRepository.getApps.mockResolvedValue(
+        Array.from({ length: 4 }, (_, idx) => ({ id: idx + 1, status: 'running', appName: `app-${idx}` })) as any,
+      );
+
+      await expect(service.installApp({ appUrn, form: {} })).rejects.toThrow('APP_ERROR_MAX_CONCURRENT_APPS_EXCEEDED');
+    });
   });
 
   describe('startApp', () => {
@@ -315,6 +332,16 @@ describe('AppLifecycleService', () => {
     it('should throw if app not found', async () => {
       appsRepository.getAppByUrn.mockResolvedValue(null as any);
       await expect(service.startApp({ appUrn: 'missing' as any })).rejects.toThrow('APP_ERROR_APP_NOT_FOUND');
+    });
+
+    it('should reject start when max concurrent app limit is exceeded', async () => {
+      hardwareInspector.getProfile.mockResolvedValueOnce({ ram: { totalMb: 16384, availableMb: 8192 } } as any);
+      appsRepository.getAppByUrn.mockResolvedValueOnce({ id: 10, name: 'test-app', status: 'stopped' } as any);
+      appsRepository.getApps.mockResolvedValueOnce(
+        Array.from({ length: 4 }, (_, idx) => ({ id: idx + 1, status: 'running', appName: `app-${idx}` })) as any,
+      );
+
+      await expect(service.startApp({ appUrn: 'test-app' as any })).rejects.toThrow('APP_ERROR_MAX_CONCURRENT_APPS_EXCEEDED');
     });
   });
 

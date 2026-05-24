@@ -736,5 +736,6 @@
   "MULTI_SERVICE_JSON_REFERENCE": "Dynamic Compose Reference",
   "APP_STORES_UPDATE_SUCCESS": "App stores updated successfully",
   "APP_STORES_UPDATE_ERROR": "Failed to update app stores",
-  "REFRESH": "Refresh"
+  "REFRESH": "Refresh",
+  "APP_ERROR_MAX_CONCURRENT_APPS_EXCEEDED": "App limit exceeded ({{active}} active / {{limit}} max). Stop an app before installing or starting another."
 }

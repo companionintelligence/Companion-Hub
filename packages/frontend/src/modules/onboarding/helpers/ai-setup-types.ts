@@ -46,6 +46,9 @@ export interface HardwareProfileResponse {
     totalMemoryMb: number;
     availableMemoryMb: number;
   };
+  appLimits?: {
+    maxConcurrentApps: number;
+  };
 }
 
 /** Cloud key validation rules by provider */

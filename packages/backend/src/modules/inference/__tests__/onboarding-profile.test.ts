@@ -105,6 +105,7 @@ describe('InferenceController — onboarding-profile', () => {
     expect(result.backends.recommended).toBe('vllm');
     expect(result.backends.available).toHaveLength(2);
     expect(result.resourceEstimate.availableMemoryMb).toBeGreaterThanOrEqual(0);
+    expect(result.appLimits.maxConcurrentApps).toBe(12);
   });
 
   it('should recommend vllm for AMD GPU with runtime', async () => {

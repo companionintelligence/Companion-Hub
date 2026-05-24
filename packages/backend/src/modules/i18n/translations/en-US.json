@@ -751,5 +751,6 @@
   "MY_APPS_RESTART_ALL_FORM_SUBTITLE": "This will restart all running apps.",
   "MY_APPS_RESTART_ALL_FORM_TITLE": "Restart all apps",
   "MY_APPS_RESTART_ALL_IN_PROGRESS": "Restarting all apps",
-  "MY_APPS_BATCH_ACTIONS": "Batch actions"
+  "MY_APPS_BATCH_ACTIONS": "Batch actions",
+  "APP_ERROR_MAX_CONCURRENT_APPS_EXCEEDED": "App limit exceeded ({{active}} active / {{limit}} max). Stop an app before installing or starting another."
 }

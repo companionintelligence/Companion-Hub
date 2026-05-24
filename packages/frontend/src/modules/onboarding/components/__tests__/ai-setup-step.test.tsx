@@ -91,6 +91,9 @@ const highTierProfile: HardwareProfileResponse = {
     totalMemoryMb: 2048,
     availableMemoryMb: 24064,
   },
+  appLimits: {
+    maxConcurrentApps: 12,
+  },
 };
 
 const insufficientProfile: HardwareProfileResponse = {
@@ -135,6 +138,7 @@ describe('AiSetupStep', () => {
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
     expect(screen.getByTestId('tier-badge')).toHaveTextContent('High');
     expect(screen.getByTestId('hw-gpu')).toHaveTextContent('RTX 4090');
+    expect(screen.getByTestId('hw-app-limits')).toHaveTextContent('Up to 12 concurrent apps');
   });
 
   it('pre-selects recommended models', async () => {

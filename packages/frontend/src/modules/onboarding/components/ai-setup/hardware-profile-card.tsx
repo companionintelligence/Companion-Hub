@@ -7,6 +7,7 @@ interface HardwareProfileCardProps {
   tier: HardwareTier;
   onRescan: () => Promise<void>;
   rescanning?: boolean;
+  maxConcurrentApps?: number;
 }
 
 const TIER_BADGES: Record<HardwareTier, { label: string; color: string; emoji: string }> = {
@@ -22,7 +23,7 @@ function formatMemory(mb: number): string {
   return `${mb} MB`;
 }
 
-export const HardwareProfileCard = ({ hardware, tier, onRescan, rescanning = false }: HardwareProfileCardProps) => {
+export const HardwareProfileCard = ({ hardware, tier, onRescan, rescanning = false, maxConcurrentApps }: HardwareProfileCardProps) => {
   const badge = TIER_BADGES[tier];
 
   return (
@@ -66,6 +67,13 @@ export const HardwareProfileCard = ({ hardware, tier, onRescan, rescanning = fal
               {hardware.cpu.cores} cores · {hardware.cpu.arch}
             </div>
           </div>
+
+          {typeof maxConcurrentApps === 'number' && (
+            <div data-testid="hw-app-limits">
+              <div className="text-muted-foreground text-xs">App Limit</div>
+              <div className="font-medium">Up to {maxConcurrentApps} concurrent apps</div>
+            </div>
+          )}
         </div>
       </CardContent>
     </Card>
