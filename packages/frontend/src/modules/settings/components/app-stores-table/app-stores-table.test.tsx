@@ -1,4 +1,5 @@
 import { render, screen } from '@/tests/test-utils';
+import type { AppStore } from '@/types/app.types';
 import { describe, expect, it, vi } from 'vitest';
 import { AppStoresTable } from './app-stores-table';
 
@@ -14,13 +15,11 @@ vi.mock('../delete-app-store-dialog/delete-app-store-dialog', () => ({
   DeleteAppStoreDialog: () => <button type="button">Delete</button>,
 }));
 
-const APP_STORE = {
+const APP_STORE: AppStore = {
   slug: 'community-apps',
   name: 'Community Apps',
   enabled: true,
   url: 'https://community.example.com/api',
-  hash: 'abc123',
-  branch: 'main',
 };
 
 describe('AppStoresTable', () => {
