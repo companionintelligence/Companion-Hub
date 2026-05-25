@@ -2,6 +2,7 @@ import { Body, Controller, Get, Post, Query, Req } from '@nestjs/common';
 import type { Request } from 'express';
 import { RegistrationService } from './registration.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
+import { DEFAULT_CI_CLOUD_URL } from '@/common/constants';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 
 interface RegisterDeviceDto {
@@ -136,7 +137,7 @@ export class RegistrationController {
       envFileLines: envFileLines.length > 0 ? envFileLines : null,
       // Also check process.env directly
       processEnv: {
-        CI_CLOUD_URL: process.env.CI_CLOUD_URL || 'https://hub.companionintelligence.com',
+        CI_CLOUD_URL: process.env.CI_CLOUD_URL || DEFAULT_CI_CLOUD_URL,
       },
     };
   }

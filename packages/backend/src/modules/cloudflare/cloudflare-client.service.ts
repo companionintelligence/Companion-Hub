@@ -1,4 +1,4 @@
-import { APP_DIR, DATA_DIR } from '@/common/constants';
+import { APP_DIR, DATA_DIR, DEFAULT_CI_CLOUD_URL } from '@/common/constants';
 import { Injectable, Logger } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -51,7 +51,7 @@ export class CloudflareClientService {
     private configService: ConfigurationService,
     private moduleRef: ModuleRef,
   ) {
-    const ciCloudUrl = this.configService.get('ciCloudUrl') || 'https://hub.companionintelligence.com';
+    const ciCloudUrl = this.configService.get('ciCloudUrl') || DEFAULT_CI_CLOUD_URL;
     this.cloudApiUrl = `${ciCloudUrl}/api`;
 
     this.client = axios.create({
