@@ -27,10 +27,16 @@ npx --package ci-hub cihub --help
 
 Homebrew and other package managers should expose the same `cihub` executable on the user's `PATH`.
 
+The screenshots below were captured from the packaged `cihub` executable in a demo sandbox so each command flow renders consistently without depending on live Docker services or root access.
+
 ## Help and MAN
 
 - `cihub --help` (or `-h`) prints command help
 - `cihub man` prints a manual-style command reference
+
+![Screenshot of `cihub --help`](./images/cli/help.svg)
+
+![Screenshot of `cihub man`](./images/cli/man.svg)
 
 ## Commands
 
@@ -42,6 +48,8 @@ cihub wizard [env]
 
 Runs a guided interactive flow for setup/start/register/config actions.
 
+![Screenshot of `cihub wizard`](./images/cli/wizard.svg)
+
 ### Setup
 
 ```bash
@@ -50,6 +58,8 @@ cihub setup [env]
 
 Initializes Traefik and Docker auth config.
 
+![Screenshot of `cihub setup local`](./images/cli/setup.svg)
+
 ### Register with Cloud Portal
 
 ```bash
@@ -57,6 +67,8 @@ cihub register [env]
 ```
 
 Prints a registration URL containing your machine device ID for CI Cloud pairing.
+
+![Screenshot of `cihub register local`](./images/cli/register.svg)
 
 ### Hub lifecycle
 
@@ -68,6 +80,8 @@ cihub config [env]
 
 Starts/stops the Hub stack and prints resolved config values.
 
+![Screenshots of `cihub config`, `cihub up`, and `cihub shutdown`](./images/cli/lifecycle.svg)
+
 ### MCP lifecycle
 
 ```bash
@@ -77,6 +91,8 @@ cihub mcp config [env]
 ```
 
 Enables/disables MCP in the env file and ensures `MCP_API_KEY` exists when enabled.
+
+![Screenshots of `cihub mcp setup`, `cihub mcp config`, and `cihub mcp shutdown`](./images/cli/mcp.svg)
 
 ### Container app lifecycle (local Docker)
 
@@ -91,6 +107,10 @@ cihub app delete <name>
 ```
 
 These commands manage local Docker containers directly.
+
+![Screenshot of `cihub app list`](./images/cli/app-list.svg)
+
+![Screenshots of `cihub app add`, `app edit`, `app start`, `app stop`, `app restart`, and `app delete`](./images/cli/app-management.svg)
 
 ## Environments
 
