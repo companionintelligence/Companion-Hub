@@ -65,6 +65,12 @@ export class HardwareInspectorService implements OnModuleInit {
       runtimeAvailable: isAppleSilicon || (gpuInfo.vendor === 'nvidia' ? nvidiaRuntime : rocmSupport),
     };
 
+    if (gpu.vendor === 'nvidia' && !gpu.runtimeAvailable) {
+      this.logger.warn(
+        '[HardwareInspector] NVIDIA GPU detected but NVIDIA container runtime is unavailable. Verify NVIDIA drivers, nvidia-container-toolkit, and container GPU passthrough configuration.',
+      );
+    }
+
     const effectiveInferenceMemoryMb = gpu.unifiedMemory ? ramInfo.availableMb : gpu.available ? gpu.vramMb : ramInfo.availableMb;
 
     const tier = this.computeTier(gpu, ramInfo);
@@ -105,35 +111,106 @@ export class HardwareInspectorService implements OnModuleInit {
   }> {
     try {
       const graphics = await si.graphics();
-      const controller = graphics.controllers?.[0];
+      const controllers = graphics.controllers ?? [];
 
-      if (!controller?.model) {
+      const detectVendor = (vendorValue: string, modelValue: string): 'nvidia' | 'amd' | 'intel' | 'none' => {
+        const modelLower = modelValue.toLowerCase();
+        const vendorLower = vendorValue.toLowerCase();
+        if (
+          vendorLower.includes('nvidia') ||
+          modelLower.includes('nvidia') ||
+          modelLower.includes('geforce') ||
+          modelLower.includes('rtx') ||
+          modelLower.includes('gtx')
+        ) {
+          return 'nvidia';
+        }
+        if (vendorLower.includes('amd') || vendorLower.includes('advanced micro') || modelLower.includes('radeon')) {
+          return 'amd';
+        }
+        if (vendorLower.includes('intel')) {
+          return 'intel';
+        }
+        return 'none';
+      };
+
+      const rankedControllers = controllers
+        .map((controller) => {
+          const model = controller.model || '';
+          const vendor = detectVendor(controller.vendor || '', model);
+          const vramMb = controller.vram || 0;
+          const vendorRank = vendor === 'nvidia' ? 3 : vendor === 'amd' ? 2 : vendor === 'intel' ? 1 : 0;
+          return {
+            vendor,
+            model,
+            vramMb,
+            driverVersion: controller.driverVersion || '',
+            score: vendorRank * 1_000_000 + vramMb,
+          };
+        })
+        .sort((a, b) => b.score - a.score);
+
+      const best = rankedControllers[0];
+      if (!best || best.vendor === 'none') {
+        return await this.detectNvidiaViaSmi();
+      }
+
+      if (best.vendor === 'nvidia' && (best.vramMb <= 0 || !best.model)) {
+        const fromSmi = await this.detectNvidiaViaSmi();
+        if (fromSmi.available) {
+          return fromSmi;
+        }
+      }
+
+      return {
+        available: best.vendor !== 'none' && (best.vramMb > 0 || !!best.model),
+        vendor: best.vendor,
+        model: best.model,
+        vramMb: best.vramMb,
+        driverVersion: best.driverVersion,
+      };
+    } catch (err) {
+      this.logger.warn(
+        `[HardwareInspector] GPU detection failed. Verify container GPU device passthrough and nvidia-smi availability. Error: ${err}`,
+      );
+      return await this.detectNvidiaViaSmi();
+    }
+  }
+
+  private async detectNvidiaViaSmi(): Promise<{
+    available: boolean;
+    vendor: 'nvidia' | 'amd' | 'intel' | 'none';
+    model: string;
+    vramMb: number;
+    driverVersion: string;
+  }> {
+    try {
+      const { stdout } = await execAsync('nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader,nounits');
+      const firstGpuLine = stdout
+        .split('\n')
+        .map((line) => line.trim())
+        .find((line) => line.length > 0);
+      if (!firstGpuLine) {
         return { available: false, vendor: 'none', model: '', vramMb: 0, driverVersion: '' };
       }
 
-      const model = controller.model || '';
-      const vramMb = controller.vram || 0;
-      const driverVersion = controller.driverVersion || '';
-
-      let vendor: 'nvidia' | 'amd' | 'intel' | 'none' = 'none';
-      const vendorStr = (controller.vendor || '').toLowerCase();
-      if (
-        vendorStr.includes('nvidia') ||
-        model.toLowerCase().includes('nvidia') ||
-        model.toLowerCase().includes('geforce') ||
-        model.toLowerCase().includes('rtx') ||
-        model.toLowerCase().includes('gtx')
-      ) {
-        vendor = 'nvidia';
-      } else if (vendorStr.includes('amd') || vendorStr.includes('advanced micro') || model.toLowerCase().includes('radeon')) {
-        vendor = 'amd';
-      } else if (vendorStr.includes('intel')) {
-        vendor = 'intel';
+      const parts = firstGpuLine.split(',').map((part) => part?.trim() ?? '');
+      if (parts.length < 2) {
+        return { available: false, vendor: 'none', model: '', vramMb: 0, driverVersion: '' };
       }
+      const [modelRaw, memoryRaw, driverRaw] = parts;
+      const vramMb = Number.parseInt(memoryRaw, 10);
+      const model = modelRaw || 'NVIDIA GPU';
+      const driverVersion = driverRaw || '';
 
-      return { available: vendor !== 'none' && vramMb > 0, vendor, model, vramMb, driverVersion };
-    } catch (err) {
-      this.logger.warn(`[HardwareInspector] GPU detection failed: ${err}`);
+      return {
+        available: true,
+        vendor: 'nvidia',
+        model,
+        vramMb: Number.isFinite(vramMb) && vramMb > 0 ? vramMb : 0,
+        driverVersion,
+      };
+    } catch {
       return { available: false, vendor: 'none', model: '', vramMb: 0, driverVersion: '' };
     }
   }

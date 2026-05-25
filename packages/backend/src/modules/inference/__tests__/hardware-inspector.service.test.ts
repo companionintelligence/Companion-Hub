@@ -6,6 +6,10 @@ import { mock, type MockProxy } from 'vitest-mock-extended';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import si from 'systeminformation';
 
+const { execAsyncMock } = vi.hoisted(() => ({
+  execAsyncMock: vi.fn(),
+}));
+
 vi.mock('systeminformation');
 vi.mock('node:child_process', () => ({
   exec: vi.fn(),
@@ -14,7 +18,7 @@ vi.mock('node:util', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:util')>();
   return {
     ...actual,
-    promisify: () => vi.fn().mockResolvedValue({ stdout: '{}' }),
+    promisify: () => execAsyncMock,
   };
 });
 
@@ -24,6 +28,8 @@ describe('HardwareInspectorService', () => {
   let filesystemService: MockProxy<FilesystemService>;
 
   beforeEach(async () => {
+    execAsyncMock.mockResolvedValue({ stdout: '{}' });
+
     loggerService = mock<LoggerService>();
     filesystemService = mock<FilesystemService>();
 
@@ -80,6 +86,44 @@ describe('HardwareInspectorService', () => {
 
       expect(profile.gpu.vendor).toBe('none');
       expect(profile.gpu.available).toBe(false);
+    });
+
+    it('SHALL prefer discrete NVIDIA GPU when multiple controllers are reported', async () => {
+      (si.graphics as any) = vi.fn().mockResolvedValue({
+        controllers: [
+          { vendor: 'Intel', model: 'Intel UHD Graphics', vram: 128, driverVersion: '1.0' },
+          { vendor: 'NVIDIA', model: 'NVIDIA GeForce RTX 4090', vram: 24564, driverVersion: '535.129.03' },
+        ],
+      });
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 16, brand: 'AMD Ryzen 9' });
+      filesystemService.readTextFile.mockResolvedValue('MemTotal: 67108864\nMemAvailable: 50331648');
+
+      const profile = await service.detect();
+
+      expect(profile.gpu.available).toBe(true);
+      expect(profile.gpu.vendor).toBe('nvidia');
+      expect(profile.gpu.model).toContain('RTX 4090');
+      expect(profile.gpu.vramMb).toBe(24564);
+    });
+
+    it('SHALL fallback to nvidia-smi when systeminformation omits controllers', async () => {
+      (si.graphics as any) = vi.fn().mockResolvedValue({ controllers: [] });
+      execAsyncMock.mockImplementation(async (command: string) => {
+        if (command.includes('--query-gpu=name,memory.total,driver_version')) {
+          return { stdout: 'NVIDIA GeForce RTX 4090, 24564, 550.54.14\n' };
+        }
+        return { stdout: '{}' };
+      });
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 16, brand: 'AMD Ryzen 9' });
+      filesystemService.readTextFile.mockResolvedValue('MemTotal: 67108864\nMemAvailable: 50331648');
+
+      const profile = await service.detect();
+
+      expect(profile.gpu.available).toBe(true);
+      expect(profile.gpu.vendor).toBe('nvidia');
+      expect(profile.gpu.model).toBe('NVIDIA GeForce RTX 4090');
+      expect(profile.gpu.vramMb).toBe(24564);
+      expect(profile.gpu.driverVersion).toBe('550.54.14');
     });
 
     it('should detect AMD GPU vendor', async () => {
