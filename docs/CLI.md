@@ -29,6 +29,18 @@ Homebrew and other package managers should expose the same `cihub` executable on
 
 The screenshots below were captured from the packaged `cihub` executable in a demo sandbox so each command flow renders consistently without depending on live Docker services or root access.
 
+## Branded terminal preview
+
+These zoomed previews keep the Companion Intelligence ASCII banner readable before the full command walkthroughs below.
+
+<p>
+  <img src="./images/cli/banner-help.svg" alt="Zoomed screenshot of the cihub help banner" width="960" />
+</p>
+
+<p>
+  <img src="./images/cli/banner-wizard.svg" alt="Zoomed screenshot of the cihub wizard banner" width="960" />
+</p>
+
 ## Help and MAN
 
 - `cihub --help` (or `-h`) prints command help

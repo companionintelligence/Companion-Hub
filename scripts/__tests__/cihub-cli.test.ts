@@ -1,6 +1,14 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { normalizeCliArgs, renderHelp, renderWizardWelcome, resolveWizardActionInput, resolveWizardEnvInput, stripAnsi } from '../cihub-cli';
+import {
+  normalizeCliArgs,
+  renderHelp,
+  renderManPage,
+  renderWizardWelcome,
+  resolveWizardActionInput,
+  resolveWizardEnvInput,
+  stripAnsi,
+} from '../cihub-cli';
 
 describe('cihub CLI presentation', () => {
   it('strips the forwarded npm double dash', () => {
@@ -21,6 +29,18 @@ describe('cihub CLI presentation', () => {
     expect(output).toContain('cihub wizard');
     expect(output).toContain('npm install -g ci-hub');
     expect(output).toContain('npx --package ci-hub cihub --help');
+    expect(output).toContain('__   __         __               __');
+    expect(output).toContain('Quick start');
+    expect(output).toContain('Container app lifecycle');
+  });
+
+  it('renders the man page with synopsis and packaging guidance', () => {
+    const output = stripAnsi(renderManPage());
+    expect(output).toContain('CIHUB(1)');
+    expect(output).toContain('Synopsis');
+    expect(output).toContain('pnpm run hub -- <command> [args]');
+    expect(output).toContain('Packaging');
+    expect(output).toContain('Homebrew and other package managers should install the same cihub executable.');
   });
 });
 
