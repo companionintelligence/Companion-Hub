@@ -304,6 +304,13 @@ export class AppHelpers {
     if (isExposed) {
       envMap.set('APP_PUBLIC_HOSTNAME', publicHostname);
       envMap.set('APP_PUBLIC_URL', publicUrl);
+      // Store the public domain separately so compose.builder.ts can read it
+      // directly without needing to parse APP_PUBLIC_HOSTNAME (which is fragile
+      // for domains with more than two parts, e.g. my.lifescope.io).
+      if (publicHostname.includes('.')) {
+        const hostnamePublicDomain = publicHostname.substring(publicHostname.indexOf('.') + 1);
+        envMap.set('APP_PUBLIC_DOMAIN', hostnamePublicDomain);
+      }
     }
 
     // --- Derived Variables ---

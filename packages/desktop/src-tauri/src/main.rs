@@ -222,7 +222,7 @@ pub fn run() {
                 // explicitly click "Start Hub" again.
                 let user_stopped = hub_manager::is_user_stopped(&data_dir);
 
-                let should_start = if user_stopped && containers_exist {
+                let should_start = if user_stopped {
                     false // User explicitly stopped — honour the decision across relaunches
                 } else if !containers_exist {
                     true // First launch or containers were removed
@@ -234,7 +234,7 @@ pub fn run() {
                     false // Containers exist, config unchanged, no runtime repair pending — do nothing
                 };
 
-                let reason = if user_stopped && containers_exist {
+                let reason = if user_stopped {
                     "user intentionally stopped the Hub — respecting decision across relaunch"
                         .to_string()
                 } else if !containers_exist {

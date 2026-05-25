@@ -30,6 +30,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   private _degradedReasons: DegradedReason[] = [];
   private checkInterval: NodeJS.Timeout | null = null;
   private periodicValidationInterval: NodeJS.Timeout | null = null;
+  private consecutiveValidationFailures = 0;
 
   constructor(
     private readonly config: ConfigurationService,
@@ -65,6 +66,8 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     // Covers the "registered-before, Hub restarted" case: recoverTunnelTokenFromDb
     // only spawns cloudflared when the token file is missing, so without this call
     // the public hub-*.$DOMAIN hostname stays DNS-resolvable but the tunnel is dead.
+    // Only starts cloudflared if not already running — avoids a token-mismatch restart
+    // when credentials are about to be refreshed from cloud.
     await this.cloudflareClientService.ensureCloudflaredRunning();
 
     // Ensure Traefik has a route for the hub's public hostname (e.g. devbox-core1.companionintelligence.com)
@@ -77,7 +80,8 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     if (isOperational(this._currentPhase)) {
       await this.verifyLicense();
 
-      // Check for missing Tunnel ID and recover from CI-Cloud if needed
+      // Log a warning if tunnelId is missing — hub can still operate but some
+      // features (e.g. tunnel config updates) may not work until re-paired.
       if (isOperational(this._currentPhase)) {
         await this.recoverTunnelIdFromCloud();
       }
@@ -291,64 +295,24 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   }
 
   /**
-   * If the org record is missing its tunnelId, attempt to re-register with
-   * CI-Cloud to obtain fresh tunnel credentials.
+   * Logs a warning if the org record is missing its tunnelId.
+   * We no longer attempt a cloud round-trip here — if the hub is operational
+   * (token file + DB record present) cloudflared is running and requests are
+   * being served regardless of what's stored in the tunnelId column.
+   * A missing tunnelId will be re-populated naturally on the next full
+   * re-pairing or when CI Portal pushes a state update via the callback.
    */
   private async recoverTunnelIdFromCloud() {
     try {
       const org = await this.deviceRegistrationRepository.getFirstDeviceRegistration();
       if (!org || org.tunnelId) return;
 
-      this.logger.warn(`Organization ${org.id} exists but Tunnel ID is missing. Attempting to recover...`);
-
-      const { ciCloudUrl, ciHubApiKey } = this.config.getConfig();
-      const deviceId = await this.getDeviceId();
-
-      if (!ciCloudUrl) return;
-
-      this.logger.info(`Attempting to recover tunnel credentials via registration endpoint for device ${deviceId}`);
-
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (ciHubApiKey) {
-        headers.Authorization = `Bearer ${ciHubApiKey}`;
-      }
-
-      const registerResponse = await fetch(`${ciCloudUrl}/api/devices/register`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          device_id: deviceId,
-          organization_id: org.id,
-          description: `CI OS Hub Device - ${deviceId} (Recovery)`,
-        }),
-      });
-
-      if (!registerResponse.ok) {
-        this.logger.error(`Failed to recover Tunnel ID: API returned ${registerResponse.status}`);
-        return;
-      }
-
-      // biome-ignore lint/suspicious/noExplicitAny: External API response
-      const data = (await registerResponse.json()) as any;
-
-      if (data.tunnel_id && data.tunnel_token) {
-        const tunnelCredentials = await this.cloudflareClientService.initializeTunnel(org.id, {
-          tunnelId: data.tunnel_id,
-          token: data.tunnel_token,
-        });
-
-        if (tunnelCredentials) {
-          await this.deviceRegistrationRepository.updateDeviceRegistration(org.id, {
-            tunnelId: tunnelCredentials.tunnelId,
-            tunnelToken: tunnelCredentials.token,
-          });
-          this.logger.info(`Tunnel ID recovered successfully: ${tunnelCredentials.tunnelId}`);
-        }
-      } else {
-        this.logger.error('Failed to recover Tunnel ID: API returned success but no credentials');
-      }
+      this.logger.warn(
+        `Organization ${org.id} is operational but tunnelId is missing from DB. ` +
+          'Tunnel is still running. Re-pair via CI Portal to restore full tunnel metadata.',
+      );
     } catch (err) {
-      this.logger.error(`Error during tunnel recovery: ${err}`);
+      this.logger.error(`Error checking tunnelId: ${err}`);
     }
   }
 
@@ -368,8 +332,8 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
    * Validates the current registration against CI Cloud.
    * Checks that the tunnel token file still exists, the device_id matches,
    * and the device status in CI Cloud is 'active'.
-   * If any check fails, marks the device as unregistered so the frontend
-   * reverts to the registration page.
+   * Only transitions to 'degraded' after 3 consecutive failures to tolerate
+   * transient network issues.
    */
   private async validateRegistrationWithCloud(): Promise<void> {
     if (!isOperational(this._currentPhase)) return;
@@ -388,45 +352,74 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
 
     try {
       const deviceId = await this.getDeviceId();
-      const statusUrl = new URL(`${ciCloudUrl}/api/devices/registration-status`);
-      statusUrl.searchParams.set('device_id', deviceId);
 
-      const response = await fetch(statusUrl.toString(), { method: 'GET' });
+      // Use the existing unauthenticated check-in endpoint to confirm the
+      // device is still active in CI Portal. A 400 means the device is no
+      // longer active; network errors are counted toward the failure threshold.
+      const response = await fetch(`${ciCloudUrl}/api/devices/check-in`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ device_id: deviceId }),
+        signal: AbortSignal.timeout(10_000),
+      });
+
+      if (response.status === 400) {
+        // 400 is a definitive "device inactive/unregistered" signal from CI Portal —
+        // degrade immediately rather than waiting for 3 strikes.
+        this.consecutiveValidationFailures = 0;
+        this.logger.warn('Registration validation: device is no longer active in CI Portal (400) — transitioning to degraded immediately');
+        await this.setPhase('degraded', ['cloud_validation_failed']);
+        return;
+      }
+
       if (!response.ok) {
-        this.logger.warn(`Registration validation: CI Cloud returned ${response.status} — transitioning to degraded`);
-        await this.setPhase('degraded', ['cloud_validation_failed']);
+        // Transient failure (5xx, etc.) — count toward the 3-strike threshold.
+        this.consecutiveValidationFailures++;
+        this.logger.warn(`Registration validation: CI Portal check-in returned ${response.status} (failure ${this.consecutiveValidationFailures}/3)`);
+        if (this.consecutiveValidationFailures >= 3) {
+          await this.setPhase('degraded', ['cloud_validation_failed']);
+        }
         return;
       }
 
-      const data = (await response.json()) as {
-        registered?: boolean;
-        device_status?: string;
-        status?: string;
-      };
-
-      const deviceStatus = data.device_status || data.status;
-
-      if (!data.registered) {
-        this.logger.warn('Registration validation: device no longer registered in CI Cloud — transitioning to degraded');
-        await this.setPhase('degraded', ['cloud_validation_failed']);
-        return;
-      }
-
-      if (deviceStatus && deviceStatus !== 'active') {
-        this.logger.warn(`Registration validation: device status is "${deviceStatus}" (not active) — transitioning to degraded`);
-        await this.setPhase('degraded', ['cloud_validation_failed']);
-        return;
-      }
+      this.consecutiveValidationFailures = 0;
 
       // Validation passed — recover from degraded if applicable
       if (this._currentPhase === 'degraded') {
         this.logger.info('Registration validation passed — recovering from degraded');
         await this.setPhase('locally_ready');
       } else {
-        this.logger.info('Registration validation passed: device is active and registered');
+        this.logger.info('Registration validation passed: device is active in CI Portal');
+      }
+
+      // Probe DNS reachability for locally_ready phase — log a warning if the public
+      // hostname is not yet resolving (tunnel may still be stabilising after a restart).
+      if (this._currentPhase === 'locally_ready') {
+        const org = await this.deviceRegistrationRepository.getFirstDeviceRegistration();
+        const { domain } = this.config.getConfig();
+
+        if (org?.hubSubdomain && domain && domain !== 'example.com') {
+          const hostname = `${org.hubSubdomain}.${domain}`;
+          try {
+            const dnsCheck = await fetch(`https://${hostname}`, {
+              method: 'HEAD',
+              signal: AbortSignal.timeout(5_000),
+            });
+            if (!dnsCheck.ok && dnsCheck.status !== 401 && dnsCheck.status !== 403) {
+              this.logger.warn(`Registration validation: public hostname ${hostname} returned ${dnsCheck.status} — tunnel may still be stabilising`);
+            }
+          } catch {
+            this.logger.warn(`Registration validation: public hostname ${hostname} not yet reachable — tunnel may still be stabilising`);
+          }
+        }
       }
     } catch (e) {
-      this.logger.error('Registration validation: failed to reach CI Cloud — keeping current state', e);
+      // Network/timeout errors are transient — count toward the 3-strike threshold.
+      this.consecutiveValidationFailures++;
+      this.logger.error(`Registration validation: failed to reach CI Portal (failure ${this.consecutiveValidationFailures}/3)`, e);
+      if (this.consecutiveValidationFailures >= 3) {
+        await this.setPhase('degraded', ['cloud_validation_failed']);
+      }
     }
   }
 
@@ -590,6 +583,12 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     }
   }
 
+  /**
+   * Checks whether registration is complete by inspecting local DB state.
+   * Registration arrives via the CI Portal callback (completeRegistrationFromCallback)
+   * — there is nothing to poll cloud for. This function simply checks whether
+   * the callback has already populated the local DB with valid credentials.
+   */
   private async checkRegistrationWithCloud(): Promise<boolean> {
     const { ciCloudUrl } = this.config.getConfig();
 
@@ -602,61 +601,42 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       return true;
     }
 
-    const deviceId = await this.getDeviceId();
-    const statusUrl = new URL(`${ciCloudUrl}/api/devices/registration-status`);
-    statusUrl.searchParams.set('device_id', deviceId);
-
     try {
-      const response = await fetch(statusUrl.toString(), { method: 'GET' });
-      if (!response.ok) {
-        this.logger.warn(`Registration status check failed: ${response.status} ${response.statusText}`);
+      // Registration state lives in the local DB and is written by the CI Portal
+      // callback. Check whether a complete registration record exists locally.
+      const org = await this.deviceRegistrationRepository.getFirstDeviceRegistration();
+      if (!org?.tunnelToken) {
+        this.logger.debug('checkRegistrationWithCloud: no local registration record yet, waiting for CI Portal callback');
         return false;
       }
 
-      const data = (await response.json()) as {
-        registered?: boolean;
-        ready?: boolean;
-        organization_id?: string;
-        organization_name?: string;
-        slug?: string;
-        subdomain?: string;
-        tunnel_id?: string;
-        tunnel_token?: string;
-        api_key?: string;
-        domain?: string;
-      };
-
-      if (!data.registered) {
+      // We have a local registration — require all fields needed by
+      // setupOrganizationInfrastructure before proceeding. If any are absent
+      // (callback may still be in progress), return false and let the poll
+      // loop retry rather than calling infra setup with empty strings.
+      if (!org.tunnelId || !org.tunnelToken || !org.hubSubdomain || !org.name || !org.slug) {
+        this.logger.debug(
+          'checkRegistrationWithCloud: local registration exists but is incomplete (missing tunnelId/subdomain/name/slug), waiting for callback to finish',
+        );
         return false;
       }
 
-      if (!data.ready) {
-        this.logger.debug('Device is registered but not ready yet (missing tunnel/app data).');
-        return false;
+      if (!isOperational(this._currentPhase)) {
+        this.logger.info('checkRegistrationWithCloud: found complete local registration, setting up infrastructure');
+        const config = this.config.getConfig();
+        await this.setupOrganizationInfrastructure(org.id, {
+          organization_name: org.name,
+          tunnel_id: org.tunnelId,
+          tunnel_token: org.tunnelToken,
+          subdomain: org.hubSubdomain,
+          slug: org.slug,
+          domain: config.domain,
+        });
       }
-
-      if (!data.organization_id || !data.tunnel_id || !data.tunnel_token || !data.subdomain) {
-        this.logger.warn('Registration status missing required fields.');
-        return false;
-      }
-
-      if (data.api_key) {
-        await this.config.setUserSettings({ ciHubApiKey: data.api_key });
-      }
-      await this.config.setUserSettings({ ciHubOrganizationId: data.organization_id });
-
-      await this.setupOrganizationInfrastructure(data.organization_id, {
-        organization_name: data.organization_name || 'Organization',
-        tunnel_id: data.tunnel_id,
-        tunnel_token: data.tunnel_token,
-        subdomain: data.subdomain,
-        slug: data.slug || 'org',
-        domain: data.domain,
-      });
 
       return true;
     } catch (error) {
-      this.logger.error('Error checking registration status from CI Cloud:', error);
+      this.logger.error('Error checking local registration state:', error);
       return false;
     }
   }

@@ -738,6 +738,72 @@ pub fn read_desktop_logs(max_lines: usize) -> String {
     lines[start..].join("\n")
 }
 
+pub(crate) fn tunnel_dir_for(data_dir: &Path) -> PathBuf {
+    data_dir.join("tunnel")
+}
+
+pub(crate) fn tunnel_token_path_for(data_dir: &Path) -> PathBuf {
+    tunnel_dir_for(data_dir).join("token")
+}
+
+/// Remove the Cloudflare tunnel token file (and its parent directory if empty).
+/// Returns a human-readable summary of what was removed for logging. Errors only
+/// when the filesystem refuses to delete an existing file — a missing token is a
+/// no-op success since the post-condition (no token on disk) is already satisfied.
+pub fn clear_tunnel_token(data_dir: &Path) -> Result<String, String> {
+    let token_path = tunnel_token_path_for(data_dir);
+    let tunnel_dir = tunnel_dir_for(data_dir);
+
+    let token_existed = token_path.exists();
+    if token_existed {
+        std::fs::remove_file(&token_path).map_err(|e| {
+            format!(
+                "Failed to remove tunnel token at {}: {}",
+                token_path.display(),
+                e
+            )
+        })?;
+    }
+
+    let mut removed_dir = false;
+    if tunnel_dir.exists() {
+        match std::fs::read_dir(&tunnel_dir) {
+            Ok(mut entries) => {
+                if entries.next().is_none() {
+                    if let Err(e) = std::fs::remove_dir(&tunnel_dir) {
+                        return Err(format!(
+                            "Removed tunnel token but failed to remove empty tunnel dir {}: {}",
+                            tunnel_dir.display(),
+                            e
+                        ));
+                    }
+                    removed_dir = true;
+                }
+            }
+            Err(e) => {
+                return Err(format!(
+                    "Removed tunnel token but failed to inspect {}: {}",
+                    tunnel_dir.display(),
+                    e
+                ));
+            }
+        }
+    }
+
+    let summary = match (token_existed, removed_dir) {
+        (true, true) => format!(
+            "Tunnel token cleared ({} removed) and empty tunnel dir removed.",
+            token_path.display()
+        ),
+        (true, false) => format!("Tunnel token cleared ({} removed).", token_path.display()),
+        (false, _) => format!(
+            "No tunnel token to clear at {} (already absent).",
+            token_path.display()
+        ),
+    };
+    Ok(summary)
+}
+
 pub(crate) fn managed_app_container_ps_args() -> [&'static str; 6] {
     [
         "ps",
@@ -3075,11 +3141,12 @@ mod tests {
     use super::docker_desktop_windows_install_script;
     use super::{
         append_desktop_log_for, classify_docker_access_result, clear_traefik_recreate_required,
-        desktop_log_path_for, format_command_output, generate_container_docker_config,
-        is_container_name_conflict, is_oci_runtime_error, is_traefik_recreate_required,
-        logs_open_target_for, managed_app_container_ps_args, mark_traefik_recreate_required,
-        parse_container_ids, prepare_traefik_runtime_state, seeded_traefik_config_contents,
-        truncate_command_output, DockerAccessState, MAX_COMMAND_OUTPUT_CHARS, TRAEFIK_ACME_FILE,
+        clear_tunnel_token, desktop_log_path_for, format_command_output,
+        generate_container_docker_config, is_container_name_conflict, is_oci_runtime_error,
+        is_traefik_recreate_required, logs_open_target_for, managed_app_container_ps_args,
+        mark_traefik_recreate_required, parse_container_ids, prepare_traefik_runtime_state,
+        seeded_traefik_config_contents, truncate_command_output, tunnel_dir_for,
+        tunnel_token_path_for, DockerAccessState, MAX_COMMAND_OUTPUT_CHARS, TRAEFIK_ACME_FILE,
         TRAEFIK_CONFIG_FILE, TRAEFIK_DYNAMIC_CONFIG_SEED, TRAEFIK_DYNAMIC_FILE, TRAEFIK_TLS_DIR,
     };
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -3557,6 +3624,56 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
             helpers.get("123456789.dkr.ecr.us-east-1.amazonaws.com"),
             Some(&serde_json::json!("ecr-login")),
             "non-host-only credHelper should be preserved"
+        );
+    }
+
+    #[test]
+    fn clear_tunnel_token_is_noop_when_absent() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let summary = clear_tunnel_token(tempdir.path()).expect("clear_tunnel_token succeeds");
+        assert!(
+            summary.contains("already absent"),
+            "missing token should report no-op, got: {summary}",
+        );
+        assert!(!tunnel_token_path_for(tempdir.path()).exists());
+    }
+
+    #[test]
+    fn clear_tunnel_token_removes_token_and_empty_dir() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let token_path = tunnel_token_path_for(tempdir.path());
+        std::fs::create_dir_all(token_path.parent().expect("parent")).expect("mkdir tunnel/");
+        std::fs::write(&token_path, b"FAKE_TOKEN").expect("write token");
+
+        let summary = clear_tunnel_token(tempdir.path()).expect("clear_tunnel_token succeeds");
+
+        assert!(!token_path.exists(), "token file should be removed");
+        assert!(
+            !tunnel_dir_for(tempdir.path()).exists(),
+            "empty tunnel dir should be removed",
+        );
+        assert!(
+            summary.contains("removed"),
+            "summary should report removal, got: {summary}",
+        );
+    }
+
+    #[test]
+    fn clear_tunnel_token_keeps_dir_with_siblings() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let token_path = tunnel_token_path_for(tempdir.path());
+        std::fs::create_dir_all(token_path.parent().expect("parent")).expect("mkdir tunnel/");
+        std::fs::write(&token_path, b"FAKE_TOKEN").expect("write token");
+        // A sibling file (e.g. certs/) keeps the tunnel/ directory alive after token removal.
+        std::fs::write(tunnel_dir_for(tempdir.path()).join("certs.pem"), b"PEM")
+            .expect("write sibling");
+
+        clear_tunnel_token(tempdir.path()).expect("clear_tunnel_token succeeds");
+
+        assert!(!token_path.exists(), "token file should be removed");
+        assert!(
+            tunnel_dir_for(tempdir.path()).exists(),
+            "tunnel dir with sibling files should be preserved",
         );
     }
 }

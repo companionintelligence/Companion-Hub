@@ -1,4 +1,4 @@
-import { APP_DIR, DATA_DIR } from '@/common/constants';
+import { APP_DIR, DATA_DIR, DEFAULT_CI_CLOUD_URL } from '@/common/constants';
 import { Injectable, Logger } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -51,7 +51,7 @@ export class CloudflareClientService {
     private configService: ConfigurationService,
     private moduleRef: ModuleRef,
   ) {
-    const ciCloudUrl = this.configService.get('ciCloudUrl') || 'https://hub.companionintelligence.com';
+    const ciCloudUrl = this.configService.get('ciCloudUrl') || DEFAULT_CI_CLOUD_URL;
     this.cloudApiUrl = `${ciCloudUrl}/api`;
 
     this.client = axios.create({
@@ -338,8 +338,18 @@ export class CloudflareClientService {
       return false;
     }
     try {
-      this.logger.warn('Ensuring cloudflared container is running (post-boot)...');
       const dockerService = this.moduleRef.get(DockerService, { strict: false });
+
+      // Skip restart if cloudflared is already running — prevents the double-restart
+      // boot scenario where the container is running with the current token but would
+      // be unnecessarily stopped and re-started, causing a 40-second connection storm.
+      const alreadyRunning = await dockerService.isContainerRunning('cloudflared');
+      if (alreadyRunning) {
+        this.logger.debug('ensureCloudflaredRunning: cloudflared is already running, skipping restart');
+        return true;
+      }
+
+      this.logger.warn('Ensuring cloudflared container is running (post-boot)...');
       const composeFile = this.getComposeFile();
       await dockerService.ensureContainerRunning('cloudflared', {
         composeFile,

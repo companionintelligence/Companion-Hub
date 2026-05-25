@@ -70,10 +70,10 @@ describe('DeviceRegistrationPage', () => {
 
     render(<DeviceRegistrationPage />);
 
-    expect(await screen.findByRole('heading', { name: 'Connect this device to your account' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Step 2: Connect this device' })).toBeInTheDocument();
     expect(screen.getByText('device-123')).toBeInTheDocument();
-    expect(screen.getByLabelText('Pairing Code')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Companion account' })).toHaveAttribute('href', 'https://portal.example.com');
+    expect(screen.getByLabelText('Enter Pairing Code:')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Login to Companion Account' })).toHaveAttribute('href', 'https://portal.example.com');
     expect(navigate).not.toHaveBeenCalled();
   });
 
@@ -83,7 +83,7 @@ describe('DeviceRegistrationPage', () => {
     render(<DeviceRegistrationPage />);
 
     expect(await screen.findByRole('heading', { name: 'Registration status temporarily unavailable' })).toBeInTheDocument();
-    expect(screen.queryByLabelText('Pairing Code')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Enter Pairing Code:')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Retry status check' })).toBeInTheDocument();
     expect(navigate).not.toHaveBeenCalled();
   });
@@ -113,9 +113,9 @@ describe('DeviceRegistrationPage', () => {
     render(<DeviceRegistrationPage />);
     await flushAsyncWork();
 
-    expect(screen.getByRole('heading', { name: 'Connect this device to your account' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Step 2: Connect this device' })).toBeInTheDocument();
 
-    fireEvent.change(screen.getByLabelText('Pairing Code'), { target: { value: 'ABC123' } });
+    fireEvent.change(screen.getByLabelText('Enter Pairing Code:'), { target: { value: 'ABC123' } });
     fireEvent.click(screen.getByRole('button', { name: 'Register' }));
     await flushAsyncWork();
 

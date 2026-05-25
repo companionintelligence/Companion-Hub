@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { Button } from '@/components/ui/Button';
 import { Alert, AlertDescription } from '@/components/ui/Alert/Alert';
-import { AlertCircle, CheckCircle2, Loader2 } from 'lucide-react';
+import { AlertCircle, CheckCircle2, ChevronRight, Copy, Loader2 } from 'lucide-react';
 import { apiFetch } from '@/lib/api-fetch';
 import type { RegistrationStatus } from '@/lib/registration-status';
 import { isRegistrationOperational, isRegistrationPending } from '@/lib/registration-status';
@@ -14,7 +14,6 @@ const HEADLESS_POLL_INTERVAL_MS = 5000; // slower poll when idle, waiting for ex
 const DOMAIN_PROBE_INTERVAL_MS = 5000;
 const MAX_DOMAIN_PROBE_ATTEMPTS = 60;
 const REQUIRED_CONSECUTIVE_PROBES = 2;
-const PUBLICLY_READY_TIMEOUT_MS = 90_000;
 
 type PairingTarget = {
   domain?: string;
@@ -85,7 +84,6 @@ export default function DeviceRegistrationPage() {
   const pairingInputRef = useRef<HTMLInputElement>(null);
   const pendingPairTargetRef = useRef<PairingTarget | null>(null);
   const completionStartedRef = useRef(false);
-  const publiclyReadyTimerRef = useRef<number | null>(null);
   const isTauri = '__TAURI_INTERNALS__' in window;
 
   const loadDeviceInfo = useCallback(async () => {
@@ -224,17 +222,9 @@ export default function DeviceRegistrationPage() {
   useEffect(() => {
     // Keep polling while:
     // - phase is in-progress (paired/provisioning)
-    // - waiting for publicly_ready before redirecting to the public URL
     // - phase is unregistered — poll at a slower rate to detect headless setup completing externally
     const isUnregistered = registrationStatus?.phase === 'unregistered';
-    const shouldPoll =
-      (registrationStatus && isRegistrationPending(registrationStatus)) ||
-      (registrationStatus &&
-        registrationStatus.phase === 'locally_ready' &&
-        pendingPairTargetRef.current?.domain &&
-        pendingPairTargetRef.current?.subdomain &&
-        !completionStartedRef.current) ||
-      isUnregistered;
+    const shouldPoll = (registrationStatus && isRegistrationPending(registrationStatus)) || isUnregistered;
 
     if (!shouldPoll) {
       return;
@@ -257,27 +247,7 @@ export default function DeviceRegistrationPage() {
 
     const target = pendingPairTargetRef.current;
     if (target) {
-      // If a public URL is expected, wait for publicly_ready (or degraded) before
-      // starting the domain probe loop. This avoids redirecting the browser to a
-      // Cloudflare error page while the tunnel is still being established.
-      if (target.domain && target.subdomain && registrationStatus.phase === 'locally_ready') {
-        // Start a timeout: if publicly_ready doesn't arrive within the window,
-        // fall through and let finishRegistrationFlow handle the fallback.
-        if (!publiclyReadyTimerRef.current) {
-          publiclyReadyTimerRef.current = window.setTimeout(() => {
-            publiclyReadyTimerRef.current = null;
-            completionStartedRef.current = true;
-            void finishRegistrationFlow(registrationStatus);
-          }, PUBLICLY_READY_TIMEOUT_MS);
-        }
-        return;
-      }
-
-      // Phase is publicly_ready, degraded, or no public URL — proceed immediately.
-      if (publiclyReadyTimerRef.current) {
-        window.clearTimeout(publiclyReadyTimerRef.current);
-        publiclyReadyTimerRef.current = null;
-      }
+      // Phase is operational (locally_ready, publicly_ready, or degraded) — proceed immediately.
       completionStartedRef.current = true;
       void finishRegistrationFlow(registrationStatus);
       return;
@@ -285,15 +255,6 @@ export default function DeviceRegistrationPage() {
 
     navigate('/', { replace: true });
   }, [finishRegistrationFlow, navigate, registrationStatus]);
-
-  // Clean up the publicly_ready timeout on unmount.
-  useEffect(() => {
-    return () => {
-      if (publiclyReadyTimerRef.current) {
-        window.clearTimeout(publiclyReadyTimerRef.current);
-      }
-    };
-  }, []);
 
   useEffect(() => {
     if (!isLoading && registrationStatus?.phase === 'unregistered' && deviceId && pairingInputRef.current) {
@@ -385,6 +346,21 @@ export default function DeviceRegistrationPage() {
     await doPair(code);
   };
 
+  const handleCopyDeviceId = async () => {
+    if (!deviceId) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(deviceId);
+      toast.success('Device ID copied to clipboard.');
+    } catch {
+      toast.error('Failed to copy device ID.');
+    }
+  };
+
+  const portalUrl = portalBaseUrl || DEFAULT_PORTAL_URL;
+
   if (isLoading) {
     return (
       <div className="flex flex-col items-center gap-4 py-4 text-center">
@@ -421,7 +397,7 @@ export default function DeviceRegistrationPage() {
           <Alert variant="warning" className="w-full text-left">
             <AlertDescription>
               <div className="flex items-start gap-2">
-                <AlertCircle role="img" aria-label="warning" className="mt-0.5 h-4 w-4 flex-shrink-0" />
+                <AlertCircle role="img" aria-label="warning" className="mt-0.5 h-4 w-4 shrink-0" />
                 <span>
                   {registrationStatus?.phase === 'paired' || registrationStatus?.phase === 'provisioning'
                     ? 'We temporarily lost contact while checking progress. We will keep retrying automatically.'
@@ -465,28 +441,90 @@ export default function DeviceRegistrationPage() {
   }
 
   return (
-    <>
-      <h2 className="mb-4 text-center text-xl font-semibold">Connect this device to your account</h2>
-      <p className="mb-6 text-center text-sm text-muted-foreground">
-        Enter the 6-character pairing code shown in your{' '}
-        <a href={portalBaseUrl || DEFAULT_PORTAL_URL} target="_blank" rel="noopener noreferrer" className="text-primary underline hover:no-underline">
-          Companion account
-        </a>{' '}
-        to claim this device and start managing it remotely.
-      </p>
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 items-stretch gap-4 md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] md:gap-5">
+        <section className="flex flex-col rounded-xl border border-border/60 bg-muted/20 p-5">
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-foreground">Step 1: Get your pairing code</h2>
+          <p className="mt-3 flex-1 text-sm leading-relaxed text-muted-foreground">
+            Log into your Companion Account and create a device. Copy the device&apos;s pairing code and return here.
+          </p>
+          <Button asChild className="mt-5 w-full" intent="primary">
+            <a href={portalUrl} target="_blank" rel="noopener noreferrer">
+              Login to Companion Account
+            </a>
+          </Button>
+        </section>
 
-      {deviceId && (
-        <div className="mb-4 rounded-lg bg-muted/50 p-3">
-          <p className="mb-1 text-xs text-muted-foreground">Device ID</p>
-          <p className="break-all font-mono text-sm">{deviceId}</p>
+        <div aria-hidden="true" className="hidden items-center justify-center text-muted-foreground md:flex">
+          <ChevronRight className="h-5 w-5" />
         </div>
-      )}
+
+        <section className="flex flex-col rounded-xl border border-border/60 bg-muted/20 p-5">
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-foreground">Step 2: Connect this device</h2>
+          <p className="mt-3 text-sm leading-relaxed text-muted-foreground">Enter the code and use the Current Device ID to complete registration.</p>
+
+          <div className="mt-5 space-y-4">
+            <div className="space-y-2">
+              <p className="text-sm text-muted-foreground">Current Device ID:</p>
+              <div className="flex items-center gap-2 rounded-lg border border-border/60 bg-background/60 px-3 py-2">
+                <p className="min-w-0 flex-1 break-all font-mono text-sm text-foreground">{deviceId ?? 'Loading device ID...'}</p>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 shrink-0 text-muted-foreground hover:text-foreground"
+                  disabled={!deviceId}
+                  onClick={() => void handleCopyDeviceId()}
+                  aria-label="Copy device ID"
+                  title="Copy device ID"
+                >
+                  <Copy className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <label htmlFor="pairing-code" className="block text-sm text-muted-foreground">
+                Enter Pairing Code:
+              </label>
+              <div className="flex gap-2">
+                <input
+                  id="pairing-code"
+                  ref={pairingInputRef}
+                  placeholder="ABC123"
+                  value={pairingCode}
+                  onChange={(event) => {
+                    const value = event.target.value
+                      .toUpperCase()
+                      .replace(/[^A-Z0-9]/g, '')
+                      .slice(0, 6);
+                    setPairingCode(value);
+                    setPairingError(null);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' && pairingCode.length === 6 && !isPairing) {
+                      void handlePair();
+                    }
+                  }}
+                  maxLength={6}
+                  disabled={isPairing}
+                  className={`h-9 flex-1 rounded-md border bg-background/60 px-3 py-1 text-base font-mono tracking-widest shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 md:text-sm ${pairingError ? 'border-destructive focus-visible:ring-destructive' : 'border-input'}`}
+                />
+                <Button intent="primary" onClick={() => void handlePair()} disabled={pairingCode.length !== 6 || isPairing} loading={isPairing}>
+                  {isPairing ? 'Registering...' : 'Register'}
+                </Button>
+              </div>
+              {pairingError && <p className="text-[0.8rem] font-medium text-destructive">{pairingError}</p>}
+            </div>
+          </div>
+        </section>
+      </div>
 
       {statusError && (
-        <Alert variant="warning" className="mb-4">
+        <Alert variant="warning">
           <AlertDescription>
             <div className="flex items-start gap-2">
-              <AlertCircle role="img" aria-label="warning" className="mt-0.5 h-4 w-4 flex-shrink-0" />
+              <AlertCircle role="img" aria-label="warning" className="mt-0.5 h-4 w-4 shrink-0" />
               <span>{statusError}</span>
             </div>
           </AlertDescription>
@@ -494,62 +532,23 @@ export default function DeviceRegistrationPage() {
       )}
 
       {deviceInfoError && (
-        <Alert variant="danger" className="mb-4">
+        <Alert variant="danger">
           <AlertDescription>
             <div className="flex items-start gap-2">
-              <AlertCircle role="img" aria-label="error" className="mt-0.5 h-4 w-4 flex-shrink-0" />
+              <AlertCircle role="img" aria-label="error" className="mt-0.5 h-4 w-4 shrink-0" />
               <span>{deviceInfoError}</span>
             </div>
           </AlertDescription>
         </Alert>
       )}
 
-      <div className="mb-6 space-y-2">
-        <label htmlFor="pairing-code" className="block text-sm font-medium leading-none">
-          Pairing Code
-        </label>
-        <div className="flex gap-2">
-          <input
-            id="pairing-code"
-            ref={pairingInputRef}
-            placeholder="ABC123"
-            value={pairingCode}
-            onChange={(event) => {
-              const value = event.target.value
-                .toUpperCase()
-                .replace(/[^A-Z0-9]/g, '')
-                .slice(0, 6);
-              setPairingCode(value);
-              setPairingError(null);
-            }}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' && pairingCode.length === 6 && !isPairing) {
-                void handlePair();
-              }
-            }}
-            maxLength={6}
-            disabled={isPairing}
-            className={`flex-1 h-9 rounded-md border bg-transparent px-3 py-1 text-base font-mono tracking-widest shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 md:text-sm ${pairingError ? 'border-destructive focus-visible:ring-destructive' : 'border-input'}`}
-          />
-          <Button intent="primary" onClick={() => void handlePair()} disabled={pairingCode.length !== 6 || isPairing} loading={isPairing}>
-            {isPairing ? 'Registering...' : 'Register'}
-          </Button>
-        </div>
-        {pairingError && <p className="text-[0.8rem] font-medium text-destructive">{pairingError}</p>}
-      </div>
-
       <p className="text-center text-xs text-muted-foreground">
         Don&apos;t have an account yet?{' '}
-        <a
-          href={`${portalBaseUrl || DEFAULT_PORTAL_URL}/signup`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-primary underline hover:no-underline"
-        >
+        <a href={`${portalUrl}/signup`} target="_blank" rel="noopener noreferrer" className="font-medium text-primary underline hover:no-underline">
           Create one free
         </a>{' '}
         — it only takes a moment, and your data stays on this device.
       </p>
-    </>
+    </div>
   );
 }

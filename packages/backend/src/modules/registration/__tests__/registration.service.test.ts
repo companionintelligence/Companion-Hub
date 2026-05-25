@@ -183,6 +183,7 @@ describe('RegistrationService', () => {
       vi.spyOn(service, 'getDeviceId').mockResolvedValue('test-device');
       configService.getConfig.mockReturnValue({
         ciCloudUrl: 'http://cloud.api',
+        ciHubApiKey: 'test-api-key',
         userSettings: { domain: 'example.com' },
       } as any);
     });
@@ -206,54 +207,75 @@ describe('RegistrationService', () => {
     });
 
     it('returns false when registration not found', async () => {
-      const mockFetch = vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({ registered: false }),
-      });
-      global.fetch = mockFetch as any;
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null);
 
       const result = await (service as any).checkRegistrationWithCloud();
 
       expect(result).toBe(false);
     });
 
-    it('returns false when registration is not ready', async () => {
-      const mockFetch = vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({ registered: true, ready: false }),
-      });
-      global.fetch = mockFetch as any;
+    it('returns false when registration is incomplete (missing tunnelId)', async () => {
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({
+        id: 'org-123',
+        name: 'Test Org',
+        slug: 'test-org',
+        hubSubdomain: 'hub-test-org',
+        tunnelId: null,
+        tunnelToken: 'token-123',
+      } as any);
 
       const result = await (service as any).checkRegistrationWithCloud();
 
       expect(result).toBe(false);
     });
 
-    it('persists config and initializes infra when registration is ready', async () => {
-      const mockFetch = vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          registered: true,
-          ready: true,
-          organization_id: 'org-123',
-          organization_name: 'Test Org',
-          slug: 'test-org',
-          subdomain: 'hub-test-org',
-          tunnel_id: 'tunnel-123',
-          tunnel_token: 'token-123',
-          api_key: 'api-123',
-          domain: 'example.com',
-        }),
-      });
-      global.fetch = mockFetch as any;
+    it('returns false when registration is incomplete (missing hubSubdomain)', async () => {
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({
+        id: 'org-123',
+        name: 'Test Org',
+        slug: 'test-org',
+        hubSubdomain: null,
+        tunnelId: 'tunnel-123',
+        tunnelToken: 'token-123',
+      } as any);
+
+      const result = await (service as any).checkRegistrationWithCloud();
+
+      expect(result).toBe(false);
+    });
+
+    it('returns false when registration has no tunnel token', async () => {
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({
+        id: 'org-123',
+        tunnelToken: null,
+      } as any);
+
+      const result = await (service as any).checkRegistrationWithCloud();
+
+      expect(result).toBe(false);
+    });
+
+    it('sets up infrastructure when local registration record is complete', async () => {
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({
+        id: 'org-123',
+        name: 'Test Org',
+        slug: 'test-org',
+        hubSubdomain: 'hub-test-org',
+        tunnelId: 'tunnel-123',
+        tunnelToken: 'token-123',
+      } as any);
+      configService.getConfig.mockReturnValue({
+        ciCloudUrl: 'http://cloud.api',
+        ciHubApiKey: 'test-api-key',
+        domain: 'example.com',
+        userSettings: { domain: 'example.com' },
+      } as any);
 
       const setupSpy = vi.spyOn(service as any, 'setupOrganizationInfrastructure').mockResolvedValue(undefined);
 
       const result = await (service as any).checkRegistrationWithCloud();
 
       expect(result).toBe(true);
-      expect(configService.setUserSettings).toHaveBeenCalledWith({ ciHubApiKey: 'api-123' });
-      expect(configService.setUserSettings).toHaveBeenCalledWith({ ciHubOrganizationId: 'org-123' });
       expect(setupSpy).toHaveBeenCalledWith('org-123', {
         organization_name: 'Test Org',
         tunnel_id: 'tunnel-123',
@@ -652,6 +674,7 @@ describe('RegistrationService', () => {
       vi.spyOn(service, 'getDeviceId').mockResolvedValue('test-device');
       configService.getConfig.mockReturnValue({
         ciCloudUrl: 'http://cloud.api',
+        ciHubApiKey: 'test-api-key',
         userSettings: { domain: 'example.com' },
       } as any);
       deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as any);
@@ -673,7 +696,7 @@ describe('RegistrationService', () => {
       expect(status.degradedReasons).toContain('tunnel_token_missing');
     });
 
-    it('transitions to degraded when CI Cloud returns error', async () => {
+    it('transitions to degraded after 3 consecutive CI Cloud errors', async () => {
       await service.setPhase('paired');
       await service.setPhase('provisioning');
       await service.setPhase('locally_ready');
@@ -682,11 +705,54 @@ describe('RegistrationService', () => {
       const mockFetch = vi.fn().mockResolvedValue({ ok: false, status: 500 });
       global.fetch = mockFetch as any;
 
+      // First two calls should NOT transition to degraded
+      await (service as any).validateRegistrationWithCloud();
+      expect(service.getRegistrationStatus().phase).toBe('locally_ready');
+
+      await (service as any).validateRegistrationWithCloud();
+      expect(service.getRegistrationStatus().phase).toBe('locally_ready');
+
+      // Third call should trigger degraded
       await (service as any).validateRegistrationWithCloud();
 
       const status = service.getRegistrationStatus();
       expect(status.phase).toBe('degraded');
       expect(status.degradedReasons).toContain('cloud_validation_failed');
+    });
+
+    it('transitions to degraded immediately on 400 (device inactive)', async () => {
+      await service.setPhase('paired');
+      await service.setPhase('provisioning');
+      await service.setPhase('locally_ready');
+
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
+      global.fetch = vi.fn().mockResolvedValue({ ok: false, status: 400 }) as any;
+
+      // Single call should be enough — 400 is definitive
+      await (service as any).validateRegistrationWithCloud();
+
+      const status = service.getRegistrationStatus();
+      expect(status.phase).toBe('degraded');
+      expect(status.degradedReasons).toContain('cloud_validation_failed');
+    });
+
+    it('counts network/timeout errors toward the failure threshold', async () => {
+      await service.setPhase('paired');
+      await service.setPhase('provisioning');
+      await service.setPhase('locally_ready');
+
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
+      global.fetch = vi.fn().mockRejectedValue(new Error('Network error')) as any;
+
+      await (service as any).validateRegistrationWithCloud();
+      expect(service.getRegistrationStatus().phase).toBe('locally_ready');
+
+      await (service as any).validateRegistrationWithCloud();
+      expect(service.getRegistrationStatus().phase).toBe('locally_ready');
+
+      // Third failure (network error) should trigger degraded
+      await (service as any).validateRegistrationWithCloud();
+      expect(service.getRegistrationStatus().phase).toBe('degraded');
     });
 
     it('recovers from degraded when validation passes', async () => {
@@ -697,7 +763,7 @@ describe('RegistrationService', () => {
       vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
       const mockFetch = vi.fn().mockResolvedValue({
         ok: true,
-        json: async () => ({ registered: true, device_status: 'active' }),
+        json: async () => ({ status: 'active' }),
       });
       global.fetch = mockFetch as any;
 

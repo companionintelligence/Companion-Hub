@@ -26,7 +26,7 @@ export const PasswordInput = (props: Props) => {
             variant="outline"
             onClick={() => setPasswordVisible(!passwordVisible)}
             type="button"
-            className="toggle-password-visibility rounded-l-none border-l-0 h-9 w-9"
+            className="toggle-password-visibility rounded-l-none border-l-0 h-11 w-11"
           >
             {passwordVisible ? (
               <EyeOff aria-label={t('APP_INSTALL_FORM_HIDE_PASSWORD')} size={16} />
