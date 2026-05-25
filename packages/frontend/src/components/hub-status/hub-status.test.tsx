@@ -1,4 +1,4 @@
-import { act, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { HubStatus, getDockerDesktopGuideContent } from './hub-status';
@@ -261,5 +261,97 @@ describe('HubStatus Docker guidance', () => {
 
     expect(await screen.findByText('Hub child')).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Docker Desktop Required' })).not.toBeInTheDocument();
+  });
+});
+
+describe('HubStatus diagnostics (View Logs / Open Logs Folder)', () => {
+  function mockMacTauriWithStatus(statusSequence: string[], extraHandlers: Record<string, () => Promise<unknown>> = {}) {
+    let callCount = 0;
+    const invoke = vi.fn<(cmd: string) => Promise<unknown>>(async (cmd: string) => {
+      if (cmd === 'get_hub_status_command') {
+        const status = statusSequence[Math.min(callCount++, statusSequence.length - 1)];
+        return status;
+      }
+      const extraHandler = extraHandlers[cmd];
+      if (extraHandler) {
+        return extraHandler();
+      }
+      // get_startup_progress_command is polled by StartupScreen — safe to return null
+      if (cmd === 'get_startup_progress_command') {
+        return null;
+      }
+      throw new Error(`Unexpected invoke command: ${cmd}`);
+    });
+
+    setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5)');
+    Object.defineProperty(tauriWindow, '__TAURI_INTERNALS__', {
+      value: { invoke },
+      configurable: true,
+    });
+
+    render(
+      <HubStatus>
+        <div>Hub child</div>
+      </HubStatus>,
+    );
+
+    return { invoke };
+  }
+
+  it('shows View Logs and Open Logs Folder buttons when the hub is Stopped', async () => {
+    mockMacTauriWithStatus(['Stopped']);
+
+    expect(await screen.findByRole('button', { name: 'View Logs' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Open Logs Folder' })).toBeInTheDocument();
+  });
+
+  it('View Logs button fetches log content and shows it inline', async () => {
+    const fakeLog = 'line1\nline2\nline3';
+    const { invoke } = mockMacTauriWithStatus(['Stopped'], {
+      read_desktop_logs_command: async () => fakeLog,
+    });
+
+    const viewLogsBtn = await screen.findByRole('button', { name: 'View Logs' });
+    await act(async () => {
+      fireEvent.click(viewLogsBtn);
+      await Promise.resolve();
+    });
+
+    expect(invoke).toHaveBeenCalledWith('read_desktop_logs_command');
+    expect(await screen.findByText('Recent Logs')).toBeInTheDocument();
+    // The <pre> renders raw newline-separated text — check for a specific line.
+    expect(screen.getByText(/line1/)).toBeInTheDocument();
+  });
+
+  it('hides the log panel when Hide is clicked', async () => {
+    mockMacTauriWithStatus(['Stopped'], {
+      read_desktop_logs_command: async () => 'some log',
+    });
+
+    const viewLogsBtn = await screen.findByRole('button', { name: 'View Logs' });
+    await act(async () => {
+      fireEvent.click(viewLogsBtn);
+      await Promise.resolve();
+    });
+
+    expect(await screen.findByRole('button', { name: 'Hide' })).toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Hide' }));
+    });
+
+    expect(screen.queryByText('Recent Logs')).not.toBeInTheDocument();
+  });
+
+  it('renders Hub child immediately when status starts as Running (no prior non-running state)', async () => {
+    // The sawNonRunningRef guard ensures we don't attempt a reload when the Hub
+    // was already Running on first check. We can only observe this indirectly
+    // in JSDOM (reload is a no-op there), but we verify the component renders
+    // normally without error.
+    mockMacTauriWithStatus(['Running']);
+    expect(await screen.findByText('Hub child')).toBeInTheDocument();
+    // No blocking screens should be shown
+    expect(screen.queryByRole('button', { name: 'Start Hub' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Starting Companion Hub')).not.toBeInTheDocument();
   });
 });

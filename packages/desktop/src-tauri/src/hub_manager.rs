@@ -668,6 +668,76 @@ pub fn logs_open_target() -> PathBuf {
     logs_open_target_for(&get_hub_data_dir())
 }
 
+// ─── User-stopped marker ──────────────────────────────────────────────────────
+//
+// When the user explicitly stops the Hub (via tray menu or the UI), we write a
+// sentinel file so that the next desktop launch does NOT auto-restart the Hub.
+// The marker is removed when the user explicitly starts the Hub again.
+
+const USER_STOPPED_MARKER_FILENAME: &str = ".user-stopped";
+
+fn user_stopped_marker_path(data_dir: &Path) -> PathBuf {
+    data_dir.join(USER_STOPPED_MARKER_FILENAME)
+}
+
+/// Record that the user intentionally stopped the Hub.
+/// Called from `stop_hub()` so the next app launch skips auto-start.
+pub fn mark_user_stopped(data_dir: &Path) {
+    let _ = std::fs::write(
+        user_stopped_marker_path(data_dir),
+        b"Hub was intentionally stopped by the user.\n",
+    );
+}
+
+/// Clear the user-stopped marker when the user explicitly starts the Hub.
+/// Also called at the beginning of `start_hub()`.
+pub fn clear_user_stopped(data_dir: &Path) {
+    let _ = std::fs::remove_file(user_stopped_marker_path(data_dir));
+}
+
+/// Returns `true` if the user intentionally stopped the Hub on last use.
+pub fn is_user_stopped(data_dir: &Path) -> bool {
+    user_stopped_marker_path(data_dir).exists()
+}
+
+// ─── Desktop log reader ───────────────────────────────────────────────────────
+
+/// Read the desktop log file (last `max_lines` lines) for in-app diagnostics.
+///
+/// Uses a bounded tail read from the end of the file to avoid loading the entire
+/// file into memory when the log has grown large.
+pub fn read_desktop_logs(max_lines: usize) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let log_path = desktop_log_path();
+    let mut file = match std::fs::File::open(&log_path) {
+        Ok(f) => f,
+        Err(_) => return String::new(),
+    };
+
+    let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
+    if file_len == 0 {
+        return String::new();
+    }
+
+    // Read at most 256 KB from the end — more than enough for a few hundred lines.
+    const MAX_TAIL_BYTES: u64 = 256 * 1024;
+    let read_from = file_len.saturating_sub(MAX_TAIL_BYTES);
+    let _ = file.seek(SeekFrom::Start(read_from));
+
+    let mut buf = String::new();
+    if file.read_to_string(&mut buf).is_err() {
+        return String::new();
+    }
+
+    let lines: Vec<&str> = buf.lines().collect();
+    let start = lines.len().saturating_sub(max_lines);
+    // If we seeked into the middle of the file, the first "line" is likely
+    // a partial line — skip it when we didn't start from the beginning.
+    let start = if read_from > 0 && start == 0 && lines.len() > 1 { 1 } else { start };
+    lines[start..].join("\n")
+}
+
 pub(crate) fn tunnel_dir_for(data_dir: &Path) -> PathBuf {
     data_dir.join("tunnel")
 }
@@ -1504,6 +1574,9 @@ fn start_database_first(compose_path: &Path, env_path: &Path, data_dir: &Path) -
 /// Uses a global `AtomicBool` guard to prevent concurrent invocations.
 /// A `Drop` guard ensures the flag is cleared even if the inner logic panics.
 pub fn start_hub(compose_path: &Path, env_path: &Path, data_dir: &Path) -> Result<String, String> {
+    // Clear the user-stopped marker: the user has explicitly requested a start.
+    clear_user_stopped(data_dir);
+
     // Prevent concurrent start attempts.
     if START_IN_PROGRESS.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err()
     {
@@ -1827,11 +1900,14 @@ fn start_hub_inner(
 /// Stop Hub containers
 pub fn stop_hub(compose_path: &Path, env_path: &Path) -> Result<String, String> {
     let data_dir = get_hub_data_dir();
+    // Record that the user intentionally stopped the Hub so the next launch
+    // does not auto-restart it.
+    mark_user_stopped(&data_dir);
     let _ = append_desktop_log_for(
         &data_dir,
         "hub.stop",
         &format!(
-            "Requested stop via docker compose down\ncompose={}\nenv={}",
+            "Requested stop via docker compose down (user-stopped marker set)\ncompose={}\nenv={}",
             compose_path.display(),
             env_path.display()
         ),
