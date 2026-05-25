@@ -736,5 +736,20 @@
   "MULTI_SERVICE_JSON_REFERENCE": "Dynamic Compose Reference",
   "APP_STORES_UPDATE_SUCCESS": "App stores updated successfully",
   "APP_STORES_UPDATE_ERROR": "Failed to update app stores",
-  "REFRESH": "Refresh"
+  "REFRESH": "Refresh",
+  "APP_INSTALL_FORM_PUBLISH_TO_INTERNET": "Publish to internet",
+  "APP_INSTALL_FORM_PORT": "Port",
+  "MY_APPS_START_ALL_FORM_SUBMIT": "Start all",
+  "MY_APPS_START_ALL_FORM_SUBTITLE": "This will start all stopped apps.",
+  "MY_APPS_START_ALL_FORM_TITLE": "Start all apps",
+  "MY_APPS_START_ALL_IN_PROGRESS": "Starting all apps",
+  "MY_APPS_STOP_ALL_FORM_SUBMIT": "Stop all",
+  "MY_APPS_STOP_ALL_FORM_SUBTITLE": "This will stop all running apps.",
+  "MY_APPS_STOP_ALL_FORM_TITLE": "Stop all apps",
+  "MY_APPS_STOP_ALL_IN_PROGRESS": "Stopping all apps",
+  "MY_APPS_RESTART_ALL_FORM_SUBMIT": "Restart all",
+  "MY_APPS_RESTART_ALL_FORM_SUBTITLE": "This will restart all running apps.",
+  "MY_APPS_RESTART_ALL_FORM_TITLE": "Restart all apps",
+  "MY_APPS_RESTART_ALL_IN_PROGRESS": "Restarting all apps",
+  "MY_APPS_BATCH_ACTIONS": "Batch actions"
 }
