@@ -5,6 +5,10 @@ import { useAppContext } from '@/context/app-context';
 import { useUserContext } from '@/context/user-context';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useLocation, Navigate } from 'react-router';
+import { useQuery } from '@tanstack/react-query';
+import { systemLoadOptions } from '@/api-client/@tanstack/react-query.gen';
+import { CoreServerBanner } from '@/components/core-server-banner/core-server-banner';
+import { useCoreServerBanner } from '@/hooks/use-core-server-banner';
 
 export const DashboardLayoutSuspense = ({ children }: PropsWithChildren) => {
   return (
@@ -22,6 +26,12 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
   const location = useLocation();
   const prevPathRef = useRef(location.pathname);
   const { isLoggedIn } = useUserContext();
+  const { isDismissed, dismiss } = useCoreServerBanner();
+
+  const { data: systemData } = useQuery({
+    ...systemLoadOptions(),
+    staleTime: 30_000,
+  });
 
   useEffect(() => {
     prevPathRef.current = location.pathname;
@@ -90,7 +100,12 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
   return (
     <div className="flex bg-background overflow-hidden w-screen flex-col" style={{ height: 'calc(100vh - var(--titlebar-height, 0px))' }}>
       <Header isLoggedIn={isLoggedIn} isUpdateAvailable={!isLatest} allowAutoThemes={userSettings.allowAutoThemes} />
-
+      {!isDismissed && (
+        <CoreServerBanner
+          onDismiss={dismiss}
+          system={systemData ? { memoryTotal: systemData.memoryTotal, diskSize: systemData.diskSize, cpuCores: systemData.cpuCores } : undefined}
+        />
+      )}
       <main className="flex-1 relative pt-24 px-4 container mx-auto h-full overflow-y-auto overflow-x-hidden no-scrollbar">
         <AnimatePresence mode="popLayout" custom={direction}>
           <motion.div
