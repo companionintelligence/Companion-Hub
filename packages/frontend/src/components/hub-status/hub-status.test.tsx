@@ -272,8 +272,9 @@ describe('HubStatus diagnostics (View Logs / Open Logs Folder)', () => {
         const status = statusSequence[Math.min(callCount++, statusSequence.length - 1)];
         return status;
       }
-      if (cmd in extraHandlers) {
-        return extraHandlers[cmd]();
+      const extraHandler = extraHandlers[cmd];
+      if (extraHandler) {
+        return extraHandler();
       }
       // get_startup_progress_command is polled by StartupScreen — safe to return null
       if (cmd === 'get_startup_progress_command') {
