@@ -80,44 +80,61 @@ export const HardwareProfileCard = ({ hardware, tier, onRescan, rescanning = fal
               skipped.
             </p>
             <p className="font-semibold">Action items:</p>
-            <ol className="mt-1 list-decimal pl-4 space-y-1">
-              <li>Close and reopen CI Hub to retry automatic GPU setup.</li>
-              <li>
-                If runtime is still missing, run a manual install:
-                <div className="mt-1 rounded bg-black/30 p-2 font-mono text-[11px] leading-relaxed text-amber-100/90">
-                  Debian/Ubuntu:
-                  <br />
-                  sudo mkdir -p /etc/apt/keyrings
-                  <br />
-                  curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o
-                  /etc/apt/keyrings/nvidia-container-toolkit-keyring.gpg
-                  <br />
-                  curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | sed 's#deb https://#deb
-                  [signed-by=/etc/apt/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | sudo tee
-                  /etc/apt/sources.list.d/nvidia-container-toolkit.list
-                  <br />
-                  sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit
-                  <br />
-                  RHEL/Fedora:
-                  <br />
-                  curl -fsSL https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo | sudo tee
-                  /etc/yum.repos.d/nvidia-container-toolkit.repo
-                  <br />
-                  sudo dnf install -y nvidia-container-toolkit
-                  <br />
-                  Arch/Manjaro: sudo pacman -Sy --noconfirm nvidia-container-toolkit
-                  <br />
-                  Then: sudo nvidia-ctk runtime configure --runtime=docker
-                  <br />
-                  Then: sudo systemctl restart docker
-                  <br />
-                  Verify: docker info | grep -i nvidia
+            <div className="mt-2 space-y-3 leading-relaxed">
+              <div>
+                <p className="font-semibold">1. Retry automatic setup</p>
+                <p>Close and reopen CI Hub to retry automatic GPU setup.</p>
+              </div>
+
+              <div>
+                <p className="font-semibold">2. Manual install (distribution-specific)</p>
+                <div className="mt-1.5 space-y-2">
+                  <div className="rounded bg-black/30 p-2.5 font-mono text-[11px] leading-6 text-amber-100/90">
+                    <p className="font-semibold text-amber-100">Debian/Ubuntu</p>
+                    <p>sudo mkdir -p /etc/apt/keyrings</p>
+                    <p>
+                      curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o
+                      /etc/apt/keyrings/nvidia-container-toolkit-keyring.gpg
+                    </p>
+                    <p>
+                      curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | sed 's#deb https://#deb
+                      [signed-by=/etc/apt/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | sudo tee
+                      /etc/apt/sources.list.d/nvidia-container-toolkit.list
+                    </p>
+                    <p>sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit</p>
+                  </div>
+
+                  <div className="rounded bg-black/30 p-2.5 font-mono text-[11px] leading-6 text-amber-100/90">
+                    <p className="font-semibold text-amber-100">RHEL/Fedora</p>
+                    <p>
+                      curl -fsSL https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo | sudo tee
+                      /etc/yum.repos.d/nvidia-container-toolkit.repo
+                    </p>
+                    <p>sudo dnf install -y nvidia-container-toolkit</p>
+                  </div>
+
+                  <div className="rounded bg-black/30 p-2.5 font-mono text-[11px] leading-6 text-amber-100/90">
+                    <p className="font-semibold text-amber-100">Arch/Manjaro</p>
+                    <p>sudo pacman -Sy --noconfirm nvidia-container-toolkit</p>
+                  </div>
                 </div>
-              </li>
-              <li>
-                Return here and click <span className="font-semibold">Rescan</span>.
-              </li>
-            </ol>
+              </div>
+
+              <div>
+                <p className="font-semibold">3. Then run (same on all distributions)</p>
+                <div className="mt-1.5 rounded bg-black/30 p-2.5 font-mono text-[11px] leading-6 text-amber-100/90">
+                  <p>sudo nvidia-ctk runtime configure --runtime=docker</p>
+                  <p>sudo systemctl restart docker</p>
+                  <p>docker info | grep -i nvidia</p>
+                </div>
+              </div>
+
+              <div>
+                <p>
+                  4. Return here and click <span className="font-semibold">Rescan</span>.
+                </p>
+              </div>
+            </div>
           </div>
         )}
 
