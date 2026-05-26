@@ -48,9 +48,9 @@ export const AppStoresTable = ({ appStores }: Props) => {
                 <EnabledBadge enabled={appStore.enabled} />
               </TableCell>
               <TableCell>
-                <a href={appStore.url} target="_blank" rel="noreferrer noopener nofollow">
+                <span className="block max-w-[28rem] truncate" title={appStore.url}>
                   {appStore.url}
-                </a>
+                </span>
               </TableCell>
               <TableCell>
                 <div className="flex flex-row">
