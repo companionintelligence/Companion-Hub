@@ -53,7 +53,8 @@ export class HardwareInspectorService implements OnModuleInit {
       this.detectRocmSupport(),
     ]);
 
-    const isAppleSilicon = cpuInfo.arch === 'arm64' && os.platform() === 'darwin';
+    const platform = this.getHostPlatform();
+    const isAppleSilicon = cpuInfo.arch === 'arm64' && platform === 'darwin';
 
     const gpu: HardwareProfile['gpu'] = {
       available: gpuInfo.available,
@@ -104,8 +105,9 @@ export class HardwareInspectorService implements OnModuleInit {
     driverVersion: string;
   }> {
     try {
+      const platform = this.getHostPlatform();
       // Special handling for macOS to get better GPU info
-      if (os.platform() === 'darwin') {
+      if (platform === 'darwin') {
         return await this.detectMacGpu();
       }
 
@@ -153,6 +155,10 @@ export class HardwareInspectorService implements OnModuleInit {
       this.logger.warn(`[HardwareInspector] GPU detection failed: ${err}`);
       return { available: false, vendor: 'none', model: '', vramMb: 0, driverVersion: '' };
     }
+  }
+
+  private getHostPlatform(): NodeJS.Platform {
+    return process.env.CI_HUB_HOST_PLATFORM === 'darwin' ? 'darwin' : os.platform();
   }
 
   /**

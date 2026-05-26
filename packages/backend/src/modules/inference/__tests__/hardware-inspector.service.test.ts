@@ -22,6 +22,7 @@ describe('HardwareInspectorService', () => {
   let service: HardwareInspectorService;
   let loggerService: MockProxy<LoggerService>;
   let filesystemService: MockProxy<FilesystemService>;
+  const originalHostPlatform = process.env.CI_HUB_HOST_PLATFORM;
 
   beforeEach(async () => {
     loggerService = mock<LoggerService>();
@@ -39,6 +40,7 @@ describe('HardwareInspectorService', () => {
   });
 
   afterEach(() => {
+    process.env.CI_HUB_HOST_PLATFORM = originalHostPlatform;
     vi.clearAllMocks();
   });
 
@@ -93,6 +95,24 @@ describe('HardwareInspectorService', () => {
 
       expect(profile.gpu.vendor).toBe('amd');
       expect(profile.gpu.available).toBe(true);
+    });
+
+    it('should use host platform override for macOS GPU detection', async () => {
+      process.env.CI_HUB_HOST_PLATFORM = 'darwin';
+      const detectMacGpuSpy = vi.spyOn(service as any, 'detectMacGpu').mockResolvedValue({
+        available: true,
+        vendor: 'amd',
+        model: 'Radeon Pro',
+        vramMb: 8192,
+        driverVersion: '',
+      });
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 8, brand: 'Intel Core i9' });
+      filesystemService.readTextFile.mockResolvedValue('MemTotal: 33554432\nMemAvailable: 16777216');
+
+      const profile = await service.detect();
+
+      expect(detectMacGpuSpy).toHaveBeenCalledTimes(1);
+      expect(profile.gpu.vendor).toBe('amd');
     });
   });
 
