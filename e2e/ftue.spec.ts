@@ -10,7 +10,7 @@ test.describe('First-Time User Experience', () => {
   test('should show register page on first access', async ({ page }) => {
     await page.goto('/');
     await expect(page).toHaveURL(/register/);
-    await expect(page.getByRole('heading', { name: 'Register your account' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Create local admin user for this device' })).toBeVisible();
   });
 
   test('should redirect to onboarding after registration', async ({ page }) => {
