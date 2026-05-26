@@ -37,18 +37,28 @@ fi
 RELEASE_NAME="$(gh release view "$TAG" -R "$REPO" --json name --jq '.name')"
 gh release view "$TAG" -R "$REPO" --json body --jq '.body' > "$BODY_FILE"
 
-gh release delete "$TAG" -R "$REPO" --yes
-
-if git rev-parse "$TAG" >/dev/null 2>&1; then
-  git tag -d "$TAG" >/dev/null
-fi
-
 git config user.name "$BOT_NAME"
 git config user.email "$BOT_EMAIL"
 
-git push origin ":refs/tags/${TAG}"
-git tag -a "$TAG" "$TARGET_COMMIT" -m "Release $TAG" -m "Refreshed by desktop release finalization to keep GitHub release ordering current."
-git push origin "refs/tags/${TAG}"
+git tag -fa "$TAG" "$TARGET_COMMIT" -m "Release $TAG" -m "Refreshed by desktop release finalization to keep GitHub release ordering current." >/dev/null
+
+LOCAL_TAG_SHA="$(git rev-parse "$TAG")"
+git push --force origin "refs/tags/${TAG}"
+
+REMOTE_TAG_SHA="$(git ls-remote origin "refs/tags/${TAG}" | awk 'NR==1 { print $1 }')"
+if [[ -z "$REMOTE_TAG_SHA" ]]; then
+  echo "Could not verify $TAG on origin after push" >&2
+  exit 1
+fi
+
+if [[ "$REMOTE_TAG_SHA" != "$LOCAL_TAG_SHA" ]]; then
+  echo "Origin tag $TAG does not match local tag object after push" >&2
+  echo "Local:  $LOCAL_TAG_SHA" >&2
+  echo "Remote: $REMOTE_TAG_SHA" >&2
+  exit 1
+fi
+
+gh release delete "$TAG" -R "$REPO" --yes
 
 gh release create "$TAG" \
   "${RELEASE_ASSETS[@]}" \
