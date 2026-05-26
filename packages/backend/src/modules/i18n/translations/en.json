@@ -380,7 +380,7 @@
   "AUTH_FORM_PASSWORD_PLACEHOLDER": "Enter your password",
   "AUTH_LOGIN_SUBMIT": "Login",
   "AUTH_LOGIN_TITLE": "Login to {{type}}",
-  "AUTH_REGISTER_NOTE": "Note: this is a local administrator account, separate from your companion hub account",
+  "AUTH_REGISTER_NOTE": "Note: this is a local administrator account, separate from your Companion Hub account.",
   "AUTH_REGISTER_SUBMIT": "Create Local Admin User",
   "AUTH_REGISTER_TITLE": "Create local admin user for this device",
   "AUTH_RESET_PASSWORD_BACK_TO_LOGIN": "Back to login",
