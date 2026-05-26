@@ -275,4 +275,24 @@ describe('AiSetupStep', () => {
       expect(mockApiFetch).toHaveBeenCalledWith('/api/inference/hardware/rescan', expect.objectContaining({ method: 'POST' }));
     });
   });
+
+  it('shows rescan error and skips profile refresh when rescan returns non-OK', async () => {
+    const user = userEvent.setup();
+    mockApiFetch
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(highTierProfile) }) // initial fetch
+      .mockResolvedValueOnce({ ok: false, status: 503 }); // rescan POST failure
+
+    render(<AiSetupStep onComplete={onComplete} onSkip={onSkip} onBack={onBack} />);
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+    await user.click(screen.getByTestId('rescan-btn'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('ai-setup-error')).toBeInTheDocument();
+    });
+    expect(screen.getByText(/Failed to detect hardware: HTTP 503/)).toBeInTheDocument();
+
+    const profileCalls = mockApiFetch.mock.calls.filter(([url]) => url === '/api/inference/onboarding-profile');
+    expect(profileCalls).toHaveLength(1);
+  });
 });

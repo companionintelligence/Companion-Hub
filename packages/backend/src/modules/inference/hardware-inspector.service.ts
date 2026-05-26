@@ -65,10 +65,14 @@ export class HardwareInspectorService implements OnModuleInit {
       runtimeAvailable: isAppleSilicon || (gpuInfo.vendor === 'nvidia' ? nvidiaRuntime : rocmSupport),
     };
 
-    if (gpu.vendor === 'nvidia' && !gpu.runtimeAvailable) {
-      this.logger.warn(
-        '[HardwareInspector] NVIDIA GPU detected but NVIDIA container runtime is unavailable. Verify NVIDIA drivers, nvidia-container-toolkit, and container GPU passthrough configuration.',
-      );
+    if (gpu.vendor === 'nvidia') {
+      if (gpu.runtimeAvailable) {
+        this.logger.info('[HardwareInspector] NVIDIA GPU detected and NVIDIA container runtime is available.');
+      } else {
+        this.logger.warn(
+          '[HardwareInspector] NVIDIA GPU detected but NVIDIA container runtime is unavailable. Verify NVIDIA drivers, nvidia-container-toolkit, and container GPU passthrough configuration.',
+        );
+      }
     }
 
     const effectiveInferenceMemoryMb = gpu.unifiedMemory ? ramInfo.availableMb : gpu.available ? gpu.vramMb : ramInfo.availableMb;
@@ -152,11 +156,18 @@ export class HardwareInspectorService implements OnModuleInit {
 
       const best = rankedControllers[0];
       if (!best || best.vendor === 'none') {
-        return await this.detectNvidiaViaSmi();
+        return await this.detectNvidiaFallback();
+      }
+
+      if (best.vendor !== 'nvidia') {
+        const fromNvidiaFallback = await this.detectNvidiaFallback();
+        if (fromNvidiaFallback.available) {
+          return fromNvidiaFallback;
+        }
       }
 
       if (best.vendor === 'nvidia' && (best.vramMb <= 0 || !best.model)) {
-        const fromSmi = await this.detectNvidiaViaSmi();
+        const fromSmi = await this.detectNvidiaFallback();
         if (fromSmi.available) {
           return fromSmi;
         }
@@ -173,8 +184,28 @@ export class HardwareInspectorService implements OnModuleInit {
       this.logger.warn(
         `[HardwareInspector] GPU detection failed. Verify container GPU device passthrough and nvidia-smi availability. Error: ${err}`,
       );
-      return await this.detectNvidiaViaSmi();
+      return await this.detectNvidiaFallback();
     }
+  }
+
+  private async detectNvidiaFallback(): Promise<{
+    available: boolean;
+    vendor: 'nvidia' | 'amd' | 'intel' | 'none';
+    model: string;
+    vramMb: number;
+    driverVersion: string;
+  }> {
+    const fromSmi = await this.detectNvidiaViaSmi();
+    if (fromSmi.available) {
+      return fromSmi;
+    }
+
+    const fromProc = await this.detectNvidiaViaProcfs();
+    if (fromProc.available) {
+      return fromProc;
+    }
+
+    return await this.detectNvidiaViaHostCache();
   }
 
   private async detectNvidiaViaSmi(): Promise<{
@@ -212,6 +243,104 @@ export class HardwareInspectorService implements OnModuleInit {
       };
     } catch {
       return { available: false, vendor: 'none', model: '', vramMb: 0, driverVersion: '' };
+    }
+  }
+
+  private async detectNvidiaViaProcfs(): Promise<{
+    available: boolean;
+    vendor: 'nvidia' | 'amd' | 'intel' | 'none';
+    model: string;
+    vramMb: number;
+    driverVersion: string;
+  }> {
+    try {
+      const cached = await this.readNvidiaHostProbe();
+      const [{ stdout: infoStdout }, { stdout: versionStdout }] = await Promise.all([
+        execAsync('cat /proc/driver/nvidia/gpus/*/information 2>/dev/null'),
+        execAsync('cat /proc/driver/nvidia/version 2>/dev/null'),
+      ]);
+
+      const model =
+        infoStdout
+          .split('\n')
+          .map((line) => line.trim())
+          .find((line) => line.startsWith('Model:'))
+          ?.split(':')
+          .slice(1)
+          .join(':')
+          .trim() ??
+        cached?.model ??
+        '';
+
+      const driverVersion =
+        versionStdout.match(/Kernel Module\s+([0-9]+(?:\.[0-9]+)+)/)?.[1] ??
+        infoStdout
+          .split('\n')
+          .map((line) => line.trim())
+          .find((line) => line.startsWith('GPU Firmware:'))
+          ?.split(':')
+          .slice(1)
+          .join(':')
+          .trim() ??
+        cached?.driverVersion ??
+        '';
+
+      if (!model) {
+        return { available: false, vendor: 'none', model: '', vramMb: 0, driverVersion: '' };
+      }
+
+      return {
+        available: true,
+        vendor: 'nvidia',
+        model,
+        vramMb: cached?.vramMb ?? 0,
+        driverVersion,
+      };
+    } catch {
+      return { available: false, vendor: 'none', model: '', vramMb: 0, driverVersion: '' };
+    }
+  }
+
+  private async detectNvidiaViaHostCache(): Promise<{
+    available: boolean;
+    vendor: 'nvidia' | 'amd' | 'intel' | 'none';
+    model: string;
+    vramMb: number;
+    driverVersion: string;
+  }> {
+    const cached = await this.readNvidiaHostProbe();
+    if (!cached?.model) {
+      return { available: false, vendor: 'none', model: '', vramMb: 0, driverVersion: '' };
+    }
+
+    return {
+      available: true,
+      vendor: 'nvidia',
+      model: cached.model,
+      vramMb: cached.vramMb,
+      driverVersion: cached.driverVersion,
+    };
+  }
+
+  private async readNvidiaHostProbe(): Promise<{ model: string; vramMb: number; driverVersion: string } | null> {
+    try {
+      const raw = await this.filesystem.readTextFile('/data/state/hardware/nvidia.json');
+      if (!raw) return null;
+
+      const parsed = JSON.parse(raw) as {
+        model?: string;
+        vramMb?: number;
+        driverVersion?: string;
+      };
+
+      if (!parsed.model || typeof parsed.model !== 'string') return null;
+      return {
+        model: parsed.model,
+        vramMb: typeof parsed.vramMb === 'number' && Number.isFinite(parsed.vramMb) && parsed.vramMb > 0 ? parsed.vramMb : 0,
+        driverVersion: typeof parsed.driverVersion === 'string' ? parsed.driverVersion : '',
+      };
+    } catch {
+      return null;
     }
   }
 

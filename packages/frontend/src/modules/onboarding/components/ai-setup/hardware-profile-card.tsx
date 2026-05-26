@@ -24,6 +24,8 @@ function formatMemory(mb: number): string {
 
 export const HardwareProfileCard = ({ hardware, tier, onRescan, rescanning = false }: HardwareProfileCardProps) => {
   const badge = TIER_BADGES[tier];
+  const nvidiaRuntimeMissing = hardware.gpu.vendor === 'nvidia' && !hardware.gpu.runtimeAvailable;
+  const nvidiaRuntimeReady = hardware.gpu.vendor === 'nvidia' && hardware.gpu.runtimeAvailable;
 
   return (
     <Card>
@@ -67,6 +69,31 @@ export const HardwareProfileCard = ({ hardware, tier, onRescan, rescanning = fal
             </div>
           </div>
         </div>
+
+        {nvidiaRuntimeMissing && (
+          <div className="mt-3 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-100" data-testid="nvidia-runtime-warning">
+            <p className="mb-2">
+              NVIDIA GPU detected, but GPU runtime is not ready yet. AI inference will run in CPU-only mode until setup completes.
+            </p>
+            <p className="font-semibold">Action items:</p>
+            <ol className="mt-1 list-decimal pl-4 space-y-1">
+              <li>Close and reopen CI Hub to trigger automatic GPU setup.</li>
+              <li>If your system asks for permission to apply runtime changes, approve it.</li>
+              <li>
+                Return here and click <span className="font-semibold">Rescan</span>.
+              </li>
+            </ol>
+          </div>
+        )}
+
+        {nvidiaRuntimeReady && (
+          <div
+            className="mt-3 rounded-md border border-emerald-500/40 bg-emerald-500/10 p-3 text-xs text-emerald-100"
+            data-testid="nvidia-runtime-ready"
+          >
+            NVIDIA GPU detected and NVIDIA container runtime is configured. AI inference can use GPU acceleration.
+          </div>
+        )}
       </CardContent>
     </Card>
   );
