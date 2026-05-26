@@ -7,7 +7,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { useLocation, Navigate } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
 import { systemLoadOptions } from '@/api-client/@tanstack/react-query.gen';
-import { CoreServerBanner } from '@/components/core-server-banner/core-server-banner';
+import { CompanionServerBanner } from '@/components/companion-server-banner/companion-server-banner.tsx';
 import { useCoreServerBanner } from '@/hooks/use-core-server-banner';
 
 export const DashboardLayoutSuspense = ({ children }: PropsWithChildren) => {
@@ -102,7 +102,7 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
       <Header isLoggedIn={isLoggedIn} isUpdateAvailable={!isLatest} allowAutoThemes={userSettings.allowAutoThemes} />
       <main className="relative flex flex-1 flex-col gap-4 pt-24 px-4 container mx-auto h-full overflow-y-auto overflow-x-hidden no-scrollbar">
         {!isDismissed && (
-          <CoreServerBanner
+          <CompanionServerBanner
             onDismiss={dismiss}
             system={systemData ? { memoryTotal: systemData.memoryTotal, diskSize: systemData.diskSize, cpuCores: systemData.cpuCores } : undefined}
           />
