@@ -140,6 +140,8 @@ Infrastructure (PostgreSQL, RabbitMQ) runs in Docker; backend and frontend run l
 | `pnpm run test:cli` | Run focused CLI/TUI tests |
 | `pnpm run hub -- setup [env]` | Initialize Traefik and docker config |
 | `pnpm run hub -- register [env]` | Print cloud portal registration URL |
+| `pnpm run hub -- purge [--yes]` | Remove CI-Hub Docker state plus local config/cache directories |
+| `pnpm run hub -- hot-reload [env]` | Start infra + backend/frontend with hot reload for local iteration |
 | `pnpm run hub -- mcp setup|shutdown|config [env]` | MCP lifecycle commands |
 | `pnpm run hub -- app list|add|edit|start|stop|restart|delete ...` | Container app lifecycle commands |
 | `pnpm run hub -- shutdown [env]` | Stop hub docker stack |
@@ -151,6 +153,14 @@ Infrastructure (PostgreSQL, RabbitMQ) runs in Docker; backend and frontend run l
 | `pnpm dev:desktop` | Launch Tauri desktop app in dev mode |
 
 Environments: `local` (default), `dev`, `staging`, `prod`.
+
+Recommended on-device CLI/TUI loop while iterating on developer flows:
+
+```bash
+pnpm run hub -- purge --yes
+pnpm run hub -- hot-reload local
+pnpm run test:cli
+```
 
 ---
 

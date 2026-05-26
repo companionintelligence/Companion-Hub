@@ -31,6 +31,9 @@ describe('cihub CLI presentation', () => {
     expect(output).toContain('npx --package ci-hub cihub --help');
     expect(output).toContain('__   __         __               __');
     expect(output).toContain('Quick start');
+    expect(output).toContain('Developer workflow');
+    expect(output).toContain('cihub purge [--yes]');
+    expect(output).toContain('cihub hot-reload [env]');
     expect(output).toContain('Container app lifecycle');
   });
 
@@ -40,6 +43,7 @@ describe('cihub CLI presentation', () => {
     expect(output).toContain('Synopsis');
     expect(output).toContain('pnpm run hub -- <command> [args]');
     expect(output).toContain('Packaging');
+    expect(output).toContain('developer purge/hot-reload flows');
     expect(output).toContain('Homebrew and other package managers should install the same cihub executable.');
   });
 });
@@ -48,6 +52,8 @@ describe('wizard selections', () => {
   it('accepts numeric shortcuts for environments and actions', () => {
     expect(resolveWizardEnvInput('4')).toBe('prod');
     expect(resolveWizardActionInput('5')).toBe('mcp-setup');
+    expect(resolveWizardActionInput('9')).toBe('purge');
+    expect(resolveWizardActionInput('10')).toBe('hot-reload');
   });
 });
 

@@ -29,6 +29,21 @@ Homebrew and other package managers should expose the same `cihub` executable on
 
 The screenshots below were captured from the packaged `cihub` executable in a demo sandbox so each command flow renders consistently without depending on live Docker services or root access.
 
+## On-device CLI / TUI testing loop
+
+Use the packaged CLI together with the focused Vitest suite for fast local verification of command rendering and developer workflows:
+
+```bash
+cihub purge --yes
+cihub hot-reload local
+cihub wizard
+pnpm run test:cli
+```
+
+- `cihub purge --yes` removes CI-Hub Docker state plus CI-Hub entries from `.local`, `.config`, and `.cache` so clean-slate installs are reproducible on one machine.
+- `cihub hot-reload local` starts infra plus backend/frontend from source, which keeps CLI/TUI iteration tight without rebuilding the full Docker stack.
+- `pnpm run test:cli` is the focused on-device presentation harness for help, MAN, and wizard flows.
+
 ## Branded terminal preview
 
 These zoomed previews keep the Companion Intelligence ASCII banner readable before the full command walkthroughs below.
@@ -93,6 +108,16 @@ cihub config [env]
 Starts/stops the Hub stack and prints resolved config values.
 
 ![Screenshots of `cihub config`, `cihub up`, and `cihub shutdown`](./images/cli/lifecycle.svg)
+
+### Developer workflow
+
+```bash
+cihub purge [--yes]
+cihub hot-reload [env]
+```
+
+- `cihub purge` is the clean-slate command for local troubleshooting, credential resets, and reinstall testing. It removes Docker containers/networks/volumes plus CI-Hub config and cache directories.
+- `cihub hot-reload` starts the backend and frontend from source after bringing up local infrastructure, so CLI/TUI and marketplace iteration can be checked without a full rebuild.
 
 ### MCP lifecycle
 

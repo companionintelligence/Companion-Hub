@@ -51,6 +51,13 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
     ],
   },
   {
+    title: 'Developer workflow',
+    entries: [
+      { command: `${BASE_COMMAND} hot-reload [env]`, description: 'Run infra plus backend/frontend with hot reload' },
+      { command: `${BASE_COMMAND} purge [--yes]`, description: 'Remove Docker state plus CI-Hub caches/configs' },
+    ],
+  },
+  {
     title: 'MCP commands',
     entries: [
       { command: `${BASE_COMMAND} mcp setup [env]`, description: 'Enable MCP and ensure MCP_API_KEY exists' },
@@ -163,7 +170,7 @@ export function renderManPage() {
     box('Synopsis', [`${BASE_COMMAND} <command> [args]`, `${COMPAT_COMMAND} <command> [args]`]),
     box('Description', [
       'Companion Intelligence Hub CLI for setup, registration, lifecycle control,',
-      'MCP toggles, and local Docker app management.',
+      'developer purge/hot-reload flows, MCP toggles, and local Docker app management.',
     ]),
     ...commandSections.map((section) => renderSection(section.title, section.entries)),
     box(
@@ -488,6 +495,52 @@ function shutdownHub(env: HubEnv) {
   run('docker', downArgs, envOverrides);
 }
 
+function hotReloadHub(env: HubEnv) {
+  printMessageBox(
+    'Starting hot reload',
+    [`Environment: ${env}`, 'Launching infra plus backend/frontend from source so CLI and TUI changes reload without a full Docker rebuild.'],
+    'green',
+  );
+  startHub('dev', env);
+}
+
+async function confirmPurge(force: boolean) {
+  if (force) return true;
+  if (!process.stdin.isTTY) {
+    usageAndExit(`Purge is destructive. Re-run with ${BASE_COMMAND} purge --yes to skip confirmation.`);
+  }
+
+  const rl = createInterface({ input, output });
+  try {
+    const answer = (await rl.question('Purge Docker state plus CI-Hub caches/configs? [y/N]: ')).trim().toLowerCase();
+    return answer === 'y' || answer === 'yes';
+  } finally {
+    rl.close();
+  }
+}
+
+async function purgeHub(args: string[]) {
+  const force = args.includes('--yes');
+  const unsupportedArgs = args.filter((arg) => arg !== '--yes');
+  if (unsupportedArgs.length > 0) usageAndExit(`Unknown purge option: ${unsupportedArgs[0]}`);
+
+  const confirmed = await confirmPurge(force);
+  if (!confirmed) {
+    printMessageBox('Purge cancelled', ['Left Docker volumes, configs, and caches untouched.'], 'yellow');
+    return;
+  }
+
+  printMessageBox(
+    'Purging developer state',
+    [
+      'Removing Docker containers, networks, and volumes used by CI-Hub.',
+      'Removing .internal plus CI-Hub entries from .local, .config, and .cache for clean-slate testing.',
+    ],
+    'yellow',
+  );
+  run('tsx', ['scripts/cleanup.ts']);
+}
+
 function setMcpState(env: HubEnv, enabled: boolean) {
   const envFileName = getEnvFileOrExit(env);
   upsertEnvVar(envFileName, 'MCP_ENABLED', enabled ? 'true' : 'false');
@@ -625,6 +678,10 @@ export function resolveWizardActionInput(value: string) {
     shutdown: 'shutdown',
     '8': 'app-list',
     'app-list': 'app-list',
+    '9': 'purge',
+    purge: 'purge',
+    '10': 'hot-reload',
+    'hot-reload': 'hot-reload',
   };
 
   const action = actionOptions[normalized];
@@ -665,10 +722,12 @@ async function runWizard(defaultEnv: HubEnv = 'local') {
         '6. mcp-shutdown  Disable MCP',
         '7. shutdown      Stop the hub stack',
         '8. app-list      List local Docker apps',
+        '9. purge         Reset Docker state, configs, and caches',
+        '10. hot-reload   Start backend/frontend with hot reload',
       ],
       'cyan',
     );
-    const actionAnswer = await rl.question('Action [1-8] [1]: ');
+    const actionAnswer = await rl.question('Action [1-10] [1]: ');
     const action = resolveWizardActionInput(actionAnswer);
 
     if (action === 'setup') return setupHub(env);
@@ -682,6 +741,15 @@ async function runWizard(defaultEnv: HubEnv = 'local') {
     if (action === 'mcp-shutdown') return setMcpState(env, false);
     if (action === 'shutdown') return shutdownHub(env);
     if (action === 'app-list') return runAppCommand(['list']);
+    if (action === 'purge') {
+      const confirmed = (await rl.question('Purge Docker state plus CI-Hub caches/configs? [y/N]: ')).trim().toLowerCase();
+      if (confirmed !== 'y' && confirmed !== 'yes') {
+        printMessageBox('Purge cancelled', ['Left Docker volumes, configs, and caches untouched.'], 'yellow');
+        return;
+      }
+      return purgeHub(['--yes']);
+    }
+    if (action === 'hot-reload') return hotReloadHub(env);
   } finally {
     rl.close();
   }
@@ -750,6 +818,16 @@ export async function runCli(rawArgs: string[]) {
 
   if (first === 'config') {
     printConfig(resolveEnvFromArgs(args.slice(1)));
+    return;
+  }
+
+  if (first === 'hot-reload') {
+    hotReloadHub(resolveEnvFromArgs(args.slice(1)));
+    return;
+  }
+
+  if (first === 'purge') {
+    await purgeHub(args.slice(1));
     return;
   }
 

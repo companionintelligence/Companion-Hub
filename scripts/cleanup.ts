@@ -7,7 +7,9 @@
  */
 
 import { execSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
+import { homedir } from 'node:os';
+import path from 'node:path';
 
 function exec(cmd: string): string {
   try {
@@ -23,6 +25,30 @@ function addNames(output: string, set: Set<string>) {
       if (name.trim()) set.add(name.trim());
     }
   }
+}
+
+function removeDir(targetPath: string, label: string) {
+  if (!existsSync(targetPath)) return false;
+  rmSync(targetPath, { recursive: true, force: true });
+  console.log(`   Removed ${label}: ${targetPath}`);
+  return true;
+}
+
+function getDeveloperStateDirs() {
+  const home = homedir();
+  const xdgDataHome = process.env.XDG_DATA_HOME || path.join(home, '.local', 'share');
+  const xdgConfigHome = process.env.XDG_CONFIG_HOME || path.join(home, '.config');
+  const xdgCacheHome = process.env.XDG_CACHE_HOME || path.join(home, '.cache');
+  const names = ['Companion Hub', 'companion-hub', 'ci-hub', 'CI-Hub', 'computer.ci.app.hub'];
+
+  return [
+    ...names.map((name) => ({ path: path.join(xdgDataHome, name), label: 'data dir' })),
+    ...names.map((name) => ({ path: path.join(xdgConfigHome, name), label: 'config dir' })),
+    ...names.map((name) => ({ path: path.join(xdgCacheHome, name), label: 'cache dir' })),
+    { path: path.join(process.cwd(), '.local'), label: 'repo-local .local' },
+    { path: path.join(process.cwd(), '.config'), label: 'repo-local .config' },
+    { path: path.join(process.cwd(), '.cache'), label: 'repo-local .cache' },
+  ];
 }
 
 console.log('🧹 Starting cleanup of CI-OS-Hub network, containers, volumes, and caches...\n');
@@ -133,16 +159,21 @@ try {
 console.log('\n Cleaning .internal and tunnel state...');
 
 if (existsSync('.internal')) {
-  console.log('   Removing .internal/ (sudo)...');
-  exec('sudo rm -rf .internal');
+  removeDir(path.join(process.cwd(), '.internal'), '.internal');
 }
 
 const tunnelDirs = ['tunnel/token', 'tunnel/certs'];
 for (const td of tunnelDirs) {
   if (existsSync(td)) {
-    console.log(`   Removing ${td}...`);
-    exec(`sudo rm -rf ${td}`);
+    removeDir(path.join(process.cwd(), td), td);
   }
+}
+
+// Step 7: Remove local config/cache/data directories for clean-slate developer tests
+console.log('\n Removing CI-Hub config and cache directories...');
+const removedDeveloperDirs = getDeveloperStateDirs().filter(({ path: targetPath, label }) => removeDir(targetPath, label));
+if (removedDeveloperDirs.length === 0) {
+  console.log('   No CI-Hub config/cache directories found');
 }
 
 console.log('\n✅ Cleanup complete!');
@@ -151,4 +182,5 @@ console.log('   - All containers in ci-os-hub_network removed');
 console.log('   - All related volumes removed');
 console.log('   - Network removed');
 console.log('   - Buildx cache removed');
-console.log('   - .internal directories cleaned');
+console.log('   - .internal and tunnel directories cleaned');
+console.log('   - CI-Hub entries removed from .local, .config, and .cache');
