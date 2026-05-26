@@ -7,6 +7,13 @@ TAG="${RELEASE_TAG:?RELEASE_TAG is required}"
 RELEASE_FILES_DIR="${RELEASE_FILES_DIR:?RELEASE_FILES_DIR is required}"
 BOT_NAME="github-actions[bot]"
 BOT_EMAIL="41898282+github-actions[bot]@users.noreply.github.com"
+TAG_PATTERN='^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$'
+
+if [[ ! "$TAG" =~ $TAG_PATTERN ]]; then
+  echo "Invalid release tag format: $TAG" >&2
+  echo "Expected tags like v0.2.2 or v0.2.2-beta.1" >&2
+  exit 1
+fi
 
 if [[ ! -d "$RELEASE_FILES_DIR" ]]; then
   echo "Release files directory does not exist: $RELEASE_FILES_DIR" >&2
@@ -28,7 +35,7 @@ trap cleanup EXIT
 
 git fetch --force origin "refs/tags/${TAG}:refs/tags/${TAG}"
 
-TARGET_COMMIT="$(git rev-list -n 1 "$TAG")"
+TARGET_COMMIT="$(git rev-list -n 1 -- "$TAG")"
 if [[ -z "$TARGET_COMMIT" ]]; then
   echo "Could not resolve target commit for $TAG" >&2
   exit 1
@@ -42,7 +49,7 @@ git config user.email "$BOT_EMAIL"
 
 git tag -fa "$TAG" "$TARGET_COMMIT" -m "Release $TAG" -m "Refreshed by desktop release finalization to keep GitHub release ordering current." >/dev/null
 
-LOCAL_TAG_SHA="$(git rev-parse "$TAG")"
+LOCAL_TAG_SHA="$(git rev-parse --verify -- "$TAG")"
 git push --force origin "refs/tags/${TAG}"
 
 REMOTE_TAG_SHA="$(git ls-remote origin "refs/tags/${TAG}" | awk 'NR==1 { print $1 }')"
