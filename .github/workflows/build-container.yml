@@ -78,7 +78,7 @@ jobs:
           if [ "$ENV" = "production" ]; then
             echo "docker_tag=latest" >> $GITHUB_OUTPUT
             echo "container_tag=ci-os-hub:latest" >> $GITHUB_OUTPUT
-            echo "portal_registry=portal.ci.computer" >> $GITHUB_OUTPUT
+            echo "portal_registry=hub.ci.computer" >> $GITHUB_OUTPUT
           elif [ "$ENV" = "staging" ]; then
             echo "docker_tag=staging" >> $GITHUB_OUTPUT
             echo "container_tag=ci-os-hub:staging" >> $GITHUB_OUTPUT

@@ -121,19 +121,29 @@ jobs:
       - name: Install dependencies
         if: env.BUILD_ENABLED
         run: pnpm install --frozen-lockfile
-      - name: Build frontend
-        if: env.BUILD_ENABLED
-        env:
-          NODE_ENV: production
-        run: |
-          pnpm run --filter=@ci-hub/common build
-          pnpm run --filter=frontend build
       - name: Set environment config
         if: env.BUILD_ENABLED
         shell: bash
         run: |
+          if [ "${{ inputs.environment }}" = "production" ]; then
+            echo "CI_CLOUD_URL=https://hub.ci.computer" >> $GITHUB_ENV
+            echo "CI_HUB_CLOUD_URL=https://hub.ci.computer" >> $GITHUB_ENV
+            echo "CI_HUB_DOMAIN=companionintelligence.org" >> $GITHUB_ENV
+          else
+            echo "CI_CLOUD_URL=https://hub.companionintelligence.com" >> $GITHUB_ENV
+            echo "CI_HUB_CLOUD_URL=https://hub.companionintelligence.com" >> $GITHUB_ENV
+            echo "CI_HUB_DOMAIN=companionintelligence.com" >> $GITHUB_ENV
+          fi
           echo "CI_HUB_ENVIRONMENT=${{ inputs.environment }}" >> $GITHUB_ENV
           echo "CI_HUB_BUILD_VERSION=${{ inputs.tag }}" >> $GITHUB_ENV
+      - name: Build frontend
+        if: env.BUILD_ENABLED
+        env:
+          NODE_ENV: production
+          CI_CLOUD_URL: ${{ env.CI_CLOUD_URL }}
+        run: |
+          pnpm run --filter=@ci-hub/common build
+          pnpm run --filter=frontend build
       - name: Bump Tauri version to match release tag
         if: env.BUILD_ENABLED
         shell: bash
