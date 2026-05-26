@@ -102,7 +102,7 @@ test.describe('Hub State: Publicly Delayed', () => {
     await createTestUser();
     await page.goto('/device-registration');
     await expect(page).toHaveURL(/\/login/, { timeout: 15000 });
-    await expect(page.getByRole('heading', { name: /Login to your account/i })).toBeVisible({ timeout: 15000 });
+    await expect(page.getByRole('heading', { name: /Login to your local admin account/i })).toBeVisible({ timeout: 15000 });
   });
 });
 

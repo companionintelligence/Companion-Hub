@@ -79,7 +79,7 @@ export async function verifyFirstUserRegistrationPage(page: Page) {
 export async function verifyLoginScreen(page: Page) {
   await page.goto('/');
   await expect(page).toHaveURL(/login/, { timeout: 15000 });
-  await expect(page.getByRole('heading', { name: /Login to your account/i })).toBeVisible({ timeout: 15000 });
+  await expect(page.getByRole('heading', { name: /Login to your local admin account/i })).toBeVisible({ timeout: 15000 });
 }
 
 /** Verify the dashboard loads after login. */

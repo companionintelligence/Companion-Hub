@@ -4,7 +4,7 @@ import path from 'node:path';
 import { Injectable, type OnApplicationBootstrap, type OnApplicationShutdown, Inject, forwardRef, Optional } from '@nestjs/common';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import { APP_DIR } from '@/common/constants';
+import { APP_DIR, TUNNEL_DIR } from '@/common/constants';
 import { CloudflareClientService } from '../cloudflare/cloudflare-client.service';
 import { TraefikConfigService } from '../docker/traefik-config.service';
 import { DeviceRegistrationRepository } from './device-registration.repository';
@@ -444,7 +444,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     await this.deviceRegistrationRepository.deleteAll();
 
     // Delete the tunnel token file from disk
-    const tokenPath = path.join(APP_DIR, 'tunnel', 'token');
+    const tokenPath = path.join(TUNNEL_DIR, 'token');
     try {
       await fs.promises.unlink(tokenPath);
     } catch {
@@ -526,7 +526,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   }
 
   private hasTunnelToken(): boolean {
-    const tokenPath = path.join(APP_DIR, 'tunnel', 'token');
+    const tokenPath = path.join(TUNNEL_DIR, 'token');
     try {
       const stat = fs.statSync(tokenPath);
       return stat.isFile() && stat.size > 0;
