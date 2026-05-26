@@ -13,21 +13,6 @@ type NvidiaProbe = {
   updatedAt: string;
 };
 
-function runCommand(cmd: string, args: string[], useSudo = false) {
-  const finalCmd = useSudo ? 'sudo' : cmd;
-  const finalArgs = useSudo ? [cmd, ...args] : args;
-  const printable = `${finalCmd} ${finalArgs.join(' ')}`.trim();
-  console.log(`init-gpu-runtime: > ${printable}`);
-
-  const result = spawnSync(finalCmd, finalArgs, {
-    stdio: 'inherit',
-    encoding: 'utf-8',
-    env: process.env,
-  });
-
-  return result.status === 0;
-}
-
 function runCapture(cmd: string, args: string[]): { ok: boolean; stdout: string; stderr: string } {
   const result = spawnSync(cmd, args, {
     stdio: 'pipe',
@@ -43,8 +28,54 @@ function runCapture(cmd: string, args: string[]): { ok: boolean; stdout: string;
 }
 
 function hasCommand(cmd: string): boolean {
-  const res = runCapture('bash', ['-lc', `command -v ${cmd} >/dev/null 2>&1`]);
+  if (process.platform === 'win32') {
+    const where = runCapture('where', [cmd]);
+    if (where.ok) return true;
+
+    const ps = runCapture('powershell.exe', [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      `if (Get-Command ${cmd} -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }`,
+    ]);
+    return ps.ok;
+  }
+
+  const res = runCapture('sh', ['-lc', `command -v ${cmd} >/dev/null 2>&1`]);
   return res.ok;
+}
+
+function runCommand(cmd: string, args: string[], useSudo = false) {
+  let finalCmd = cmd;
+  let finalArgs = args;
+
+  if (useSudo) {
+    if (!hasCommand('sudo')) {
+      console.warn(`init-gpu-runtime: sudo is unavailable, cannot run: ${cmd} ${args.join(' ')}`);
+      return false;
+    }
+
+    // Non-interactive sudo avoids hanging startup in desktop/service contexts.
+    const sudoCheck = runCapture('sudo', ['-n', 'true']);
+    if (!sudoCheck.ok) {
+      console.warn(`init-gpu-runtime: sudo requires interactive authentication; skipping: ${cmd} ${args.join(' ')}`);
+      return false;
+    }
+
+    finalCmd = 'sudo';
+    finalArgs = ['-n', cmd, ...args];
+  }
+
+  const printable = `${finalCmd} ${finalArgs.join(' ')}`.trim();
+  console.log(`init-gpu-runtime: > ${printable}`);
+
+  const result = spawnSync(finalCmd, finalArgs, {
+    stdio: 'inherit',
+    encoding: 'utf-8',
+    env: process.env,
+  });
+
+  return result.status === 0;
 }
 
 function parseOsRelease(): Record<string, string> {
@@ -205,26 +236,40 @@ function hasNvidiaGpuWindows(): boolean {
   return ps.stdout.toLowerCase().includes('nvidia');
 }
 
-function configureNvidiaRuntimeLinux(): boolean {
+function restartDockerDaemonLinux(): boolean {
+  return runCommand('systemctl', ['restart', 'docker'], true) || runCommand('service', ['docker', 'restart'], true);
+}
+
+function configureNvidiaRuntimeLinux(): { ok: boolean; restartRecommended: boolean } {
   if (!runCommand('nvidia-ctk', ['runtime', 'configure', '--runtime=docker'], true)) {
-    return false;
+    return { ok: false, restartRecommended: false };
   }
 
-  // Restart Docker to apply daemon.json changes.
-  const restarted = runCommand('systemctl', ['restart', 'docker'], true) || runCommand('service', ['docker', 'restart'], true);
-  return restarted;
+  // Do not restart Docker automatically by default; this can disrupt unrelated workloads.
+  if (dockerHasNvidiaRuntime()) {
+    return { ok: true, restartRecommended: false };
+  }
+
+  if (process.env.CI_HUB_ALLOW_DOCKER_RESTART === 'true') {
+    const restarted = restartDockerDaemonLinux();
+    if (restarted && dockerHasNvidiaRuntime()) {
+      return { ok: true, restartRecommended: false };
+    }
+  }
+
+  return { ok: true, restartRecommended: true };
 }
 
 function installToolkitDebian(): boolean {
   if (!runCommand('mkdir', ['-p', '/etc/apt/keyrings'], true)) return false;
 
   const keyCmd =
-    'curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /etc/apt/keyrings/nvidia-container-toolkit-keyring.gpg';
-  if (!runCommand('bash', ['-lc', keyCmd])) return false;
+    'curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor -o /etc/apt/keyrings/nvidia-container-toolkit-keyring.gpg';
+  if (!runCommand('bash', ['-lc', keyCmd], true)) return false;
 
   const listCmd =
-    "curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | sed 's#deb https://#deb [signed-by=/etc/apt/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list >/dev/null";
-  if (!runCommand('bash', ['-lc', listCmd])) return false;
+    "curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | sed 's#deb https://#deb [signed-by=/etc/apt/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | tee /etc/apt/sources.list.d/nvidia-container-toolkit.list >/dev/null";
+  if (!runCommand('bash', ['-lc', listCmd], true)) return false;
 
   if (!runCommand('apt-get', ['update'], true)) return false;
   return runCommand('apt-get', ['install', '-y', 'nvidia-container-toolkit'], true);
@@ -232,8 +277,8 @@ function installToolkitDebian(): boolean {
 
 function installToolkitRpm(): boolean {
   const repoCmd =
-    'curl -fsSL https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo | sudo tee /etc/yum.repos.d/nvidia-container-toolkit.repo >/dev/null';
-  if (!runCommand('bash', ['-lc', repoCmd])) return false;
+    'curl -fsSL https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo | tee /etc/yum.repos.d/nvidia-container-toolkit.repo >/dev/null';
+  if (!runCommand('bash', ['-lc', repoCmd], true)) return false;
 
   if (hasCommand('dnf')) {
     return runCommand('dnf', ['install', '-y', 'nvidia-container-toolkit'], true);
@@ -271,14 +316,43 @@ function main() {
     return;
   }
 
-  if (!hasCommand('docker')) {
-    warnCpuFallback('Docker is not available yet, skipping GPU runtime setup.');
+  const platform = process.platform;
+
+  if (platform === 'win32') {
+    clearNvidiaProbe();
+    if (!hasNvidiaGpuWindows()) {
+      console.log('init-gpu-runtime: No NVIDIA GPU detected on Windows. Skipping GPU runtime setup.');
+      return;
+    }
+
+    console.log('init-gpu-runtime: NVIDIA GPU detected on Windows.');
+    if (!hasCommand('docker')) {
+      warnCpuFallback('Docker Desktop CLI is unavailable. Install or start Docker Desktop and retry.');
+      return;
+    }
+
+    console.log('init-gpu-runtime: Docker Desktop uses WSL2 GPU support instead of nvidia-container-toolkit.');
+    console.log('init-gpu-runtime: Ensure Docker Desktop + WSL2 GPU integration is enabled.');
     return;
   }
 
-  const platform = process.platform;
+  if (platform === 'darwin') {
+    clearNvidiaProbe();
+    if (!hasNvidiaGpuMac()) {
+      console.log('init-gpu-runtime: No NVIDIA GPU detected on macOS. Skipping GPU runtime setup.');
+      return;
+    }
+
+    warnCpuFallback('NVIDIA container runtime auto-setup is not supported on macOS.');
+    return;
+  }
 
   if (platform === 'linux') {
+    if (!hasCommand('docker')) {
+      warnCpuFallback('Docker is not available yet, skipping GPU runtime setup.');
+      return;
+    }
+
     if (!hasNvidiaGpuLinux()) {
       clearNvidiaProbe();
       console.log('init-gpu-runtime: No NVIDIA GPU detected. Skipping nvidia-container-toolkit setup.');
@@ -308,8 +382,15 @@ function main() {
     }
 
     const configured = configureNvidiaRuntimeLinux();
-    if (!configured) {
-      warnCpuFallback('Toolkit installed but failed to configure/restart Docker runtime.');
+    if (!configured.ok) {
+      warnCpuFallback('Toolkit installed but failed to configure NVIDIA runtime.');
+      return;
+    }
+
+    if (configured.restartRecommended) {
+      warnCpuFallback(
+        'Toolkit configured but Docker restart is required to activate NVIDIA runtime. Restart Docker manually, or set CI_HUB_ALLOW_DOCKER_RESTART=true to permit automatic restart.',
+      );
       return;
     }
 
@@ -318,30 +399,6 @@ function main() {
     } else {
       warnCpuFallback('NVIDIA runtime still not visible in docker info after configuration.');
     }
-    return;
-  }
-
-  if (platform === 'win32') {
-    clearNvidiaProbe();
-    if (!hasNvidiaGpuWindows()) {
-      console.log('init-gpu-runtime: No NVIDIA GPU detected on Windows. Skipping GPU runtime setup.');
-      return;
-    }
-
-    console.log('init-gpu-runtime: NVIDIA GPU detected on Windows.');
-    console.log('init-gpu-runtime: Docker Desktop uses WSL2 GPU support instead of nvidia-container-toolkit.');
-    console.log('init-gpu-runtime: Ensure Docker Desktop + WSL2 GPU integration is enabled.');
-    return;
-  }
-
-  if (platform === 'darwin') {
-    clearNvidiaProbe();
-    if (!hasNvidiaGpuMac()) {
-      console.log('init-gpu-runtime: No NVIDIA GPU detected on macOS. Skipping GPU runtime setup.');
-      return;
-    }
-
-    warnCpuFallback('NVIDIA container runtime auto-setup is not supported on macOS.');
     return;
   }
 
