@@ -49,7 +49,14 @@ export const OllamaSetupCard = ({ status, installing, checking, onInstall, onRec
                 </div>
               </div>
             </div>
-            <Button variant="ghost" size="sm" onClick={onRecheck} loading={checking} className="flex-shrink-0">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onRecheck}
+              loading={checking}
+              aria-label="Re-check Ollama installation"
+              className="flex-shrink-0"
+            >
               <RefreshCw className="h-3.5 w-3.5" />
             </Button>
           </div>
