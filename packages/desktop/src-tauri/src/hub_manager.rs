@@ -132,6 +132,120 @@ fn command_on_path(binary: &str) -> Option<PathBuf> {
         })
 }
 
+fn refresh_nvidia_host_probe_cache(data_dir: &Path) {
+    if !cfg!(target_os = "linux") {
+        return;
+    }
+
+    let probe_path = data_dir.join("state/hardware/nvidia.json");
+    if let Some(parent) = probe_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    let output = Command::new("sh")
+        .arg("-lc")
+        .arg("nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader,nounits | head -n 1")
+        .output();
+
+    let output = match output {
+        Ok(value) => value,
+        Err(error) => {
+            let _ = append_desktop_log_for(
+                data_dir,
+                "gpu.probe",
+                &format!(
+                    "Skipping host NVIDIA probe cache refresh (nvidia-smi unavailable): {}",
+                    error
+                ),
+            );
+            return;
+        }
+    };
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let details = if stderr.is_empty() {
+            "nvidia-smi command failed".to_string()
+        } else {
+            format!("nvidia-smi command failed: {}", stderr)
+        };
+        let _ = append_desktop_log_for(data_dir, "gpu.probe", &details);
+        return;
+    }
+
+    let first_line = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("")
+        .to_string();
+    if first_line.is_empty() {
+        let _ = append_desktop_log_for(
+            data_dir,
+            "gpu.probe",
+            "nvidia-smi produced no GPU rows; host NVIDIA probe cache not updated.",
+        );
+        return;
+    }
+
+    let mut parts = first_line.split(',').map(str::trim);
+    let model = parts.next().unwrap_or_default().to_string();
+    let vram_mb = parts
+        .next()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+    let driver_version = parts.next().unwrap_or_default().to_string();
+
+    if model.is_empty() {
+        let _ = append_desktop_log_for(
+            data_dir,
+            "gpu.probe",
+            "nvidia-smi probe row did not include a GPU model; host cache not updated.",
+        );
+        return;
+    }
+
+    let payload = serde_json::json!({
+        "model": model,
+        "vramMb": vram_mb,
+        "driverVersion": driver_version,
+        "source": "desktop-host-nvidia-smi"
+    });
+
+    let serialized = match serde_json::to_string_pretty(&payload) {
+        Ok(value) => format!("{}\n", value),
+        Err(error) => {
+            let _ = append_desktop_log_for(
+                data_dir,
+                "gpu.probe",
+                &format!("Failed to serialize host NVIDIA probe cache: {}", error),
+            );
+            return;
+        }
+    };
+
+    match std::fs::write(&probe_path, serialized) {
+        Ok(_) => {
+            let _ = append_desktop_log_for(
+                data_dir,
+                "gpu.probe",
+                &format!("Updated host NVIDIA probe cache at {}", probe_path.display()),
+            );
+        }
+        Err(error) => {
+            let _ = append_desktop_log_for(
+                data_dir,
+                "gpu.probe",
+                &format!(
+                    "Failed to write host NVIDIA probe cache at {}: {}",
+                    probe_path.display(),
+                    error
+                ),
+            );
+        }
+    }
+}
+
 /// Find the Docker binary, checking common install locations if not in PATH.
 fn find_docker_binary() -> PathBuf {
     if let Some(path) = command_on_path("docker") {
@@ -1721,6 +1835,11 @@ fn start_hub_inner(
             ),
         );
     }
+
+    // Surface host NVIDIA hardware to the backend even when the container lacks
+    // direct GPU devices; this enables runtime-missing warnings instead of
+    // misclassifying NVIDIA hosts as "no GPU detected".
+    refresh_nvidia_host_probe_cache(data_dir);
 
     // Resolve port conflicts and write to the runtime env file before starting.
     let resolution = crate::port_manager::refresh_ports_if_needed(env_path).map_err(|error| {

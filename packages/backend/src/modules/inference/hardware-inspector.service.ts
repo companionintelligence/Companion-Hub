@@ -53,16 +53,32 @@ export class HardwareInspectorService implements OnModuleInit {
       this.detectRocmSupport(),
     ]);
 
+    const hostProbe = await this.readNvidiaHostProbe();
+    const effectiveGpuInfo =
+      !gpuInfo.available && hostProbe
+        ? {
+            available: true,
+            vendor: 'nvidia' as const,
+            model: hostProbe.model,
+            vramMb: hostProbe.vramMb,
+            driverVersion: hostProbe.driverVersion || gpuInfo.driverVersion,
+          }
+        : gpuInfo;
+
+    if (!gpuInfo.available && hostProbe) {
+      this.logger.info('[HardwareInspector] Using host NVIDIA probe cache fallback for GPU detection.');
+    }
+
     const isAppleSilicon = cpuInfo.arch === 'arm64' && os.platform() === 'darwin';
 
     const gpu: HardwareProfile['gpu'] = {
-      available: gpuInfo.available,
-      vendor: isAppleSilicon ? 'apple' : gpuInfo.vendor,
-      model: isAppleSilicon ? `${cpuInfo.model} (Apple Silicon)` : gpuInfo.model,
-      vramMb: isAppleSilicon ? ramInfo.totalMb : gpuInfo.vramMb,
+      available: effectiveGpuInfo.available,
+      vendor: isAppleSilicon ? 'apple' : effectiveGpuInfo.vendor,
+      model: isAppleSilicon ? `${cpuInfo.model} (Apple Silicon)` : effectiveGpuInfo.model,
+      vramMb: isAppleSilicon ? ramInfo.totalMb : effectiveGpuInfo.vramMb,
       unifiedMemory: isAppleSilicon,
-      driverVersion: gpuInfo.driverVersion,
-      runtimeAvailable: isAppleSilicon || (gpuInfo.vendor === 'nvidia' ? nvidiaRuntime : rocmSupport),
+      driverVersion: effectiveGpuInfo.driverVersion,
+      runtimeAvailable: isAppleSilicon || (effectiveGpuInfo.vendor === 'nvidia' ? nvidiaRuntime : rocmSupport),
     };
 
     if (gpu.vendor === 'nvidia') {

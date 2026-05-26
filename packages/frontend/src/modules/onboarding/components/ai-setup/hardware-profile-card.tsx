@@ -75,10 +75,45 @@ export const HardwareProfileCard = ({ hardware, tier, onRescan, rescanning = fal
             <p className="mb-2">
               NVIDIA GPU detected, but GPU runtime is not ready yet. AI inference will run in CPU-only mode until setup completes.
             </p>
+            <p className="mb-2">
+              Automatic setup runs during startup in non-interactive mode. If your system requires a sudo password prompt, the automatic install is
+              skipped.
+            </p>
             <p className="font-semibold">Action items:</p>
             <ol className="mt-1 list-decimal pl-4 space-y-1">
-              <li>Close and reopen CI Hub to trigger automatic GPU setup.</li>
-              <li>If your system asks for permission to apply runtime changes, approve it.</li>
+              <li>Close and reopen CI Hub to retry automatic GPU setup.</li>
+              <li>
+                If runtime is still missing, run a manual install:
+                <div className="mt-1 rounded bg-black/30 p-2 font-mono text-[11px] leading-relaxed text-amber-100/90">
+                  Debian/Ubuntu:
+                  <br />
+                  sudo mkdir -p /etc/apt/keyrings
+                  <br />
+                  curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o
+                  /etc/apt/keyrings/nvidia-container-toolkit-keyring.gpg
+                  <br />
+                  curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | sed 's#deb https://#deb
+                  [signed-by=/etc/apt/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | sudo tee
+                  /etc/apt/sources.list.d/nvidia-container-toolkit.list
+                  <br />
+                  sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit
+                  <br />
+                  RHEL/Fedora:
+                  <br />
+                  curl -fsSL https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo | sudo tee
+                  /etc/yum.repos.d/nvidia-container-toolkit.repo
+                  <br />
+                  sudo dnf install -y nvidia-container-toolkit
+                  <br />
+                  Arch/Manjaro: sudo pacman -Sy --noconfirm nvidia-container-toolkit
+                  <br />
+                  Then: sudo nvidia-ctk runtime configure --runtime=docker
+                  <br />
+                  Then: sudo systemctl restart docker
+                  <br />
+                  Verify: docker info | grep -i nvidia
+                </div>
+              </li>
               <li>
                 Return here and click <span className="font-semibold">Rescan</span>.
               </li>
