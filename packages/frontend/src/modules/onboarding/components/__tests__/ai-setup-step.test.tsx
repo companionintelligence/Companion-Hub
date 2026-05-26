@@ -5,6 +5,12 @@ import { AiSetupStep } from '../ai-setup-step';
 import type { HardwareProfileResponse } from '../../helpers/ai-setup-types';
 
 const mockApiFetch = vi.fn();
+const mockResponse = <T,>(data: T, ok = true) =>
+  Promise.resolve({
+    ok,
+    status: ok ? 200 : 500,
+    json: () => Promise.resolve(data),
+  });
 
 vi.mock('@/lib/api-fetch', () => ({
   apiFetch: (...args: unknown[]) => mockApiFetch(...args),
@@ -324,5 +330,130 @@ describe('AiSetupStep', () => {
     await waitFor(() => {
       expect(mockApiFetch).toHaveBeenCalledWith('/api/inference/hardware/rescan', expect.objectContaining({ method: 'POST' }));
     });
+  });
+
+  it('shows Ollama setup card when Ollama backend is selected and not installed', async () => {
+    const ollamaProfile = {
+      ...highTierProfile,
+      backends: {
+        recommended: 'ollama',
+        available: highTierProfile.backends.available,
+      },
+    };
+
+    mockApiFetch
+      .mockImplementationOnce(() => mockResponse(ollamaProfile))
+      .mockImplementationOnce(() => mockResponse({ installed: false, needsInstall: true }));
+
+    render(<AiSetupStep onComplete={onComplete} onSkip={onSkip} onBack={onBack} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Ollama Not Installed')).toBeInTheDocument();
+    });
+  });
+
+  it('disables Continue while Ollama installation is running', async () => {
+    const user = userEvent.setup();
+    const ollamaProfile = {
+      ...highTierProfile,
+      backends: {
+        recommended: 'ollama',
+        available: highTierProfile.backends.available,
+      },
+    };
+
+    mockApiFetch
+      .mockImplementationOnce(() => mockResponse(ollamaProfile))
+      .mockImplementationOnce(() => mockResponse({ installed: false, needsInstall: true }))
+      .mockImplementationOnce(() => new Promise(() => {}));
+
+    render(<AiSetupStep onComplete={onComplete} onSkip={onSkip} onBack={onBack} />);
+
+    await waitFor(() => expect(screen.getByText('Ollama Not Installed')).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Install Ollama' }));
+
+    expect(screen.getByTestId('ai-continue-btn')).toBeDisabled();
+  });
+
+  it('re-checks Ollama status after successful install', async () => {
+    const user = userEvent.setup();
+    const ollamaProfile = {
+      ...highTierProfile,
+      backends: {
+        recommended: 'ollama',
+        available: highTierProfile.backends.available,
+      },
+    };
+
+    mockApiFetch
+      .mockImplementationOnce(() => mockResponse(ollamaProfile))
+      .mockImplementationOnce(() => mockResponse({ installed: false, needsInstall: true }))
+      .mockImplementationOnce(() => mockResponse({ success: true, message: 'ok' }))
+      .mockImplementationOnce(() => mockResponse({ installed: true, needsInstall: false, version: '0.5.0' }));
+
+    render(<AiSetupStep onComplete={onComplete} onSkip={onSkip} onBack={onBack} />);
+
+    await waitFor(() => expect(screen.getByText('Ollama Not Installed')).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Install Ollama' }));
+
+    await waitFor(() => {
+      const statusChecks = mockApiFetch.mock.calls.filter(([url]) => url === '/api/inference/ollama/status');
+      expect(statusChecks).toHaveLength(2);
+    });
+  });
+
+  it('shows no-GPU warning copy when gpu.available is false', async () => {
+    const profileNoGpu: HardwareProfileResponse = {
+      ...highTierProfile,
+      hardware: {
+        ...highTierProfile.hardware,
+        gpu: {
+          ...highTierProfile.hardware.gpu,
+          available: false,
+          vendor: 'none',
+          model: '',
+          vramMb: 0,
+        },
+      },
+    };
+
+    mockApiFetch
+      .mockImplementationOnce(() => mockResponse(profileNoGpu))
+      .mockImplementationOnce(() => mockResponse({ installed: true, needsInstall: false }));
+
+    render(<AiSetupStep onComplete={onComplete} onSkip={onSkip} onBack={onBack} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('No GPU detected.')).toBeInTheDocument();
+    });
+  });
+
+  it.each([
+    ['nvidia', 'NVIDIA CUDA'],
+    ['amd', 'AMD ROCm'],
+  ] as const)('shows runtime-unavailable warning copy for %s GPUs', async (vendor, driverText) => {
+    const profileRuntimeMissing: HardwareProfileResponse = {
+      ...highTierProfile,
+      hardware: {
+        ...highTierProfile.hardware,
+        gpu: {
+          ...highTierProfile.hardware.gpu,
+          available: true,
+          vendor,
+          runtimeAvailable: false,
+        },
+      },
+    };
+
+    mockApiFetch
+      .mockImplementationOnce(() => mockResponse(profileRuntimeMissing))
+      .mockImplementationOnce(() => mockResponse({ installed: true, needsInstall: false }));
+
+    render(<AiSetupStep onComplete={onComplete} onSkip={onSkip} onBack={onBack} />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/GPU driver not available\./)).toBeInTheDocument();
+    });
+    expect(screen.getByText(new RegExp(driverText))).toBeInTheDocument();
   });
 });

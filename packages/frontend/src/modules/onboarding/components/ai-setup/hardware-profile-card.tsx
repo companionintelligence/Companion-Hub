@@ -27,6 +27,7 @@ export const HardwareProfileCard = ({ hardware, tier, onRescan, rescanning = fal
   const badge = TIER_BADGES[tier];
   const noGpu = !hardware.gpu.available;
   const gpuNoRuntime = hardware.gpu.available && !hardware.gpu.runtimeAvailable;
+  const gpuDriverGuidance = hardware.gpu.vendor === 'nvidia' ? 'NVIDIA CUDA' : hardware.gpu.vendor === 'amd' ? 'AMD ROCm' : null;
 
   return (
     <Card>
@@ -85,7 +86,7 @@ export const HardwareProfileCard = ({ hardware, tier, onRescan, rescanning = fal
               {gpuNoRuntime && (
                 <span>
                   <strong>GPU driver not available.</strong> Your {hardware.gpu.vendor} GPU was detected but the runtime is not available. Please
-                  install the appropriate drivers ({hardware.gpu.vendor === 'nvidia' ? 'NVIDIA CUDA' : 'AMD ROCm'}).
+                  install the appropriate drivers{gpuDriverGuidance ? ` (${gpuDriverGuidance})` : ''}.
                 </span>
               )}
             </div>
