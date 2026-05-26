@@ -163,7 +163,7 @@ export class HardwareInspectorService implements OnModuleInit {
       }
 
       return {
-        available: best.vendor !== 'none' && (best.vramMb > 0 || !!best.model),
+        available: best.vramMb > 0 || !!best.model,
         vendor: best.vendor,
         model: best.model,
         vramMb: best.vramMb,
@@ -199,7 +199,7 @@ export class HardwareInspectorService implements OnModuleInit {
         return { available: false, vendor: 'none', model: '', vramMb: 0, driverVersion: '' };
       }
       const [modelRaw, memoryRaw, driverRaw] = parts;
-      const vramMb = Number.parseInt(memoryRaw, 10);
+      const vramMb = Number.parseInt(memoryRaw ?? '', 10);
       const model = modelRaw || 'NVIDIA GPU';
       const driverVersion = driverRaw || '';
 
