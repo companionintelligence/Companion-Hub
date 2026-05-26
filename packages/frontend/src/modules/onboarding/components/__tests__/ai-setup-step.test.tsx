@@ -137,6 +137,56 @@ describe('AiSetupStep', () => {
     expect(screen.getByTestId('hw-gpu')).toHaveTextContent('RTX 4090');
   });
 
+  it('shows no GPU warning copy when gpu.available is false', async () => {
+    const noGpuProfile: HardwareProfileResponse = {
+      ...highTierProfile,
+      hardware: {
+        ...highTierProfile.hardware,
+        gpu: {
+          ...highTierProfile.hardware.gpu,
+          available: false,
+          model: '',
+          runtimeAvailable: false,
+          vendor: 'none',
+          vramMb: 0,
+        },
+      },
+    };
+
+    mockApiFetch.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(noGpuProfile) });
+    render(<AiSetupStep onComplete={onComplete} onSkip={onSkip} onBack={onBack} />);
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+    expect(screen.getByText('No GPU detected.')).toBeInTheDocument();
+    expect(screen.getByText(/AI services will run on CPU only/)).toBeInTheDocument();
+  });
+
+  it.each([
+    ['nvidia', 'NVIDIA CUDA'],
+    ['amd', 'AMD ROCm'],
+  ] as const)('shows runtime warning copy for %s GPUs when runtime is unavailable', async (vendor, driverText) => {
+    const noRuntimeProfile: HardwareProfileResponse = {
+      ...highTierProfile,
+      hardware: {
+        ...highTierProfile.hardware,
+        gpu: {
+          ...highTierProfile.hardware.gpu,
+          available: true,
+          runtimeAvailable: false,
+          vendor,
+        },
+      },
+    };
+
+    mockApiFetch.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(noRuntimeProfile) });
+    render(<AiSetupStep onComplete={onComplete} onSkip={onSkip} onBack={onBack} />);
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+    expect(screen.getByText('GPU driver not available.')).toBeInTheDocument();
+    expect(screen.getByText(`Your ${vendor} GPU was detected but the runtime is not available.`, { exact: false })).toBeInTheDocument();
+    expect(screen.getByText(`Please install the appropriate drivers (${driverText}).`, { exact: false })).toBeInTheDocument();
+  });
+
   it('pre-selects recommended models', async () => {
     mockApiFetch.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(highTierProfile) });
     render(<AiSetupStep onComplete={onComplete} onSkip={onSkip} onBack={onBack} />);
