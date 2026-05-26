@@ -228,12 +228,15 @@ export const TailscaleSetupStep = ({ onComplete, onSkip, onBack }: TailscaleSetu
           {t('COMMON_BACK')}
         </Button>
         <div className="flex gap-2">
-          <Button type="button" variant="ghost" onClick={onSkip}>
-            {t('ONBOARDING_TAILSCALE_SKIP')}
-          </Button>
-          <Button type="button" onClick={onComplete} disabled={isLoading}>
-            {isConnected ? t('COMMON_CONTINUE') : t('ONBOARDING_TAILSCALE_SKIP')}
-          </Button>
+          {isConnected ? (
+            <Button type="button" onClick={onComplete} disabled={isLoading}>
+              {t('COMMON_CONTINUE')}
+            </Button>
+          ) : (
+            <Button type="button" variant="ghost" onClick={onSkip}>
+              {t('ONBOARDING_TAILSCALE_SKIP')}
+            </Button>
+          )}
         </div>
       </div>
     </div>
