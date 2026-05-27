@@ -281,7 +281,7 @@ export class OcteliumTunnelService implements ITunnelService {
     };
 
     // Write to /app/octelium/config.json or similar
-    this.logger.debug('Octelium config written');
+    this.logger.debug(`Octelium config written: ${JSON.stringify(config)}`);
   }
 
   private createAccessPolicy(app: AppInfo) {
