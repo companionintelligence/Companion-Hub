@@ -152,13 +152,23 @@ export class HardwareInspectorService implements OnModuleInit {
 
       const best = rankedControllers[0];
       if (!best || best.vendor === 'none') {
-        return await this.detectNvidiaViaSmi();
+        const fromNvidiaSmi = await this.detectNvidiaViaSmi();
+        if (fromNvidiaSmi.available) {
+          return fromNvidiaSmi;
+        }
+        return await this.detectAmdViaRocmSmi();
       }
 
       if (best.vendor === 'nvidia' && (best.vramMb <= 0 || !best.model)) {
         const fromSmi = await this.detectNvidiaViaSmi();
         if (fromSmi.available) {
           return fromSmi;
+        }
+      }
+      if (best.vendor === 'amd' && (best.vramMb <= 0 || !best.model)) {
+        const fromRocmSmi = await this.detectAmdViaRocmSmi();
+        if (fromRocmSmi.available) {
+          return fromRocmSmi;
         }
       }
 
@@ -173,7 +183,11 @@ export class HardwareInspectorService implements OnModuleInit {
       this.logger.warn(
         `[HardwareInspector] GPU detection failed. Verify container GPU device passthrough and nvidia-smi availability. Error: ${err}`,
       );
-      return await this.detectNvidiaViaSmi();
+      const fromNvidiaSmi = await this.detectNvidiaViaSmi();
+      if (fromNvidiaSmi.available) {
+        return fromNvidiaSmi;
+      }
+      return await this.detectAmdViaRocmSmi();
     }
   }
 
@@ -208,6 +222,42 @@ export class HardwareInspectorService implements OnModuleInit {
         vendor: 'nvidia',
         model,
         vramMb: Number.isFinite(vramMb) && vramMb > 0 ? vramMb : 0,
+        driverVersion,
+      };
+    } catch {
+      return { available: false, vendor: 'none', model: '', vramMb: 0, driverVersion: '' };
+    }
+  }
+
+  private async detectAmdViaRocmSmi(): Promise<{
+    available: boolean;
+    vendor: 'nvidia' | 'amd' | 'intel' | 'none';
+    model: string;
+    vramMb: number;
+    driverVersion: string;
+  }> {
+    try {
+      const { stdout } = await execAsync('rocm-smi --showproductname --showmeminfo vram --showdriverversion');
+      const lines = stdout.split('\n').map((line) => line.trim());
+
+      const modelMatch = lines.find((line) => line.includes('Card series:'))?.match(/Card series:\s*(.+)$/i);
+      const vramMatch = lines.find((line) => line.includes('VRAM Total Memory (B):'))?.match(/VRAM Total Memory \(B\):\s*([0-9]+)/i);
+      const driverMatch = lines.find((line) => line.includes('Driver version:'))?.match(/Driver version:\s*(.+)$/i);
+
+      const model = modelMatch?.[1]?.trim() ?? '';
+      const vramBytes = Number.parseInt(vramMatch?.[1] ?? '', 10);
+      const vramMb = Number.isFinite(vramBytes) && vramBytes > 0 ? Math.floor(vramBytes / (1024 * 1024)) : 0;
+      const driverVersion = driverMatch?.[1]?.trim() ?? '';
+
+      if (!model && vramMb <= 0) {
+        return { available: false, vendor: 'none', model: '', vramMb: 0, driverVersion: '' };
+      }
+
+      return {
+        available: true,
+        vendor: 'amd',
+        model: model || 'AMD GPU',
+        vramMb,
         driverVersion,
       };
     } catch {

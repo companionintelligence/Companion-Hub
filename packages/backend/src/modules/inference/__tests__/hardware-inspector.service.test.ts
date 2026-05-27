@@ -138,6 +138,57 @@ describe('HardwareInspectorService', () => {
       expect(profile.gpu.vendor).toBe('amd');
       expect(profile.gpu.available).toBe(true);
     });
+
+    it('SHALL fallback to rocm-smi when AMD controller is missing VRAM details', async () => {
+      (si.graphics as any) = vi.fn().mockResolvedValue({
+        controllers: [{ vendor: 'Advanced Micro Devices', model: 'Radeon RX 7900 XTX', vram: 0, driverVersion: '' }],
+      });
+      execAsyncMock.mockImplementation(async (command: string) => {
+        if (command.includes('rocm-smi --showproductname --showmeminfo vram --showdriverversion')) {
+          return {
+            stdout:
+              'GPU[0]          : Card series: Radeon RX 7900 XTX\nGPU[0]          : VRAM Total Memory (B): 25769803776\nGPU[0]          : Driver version: 6.2.0',
+          };
+        }
+        return { stdout: '{}' };
+      });
+      filesystemService.pathExists.mockResolvedValue(true);
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 16, brand: 'AMD Ryzen 9' });
+      filesystemService.readTextFile.mockResolvedValue('MemTotal: 67108864\nMemAvailable: 50331648');
+
+      const profile = await service.detect();
+
+      expect(profile.gpu.available).toBe(true);
+      expect(profile.gpu.vendor).toBe('amd');
+      expect(profile.gpu.model).toBe('Radeon RX 7900 XTX');
+      expect(profile.gpu.vramMb).toBe(24576);
+      expect(profile.gpu.driverVersion).toBe('6.2.0');
+    });
+
+    it('SHALL detect AMD via rocm-smi when no GPU controllers are reported', async () => {
+      (si.graphics as any) = vi.fn().mockResolvedValue({ controllers: [] });
+      execAsyncMock.mockImplementation(async (command: string) => {
+        if (command.includes('--query-gpu=name,memory.total,driver_version')) {
+          return { stdout: '' };
+        }
+        if (command.includes('rocm-smi --showproductname --showmeminfo vram --showdriverversion')) {
+          return {
+            stdout: 'GPU[0]          : Card series: Radeon PRO W6800\nGPU[0]          : VRAM Total Memory (B): 34359738368',
+          };
+        }
+        return { stdout: '{}' };
+      });
+      filesystemService.pathExists.mockResolvedValue(true);
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 16, brand: 'AMD Ryzen 9' });
+      filesystemService.readTextFile.mockResolvedValue('MemTotal: 67108864\nMemAvailable: 50331648');
+
+      const profile = await service.detect();
+
+      expect(profile.gpu.available).toBe(true);
+      expect(profile.gpu.vendor).toBe('amd');
+      expect(profile.gpu.model).toBe('Radeon PRO W6800');
+      expect(profile.gpu.vramMb).toBe(32768);
+    });
   });
 
   // ─── S-HW-3: Hardware Tiers ────────────────────────────────────────
