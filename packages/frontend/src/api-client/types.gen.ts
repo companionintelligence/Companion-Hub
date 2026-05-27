@@ -248,6 +248,7 @@ export type MyAppsDto = {
                 pattern_error?: string;
                 placeholder?: string;
                 regex?: string;
+                template_value?: number | string | boolean;
             }>;
             generate_vapid_keys: boolean;
             https: boolean;
@@ -329,6 +330,7 @@ export type GuestAppsDto = {
                 pattern_error?: string;
                 placeholder?: string;
                 regex?: string;
+                template_value?: number | string | boolean;
             }>;
             generate_vapid_keys: boolean;
             https: boolean;
@@ -392,6 +394,7 @@ export type GetAppDto = {
             pattern_error?: string;
             placeholder?: string;
             regex?: string;
+            template_value?: number | string | boolean;
         }>;
         generate_vapid_keys: boolean;
         https: boolean;

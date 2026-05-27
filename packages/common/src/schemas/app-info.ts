@@ -49,6 +49,7 @@ export const formFieldSchema = z.object({
   options: z.object({ label: z.string(), value: z.string() }).array().optional(),
   required: z.boolean().optional().default(false),
   default: z.union([z.boolean(), z.string(), z.number()]).optional(),
+  template_value: z.union([z.boolean(), z.string(), z.number()]).optional(),
   regex: z.string().optional(),
   pattern_error: z.string().optional(),
   env_variable: z.string(),

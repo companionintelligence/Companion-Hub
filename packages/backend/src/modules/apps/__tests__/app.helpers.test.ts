@@ -584,6 +584,93 @@ describe('AppHelpers', () => {
       expect(envMap.get('BOOLEAN_WITH_DEFAULT')).toBe('false');
     });
 
+    it('should use template_value when form field is not provided', async () => {
+      // Arrange
+      const envMap = new Map<string, string>();
+      envUtils.envStringToMap.mockReturnValue(envMap);
+
+      const appInfoWithTemplateValues = {
+        ...mockAppInfo,
+        form_fields: [
+          {
+            env_variable: 'SMTP_HOST',
+            label: 'SMTP Host',
+            type: 'text' as const,
+            template_value: 'smtp.example.com',
+            required: false,
+          },
+          {
+            env_variable: 'SMTP_PORT',
+            label: 'SMTP Port',
+            type: 'number' as const,
+            template_value: 587,
+            required: false,
+          },
+        ],
+      };
+      appFilesManager.getInstalledAppInfo.mockResolvedValue(appInfoWithTemplateValues);
+
+      // Act - not providing form values
+      await appHelpers.generateEnvFile(testAppUrn, {});
+
+      // Assert - should use template values
+      expect(envMap.get('SMTP_HOST')).toBe('smtp.example.com');
+      expect(envMap.get('SMTP_PORT')).toBe('587');
+    });
+
+    it('should prefer form value over template_value', async () => {
+      // Arrange
+      const envMap = new Map<string, string>();
+      envUtils.envStringToMap.mockReturnValue(envMap);
+
+      const appInfoWithTemplateValues = {
+        ...mockAppInfo,
+        form_fields: [
+          {
+            env_variable: 'SMTP_HOST',
+            label: 'SMTP Host',
+            type: 'text' as const,
+            template_value: 'smtp.example.com',
+            required: false,
+          },
+        ],
+      };
+      appFilesManager.getInstalledAppInfo.mockResolvedValue(appInfoWithTemplateValues);
+
+      // Act - providing a custom value from the form
+      await appHelpers.generateEnvFile(testAppUrn, { SMTP_HOST: 'smtp.myserver.com' });
+
+      // Assert - should use form value, not template value
+      expect(envMap.get('SMTP_HOST')).toBe('smtp.myserver.com');
+    });
+
+    it('should prefer default over template_value when no form value provided', async () => {
+      // Arrange
+      const envMap = new Map<string, string>();
+      envUtils.envStringToMap.mockReturnValue(envMap);
+
+      const appInfoWithBoth = {
+        ...mockAppInfo,
+        form_fields: [
+          {
+            env_variable: 'SMTP_HOST',
+            label: 'SMTP Host',
+            type: 'text' as const,
+            default: 'smtp.default.com',
+            template_value: 'smtp.template.com',
+            required: false,
+          },
+        ],
+      };
+      appFilesManager.getInstalledAppInfo.mockResolvedValue(appInfoWithBoth);
+
+      // Act - not providing form values
+      await appHelpers.generateEnvFile(testAppUrn, {});
+
+      // Assert - should use default, not template_value
+      expect(envMap.get('SMTP_HOST')).toBe('smtp.default.com');
+    });
+
     it('should correctly format APP_DOMAIN for subdomains', async () => {
       // Arrange
       const envMap = new Map<string, string>();

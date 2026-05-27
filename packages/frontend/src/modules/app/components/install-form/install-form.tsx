@@ -128,8 +128,9 @@ export const InstallForm: React.FC<IProps> = ({
     const requiredFields = formFields.filter((f) => f.required && !hiddenTypes.includes(f.type));
     const allRequiredFilled = requiredFields.every((f, i) => {
       const val = watchedRequiredValues[i];
-      // Fields with defaults count as filled
+      // Fields with defaults or template values count as filled
       if (f.default !== undefined && f.default !== '') return true;
+      if (f.template_value !== undefined && f.template_value !== '') return true;
       return val !== undefined && val !== '' && val !== null;
     });
 
@@ -147,6 +148,17 @@ export const InstallForm: React.FC<IProps> = ({
         setValue(key, value as string);
       }
     }
+
+    // Pre-populate template values for fields that don't already have an initial value.
+    // This ensures template_value fields are tracked by the form and submitted even when untouched.
+    if (!isDirty) {
+      for (const field of formFields) {
+        if (field.template_value !== undefined && !initialValues?.[field.env_variable]) {
+          setValue(field.env_variable, String(field.template_value));
+        }
+      }
+    }
+
     if (info.force_expose) {
       setValue('exposed', true);
       setValue('openPort', false);
@@ -173,6 +185,7 @@ export const InstallForm: React.FC<IProps> = ({
   }, [
     initialValues,
     isDirty,
+    formFields,
     getValues,
     setValue,
     info.urn,
@@ -308,7 +321,7 @@ export const InstallForm: React.FC<IProps> = ({
     return (
       <InstallFormField
         loading={loading}
-        initialValue={(initialValues ? initialValues[field.env_variable] : field.default) as string}
+        initialValue={(initialValues ? initialValues[field.env_variable] : (field.default ?? field.template_value)) as string}
         register={register}
         field={field}
         control={control}
@@ -566,11 +579,13 @@ export const InstallForm: React.FC<IProps> = ({
     toast.error(t('APP_INSTALL_FORM_ERROR_INVALID'));
   };
 
-  const hasOptionalFields = formFields.some((field) => !field.required && typeFilter(field));
+  const hasOptionalFields = formFields.some((field) => !field.required && field.template_value === undefined && typeFilter(field));
   const hasAdvancedSimpleModeOptions = hasOptionalFields || (info.exposable && info.dynamic_config);
   const shouldShowAdvancedSettingsToggle = !isAdvancedMode && hasAdvancedSimpleModeOptions;
   const visibleFields =
-    isAdvancedMode || showAdvancedSettings ? formFields.filter(typeFilter) : formFields.filter((field) => field.required && typeFilter(field));
+    isAdvancedMode || showAdvancedSettings
+      ? formFields.filter(typeFilter)
+      : formFields.filter((field) => (field.required || field.template_value !== undefined) && typeFilter(field));
   const hasConfigSection = visibleFields.length > 0 || shouldShowAdvancedSettingsToggle || (guestDashboard && isAdvancedMode) || isAdvancedMode;
 
   return (

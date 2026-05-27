@@ -226,6 +226,11 @@ export class AppHelpers {
         continue;
       }
 
+      if (field.template_value !== undefined) {
+        envMap.set(envVar, String(field.template_value));
+        continue;
+      }
+
       if (field.required) {
         throw new Error(`Variable ${field.label || field.env_variable} is required`);
       }

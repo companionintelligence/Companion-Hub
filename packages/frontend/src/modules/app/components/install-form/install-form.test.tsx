@@ -311,4 +311,92 @@ describe('InstallForm', () => {
 
     MOCK_AVAILABLE_DOMAINS.domains = [];
   });
+
+  it('shows fields with template_value in simple mode without advanced settings toggle', () => {
+    vi.mocked(useAppContext).mockReturnValue(createContext(false) as unknown as ReturnType<typeof useAppContext>);
+
+    const formFields = [
+      {
+        env_variable: 'SMTP_HOST',
+        label: 'SMTP Host',
+        type: 'text',
+        required: false,
+        template_value: 'smtp.example.com',
+      },
+    ] as never[];
+
+    render(
+      <MemoryRouter>
+        <InstallForm info={baseInfo} onSubmit={vi.fn()} formId="test-form" formFields={formFields} />
+      </MemoryRouter>,
+    );
+
+    // template_value fields are shown in simple mode
+    expect(screen.getByText('SMTP Host')).toBeInTheDocument();
+    // No advanced settings toggle since template_value fields are not counted as "optional"
+    expect(screen.queryByRole('switch', { name: 'APP_INSTALL_FORM_SHOW_ADVANCED_SETTINGS' })).not.toBeInTheDocument();
+  });
+
+  it('shows template_value fields in simple mode alongside required fields', () => {
+    vi.mocked(useAppContext).mockReturnValue(createContext(false) as unknown as ReturnType<typeof useAppContext>);
+
+    const formFields = [
+      {
+        env_variable: 'REQUIRED_FIELD',
+        label: 'Required field',
+        type: 'text',
+        required: true,
+      },
+      {
+        env_variable: 'SMTP_HOST',
+        label: 'SMTP Host',
+        type: 'text',
+        required: false,
+        template_value: 'smtp.example.com',
+      },
+      {
+        env_variable: 'OPTIONAL_FIELD',
+        label: 'Optional field',
+        type: 'text',
+        required: false,
+      },
+    ] as never[];
+
+    render(
+      <MemoryRouter>
+        <InstallForm info={baseInfo} onSubmit={vi.fn()} formId="test-form" formFields={formFields} />
+      </MemoryRouter>,
+    );
+
+    // Required and template_value fields are shown
+    expect(screen.getByText('Required field')).toBeInTheDocument();
+    expect(screen.getByText('SMTP Host')).toBeInTheDocument();
+    // Optional field without template_value is hidden in simple mode
+    expect(screen.queryByText('Optional field')).not.toBeInTheDocument();
+    // Advanced settings toggle shown because there is an optional field without template_value
+    expect(screen.getByRole('switch', { name: 'APP_INSTALL_FORM_SHOW_ADVANCED_SETTINGS' })).toBeInTheDocument();
+  });
+
+  it('pre-populates template_value as the input default', () => {
+    vi.mocked(useAppContext).mockReturnValue(createContext(false) as unknown as ReturnType<typeof useAppContext>);
+
+    const formFields = [
+      {
+        env_variable: 'SMTP_HOST',
+        label: 'SMTP Host',
+        type: 'text',
+        required: false,
+        template_value: 'smtp.example.com',
+      },
+    ] as never[];
+
+    render(
+      <MemoryRouter>
+        <InstallForm info={baseInfo} onSubmit={vi.fn()} formId="test-form" formFields={formFields} />
+      </MemoryRouter>,
+    );
+
+    const input = screen.getByDisplayValue('smtp.example.com');
+    expect(input).toBeInTheDocument();
+  });
 });
