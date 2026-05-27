@@ -787,6 +787,7 @@ Vitest runs unit tests in backend and frontend packages. Tests are co-located wi
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CI_CLOUD_URL` | `https://hub.companionintelligence.com` | CI Cloud Portal URL |
+| `CI_CLOUD_REGISTRY_URL` | unset | Optional direct OCI registry host used to rewrite CI Cloud marketplace compose image pulls (bypass Cloudflare edge limits) |
 | `DOMAIN` | — | Public domain for Cloudflare exposure |
 | `LOCAL_DOMAIN` | `ci.lan` | Local domain for Traefik routing |
 | `INTERNAL_IP` | `127.0.0.1` | Host internal IP address |

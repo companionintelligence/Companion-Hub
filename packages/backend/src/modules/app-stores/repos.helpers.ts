@@ -60,6 +60,32 @@ export class ReposHelpers {
     return { success: false, message: `An error occurred: ${String(err)}` };
   }
 
+  private normalizeRegistryHost(value: string | undefined): string | null {
+    if (!value) return null;
+
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+
+    try {
+      if (trimmed.includes('://')) {
+        return new URL(trimmed).host;
+      }
+
+      return new URL(`https://${trimmed}`).host;
+    } catch {
+      return null;
+    }
+  }
+
+  private rewriteComposeRegistryHost(content: string, sourceHost: string, targetHost: string): string {
+    if (!content || sourceHost === targetHost) {
+      return content;
+    }
+
+    const escapedSourceHost = sourceHost.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return content.replace(new RegExp(`\\b${escapedSourceHost}/`, 'g'), `${targetHost}/`);
+  }
+
   /**
    * Ensure directory exists and has correct permissions
    * @param {string} dirPath
@@ -158,6 +184,9 @@ export class ReposHelpers {
 
       const apps = (await response.json()) as Array<{ id: string; slug?: string; [key: string]: unknown }>;
 
+      const sourceRegistryHost = this.normalizeRegistryHost(url);
+      const targetRegistryHost = this.normalizeRegistryHost(process.env.CI_CLOUD_REGISTRY_URL);
+
       for (const app of apps) {
         const appSlug = app.slug || app.id;
         const appDir = path.join(appsPath, appSlug);
@@ -207,7 +236,11 @@ export class ReposHelpers {
 
         // Write docker-compose.json if available
         if (typeof app.compose === 'string') {
-          await fs.promises.writeFile(path.join(appDir, 'docker-compose.json'), app.compose);
+          const composeContent =
+            sourceRegistryHost && targetRegistryHost
+              ? this.rewriteComposeRegistryHost(app.compose, sourceRegistryHost, targetRegistryHost)
+              : app.compose;
+          await fs.promises.writeFile(path.join(appDir, 'docker-compose.json'), composeContent);
         }
 
         // Download app icon so getAppImage can serve it from metadata/logo.*
@@ -271,12 +304,25 @@ export class ReposHelpers {
       await this.ensureDirectoryWithPermissions(appPath);
 
       const files = data.files || {};
+      const sourceRegistryHost = this.normalizeRegistryHost(repoUrl);
+      const targetRegistryHost = this.normalizeRegistryHost(process.env.CI_CLOUD_REGISTRY_URL);
 
       if (Object.keys(files).length > 0) {
         for (const [filename, content] of Object.entries(files)) {
           const filePath = path.join(appPath, filename);
           await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
-          await fs.promises.writeFile(filePath, typeof content === 'string' ? content : JSON.stringify(content, null, 2));
+          let fileContent = typeof content === 'string' ? content : JSON.stringify(content, null, 2);
+
+          if (
+            sourceRegistryHost &&
+            targetRegistryHost &&
+            (filename === 'docker-compose.yml' || filename === 'docker-compose.json') &&
+            typeof content === 'string'
+          ) {
+            fileContent = this.rewriteComposeRegistryHost(fileContent, sourceRegistryHost, targetRegistryHost);
+          }
+
+          await fs.promises.writeFile(filePath, fileContent);
         }
       } else {
         this.logger.warn(`No app files found in response for ${appSlug}`);

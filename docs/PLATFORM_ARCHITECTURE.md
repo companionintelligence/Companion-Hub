@@ -579,4 +579,4 @@ App data, configuration files, Docker volumes, database contents, and backups al
 | Staging | `portal.companionintel.com` | `.env.staging` | `ci-cloud-db-staging` | `ci-registry-staging` | staging /v2 |
 | Production | `portal.ci.computer` | `.env.prod` | `ci-cloud-db-prod` | `ci-registry-prod` | prod /v2 |
 
-Hub environments (`local`, `dev`, `staging`, `prod`) each point to their corresponding Portal via the `CI_CLOUD_URL` environment variable.
+Hub environments (`local`, `dev`, `staging`, `prod`) each point to their corresponding Portal via the `CI_CLOUD_URL` environment variable. When large OCI layer downloads are impacted by Cloudflare edge chunking limits, the Hub can optionally rewrite marketplace compose image hosts to a direct registry origin by setting `CI_CLOUD_REGISTRY_URL`.

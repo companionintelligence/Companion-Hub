@@ -40,6 +40,7 @@ describe('ReposHelpers', () => {
   let filesystemService = mock<FilesystemService>();
   const logger = mockDeep<LoggerService>();
   let registrationService = mock<RegistrationService>();
+  const originalRegistryUrl = process.env.CI_CLOUD_REGISTRY_URL;
 
   // Mock fetch
   const fetchMock = vi.fn();
@@ -74,6 +75,11 @@ describe('ReposHelpers', () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+    if (originalRegistryUrl === undefined) {
+      delete process.env.CI_CLOUD_REGISTRY_URL;
+    } else {
+      process.env.CI_CLOUD_REGISTRY_URL = originalRegistryUrl;
+    }
   });
 
   describe('pullRepo with ci_cloud_api', () => {
@@ -128,6 +134,24 @@ describe('ReposHelpers', () => {
       expect(writtenConfig).toHaveProperty('categories', ['utilities']);
       expect(writtenConfig).toHaveProperty('port', 8080);
       expect(writtenConfig).toHaveProperty('supported_architectures', ['amd64', 'arm64']);
+    });
+
+    it('should rewrite compose image registry host when CI_CLOUD_REGISTRY_URL is set', async () => {
+      process.env.CI_CLOUD_REGISTRY_URL = 'https://registry-origin.ci.computer';
+
+      const appsData = [{ slug: 'app1', name: 'App 1', compose: 'services:\n  app:\n    image: cloud.api/team/app:1.0.0' }];
+
+      fetchMock.mockResolvedValue({
+        ok: true,
+        json: async () => appsData,
+      });
+
+      await service.pullRepo('https://cloud.api', 'ci-marketplace', 'ci_cloud_api');
+
+      expect(fs.promises.writeFile).toHaveBeenCalledWith(
+        expect.stringContaining('app1/docker-compose.json'),
+        expect.stringContaining('image: registry-origin.ci.computer/team/app:1.0.0'),
+      );
     });
   });
 
@@ -273,6 +297,27 @@ describe('ReposHelpers', () => {
 
       expect(result.success).toBe(true);
       expect(fs.promises.writeFile).toHaveBeenCalledWith(expect.stringContaining('exact-app/exact.txt'), exactContent);
+    });
+
+    it('should rewrite install docker-compose registry host when CI_CLOUD_REGISTRY_URL is set', async () => {
+      process.env.CI_CLOUD_REGISTRY_URL = 'registry-origin.ci.computer';
+
+      fetchMock.mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          files: {
+            'docker-compose.yml': 'services:\n  app:\n    image: cloud.api/team/app:2.0.0',
+          },
+        }),
+      });
+
+      const result = await service.downloadAppFiles('https://cloud.api', 'repo1', 'rewrite-app');
+
+      expect(result.success).toBe(true);
+      expect(fs.promises.writeFile).toHaveBeenCalledWith(
+        expect.stringContaining('rewrite-app/docker-compose.yml'),
+        'services:\n  app:\n    image: registry-origin.ci.computer/team/app:2.0.0',
+      );
     });
 
     it('should create directories before writing files', async () => {
