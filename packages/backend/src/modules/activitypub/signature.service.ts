@@ -1,4 +1,5 @@
 import { createHash, createSign, createVerify } from 'node:crypto';
+import { lookup } from 'node:dns/promises';
 import net from 'node:net';
 import { Injectable } from '@nestjs/common';
 import type { Request } from 'express';
@@ -101,13 +102,28 @@ export class SignatureService {
     };
   }
 
-  async fetchRemoteActor(actorUri: string): Promise<Record<string, unknown>> {
+  private async validateRemoteActorUrl(actorUri: string): Promise<URL> {
     const url = new URL(actorUri);
-    if (url.protocol !== 'https:' || isPrivateIp(url.hostname)) {
+    if (url.protocol !== 'https:' || url.username || url.password || url.hash || isPrivateIp(url.hostname)) {
       throw new Error('Only public HTTPS actor URLs are allowed');
     }
 
-    const response = await fetch(actorUri, {
+    if (url.port && url.port !== '443') {
+      throw new Error('Only default HTTPS ports are allowed for remote actors');
+    }
+
+    const resolved = await lookup(url.hostname, { all: true });
+    if (resolved.length === 0 || resolved.some((entry) => isPrivateIp(entry.address))) {
+      throw new Error('Remote actor hostname resolves to a private address');
+    }
+
+    return new URL(url.toString());
+  }
+
+  async fetchRemoteActor(actorUri: string): Promise<Record<string, unknown>> {
+    const safeUrl = await this.validateRemoteActorUrl(actorUri);
+
+    const response = await fetch(safeUrl, {
       headers: {
         Accept: 'application/activity+json, application/ld+json; profile="https://www.w3.org/ns/activitystreams"',
       },
