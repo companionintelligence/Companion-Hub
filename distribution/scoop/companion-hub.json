@@ -1,0 +1,32 @@
+// Scoop bucket manifest for Companion Hub
+// To publish: fork https://github.com/ScoopInstaller/Extras or create your own bucket at
+// companionintelligence/scoop-bucket and submit a PR to Extras.
+//
+// Install: scoop bucket add companionintelligence https://github.com/companionintelligence/scoop-bucket
+//          scoop install companion-hub
+//
+// NOTE: Scoop JSON does not support comments — this header block is for documentation only.
+// Remove it before publishing to a real bucket.
+{
+  "version": "0.2.4",
+  "description": "AI-powered companion intelligence hub",
+  "homepage": "https://github.com/companionintelligence/CI-Hub",
+  "license": "Proprietary",
+  "url": "https://github.com/companionintelligence/CI-Hub/releases/download/v0.2.4/Companion.Hub_0.2.4_x64-setup.exe",
+  "hash": "TODO_SHA256_NSIS_EXE",
+  "installer": {
+    "script": "& \"$dir\\Companion.Hub_0.2.4_x64-setup.exe\" /S"
+  },
+  "shortcuts": [
+    ["Companion Hub\\Companion Hub.exe", "Companion Hub"]
+  ],
+  "uninstaller": {
+    "script": "& \"$dir\\uninstall.exe\" /S"
+  },
+  "checkver": {
+    "github": "https://github.com/companionintelligence/CI-Hub"
+  },
+  "autoupdate": {
+    "url": "https://github.com/companionintelligence/CI-Hub/releases/download/v$version/Companion.Hub_$version_x64-setup.exe"
+  }
+}
