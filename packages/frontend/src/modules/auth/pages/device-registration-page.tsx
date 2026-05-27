@@ -2,13 +2,16 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { Button } from '@/components/ui/Button';
 import { Alert, AlertDescription } from '@/components/ui/Alert/Alert';
+import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
 import { AlertCircle, CheckCircle2, ChevronRight, Copy, Loader2 } from 'lucide-react';
 import { apiFetch } from '@/lib/api-fetch';
+import { openExternal } from '@/lib/helpers/open-external';
 import type { RegistrationStatus } from '@/lib/registration-status';
 import { isRegistrationOperational, isRegistrationPending } from '@/lib/registration-status';
 import toast from 'react-hot-toast';
 
-const DEFAULT_PORTAL_URL = 'https://hub.companionintelligence.com';
+const DEFAULT_PORTAL_URL =
+  (import.meta.env.CI_CLOUD_URL as string | undefined)?.trim()?.replace(/\/+$/, '') || 'https://hub.companionintelligence.com';
 const STATUS_POLL_INTERVAL_MS = 3000;
 const HEADLESS_POLL_INTERVAL_MS = 5000; // slower poll when idle, waiting for external registration
 const DOMAIN_PROBE_INTERVAL_MS = 5000;
@@ -72,11 +75,13 @@ export default function DeviceRegistrationPage() {
   const [deviceId, setDeviceId] = useState<string | null>(null);
   const [portalBaseUrl, setPortalBaseUrl] = useState<string>(DEFAULT_PORTAL_URL);
   const [isLoading, setIsLoading] = useState(true);
+  const [isDeviceInfoLoading, setIsDeviceInfoLoading] = useState(false);
   const [deviceInfoError, setDeviceInfoError] = useState<string | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
 
   const [registrationStatus, setRegistrationStatus] = useState<RegistrationStatus | null>(null);
   const [pairingCode, setPairingCode] = useState('');
+  const [showManualCodeEntry, setShowManualCodeEntry] = useState(false);
   const [isPairing, setIsPairing] = useState(false);
   const [pairingError, setPairingError] = useState<string | null>(null);
   const [redirectStatus, setRedirectStatus] = useState<string>('Setting up your Hub...');
@@ -87,9 +92,11 @@ export default function DeviceRegistrationPage() {
   const isTauri = '__TAURI_INTERNALS__' in window;
 
   const loadDeviceInfo = useCallback(async () => {
+    setIsDeviceInfoLoading(true);
     try {
       const deviceRes = await apiFetch('/api/registration/device-id');
       if (!deviceRes.ok) {
+        setDeviceId(null);
         setDeviceInfoError('Failed to get device information');
         return;
       }
@@ -103,7 +110,10 @@ export default function DeviceRegistrationPage() {
       setDeviceInfoError(null);
     } catch (error) {
       console.error(error);
+      setDeviceId(null);
       setDeviceInfoError('Failed to get device information');
+    } finally {
+      setIsDeviceInfoLoading(false);
     }
   }, []);
 
@@ -127,7 +137,7 @@ export default function DeviceRegistrationPage() {
         clearRegisteredCache();
 
         if (loadDeviceData && status.phase === 'unregistered') {
-          await loadDeviceInfo();
+          void loadDeviceInfo();
         }
 
         return status;
@@ -257,10 +267,10 @@ export default function DeviceRegistrationPage() {
   }, [finishRegistrationFlow, navigate, registrationStatus]);
 
   useEffect(() => {
-    if (!isLoading && registrationStatus?.phase === 'unregistered' && deviceId && pairingInputRef.current) {
+    if (!isLoading && registrationStatus?.phase === 'unregistered' && showManualCodeEntry && pairingInputRef.current) {
       pairingInputRef.current.focus();
     }
-  }, [deviceId, isLoading, registrationStatus]);
+  }, [isLoading, registrationStatus, showManualCodeEntry]);
 
   const doPair = useCallback(
     async (code: string) => {
@@ -319,6 +329,7 @@ export default function DeviceRegistrationPage() {
             return;
           }
 
+          setShowManualCodeEntry(true);
           setPairingCode(code);
           void doPair(code);
         });
@@ -359,7 +370,30 @@ export default function DeviceRegistrationPage() {
     }
   };
 
-  const portalUrl = portalBaseUrl || DEFAULT_PORTAL_URL;
+  const buildPortalUrl = useCallback(
+    (path: '/signup' | '/login', destination: '/setup/org' | '/setup/device') => {
+      if (!deviceId) {
+        return null;
+      }
+
+      return `${portalBaseUrl || DEFAULT_PORTAL_URL}${path}?destination=${destination}#deviceId=${encodeURIComponent(deviceId)}`;
+    },
+    [deviceId, portalBaseUrl],
+  );
+
+  const handleOpenPortal = useCallback(
+    async (path: '/signup' | '/login', destination: '/setup/org' | '/setup/device') => {
+      const url = buildPortalUrl(path, destination);
+      if (!url) {
+        return;
+      }
+
+      await openExternal(url);
+    },
+    [buildPortalUrl],
+  );
+
+  const portalActionsDisabled = isDeviceInfoLoading || !deviceId;
 
   if (isLoading) {
     return (
@@ -441,17 +475,50 @@ export default function DeviceRegistrationPage() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="mx-auto max-w-3xl space-y-6">
+      <section className="rounded-xl border border-border/60 bg-muted/20 p-5 md:p-6">
+        <h2 className="text-xl font-semibold text-foreground">Register this Hub</h2>
+        <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+          Use Portal to finish account, organization, and device setup, then come back here to complete the pairing handshake.
+        </p>
+
+        <div className="mt-5 space-y-2">
+          <p className="text-sm text-muted-foreground">Current Device ID:</p>
+          <div className="flex items-center gap-2 rounded-lg border border-border/60 bg-background/60 px-3 py-2">
+            <Skeleton loading={isDeviceInfoLoading} className="h-5 flex-1 rounded-md">
+              <p className="min-w-0 flex-1 break-all font-mono text-sm text-foreground">{deviceId ?? 'Loading device ID...'}</p>
+            </Skeleton>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 shrink-0 text-muted-foreground hover:text-foreground"
+              disabled={!deviceId}
+              onClick={() => void handleCopyDeviceId()}
+              aria-label="Copy device ID"
+              title="Copy device ID"
+            >
+              <Copy className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+      </section>
+
       <div className="grid grid-cols-1 items-stretch gap-4 md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] md:gap-5">
         <section className="flex flex-col rounded-xl border border-border/60 bg-muted/20 p-5">
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-foreground">Step 1: Get your pairing code</h2>
+          <h3 className="text-sm font-semibold uppercase tracking-wide text-foreground">Create your admin account</h3>
           <p className="mt-3 flex-1 text-sm leading-relaxed text-muted-foreground">
-            Log into your Companion Account and create a device. Copy the device&apos;s pairing code and return here.
+            New to Companion Intelligence? Create your account and connect this Hub in a few steps.
           </p>
-          <Button asChild className="mt-5 w-full" intent="primary">
-            <a href={portalUrl} target="_blank" rel="noopener noreferrer">
-              Login to Companion Account
-            </a>
+          <Button
+            type="button"
+            className="mt-5 w-full"
+            intent="primary"
+            disabled={portalActionsDisabled}
+            loading={isDeviceInfoLoading}
+            onClick={() => void handleOpenPortal('/signup', '/setup/org')}
+          >
+            Create your admin account
           </Button>
         </section>
 
@@ -460,30 +527,38 @@ export default function DeviceRegistrationPage() {
         </div>
 
         <section className="flex flex-col rounded-xl border border-border/60 bg-muted/20 p-5">
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-foreground">Step 2: Connect this device</h2>
-          <p className="mt-3 text-sm leading-relaxed text-muted-foreground">Enter the code and use the Current Device ID to complete registration.</p>
+          <h3 className="text-sm font-semibold uppercase tracking-wide text-foreground">Connect to existing account</h3>
+          <p className="mt-3 flex-1 text-sm leading-relaxed text-muted-foreground">
+            Already have an account? Log in to link this Hub to your organization.
+          </p>
+          <Button
+            type="button"
+            className="mt-5 w-full"
+            variant="outline"
+            disabled={portalActionsDisabled}
+            loading={isDeviceInfoLoading}
+            onClick={() => void handleOpenPortal('/login', '/setup/device')}
+          >
+            Connect to existing account
+          </Button>
+        </section>
+      </div>
 
-          <div className="mt-5 space-y-4">
-            <div className="space-y-2">
-              <p className="text-sm text-muted-foreground">Current Device ID:</p>
-              <div className="flex items-center gap-2 rounded-lg border border-border/60 bg-background/60 px-3 py-2">
-                <p className="min-w-0 flex-1 break-all font-mono text-sm text-foreground">{deviceId ?? 'Loading device ID...'}</p>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="h-8 w-8 shrink-0 text-muted-foreground hover:text-foreground"
-                  disabled={!deviceId}
-                  onClick={() => void handleCopyDeviceId()}
-                  aria-label="Copy device ID"
-                  title="Copy device ID"
-                >
-                  <Copy className="h-4 w-4" />
-                </Button>
-              </div>
-            </div>
+      <div className="space-y-4 text-center">
+        <button
+          type="button"
+          className="text-sm font-medium text-muted-foreground underline underline-offset-4 transition-colors hover:text-foreground"
+          onClick={() => setShowManualCodeEntry(true)}
+        >
+          Didn&apos;t work? Use a code
+        </button>
 
-            <div className="space-y-2">
+        {showManualCodeEntry && (
+          <section className="mx-auto max-w-xl rounded-xl border border-border/60 bg-muted/20 p-5 text-left">
+            <h3 className="text-sm font-semibold uppercase tracking-wide text-foreground">Step 2: Connect this device</h3>
+            <p className="mt-3 text-sm leading-relaxed text-muted-foreground">Enter the pairing code from Portal to finish registration.</p>
+
+            <div className="mt-5 space-y-2">
               <label htmlFor="pairing-code" className="block text-sm text-muted-foreground">
                 Enter Pairing Code:
               </label>
@@ -516,8 +591,8 @@ export default function DeviceRegistrationPage() {
               </div>
               {pairingError && <p className="text-[0.8rem] font-medium text-destructive">{pairingError}</p>}
             </div>
-          </div>
-        </section>
+          </section>
+        )}
       </div>
 
       {statusError && (
@@ -541,14 +616,6 @@ export default function DeviceRegistrationPage() {
           </AlertDescription>
         </Alert>
       )}
-
-      <p className="text-center text-xs text-muted-foreground">
-        Don&apos;t have an account yet?{' '}
-        <a href={`${portalUrl}/signup`} target="_blank" rel="noopener noreferrer" className="font-medium text-primary underline hover:no-underline">
-          Create one free
-        </a>{' '}
-        — it only takes a moment, and your data stays on this device.
-      </p>
     </div>
   );
 }
