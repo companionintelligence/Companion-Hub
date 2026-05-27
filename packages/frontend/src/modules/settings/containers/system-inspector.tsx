@@ -14,6 +14,9 @@ import {
   XCircle,
   Clock,
   Container,
+  Lock,
+  Shield,
+  ShieldAlert,
 } from 'lucide-react';
 import { useState } from 'react';
 
@@ -57,6 +60,39 @@ interface InspectionData {
   containers: ContainerInfo[];
   ports: { allocations: PortStatus[]; untracked: Array<{ port: number; process: string }> };
   health: SystemHealth;
+  security: {
+    summary: {
+      score: number;
+      findings: number;
+      critical: number;
+      high: number;
+      medium: number;
+      low: number;
+      cloudflareExposedApps: number;
+      tailscaleExposedApps: number;
+      localApps: number;
+    };
+    overview: string;
+    findings: Array<{
+      id: string;
+      severity: 'critical' | 'high' | 'medium' | 'low';
+      title: string;
+      description: string;
+      remediation: string;
+      appName?: string;
+      exposure: 'cloudflare' | 'tailscale' | 'local' | 'host';
+    }>;
+    apps: Array<{
+      appUrn: string;
+      appName: string;
+      status: string;
+      exposure: 'cloudflare' | 'tailscale' | 'local' | 'host';
+      sensitivity: 'high' | 'medium' | 'standard';
+      score: number;
+      findings: number;
+      topFinding?: string;
+    }>;
+  };
   timestamp: string;
 }
 
@@ -142,7 +178,141 @@ const Badge = ({ children, variant = 'default' }: { children: React.ReactNode; v
   return <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${colors[variant]}`}>{children}</span>;
 };
 
+const severityVariant = (severity: 'critical' | 'high' | 'medium' | 'low'): 'danger' | 'warning' | 'default' => {
+  if (severity === 'critical' || severity === 'high') return 'danger';
+  if (severity === 'medium') return 'warning';
+  return 'default';
+};
+
+const exposureLabel = (exposure: 'cloudflare' | 'tailscale' | 'local' | 'host') => {
+  if (exposure === 'cloudflare') return 'Cloudflare';
+  if (exposure === 'tailscale') return 'Tailscale';
+  if (exposure === 'host') return 'Host';
+  return 'Local';
+};
+
 // ─── System Health Section ───────────────────────────────────────────────────
+
+const SecurityOverviewSection = ({ security }: { security: InspectionData['security'] }) => (
+  <div className="flex flex-col gap-4">
+    <div className="flex items-center gap-2">
+      <Shield className="h-5 w-5 text-primary" />
+      <h3 className="text-base font-semibold">Security Digest</h3>
+      <Badge variant={security.summary.critical > 0 ? 'danger' : security.summary.high > 0 ? 'warning' : 'success'}>
+        {security.summary.score}/100
+      </Badge>
+    </div>
+
+    <p className="text-sm text-muted-foreground">{security.overview}</p>
+
+    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <StatCard icon={ShieldAlert} title="Risk Score" value={`${security.summary.score}/100`} subtitle="Higher is better" />
+      <StatCard
+        icon={AlertTriangle}
+        title="Findings"
+        value={`${security.summary.findings}`}
+        subtitle={`${security.summary.critical} critical · ${security.summary.high} high`}
+      />
+      <StatCard
+        icon={Network}
+        title="Internet Exposed"
+        value={`${security.summary.cloudflareExposedApps}`}
+        subtitle="Apps reachable through Cloudflare"
+        color="blue"
+      />
+      <StatCard
+        icon={Lock}
+        title="Private / Local"
+        value={`${security.summary.tailscaleExposedApps + security.summary.localApps}`}
+        subtitle={`${security.summary.tailscaleExposedApps} Tailscale · ${security.summary.localApps} local`}
+        color="green"
+      />
+    </div>
+  </div>
+);
+
+const SecurityFindingsSection = ({ security }: { security: InspectionData['security'] }) => (
+  <div className="flex flex-col gap-4">
+    <div className="flex items-center gap-2">
+      <ShieldAlert className="h-5 w-5 text-primary" />
+      <h3 className="text-base font-semibold">Contextual Findings</h3>
+      <Badge>{security.findings.length}</Badge>
+    </div>
+
+    {security.findings.length === 0 ? (
+      <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+        No security findings detected from the current configuration, installed apps, and runtime posture.
+      </div>
+    ) : (
+      <div className="grid gap-3">
+        {security.findings.map((finding) => (
+          <div key={finding.id} className="rounded-lg border p-4 flex flex-col gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant={severityVariant(finding.severity)}>{finding.severity.toUpperCase()}</Badge>
+              <Badge>{exposureLabel(finding.exposure)}</Badge>
+              {finding.appName && <Badge variant="default">{finding.appName}</Badge>}
+            </div>
+            <div className="font-medium">{finding.title}</div>
+            <p className="text-sm text-muted-foreground">{finding.description}</p>
+            <p className="text-sm">
+              <span className="font-medium">Recommended action:</span> {finding.remediation}
+            </p>
+          </div>
+        ))}
+      </div>
+    )}
+  </div>
+);
+
+const AppSecuritySection = ({ security }: { security: InspectionData['security'] }) => (
+  <div className="flex flex-col gap-4">
+    <div className="flex items-center gap-2">
+      <Shield className="h-5 w-5 text-primary" />
+      <h3 className="text-base font-semibold">Per-App Posture</h3>
+      <Badge>{security.apps.length} apps</Badge>
+    </div>
+
+    {security.apps.length === 0 ? (
+      <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+        Install an app to start generating per-app security posture.
+      </div>
+    ) : (
+      <div className="rounded-lg border overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b bg-muted/50">
+                <th className="text-left p-2 pl-3 font-medium text-muted-foreground">App</th>
+                <th className="text-left p-2 font-medium text-muted-foreground">Exposure</th>
+                <th className="text-left p-2 font-medium text-muted-foreground">Score</th>
+                <th className="text-left p-2 font-medium text-muted-foreground hidden sm:table-cell">Sensitivity</th>
+                <th className="text-left p-2 pr-3 font-medium text-muted-foreground hidden md:table-cell">Top Context</th>
+              </tr>
+            </thead>
+            <tbody>
+              {security.apps.map((app) => (
+                <tr key={app.appUrn} className="border-b last:border-0 hover:bg-muted/30 transition-colors">
+                  <td className="p-2 pl-3">
+                    <div className="font-medium">{app.appName}</div>
+                    <div className="text-xs text-muted-foreground">{app.status}</div>
+                  </td>
+                  <td className="p-2">
+                    <Badge>{exposureLabel(app.exposure)}</Badge>
+                  </td>
+                  <td className="p-2">
+                    <Badge variant={app.score < 60 ? 'danger' : app.score < 80 ? 'warning' : 'success'}>{app.score}/100</Badge>
+                  </td>
+                  <td className="p-2 hidden sm:table-cell capitalize">{app.sensitivity}</td>
+                  <td className="p-2 pr-3 hidden md:table-cell text-xs text-muted-foreground">{app.topFinding || 'No current findings'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    )}
+  </div>
+);
 
 const SystemHealthSection = ({ health }: { health: SystemHealth }) => (
   <div className="flex flex-col gap-4">
@@ -468,6 +638,9 @@ export const SystemInspectorContainer = () => {
       </div>
 
       <SystemHealthSection health={data.health} />
+      <SecurityOverviewSection security={data.security} />
+      <SecurityFindingsSection security={data.security} />
+      <AppSecuritySection security={data.security} />
       <ContainersSection containers={data.containers} />
       <PortManagementSection ports={data.ports} />
     </div>
