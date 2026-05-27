@@ -320,6 +320,33 @@ describe('HardwareInspectorService', () => {
       expect(refreshed.gpu.vramMb).toBe(8192);
       expect(refreshed.tier).toBe('medium');
     });
+
+    it('limits incomplete discrete GPU profile re-detection with cooldown', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+
+      const incompleteProfile = {
+        gpu: { available: true, vendor: 'nvidia', model: 'RTX 3080', vramMb: 0, unifiedMemory: false, driverVersion: '', runtimeAvailable: true },
+        npu: { available: false, model: '' },
+        ram: { totalMb: 32768, availableMb: 16384 },
+        cpu: { arch: 'x86_64', cores: 16, model: 'AMD Ryzen' },
+        effectiveInferenceMemoryMb: 0,
+        tier: 'low',
+      } as const;
+
+      const detectSpy = vi.spyOn(service, 'detect').mockResolvedValue(incompleteProfile as any);
+      (service as any).cachedProfile = incompleteProfile;
+
+      await service.getProfile();
+      await service.getProfile();
+      expect(detectSpy).toHaveBeenCalledTimes(1);
+
+      vi.setSystemTime(new Date('2026-01-01T00:06:00.000Z'));
+      await service.getProfile();
+      expect(detectSpy).toHaveBeenCalledTimes(2);
+
+      vi.useRealTimers();
+    });
   });
 
   // ─── RAM Detection ─────────────────────────────────────────────────

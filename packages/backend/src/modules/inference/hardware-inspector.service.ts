@@ -8,10 +8,12 @@ import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
 
 const execAsync = promisify(exec);
+const INCOMPLETE_GPU_PROFILE_REFRESH_COOLDOWN_MS = 5 * 60 * 1000;
 
 @Injectable()
 export class HardwareInspectorService implements OnModuleInit {
   private cachedProfile: HardwareProfile | null = null;
+  private lastIncompleteDiscreteGpuRefreshAt = 0;
 
   constructor(
     private readonly logger: LoggerService,
@@ -31,7 +33,20 @@ export class HardwareInspectorService implements OnModuleInit {
 
   /** Get the cached hardware profile, or re-detect if not available */
   async getProfile(): Promise<HardwareProfile> {
-    if (!this.cachedProfile || this.hasIncompleteDiscreteGpuProfile(this.cachedProfile)) {
+    if (!this.cachedProfile) {
+      this.cachedProfile = await this.detect();
+      return this.cachedProfile;
+    }
+
+    if (this.hasIncompleteDiscreteGpuProfile(this.cachedProfile)) {
+      const now = Date.now();
+      if (now - this.lastIncompleteDiscreteGpuRefreshAt >= INCOMPLETE_GPU_PROFILE_REFRESH_COOLDOWN_MS) {
+        this.lastIncompleteDiscreteGpuRefreshAt = now;
+        this.cachedProfile = await this.detect();
+      }
+    }
+
+    if (!this.cachedProfile) {
       this.cachedProfile = await this.detect();
     }
     return this.cachedProfile;

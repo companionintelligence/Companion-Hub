@@ -50,6 +50,38 @@ async function navigateToAiSetupStep(page: import('@playwright/test').Page) {
   });
 }
 
+/** Advance from AI Setup to Install, passing through Select Apps and Private VPN. */
+async function advanceFromAiSetupToInstall(page: import('@playwright/test').Page, action: 'continue' | 'skip') {
+  if (action === 'continue') {
+    await page.getByTestId('ai-continue-btn').click();
+  } else {
+    await page.getByTestId('ai-skip-btn').click();
+  }
+
+  // Step 3: Select Apps
+  await expect(page.getByText('Review Your Selection')).toBeVisible({ timeout: 15000 });
+  await page
+    .getByRole('button', { name: /install|continue/i })
+    .last()
+    .click();
+
+  // Step 4: Private VPN (or already on Install, depending on environment state)
+  const installVisible = await page
+    .getByTestId('install-progress-text')
+    .isVisible()
+    .catch(() => false);
+  if (!installVisible) {
+    await expect(page.getByRole('button', { name: /skip|continue/i }).last()).toBeVisible({ timeout: 15000 });
+    await page
+      .getByRole('button', { name: /skip|continue/i })
+      .last()
+      .click();
+  }
+
+  // Step 5: Install
+  await expect(page.getByTestId('install-progress-text')).toBeVisible({ timeout: 15000 });
+}
+
 test.describe('Onboarding AI Setup', () => {
   test.beforeEach(async () => {
     await clearDatabase();
@@ -234,11 +266,7 @@ test.describe('Onboarding AI Setup', () => {
     await navigateToAiSetupStep(page);
     await expect(page.getByTestId('ai-setup-step')).toBeVisible({ timeout: 30000 });
 
-    // Click Continue to move to the Install step
-    await page.getByTestId('ai-continue-btn').click();
-
-    // Install step should be visible
-    await expect(page.getByTestId('install-progress-text')).toBeVisible({ timeout: 15000 });
+    await advanceFromAiSetupToInstall(page, 'continue');
 
     // If models were selected, the AI phase section should appear.
     // AI phase may or may not be visible depending on model selection —
@@ -250,11 +278,7 @@ test.describe('Onboarding AI Setup', () => {
     await navigateToAiSetupStep(page);
     await expect(page.getByTestId('ai-setup-step')).toBeVisible({ timeout: 30000 });
 
-    // Click "Skip AI Setup"
-    await page.getByTestId('ai-skip-btn').click();
-
-    // Should advance to Install step (step 5)
-    await expect(page.getByTestId('install-progress-text')).toBeVisible({ timeout: 15000 });
+    await advanceFromAiSetupToInstall(page, 'skip');
 
     // AI phase section should NOT be present when skipped
     await expect(page.getByTestId('ai-phase-section')).not.toBeVisible();
@@ -264,10 +288,9 @@ test.describe('Onboarding AI Setup', () => {
     await navigateToAiSetupStep(page);
     await expect(page.getByTestId('ai-setup-step')).toBeVisible({ timeout: 30000 });
 
-    // Skip AI setup
-    await page.getByTestId('ai-skip-btn').click();
+    await advanceFromAiSetupToInstall(page, 'skip');
 
-    // Wait for install step, then continue
+    // Wait for install step, then continue to Complete
     await expect(page.getByTestId('install-continue-btn')).toBeVisible({ timeout: 60000 });
     await page.getByTestId('install-continue-btn').click();
 
