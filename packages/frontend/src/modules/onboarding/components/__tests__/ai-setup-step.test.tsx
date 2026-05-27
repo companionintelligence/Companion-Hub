@@ -295,4 +295,35 @@ describe('AiSetupStep', () => {
     const profileCalls = mockApiFetch.mock.calls.filter(([url]) => url === '/api/inference/onboarding-profile');
     expect(profileCalls).toHaveLength(1);
   });
+
+  it('shows generic non-Linux NVIDIA guidance without Linux shell commands', async () => {
+    const runtimeMissingProfile: HardwareProfileResponse = {
+      ...highTierProfile,
+      hardware: {
+        ...highTierProfile.hardware,
+        gpu: {
+          ...highTierProfile.hardware.gpu,
+          runtimeAvailable: false,
+        },
+      },
+    };
+
+    const platformDescriptor = Object.getOwnPropertyDescriptor(window.navigator, 'platform');
+    Object.defineProperty(window.navigator, 'platform', {
+      configurable: true,
+      value: 'Win32',
+    });
+
+    mockApiFetch.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(runtimeMissingProfile) });
+    render(<AiSetupStep onComplete={onComplete} onSkip={onSkip} onBack={onBack} />);
+
+    await waitFor(() => expect(screen.getByTestId('nvidia-runtime-warning')).toBeInTheDocument());
+    expect(screen.getByText(/Docker Desktop and confirm WSL2 GPU support is enabled/i)).toBeInTheDocument();
+    expect(screen.queryByText(/sudo apt-get update/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/sudo systemctl restart docker/i)).not.toBeInTheDocument();
+
+    if (platformDescriptor) {
+      Object.defineProperty(window.navigator, 'platform', platformDescriptor);
+    }
+  });
 });

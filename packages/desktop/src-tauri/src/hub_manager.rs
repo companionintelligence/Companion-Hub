@@ -271,6 +271,7 @@ fn refresh_nvidia_host_probe_cache(data_dir: &Path) {
 
     #[cfg(not(target_os = "linux"))]
     {
+        clear_stale_probe();
         return;
     }
 

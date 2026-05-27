@@ -9,7 +9,7 @@ type NvidiaProbe = {
   model: string;
   vramMb: number;
   driverVersion: string;
-  source: 'host-nvidia-smi';
+  source: 'host-nvidia-smi' | 'host-windows-wmi';
   updatedAt: string;
 };
 
@@ -189,6 +189,39 @@ function collectHostNvidiaProbe(): NvidiaProbe | null {
   };
 }
 
+function collectHostNvidiaProbeWindows(): NvidiaProbe | null {
+  const probe = runCapture('powershell.exe', [
+    '-NoProfile',
+    '-NonInteractive',
+    '-Command',
+    "$gpu = Get-CimInstance Win32_VideoController | Where-Object { $_.Name -match 'NVIDIA' } | Select-Object -First 1 Name,AdapterRAM,DriverVersion; if ($null -eq $gpu) { exit 3 }; $gpu | ConvertTo-Json -Compress",
+  ]);
+  if (!probe.ok) return null;
+
+  try {
+    const parsed = JSON.parse(probe.stdout) as {
+      Name?: string;
+      AdapterRAM?: number;
+      DriverVersion?: string;
+    };
+    const model = parsed.Name?.trim() || '';
+    if (!model) return null;
+
+    const vramMb =
+      typeof parsed.AdapterRAM === 'number' && Number.isFinite(parsed.AdapterRAM) ? Math.max(0, Math.floor(parsed.AdapterRAM / (1024 * 1024))) : 0;
+
+    return {
+      model,
+      vramMb,
+      driverVersion: parsed.DriverVersion?.trim() || '',
+      source: 'host-windows-wmi',
+      updatedAt: new Date().toISOString(),
+    };
+  } catch {
+    return null;
+  }
+}
+
 function detectOsFamily(): OsFamily {
   const info = parseOsRelease();
   const id = (info.ID || '').toLowerCase();
@@ -319,13 +352,20 @@ function main() {
   const platform = process.platform;
 
   if (platform === 'win32') {
-    clearNvidiaProbe();
     if (!hasNvidiaGpuWindows()) {
+      clearNvidiaProbe();
       console.log('init-gpu-runtime: No NVIDIA GPU detected on Windows. Skipping GPU runtime setup.');
       return;
     }
 
     console.log('init-gpu-runtime: NVIDIA GPU detected on Windows.');
+    const hostProbe = collectHostNvidiaProbeWindows();
+    if (hostProbe) {
+      writeNvidiaProbe(hostProbe);
+    } else {
+      console.warn('init-gpu-runtime: Failed to collect Windows NVIDIA probe; leaving existing probe cache unchanged.');
+    }
+
     if (!hasCommand('docker')) {
       warnCpuFallback('Docker Desktop CLI is unavailable. Install or start Docker Desktop and retry.');
       return;
