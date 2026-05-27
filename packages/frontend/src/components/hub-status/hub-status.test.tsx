@@ -101,7 +101,14 @@ describe('getDockerDesktopGuideContent', () => {
     expect(getDockerDesktopGuideContent('windows', false)).toEqual({
       platformLabel: 'Windows',
       downloadUrl: 'https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe',
-      manualSteps: [
+      alreadyInstalledTitle: 'If Docker Desktop is already installed:',
+      alreadyInstalledSteps: [
+        'Open Docker Desktop from your Start Menu',
+        "Wait for Docker to start (you'll see the whale icon in your system tray)",
+        'Come back here — the Hub will continue automatically',
+      ],
+      notInstalledTitle: 'If Docker Desktop is NOT installed:',
+      notInstalledSteps: [
         'Download Docker Desktop for Windows',
         'Run the installer and follow the prompts',
         'Restart your computer if prompted',
@@ -116,7 +123,14 @@ describe('getDockerDesktopGuideContent', () => {
     expect(getDockerDesktopGuideContent('macos', true)).toEqual({
       platformLabel: 'Mac',
       downloadUrl: 'https://desktop.docker.com/mac/main/arm64/Docker.dmg',
-      manualSteps: [
+      alreadyInstalledTitle: 'If Docker Desktop is already installed:',
+      alreadyInstalledSteps: [
+        'Open Docker Desktop from your Applications folder',
+        "Wait for Docker to start (you'll see the whale icon in your system tray)",
+        'Come back here — the Hub will continue automatically',
+      ],
+      notInstalledTitle: 'If Docker Desktop is NOT installed:',
+      notInstalledSteps: [
         'Download Docker Desktop for Mac',
         'Open the .dmg and drag Docker to Applications',
         'Launch Docker Desktop and grant permissions',
@@ -139,11 +153,10 @@ describe('HubStatus Docker guidance', () => {
       'href',
       'https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe',
     );
-    expect(
-      screen.getByText(
-        'Download Docker Desktop for your Windows machine. Companion Hub will keep checking and continue automatically once Docker is ready.',
-      ),
-    ).toBeInTheDocument();
+    expect(screen.getByText('Docker Desktop is either not installed or not currently running.')).toBeInTheDocument();
+    expect(screen.getByText('If Docker Desktop is already installed:')).toBeInTheDocument();
+    expect(screen.getByText('Open Docker Desktop from your Start Menu')).toBeInTheDocument();
+    expect(screen.getByText('If Docker Desktop is NOT installed:')).toBeInTheDocument();
     expect(screen.getByText('Run the installer and follow the prompts')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Install Docker Desktop' })).not.toBeInTheDocument();
     expect(invoke).toHaveBeenCalledWith('get_hub_status_command');
@@ -158,6 +171,7 @@ describe('HubStatus Docker guidance', () => {
       'href',
       'https://desktop.docker.com/mac/main/arm64/Docker.dmg',
     );
+    expect(screen.getByText('Open Docker Desktop from your Applications folder')).toBeInTheDocument();
     expect(screen.getByText('Open the .dmg and drag Docker to Applications')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Install Docker Desktop' })).not.toBeInTheDocument();
   });
