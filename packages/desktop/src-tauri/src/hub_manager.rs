@@ -2168,7 +2168,10 @@ fn render_runtime_env_content(
     let cloud_url =
         option_env!("CI_HUB_CLOUD_URL").unwrap_or("https://hub.companionintelligence.com");
     let hub_version = option_env!("CI_HUB_BUILD_VERSION").unwrap_or("4.7.0");
-    let hub_image = get_non_empty_env_value(existing, "CI_HUB_IMAGE")
+    let hub_image = option_env!("CI_HUB_IMAGE")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
         .unwrap_or_else(|| image_for_domain(domain).to_string());
     let docker_platform = if cfg!(target_arch = "aarch64") {
         "linux/arm64"
@@ -3141,13 +3144,15 @@ mod tests {
     use super::docker_desktop_windows_install_script;
     use super::{
         append_desktop_log_for, classify_docker_access_result, clear_traefik_recreate_required,
-        clear_tunnel_token, desktop_log_path_for, format_command_output,
-        generate_container_docker_config, is_container_name_conflict, is_oci_runtime_error,
+        clear_tunnel_token, compat_hub_env_path_for, desktop_log_path_for,
+        ensure_runtime_env_state, format_command_output, generate_container_docker_config,
+        hub_env_path_for, is_container_name_conflict, is_oci_runtime_error,
         is_traefik_recreate_required, logs_open_target_for, managed_app_container_ps_args,
         mark_traefik_recreate_required, parse_container_ids, prepare_traefik_runtime_state,
-        seeded_traefik_config_contents, truncate_command_output, tunnel_dir_for,
-        tunnel_token_path_for, DockerAccessState, MAX_COMMAND_OUTPUT_CHARS, TRAEFIK_ACME_FILE,
-        TRAEFIK_CONFIG_FILE, TRAEFIK_DYNAMIC_CONFIG_SEED, TRAEFIK_DYNAMIC_FILE, TRAEFIK_TLS_DIR,
+        render_runtime_env_content, seeded_traefik_config_contents, truncate_command_output,
+        tunnel_dir_for, tunnel_token_path_for, DockerAccessState, MAX_COMMAND_OUTPUT_CHARS,
+        TRAEFIK_ACME_FILE, TRAEFIK_CONFIG_FILE, TRAEFIK_DYNAMIC_CONFIG_SEED, TRAEFIK_DYNAMIC_FILE,
+        TRAEFIK_TLS_DIR,
     };
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     use std::os::unix::fs::PermissionsExt;
@@ -3674,6 +3679,61 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
         assert!(
             tunnel_dir_for(tempdir.path()).exists(),
             "tunnel dir with sibling files should be preserved",
+        );
+    }
+
+    #[test]
+    fn runtime_env_recomputes_hub_image_instead_of_preserving_existing_value() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let mut existing = std::collections::HashMap::new();
+        existing.insert(
+            "CI_HUB_IMAGE".to_string(),
+            "ghcr.io/companionintelligence/ci-hub:legacy".to_string(),
+        );
+
+        let env_content = render_runtime_env_content(tempdir.path(), &existing);
+
+        assert!(
+            env_content.contains("CI_HUB_IMAGE=ghcr.io/companionintelligence/ci-hub:dev"),
+            "expected CI_HUB_IMAGE to be derived from current binary defaults",
+        );
+        assert!(
+            !env_content.contains("CI_HUB_IMAGE=ghcr.io/companionintelligence/ci-hub:legacy"),
+            "stale CI_HUB_IMAGE should not be preserved",
+        );
+    }
+
+    #[test]
+    fn runtime_env_migration_reads_compat_file_but_does_not_pin_legacy_hub_image() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let data_dir = tempdir.path();
+        let env_path = hub_env_path_for(data_dir);
+        let compat_env_path = compat_hub_env_path_for(data_dir);
+
+        if env_path == compat_env_path {
+            return;
+        }
+
+        std::fs::write(
+            &compat_env_path,
+            "ROOT_FOLDER_HOST=/legacy\nJWT_SECRET=secret\nPOSTGRES_PASSWORD=postgres\nCI_HUB_IMAGE=ghcr.io/companionintelligence/ci-hub:legacy\n",
+        )
+        .expect("write compat env");
+
+        let changed = ensure_runtime_env_state(data_dir, &env_path).expect("ensure runtime env");
+        assert!(changed);
+
+        let env_content = std::fs::read_to_string(&env_path).expect("read runtime env");
+        assert!(env_content.contains("ROOT_FOLDER_HOST=/legacy"));
+        assert!(env_content.contains("JWT_SECRET=secret"));
+        assert!(env_content.contains("POSTGRES_PASSWORD=postgres"));
+        assert!(
+            env_content.contains("CI_HUB_IMAGE=ghcr.io/companionintelligence/ci-hub:dev"),
+            "expected derived CI_HUB_IMAGE in migrated runtime env",
+        );
+        assert!(
+            !env_content.contains("CI_HUB_IMAGE=ghcr.io/companionintelligence/ci-hub:legacy"),
+            "legacy CI_HUB_IMAGE from compat file must not be preserved",
         );
     }
 }
