@@ -126,6 +126,88 @@ describe('HardwareInspectorService', () => {
       expect(profile.gpu.driverVersion).toBe('550.54.14');
     });
 
+    it('SHALL fallback to /proc/driver/nvidia when nvidia-smi is unavailable', async () => {
+      (si.graphics as any) = vi.fn().mockResolvedValue({
+        controllers: [{ vendor: 'Intel', model: 'Intel UHD Graphics', vram: 128, driverVersion: '1.0' }],
+      });
+      filesystemService.readTextFile.mockImplementation(async (filePath: string) => {
+        if (filePath === '/host/proc/meminfo') {
+          return 'MemTotal: 67108864\nMemAvailable: 50331648';
+        }
+        if (filePath === '/data/state/hardware/nvidia.json') {
+          return JSON.stringify({
+            model: 'NVIDIA GeForce RTX 3080 Laptop GPU',
+            vramMb: 8192,
+            driverVersion: '595.71.05',
+          });
+        }
+        return null;
+      });
+      execAsyncMock.mockImplementation(async (command: string) => {
+        if (command.includes('--query-gpu=name,memory.total,driver_version')) {
+          throw new Error('nvidia-smi missing');
+        }
+        if (command.includes('/proc/driver/nvidia/gpus/*/information')) {
+          return {
+            stdout: 'Model:           NVIDIA GeForce RTX 3080 Laptop GPU\nGPU UUID:        GPU-test\nGPU Firmware:    595.71.05\n',
+          };
+        }
+        if (command.includes('/proc/driver/nvidia/version')) {
+          return {
+            stdout: 'NVRM version: NVIDIA UNIX Open Kernel Module for x86_64  595.71.05  Release Build\n',
+          };
+        }
+        return { stdout: '{}' };
+      });
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 16, brand: 'Intel Core i7' });
+
+      const profile = await service.detect();
+
+      expect(profile.gpu.available).toBe(true);
+      expect(profile.gpu.vendor).toBe('nvidia');
+      expect(profile.gpu.model).toBe('NVIDIA GeForce RTX 3080 Laptop GPU');
+      expect(profile.gpu.vramMb).toBe(8192);
+      expect(profile.gpu.driverVersion).toBe('595.71.05');
+    });
+
+    it('SHALL fallback to cached host probe when nvidia-smi and procfs are unavailable', async () => {
+      (si.graphics as any) = vi.fn().mockResolvedValue({ controllers: [] });
+      filesystemService.readTextFile.mockImplementation(async (filePath: string) => {
+        if (filePath === '/host/proc/meminfo') {
+          return 'MemTotal: 67108864\nMemAvailable: 50331648';
+        }
+        if (filePath === '/data/state/hardware/nvidia.json') {
+          return JSON.stringify({
+            model: 'NVIDIA GeForce RTX 3080 Laptop GPU',
+            vramMb: 8192,
+            driverVersion: '595.71.05',
+          });
+        }
+        return null;
+      });
+      execAsyncMock.mockImplementation(async (command: string) => {
+        if (command.includes('--query-gpu=name,memory.total,driver_version')) {
+          throw new Error('nvidia-smi missing');
+        }
+        if (command.includes('/proc/driver/nvidia/gpus/*/information')) {
+          throw new Error('procfs missing');
+        }
+        if (command.includes('/proc/driver/nvidia/version')) {
+          throw new Error('procfs missing');
+        }
+        return { stdout: '{}' };
+      });
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 16, brand: 'Intel Core i7' });
+
+      const profile = await service.detect();
+
+      expect(profile.gpu.available).toBe(true);
+      expect(profile.gpu.vendor).toBe('nvidia');
+      expect(profile.gpu.model).toBe('NVIDIA GeForce RTX 3080 Laptop GPU');
+      expect(profile.gpu.vramMb).toBe(8192);
+      expect(profile.gpu.driverVersion).toBe('595.71.05');
+    });
+
     it('should detect AMD GPU vendor', async () => {
       (si.graphics as any) = vi.fn().mockResolvedValue({
         controllers: [{ vendor: 'Advanced Micro Devices', model: 'Radeon RX 7900 XTX', vram: 24576, driverVersion: '6.2.0' }],

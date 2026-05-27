@@ -22,8 +22,22 @@ function formatMemory(mb: number): string {
   return `${mb} MB`;
 }
 
+function getClientPlatform(): 'linux' | 'windows' | 'macos' | 'other' {
+  if (typeof navigator === 'undefined') return 'other';
+
+  const platform = `${navigator.userAgent} ${navigator.platform}`.toLowerCase();
+  if (platform.includes('win')) return 'windows';
+  if (platform.includes('mac')) return 'macos';
+  if (platform.includes('linux') || platform.includes('x11')) return 'linux';
+  return 'other';
+}
+
 export const HardwareProfileCard = ({ hardware, tier, onRescan, rescanning = false }: HardwareProfileCardProps) => {
   const badge = TIER_BADGES[tier];
+  const nvidiaRuntimeMissing = hardware.gpu.vendor === 'nvidia' && !hardware.gpu.runtimeAvailable;
+  const nvidiaRuntimeReady = hardware.gpu.vendor === 'nvidia' && hardware.gpu.runtimeAvailable;
+  const clientPlatform = getClientPlatform();
+  const showLinuxRuntimeSteps = clientPlatform === 'linux';
 
   return (
     <Card>
@@ -67,6 +81,97 @@ export const HardwareProfileCard = ({ hardware, tier, onRescan, rescanning = fal
             </div>
           </div>
         </div>
+
+        {nvidiaRuntimeMissing && (
+          <div className="mt-3 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-100" data-testid="nvidia-runtime-warning">
+            <p className="mb-2">
+              NVIDIA GPU detected, but GPU runtime is not ready yet. AI inference will run in CPU-only mode until setup completes.
+            </p>
+            <p className="mb-2">
+              Automatic setup runs during startup in non-interactive mode. If your system requires a sudo password prompt, the automatic install is
+              skipped.
+            </p>
+            <p className="font-semibold">Action items:</p>
+            <div className="mt-2 space-y-3 leading-relaxed">
+              <div>
+                <p className="font-semibold">1. Retry automatic setup</p>
+                <p>Close and reopen CI Hub to retry automatic GPU setup.</p>
+              </div>
+
+              <div>
+                {showLinuxRuntimeSteps ? (
+                  <>
+                    <p className="font-semibold">2. Manual install (distribution-specific)</p>
+                    <div className="mt-1.5 space-y-2">
+                      <div className="rounded bg-black/30 p-2.5 font-mono text-[11px] leading-6 text-amber-100/90">
+                        <p className="font-semibold text-amber-100">Debian/Ubuntu</p>
+                        <p>sudo mkdir -p /etc/apt/keyrings</p>
+                        <p>
+                          curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o
+                          /etc/apt/keyrings/nvidia-container-toolkit-keyring.gpg
+                        </p>
+                        <p>
+                          curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | sed 's#deb https://#deb
+                          [signed-by=/etc/apt/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | sudo tee
+                          /etc/apt/sources.list.d/nvidia-container-toolkit.list
+                        </p>
+                        <p>sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit</p>
+                      </div>
+
+                      <div className="rounded bg-black/30 p-2.5 font-mono text-[11px] leading-6 text-amber-100/90">
+                        <p className="font-semibold text-amber-100">RHEL/Fedora</p>
+                        <p>
+                          curl -fsSL https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo | sudo tee
+                          /etc/yum.repos.d/nvidia-container-toolkit.repo
+                        </p>
+                        <p>sudo dnf install -y nvidia-container-toolkit</p>
+                      </div>
+
+                      <div className="rounded bg-black/30 p-2.5 font-mono text-[11px] leading-6 text-amber-100/90">
+                        <p className="font-semibold text-amber-100">Arch/Manjaro</p>
+                        <p>sudo pacman -Sy --noconfirm nvidia-container-toolkit</p>
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <p className="font-semibold">2. Complete GPU support in your host environment</p>
+                    <div className="mt-1.5 rounded bg-black/30 p-2.5 text-[11px] leading-6 text-amber-100/90">
+                      On Windows, open Docker Desktop and confirm WSL2 GPU support is enabled. On other non-Linux hosts, verify your Docker setup and
+                      NVIDIA drivers support GPU passthrough for containers before rescanning.
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {showLinuxRuntimeSteps && (
+                <div>
+                  <p className="font-semibold">3. Then run (same on all distributions)</p>
+                  <div className="mt-1.5 rounded bg-black/30 p-2.5 font-mono text-[11px] leading-6 text-amber-100/90">
+                    <p>sudo nvidia-ctk runtime configure --runtime=docker</p>
+                    <p>sudo systemctl restart docker</p>
+                    <p>docker info | grep -i nvidia</p>
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <p>
+                  {showLinuxRuntimeSteps ? '4.' : '3.'} Return here and click <span className="font-semibold">Rescan</span>.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {nvidiaRuntimeReady && (
+          <div
+            className="mt-3 rounded-md border border-emerald-500/40 bg-emerald-500/10 p-3 text-xs text-emerald-100"
+            data-testid="nvidia-runtime-ready"
+          >
+            NVIDIA GPU detected and NVIDIA container runtime is configured. AI inference can use GPU acceleration.
+          </div>
+        )}
       </CardContent>
     </Card>
   );

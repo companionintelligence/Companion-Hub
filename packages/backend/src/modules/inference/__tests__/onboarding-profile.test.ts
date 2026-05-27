@@ -1,5 +1,6 @@
 import { LoggerService } from '@/core/logger/logger.service';
 import { Test } from '@nestjs/testing';
+import { HttpException, HttpStatus } from '@nestjs/common';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { InferenceController } from '../inference.controller';
@@ -161,5 +162,13 @@ describe('InferenceController — onboarding-profile', () => {
 
     const result = await controller.getOnboardingProfile();
     expect(result.resourceEstimate.availableMemoryMb).toBe(fakeStatus.memoryBudget.modelBudgetRamMb - fakeStatus.memoryBudget.modelUsedRamMb);
+  });
+
+  it('should propagate rescan HttpException from hardware inspector', async () => {
+    const err = new HttpException('rescan unavailable', HttpStatus.SERVICE_UNAVAILABLE);
+    hardwareInspector.rescan.mockRejectedValue(err);
+
+    await expect(controller.rescanHardware()).rejects.toBe(err);
+    expect(hardwareInspector.rescan).toHaveBeenCalledOnce();
   });
 });
