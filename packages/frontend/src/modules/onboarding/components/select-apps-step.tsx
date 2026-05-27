@@ -52,7 +52,7 @@ export const SelectAppsStep = ({ selectedApps, onConfirm, onBack }: SelectAppsSt
           {apps.length === 0 && (
             <div className="text-center py-8">
               <div className="text-3xl mb-2">📦</div>
-              <p className="text-muted-foreground">No apps selected. Go back to add some, or continue to AI Setup.</p>
+              <p className="text-muted-foreground">No apps selected. Go back to add some, or continue to Private VPN.</p>
             </div>
           )}
         </div>
@@ -62,7 +62,7 @@ export const SelectAppsStep = ({ selectedApps, onConfirm, onBack }: SelectAppsSt
             Back
           </Button>
           <Button intent="primary" onClick={() => onConfirm(apps)}>
-            {apps.length > 0 ? `Install ${apps.length} app${apps.length === 1 ? '' : 's'}` : 'Continue to AI Setup'}
+            {apps.length > 0 ? `Install ${apps.length} app${apps.length === 1 ? '' : 's'}` : 'Continue to Private VPN'}
           </Button>
         </div>
       </CardContent>
