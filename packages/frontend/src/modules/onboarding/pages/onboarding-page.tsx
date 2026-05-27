@@ -29,7 +29,7 @@ function OnboardingWizard() {
     return <Navigate to="/dashboard" replace />;
   }
 
-  const stepTitles = ['Welcome', 'Discover', 'AI Setup', 'Select', 'Private VPN', 'Install', 'Done'];
+  const stepTitles = ['Welcome', 'Discover', 'AI Setup', 'Select Apps', 'Private VPN', 'Install', 'Done'];
 
   return (
     <div className="flex items-center justify-center bg-background px-4 py-8" style={{ minHeight: 'calc(100vh - var(--titlebar-height, 0px))' }}>

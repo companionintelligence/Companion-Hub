@@ -101,6 +101,17 @@ vi.mock('@/components/ui/Stepper/Stepper', () => ({
 }));
 
 describe('OnboardingPage', () => {
+  it('shows the renamed Select Apps step title in the stepper', () => {
+    render(
+      <MemoryRouter initialEntries={['/onboarding']}>
+        <OnboardingPage />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText('Select Apps')).toBeInTheDocument();
+    expect(screen.queryByText('Select')).not.toBeInTheDocument();
+  });
+
   it('routes Discover continue to AI Setup instead of App setup', async () => {
     const user = userEvent.setup();
 
