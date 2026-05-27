@@ -24,21 +24,6 @@ static START_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 /// `(hub .env mtime, is_private_vpn)` — avoids parsing the env file on every hub status poll (~3s).
 static PRIVATE_VPN_ENV_CACHE: Mutex<Option<(Option<std::time::SystemTime>, bool)>> = Mutex::new(None);
 
-/// After the hub container is healthy and the Tailscale sidecar has been verified once, keep inspecting it
-/// until this grace elapses; then skip docker inspect on steady-state polls.
-const VPN_SIDECARS_STATUS_POLL_GRACE: Duration = Duration::from_secs(90);
-
-#[derive(Debug, Clone, Copy)]
-enum VpnSidecarPollPhase {
-    /// Hub reports healthy but `hub-tailscale` has not yet passed [`vpn_sidecars_ready`] in this cycle.
-    PendingReady,
-    /// Sidecar was ready at least once at `verified_at`.
-    VerifiedSince(Instant),
-}
-
-static VPN_SIDECAR_STATUS_POLL_PHASE: Mutex<VpnSidecarPollPhase> =
-    Mutex::new(VpnSidecarPollPhase::PendingReady);
-
 /// Serialize rotation + append so concurrent callers cannot interleave
 /// renames and writes to `desktop.log`.
 static LOG_WRITE_LOCK: Mutex<()> = Mutex::new(());
@@ -651,23 +636,31 @@ fn service_state_score(state: &ServiceState) -> u8 {
     }
 }
 
-/// Return per-service startup progress for the frontend loading screen.
-pub fn get_startup_progress() -> StartupProgress {
-    let vpn_on = is_private_vpn_enabled();
-
-    // Core services in startup order. Optional ones are included for visibility but do not block
-    // the "all_ready" gate. When Private VPN is enabled, `hub-tailscale` is required.
-    let mut core: Vec<(&str, &str, bool)> = vec![
+fn startup_service_definitions(vpn_on: bool) -> (Vec<(&'static str, &'static str, bool)>, Vec<(&'static str, &'static str, bool)>) {
+    let core = vec![
         ("ci-hub-db", "Database", true),
         ("ci-os-hub-queue", "Message queue", true),
         ("ci-os-hub", "Hub backend", true),
         ("traefik", "Router", true),
     ];
-    if vpn_on {
-        core.push(("hub-tailscale", "Private VPN", true));
-    }
 
-    let optional: Vec<(&str, &str, bool)> = vec![("cloudflared", "Tunnel", false)];
+    let mut optional = Vec::new();
+    if vpn_on {
+        optional.push(("hub-tailscale", "Private VPN", false));
+    }
+    optional.push(("cloudflared", "Tunnel", false));
+
+    (core, optional)
+}
+
+/// Return per-service startup progress for the frontend loading screen.
+pub fn get_startup_progress() -> StartupProgress {
+    let vpn_on = is_private_vpn_enabled();
+
+    // Core services in startup order. Optional ones are included for visibility but do not block
+    // the "all_ready" gate. Private VPN improves remote access, but the desktop app should stay
+    // usable even if the sidecar is still reconnecting.
+    let (core, optional) = startup_service_definitions(vpn_on);
 
     let all_names: Vec<&str> = core.iter().chain(optional.iter()).map(|(n, _, _)| *n).collect();
     let states = inspect_containers(&all_names);
@@ -740,12 +733,10 @@ pub fn get_hub_status() -> HubStatus {
     // If a start operation is actively running (including first-time image pulls),
     // report Starting so the frontend shows progress instead of a false "Stopped" state.
     if START_IN_PROGRESS.load(Ordering::SeqCst) {
-        reset_vpn_sidecar_status_poll_phase();
         return HubStatus::Starting;
     }
 
     if !is_docker_available() {
-        reset_vpn_sidecar_status_poll_phase();
         return HubStatus::DockerNotAvailable;
     }
 
@@ -762,7 +753,6 @@ pub fn get_hub_status() -> HubStatus {
         .unwrap_or_default();
 
     if status.is_empty() || status.contains("No such object") || status.contains("Error") {
-        reset_vpn_sidecar_status_poll_phase();
         return HubStatus::Stopped;
     }
 
@@ -770,53 +760,8 @@ pub fn get_hub_status() -> HubStatus {
     let state = parts.first().copied().unwrap_or("");
     let health = parts.get(1).copied().unwrap_or("");
 
-    if !(state == "running" && health == "healthy") {
-        reset_vpn_sidecar_status_poll_phase();
-    }
-
     match (state, health) {
-        ("running", "healthy") => {
-            let vpn_on = is_private_vpn_enabled();
-            if !vpn_on {
-                reset_vpn_sidecar_status_poll_phase();
-                HubStatus::Running
-            } else {
-                let skip_sidecar_inspect = {
-                    let phase = VPN_SIDECAR_STATUS_POLL_PHASE.lock().unwrap();
-                    matches!(
-                        *phase,
-                        VpnSidecarPollPhase::VerifiedSince(since)
-                            if since.elapsed() >= VPN_SIDECARS_STATUS_POLL_GRACE
-                    )
-                };
-                if skip_sidecar_inspect {
-                    HubStatus::Running
-                } else {
-                    let ready = vpn_sidecars_ready();
-                    let mut phase = VPN_SIDECAR_STATUS_POLL_PHASE.lock().unwrap();
-                    match *phase {
-                        VpnSidecarPollPhase::PendingReady => {
-                            if ready {
-                                *phase = VpnSidecarPollPhase::VerifiedSince(Instant::now());
-                                HubStatus::Running
-                            } else {
-                                HubStatus::Starting
-                            }
-                        }
-                        VpnSidecarPollPhase::VerifiedSince(since) => {
-                            if since.elapsed() >= VPN_SIDECARS_STATUS_POLL_GRACE {
-                                HubStatus::Running
-                            } else if ready {
-                                HubStatus::Running
-                            } else {
-                                *phase = VpnSidecarPollPhase::PendingReady;
-                                HubStatus::Starting
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        ("running", "healthy") => HubStatus::Running,
         ("running", _) => HubStatus::Starting,
         ("restarting", _) => {
             // Check if database is still starting — if so, Hub restart is expected
@@ -2307,10 +2252,6 @@ fn private_vpn_enabled_from_map(env: &std::collections::HashMap<String, String>)
         .unwrap_or(true)
 }
 
-fn reset_vpn_sidecar_status_poll_phase() {
-    *VPN_SIDECAR_STATUS_POLL_PHASE.lock().unwrap() = VpnSidecarPollPhase::PendingReady;
-}
-
 /// Cached by hub `.env` file mtime so frequent [`get_hub_status`] polls do not re-read and parse the file.
 fn is_private_vpn_enabled() -> bool {
     let path = hub_env_path();
@@ -2363,24 +2304,6 @@ fn merge_compose_profiles(
         parts.retain(|p| p != "private-vpn");
     }
     parts.join(",")
-}
-
-/// `hub-tailscale` must be [`ServiceState::Ready`]: running (no healthcheck → `none` counts as ready).
-fn vpn_sidecars_ready() -> bool {
-    let names = ["hub-tailscale"];
-    let states = inspect_containers(&names);
-    for name in names {
-        match states.get(name) {
-            Some((state, health)) => {
-                let svc_state = derive_service_state(state.as_str(), health.as_str());
-                if !matches!(svc_state, ServiceState::Ready) {
-                    return false;
-                }
-            }
-            None => return false,
-        }
-    }
-    true
 }
 
 fn get_non_empty_env_value(
@@ -3401,7 +3324,7 @@ mod tests {
         generate_container_docker_config, is_container_name_conflict, is_oci_runtime_error,
         is_traefik_recreate_required, logs_open_target_for, managed_app_container_ps_args,
         mark_traefik_recreate_required, parse_container_ids, prepare_traefik_runtime_state,
-        seeded_traefik_config_contents, truncate_command_output, tunnel_dir_for,
+        seeded_traefik_config_contents, startup_service_definitions, truncate_command_output, tunnel_dir_for,
         tunnel_token_path_for, DockerAccessState, MAX_COMMAND_OUTPUT_CHARS, TRAEFIK_ACME_FILE,
         TRAEFIK_CONFIG_FILE, TRAEFIK_DYNAMIC_CONFIG_SEED, TRAEFIK_DYNAMIC_FILE, TRAEFIK_TLS_DIR,
     };
@@ -3507,6 +3430,16 @@ mod tests {
                 "label=ci-os-hub.appurn",
             ]
         );
+    }
+
+    #[test]
+    fn startup_progress_keeps_private_vpn_visible_but_non_blocking() {
+        let (core, optional) = startup_service_definitions(true);
+
+        assert_eq!(core.len(), 4);
+        assert!(optional
+            .iter()
+            .any(|(container, label, required)| *container == "hub-tailscale" && *label == "Private VPN" && !required));
     }
 
     #[test]
