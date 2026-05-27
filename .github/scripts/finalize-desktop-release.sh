@@ -35,7 +35,7 @@ trap cleanup EXIT
 
 git fetch --force origin "refs/tags/${TAG}:refs/tags/${TAG}"
 
-TARGET_COMMIT="$(git rev-list -n 1 -- "$TAG")"
+TARGET_COMMIT="$(git rev-parse --verify "${TAG}^{commit}")"
 if [[ -z "$TARGET_COMMIT" ]]; then
   echo "Could not resolve target commit for $TAG" >&2
   exit 1
