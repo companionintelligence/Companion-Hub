@@ -35,7 +35,13 @@ Steps to reproduce the behavior:
 A clear and concise description of what you expected to happen.
 
 **Screenshots**
-If applicable, add screenshots to help explain your problem.
+
+Screenshots are **required** for bugs involving UI/UX changes. Attach screenshots directly to this issue or upload them to the [shared team folder](https://drive.google.com/drive/folders/ci-hub-screenshots) organized by issue number.
+
+- For UI bugs: include a screenshot showing the unexpected behaviour.
+- For regressions: include before/after screenshots if possible.
+- Use Playwright screenshots where applicable (see `CONTRIBUTING.md` for instructions).
+- Backend-only bugs: screenshots are optional.
 
 **Server (please complete the following information):**
 
