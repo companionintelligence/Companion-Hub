@@ -86,6 +86,17 @@ export class ReposHelpers {
     return content.replace(new RegExp(`\\b${escapedSourceHost}/`, 'g'), `${targetHost}/`);
   }
 
+  private resolveSafeAppFilePath(appPath: string, filename: string): string | null {
+    const resolvedFilePath = path.resolve(appPath, filename);
+    const relativePath = path.relative(appPath, resolvedFilePath);
+
+    if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+      return null;
+    }
+
+    return resolvedFilePath;
+  }
+
   /**
    * Ensure directory exists and has correct permissions
    * @param {string} dirPath
@@ -309,7 +320,12 @@ export class ReposHelpers {
 
       if (Object.keys(files).length > 0) {
         for (const [filename, content] of Object.entries(files)) {
-          const filePath = path.join(appPath, filename);
+          const filePath = this.resolveSafeAppFilePath(appPath, filename);
+          if (!filePath) {
+            this.logger.warn(`Skipping unsafe file path from app install payload: ${filename}`);
+            continue;
+          }
+
           await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
           let fileContent = typeof content === 'string' ? content : JSON.stringify(content, null, 2);
 

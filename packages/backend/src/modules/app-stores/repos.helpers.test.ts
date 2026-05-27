@@ -353,5 +353,23 @@ describe('ReposHelpers', () => {
       expect(result.success).toBe(false);
       expect(result.message).toContain('Payment Required');
     });
+
+    it('should skip unsafe traversal file paths from install payloads', async () => {
+      fetchMock.mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          files: {
+            '../escape.txt': 'bad',
+            'safe/config.json': '{"safe":true}',
+          },
+        }),
+      });
+
+      const result = await service.downloadAppFiles('http://cloud.api', 'repo1', 'safe-app');
+
+      expect(result.success).toBe(true);
+      expect(fs.promises.writeFile).toHaveBeenCalledWith(expect.stringContaining('safe-app/safe/config.json'), '{"safe":true}');
+      expect(fs.promises.writeFile).not.toHaveBeenCalledWith(expect.stringContaining('escape.txt'), 'bad');
+    });
   });
 });
