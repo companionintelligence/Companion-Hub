@@ -123,6 +123,8 @@ Infrastructure (PostgreSQL, RabbitMQ) runs in Docker; backend and frontend run l
 
 Environments: `local` (default), `dev`, `staging`, `prod`.
 
+See [e2e/README.md](e2e/README.md) for the E2E test matrix, including the AI-driven App Explorer Test.
+
 ---
 
 ## Networking
