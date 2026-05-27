@@ -67,17 +67,17 @@ describe('TailscaleSetupStep', () => {
   it('shows only Skip when Tailscale is not connected', () => {
     renderStep(false);
 
-    expect(screen.getByRole('button', { name: 'Skip to Install' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Continue to Install' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Skip to Discover' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Continue to Discover' })).not.toBeInTheDocument();
   });
 
   it('shows only Continue when Tailscale is connected and completes onboarding', async () => {
     const { onComplete } = renderStep(true);
 
-    expect(screen.getByRole('button', { name: 'Continue to Install' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Skip to Install' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Continue to Discover' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Skip to Discover' })).not.toBeInTheDocument();
 
-    await userEvent.click(screen.getByRole('button', { name: 'Continue to Install' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Continue to Discover' }));
 
     expect(onComplete).toHaveBeenCalledTimes(1);
   });

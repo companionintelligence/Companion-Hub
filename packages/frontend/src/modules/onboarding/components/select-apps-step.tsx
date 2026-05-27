@@ -56,7 +56,7 @@ export const SelectAppsStep = ({ selectedApps, onConfirm, onBack }: SelectAppsSt
           {apps.length === 0 && (
             <div className="text-center py-8">
               <div className="text-3xl mb-2">📦</div>
-              <p className="text-muted-foreground">No apps selected. Go back to add some, or continue to Private VPN.</p>
+              <p className="text-muted-foreground">No apps selected. Go back to add some, or continue to Install.</p>
             </div>
           )}
         </div>
@@ -66,7 +66,7 @@ export const SelectAppsStep = ({ selectedApps, onConfirm, onBack }: SelectAppsSt
             Back
           </Button>
           <Button intent="primary" onClick={() => onConfirm(apps)}>
-            Continue to Private VPN
+            Continue to Install
           </Button>
         </div>
       </CardContent>

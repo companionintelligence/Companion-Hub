@@ -230,11 +230,11 @@ export const TailscaleSetupStep = ({ onComplete, onSkip, onBack }: TailscaleSetu
         <div className="flex gap-2">
           {isConnected ? (
             <Button type="button" onClick={onComplete} disabled={isLoading}>
-              Continue to Install
+              Continue to Discover
             </Button>
           ) : (
             <Button type="button" variant="ghost" onClick={onSkip}>
-              Skip to Install
+              Skip to Discover
             </Button>
           )}
         </div>

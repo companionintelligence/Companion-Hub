@@ -149,12 +149,12 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
         </Button>
         <div className="flex gap-2">
           <Button variant="outline" onClick={handleSkip} data-testid="ai-skip-btn">
-            Skip to Discover
+            Skip to Private VPN
           </Button>
           <Button intent="primary" onClick={handleContinue} data-testid="ai-continue-btn">
             {isInsufficient && cloudProviders.filter((p) => p.apiKey.trim()).length === 0
-              ? 'Continue to Discover without AI'
-              : 'Continue to Discover'}
+              ? 'Continue to Private VPN without AI'
+              : 'Continue to Private VPN'}
           </Button>
         </div>
       </div>

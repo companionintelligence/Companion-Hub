@@ -25,13 +25,10 @@ vi.mock('@/lib/theme/theme', () => ({
 }));
 
 vi.mock('../components/welcome-step', () => ({
-  WelcomeStep: ({ onDetected, onSkip }: { onDetected: (services: []) => void; onSkip: () => void }) => (
+  WelcomeStep: ({ onDetected }: { onDetected: (services: []) => void }) => (
     <div>
       <button type="button" onClick={() => onDetected([])}>
         welcome-next
-      </button>
-      <button type="button" onClick={onSkip}>
-        welcome-skip
       </button>
     </div>
   ),
@@ -78,7 +75,17 @@ vi.mock('../components/ai-setup-step', () => ({
 }));
 
 vi.mock('../components/tailscale-setup-step', () => ({
-  TailscaleSetupStep: () => <div data-testid="tailscale-setup-step">Tailscale Setup</div>,
+  TailscaleSetupStep: ({ onComplete, onSkip }: { onComplete: () => void; onSkip: () => void }) => (
+    <div data-testid="tailscale-setup-step">
+      Tailscale Setup
+      <button type="button" onClick={onComplete}>
+        tailscale-next
+      </button>
+      <button type="button" onClick={onSkip}>
+        tailscale-skip
+      </button>
+    </div>
+  ),
 }));
 
 vi.mock('../components/install-step', () => ({
@@ -130,22 +137,7 @@ describe('OnboardingPage', () => {
     expect(screen.queryByTestId('complete-step')).not.toBeInTheDocument();
   });
 
-  it('routes Welcome skip to AI Setup', async () => {
-    const user = userEvent.setup();
-
-    render(
-      <MemoryRouter initialEntries={['/onboarding']}>
-        <OnboardingPage />
-      </MemoryRouter>,
-    );
-
-    await user.click(screen.getByRole('button', { name: 'welcome-skip' }));
-
-    expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument();
-    expect(screen.queryByTestId('complete-step')).not.toBeInTheDocument();
-  });
-
-  it('routes AI Setup continue to Discover', async () => {
+  it('routes AI Setup continue to Private VPN', async () => {
     const user = userEvent.setup();
 
     render(
@@ -157,10 +149,10 @@ describe('OnboardingPage', () => {
     await user.click(screen.getByRole('button', { name: 'welcome-next' }));
     await user.click(screen.getByRole('button', { name: 'ai-next' }));
 
-    expect(screen.getByTestId('recommendations-step')).toBeInTheDocument();
+    expect(screen.getByTestId('tailscale-setup-step')).toBeInTheDocument();
   });
 
-  it('routes AI Setup skip to Discover', async () => {
+  it('routes AI Setup skip to Private VPN', async () => {
     const user = userEvent.setup();
 
     render(
@@ -172,10 +164,10 @@ describe('OnboardingPage', () => {
     await user.click(screen.getByRole('button', { name: 'welcome-next' }));
     await user.click(screen.getByRole('button', { name: 'ai-skip' }));
 
-    expect(screen.getByTestId('recommendations-step')).toBeInTheDocument();
+    expect(screen.getByTestId('tailscale-setup-step')).toBeInTheDocument();
   });
 
-  it('routes Discover skip to Select Apps', async () => {
+  it('routes Private VPN continue to Discover', async () => {
     const user = userEvent.setup();
 
     render(
@@ -186,8 +178,25 @@ describe('OnboardingPage', () => {
 
     await user.click(screen.getByRole('button', { name: 'welcome-next' }));
     await user.click(screen.getByRole('button', { name: 'ai-next' }));
+    await user.click(screen.getByRole('button', { name: 'tailscale-next' }));
+
+    expect(screen.getByTestId('recommendations-step')).toBeInTheDocument();
+  });
+
+  it('routes Discover skip to Install', async () => {
+    const user = userEvent.setup();
+
+    render(
+      <MemoryRouter initialEntries={['/onboarding']}>
+        <OnboardingPage />
+      </MemoryRouter>,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'welcome-next' }));
+    await user.click(screen.getByRole('button', { name: 'ai-next' }));
+    await user.click(screen.getByRole('button', { name: 'tailscale-next' }));
     await user.click(screen.getByRole('button', { name: 'recommend-skip' }));
 
-    expect(screen.getByRole('button', { name: 'finish-setup' })).toBeInTheDocument();
+    expect(screen.getByTestId('install-step')).toBeInTheDocument();
   });
 });

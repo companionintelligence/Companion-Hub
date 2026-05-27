@@ -29,7 +29,7 @@ function OnboardingWizard() {
     return <Navigate to="/dashboard" replace />;
   }
 
-  const stepTitles = ['Welcome', 'AI Setup', 'Discover', 'Select Apps', 'Private VPN', 'Install', 'Done'];
+  const stepTitles = ['Welcome', 'AI Setup', 'Private VPN', 'Discover', 'Select Apps', 'Install', 'Done'];
 
   return (
     <div className="flex items-center justify-center bg-background px-4 py-8" style={{ minHeight: 'calc(100vh - var(--titlebar-height, 0px))' }}>
@@ -74,7 +74,6 @@ function OnboardingWizard() {
                   setDetectedServices(services);
                   setCurrentStep(1);
                 }}
-                onSkip={() => setCurrentStep(1)}
               />
             </StepContent>
 
@@ -93,30 +92,30 @@ function OnboardingWizard() {
             </StepContent>
 
             <StepContent step={2}>
+              <TailscaleSetupStep onComplete={() => setCurrentStep(3)} onSkip={() => setCurrentStep(3)} onBack={() => setCurrentStep(1)} />
+            </StepContent>
+
+            <StepContent step={3}>
               <RecommendationsStep
                 detectedServices={detectedServices}
                 onSelect={(apps) => {
                   setSelectedApps(apps);
-                  setCurrentStep(3);
-                }}
-                onSkip={() => setCurrentStep(3)}
-                onBack={() => setCurrentStep(1)}
-              />
-            </StepContent>
-
-            <StepContent step={3}>
-              <SelectAppsStep
-                selectedApps={selectedApps}
-                onConfirm={(apps) => {
-                  setSelectedApps(apps);
                   setCurrentStep(4);
                 }}
+                onSkip={() => setCurrentStep(5)}
                 onBack={() => setCurrentStep(2)}
               />
             </StepContent>
 
             <StepContent step={4}>
-              <TailscaleSetupStep onComplete={() => setCurrentStep(5)} onSkip={() => setCurrentStep(5)} onBack={() => setCurrentStep(3)} />
+              <SelectAppsStep
+                selectedApps={selectedApps}
+                onConfirm={(apps) => {
+                  setSelectedApps(apps);
+                  setCurrentStep(5);
+                }}
+                onBack={() => setCurrentStep(3)}
+              />
             </StepContent>
 
             <StepContent step={5}>

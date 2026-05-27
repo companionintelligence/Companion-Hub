@@ -6,10 +6,9 @@ import { identifyServices, type DetectedService } from '../helpers/service-detec
 
 interface WelcomeStepProps {
   onDetected: (services: DetectedService[]) => void;
-  onSkip: () => void;
 }
 
-export const WelcomeStep = ({ onDetected, onSkip }: WelcomeStepProps) => {
+export const WelcomeStep = ({ onDetected }: WelcomeStepProps) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -23,7 +22,8 @@ export const WelcomeStep = ({ onDetected, onSkip }: WelcomeStepProps) => {
       const detected = identifyServices(data.services || []);
       onDetected(detected);
     } catch (e) {
-      setError('Could not detect services. You can skip this step.');
+      setError('Could not detect services. Continuing with no detected services.');
+      onDetected([]);
       console.error(e);
     } finally {
       setLoading(false);
@@ -44,10 +44,7 @@ export const WelcomeStep = ({ onDetected, onSkip }: WelcomeStepProps) => {
 
         <div className="flex flex-col gap-3 items-center">
           <Button intent="primary" onClick={handleDetect} loading={loading} disabled={loading} className="w-64">
-            Detect services and continue to AI Setup
-          </Button>
-          <Button variant="ghost" onClick={onSkip} disabled={loading}>
-            Skip to AI Setup
+            Continue to AI Setup
           </Button>
         </div>
 
