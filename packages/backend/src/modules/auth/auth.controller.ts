@@ -15,6 +15,11 @@ import {
   GetTotpUriDto,
   LoginBody,
   LoginDto,
+  PasswordResetCompleteBody,
+  PasswordResetCompleteDto,
+  PasswordResetRequestBody,
+  PasswordResetRequestDto,
+  PasswordResetVerifyResponseDto,
   RegisterBody,
   RegisterDto,
   ResetPasswordBody,
@@ -192,6 +197,36 @@ export class AuthController {
     const isPending = await this.authService.checkPasswordChangeRequest();
 
     return CheckResetPasswordRequestDto.parse({ isRequestPending: isPending }, { reportOnly: true });
+  }
+
+  @Post('/password-reset/request')
+  @ApiResponse({ type: PasswordResetRequestDto })
+  async requestPasswordReset(@Body() body: PasswordResetRequestBody, @Req() req: Request) {
+    await this.authService.requestPasswordReset({ email: body.email, ipAddress: req.ip });
+
+    return PasswordResetRequestDto.parse(
+      { success: true, message: 'If this email is registered, you will receive reset instructions shortly.' },
+      { reportOnly: true },
+    );
+  }
+
+  @Get('/password-reset/verify/:token')
+  @ApiResponse({ type: PasswordResetVerifyResponseDto })
+  async verifyPasswordResetToken(@Req() req: Request) {
+    const token = String(req.params.token ?? '');
+    const result = await this.authService.verifyPasswordResetToken(token);
+    return PasswordResetVerifyResponseDto.parse(result, { reportOnly: true });
+  }
+
+  @Post('/password-reset/complete')
+  @ApiResponse({ type: PasswordResetCompleteDto })
+  async completePasswordReset(@Body() body: PasswordResetCompleteBody, @Req() req: Request) {
+    await this.authService.completePasswordReset({ token: body.token, newPassword: body.newPassword, ipAddress: req.ip });
+
+    return PasswordResetCompleteDto.parse(
+      { success: true, message: 'Password updated. You can now log in with your new password.' },
+      { reportOnly: true },
+    );
   }
 
   @Get('/traefik')

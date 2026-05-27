@@ -37,6 +37,19 @@ const resetPasswordSchema = z.object({
   newPassword: z.string(),
 });
 
+const passwordResetRequestSchema = z.object({
+  email: z.string().email(),
+});
+
+const passwordResetVerifySchema = z.object({
+  token: z.string(),
+});
+
+const passwordResetCompleteSchema = z.object({
+  token: z.string(),
+  newPassword: z.string(),
+});
+
 const loginResponseSchema = z.object({
   success: z.boolean(),
   totpSessionId: z.string().optional(),
@@ -59,6 +72,21 @@ const resetPasswordResponseSchema = z.object({
 
 const checkResetPasswordRequestSchema = z.object({
   isRequestPending: z.boolean(),
+});
+
+const passwordResetRequestResponseSchema = z.object({
+  success: z.boolean(),
+  message: z.string(),
+});
+
+const passwordResetVerifyResponseSchema = z.object({
+  valid: z.boolean(),
+  email: z.string().optional(),
+});
+
+const passwordResetCompleteResponseSchema = z.object({
+  success: z.boolean(),
+  message: z.string(),
 });
 
 // Login
@@ -86,3 +114,9 @@ export class DisableTotpBody extends createZodDto(disableTotpSchema) {}
 export class ResetPasswordBody extends createZodDto(resetPasswordSchema) {}
 export class ResetPasswordDto extends createZodDto(resetPasswordResponseSchema) {}
 export class CheckResetPasswordRequestDto extends createZodDto(checkResetPasswordRequestSchema) {}
+export class PasswordResetRequestBody extends createZodDto(passwordResetRequestSchema) {}
+export class PasswordResetVerifyDto extends createZodDto(passwordResetVerifySchema) {}
+export class PasswordResetCompleteBody extends createZodDto(passwordResetCompleteSchema) {}
+export class PasswordResetRequestDto extends createZodDto(passwordResetRequestResponseSchema) {}
+export class PasswordResetVerifyResponseDto extends createZodDto(passwordResetVerifyResponseSchema) {}
+export class PasswordResetCompleteDto extends createZodDto(passwordResetCompleteResponseSchema) {}

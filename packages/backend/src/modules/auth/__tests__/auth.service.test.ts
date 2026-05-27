@@ -4,8 +4,9 @@ import { UserRepository } from '@/modules/user/user.repository';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { EncryptionService } from '@/core/encryption/encryption.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
+import { LoggerService } from '@/core/logger/logger.service';
 import { Test } from '@nestjs/testing';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { AuthService } from '../auth.service';
 import { SessionManager } from '../session.manager';
@@ -17,6 +18,7 @@ describe('AuthService', () => {
   let passwordService: MockProxy<PasswordService>;
   let sessionManager: MockProxy<SessionManager>;
   let cacheService: MockProxy<CacheService>;
+  let configurationService: MockProxy<ConfigurationService>;
 
   beforeEach(async () => {
     const moduleRef = await Test.createTestingModule({
@@ -29,6 +31,7 @@ describe('AuthService', () => {
         { provide: ConfigurationService, useValue: mock<ConfigurationService>() },
         { provide: EncryptionService, useValue: mock<EncryptionService>() },
         { provide: FilesystemService, useValue: mock<FilesystemService>() },
+        { provide: LoggerService, useValue: mock<LoggerService>() },
       ],
     }).compile();
 
@@ -37,6 +40,7 @@ describe('AuthService', () => {
     passwordService = moduleRef.get(PasswordService);
     sessionManager = moduleRef.get(SessionManager);
     cacheService = moduleRef.get(CacheService);
+    configurationService = moduleRef.get(ConfigurationService);
   });
 
   it('should be defined', () => {
@@ -114,6 +118,30 @@ describe('AuthService', () => {
       const result = await authService.getCookieDomain(domain);
 
       expect(result).toBe('.sub.sub.duckdns.org');
+    });
+  });
+
+  describe('requestPasswordReset', () => {
+    it('applies per-email rate limiting and only forwards first 3 requests per hour', async () => {
+      configurationService.getConfig.mockReturnValue({ ciCloudUrl: 'https://portal.example.com' } as any);
+
+      const cacheEntries = new Map<string, string>();
+      cacheService.get.mockImplementation((key: string) => cacheEntries.get(key));
+      cacheService.set.mockImplementation((key: string, value: string) => {
+        cacheEntries.set(key, value);
+      });
+
+      const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+      vi.stubGlobal('fetch', fetchMock);
+
+      await authService.requestPasswordReset({ email: 'user@example.com' });
+      await authService.requestPasswordReset({ email: 'user@example.com' });
+      await authService.requestPasswordReset({ email: 'user@example.com' });
+      await authService.requestPasswordReset({ email: 'user@example.com' });
+
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+
+      vi.unstubAllGlobals();
     });
   });
 });

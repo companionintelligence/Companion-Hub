@@ -5,9 +5,10 @@ import { CacheService } from '@/core/cache/cache.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { EncryptionService } from '@/core/encryption/encryption.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
+import { LoggerService } from '@/core/logger/logger.service';
 import { PasswordService } from '@/core/password/password.service';
 import { UserRepository } from '@/modules/user/user.repository';
-import { HttpStatus, Injectable } from '@nestjs/common';
+import { HttpStatus, Injectable, ServiceUnavailableException } from '@nestjs/common';
 import psl from 'psl';
 import validator from 'validator';
 import type { LoginBody, RegisterBody } from './dto/auth.dto';
@@ -16,6 +17,9 @@ import { TotpAuthenticator } from './utils/totp-authenticator';
 
 @Injectable()
 export class AuthService {
+  private static readonly PASSWORD_RESET_RATE_LIMIT_WINDOW_SECS = 60 * 60;
+  private static readonly PASSWORD_RESET_RATE_LIMIT_MAX_REQUESTS = 3;
+
   constructor(
     private userRepository: UserRepository,
     private sessionManager: SessionManager,
@@ -24,6 +28,7 @@ export class AuthService {
     private cache: CacheService,
     private filesystem: FilesystemService,
     private passwordService: PasswordService,
+    private logger: LoggerService,
   ) {}
 
   public getCookieDomain(domain?: string) {
@@ -39,6 +44,53 @@ export class AuthService {
 
     // biome-ignore lint/suspicious/noExplicitAny: PSL types are tricky
     return `.${(parsed as any).input}`;
+  }
+
+  private getPasswordResetPortalBaseUrl() {
+    const { ciCloudUrl } = this.config.getConfig();
+    const base = ciCloudUrl?.trim().replace(/\/$/, '');
+
+    if (!base) {
+      throw new ServiceUnavailableException('CI_CLOUD_URL is not configured on this Hub.');
+    }
+
+    return base;
+  }
+
+  private getPasswordResetRateLimitKey(email: string) {
+    return `auth:password-reset:rate:${email}`;
+  }
+
+  private consumePasswordResetRateLimit(email: string) {
+    const key = this.getPasswordResetRateLimitKey(email);
+    const now = Math.floor(Date.now() / 1000);
+    const rawValue = this.cache.get(key);
+
+    if (!rawValue) {
+      this.cache.set(key, JSON.stringify({ count: 1, startedAt: now }), AuthService.PASSWORD_RESET_RATE_LIMIT_WINDOW_SECS);
+      return true;
+    }
+
+    try {
+      const parsed = JSON.parse(rawValue) as { count?: number; startedAt?: number };
+      const count = Number(parsed.count ?? 0);
+      const startedAt = Number(parsed.startedAt ?? now);
+
+      if (startedAt + AuthService.PASSWORD_RESET_RATE_LIMIT_WINDOW_SECS <= now) {
+        this.cache.set(key, JSON.stringify({ count: 1, startedAt: now }), AuthService.PASSWORD_RESET_RATE_LIMIT_WINDOW_SECS);
+        return true;
+      }
+
+      if (count >= AuthService.PASSWORD_RESET_RATE_LIMIT_MAX_REQUESTS) {
+        return false;
+      }
+
+      this.cache.set(key, JSON.stringify({ count: count + 1, startedAt }), AuthService.PASSWORD_RESET_RATE_LIMIT_WINDOW_SECS);
+      return true;
+    } catch {
+      this.cache.set(key, JSON.stringify({ count: 1, startedAt: now }), AuthService.PASSWORD_RESET_RATE_LIMIT_WINDOW_SECS);
+      return true;
+    }
   }
 
   /**
@@ -331,6 +383,84 @@ export class AuthService {
     await this.userRepository.updateUser(userId, { totpEnabled: false, totpSecret: null });
 
     return true;
+  };
+
+  public requestPasswordReset = async (params: { email: string; ipAddress?: string }) => {
+    const email = params.email.trim().toLowerCase();
+    const rateLimitAllowed = this.consumePasswordResetRateLimit(email);
+
+    this.logger.info('Password reset requested', { email, ipAddress: params.ipAddress, rateLimitAllowed });
+
+    if (!rateLimitAllowed) {
+      this.logger.warn('Password reset rate limited', { email, ipAddress: params.ipAddress });
+      return { success: true };
+    }
+
+    const base = this.getPasswordResetPortalBaseUrl();
+
+    try {
+      const response = await fetch(`${base}/api/auth/password-reset/request`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+        signal: AbortSignal.timeout(15_000),
+      });
+
+      if (!response.ok) {
+        this.logger.warn('Portal password reset request failed', { status: response.status, email, ipAddress: params.ipAddress });
+      }
+    } catch (error) {
+      this.logger.error('Portal password reset request failed', error);
+    }
+
+    return { success: true };
+  };
+
+  public verifyPasswordResetToken = async (token: string) => {
+    const base = this.getPasswordResetPortalBaseUrl();
+
+    try {
+      const response = await fetch(`${base}/api/auth/password-reset/verify/${encodeURIComponent(token)}`, {
+        method: 'GET',
+        signal: AbortSignal.timeout(15_000),
+      });
+
+      if (!response.ok) {
+        return { valid: false };
+      }
+
+      const data = (await response.json().catch(() => ({}))) as { valid?: boolean; email?: string };
+      const valid = data.valid ?? true;
+
+      return {
+        valid,
+        email: typeof data.email === 'string' ? data.email : undefined,
+      };
+    } catch {
+      return { valid: false };
+    }
+  };
+
+  public completePasswordReset = async (params: { token: string; newPassword: string; ipAddress?: string }) => {
+    const passwordStrengthRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z\d]).{8,}$/;
+    if (!passwordStrengthRegex.test(params.newPassword)) {
+      throw new TranslatableError('AUTH_ERROR_INVALID_PASSWORD_LENGTH', {}, HttpStatus.BAD_REQUEST);
+    }
+
+    const base = this.getPasswordResetPortalBaseUrl();
+    const response = await fetch(`${base}/api/auth/password-reset/complete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: params.token, newPassword: params.newPassword }),
+      signal: AbortSignal.timeout(15_000),
+    });
+
+    if (!response.ok) {
+      throw new TranslatableError('AUTH_ERROR_NO_CHANGE_PASSWORD_REQUEST', {}, HttpStatus.BAD_REQUEST);
+    }
+
+    this.logger.info('Password reset completed', { ipAddress: params.ipAddress });
+    return { success: true };
   };
 
   /**
