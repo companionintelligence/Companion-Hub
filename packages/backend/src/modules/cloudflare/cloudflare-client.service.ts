@@ -3,7 +3,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { DockerService } from '../docker/docker.service';
-import type { AvailableDomain, AvailableDomainsResponse } from '@ci-hub/common/types';
+import type { AvailableDomain, AvailableDomainsResponse, SyncedCustomDomain } from '@ci-hub/common/types';
 import axios, { AxiosInstance, type AxiosResponse } from 'axios';
 import * as fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
@@ -46,6 +46,7 @@ export class CloudflareClientService {
   private readonly client: AxiosInstance;
   private tunnelToken: string | null = null;
   private tunnelId: string | null = null;
+  private customDomains: SyncedCustomDomain[] = [];
 
   constructor(
     private configService: ConfigurationService,
@@ -85,6 +86,15 @@ export class CloudflareClientService {
       typeof candidate.isDefault === 'boolean' &&
       (typeof candidate.scope === 'string' || typeof candidate.scope === 'undefined')
     );
+  }
+
+  private isSyncedCustomDomain(entry: unknown): entry is SyncedCustomDomain {
+    if (!entry || typeof entry !== 'object') {
+      return false;
+    }
+
+    const candidate = entry as Partial<SyncedCustomDomain>;
+    return typeof candidate.id === 'string' && typeof candidate.domain === 'string';
   }
 
   private async updateTunnelFiles(token: string) {
@@ -181,6 +191,10 @@ export class CloudflareClientService {
       );
 
       this.logger.log(`Sync Response: ${JSON.stringify(response.data)}`);
+
+      this.customDomains = Array.isArray(response.data?.customDomains)
+        ? response.data.customDomains.filter((entry: unknown): entry is SyncedCustomDomain => this.isSyncedCustomDomain(entry))
+        : [];
 
       if (response.data.success) {
         this.logger.log('State sync successful');
@@ -293,6 +307,10 @@ export class CloudflareClientService {
 
   getTunnelToken(): string | null {
     return this.tunnelToken;
+  }
+
+  getCustomDomains(): SyncedCustomDomain[] {
+    return this.customDomains;
   }
 
   /**

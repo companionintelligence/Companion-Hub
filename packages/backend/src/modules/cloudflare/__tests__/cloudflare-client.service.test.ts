@@ -154,6 +154,19 @@ describe('CloudflareClientService', () => {
       const result = await service.syncState('org-id', [], 'tun-id');
       expect(result).toBe(false);
     });
+
+    it('should cache custom domains from sync response', async () => {
+      mockAxiosInstance.post.mockResolvedValue({
+        data: {
+          success: true,
+          customDomains: [{ id: 'cd-1', domain: 'grafana.example.com', appUrn: 'grafana:ci-marketplace' }, { id: 'invalid' }],
+        },
+      });
+
+      await service.syncState('org-id', [], 'tun-id');
+
+      expect(service.getCustomDomains()).toEqual([{ id: 'cd-1', domain: 'grafana.example.com', appUrn: 'grafana:ci-marketplace' }]);
+    });
   });
 
   describe('fetchAvailableDomains', () => {

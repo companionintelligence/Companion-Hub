@@ -28,6 +28,7 @@ export const sseSchema = z.union([
         z.literal('backup_error'),
         z.literal('restore_success'),
         z.literal('restore_error'),
+        z.literal('custom_domain_status'),
       ]),
       appUrn: z.string().refine((v) => v.split(':').length === 2),
       appStatus: z
@@ -49,6 +50,12 @@ export const sseSchema = z.union([
         .optional(),
       error: z.string().optional(),
       progress: z.number().min(0).max(99).optional(),
+      customDomainId: z.string().optional(),
+      domain: z.string().optional(),
+      propagationStatus: z.string().optional(),
+      sslStatus: z.string().optional(),
+      monitorStatus: z.string().optional(),
+      connectLink: z.string().optional(),
     }),
   }),
   z.object({

@@ -13,6 +13,7 @@ export type {
   AvailableDomain,
   AvailableDomainsResponse,
 } from './domains.js';
+export type { SyncedCustomDomain } from './custom-domains.js';
 export type {
   HardwareProfile,
   HardwareTier,
