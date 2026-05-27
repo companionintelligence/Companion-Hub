@@ -14,8 +14,8 @@ interface CloudProviderCardProps {
 const PROVIDER_ORDER: CloudProviderType[] = ['openai', 'anthropic', 'google', 'github-copilot'];
 const RECOMMENDED_PROVIDERS: CloudProviderType[] = ['openai', 'anthropic'];
 const PROVIDER_PRESENTATION: Record<CloudProviderType, { title: string; subtitle?: string }> = {
-  openai: { title: 'OpenClaude', subtitle: 'Recommended personal AI service' },
-  anthropic: { title: 'Hermes', subtitle: 'Recommended personal AI service' },
+  openai: { title: 'OpenAI', subtitle: 'Recommended personal AI service' },
+  anthropic: { title: 'Anthropic', subtitle: 'Recommended personal AI service' },
   google: { title: 'Google AI' },
   'github-copilot': { title: 'GitHub Copilot' },
 };
