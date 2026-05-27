@@ -140,7 +140,13 @@ echo "YOUR_TUNNEL_TOKEN" > tunnel/token
 
 ### Private VPN (Tailscale, optional)
 
-The **`hub-tailscale`** Docker sidecar joins your Tailscale tailnet for private access to the Hub network. See **[docs/private-vpn.md](docs/private-vpn.md)**.
+Use Tailscale when you want private remote access to the Hub and its apps without exposing them publicly.
+
+- Set up Tailscale from the onboarding flow or **Settings → Network**
+- Use **`TAILSCALE_AUTHKEY`** for unattended deployments
+- Access the Hub with its Tailscale hostname and expose apps privately with the **Tailscale** exposure mode
+
+See **[docs/private-vpn.md](docs/private-vpn.md)** for setup, URL examples, troubleshooting, and the recommended remote administration workflow.
 
 ---
 
