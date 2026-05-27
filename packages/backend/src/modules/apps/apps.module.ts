@@ -10,9 +10,10 @@ import { AppsController } from './apps.controller';
 import { AppsRepository } from './apps.repository';
 import { AppsService } from './apps.service';
 import { RegistrationModule } from '../registration/registration.module';
+import { SmtpModule } from '../smtp/smtp.module';
 
 @Module({
-  imports: [QueueModule, EnvModule, MarketplaceModule, forwardRef(() => RegistrationModule)],
+  imports: [QueueModule, EnvModule, MarketplaceModule, forwardRef(() => RegistrationModule), SmtpModule],
   controllers: [AppsController],
   providers: [AppFilesManager, AppsRepository, AppHelpers, AppsService, ConfigurationService, PortAllocationRepository],
   exports: [AppsRepository, AppFilesManager, AppHelpers, AppsService],

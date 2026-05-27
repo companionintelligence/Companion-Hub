@@ -4,13 +4,14 @@ import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
 import { EnvUtils } from '../env/env.utils';
 import type { AppEventFormInput } from '../queue/entities/app-events';
 import { AppFilesManager } from './app-files-manager';
 import { DeviceRegistrationRepository } from '../registration/device-registration.repository';
 import { RegistrationService } from '../registration/registration.service';
+import { SmtpInjectorService } from '../smtp/smtp-injector.service';
 
 @Injectable()
 export class AppHelpers {
@@ -22,6 +23,7 @@ export class AppHelpers {
     private readonly logger: LoggerService,
     private readonly deviceRegistrationRepository: DeviceRegistrationRepository,
     private readonly registrationService: RegistrationService,
+    @Optional() private readonly smtpInjector?: SmtpInjectorService,
   ) {}
 
   /**
@@ -382,6 +384,16 @@ export class AppHelpers {
       const hubContainerName = process.env.HUB_CONTAINER_NAME || 'ci-os-hub';
       const hubPort = process.env.API_PORT || '3000';
       envMap.set('HUB_INFERENCE_URL', `http://${hubContainerName}:${hubPort}/api/inference/v1`);
+    }
+
+    // --- SMTP Integration for all Hub apps ---
+    // Detect SMTP-related env vars and inject Hub SMTP credentials when available
+    if (this.smtpInjector) {
+      try {
+        await this.smtpInjector.injectSmtpEnv(appName, envMap, domain);
+      } catch (err) {
+        this.logger.warn(`[SMTP] Failed to inject SMTP env vars for ${appUrn}: ${err}`);
+      }
     }
 
     await this.appFilesManager.writeAppEnv(appUrn, this.envUtils.envMapToString(envMap));
