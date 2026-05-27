@@ -23,12 +23,20 @@ const runningStatusJson = JSON.stringify({
 
 describe('TailscaleService', () => {
   let service: TailscaleService;
+  const configService = {
+    getConfig: vi.fn(),
+  };
 
   beforeEach(() => {
+    vi.unstubAllGlobals();
     execFileMock.mockReset();
     vi.mocked(access).mockReset();
     vi.mocked(access).mockRejectedValue(new Error('ENOENT'));
-    service = new TailscaleService();
+    configService.getConfig.mockReturnValue({
+      ciCloudUrl: 'https://cloud.example',
+      ciHubApiKey: 'hub-api-key',
+    });
+    service = new TailscaleService(configService as never);
   });
 
   it('uses docker sidecar when host binary/socket are missing', async () => {
@@ -301,5 +309,74 @@ describe('TailscaleService', () => {
     await service.disconnect();
 
     expect(execFileMock).toHaveBeenCalledWith('docker', ['exec', 'hub-tailscale', 'tailscale', 'down'], expect.any(Object), expect.any(Function));
+  });
+
+  it('normalizes portal device URLs and admin links', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        devices: [
+          {
+            device_id: 'dev-1',
+            name: 'Mac mini',
+            online: true,
+            tailscale_url: 'mac-mini.tailnet.ts.net',
+          },
+          {
+            id: 'dev-2',
+            hostname: 'linux-box.tailnet.ts.net',
+            status: 'offline',
+            admin_panel_url: 'https://linux-box.tailnet.ts.net/admin',
+          },
+        ],
+      }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await service.getDevices();
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://cloud.example/api/devices',
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Accept: 'application/json',
+          Authorization: 'Bearer '.concat('hub-api-key'),
+          'x-device-key': 'hub-api-key',
+        }),
+      }),
+    );
+    expect(result).toEqual({
+      devices: [
+        {
+          id: 'dev-1',
+          name: 'Mac mini',
+          online: true,
+          status: 'online',
+          tailscaleUrl: 'https://mac-mini.tailnet.ts.net',
+          adminUrl: 'https://mac-mini.tailnet.ts.net',
+        },
+        {
+          id: 'dev-2',
+          name: 'linux-box.tailnet.ts.net',
+          online: false,
+          status: 'offline',
+          tailscaleUrl: 'https://linux-box.tailnet.ts.net',
+          adminUrl: 'https://linux-box.tailnet.ts.net/admin',
+        },
+      ],
+      message: null,
+    });
+  });
+
+  it('returns a helpful message when device directory credentials are missing', async () => {
+    configService.getConfig.mockReturnValue({
+      ciCloudUrl: 'https://cloud.example',
+      ciHubApiKey: null,
+    });
+
+    await expect(service.getDevices()).resolves.toEqual({
+      devices: [],
+      message: 'Register this Hub with Companion Cloud to load your device directory.',
+    });
   });
 });

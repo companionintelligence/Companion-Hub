@@ -2,7 +2,7 @@ import { appContextQueryKey } from '@/api-client/@tanstack/react-query.gen';
 import { Button } from '@/components/ui/Button';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Globe, Loader2, Shield } from 'lucide-react';
+import { Copy, ExternalLink, Globe, Loader2, Shield } from 'lucide-react';
 import { useState } from 'react';
 import { apiFetch } from '@/lib/api-fetch';
 import toast from 'react-hot-toast';
@@ -31,6 +31,20 @@ interface TailscaleApiStatus {
   backendState: string | null;
 }
 
+interface TailscaleDeviceEntry {
+  id: string;
+  name: string;
+  online: boolean;
+  status: 'online' | 'offline';
+  tailscaleUrl: string | null;
+  adminUrl: string | null;
+}
+
+interface TailscaleDevicesResponse {
+  devices: TailscaleDeviceEntry[];
+  message: string | null;
+}
+
 interface AuthStartResponse {
   success: boolean;
   authUrl?: string;
@@ -42,6 +56,19 @@ const TailscaleSidecarSection = () => {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
 
+  const copyToClipboard = async (value: string | null) => {
+    const trimmed = value?.trim();
+    if (!trimmed) {
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(trimmed);
+      toast.success(t('SETTINGS_NETWORK_COPIED'));
+    } catch {
+      toast.error(t('SETTINGS_GENERAL_COPY_FAILED'));
+    }
+  };
+
   const { data, isLoading } = useQuery<TailscaleApiStatus>({
     queryKey: ['tailscale-status'],
     queryFn: async () => {
@@ -51,8 +78,18 @@ const TailscaleSidecarSection = () => {
     refetchInterval: 10_000,
   });
 
+  const { data: deviceDirectory, isLoading: isDevicesLoading } = useQuery<TailscaleDevicesResponse>({
+    queryKey: ['tailscale-devices'],
+    queryFn: async () => {
+      const res = await apiFetch('/api/tailscale/devices', { credentials: 'include' });
+      return res.json();
+    },
+    refetchInterval: 15_000,
+  });
+
   const invalidateTailscaleAndAppContext = () => {
     void queryClient.invalidateQueries({ queryKey: ['tailscale-status'] });
+    void queryClient.invalidateQueries({ queryKey: ['tailscale-devices'] });
     void queryClient.invalidateQueries({ queryKey: appContextQueryKey() });
   };
 
@@ -137,6 +174,73 @@ const TailscaleSidecarSection = () => {
           )}
         </div>
       )}
+
+      <div className="space-y-3 border-t pt-3">
+        <div>
+          <h4 className="text-sm font-medium text-foreground">Registered device URLs</h4>
+          <p className="text-xs text-muted-foreground">
+            Copy a Tailscale URL or jump straight into a device admin panel from anywhere on your tailnet.
+          </p>
+        </div>
+
+        {isDevicesLoading ? (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Loading device URLs…
+          </div>
+        ) : deviceDirectory?.devices?.length ? (
+          <div className="space-y-3">
+            {deviceDirectory.devices.map((device) => (
+              <div key={device.id} className="rounded-lg border border-border/60 bg-background/60 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="font-medium text-foreground">{device.name}</div>
+                    <div className="text-xs text-muted-foreground">Status: {device.online ? 'Online' : 'Offline'}</div>
+                  </div>
+                  <StatusBadge connected={device.online} label={device.online ? 'Online' : 'Offline'} />
+                </div>
+
+                <div className="mt-3 space-y-2">
+                  <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Tailscale URL</div>
+                  <div className="flex flex-col gap-2 md:flex-row">
+                    <div className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-border/60 bg-muted/30 px-3 py-2">
+                      <p className="min-w-0 flex-1 break-all font-mono text-sm text-foreground">
+                        {device.tailscaleUrl ?? 'Waiting for Tailscale URL'}
+                      </p>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8 shrink-0 text-muted-foreground hover:text-foreground"
+                        disabled={!device.tailscaleUrl}
+                        onClick={() => void copyToClipboard(device.tailscaleUrl)}
+                        aria-label={`Copy Tailscale URL for ${device.name}`}
+                        title={`Copy Tailscale URL for ${device.name}`}
+                      >
+                        <Copy className="h-4 w-4" />
+                      </Button>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="md:self-stretch"
+                      disabled={!device.adminUrl}
+                      onClick={() => device.adminUrl && openExternal(device.adminUrl)}
+                    >
+                      <ExternalLink className="mr-2 h-4 w-4" />
+                      Open Admin Panel
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="rounded-lg border border-dashed border-border/60 bg-muted/20 p-3 text-sm text-muted-foreground">
+            {deviceDirectory?.message ?? 'No registered Tailscale devices yet.'}
+          </div>
+        )}
+      </div>
 
       {cliUnavailable && (
         <div className="space-y-3">

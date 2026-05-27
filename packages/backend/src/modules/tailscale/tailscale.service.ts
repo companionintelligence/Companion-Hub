@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import type { ConfigurationService } from '@/core/config/configuration.service';
 import { execFile } from 'node:child_process';
 import { access, constants } from 'node:fs/promises';
 
@@ -18,6 +19,20 @@ export interface TailscaleServeEntry {
   proto: string;
   mountPoint: string;
   dest: string;
+}
+
+export interface TailscaleDeviceEntry {
+  id: string;
+  name: string;
+  online: boolean;
+  status: 'online' | 'offline';
+  tailscaleUrl: string | null;
+  adminUrl: string | null;
+}
+
+export interface TailscaleDevicesResponse {
+  devices: TailscaleDeviceEntry[];
+  message: string | null;
 }
 
 interface TailscaleServeServiceConfig {
@@ -42,6 +57,8 @@ export class TailscaleService {
 
   private strategyCache: { value: ExecStrategy | null; expires: number } | null = null;
   private static readonly STRATEGY_TTL_MS = 30_000;
+
+  constructor(private readonly configService: Pick<ConfigurationService, 'getConfig'>) {}
 
   private execHost(args: string[], timeoutMs = 15000): Promise<{ stdout: string; stderr: string }> {
     return new Promise((resolve, reject) => {
@@ -98,6 +115,158 @@ export class TailscaleService {
 
   private invalidateStrategyCache(): void {
     this.strategyCache = null;
+  }
+
+  private isObject(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null;
+  }
+
+  private pickString(candidate: Record<string, unknown>, keys: string[]): string | null {
+    for (const key of keys) {
+      const value = candidate[key];
+      if (typeof value === 'string') {
+        const trimmed = value.trim();
+        if (trimmed) {
+          return trimmed;
+        }
+      }
+    }
+    return null;
+  }
+
+  private resolvePortalDeviceList(payload: unknown): unknown[] {
+    if (Array.isArray(payload)) {
+      return payload;
+    }
+    if (!this.isObject(payload)) {
+      return [];
+    }
+
+    const nestedKeys = ['devices', 'data', 'results', 'items'];
+    for (const key of nestedKeys) {
+      const value = payload[key];
+      if (Array.isArray(value)) {
+        return value;
+      }
+      if (this.isObject(value)) {
+        for (const nestedKey of nestedKeys) {
+          const nestedValue = value[nestedKey];
+          if (Array.isArray(nestedValue)) {
+            return nestedValue;
+          }
+        }
+      }
+    }
+
+    return [];
+  }
+
+  private normalizeExternalUrl(value: string | null): string | null {
+    if (!value) {
+      return null;
+    }
+
+    const finalizeUrl = (raw: string): string | null => {
+      try {
+        const url = new URL(raw);
+        if (!['http:', 'https:'].includes(url.protocol)) {
+          return null;
+        }
+        const normalized = url.toString();
+        return url.pathname === '/' && !url.search && !url.hash ? normalized.replace(/\/$/, '') : normalized;
+      } catch {
+        return null;
+      }
+    };
+
+    if (/^https?:\/\//i.test(value)) {
+      return finalizeUrl(value);
+    }
+
+    if (!/^[a-z0-9.-]+(?::\d+)?(?:\/[^\s]*)?$/i.test(value)) {
+      return null;
+    }
+
+    return finalizeUrl(`https://${value}`);
+  }
+
+  private normalizePortalDevice(entry: unknown): TailscaleDeviceEntry | null {
+    if (!this.isObject(entry)) {
+      return null;
+    }
+
+    const id = this.pickString(entry, ['deviceId', 'device_id', 'id', 'slug', 'hostname', 'name', 'deviceName', 'device_name']) ?? 'unknown-device';
+    const name = this.pickString(entry, ['name', 'deviceName', 'device_name', 'hostname', 'slug', 'deviceId', 'device_id']) ?? id;
+
+    const rawStatus = this.pickString(entry, ['status', 'connectionStatus', 'connection_status', 'state']);
+    const onlineFlag = entry.online ?? entry.isOnline ?? entry.connected ?? entry.is_connected;
+    const online =
+      typeof onlineFlag === 'boolean'
+        ? onlineFlag
+        : rawStatus
+          ? ['online', 'connected', 'running', 'active'].includes(rawStatus.toLowerCase())
+          : false;
+
+    const tailscaleUrl = this.normalizeExternalUrl(
+      this.pickString(entry, ['tailscaleUrl', 'tailscale_url', 'magicDnsUrl', 'magic_dns_url', 'url', 'hostname']),
+    );
+    const adminUrl = this.normalizeExternalUrl(
+      this.pickString(entry, ['adminPanelUrl', 'admin_panel_url', 'adminUrl', 'admin_url', 'dashboardUrl', 'dashboard_url']) ?? tailscaleUrl,
+    );
+
+    return {
+      id,
+      name,
+      online,
+      status: online ? 'online' : 'offline',
+      tailscaleUrl,
+      adminUrl,
+    };
+  }
+
+  async getDevices(): Promise<TailscaleDevicesResponse> {
+    const { ciCloudUrl, ciHubApiKey } = this.configService.getConfig();
+    const base = ciCloudUrl?.trim().replace(/\/+$/, '');
+
+    if (!base || !ciHubApiKey) {
+      return {
+        devices: [],
+        message: 'Register this Hub with Companion Cloud to load your device directory.',
+      };
+    }
+
+    let response: Response;
+    try {
+      response = await fetch(`${base}/api/devices`, {
+        headers: {
+          Accept: 'application/json',
+          Authorization: 'Bearer '.concat(ciHubApiKey),
+          'x-device-key': ciHubApiKey,
+        },
+        signal: AbortSignal.timeout(10_000),
+      });
+    } catch (error) {
+      this.logger.warn(`Failed to fetch Tailscale devices: ${error}`);
+      return {
+        devices: [],
+        message: 'Could not reach Companion Cloud to load Tailscale device URLs.',
+      };
+    }
+
+    if (!response.ok) {
+      this.logger.warn(`Companion Cloud returned ${response.status} while loading Tailscale devices`);
+      return {
+        devices: [],
+        message: 'Companion Cloud could not load Tailscale device URLs right now.',
+      };
+    }
+
+    const payload = await response.json().catch(() => null);
+    const devices = this.resolvePortalDeviceList(payload)
+      .map((entry) => this.normalizePortalDevice(entry))
+      .filter((entry): entry is TailscaleDeviceEntry => entry !== null);
+
+    return { devices, message: devices.length === 0 ? 'No registered Tailscale devices were returned yet.' : null };
   }
 
   /** Same flags as `connectWithAuthKey`: env override or default Docker bridge advertisement. */

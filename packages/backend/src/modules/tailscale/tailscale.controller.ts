@@ -14,6 +14,12 @@ export class TailscaleController {
     return this.tailscaleService.getStatus();
   }
 
+  @Get('devices')
+  @ApiResponse({ type: Object })
+  async getDevices() {
+    return this.tailscaleService.getDevices();
+  }
+
   @Post('auth/start')
   @ApiResponse({ type: Object })
   async startAuth() {
