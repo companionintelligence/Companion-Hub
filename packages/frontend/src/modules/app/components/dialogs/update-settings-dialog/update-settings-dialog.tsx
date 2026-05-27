@@ -1,10 +1,11 @@
-import { updateAppConfigMutation } from '@/api-client/@tanstack/react-query.gen';
+import { backupAppMutation, updateAppConfigMutation } from '@/api-client/@tanstack/react-query.gen';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
+import { Switch } from '@/components/ui/Switch';
 import type { AppInfo, AppStatus } from '@/types/app.types';
 import type { TranslatableError } from '@/types/error.types';
 import { useMutation } from '@tanstack/react-query';
 import type React from 'react';
-import { useId } from 'react';
+import { useId, useState } from 'react';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
 import { InstallFormButtons } from '../../install-form-buttons/install-form-buttons';
@@ -23,6 +24,7 @@ const RUNNING_STATUSES: AppStatus[] = ['running', 'starting', 'restarting'];
 export const UpdateSettingsDialog: React.FC<IProps> = ({ info, config, isOpen, onClose, status }) => {
   const { t } = useTranslation();
   const formId = useId();
+  const [backupBeforeRestart, setBackupBeforeRestart] = useState(true);
 
   const isRunning = status != null && RUNNING_STATUSES.includes(status);
 
@@ -39,6 +41,13 @@ export const UpdateSettingsDialog: React.FC<IProps> = ({ info, config, isOpen, o
     },
   });
 
+  const backup = useMutation({
+    ...backupAppMutation(),
+    onError: (e: TranslatableError) => {
+      toast.error(t(e.message, e.intlParams));
+    },
+  });
+
   const normalizeFormValues = (values: FormValues) => {
     return {
       ...values,
@@ -46,6 +55,13 @@ export const UpdateSettingsDialog: React.FC<IProps> = ({ info, config, isOpen, o
       localSubdomain: values.localSubdomain || undefined,
       maxBackups: values.maxBackups !== undefined && Number.isNaN(values.maxBackups) ? undefined : values.maxBackups,
     };
+  };
+
+  const handleSubmit = async (values: FormValues) => {
+    if (isRunning && backupBeforeRestart) {
+      await backup.mutateAsync({ path: { urn: info.urn } });
+    }
+    updateConfig.mutate({ path: { urn: info.urn }, body: normalizeFormValues(values) });
   };
 
   return (
@@ -59,7 +75,7 @@ export const UpdateSettingsDialog: React.FC<IProps> = ({ info, config, isOpen, o
         </DialogHeader>
         <div className="flex-1 overflow-y-auto">
           <InstallForm
-            onSubmit={(values: FormValues) => updateConfig.mutate({ path: { urn: info.urn }, body: normalizeFormValues(values) })}
+            onSubmit={handleSubmit}
             formFields={info.form_fields}
             info={info}
             initialValues={{ ...config }}
@@ -68,8 +84,17 @@ export const UpdateSettingsDialog: React.FC<IProps> = ({ info, config, isOpen, o
             scrollable
           />
         </div>
+        {isRunning && (
+          <div className="px-1 pb-2">
+            <Switch
+              checked={backupBeforeRestart}
+              onCheckedChange={setBackupBeforeRestart}
+              label={t('APP_UPDATE_SETTINGS_BACKUP_BEFORE_RESTART')}
+            />
+          </div>
+        )}
         <DialogFooter>
-          <InstallFormButtons loading={updateConfig.isPending} isEdit formId={formId} />
+          <InstallFormButtons loading={updateConfig.isPending || backup.isPending} isEdit formId={formId} />
         </DialogFooter>
       </DialogContent>
     </Dialog>
