@@ -36,6 +36,8 @@ import { McpBridgeService } from './agents/mcp-bridge.service';
 import { ApiProxyService } from './agents/api-proxy.service';
 import { InferenceModule } from '@/modules/inference/inference.module';
 import { InferenceTools } from './tools/inference.tools';
+import { ActivityPubModule } from '@/modules/activitypub/activitypub.module';
+import { ActivityPubTools } from './tools/activitypub.tools';
 
 @Module({
   imports: [
@@ -55,6 +57,7 @@ import { InferenceTools } from './tools/inference.tools';
     CloudflareModule,
     LinksModule,
     InferenceModule,
+    ActivityPubModule,
   ],
   controllers: [McpController],
   providers: [
@@ -73,6 +76,7 @@ import { InferenceTools } from './tools/inference.tools';
     AppAgentTools,
     AppApiProxyTools,
     InferenceTools,
+    ActivityPubTools,
     AgentConfigService,
     SkillResolverService,
     OpenApiBridgeService,

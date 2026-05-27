@@ -1,4 +1,4 @@
-import { type INestApplication, ValidationPipe } from '@nestjs/common';
+import { RequestMethod, type INestApplication, ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { SwaggerModule } from '@nestjs/swagger';
 import cookieParser from 'cookie-parser';
@@ -34,7 +34,13 @@ async function bootstrap() {
   const appService = app.get(AppService);
   await appService.bootstrap();
 
-  app.setGlobalPrefix('/api');
+  app.setGlobalPrefix('/api', {
+    exclude: [
+      { path: '.well-known/webfinger', method: RequestMethod.GET },
+      { path: '.well-known/nodeinfo', method: RequestMethod.GET },
+      { path: 'nodeinfo/2.0', method: RequestMethod.GET },
+    ],
+  });
   app.useGlobalPipes(new ValidationPipe());
   app.enableCors({
     origin: (origin: string | undefined, callback: (err: Error | null, origin?: string | boolean) => void) => {

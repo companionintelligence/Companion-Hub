@@ -38,6 +38,23 @@ export const settingsSchema = z.object({
   ciHubOrganizationLabel: z.string().trim().optional(),
   ciHubDeviceSlug: z.string().trim().optional(),
   inferenceBackend: z.enum(['ollama', 'vllm', 'lemonade']).optional(),
+  federationEnabled: z.boolean().optional(),
+  federationDisplayName: z.string().trim().optional(),
+  federationSummary: z.string().trim().optional(),
+  federationPreferredUsername: z
+    .string()
+    .trim()
+    .regex(/^[a-z0-9._-]+$/i)
+    .optional(),
+  federationManualApproval: z.boolean().optional(),
+  federationPublishAppInstalls: z.boolean().optional(),
+  federationPublishAppUpdates: z.boolean().optional(),
+  federationPublishHubStatus: z.boolean().optional(),
+  federationPublishAgentActivity: z.boolean().optional(),
+  federationPublishSystemMetrics: z.boolean().optional(),
+  federationRelayGhost: z.boolean().optional(),
+  federationRelayForgejo: z.boolean().optional(),
+  federationRelayNextcloud: z.boolean().optional(),
 });
 
 const simpleAppInfoSchema = appInfoSchema.pick({

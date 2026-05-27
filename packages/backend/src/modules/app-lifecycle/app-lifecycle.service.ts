@@ -87,6 +87,18 @@ export class AppLifecycleService implements OnApplicationBootstrap {
     }, 10000); // Wait 10s for all services to be ready
   }
 
+  private async publishActivityPubAppEvent(kind: 'install' | 'update' | 'start' | 'stop', appUrn: AppUrn) {
+    try {
+      const { OutboxService } = await import('../activitypub/outbox.service');
+      const outboxService = this.moduleRef.get(OutboxService, { strict: false });
+      if (outboxService) {
+        await outboxService.publishAppEvent(kind, appUrn);
+      }
+    } catch (error) {
+      this.logger.warn(`ActivityPub publish skipped for ${kind}:${appUrn}`, error);
+    }
+  }
+
   async invokeCommand(data: z.infer<typeof appEventSchema>, reply: (response: z.output<typeof appEventResultSchema>) => Promise<void>) {
     const release = await this.mutex.acquire(data.appUrn);
 
@@ -136,6 +148,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
         this.logger.info(`App ${appUrn} started successfully`);
         await this.appRepository.updateAppById(app.id, { status: 'running', pendingRestart: false });
         this.sseService.emit('app', { event: 'start_success', appUrn, appStatus: 'running' });
+        await this.publishActivityPubAppEvent('start', appUrn);
 
         // Check if we need to sync Cloudflare state (if app is exposedLocal and production)
         const { isProduction: isProdEnv } = this.config.getConfig();
@@ -311,6 +324,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
         this.logger.info(`App ${appUrn} installed successfully`);
         await this.appRepository.updateAppById(createdApp.id, { status: 'running' });
         this.sseService.emit('app', { event: 'install_success', appUrn, appStatus: 'running' });
+        await this.publishActivityPubAppEvent('install', appUrn);
 
         // Check if we need to sync Cloudflare state (if app is exposedLocal)
         if (createdApp.exposedLocal || (appInfo.exposable && !exposedLocal)) {
@@ -347,6 +361,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
         await this.appRepository.updateAppById(app.id, { status: 'stopped' });
         this.sseService.emit('app', { event: 'stop_success', appUrn, appStatus: 'stopped' });
         this.logger.info(`App ${appUrn} stopped successfully`);
+        await this.publishActivityPubAppEvent('stop', appUrn);
 
         // Trigger sync to remove route if exposedLocal
         if (app.exposedLocal) {
@@ -805,6 +820,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
         await this.appRepository.updateAppById(app.id, { version: appInfo?.tipi_version, status: restoredStatus });
         this.sseService.emit('app', { event: 'update_success', appUrn, appStatus: restoredStatus });
         this.agentNotifyService?.notify('update_success', { appUrn }, 'info');
+        await this.publishActivityPubAppEvent('update', appUrn);
 
         if (appStatusBeforeUpdate === 'running') {
           void this.startApp({ appUrn });

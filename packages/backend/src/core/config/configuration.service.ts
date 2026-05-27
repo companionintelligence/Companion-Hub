@@ -97,7 +97,24 @@ export class ConfigurationService {
     const { NODE_ENV } = process.env;
 
     // Load settings.json manually to get credentials, bypassing .env
-    let settingsValues: { ciHubApiKey: string | null; ciHubOrganizationId: string | null; inferenceBackend: InferenceBackendType | undefined } = {
+    let settingsValues: {
+      ciHubApiKey: string | null;
+      ciHubOrganizationId: string | null;
+      inferenceBackend: InferenceBackendType | undefined;
+      federationEnabled?: boolean;
+      federationDisplayName?: string;
+      federationSummary?: string;
+      federationPreferredUsername?: string;
+      federationManualApproval?: boolean;
+      federationPublishAppInstalls?: boolean;
+      federationPublishAppUpdates?: boolean;
+      federationPublishHubStatus?: boolean;
+      federationPublishAgentActivity?: boolean;
+      federationPublishSystemMetrics?: boolean;
+      federationRelayGhost?: boolean;
+      federationRelayForgejo?: boolean;
+      federationRelayNextcloud?: boolean;
+    } = {
       ciHubApiKey: null,
       ciHubOrganizationId: null,
       inferenceBackend: undefined,
@@ -111,6 +128,19 @@ export class ConfigurationService {
           ciHubApiKey: settings.ciHubApiKey || null,
           ciHubOrganizationId: settings.ciHubOrganizationId || null,
           inferenceBackend: settings.inferenceBackend,
+          federationEnabled: settings.federationEnabled,
+          federationDisplayName: settings.federationDisplayName,
+          federationSummary: settings.federationSummary,
+          federationPreferredUsername: settings.federationPreferredUsername,
+          federationManualApproval: settings.federationManualApproval,
+          federationPublishAppInstalls: settings.federationPublishAppInstalls,
+          federationPublishAppUpdates: settings.federationPublishAppUpdates,
+          federationPublishHubStatus: settings.federationPublishHubStatus,
+          federationPublishAgentActivity: settings.federationPublishAgentActivity,
+          federationPublishSystemMetrics: settings.federationPublishSystemMetrics,
+          federationRelayGhost: settings.federationRelayGhost,
+          federationRelayForgejo: settings.federationRelayForgejo,
+          federationRelayNextcloud: settings.federationRelayNextcloud,
         };
       }
     } catch (_e) {
@@ -164,6 +194,19 @@ export class ConfigurationService {
         themeBase: env.data.THEME_BASE,
         themeColor: env.data.THEME_COLOR,
         inferenceBackend: settingsValues.inferenceBackend,
+        federationEnabled: settingsValues.federationEnabled,
+        federationDisplayName: settingsValues.federationDisplayName,
+        federationSummary: settingsValues.federationSummary,
+        federationPreferredUsername: settingsValues.federationPreferredUsername,
+        federationManualApproval: settingsValues.federationManualApproval,
+        federationPublishAppInstalls: settingsValues.federationPublishAppInstalls,
+        federationPublishAppUpdates: settingsValues.federationPublishAppUpdates,
+        federationPublishHubStatus: settingsValues.federationPublishHubStatus,
+        federationPublishAgentActivity: settingsValues.federationPublishAgentActivity,
+        federationPublishSystemMetrics: settingsValues.federationPublishSystemMetrics,
+        federationRelayGhost: settingsValues.federationRelayGhost,
+        federationRelayForgejo: settingsValues.federationRelayForgejo,
+        federationRelayNextcloud: settingsValues.federationRelayNextcloud,
         experimental: {
           insecureCookie: env.data.EXPERIMENTAL_INSECURE_COOKIE,
         },
