@@ -149,10 +149,12 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
         </Button>
         <div className="flex gap-2">
           <Button variant="outline" onClick={handleSkip} data-testid="ai-skip-btn">
-            Skip AI Setup
+            Skip to Discover
           </Button>
           <Button intent="primary" onClick={handleContinue} data-testid="ai-continue-btn">
-            {isInsufficient && cloudProviders.filter((p) => p.apiKey.trim()).length === 0 ? 'Continue without AI' : 'Continue'}
+            {isInsufficient && cloudProviders.filter((p) => p.apiKey.trim()).length === 0
+              ? 'Continue to Discover without AI'
+              : 'Continue to Discover'}
           </Button>
         </div>
       </div>

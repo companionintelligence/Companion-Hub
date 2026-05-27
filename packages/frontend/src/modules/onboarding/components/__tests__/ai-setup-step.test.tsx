@@ -183,7 +183,7 @@ describe('AiSetupStep', () => {
     render(<AiSetupStep onComplete={onComplete} onSkip={onSkip} onBack={onBack} />);
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
 
-    expect(screen.getByTestId('ai-continue-btn')).toHaveTextContent('Continue without AI');
+    expect(screen.getByTestId('ai-continue-btn')).toHaveTextContent('Continue to Discover without AI');
   });
 
   it('calls onComplete with config when Continue is clicked', async () => {

@@ -66,7 +66,7 @@ export const SelectAppsStep = ({ selectedApps, onConfirm, onBack }: SelectAppsSt
             Back
           </Button>
           <Button intent="primary" onClick={() => onConfirm(apps)}>
-            {apps.length > 0 ? `Install ${apps.length} app${apps.length === 1 ? '' : 's'}` : 'Continue to Private VPN'}
+            Continue to Private VPN
           </Button>
         </div>
       </CardContent>

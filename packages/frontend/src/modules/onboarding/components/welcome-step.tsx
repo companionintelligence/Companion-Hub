@@ -44,10 +44,10 @@ export const WelcomeStep = ({ onDetected, onSkip }: WelcomeStepProps) => {
 
         <div className="flex flex-col gap-3 items-center">
           <Button intent="primary" onClick={handleDetect} loading={loading} disabled={loading} className="w-64">
-            Detect running services
+            Detect services and continue to AI Setup
           </Button>
           <Button variant="ghost" onClick={onSkip} disabled={loading}>
-            Skip service detection
+            Skip to AI Setup
           </Button>
         </div>
 
