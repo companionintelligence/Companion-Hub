@@ -271,10 +271,12 @@ export class HardwareInspectorService implements OnModuleInit {
   }> {
     try {
       const cached = await this.readNvidiaHostProbe();
-      const [{ stdout: infoStdout }, { stdout: versionStdout }] = await Promise.all([
-        execAsync('cat /proc/driver/nvidia/gpus/*/information 2>/dev/null'),
-        execAsync('cat /proc/driver/nvidia/version 2>/dev/null'),
-      ]);
+      const infoStdout = await execAsync('cat /proc/driver/nvidia/gpus/*/information 2>/dev/null || true')
+        .then((result) => result.stdout)
+        .catch(() => '');
+      const versionStdout = await execAsync('cat /proc/driver/nvidia/version 2>/dev/null || true')
+        .then((result) => result.stdout)
+        .catch(() => '');
 
       const model =
         infoStdout
@@ -288,18 +290,7 @@ export class HardwareInspectorService implements OnModuleInit {
         cached?.model ??
         '';
 
-      const driverVersion =
-        versionStdout.match(/Kernel Module\s+([0-9]+(?:\.[0-9]+)+)/)?.[1] ??
-        infoStdout
-          .split('\n')
-          .map((line) => line.trim())
-          .find((line) => line.startsWith('GPU Firmware:'))
-          ?.split(':')
-          .slice(1)
-          .join(':')
-          .trim() ??
-        cached?.driverVersion ??
-        '';
+      const driverVersion = versionStdout.match(/NVRM version:\s+[^\n]*?\s([0-9]+(?:\.[0-9]+)+)\b/)?.[1] ?? cached?.driverVersion ?? '';
 
       if (!model) {
         return { available: false, vendor: 'none', model: '', vramMb: 0, driverVersion: '' };

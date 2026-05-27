@@ -141,6 +141,9 @@ fn refresh_nvidia_host_probe_cache(data_dir: &Path) {
     if let Some(parent) = probe_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
+    let clear_stale_probe = || {
+        let _ = std::fs::remove_file(&probe_path);
+    };
 
     let output = Command::new("sh")
         .arg("-lc")
@@ -150,6 +153,7 @@ fn refresh_nvidia_host_probe_cache(data_dir: &Path) {
     let output = match output {
         Ok(value) => value,
         Err(error) => {
+            clear_stale_probe();
             let _ = append_desktop_log_for(
                 data_dir,
                 "gpu.probe",
@@ -163,6 +167,7 @@ fn refresh_nvidia_host_probe_cache(data_dir: &Path) {
     };
 
     if !output.status.success() {
+        clear_stale_probe();
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         let details = if stderr.is_empty() {
             "nvidia-smi command failed".to_string()
@@ -180,6 +185,7 @@ fn refresh_nvidia_host_probe_cache(data_dir: &Path) {
         .unwrap_or("")
         .to_string();
     if first_line.is_empty() {
+        clear_stale_probe();
         let _ = append_desktop_log_for(
             data_dir,
             "gpu.probe",
@@ -197,6 +203,7 @@ fn refresh_nvidia_host_probe_cache(data_dir: &Path) {
     let driver_version = parts.next().unwrap_or_default().to_string();
 
     if model.is_empty() {
+        clear_stale_probe();
         let _ = append_desktop_log_for(
             data_dir,
             "gpu.probe",

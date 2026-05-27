@@ -167,7 +167,7 @@ function clearNvidiaProbe(): void {
 }
 
 function collectHostNvidiaProbe(): NvidiaProbe | null {
-  const probe = runCapture('bash', ['-lc', 'nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader,nounits | head -n 1']);
+  const probe = runCapture('sh', ['-lc', 'nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader,nounits | head -n 1']);
   if (!probe.ok) return null;
 
   const line = probe.stdout
@@ -212,15 +212,15 @@ function dockerHasNvidiaRuntime(): boolean {
 function hasNvidiaGpuLinux(): boolean {
   if (existsSync('/proc/driver/nvidia/gpus')) return true;
 
-  const smi = runCapture('bash', ['-lc', 'nvidia-smi -L']);
+  const smi = runCapture('sh', ['-lc', 'nvidia-smi -L']);
   if (smi.ok && smi.stdout.toLowerCase().includes('gpu')) return true;
 
-  const lspci = runCapture('bash', ['-lc', "lspci 2>/dev/null | grep -i 'nvidia' || true"]);
+  const lspci = runCapture('sh', ['-lc', "lspci 2>/dev/null | grep -i 'nvidia' || true"]);
   return lspci.stdout.trim().length > 0;
 }
 
 function hasNvidiaGpuMac(): boolean {
-  const sp = runCapture('bash', ['-lc', "system_profiler SPDisplaysDataType 2>/dev/null | grep -i 'nvidia' || true"]);
+  const sp = runCapture('sh', ['-lc', "system_profiler SPDisplaysDataType 2>/dev/null | grep -i 'nvidia' || true"]);
   return sp.stdout.trim().length > 0;
 }
 
@@ -265,11 +265,11 @@ function installToolkitDebian(): boolean {
 
   const keyCmd =
     'curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor -o /etc/apt/keyrings/nvidia-container-toolkit-keyring.gpg';
-  if (!runCommand('bash', ['-lc', keyCmd], true)) return false;
+  if (!runCommand('sh', ['-lc', keyCmd], true)) return false;
 
   const listCmd =
     "curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | sed 's#deb https://#deb [signed-by=/etc/apt/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | tee /etc/apt/sources.list.d/nvidia-container-toolkit.list >/dev/null";
-  if (!runCommand('bash', ['-lc', listCmd], true)) return false;
+  if (!runCommand('sh', ['-lc', listCmd], true)) return false;
 
   if (!runCommand('apt-get', ['update'], true)) return false;
   return runCommand('apt-get', ['install', '-y', 'nvidia-container-toolkit'], true);
@@ -278,7 +278,7 @@ function installToolkitDebian(): boolean {
 function installToolkitRpm(): boolean {
   const repoCmd =
     'curl -fsSL https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo | tee /etc/yum.repos.d/nvidia-container-toolkit.repo >/dev/null';
-  if (!runCommand('bash', ['-lc', repoCmd], true)) return false;
+  if (!runCommand('sh', ['-lc', repoCmd], true)) return false;
 
   if (hasCommand('dnf')) {
     return runCommand('dnf', ['install', '-y', 'nvidia-container-toolkit'], true);
