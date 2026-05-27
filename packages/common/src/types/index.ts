@@ -13,6 +13,7 @@ export type {
   AvailableDomain,
   AvailableDomainsResponse,
 } from './domains.js';
+export type { SourcePlatform } from './migration.js';
 export type {
   HardwareProfile,
   HardwareTier,

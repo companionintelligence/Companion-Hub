@@ -18,6 +18,9 @@ const SystemInspectorContainer = lazy(() =>
 );
 const GeneralActionsContainer = lazy(() => import('../containers/general-actions').then((module) => ({ default: module.GeneralActionsContainer })));
 const AiSettingsContainer = lazy(() => import('../containers/ai-settings').then((module) => ({ default: module.AiSettingsContainer })));
+const MigrationContainer = lazy(() =>
+  import('@/modules/migration/components/migration-container').then((module) => ({ default: module.MigrationContainer })),
+);
 
 export default () => {
   const { t } = useTranslation();
@@ -57,6 +60,9 @@ export default () => {
               <TabsTrigger value="ai" className="hidden md:inline-flex">
                 AI
               </TabsTrigger>
+              <TabsTrigger value="migration" className="hidden md:inline-flex">
+                Migration
+              </TabsTrigger>
               <TabsTrigger value="system" className="hidden md:inline-flex">
                 System
               </TabsTrigger>
@@ -71,6 +77,7 @@ export default () => {
                   <DropdownMenuItem onClick={() => handleTabChange('appstores')}>{t('SETTINGS_APPSTORES_TAB_TITLE')}</DropdownMenuItem>
                   <DropdownMenuItem onClick={() => handleTabChange('network')}>{t('SETTINGS_NETWORK_TAB_TITLE')}</DropdownMenuItem>
                   <DropdownMenuItem onClick={() => handleTabChange('ai')}>AI</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handleTabChange('migration')}>Migration</DropdownMenuItem>
                   <DropdownMenuItem onClick={() => handleTabChange('system')}>System</DropdownMenuItem>
                   <DropdownMenuItem onClick={() => handleTabChange('logs')}>{t('SETTINGS_LOGS_TAB_TITLE')}</DropdownMenuItem>
                 </DropdownMenuContent>
@@ -102,6 +109,11 @@ export default () => {
               <TabsContent value="ai">
                 <Suspense fallback={<div>Loading...</div>}>
                   <AiSettingsContainer />
+                </Suspense>
+              </TabsContent>
+              <TabsContent value="migration">
+                <Suspense fallback={<div>Loading...</div>}>
+                  <MigrationContainer />
                 </Suspense>
               </TabsContent>
               <TabsContent value="system">
