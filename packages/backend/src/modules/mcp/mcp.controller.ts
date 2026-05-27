@@ -1,13 +1,18 @@
 import { Body, Controller, Get, Post, Req, Res, UseGuards } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { McpAuthGuard } from './mcp-auth.guard';
-import { type JsonRpcRequest, McpService } from './mcp.service';
+import { type JsonRpcRequest, type McpRegistryResponse, McpService } from './mcp.service';
 
 @Controller('mcp')
 export class McpController {
   private sseClients = new Set<Response>();
 
   constructor(private readonly mcpService: McpService) {}
+
+  @Get('registry')
+  async registry(): Promise<McpRegistryResponse> {
+    return this.mcpService.getRegistry();
+  }
 
   @Get('sse')
   @UseGuards(McpAuthGuard)

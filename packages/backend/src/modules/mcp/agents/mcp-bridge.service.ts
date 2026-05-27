@@ -22,6 +22,12 @@ export interface BridgedToolInfo {
   source: 'mcp';
 }
 
+export interface RemoteMcpTool {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+}
+
 /**
  * Connects to app MCP servers and bridges their tools.
  * Implements AMB-1 (SSE), AMB-2 (stdio), AMB-3 (lifecycle).
@@ -91,6 +97,22 @@ export class McpBridgeService implements OnModuleDestroy {
       description: tool.description,
       source: 'mcp' as const,
     }));
+  }
+
+  /**
+   * Discover and cache the raw MCP tools exposed by an app server.
+   */
+  async listRemoteTools(appUrn: AppUrn, agentConfig: ResolvedAgentConfig): Promise<RemoteMcpTool[]> {
+    if (!agentConfig.mcp.enabled || !agentConfig.mcp.config) {
+      return [];
+    }
+
+    const conn = this.getOrCreateConnection(appUrn, agentConfig.mcp.config);
+    if (conn.connected && conn.tools.length > 0) {
+      return conn.tools;
+    }
+
+    return this.connectAndDiscover(appUrn, conn);
   }
 
   /**

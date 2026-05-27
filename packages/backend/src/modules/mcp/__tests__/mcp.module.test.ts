@@ -28,6 +28,8 @@ import { RegistrationService } from '@/modules/registration/registration.service
 import { CloudflareClientService } from '@/modules/cloudflare/cloudflare-client.service';
 import { LinksService } from '@/modules/links/links.service';
 import { LoggerService } from '@/core/logger/logger.service';
+import { AgentConfigService } from '../agents/agent-config.service';
+import { McpBridgeService } from '../agents/mcp-bridge.service';
 
 describe('McpModule', () => {
   it('should compile as a standalone NestJS module without the full application', async () => {
@@ -59,6 +61,8 @@ describe('McpModule', () => {
         { provide: RegistrationService, useValue: mock<RegistrationService>() },
         { provide: CloudflareClientService, useValue: mock<CloudflareClientService>() },
         { provide: LinksService, useValue: mock<LinksService>() },
+        { provide: AgentConfigService, useValue: mock<AgentConfigService>() },
+        { provide: McpBridgeService, useValue: mock<McpBridgeService>() },
         { provide: LoggerService, useValue: mock<LoggerService>() },
       ],
     }).compile();

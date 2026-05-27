@@ -1,21 +1,37 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { mock } from 'vitest-mock-extended';
+import { mock, type MockProxy } from 'vitest-mock-extended';
 import { McpToolRegistry } from '../mcp-tool-registry.service';
 import { McpService } from '../mcp.service';
 import { LoggerService } from '@/core/logger/logger.service';
+import { AppsService } from '@/modules/apps/apps.service';
+import { AgentConfigService } from '../agents/agent-config.service';
+import { McpBridgeService } from '../agents/mcp-bridge.service';
 
 describe('McpService', () => {
   let service: McpService;
   let toolRegistry: McpToolRegistry;
+  let appsService: MockProxy<AppsService>;
+  let agentConfigService: MockProxy<AgentConfigService>;
+  let mcpBridgeService: MockProxy<McpBridgeService>;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
-      providers: [McpService, McpToolRegistry, { provide: LoggerService, useValue: mock<LoggerService>() }],
+      providers: [
+        McpService,
+        McpToolRegistry,
+        { provide: LoggerService, useValue: mock<LoggerService>() },
+        { provide: AppsService, useValue: mock<AppsService>() },
+        { provide: AgentConfigService, useValue: mock<AgentConfigService>() },
+        { provide: McpBridgeService, useValue: mock<McpBridgeService>() },
+      ],
     }).compile();
 
     service = module.get<McpService>(McpService);
     toolRegistry = module.get(McpToolRegistry);
+    appsService = module.get(AppsService);
+    agentConfigService = module.get(AgentConfigService);
+    mcpBridgeService = module.get(McpBridgeService);
   });
 
   it('should be defined', () => {
@@ -31,6 +47,82 @@ describe('McpService', () => {
     it('should return capabilities with tools object', async () => {
       const res = await service.handleMessage({ jsonrpc: '2.0', id: 1, method: 'initialize' });
       expect((res.result as any).capabilities.tools).toEqual({});
+    });
+  });
+
+  describe('getRegistry', () => {
+    it('should return only installed apps with MCP enabled', async () => {
+      appsService.getInstalledApps.mockResolvedValue([
+        { app: { status: 'running' }, info: { urn: 'nextcloud:ci-store', name: 'Nextcloud' } },
+        { app: { status: 'stopped' }, info: { urn: 'vaultwarden:ci-store', name: 'Vaultwarden' } },
+        { app: { status: 'running' }, info: { urn: 'paperless:ci-store', name: 'Paperless' } },
+      ] as any);
+
+      agentConfigService.getAgentConfig
+        .mockResolvedValueOnce({
+          skill: { enabled: false, content: null, inline: false },
+          openapi: { enabled: false, specPath: null, config: null },
+          mcp: { enabled: true, config: { enabled: true, transport: 'sse', url: 'http://nextcloud:80/mcp' } },
+        } as any)
+        .mockResolvedValueOnce({
+          skill: { enabled: false, content: null, inline: false },
+          openapi: { enabled: false, specPath: null, config: null },
+          mcp: { enabled: true, config: { enabled: true, transport: 'stdio' } },
+        } as any)
+        .mockResolvedValueOnce(null);
+
+      mcpBridgeService.listRemoteTools.mockResolvedValue([{ name: 'list_files', description: 'List files', inputSchema: {} }]);
+
+      const result = await service.getRegistry();
+
+      expect(result).toEqual({
+        servers: [
+          {
+            appUrn: 'nextcloud:ci-store',
+            name: 'Nextcloud',
+            transport: 'sse',
+            url: 'http://nextcloud:80/mcp',
+            tools: ['list_files'],
+            status: 'running',
+          },
+          {
+            appUrn: 'vaultwarden:ci-store',
+            name: 'Vaultwarden',
+            transport: 'stdio',
+            url: null,
+            tools: [],
+            status: 'stopped',
+          },
+        ],
+      });
+      expect(mcpBridgeService.listRemoteTools).toHaveBeenCalledTimes(1);
+    });
+
+    it('should mark a running app as error when MCP discovery fails', async () => {
+      appsService.getInstalledApps.mockResolvedValue([
+        { app: { status: 'running' }, info: { urn: 'home-assistant:ci-store', name: 'Home Assistant' } },
+      ] as any);
+      agentConfigService.getAgentConfig.mockResolvedValue({
+        skill: { enabled: false, content: null, inline: false },
+        openapi: { enabled: false, specPath: null, config: null },
+        mcp: { enabled: true, config: { enabled: true, transport: 'sse', url: 'http://home-assistant:8123/mcp' } },
+      } as any);
+      mcpBridgeService.listRemoteTools.mockRejectedValue(new Error('connection refused'));
+
+      const result = await service.getRegistry();
+
+      expect(result).toEqual({
+        servers: [
+          {
+            appUrn: 'home-assistant:ci-store',
+            name: 'Home Assistant',
+            transport: 'sse',
+            url: 'http://home-assistant:8123/mcp',
+            tools: [],
+            status: 'error',
+          },
+        ],
+      });
     });
   });
 

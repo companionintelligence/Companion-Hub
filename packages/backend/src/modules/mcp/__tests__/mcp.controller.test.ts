@@ -28,6 +28,28 @@ describe('McpController', () => {
     expect(controller).toBeDefined();
   });
 
+  describe('GET /api/mcp/registry', () => {
+    it('should delegate to mcpService.getRegistry', async () => {
+      const expected = {
+        servers: [
+          {
+            appUrn: 'nextcloud:ci-store',
+            name: 'Nextcloud',
+            transport: 'sse' as const,
+            url: 'http://nextcloud:80/mcp',
+            tools: ['list_files'],
+            status: 'running' as const,
+          },
+        ],
+      };
+      mcpService.getRegistry.mockResolvedValue(expected);
+
+      const result = await controller.registry();
+      expect(mcpService.getRegistry).toHaveBeenCalled();
+      expect(result).toEqual(expected);
+    });
+  });
+
   describe('GET /api/mcp/sse', () => {
     it('should set Content-Type to text/event-stream', () => {
       const headers: Record<string, string> = {};
