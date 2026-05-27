@@ -271,7 +271,13 @@ describe('AiSetupStep', () => {
     expect(screen.getByText('Anthropic')).toBeInTheDocument();
     expect(screen.queryByTestId('cloud-provider-google')).not.toBeInTheDocument();
 
-    await user.click(screen.getByTestId('other-services-toggle'));
+    const otherServicesToggle = screen.getByTestId('other-services-toggle');
+    expect(otherServicesToggle).toHaveAttribute('aria-expanded', 'false');
+    expect(otherServicesToggle).toHaveAttribute('aria-controls', 'other-ai-services-panel');
+
+    await user.click(otherServicesToggle);
+    expect(otherServicesToggle).toHaveAttribute('aria-expanded', 'true');
+    expect(document.getElementById('other-ai-services-panel')).toBeInTheDocument();
     expect(screen.getByTestId('cloud-provider-google')).toBeInTheDocument();
   });
 

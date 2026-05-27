@@ -24,6 +24,7 @@ export const CloudProviderCard = ({ providers, insufficientHardware, onUpdate }:
   const [expanded, setExpanded] = useState(insufficientHardware);
   const [otherExpanded, setOtherExpanded] = useState(false);
   const [errors, setErrors] = useState<Record<string, string | null>>({});
+  const otherServicesPanelId = 'other-ai-services-panel';
 
   const getProvider = (type: CloudProviderType): CloudProviderInput =>
     providers.find((p) => p.provider === type) ?? { provider: type, apiKey: '', enabled: false };
@@ -106,12 +107,19 @@ export const CloudProviderCard = ({ providers, insufficientHardware, onUpdate }:
             })}
 
             <div className="rounded-lg border border-dashed border-muted-foreground/30 p-3">
-              <Button variant="ghost" size="sm" onClick={() => setOtherExpanded(!otherExpanded)} data-testid="other-services-toggle">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setOtherExpanded(!otherExpanded)}
+                aria-expanded={otherExpanded}
+                aria-controls={otherServicesPanelId}
+                data-testid="other-services-toggle"
+              >
                 {otherExpanded ? 'Hide other AI services' : 'Other AI services'}
               </Button>
 
               {otherExpanded && (
-                <div className="mt-3 space-y-3">
+                <div id={otherServicesPanelId} className="mt-3 space-y-3">
                   {PROVIDER_ORDER.filter((type) => !RECOMMENDED_PROVIDERS.includes(type)).map((type) => {
                     const pattern = CLOUD_KEY_PATTERNS[type];
                     const presentation = PROVIDER_PRESENTATION[type];
