@@ -249,6 +249,14 @@ describe('HardwareInspectorService', () => {
       expect(tier).toBe('low');
     });
 
+    it('S-HW-3.1: low tier when discrete GPU runtime is ready but VRAM is unknown', () => {
+      const tier = service.computeTier(
+        { available: true, vendor: 'nvidia', model: 'RTX 3080', vramMb: 0, unifiedMemory: false, driverVersion: '', runtimeAvailable: true },
+        { totalMb: 32768, availableMb: 16384 },
+      );
+      expect(tier).toBe('low');
+    });
+
     it('S-HW-3.1: cpu-only tier for no GPU but ≥16 GB RAM', () => {
       const tier = service.computeTier(
         { available: false, vendor: 'none', model: '', vramMb: 0, unifiedMemory: false, driverVersion: '', runtimeAvailable: false },
@@ -283,6 +291,34 @@ describe('HardwareInspectorService', () => {
       const profile1 = await service.detect();
       const profile2 = await service.rescan();
       expect(profile1.tier).toBe(profile2.tier);
+    });
+
+    it('re-detects cached discrete GPU profiles when runtime is ready but VRAM was previously unknown', async () => {
+      (si.graphics as any)
+        .mockResolvedValueOnce({
+          controllers: [{ vendor: 'NVIDIA', model: 'RTX 3080', vram: 0, driverVersion: '535' }],
+        })
+        .mockResolvedValueOnce({
+          controllers: [{ vendor: 'NVIDIA', model: 'RTX 3080', vram: 8192, driverVersion: '535' }],
+        });
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 16, brand: 'AMD Ryzen' });
+      filesystemService.readTextFile.mockResolvedValue('MemTotal: 67108864\nMemAvailable: 50331648');
+      execAsyncMock.mockImplementation(async (command: string) => {
+        if (command.includes('docker info')) {
+          return { stdout: '{"nvidia":{"path":"nvidia-container-runtime"}}' };
+        }
+        return { stdout: '{}' };
+      });
+
+      const initial = await service.detect();
+      expect(initial.gpu.vramMb).toBe(0);
+      expect(initial.tier).toBe('low');
+
+      (service as any).cachedProfile = initial;
+      const refreshed = await service.getProfile();
+
+      expect(refreshed.gpu.vramMb).toBe(8192);
+      expect(refreshed.tier).toBe('medium');
     });
   });
 

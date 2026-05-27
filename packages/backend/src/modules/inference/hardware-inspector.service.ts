@@ -31,7 +31,7 @@ export class HardwareInspectorService implements OnModuleInit {
 
   /** Get the cached hardware profile, or re-detect if not available */
   async getProfile(): Promise<HardwareProfile> {
-    if (!this.cachedProfile) {
+    if (!this.cachedProfile || this.hasIncompleteDiscreteGpuProfile(this.cachedProfile)) {
       this.cachedProfile = await this.detect();
     }
     return this.cachedProfile;
@@ -111,6 +111,12 @@ export class HardwareInspectorService implements OnModuleInit {
       if (effectiveVram >= 16384) return 'high';
       if (effectiveVram >= 8192) return 'medium';
       if (effectiveVram >= 4096) return 'low';
+      if (!gpu.unifiedMemory && effectiveVram <= 0 && (gpu.vendor === 'nvidia' || gpu.vendor === 'amd')) {
+        this.logger.warn(
+          `[HardwareInspector] ${gpu.vendor.toUpperCase()} GPU runtime is available but VRAM could not be determined; defaulting tier to low until probe data is available.`,
+        );
+        return 'low';
+      }
     }
     // CPU-only with unified memory check
     if (gpu.unifiedMemory) {
@@ -409,5 +415,15 @@ export class HardwareInspectorService implements OnModuleInit {
     } catch {
       return false;
     }
+  }
+
+  private hasIncompleteDiscreteGpuProfile(profile: HardwareProfile): boolean {
+    return (
+      profile.gpu.available &&
+      profile.gpu.runtimeAvailable &&
+      !profile.gpu.unifiedMemory &&
+      (profile.gpu.vendor === 'nvidia' || profile.gpu.vendor === 'amd') &&
+      profile.gpu.vramMb <= 0
+    );
   }
 }
