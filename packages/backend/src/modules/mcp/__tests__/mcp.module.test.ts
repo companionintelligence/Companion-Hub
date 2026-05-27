@@ -17,6 +17,7 @@ import { LinkTools } from '../tools/link.tools';
 import { AppsService } from '@/modules/apps/apps.service';
 import { DockerService } from '@/modules/docker/docker.service';
 import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
+import { StackCompositionService } from '@/modules/app-lifecycle/stack-composition.service';
 import { UserConfigService } from '@/modules/user-config/user-config.service';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import { AppStoreService } from '@/modules/app-stores/app-store.service';
@@ -49,6 +50,7 @@ describe('McpModule', () => {
         { provide: AppsService, useValue: mock<AppsService>() },
         { provide: DockerService, useValue: mock<DockerService>() },
         { provide: AppLifecycleService, useValue: mock<AppLifecycleService>() },
+        { provide: StackCompositionService, useValue: mock<StackCompositionService>() },
         { provide: UserConfigService, useValue: mock<UserConfigService>() },
         { provide: MarketplaceService, useValue: mock<MarketplaceService>() },
         { provide: AppStoreService, useValue: mock<AppStoreService>() },

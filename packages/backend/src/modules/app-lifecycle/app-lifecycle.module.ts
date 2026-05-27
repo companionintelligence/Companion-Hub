@@ -14,6 +14,7 @@ import { AppLifecycleCommandFactory } from './app-lifecycle-command.factory';
 import { AppLifecycleController } from './app-lifecycle.controller';
 import { AppLifecycleService } from './app-lifecycle.service';
 import { AppStatusSyncService } from './app-status-sync.service';
+import { StackCompositionService } from './stack-composition.service';
 
 @Module({
   imports: [
@@ -29,8 +30,8 @@ import { AppStatusSyncService } from './app-status-sync.service';
     RegistrationModule,
     TailscaleModule,
   ],
-  providers: [AppLifecycleService, AppLifecycleCommandFactory, AppStatusSyncService],
+  providers: [AppLifecycleService, AppLifecycleCommandFactory, AppStatusSyncService, StackCompositionService],
   controllers: [AppLifecycleController],
-  exports: [AppLifecycleService, AppStatusSyncService],
+  exports: [AppLifecycleService, AppStatusSyncService, StackCompositionService],
 })
 export class AppLifecycleModule {}

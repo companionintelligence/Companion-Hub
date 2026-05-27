@@ -1,5 +1,6 @@
 import { Injectable, type OnModuleInit } from '@nestjs/common';
 import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
+import { StackCompositionService } from '@/modules/app-lifecycle/stack-composition.service';
 import { castAppUrn } from '@/common/helpers/app-helpers';
 import { McpToolRegistry } from '../mcp-tool-registry.service';
 
@@ -9,10 +10,37 @@ const urnProp = { type: 'string', description: 'App identifier in storeSlug:appN
 export class AppLifecycleTools implements OnModuleInit {
   constructor(
     private readonly appLifecycleService: AppLifecycleService,
+    private readonly stackCompositionService: StackCompositionService,
     private readonly registry: McpToolRegistry,
   ) {}
 
   onModuleInit() {
+    this.registry.register({
+      name: 'compose_stack',
+      description:
+        'Compose a multi-app stack from natural language or a recipe, generating shared networks/volumes/env cross-references and optionally executing installation.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          request: { type: 'string', description: 'Natural language request (e.g. "set up a media server for my family")' },
+          recipeId: { type: 'string', description: 'Optional known recipe id (e.g. media-server, ai-stack)' },
+          includeOptionalApps: { type: 'boolean', description: 'Include optional recipe apps (default true)' },
+          approved: { type: 'boolean', description: 'Set true after user approval to execute installation' },
+          execute: { type: 'boolean', description: 'Alias for approved=true' },
+        },
+        required: [],
+      },
+      handler: (p) =>
+        this.composeStack(
+          p as {
+            request?: string;
+            recipeId?: string;
+            includeOptionalApps?: boolean;
+            approved?: boolean;
+            execute?: boolean;
+          },
+        ),
+    });
     this.registry.register({
       name: 'hub_install_app',
       description: 'Install an app from a configured app store. Returns a requestId to track progress.',
@@ -108,6 +136,9 @@ export class AppLifecycleTools implements OnModuleInit {
 
   async installApp(params: { appUrn: string; form?: Record<string, unknown> }) {
     return this.appLifecycleService.installApp({ appUrn: castAppUrn(params.appUrn), form: params.form ?? {} });
+  }
+  async composeStack(params: { request?: string; recipeId?: string; includeOptionalApps?: boolean; approved?: boolean; execute?: boolean }) {
+    return this.stackCompositionService.composeStack(params);
   }
   async startApp(params: { appUrn: string }) {
     return this.appLifecycleService.startApp({ appUrn: castAppUrn(params.appUrn) });

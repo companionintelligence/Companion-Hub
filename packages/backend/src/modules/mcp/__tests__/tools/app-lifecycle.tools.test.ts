@@ -4,25 +4,54 @@ import { mock, type MockProxy } from 'vitest-mock-extended';
 import { McpToolRegistry } from '../../mcp-tool-registry.service';
 import { AppLifecycleTools } from '../../tools/app-lifecycle.tools';
 import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
+import { StackCompositionService } from '@/modules/app-lifecycle/stack-composition.service';
 
 describe('AppLifecycleTools', () => {
   let tools: AppLifecycleTools;
   let lifecycleService: MockProxy<AppLifecycleService>;
+  let stackCompositionService: MockProxy<StackCompositionService>;
+  let registry: MockProxy<McpToolRegistry>;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         AppLifecycleTools,
         { provide: AppLifecycleService, useValue: mock<AppLifecycleService>() },
+        { provide: StackCompositionService, useValue: mock<StackCompositionService>() },
         { provide: McpToolRegistry, useValue: mock<McpToolRegistry>() },
       ],
     }).compile();
     tools = module.get<AppLifecycleTools>(AppLifecycleTools);
     lifecycleService = module.get(AppLifecycleService);
+    stackCompositionService = module.get(StackCompositionService);
+    registry = module.get(McpToolRegistry);
   });
 
   it('should be defined', () => {
     expect(tools).toBeDefined();
+  });
+
+  describe('compose_stack', () => {
+    it('should register compose_stack tool', () => {
+      tools.onModuleInit();
+      expect(registry.register).toHaveBeenCalledWith(expect.objectContaining({ name: 'compose_stack' }));
+    });
+
+    it('should delegate to stack composition service', async () => {
+      stackCompositionService.composeStack.mockResolvedValue({
+        recipe: { id: 'media-server' },
+        plan: { apps: [] },
+        requiresApproval: true,
+      } as any);
+
+      const result = await tools.composeStack({ request: 'set up a media server for my family' });
+      expect(stackCompositionService.composeStack).toHaveBeenCalledWith({ request: 'set up a media server for my family' });
+      expect(result).toEqual(
+        expect.objectContaining({
+          recipe: expect.objectContaining({ id: 'media-server' }),
+        }),
+      );
+    });
   });
 
   describe('hub_install_app', () => {
