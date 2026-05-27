@@ -39,7 +39,7 @@ vi.mock('../components/welcome-step', () => ({
 
 vi.mock('../components/recommendations-step', () => ({
   RecommendationsStep: ({ onSelect, onSkip }: { onSelect: (apps: []) => void; onSkip: () => void }) => (
-    <div>
+    <div data-testid="recommendations-step">
       <button type="button" onClick={() => onSelect([])}>
         recommend-next
       </button>
@@ -64,11 +64,14 @@ vi.mock('../components/select-apps-step', () => ({
 }));
 
 vi.mock('../components/ai-setup-step', () => ({
-  AiSetupStep: ({ onComplete }: { onComplete: (config: unknown) => void }) => (
+  AiSetupStep: ({ onComplete, onSkip }: { onComplete: (config: unknown) => void; onSkip: () => void }) => (
     <div data-testid="ai-setup-step">
       AI Setup
       <button type="button" onClick={() => onComplete({ selectedModels: [], backend: 'ollama', cloudProviders: [], skipped: false })}>
         ai-next
+      </button>
+      <button type="button" onClick={onSkip}>
+        ai-skip
       </button>
     </div>
   ),
@@ -112,7 +115,7 @@ describe('OnboardingPage', () => {
     expect(screen.queryByText('Select')).not.toBeInTheDocument();
   });
 
-  it('routes Discover continue to AI Setup instead of App setup', async () => {
+  it('routes Welcome continue to AI Setup', async () => {
     const user = userEvent.setup();
 
     render(
@@ -122,13 +125,12 @@ describe('OnboardingPage', () => {
     );
 
     await user.click(screen.getByRole('button', { name: 'welcome-next' }));
-    await user.click(screen.getByRole('button', { name: 'recommend-next' }));
 
     expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument();
     expect(screen.queryByTestId('complete-step')).not.toBeInTheDocument();
   });
 
-  it('routes Welcome skip to AI Setup instead of Done', async () => {
+  it('routes Welcome skip to AI Setup', async () => {
     const user = userEvent.setup();
 
     render(
@@ -143,7 +145,7 @@ describe('OnboardingPage', () => {
     expect(screen.queryByTestId('complete-step')).not.toBeInTheDocument();
   });
 
-  it('routes Discover skip to AI Setup instead of Done', async () => {
+  it('routes AI Setup continue to Discover', async () => {
     const user = userEvent.setup();
 
     render(
@@ -153,9 +155,39 @@ describe('OnboardingPage', () => {
     );
 
     await user.click(screen.getByRole('button', { name: 'welcome-next' }));
+    await user.click(screen.getByRole('button', { name: 'ai-next' }));
+
+    expect(screen.getByTestId('recommendations-step')).toBeInTheDocument();
+  });
+
+  it('routes AI Setup skip to Discover', async () => {
+    const user = userEvent.setup();
+
+    render(
+      <MemoryRouter initialEntries={['/onboarding']}>
+        <OnboardingPage />
+      </MemoryRouter>,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'welcome-next' }));
+    await user.click(screen.getByRole('button', { name: 'ai-skip' }));
+
+    expect(screen.getByTestId('recommendations-step')).toBeInTheDocument();
+  });
+
+  it('routes Discover skip to Select Apps', async () => {
+    const user = userEvent.setup();
+
+    render(
+      <MemoryRouter initialEntries={['/onboarding']}>
+        <OnboardingPage />
+      </MemoryRouter>,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'welcome-next' }));
+    await user.click(screen.getByRole('button', { name: 'ai-next' }));
     await user.click(screen.getByRole('button', { name: 'recommend-skip' }));
 
-    expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument();
-    expect(screen.queryByTestId('complete-step')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'finish-setup' })).toBeInTheDocument();
   });
 });
