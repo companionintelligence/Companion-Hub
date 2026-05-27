@@ -1,0 +1,54 @@
+# Maintainer: Companion Intelligence <support@companion.computer>
+# AUR package: https://aur.archlinux.org/packages/companion-hub-bin
+# Binary package built from upstream .deb release asset
+
+pkgname=companion-hub-bin
+pkgver=0.2.4
+pkgrel=1
+pkgdesc="AI-powered companion intelligence hub"
+arch=('x86_64' 'aarch64')
+url="https://github.com/companionintelligence/CI-Hub"
+license=('custom:Proprietary')
+depends=('webkit2gtk-4.1' 'gtk3' 'libayatana-appindicator3-1' 'glibc')
+provides=('companion-hub')
+conflicts=('companion-hub')
+options=('!strip')
+
+source_x86_64=("https://github.com/companionintelligence/CI-Hub/releases/download/v${pkgver}/Companion.Hub_${pkgver}_amd64.deb")
+source_aarch64=("https://github.com/companionintelligence/CI-Hub/releases/download/v${pkgver}/Companion.Hub_${pkgver}_arm64.deb")
+
+sha256sums_x86_64=('SKIP')
+sha256sums_aarch64=('SKIP')
+
+package() {
+    # Extract the deb archive
+    bsdtar -xf "${srcdir}/Companion.Hub_${pkgver}_"*.deb -C "${srcdir}"
+
+    # Extract data.tar from the deb
+    bsdtar -xf "${srcdir}/data.tar"* -C "${srcdir}"
+
+    # Install binary
+    install -Dm755 "${srcdir}/usr/bin/companion-hub" "${pkgdir}/usr/bin/companion-hub"
+
+    # Install application resources
+    if [ -d "${srcdir}/usr/lib/companion-hub" ]; then
+        cp -r "${srcdir}/usr/lib/companion-hub" "${pkgdir}/usr/lib/"
+    fi
+
+    # Install desktop entry
+    install -Dm644 "${srcdir}/usr/share/applications/companion-hub.desktop" \
+        "${pkgdir}/usr/share/applications/companion-hub.desktop"
+
+    # Install icons
+    for size in 16 32 48 64 128 256 512; do
+        if [ -f "${srcdir}/usr/share/icons/hicolor/${size}x${size}/apps/companion-hub.png" ]; then
+            install -Dm644 "${srcdir}/usr/share/icons/hicolor/${size}x${size}/apps/companion-hub.png" \
+                "${pkgdir}/usr/share/icons/hicolor/${size}x${size}/apps/companion-hub.png"
+        fi
+    done
+
+    # Install license
+    install -Dm644 /dev/stdin "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE" <<EOF
+Proprietary — see ${url}/blob/main/LICENSE
+EOF
+}
