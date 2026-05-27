@@ -1,0 +1,48 @@
+name: companion-hub
+version: "0.2.4"
+summary: AI-powered companion intelligence hub
+description: |
+  Companion Hub is a desktop application that serves as an AI-powered companion
+  intelligence hub, orchestrating AI workflows, integrations, and local services
+  for the Companion Intelligence platform. It manages Docker Compose stacks,
+  coordinates local AI services, and provides a unified interface for the
+  companion intelligence ecosystem.
+license: proprietary
+# classic confinement is required because the app manages Docker Compose stacks
+# and needs access to system Docker sockets and arbitrary filesystem paths
+confinement: classic
+base: core22
+grade: stable
+
+architectures:
+  - build-on: amd64
+    build-for: amd64
+  - build-on: arm64
+    build-for: arm64
+
+parts:
+  companion-hub:
+    plugin: dump
+    source: https://github.com/companionintelligence/CI-Hub/releases/download/v0.2.4/Companion.Hub_0.2.4_amd64.AppImage
+    source-type: file
+    stage-packages:
+      - libgtk-3-0
+      - libwebkit2gtk-4.1-0
+      - libayatana-appindicator3-1
+    override-pull: |
+      craftctl default
+      chmod +x Companion.Hub_0.2.4_amd64.AppImage
+      ./Companion.Hub_0.2.4_amd64.AppImage --appimage-extract
+      rm -rf $CRAFT_PART_SRC/../install
+      mv squashfs-root $CRAFT_PART_SRC/../install
+    override-build: |
+      cp -r $CRAFT_PART_SRC/../install/. $CRAFT_PART_INSTALL/
+
+apps:
+  companion-hub:
+    command: AppRun
+    desktop: companion-hub.desktop
+    environment:
+      TMPDIR: $XDG_RUNTIME_DIR
+      PATH: $SNAP/usr/bin:$PATH
+      LD_LIBRARY_PATH: $SNAP/usr/lib/x86_64-linux-gnu:$SNAP/usr/lib:$LD_LIBRARY_PATH
