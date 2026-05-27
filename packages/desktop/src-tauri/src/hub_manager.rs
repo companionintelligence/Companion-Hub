@@ -133,10 +133,6 @@ fn command_on_path(binary: &str) -> Option<PathBuf> {
 }
 
 fn refresh_nvidia_host_probe_cache(data_dir: &Path) {
-    if !cfg!(target_os = "linux") {
-        return;
-    }
-
     let probe_path = data_dir.join("state/hardware/nvidia.json");
     if let Some(parent) = probe_path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -144,6 +140,139 @@ fn refresh_nvidia_host_probe_cache(data_dir: &Path) {
     let clear_stale_probe = || {
         let _ = std::fs::remove_file(&probe_path);
     };
+
+    #[cfg(target_os = "windows")]
+    {
+        let mut command = Command::new("powershell.exe");
+        command
+            .creation_flags(CREATE_NO_WINDOW)
+            .arg("-NoProfile")
+            .arg("-NonInteractive")
+            .arg("-Command")
+            .arg("$gpu = Get-CimInstance Win32_VideoController | Where-Object { $_.Name -match 'NVIDIA' } | Select-Object -First 1 Name,AdapterRAM,DriverVersion; if ($null -eq $gpu) { exit 3 }; $gpu | ConvertTo-Json -Compress");
+
+        let output = match command.output() {
+            Ok(value) => value,
+            Err(error) => {
+                clear_stale_probe();
+                let _ = append_desktop_log_for(
+                    data_dir,
+                    "gpu.probe",
+                    &format!(
+                        "Skipping Windows NVIDIA probe cache refresh (PowerShell unavailable): {}",
+                        error
+                    ),
+                );
+                return;
+            }
+        };
+
+        if !output.status.success() {
+            clear_stale_probe();
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let details = if stderr.is_empty() {
+                "No NVIDIA GPU found via Windows WMI; host NVIDIA probe cache cleared."
+                    .to_string()
+            } else {
+                format!("Windows NVIDIA probe command failed: {}", stderr)
+            };
+            let _ = append_desktop_log_for(data_dir, "gpu.probe", &details);
+            return;
+        }
+
+        let raw_json = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let parsed: serde_json::Value = match serde_json::from_str(&raw_json) {
+            Ok(value) => value,
+            Err(error) => {
+                clear_stale_probe();
+                let _ = append_desktop_log_for(
+                    data_dir,
+                    "gpu.probe",
+                    &format!("Failed to parse Windows NVIDIA probe output: {}", error),
+                );
+                return;
+            }
+        };
+
+        let model = parsed
+            .get("Name")
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if model.is_empty() {
+            clear_stale_probe();
+            let _ = append_desktop_log_for(
+                data_dir,
+                "gpu.probe",
+                "Windows NVIDIA probe output missing adapter name; host cache not updated.",
+            );
+            return;
+        }
+
+        let vram_mb = parsed
+            .get("AdapterRAM")
+            .and_then(|value| value.as_u64())
+            .map(|bytes| bytes / (1024 * 1024))
+            .unwrap_or(0);
+        let driver_version = parsed
+            .get("DriverVersion")
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+
+        let payload = serde_json::json!({
+            "model": model,
+            "vramMb": vram_mb,
+            "driverVersion": driver_version,
+            "source": "desktop-host-windows-wmi"
+        });
+
+        let serialized = match serde_json::to_string_pretty(&payload) {
+            Ok(value) => format!("{}\n", value),
+            Err(error) => {
+                clear_stale_probe();
+                let _ = append_desktop_log_for(
+                    data_dir,
+                    "gpu.probe",
+                    &format!("Failed to serialize Windows NVIDIA probe cache: {}", error),
+                );
+                return;
+            }
+        };
+
+        match std::fs::write(&probe_path, serialized) {
+            Ok(_) => {
+                let _ = append_desktop_log_for(
+                    data_dir,
+                    "gpu.probe",
+                    &format!(
+                        "Updated Windows host NVIDIA probe cache at {}",
+                        probe_path.display()
+                    ),
+                );
+            }
+            Err(error) => {
+                let _ = append_desktop_log_for(
+                    data_dir,
+                    "gpu.probe",
+                    &format!(
+                        "Failed to write Windows host NVIDIA probe cache at {}: {}",
+                        probe_path.display(),
+                        error
+                    ),
+                );
+            }
+        }
+
+        return;
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        return;
+    }
 
     let output = Command::new("sh")
         .arg("-lc")

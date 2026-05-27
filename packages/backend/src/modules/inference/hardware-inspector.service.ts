@@ -286,11 +286,9 @@ export class HardwareInspectorService implements OnModuleInit {
           ?.split(':')
           .slice(1)
           .join(':')
-          .trim() ??
-        cached?.model ??
-        '';
+          .trim() ?? '';
 
-      const driverVersion = versionStdout.match(/NVRM version:\s+[^\n]*?\s([0-9]+(?:\.[0-9]+)+)\b/)?.[1] ?? cached?.driverVersion ?? '';
+      const driverVersion = versionStdout.match(/NVRM version:\s+[^\n]*?\s([0-9]+(?:\.[0-9]+)+)\b/)?.[1] ?? '';
 
       if (!model) {
         return { available: false, vendor: 'none', model: '', vramMb: 0, driverVersion: '' };

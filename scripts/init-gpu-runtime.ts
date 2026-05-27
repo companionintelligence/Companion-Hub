@@ -362,6 +362,9 @@ function main() {
     const hostProbe = collectHostNvidiaProbe();
     if (hostProbe) {
       writeNvidiaProbe(hostProbe);
+    } else {
+      clearNvidiaProbe();
+      console.warn('init-gpu-runtime: Failed to collect host NVIDIA probe; cleared stale NVIDIA probe cache.');
     }
 
     if (dockerHasNvidiaRuntime()) {
