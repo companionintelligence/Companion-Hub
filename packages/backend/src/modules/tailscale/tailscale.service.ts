@@ -29,6 +29,11 @@ interface TailscaleServeWebHandler {
   Path?: string;
 }
 
+interface ExecError extends Error {
+  stdout?: string | Buffer;
+  stderr?: string | Buffer;
+}
+
 type ExecStrategy = 'host' | 'sidecar';
 
 @Injectable()
@@ -59,6 +64,21 @@ export class TailscaleService {
         else resolve({ stdout: stdout.toString(), stderr: stderr.toString() });
       });
     });
+  }
+
+  private extractAuthUrl(output: string): string | null {
+    const match = output.match(/https:\/\/login\.tailscale\.com\/[^\s"']+/i);
+    return match?.[0] ?? null;
+  }
+
+  private getExecErrorOutput(error: unknown): string {
+    if (!(error instanceof Error)) {
+      return '';
+    }
+    const execErr = error as ExecError;
+    const stdout = execErr.stdout?.toString() ?? '';
+    const stderr = execErr.stderr?.toString() ?? '';
+    return [stdout, stderr, error.message].filter(Boolean).join('\n');
   }
 
   /**
@@ -266,24 +286,34 @@ export class TailscaleService {
     // --reset resets persisted non-default preferences to defaults before applying
     // the provided flags. Only safe for the sidecar (isolated daemon); on the host
     // it would mutate the user's existing Tailscale configuration.
-    const args = ['up', ...(strategy === 'sidecar' ? ['--reset'] : []), '--json', ...this.getTailscaleUpExtraArgs()];
+    const args = ['up', ...(strategy === 'sidecar' ? ['--reset'] : []), ...this.getTailscaleUpExtraArgs()];
     if (operator) {
       args.push(`--operator=${operator}`);
     }
 
     const execFn = strategy === 'host' ? this.execHost.bind(this) : this.execDocker.bind(this);
-    const { stdout } = await execFn(args, 30000);
-    const result = JSON.parse(stdout) as Record<string, unknown>;
+    try {
+      const { stdout, stderr } = await execFn(args, 30000);
+      const output = `${stdout}\n${stderr}`;
+      const authUrl = this.extractAuthUrl(output);
+      if (authUrl) {
+        return { authUrl };
+      }
 
-    if (result.AuthURL) {
-      return { authUrl: result.AuthURL as string };
+      const status = await this.getStatus();
+      if (status.connected || status.backendState === 'Running') {
+        return { authUrl: '' };
+      }
+
+      throw new Error('Failed to get Tailscale auth URL from tailscale up output');
+    } catch (error) {
+      const output = this.getExecErrorOutput(error);
+      const authUrl = this.extractAuthUrl(output);
+      if (authUrl) {
+        return { authUrl };
+      }
+      throw new Error(output || 'Failed to start Tailscale auth');
     }
-
-    if (result.BackendState === 'Running') {
-      return { authUrl: '' };
-    }
-
-    throw new Error('Failed to get Tailscale auth URL');
   }
 
   /**
