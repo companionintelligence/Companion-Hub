@@ -51,8 +51,12 @@ export class TailscaleService {
   private execHost(args: string[], timeoutMs = 15000): Promise<{ stdout: string; stderr: string }> {
     return new Promise((resolve, reject) => {
       execFile(this.binaryPath, args, { timeout: timeoutMs }, (err, stdout, stderr) => {
-        if (err) reject(err);
-        else resolve({ stdout: stdout.toString(), stderr: stderr.toString() });
+        if (err) {
+          const execErr = err as ExecError;
+          execErr.stdout = stdout;
+          execErr.stderr = stderr;
+          reject(execErr);
+        } else resolve({ stdout: stdout.toString(), stderr: stderr.toString() });
       });
     });
   }
@@ -60,8 +64,12 @@ export class TailscaleService {
   private execDocker(args: string[], timeoutMs = 15000): Promise<{ stdout: string; stderr: string }> {
     return new Promise((resolve, reject) => {
       execFile('docker', ['exec', this.sidecarContainer, 'tailscale', ...args], { timeout: timeoutMs }, (err, stdout, stderr) => {
-        if (err) reject(err);
-        else resolve({ stdout: stdout.toString(), stderr: stderr.toString() });
+        if (err) {
+          const execErr = err as ExecError;
+          execErr.stdout = stdout;
+          execErr.stderr = stderr;
+          reject(execErr);
+        } else resolve({ stdout: stdout.toString(), stderr: stderr.toString() });
       });
     });
   }

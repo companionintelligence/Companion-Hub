@@ -7,6 +7,8 @@ const translations = {
   COMMON_BACK: 'Back',
   COMMON_CONTINUE: 'Continue',
   ONBOARDING_TAILSCALE_SKIP: 'Skip',
+  ONBOARDING_TAILSCALE_SKIP_TO_DISCOVER: 'Skip to Discover',
+  ONBOARDING_TAILSCALE_CONTINUE_TO_DISCOVER: 'Continue to Discover',
 } as const;
 
 vi.mock('@tanstack/react-query', () => ({

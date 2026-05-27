@@ -10,11 +10,9 @@ interface WelcomeStepProps {
 
 export const WelcomeStep = ({ onDetected }: WelcomeStepProps) => {
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   const handleDetect = async () => {
     setLoading(true);
-    setError(null);
     try {
       const res = await apiFetch('/api/system/detect-services', { credentials: 'include' });
       if (!res.ok) throw new Error('Failed to detect services');
@@ -22,7 +20,6 @@ export const WelcomeStep = ({ onDetected }: WelcomeStepProps) => {
       const detected = identifyServices(data.services || []);
       onDetected(detected);
     } catch (e) {
-      setError('Could not detect services. Continuing with no detected services.');
       onDetected([]);
       console.error(e);
     } finally {
@@ -47,8 +44,6 @@ export const WelcomeStep = ({ onDetected }: WelcomeStepProps) => {
             Continue to AI Setup
           </Button>
         </div>
-
-        {error && <p className="text-sm text-destructive mt-4">{error}</p>}
       </CardContent>
     </Card>
   );
