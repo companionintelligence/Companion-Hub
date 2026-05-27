@@ -18,8 +18,8 @@ import path from 'node:path';
 import * as schema from '../../packages/backend/src/core/database/drizzle/schema';
 import { clearDatabase, db, seedOrganization } from '../helpers/db';
 
-const TUNNEL_TOKEN_PATH = path.join(process.env.CI_HUB_APP_DIR || process.cwd(), 'tunnel', 'token');
 const DATA_DIR = process.env.CI_HUB_DATA_DIR || '/tmp/ci-hub-e2e';
+const TUNNEL_TOKEN_PATH = path.join(process.env.CI_HUB_TUNNEL_DIR || path.join(DATA_DIR, 'tunnel'), 'token');
 
 /** Ensure the tunnel token file exists on disk (backend checks this). */
 function writeTunnelToken(token = 'e2e-mock-tunnel-token') {

@@ -5,6 +5,7 @@
 set -euo pipefail
 
 DATA_DIR="${CI_HUB_DATA_DIR:-/tmp/ci-hub-e2e}"
+TUNNEL_DIR="${CI_HUB_TUNNEL_DIR:-$DATA_DIR/tunnel}"
 
 
 # Fail fast with a clear message if Postgres / RabbitMQ are unavailable.
@@ -17,8 +18,8 @@ touch "$DATA_DIR/state/traefik/acme_storage.json"
 
 # Create dummy tunnel token so isRegistered() returns true in E2E
 # Without this, the frontend gates all pages behind device-registration
-mkdir -p "$(pwd)/tunnel"
-echo "e2e-mock-tunnel-token" > "$(pwd)/tunnel/token"
+mkdir -p "$TUNNEL_DIR"
+echo "e2e-mock-tunnel-token" > "$TUNNEL_DIR/token"
 
 # Build workspace dependencies (common package must be compiled before backend can start)
 echo "Building @ci-hub/common..."
@@ -73,6 +74,7 @@ DEVICE_ID=${DEVICE_ID:-test-device-e2e}
 CI_HUB_DATA_DIR=$DATA_DIR
 CI_HUB_APP_DATA_DIR=$DATA_DIR/app-data
 CI_HUB_APP_DIR=$(pwd)
+CI_HUB_TUNNEL_DIR=$TUNNEL_DIR
 E2E_TEST=${E2E_TEST:-true}
 EOF
 

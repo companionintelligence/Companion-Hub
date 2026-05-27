@@ -213,6 +213,8 @@ async function main() {
 
   if (mode === 'dev') {
     // Start infra (db + queue) using local compose
+    run('tsx', ['scripts/init-gpu-runtime.ts'], envOverrides);
+
     run(
       'docker',
       ['compose', '--env-file', envFileStr, '--project-name', 'ci-hub', '-f', 'docker-compose.local.yml', 'up', '-d', 'ci-os-hub-queue', 'ci-hub-db'],
@@ -229,7 +231,10 @@ async function main() {
   if (env !== 'local') {
     // initialize traefik first (matches previous behavior)
     run('tsx', ['scripts/init-traefik.ts'], envOverrides);
+    run('tsx', ['scripts/init-docker-config.ts'], envOverrides);
   }
+
+  run('tsx', ['scripts/init-gpu-runtime.ts'], envOverrides);
 
   // Compose files selection
   const files: string[] = [];

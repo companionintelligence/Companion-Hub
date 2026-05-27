@@ -1,0 +1,15 @@
+---
+description: Use pnpm and Node.js. Do not use Bun, npm, or yarn.
+globs: "*.ts, *.tsx, *.html, *.css, *.js, *.jsx, package.json"
+alwaysApply: false
+---
+
+Use pnpm as the package manager and Node.js as the runtime. Do not use Bun, npm, or yarn.
+
+- Use `node <file>` or `npx ts-node <file>` to run files, not `bun <file>`
+- Use `pnpm install` instead of `npm install`, `yarn install`, or `bun install`
+- Use `pnpm run <script>` instead of `npm run`, `yarn run`, or `bun run`
+- Use `pnpm add <package>` instead of `npm install <package>` or `bun add`
+- Use `pnpm remove <package>` instead of `npm uninstall` or `bun remove`
+- Use `dotenv` or `dotenv-flow` to load `.env` files — Node.js does not load them automatically
+- Do not reference `bun:*` imports or `Bun.*` globals

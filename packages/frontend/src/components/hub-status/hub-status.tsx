@@ -342,12 +342,20 @@ function StartupScreen({ elapsedSeconds }: { elapsedSeconds: number }) {
 export function HubStatus({ children }: HubStatusProps) {
   const [status, setStatus] = useState<HubStatusResponse | null>(null);
   const [startupElapsed, setStartupElapsed] = useState(0);
+  const [logs, setLogs] = useState<string | null>(null);
+  const [showLogs, setShowLogs] = useState(false);
   const startupStartRef = useRef<number | null>(null);
   const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
   const isTauriRelease = isTauri && !window.location.origin.startsWith('http://localhost:');
   const isWindows = isTauri && detectPlatform() === 'windows';
   const shouldAutoStartWindowsHubRef = useRef(true);
   const checkStatusInFlightRef = useRef(false);
+  // Track whether we've seen a non-Running state so we can reload once the Hub
+  // becomes healthy. Without this, React Router's cached clientLoader errors
+  // from startup (when the backend wasn't ready) would persist as stale
+  // ErrorBoundary renders even after the Hub comes up.
+  const sawNonRunningRef = useRef(false);
+  const hasReloadedRef = useRef(false);
 
   const checkHealthFallback = useCallback(async () => {
     const port = await fetchFirstHealthyHubPort();
@@ -356,6 +364,7 @@ export function HubStatus({ children }: HubStatusProps) {
       setStatus('Running');
       return;
     }
+    sawNonRunningRef.current = true;
     setStatus('Stopped');
   }, []);
 
@@ -402,6 +411,10 @@ export function HubStatus({ children }: HubStatusProps) {
           // health-check fails.
           // Match Docker's ci-os-hub healthcheck (`/api/health` only — not `/api/registration/status`,
           // which can lag right after boot and wedge the loading UI).
+          if (result !== 'Running') {
+            sawNonRunningRef.current = true;
+          }
+
           if (result === 'Running' && isTauriRelease) {
             const alivePort = await fetchFirstHealthyHubPort();
             if (alivePort !== null) {
@@ -453,6 +466,47 @@ export function HubStatus({ children }: HubStatusProps) {
     await startHub('Failed to restart hub:');
   }, [startHub]);
 
+  // When the Hub transitions from a non-running state to Running, route loaders
+  // that failed during startup (backend wasn't ready) would stay stale in React
+  // Router's cache. Reload once so clientLoader runs against the healthy backend.
+  useEffect(() => {
+    if (isTauri && status === 'Running' && sawNonRunningRef.current && !hasReloadedRef.current) {
+      hasReloadedRef.current = true;
+      try {
+        window.location.reload();
+      } catch {
+        // JSDOM in tests doesn't support navigation; ignore safely.
+      }
+    }
+  }, [status, isTauri]);
+
+  const handleViewLogs = useCallback(async () => {
+    const invoke = getTauriInvoke();
+    if (!invoke) return;
+    try {
+      const logContent = (await invoke('read_desktop_logs_command')) as string;
+      setLogs(logContent);
+      setShowLogs(true);
+    } catch {
+      // Fallback: open the logs directory instead
+      try {
+        await invoke('open_logs_dir_command');
+      } catch {
+        // ignore
+      }
+    }
+  }, []);
+
+  const handleOpenLogsDir = useCallback(async () => {
+    const invoke = getTauriInvoke();
+    if (!invoke) return;
+    try {
+      await invoke('open_logs_dir_command');
+    } catch {
+      // ignore
+    }
+  }, []);
+
   // If not in Tauri, don't block the UI — web users have the backend proxied
   if (!isTauri) return <>{children}</>;
 
@@ -482,6 +536,14 @@ export function HubStatus({ children }: HubStatusProps) {
           >
             Start Hub
           </button>
+          <div className="flex gap-4">
+            <button type="button" onClick={handleViewLogs} className="text-sm text-muted-foreground underline hover:text-foreground">
+              View Logs
+            </button>
+            <button type="button" onClick={handleOpenLogsDir} className="text-sm text-muted-foreground underline hover:text-foreground">
+              Open Logs Folder
+            </button>
+          </div>
         </>
       )}
 
@@ -498,6 +560,14 @@ export function HubStatus({ children }: HubStatusProps) {
           >
             Restart Hub
           </button>
+          <div className="flex gap-4">
+            <button type="button" onClick={handleViewLogs} className="text-sm text-muted-foreground underline hover:text-foreground">
+              View Logs
+            </button>
+            <button type="button" onClick={handleOpenLogsDir} className="text-sm text-muted-foreground underline hover:text-foreground">
+              Open Logs Folder
+            </button>
+          </div>
         </>
       )}
 
@@ -505,6 +575,20 @@ export function HubStatus({ children }: HubStatusProps) {
         <button type="button" onClick={() => checkStatus()} className="text-sm text-muted-foreground underline hover:text-foreground">
           Check again
         </button>
+      )}
+
+      {showLogs && logs !== null && (
+        <div className="w-full max-w-2xl">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-sm font-medium text-foreground">Recent Logs</span>
+            <button type="button" onClick={() => setShowLogs(false)} className="text-sm text-muted-foreground underline hover:text-foreground">
+              Hide
+            </button>
+          </div>
+          <pre className="bg-muted rounded-md p-3 text-xs font-mono text-muted-foreground max-h-64 overflow-auto whitespace-pre-wrap">
+            {logs || 'No logs available.'}
+          </pre>
+        </div>
       )}
     </div>
   );

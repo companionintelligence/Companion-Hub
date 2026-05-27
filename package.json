@@ -16,7 +16,7 @@
     "test:integration": "turbo run test:integration",
     "start": "pnpm exec tsx scripts/start.ts start",
     "start:docker": "ENV_FILE=.env.local docker compose --env-file .env.local --project-name ci-hub -f docker-compose.local.yml up --build",
-    "init:host": "pnpm exec tsx scripts/init-traefik.ts && pnpm exec tsx scripts/init-docker-config.ts",
+    "init:host": "pnpm exec tsx scripts/init-traefik.ts && pnpm exec tsx scripts/init-docker-config.ts && pnpm exec tsx scripts/init-gpu-runtime.ts",
     "start:prod": "pnpm run init:host && ENV_FILE=.env.prod docker compose --env-file .env.prod --project-name ci-hub --profile private-vpn -f docker-compose.prod.yml up --build",
     "start:staging": "pnpm run init:host && ENV_FILE=.env.staging docker compose --env-file .env.staging --project-name ci-hub --profile private-vpn -f docker-compose.prod.yml up --build",
     "start:dev": "pnpm run init:host && ENV_FILE=.env.dev docker compose --env-file .env.dev --project-name ci-hub --profile private-vpn -f docker-compose.prod.yml up --build",

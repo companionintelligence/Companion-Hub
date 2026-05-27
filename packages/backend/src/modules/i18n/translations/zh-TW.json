@@ -267,8 +267,6 @@
   "APP_STORE_DELETE_DIALOG_SUBTITLE": "Are you sure you want to delete this appstore?",
   "APP_STORE_DELETE_DIALOG_WARNING": "The appstore {{name}} will be deleted but your app data will be kept.",
   "APP_STORE_DELETE_DIALOG_SUBMIT": "刪除",
-  "APP_STORE_DELETE_SUCCESS": "",
-  "APP_STORE_DELETE_ERROR_LAST_STORE": "",
   "APP_STORE_DELETE_ERROR_APPS_EXIST": "There are installed apps that belong to this appstore. Please uninstall them first",
   "APP_STORE_ADD_DIALOG_TITLE": "Add appstore",
   "APP_STORE_ADD_FORM_NAME": "Appstore name",
