@@ -354,6 +354,7 @@ export class TailscaleService {
    * Initiate Tailscale auth — returns URL for browser OAuth redirect (host or sidecar).
    */
   async startAuth(operator?: string): Promise<{ authUrl: string }> {
+    const publicErrorMessage = 'Failed to start Tailscale auth. Check server logs for details.';
     const strategy = await this.resolveStrategy();
     if (strategy === null) {
       throw new Error('Tailscale CLI unavailable (no host socket and no sidecar)');
@@ -406,7 +407,8 @@ export class TailscaleService {
         if (authUrlFromCombinedOutput) {
           return { authUrl: authUrlFromCombinedOutput };
         }
-        throw new Error(combinedOutput || 'Failed to start Tailscale auth');
+        this.logger.error(`[TailscaleService] startAuth status check failed after tailscale up\n${combinedOutput || '(no diagnostic output)'}`);
+        throw new Error(publicErrorMessage);
       }
 
       if (status.connected || status.backendState === 'Running') {
@@ -424,7 +426,8 @@ export class TailscaleService {
       if (authUrl) {
         return { authUrl };
       }
-      throw new Error(output || 'Failed to start Tailscale auth');
+      this.logger.error(`[TailscaleService] startAuth failed\n${output || '(no diagnostic output)'}`);
+      throw new Error(publicErrorMessage);
     }
   }
 

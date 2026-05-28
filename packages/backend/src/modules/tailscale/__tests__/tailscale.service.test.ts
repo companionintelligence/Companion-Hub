@@ -446,7 +446,7 @@ describe('TailscaleService', () => {
       },
     );
 
-    await expect(service.startAuth()).rejects.toThrow(/tailscale up completed with no auth URL[\s\S]*transient tailscale status failure/);
+    await expect(service.startAuth()).rejects.toThrow('Failed to start Tailscale auth. Check server logs for details.');
   });
 
   describe('waitForSidecarDaemon', () => {
