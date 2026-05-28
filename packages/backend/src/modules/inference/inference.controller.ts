@@ -9,6 +9,7 @@ import { ModelPullerService } from './model-puller.service';
 import { CloudFallbackService } from './cloud-fallback.service';
 import { OllamaInstallerService } from './ollama-installer.service';
 import { AppBootstrapService } from './app-bootstrap.service';
+import { CatalogVerifierService } from './catalog-verifier.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AuthGuard } from '@/modules/auth/auth.guard';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -33,6 +34,7 @@ export class InferenceController {
     private readonly cloudFallback: CloudFallbackService,
     private readonly ollamaInstaller: OllamaInstallerService,
     private readonly appBootstrap: AppBootstrapService,
+    private readonly catalogVerifier: CatalogVerifierService,
     private readonly configurationService: ConfigurationService,
     private readonly ollamaBackend: OllamaBackend,
     private readonly vllmBackend: VllmBackend,
@@ -419,6 +421,22 @@ export class InferenceController {
     res.setHeader('X-Hub-Managed-Keys', config.managedKeys.join(','));
     res.setHeader('Cache-Control', 'no-store');
     res.json(config);
+  }
+
+  // Catalog verification: a startup probe checks each Ollama-backed
+  // catalog entry against ollama.com's registry manifest endpoint and
+  // surfaces missing tags. Operators can re-trigger via POST.
+
+  @UseGuards(AuthGuard)
+  @Get('catalog/verification')
+  getCatalogVerification() {
+    return this.catalogVerifier.getSummary();
+  }
+
+  @UseGuards(AuthGuard)
+  @Post('catalog/verify')
+  async runCatalogVerification() {
+    return this.catalogVerifier.verifyAll();
   }
 
   @Get('apps/:slug/bootstrap.env')

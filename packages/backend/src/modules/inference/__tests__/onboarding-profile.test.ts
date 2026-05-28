@@ -12,6 +12,7 @@ import { ModelPullerService } from '../model-puller.service';
 import { CloudFallbackService } from '../cloud-fallback.service';
 import { OllamaInstallerService } from '../ollama-installer.service';
 import { AppBootstrapService } from '../app-bootstrap.service';
+import { CatalogVerifierService } from '../catalog-verifier.service';
 import type { HardwareProfile, InferenceStatus } from '@ci-hub/common/types';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { OllamaBackend } from '../backends/ollama.backend';
@@ -77,6 +78,7 @@ describe('InferenceController — onboarding-profile', () => {
         { provide: CloudFallbackService, useValue: mock<CloudFallbackService>() },
         { provide: OllamaInstallerService, useValue: mock<OllamaInstallerService>() },
         { provide: AppBootstrapService, useValue: mock<AppBootstrapService>() },
+        { provide: CatalogVerifierService, useValue: mock<CatalogVerifierService>() },
         { provide: ConfigurationService, useValue: mock<ConfigurationService>() },
         { provide: OllamaBackend, useValue: mock<OllamaBackend>() },
         { provide: VllmBackend, useValue: mock<VllmBackend>() },
