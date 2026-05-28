@@ -134,6 +134,33 @@ describe('InferenceController — onboarding-profile', () => {
     expect(result.backends.recommended).toBe('ollama');
   });
 
+  it('should keep a GPU tier for Ollama onboarding when host GPU VRAM is available but container runtime is not', async () => {
+    const noRuntimeProfile: HardwareProfile = {
+      ...fakeProfile,
+      gpu: { ...fakeProfile.gpu, runtimeAvailable: false },
+      tier: 'cpu-only',
+    };
+
+    hardwareInspector.getProfile.mockResolvedValue(noRuntimeProfile);
+    hardwareInspector.computeTier.mockReturnValue('high');
+    modelRegistry.getRecommendedModels.mockReturnValue([]);
+    modelRegistry.getModelsForTier.mockReturnValue([]);
+    memoryManager.calculateBudget.mockReturnValue(fakeStatus.memoryBudget);
+    router.getStatus.mockResolvedValue(fakeStatus);
+
+    const result = await controller.getOnboardingProfile();
+
+    expect(result.backends.recommended).toBe('ollama');
+    expect(result.tier).toBe('high');
+    expect(hardwareInspector.computeTier).toHaveBeenCalledWith(
+      expect.objectContaining({ runtimeAvailable: true, vramMb: 24576 }),
+      noRuntimeProfile.ram,
+    );
+    expect(modelRegistry.getRecommendedModels).toHaveBeenCalledWith('high');
+    expect(modelRegistry.getModelsForTier).toHaveBeenCalledWith('high');
+    expect(result.resourceEstimate.availableMemoryMb).toBe(fakeStatus.memoryBudget.modelBudgetVramMb - fakeStatus.memoryBudget.modelUsedVramMb);
+  });
+
   it('should calculate resource estimates from recommended models', async () => {
     const fakeModels = [
       { id: 'm1', runtime: { memoryFootprintMb: 4096 }, requirements: { diskMb: 3000 } },

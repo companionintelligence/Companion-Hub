@@ -49,6 +49,9 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
   const [checkingOllama, setCheckingOllama] = useState(false);
   const [installingOllama, setInstallingOllama] = useState(false);
 
+  const getRecommendedModelIdsForBackend = (data: HardwareProfileResponse, backend: InferenceBackendType) =>
+    data.recommendedModels.filter((model) => model.backend === backend).map((model) => model.id);
+
   const fetchProfile = async (isRescan = false) => {
     if (!isRescan) setLoading(true);
     setError(null);
@@ -57,8 +60,8 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data: HardwareProfileResponse = await res.json();
       setProfile(data);
-      setSelectedModelIds(data.recommendedModels.map((m) => m.id));
       setSelectedBackend(data.backends.recommended);
+      setSelectedModelIds(getRecommendedModelIdsForBackend(data, data.backends.recommended));
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -139,12 +142,18 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
   };
 
   const handleContinue = () => {
+    if (!profile) {
+      throw new Error('AI profile unavailable');
+    }
+    const backendCompatibleSelectedModels = profile.availableModels
+      .filter((model) => model.backend === selectedBackend && selectedModelIds.includes(model.id))
+      .map((model) => model.id);
     const validProviders = cloudProviders.filter((p) => {
       if (!p.apiKey.trim()) return false;
       return !validateCloudKey(p.provider, p.apiKey);
     });
     onComplete({
-      selectedModels: selectedModelIds,
+      selectedModels: backendCompatibleSelectedModels,
       backend: selectedBackend,
       cloudProviders: validProviders,
       skipped: false,
@@ -186,7 +195,9 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
   }
 
   const isInsufficient = profile.tier === 'insufficient';
-  const selectedModels = profile.availableModels.filter((m) => selectedModelIds.includes(m.id));
+  const backendRecommendedModels = profile.recommendedModels.filter((model) => model.backend === selectedBackend);
+  const backendAvailableModels = profile.availableModels.filter((model) => model.backend === selectedBackend);
+  const selectedModels = backendAvailableModels.filter((model) => selectedModelIds.includes(model.id));
   const availableMemoryMb = profile.resourceEstimate.availableMemoryMb;
   const needsOllama = selectedBackend === 'ollama' && (ollamaStatus === null || !ollamaStatus.ready);
   const ollamaInstallMode = detectOllamaInstallMode();
@@ -213,8 +224,8 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
 
           <ModelSelectionCard
             tier={profile.tier}
-            recommendedModels={profile.recommendedModels}
-            availableModels={profile.availableModels}
+            recommendedModels={backendRecommendedModels}
+            availableModels={backendAvailableModels}
             selectedModelIds={selectedModelIds}
             onToggleModel={handleToggleModel}
           />
@@ -223,7 +234,10 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
             recommended={profile.backends.recommended}
             available={profile.backends.available}
             selected={selectedBackend}
-            onSelect={setSelectedBackend}
+            onSelect={(backend) => {
+              setSelectedBackend(backend);
+              setSelectedModelIds(getRecommendedModelIdsForBackend(profile, backend));
+            }}
           />
 
           <ResourceSummaryBar selectedModels={selectedModels} availableMemoryMb={availableMemoryMb} />

@@ -100,8 +100,9 @@ export const HardwareProfileCard = ({ hardware, tier, onRescan, rescanning = fal
           <div className="flex items-start gap-2 p-2.5 bg-yellow-50 dark:bg-yellow-950 border border-yellow-200 dark:border-yellow-800 rounded-md">
             <AlertTriangle className="h-4 w-4 text-yellow-600 dark:text-yellow-400 flex-shrink-0 mt-0.5" />
             <div className="text-xs text-yellow-800 dark:text-yellow-200">
-              <strong>GPU driver not available.</strong> Your {hardware.gpu.vendor} GPU was detected but the runtime is not available. Please install
-              the appropriate drivers ({amdDriverGuidance}).
+              <strong>Container GPU runtime not available.</strong> Your {hardware.gpu.vendor} GPU was detected, but containerized backends do not
+              have ROCm access yet. Host-side Ollama can still use the GPU once it is installed and reachable. Please install the appropriate drivers
+              ({amdDriverGuidance}) to enable container GPU acceleration too.
             </div>
           </div>
         )}
@@ -109,7 +110,8 @@ export const HardwareProfileCard = ({ hardware, tier, onRescan, rescanning = fal
         {nvidiaRuntimeMissing && (
           <div className="mt-3 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-100" data-testid="nvidia-runtime-warning">
             <p className="mb-2">
-              NVIDIA GPU detected, but GPU runtime is not ready yet. AI inference will run in CPU-only mode until setup completes.
+              NVIDIA GPU detected, but the container GPU runtime is not ready yet. Host-side Ollama can still use this GPU, but containerized backends
+              like vLLM need the NVIDIA container runtime before they can accelerate.
             </p>
             <p className="mb-2">
               Automatic setup runs during startup in non-interactive mode. If your system requires a sudo password prompt, the automatic install is
