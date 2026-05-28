@@ -100,7 +100,7 @@ describe('env-helpers — resolve() priority chain', () => {
     delete process.env.DOMAIN;
     setupMocks({ dataEnv: '' });
     const envMap = await generateSystemEnvFile();
-    expect(envMap.get('DOMAIN')).toBe('example.com');
+    expect(envMap.get('DOMAIN')).toBe('companionintelligence.com');
   });
 
   it('MUST have process.env win over settings.json for GUEST_DASHBOARD', async () => {

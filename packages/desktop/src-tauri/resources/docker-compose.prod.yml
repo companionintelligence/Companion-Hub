@@ -49,7 +49,7 @@ services:
     # Set DOCKER_PLATFORM=linux/amd64 for Linux production (AMD64 build, slower on Mac due to emulation)
     platform: ${DOCKER_PLATFORM:-linux/amd64}
     privileged: true
-    image: ${CI_HUB_IMAGE:-ghcr.io/companionintelligence/ci-hub:dev}
+    image: ${CI_HUB_IMAGE:-ghcr.io/companionintelligence/ci-hub:latest}
     pull_policy: always
     depends_on:
       ci-hub-db:
@@ -102,6 +102,7 @@ services:
           - host.docker.internal
     environment:
       NODE_ENV: production
+      CI_HUB_ENVIRONMENT: ${CI_HUB_ENVIRONMENT:-production}
       LOCAL: "false"
       EXPERIMENTAL_INSECURE_COOKIE: "true"
       LOG_LEVEL: info
@@ -118,8 +119,8 @@ services:
       RABBITMQ_PORT: 5672
       INTERNAL_IP: ${INTERNAL_IP:-0.0.0.0}
       CI_HUB_VERSION: ${CI_HUB_VERSION:-4.7.0}
-      CI_CLOUD_URL: ${CI_CLOUD_URL:-https://hub.companionintelligence.com}
-      DOMAIN: ${DOMAIN:-companionintelligence.com}
+      CI_CLOUD_URL: ${CI_CLOUD_URL:-https://hub.ci.computer}
+      DOMAIN: ${DOMAIN:-companionintelligence.org}
       JWT_SECRET: ${JWT_SECRET}
       # Inference backend URLs — default to host machine via host.docker.internal.
       # Override via OLLAMA_URL / VLLM_URL / LEMONADE_URL env vars if the backends

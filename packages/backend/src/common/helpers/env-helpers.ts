@@ -17,6 +17,8 @@ import {
   DEFAULT_RABBITMQ_PASSWORD,
   DEFAULT_FORWARD_AUTH_URL,
   DEFAULT_DNS_IP,
+  DEFAULT_CI_CLOUD_URL,
+  DEFAULT_PUBLIC_DOMAIN,
   DEFAULT_DEMO_MODE,
   DEFAULT_DISABLE_PASSWORD_RESET,
   DEFAULT_GUEST_DASHBOARD,
@@ -231,7 +233,7 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   envMap.set('INTERNAL_IP', resolve('INTERNAL_IP', { envMap, settingsVal: settingsData.listenIp, fallback: '127.0.0.1' }));
   envMap.set('TZ', resolve('TZ', { envMap, settingsVal: settingsData.timeZone, fallback: Intl.DateTimeFormat().resolvedOptions().timeZone }));
   envMap.set('DNS_IP', resolve('DNS_IP', { envMap, settingsVal: settingsData.dnsIp, fallback: DEFAULT_DNS_IP }));
-  envMap.set('DOMAIN', resolve('DOMAIN', { envMap, fallback: 'example.com' }));
+  envMap.set('DOMAIN', resolve('DOMAIN', { envMap, fallback: DEFAULT_PUBLIC_DOMAIN }));
   envMap.set(
     'LOCAL_DOMAIN',
     resolve('LOCAL_DOMAIN', {
@@ -319,7 +321,7 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   // CI Cloud integration — REQUIRED, no fallback
   const ciCloudUrl = resolve('CI_CLOUD_URL', { envMap, fallback: '' });
   if (!ciCloudUrl) {
-    throw new Error('CI_CLOUD_URL is required. Please set it in your .env file (e.g. CI_CLOUD_URL=https://hub.companionintelligence.com)');
+    throw new Error(`CI_CLOUD_URL is required. Please set it in your .env file (e.g. CI_CLOUD_URL=${DEFAULT_CI_CLOUD_URL})`);
   }
   envMap.set('CI_CLOUD_URL', ciCloudUrl);
 

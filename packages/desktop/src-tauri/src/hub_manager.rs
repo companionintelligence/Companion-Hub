@@ -30,6 +30,10 @@ static LOG_WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 const MAX_COMMAND_OUTPUT_CHARS: usize = 50_000;
 const DESKTOP_LOG_FILENAME: &str = "desktop.log";
+const DEFAULT_DEV_PUBLIC_DOMAIN: &str = "companionintelligence.com";
+const DEFAULT_PROD_PUBLIC_DOMAIN: &str = "companionintelligence.org";
+const DEFAULT_DEV_CI_CLOUD_URL: &str = "https://hub.companionintelligence.com";
+const DEFAULT_PROD_CI_CLOUD_URL: &str = "https://hub.ci.computer";
 #[cfg(target_os = "windows")]
 const HUB_ENV_FILENAME: &str = ".env";
 #[cfg(not(target_os = "windows"))]
@@ -62,6 +66,20 @@ const INTERNAL_DOCKER_CONFIG_FILE: &str = ".internal/docker-config.json";
 const HUB_DOCKER_CONFIG_FILE: &str = "docker-config.json";
 const HUB_START_HEALTHY_TIMEOUT_SECS: u64 = 180;
 const DB_START_HEALTHY_TIMEOUT_SECS: u64 = 180;
+
+pub(crate) fn default_public_domain() -> &'static str {
+    match option_env!("CI_HUB_ENVIRONMENT") {
+        Some("production") => DEFAULT_PROD_PUBLIC_DOMAIN,
+        _ => DEFAULT_DEV_PUBLIC_DOMAIN,
+    }
+}
+
+pub(crate) fn default_ci_cloud_url() -> &'static str {
+    match option_env!("CI_HUB_ENVIRONMENT") {
+        Some("production") => DEFAULT_PROD_CI_CLOUD_URL,
+        _ => DEFAULT_DEV_CI_CLOUD_URL,
+    }
+}
 
 #[cfg(target_os = "windows")]
 const DOCKER_DESKTOP_WINDOWS_INSTALLER_URL: &str =
@@ -558,7 +576,7 @@ fn required_startup_images() -> Vec<String> {
     let domain = env
         .get("DOMAIN")
         .map(String::as_str)
-        .unwrap_or("companionintelligence.com");
+        .unwrap_or(default_public_domain());
     let hub_image = env
         .get("CI_HUB_IMAGE")
         .cloned()
@@ -2343,9 +2361,8 @@ fn render_runtime_env_content(
         format!("COMPOSE_PROFILES={compose_profiles}\n")
     };
 
-    let domain = option_env!("CI_HUB_DOMAIN").unwrap_or("companionintelligence.com");
-    let cloud_url =
-        option_env!("CI_HUB_CLOUD_URL").unwrap_or("https://hub.companionintelligence.com");
+    let domain = option_env!("CI_HUB_DOMAIN").unwrap_or(default_public_domain());
+    let cloud_url = option_env!("CI_HUB_CLOUD_URL").unwrap_or(default_ci_cloud_url());
     let hub_version = option_env!("CI_HUB_BUILD_VERSION").unwrap_or("4.7.0");
     let hub_image = get_non_empty_env_value(existing, "CI_HUB_IMAGE")
         .unwrap_or_else(|| image_for_domain(domain).to_string());
@@ -2420,7 +2437,7 @@ fn generate_hex(bytes: usize) -> String {
 /// Determine the Hub container image tag from the domain.
 fn image_for_domain(domain: &str) -> &'static str {
     match domain {
-        "ci.computer" => "ghcr.io/companionintelligence/ci-hub:latest",
+        "ci.computer" | "companionintelligence.org" => "ghcr.io/companionintelligence/ci-hub:latest",
         "companionintel.com" => "ghcr.io/companionintelligence/ci-hub:staging",
         _ => "ghcr.io/companionintelligence/ci-hub:dev",
     }

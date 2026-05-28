@@ -54,7 +54,7 @@ services:
       dockerfile: Dockerfile
       args:
         CI_HUB_VERSION: ${CI_HUB_VERSION:-4.5.0}
-        CI_CLOUD_URL: ${CI_CLOUD_URL:-}
+        CI_CLOUD_URL: ${CI_CLOUD_URL:-https://hub.ci.computer}
         LOCAL: ${LOCAL:-false}
         TARGETARCH: ${TARGETARCH:-amd64}
         DOCKER_PLATFORM: ${DOCKER_PLATFORM:-linux/amd64}
@@ -114,6 +114,7 @@ services:
       VLLM_URL: ${VLLM_URL:-http://ci-hub-vllm:8000}
       LEMONADE_URL: ${LEMONADE_URL:-http://ci-hub-lemonade:13305}
       API_PORT: 5002
+      CI_HUB_ENVIRONMENT: ${CI_HUB_ENVIRONMENT:-production}
       LOCAL: ${LOCAL:-false}
       NODE_ENV: ${NODE_ENV:-production}
       ROOT_FOLDER_HOST: ${ROOT_FOLDER_HOST:?ROOT_FOLDER_HOST must be set to an absolute host path}
@@ -128,7 +129,7 @@ services:
       INTERNAL_IP: ${INTERNAL_IP:-127.0.0.1}
       CI_HUB_VERSION: ${CI_HUB_VERSION:-4.5.0}
       LOG_LEVEL: ${LOG_LEVEL:-info}
-      CI_CLOUD_URL: ${CI_CLOUD_URL:-https://hub.companionintelligence.com}
+      CI_CLOUD_URL: ${CI_CLOUD_URL:-https://hub.ci.computer}
     env_file:
       - path: ${ENV_FILE:-.env}
         required: false
