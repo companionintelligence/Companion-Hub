@@ -66,9 +66,8 @@ export class ModelRegistryService implements OnModuleInit {
       profile.gpu.available && !profile.gpu.unifiedMemory ? profile.gpu.vramMb : profile.gpu.unifiedMemory ? profile.ram.totalMb : 0;
     const effectiveRamMb = profile.ram.totalMb;
 
-    const tableMatch =
-      LLM_RECOMMENDATION_TABLE.find((row) => effectiveVramMb >= row.minVramMb && effectiveRamMb >= row.minRamMb) ??
-      LLM_RECOMMENDATION_TABLE[LLM_RECOMMENDATION_TABLE.length - 1];
+    const tableMatch = LLM_RECOMMENDATION_TABLE.find((row) => effectiveVramMb >= row.minVramMb && effectiveRamMb >= row.minRamMb) ??
+      LLM_RECOMMENDATION_TABLE[LLM_RECOMMENDATION_TABLE.length - 1] ?? { minVramMb: 0, minRamMb: 0, recommendedModelIds: [] };
 
     const tableRecommendedLlms = tableMatch.recommendedModelIds
       .map((id) => ollamaLlmCandidates.find((m) => m.id === id))

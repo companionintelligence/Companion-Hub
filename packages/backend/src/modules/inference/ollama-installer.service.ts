@@ -3,6 +3,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { OllamaBackend } from './backends/ollama.backend';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
+import os from 'node:os';
 
 const execAsync = promisify(exec);
 
