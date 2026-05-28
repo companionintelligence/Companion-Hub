@@ -40,7 +40,7 @@ This is useful for pre-provisioned devices or admin-managed deployments.
 
 - **Enable / disable:** set **`PRIVATE_VPN_ENABLED=false`** in `.env` to disable the sidecar entirely.
 - **Auth:** set **`TAILSCALE_AUTHKEY`** for unattended setup, or use browser sign-in from the Hub UI.
-- **Routes:** by default **`HUB_TAILSCALE_EXTRA_ARGS`** advertises `172.18.0.0/16` so tailnet clients can reach the Hub's Docker bridge. Change this if your Docker network uses a different CIDR.
+- **Routes:** by default **`HUB_TAILSCALE_EXTRA_ARGS`** targets the public Tailscale control plane and advertises `172.18.0.0/16` so tailnet clients can reach the Hub's Docker bridge. Change this if your Docker network uses a different CIDR.
 - **Sidecar name:** CI-Hub uses **`TAILSCALE_SIDECAR_CONTAINER`** when it needs to run `docker exec ... tailscale ...` against a non-default container name.
 
 The backend **`TailscaleService`** talks to Tailscale via `docker exec hub-tailscale tailscale …` when the Hub container has no host Tailscale socket.
@@ -105,6 +105,7 @@ This workflow is ideal for remote maintenance, operator access, and private demo
 | **Browser login opens but CI-Hub never shows connected** | Wait a few seconds for the status refresh, then revisit **Settings → Network**. Confirm the device appears in the Tailscale admin console. |
 | **Auth key login fails immediately** | Verify the key starts with `tskey-auth-` and is still valid in the Tailscale admin console. |
 | **Remote device cannot reach the Hub or apps** | Confirm the remote device is logged in to the same tailnet and that the advertised route in `HUB_TAILSCALE_EXTRA_ARGS` matches the Docker network used by the Hub. |
+| **Logs still mention `headscale:8080` after upgrading** | Reconnect Tailscale once so the device state is rewritten against `controlplane.tailscale.com`. If you override `HUB_TAILSCALE_EXTRA_ARGS`, keep an explicit `--login-server=https://controlplane.tailscale.com` unless you intentionally run your own control plane. |
 | **App URL works locally but not via Tailscale** | Re-save the app with **Tailscale** exposure mode, then check that the Hub itself is connected to Tailscale before testing again. |
 | **Need to turn Tailscale off temporarily** | Set `PRIVATE_VPN_ENABLED=false` and restart the Hub. |
 

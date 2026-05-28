@@ -31,6 +31,9 @@ interface TailscaleServeWebHandler {
 
 type ExecStrategy = 'host' | 'sidecar';
 
+const DEFAULT_TAILSCALE_LOGIN_SERVER = '--login-server=https://controlplane.tailscale.com';
+const DEFAULT_TAILSCALE_EXTRA_ARGS = [DEFAULT_TAILSCALE_LOGIN_SERVER, '--accept-routes', '--advertise-routes=172.18.0.0/16'];
+
 @Injectable()
 export class TailscaleService {
   private readonly logger = new Logger(TailscaleService.name);
@@ -103,7 +106,16 @@ export class TailscaleService {
   /** Same flags as `connectWithAuthKey`: env override or default Docker bridge advertisement. */
   private getTailscaleUpExtraArgs(): string[] {
     const extra = (process.env.HUB_TAILSCALE_EXTRA_ARGS || '').trim();
-    return extra ? extra.split(/\s+/).filter(Boolean) : ['--accept-routes', '--advertise-routes=172.18.0.0/16'];
+    if (!extra) {
+      return [...DEFAULT_TAILSCALE_EXTRA_ARGS];
+    }
+
+    const parsed = extra.split(/\s+/).filter(Boolean);
+    if (parsed.some((arg) => arg === '--login-server' || arg.startsWith('--login-server='))) {
+      return parsed;
+    }
+
+    return [DEFAULT_TAILSCALE_LOGIN_SERVER, ...parsed];
   }
 
   private async execTailscale(args: string[], timeoutMs = 15000): Promise<{ stdout: string; stderr: string }> {
