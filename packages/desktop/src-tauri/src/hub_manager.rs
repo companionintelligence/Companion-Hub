@@ -82,14 +82,14 @@ const HUB_DOCKER_CONFIG_FILE: &str = "docker-config.json";
 const HUB_START_HEALTHY_TIMEOUT_SECS: u64 = 180;
 const DB_START_HEALTHY_TIMEOUT_SECS: u64 = 180;
 
-pub(crate) const fn default_public_domain() -> &'static str {
+pub(crate) fn default_public_domain() -> &'static str {
     match option_env!("CI_HUB_ENVIRONMENT") {
         Some("production") => DEFAULT_PROD_PUBLIC_DOMAIN,
         _ => DEFAULT_DEV_PUBLIC_DOMAIN,
     }
 }
 
-pub(crate) const fn default_ci_cloud_url() -> &'static str {
+pub(crate) fn default_ci_cloud_url() -> &'static str {
     match option_env!("CI_HUB_ENVIRONMENT") {
         Some("production") => DEFAULT_PROD_CI_CLOUD_URL,
         _ => DEFAULT_DEV_CI_CLOUD_URL,

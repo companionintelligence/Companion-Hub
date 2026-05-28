@@ -102,6 +102,7 @@ services:
           - host.docker.internal
     environment:
       NODE_ENV: production
+      CI_HUB_ENVIRONMENT: ${CI_HUB_ENVIRONMENT:-production}
       LOCAL: "false"
       EXPERIMENTAL_INSECURE_COOKIE: "true"
       LOG_LEVEL: info

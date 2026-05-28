@@ -63,7 +63,7 @@ export const DEFAULT_DNS_IP = '9.9.9.9';
 export const DEFAULT_LOCAL_DOMAIN = 'ci.lan';
 
 function isProductionEnvironmentDefault() {
-  return process.env.CI_HUB_ENVIRONMENT === 'production' || process.env.NODE_ENV === 'production';
+  return process.env.CI_HUB_ENVIRONMENT === 'production';
 }
 
 // CI Cloud
