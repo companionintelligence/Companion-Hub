@@ -113,7 +113,11 @@ export class AppBootstrapService {
     const endpointReady = !!(endpointHealth.running && endpointHealth.healthy);
 
     const llm = this.pickTopRunnableModel(this.modelRegistry.getRecommendedModelsForHardware(profile.tier, profile));
-    const embeddings: CuratedModel | null = null;
+    // Embeddings picking was disabled in review feedback (a170aa9b). The explicit
+    // `as CuratedModel | null` prevents TS from narrowing the constant to `null`
+    // and breaking the downstream `if (embeddings)` branches — the picker can be
+    // re-enabled without touching consumer code.
+    const embeddings = null as CuratedModel | null;
 
     const llmReady = llm ? this.isModelPulled(llm.id, endpointHealth.modelsLoaded) : false;
     if (llm && !llmReady && endpointReady) {
