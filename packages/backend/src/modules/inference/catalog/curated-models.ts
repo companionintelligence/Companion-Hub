@@ -1,4 +1,4 @@
-import type { CuratedModel } from '@ci-hub/common/types';
+import type { CuratedModel, HardwareTier, ModelModality, ModelPurpose } from '@ci-hub/common/types';
 
 const QUANTS = [
   { suffix: 'fp16', name: 'FP16', mult: 3.2 },
@@ -9,196 +9,107 @@ const QUANTS = [
   { suffix: 'q3_K_M', name: '3-bit', mult: 0.75 },
 ];
 
+const FAMILIES = [
+  {
+    prefix: 'gemma4',
+    idPrefix: 'gemma4',
+    name: 'Gemma 4',
+    purpose: 'general' as ModelPurpose,
+    sizes: [
+      { s: '4b', idSize: '4b', p: 4, tier: 'cpu-only' as HardwareTier },
+      { s: '12b', idSize: '12b', p: 12, tier: 'low' as HardwareTier },
+      { s: '27b', idSize: '27b', p: 27, tier: 'medium' as HardwareTier },
+      { s: '70b', idSize: '70b', p: 70, tier: 'high' as HardwareTier },
+      { s: '300b', idSize: '300b', p: 300, tier: 'high' as HardwareTier },
+      { s: '800b', idSize: '800b', p: 800, tier: 'high' as HardwareTier },
+      { s: '3t', idSize: '3t', p: 3000, tier: 'high' as HardwareTier },
+    ],
+  },
+  {
+    prefix: 'qwen3.6',
+    idPrefix: 'qwen3-6',
+    name: 'Qwen 3.6',
+    purpose: 'coding' as ModelPurpose,
+    sizes: [
+      { s: '8b', idSize: '8b', p: 8, tier: 'low' as HardwareTier },
+      { s: '20b', idSize: '20b', p: 20, tier: 'medium' as HardwareTier },
+      { s: '72b', idSize: '72b', p: 72, tier: 'high' as HardwareTier },
+      { s: '200b', idSize: '200b', p: 200, tier: 'high' as HardwareTier },
+      { s: '500b', idSize: '500b', p: 500, tier: 'high' as HardwareTier },
+      { s: '1.5t', idSize: '1-5t', p: 1500, tier: 'high' as HardwareTier },
+    ],
+  },
+  {
+    prefix: 'nemotron3',
+    idPrefix: 'nemotron3',
+    name: 'Nemotron 3',
+    purpose: 'reasoning' as ModelPurpose,
+    sizes: [
+      { s: '8b', idSize: '8b', p: 8, tier: 'low' as HardwareTier },
+      { s: '22b', idSize: '22b', p: 22, tier: 'medium' as HardwareTier },
+      { s: '70b', idSize: '70b', p: 70, tier: 'high' as HardwareTier },
+      { s: '340b', idSize: '340b', p: 340, tier: 'high' as HardwareTier },
+      { s: '1t', idSize: '1t', p: 1000, tier: 'high' as HardwareTier },
+    ],
+  },
+  {
+    prefix: 'hermes4',
+    idPrefix: 'hermes4',
+    name: 'Hermes 4',
+    purpose: 'general' as ModelPurpose, // assistant maps to general in types
+    sizes: [
+      { s: '4b', idSize: '4b', p: 4, tier: 'cpu-only' as HardwareTier },
+      { s: '8b', idSize: '8b', p: 8, tier: 'low' as HardwareTier },
+      { s: '70b', idSize: '70b', p: 70, tier: 'high' as HardwareTier },
+      { s: '405b', idSize: '405b', p: 405, tier: 'high' as HardwareTier },
+      { s: '1t', idSize: '1t', p: 1000, tier: 'high' as HardwareTier },
+    ],
+  },
+];
+
 const BASE_LLMS: Array<
   Omit<CuratedModel, 'id' | 'backendModelId' | 'displayName' | 'backend'> & {
     baseId: string;
     baseBackendModelId: string;
     baseDisplayName: string;
   }
-> = [
-  {
-    baseId: 'gemma4-27b',
-    baseBackendModelId: 'gemma4:27b',
-    modality: 'llm',
-    purpose: 'general',
-    baseDisplayName: 'Gemma 4 27B',
-    description: 'Largest Gemma 4 option for high-end systems that need strongest local reasoning quality.',
-    requirements: {
-      minVramMb: 16384,
-      recommendedVramMb: 49152,
-      minRamMb: 49152,
-      diskMb: 18432,
-      gpuVendors: ['nvidia', 'amd', 'apple'],
-      npuRequired: false,
-      minTier: 'high',
-    },
-    runtime: {
-      contextWindow: 131072,
-      maxTokens: 8192,
-      reasoning: true,
-      input: ['text'],
-      pinnedByDefault: false,
-      memoryFootprintMb: 15000,
-    },
-    tiers: { high: 'recommended', medium: 'available', low: 'not-recommended', cpuOnly: 'not-recommended' },
-  },
-  {
-    baseId: 'nemotron3-22b',
-    baseBackendModelId: 'nemotron3:22b',
-    modality: 'llm',
-    purpose: 'reasoning',
-    baseDisplayName: 'Nemotron 3 22B',
-    description: 'Large Nemotron 3 option tuned for longer-form reasoning and instruction following.',
-    requirements: {
-      minVramMb: 12288,
-      recommendedVramMb: 16384,
-      minRamMb: 24576,
-      diskMb: 14336,
-      gpuVendors: ['nvidia', 'amd', 'apple'],
-      npuRequired: false,
-      minTier: 'high',
-    },
-    runtime: {
-      contextWindow: 131072,
-      maxTokens: 8192,
-      reasoning: true,
-      input: ['text'],
-      pinnedByDefault: false,
-      memoryFootprintMb: 12000,
-    },
-    tiers: { high: 'recommended', medium: 'available', low: 'not-recommended', cpuOnly: 'not-recommended' },
-  },
-  {
-    baseId: 'qwen3-6-20b',
-    baseBackendModelId: 'qwen3.6:20b',
-    modality: 'llm',
-    purpose: 'general',
-    baseDisplayName: 'Qwen 3.6 20B',
-    description: 'Balanced mid-large model. Recommended for ~12GB+ VRAM systems.',
-    requirements: {
-      minVramMb: 8192,
-      recommendedVramMb: 12288,
-      minRamMb: 24576,
-      diskMb: 12288,
-      gpuVendors: ['nvidia', 'amd', 'apple', 'cpu'],
-      npuRequired: false,
-      minTier: 'medium',
-    },
-    runtime: {
-      contextWindow: 131072,
-      maxTokens: 8192,
-      reasoning: true,
-      input: ['text'],
-      pinnedByDefault: false,
-      memoryFootprintMb: 8192,
-    },
-    tiers: { high: 'recommended', medium: 'recommended', low: 'available', cpuOnly: 'not-recommended' },
-  },
-  {
-    baseId: 'gemma4-12b',
-    baseBackendModelId: 'gemma4:12b',
-    modality: 'llm',
-    purpose: 'general',
-    baseDisplayName: 'Gemma 4 12B',
-    description: 'Mid-size Gemma 4 option for common desktop GPUs and larger unified-memory systems.',
-    requirements: {
-      minVramMb: 4096,
-      recommendedVramMb: 8192,
-      minRamMb: 16384,
-      diskMb: 7168,
-      gpuVendors: ['nvidia', 'amd', 'apple', 'cpu'],
-      npuRequired: false,
-      minTier: 'low',
-    },
-    runtime: {
-      contextWindow: 131072,
-      maxTokens: 8192,
-      reasoning: true,
-      input: ['text'],
-      pinnedByDefault: false,
-      memoryFootprintMb: 6200,
-    },
-    tiers: { high: 'available', medium: 'recommended', low: 'recommended', cpuOnly: 'available' },
-  },
-  {
-    baseId: 'qwen3-6-8b',
-    baseBackendModelId: 'qwen3.6:8b',
-    modality: 'llm',
-    purpose: 'coding',
-    baseDisplayName: 'Qwen 3.6 8B',
-    description: 'Compact Qwen 3.6 model with strong coding and assistant behavior for lower VRAM systems.',
-    requirements: {
-      minVramMb: 4096,
-      recommendedVramMb: 4096,
-      minRamMb: 8192,
-      diskMb: 5120,
-      gpuVendors: ['nvidia', 'amd', 'apple', 'intel', 'cpu'],
-      npuRequired: false,
-      minTier: 'low',
-    },
-    runtime: {
-      contextWindow: 131072,
-      maxTokens: 4096,
-      reasoning: true,
-      input: ['text'],
-      pinnedByDefault: false,
-      memoryFootprintMb: 4600,
-    },
-    tiers: { high: 'available', medium: 'recommended', low: 'recommended', cpuOnly: 'available' },
-  },
-  {
-    baseId: 'nemotron3-8b',
-    baseBackendModelId: 'nemotron3:8b',
-    modality: 'llm',
-    purpose: 'reasoning',
-    baseDisplayName: 'Nemotron 3 8B',
-    description: 'Small Nemotron 3 variant focused on efficient reasoning under constrained resources.',
-    requirements: {
-      minVramMb: 0,
-      recommendedVramMb: 4096,
-      minRamMb: 8192,
-      diskMb: 5632,
-      gpuVendors: ['nvidia', 'amd', 'apple', 'intel', 'cpu'],
-      npuRequired: false,
-      minTier: 'low',
-    },
-    runtime: {
-      contextWindow: 262144,
-      maxTokens: 4096,
-      reasoning: true,
-      input: ['text'],
-      pinnedByDefault: false,
-      memoryFootprintMb: 5000,
-    },
-    tiers: { high: 'available', medium: 'available', low: 'recommended', cpuOnly: 'available' },
-  },
-  {
-    baseId: 'gemma4-4b',
-    baseBackendModelId: 'gemma4:4b',
-    modality: 'llm',
-    purpose: 'fast',
-    baseDisplayName: 'Gemma 4 4B',
-    description: 'Fast smallest Gemma 4 option for CPU-only and integrated-GPU systems.',
-    requirements: {
-      minVramMb: 0,
-      recommendedVramMb: 4096,
-      minRamMb: 6144,
-      diskMb: 3072,
-      gpuVendors: ['nvidia', 'amd', 'apple', 'intel', 'cpu'],
-      npuRequired: false,
-      minTier: 'cpu-only',
-    },
-    runtime: {
-      contextWindow: 65536,
-      maxTokens: 4096,
-      reasoning: false,
-      input: ['text'],
-      pinnedByDefault: true,
-      memoryFootprintMb: 2900,
-    },
-    tiers: { high: 'available', medium: 'available', low: 'recommended', cpuOnly: 'recommended' },
-  },
-];
+> = [];
+
+for (const fam of FAMILIES) {
+  for (const size of fam.sizes) {
+    BASE_LLMS.push({
+      baseId: `${fam.idPrefix}-${size.idSize}`,
+      baseBackendModelId: `${fam.prefix}:${size.s}`,
+      modality: 'llm',
+      purpose: fam.purpose,
+      baseDisplayName: `${fam.name} ${size.s.toUpperCase()}`,
+      description: `${fam.name} option for ${size.tier} tier systems.`,
+      requirements: {
+        minVramMb: Math.round(size.p * 600),
+        recommendedVramMb: Math.round(size.p * 650 + 2000),
+        minRamMb: Math.round(size.p * 1800),
+        diskMb: Math.round(size.p * 680),
+        gpuVendors: ['nvidia', 'amd', 'apple', 'cpu'],
+        npuRequired: false,
+        minTier: size.tier,
+      },
+      runtime: {
+        contextWindow: 131072,
+        maxTokens: 8192,
+        reasoning: fam.purpose === 'reasoning',
+        input: ['text'],
+        pinnedByDefault: size.p <= 4,
+        memoryFootprintMb: Math.round(size.p * 650 + 1500),
+      },
+      tiers: {
+        high: size.tier === 'high' ? 'recommended' : 'available',
+        medium: size.tier === 'medium' ? 'recommended' : size.tier === 'high' ? 'not-recommended' : 'available',
+        low: size.tier === 'low' ? 'recommended' : size.tier === 'high' || size.tier === 'medium' ? 'not-recommended' : 'available',
+        cpuOnly: size.tier === 'cpu-only' ? 'recommended' : 'not-recommended',
+      },
+    });
+  }
+}
 
 const generatedLlms: CuratedModel[] = [];
 

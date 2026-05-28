@@ -12,14 +12,20 @@ import type {
 import { CURATED_MODELS } from './catalog/curated-models';
 
 const LLM_RECOMMENDATION_TABLE: Array<{ minVramMb: number; minRamMb: number; recommendedModelIds: string[] }> = [
-  { minVramMb: 49152, minRamMb: 131072, recommendedModelIds: ['gemma4-27b-fp16', 'nemotron3-22b-fp16'] },
-  { minVramMb: 32768, minRamMb: 98304, recommendedModelIds: ['gemma4-27b-q8_0', 'nemotron3-22b-q8_0'] },
-  { minVramMb: 24576, minRamMb: 65536, recommendedModelIds: ['gemma4-27b', 'nemotron3-22b'] },
-  { minVramMb: 16384, minRamMb: 32768, recommendedModelIds: ['nemotron3-22b-q6_K', 'qwen3-6-20b'] },
-  { minVramMb: 12288, minRamMb: 32768, recommendedModelIds: ['qwen3-6-20b', 'gemma4-12b-q8_0'] },
-  { minVramMb: 8192, minRamMb: 24576, recommendedModelIds: ['gemma4-12b', 'nemotron3-8b-q8_0'] },
-  { minVramMb: 6144, minRamMb: 16384, recommendedModelIds: ['gemma4-12b-q3_K_M', 'qwen3-6-8b-q6_K'] },
-  { minVramMb: 4096, minRamMb: 16384, recommendedModelIds: ['qwen3-6-8b', 'nemotron3-8b'] },
+  { minVramMb: 2097152, minRamMb: 3145728, recommendedModelIds: ['gemma4-3t', 'qwen3-6-1-5t-q8_0'] },
+  { minVramMb: 1048576, minRamMb: 1572864, recommendedModelIds: ['qwen3-6-1-5t', 'hermes4-1t-q6_K'] },
+  { minVramMb: 524288, minRamMb: 786432, recommendedModelIds: ['gemma4-800b', 'hermes4-405b-q8_0'] },
+  { minVramMb: 262144, minRamMb: 393216, recommendedModelIds: ['nemotron3-340b', 'hermes4-405b'] },
+  { minVramMb: 131072, minRamMb: 196608, recommendedModelIds: ['qwen3-6-200b', 'hermes4-70b-fp16'] },
+  { minVramMb: 98304, minRamMb: 131072, recommendedModelIds: ['hermes4-70b-q8_0', 'qwen3-6-72b-q8_0'] },
+  { minVramMb: 65536, minRamMb: 131072, recommendedModelIds: ['hermes4-70b', 'gemma4-70b'] },
+  { minVramMb: 32768, minRamMb: 65536, recommendedModelIds: ['gemma4-27b-q6_K', 'qwen3-6-20b-q8_0'] },
+  { minVramMb: 24576, minRamMb: 49152, recommendedModelIds: ['nemotron3-22b', 'gemma4-27b'] },
+  { minVramMb: 16384, minRamMb: 32768, recommendedModelIds: ['qwen3-6-20b-q3_K_M', 'hermes4-8b-fp16'] },
+  { minVramMb: 12288, minRamMb: 24576, recommendedModelIds: ['gemma4-12b', 'qwen3-6-8b-q8_0'] },
+  { minVramMb: 8192, minRamMb: 16384, recommendedModelIds: ['hermes4-8b', 'qwen3-6-8b'] },
+  { minVramMb: 4096, minRamMb: 8192, recommendedModelIds: ['gemma4-4b', 'hermes4-4b'] },
+  { minVramMb: 2048, minRamMb: 6144, recommendedModelIds: ['hermes4-4b-q3_K_M', 'gemma4-4b-q3_K_M'] },
   { minVramMb: 0, minRamMb: 8192, recommendedModelIds: ['gemma4-4b', 'qwen3-6-8b-q3_K_M'] },
   { minVramMb: 0, minRamMb: 4096, recommendedModelIds: ['gemma4-4b-q3_K_M'] },
 ];
