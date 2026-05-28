@@ -79,7 +79,7 @@ export class TailscaleService {
 
   private getConfiguredLoginServerHost(extraArgs: string[]): string | null {
     const inline = extraArgs.find((arg) => arg.startsWith('--login-server='));
-    const explicitIndex = extraArgs.findIndex((arg) => arg === '--login-server');
+    const explicitIndex = extraArgs.indexOf('--login-server');
     const rawValue = inline ? inline.slice('--login-server='.length) : explicitIndex >= 0 ? (extraArgs[explicitIndex + 1] ?? '') : '';
 
     if (!rawValue) {
@@ -286,7 +286,7 @@ export class TailscaleService {
     return this.getStatusForStrategy(strategy);
   }
 
-  private async getStatusForStrategy(strategy: ExecStrategy): Promise<TailscaleStatus> {
+  private async getStatusForStrategy(strategy: ExecStrategy, suppressErrors = true): Promise<TailscaleStatus> {
     const notInstalled: TailscaleStatus = {
       installed: false,
       connected: false,
@@ -305,6 +305,9 @@ export class TailscaleService {
     } catch (error) {
       this.logger.warn(`Failed to get Tailscale status: ${error}`);
       this.invalidateStrategyCache();
+      if (!suppressErrors) {
+        throw error;
+      }
       return { ...notInstalled, installed: true };
     }
   }
@@ -369,22 +372,35 @@ export class TailscaleService {
     }
 
     const execFn = strategy === 'host' ? this.execHost.bind(this) : this.execDocker.bind(this);
+    let upOutput = '';
     try {
       const { stdout, stderr } = await execFn(args, 30000);
-      const output = `${stdout}\n${stderr}`;
-      const authUrl = this.extractAuthUrl(output, loginServerHost);
+      upOutput = `${stdout}\n${stderr}`;
+      const authUrl = this.extractAuthUrl(upOutput, loginServerHost);
       if (authUrl) {
         return { authUrl };
       }
 
-      const status = await this.getStatusForStrategy(strategy);
+      let status: TailscaleStatus;
+      try {
+        status = await this.getStatusForStrategy(strategy, false);
+      } catch (statusError) {
+        const statusOutput = this.getExecErrorOutput(statusError);
+        const combinedOutput = [upOutput, statusOutput].filter(Boolean).join('\n');
+        const authUrlFromCombinedOutput = this.extractAuthUrl(combinedOutput, loginServerHost);
+        if (authUrlFromCombinedOutput) {
+          return { authUrl: authUrlFromCombinedOutput };
+        }
+        throw new Error(combinedOutput || 'Failed to start Tailscale auth');
+      }
+
       if (status.connected || status.backendState === 'Running') {
         return { authUrl: '' };
       }
 
       throw new Error('Failed to get Tailscale auth URL from tailscale up output');
     } catch (error) {
-      const output = this.getExecErrorOutput(error);
+      const output = [upOutput, this.getExecErrorOutput(error)].filter(Boolean).join('\n');
       const authUrl = this.extractAuthUrl(output, loginServerHost);
       if (authUrl) {
         return { authUrl };

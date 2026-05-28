@@ -26,9 +26,9 @@ export class HardwareInspectorService implements OnModuleInit {
 
   async onModuleInit() {
     try {
-      this.cachedProfile = await this.detect();
+      this.updateCachedProfile(await this.detect());
       this.logger.info(
-        `[HardwareInspector] Detected tier: ${this.cachedProfile.tier}, GPU: ${this.cachedProfile.gpu.vendor} ${this.cachedProfile.gpu.model}`,
+        `[HardwareInspector] Detected tier: ${this.cachedProfile?.tier}, GPU: ${this.cachedProfile?.gpu.vendor} ${this.cachedProfile?.gpu.model}`,
       );
     } catch (err) {
       this.logger.error(`[HardwareInspector] Failed to detect hardware: ${err}`);
@@ -38,19 +38,13 @@ export class HardwareInspectorService implements OnModuleInit {
   /** Get the cached hardware profile, or re-detect if not available */
   async getProfile(): Promise<HardwareProfile> {
     if (!this.cachedProfile) {
-      this.cachedProfile = await this.detect();
-      if (this.hasIncompleteDiscreteGpuProfile(this.cachedProfile)) {
-        this.lastIncompleteDiscreteGpuRefreshAt = Date.now();
-      }
-      return this.cachedProfile;
+      return this.updateCachedProfile(await this.detect());
     }
 
     if (this.hasIncompleteDiscreteGpuProfile(this.cachedProfile)) {
       const now = Date.now();
       if (now - this.lastIncompleteDiscreteGpuRefreshAt >= INCOMPLETE_GPU_PROFILE_REFRESH_COOLDOWN_MS) {
-        const refreshedProfile = await this.detect();
-        this.cachedProfile = refreshedProfile;
-        this.lastIncompleteDiscreteGpuRefreshAt = now;
+        return this.updateCachedProfile(await this.detect());
       }
     }
 
@@ -59,8 +53,17 @@ export class HardwareInspectorService implements OnModuleInit {
 
   /** Force a re-scan of hardware */
   async rescan(): Promise<HardwareProfile> {
-    this.cachedProfile = await this.detect();
-    return this.cachedProfile;
+    return this.updateCachedProfile(await this.detect());
+  }
+
+  private updateCachedProfile(profile: HardwareProfile): HardwareProfile {
+    this.cachedProfile = profile;
+    if (this.hasIncompleteDiscreteGpuProfile(profile)) {
+      this.lastIncompleteDiscreteGpuRefreshAt = Date.now();
+    } else {
+      this.lastIncompleteDiscreteGpuRefreshAt = 0;
+    }
+    return profile;
   }
 
   /** Main detection routine */

@@ -390,6 +390,32 @@ describe('TailscaleService', () => {
     expect(hostStatusCalls.length).toBe(0);
   });
 
+  it('startAuth preserves tailscale up output when post-up status check fails', async () => {
+    execFileMock.mockImplementation(
+      (cmd: string, args: string[], _opts: unknown, cb: (err: Error | null, stdout?: string, stderr?: string) => void) => {
+        if (cmd === 'docker' && args[1] === 'hub-tailscale' && args[3] === 'version') {
+          process.nextTick(() => cb(null, '1.82.0', ''));
+          return;
+        }
+        if (cmd === 'docker' && args.includes('up')) {
+          process.nextTick(() => cb(null, 'tailscale up completed with no auth URL', 'NeedsLogin state detected'));
+          return;
+        }
+        if (cmd === 'docker' && args.includes('status') && args.includes('--json')) {
+          const err = Object.assign(new Error('status command failed'), {
+            stderr: 'transient tailscale status failure',
+            stdout: '',
+          });
+          process.nextTick(() => cb(err, '', 'transient tailscale status failure'));
+          return;
+        }
+        process.nextTick(() => cb(new Error('unexpected'), '', ''));
+      },
+    );
+
+    await expect(service.startAuth()).rejects.toThrow(/tailscale up completed with no auth URL[\s\S]*transient tailscale status failure/);
+  });
+
   describe('waitForSidecarDaemon', () => {
     it('returns immediately when daemon responds (including non-zero exits like NeedsLogin)', async () => {
       execFileMock.mockImplementation(

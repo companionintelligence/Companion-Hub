@@ -505,6 +505,35 @@ describe('HardwareInspectorService', () => {
       vi.useRealTimers();
     });
 
+    it('applies cooldown when cache is populated via rescan()', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+
+      const incompleteProfile = {
+        gpu: { available: true, vendor: 'nvidia', model: 'RTX 3080', vramMb: 0, unifiedMemory: false, driverVersion: '', runtimeAvailable: true },
+        npu: { available: false, model: '' },
+        ram: { totalMb: 32768, availableMb: 16384 },
+        cpu: { arch: 'x86_64', cores: 16, model: 'AMD Ryzen' },
+        effectiveInferenceMemoryMb: 0,
+        tier: 'low',
+      } as const;
+
+      const detectSpy = vi.spyOn(service, 'detect').mockResolvedValue(incompleteProfile as any);
+
+      await service.rescan();
+      expect(detectSpy).toHaveBeenCalledTimes(1);
+
+      // rescan() now seeds cooldown for incomplete profiles, so no immediate re-detect
+      await service.getProfile();
+      expect(detectSpy).toHaveBeenCalledTimes(1);
+
+      vi.setSystemTime(new Date('2026-01-01T00:06:00.000Z'));
+      await service.getProfile();
+      expect(detectSpy).toHaveBeenCalledTimes(2);
+
+      vi.useRealTimers();
+    });
+
     it('does not advance cooldown when incomplete GPU profile refresh fails', async () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
