@@ -335,9 +335,17 @@ describe('HardwareInspectorService', () => {
       expect(tier).toBe('low');
     });
 
-    it('S-HW-3.1: low tier when discrete GPU runtime is ready but VRAM is unknown', () => {
+    it('S-HW-3.1: low tier when discrete GPU runtime is ready but VRAM is unknown (0)', () => {
       const tier = service.computeTier(
         { available: true, vendor: 'nvidia', model: 'RTX 3080', vramMb: 0, unifiedMemory: false, driverVersion: '', runtimeAvailable: true },
+        { totalMb: 32768, availableMb: 16384 },
+      );
+      expect(tier).toBe('low');
+    });
+
+    it('S-HW-3.1: low tier when SI reports PCIe framebuffer (32 MB) instead of real GDDR VRAM', () => {
+      const tier = service.computeTier(
+        { available: true, vendor: 'nvidia', model: 'RTX 3080', vramMb: 32, unifiedMemory: false, driverVersion: '', runtimeAvailable: true },
         { totalMb: 32768, availableMb: 16384 },
       );
       expect(tier).toBe('low');
@@ -403,6 +411,37 @@ describe('HardwareInspectorService', () => {
       (service as any).cachedProfile = initial;
       const refreshed = await service.getProfile();
 
+      expect(refreshed.gpu.vramMb).toBe(8192);
+      expect(refreshed.tier).toBe('medium');
+    });
+
+    it('re-detects cached discrete GPU profiles when SI reports PCIe framebuffer (32 MB) instead of real GDDR VRAM', async () => {
+      (si.graphics as any)
+        .mockResolvedValueOnce({
+          controllers: [{ vendor: 'NVIDIA', model: 'RTX 3080', vram: 32, driverVersion: '535' }],
+        })
+        .mockResolvedValueOnce({
+          controllers: [{ vendor: 'NVIDIA', model: 'RTX 3080', vram: 8192, driverVersion: '535' }],
+        });
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 16, brand: 'AMD Ryzen' });
+      filesystemService.readTextFile.mockResolvedValue('MemTotal: 67108864\nMemAvailable: 50331648');
+      execAsyncMock.mockImplementation(async (command: string) => {
+        if (command.includes('docker info')) {
+          return { stdout: '{"nvidia":{"path":"nvidia-container-runtime"}}' };
+        }
+        return { stdout: '{}' };
+      });
+
+      // SI returns 32 MB (PCIe BAR), detectNvidiaVram() fires but mock returns 0
+      // → initial profile records 0 MB (unreliable reading discarded)
+      const initial = await service.detect();
+      expect(initial.gpu.vramMb).toBe(0);
+      expect(initial.tier).toBe('low');
+
+      (service as any).cachedProfile = initial;
+      const refreshed = await service.getProfile();
+
+      // Second detect(): SI now returns 8192 MB → correct tier
       expect(refreshed.gpu.vramMb).toBe(8192);
       expect(refreshed.tier).toBe('medium');
     });

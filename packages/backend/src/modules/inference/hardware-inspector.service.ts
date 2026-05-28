@@ -9,6 +9,10 @@ import { promisify } from 'node:util';
 
 const execAsync = promisify(exec);
 const INCOMPLETE_GPU_PROFILE_REFRESH_COOLDOWN_MS = 5 * 60 * 1000;
+// systeminformation can return the PCIe BAR/framebuffer size (e.g. 32 MB) instead
+// of actual GDDR VRAM when GPU device passthrough is unavailable inside a container.
+// Any reading below this threshold is treated as unreliable for a discrete GPU.
+const MIN_PLAUSIBLE_DISCRETE_VRAM_MB = 512;
 
 @Injectable()
 export class HardwareInspectorService implements OnModuleInit {
@@ -73,15 +77,15 @@ export class HardwareInspectorService implements OnModuleInit {
             available: gpuInfo.available || !!hostProbe.model,
             vendor: 'nvidia' as const,
             model: gpuInfo.model || hostProbe.model,
-            vramMb: gpuInfo.vramMb > 0 ? gpuInfo.vramMb : hostProbe.vramMb,
+            vramMb: gpuInfo.vramMb >= MIN_PLAUSIBLE_DISCRETE_VRAM_MB ? gpuInfo.vramMb : hostProbe.vramMb,
             driverVersion: gpuInfo.driverVersion || hostProbe.driverVersion,
           }
         : gpuInfo;
 
     if (!gpuInfo.available && hostProbe) {
       this.logger.info('[HardwareInspector] Using host NVIDIA probe cache fallback for GPU detection.');
-    } else if (hostProbe && gpuInfo.vendor === 'nvidia' && gpuInfo.vramMb <= 0) {
-      this.logger.info('[HardwareInspector] Augmenting NVIDIA GPU detection with host probe VRAM data.');
+    } else if (hostProbe && gpuInfo.vendor === 'nvidia' && gpuInfo.vramMb < MIN_PLAUSIBLE_DISCRETE_VRAM_MB) {
+      this.logger.info('[HardwareInspector] Augmenting NVIDIA GPU detection with host probe VRAM data (SI reported unreliable value).');
     }
 
     const platform = this.getHostPlatform();
@@ -127,9 +131,9 @@ export class HardwareInspectorService implements OnModuleInit {
       if (effectiveVram >= 16384) return 'high';
       if (effectiveVram >= 8192) return 'medium';
       if (effectiveVram >= 4096) return 'low';
-      if (!gpu.unifiedMemory && effectiveVram <= 0 && (gpu.vendor === 'nvidia' || gpu.vendor === 'amd')) {
+      if (!gpu.unifiedMemory && effectiveVram < MIN_PLAUSIBLE_DISCRETE_VRAM_MB && (gpu.vendor === 'nvidia' || gpu.vendor === 'amd')) {
         this.logger.warn(
-          `[HardwareInspector] ${gpu.vendor.toUpperCase()} GPU runtime is available but VRAM could not be determined; defaulting tier to low until probe data is available.`,
+          `[HardwareInspector] ${gpu.vendor.toUpperCase()} GPU detected with unreliable VRAM reading (${effectiveVram} MB); defaulting tier to low until probe data is available.`,
         );
         return 'low';
       }
@@ -212,9 +216,9 @@ export class HardwareInspectorService implements OnModuleInit {
       }
 
       let vramMb = best.vramMb;
-      if (best.vendor === 'nvidia' && vramMb <= 0) {
+      if (best.vendor === 'nvidia' && vramMb < MIN_PLAUSIBLE_DISCRETE_VRAM_MB) {
         vramMb = await this.detectNvidiaVram();
-        if (vramMb <= 0 && !best.model) {
+        if (vramMb < MIN_PLAUSIBLE_DISCRETE_VRAM_MB && !best.model) {
           const fromSmi = await this.detectNvidiaFallback();
           if (fromSmi.available) {
             return fromSmi;
@@ -591,7 +595,7 @@ export class HardwareInspectorService implements OnModuleInit {
       profile.gpu.runtimeAvailable &&
       !profile.gpu.unifiedMemory &&
       (profile.gpu.vendor === 'nvidia' || profile.gpu.vendor === 'amd') &&
-      profile.gpu.vramMb <= 0
+      profile.gpu.vramMb < MIN_PLAUSIBLE_DISCRETE_VRAM_MB
     );
   }
 }
