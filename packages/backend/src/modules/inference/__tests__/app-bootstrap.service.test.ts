@@ -1,0 +1,238 @@
+import { Test, type TestingModule } from '@nestjs/testing';
+import { mock, type MockProxy } from 'vitest-mock-extended';
+import { describe, it, expect, beforeEach } from 'vitest';
+import { NotFoundException } from '@nestjs/common';
+import { AppBootstrapService } from '../app-bootstrap.service';
+import { HardwareInspectorService } from '../hardware-inspector.service';
+import { ModelRegistryService } from '../model-registry.service';
+import { OllamaBackend } from '../backends/ollama.backend';
+import { LoggerService } from '@/core/logger/logger.service';
+import type { CuratedModel, HardwareProfile } from '@ci-hub/common/types';
+
+const makeLlm = (id: string, backendModelId: string, minVramMb = 0, minRamMb = 0): CuratedModel =>
+  ({
+    id,
+    backend: 'ollama',
+    backendModelId,
+    modality: 'llm',
+    purpose: 'general',
+    displayName: id,
+    description: '',
+    requirements: {
+      minVramMb,
+      recommendedVramMb: minVramMb,
+      minRamMb,
+      diskMb: 0,
+      gpuVendors: ['nvidia', 'cpu'],
+      npuRequired: false,
+      minTier: 'high',
+    },
+    runtime: {
+      contextWindow: 131072,
+      maxTokens: 8192,
+      reasoning: false,
+      input: ['text'],
+      quantization: 'q4_K_M',
+      pinnedByDefault: false,
+      memoryFootprintMb: 0,
+    },
+    tiers: { high: 'recommended', medium: 'available', low: 'available', cpuOnly: 'available' },
+  }) as unknown as CuratedModel;
+
+const makeEmbedding = (id: string, backendModelId: string): CuratedModel =>
+  ({
+    id,
+    backend: 'ollama',
+    backendModelId,
+    modality: 'embedding',
+    purpose: 'general',
+    displayName: id,
+    description: '',
+    requirements: {
+      minVramMb: 0,
+      recommendedVramMb: 0,
+      minRamMb: 2048,
+      diskMb: 0,
+      gpuVendors: ['nvidia', 'cpu'],
+      npuRequired: false,
+      minTier: 'cpu-only',
+    },
+    runtime: {
+      contextWindow: 8192,
+      maxTokens: 0,
+      reasoning: false,
+      input: ['text'],
+      quantization: 'q4_K_M',
+      pinnedByDefault: false,
+      memoryFootprintMb: 0,
+    },
+    tiers: { high: 'available', medium: 'available', low: 'available', cpuOnly: 'available' },
+  }) as unknown as CuratedModel;
+
+const baseProfile: HardwareProfile = {
+  gpu: { available: true, vendor: 'nvidia', model: 'RTX 4090', vramMb: 24576, unifiedMemory: false, driverVersion: '550.0', runtimeAvailable: true },
+  npu: { available: false, model: '' },
+  ram: { totalMb: 65536, availableMb: 60000 },
+  cpu: { arch: 'x86_64', cores: 16, model: 'Test CPU' },
+  effectiveInferenceMemoryMb: 24576,
+  tier: 'high',
+};
+
+describe('AppBootstrapService', () => {
+  let service: AppBootstrapService;
+  let logger: MockProxy<LoggerService>;
+  let hardwareInspector: MockProxy<HardwareInspectorService>;
+  let modelRegistry: MockProxy<ModelRegistryService>;
+  let ollamaBackend: MockProxy<OllamaBackend>;
+
+  beforeEach(async () => {
+    logger = mock<LoggerService>();
+    hardwareInspector = mock<HardwareInspectorService>();
+    modelRegistry = mock<ModelRegistryService>();
+    ollamaBackend = mock<OllamaBackend>();
+
+    ollamaBackend.getBaseUrl.mockReturnValue('http://ci-hub-ollama:11434');
+    hardwareInspector.getProfile.mockResolvedValue(baseProfile);
+    modelRegistry.getRecommendedModelsForHardware.mockReturnValue([
+      makeLlm('hermes4-70b', 'hermes4:70b', 42000, 126000),
+      makeLlm('hermes4-8b', 'hermes4:8b', 4800, 14400),
+    ]);
+    modelRegistry.getModelsByModality.mockReturnValue([makeEmbedding('nomic-embed-text', 'nomic-embed-text')]);
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        AppBootstrapService,
+        { provide: LoggerService, useValue: logger },
+        { provide: HardwareInspectorService, useValue: hardwareInspector },
+        { provide: ModelRegistryService, useValue: modelRegistry },
+        { provide: OllamaBackend, useValue: ollamaBackend },
+      ],
+    }).compile();
+
+    service = module.get<AppBootstrapService>(AppBootstrapService);
+  });
+
+  describe('getBootstrap', () => {
+    it('throws NotFoundException for unknown slugs', async () => {
+      await expect(service.getBootstrap('unknown-app')).rejects.toThrow(NotFoundException);
+    });
+
+    it('returns hermes-agent env keyed with HERMES_* and biggest runnable LLM', async () => {
+      const config = await service.getBootstrap('hermes-agent');
+
+      expect(config.app).toBe('hermes-agent');
+      expect(config.endpointUrl).toBe('http://ci-hub-ollama:11434/v1');
+      expect(config.llmModelId).toBe('hermes4-70b');
+      expect(config.llmBackendModelId).toBe('hermes4:70b');
+      expect(config.embeddingsModelId).toBe('nomic-embed-text');
+      expect(config.env).toEqual({
+        HERMES_OPENAI_BASE_URL: 'http://ci-hub-ollama:11434/v1',
+        HERMES_OPENAI_API_KEY: 'ollama',
+        HERMES_DEFAULT_MODEL: 'hermes4-70b',
+        HERMES_DEFAULT_MODEL_BACKEND_ID: 'hermes4:70b',
+        HERMES_EMBEDDINGS_MODEL: 'nomic-embed-text',
+        HERMES_EMBEDDINGS_MODEL_BACKEND_ID: 'nomic-embed-text',
+      });
+    });
+
+    it('returns openclaw env keyed with OPENAI_API_* and DEFAULT_MODEL', async () => {
+      const config = await service.getBootstrap('openclaw');
+
+      expect(config.app).toBe('openclaw');
+      expect(config.env).toEqual({
+        OPENAI_API_BASE: 'http://ci-hub-ollama:11434/v1',
+        OPENAI_API_KEY: 'ollama',
+        DEFAULT_MODEL: 'hermes4-70b',
+        DEFAULT_MODEL_BACKEND_ID: 'hermes4:70b',
+        EMBEDDINGS_MODEL: 'nomic-embed-text',
+        EMBEDDINGS_MODEL_BACKEND_ID: 'nomic-embed-text',
+      });
+    });
+
+    it('returns null model ids when no LLM is runnable on the hardware', async () => {
+      modelRegistry.getRecommendedModelsForHardware.mockReturnValue([]);
+      modelRegistry.getModelsByModality.mockReturnValue([]);
+
+      const config = await service.getBootstrap('openclaw');
+
+      expect(config.llmModelId).toBeNull();
+      expect(config.embeddingsModelId).toBeNull();
+      expect(config.env).toEqual({
+        OPENAI_API_BASE: 'http://ci-hub-ollama:11434/v1',
+        OPENAI_API_KEY: 'ollama',
+      });
+    });
+
+    it('filters embeddings models that exceed available RAM', async () => {
+      modelRegistry.getModelsByModality.mockReturnValue([
+        {
+          ...makeEmbedding('huge-emb', 'huge-emb'),
+          requirements: { ...makeEmbedding('huge-emb', 'huge-emb').requirements, minRamMb: 1_000_000 },
+        } as CuratedModel,
+        makeEmbedding('small-emb', 'small-emb'),
+      ]);
+
+      const config = await service.getBootstrap('openclaw');
+
+      expect(config.embeddingsModelId).toBe('small-emb');
+    });
+
+    it('picks the first model returned by the registry (biggest first)', async () => {
+      modelRegistry.getRecommendedModelsForHardware.mockReturnValue([
+        makeLlm('biggest-700b', 'family:700b'),
+        makeLlm('mid-70b', 'family:70b'),
+        makeLlm('small-8b', 'family:8b'),
+      ]);
+
+      const config = await service.getBootstrap('hermes-agent');
+
+      expect(config.llmModelId).toBe('biggest-700b');
+    });
+  });
+
+  describe('serializeAsDotenv', () => {
+    it('emits KEY=VALUE lines with no quoting for simple values', async () => {
+      const config = await service.getBootstrap('openclaw');
+      const dotenv = service.serializeAsDotenv(config);
+
+      expect(dotenv).toContain('OPENAI_API_BASE=http://ci-hub-ollama:11434/v1');
+      expect(dotenv).toContain('OPENAI_API_KEY=ollama');
+      expect(dotenv).toContain('DEFAULT_MODEL=hermes4-70b');
+      expect(dotenv.endsWith('\n')).toBe(true);
+    });
+
+    it('quotes values containing whitespace, quotes, or = signs', () => {
+      const config = {
+        app: 'openclaw' as const,
+        endpointUrl: '',
+        llmModelId: null,
+        llmBackendModelId: null,
+        embeddingsModelId: null,
+        embeddingsBackendModelId: null,
+        env: {
+          SIMPLE: 'plain',
+          WITH_SPACES: 'foo bar',
+          WITH_QUOTE: 'has"quote',
+          WITH_EQ: 'a=b',
+        },
+      };
+      const dotenv = service.serializeAsDotenv(config);
+
+      expect(dotenv).toContain('SIMPLE=plain');
+      expect(dotenv).toContain('WITH_SPACES="foo bar"');
+      expect(dotenv).toContain('WITH_QUOTE="has\\"quote"');
+      expect(dotenv).toContain('WITH_EQ="a=b"');
+    });
+  });
+
+  describe('isSupported', () => {
+    it('recognizes supported slugs', () => {
+      expect(service.isSupported('hermes-agent')).toBe(true);
+      expect(service.isSupported('openclaw')).toBe(true);
+    });
+
+    it('rejects unknown slugs', () => {
+      expect(service.isSupported('something-else')).toBe(false);
+    });
+  });
+});
