@@ -1,7 +1,7 @@
 import { X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
-const CORE_SERVER_URL = 'https://www.ci.computer/core-server';
+const CORE_SERVER_URL = 'https://www.ci.computer/store/p/core';
 
 /** Thresholds for "low spec" detection */
 const LOW_RAM_GB = 8;
