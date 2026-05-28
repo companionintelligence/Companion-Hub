@@ -67,29 +67,87 @@ describe('ModelRegistryService', () => {
       expect(mediumRec.length).toBeGreaterThan(0);
     });
 
-    it('should use the VRAM/RAM recommendation table for onboarding LLM picks', () => {
-      const profile: HardwareProfile = {
-        gpu: {
-          available: true,
-          vendor: 'nvidia',
-          model: 'RTX 3060',
-          vramMb: 12288,
-          unifiedMemory: false,
-          driverVersion: '550.0',
-          runtimeAvailable: true,
-        },
+    describe('Hardware Recommendation Tiers', () => {
+      const baseProfile: HardwareProfile = {
+        gpu: { available: true, vendor: 'nvidia', model: 'RTX', vramMb: 0, unifiedMemory: false, driverVersion: '550.0', runtimeAvailable: true },
         npu: { available: false, model: '' },
-        ram: { totalMb: 32768, availableMb: 24000 },
-        cpu: { arch: 'x86_64', cores: 8, model: 'AMD Ryzen 7' },
-        effectiveInferenceMemoryMb: 12288,
-        tier: 'medium',
+        ram: { totalMb: 0, availableMb: 0 },
+        cpu: { arch: 'x86_64', cores: 16, model: 'Test CPU' },
+        effectiveInferenceMemoryMb: 0,
+        tier: 'high',
       };
 
-      const recommended = service.getRecommendedModelsForHardware('medium', profile);
-      const llmIds = recommended.filter((m) => m.modality === 'llm').map((m) => m.id);
+      it('should recommend 2048GB VRAM models for massive datacenter nodes', () => {
+        const profile: HardwareProfile = {
+          ...baseProfile,
+          gpu: { ...baseProfile.gpu, vramMb: 2097152 },
+          ram: { totalMb: 10000000, availableMb: 10000000 },
+          effectiveInferenceMemoryMb: 2097152,
+        };
+        const recs = service.getRecommendedModelsForHardware('high', profile).map((m) => m.id);
+        expect(recs).toContain('gemma4-3t');
+        expect(recs).toContain('qwen3-6-1-5t-q8_0');
+      });
 
-      expect(llmIds).toContain('qwen3-6-20b');
-      expect(llmIds).not.toContain('gemma4-4b');
+      it('should recommend 512GB VRAM models (e.g. DeepSeek V4 Pro)', () => {
+        const profile: HardwareProfile = {
+          ...baseProfile,
+          gpu: { ...baseProfile.gpu, vramMb: 524288 },
+          ram: { totalMb: 2000000, availableMb: 2000000 },
+          effectiveInferenceMemoryMb: 524288,
+        };
+        const recs = service.getRecommendedModelsForHardware('high', profile).map((m) => m.id);
+        expect(recs).toContain('deepseek-v4-pro');
+        expect(recs).toContain('qwen3-5-397b-a17b');
+      });
+
+      it('should recommend 128GB VRAM models (e.g. MiMo, Qwen 200B)', () => {
+        const profile: HardwareProfile = {
+          ...baseProfile,
+          gpu: { ...baseProfile.gpu, vramMb: 131072 },
+          ram: { totalMb: 1000000, availableMb: 1000000 },
+          effectiveInferenceMemoryMb: 131072,
+        };
+        const recs = service.getRecommendedModelsForHardware('high', profile).map((m) => m.id);
+        expect(recs).toContain('mimo-v2-5-pro');
+        expect(recs).toContain('qwen3-6-200b');
+      });
+
+      it('should recommend 96GB VRAM models (e.g. GLM 5.1, Mistral Medium)', () => {
+        const profile: HardwareProfile = {
+          ...baseProfile,
+          gpu: { ...baseProfile.gpu, vramMb: 98304 },
+          ram: { totalMb: 500000, availableMb: 500000 },
+          effectiveInferenceMemoryMb: 98304,
+        };
+        const recs = service.getRecommendedModelsForHardware('high', profile).map((m) => m.id);
+        expect(recs).toContain('glm-5-1');
+        expect(recs).toContain('mistral-medium-3.5');
+      });
+
+      it('should recommend 32GB VRAM models (e.g. QwQ 32B, Kimi V2)', () => {
+        const profile: HardwareProfile = {
+          ...baseProfile,
+          gpu: { ...baseProfile.gpu, vramMb: 32768 },
+          ram: { totalMb: 200000, availableMb: 200000 },
+          effectiveInferenceMemoryMb: 32768,
+        };
+        const recs = service.getRecommendedModelsForHardware('high', profile).map((m) => m.id);
+        expect(recs).toContain('qwq-32b');
+        expect(recs).toContain('kimi-k2-think-v2-q3_K_M');
+      });
+
+      it('should recommend 24GB VRAM models (e.g. Mistral Small, GPT-OSS 20B)', () => {
+        const profile: HardwareProfile = {
+          ...baseProfile,
+          gpu: { ...baseProfile.gpu, vramMb: 24576 },
+          ram: { totalMb: 200000, availableMb: 200000 },
+          effectiveInferenceMemoryMb: 24576,
+        };
+        const recs = service.getRecommendedModelsForHardware('high', profile).map((m) => m.id);
+        expect(recs).toContain('mistral-small-3.2');
+        expect(recs).toContain('gpt-oss-20b');
+      });
     });
 
     it('should filter by modality', () => {

@@ -19,6 +19,7 @@ const FAMILIES = [
       { s: '4b', idSize: '4b', p: 4, tier: 'cpu-only' as HardwareTier },
       { s: '12b', idSize: '12b', p: 12, tier: 'low' as HardwareTier },
       { s: '27b', idSize: '27b', p: 27, tier: 'medium' as HardwareTier },
+      { s: '31b', idSize: '31b', p: 31, tier: 'medium' as HardwareTier },
       { s: '70b', idSize: '70b', p: 70, tier: 'high' as HardwareTier },
       { s: '300b', idSize: '300b', p: 300, tier: 'high' as HardwareTier },
       { s: '800b', idSize: '800b', p: 800, tier: 'high' as HardwareTier },
@@ -40,6 +41,13 @@ const FAMILIES = [
     ],
   },
   {
+    prefix: 'qwen3.5',
+    idPrefix: 'qwen3-5',
+    name: 'Qwen 3.5',
+    purpose: 'reasoning' as ModelPurpose,
+    sizes: [{ s: '397b-a17b', idSize: '397b-a17b', p: 397, tier: 'high' as HardwareTier }],
+  },
+  {
     prefix: 'nemotron3',
     idPrefix: 'nemotron3',
     name: 'Nemotron 3',
@@ -48,6 +56,7 @@ const FAMILIES = [
       { s: '8b', idSize: '8b', p: 8, tier: 'low' as HardwareTier },
       { s: '22b', idSize: '22b', p: 22, tier: 'medium' as HardwareTier },
       { s: '70b', idSize: '70b', p: 70, tier: 'high' as HardwareTier },
+      { s: 'super-120b-a12b', idSize: 'super-120b-a12b', p: 120, tier: 'high' as HardwareTier },
       { s: '340b', idSize: '340b', p: 340, tier: 'high' as HardwareTier },
       { s: '1t', idSize: '1t', p: 1000, tier: 'high' as HardwareTier },
     ],
@@ -56,7 +65,7 @@ const FAMILIES = [
     prefix: 'hermes4',
     idPrefix: 'hermes4',
     name: 'Hermes 4',
-    purpose: 'general' as ModelPurpose, // assistant maps to general in types
+    purpose: 'general' as ModelPurpose,
     sizes: [
       { s: '4b', idSize: '4b', p: 4, tier: 'cpu-only' as HardwareTier },
       { s: '8b', idSize: '8b', p: 8, tier: 'low' as HardwareTier },
@@ -64,6 +73,75 @@ const FAMILIES = [
       { s: '405b', idSize: '405b', p: 405, tier: 'high' as HardwareTier },
       { s: '1t', idSize: '1t', p: 1000, tier: 'high' as HardwareTier },
     ],
+  },
+  {
+    prefix: 'deepseek',
+    idPrefix: 'deepseek',
+    name: 'DeepSeek',
+    purpose: 'reasoning' as ModelPurpose,
+    sizes: [
+      { s: 'v4-flash', idSize: 'v4-flash', p: 100, tier: 'high' as HardwareTier },
+      { s: 'r10528', idSize: 'r10528', p: 200, tier: 'high' as HardwareTier },
+      { s: 'v4-pro', idSize: 'v4-pro', p: 500, tier: 'high' as HardwareTier },
+    ],
+  },
+  {
+    prefix: 'mistral',
+    idPrefix: 'mistral',
+    name: 'Mistral',
+    purpose: 'general' as ModelPurpose,
+    sizes: [
+      { s: 'small-3.2', idSize: 'small-3.2', p: 24, tier: 'medium' as HardwareTier },
+      { s: 'medium-3.5', idSize: 'medium-3.5', p: 100, tier: 'high' as HardwareTier },
+    ],
+  },
+  {
+    prefix: 'kimi',
+    idPrefix: 'kimi',
+    name: 'Kimi',
+    purpose: 'general' as ModelPurpose,
+    sizes: [
+      { s: 'k2.6', idSize: 'k2-6', p: 100, tier: 'high' as HardwareTier },
+      { s: 'k2-think-v2', idSize: 'k2-think-v2', p: 60, tier: 'high' as HardwareTier },
+    ],
+  },
+  {
+    prefix: 'mimo',
+    idPrefix: 'mimo',
+    name: 'MiMo',
+    purpose: 'general' as ModelPurpose,
+    sizes: [{ s: 'v2.5-pro', idSize: 'v2-5-pro', p: 140, tier: 'high' as HardwareTier }],
+  },
+  {
+    prefix: 'glm',
+    idPrefix: 'glm',
+    name: 'GLM',
+    purpose: 'reasoning' as ModelPurpose,
+    sizes: [{ s: '5.1', idSize: '5-1', p: 130, tier: 'high' as HardwareTier }],
+  },
+  {
+    prefix: 'minimax',
+    idPrefix: 'minimax',
+    name: 'MiniMax',
+    purpose: 'general' as ModelPurpose,
+    sizes: [{ s: 'm2.7', idSize: 'm2-7', p: 100, tier: 'high' as HardwareTier }],
+  },
+  {
+    prefix: 'gpt-oss',
+    idPrefix: 'gpt-oss',
+    name: 'GPT-OSS',
+    purpose: 'general' as ModelPurpose,
+    sizes: [
+      { s: '20b', idSize: '20b', p: 20, tier: 'medium' as HardwareTier },
+      { s: '120b', idSize: '120b', p: 120, tier: 'high' as HardwareTier },
+    ],
+  },
+  {
+    prefix: 'qwq',
+    idPrefix: 'qwq',
+    name: 'QwQ',
+    purpose: 'reasoning' as ModelPurpose,
+    sizes: [{ s: '32b', idSize: '32b', p: 32, tier: 'medium' as HardwareTier }],
   },
 ];
 
