@@ -29,11 +29,6 @@ interface TailscaleServeWebHandler {
   Path?: string;
 }
 
-interface ExecError extends Error {
-  stdout?: string | Buffer;
-  stderr?: string | Buffer;
-}
-
 type ExecStrategy = 'host' | 'sidecar';
 
 const DEFAULT_TAILSCALE_LOGIN_SERVER = '--login-server=https://controlplane.tailscale.com';
@@ -54,12 +49,8 @@ export class TailscaleService {
   private execHost(args: string[], timeoutMs = 15000): Promise<{ stdout: string; stderr: string }> {
     return new Promise((resolve, reject) => {
       execFile(this.binaryPath, args, { timeout: timeoutMs }, (err, stdout, stderr) => {
-        if (err) {
-          const execErr = err as ExecError;
-          execErr.stdout = stdout;
-          execErr.stderr = stderr;
-          reject(execErr);
-        } else resolve({ stdout: stdout.toString(), stderr: stderr.toString() });
+        if (err) reject(err);
+        else resolve({ stdout: stdout.toString(), stderr: stderr.toString() });
       });
     });
   }
@@ -67,29 +58,10 @@ export class TailscaleService {
   private execDocker(args: string[], timeoutMs = 15000): Promise<{ stdout: string; stderr: string }> {
     return new Promise((resolve, reject) => {
       execFile('docker', ['exec', this.sidecarContainer, 'tailscale', ...args], { timeout: timeoutMs }, (err, stdout, stderr) => {
-        if (err) {
-          const execErr = err as ExecError;
-          execErr.stdout = stdout;
-          execErr.stderr = stderr;
-          reject(execErr);
-        } else resolve({ stdout: stdout.toString(), stderr: stderr.toString() });
+        if (err) reject(err);
+        else resolve({ stdout: stdout.toString(), stderr: stderr.toString() });
       });
     });
-  }
-
-  private extractAuthUrl(output: string): string | null {
-    const match = output.match(/https:\/\/login\.tailscale\.com\/[^\s"']+/i);
-    return match?.[0] ?? null;
-  }
-
-  private getExecErrorOutput(error: unknown): string {
-    if (!(error instanceof Error)) {
-      return '';
-    }
-    const execErr = error as ExecError;
-    const stdout = execErr.stdout?.toString() ?? '';
-    const stderr = execErr.stderr?.toString() ?? '';
-    return [stdout, stderr, error.message].filter(Boolean).join('\n');
   }
 
   /**
@@ -306,34 +278,24 @@ export class TailscaleService {
     // --reset resets persisted non-default preferences to defaults before applying
     // the provided flags. Only safe for the sidecar (isolated daemon); on the host
     // it would mutate the user's existing Tailscale configuration.
-    const args = ['up', ...(strategy === 'sidecar' ? ['--reset'] : []), ...this.getTailscaleUpExtraArgs()];
+    const args = ['up', ...(strategy === 'sidecar' ? ['--reset'] : []), '--json', ...this.getTailscaleUpExtraArgs()];
     if (operator) {
       args.push(`--operator=${operator}`);
     }
 
     const execFn = strategy === 'host' ? this.execHost.bind(this) : this.execDocker.bind(this);
-    try {
-      const { stdout, stderr } = await execFn(args, 30000);
-      const output = `${stdout}\n${stderr}`;
-      const authUrl = this.extractAuthUrl(output);
-      if (authUrl) {
-        return { authUrl };
-      }
+    const { stdout } = await execFn(args, 30000);
+    const result = JSON.parse(stdout) as Record<string, unknown>;
 
-      const status = await this.getStatus();
-      if (status.connected || status.backendState === 'Running') {
-        return { authUrl: '' };
-      }
-
-      throw new Error('Failed to get Tailscale auth URL from tailscale up output');
-    } catch (error) {
-      const output = this.getExecErrorOutput(error);
-      const authUrl = this.extractAuthUrl(output);
-      if (authUrl) {
-        return { authUrl };
-      }
-      throw new Error(output || 'Failed to start Tailscale auth');
+    if (result.AuthURL) {
+      return { authUrl: result.AuthURL as string };
     }
+
+    if (result.BackendState === 'Running') {
+      return { authUrl: '' };
+    }
+
+    throw new Error('Failed to get Tailscale auth URL');
   }
 
   /**

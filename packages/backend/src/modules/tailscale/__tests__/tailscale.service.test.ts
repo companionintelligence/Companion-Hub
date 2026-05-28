@@ -66,8 +66,8 @@ describe('TailscaleService', () => {
           process.nextTick(() => cb(null, '1.82.0', ''));
           return;
         }
-        if (cmd === 'docker' && args.includes('up')) {
-          process.nextTick(() => cb(null, '', 'To authenticate, visit:\nhttps://login.tailscale.com/a/test-auth'));
+        if (cmd === 'docker' && args.includes('up') && args.includes('--json')) {
+          process.nextTick(() => cb(null, JSON.stringify({ AuthURL: 'https://login.test/auth' }), ''));
           return;
         }
         process.nextTick(() => cb(new Error('unexpected'), '', ''));
@@ -75,7 +75,7 @@ describe('TailscaleService', () => {
     );
 
     const result = await service.startAuth();
-    expect(result.authUrl).toBe('https://login.tailscale.com/a/test-auth');
+    expect(result.authUrl).toBe('https://login.test/auth');
   });
 
   it('startAuth includes --reset on sidecar strategy', async () => {
@@ -85,8 +85,8 @@ describe('TailscaleService', () => {
           process.nextTick(() => cb(null, '1.82.0', ''));
           return;
         }
-        if (cmd === 'docker' && args.includes('up')) {
-          process.nextTick(() => cb(null, '', 'To authenticate, visit:\nhttps://login.tailscale.com/a/test-auth'));
+        if (cmd === 'docker' && args.includes('up') && args.includes('--json')) {
+          process.nextTick(() => cb(null, JSON.stringify({ AuthURL: 'https://login.test/auth' }), ''));
           return;
         }
         process.nextTick(() => cb(new Error('unexpected'), '', ''));
@@ -97,7 +97,6 @@ describe('TailscaleService', () => {
 
     const upCall = execFileMock.mock.calls.find(([cmd, args]: [string, string[]]) => cmd === 'docker' && args.includes('up'));
     expect(upCall[1]).toContain('--reset');
-    expect(upCall[1]).not.toContain('--json');
   });
 
   it('startAuth does not include --reset on host strategy', async () => {
@@ -109,8 +108,8 @@ describe('TailscaleService', () => {
           process.nextTick(() => cb(null, '1.82.0\n', ''));
           return;
         }
-        if (cmd === '/usr/bin/tailscale' && args.includes('up')) {
-          process.nextTick(() => cb(null, '', 'To authenticate, visit:\nhttps://login.tailscale.com/a/test-auth'));
+        if (cmd === '/usr/bin/tailscale' && args.includes('up') && args.includes('--json')) {
+          process.nextTick(() => cb(null, JSON.stringify({ AuthURL: 'https://login.test/auth' }), ''));
           return;
         }
         process.nextTick(() => cb(new Error('unexpected'), '', ''));
@@ -118,12 +117,11 @@ describe('TailscaleService', () => {
     );
 
     const result = await service.startAuth();
-    expect(result.authUrl).toBe('https://login.tailscale.com/a/test-auth');
+    expect(result.authUrl).toBe('https://login.test/auth');
 
     const upCall = execFileMock.mock.calls.find(([cmd, args]: [string, string[]]) => cmd === '/usr/bin/tailscale' && args.includes('up'));
     expect(upCall).toBeDefined();
     expect(upCall[1]).not.toContain('--reset');
-    expect(upCall[1]).not.toContain('--json');
   });
 
   it('connectWithAuthKey invokes tailscale up via sidecar (includes --reset)', async () => {
@@ -278,9 +276,9 @@ describe('TailscaleService', () => {
           process.nextTick(() => cb(null, JSON.stringify({ BackendState: 'NeedsLogin' }), ''));
           return;
         }
-        if (cmd === 'docker' && args.includes('up')) {
+        if (cmd === 'docker' && args.includes('up') && args.includes('--json')) {
           callOrder.push('up');
-          process.nextTick(() => cb(null, '', 'To authenticate, visit:\nhttps://login.tailscale.com/a/test-auth'));
+          process.nextTick(() => cb(null, JSON.stringify({ AuthURL: 'https://login.test/auth' }), ''));
           return;
         }
         process.nextTick(() => cb(new Error('unexpected'), '', ''));
@@ -288,35 +286,8 @@ describe('TailscaleService', () => {
     );
 
     const result = await service.startAuth();
-    expect(result.authUrl).toBe('https://login.tailscale.com/a/test-auth');
+    expect(result.authUrl).toBe('https://login.test/auth');
     expect(callOrder).toEqual(['status', 'up']);
-  });
-
-  it('startAuth extracts auth URL when tailscale up exits non-zero with output', async () => {
-    execFileMock.mockImplementation(
-      (cmd: string, args: string[], _opts: unknown, cb: (err: Error | null, stdout?: string, stderr?: string) => void) => {
-        if (cmd === 'docker' && args[1] === 'hub-tailscale' && args[3] === 'version') {
-          process.nextTick(() => cb(null, '1.82.0', ''));
-          return;
-        }
-        if (cmd === 'docker' && args.includes('status') && args.includes('--json')) {
-          process.nextTick(() => cb(null, JSON.stringify({ BackendState: 'NeedsLogin' }), ''));
-          return;
-        }
-        if (cmd === 'docker' && args.includes('up')) {
-          const err = Object.assign(new Error('Command failed'), {
-            stderr: 'To authenticate, visit:\nhttps://login.tailscale.com/a/test-auth',
-            stdout: '',
-          });
-          process.nextTick(() => cb(err, '', 'To authenticate, visit:\nhttps://login.tailscale.com/a/test-auth'));
-          return;
-        }
-        process.nextTick(() => cb(new Error('unexpected'), '', ''));
-      },
-    );
-
-    const result = await service.startAuth();
-    expect(result.authUrl).toBe('https://login.tailscale.com/a/test-auth');
   });
 
   describe('waitForSidecarDaemon', () => {
