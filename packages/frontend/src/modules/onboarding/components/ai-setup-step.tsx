@@ -19,12 +19,8 @@ interface AiSetupStepProps {
 }
 
 interface OllamaStatus {
-  installed: boolean;
-  version?: string;
-  installPath?: string;
-  needsInstall: boolean;
-  running: boolean;
   ready: boolean;
+  running: boolean;
   endpointUrl: string;
   error?: string;
 }
@@ -73,7 +69,7 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
       setOllamaStatus(data);
     } catch (_e) {
       // Silently fail - Ollama status is optional
-      setOllamaStatus({ installed: false, needsInstall: true, running: false, ready: false, endpointUrl: '' });
+      setOllamaStatus({ ready: false, running: false, endpointUrl: '' });
     } finally {
       setCheckingOllama(false);
     }
