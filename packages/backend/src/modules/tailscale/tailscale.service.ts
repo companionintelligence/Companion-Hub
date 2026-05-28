@@ -468,10 +468,9 @@ export class TailscaleService {
     const strategy = await this.resolveStrategy();
     if (strategy === 'host') {
       await this.execTailscale(['down']);
-    }
-    else if (strategy === 'sidecar') {
+    } else if (strategy === 'sidecar') {
       await new Promise((resolve, reject) => {
-        execFile('docker', ['exec', this.sidecarContainer, 'sh', '-c', 'kill -9 $(pidof tailscaled) && rm -f /var/lib/tailscale/tailscaled.state'], { timeout: 15000 }, (err, stdout, stderr) => {
+        execFile('docker', ['exec', this.sidecarContainer, 'sh', '-c', 'kill -9 $(pidof tailscaled 2>/dev/null) >/dev/null 2>&1 || true; rm -f /var/lib/tailscale/tailscaled.state'], { timeout: 15000 }, (err, stdout, stderr) => {
           if (err) {
             const execErr = err as ExecError;
             execErr.stdout = stdout;
@@ -480,6 +479,8 @@ export class TailscaleService {
           } else resolve({ stdout: stdout.toString(), stderr: stderr.toString() });
         });
       });
+    } else {
+      throw new Error('Tailscale CLI unavailable (no host socket and no sidecar)');
     }
     this.invalidateStrategyCache();
   }
