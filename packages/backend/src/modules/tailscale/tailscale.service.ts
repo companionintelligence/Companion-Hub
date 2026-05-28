@@ -119,7 +119,7 @@ export class TailscaleService {
         return false;
       }
     });
-    return tailscaleLoginMatch ?? candidates[0];
+    return tailscaleLoginMatch ?? candidates[0] ?? null;
   }
 
   private getExecErrorOutput(error: unknown): string {
