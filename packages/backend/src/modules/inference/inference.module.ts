@@ -10,6 +10,7 @@ import { InferenceRouterService } from './inference-router.service';
 import { CloudFallbackService } from './cloud-fallback.service';
 import { OllamaInstallerService } from './ollama-installer.service';
 import { AppBootstrapService } from './app-bootstrap.service';
+import { CatalogVerifierService } from './catalog-verifier.service';
 import { OllamaBackend } from './backends/ollama.backend';
 import { VllmBackend } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
@@ -27,6 +28,7 @@ import { InferenceController } from './inference.controller';
     CloudFallbackService,
     OllamaInstallerService,
     AppBootstrapService,
+    CatalogVerifierService,
     OllamaBackend,
     VllmBackend,
     LemonadeBackend,
@@ -40,6 +42,7 @@ import { InferenceController } from './inference.controller';
     CloudFallbackService,
     OllamaInstallerService,
     AppBootstrapService,
+    CatalogVerifierService,
     OllamaBackend,
     VllmBackend,
     LemonadeBackend,
