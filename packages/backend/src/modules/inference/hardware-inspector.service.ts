@@ -39,6 +39,9 @@ export class HardwareInspectorService implements OnModuleInit {
   async getProfile(): Promise<HardwareProfile> {
     if (!this.cachedProfile) {
       this.cachedProfile = await this.detect();
+      if (this.hasIncompleteDiscreteGpuProfile(this.cachedProfile)) {
+        this.lastIncompleteDiscreteGpuRefreshAt = Date.now();
+      }
       return this.cachedProfile;
     }
 
