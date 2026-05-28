@@ -1,9 +1,10 @@
 import { Test, type TestingModule } from '@nestjs/testing';
 import { mock, type MockProxy } from 'vitest-mock-extended';
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { AppBootstrapService } from '../app-bootstrap.service';
 import { HardwareInspectorService } from '../hardware-inspector.service';
+import { InferenceRouterService } from '../inference-router.service';
 import { ModelRegistryService } from '../model-registry.service';
 import { ModelPullerService } from '../model-puller.service';
 import { OllamaBackend } from '../backends/ollama.backend';
@@ -83,6 +84,7 @@ describe('AppBootstrapService', () => {
   let service: AppBootstrapService;
   let logger: MockProxy<LoggerService>;
   let hardwareInspector: MockProxy<HardwareInspectorService>;
+  let inferenceRouter: MockProxy<InferenceRouterService>;
   let modelRegistry: MockProxy<ModelRegistryService>;
   let modelPuller: MockProxy<ModelPullerService>;
   let ollamaBackend: MockProxy<OllamaBackend>;
@@ -90,10 +92,12 @@ describe('AppBootstrapService', () => {
   beforeEach(async () => {
     logger = mock<LoggerService>();
     hardwareInspector = mock<HardwareInspectorService>();
+    inferenceRouter = mock<InferenceRouterService>();
     modelRegistry = mock<ModelRegistryService>();
     modelPuller = mock<ModelPullerService>();
     ollamaBackend = mock<OllamaBackend>();
 
+    inferenceRouter.getInferenceEndpoint.mockReturnValue('http://ci-os-hub:3000/api/inference/v1');
     ollamaBackend.getBaseUrl.mockReturnValue('http://ci-hub-ollama:11434');
     ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [] });
     hardwareInspector.getProfile.mockResolvedValue(baseProfile);
@@ -115,6 +119,7 @@ describe('AppBootstrapService', () => {
         AppBootstrapService,
         { provide: LoggerService, useValue: logger },
         { provide: HardwareInspectorService, useValue: hardwareInspector },
+        { provide: InferenceRouterService, useValue: inferenceRouter },
         { provide: ModelRegistryService, useValue: modelRegistry },
         { provide: ModelPullerService, useValue: modelPuller },
         { provide: OllamaBackend, useValue: ollamaBackend },
@@ -133,17 +138,15 @@ describe('AppBootstrapService', () => {
       const config = await service.getBootstrap('hermes-agent');
 
       expect(config.app).toBe('hermes-agent');
-      expect(config.endpointUrl).toBe('http://ci-hub-ollama:11434/v1');
+      expect(config.endpointUrl).toBe('http://ci-os-hub:3000/api/inference/v1');
       expect(config.llmModelId).toBe('hermes4-70b');
       expect(config.llmBackendModelId).toBe('hermes4:70b');
-      expect(config.embeddingsModelId).toBe('nomic-embed-text');
+      expect(config.embeddingsModelId).toBeNull();
       expect(config.env).toEqual({
-        HERMES_OPENAI_BASE_URL: 'http://ci-hub-ollama:11434/v1',
+        HERMES_OPENAI_BASE_URL: 'http://ci-os-hub:3000/api/inference/v1',
         HERMES_OPENAI_API_KEY: 'ollama',
         HERMES_DEFAULT_MODEL: 'hermes4-70b',
         HERMES_DEFAULT_MODEL_BACKEND_ID: 'hermes4:70b',
-        HERMES_EMBEDDINGS_MODEL: 'nomic-embed-text',
-        HERMES_EMBEDDINGS_MODEL_BACKEND_ID: 'nomic-embed-text',
       });
     });
 
@@ -152,12 +155,10 @@ describe('AppBootstrapService', () => {
 
       expect(config.app).toBe('openclaw');
       expect(config.env).toEqual({
-        OPENAI_API_BASE: 'http://ci-hub-ollama:11434/v1',
+        OPENAI_API_BASE: 'http://ci-os-hub:3000/api/inference/v1',
         OPENAI_API_KEY: 'ollama',
         DEFAULT_MODEL: 'hermes4-70b',
         DEFAULT_MODEL_BACKEND_ID: 'hermes4:70b',
-        EMBEDDINGS_MODEL: 'nomic-embed-text',
-        EMBEDDINGS_MODEL_BACKEND_ID: 'nomic-embed-text',
       });
     });
 
@@ -170,12 +171,12 @@ describe('AppBootstrapService', () => {
       expect(config.llmModelId).toBeNull();
       expect(config.embeddingsModelId).toBeNull();
       expect(config.env).toEqual({
-        OPENAI_API_BASE: 'http://ci-hub-ollama:11434/v1',
+        OPENAI_API_BASE: 'http://ci-os-hub:3000/api/inference/v1',
         OPENAI_API_KEY: 'ollama',
       });
     });
 
-    it('filters embeddings models that exceed available RAM', async () => {
+    it('does not emit embeddings model fields when embeddings are not bootstrapped', async () => {
       modelRegistry.getModelsByModality.mockReturnValue([
         {
           ...makeEmbedding('huge-emb', 'huge-emb'),
@@ -186,7 +187,9 @@ describe('AppBootstrapService', () => {
 
       const config = await service.getBootstrap('openclaw');
 
-      expect(config.embeddingsModelId).toBe('small-emb');
+      expect(config.embeddingsModelId).toBeNull();
+      expect(config.env.EMBEDDINGS_MODEL).toBeUndefined();
+      expect(config.env.EMBEDDINGS_MODEL_BACKEND_ID).toBeUndefined();
     });
 
     it('picks the first model returned by the registry (biggest first)', async () => {
@@ -207,7 +210,7 @@ describe('AppBootstrapService', () => {
       const config = await service.getBootstrap('openclaw');
       const dotenv = service.serializeAsDotenv(config);
 
-      expect(dotenv).toContain('OPENAI_API_BASE=http://ci-hub-ollama:11434/v1');
+      expect(dotenv).toContain('OPENAI_API_BASE=http://ci-os-hub:3000/api/inference/v1');
       expect(dotenv).toContain('OPENAI_API_KEY=ollama');
       expect(dotenv).toContain('DEFAULT_MODEL=hermes4-70b');
       expect(dotenv.endsWith('\n')).toBe(true);

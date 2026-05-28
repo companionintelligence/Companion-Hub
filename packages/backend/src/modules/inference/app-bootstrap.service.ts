@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 import { HardwareInspectorService } from './hardware-inspector.service';
+import { InferenceRouterService } from './inference-router.service';
 import { ModelRegistryService } from './model-registry.service';
 import { ModelPullerService } from './model-puller.service';
 import { OllamaBackend } from './backends/ollama.backend';
@@ -59,6 +60,7 @@ export class AppBootstrapService {
   constructor(
     private readonly logger: LoggerService,
     private readonly hardwareInspector: HardwareInspectorService,
+    private readonly inferenceRouter: InferenceRouterService,
     private readonly modelRegistry: ModelRegistryService,
     private readonly modelPuller: ModelPullerService,
     private readonly ollamaBackend: OllamaBackend,
@@ -102,7 +104,7 @@ export class AppBootstrapService {
     }
 
     const profile = await this.hardwareInspector.getProfile();
-    const endpointUrl = `${this.ollamaBackend.getBaseUrl()}/v1`;
+    const endpointUrl = this.inferenceRouter.getInferenceEndpoint();
 
     const endpointHealth = await this.ollamaBackend.healthCheck().catch((err) => {
       this.logger.error(`[AppBootstrap] Ollama health check threw: ${err instanceof Error ? err.message : String(err)}`);
@@ -111,12 +113,7 @@ export class AppBootstrapService {
     const endpointReady = !!(endpointHealth.running && endpointHealth.healthy);
 
     const llm = this.pickTopRunnableModel(this.modelRegistry.getRecommendedModelsForHardware(profile.tier, profile));
-    const embeddings = this.pickTopRunnableModel(
-      this.modelRegistry
-        .getModelsByModality('embedding')
-        .filter((m) => m.backend === 'ollama')
-        .filter((m) => m.requirements.minRamMb <= profile.ram.totalMb),
-    );
+    const embeddings: CuratedModel | null = null;
 
     const llmReady = llm ? this.isModelPulled(llm.id, endpointHealth.modelsLoaded) : false;
     if (llm && !llmReady && endpointReady) {
