@@ -1,0 +1,30 @@
+# Compose overlay that adds a real Ollama service to docker-compose.local.yml
+# so the bootstrap-endpoint contract can be tested end-to-end against a live
+# inference backend rather than a mock.
+#
+# Usage (from repo root):
+#   docker compose -f docker-compose.local.yml -f scripts/integration/docker-compose.integration.yml up -d
+#
+# Or invoke the wrapper script: `bash scripts/integration/test-bootstrap.sh`
+services:
+  ci-hub-ollama:
+    image: ollama/ollama:latest
+    container_name: ci-hub-ollama
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 30s
+    volumes:
+      - ci_hub_ollama_data:/root/.ollama
+    networks:
+      - ci_os_hub_network
+
+  ci-os-hub:
+    environment:
+      OLLAMA_URL: http://ci-hub-ollama:11434
+
+volumes:
+  ci_hub_ollama_data:

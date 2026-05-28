@@ -1,0 +1,27 @@
+name: Bootstrap integration
+
+on:
+  workflow_call:
+  pull_request:
+    paths:
+      - packages/backend/src/modules/inference/**
+      - scripts/integration/**
+      - docker-compose.local.yml
+      - .github/workflows/bootstrap-integration.yml
+  push:
+    branches:
+      - dev
+
+jobs:
+  bootstrap-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run bootstrap integration test
+        run: bash scripts/integration/test-bootstrap.sh
+
+      - name: Hub logs on failure
+        if: failure()
+        run: docker logs ci-os-hub 2>&1 | tail -200 || true
