@@ -12,6 +12,8 @@ import { OllamaSetupCard } from './ai-setup/ollama-setup-card';
 import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
 import { Loader2 } from 'lucide-react';
 
+const OLLAMA_INSTALL_COMMAND = 'curl -fsSL https://ollama.com/install.sh | sh';
+
 interface AiSetupStepProps {
   onComplete: (config: AiSetupConfig) => void;
   onSkip: () => void;
@@ -23,6 +25,15 @@ interface OllamaStatus {
   version?: string;
   installPath?: string;
   needsInstall: boolean;
+  running: boolean;
+  ready: boolean;
+  endpointUrl: string;
+  error?: string;
+}
+
+function detectOllamaInstallMode() {
+  const platform = `${navigator.userAgent} ${navigator.platform}`.toLowerCase();
+  return platform.includes('windows') || platform.includes('win32') || platform.includes('win64') ? 'auto' : 'manual-script';
 }
 
 export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) => {
@@ -64,13 +75,22 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
       setOllamaStatus(data);
     } catch (_e) {
       // Silently fail - Ollama status is optional
-      setOllamaStatus({ installed: false, needsInstall: true });
+      setOllamaStatus({ installed: false, needsInstall: true, running: false, ready: false, endpointUrl: '' });
     } finally {
       setCheckingOllama(false);
     }
   };
 
   const handleInstallOllama = async () => {
+    if (detectOllamaInstallMode() === 'manual-script') {
+      try {
+        await navigator.clipboard.writeText(OLLAMA_INSTALL_COMMAND);
+      } catch {
+        setError('Failed to copy the Ollama install command.');
+      }
+      return;
+    }
+
     setInstallingOllama(true);
     try {
       const res = await apiFetch('/api/inference/ollama/install', {
@@ -165,7 +185,8 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
   const isInsufficient = profile.tier === 'insufficient';
   const selectedModels = profile.availableModels.filter((m) => selectedModelIds.includes(m.id));
   const availableMemoryMb = profile.resourceEstimate.availableMemoryMb;
-  const needsOllama = selectedBackend === 'ollama' && (ollamaStatus === null || !ollamaStatus.installed);
+  const needsOllama = selectedBackend === 'ollama' && (ollamaStatus === null || !ollamaStatus.ready);
+  const ollamaInstallMode = detectOllamaInstallMode();
 
   return (
     <div className="space-y-4 max-h-[62vh] overflow-y-auto pr-2" data-testid="ai-setup-step">
@@ -181,6 +202,8 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
               checking={checkingOllama}
               onInstall={handleInstallOllama}
               onRecheck={checkOllamaStatus}
+              installMode={ollamaInstallMode}
+              installCommand={OLLAMA_INSTALL_COMMAND}
             />
           )}
 
@@ -213,7 +236,12 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
           <Button variant="outline" onClick={handleSkip} data-testid="ai-skip-btn">
             Skip AI Setup
           </Button>
-          <Button intent="primary" onClick={handleContinue} data-testid="ai-continue-btn" disabled={needsOllama && installingOllama}>
+          <Button
+            intent="primary"
+            onClick={handleContinue}
+            data-testid="ai-continue-btn"
+            disabled={needsOllama && (installingOllama || checkingOllama || !ollamaStatus?.ready)}
+          >
             {isInsufficient && cloudProviders.filter((p) => p.apiKey.trim()).length === 0 ? 'Continue without AI' : 'Continue'}
           </Button>
         </div>

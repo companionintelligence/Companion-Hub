@@ -5,6 +5,7 @@ import { AiSetupStep } from '../ai-setup-step';
 import type { HardwareProfileResponse } from '../../helpers/ai-setup-types';
 
 const mockApiFetch = vi.fn();
+const mockClipboardWriteText = vi.fn();
 const mockResponse = <T,>(data: T, ok = true) =>
   Promise.resolve({
     ok,
@@ -117,9 +118,36 @@ describe('AiSetupStep', () => {
   const onComplete = vi.fn();
   const onSkip = vi.fn();
   const onBack = vi.fn();
+  const ollamaReadyStatus = {
+    installed: true,
+    needsInstall: false,
+    running: true,
+    ready: true,
+    endpointUrl: 'http://host.docker.internal:11434',
+  };
+  const ollamaMissingStatus = {
+    installed: false,
+    needsInstall: true,
+    running: false,
+    ready: false,
+    endpointUrl: 'http://host.docker.internal:11434',
+  };
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockClipboardWriteText.mockResolvedValue(undefined);
+    Object.defineProperty(window.navigator, 'platform', {
+      configurable: true,
+      value: 'Linux x86_64',
+    });
+    Object.defineProperty(window.navigator, 'userAgent', {
+      configurable: true,
+      value: 'Mozilla/5.0 (X11; Linux x86_64)',
+    });
+    Object.defineProperty(window.navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: mockClipboardWriteText },
+    });
   });
 
   it('shows loading skeleton while fetching profile', () => {
@@ -356,7 +384,7 @@ describe('AiSetupStep', () => {
     const user = userEvent.setup();
     mockApiFetch
       .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(highTierProfile) }) // initial profile fetch
-      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ installed: true, needsInstall: false }) }) // ollama status
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(ollamaReadyStatus) }) // ollama status
       .mockResolvedValueOnce({ ok: false, status: 503 }); // rescan POST failure
 
     render(<AiSetupStep onComplete={onComplete} onSkip={onSkip} onBack={onBack} />);
@@ -413,9 +441,7 @@ describe('AiSetupStep', () => {
       },
     };
 
-    mockApiFetch
-      .mockImplementationOnce(() => mockResponse(ollamaProfile))
-      .mockImplementationOnce(() => mockResponse({ installed: false, needsInstall: true }));
+    mockApiFetch.mockImplementationOnce(() => mockResponse(ollamaProfile)).mockImplementationOnce(() => mockResponse(ollamaMissingStatus));
 
     render(<AiSetupStep onComplete={onComplete} onSkip={onSkip} onBack={onBack} />);
 
@@ -424,8 +450,7 @@ describe('AiSetupStep', () => {
     });
   });
 
-  it('disables Continue while Ollama installation is running', async () => {
-    const user = userEvent.setup();
+  it('disables Continue while Ollama is not reachable', async () => {
     const ollamaProfile = {
       ...highTierProfile,
       backends: {
@@ -436,19 +461,25 @@ describe('AiSetupStep', () => {
 
     mockApiFetch
       .mockImplementationOnce(() => mockResponse(ollamaProfile))
-      .mockImplementationOnce(() => mockResponse({ installed: false, needsInstall: true }))
-      .mockImplementationOnce(() => new Promise(() => {}));
+      .mockImplementationOnce(() =>
+        mockResponse({
+          installed: true,
+          needsInstall: false,
+          running: false,
+          ready: false,
+          endpointUrl: 'http://host.docker.internal:11434',
+          error: 'connect ECONNREFUSED',
+        }),
+      );
 
     render(<AiSetupStep onComplete={onComplete} onSkip={onSkip} onBack={onBack} />);
 
-    await waitFor(() => expect(screen.getByText('Ollama Not Installed')).toBeInTheDocument());
-    await user.click(screen.getByRole('button', { name: 'Install Ollama' }));
-
+    await waitFor(() => expect(screen.getByText('Ollama Not Reachable')).toBeInTheDocument());
     expect(screen.getByTestId('ai-continue-btn')).toBeDisabled();
+    expect(screen.getByText(/could not reach Ollama/)).toBeInTheDocument();
   });
 
-  it('re-checks Ollama status after successful install', async () => {
-    const user = userEvent.setup();
+  it('shows the host-side install command on Unix-like platforms', async () => {
     const ollamaProfile = {
       ...highTierProfile,
       backends: {
@@ -457,20 +488,12 @@ describe('AiSetupStep', () => {
       },
     };
 
-    mockApiFetch
-      .mockImplementationOnce(() => mockResponse(ollamaProfile))
-      .mockImplementationOnce(() => mockResponse({ installed: false, needsInstall: true }))
-      .mockImplementationOnce(() => mockResponse({ success: true, message: 'ok' }))
-      .mockImplementationOnce(() => mockResponse({ installed: true, needsInstall: false, version: '0.5.0' }));
+    mockApiFetch.mockImplementationOnce(() => mockResponse(ollamaProfile)).mockImplementationOnce(() => mockResponse(ollamaMissingStatus));
 
     render(<AiSetupStep onComplete={onComplete} onSkip={onSkip} onBack={onBack} />);
 
     await waitFor(() => expect(screen.getByText('Ollama Not Installed')).toBeInTheDocument());
-    await user.click(screen.getByRole('button', { name: 'Install Ollama' }));
-
-    await waitFor(() => {
-      const statusChecks = mockApiFetch.mock.calls.filter(([url]) => url === '/api/inference/ollama/status');
-      expect(statusChecks).toHaveLength(2);
-    });
+    expect(screen.getByText('curl -fsSL https://ollama.com/install.sh | sh')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Copy Install Command' })).toBeInTheDocument();
   });
 });

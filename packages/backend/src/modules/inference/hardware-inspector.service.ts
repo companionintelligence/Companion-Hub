@@ -470,11 +470,12 @@ export class HardwareInspectorService implements OnModuleInit {
         .split('\n')
         .map((line) => line.trim())
         .filter(Boolean);
-      if (lines.length < 2) {
+      const [headerLine, ...dataLines] = lines;
+      if (!headerLine || dataLines.length === 0) {
         return 0;
       }
 
-      const headers = lines[0].split(',').map((value) => value.trim().replace(/^"|"$/g, ''));
+      const headers = headerLine.split(',').map((value) => value.trim().replace(/^"|"$/g, ''));
       const totalVramIndex = headers.findIndex(
         (header) => /vram/i.test(header) && /total/i.test(header) && /memory/i.test(header) && !/used/i.test(header),
       );
@@ -483,7 +484,7 @@ export class HardwareInspectorService implements OnModuleInit {
       }
 
       let largestVramMb = 0;
-      for (const line of lines.slice(1)) {
+      for (const line of dataLines) {
         const values = line.split(',').map((value) => value.trim().replace(/^"|"$/g, ''));
         const vramBytes = Number.parseInt(values[totalVramIndex] ?? '', 10);
         if (Number.isNaN(vramBytes) || vramBytes <= 0) {

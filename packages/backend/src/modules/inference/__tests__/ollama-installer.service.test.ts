@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import os from 'node:os';
 import { LoggerService } from '@/core/logger/logger.service';
 import { OllamaInstallerService } from '../ollama-installer.service';
+import { OllamaBackend } from '../backends/ollama.backend';
 
 const { execAsyncMock } = vi.hoisted(() => ({
   execAsyncMock: vi.fn(),
@@ -24,65 +25,72 @@ vi.mock('node:util', async (importOriginal) => {
 describe('OllamaInstallerService', () => {
   let service: OllamaInstallerService;
   let loggerService: MockProxy<LoggerService>;
+  let ollamaBackend: MockProxy<OllamaBackend>;
 
   beforeEach(async () => {
     execAsyncMock.mockReset();
     loggerService = mock<LoggerService>();
+    ollamaBackend = mock<OllamaBackend>();
+    ollamaBackend.getBaseUrl.mockReturnValue('http://host.docker.internal:11434');
+    ollamaBackend.healthCheck.mockResolvedValue({
+      running: false,
+      healthy: false,
+      modelsLoaded: [],
+      error: 'connect ECONNREFUSED',
+    });
 
     const module: TestingModule = await Test.createTestingModule({
-      providers: [OllamaInstallerService, { provide: LoggerService, useValue: loggerService }],
+      providers: [OllamaInstallerService, { provide: LoggerService, useValue: loggerService }, { provide: OllamaBackend, useValue: ollamaBackend }],
     }).compile();
 
     service = module.get(OllamaInstallerService);
   });
 
-  it('uses the official install script on macOS', async () => {
+  it('reports Ollama ready when the configured endpoint is healthy even without a local CLI', async () => {
     vi.spyOn(os, 'platform').mockReturnValue('darwin');
-    vi.spyOn(service as never, 'delay').mockResolvedValue(undefined);
-    const checkInstallationSpy = vi.spyOn(service, 'checkInstallation').mockResolvedValue({
-      installed: true,
-      needsInstall: false,
-      version: '0.6.0',
-      installPath: '/usr/local/bin/ollama',
+    execAsyncMock.mockRejectedValue(new Error('not found'));
+    ollamaBackend.healthCheck.mockResolvedValue({
+      running: true,
+      healthy: true,
+      modelsLoaded: ['phi4-mini'],
     });
-    execAsyncMock.mockResolvedValue({ stdout: '' });
 
-    const result = await service.install();
-
-    expect(execAsyncMock).toHaveBeenCalledWith('curl -fsSL https://ollama.com/install.sh | sh', expect.objectContaining({ timeout: 300000 }));
-    expect(checkInstallationSpy).toHaveBeenCalledTimes(1);
-    expect(result).toEqual({
-      success: true,
-      message: 'Ollama installed successfully (0.6.0)',
+    await expect(service.checkInstallation()).resolves.toEqual({
+      installed: true,
+      version: undefined,
+      installPath: undefined,
+      needsInstall: false,
+      running: true,
+      ready: true,
+      endpointUrl: 'http://host.docker.internal:11434',
+      error: undefined,
     });
   });
 
-  it('uses the official install script on Linux', async () => {
+  it('reports Ollama installed but not ready when the CLI exists and the endpoint is down', async () => {
     vi.spyOn(os, 'platform').mockReturnValue('linux');
-    vi.spyOn(service as never, 'delay').mockResolvedValue(undefined);
-    const checkInstallationSpy = vi.spyOn(service, 'checkInstallation').mockResolvedValue({
+    execAsyncMock.mockResolvedValueOnce({ stdout: 'ollama version 0.6.0\n' }).mockResolvedValueOnce({ stdout: '/usr/local/bin/ollama\n' });
+
+    await expect(service.checkInstallation()).resolves.toEqual({
       installed: true,
-      needsInstall: false,
-      version: '0.6.0',
+      version: 'ollama version 0.6.0',
       installPath: '/usr/local/bin/ollama',
+      needsInstall: false,
+      running: false,
+      ready: false,
+      endpointUrl: 'http://host.docker.internal:11434',
+      error: 'connect ECONNREFUSED',
     });
-    execAsyncMock.mockResolvedValue({ stdout: '' });
-
-    await service.install();
-
-    expect(execAsyncMock).toHaveBeenCalledWith('curl -fsSL https://ollama.com/install.sh | sh', expect.objectContaining({ timeout: 300000 }));
-    expect(checkInstallationSpy).toHaveBeenCalledTimes(1);
   });
 
-  it('returns the manual install command when Unix-like installation hits a permission error', async () => {
+  it('returns a host-side install command for Unix-like platforms', async () => {
     vi.spyOn(os, 'platform').mockReturnValue('linux');
-    execAsyncMock.mockRejectedValue(new Error('Permission denied'));
 
     const result = await service.install();
 
     expect(result).toEqual({
       success: false,
-      message: 'Installation requires administrator permissions. Please install Ollama manually: curl -fsSL https://ollama.com/install.sh | sh',
+      message: 'Install Ollama on the host machine with: curl -fsSL https://ollama.com/install.sh | sh',
     });
   });
 });

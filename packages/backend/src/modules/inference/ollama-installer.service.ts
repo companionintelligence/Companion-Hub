@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
+import { OllamaBackend } from './backends/ollama.backend';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
 import os from 'node:os';
@@ -14,22 +15,24 @@ export interface OllamaInstallStatus {
   version?: string;
   installPath?: string;
   needsInstall: boolean;
+  running: boolean;
+  ready: boolean;
+  endpointUrl: string;
+  error?: string;
 }
 
 @Injectable()
 export class OllamaInstallerService {
-  constructor(private readonly logger: LoggerService) {}
+  constructor(
+    private readonly logger: LoggerService,
+    private readonly ollamaBackend: OllamaBackend,
+  ) {}
 
   private delay(ms: number) {
     return new Promise<void>((resolve) => setTimeout(resolve, ms));
   }
 
-  /**
-   * Check if Ollama is installed and get version info
-   * Checks both container PATH and host system
-   */
-  async checkInstallation(): Promise<OllamaInstallStatus> {
-    // First try: Check if Ollama is accessible in container PATH
+  private async detectCliInstallation() {
     try {
       const { stdout } = await execAsync('ollama --version', { timeout: 5000 });
       const version = stdout.trim();
@@ -41,12 +44,10 @@ export class OllamaInstallerService {
       } catch {
         // Path detection failed, but version works so it's installed somewhere
       }
-
       return {
         installed: true,
         version,
         installPath,
-        needsInstall: false,
       };
     } catch {
       // Container PATH check failed
@@ -59,6 +60,8 @@ export class OllamaInstallerService {
       '/opt/homebrew/bin/ollama', // macOS Homebrew (Apple Silicon)
       '/home/linuxbrew/.linuxbrew/bin/ollama', // Linux Homebrew
       '/usr/local/opt/ollama/bin/ollama', // macOS Homebrew (Intel)
+      '/Applications/Ollama.app/Contents/Resources/ollama', // macOS app bundle
+      '/Applications/Ollama.app/Contents/MacOS/Ollama', // macOS app executable
     ];
 
     for (const ollamaPath of commonPaths) {
@@ -71,7 +74,6 @@ export class OllamaInstallerService {
           installed: true,
           version,
           installPath: ollamaPath,
-          needsInstall: false,
         };
       } catch {
         // This path doesn't have Ollama, try next
@@ -82,7 +84,27 @@ export class OllamaInstallerService {
     this.logger.info('[OllamaInstaller] Ollama not found in PATH or common installation locations');
     return {
       installed: false,
-      needsInstall: true,
+    };
+  }
+
+  /**
+   * Check if Ollama is installed and whether the configured runtime endpoint is reachable.
+   */
+  async checkInstallation(): Promise<OllamaInstallStatus> {
+    const [cliStatus, endpointHealth] = await Promise.all([this.detectCliInstallation(), this.ollamaBackend.healthCheck()]);
+    const endpointUrl = this.ollamaBackend.getBaseUrl();
+    const ready = endpointHealth.running && endpointHealth.healthy;
+    const installed = cliStatus.installed || ready;
+
+    return {
+      installed,
+      version: cliStatus.version,
+      installPath: cliStatus.installPath,
+      needsInstall: !installed,
+      running: ready,
+      ready,
+      endpointUrl,
+      error: ready ? undefined : endpointHealth.error,
     };
   }
 
@@ -97,9 +119,11 @@ export class OllamaInstallerService {
 
       switch (platform) {
         case 'darwin':
-          return await this.installUnixLike('macOS');
         case 'linux':
-          return await this.installUnixLike('Linux');
+          return {
+            success: false,
+            message: `Install Ollama on the host machine with: ${OLLAMA_INSTALL_SCRIPT}`,
+          };
         case 'win32':
           return await this.installWindows();
         default:
@@ -114,48 +138,6 @@ export class OllamaInstallerService {
       return {
         success: false,
         message: `Installation failed: ${message}`,
-      };
-    }
-  }
-
-  /**
-   * Install Ollama on Unix-like systems using Ollama's official install script.
-   */
-  private async installUnixLike(platformLabel: 'macOS' | 'Linux'): Promise<{ success: boolean; message: string }> {
-    try {
-      this.logger.info(`[OllamaInstaller] Installing Ollama on ${platformLabel} using the official install script...`);
-      await execAsync(OLLAMA_INSTALL_SCRIPT, {
-        timeout: 300000,
-      });
-
-      await this.delay(2000);
-
-      const status = await this.checkInstallation();
-      if (status.installed) {
-        return {
-          success: true,
-          message: `Ollama installed successfully${status.version ? ` (${status.version})` : ''}`,
-        };
-      }
-
-      return {
-        success: false,
-        message: `${platformLabel} installation completed but Ollama is not available. You may need to restart the Hub or ensure the Ollama CLI install path is on PATH.`,
-      };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.logger.error(`[OllamaInstaller] ${platformLabel} installation failed: ${message}`);
-
-      if (message.includes('Permission denied') || message.includes('EACCES')) {
-        return {
-          success: false,
-          message: `Installation requires administrator permissions. Please install Ollama manually: ${OLLAMA_INSTALL_SCRIPT}`,
-        };
-      }
-
-      return {
-        success: false,
-        message: `${platformLabel} installation failed: ${message}`,
       };
     }
   }
@@ -186,7 +168,7 @@ export class OllamaInstallerService {
 
       // Verify installation
       const status = await this.checkInstallation();
-      if (status.installed) {
+      if (status.ready) {
         // Clean up installer
         await fs.unlink(installerPath).catch(() => {
           /* Ignore cleanup errors */
@@ -199,7 +181,7 @@ export class OllamaInstallerService {
 
       return {
         success: false,
-        message: 'Installation completed but Ollama is not available in PATH. You may need to restart your system.',
+        message: `Installation completed but the configured Ollama endpoint is not reachable (${status.endpointUrl}). Start Ollama on the host machine and re-check the connection.`,
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
