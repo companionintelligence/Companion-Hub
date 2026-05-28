@@ -626,7 +626,7 @@ describe('AiSetupStep', () => {
 
     await waitFor(() => expect(screen.getByText('Ollama Container Not Running')).toBeInTheDocument());
     expect(screen.getByText(/runs inside the Hub container stack/i)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Start Ollama Container' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Check Ollama Connection' })).toBeInTheDocument();
   });
 
   it('keeps the hardware profile visible when Ollama installation fails', async () => {
@@ -648,21 +648,24 @@ describe('AiSetupStep', () => {
       },
     };
 
+    const containerFailureMessage =
+      'Ollama is managed by the ci-hub-ollama container. Start or restart that container and re-check http://ci-hub-ollama:11434.';
+
     mockApiFetch
       .mockImplementationOnce(() => mockResponse(ollamaProfile))
       .mockImplementationOnce(() => mockResponse(ollamaMissingStatus))
-      .mockImplementationOnce(() => mockResponse({ success: false, message: 'Windows installation failed: access denied' }));
+      .mockImplementationOnce(() => mockResponse({ success: false, message: containerFailureMessage }));
 
     render(<AiSetupStep onComplete={onComplete} onSkip={onSkip} onBack={onBack} />);
 
     await waitFor(() => expect(screen.getByText('Ollama Container Not Running')).toBeInTheDocument());
-    await user.click(screen.getByRole('button', { name: 'Start Ollama Container' }));
+    await user.click(screen.getByRole('button', { name: 'Check Ollama Connection' }));
 
     await waitFor(() => {
-      expect(screen.getByText('Windows installation failed: access denied')).toBeInTheDocument();
+      expect(screen.getByText(containerFailureMessage)).toBeInTheDocument();
     });
     expect(screen.getByTestId('hw-card-title')).toBeInTheDocument();
     expect(screen.queryByTestId('ai-setup-error')).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Start Ollama Container' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Check Ollama Connection' })).toBeInTheDocument();
   });
 });

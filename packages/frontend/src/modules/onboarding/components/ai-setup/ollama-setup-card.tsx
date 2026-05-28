@@ -89,7 +89,7 @@ export const OllamaSetupCard = ({ status, installing, checking, onInstall, onRec
                     Checking Ollama...
                   </>
                 ) : (
-                  'Start Ollama Container'
+                  'Check Ollama Connection'
                 )}
               </Button>
               <Button variant="ghost" size="sm" onClick={onRecheck} loading={checking} disabled={installing}>

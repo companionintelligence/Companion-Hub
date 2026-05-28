@@ -4,7 +4,7 @@ The Model Registry in CI-Hub is a dynamic, scalable catalog of state-of-the-art 
 
 ## 1. Overview of Expansion & Supported Models
 
-The `curated-models.ts` catalog has been vastly expanded. It dynamically calculates memory footprints, quantization mults, and hardware tiering for **~15 major model families** representing the bleeding-edge of open-weight intelligence:
+The `curated-models.ts` catalog has been vastly expanded. It dynamically calculates memory footprints, quantization mults, and hardware tiering for **13 major model families** representing the bleeding-edge of open-weight intelligence:
 
 - **Gemma Family**: 4B to 3T parameters (`gemma4-3t`)
 - **Qwen Family**: 8B to 1.5T parameters (`qwen3-6-1-5t`, `qwen3.5-397b-a17b` MoE)
@@ -13,7 +13,7 @@ The `curated-models.ts` catalog has been vastly expanded. It dynamically calcula
 - **Nemotron / Hermes 4**: Extensive parameter scales spanning 4B up to 1T for broad assistant and logic capabilities.
 - **GLM / MiMo / Kimi / MiniMax / QwQ**: Targeted reasoning and specialist variants optimized for 32GB–128GB tiers.
 
-These families automatically generate into over **120 unique model + quantization combinations**, spanning quantizations from `fp16` to `q3_K_M`.
+These families automatically generate **234 unique model + quantization combinations** (39 base sizes × 6 quantization levels), spanning quantizations from `fp16` to `q3_K_M`.
 
 ## 2. Hardware Benchmarking & Scaling Math
 
@@ -33,7 +33,7 @@ When the catalog is initialized, it dynamically generates resource limits. Below
    - A `gemma4-3t` (3000B) thus demands an immense ~5.4TB RAM overhead to handle contextual context processing safely.
 
 3. **Recommendation Breakdown**:
-   - The `LLM_RECOMMENDATION_TABLE` in `model-registry.service.ts` cross-references the user's `effectiveInferenceMemoryMb` (VRAM) and guarantees that the system RAM clears the respective constraints before matching them to brackets (ranging from **2GB** to **2048GB VRAM**).
+   - The `LLM_RECOMMENDATION_TABLE` in `model-registry.service.ts` cross-references the user's effective VRAM (`gpu.vramMb`, or `ram.totalMb` on unified-memory systems) against 17 brackets ranging from **0 VRAM / 4GB RAM** at the low end up to **2048GB VRAM / 3072GB RAM** for datacenter nodes. The first row whose `minVramMb` and `minRamMb` both fit the profile wins; `canRunOnHardware()` then filters that row's IDs against the model's own `requirements`.
 
 ## 3. How to Add and Edit Models in the Installer
 
