@@ -465,7 +465,22 @@ export class TailscaleService {
    * Disconnect from Tailscale (host or sidecar)
    */
   async disconnect(): Promise<void> {
-    await this.execTailscale(['down']);
+    const strategy = await this.resolveStrategy();
+    if (strategy === 'host') {
+      await this.execTailscale(['down']);
+    }
+    else if (strategy === 'sidecar') {
+      await new Promise((resolve, reject) => {
+        execFile('docker', ['exec', this.sidecarContainer, 'sh', '-c', 'kill -9 $(pidof tailscaled) && rm -f /var/lib/tailscale/tailscaled.state'], { timeout: 15000 }, (err, stdout, stderr) => {
+          if (err) {
+            const execErr = err as ExecError;
+            execErr.stdout = stdout;
+            execErr.stderr = stderr;
+            reject(execErr);
+          } else resolve({ stdout: stdout.toString(), stderr: stderr.toString() });
+        });
+      });
+    }
     this.invalidateStrategyCache();
   }
 
