@@ -289,10 +289,11 @@ describe('TailscaleService', () => {
 
     const result = await service.startAuth();
     expect(result.authUrl).toBe('https://login.tailscale.com/a/test-auth');
-    expect(callOrder).toEqual(['status', 'up']);
+    expect(callOrder).toEqual(['status', 'status', 'up']);
   });
 
-  it('startAuth extracts auth URL when tailscale up exits non-zero with output', async () => {
+  it('startAuth reuses existing AuthURL from status without running tailscale up', async () => {
+    const callOrder: string[] = [];
     execFileMock.mockImplementation(
       (cmd: string, args: string[], _opts: unknown, cb: (err: Error | null, stdout?: string, stderr?: string) => void) => {
         if (cmd === 'docker' && args[1] === 'hub-tailscale' && args[3] === 'version') {
@@ -300,7 +301,39 @@ describe('TailscaleService', () => {
           return;
         }
         if (cmd === 'docker' && args.includes('status') && args.includes('--json')) {
-          process.nextTick(() => cb(null, JSON.stringify({ BackendState: 'NeedsLogin' }), ''));
+          callOrder.push('status');
+          process.nextTick(() => cb(null, JSON.stringify({ BackendState: 'NeedsLogin', AuthURL: 'https://login.tailscale.com/a/existing' }), ''));
+          return;
+        }
+        if (cmd === 'docker' && args.includes('up')) {
+          callOrder.push('up');
+          process.nextTick(() => cb(null, '', 'To authenticate, visit:\nhttps://login.tailscale.com/a/test-auth'));
+          return;
+        }
+        process.nextTick(() => cb(new Error('unexpected'), '', ''));
+      },
+    );
+
+    const result = await service.startAuth();
+    expect(result.authUrl).toBe('https://login.tailscale.com/a/existing');
+    expect(callOrder).toEqual(['status', 'status']);
+  });
+
+  it('startAuth extracts auth URL when tailscale up exits non-zero with output', async () => {
+    let statusCallCount = 0;
+    execFileMock.mockImplementation(
+      (cmd: string, args: string[], _opts: unknown, cb: (err: Error | null, stdout?: string, stderr?: string) => void) => {
+        if (cmd === 'docker' && args[1] === 'hub-tailscale' && args[3] === 'version') {
+          process.nextTick(() => cb(null, '1.82.0', ''));
+          return;
+        }
+        if (cmd === 'docker' && args.includes('status') && args.includes('--json')) {
+          statusCallCount++;
+          if (statusCallCount === 1) {
+            process.nextTick(() => cb(null, JSON.stringify({ BackendState: 'NoState' }), ''));
+          } else {
+            process.nextTick(() => cb(null, JSON.stringify({ BackendState: 'NeedsLogin' }), ''));
+          }
           return;
         }
         if (cmd === 'docker' && args.includes('up')) {

@@ -11,6 +11,7 @@ export interface TailscaleStatus {
   ip: string | null;
   supportsServices: boolean;
   backendState: string | null;
+  authUrl: string | null;
 }
 
 export interface TailscaleServeEntry {
@@ -230,6 +231,7 @@ export class TailscaleService {
       ip: null,
       supportsServices: false,
       backendState: null,
+      authUrl: null,
     };
 
     try {
@@ -259,6 +261,7 @@ export class TailscaleService {
         ip: (self.TailscaleIPs as string[])?.[0] || null,
         supportsServices,
         backendState: (status.BackendState as string) || null,
+        authUrl: (status.AuthURL as string) || null,
       };
     } catch (error) {
       this.logger.warn(`Failed to parse tailscale status JSON: ${error}`);
@@ -276,6 +279,7 @@ export class TailscaleService {
       ip: null,
       supportsServices: false,
       backendState: null,
+      authUrl: null,
     };
 
     const strategy = await this.resolveStrategy();
@@ -296,6 +300,7 @@ export class TailscaleService {
       ip: null,
       supportsServices: false,
       backendState: null,
+      authUrl: null,
     };
 
     try {
@@ -361,6 +366,16 @@ export class TailscaleService {
       await this.waitForSidecarDaemon();
     }
 
+    // If the daemon is already in interactive auth mode, reuse the current URL
+    // instead of running another `tailscale up` that can churn login state.
+    const preAuthStatus = await this.getStatusForStrategy(strategy);
+    if (preAuthStatus.connected || preAuthStatus.backendState === 'Running') {
+      return { authUrl: '' };
+    }
+    if (preAuthStatus.backendState === 'NeedsLogin' && preAuthStatus.authUrl) {
+      return { authUrl: preAuthStatus.authUrl };
+    }
+
     // --reset resets persisted non-default preferences to defaults before applying
     // the provided flags. Only safe for the sidecar (isolated daemon); on the host
     // it would mutate the user's existing Tailscale configuration.
@@ -396,6 +411,10 @@ export class TailscaleService {
 
       if (status.connected || status.backendState === 'Running') {
         return { authUrl: '' };
+      }
+
+      if (status.backendState === 'NeedsLogin' && status.authUrl) {
+        return { authUrl: status.authUrl };
       }
 
       throw new Error('Failed to get Tailscale auth URL from tailscale up output');
