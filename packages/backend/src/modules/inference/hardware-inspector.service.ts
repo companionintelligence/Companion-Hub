@@ -465,15 +465,38 @@ export class HardwareInspectorService implements OnModuleInit {
   private async detectAmdVram(): Promise<number> {
     try {
       const { stdout } = await execAsync('rocm-smi --showmeminfo vram --csv', { timeout: 5000 });
-      const lines = stdout.trim().split('\n');
-      if (lines.length > 1 && lines[1]) {
-        const values = lines[1].split(',');
-        if (values[0]) {
-          const vramMb = Number.parseInt(values[0], 10);
-          return Number.isNaN(vramMb) ? 0 : vramMb;
+      const lines = stdout
+        .trim()
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean);
+      if (lines.length < 2) {
+        return 0;
+      }
+
+      const headers = lines[0].split(',').map((value) => value.trim().replace(/^"|"$/g, ''));
+      const totalVramIndex = headers.findIndex(
+        (header) => /vram/i.test(header) && /total/i.test(header) && /memory/i.test(header) && !/used/i.test(header),
+      );
+      if (totalVramIndex === -1) {
+        return 0;
+      }
+
+      let largestVramMb = 0;
+      for (const line of lines.slice(1)) {
+        const values = line.split(',').map((value) => value.trim().replace(/^"|"$/g, ''));
+        const vramBytes = Number.parseInt(values[totalVramIndex] ?? '', 10);
+        if (Number.isNaN(vramBytes) || vramBytes <= 0) {
+          continue;
+        }
+
+        const vramMb = Math.round(vramBytes / (1024 * 1024));
+        if (vramMb > largestVramMb) {
+          largestVramMb = vramMb;
         }
       }
-      return 0;
+
+      return largestVramMb;
     } catch {
       return 0;
     }
