@@ -412,15 +412,23 @@ export class InferenceController {
   // start to auto-configure themselves against the Hub's local inference.
 
   @Get('apps/:slug/bootstrap')
-  async getAppBootstrap(@Param('slug') slug: string) {
-    return this.appBootstrap.getBootstrap(slug);
+  async getAppBootstrap(@Param('slug') slug: string, @Query('v') v: string | undefined, @Res() res: Response) {
+    const apiVersion = this.appBootstrap.parseApiVersion(v);
+    const config = await this.appBootstrap.getBootstrap(slug, apiVersion);
+    res.setHeader('X-Hub-Bootstrap-Version', String(config.apiVersion));
+    res.setHeader('X-Hub-Managed-Keys', config.managedKeys.join(','));
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(config);
   }
 
   @Get('apps/:slug/bootstrap.env')
-  async getAppBootstrapEnv(@Param('slug') slug: string, @Res() res: Response) {
-    const config = await this.appBootstrap.getBootstrap(slug);
+  async getAppBootstrapEnv(@Param('slug') slug: string, @Query('v') v: string | undefined, @Res() res: Response) {
+    const apiVersion = this.appBootstrap.parseApiVersion(v);
+    const config = await this.appBootstrap.getBootstrap(slug, apiVersion);
     const body = this.appBootstrap.serializeAsDotenv(config);
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('X-Hub-Bootstrap-Version', String(config.apiVersion));
+    res.setHeader('X-Hub-Managed-Keys', config.managedKeys.join(','));
     res.setHeader('Cache-Control', 'no-store');
     res.send(body);
   }

@@ -1,10 +1,11 @@
 import { Test, type TestingModule } from '@nestjs/testing';
 import { mock, type MockProxy } from 'vitest-mock-extended';
-import { describe, it, expect, beforeEach } from 'vitest';
-import { NotFoundException } from '@nestjs/common';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { AppBootstrapService } from '../app-bootstrap.service';
 import { HardwareInspectorService } from '../hardware-inspector.service';
 import { ModelRegistryService } from '../model-registry.service';
+import { ModelPullerService } from '../model-puller.service';
 import { OllamaBackend } from '../backends/ollama.backend';
 import { LoggerService } from '@/core/logger/logger.service';
 import type { CuratedModel, HardwareProfile } from '@ci-hub/common/types';
@@ -83,21 +84,31 @@ describe('AppBootstrapService', () => {
   let logger: MockProxy<LoggerService>;
   let hardwareInspector: MockProxy<HardwareInspectorService>;
   let modelRegistry: MockProxy<ModelRegistryService>;
+  let modelPuller: MockProxy<ModelPullerService>;
   let ollamaBackend: MockProxy<OllamaBackend>;
 
   beforeEach(async () => {
     logger = mock<LoggerService>();
     hardwareInspector = mock<HardwareInspectorService>();
     modelRegistry = mock<ModelRegistryService>();
+    modelPuller = mock<ModelPullerService>();
     ollamaBackend = mock<OllamaBackend>();
 
     ollamaBackend.getBaseUrl.mockReturnValue('http://ci-hub-ollama:11434');
+    ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [] });
     hardwareInspector.getProfile.mockResolvedValue(baseProfile);
     modelRegistry.getRecommendedModelsForHardware.mockReturnValue([
       makeLlm('hermes4-70b', 'hermes4:70b', 42000, 126000),
       makeLlm('hermes4-8b', 'hermes4:8b', 4800, 14400),
     ]);
     modelRegistry.getModelsByModality.mockReturnValue([makeEmbedding('nomic-embed-text', 'nomic-embed-text')]);
+    modelRegistry.getTrackedModel.mockReturnValue(undefined);
+    modelRegistry.getCuratedModel.mockImplementation((id) => {
+      if (id === 'hermes4-70b') return makeLlm('hermes4-70b', 'hermes4:70b');
+      if (id === 'nomic-embed-text') return makeEmbedding('nomic-embed-text', 'nomic-embed-text');
+      return undefined;
+    });
+    modelPuller.pullModel.mockResolvedValue(undefined);
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -105,6 +116,7 @@ describe('AppBootstrapService', () => {
         { provide: LoggerService, useValue: logger },
         { provide: HardwareInspectorService, useValue: hardwareInspector },
         { provide: ModelRegistryService, useValue: modelRegistry },
+        { provide: ModelPullerService, useValue: modelPuller },
         { provide: OllamaBackend, useValue: ollamaBackend },
       ],
     }).compile();
@@ -204,9 +216,12 @@ describe('AppBootstrapService', () => {
     it('quotes values containing whitespace, quotes, or = signs', () => {
       const config = {
         app: 'openclaw' as const,
+        apiVersion: 1 as const,
         endpointUrl: '',
+        endpointReady: false,
         llmModelId: null,
         llmBackendModelId: null,
+        llmReady: false,
         embeddingsModelId: null,
         embeddingsBackendModelId: null,
         env: {
@@ -215,6 +230,7 @@ describe('AppBootstrapService', () => {
           WITH_QUOTE: 'has"quote',
           WITH_EQ: 'a=b',
         },
+        managedKeys: ['SIMPLE', 'WITH_SPACES', 'WITH_QUOTE', 'WITH_EQ'],
       };
       const dotenv = service.serializeAsDotenv(config);
 
@@ -222,6 +238,123 @@ describe('AppBootstrapService', () => {
       expect(dotenv).toContain('WITH_SPACES="foo bar"');
       expect(dotenv).toContain('WITH_QUOTE="has\\"quote"');
       expect(dotenv).toContain('WITH_EQ="a=b"');
+    });
+  });
+
+  describe('isSupported', () => {
+    it('recognizes supported slugs', () => {
+      expect(service.isSupported('hermes-agent')).toBe(true);
+      expect(service.isSupported('openclaw')).toBe(true);
+    });
+
+    it('reports endpointReady from ollamaBackend.healthCheck', async () => {
+      ollamaBackend.healthCheck.mockResolvedValueOnce({ running: false, healthy: false, modelsLoaded: [] });
+      service.invalidateCache();
+      const config = await service.getBootstrap('openclaw');
+      expect(config.endpointReady).toBe(false);
+    });
+
+    it('exposes managedKeys matching env keys for header consumers', async () => {
+      const config = await service.getBootstrap('hermes-agent');
+      expect(config.managedKeys.sort()).toEqual(Object.keys(config.env).sort());
+    });
+
+    it('always defaults apiVersion to 1', async () => {
+      const config = await service.getBootstrap('openclaw');
+      expect(config.apiVersion).toBe(1);
+    });
+  });
+
+  describe('parseApiVersion', () => {
+    it('defaults to 1 when undefined', () => {
+      expect(service.parseApiVersion(undefined)).toBe(1);
+    });
+    it('defaults to 1 when empty string', () => {
+      expect(service.parseApiVersion('')).toBe(1);
+    });
+    it('accepts the version 1 literal', () => {
+      expect(service.parseApiVersion('1')).toBe(1);
+    });
+    it('takes the first value of an array (query string repeats)', () => {
+      expect(service.parseApiVersion(['1', '99'])).toBe(1);
+    });
+    it('rejects unknown versions with BadRequestException', () => {
+      expect(() => service.parseApiVersion('99')).toThrow(BadRequestException);
+    });
+    it('rejects non-numeric values', () => {
+      expect(() => service.parseApiVersion('latest')).toThrow(BadRequestException);
+    });
+  });
+
+  describe('caching', () => {
+    it('returns the cached value on a second call within TTL without re-querying hardware', async () => {
+      await service.getBootstrap('openclaw');
+      await service.getBootstrap('openclaw');
+      expect(hardwareInspector.getProfile).toHaveBeenCalledTimes(1);
+      expect(ollamaBackend.healthCheck).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the cache separate per slug', async () => {
+      await service.getBootstrap('hermes-agent');
+      await service.getBootstrap('openclaw');
+      expect(hardwareInspector.getProfile).toHaveBeenCalledTimes(2);
+    });
+
+    it('invalidateCache() forces a fresh resolve', async () => {
+      await service.getBootstrap('openclaw');
+      service.invalidateCache();
+      await service.getBootstrap('openclaw');
+      expect(hardwareInspector.getProfile).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('pre-pull', () => {
+    it('fires an async pull for the recommended LLM when Ollama is reachable and model not yet pulled', async () => {
+      await service.getBootstrap('openclaw');
+      // tick: pullModel is invoked via void promise chain, so it should be queued by now
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(modelPuller.pullModel).toHaveBeenCalledWith('hermes4-70b');
+    });
+
+    it('does not pull when Ollama endpoint is unreachable', async () => {
+      ollamaBackend.healthCheck.mockResolvedValueOnce({ running: false, healthy: false, modelsLoaded: [] });
+      service.invalidateCache();
+      await service.getBootstrap('openclaw');
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(modelPuller.pullModel).not.toHaveBeenCalled();
+    });
+
+    it('does not pull when the model is already loaded in Ollama (modelsLoaded includes backendModelId)', async () => {
+      ollamaBackend.healthCheck.mockResolvedValueOnce({ running: true, healthy: true, modelsLoaded: ['hermes4:70b'] });
+      service.invalidateCache();
+      const config = await service.getBootstrap('openclaw');
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(config.llmReady).toBe(true);
+      expect(modelPuller.pullModel).not.toHaveBeenCalled();
+    });
+
+    it('does not pull when registry reports state=pulled for the catalog id', async () => {
+      modelRegistry.getTrackedModel.mockReturnValue({ catalogId: 'hermes4-70b', state: 'pulled' } as any);
+      service.invalidateCache();
+      const config = await service.getBootstrap('openclaw');
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(config.llmReady).toBe(true);
+      expect(modelPuller.pullModel).not.toHaveBeenCalled();
+    });
+
+    it('de-dupes concurrent pre-pull requests for the same model', async () => {
+      let resolvePull: () => void = () => {};
+      modelPuller.pullModel.mockReturnValueOnce(
+        new Promise<void>((r) => {
+          resolvePull = r;
+        }),
+      );
+      await service.getBootstrap('openclaw');
+      service.invalidateCache();
+      await service.getBootstrap('openclaw');
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(modelPuller.pullModel).toHaveBeenCalledTimes(1);
+      resolvePull();
     });
   });
 
