@@ -58,7 +58,7 @@ describe('CoreServerBanner', () => {
     render(<CoreServerBanner onDismiss={vi.fn()} />);
 
     const link = screen.getByRole('link', { name: /CORE_SERVER_BANNER_LEARN_MORE/i });
-    expect(link).toHaveAttribute('href', 'https://www.ci.computer/core-server');
+    expect(link).toHaveAttribute('href', 'https://www.ci.computer/store/p/core');
     expect(link).toHaveAttribute('target', '_blank');
     expect(link).toHaveAttribute('rel', 'noopener noreferrer');
   });

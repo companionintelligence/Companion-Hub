@@ -24,21 +24,6 @@ static START_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 /// `(hub .env mtime, is_private_vpn)` — avoids parsing the env file on every hub status poll (~3s).
 static PRIVATE_VPN_ENV_CACHE: Mutex<Option<(Option<std::time::SystemTime>, bool)>> = Mutex::new(None);
 
-/// After the hub container is healthy and the Tailscale sidecar has been verified once, keep inspecting it
-/// until this grace elapses; then skip docker inspect on steady-state polls.
-const VPN_SIDECARS_STATUS_POLL_GRACE: Duration = Duration::from_secs(90);
-
-#[derive(Debug, Clone, Copy)]
-enum VpnSidecarPollPhase {
-    /// Hub reports healthy but `hub-tailscale` has not yet passed [`vpn_sidecars_ready`] in this cycle.
-    PendingReady,
-    /// Sidecar was ready at least once at `verified_at`.
-    VerifiedSince(Instant),
-}
-
-static VPN_SIDECAR_STATUS_POLL_PHASE: Mutex<VpnSidecarPollPhase> =
-    Mutex::new(VpnSidecarPollPhase::PendingReady);
-
 /// Serialize rotation + append so concurrent callers cannot interleave
 /// renames and writes to `desktop.log`.
 static LOG_WRITE_LOCK: Mutex<()> = Mutex::new(());
@@ -148,6 +133,257 @@ fn command_on_path(binary: &str) -> Option<PathBuf> {
                 .find(|line| !line.is_empty())
                 .map(PathBuf::from)
         })
+}
+
+fn refresh_nvidia_host_probe_cache(data_dir: &Path) {
+    let probe_path = data_dir.join("state/hardware/nvidia.json");
+    if let Some(parent) = probe_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let clear_stale_probe = || {
+        let _ = std::fs::remove_file(&probe_path);
+    };
+
+    #[cfg(target_os = "windows")]
+    {
+        let mut command = Command::new("powershell.exe");
+        command
+            .creation_flags(CREATE_NO_WINDOW)
+            .arg("-NoProfile")
+            .arg("-NonInteractive")
+            .arg("-Command")
+            .arg("$gpu = Get-CimInstance Win32_VideoController | Where-Object { $_.Name -match 'NVIDIA' } | Select-Object -First 1 Name,AdapterRAM,DriverVersion; if ($null -eq $gpu) { exit 3 }; $gpu | ConvertTo-Json -Compress");
+
+        let output = match command.output() {
+            Ok(value) => value,
+            Err(error) => {
+                clear_stale_probe();
+                let _ = append_desktop_log_for(
+                    data_dir,
+                    "gpu.probe",
+                    &format!(
+                        "Skipping Windows NVIDIA probe cache refresh (PowerShell unavailable): {}",
+                        error
+                    ),
+                );
+                return;
+            }
+        };
+
+        if !output.status.success() {
+            clear_stale_probe();
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let details = if stderr.is_empty() {
+                "No NVIDIA GPU found via Windows WMI; host NVIDIA probe cache cleared."
+                    .to_string()
+            } else {
+                format!("Windows NVIDIA probe command failed: {}", stderr)
+            };
+            let _ = append_desktop_log_for(data_dir, "gpu.probe", &details);
+            return;
+        }
+
+        let raw_json = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let parsed: serde_json::Value = match serde_json::from_str(&raw_json) {
+            Ok(value) => value,
+            Err(error) => {
+                clear_stale_probe();
+                let _ = append_desktop_log_for(
+                    data_dir,
+                    "gpu.probe",
+                    &format!("Failed to parse Windows NVIDIA probe output: {}", error),
+                );
+                return;
+            }
+        };
+
+        let model = parsed
+            .get("Name")
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if model.is_empty() {
+            clear_stale_probe();
+            let _ = append_desktop_log_for(
+                data_dir,
+                "gpu.probe",
+                "Windows NVIDIA probe output missing adapter name; host cache not updated.",
+            );
+            return;
+        }
+
+        let vram_mb = parsed
+            .get("AdapterRAM")
+            .and_then(|value| value.as_u64())
+            .map(|bytes| bytes / (1024 * 1024))
+            .unwrap_or(0);
+        let driver_version = parsed
+            .get("DriverVersion")
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+
+        let payload = serde_json::json!({
+            "model": model,
+            "vramMb": vram_mb,
+            "driverVersion": driver_version,
+            "source": "desktop-host-windows-wmi"
+        });
+
+        let serialized = match serde_json::to_string_pretty(&payload) {
+            Ok(value) => format!("{}\n", value),
+            Err(error) => {
+                clear_stale_probe();
+                let _ = append_desktop_log_for(
+                    data_dir,
+                    "gpu.probe",
+                    &format!("Failed to serialize Windows NVIDIA probe cache: {}", error),
+                );
+                return;
+            }
+        };
+
+        match std::fs::write(&probe_path, serialized) {
+            Ok(_) => {
+                let _ = append_desktop_log_for(
+                    data_dir,
+                    "gpu.probe",
+                    &format!(
+                        "Updated Windows host NVIDIA probe cache at {}",
+                        probe_path.display()
+                    ),
+                );
+            }
+            Err(error) => {
+                let _ = append_desktop_log_for(
+                    data_dir,
+                    "gpu.probe",
+                    &format!(
+                        "Failed to write Windows host NVIDIA probe cache at {}: {}",
+                        probe_path.display(),
+                        error
+                    ),
+                );
+            }
+        }
+
+        return;
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        clear_stale_probe();
+        return;
+    }
+
+    let output = Command::new("sh")
+        .arg("-lc")
+        .arg("nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader,nounits | head -n 1")
+        .output();
+
+    let output = match output {
+        Ok(value) => value,
+        Err(error) => {
+            clear_stale_probe();
+            let _ = append_desktop_log_for(
+                data_dir,
+                "gpu.probe",
+                &format!(
+                    "Skipping host NVIDIA probe cache refresh (nvidia-smi unavailable): {}",
+                    error
+                ),
+            );
+            return;
+        }
+    };
+
+    if !output.status.success() {
+        clear_stale_probe();
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let details = if stderr.is_empty() {
+            "nvidia-smi command failed".to_string()
+        } else {
+            format!("nvidia-smi command failed: {}", stderr)
+        };
+        let _ = append_desktop_log_for(data_dir, "gpu.probe", &details);
+        return;
+    }
+
+    let first_line = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("")
+        .to_string();
+    if first_line.is_empty() {
+        clear_stale_probe();
+        let _ = append_desktop_log_for(
+            data_dir,
+            "gpu.probe",
+            "nvidia-smi produced no GPU rows; host NVIDIA probe cache not updated.",
+        );
+        return;
+    }
+
+    let mut parts = first_line.split(',').map(str::trim);
+    let model = parts.next().unwrap_or_default().to_string();
+    let vram_mb = parts
+        .next()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+    let driver_version = parts.next().unwrap_or_default().to_string();
+
+    if model.is_empty() {
+        clear_stale_probe();
+        let _ = append_desktop_log_for(
+            data_dir,
+            "gpu.probe",
+            "nvidia-smi probe row did not include a GPU model; host cache not updated.",
+        );
+        return;
+    }
+
+    let payload = serde_json::json!({
+        "model": model,
+        "vramMb": vram_mb,
+        "driverVersion": driver_version,
+        "source": "desktop-host-nvidia-smi"
+    });
+
+    let serialized = match serde_json::to_string_pretty(&payload) {
+        Ok(value) => format!("{}\n", value),
+        Err(error) => {
+            let _ = append_desktop_log_for(
+                data_dir,
+                "gpu.probe",
+                &format!("Failed to serialize host NVIDIA probe cache: {}", error),
+            );
+            return;
+        }
+    };
+
+    match std::fs::write(&probe_path, serialized) {
+        Ok(_) => {
+            let _ = append_desktop_log_for(
+                data_dir,
+                "gpu.probe",
+                &format!("Updated host NVIDIA probe cache at {}", probe_path.display()),
+            );
+        }
+        Err(error) => {
+            let _ = append_desktop_log_for(
+                data_dir,
+                "gpu.probe",
+                &format!(
+                    "Failed to write host NVIDIA probe cache at {}: {}",
+                    probe_path.display(),
+                    error
+                ),
+            );
+        }
+    }
 }
 
 /// Find the Docker binary, checking common install locations if not in PATH.
@@ -418,23 +654,31 @@ fn service_state_score(state: &ServiceState) -> u8 {
     }
 }
 
-/// Return per-service startup progress for the frontend loading screen.
-pub fn get_startup_progress() -> StartupProgress {
-    let vpn_on = is_private_vpn_enabled();
-
-    // Core services in startup order. Optional ones are included for visibility but do not block
-    // the "all_ready" gate. When Private VPN is enabled, `hub-tailscale` is required.
-    let mut core: Vec<(&str, &str, bool)> = vec![
+fn startup_service_definitions(vpn_on: bool) -> (Vec<(&'static str, &'static str, bool)>, Vec<(&'static str, &'static str, bool)>) {
+    let core = vec![
         ("ci-hub-db", "Database", true),
         ("ci-os-hub-queue", "Message queue", true),
         ("ci-os-hub", "Hub backend", true),
         ("traefik", "Router", true),
     ];
-    if vpn_on {
-        core.push(("hub-tailscale", "Private VPN", true));
-    }
 
-    let optional: Vec<(&str, &str, bool)> = vec![("cloudflared", "Tunnel", false)];
+    let mut optional = Vec::new();
+    if vpn_on {
+        optional.push(("hub-tailscale", "Private VPN", false));
+    }
+    optional.push(("cloudflared", "Tunnel", false));
+
+    (core, optional)
+}
+
+/// Return per-service startup progress for the frontend loading screen.
+pub fn get_startup_progress() -> StartupProgress {
+    let vpn_on = is_private_vpn_enabled();
+
+    // Core services in startup order. Optional ones are included for visibility but do not block
+    // the "all_ready" gate. Private VPN improves remote access, but the desktop app should stay
+    // usable even if the sidecar is still reconnecting.
+    let (core, optional) = startup_service_definitions(vpn_on);
 
     let all_names: Vec<&str> = core.iter().chain(optional.iter()).map(|(n, _, _)| *n).collect();
     let states = inspect_containers(&all_names);
@@ -507,12 +751,10 @@ pub fn get_hub_status() -> HubStatus {
     // If a start operation is actively running (including first-time image pulls),
     // report Starting so the frontend shows progress instead of a false "Stopped" state.
     if START_IN_PROGRESS.load(Ordering::SeqCst) {
-        reset_vpn_sidecar_status_poll_phase();
         return HubStatus::Starting;
     }
 
     if !is_docker_available() {
-        reset_vpn_sidecar_status_poll_phase();
         return HubStatus::DockerNotAvailable;
     }
 
@@ -529,7 +771,6 @@ pub fn get_hub_status() -> HubStatus {
         .unwrap_or_default();
 
     if status.is_empty() || status.contains("No such object") || status.contains("Error") {
-        reset_vpn_sidecar_status_poll_phase();
         return HubStatus::Stopped;
     }
 
@@ -537,53 +778,8 @@ pub fn get_hub_status() -> HubStatus {
     let state = parts.first().copied().unwrap_or("");
     let health = parts.get(1).copied().unwrap_or("");
 
-    if !(state == "running" && health == "healthy") {
-        reset_vpn_sidecar_status_poll_phase();
-    }
-
     match (state, health) {
-        ("running", "healthy") => {
-            let vpn_on = is_private_vpn_enabled();
-            if !vpn_on {
-                reset_vpn_sidecar_status_poll_phase();
-                HubStatus::Running
-            } else {
-                let skip_sidecar_inspect = {
-                    let phase = VPN_SIDECAR_STATUS_POLL_PHASE.lock().unwrap();
-                    matches!(
-                        *phase,
-                        VpnSidecarPollPhase::VerifiedSince(since)
-                            if since.elapsed() >= VPN_SIDECARS_STATUS_POLL_GRACE
-                    )
-                };
-                if skip_sidecar_inspect {
-                    HubStatus::Running
-                } else {
-                    let ready = vpn_sidecars_ready();
-                    let mut phase = VPN_SIDECAR_STATUS_POLL_PHASE.lock().unwrap();
-                    match *phase {
-                        VpnSidecarPollPhase::PendingReady => {
-                            if ready {
-                                *phase = VpnSidecarPollPhase::VerifiedSince(Instant::now());
-                                HubStatus::Running
-                            } else {
-                                HubStatus::Starting
-                            }
-                        }
-                        VpnSidecarPollPhase::VerifiedSince(since) => {
-                            if since.elapsed() >= VPN_SIDECARS_STATUS_POLL_GRACE {
-                                HubStatus::Running
-                            } else if ready {
-                                HubStatus::Running
-                            } else {
-                                *phase = VpnSidecarPollPhase::PendingReady;
-                                HubStatus::Starting
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        ("running", "healthy") => HubStatus::Running,
         ("running", _) => HubStatus::Starting,
         ("restarting", _) => {
             // Check if database is still starting — if so, Hub restart is expected
@@ -1740,6 +1936,11 @@ fn start_hub_inner(
         );
     }
 
+    // Surface host NVIDIA hardware to the backend even when the container lacks
+    // direct GPU devices; this enables runtime-missing warnings instead of
+    // misclassifying NVIDIA hosts as "no GPU detected".
+    refresh_nvidia_host_probe_cache(data_dir);
+
     // Resolve port conflicts and write to the runtime env file before starting.
     let resolution = crate::port_manager::refresh_ports_if_needed(env_path).map_err(|error| {
         let message = format!("Port resolution failed before startup: {}", error);
@@ -2069,10 +2270,6 @@ fn private_vpn_enabled_from_map(env: &std::collections::HashMap<String, String>)
         .unwrap_or(true)
 }
 
-fn reset_vpn_sidecar_status_poll_phase() {
-    *VPN_SIDECAR_STATUS_POLL_PHASE.lock().unwrap() = VpnSidecarPollPhase::PendingReady;
-}
-
 /// Cached by hub `.env` file mtime so frequent [`get_hub_status`] polls do not re-read and parse the file.
 fn is_private_vpn_enabled() -> bool {
     let path = hub_env_path();
@@ -2125,24 +2322,6 @@ fn merge_compose_profiles(
         parts.retain(|p| p != "private-vpn");
     }
     parts.join(",")
-}
-
-/// `hub-tailscale` must be [`ServiceState::Ready`]: running (no healthcheck → `none` counts as ready).
-fn vpn_sidecars_ready() -> bool {
-    let names = ["hub-tailscale"];
-    let states = inspect_containers(&names);
-    for name in names {
-        match states.get(name) {
-            Some((state, health)) => {
-                let svc_state = derive_service_state(state.as_str(), health.as_str());
-                if !matches!(svc_state, ServiceState::Ready) {
-                    return false;
-                }
-            }
-            None => return false,
-        }
-    }
-    true
 }
 
 fn get_non_empty_env_value(
@@ -3162,7 +3341,7 @@ mod tests {
         generate_container_docker_config, is_container_name_conflict, is_oci_runtime_error,
         is_traefik_recreate_required, logs_open_target_for, managed_app_container_ps_args,
         mark_traefik_recreate_required, parse_container_ids, prepare_traefik_runtime_state,
-        seeded_traefik_config_contents, truncate_command_output, tunnel_dir_for,
+        seeded_traefik_config_contents, startup_service_definitions, truncate_command_output, tunnel_dir_for,
         tunnel_token_path_for, DockerAccessState, MAX_COMMAND_OUTPUT_CHARS, TRAEFIK_ACME_FILE,
         TRAEFIK_CONFIG_FILE, TRAEFIK_DYNAMIC_CONFIG_SEED, TRAEFIK_DYNAMIC_FILE, TRAEFIK_TLS_DIR,
     };
@@ -3268,6 +3447,16 @@ mod tests {
                 "label=ci-os-hub.appurn",
             ]
         );
+    }
+
+    #[test]
+    fn startup_progress_keeps_private_vpn_visible_but_non_blocking() {
+        let (core, optional) = startup_service_definitions(true);
+
+        assert_eq!(core.len(), 4);
+        assert!(optional
+            .iter()
+            .any(|(container, label, required)| *container == "hub-tailscale" && *label == "Private VPN" && !required));
     }
 
     #[test]

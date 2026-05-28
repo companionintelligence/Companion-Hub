@@ -476,3 +476,37 @@ jobs:
         run: |
           echo '{"version":"${{ inputs.tag }}","date":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' > /tmp/latest.json
           wrangler r2 object put --remote "dl-prod/latest.json" --file /tmp/latest.json
+
+  finalize-release-page:
+    if: inputs.environment == 'production' && !inputs.prerelease
+    needs: [release, upload-r2]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: false
+
+      - name: Collect all files
+        run: |
+          set -euo pipefail
+          mkdir -p release-files
+          find artifacts -type f \( -name "*.dmg" -o -name "*.deb" -o -name "*.rpm" -o -name "*.AppImage" -o -name "*.msi" -o -name "*-setup.exe" \) -exec cp {} release-files/ \;
+          echo "=== All release files ==="
+          ls -lh release-files/
+
+      - name: Finalize GitHub release page
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_FILES_DIR: release-files
+        run: ./.github/scripts/finalize-desktop-release.sh

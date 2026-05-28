@@ -7,10 +7,11 @@ import { MemoryManagerService } from './memory-manager.service';
 import { ModelRegistryService } from './model-registry.service';
 import { ModelPullerService } from './model-puller.service';
 import { CloudFallbackService } from './cloud-fallback.service';
+import { OllamaInstallerService } from './ollama-installer.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AuthGuard } from '@/modules/auth/auth.guard';
 import { ConfigurationService } from '@/core/config/configuration.service';
-import type { CloudProviderType, InferenceBackendType } from '@ci-hub/common/types';
+import type { CloudProviderType, HardwareProfile, HardwareTier, InferenceBackendType } from '@ci-hub/common/types';
 import { RuntimeModelsQueryDto, UpdateInferencePreferencesBody } from './inference.dto';
 import { OllamaBackend } from './backends/ollama.backend';
 import { VllmBackend } from './backends/vllm.backend';
@@ -29,12 +30,38 @@ export class InferenceController {
     private readonly modelRegistry: ModelRegistryService,
     private readonly modelPuller: ModelPullerService,
     private readonly cloudFallback: CloudFallbackService,
+    private readonly ollamaInstaller: OllamaInstallerService,
     private readonly configurationService: ConfigurationService,
     private readonly ollamaBackend: OllamaBackend,
     private readonly vllmBackend: VllmBackend,
     private readonly lemonadeBackend: LemonadeBackend,
     private readonly logger: LoggerService,
   ) {}
+
+  private getRecommendedBackend(profile: HardwareProfile): InferenceBackendType {
+    return profile.npu.available
+      ? 'lemonade'
+      : profile.gpu.vendor === 'nvidia' && profile.gpu.runtimeAvailable
+        ? 'vllm'
+        : profile.gpu.vendor === 'amd' && profile.gpu.runtimeAvailable
+          ? 'vllm'
+          : 'ollama';
+  }
+
+  private getOnboardingTier(profile: HardwareProfile, recommendedBackend: InferenceBackendType): HardwareTier {
+    if (
+      recommendedBackend === 'ollama' &&
+      profile.gpu.available &&
+      !profile.gpu.unifiedMemory &&
+      !profile.gpu.runtimeAvailable &&
+      (profile.gpu.vendor === 'nvidia' || profile.gpu.vendor === 'amd') &&
+      profile.gpu.vramMb > 0
+    ) {
+      return this.hardwareInspector.computeTier({ ...profile.gpu, runtimeAvailable: true }, profile.ram);
+    }
+
+    return profile.tier;
+  }
 
   // ─── OpenAI-Compatible Endpoints ──────────────────────────────────────
 
@@ -333,19 +360,12 @@ export class InferenceController {
   @Get('onboarding-profile')
   async getOnboardingProfile() {
     const profile = await this.hardwareInspector.getProfile();
-    const tier = profile.tier;
+    const recommendedBackend = this.getRecommendedBackend(profile);
+    const tier = this.getOnboardingTier(profile, recommendedBackend);
     const recommendedModels = this.modelRegistry.getRecommendedModels(tier);
     const availableModels = this.modelRegistry.getModelsForTier(tier);
     const budget = this.memoryManager.calculateBudget(profile);
     const status = await this.router.getStatus();
-
-    const recommendedBackend: InferenceBackendType = profile.npu.available
-      ? 'lemonade'
-      : profile.gpu.vendor === 'nvidia' && profile.gpu.runtimeAvailable
-        ? 'vllm'
-        : profile.gpu.vendor === 'amd' && profile.gpu.runtimeAvailable
-          ? 'vllm'
-          : 'ollama';
 
     const totalMemoryMb = recommendedModels.reduce((sum, m) => sum + m.runtime.memoryFootprintMb, 0);
     const availableMemoryMb =
@@ -369,5 +389,19 @@ export class InferenceController {
         availableMemoryMb: Math.max(0, availableMemoryMb),
       },
     };
+  }
+
+  // ─── Ollama Installation ──────────────────────────────────────────────
+
+  @UseGuards(AuthGuard)
+  @Get('ollama/status')
+  async getOllamaStatus() {
+    return this.ollamaInstaller.checkInstallation();
+  }
+
+  @UseGuards(AuthGuard)
+  @Post('ollama/install')
+  async installOllama() {
+    return this.ollamaInstaller.install();
   }
 }

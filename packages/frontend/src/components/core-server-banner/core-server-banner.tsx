@@ -1,7 +1,7 @@
 import { X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
-const CORE_SERVER_URL = 'https://www.ci.computer/core-server';
+const CORE_SERVER_URL = 'https://www.ci.computer/store/p/core';
 
 /** Thresholds for "low spec" detection */
 const LOW_RAM_GB = 8;
@@ -43,12 +43,12 @@ export function CoreServerBanner({ onDismiss, system }: CoreServerBannerProps) {
       role="status"
       aria-live="polite"
       data-testid="core-server-banner"
-      className="flex items-center justify-between gap-3 border-b bg-blue-50 px-4 py-2 text-sm dark:bg-blue-950/40"
+      className="flex flex-col gap-3 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm shadow-sm md:flex-row md:items-center md:justify-between dark:border-blue-900/60 dark:bg-blue-950/40"
     >
-      <span className="text-blue-900 dark:text-blue-200">
+      <span className="text-blue-900 leading-relaxed dark:text-blue-200">
         <strong>{t(titleKey)}</strong> — {t(messageKey)}
       </span>
-      <div className="flex shrink-0 items-center gap-2">
+      <div className="flex shrink-0 items-center gap-2 self-start md:self-auto">
         <a
           href={CORE_SERVER_URL}
           target="_blank"

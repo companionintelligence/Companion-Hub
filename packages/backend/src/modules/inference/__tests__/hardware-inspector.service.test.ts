@@ -26,6 +26,7 @@ describe('HardwareInspectorService', () => {
   let service: HardwareInspectorService;
   let loggerService: MockProxy<LoggerService>;
   let filesystemService: MockProxy<FilesystemService>;
+  const originalHostPlatform = process.env.CI_HUB_HOST_PLATFORM;
 
   beforeEach(async () => {
     execAsyncMock.mockResolvedValue({ stdout: '{}' });
@@ -45,6 +46,7 @@ describe('HardwareInspectorService', () => {
   });
 
   afterEach(() => {
+    process.env.CI_HUB_HOST_PLATFORM = originalHostPlatform;
     vi.clearAllMocks();
   });
 
@@ -126,6 +128,132 @@ describe('HardwareInspectorService', () => {
       expect(profile.gpu.driverVersion).toBe('550.54.14');
     });
 
+    it('SHALL fallback to /proc/driver/nvidia when nvidia-smi is unavailable', async () => {
+      (si.graphics as any) = vi.fn().mockResolvedValue({
+        controllers: [{ vendor: 'Intel', model: 'Intel UHD Graphics', vram: 128, driverVersion: '1.0' }],
+      });
+      filesystemService.readTextFile.mockImplementation(async (filePath: string) => {
+        if (filePath === '/host/proc/meminfo') {
+          return 'MemTotal: 67108864\nMemAvailable: 50331648';
+        }
+        if (filePath === '/data/state/hardware/nvidia.json') {
+          return JSON.stringify({
+            model: 'NVIDIA GeForce RTX 3080 Laptop GPU',
+            vramMb: 8192,
+            driverVersion: '595.71.05',
+          });
+        }
+        return null;
+      });
+      execAsyncMock.mockImplementation(async (command: string) => {
+        if (command.includes('--query-gpu=name,memory.total,driver_version')) {
+          throw new Error('nvidia-smi missing');
+        }
+        if (command.includes('/proc/driver/nvidia/gpus/*/information')) {
+          return {
+            stdout: 'Model:           NVIDIA GeForce RTX 3080 Laptop GPU\nGPU UUID:        GPU-test\nGPU Firmware:    595.71.05\n',
+          };
+        }
+        if (command.includes('/proc/driver/nvidia/version')) {
+          return {
+            stdout: 'NVRM version: NVIDIA UNIX Open Kernel Module for x86_64  595.71.05  Release Build\n',
+          };
+        }
+        return { stdout: '{}' };
+      });
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 16, brand: 'Intel Core i7' });
+
+      const profile = await service.detect();
+
+      expect(profile.gpu.available).toBe(true);
+      expect(profile.gpu.vendor).toBe('nvidia');
+      expect(profile.gpu.model).toBe('NVIDIA GeForce RTX 3080 Laptop GPU');
+      expect(profile.gpu.vramMb).toBe(8192);
+      expect(profile.gpu.driverVersion).toBe('595.71.05');
+    });
+
+    it('SHALL augment detected NVIDIA GPUs with cached host VRAM when procfs lacks memory data', async () => {
+      (si.graphics as any) = vi.fn().mockResolvedValue({
+        controllers: [{ vendor: 'Intel', model: 'Intel UHD Graphics', vram: 128, driverVersion: '1.0' }],
+      });
+      filesystemService.readTextFile.mockImplementation(async (filePath: string) => {
+        if (filePath === '/host/proc/meminfo') {
+          return 'MemTotal: 67108864\nMemAvailable: 50331648';
+        }
+        if (filePath === '/data/state/hardware/nvidia.json') {
+          return JSON.stringify({
+            model: 'NVIDIA GeForce RTX 3090',
+            vramMb: 24576,
+            driverVersion: '580.65.06',
+          });
+        }
+        return null;
+      });
+      execAsyncMock.mockImplementation(async (command: string) => {
+        if (command.includes('--query-gpu=name,memory.total,driver_version')) {
+          throw new Error('nvidia-smi missing');
+        }
+        if (command.includes('/proc/driver/nvidia/gpus/*/information')) {
+          return {
+            stdout: 'Model:           NVIDIA GeForce RTX 3090\nGPU UUID:        GPU-test\n',
+          };
+        }
+        if (command.includes('/proc/driver/nvidia/version')) {
+          return {
+            stdout: 'NVRM version: NVIDIA UNIX Open Kernel Module for x86_64  580.65.06  Release Build\n',
+          };
+        }
+        return { stdout: '{}' };
+      });
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 24, brand: 'AMD Ryzen 9' });
+
+      const profile = await service.detect();
+
+      expect(profile.gpu.available).toBe(true);
+      expect(profile.gpu.vendor).toBe('nvidia');
+      expect(profile.gpu.model).toBe('NVIDIA GeForce RTX 3090');
+      expect(profile.gpu.vramMb).toBe(24576);
+      expect(profile.gpu.driverVersion).toBe('580.65.06');
+    });
+
+    it('SHALL fallback to cached host probe when nvidia-smi and procfs are unavailable', async () => {
+      (si.graphics as any) = vi.fn().mockResolvedValue({ controllers: [] });
+      filesystemService.readTextFile.mockImplementation(async (filePath: string) => {
+        if (filePath === '/host/proc/meminfo') {
+          return 'MemTotal: 67108864\nMemAvailable: 50331648';
+        }
+        if (filePath === '/data/state/hardware/nvidia.json') {
+          return JSON.stringify({
+            model: 'NVIDIA GeForce RTX 3080 Laptop GPU',
+            vramMb: 8192,
+            driverVersion: '595.71.05',
+          });
+        }
+        return null;
+      });
+      execAsyncMock.mockImplementation(async (command: string) => {
+        if (command.includes('--query-gpu=name,memory.total,driver_version')) {
+          throw new Error('nvidia-smi missing');
+        }
+        if (command.includes('/proc/driver/nvidia/gpus/*/information')) {
+          throw new Error('procfs missing');
+        }
+        if (command.includes('/proc/driver/nvidia/version')) {
+          throw new Error('procfs missing');
+        }
+        return { stdout: '{}' };
+      });
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 16, brand: 'Intel Core i7' });
+
+      const profile = await service.detect();
+
+      expect(profile.gpu.available).toBe(true);
+      expect(profile.gpu.vendor).toBe('nvidia');
+      expect(profile.gpu.model).toBe('NVIDIA GeForce RTX 3080 Laptop GPU');
+      expect(profile.gpu.vramMb).toBe(8192);
+      expect(profile.gpu.driverVersion).toBe('595.71.05');
+    });
+
     it('should detect AMD GPU vendor', async () => {
       (si.graphics as any) = vi.fn().mockResolvedValue({
         controllers: [{ vendor: 'Advanced Micro Devices', model: 'Radeon RX 7900 XTX', vram: 24576, driverVersion: '6.2.0' }],
@@ -137,6 +265,46 @@ describe('HardwareInspectorService', () => {
 
       expect(profile.gpu.vendor).toBe('amd');
       expect(profile.gpu.available).toBe(true);
+    });
+
+    it('SHALL parse rocm-smi VRAM total bytes instead of the card column', async () => {
+      (si.graphics as any) = vi.fn().mockResolvedValue({
+        controllers: [{ vendor: 'Advanced Micro Devices', model: 'Radeon RX 7900 XTX', vram: 0, driverVersion: '6.2.0' }],
+      });
+      execAsyncMock.mockImplementation(async (command: string) => {
+        if (command === 'rocm-smi --showmeminfo vram --csv') {
+          return {
+            stdout: 'card,VRAM Total Memory (B),VRAM Total Used Memory (B)\ncard0,17179869184,1073741824\n',
+          };
+        }
+        return { stdout: '{}' };
+      });
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 16, brand: 'AMD Ryzen 9' });
+      filesystemService.readTextFile.mockResolvedValue('MemTotal: 67108864\nMemAvailable: 50331648');
+
+      const profile = await service.detect();
+
+      expect(profile.gpu.vendor).toBe('amd');
+      expect(profile.gpu.available).toBe(true);
+      expect(profile.gpu.vramMb).toBe(16384);
+    });
+
+    it('should use host platform override for macOS GPU detection', async () => {
+      process.env.CI_HUB_HOST_PLATFORM = 'darwin';
+      const detectMacGpuSpy = vi.spyOn(service as any, 'detectMacGpu').mockResolvedValue({
+        available: true,
+        vendor: 'amd',
+        model: 'Radeon Pro',
+        vramMb: 8192,
+        driverVersion: '',
+      });
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 8, brand: 'Intel Core i9' });
+      filesystemService.readTextFile.mockResolvedValue('MemTotal: 33554432\nMemAvailable: 16777216');
+
+      const profile = await service.detect();
+
+      expect(detectMacGpuSpy).toHaveBeenCalledTimes(1);
+      expect(profile.gpu.vendor).toBe('amd');
     });
   });
 

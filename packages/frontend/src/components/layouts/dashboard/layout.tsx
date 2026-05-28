@@ -100,13 +100,13 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
   return (
     <div className="flex bg-background overflow-hidden w-screen flex-col" style={{ height: 'calc(100vh - var(--titlebar-height, 0px))' }}>
       <Header isLoggedIn={isLoggedIn} isUpdateAvailable={!isLatest} allowAutoThemes={userSettings.allowAutoThemes} />
-      {!isDismissed && (
-        <CoreServerBanner
-          onDismiss={dismiss}
-          system={systemData ? { memoryTotal: systemData.memoryTotal, diskSize: systemData.diskSize, cpuCores: systemData.cpuCores } : undefined}
-        />
-      )}
-      <main className="flex-1 relative pt-24 px-4 container mx-auto h-full overflow-y-auto overflow-x-hidden no-scrollbar">
+      <main className="relative flex flex-1 flex-col gap-4 pt-24 px-4 container mx-auto h-full overflow-y-auto overflow-x-hidden no-scrollbar">
+        {!isDismissed && (
+          <CoreServerBanner
+            onDismiss={dismiss}
+            system={systemData ? { memoryTotal: systemData.memoryTotal, diskSize: systemData.diskSize, cpuCores: systemData.cpuCores } : undefined}
+          />
+        )}
         <AnimatePresence mode="popLayout" custom={direction}>
           <motion.div
             key={getAnimationKey(location.pathname)}
@@ -119,7 +119,7 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
               x: { type: 'spring', stiffness: 300, damping: 30 },
               opacity: { duration: 0.2 },
             }}
-            className="w-full h-full"
+            className="w-full flex-1"
           >
             {children}
           </motion.div>
