@@ -7,6 +7,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 const execAsync = promisify(exec);
+const OLLAMA_INSTALL_SCRIPT = 'curl -fsSL https://ollama.com/install.sh | sh';
 
 export interface OllamaInstallStatus {
   installed: boolean;
@@ -18,6 +19,10 @@ export interface OllamaInstallStatus {
 @Injectable()
 export class OllamaInstallerService {
   constructor(private readonly logger: LoggerService) {}
+
+  private delay(ms: number) {
+    return new Promise<void>((resolve) => setTimeout(resolve, ms));
+  }
 
   /**
    * Check if Ollama is installed and get version info
@@ -92,9 +97,9 @@ export class OllamaInstallerService {
 
       switch (platform) {
         case 'darwin':
-          return await this.installMacOS();
+          return await this.installUnixLike('macOS');
         case 'linux':
-          return await this.installLinux();
+          return await this.installUnixLike('Linux');
         case 'win32':
           return await this.installWindows();
         default:
@@ -114,84 +119,17 @@ export class OllamaInstallerService {
   }
 
   /**
-   * Install Ollama on macOS using official installer
+   * Install Ollama on Unix-like systems using Ollama's official install script.
    */
-  private async installMacOS(): Promise<{ success: boolean; message: string }> {
-    const tempDir = os.tmpdir();
-    const installerPath = path.join(tempDir, 'Ollama.dmg');
-
+  private async installUnixLike(platformLabel: 'macOS' | 'Linux'): Promise<{ success: boolean; message: string }> {
     try {
-      // Download Ollama DMG
-      this.logger.info('[OllamaInstaller] Downloading Ollama for macOS...');
-      await execAsync(`curl -L -o "${installerPath}" https://ollama.com/download/Ollama-darwin.zip`, {
-        timeout: 300000, // 5 minute timeout for download
+      this.logger.info(`[OllamaInstaller] Installing Ollama on ${platformLabel} using the official install script...`);
+      await execAsync(OLLAMA_INSTALL_SCRIPT, {
+        timeout: 300000,
       });
 
-      // Mount DMG and install
-      this.logger.info('[OllamaInstaller] Installing Ollama...');
-      await execAsync(`open "${installerPath}"`);
+      await this.delay(2000);
 
-      // Wait a bit for installation to complete
-      await new Promise((resolve) => setTimeout(resolve, 5000));
-
-      // Verify installation
-      const status = await this.checkInstallation();
-      if (status.installed) {
-        // Clean up installer
-        await fs.unlink(installerPath).catch(() => {
-          /* Ignore cleanup errors */
-        });
-        return {
-          success: true,
-          message: `Ollama installed successfully${status.version ? ` (${status.version})` : ''}`,
-        };
-      }
-
-      return {
-        success: false,
-        message: 'Installation completed but Ollama is not available in PATH. You may need to restart your terminal or system.',
-      };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.logger.error(`[OllamaInstaller] macOS installation failed: ${message}`);
-
-      // Clean up on failure
-      await fs.unlink(installerPath).catch(() => {
-        /* Ignore cleanup errors */
-      });
-
-      return {
-        success: false,
-        message: `macOS installation failed: ${message}`,
-      };
-    }
-  }
-
-  /**
-   * Install Ollama on Linux using official install script
-   * NOTE: This runs in a container and attempts to install on the host system.
-   * It requires the backend to have sufficient permissions.
-   */
-  private async installLinux(): Promise<{ success: boolean; message: string }> {
-    try {
-      this.logger.info('[OllamaInstaller] Installing Ollama on Linux...');
-
-      // Use official install script with sudo (non-interactive)
-      // The OLLAMA_VERSION env var can be set to install a specific version
-      const installCmd = 'curl -fsSL https://ollama.com/install.sh | NONINTERACTIVE=1 sh';
-
-      await execAsync(installCmd, {
-        timeout: 300000, // 5 minute timeout
-        env: {
-          ...process.env,
-          NONINTERACTIVE: '1', // Skip prompts
-        },
-      });
-
-      // Wait a moment for installation to complete and PATH to update
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-
-      // Verify installation
       const status = await this.checkInstallation();
       if (status.installed) {
         return {
@@ -202,23 +140,22 @@ export class OllamaInstallerService {
 
       return {
         success: false,
-        message: 'Installation script completed but Ollama is not available. You may need to add /usr/local/bin to PATH or restart the Hub.',
+        message: `${platformLabel} installation completed but Ollama is not available. You may need to restart the Hub or ensure the Ollama CLI install path is on PATH.`,
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      this.logger.error(`[OllamaInstaller] Linux installation failed: ${message}`);
+      this.logger.error(`[OllamaInstaller] ${platformLabel} installation failed: ${message}`);
 
-      // Provide helpful error message
       if (message.includes('Permission denied') || message.includes('EACCES')) {
         return {
           success: false,
-          message: 'Installation requires administrator permissions. Please install Ollama manually: curl -fsSL https://ollama.com/install.sh | sh',
+          message: `Installation requires administrator permissions. Please install Ollama manually: ${OLLAMA_INSTALL_SCRIPT}`,
         };
       }
 
       return {
         success: false,
-        message: `Linux installation failed: ${message}`,
+        message: `${platformLabel} installation failed: ${message}`,
       };
     }
   }
@@ -245,7 +182,7 @@ export class OllamaInstallerService {
       });
 
       // Wait for installation to complete
-      await new Promise((resolve) => setTimeout(resolve, 10000));
+      await this.delay(10000);
 
       // Verify installation
       const status = await this.checkInstallation();
