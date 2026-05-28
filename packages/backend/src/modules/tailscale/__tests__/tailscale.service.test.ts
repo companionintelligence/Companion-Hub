@@ -319,6 +319,77 @@ describe('TailscaleService', () => {
     expect(result.authUrl).toBe('https://login.tailscale.com/a/test-auth');
   });
 
+  it('startAuth extracts auth URL for custom login-server host', async () => {
+    process.env.HUB_TAILSCALE_EXTRA_ARGS = '--login-server=https://headscale.example --accept-routes';
+
+    execFileMock.mockImplementation(
+      (cmd: string, args: string[], _opts: unknown, cb: (err: Error | null, stdout?: string, stderr?: string) => void) => {
+        if (cmd === 'docker' && args[1] === 'hub-tailscale' && args[3] === 'version') {
+          process.nextTick(() => cb(null, '1.82.0', ''));
+          return;
+        }
+        if (cmd === 'docker' && args.includes('up')) {
+          process.nextTick(() => cb(null, '', 'To authenticate, visit:\nhttps://headscale.example/register/test-auth'));
+          return;
+        }
+        process.nextTick(() => cb(new Error('unexpected'), '', ''));
+      },
+    );
+
+    const result = await service.startAuth();
+    expect(result.authUrl).toBe('https://headscale.example/register/test-auth');
+  });
+
+  it('startAuth checks status via the same strategy used for tailscale up', async () => {
+    let accessCalls = 0;
+    vi.mocked(access).mockImplementation(async () => {
+      accessCalls++;
+      if (accessCalls <= 2) {
+        throw new Error('ENOENT');
+      }
+    });
+
+    execFileMock.mockImplementation(
+      (cmd: string, args: string[], _opts: unknown, cb: (err: Error | null, stdout?: string, stderr?: string) => void) => {
+        if (cmd === '/usr/bin/tailscale' && args.includes('version')) {
+          process.nextTick(() => cb(null, '1.82.0\n', ''));
+          return;
+        }
+        if (cmd === '/usr/bin/tailscale' && args.includes('status') && args.includes('--json')) {
+          process.nextTick(() => cb(null, JSON.stringify({ BackendState: 'Running', Version: '1.82.0' }), ''));
+          return;
+        }
+        if (cmd === 'docker' && args[1] === 'hub-tailscale' && args[3] === 'version') {
+          process.nextTick(() => cb(null, '1.82.0', ''));
+          return;
+        }
+        if (cmd === 'docker' && args.includes('up')) {
+          (service as any).strategyCache = { value: 'sidecar', expires: Date.now() - 1 };
+          process.nextTick(() => cb(null, '', ''));
+          return;
+        }
+        if (cmd === 'docker' && args.includes('status') && args.includes('--json')) {
+          process.nextTick(() => cb(null, JSON.stringify({ BackendState: 'Running', Version: '1.82.0' }), ''));
+          return;
+        }
+        process.nextTick(() => cb(new Error('unexpected'), '', ''));
+      },
+    );
+
+    const result = await service.startAuth();
+    expect(result.authUrl).toBe('');
+
+    const dockerStatusCalls = execFileMock.mock.calls.filter(
+      ([cmd, args]: [string, string[]]) => cmd === 'docker' && args.includes('status') && args.includes('--json'),
+    );
+    const hostStatusCalls = execFileMock.mock.calls.filter(
+      ([cmd, args]: [string, string[]]) => cmd === '/usr/bin/tailscale' && args.includes('status') && args.includes('--json'),
+    );
+
+    expect(dockerStatusCalls.length).toBeGreaterThan(0);
+    expect(hostStatusCalls.length).toBe(0);
+  });
+
   describe('waitForSidecarDaemon', () => {
     it('returns immediately when daemon responds (including non-zero exits like NeedsLogin)', async () => {
       execFileMock.mockImplementation(

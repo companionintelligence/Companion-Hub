@@ -41,14 +41,12 @@ export class HardwareInspectorService implements OnModuleInit {
     if (this.hasIncompleteDiscreteGpuProfile(this.cachedProfile)) {
       const now = Date.now();
       if (now - this.lastIncompleteDiscreteGpuRefreshAt >= INCOMPLETE_GPU_PROFILE_REFRESH_COOLDOWN_MS) {
+        const refreshedProfile = await this.detect();
+        this.cachedProfile = refreshedProfile;
         this.lastIncompleteDiscreteGpuRefreshAt = now;
-        this.cachedProfile = await this.detect();
       }
     }
 
-    if (!this.cachedProfile) {
-      this.cachedProfile = await this.detect();
-    }
     return this.cachedProfile;
   }
 
