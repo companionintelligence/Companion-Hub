@@ -92,30 +92,44 @@ export class OllamaBackend implements InferenceBackend {
   }
 
   async loadModel(modelId: string): Promise<void> {
+    this.logger.info(`[Ollama] Loading model: ${modelId}`);
     // Ollama loads models on first inference. We can pre-warm with keep_alive.
-    await axios.post(
-      `${this.baseUrl}/api/generate`,
-      {
-        model: modelId,
-        prompt: '',
-        keep_alive: -1, // Keep loaded indefinitely
-      },
-      { timeout: 120000 },
-    );
-    this.logger.info(`[Ollama] Model loaded and pinned: ${modelId}`);
+    try {
+      await axios.post(
+        `${this.baseUrl}/api/generate`,
+        {
+          model: modelId,
+          prompt: '',
+          keep_alive: -1, // Keep loaded indefinitely
+        },
+        { timeout: 120000 },
+      );
+      this.logger.info(`[Ollama] Model loaded and pinned: ${modelId}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`[Ollama] Failed to load model ${modelId}: ${msg}`);
+      throw err;
+    }
   }
 
   async unloadModel(modelId: string): Promise<void> {
-    await axios.post(
-      `${this.baseUrl}/api/generate`,
-      {
-        model: modelId,
-        prompt: '',
-        keep_alive: 0, // Unload immediately
-      },
-      { timeout: 30000 },
-    );
-    this.logger.info(`[Ollama] Model unloaded: ${modelId}`);
+    this.logger.info(`[Ollama] Unloading model: ${modelId}`);
+    try {
+      await axios.post(
+        `${this.baseUrl}/api/generate`,
+        {
+          model: modelId,
+          prompt: '',
+          keep_alive: 0, // Unload immediately
+        },
+        { timeout: 30000 },
+      );
+      this.logger.info(`[Ollama] Model unloaded: ${modelId}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`[Ollama] Failed to unload model ${modelId}: ${msg}`);
+      throw err;
+    }
   }
 
   async isModelLoaded(modelId: string): Promise<boolean> {

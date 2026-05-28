@@ -52,6 +52,18 @@ describe('OllamaInstallerService', () => {
     });
   });
 
+  it('handles an unexpected healthCheck throw gracefully', async () => {
+    ollamaBackend.healthCheck.mockRejectedValue(new Error('socket hang up'));
+
+    await expect(service.checkInstallation()).resolves.toEqual({
+      ready: false,
+      running: false,
+      endpointUrl: 'http://ci-hub-ollama:11434',
+      error: 'socket hang up',
+    });
+    expect(loggerService.error).toHaveBeenCalledWith(expect.stringContaining('socket hang up'));
+  });
+
   it('returns container guidance when Ollama is not reachable', async () => {
     const result = await service.install();
 

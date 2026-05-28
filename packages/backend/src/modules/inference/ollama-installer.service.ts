@@ -20,16 +20,29 @@ export class OllamaInstallerService {
    * Check whether the containerised Ollama endpoint is reachable and healthy.
    */
   async checkInstallation(): Promise<OllamaInstallStatus> {
-    const endpointHealth = await this.ollamaBackend.healthCheck();
     const endpointUrl = this.ollamaBackend.getBaseUrl();
-    const ready = endpointHealth.running && endpointHealth.healthy;
+    try {
+      const endpointHealth = await this.ollamaBackend.healthCheck();
+      const ready = endpointHealth.running && endpointHealth.healthy;
 
-    return {
-      ready,
-      running: endpointHealth.running,
-      endpointUrl,
-      error: ready ? undefined : endpointHealth.error,
-    };
+      this.logger.info(`[OllamaInstaller] Health check — ready=${ready} running=${endpointHealth.running} url=${endpointUrl}`);
+
+      return {
+        ready,
+        running: endpointHealth.running,
+        endpointUrl,
+        error: ready ? undefined : endpointHealth.error,
+      };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`[OllamaInstaller] Health check threw unexpectedly: ${msg}`);
+      return {
+        ready: false,
+        running: false,
+        endpointUrl,
+        error: msg,
+      };
+    }
   }
 
   /**
