@@ -5,6 +5,13 @@ import { AiSetupStep } from '../ai-setup-step';
 import type { HardwareProfileResponse } from '../../helpers/ai-setup-types';
 
 const mockApiFetch = vi.fn();
+const mockClipboardWriteText = vi.fn();
+const mockResponse = <T,>(data: T, ok = true) =>
+  Promise.resolve({
+    ok,
+    status: ok ? 200 : 500,
+    json: () => Promise.resolve(data),
+  });
 
 vi.mock('@/lib/api-fetch', () => ({
   apiFetch: (...args: unknown[]) => mockApiFetch(...args),
@@ -111,9 +118,36 @@ describe('AiSetupStep', () => {
   const onComplete = vi.fn();
   const onSkip = vi.fn();
   const onBack = vi.fn();
+  const ollamaReadyStatus = {
+    installed: true,
+    needsInstall: false,
+    running: true,
+    ready: true,
+    endpointUrl: 'http://host.docker.internal:11434',
+  };
+  const ollamaMissingStatus = {
+    installed: false,
+    needsInstall: true,
+    running: false,
+    ready: false,
+    endpointUrl: 'http://host.docker.internal:11434',
+  };
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockClipboardWriteText.mockResolvedValue(undefined);
+    Object.defineProperty(window.navigator, 'platform', {
+      configurable: true,
+      value: 'Linux x86_64',
+    });
+    Object.defineProperty(window.navigator, 'userAgent', {
+      configurable: true,
+      value: 'Mozilla/5.0 (X11; Linux x86_64)',
+    });
+    Object.defineProperty(window.navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: mockClipboardWriteText },
+    });
   });
 
   it('shows loading skeleton while fetching profile', () => {
@@ -135,6 +169,76 @@ describe('AiSetupStep', () => {
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
     expect(screen.getByTestId('tier-badge')).toHaveTextContent('High');
     expect(screen.getByTestId('hw-gpu')).toHaveTextContent('RTX 4090');
+  });
+
+  it('shows no GPU warning copy when gpu.available is false', async () => {
+    const noGpuProfile: HardwareProfileResponse = {
+      ...highTierProfile,
+      hardware: {
+        ...highTierProfile.hardware,
+        gpu: {
+          ...highTierProfile.hardware.gpu,
+          available: false,
+          model: '',
+          runtimeAvailable: false,
+          vendor: 'none',
+          vramMb: 0,
+        },
+      },
+    };
+
+    mockApiFetch.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(noGpuProfile) });
+    render(<AiSetupStep onComplete={onComplete} onSkip={onSkip} onBack={onBack} />);
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+    expect(screen.getByText('No GPU detected.')).toBeInTheDocument();
+    expect(screen.getByText(/AI services will run on CPU only/)).toBeInTheDocument();
+  });
+
+  it('shows NVIDIA runtime setup guidance when NVIDIA GPU runtime is unavailable', async () => {
+    const noRuntimeProfile: HardwareProfileResponse = {
+      ...highTierProfile,
+      hardware: {
+        ...highTierProfile.hardware,
+        gpu: {
+          ...highTierProfile.hardware.gpu,
+          available: true,
+          runtimeAvailable: false,
+          vendor: 'nvidia',
+        },
+      },
+    };
+
+    mockApiFetch.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(noRuntimeProfile) });
+    render(<AiSetupStep onComplete={onComplete} onSkip={onSkip} onBack={onBack} />);
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+    expect(screen.getByTestId('nvidia-runtime-warning')).toBeInTheDocument();
+    expect(screen.getByText(/NVIDIA GPU detected, but GPU runtime is not ready yet/i)).toBeInTheDocument();
+  });
+
+  it('shows AMD runtime warning copy when AMD GPU runtime is unavailable', async () => {
+    const noRuntimeProfile: HardwareProfileResponse = {
+      ...highTierProfile,
+      hardware: {
+        ...highTierProfile.hardware,
+        gpu: {
+          ...highTierProfile.hardware.gpu,
+          available: true,
+          runtimeAvailable: false,
+          vendor: 'amd',
+          model: 'Radeon RX 7900 XTX',
+        },
+      },
+    };
+
+    mockApiFetch.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(noRuntimeProfile) });
+    render(<AiSetupStep onComplete={onComplete} onSkip={onSkip} onBack={onBack} />);
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+    expect(screen.getByText('GPU driver not available.')).toBeInTheDocument();
+    expect(screen.getByText(/Your amd GPU was detected but the runtime is not available/i)).toBeInTheDocument();
+    expect(screen.getByText(/Please install the appropriate drivers \(AMD ROCm\)/i)).toBeInTheDocument();
   });
 
   it('pre-selects recommended models', async () => {
@@ -279,7 +383,8 @@ describe('AiSetupStep', () => {
   it('shows rescan error and skips profile refresh when rescan returns non-OK', async () => {
     const user = userEvent.setup();
     mockApiFetch
-      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(highTierProfile) }) // initial fetch
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(highTierProfile) }) // initial profile fetch
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(ollamaReadyStatus) }) // ollama status
       .mockResolvedValueOnce({ ok: false, status: 503 }); // rescan POST failure
 
     render(<AiSetupStep onComplete={onComplete} onSkip={onSkip} onBack={onBack} />);
@@ -325,5 +430,107 @@ describe('AiSetupStep', () => {
     if (platformDescriptor) {
       Object.defineProperty(window.navigator, 'platform', platformDescriptor);
     }
+  });
+
+  it('shows Ollama setup card when Ollama backend is selected and not installed', async () => {
+    const ollamaProfile = {
+      ...highTierProfile,
+      backends: {
+        recommended: 'ollama',
+        available: highTierProfile.backends.available,
+      },
+    };
+
+    mockApiFetch.mockImplementationOnce(() => mockResponse(ollamaProfile)).mockImplementationOnce(() => mockResponse(ollamaMissingStatus));
+
+    render(<AiSetupStep onComplete={onComplete} onSkip={onSkip} onBack={onBack} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Ollama Not Installed')).toBeInTheDocument();
+    });
+  });
+
+  it('disables Continue while Ollama is not reachable', async () => {
+    const ollamaProfile = {
+      ...highTierProfile,
+      backends: {
+        recommended: 'ollama',
+        available: highTierProfile.backends.available,
+      },
+    };
+
+    mockApiFetch
+      .mockImplementationOnce(() => mockResponse(ollamaProfile))
+      .mockImplementationOnce(() =>
+        mockResponse({
+          installed: true,
+          needsInstall: false,
+          running: false,
+          ready: false,
+          endpointUrl: 'http://host.docker.internal:11434',
+          error: 'connect ECONNREFUSED',
+        }),
+      );
+
+    render(<AiSetupStep onComplete={onComplete} onSkip={onSkip} onBack={onBack} />);
+
+    await waitFor(() => expect(screen.getByText('Ollama Not Reachable')).toBeInTheDocument());
+    expect(screen.getByTestId('ai-continue-btn')).toBeDisabled();
+    expect(screen.getByText(/could not reach Ollama/)).toBeInTheDocument();
+  });
+
+  it('shows the host-side install command on Unix-like platforms', async () => {
+    const ollamaProfile = {
+      ...highTierProfile,
+      backends: {
+        recommended: 'ollama',
+        available: highTierProfile.backends.available,
+      },
+    };
+
+    mockApiFetch.mockImplementationOnce(() => mockResponse(ollamaProfile)).mockImplementationOnce(() => mockResponse(ollamaMissingStatus));
+
+    render(<AiSetupStep onComplete={onComplete} onSkip={onSkip} onBack={onBack} />);
+
+    await waitFor(() => expect(screen.getByText('Ollama Not Installed')).toBeInTheDocument());
+    expect(screen.getByText('curl -fsSL https://ollama.com/install.sh | sh')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Copy Install Command' })).toBeInTheDocument();
+  });
+
+  it('keeps the hardware profile visible when Ollama installation fails', async () => {
+    const user = userEvent.setup();
+    Object.defineProperty(window.navigator, 'platform', {
+      configurable: true,
+      value: 'Win32',
+    });
+    Object.defineProperty(window.navigator, 'userAgent', {
+      configurable: true,
+      value: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+    });
+
+    const ollamaProfile = {
+      ...highTierProfile,
+      backends: {
+        recommended: 'ollama',
+        available: highTierProfile.backends.available,
+      },
+    };
+
+    mockApiFetch
+      .mockImplementationOnce(() => mockResponse(ollamaProfile))
+      .mockImplementationOnce(() => mockResponse(ollamaMissingStatus))
+      .mockImplementationOnce(() => mockResponse({ success: false, message: 'Windows installation failed: access denied' }));
+
+    render(<AiSetupStep onComplete={onComplete} onSkip={onSkip} onBack={onBack} />);
+
+    await waitFor(() => expect(screen.getByText('Ollama Not Installed')).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Install Ollama' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Windows installation failed: access denied')).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('hw-card-title')).toBeInTheDocument();
+    expect(screen.queryByTestId('ai-setup-error')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Install Ollama' })).toBeInTheDocument();
   });
 });

@@ -7,6 +7,7 @@ import { MemoryManagerService } from './memory-manager.service';
 import { ModelRegistryService } from './model-registry.service';
 import { ModelPullerService } from './model-puller.service';
 import { CloudFallbackService } from './cloud-fallback.service';
+import { OllamaInstallerService } from './ollama-installer.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AuthGuard } from '@/modules/auth/auth.guard';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -29,6 +30,7 @@ export class InferenceController {
     private readonly modelRegistry: ModelRegistryService,
     private readonly modelPuller: ModelPullerService,
     private readonly cloudFallback: CloudFallbackService,
+    private readonly ollamaInstaller: OllamaInstallerService,
     private readonly configurationService: ConfigurationService,
     private readonly ollamaBackend: OllamaBackend,
     private readonly vllmBackend: VllmBackend,
@@ -369,5 +371,19 @@ export class InferenceController {
         availableMemoryMb: Math.max(0, availableMemoryMb),
       },
     };
+  }
+
+  // ─── Ollama Installation ──────────────────────────────────────────────
+
+  @UseGuards(AuthGuard)
+  @Get('ollama/status')
+  async getOllamaStatus() {
+    return this.ollamaInstaller.checkInstallation();
+  }
+
+  @UseGuards(AuthGuard)
+  @Post('ollama/install')
+  async installOllama() {
+    return this.ollamaInstaller.install();
   }
 }

@@ -26,6 +26,7 @@ describe('HardwareInspectorService', () => {
   let service: HardwareInspectorService;
   let loggerService: MockProxy<LoggerService>;
   let filesystemService: MockProxy<FilesystemService>;
+  const originalHostPlatform = process.env.CI_HUB_HOST_PLATFORM;
 
   beforeEach(async () => {
     execAsyncMock.mockResolvedValue({ stdout: '{}' });
@@ -45,6 +46,7 @@ describe('HardwareInspectorService', () => {
   });
 
   afterEach(() => {
+    process.env.CI_HUB_HOST_PLATFORM = originalHostPlatform;
     vi.clearAllMocks();
   });
 
@@ -219,6 +221,46 @@ describe('HardwareInspectorService', () => {
 
       expect(profile.gpu.vendor).toBe('amd');
       expect(profile.gpu.available).toBe(true);
+    });
+
+    it('SHALL parse rocm-smi VRAM total bytes instead of the card column', async () => {
+      (si.graphics as any) = vi.fn().mockResolvedValue({
+        controllers: [{ vendor: 'Advanced Micro Devices', model: 'Radeon RX 7900 XTX', vram: 0, driverVersion: '6.2.0' }],
+      });
+      execAsyncMock.mockImplementation(async (command: string) => {
+        if (command === 'rocm-smi --showmeminfo vram --csv') {
+          return {
+            stdout: 'card,VRAM Total Memory (B),VRAM Total Used Memory (B)\ncard0,17179869184,1073741824\n',
+          };
+        }
+        return { stdout: '{}' };
+      });
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 16, brand: 'AMD Ryzen 9' });
+      filesystemService.readTextFile.mockResolvedValue('MemTotal: 67108864\nMemAvailable: 50331648');
+
+      const profile = await service.detect();
+
+      expect(profile.gpu.vendor).toBe('amd');
+      expect(profile.gpu.available).toBe(true);
+      expect(profile.gpu.vramMb).toBe(16384);
+    });
+
+    it('should use host platform override for macOS GPU detection', async () => {
+      process.env.CI_HUB_HOST_PLATFORM = 'darwin';
+      const detectMacGpuSpy = vi.spyOn(service as any, 'detectMacGpu').mockResolvedValue({
+        available: true,
+        vendor: 'amd',
+        model: 'Radeon Pro',
+        vramMb: 8192,
+        driverVersion: '',
+      });
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 8, brand: 'Intel Core i9' });
+      filesystemService.readTextFile.mockResolvedValue('MemTotal: 33554432\nMemAvailable: 16777216');
+
+      const profile = await service.detect();
+
+      expect(detectMacGpuSpy).toHaveBeenCalledTimes(1);
+      expect(profile.gpu.vendor).toBe('amd');
     });
   });
 
