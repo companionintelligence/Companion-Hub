@@ -1,7 +1,23 @@
 import { Injectable, type OnModuleInit } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
-import type { CuratedModel, HardwareTier, InferenceBackendType, ModelModality, ModelState, TrackedModel } from '@ci-hub/common/types';
+import type {
+  CuratedModel,
+  HardwareProfile,
+  HardwareTier,
+  InferenceBackendType,
+  ModelModality,
+  ModelState,
+  TrackedModel,
+} from '@ci-hub/common/types';
 import { CURATED_MODELS } from './catalog/curated-models';
+
+const LLM_RECOMMENDATION_TABLE: Array<{ minVramMb: number; minRamMb: number; recommendedModelIds: string[] }> = [
+  { minVramMb: 24576, minRamMb: 65536, recommendedModelIds: ['gemma4-27b', 'nemotron3-22b'] },
+  { minVramMb: 12288, minRamMb: 32768, recommendedModelIds: ['qwen3-6-20b', 'nemotron3-22b'] },
+  { minVramMb: 8192, minRamMb: 24576, recommendedModelIds: ['qwen3-6-20b', 'gemma4-12b'] },
+  { minVramMb: 4096, minRamMb: 16384, recommendedModelIds: ['qwen3-6-8b', 'nemotron3-8b'] },
+  { minVramMb: 0, minRamMb: 8192, recommendedModelIds: ['gemma4-4b', 'qwen3-6-8b'] },
+];
 
 @Injectable()
 export class ModelRegistryService implements OnModuleInit {
@@ -36,9 +52,53 @@ export class ModelRegistryService implements OnModuleInit {
     return CURATED_MODELS.filter((m) => m.tiers[tierKey as keyof typeof m.tiers] === 'recommended');
   }
 
+  /** Get hardware-aware recommendations with VRAM/RAM sizing table for Ollama LLMs */
+  getRecommendedModelsForHardware(tier: HardwareTier, profile: HardwareProfile): CuratedModel[] {
+    const tierRecommended = this.getRecommendedModels(tier);
+    const nonOllamaLlmRecommended = tierRecommended.filter((m) => m.backend !== 'ollama' || m.modality !== 'llm');
+    const ollamaLlmCandidates = this.getModelsForTier(tier).filter((m) => m.backend === 'ollama' && m.modality === 'llm');
+
+    if (ollamaLlmCandidates.length === 0) {
+      return tierRecommended;
+    }
+
+    const effectiveVramMb =
+      profile.gpu.available && !profile.gpu.unifiedMemory ? profile.gpu.vramMb : profile.gpu.unifiedMemory ? profile.ram.totalMb : 0;
+    const effectiveRamMb = profile.ram.totalMb;
+
+    const tableMatch =
+      LLM_RECOMMENDATION_TABLE.find((row) => effectiveVramMb >= row.minVramMb && effectiveRamMb >= row.minRamMb) ??
+      LLM_RECOMMENDATION_TABLE[LLM_RECOMMENDATION_TABLE.length - 1];
+
+    const tableRecommendedLlms = tableMatch.recommendedModelIds
+      .map((id) => ollamaLlmCandidates.find((m) => m.id === id))
+      .filter((m): m is CuratedModel => !!m)
+      .filter((m) => this.canRunOnHardware(m, profile));
+
+    if (tableRecommendedLlms.length > 0) {
+      return [...tableRecommendedLlms, ...nonOllamaLlmRecommended];
+    }
+
+    const fallbackLlms = tierRecommended
+      .filter((m) => m.backend === 'ollama' && m.modality === 'llm')
+      .filter((m) => this.canRunOnHardware(m, profile));
+
+    return [...fallbackLlms, ...nonOllamaLlmRecommended];
+  }
+
   /** Get default models to pin for a tier */
   getDefaultPinnedModels(tier: HardwareTier): CuratedModel[] {
     return this.getRecommendedModels(tier).filter((m) => m.runtime.pinnedByDefault);
+  }
+
+  private canRunOnHardware(model: CuratedModel, profile: HardwareProfile): boolean {
+    const runtimeVramMb = profile.gpu.unifiedMemory ? profile.ram.totalMb : profile.gpu.available ? profile.gpu.vramMb : 0;
+    const gpuVendor = profile.gpu.available && profile.gpu.vendor !== 'none' ? profile.gpu.vendor : 'cpu';
+    return (
+      model.requirements.minRamMb <= profile.ram.totalMb &&
+      model.requirements.minVramMb <= runtimeVramMb &&
+      model.requirements.gpuVendors.includes(gpuVendor)
+    );
   }
 
   /** Get models by modality */

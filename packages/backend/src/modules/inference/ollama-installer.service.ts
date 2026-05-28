@@ -3,12 +3,8 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { OllamaBackend } from './backends/ollama.backend';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
-import os from 'node:os';
-import fs from 'node:fs/promises';
-import path from 'node:path';
 
 const execAsync = promisify(exec);
-const OLLAMA_INSTALL_SCRIPT = 'curl -fsSL https://ollama.com/install.sh | sh';
 
 export interface OllamaInstallStatus {
   installed: boolean;
@@ -27,10 +23,6 @@ export class OllamaInstallerService {
     private readonly logger: LoggerService,
     private readonly ollamaBackend: OllamaBackend,
   ) {}
-
-  private delay(ms: number) {
-    return new Promise<void>((resolve) => setTimeout(resolve, ms));
-  }
 
   private async detectCliInstallation() {
     try {
@@ -109,92 +101,28 @@ export class OllamaInstallerService {
   }
 
   /**
-   * Install Ollama for the current platform
+   * Validate Ollama container availability and provide container-first guidance.
    */
   async install(): Promise<{ success: boolean; message: string }> {
-    const platform = os.platform();
-
     try {
-      this.logger.info(`[OllamaInstaller] Starting Ollama installation for platform: ${platform}`);
-
-      switch (platform) {
-        case 'darwin':
-        case 'linux':
-          return {
-            success: false,
-            message: `Install Ollama on the host machine with: ${OLLAMA_INSTALL_SCRIPT}`,
-          };
-        case 'win32':
-          return await this.installWindows();
-        default:
-          return {
-            success: false,
-            message: `Unsupported platform: ${platform}`,
-          };
+      const status = await this.checkInstallation();
+      if (status.ready) {
+        return {
+          success: true,
+          message: 'Ollama container is already running and reachable.',
+        };
       }
+
+      return {
+        success: false,
+        message: `Ollama is managed by the ci-hub-ollama container. Start or restart that container and re-check ${status.endpointUrl}.`,
+      };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.error(`[OllamaInstaller] Installation failed: ${message}`);
       return {
         success: false,
         message: `Installation failed: ${message}`,
-      };
-    }
-  }
-
-  /**
-   * Install Ollama on Windows using official installer
-   */
-  private async installWindows(): Promise<{ success: boolean; message: string }> {
-    const tempDir = os.tmpdir();
-    const installerPath = path.join(tempDir, 'OllamaSetup.exe');
-
-    try {
-      this.logger.info('[OllamaInstaller] Downloading Ollama for Windows...');
-
-      // Download Windows installer
-      await execAsync(`curl -L -o "${installerPath}" https://ollama.com/download/OllamaSetup.exe`, {
-        timeout: 300000, // 5 minute timeout
-      });
-
-      // Run installer silently
-      this.logger.info('[OllamaInstaller] Running Ollama installer...');
-      await execAsync(`"${installerPath}" /S`, {
-        timeout: 300000, // 5 minute timeout for installation
-      });
-
-      // Wait for installation to complete
-      await this.delay(10000);
-
-      // Verify installation
-      const status = await this.checkInstallation();
-      if (status.ready) {
-        // Clean up installer
-        await fs.unlink(installerPath).catch(() => {
-          /* Ignore cleanup errors */
-        });
-        return {
-          success: true,
-          message: `Ollama installed successfully${status.version ? ` (${status.version})` : ''}`,
-        };
-      }
-
-      return {
-        success: false,
-        message: `Installation completed but the configured Ollama endpoint is not reachable (${status.endpointUrl}). Start Ollama on the host machine and re-check the connection.`,
-      };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.logger.error(`[OllamaInstaller] Windows installation failed: ${message}`);
-
-      // Clean up on failure
-      await fs.unlink(installerPath).catch(() => {
-        /* Ignore cleanup errors */
-      });
-
-      return {
-        success: false,
-        message: `Windows installation failed: ${message}`,
       };
     }
   }

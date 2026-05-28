@@ -1,6 +1,6 @@
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent } from '@/components/ui/Card';
-import { AlertCircle, CheckCircle2, Copy, Download, Loader2, RefreshCw } from 'lucide-react';
+import { AlertCircle, CheckCircle2, Download, Loader2, RefreshCw } from 'lucide-react';
 
 interface OllamaStatus {
   installed: boolean;
@@ -19,21 +19,10 @@ interface OllamaSetupCardProps {
   checking: boolean;
   onInstall: () => Promise<void>;
   onRecheck: () => Promise<void>;
-  installMode: 'auto' | 'manual-script';
-  installCommand: string;
   errorMessage?: string | null;
 }
 
-export const OllamaSetupCard = ({
-  status,
-  installing,
-  checking,
-  onInstall,
-  onRecheck,
-  installMode,
-  installCommand,
-  errorMessage,
-}: OllamaSetupCardProps) => {
+export const OllamaSetupCard = ({ status, installing, checking, onInstall, onRecheck, errorMessage }: OllamaSetupCardProps) => {
   if (!status) {
     return (
       <Card className="border-muted">
@@ -115,15 +104,8 @@ export const OllamaSetupCard = ({
           <div className="flex-1">
             <div className="text-sm font-medium text-yellow-900 dark:text-yellow-100 mb-1">Ollama Not Installed</div>
             <div className="text-xs text-yellow-700 dark:text-yellow-300 mb-3">
-              {installMode === 'auto'
-                ? 'Ollama is required to run local AI models. We can install it automatically for you.'
-                : 'Ollama is required to run local AI models. Install it on the host machine, then re-check the connection.'}
+              Ollama runs inside the Hub container stack. Start or restart the Ollama container, then re-check the connection.
             </div>
-            {installMode === 'manual-script' && (
-              <div className="mb-3 rounded-md border border-yellow-300/70 bg-yellow-100/60 px-3 py-2 font-mono text-xs text-yellow-900 dark:border-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-100">
-                {installCommand}
-              </div>
-            )}
             {errorMessage && <div className="mb-3 text-xs text-red-700 dark:text-red-300">{errorMessage}</div>}
             <div className="flex gap-2">
               <Button
@@ -133,20 +115,15 @@ export const OllamaSetupCard = ({
                 disabled={installing}
                 className="bg-yellow-600 hover:bg-yellow-700 text-white"
               >
-                {installMode === 'manual-script' ? (
-                  <>
-                    <Copy className="h-3.5 w-3.5 mr-1.5" />
-                    Copy Install Command
-                  </>
-                ) : installing ? (
+                {installing ? (
                   <>
                     <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
-                    Installing Ollama...
+                    Checking Ollama...
                   </>
                 ) : (
                   <>
                     <Download className="h-3.5 w-3.5 mr-1.5" />
-                    Install Ollama
+                    Start Ollama Container
                   </>
                 )}
               </Button>
@@ -155,7 +132,7 @@ export const OllamaSetupCard = ({
                 Re-check
               </Button>
             </div>
-            {installing && installMode === 'auto' && (
+            {installing && (
               <div className="mt-3 text-xs text-yellow-600 dark:text-yellow-400">This may take a few minutes. Please do not close this window.</div>
             )}
           </div>

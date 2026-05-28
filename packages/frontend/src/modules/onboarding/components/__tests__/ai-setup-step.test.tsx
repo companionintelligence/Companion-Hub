@@ -5,7 +5,6 @@ import { AiSetupStep } from '../ai-setup-step';
 import type { HardwareProfileResponse } from '../../helpers/ai-setup-types';
 
 const mockApiFetch = vi.fn();
-const mockClipboardWriteText = vi.fn();
 const mockResponse = <T,>(data: T, ok = true) =>
   Promise.resolve({
     ok,
@@ -135,7 +134,6 @@ describe('AiSetupStep', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    mockClipboardWriteText.mockResolvedValue(undefined);
     Object.defineProperty(window.navigator, 'platform', {
       configurable: true,
       value: 'Linux x86_64',
@@ -143,10 +141,6 @@ describe('AiSetupStep', () => {
     Object.defineProperty(window.navigator, 'userAgent', {
       configurable: true,
       value: 'Mozilla/5.0 (X11; Linux x86_64)',
-    });
-    Object.defineProperty(window.navigator, 'clipboard', {
-      configurable: true,
-      value: { writeText: mockClipboardWriteText },
     });
   });
 
@@ -623,7 +617,7 @@ describe('AiSetupStep', () => {
     expect(screen.getByText(/could not reach Ollama/)).toBeInTheDocument();
   });
 
-  it('shows the host-side install command on Unix-like platforms', async () => {
+  it('shows container-first setup guidance when Ollama is not installed', async () => {
     const ollamaProfile = {
       ...highTierProfile,
       backends: {
@@ -637,8 +631,8 @@ describe('AiSetupStep', () => {
     render(<AiSetupStep onComplete={onComplete} onSkip={onSkip} onBack={onBack} />);
 
     await waitFor(() => expect(screen.getByText('Ollama Not Installed')).toBeInTheDocument());
-    expect(screen.getByText('curl -fsSL https://ollama.com/install.sh | sh')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Copy Install Command' })).toBeInTheDocument();
+    expect(screen.getByText(/runs inside the Hub container stack/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Start Ollama Container' })).toBeInTheDocument();
   });
 
   it('keeps the hardware profile visible when Ollama installation fails', async () => {
@@ -668,13 +662,13 @@ describe('AiSetupStep', () => {
     render(<AiSetupStep onComplete={onComplete} onSkip={onSkip} onBack={onBack} />);
 
     await waitFor(() => expect(screen.getByText('Ollama Not Installed')).toBeInTheDocument());
-    await user.click(screen.getByRole('button', { name: 'Install Ollama' }));
+    await user.click(screen.getByRole('button', { name: 'Start Ollama Container' }));
 
     await waitFor(() => {
       expect(screen.getByText('Windows installation failed: access denied')).toBeInTheDocument();
     });
     expect(screen.getByTestId('hw-card-title')).toBeInTheDocument();
     expect(screen.queryByTestId('ai-setup-error')).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Install Ollama' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Start Ollama Container' })).toBeInTheDocument();
   });
 });

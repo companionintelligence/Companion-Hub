@@ -96,7 +96,7 @@ describe('InferenceController — onboarding-profile', () => {
 
   it('should return aggregated onboarding profile', async () => {
     hardwareInspector.getProfile.mockResolvedValue(fakeProfile);
-    modelRegistry.getRecommendedModels.mockReturnValue([]);
+    modelRegistry.getRecommendedModelsForHardware.mockReturnValue([]);
     modelRegistry.getModelsForTier.mockReturnValue([]);
     memoryManager.calculateBudget.mockReturnValue(fakeStatus.memoryBudget);
     router.getStatus.mockResolvedValue(fakeStatus);
@@ -113,7 +113,7 @@ describe('InferenceController — onboarding-profile', () => {
   it('should recommend vllm for AMD GPU with runtime', async () => {
     const amdProfile = { ...fakeProfile, gpu: { ...fakeProfile.gpu, vendor: 'amd' as const } };
     hardwareInspector.getProfile.mockResolvedValue(amdProfile);
-    modelRegistry.getRecommendedModels.mockReturnValue([]);
+    modelRegistry.getRecommendedModelsForHardware.mockReturnValue([]);
     modelRegistry.getModelsForTier.mockReturnValue([]);
     memoryManager.calculateBudget.mockReturnValue(fakeStatus.memoryBudget);
     router.getStatus.mockResolvedValue(fakeStatus);
@@ -125,7 +125,7 @@ describe('InferenceController — onboarding-profile', () => {
   it('should recommend ollama for nvidia without runtime', async () => {
     const noRuntimeProfile = { ...fakeProfile, gpu: { ...fakeProfile.gpu, runtimeAvailable: false } };
     hardwareInspector.getProfile.mockResolvedValue(noRuntimeProfile);
-    modelRegistry.getRecommendedModels.mockReturnValue([]);
+    modelRegistry.getRecommendedModelsForHardware.mockReturnValue([]);
     modelRegistry.getModelsForTier.mockReturnValue([]);
     memoryManager.calculateBudget.mockReturnValue(fakeStatus.memoryBudget);
     router.getStatus.mockResolvedValue(fakeStatus);
@@ -143,7 +143,7 @@ describe('InferenceController — onboarding-profile', () => {
 
     hardwareInspector.getProfile.mockResolvedValue(noRuntimeProfile);
     hardwareInspector.computeTier.mockReturnValue('high');
-    modelRegistry.getRecommendedModels.mockReturnValue([]);
+    modelRegistry.getRecommendedModelsForHardware.mockReturnValue([]);
     modelRegistry.getModelsForTier.mockReturnValue([]);
     memoryManager.calculateBudget.mockReturnValue(fakeStatus.memoryBudget);
     router.getStatus.mockResolvedValue(fakeStatus);
@@ -156,7 +156,7 @@ describe('InferenceController — onboarding-profile', () => {
       expect.objectContaining({ runtimeAvailable: true, vramMb: 24576 }),
       noRuntimeProfile.ram,
     );
-    expect(modelRegistry.getRecommendedModels).toHaveBeenCalledWith('high');
+    expect(modelRegistry.getRecommendedModelsForHardware).toHaveBeenCalledWith('high', noRuntimeProfile);
     expect(modelRegistry.getModelsForTier).toHaveBeenCalledWith('high');
     expect(result.resourceEstimate.availableMemoryMb).toBe(fakeStatus.memoryBudget.modelBudgetVramMb - fakeStatus.memoryBudget.modelUsedVramMb);
   });
@@ -168,7 +168,7 @@ describe('InferenceController — onboarding-profile', () => {
     ] as any;
 
     hardwareInspector.getProfile.mockResolvedValue(fakeProfile);
-    modelRegistry.getRecommendedModels.mockReturnValue(fakeModels);
+    modelRegistry.getRecommendedModelsForHardware.mockReturnValue(fakeModels);
     modelRegistry.getModelsForTier.mockReturnValue(fakeModels);
     memoryManager.calculateBudget.mockReturnValue(fakeStatus.memoryBudget);
     router.getStatus.mockResolvedValue(fakeStatus);
@@ -184,7 +184,7 @@ describe('InferenceController — onboarding-profile', () => {
       gpu: { ...fakeProfile.gpu, unifiedMemory: true },
     };
     hardwareInspector.getProfile.mockResolvedValue(unifiedProfile);
-    modelRegistry.getRecommendedModels.mockReturnValue([]);
+    modelRegistry.getRecommendedModelsForHardware.mockReturnValue([]);
     modelRegistry.getModelsForTier.mockReturnValue([]);
     memoryManager.calculateBudget.mockReturnValue(fakeStatus.memoryBudget);
     router.getStatus.mockResolvedValue(fakeStatus);

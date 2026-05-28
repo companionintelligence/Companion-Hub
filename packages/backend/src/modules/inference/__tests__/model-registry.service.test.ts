@@ -3,6 +3,7 @@ import { ModelRegistryService } from '../model-registry.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { describe, it, expect, beforeEach } from 'vitest';
+import type { HardwareProfile } from '@ci-hub/common/types';
 
 describe('ModelRegistryService', () => {
   let service: ModelRegistryService;
@@ -64,6 +65,31 @@ describe('ModelRegistryService', () => {
 
       const mediumRec = service.getRecommendedModels('medium');
       expect(mediumRec.length).toBeGreaterThan(0);
+    });
+
+    it('should use the VRAM/RAM recommendation table for onboarding LLM picks', () => {
+      const profile: HardwareProfile = {
+        gpu: {
+          available: true,
+          vendor: 'nvidia',
+          model: 'RTX 3060',
+          vramMb: 12288,
+          unifiedMemory: false,
+          driverVersion: '550.0',
+          runtimeAvailable: true,
+        },
+        npu: { available: false, model: '' },
+        ram: { totalMb: 32768, availableMb: 24000 },
+        cpu: { arch: 'x86_64', cores: 8, model: 'AMD Ryzen 7' },
+        effectiveInferenceMemoryMb: 12288,
+        tier: 'medium',
+      };
+
+      const recommended = service.getRecommendedModelsForHardware('medium', profile);
+      const llmIds = recommended.filter((m) => m.modality === 'llm').map((m) => m.id);
+
+      expect(llmIds).toContain('qwen3-6-20b');
+      expect(llmIds).not.toContain('gemma4-4b');
     });
 
     it('should filter by modality', () => {

@@ -269,7 +269,7 @@ export class InferenceController {
     const profile = await this.hardwareInspector.getProfile();
     return {
       tier: profile.tier,
-      recommended: this.modelRegistry.getRecommendedModels(profile.tier),
+      recommended: this.modelRegistry.getRecommendedModelsForHardware(profile.tier, profile),
       available: this.modelRegistry.getModelsForTier(profile.tier),
     };
   }
@@ -362,7 +362,7 @@ export class InferenceController {
     const profile = await this.hardwareInspector.getProfile();
     const recommendedBackend = this.getRecommendedBackend(profile);
     const tier = this.getOnboardingTier(profile, recommendedBackend);
-    const recommendedModels = this.modelRegistry.getRecommendedModels(tier);
+    const recommendedModels = this.modelRegistry.getRecommendedModelsForHardware(tier, profile);
     const availableModels = this.modelRegistry.getModelsForTier(tier);
     const budget = this.memoryManager.calculateBudget(profile);
     const status = await this.router.getStatus();

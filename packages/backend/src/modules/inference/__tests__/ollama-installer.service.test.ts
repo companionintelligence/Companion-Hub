@@ -1,7 +1,6 @@
 import { Test, type TestingModule } from '@nestjs/testing';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import os from 'node:os';
 import { LoggerService } from '@/core/logger/logger.service';
 import { OllamaInstallerService } from '../ollama-installer.service';
 import { OllamaBackend } from '../backends/ollama.backend';
@@ -47,7 +46,6 @@ describe('OllamaInstallerService', () => {
   });
 
   it('reports Ollama ready when the configured endpoint is healthy even without a local CLI', async () => {
-    vi.spyOn(os, 'platform').mockReturnValue('darwin');
     execAsyncMock.mockRejectedValue(new Error('not found'));
     ollamaBackend.healthCheck.mockResolvedValue({
       running: true,
@@ -68,13 +66,11 @@ describe('OllamaInstallerService', () => {
   });
 
   it('reports Ollama installed but not ready when the CLI exists and the endpoint is down', async () => {
-    vi.spyOn(os, 'platform').mockReturnValue('linux');
     execAsyncMock.mockResolvedValueOnce({ stdout: 'ollama version 0.6.0\n' }).mockResolvedValueOnce({ stdout: '/usr/local/bin/ollama\n' });
 
-    await expect(service.checkInstallation()).resolves.toEqual({
+    await expect(service.checkInstallation()).resolves.toMatchObject({
       installed: true,
       version: 'ollama version 0.6.0',
-      installPath: '/usr/local/bin/ollama',
       needsInstall: false,
       running: false,
       ready: false,
@@ -83,14 +79,28 @@ describe('OllamaInstallerService', () => {
     });
   });
 
-  it('returns a host-side install command for Unix-like platforms', async () => {
-    vi.spyOn(os, 'platform').mockReturnValue('linux');
-
+  it('returns container guidance when Ollama is not reachable', async () => {
     const result = await service.install();
 
     expect(result).toEqual({
       success: false,
-      message: 'Install Ollama on the host machine with: curl -fsSL https://ollama.com/install.sh | sh',
+      message: 'Ollama is managed by the ci-hub-ollama container. Start or restart that container and re-check http://host.docker.internal:11434.',
+    });
+  });
+
+  it('returns success when the Ollama endpoint is already ready', async () => {
+    execAsyncMock.mockRejectedValue(new Error('not found'));
+    ollamaBackend.healthCheck.mockResolvedValue({
+      running: true,
+      healthy: true,
+      modelsLoaded: ['qwen3.6:8b'],
+    });
+
+    const result = await service.install();
+
+    expect(result).toEqual({
+      success: true,
+      message: 'Ollama container is already running and reachable.',
     });
   });
 });

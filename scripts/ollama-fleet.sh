@@ -29,8 +29,9 @@ MODEL_SOURCE_NAME="core-5"
 
 # Standard models to ensure on all servers
 STANDARD_MODELS=(
-  "qwen3:32b"
-  "gemma3:1b"
+  "gemma4:12b"
+  "qwen3.6:20b"
+  "nemotron3:8b"
   "nomic-embed-text:latest"
 )
 
@@ -156,7 +157,7 @@ cmd_pull() {
   MODEL="$1"
   if [ -z "$MODEL" ]; then
     echo "Usage: $0 pull <model>"
-    echo "Example: $0 pull qwen3:32b"
+    echo "Example: $0 pull qwen3.6:20b"
     exit 1
   fi
   

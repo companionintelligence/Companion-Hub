@@ -12,8 +12,6 @@ import { OllamaSetupCard } from './ai-setup/ollama-setup-card';
 import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
 import { Loader2 } from 'lucide-react';
 
-const OLLAMA_INSTALL_COMMAND = 'curl -fsSL https://ollama.com/install.sh | sh';
-
 interface AiSetupStepProps {
   onComplete: (config: AiSetupConfig) => void;
   onSkip: () => void;
@@ -29,11 +27,6 @@ interface OllamaStatus {
   ready: boolean;
   endpointUrl: string;
   error?: string;
-}
-
-function detectOllamaInstallMode() {
-  const platform = `${navigator.userAgent} ${navigator.platform}`.toLowerCase();
-  return platform.includes('windows') || platform.includes('win32') || platform.includes('win64') ? 'auto' : 'manual-script';
 }
 
 export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) => {
@@ -88,15 +81,6 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
 
   const handleInstallOllama = async () => {
     setOllamaInstallError(null);
-    if (detectOllamaInstallMode() === 'manual-script') {
-      try {
-        await navigator.clipboard.writeText(OLLAMA_INSTALL_COMMAND);
-      } catch {
-        setOllamaInstallError('Failed to copy the Ollama install command.');
-      }
-      return;
-    }
-
     setInstallingOllama(true);
     try {
       const res = await apiFetch('/api/inference/ollama/install', {
@@ -200,7 +184,6 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
   const selectedModels = backendAvailableModels.filter((model) => selectedModelIds.includes(model.id));
   const availableMemoryMb = profile.resourceEstimate.availableMemoryMb;
   const needsOllama = selectedBackend === 'ollama' && (ollamaStatus === null || !ollamaStatus.ready);
-  const ollamaInstallMode = detectOllamaInstallMode();
 
   return (
     <div className="space-y-4 max-h-[62vh] overflow-y-auto pr-2" data-testid="ai-setup-step">
@@ -216,8 +199,6 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
               checking={checkingOllama}
               onInstall={handleInstallOllama}
               onRecheck={checkOllamaStatus}
-              installMode={ollamaInstallMode}
-              installCommand={OLLAMA_INSTALL_COMMAND}
               errorMessage={ollamaInstallError}
             />
           )}
