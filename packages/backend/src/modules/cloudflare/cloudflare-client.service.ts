@@ -1,4 +1,4 @@
-import { APP_DIR, DATA_DIR } from '@/common/constants';
+import { APP_DIR, DATA_DIR, DEFAULT_CI_CLOUD_URL, TUNNEL_DIR } from '@/common/constants';
 import { Injectable, Logger } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -51,7 +51,7 @@ export class CloudflareClientService {
     private configService: ConfigurationService,
     private moduleRef: ModuleRef,
   ) {
-    const ciCloudUrl = this.configService.get('ciCloudUrl') || 'https://hub.companionintelligence.com';
+    const ciCloudUrl = this.configService.get('ciCloudUrl') || DEFAULT_CI_CLOUD_URL;
     this.cloudApiUrl = `${ciCloudUrl}/api`;
 
     this.client = axios.create({
@@ -88,8 +88,8 @@ export class CloudflareClientService {
   }
 
   private async updateTunnelFiles(token: string) {
-    // APP_DIR is configured to be the repo root in dev, and /app in prod
-    const tunnelDir = path.join(APP_DIR, 'tunnel');
+    // Tunnel state defaults under APP_DIR, but tests can redirect it with CI_HUB_TUNNEL_DIR.
+    const tunnelDir = TUNNEL_DIR;
     const certsDir = path.join(tunnelDir, 'certs');
 
     try {
@@ -305,7 +305,7 @@ export class CloudflareClientService {
       if (tunnelId) {
         this.tunnelId = tunnelId;
       }
-      const tokenPath = path.join(APP_DIR, 'tunnel', 'token');
+      const tokenPath = path.join(TUNNEL_DIR, 'token');
       const token = await fs.readFile(tokenPath, 'utf-8');
       const trimmed = token?.trim();
       if (trimmed) {

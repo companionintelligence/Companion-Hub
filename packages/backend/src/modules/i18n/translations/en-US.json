@@ -380,8 +380,9 @@
   "AUTH_FORM_PASSWORD_PLACEHOLDER": "Enter your password",
   "AUTH_LOGIN_SUBMIT": "Login",
   "AUTH_LOGIN_TITLE": "Login to {{type}}",
-  "AUTH_REGISTER_SUBMIT": "Register",
-  "AUTH_REGISTER_TITLE": "Register your account",
+  "AUTH_REGISTER_NOTE": "Note: this is a local administrator account, separate from your Companion Hub account",
+  "AUTH_REGISTER_SUBMIT": "Create Local Admin User",
+  "AUTH_REGISTER_TITLE": "Create local admin user for this device",
   "AUTH_RESET_PASSWORD_BACK_TO_LOGIN": "Back to login",
   "AUTH_RESET_PASSWORD_CANCEL": "Cancel password change request",
   "AUTH_RESET_PASSWORD_INSTRUCTIONS": "To get started, run this command on your server and then refresh this page. If you have previously done so, the password reset request may have expired. In that case please retry",
@@ -751,5 +752,15 @@
   "MY_APPS_RESTART_ALL_FORM_SUBTITLE": "This will restart all running apps.",
   "MY_APPS_RESTART_ALL_FORM_TITLE": "Restart all apps",
   "MY_APPS_RESTART_ALL_IN_PROGRESS": "Restarting all apps",
-  "MY_APPS_BATCH_ACTIONS": "Batch actions"
+  "MY_APPS_BATCH_ACTIONS": "Batch actions",
+  "CORE_SERVER_BANNER_DISMISS": "Dismiss",
+  "CORE_SERVER_BANNER_LEARN_MORE": "Learn more",
+  "CORE_SERVER_BANNER_DEFAULT_TITLE": "Upgrade to a Companion Core Server",
+  "CORE_SERVER_BANNER_DEFAULT_MESSAGE": "Your current hardware may limit your AI companion experience. A Companion Core Server delivers dedicated processing power for faster, more capable AI.",
+  "CORE_SERVER_BANNER_LOW_RAM_TITLE": "Your system is low on memory",
+  "CORE_SERVER_BANNER_LOW_RAM_MESSAGE": "You do not have enough RAM to run advanced AI models smoothly. A Companion Core Server provides the memory your companion needs to perform at its best.",
+  "CORE_SERVER_BANNER_LOW_DISK_TITLE": "Your system is low on storage",
+  "CORE_SERVER_BANNER_LOW_DISK_MESSAGE": "You do not have enough disk space to store large AI models. A Companion Core Server comes with ample storage purpose-built for AI workloads.",
+  "CORE_SERVER_BANNER_LOW_CPU_TITLE": "Your CPU may be holding you back",
+  "CORE_SERVER_BANNER_LOW_CPU_MESSAGE": "You do not have enough processing power for demanding AI tasks. A Companion Core Server delivers dedicated hardware power your companion deserves."
 }

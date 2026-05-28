@@ -24,21 +24,6 @@ static START_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 /// `(hub .env mtime, is_private_vpn)` — avoids parsing the env file on every hub status poll (~3s).
 static PRIVATE_VPN_ENV_CACHE: Mutex<Option<(Option<std::time::SystemTime>, bool)>> = Mutex::new(None);
 
-/// After the hub container is healthy and the Tailscale sidecar has been verified once, keep inspecting it
-/// until this grace elapses; then skip docker inspect on steady-state polls.
-const VPN_SIDECARS_STATUS_POLL_GRACE: Duration = Duration::from_secs(90);
-
-#[derive(Debug, Clone, Copy)]
-enum VpnSidecarPollPhase {
-    /// Hub reports healthy but `hub-tailscale` has not yet passed [`vpn_sidecars_ready`] in this cycle.
-    PendingReady,
-    /// Sidecar was ready at least once at `verified_at`.
-    VerifiedSince(Instant),
-}
-
-static VPN_SIDECAR_STATUS_POLL_PHASE: Mutex<VpnSidecarPollPhase> =
-    Mutex::new(VpnSidecarPollPhase::PendingReady);
-
 /// Serialize rotation + append so concurrent callers cannot interleave
 /// renames and writes to `desktop.log`.
 static LOG_WRITE_LOCK: Mutex<()> = Mutex::new(());
@@ -130,6 +115,257 @@ fn command_on_path(binary: &str) -> Option<PathBuf> {
                 .find(|line| !line.is_empty())
                 .map(PathBuf::from)
         })
+}
+
+fn refresh_nvidia_host_probe_cache(data_dir: &Path) {
+    let probe_path = data_dir.join("state/hardware/nvidia.json");
+    if let Some(parent) = probe_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let clear_stale_probe = || {
+        let _ = std::fs::remove_file(&probe_path);
+    };
+
+    #[cfg(target_os = "windows")]
+    {
+        let mut command = Command::new("powershell.exe");
+        command
+            .creation_flags(CREATE_NO_WINDOW)
+            .arg("-NoProfile")
+            .arg("-NonInteractive")
+            .arg("-Command")
+            .arg("$gpu = Get-CimInstance Win32_VideoController | Where-Object { $_.Name -match 'NVIDIA' } | Select-Object -First 1 Name,AdapterRAM,DriverVersion; if ($null -eq $gpu) { exit 3 }; $gpu | ConvertTo-Json -Compress");
+
+        let output = match command.output() {
+            Ok(value) => value,
+            Err(error) => {
+                clear_stale_probe();
+                let _ = append_desktop_log_for(
+                    data_dir,
+                    "gpu.probe",
+                    &format!(
+                        "Skipping Windows NVIDIA probe cache refresh (PowerShell unavailable): {}",
+                        error
+                    ),
+                );
+                return;
+            }
+        };
+
+        if !output.status.success() {
+            clear_stale_probe();
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let details = if stderr.is_empty() {
+                "No NVIDIA GPU found via Windows WMI; host NVIDIA probe cache cleared."
+                    .to_string()
+            } else {
+                format!("Windows NVIDIA probe command failed: {}", stderr)
+            };
+            let _ = append_desktop_log_for(data_dir, "gpu.probe", &details);
+            return;
+        }
+
+        let raw_json = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let parsed: serde_json::Value = match serde_json::from_str(&raw_json) {
+            Ok(value) => value,
+            Err(error) => {
+                clear_stale_probe();
+                let _ = append_desktop_log_for(
+                    data_dir,
+                    "gpu.probe",
+                    &format!("Failed to parse Windows NVIDIA probe output: {}", error),
+                );
+                return;
+            }
+        };
+
+        let model = parsed
+            .get("Name")
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if model.is_empty() {
+            clear_stale_probe();
+            let _ = append_desktop_log_for(
+                data_dir,
+                "gpu.probe",
+                "Windows NVIDIA probe output missing adapter name; host cache not updated.",
+            );
+            return;
+        }
+
+        let vram_mb = parsed
+            .get("AdapterRAM")
+            .and_then(|value| value.as_u64())
+            .map(|bytes| bytes / (1024 * 1024))
+            .unwrap_or(0);
+        let driver_version = parsed
+            .get("DriverVersion")
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+
+        let payload = serde_json::json!({
+            "model": model,
+            "vramMb": vram_mb,
+            "driverVersion": driver_version,
+            "source": "desktop-host-windows-wmi"
+        });
+
+        let serialized = match serde_json::to_string_pretty(&payload) {
+            Ok(value) => format!("{}\n", value),
+            Err(error) => {
+                clear_stale_probe();
+                let _ = append_desktop_log_for(
+                    data_dir,
+                    "gpu.probe",
+                    &format!("Failed to serialize Windows NVIDIA probe cache: {}", error),
+                );
+                return;
+            }
+        };
+
+        match std::fs::write(&probe_path, serialized) {
+            Ok(_) => {
+                let _ = append_desktop_log_for(
+                    data_dir,
+                    "gpu.probe",
+                    &format!(
+                        "Updated Windows host NVIDIA probe cache at {}",
+                        probe_path.display()
+                    ),
+                );
+            }
+            Err(error) => {
+                let _ = append_desktop_log_for(
+                    data_dir,
+                    "gpu.probe",
+                    &format!(
+                        "Failed to write Windows host NVIDIA probe cache at {}: {}",
+                        probe_path.display(),
+                        error
+                    ),
+                );
+            }
+        }
+
+        return;
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        clear_stale_probe();
+        return;
+    }
+
+    let output = Command::new("sh")
+        .arg("-lc")
+        .arg("nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader,nounits | head -n 1")
+        .output();
+
+    let output = match output {
+        Ok(value) => value,
+        Err(error) => {
+            clear_stale_probe();
+            let _ = append_desktop_log_for(
+                data_dir,
+                "gpu.probe",
+                &format!(
+                    "Skipping host NVIDIA probe cache refresh (nvidia-smi unavailable): {}",
+                    error
+                ),
+            );
+            return;
+        }
+    };
+
+    if !output.status.success() {
+        clear_stale_probe();
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let details = if stderr.is_empty() {
+            "nvidia-smi command failed".to_string()
+        } else {
+            format!("nvidia-smi command failed: {}", stderr)
+        };
+        let _ = append_desktop_log_for(data_dir, "gpu.probe", &details);
+        return;
+    }
+
+    let first_line = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("")
+        .to_string();
+    if first_line.is_empty() {
+        clear_stale_probe();
+        let _ = append_desktop_log_for(
+            data_dir,
+            "gpu.probe",
+            "nvidia-smi produced no GPU rows; host NVIDIA probe cache not updated.",
+        );
+        return;
+    }
+
+    let mut parts = first_line.split(',').map(str::trim);
+    let model = parts.next().unwrap_or_default().to_string();
+    let vram_mb = parts
+        .next()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+    let driver_version = parts.next().unwrap_or_default().to_string();
+
+    if model.is_empty() {
+        clear_stale_probe();
+        let _ = append_desktop_log_for(
+            data_dir,
+            "gpu.probe",
+            "nvidia-smi probe row did not include a GPU model; host cache not updated.",
+        );
+        return;
+    }
+
+    let payload = serde_json::json!({
+        "model": model,
+        "vramMb": vram_mb,
+        "driverVersion": driver_version,
+        "source": "desktop-host-nvidia-smi"
+    });
+
+    let serialized = match serde_json::to_string_pretty(&payload) {
+        Ok(value) => format!("{}\n", value),
+        Err(error) => {
+            let _ = append_desktop_log_for(
+                data_dir,
+                "gpu.probe",
+                &format!("Failed to serialize host NVIDIA probe cache: {}", error),
+            );
+            return;
+        }
+    };
+
+    match std::fs::write(&probe_path, serialized) {
+        Ok(_) => {
+            let _ = append_desktop_log_for(
+                data_dir,
+                "gpu.probe",
+                &format!("Updated host NVIDIA probe cache at {}", probe_path.display()),
+            );
+        }
+        Err(error) => {
+            let _ = append_desktop_log_for(
+                data_dir,
+                "gpu.probe",
+                &format!(
+                    "Failed to write host NVIDIA probe cache at {}: {}",
+                    probe_path.display(),
+                    error
+                ),
+            );
+        }
+    }
 }
 
 /// Find the Docker binary, checking common install locations if not in PATH.
@@ -400,23 +636,31 @@ fn service_state_score(state: &ServiceState) -> u8 {
     }
 }
 
-/// Return per-service startup progress for the frontend loading screen.
-pub fn get_startup_progress() -> StartupProgress {
-    let vpn_on = is_private_vpn_enabled();
-
-    // Core services in startup order. Optional ones are included for visibility but do not block
-    // the "all_ready" gate. When Private VPN is enabled, `hub-tailscale` is required.
-    let mut core: Vec<(&str, &str, bool)> = vec![
+fn startup_service_definitions(vpn_on: bool) -> (Vec<(&'static str, &'static str, bool)>, Vec<(&'static str, &'static str, bool)>) {
+    let core = vec![
         ("ci-hub-db", "Database", true),
         ("ci-os-hub-queue", "Message queue", true),
         ("ci-os-hub", "Hub backend", true),
         ("traefik", "Router", true),
     ];
-    if vpn_on {
-        core.push(("hub-tailscale", "Private VPN", true));
-    }
 
-    let optional: Vec<(&str, &str, bool)> = vec![("cloudflared", "Tunnel", false)];
+    let mut optional = Vec::new();
+    if vpn_on {
+        optional.push(("hub-tailscale", "Private VPN", false));
+    }
+    optional.push(("cloudflared", "Tunnel", false));
+
+    (core, optional)
+}
+
+/// Return per-service startup progress for the frontend loading screen.
+pub fn get_startup_progress() -> StartupProgress {
+    let vpn_on = is_private_vpn_enabled();
+
+    // Core services in startup order. Optional ones are included for visibility but do not block
+    // the "all_ready" gate. Private VPN improves remote access, but the desktop app should stay
+    // usable even if the sidecar is still reconnecting.
+    let (core, optional) = startup_service_definitions(vpn_on);
 
     let all_names: Vec<&str> = core.iter().chain(optional.iter()).map(|(n, _, _)| *n).collect();
     let states = inspect_containers(&all_names);
@@ -489,12 +733,10 @@ pub fn get_hub_status() -> HubStatus {
     // If a start operation is actively running (including first-time image pulls),
     // report Starting so the frontend shows progress instead of a false "Stopped" state.
     if START_IN_PROGRESS.load(Ordering::SeqCst) {
-        reset_vpn_sidecar_status_poll_phase();
         return HubStatus::Starting;
     }
 
     if !is_docker_available() {
-        reset_vpn_sidecar_status_poll_phase();
         return HubStatus::DockerNotAvailable;
     }
 
@@ -511,7 +753,6 @@ pub fn get_hub_status() -> HubStatus {
         .unwrap_or_default();
 
     if status.is_empty() || status.contains("No such object") || status.contains("Error") {
-        reset_vpn_sidecar_status_poll_phase();
         return HubStatus::Stopped;
     }
 
@@ -519,53 +760,8 @@ pub fn get_hub_status() -> HubStatus {
     let state = parts.first().copied().unwrap_or("");
     let health = parts.get(1).copied().unwrap_or("");
 
-    if !(state == "running" && health == "healthy") {
-        reset_vpn_sidecar_status_poll_phase();
-    }
-
     match (state, health) {
-        ("running", "healthy") => {
-            let vpn_on = is_private_vpn_enabled();
-            if !vpn_on {
-                reset_vpn_sidecar_status_poll_phase();
-                HubStatus::Running
-            } else {
-                let skip_sidecar_inspect = {
-                    let phase = VPN_SIDECAR_STATUS_POLL_PHASE.lock().unwrap();
-                    matches!(
-                        *phase,
-                        VpnSidecarPollPhase::VerifiedSince(since)
-                            if since.elapsed() >= VPN_SIDECARS_STATUS_POLL_GRACE
-                    )
-                };
-                if skip_sidecar_inspect {
-                    HubStatus::Running
-                } else {
-                    let ready = vpn_sidecars_ready();
-                    let mut phase = VPN_SIDECAR_STATUS_POLL_PHASE.lock().unwrap();
-                    match *phase {
-                        VpnSidecarPollPhase::PendingReady => {
-                            if ready {
-                                *phase = VpnSidecarPollPhase::VerifiedSince(Instant::now());
-                                HubStatus::Running
-                            } else {
-                                HubStatus::Starting
-                            }
-                        }
-                        VpnSidecarPollPhase::VerifiedSince(since) => {
-                            if since.elapsed() >= VPN_SIDECARS_STATUS_POLL_GRACE {
-                                HubStatus::Running
-                            } else if ready {
-                                HubStatus::Running
-                            } else {
-                                *phase = VpnSidecarPollPhase::PendingReady;
-                                HubStatus::Starting
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        ("running", "healthy") => HubStatus::Running,
         ("running", _) => HubStatus::Starting,
         ("restarting", _) => {
             // Check if database is still starting — if so, Hub restart is expected
@@ -666,6 +862,142 @@ pub(crate) fn logs_open_target_for(data_dir: &Path) -> PathBuf {
 
 pub fn logs_open_target() -> PathBuf {
     logs_open_target_for(&get_hub_data_dir())
+}
+
+// ─── User-stopped marker ──────────────────────────────────────────────────────
+//
+// When the user explicitly stops the Hub (via tray menu or the UI), we write a
+// sentinel file so that the next desktop launch does NOT auto-restart the Hub.
+// The marker is removed when the user explicitly starts the Hub again.
+
+const USER_STOPPED_MARKER_FILENAME: &str = ".user-stopped";
+
+fn user_stopped_marker_path(data_dir: &Path) -> PathBuf {
+    data_dir.join(USER_STOPPED_MARKER_FILENAME)
+}
+
+/// Record that the user intentionally stopped the Hub.
+/// Called from `stop_hub()` so the next app launch skips auto-start.
+pub fn mark_user_stopped(data_dir: &Path) {
+    let _ = std::fs::write(
+        user_stopped_marker_path(data_dir),
+        b"Hub was intentionally stopped by the user.\n",
+    );
+}
+
+/// Clear the user-stopped marker when the user explicitly starts the Hub.
+/// Also called at the beginning of `start_hub()`.
+pub fn clear_user_stopped(data_dir: &Path) {
+    let _ = std::fs::remove_file(user_stopped_marker_path(data_dir));
+}
+
+/// Returns `true` if the user intentionally stopped the Hub on last use.
+pub fn is_user_stopped(data_dir: &Path) -> bool {
+    user_stopped_marker_path(data_dir).exists()
+}
+
+// ─── Desktop log reader ───────────────────────────────────────────────────────
+
+/// Read the desktop log file (last `max_lines` lines) for in-app diagnostics.
+///
+/// Uses a bounded tail read from the end of the file to avoid loading the entire
+/// file into memory when the log has grown large.
+pub fn read_desktop_logs(max_lines: usize) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let log_path = desktop_log_path();
+    let mut file = match std::fs::File::open(&log_path) {
+        Ok(f) => f,
+        Err(_) => return String::new(),
+    };
+
+    let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
+    if file_len == 0 {
+        return String::new();
+    }
+
+    // Read at most 256 KB from the end — more than enough for a few hundred lines.
+    const MAX_TAIL_BYTES: u64 = 256 * 1024;
+    let read_from = file_len.saturating_sub(MAX_TAIL_BYTES);
+    let _ = file.seek(SeekFrom::Start(read_from));
+
+    let mut buf = String::new();
+    if file.read_to_string(&mut buf).is_err() {
+        return String::new();
+    }
+
+    let lines: Vec<&str> = buf.lines().collect();
+    let start = lines.len().saturating_sub(max_lines);
+    // If we seeked into the middle of the file, the first "line" is likely
+    // a partial line — skip it when we didn't start from the beginning.
+    let start = if read_from > 0 && start == 0 && lines.len() > 1 { 1 } else { start };
+    lines[start..].join("\n")
+}
+
+pub(crate) fn tunnel_dir_for(data_dir: &Path) -> PathBuf {
+    data_dir.join("tunnel")
+}
+
+pub(crate) fn tunnel_token_path_for(data_dir: &Path) -> PathBuf {
+    tunnel_dir_for(data_dir).join("token")
+}
+
+/// Remove the Cloudflare tunnel token file (and its parent directory if empty).
+/// Returns a human-readable summary of what was removed for logging. Errors only
+/// when the filesystem refuses to delete an existing file — a missing token is a
+/// no-op success since the post-condition (no token on disk) is already satisfied.
+pub fn clear_tunnel_token(data_dir: &Path) -> Result<String, String> {
+    let token_path = tunnel_token_path_for(data_dir);
+    let tunnel_dir = tunnel_dir_for(data_dir);
+
+    let token_existed = token_path.exists();
+    if token_existed {
+        std::fs::remove_file(&token_path).map_err(|e| {
+            format!(
+                "Failed to remove tunnel token at {}: {}",
+                token_path.display(),
+                e
+            )
+        })?;
+    }
+
+    let mut removed_dir = false;
+    if tunnel_dir.exists() {
+        match std::fs::read_dir(&tunnel_dir) {
+            Ok(mut entries) => {
+                if entries.next().is_none() {
+                    if let Err(e) = std::fs::remove_dir(&tunnel_dir) {
+                        return Err(format!(
+                            "Removed tunnel token but failed to remove empty tunnel dir {}: {}",
+                            tunnel_dir.display(),
+                            e
+                        ));
+                    }
+                    removed_dir = true;
+                }
+            }
+            Err(e) => {
+                return Err(format!(
+                    "Removed tunnel token but failed to inspect {}: {}",
+                    tunnel_dir.display(),
+                    e
+                ));
+            }
+        }
+    }
+
+    let summary = match (token_existed, removed_dir) {
+        (true, true) => format!(
+            "Tunnel token cleared ({} removed) and empty tunnel dir removed.",
+            token_path.display()
+        ),
+        (true, false) => format!("Tunnel token cleared ({} removed).", token_path.display()),
+        (false, _) => format!(
+            "No tunnel token to clear at {} (already absent).",
+            token_path.display()
+        ),
+    };
+    Ok(summary)
 }
 
 pub(crate) fn managed_app_container_ps_args() -> [&'static str; 6] {
@@ -1438,6 +1770,9 @@ fn start_database_first(compose_path: &Path, env_path: &Path, data_dir: &Path) -
 /// Uses a global `AtomicBool` guard to prevent concurrent invocations.
 /// A `Drop` guard ensures the flag is cleared even if the inner logic panics.
 pub fn start_hub(compose_path: &Path, env_path: &Path, data_dir: &Path) -> Result<String, String> {
+    // Clear the user-stopped marker: the user has explicitly requested a start.
+    clear_user_stopped(data_dir);
+
     // Prevent concurrent start attempts.
     if START_IN_PROGRESS.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err()
     {
@@ -1582,6 +1917,11 @@ fn start_hub_inner(
             ),
         );
     }
+
+    // Surface host NVIDIA hardware to the backend even when the container lacks
+    // direct GPU devices; this enables runtime-missing warnings instead of
+    // misclassifying NVIDIA hosts as "no GPU detected".
+    refresh_nvidia_host_probe_cache(data_dir);
 
     // Resolve port conflicts and write to the runtime env file before starting.
     let resolution = crate::port_manager::refresh_ports_if_needed(env_path).map_err(|error| {
@@ -1761,11 +2101,14 @@ fn start_hub_inner(
 /// Stop Hub containers
 pub fn stop_hub(compose_path: &Path, env_path: &Path) -> Result<String, String> {
     let data_dir = get_hub_data_dir();
+    // Record that the user intentionally stopped the Hub so the next launch
+    // does not auto-restart it.
+    mark_user_stopped(&data_dir);
     let _ = append_desktop_log_for(
         &data_dir,
         "hub.stop",
         &format!(
-            "Requested stop via docker compose down\ncompose={}\nenv={}",
+            "Requested stop via docker compose down (user-stopped marker set)\ncompose={}\nenv={}",
             compose_path.display(),
             env_path.display()
         ),
@@ -1909,10 +2252,6 @@ fn private_vpn_enabled_from_map(env: &std::collections::HashMap<String, String>)
         .unwrap_or(true)
 }
 
-fn reset_vpn_sidecar_status_poll_phase() {
-    *VPN_SIDECAR_STATUS_POLL_PHASE.lock().unwrap() = VpnSidecarPollPhase::PendingReady;
-}
-
 /// Cached by hub `.env` file mtime so frequent [`get_hub_status`] polls do not re-read and parse the file.
 fn is_private_vpn_enabled() -> bool {
     let path = hub_env_path();
@@ -1965,24 +2304,6 @@ fn merge_compose_profiles(
         parts.retain(|p| p != "private-vpn");
     }
     parts.join(",")
-}
-
-/// `hub-tailscale` must be [`ServiceState::Ready`]: running (no healthcheck → `none` counts as ready).
-fn vpn_sidecars_ready() -> bool {
-    let names = ["hub-tailscale"];
-    let states = inspect_containers(&names);
-    for name in names {
-        match states.get(name) {
-            Some((state, health)) => {
-                let svc_state = derive_service_state(state.as_str(), health.as_str());
-                if !matches!(svc_state, ServiceState::Ready) {
-                    return false;
-                }
-            }
-            None => return false,
-        }
-    }
-    true
 }
 
 fn get_non_empty_env_value(
@@ -2999,11 +3320,12 @@ mod tests {
     use super::docker_desktop_windows_install_script;
     use super::{
         append_desktop_log_for, classify_docker_access_result, clear_traefik_recreate_required,
-        desktop_log_path_for, format_command_output, generate_container_docker_config,
-        is_container_name_conflict, is_oci_runtime_error, is_traefik_recreate_required,
-        logs_open_target_for, managed_app_container_ps_args, mark_traefik_recreate_required,
-        parse_container_ids, prepare_traefik_runtime_state, seeded_traefik_config_contents,
-        truncate_command_output, DockerAccessState, MAX_COMMAND_OUTPUT_CHARS, TRAEFIK_ACME_FILE,
+        clear_tunnel_token, desktop_log_path_for, format_command_output,
+        generate_container_docker_config, is_container_name_conflict, is_oci_runtime_error,
+        is_traefik_recreate_required, logs_open_target_for, managed_app_container_ps_args,
+        mark_traefik_recreate_required, parse_container_ids, prepare_traefik_runtime_state,
+        seeded_traefik_config_contents, startup_service_definitions, truncate_command_output, tunnel_dir_for,
+        tunnel_token_path_for, DockerAccessState, MAX_COMMAND_OUTPUT_CHARS, TRAEFIK_ACME_FILE,
         TRAEFIK_CONFIG_FILE, TRAEFIK_DYNAMIC_CONFIG_SEED, TRAEFIK_DYNAMIC_FILE, TRAEFIK_TLS_DIR,
     };
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -3108,6 +3430,16 @@ mod tests {
                 "label=ci-os-hub.appurn",
             ]
         );
+    }
+
+    #[test]
+    fn startup_progress_keeps_private_vpn_visible_but_non_blocking() {
+        let (core, optional) = startup_service_definitions(true);
+
+        assert_eq!(core.len(), 4);
+        assert!(optional
+            .iter()
+            .any(|(container, label, required)| *container == "hub-tailscale" && *label == "Private VPN" && !required));
     }
 
     #[test]
@@ -3481,6 +3813,56 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
             helpers.get("123456789.dkr.ecr.us-east-1.amazonaws.com"),
             Some(&serde_json::json!("ecr-login")),
             "non-host-only credHelper should be preserved"
+        );
+    }
+
+    #[test]
+    fn clear_tunnel_token_is_noop_when_absent() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let summary = clear_tunnel_token(tempdir.path()).expect("clear_tunnel_token succeeds");
+        assert!(
+            summary.contains("already absent"),
+            "missing token should report no-op, got: {summary}",
+        );
+        assert!(!tunnel_token_path_for(tempdir.path()).exists());
+    }
+
+    #[test]
+    fn clear_tunnel_token_removes_token_and_empty_dir() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let token_path = tunnel_token_path_for(tempdir.path());
+        std::fs::create_dir_all(token_path.parent().expect("parent")).expect("mkdir tunnel/");
+        std::fs::write(&token_path, b"FAKE_TOKEN").expect("write token");
+
+        let summary = clear_tunnel_token(tempdir.path()).expect("clear_tunnel_token succeeds");
+
+        assert!(!token_path.exists(), "token file should be removed");
+        assert!(
+            !tunnel_dir_for(tempdir.path()).exists(),
+            "empty tunnel dir should be removed",
+        );
+        assert!(
+            summary.contains("removed"),
+            "summary should report removal, got: {summary}",
+        );
+    }
+
+    #[test]
+    fn clear_tunnel_token_keeps_dir_with_siblings() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let token_path = tunnel_token_path_for(tempdir.path());
+        std::fs::create_dir_all(token_path.parent().expect("parent")).expect("mkdir tunnel/");
+        std::fs::write(&token_path, b"FAKE_TOKEN").expect("write token");
+        // A sibling file (e.g. certs/) keeps the tunnel/ directory alive after token removal.
+        std::fs::write(tunnel_dir_for(tempdir.path()).join("certs.pem"), b"PEM")
+            .expect("write sibling");
+
+        clear_tunnel_token(tempdir.path()).expect("clear_tunnel_token succeeds");
+
+        assert!(!token_path.exists(), "token file should be removed");
+        assert!(
+            tunnel_dir_for(tempdir.path()).exists(),
+            "tunnel dir with sibling files should be preserved",
         );
     }
 }

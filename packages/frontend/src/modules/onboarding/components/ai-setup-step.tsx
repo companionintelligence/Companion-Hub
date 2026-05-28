@@ -102,7 +102,8 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
   const handleRescan = async () => {
     setRescanning(true);
     try {
-      await apiFetch('/api/inference/hardware/rescan', { method: 'POST', credentials: 'include' });
+      const res = await apiFetch('/api/inference/hardware/rescan', { method: 'POST', credentials: 'include' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       await fetchProfile(true);
     } catch (e) {
       setError((e as Error).message);

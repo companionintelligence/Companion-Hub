@@ -167,10 +167,7 @@ describe('AiSetupStep', () => {
     expect(screen.getByText(/AI services will run on CPU only/)).toBeInTheDocument();
   });
 
-  it.each([
-    ['nvidia', 'NVIDIA CUDA'],
-    ['amd', 'AMD ROCm'],
-  ] as const)('shows runtime warning copy for %s GPUs when runtime is unavailable', async (vendor, driverText) => {
+  it('shows NVIDIA runtime setup guidance when NVIDIA GPU runtime is unavailable', async () => {
     const noRuntimeProfile: HardwareProfileResponse = {
       ...highTierProfile,
       hardware: {
@@ -179,7 +176,30 @@ describe('AiSetupStep', () => {
           ...highTierProfile.hardware.gpu,
           available: true,
           runtimeAvailable: false,
-          vendor,
+          vendor: 'nvidia',
+        },
+      },
+    };
+
+    mockApiFetch.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(noRuntimeProfile) });
+    render(<AiSetupStep onComplete={onComplete} onSkip={onSkip} onBack={onBack} />);
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+    expect(screen.getByTestId('nvidia-runtime-warning')).toBeInTheDocument();
+    expect(screen.getByText(/NVIDIA GPU detected, but GPU runtime is not ready yet/i)).toBeInTheDocument();
+  });
+
+  it('shows AMD runtime warning copy when AMD GPU runtime is unavailable', async () => {
+    const noRuntimeProfile: HardwareProfileResponse = {
+      ...highTierProfile,
+      hardware: {
+        ...highTierProfile.hardware,
+        gpu: {
+          ...highTierProfile.hardware.gpu,
+          available: true,
+          runtimeAvailable: false,
+          vendor: 'amd',
+          model: 'Radeon RX 7900 XTX',
         },
       },
     };
@@ -189,8 +209,8 @@ describe('AiSetupStep', () => {
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
 
     expect(screen.getByText('GPU driver not available.')).toBeInTheDocument();
-    expect(screen.getByText(`Your ${vendor} GPU was detected but the runtime is not available.`, { exact: false })).toBeInTheDocument();
-    expect(screen.getByText(`Please install the appropriate drivers (${driverText}).`, { exact: false })).toBeInTheDocument();
+    expect(screen.getByText(/Your amd GPU was detected but the runtime is not available/i)).toBeInTheDocument();
+    expect(screen.getByText(/Please install the appropriate drivers \(AMD ROCm\)/i)).toBeInTheDocument();
   });
 
   it('pre-selects recommended models', async () => {
@@ -332,6 +352,58 @@ describe('AiSetupStep', () => {
     });
   });
 
+  it('shows rescan error and skips profile refresh when rescan returns non-OK', async () => {
+    const user = userEvent.setup();
+    mockApiFetch
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(highTierProfile) }) // initial profile fetch
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ installed: true, needsInstall: false }) }) // ollama status
+      .mockResolvedValueOnce({ ok: false, status: 503 }); // rescan POST failure
+
+    render(<AiSetupStep onComplete={onComplete} onSkip={onSkip} onBack={onBack} />);
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+    await user.click(screen.getByTestId('rescan-btn'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('ai-setup-error')).toBeInTheDocument();
+    });
+    expect(screen.getByText(/Failed to detect hardware: HTTP 503/)).toBeInTheDocument();
+
+    const profileCalls = mockApiFetch.mock.calls.filter(([url]) => url === '/api/inference/onboarding-profile');
+    expect(profileCalls).toHaveLength(1);
+  });
+
+  it('shows generic non-Linux NVIDIA guidance without Linux shell commands', async () => {
+    const runtimeMissingProfile: HardwareProfileResponse = {
+      ...highTierProfile,
+      hardware: {
+        ...highTierProfile.hardware,
+        gpu: {
+          ...highTierProfile.hardware.gpu,
+          runtimeAvailable: false,
+        },
+      },
+    };
+
+    const platformDescriptor = Object.getOwnPropertyDescriptor(window.navigator, 'platform');
+    Object.defineProperty(window.navigator, 'platform', {
+      configurable: true,
+      value: 'Win32',
+    });
+
+    mockApiFetch.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(runtimeMissingProfile) });
+    render(<AiSetupStep onComplete={onComplete} onSkip={onSkip} onBack={onBack} />);
+
+    await waitFor(() => expect(screen.getByTestId('nvidia-runtime-warning')).toBeInTheDocument());
+    expect(screen.getByText(/Docker Desktop and confirm WSL2 GPU support is enabled/i)).toBeInTheDocument();
+    expect(screen.queryByText(/sudo apt-get update/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/sudo systemctl restart docker/i)).not.toBeInTheDocument();
+
+    if (platformDescriptor) {
+      Object.defineProperty(window.navigator, 'platform', platformDescriptor);
+    }
+  });
+
   it('shows Ollama setup card when Ollama backend is selected and not installed', async () => {
     const ollamaProfile = {
       ...highTierProfile,
@@ -400,60 +472,5 @@ describe('AiSetupStep', () => {
       const statusChecks = mockApiFetch.mock.calls.filter(([url]) => url === '/api/inference/ollama/status');
       expect(statusChecks).toHaveLength(2);
     });
-  });
-
-  it('shows no-GPU warning copy when gpu.available is false', async () => {
-    const profileNoGpu: HardwareProfileResponse = {
-      ...highTierProfile,
-      hardware: {
-        ...highTierProfile.hardware,
-        gpu: {
-          ...highTierProfile.hardware.gpu,
-          available: false,
-          vendor: 'none',
-          model: '',
-          vramMb: 0,
-        },
-      },
-    };
-
-    mockApiFetch
-      .mockImplementationOnce(() => mockResponse(profileNoGpu))
-      .mockImplementationOnce(() => mockResponse({ installed: true, needsInstall: false }));
-
-    render(<AiSetupStep onComplete={onComplete} onSkip={onSkip} onBack={onBack} />);
-
-    await waitFor(() => {
-      expect(screen.getByText('No GPU detected.')).toBeInTheDocument();
-    });
-  });
-
-  it.each([
-    ['nvidia', 'NVIDIA CUDA'],
-    ['amd', 'AMD ROCm'],
-  ] as const)('shows runtime-unavailable warning copy for %s GPUs', async (vendor, driverText) => {
-    const profileRuntimeMissing: HardwareProfileResponse = {
-      ...highTierProfile,
-      hardware: {
-        ...highTierProfile.hardware,
-        gpu: {
-          ...highTierProfile.hardware.gpu,
-          available: true,
-          vendor,
-          runtimeAvailable: false,
-        },
-      },
-    };
-
-    mockApiFetch
-      .mockImplementationOnce(() => mockResponse(profileRuntimeMissing))
-      .mockImplementationOnce(() => mockResponse({ installed: true, needsInstall: false }));
-
-    render(<AiSetupStep onComplete={onComplete} onSkip={onSkip} onBack={onBack} />);
-
-    await waitFor(() => {
-      expect(screen.getByText(/GPU driver not available\./)).toBeInTheDocument();
-    });
-    expect(screen.getByText(new RegExp(driverText))).toBeInTheDocument();
   });
 });
