@@ -40,6 +40,7 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
   const [loading, setLoading] = useState(true);
   const [rescanning, setRescanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [ollamaInstallError, setOllamaInstallError] = useState<string | null>(null);
   const [profile, setProfile] = useState<HardwareProfileResponse | null>(null);
   const [selectedModelIds, setSelectedModelIds] = useState<string[]>([]);
   const [selectedBackend, setSelectedBackend] = useState<InferenceBackendType>('ollama');
@@ -68,6 +69,7 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
 
   const checkOllamaStatus = async () => {
     setCheckingOllama(true);
+    setOllamaInstallError(null);
     try {
       const res = await apiFetch('/api/inference/ollama/status', { credentials: 'include' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -82,11 +84,12 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
   };
 
   const handleInstallOllama = async () => {
+    setOllamaInstallError(null);
     if (detectOllamaInstallMode() === 'manual-script') {
       try {
         await navigator.clipboard.writeText(OLLAMA_INSTALL_COMMAND);
       } catch {
-        setError('Failed to copy the Ollama install command.');
+        setOllamaInstallError('Failed to copy the Ollama install command.');
       }
       return;
     }
@@ -104,10 +107,10 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
         // Re-check status after installation
         await checkOllamaStatus();
       } else {
-        setError(data.message);
+        setOllamaInstallError(data.message);
       }
     } catch (e) {
-      setError((e as Error).message);
+      setOllamaInstallError((e as Error).message);
     } finally {
       setInstallingOllama(false);
     }
@@ -204,6 +207,7 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
               onRecheck={checkOllamaStatus}
               installMode={ollamaInstallMode}
               installCommand={OLLAMA_INSTALL_COMMAND}
+              errorMessage={ollamaInstallError}
             />
           )}
 

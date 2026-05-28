@@ -496,4 +496,41 @@ describe('AiSetupStep', () => {
     expect(screen.getByText('curl -fsSL https://ollama.com/install.sh | sh')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Copy Install Command' })).toBeInTheDocument();
   });
+
+  it('keeps the hardware profile visible when Ollama installation fails', async () => {
+    const user = userEvent.setup();
+    Object.defineProperty(window.navigator, 'platform', {
+      configurable: true,
+      value: 'Win32',
+    });
+    Object.defineProperty(window.navigator, 'userAgent', {
+      configurable: true,
+      value: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+    });
+
+    const ollamaProfile = {
+      ...highTierProfile,
+      backends: {
+        recommended: 'ollama',
+        available: highTierProfile.backends.available,
+      },
+    };
+
+    mockApiFetch
+      .mockImplementationOnce(() => mockResponse(ollamaProfile))
+      .mockImplementationOnce(() => mockResponse(ollamaMissingStatus))
+      .mockImplementationOnce(() => mockResponse({ success: false, message: 'Windows installation failed: access denied' }));
+
+    render(<AiSetupStep onComplete={onComplete} onSkip={onSkip} onBack={onBack} />);
+
+    await waitFor(() => expect(screen.getByText('Ollama Not Installed')).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Install Ollama' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Windows installation failed: access denied')).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('hw-card-title')).toBeInTheDocument();
+    expect(screen.queryByTestId('ai-setup-error')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Install Ollama' })).toBeInTheDocument();
+  });
 });

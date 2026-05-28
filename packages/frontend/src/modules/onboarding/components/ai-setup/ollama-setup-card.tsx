@@ -21,9 +21,19 @@ interface OllamaSetupCardProps {
   onRecheck: () => Promise<void>;
   installMode: 'auto' | 'manual-script';
   installCommand: string;
+  errorMessage?: string | null;
 }
 
-export const OllamaSetupCard = ({ status, installing, checking, onInstall, onRecheck, installMode, installCommand }: OllamaSetupCardProps) => {
+export const OllamaSetupCard = ({
+  status,
+  installing,
+  checking,
+  onInstall,
+  onRecheck,
+  installMode,
+  installCommand,
+  errorMessage,
+}: OllamaSetupCardProps) => {
   if (!status) {
     return (
       <Card className="border-muted">
@@ -85,6 +95,7 @@ export const OllamaSetupCard = ({ status, installing, checking, onInstall, onRec
                 then re-check.
               </div>
               {status.error && <div className="mb-3 text-xs text-yellow-800 dark:text-yellow-200">{status.error}</div>}
+              {errorMessage && <div className="mb-3 text-xs text-red-700 dark:text-red-300">{errorMessage}</div>}
               <Button variant="ghost" size="sm" onClick={onRecheck} loading={checking} disabled={installing}>
                 <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
                 Re-check
@@ -113,6 +124,7 @@ export const OllamaSetupCard = ({ status, installing, checking, onInstall, onRec
                 {installCommand}
               </div>
             )}
+            {errorMessage && <div className="mb-3 text-xs text-red-700 dark:text-red-300">{errorMessage}</div>}
             <div className="flex gap-2">
               <Button
                 size="sm"
