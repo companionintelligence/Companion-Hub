@@ -252,7 +252,7 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
         </Button>
         <div className="flex gap-2">
           <Button variant="outline" onClick={handleSkip} data-testid="ai-skip-btn">
-            Skip to Private VPN
+            Skip AI Setup
           </Button>
           <Button
             intent="primary"
@@ -260,9 +260,7 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
             data-testid="ai-continue-btn"
             disabled={needsOllama && (installingOllama || checkingOllama || !ollamaStatus?.ready)}
           >
-            {isInsufficient && cloudProviders.filter((p) => p.apiKey.trim()).length === 0
-              ? 'Continue to Private VPN without AI'
-              : 'Continue to Private VPN'}
+            {isInsufficient && cloudProviders.filter((p) => p.apiKey.trim()).length === 0 ? 'Continue without AI' : 'Continue'}
           </Button>
         </div>
       </div>

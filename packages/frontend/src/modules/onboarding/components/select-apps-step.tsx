@@ -1,6 +1,6 @@
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent } from '@/components/ui/Card';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import type { OnboardingApp } from '../helpers/types';
 
 interface SelectAppsStepProps {
@@ -11,10 +11,6 @@ interface SelectAppsStepProps {
 
 export const SelectAppsStep = ({ selectedApps, onConfirm, onBack }: SelectAppsStepProps) => {
   const [apps, setApps] = useState<OnboardingApp[]>(selectedApps);
-
-  useEffect(() => {
-    setApps(selectedApps);
-  }, [selectedApps]);
 
   const removeApp = (slug: string) => {
     setApps((prev) => prev.filter((a) => a.appSlug !== slug));
@@ -56,7 +52,7 @@ export const SelectAppsStep = ({ selectedApps, onConfirm, onBack }: SelectAppsSt
           {apps.length === 0 && (
             <div className="text-center py-8">
               <div className="text-3xl mb-2">📦</div>
-              <p className="text-muted-foreground">No apps selected. Go back to add some, or continue to Install.</p>
+              <p className="text-muted-foreground">No apps selected. Go back to add some, or continue to AI Setup.</p>
             </div>
           )}
         </div>
@@ -66,7 +62,7 @@ export const SelectAppsStep = ({ selectedApps, onConfirm, onBack }: SelectAppsSt
             Back
           </Button>
           <Button intent="primary" onClick={() => onConfirm(apps)}>
-            Continue to Install
+            {apps.length > 0 ? `Install ${apps.length} app${apps.length === 1 ? '' : 's'}` : 'Continue to AI Setup'}
           </Button>
         </div>
       </CardContent>

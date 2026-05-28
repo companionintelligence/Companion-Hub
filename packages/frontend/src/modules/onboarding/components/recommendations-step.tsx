@@ -184,10 +184,10 @@ export const RecommendationsStep = ({ detectedServices, onSelect, onSkip, onBack
           </Button>
           <div className="flex gap-2">
             <Button variant="ghost" onClick={onSkip}>
-              Skip to Install
+              Skip
             </Button>
             <Button intent="primary" onClick={handleContinue} disabled={selected.size === 0}>
-              Continue to Select Apps with {selected.size} app{selected.size === 1 ? '' : 's'}
+              Continue with {selected.size} app{selected.size === 1 ? '' : 's'}
             </Button>
           </div>
         </div>
