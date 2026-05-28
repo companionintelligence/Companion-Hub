@@ -1,6 +1,6 @@
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent } from '@/components/ui/Card';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { OnboardingApp } from '../helpers/types';
 
 interface SelectAppsStepProps {
@@ -11,6 +11,10 @@ interface SelectAppsStepProps {
 
 export const SelectAppsStep = ({ selectedApps, onConfirm, onBack }: SelectAppsStepProps) => {
   const [apps, setApps] = useState<OnboardingApp[]>(selectedApps);
+
+  useEffect(() => {
+    setApps(selectedApps);
+  }, [selectedApps]);
 
   const removeApp = (slug: string) => {
     setApps((prev) => prev.filter((a) => a.appSlug !== slug));
