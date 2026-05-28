@@ -8,6 +8,7 @@ import { MemoryManagerService } from './memory-manager.service';
 import { ModelPullerService } from './model-puller.service';
 import { InferenceRouterService } from './inference-router.service';
 import { CloudFallbackService } from './cloud-fallback.service';
+import { OllamaInstallerService } from './ollama-installer.service';
 import { OllamaBackend } from './backends/ollama.backend';
 import { VllmBackend } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
@@ -23,6 +24,7 @@ import { InferenceController } from './inference.controller';
     ModelPullerService,
     InferenceRouterService,
     CloudFallbackService,
+    OllamaInstallerService,
     OllamaBackend,
     VllmBackend,
     LemonadeBackend,
@@ -34,6 +36,7 @@ import { InferenceController } from './inference.controller';
     ModelPullerService,
     InferenceRouterService,
     CloudFallbackService,
+    OllamaInstallerService,
     OllamaBackend,
     VllmBackend,
     LemonadeBackend,

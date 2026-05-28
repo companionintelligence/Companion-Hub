@@ -1,5 +1,6 @@
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent } from '@/components/ui/Card';
+import { AlertTriangle } from 'lucide-react';
 import type { HardwareProfile, HardwareTier } from '@ci-hub/common/types';
 
 interface HardwareProfileCardProps {
@@ -34,6 +35,9 @@ function getClientPlatform(): 'linux' | 'windows' | 'macos' | 'other' {
 
 export const HardwareProfileCard = ({ hardware, tier, onRescan, rescanning = false }: HardwareProfileCardProps) => {
   const badge = TIER_BADGES[tier];
+  const noGpu = !hardware.gpu.available;
+  const amdRuntimeMissing = hardware.gpu.vendor === 'amd' && hardware.gpu.available && !hardware.gpu.runtimeAvailable;
+  const amdDriverGuidance = 'AMD ROCm';
   const nvidiaRuntimeMissing = hardware.gpu.vendor === 'nvidia' && !hardware.gpu.runtimeAvailable;
   const nvidiaRuntimeReady = hardware.gpu.vendor === 'nvidia' && hardware.gpu.runtimeAvailable;
   const clientPlatform = getClientPlatform();
@@ -56,7 +60,7 @@ export const HardwareProfileCard = ({ hardware, tier, onRescan, rescanning = fal
           </div>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm mb-3">
           <div data-testid="hw-gpu">
             <div className="text-muted-foreground text-xs">GPU</div>
             <div className="font-medium">{hardware.gpu.available ? `${hardware.gpu.model}` : 'No GPU detected'}</div>
@@ -82,10 +86,32 @@ export const HardwareProfileCard = ({ hardware, tier, onRescan, rescanning = fal
           </div>
         </div>
 
+        {noGpu && (
+          <div className="flex items-start gap-2 p-2.5 bg-yellow-50 dark:bg-yellow-950 border border-yellow-200 dark:border-yellow-800 rounded-md">
+            <AlertTriangle className="h-4 w-4 text-yellow-600 dark:text-yellow-400 flex-shrink-0 mt-0.5" />
+            <div className="text-xs text-yellow-800 dark:text-yellow-200">
+              <strong>No GPU detected.</strong> AI services will run on CPU only. Performance may be slower. Consider installing a graphics card for
+              better performance.
+            </div>
+          </div>
+        )}
+
+        {amdRuntimeMissing && (
+          <div className="flex items-start gap-2 p-2.5 bg-yellow-50 dark:bg-yellow-950 border border-yellow-200 dark:border-yellow-800 rounded-md">
+            <AlertTriangle className="h-4 w-4 text-yellow-600 dark:text-yellow-400 flex-shrink-0 mt-0.5" />
+            <div className="text-xs text-yellow-800 dark:text-yellow-200">
+              <strong>Container GPU runtime not available.</strong> Your {hardware.gpu.vendor} GPU was detected, but containerized backends do not
+              have ROCm access yet. Host-side Ollama can still use the GPU once it is installed and reachable. Please install the appropriate drivers
+              ({amdDriverGuidance}) to enable container GPU acceleration too.
+            </div>
+          </div>
+        )}
+
         {nvidiaRuntimeMissing && (
           <div className="mt-3 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-100" data-testid="nvidia-runtime-warning">
             <p className="mb-2">
-              NVIDIA GPU detected, but GPU runtime is not ready yet. AI inference will run in CPU-only mode until setup completes.
+              NVIDIA GPU detected, but the container GPU runtime is not ready yet. Host-side Ollama can still use this GPU, but containerized backends
+              like vLLM need the NVIDIA container runtime before they can accelerate.
             </p>
             <p className="mb-2">
               Automatic setup runs during startup in non-interactive mode. If your system requires a sudo password prompt, the automatic install is

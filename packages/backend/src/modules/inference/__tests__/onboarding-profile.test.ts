@@ -10,6 +10,7 @@ import { MemoryManagerService } from '../memory-manager.service';
 import { ModelRegistryService } from '../model-registry.service';
 import { ModelPullerService } from '../model-puller.service';
 import { CloudFallbackService } from '../cloud-fallback.service';
+import { OllamaInstallerService } from '../ollama-installer.service';
 import type { HardwareProfile, InferenceStatus } from '@ci-hub/common/types';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { OllamaBackend } from '../backends/ollama.backend';
@@ -73,6 +74,7 @@ describe('InferenceController — onboarding-profile', () => {
         { provide: ModelRegistryService, useValue: mock<ModelRegistryService>() },
         { provide: ModelPullerService, useValue: mock<ModelPullerService>() },
         { provide: CloudFallbackService, useValue: mock<CloudFallbackService>() },
+        { provide: OllamaInstallerService, useValue: mock<OllamaInstallerService>() },
         { provide: ConfigurationService, useValue: mock<ConfigurationService>() },
         { provide: OllamaBackend, useValue: mock<OllamaBackend>() },
         { provide: VllmBackend, useValue: mock<VllmBackend>() },
@@ -130,6 +132,33 @@ describe('InferenceController — onboarding-profile', () => {
 
     const result = await controller.getOnboardingProfile();
     expect(result.backends.recommended).toBe('ollama');
+  });
+
+  it('should keep a GPU tier for Ollama onboarding when host GPU VRAM is available but container runtime is not', async () => {
+    const noRuntimeProfile: HardwareProfile = {
+      ...fakeProfile,
+      gpu: { ...fakeProfile.gpu, runtimeAvailable: false },
+      tier: 'cpu-only',
+    };
+
+    hardwareInspector.getProfile.mockResolvedValue(noRuntimeProfile);
+    hardwareInspector.computeTier.mockReturnValue('high');
+    modelRegistry.getRecommendedModels.mockReturnValue([]);
+    modelRegistry.getModelsForTier.mockReturnValue([]);
+    memoryManager.calculateBudget.mockReturnValue(fakeStatus.memoryBudget);
+    router.getStatus.mockResolvedValue(fakeStatus);
+
+    const result = await controller.getOnboardingProfile();
+
+    expect(result.backends.recommended).toBe('ollama');
+    expect(result.tier).toBe('high');
+    expect(hardwareInspector.computeTier).toHaveBeenCalledWith(
+      expect.objectContaining({ runtimeAvailable: true, vramMb: 24576 }),
+      noRuntimeProfile.ram,
+    );
+    expect(modelRegistry.getRecommendedModels).toHaveBeenCalledWith('high');
+    expect(modelRegistry.getModelsForTier).toHaveBeenCalledWith('high');
+    expect(result.resourceEstimate.availableMemoryMb).toBe(fakeStatus.memoryBudget.modelBudgetVramMb - fakeStatus.memoryBudget.modelUsedVramMb);
   });
 
   it('should calculate resource estimates from recommended models', async () => {

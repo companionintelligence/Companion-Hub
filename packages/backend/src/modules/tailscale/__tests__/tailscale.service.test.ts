@@ -28,6 +28,7 @@ describe('TailscaleService', () => {
     execFileMock.mockReset();
     vi.mocked(access).mockReset();
     vi.mocked(access).mockRejectedValue(new Error('ENOENT'));
+    delete process.env.HUB_TAILSCALE_EXTRA_ARGS;
     service = new TailscaleService();
   });
 
@@ -152,12 +153,60 @@ describe('TailscaleService', () => {
         '--reset',
         '--auth-key',
         'tskey-auth-testkey',
+        '--login-server=https://controlplane.tailscale.com',
         '--accept-routes',
         '--advertise-routes=172.18.0.0/16',
       ],
       expect.objectContaining({ timeout: 120_000 }),
       expect.any(Function),
     );
+  });
+
+  it('prepends the Tailscale control server when custom extra args omit one', async () => {
+    process.env.HUB_TAILSCALE_EXTRA_ARGS = '--accept-routes --advertise-routes=10.0.0.0/24';
+
+    execFileMock.mockImplementation(
+      (cmd: string, args: string[], _opts: unknown, cb: (err: Error | null, stdout?: string, stderr?: string) => void) => {
+        if (cmd === 'docker' && args[1] === 'hub-tailscale' && args[3] === 'version') {
+          process.nextTick(() => cb(null, '1.82.0', ''));
+          return;
+        }
+        if (cmd === 'docker' && args.includes('up') && args.includes('--auth-key')) {
+          process.nextTick(() => cb(null, '', ''));
+          return;
+        }
+        process.nextTick(() => cb(new Error('unexpected'), '', ''));
+      },
+    );
+
+    await service.connectWithAuthKey('tskey-auth-testkey');
+
+    const upCall = execFileMock.mock.calls.find(([cmd, args]: [string, string[]]) => cmd === 'docker' && args.includes('up'));
+    expect(upCall?.[1]).toContain('--login-server=https://controlplane.tailscale.com');
+  });
+
+  it('preserves an explicit login server override in custom extra args', async () => {
+    process.env.HUB_TAILSCALE_EXTRA_ARGS = '--login-server=https://headscale.example --accept-routes';
+
+    execFileMock.mockImplementation(
+      (cmd: string, args: string[], _opts: unknown, cb: (err: Error | null, stdout?: string, stderr?: string) => void) => {
+        if (cmd === 'docker' && args[1] === 'hub-tailscale' && args[3] === 'version') {
+          process.nextTick(() => cb(null, '1.82.0', ''));
+          return;
+        }
+        if (cmd === 'docker' && args.includes('up') && args.includes('--auth-key')) {
+          process.nextTick(() => cb(null, '', ''));
+          return;
+        }
+        process.nextTick(() => cb(new Error('unexpected'), '', ''));
+      },
+    );
+
+    await service.connectWithAuthKey('tskey-auth-testkey');
+
+    const upCall = execFileMock.mock.calls.find(([cmd, args]: [string, string[]]) => cmd === 'docker' && args.includes('up'));
+    expect(upCall?.[1]).toContain('--login-server=https://headscale.example');
+    expect(upCall?.[1]).not.toContain('--login-server=https://controlplane.tailscale.com');
   });
 
   it('connectWithAuthKey does not include --reset on host strategy', async () => {

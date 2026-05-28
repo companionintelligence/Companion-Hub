@@ -70,21 +70,24 @@ export class HardwareInspectorService implements OnModuleInit {
 
     const hostProbe = await this.readNvidiaHostProbe();
     const effectiveGpuInfo =
-      !gpuInfo.available && hostProbe
+      hostProbe && (gpuInfo.vendor === 'nvidia' || !gpuInfo.available)
         ? {
-            available: true,
+            available: gpuInfo.available || !!hostProbe.model,
             vendor: 'nvidia' as const,
-            model: hostProbe.model,
-            vramMb: hostProbe.vramMb,
-            driverVersion: hostProbe.driverVersion || gpuInfo.driverVersion,
+            model: gpuInfo.model || hostProbe.model,
+            vramMb: gpuInfo.vramMb > 0 ? gpuInfo.vramMb : hostProbe.vramMb,
+            driverVersion: gpuInfo.driverVersion || hostProbe.driverVersion,
           }
         : gpuInfo;
 
     if (!gpuInfo.available && hostProbe) {
       this.logger.info('[HardwareInspector] Using host NVIDIA probe cache fallback for GPU detection.');
+    } else if (hostProbe && gpuInfo.vendor === 'nvidia' && gpuInfo.vramMb <= 0) {
+      this.logger.info('[HardwareInspector] Augmenting NVIDIA GPU detection with host probe VRAM data.');
     }
 
-    const isAppleSilicon = cpuInfo.arch === 'arm64' && os.platform() === 'darwin';
+    const platform = this.getHostPlatform();
+    const isAppleSilicon = cpuInfo.arch === 'arm64' && platform === 'darwin';
 
     const gpu: HardwareProfile['gpu'] = {
       available: effectiveGpuInfo.available,
@@ -151,6 +154,11 @@ export class HardwareInspectorService implements OnModuleInit {
     driverVersion: string;
   }> {
     try {
+      const platform = this.getHostPlatform();
+      if (platform === 'darwin') {
+        return await this.detectMacGpu();
+      }
+
       const graphics = await si.graphics();
       const controllers = graphics.controllers ?? [];
 
@@ -162,11 +170,13 @@ export class HardwareInspectorService implements OnModuleInit {
           modelLower.includes('nvidia') ||
           modelLower.includes('geforce') ||
           modelLower.includes('rtx') ||
-          modelLower.includes('gtx')
+          modelLower.includes('gtx') ||
+          modelLower.includes('quadro') ||
+          modelLower.includes('tesla')
         ) {
           return 'nvidia';
         }
-        if (vendorLower.includes('amd') || vendorLower.includes('advanced micro') || modelLower.includes('radeon')) {
+        if (vendorLower.includes('amd') || vendorLower.includes('advanced micro') || modelLower.includes('radeon') || modelLower.includes('rx ')) {
           return 'amd';
         }
         if (vendorLower.includes('intel')) {
@@ -203,18 +213,24 @@ export class HardwareInspectorService implements OnModuleInit {
         }
       }
 
-      if (best.vendor === 'nvidia' && (best.vramMb <= 0 || !best.model)) {
-        const fromSmi = await this.detectNvidiaFallback();
-        if (fromSmi.available) {
-          return fromSmi;
+      let vramMb = best.vramMb;
+      if (best.vendor === 'nvidia' && vramMb <= 0) {
+        vramMb = await this.detectNvidiaVram();
+        if (vramMb <= 0 && !best.model) {
+          const fromSmi = await this.detectNvidiaFallback();
+          if (fromSmi.available) {
+            return fromSmi;
+          }
         }
+      } else if (best.vendor === 'amd' && vramMb <= 0) {
+        vramMb = await this.detectAmdVram();
       }
 
       return {
-        available: best.vramMb > 0 || !!best.model,
+        available: vramMb > 0 || !!best.model,
         vendor: best.vendor,
         model: best.model,
-        vramMb: best.vramMb,
+        vramMb,
         driverVersion: best.driverVersion,
       };
     } catch (err) {
@@ -370,6 +386,146 @@ export class HardwareInspectorService implements OnModuleInit {
     }
   }
 
+  private getHostPlatform(): NodeJS.Platform {
+    return process.env.CI_HUB_HOST_PLATFORM === 'darwin' ? 'darwin' : os.platform();
+  }
+
+  /** Detect GPU on macOS using system_profiler */
+  private async detectMacGpu(): Promise<{
+    available: boolean;
+    vendor: 'nvidia' | 'amd' | 'intel' | 'none';
+    model: string;
+    vramMb: number;
+    driverVersion: string;
+  }> {
+    try {
+      const { stdout } = await execAsync('system_profiler SPDisplaysDataType -json', { timeout: 10000 });
+      const data = JSON.parse(stdout);
+
+      const displays = data?.SPDisplaysDataType || [];
+      for (const display of displays) {
+        const model = display.sppci_model || display.spdisplays_device_name || '';
+        const vramStr = display.sppci_vram || display.spdisplays_vram || '0';
+
+        let vramMb = 0;
+        const vramMatch = vramStr.match(/(\d+)\s*(GB|MB)/i);
+        if (vramMatch) {
+          const value = Number.parseInt(vramMatch[1], 10);
+          const unit = vramMatch[2].toUpperCase();
+          vramMb = unit === 'GB' ? value * 1024 : value;
+        }
+
+        const modelLower = model.toLowerCase();
+        let vendor: 'nvidia' | 'amd' | 'intel' | 'none' = 'none';
+
+        if (modelLower.includes('nvidia') || modelLower.includes('geforce') || modelLower.includes('rtx') || modelLower.includes('gtx')) {
+          vendor = 'nvidia';
+        } else if (modelLower.includes('amd') || modelLower.includes('radeon') || modelLower.includes('rx ')) {
+          vendor = 'amd';
+        } else if (modelLower.includes('intel') || modelLower.includes('iris') || modelLower.includes('uhd')) {
+          vendor = 'intel';
+        }
+
+        if (vendor !== 'none' && vramMb > 0) {
+          return {
+            available: true,
+            vendor,
+            model,
+            vramMb,
+            driverVersion: '',
+          };
+        }
+      }
+
+      return { available: false, vendor: 'none', model: '', vramMb: 0, driverVersion: '' };
+    } catch (err) {
+      this.logger.warn(`[HardwareInspector] macOS GPU detection failed: ${err}`);
+      return await this.detectGpuFallback();
+    }
+  }
+
+  /** Fallback GPU detection using systeminformation */
+  private async detectGpuFallback(): Promise<{
+    available: boolean;
+    vendor: 'nvidia' | 'amd' | 'intel' | 'none';
+    model: string;
+    vramMb: number;
+    driverVersion: string;
+  }> {
+    const graphics = await si.graphics();
+    const controller = graphics.controllers?.[0];
+
+    if (!controller?.model) {
+      return { available: false, vendor: 'none', model: '', vramMb: 0, driverVersion: '' };
+    }
+
+    const model = controller.model || '';
+    const vramMb = controller.vram || 0;
+    const driverVersion = controller.driverVersion || '';
+    const vendorStr = (controller.vendor || '').toLowerCase();
+    const modelLower = model.toLowerCase();
+
+    let vendor: 'nvidia' | 'amd' | 'intel' | 'none' = 'none';
+    if (vendorStr.includes('nvidia') || modelLower.includes('nvidia')) vendor = 'nvidia';
+    else if (vendorStr.includes('amd') || modelLower.includes('radeon')) vendor = 'amd';
+    else if (vendorStr.includes('intel')) vendor = 'intel';
+
+    return { available: vendor !== 'none' && vramMb > 0, vendor, model, vramMb, driverVersion };
+  }
+
+  /** Detect NVIDIA VRAM using nvidia-smi */
+  private async detectNvidiaVram(): Promise<number> {
+    try {
+      const { stdout } = await execAsync('nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits', { timeout: 5000 });
+      const vramMb = Number.parseInt(stdout.trim(), 10);
+      return Number.isNaN(vramMb) ? 0 : vramMb;
+    } catch {
+      return 0;
+    }
+  }
+
+  /** Detect AMD VRAM using rocm-smi */
+  private async detectAmdVram(): Promise<number> {
+    try {
+      const { stdout } = await execAsync('rocm-smi --showmeminfo vram --csv', { timeout: 5000 });
+      const lines = stdout
+        .trim()
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean);
+      const [headerLine, ...dataLines] = lines;
+      if (!headerLine || dataLines.length === 0) {
+        return 0;
+      }
+
+      const headers = headerLine.split(',').map((value) => value.trim().replace(/^"|"$/g, ''));
+      const totalVramIndex = headers.findIndex(
+        (header) => /vram/i.test(header) && /total/i.test(header) && /memory/i.test(header) && !/used/i.test(header),
+      );
+      if (totalVramIndex === -1) {
+        return 0;
+      }
+
+      let largestVramMb = 0;
+      for (const line of dataLines) {
+        const values = line.split(',').map((value) => value.trim().replace(/^"|"$/g, ''));
+        const vramBytes = Number.parseInt(values[totalVramIndex] ?? '', 10);
+        if (Number.isNaN(vramBytes) || vramBytes <= 0) {
+          continue;
+        }
+
+        const vramMb = Math.round(vramBytes / (1024 * 1024));
+        if (vramMb > largestVramMb) {
+          largestVramMb = vramMb;
+        }
+      }
+
+      return largestVramMb;
+    } catch {
+      return 0;
+    }
+  }
+
   private async detectRam(): Promise<{ totalMb: number; availableMb: number }> {
     try {
       const content = await this.filesystem.readTextFile('/host/proc/meminfo');
@@ -389,7 +545,6 @@ export class HardwareInspectorService implements OnModuleInit {
         availableMb: Math.floor(availKb / 1024),
       };
     } catch {
-      // Fallback to os module
       const totalMb = Math.floor(os.totalmem() / (1024 * 1024));
       const availMb = Math.floor(os.freemem() / (1024 * 1024));
       return { totalMb, availableMb: availMb };
