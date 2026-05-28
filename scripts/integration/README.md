@@ -3,6 +3,14 @@
 End-to-end test of `/api/inference/apps/:slug/bootstrap[.env]` against a live
 Hub stack with a real Ollama backend.
 
+## Running locally
+
+This test runs only on demand, not in CI. From repo root:
+
+```sh
+bash scripts/integration/test-bootstrap.sh
+```
+
 ## What it covers
 
 - Wire shape: JSON, dotenv, headers (`X-Hub-Bootstrap-Version`,
