@@ -12,11 +12,16 @@ import type {
 import { CURATED_MODELS } from './catalog/curated-models';
 
 const LLM_RECOMMENDATION_TABLE: Array<{ minVramMb: number; minRamMb: number; recommendedModelIds: string[] }> = [
+  { minVramMb: 49152, minRamMb: 131072, recommendedModelIds: ['gemma4-27b-fp16', 'nemotron3-22b-fp16'] },
+  { minVramMb: 32768, minRamMb: 98304, recommendedModelIds: ['gemma4-27b-q8_0', 'nemotron3-22b-q8_0'] },
   { minVramMb: 24576, minRamMb: 65536, recommendedModelIds: ['gemma4-27b', 'nemotron3-22b'] },
-  { minVramMb: 12288, minRamMb: 32768, recommendedModelIds: ['qwen3-6-20b', 'nemotron3-22b'] },
-  { minVramMb: 8192, minRamMb: 24576, recommendedModelIds: ['qwen3-6-20b', 'gemma4-12b'] },
+  { minVramMb: 16384, minRamMb: 32768, recommendedModelIds: ['nemotron3-22b-q6_K', 'qwen3-6-20b'] },
+  { minVramMb: 12288, minRamMb: 32768, recommendedModelIds: ['qwen3-6-20b', 'gemma4-12b-q8_0'] },
+  { minVramMb: 8192, minRamMb: 24576, recommendedModelIds: ['gemma4-12b', 'nemotron3-8b-q8_0'] },
+  { minVramMb: 6144, minRamMb: 16384, recommendedModelIds: ['gemma4-12b-q3_K_M', 'qwen3-6-8b-q6_K'] },
   { minVramMb: 4096, minRamMb: 16384, recommendedModelIds: ['qwen3-6-8b', 'nemotron3-8b'] },
-  { minVramMb: 0, minRamMb: 8192, recommendedModelIds: ['gemma4-4b', 'qwen3-6-8b'] },
+  { minVramMb: 0, minRamMb: 8192, recommendedModelIds: ['gemma4-4b', 'qwen3-6-8b-q3_K_M'] },
+  { minVramMb: 0, minRamMb: 4096, recommendedModelIds: ['gemma4-4b-q3_K_M'] },
 ];
 
 @Injectable()

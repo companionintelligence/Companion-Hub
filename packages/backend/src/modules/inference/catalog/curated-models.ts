@@ -1,18 +1,27 @@
 import type { CuratedModel } from '@ci-hub/common/types';
 
-/**
- * Curated model catalog — models approved for the Hub with hardware requirements and tier recommendations.
- * This is NOT an open-ended model browser — it's a curated list mapping hardware tiers to recommended models.
- */
-export const CURATED_MODELS: CuratedModel[] = [
-  // ─── Ollama LLMs (Gemma 4, Qwen 3.6, Nemotron 3) ─────────────────────
+const QUANTS = [
+  { suffix: 'fp16', name: 'FP16', mult: 3.2 },
+  { suffix: 'q8_0', name: '8-bit', mult: 1.7 },
+  { suffix: 'q6_K', name: '6-bit', mult: 1.3 },
+  { suffix: 'q5_K_M', name: '5-bit', mult: 1.15 },
+  { suffix: 'q4_K_M', name: '4-bit', mult: 1.0 },
+  { suffix: 'q3_K_M', name: '3-bit', mult: 0.75 },
+];
+
+const BASE_LLMS: Array<
+  Omit<CuratedModel, 'id' | 'backendModelId' | 'displayName' | 'backend'> & {
+    baseId: string;
+    baseBackendModelId: string;
+    baseDisplayName: string;
+  }
+> = [
   {
-    id: 'gemma4-27b',
-    backend: 'ollama',
-    backendModelId: 'gemma4:27b',
+    baseId: 'gemma4-27b',
+    baseBackendModelId: 'gemma4:27b',
     modality: 'llm',
     purpose: 'general',
-    displayName: 'Gemma 4 27B',
+    baseDisplayName: 'Gemma 4 27B',
     description: 'Largest Gemma 4 option for high-end systems that need strongest local reasoning quality.',
     requirements: {
       minVramMb: 16384,
@@ -28,19 +37,17 @@ export const CURATED_MODELS: CuratedModel[] = [
       maxTokens: 8192,
       reasoning: true,
       input: ['text'],
-      quantization: 'Q4_K_M',
       pinnedByDefault: false,
       memoryFootprintMb: 15000,
     },
     tiers: { high: 'recommended', medium: 'available', low: 'not-recommended', cpuOnly: 'not-recommended' },
   },
   {
-    id: 'nemotron3-22b',
-    backend: 'ollama',
-    backendModelId: 'nemotron3:22b',
+    baseId: 'nemotron3-22b',
+    baseBackendModelId: 'nemotron3:22b',
     modality: 'llm',
     purpose: 'reasoning',
-    displayName: 'Nemotron 3 22B',
+    baseDisplayName: 'Nemotron 3 22B',
     description: 'Large Nemotron 3 option tuned for longer-form reasoning and instruction following.',
     requirements: {
       minVramMb: 12288,
@@ -56,19 +63,17 @@ export const CURATED_MODELS: CuratedModel[] = [
       maxTokens: 8192,
       reasoning: true,
       input: ['text'],
-      quantization: 'Q4_K_M',
       pinnedByDefault: false,
       memoryFootprintMb: 12000,
     },
     tiers: { high: 'recommended', medium: 'available', low: 'not-recommended', cpuOnly: 'not-recommended' },
   },
   {
-    id: 'qwen3-6-20b',
-    backend: 'ollama',
-    backendModelId: 'qwen3.6:20b',
+    baseId: 'qwen3-6-20b',
+    baseBackendModelId: 'qwen3.6:20b',
     modality: 'llm',
     purpose: 'general',
-    displayName: 'Qwen 3.6 20B',
+    baseDisplayName: 'Qwen 3.6 20B',
     description: 'Balanced mid-large model. Recommended for ~12GB+ VRAM systems.',
     requirements: {
       minVramMb: 8192,
@@ -84,19 +89,17 @@ export const CURATED_MODELS: CuratedModel[] = [
       maxTokens: 8192,
       reasoning: true,
       input: ['text'],
-      quantization: 'Q4_K_M',
       pinnedByDefault: false,
       memoryFootprintMb: 8192,
     },
     tiers: { high: 'recommended', medium: 'recommended', low: 'available', cpuOnly: 'not-recommended' },
   },
   {
-    id: 'gemma4-12b',
-    backend: 'ollama',
-    backendModelId: 'gemma4:12b',
+    baseId: 'gemma4-12b',
+    baseBackendModelId: 'gemma4:12b',
     modality: 'llm',
     purpose: 'general',
-    displayName: 'Gemma 4 12B',
+    baseDisplayName: 'Gemma 4 12B',
     description: 'Mid-size Gemma 4 option for common desktop GPUs and larger unified-memory systems.',
     requirements: {
       minVramMb: 4096,
@@ -112,19 +115,17 @@ export const CURATED_MODELS: CuratedModel[] = [
       maxTokens: 8192,
       reasoning: true,
       input: ['text'],
-      quantization: 'Q4_K_M',
       pinnedByDefault: false,
       memoryFootprintMb: 6200,
     },
     tiers: { high: 'available', medium: 'recommended', low: 'recommended', cpuOnly: 'available' },
   },
   {
-    id: 'qwen3-6-8b',
-    backend: 'ollama',
-    backendModelId: 'qwen3.6:8b',
+    baseId: 'qwen3-6-8b',
+    baseBackendModelId: 'qwen3.6:8b',
     modality: 'llm',
     purpose: 'coding',
-    displayName: 'Qwen 3.6 8B',
+    baseDisplayName: 'Qwen 3.6 8B',
     description: 'Compact Qwen 3.6 model with strong coding and assistant behavior for lower VRAM systems.',
     requirements: {
       minVramMb: 4096,
@@ -140,19 +141,17 @@ export const CURATED_MODELS: CuratedModel[] = [
       maxTokens: 4096,
       reasoning: true,
       input: ['text'],
-      quantization: 'Q4_K_M',
       pinnedByDefault: false,
       memoryFootprintMb: 4600,
     },
     tiers: { high: 'available', medium: 'recommended', low: 'recommended', cpuOnly: 'available' },
   },
   {
-    id: 'nemotron3-8b',
-    backend: 'ollama',
-    backendModelId: 'nemotron3:8b',
+    baseId: 'nemotron3-8b',
+    baseBackendModelId: 'nemotron3:8b',
     modality: 'llm',
     purpose: 'reasoning',
-    displayName: 'Nemotron 3 8B',
+    baseDisplayName: 'Nemotron 3 8B',
     description: 'Small Nemotron 3 variant focused on efficient reasoning under constrained resources.',
     requirements: {
       minVramMb: 0,
@@ -168,19 +167,17 @@ export const CURATED_MODELS: CuratedModel[] = [
       maxTokens: 4096,
       reasoning: true,
       input: ['text'],
-      quantization: 'Q4_K_M',
       pinnedByDefault: false,
       memoryFootprintMb: 5000,
     },
     tiers: { high: 'available', medium: 'available', low: 'recommended', cpuOnly: 'available' },
   },
   {
-    id: 'gemma4-4b',
-    backend: 'ollama',
-    backendModelId: 'gemma4:4b',
+    baseId: 'gemma4-4b',
+    baseBackendModelId: 'gemma4:4b',
     modality: 'llm',
     purpose: 'fast',
-    displayName: 'Gemma 4 4B',
+    baseDisplayName: 'Gemma 4 4B',
     description: 'Fast smallest Gemma 4 option for CPU-only and integrated-GPU systems.',
     requirements: {
       minVramMb: 0,
@@ -196,14 +193,45 @@ export const CURATED_MODELS: CuratedModel[] = [
       maxTokens: 4096,
       reasoning: false,
       input: ['text'],
-      quantization: 'Q4_K_M',
       pinnedByDefault: true,
       memoryFootprintMb: 2900,
     },
     tiers: { high: 'available', medium: 'available', low: 'recommended', cpuOnly: 'recommended' },
   },
+];
 
-  // ─── Voice Models ───────────────────────────────────────────────────────
+const generatedLlms: CuratedModel[] = [];
+
+for (const base of BASE_LLMS) {
+  for (const q of QUANTS) {
+    const isQ4 = q.suffix === 'q4_K_M';
+    generatedLlms.push({
+      id: isQ4 ? base.baseId : `${base.baseId}-${q.suffix}`,
+      backend: 'ollama',
+      backendModelId: isQ4 ? base.baseBackendModelId : `${base.baseBackendModelId}-${q.suffix}`,
+      modality: base.modality,
+      purpose: base.purpose,
+      displayName: isQ4 ? base.baseDisplayName : `${base.baseDisplayName} (${q.name})`,
+      description: base.description,
+      requirements: {
+        ...base.requirements,
+        minVramMb: Math.round(base.requirements.minVramMb * q.mult),
+        recommendedVramMb: Math.round(base.requirements.recommendedVramMb * q.mult),
+        minRamMb: Math.round(base.requirements.minRamMb * q.mult),
+        diskMb: Math.round(base.requirements.diskMb * q.mult),
+      },
+      runtime: {
+        ...base.runtime,
+        quantization: q.suffix,
+        pinnedByDefault: isQ4 ? base.runtime.pinnedByDefault : false,
+        memoryFootprintMb: Math.round(base.runtime.memoryFootprintMb * q.mult),
+      },
+      tiers: base.tiers,
+    });
+  }
+}
+
+const VOICE_MODELS: CuratedModel[] = [
   {
     id: 'kokoro-v1',
     backend: 'lemonade',
@@ -286,3 +314,5 @@ export const CURATED_MODELS: CuratedModel[] = [
     tiers: { high: 'available', medium: 'available', low: 'recommended', cpuOnly: 'recommended' },
   },
 ];
+
+export const CURATED_MODELS: CuratedModel[] = [...generatedLlms, ...VOICE_MODELS];
