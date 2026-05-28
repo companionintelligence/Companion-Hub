@@ -46,7 +46,7 @@ const highTierProfile: HardwareProfileResponse = {
       description: 'Small language model',
       modality: 'text-generation',
       purpose: 'general',
-      backend: 'ollama',
+      backend: 'vllm',
       runtime: { backendModelId: 'phi4-mini', input: ['text'], pinnedByDefault: true, memoryFootprintMb: 2048 },
       tiers: { high: 'recommended', medium: 'recommended', low: 'available', cpuOnly: 'available' },
     },
@@ -58,7 +58,7 @@ const highTierProfile: HardwareProfileResponse = {
       description: 'Small language model',
       modality: 'text-generation',
       purpose: 'general',
-      backend: 'ollama',
+      backend: 'vllm',
       runtime: { backendModelId: 'phi4-mini', input: ['text'], pinnedByDefault: true, memoryFootprintMb: 2048 },
       tiers: { high: 'recommended', medium: 'recommended', low: 'available', cpuOnly: 'available' },
     },
@@ -68,7 +68,7 @@ const highTierProfile: HardwareProfileResponse = {
       description: 'Coding model',
       modality: 'code-generation',
       purpose: 'coding',
-      backend: 'ollama',
+      backend: 'vllm',
       runtime: { backendModelId: 'qwen2.5-coder', input: ['text'], pinnedByDefault: false, memoryFootprintMb: 4096 },
       tiers: { high: 'available', medium: 'available', low: 'unavailable', cpuOnly: 'unavailable' },
     },
@@ -214,7 +214,7 @@ describe('AiSetupStep', () => {
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
 
     expect(screen.getByTestId('nvidia-runtime-warning')).toBeInTheDocument();
-    expect(screen.getByText(/NVIDIA GPU detected, but GPU runtime is not ready yet/i)).toBeInTheDocument();
+    expect(screen.getByText(/NVIDIA GPU detected, but the container GPU runtime is not ready yet/i)).toBeInTheDocument();
   });
 
   it('shows AMD runtime warning copy when AMD GPU runtime is unavailable', async () => {
@@ -236,9 +236,9 @@ describe('AiSetupStep', () => {
     render(<AiSetupStep onComplete={onComplete} onSkip={onSkip} onBack={onBack} />);
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
 
-    expect(screen.getByText('GPU driver not available.')).toBeInTheDocument();
-    expect(screen.getByText(/Your amd GPU was detected but the runtime is not available/i)).toBeInTheDocument();
-    expect(screen.getByText(/Please install the appropriate drivers \(AMD ROCm\)/i)).toBeInTheDocument();
+    expect(screen.getByText('Container GPU runtime not available.')).toBeInTheDocument();
+    expect(screen.getByText(/containerized backends do not have ROCm access yet/i)).toBeInTheDocument();
+    expect(screen.getByText(/Host-side Ollama can still use the GPU/i)).toBeInTheDocument();
   });
 
   it('pre-selects recommended models', async () => {
@@ -248,6 +248,150 @@ describe('AiSetupStep', () => {
 
     const checkbox = screen.getByTestId('model-checkbox-phi-4-mini') as HTMLInputElement;
     expect(checkbox.checked).toBe(true);
+  });
+
+  it('only pre-selects and submits models for the selected backend', async () => {
+    const mixedBackendProfile: HardwareProfileResponse = {
+      ...highTierProfile,
+      backends: {
+        recommended: 'ollama',
+        available: [
+          { type: 'ollama', running: true, healthy: true },
+          { type: 'lemonade', running: true, healthy: true },
+        ],
+      },
+      recommendedModels: [
+        {
+          id: 'phi-4-mini',
+          name: 'Phi-4 Mini',
+          description: 'Small language model',
+          modality: 'text-generation',
+          purpose: 'general',
+          backend: 'ollama',
+          runtime: { backendModelId: 'phi4-mini', input: ['text'], pinnedByDefault: true, memoryFootprintMb: 2048 },
+          tiers: { high: 'recommended', medium: 'recommended', low: 'available', cpuOnly: 'available' },
+        } as any,
+        {
+          id: 'whisper-base',
+          name: 'Whisper Base',
+          description: 'Speech-to-text',
+          modality: 'stt',
+          purpose: 'transcription',
+          backend: 'lemonade',
+          runtime: { backendModelId: 'whisper-base', input: ['audio'], pinnedByDefault: false, memoryFootprintMb: 200 },
+          tiers: { high: 'recommended', medium: 'recommended', low: 'recommended', cpuOnly: 'recommended' },
+        } as any,
+      ],
+      availableModels: [
+        {
+          id: 'phi-4-mini',
+          name: 'Phi-4 Mini',
+          description: 'Small language model',
+          modality: 'text-generation',
+          purpose: 'general',
+          backend: 'ollama',
+          runtime: { backendModelId: 'phi4-mini', input: ['text'], pinnedByDefault: true, memoryFootprintMb: 2048 },
+          tiers: { high: 'recommended', medium: 'recommended', low: 'available', cpuOnly: 'available' },
+        } as any,
+        {
+          id: 'whisper-base',
+          name: 'Whisper Base',
+          description: 'Speech-to-text',
+          modality: 'stt',
+          purpose: 'transcription',
+          backend: 'lemonade',
+          runtime: { backendModelId: 'whisper-base', input: ['audio'], pinnedByDefault: false, memoryFootprintMb: 200 },
+          tiers: { high: 'recommended', medium: 'recommended', low: 'recommended', cpuOnly: 'recommended' },
+        } as any,
+      ],
+    };
+
+    const user = userEvent.setup();
+    mockApiFetch.mockImplementationOnce(() => mockResponse(mixedBackendProfile)).mockImplementationOnce(() => mockResponse(ollamaReadyStatus));
+
+    render(<AiSetupStep onComplete={onComplete} onSkip={onSkip} onBack={onBack} />);
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+    expect(screen.getByText(/1 model selected/)).toBeInTheDocument();
+    expect(screen.queryByTestId('model-row-whisper-base')).not.toBeInTheDocument();
+
+    await user.click(screen.getByTestId('ai-continue-btn'));
+
+    expect(onComplete).toHaveBeenCalledWith({
+      selectedModels: ['phi-4-mini'],
+      backend: 'ollama',
+      cloudProviders: [],
+      skipped: false,
+    });
+  });
+
+  it('resets model recommendations when switching backends', async () => {
+    const mixedBackendProfile: HardwareProfileResponse = {
+      ...highTierProfile,
+      backends: {
+        recommended: 'ollama',
+        available: [
+          { type: 'ollama', running: true, healthy: true },
+          { type: 'lemonade', running: true, healthy: true },
+        ],
+      },
+      recommendedModels: [
+        {
+          id: 'phi-4-mini',
+          name: 'Phi-4 Mini',
+          description: 'Small language model',
+          modality: 'text-generation',
+          purpose: 'general',
+          backend: 'ollama',
+          runtime: { backendModelId: 'phi4-mini', input: ['text'], pinnedByDefault: true, memoryFootprintMb: 2048 },
+          tiers: { high: 'recommended', medium: 'recommended', low: 'available', cpuOnly: 'available' },
+        } as any,
+        {
+          id: 'whisper-base',
+          name: 'Whisper Base',
+          description: 'Speech-to-text',
+          modality: 'stt',
+          purpose: 'transcription',
+          backend: 'lemonade',
+          runtime: { backendModelId: 'whisper-base', input: ['audio'], pinnedByDefault: false, memoryFootprintMb: 200 },
+          tiers: { high: 'recommended', medium: 'recommended', low: 'recommended', cpuOnly: 'recommended' },
+        } as any,
+      ],
+      availableModels: [
+        {
+          id: 'phi-4-mini',
+          name: 'Phi-4 Mini',
+          description: 'Small language model',
+          modality: 'text-generation',
+          purpose: 'general',
+          backend: 'ollama',
+          runtime: { backendModelId: 'phi4-mini', input: ['text'], pinnedByDefault: true, memoryFootprintMb: 2048 },
+          tiers: { high: 'recommended', medium: 'recommended', low: 'available', cpuOnly: 'available' },
+        } as any,
+        {
+          id: 'whisper-base',
+          name: 'Whisper Base',
+          description: 'Speech-to-text',
+          modality: 'stt',
+          purpose: 'transcription',
+          backend: 'lemonade',
+          runtime: { backendModelId: 'whisper-base', input: ['audio'], pinnedByDefault: false, memoryFootprintMb: 200 },
+          tiers: { high: 'recommended', medium: 'recommended', low: 'recommended', cpuOnly: 'recommended' },
+        } as any,
+      ],
+    };
+
+    const user = userEvent.setup();
+    mockApiFetch.mockImplementationOnce(() => mockResponse(mixedBackendProfile)).mockImplementationOnce(() => mockResponse(ollamaReadyStatus));
+
+    render(<AiSetupStep onComplete={onComplete} onSkip={onSkip} onBack={onBack} />);
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+    await user.click(screen.getByTestId('backend-option-lemonade'));
+
+    expect(screen.queryByTestId('model-row-phi-4-mini')).not.toBeInTheDocument();
+    expect(screen.getByTestId('model-row-whisper-base')).toBeInTheDocument();
+    expect(screen.getByText(/1 model selected/)).toBeInTheDocument();
   });
 
   it('allows toggling model selection', async () => {

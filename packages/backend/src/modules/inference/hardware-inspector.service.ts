@@ -55,18 +55,20 @@ export class HardwareInspectorService implements OnModuleInit {
 
     const hostProbe = await this.readNvidiaHostProbe();
     const effectiveGpuInfo =
-      !gpuInfo.available && hostProbe
+      hostProbe && (gpuInfo.vendor === 'nvidia' || !gpuInfo.available)
         ? {
-            available: true,
+            available: gpuInfo.available || !!hostProbe.model,
             vendor: 'nvidia' as const,
-            model: hostProbe.model,
-            vramMb: hostProbe.vramMb,
-            driverVersion: hostProbe.driverVersion || gpuInfo.driverVersion,
+            model: gpuInfo.model || hostProbe.model,
+            vramMb: gpuInfo.vramMb > 0 ? gpuInfo.vramMb : hostProbe.vramMb,
+            driverVersion: gpuInfo.driverVersion || hostProbe.driverVersion,
           }
         : gpuInfo;
 
     if (!gpuInfo.available && hostProbe) {
       this.logger.info('[HardwareInspector] Using host NVIDIA probe cache fallback for GPU detection.');
+    } else if (hostProbe && gpuInfo.vendor === 'nvidia' && gpuInfo.vramMb <= 0) {
+      this.logger.info('[HardwareInspector] Augmenting NVIDIA GPU detection with host probe VRAM data.');
     }
 
     const platform = this.getHostPlatform();

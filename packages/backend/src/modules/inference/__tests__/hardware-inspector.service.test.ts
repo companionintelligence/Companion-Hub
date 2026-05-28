@@ -172,6 +172,50 @@ describe('HardwareInspectorService', () => {
       expect(profile.gpu.driverVersion).toBe('595.71.05');
     });
 
+    it('SHALL augment detected NVIDIA GPUs with cached host VRAM when procfs lacks memory data', async () => {
+      (si.graphics as any) = vi.fn().mockResolvedValue({
+        controllers: [{ vendor: 'Intel', model: 'Intel UHD Graphics', vram: 128, driverVersion: '1.0' }],
+      });
+      filesystemService.readTextFile.mockImplementation(async (filePath: string) => {
+        if (filePath === '/host/proc/meminfo') {
+          return 'MemTotal: 67108864\nMemAvailable: 50331648';
+        }
+        if (filePath === '/data/state/hardware/nvidia.json') {
+          return JSON.stringify({
+            model: 'NVIDIA GeForce RTX 3090',
+            vramMb: 24576,
+            driverVersion: '580.65.06',
+          });
+        }
+        return null;
+      });
+      execAsyncMock.mockImplementation(async (command: string) => {
+        if (command.includes('--query-gpu=name,memory.total,driver_version')) {
+          throw new Error('nvidia-smi missing');
+        }
+        if (command.includes('/proc/driver/nvidia/gpus/*/information')) {
+          return {
+            stdout: 'Model:           NVIDIA GeForce RTX 3090\nGPU UUID:        GPU-test\n',
+          };
+        }
+        if (command.includes('/proc/driver/nvidia/version')) {
+          return {
+            stdout: 'NVRM version: NVIDIA UNIX Open Kernel Module for x86_64  580.65.06  Release Build\n',
+          };
+        }
+        return { stdout: '{}' };
+      });
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 24, brand: 'AMD Ryzen 9' });
+
+      const profile = await service.detect();
+
+      expect(profile.gpu.available).toBe(true);
+      expect(profile.gpu.vendor).toBe('nvidia');
+      expect(profile.gpu.model).toBe('NVIDIA GeForce RTX 3090');
+      expect(profile.gpu.vramMb).toBe(24576);
+      expect(profile.gpu.driverVersion).toBe('580.65.06');
+    });
+
     it('SHALL fallback to cached host probe when nvidia-smi and procfs are unavailable', async () => {
       (si.graphics as any) = vi.fn().mockResolvedValue({ controllers: [] });
       filesystemService.readTextFile.mockImplementation(async (filePath: string) => {
