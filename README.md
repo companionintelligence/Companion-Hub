@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/ftue.gif" alt="Companion Hub onboarding walkthrough" width="720" />
+</p>
+
 # [Companion Hub](https://ci.computer/hub)
 
 **Self-hosted app platform.** Install and manage Docker apps from the Companion Intelligence marketplace with one click. Your machine, your data.
