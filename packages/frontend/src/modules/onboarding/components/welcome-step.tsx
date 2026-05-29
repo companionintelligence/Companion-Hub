@@ -6,16 +6,13 @@ import { identifyServices, type DetectedService } from '../helpers/service-detec
 
 interface WelcomeStepProps {
   onDetected: (services: DetectedService[]) => void;
-  onSkip: () => void;
 }
 
-export const WelcomeStep = ({ onDetected, onSkip }: WelcomeStepProps) => {
+export const WelcomeStep = ({ onDetected }: WelcomeStepProps) => {
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   const handleDetect = async () => {
     setLoading(true);
-    setError(null);
     try {
       const res = await apiFetch('/api/system/detect-services', { credentials: 'include' });
       if (!res.ok) throw new Error('Failed to detect services');
@@ -23,7 +20,7 @@ export const WelcomeStep = ({ onDetected, onSkip }: WelcomeStepProps) => {
       const detected = identifyServices(data.services || []);
       onDetected(detected);
     } catch (e) {
-      setError('Could not detect services. You can skip this step.');
+      onDetected([]);
       console.error(e);
     } finally {
       setLoading(false);
@@ -44,14 +41,9 @@ export const WelcomeStep = ({ onDetected, onSkip }: WelcomeStepProps) => {
 
         <div className="flex flex-col gap-3 items-center">
           <Button intent="primary" onClick={handleDetect} loading={loading} disabled={loading} className="w-64">
-            Detect running services
-          </Button>
-          <Button variant="ghost" onClick={onSkip} disabled={loading}>
-            Skip service detection
+            Continue to AI Setup
           </Button>
         </div>
-
-        {error && <p className="text-sm text-destructive mt-4">{error}</p>}
       </CardContent>
     </Card>
   );

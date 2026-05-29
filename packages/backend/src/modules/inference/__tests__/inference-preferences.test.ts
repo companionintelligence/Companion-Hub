@@ -47,29 +47,38 @@ describe('InferenceController — preferences', () => {
     ollamaBackend = moduleRef.get(OllamaBackend);
   });
 
-  it('returns null when global preferred backend is unset', async () => {
-    configService.getInferencePreferences.mockReturnValue({ preferredBackend: null });
+  it('returns nulls when global preferences are unset', async () => {
+    configService.getInferencePreferences.mockReturnValue({ preferredBackend: null, preferredModel: null });
 
     const result = await controller.getPreferences();
 
-    expect(result).toEqual({ preferredBackend: null });
+    expect(result).toEqual({ preferredBackend: null, preferredModel: null });
   });
 
-  it('returns global preferred backend when persisted', async () => {
-    configService.getInferencePreferences.mockReturnValue({ preferredBackend: 'vllm' });
+  it('returns global preferred backend and model when persisted', async () => {
+    configService.getInferencePreferences.mockReturnValue({ preferredBackend: 'vllm', preferredModel: 'hermes4-70b' });
 
     const result = await controller.getPreferences();
 
-    expect(result).toEqual({ preferredBackend: 'vllm' });
+    expect(result).toEqual({ preferredBackend: 'vllm', preferredModel: 'hermes4-70b' });
   });
 
-  it('updates and returns global preferred backend', async () => {
-    configService.setInferencePreferences.mockResolvedValue({ preferredBackend: 'lemonade' });
+  it('updates the preferred backend and leaves the model unchanged when omitted', async () => {
+    configService.setInferencePreferences.mockResolvedValue({ preferredBackend: 'lemonade', preferredModel: null });
 
     const result = await controller.updatePreferences({ backend: 'lemonade' });
 
-    expect(configService.setInferencePreferences).toHaveBeenCalledWith('lemonade');
-    expect(result).toEqual({ preferredBackend: 'lemonade' });
+    expect(configService.setInferencePreferences).toHaveBeenCalledWith('lemonade', undefined);
+    expect(result).toEqual({ preferredBackend: 'lemonade', preferredModel: null });
+  });
+
+  it('passes the preferred model through when provided', async () => {
+    configService.setInferencePreferences.mockResolvedValue({ preferredBackend: 'ollama', preferredModel: 'hermes4-8b' });
+
+    const result = await controller.updatePreferences({ backend: 'ollama', model: 'hermes4-8b' });
+
+    expect(configService.setInferencePreferences).toHaveBeenCalledWith('ollama', 'hermes4-8b');
+    expect(result).toEqual({ preferredBackend: 'ollama', preferredModel: 'hermes4-8b' });
   });
 
   it('returns runtime models for a healthy selected backend', async () => {
@@ -100,5 +109,12 @@ describe('InferenceController — preferences', () => {
   it('rejects invalid backend values in preferences schema', () => {
     const parsed = inferencePreferencesSchema.safeParse({ backend: 'invalid-backend' });
     expect(parsed.success).toBe(false);
+  });
+
+  it('accepts an optional preferred model in the preferences schema', () => {
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', model: 'hermes4-70b' }).success).toBe(true);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', model: null }).success).toBe(true);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama' }).success).toBe(true);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', model: '' }).success).toBe(false);
   });
 });

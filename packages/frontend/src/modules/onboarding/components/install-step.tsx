@@ -72,7 +72,7 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
             method: 'PATCH',
             credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ backend: aiSetupConfig.backend }),
+            body: JSON.stringify({ backend: aiSetupConfig.backend, model: aiSetupConfig.preferredModelId ?? null }),
           });
           if (!preferenceRes.ok) {
             setAiPhase((prev) => ({ ...prev, error: `Failed to save preferred backend: HTTP ${preferenceRes.status}` }));
@@ -437,7 +437,10 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
                 <span className="w-4 text-center">
                   {(aiPhase.modelProgress[modelId] ?? 0) >= 100 ? '✓' : aiPhase.status === 'pulling-models' ? '●' : '○'}
                 </span>
-                <span className="flex-1">{modelId}</span>
+                <span className="flex-1">
+                  {modelId}
+                  {modelId === aiSetupConfig.preferredModelId && <span className="ml-2 text-xs text-primary">agent default</span>}
+                </span>
                 {aiPhase.status === 'pulling-models' && (aiPhase.modelProgress[modelId] ?? 0) < 100 && (
                   <span className="text-xs text-muted-foreground">{aiPhase.modelProgress[modelId] ?? 0}%</span>
                 )}

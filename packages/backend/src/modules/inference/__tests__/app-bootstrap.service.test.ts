@@ -9,6 +9,7 @@ import { ModelRegistryService } from '../model-registry.service';
 import { ModelPullerService } from '../model-puller.service';
 import { OllamaBackend } from '../backends/ollama.backend';
 import { LoggerService } from '@/core/logger/logger.service';
+import { ConfigurationService } from '@/core/config/configuration.service';
 import type { CuratedModel, HardwareProfile } from '@ci-hub/common/types';
 
 const makeLlm = (id: string, backendModelId: string, minVramMb = 0, minRamMb = 0): CuratedModel =>
@@ -88,6 +89,7 @@ describe('AppBootstrapService', () => {
   let modelRegistry: MockProxy<ModelRegistryService>;
   let modelPuller: MockProxy<ModelPullerService>;
   let ollamaBackend: MockProxy<OllamaBackend>;
+  let configurationService: MockProxy<ConfigurationService>;
 
   beforeEach(async () => {
     logger = mock<LoggerService>();
@@ -96,6 +98,7 @@ describe('AppBootstrapService', () => {
     modelRegistry = mock<ModelRegistryService>();
     modelPuller = mock<ModelPullerService>();
     ollamaBackend = mock<OllamaBackend>();
+    configurationService = mock<ConfigurationService>();
 
     inferenceRouter.getInferenceEndpoint.mockReturnValue('http://ci-os-hub:3000/api/inference/v1');
     ollamaBackend.getBaseUrl.mockReturnValue('http://ci-hub-ollama:11434');
@@ -113,6 +116,7 @@ describe('AppBootstrapService', () => {
       return undefined;
     });
     modelPuller.pullModel.mockResolvedValue(undefined);
+    configurationService.getInferencePreferences.mockReturnValue({ preferredBackend: null, preferredModel: null });
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -123,6 +127,7 @@ describe('AppBootstrapService', () => {
         { provide: ModelRegistryService, useValue: modelRegistry },
         { provide: ModelPullerService, useValue: modelPuller },
         { provide: OllamaBackend, useValue: ollamaBackend },
+        { provide: ConfigurationService, useValue: configurationService },
       ],
     }).compile();
 
@@ -225,6 +230,37 @@ describe('AppBootstrapService', () => {
       const config = await service.getBootstrap('hermes-agent');
 
       expect(config.llmModelId).toBe('biggest-700b');
+    });
+
+    it('honors the persisted preferred model when it is among the runnable candidates', async () => {
+      configurationService.getInferencePreferences.mockReturnValue({ preferredBackend: 'ollama', preferredModel: 'hermes4-8b' });
+
+      const config = await service.getBootstrap('hermes-agent');
+
+      expect(config.llmModelId).toBe('hermes4-8b');
+      expect(config.llmBackendModelId).toBe('hermes4:8b');
+      expect(config.env.HERMES_DEFAULT_MODEL).toBe('hermes4-8b');
+    });
+
+    it('honors a preferred model outside the recommended list when it is a runnable LLM for the tier', async () => {
+      configurationService.getInferencePreferences.mockReturnValue({ preferredBackend: 'ollama', preferredModel: 'mid-70b' });
+      modelRegistry.getCuratedModel.mockReturnValue(makeLlm('mid-70b', 'family:70b'));
+      modelRegistry.getModelsForTier.mockReturnValue([makeLlm('mid-70b', 'family:70b')]);
+
+      const config = await service.getBootstrap('openclaw');
+
+      expect(config.llmModelId).toBe('mid-70b');
+      expect(config.env.DEFAULT_MODEL).toBe('mid-70b');
+    });
+
+    it('falls back to the top recommended model when the preferred model is not runnable on the hardware', async () => {
+      configurationService.getInferencePreferences.mockReturnValue({ preferredBackend: 'ollama', preferredModel: 'gpt-oss-120b' });
+      modelRegistry.getCuratedModel.mockReturnValue(undefined);
+      modelRegistry.getModelsForTier.mockReturnValue([]);
+
+      const config = await service.getBootstrap('hermes-agent');
+
+      expect(config.llmModelId).toBe('hermes4-70b');
     });
   });
 
