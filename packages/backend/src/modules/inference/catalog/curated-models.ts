@@ -164,6 +164,50 @@ const FAMILIES = [
     purpose: 'reasoning' as ModelPurpose,
     sizes: [{ s: '32b', idSize: '32b', p: 32, tier: 'medium' as HardwareTier }],
   },
+  {
+    // DeepSeek R1 is the family member with a real local parameter ladder on Ollama.
+    // ollama.com/library/deepseek-r1 (v4-pro/v4-flash above are cloud-only).
+    prefix: 'deepseek-r1',
+    idPrefix: 'deepseek-r1',
+    name: 'DeepSeek R1',
+    purpose: 'reasoning' as ModelPurpose,
+    sizes: [
+      { s: '1.5b', idSize: '1-5b', p: 1.5, tier: 'cpu-only' as HardwareTier },
+      { s: '7b', idSize: '7b', p: 7, tier: 'low' as HardwareTier },
+      { s: '8b', idSize: '8b', p: 8, tier: 'low' as HardwareTier },
+      { s: '14b', idSize: '14b', p: 14, tier: 'low' as HardwareTier },
+      { s: '32b', idSize: '32b', p: 32, tier: 'medium' as HardwareTier },
+      { s: '70b', idSize: '70b', p: 70, tier: 'high' as HardwareTier },
+      { s: '671b', idSize: '671b', p: 671, tier: 'high' as HardwareTier },
+    ],
+  },
+  {
+    // ollama.com/library/glm4 (glm-5/glm-5.1 are cloud-only).
+    prefix: 'glm4',
+    idPrefix: 'glm4',
+    name: 'GLM-4',
+    purpose: 'general' as ModelPurpose,
+    sizes: [{ s: '9b', idSize: '9b', p: 9, tier: 'low' as HardwareTier }],
+  },
+  {
+    // ollama.com/library/nemotron-3-nano
+    prefix: 'nemotron-3-nano',
+    idPrefix: 'nemotron-3-nano',
+    name: 'Nemotron 3 Nano',
+    purpose: 'reasoning' as ModelPurpose,
+    sizes: [
+      { s: '4b', idSize: '4b', p: 4, tier: 'cpu-only' as HardwareTier },
+      { s: '30b', idSize: '30b', p: 30, tier: 'medium' as HardwareTier },
+    ],
+  },
+  {
+    // ollama.com/library/nemotron-3-super — 120B MoE, ~12B active.
+    prefix: 'nemotron-3-super',
+    idPrefix: 'nemotron-3-super',
+    name: 'Nemotron 3 Super',
+    purpose: 'reasoning' as ModelPurpose,
+    sizes: [{ s: '120b', idSize: '120b', p: 120, tier: 'high' as HardwareTier }],
+  },
 ];
 
 const BASE_LLMS: Array<
