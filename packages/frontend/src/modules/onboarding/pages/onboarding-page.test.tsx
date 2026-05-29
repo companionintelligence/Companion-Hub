@@ -137,7 +137,7 @@ describe('OnboardingPage', () => {
     expect(screen.queryByTestId('complete-step')).not.toBeInTheDocument();
   });
 
-  it('routes AI Setup continue to Private VPN', async () => {
+  it('routes AI Setup continue to Discover', async () => {
     const user = userEvent.setup();
 
     render(
@@ -149,10 +149,10 @@ describe('OnboardingPage', () => {
     await user.click(screen.getByRole('button', { name: 'welcome-next' }));
     await user.click(screen.getByRole('button', { name: 'ai-next' }));
 
-    expect(screen.getByTestId('tailscale-setup-step')).toBeInTheDocument();
+    expect(screen.getByTestId('recommendations-step')).toBeInTheDocument();
   });
 
-  it('routes AI Setup skip to Private VPN', async () => {
+  it('routes AI Setup skip to Discover', async () => {
     const user = userEvent.setup();
 
     render(
@@ -164,10 +164,10 @@ describe('OnboardingPage', () => {
     await user.click(screen.getByRole('button', { name: 'welcome-next' }));
     await user.click(screen.getByRole('button', { name: 'ai-skip' }));
 
-    expect(screen.getByTestId('tailscale-setup-step')).toBeInTheDocument();
+    expect(screen.getByTestId('recommendations-step')).toBeInTheDocument();
   });
 
-  it('routes Private VPN continue to Discover', async () => {
+  it('routes Discover continue to Select Apps', async () => {
     const user = userEvent.setup();
 
     render(
@@ -178,9 +178,9 @@ describe('OnboardingPage', () => {
 
     await user.click(screen.getByRole('button', { name: 'welcome-next' }));
     await user.click(screen.getByRole('button', { name: 'ai-next' }));
-    await user.click(screen.getByRole('button', { name: 'tailscale-next' }));
+    await user.click(screen.getByRole('button', { name: 'recommend-next' }));
 
-    expect(screen.getByTestId('recommendations-step')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'finish-setup' })).toBeInTheDocument();
   });
 
   it('routes Discover skip to Install', async () => {
@@ -194,8 +194,24 @@ describe('OnboardingPage', () => {
 
     await user.click(screen.getByRole('button', { name: 'welcome-next' }));
     await user.click(screen.getByRole('button', { name: 'ai-next' }));
-    await user.click(screen.getByRole('button', { name: 'tailscale-next' }));
     await user.click(screen.getByRole('button', { name: 'recommend-skip' }));
+
+    expect(screen.getByTestId('install-step')).toBeInTheDocument();
+  });
+
+  it('routes Select Apps confirm to Install', async () => {
+    const user = userEvent.setup();
+
+    render(
+      <MemoryRouter initialEntries={['/onboarding']}>
+        <OnboardingPage />
+      </MemoryRouter>,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'welcome-next' }));
+    await user.click(screen.getByRole('button', { name: 'ai-next' }));
+    await user.click(screen.getByRole('button', { name: 'recommend-next' }));
+    await user.click(screen.getByRole('button', { name: 'finish-setup' }));
 
     expect(screen.getByTestId('install-step')).toBeInTheDocument();
   });

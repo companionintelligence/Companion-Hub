@@ -222,22 +222,25 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
             />
           )}
 
+          {/* Inference backend is an advanced setting and is visually de-emphasized. */}
+          <div className="opacity-60" data-testid="backend-selection-wrapper">
+            <BackendSelectionCard
+              recommended={profile.backends.recommended}
+              available={profile.backends.available}
+              selected={selectedBackend}
+              onSelect={(backend) => {
+                setSelectedBackend(backend);
+                setSelectedModelIds(getRecommendedModelIdsForBackend(profile, backend));
+              }}
+            />
+          </div>
+
           <ModelSelectionCard
             tier={profile.tier}
             recommendedModels={backendRecommendedModels}
             availableModels={backendAvailableModels}
             selectedModelIds={selectedModelIds}
             onToggleModel={handleToggleModel}
-          />
-
-          <BackendSelectionCard
-            recommended={profile.backends.recommended}
-            available={profile.backends.available}
-            selected={selectedBackend}
-            onSelect={(backend) => {
-              setSelectedBackend(backend);
-              setSelectedModelIds(getRecommendedModelIdsForBackend(profile, backend));
-            }}
           />
 
           <ResourceSummaryBar selectedModels={selectedModels} availableMemoryMb={availableMemoryMb} />
@@ -252,7 +255,7 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
         </Button>
         <div className="flex gap-2">
           <Button variant="outline" onClick={handleSkip} data-testid="ai-skip-btn">
-            Skip to Private VPN
+            Skip to Discover
           </Button>
           <Button
             intent="primary"
@@ -261,8 +264,8 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
             disabled={needsOllama && (installingOllama || checkingOllama || !ollamaStatus?.ready)}
           >
             {isInsufficient && cloudProviders.filter((p) => p.apiKey.trim()).length === 0
-              ? 'Continue to Private VPN without AI'
-              : 'Continue to Private VPN'}
+              ? 'Continue to Discover without AI'
+              : 'Continue to Discover'}
           </Button>
         </div>
       </div>

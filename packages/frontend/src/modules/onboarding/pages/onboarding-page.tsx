@@ -29,7 +29,7 @@ function OnboardingWizard() {
     return <Navigate to="/dashboard" replace />;
   }
 
-  const stepTitles = ['Welcome', 'AI Setup', 'Private VPN', 'Discover', 'Select Apps', 'Install', 'Done'];
+  const stepTitles = ['Welcome', 'AI Setup', 'Discover', 'Select Apps', 'Install', 'Private VPN', 'Done'];
 
   return (
     <div className="flex items-center justify-center bg-background px-4 py-8" style={{ minHeight: 'calc(100vh - var(--titlebar-height, 0px))' }}>
@@ -92,42 +92,42 @@ function OnboardingWizard() {
             </StepContent>
 
             <StepContent step={2}>
-              <TailscaleSetupStep onComplete={() => setCurrentStep(3)} onSkip={() => setCurrentStep(3)} onBack={() => setCurrentStep(1)} />
-            </StepContent>
-
-            <StepContent step={3}>
               <RecommendationsStep
                 detectedServices={detectedServices}
                 onSelect={(apps) => {
                   setSelectedApps(apps);
+                  setCurrentStep(3);
+                }}
+                onSkip={() => setCurrentStep(4)}
+                onBack={() => setCurrentStep(1)}
+              />
+            </StepContent>
+
+            <StepContent step={3}>
+              <SelectAppsStep
+                selectedApps={selectedApps}
+                onConfirm={(apps) => {
+                  setSelectedApps(apps);
                   setCurrentStep(4);
                 }}
-                onSkip={() => setCurrentStep(5)}
                 onBack={() => setCurrentStep(2)}
               />
             </StepContent>
 
             <StepContent step={4}>
-              <SelectAppsStep
-                selectedApps={selectedApps}
-                onConfirm={(apps) => {
-                  setSelectedApps(apps);
-                  setCurrentStep(5);
-                }}
-                onBack={() => setCurrentStep(3)}
-              />
-            </StepContent>
-
-            <StepContent step={5}>
               <InstallStep
                 apps={selectedApps}
                 defaultExposureMode={defaultExposureMode}
                 aiSetupConfig={aiSetupConfig}
                 onComplete={(summary) => {
                   setInstallSummary(summary);
-                  setCurrentStep(6);
+                  setCurrentStep(5);
                 }}
               />
+            </StepContent>
+
+            <StepContent step={5}>
+              <TailscaleSetupStep onComplete={() => setCurrentStep(6)} onSkip={() => setCurrentStep(6)} onBack={() => setCurrentStep(4)} />
             </StepContent>
 
             <StepContent step={6}>
