@@ -5,7 +5,6 @@ import { AiSetupStep } from '../ai-setup-step';
 import type { HardwareProfileResponse } from '../../helpers/ai-setup-types';
 
 const mockApiFetch = vi.fn();
-const mockClipboardWriteText = vi.fn();
 const mockResponse = <T,>(data: T, ok = true) =>
   Promise.resolve({
     ok,
@@ -119,23 +118,18 @@ describe('AiSetupStep', () => {
   const onSkip = vi.fn();
   const onBack = vi.fn();
   const ollamaReadyStatus = {
-    installed: true,
-    needsInstall: false,
-    running: true,
     ready: true,
-    endpointUrl: 'http://host.docker.internal:11434',
+    running: true,
+    endpointUrl: 'http://ci-hub-ollama:11434',
   };
   const ollamaMissingStatus = {
-    installed: false,
-    needsInstall: true,
-    running: false,
     ready: false,
-    endpointUrl: 'http://host.docker.internal:11434',
+    running: false,
+    endpointUrl: 'http://ci-hub-ollama:11434',
   };
 
   beforeEach(() => {
     vi.clearAllMocks();
-    mockClipboardWriteText.mockResolvedValue(undefined);
     Object.defineProperty(window.navigator, 'platform', {
       configurable: true,
       value: 'Linux x86_64',
@@ -143,10 +137,6 @@ describe('AiSetupStep', () => {
     Object.defineProperty(window.navigator, 'userAgent', {
       configurable: true,
       value: 'Mozilla/5.0 (X11; Linux x86_64)',
-    });
-    Object.defineProperty(window.navigator, 'clipboard', {
-      configurable: true,
-      value: { writeText: mockClipboardWriteText },
     });
   });
 
@@ -576,7 +566,7 @@ describe('AiSetupStep', () => {
     }
   });
 
-  it('shows Ollama setup card when Ollama backend is selected and not installed', async () => {
+  it('shows Ollama setup card when Ollama backend is selected and container is not running', async () => {
     const ollamaProfile = {
       ...highTierProfile,
       backends: {
@@ -590,7 +580,7 @@ describe('AiSetupStep', () => {
     render(<AiSetupStep onComplete={onComplete} onSkip={onSkip} onBack={onBack} />);
 
     await waitFor(() => {
-      expect(screen.getByText('Ollama Not Installed')).toBeInTheDocument();
+      expect(screen.getByText('Ollama Container Not Running')).toBeInTheDocument();
     });
   });
 
@@ -607,23 +597,21 @@ describe('AiSetupStep', () => {
       .mockImplementationOnce(() => mockResponse(ollamaProfile))
       .mockImplementationOnce(() =>
         mockResponse({
-          installed: true,
-          needsInstall: false,
-          running: false,
           ready: false,
-          endpointUrl: 'http://host.docker.internal:11434',
+          running: false,
+          endpointUrl: 'http://ci-hub-ollama:11434',
           error: 'connect ECONNREFUSED',
         }),
       );
 
     render(<AiSetupStep onComplete={onComplete} onSkip={onSkip} onBack={onBack} />);
 
-    await waitFor(() => expect(screen.getByText('Ollama Not Reachable')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Ollama Container Not Running')).toBeInTheDocument());
     expect(screen.getByTestId('ai-continue-btn')).toBeDisabled();
-    expect(screen.getByText(/could not reach Ollama/)).toBeInTheDocument();
+    expect(screen.getByText(/runs inside the Hub container stack/i)).toBeInTheDocument();
   });
 
-  it('shows the host-side install command on Unix-like platforms', async () => {
+  it('shows container-first setup guidance when Ollama container is not running', async () => {
     const ollamaProfile = {
       ...highTierProfile,
       backends: {
@@ -636,9 +624,9 @@ describe('AiSetupStep', () => {
 
     render(<AiSetupStep onComplete={onComplete} onSkip={onSkip} onBack={onBack} />);
 
-    await waitFor(() => expect(screen.getByText('Ollama Not Installed')).toBeInTheDocument());
-    expect(screen.getByText('curl -fsSL https://ollama.com/install.sh | sh')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Copy Install Command' })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('Ollama Container Not Running')).toBeInTheDocument());
+    expect(screen.getByText(/runs inside the Hub container stack/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Check Ollama Connection' })).toBeInTheDocument();
   });
 
   it('keeps the hardware profile visible when Ollama installation fails', async () => {
@@ -660,21 +648,24 @@ describe('AiSetupStep', () => {
       },
     };
 
+    const containerFailureMessage =
+      'Ollama is managed by the ci-hub-ollama container. Start or restart that container and re-check http://ci-hub-ollama:11434.';
+
     mockApiFetch
       .mockImplementationOnce(() => mockResponse(ollamaProfile))
       .mockImplementationOnce(() => mockResponse(ollamaMissingStatus))
-      .mockImplementationOnce(() => mockResponse({ success: false, message: 'Windows installation failed: access denied' }));
+      .mockImplementationOnce(() => mockResponse({ success: false, message: containerFailureMessage }));
 
     render(<AiSetupStep onComplete={onComplete} onSkip={onSkip} onBack={onBack} />);
 
-    await waitFor(() => expect(screen.getByText('Ollama Not Installed')).toBeInTheDocument());
-    await user.click(screen.getByRole('button', { name: 'Install Ollama' }));
+    await waitFor(() => expect(screen.getByText('Ollama Container Not Running')).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Check Ollama Connection' }));
 
     await waitFor(() => {
-      expect(screen.getByText('Windows installation failed: access denied')).toBeInTheDocument();
+      expect(screen.getByText(containerFailureMessage)).toBeInTheDocument();
     });
     expect(screen.getByTestId('hw-card-title')).toBeInTheDocument();
     expect(screen.queryByTestId('ai-setup-error')).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Install Ollama' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Check Ollama Connection' })).toBeInTheDocument();
   });
 });

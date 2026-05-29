@@ -233,11 +233,17 @@ export class InferenceRouterService {
     // Try Lemonade first
     const lemonadeHealth = await this.lemonadeBackend.healthCheck();
     if (lemonadeHealth.running && lemonadeHealth.healthy) {
-      const response = await axios.post(`${this.lemonadeBackend.getBaseUrl()}/v1/audio/speech`, body, {
-        responseType: 'arraybuffer',
-        timeout: 60000,
-      });
-      return { data: Buffer.from(response.data), backend: 'lemonade' };
+      try {
+        const response = await axios.post(`${this.lemonadeBackend.getBaseUrl()}/v1/audio/speech`, body, {
+          responseType: 'arraybuffer',
+          timeout: 60000,
+        });
+        return { data: Buffer.from(response.data), backend: 'lemonade' };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        this._logger.error(`[Inference] TTS request to Lemonade failed: ${msg}`);
+        throw err;
+      }
     }
 
     // Cloud fallback
@@ -254,8 +260,14 @@ export class InferenceRouterService {
   async routeStt(formData: FormData): Promise<{ data: unknown; backend: string }> {
     const lemonadeHealth = await this.lemonadeBackend.healthCheck();
     if (lemonadeHealth.running && lemonadeHealth.healthy) {
-      const response = await axios.post(`${this.lemonadeBackend.getBaseUrl()}/v1/audio/transcriptions`, formData, { timeout: 120000 });
-      return { data: response.data, backend: 'lemonade' };
+      try {
+        const response = await axios.post(`${this.lemonadeBackend.getBaseUrl()}/v1/audio/transcriptions`, formData, { timeout: 120000 });
+        return { data: response.data, backend: 'lemonade' };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        this._logger.error(`[Inference] STT request to Lemonade failed: ${msg}`);
+        throw err;
+      }
     }
 
     const provider = this.cloudFallback.getEnabledProviders()[0];
@@ -272,18 +284,30 @@ export class InferenceRouterService {
     // Try Ollama first
     const ollamaHealth = await this.ollamaBackend.healthCheck();
     if (ollamaHealth.running && ollamaHealth.healthy) {
-      const response = await axios.post(`${this.ollamaBackend.getBaseUrl()}/v1/embeddings`, body, { timeout: 60000 });
-      return { data: response.data, backend: 'ollama' };
+      try {
+        const response = await axios.post(`${this.ollamaBackend.getBaseUrl()}/v1/embeddings`, body, { timeout: 60000 });
+        return { data: response.data, backend: 'ollama' };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        this._logger.error(`[Inference] Embeddings request to Ollama failed: ${msg}`);
+        throw err;
+      }
     }
 
     const provider = this.cloudFallback.getEnabledProviders()[0];
     if (provider) {
       const baseUrl = provider.baseUrl || 'https://api.openai.com/v1';
-      const response = await axios.post(`${baseUrl}/embeddings`, body, {
-        headers: { Authorization: `Bearer ${provider.apiKey}` },
-        timeout: 60000,
-      });
-      return { data: response.data, backend: `cloud:${provider.provider}` };
+      try {
+        const response = await axios.post(`${baseUrl}/embeddings`, body, {
+          headers: { Authorization: `Bearer ${provider.apiKey}` },
+          timeout: 60000,
+        });
+        return { data: response.data, backend: `cloud:${provider.provider}` };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        this._logger.error(`[Inference] Embeddings request to cloud provider ${provider.provider} failed: ${msg}`);
+        throw err;
+      }
     }
 
     throw new Error('No embeddings backend available');

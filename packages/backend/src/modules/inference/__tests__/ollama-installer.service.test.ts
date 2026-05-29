@@ -1,26 +1,9 @@
 import { Test, type TestingModule } from '@nestjs/testing';
 import { mock, type MockProxy } from 'vitest-mock-extended';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import os from 'node:os';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { LoggerService } from '@/core/logger/logger.service';
 import { OllamaInstallerService } from '../ollama-installer.service';
 import { OllamaBackend } from '../backends/ollama.backend';
-
-const { execAsyncMock } = vi.hoisted(() => ({
-  execAsyncMock: vi.fn(),
-}));
-
-vi.mock('node:child_process', () => ({
-  exec: vi.fn(),
-}));
-
-vi.mock('node:util', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('node:util')>();
-  return {
-    ...actual,
-    promisify: () => execAsyncMock,
-  };
-});
 
 describe('OllamaInstallerService', () => {
   let service: OllamaInstallerService;
@@ -28,10 +11,9 @@ describe('OllamaInstallerService', () => {
   let ollamaBackend: MockProxy<OllamaBackend>;
 
   beforeEach(async () => {
-    execAsyncMock.mockReset();
     loggerService = mock<LoggerService>();
     ollamaBackend = mock<OllamaBackend>();
-    ollamaBackend.getBaseUrl.mockReturnValue('http://host.docker.internal:11434');
+    ollamaBackend.getBaseUrl.mockReturnValue('http://ci-hub-ollama:11434');
     ollamaBackend.healthCheck.mockResolvedValue({
       running: false,
       healthy: false,
@@ -46,51 +28,63 @@ describe('OllamaInstallerService', () => {
     service = module.get(OllamaInstallerService);
   });
 
-  it('reports Ollama ready when the configured endpoint is healthy even without a local CLI', async () => {
-    vi.spyOn(os, 'platform').mockReturnValue('darwin');
-    execAsyncMock.mockRejectedValue(new Error('not found'));
+  it('reports Ollama ready when the container endpoint is healthy', async () => {
     ollamaBackend.healthCheck.mockResolvedValue({
       running: true,
       healthy: true,
-      modelsLoaded: ['phi4-mini'],
+      modelsLoaded: ['gemma4:4b'],
     });
 
     await expect(service.checkInstallation()).resolves.toEqual({
-      installed: true,
-      version: undefined,
-      installPath: undefined,
-      needsInstall: false,
-      running: true,
       ready: true,
-      endpointUrl: 'http://host.docker.internal:11434',
+      running: true,
+      endpointUrl: 'http://ci-hub-ollama:11434',
       error: undefined,
     });
   });
 
-  it('reports Ollama installed but not ready when the CLI exists and the endpoint is down', async () => {
-    vi.spyOn(os, 'platform').mockReturnValue('linux');
-    execAsyncMock.mockResolvedValueOnce({ stdout: 'ollama version 0.6.0\n' }).mockResolvedValueOnce({ stdout: '/usr/local/bin/ollama\n' });
-
+  it('reports Ollama not ready when the container endpoint is down', async () => {
     await expect(service.checkInstallation()).resolves.toEqual({
-      installed: true,
-      version: 'ollama version 0.6.0',
-      installPath: '/usr/local/bin/ollama',
-      needsInstall: false,
-      running: false,
       ready: false,
-      endpointUrl: 'http://host.docker.internal:11434',
+      running: false,
+      endpointUrl: 'http://ci-hub-ollama:11434',
       error: 'connect ECONNREFUSED',
     });
   });
 
-  it('returns a host-side install command for Unix-like platforms', async () => {
-    vi.spyOn(os, 'platform').mockReturnValue('linux');
+  it('handles an unexpected healthCheck throw gracefully', async () => {
+    ollamaBackend.healthCheck.mockRejectedValue(new Error('socket hang up'));
 
+    await expect(service.checkInstallation()).resolves.toEqual({
+      ready: false,
+      running: false,
+      endpointUrl: 'http://ci-hub-ollama:11434',
+      error: 'socket hang up',
+    });
+    expect(loggerService.error).toHaveBeenCalledWith(expect.stringContaining('socket hang up'));
+  });
+
+  it('returns container guidance when Ollama is not reachable', async () => {
     const result = await service.install();
 
     expect(result).toEqual({
       success: false,
-      message: 'Install Ollama on the host machine with: curl -fsSL https://ollama.com/install.sh | sh',
+      message: 'Ollama is managed by the ci-hub-ollama container. Start or restart that container and re-check http://ci-hub-ollama:11434.',
+    });
+  });
+
+  it('returns success when the Ollama endpoint is already ready', async () => {
+    ollamaBackend.healthCheck.mockResolvedValue({
+      running: true,
+      healthy: true,
+      modelsLoaded: ['qwen3.6:8b'],
+    });
+
+    const result = await service.install();
+
+    expect(result).toEqual({
+      success: true,
+      message: 'Ollama container is already running and reachable.',
     });
   });
 });
