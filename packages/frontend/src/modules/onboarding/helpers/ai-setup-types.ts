@@ -1,7 +1,12 @@
 import type { CloudProviderType, CuratedModel, HardwareProfile, HardwareTier, InferenceBackendType, MemoryBudget } from '@ci-hub/common/types';
 
+/** The Companion agent framework that powers the user's system. */
+export type AgentFramework = 'openclaw' | 'hermes';
+
 /** AI setup state managed by the AiSetupStep and passed down to InstallStep / CompleteStep. */
 export interface AiSetupConfig {
+  /** Chosen agent framework (OpenClaw is the default). */
+  agentFramework: AgentFramework;
   selectedModels: string[];
   backend: InferenceBackendType;
   cloudProviders: CloudProviderInput[];
@@ -11,8 +16,18 @@ export interface AiSetupConfig {
    * the hardware can't run a local model.
    */
   preferredModelId?: string;
+  /**
+   * Preferred remote-access transport for the user's Companion agents (Hermes, OpenClaw) and Hub
+   * services: 'tailscale' (private VPN), 'cloudflare' (public web URL), or 'local' (no remote
+   * exposure). Seeds the default exposure mode used when onboarding installs apps. Undefined when
+   * AI setup was skipped.
+   */
+  exposureMode?: ExposureMode;
   skipped: boolean;
 }
+
+/** How the user reaches their agents/Hub from other devices. "Web" in the UI maps to 'cloudflare'. */
+export type ExposureMode = 'cloudflare' | 'tailscale' | 'local';
 
 export interface CloudProviderInput {
   provider: CloudProviderType;

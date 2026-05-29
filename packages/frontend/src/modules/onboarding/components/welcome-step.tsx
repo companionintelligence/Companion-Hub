@@ -1,8 +1,9 @@
 import { apiFetch } from '@/lib/api-fetch';
 import { Button } from '@/components/ui/Button';
-import { Card, CardContent } from '@/components/ui/Card';
 import { useState } from 'react';
+import { Sparkles } from 'lucide-react';
 import { identifyServices, type DetectedService } from '../helpers/service-detection';
+import { IconBadge, WizardCard } from './wizard-ui';
 
 interface WelcomeStepProps {
   onDetected: (services: DetectedService[]) => void;
@@ -28,23 +29,20 @@ export const WelcomeStep = ({ onDetected }: WelcomeStepProps) => {
   };
 
   return (
-    <Card>
-      <CardContent className="p-8 text-center">
-        <div className="mb-6">
-          <div className="text-5xl mb-4">👋</div>
-          <h2 className="text-xl font-semibold mb-2">Welcome to Companion Hub</h2>
-          <p className="text-muted-foreground max-w-md mx-auto">
-            Let's get your self-hosted ecosystem set up. We'll inspect Docker services running on this device and recommend open-source alternatives
-            you can install with one click.
-          </p>
-        </div>
-
-        <div className="flex flex-col gap-3 items-center">
-          <Button intent="primary" onClick={handleDetect} loading={loading} disabled={loading} className="w-64">
-            Continue to AI Setup
-          </Button>
-        </div>
-      </CardContent>
-    </Card>
+    <WizardCard className="text-center">
+      <div className="flex flex-col items-center">
+        <IconBadge>
+          <Sparkles />
+        </IconBadge>
+        <h2 className="mt-5 text-2xl font-bold tracking-tight">Welcome to Companion Hub</h2>
+        <p className="mt-2 max-w-md text-muted-foreground">
+          Let's get your private, local-first ecosystem set up. We'll inspect the Docker services running on this device and recommend open-source
+          alternatives you can install with one click.
+        </p>
+        <Button intent="primary" onClick={handleDetect} loading={loading} disabled={loading} className="mt-6 w-64">
+          Continue to AI Setup
+        </Button>
+      </div>
+    </WizardCard>
   );
 };

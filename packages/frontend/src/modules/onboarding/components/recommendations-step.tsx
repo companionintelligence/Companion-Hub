@@ -1,13 +1,15 @@
 import { Button } from '@/components/ui/Button';
-import { Card, CardContent } from '@/components/ui/Card';
-import { Checkbox } from '@/components/ui/Checkbox/Checkbox';
+import { cn } from '@/lib/utils';
 import { useAppContext } from '@/context/app-context';
 import { portalAlternativesQueryOptions } from '@/lib/portal-alternatives';
 import { useQuery } from '@tanstack/react-query';
+import { LayoutGrid } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { getRecommendedApps } from '../helpers/alternatives';
 import type { DetectedService } from '../helpers/service-detection';
 import type { OnboardingApp } from '../helpers/types';
+import { SelectIndicator } from './ai-setup/primitives';
+import { WizardCard, WizardHeader, WizardNav } from './wizard-ui';
 
 interface RecommendationsStepProps {
   detectedServices: DetectedService[];
@@ -98,100 +100,107 @@ export const RecommendationsStep = ({ detectedServices, onSelect, onSkip, onBack
   }
 
   return (
-    <Card>
-      <CardContent className="p-6">
-        <div className="mb-4">
-          <h2 className="text-xl font-semibold mb-1">Recommended Apps</h2>
-          {isAltsError && (
-            <div className="mb-3 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-              Could not load app recommendations
-              {altsError instanceof Error ? `: ${altsError.message}` : ''}.{' '}
-              <button type="button" className="underline font-medium" onClick={() => refetch()}>
-                Retry
-              </button>
-            </div>
-          )}
-          <p className="text-sm text-muted-foreground">
-            {detectedServices.length > 0
-              ? `We found ${detectedServices.length} Docker service${detectedServices.length > 1 ? 's' : ''} on this device. Here are some open-source alternatives you might like.`
-              : 'Here are some popular open-source apps you can self-host.'}
-          </p>
-          {detectedServices.length > 0 && (
-            <div className="flex flex-wrap gap-2 mt-2">
-              {detectedServices.map((s) => (
-                <span key={s.friendlyName} className="text-xs bg-muted px-2 py-1 rounded-full">
-                  {s.friendlyName}
-                </span>
-              ))}
-            </div>
-          )}
-        </div>
+    <WizardCard>
+      <WizardHeader
+        icon={<LayoutGrid />}
+        title="Recommended Apps"
+        description={
+          detectedServices.length > 0
+            ? `We found ${detectedServices.length} Docker service${detectedServices.length > 1 ? 's' : ''} on this device. Here are some open-source alternatives you might like.`
+            : 'Here are some popular open-source apps you can self-host.'
+        }
+      />
 
-        <div className="max-h-[400px] overflow-y-auto space-y-6 pr-2">
-          {isAltsLoading && (
-            <div className="space-y-3 py-4">
-              <div className="h-4 max-w-md w-[75%] animate-pulse rounded bg-muted" />
-              <div className="h-4 max-w-sm w-1/2 animate-pulse rounded bg-muted" />
-              <div className="h-24 animate-pulse rounded-lg bg-muted/50" />
-            </div>
-          )}
-          {!isAltsLoading && !isAltsError && recommendations.length === 0 && altsData && Object.keys(altsData).length > 0 && (
-            <p className="text-sm text-muted-foreground py-4">
-              No matching apps are available in your store yet. You can skip this step or sync the app store.
-            </p>
-          )}
-          {Array.from(byCategory.entries()).map(([category, recs]) => (
-            <div key={category}>
-              <h3 className="text-sm font-medium text-muted-foreground mb-2">{categoryLabels[category] || category}</h3>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                {recs.flatMap((rec) =>
-                  rec.alternatives
-                    .filter((alt) => alt.appSlug)
-                    .map((alt) => {
-                      const slug = alt.appSlug as string;
-                      return (
-                        <button
-                          type="button"
-                          key={slug}
-                          className="flex items-center gap-3 p-3 rounded-lg border cursor-pointer hover:bg-muted/50 transition-colors text-left w-full"
-                          onClick={() => toggleApp(slug)}
-                        >
-                          <Checkbox checked={selected.has(slug)} onCheckedChange={() => toggleApp(slug)} />
-                          <img
-                            src={alt.icon}
-                            alt=""
-                            className="w-6 h-6 rounded"
-                            onError={(e) => {
-                              (e.target as HTMLImageElement).style.display = 'none';
-                            }}
-                          />
-                          <div className="flex-1 min-w-0">
-                            <div className="text-sm font-medium truncate">{alt.name}</div>
-                            <div className="text-xs text-muted-foreground truncate">Replaces {rec.proprietary.join(', ')}</div>
-                          </div>
-                        </button>
-                      );
-                    }),
-                )}
-              </div>
-            </div>
+      {isAltsError && (
+        <div className="mb-3 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          Could not load app recommendations
+          {altsError instanceof Error ? `: ${altsError.message}` : ''}.{' '}
+          <button type="button" className="font-medium underline" onClick={() => refetch()}>
+            Retry
+          </button>
+        </div>
+      )}
+
+      {detectedServices.length > 0 && (
+        <div className="mb-4 flex flex-wrap gap-2">
+          {detectedServices.map((s) => (
+            <span key={s.friendlyName} className="rounded-full border border-border bg-foreground/[0.03] px-2 py-1 text-xs text-muted-foreground">
+              {s.friendlyName}
+            </span>
           ))}
         </div>
+      )}
 
-        <div className="flex justify-between mt-6">
-          <Button variant="ghost" onClick={onBack}>
-            Back
-          </Button>
-          <div className="flex gap-2">
-            <Button variant="ghost" onClick={onSkip}>
-              Skip to Install
-            </Button>
-            <Button intent="primary" onClick={handleContinue} disabled={selected.size === 0}>
-              Continue to Select Apps with {selected.size} app{selected.size === 1 ? '' : 's'}
-            </Button>
+      <div className="max-h-[400px] space-y-6 overflow-y-auto pr-2">
+        {isAltsLoading && (
+          <div className="space-y-3 py-4">
+            <div className="h-4 w-[75%] max-w-md animate-pulse rounded bg-muted" />
+            <div className="h-4 w-1/2 max-w-sm animate-pulse rounded bg-muted" />
+            <div className="h-24 animate-pulse rounded-lg bg-muted/50" />
           </div>
+        )}
+        {!isAltsLoading && !isAltsError && recommendations.length === 0 && altsData && Object.keys(altsData).length > 0 && (
+          <p className="py-4 text-sm text-muted-foreground">
+            No matching apps are available in your store yet. You can skip this step or sync the app store.
+          </p>
+        )}
+        {Array.from(byCategory.entries()).map(([category, recs]) => (
+          <div key={category}>
+            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{categoryLabels[category] || category}</h3>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              {recs.flatMap((rec) =>
+                rec.alternatives
+                  .filter((alt) => alt.appSlug)
+                  .map((alt) => {
+                    const slug = alt.appSlug as string;
+                    const isSelected = selected.has(slug);
+                    return (
+                      <button
+                        type="button"
+                        key={slug}
+                        onClick={() => toggleApp(slug)}
+                        className={cn(
+                          'flex w-full items-center gap-3 rounded-xl border p-3 text-left transition-colors',
+                          isSelected
+                            ? 'border-primary bg-primary/[0.06] ring-1 ring-primary/30'
+                            : 'border-border bg-foreground/[0.015] hover:border-primary/40',
+                        )}
+                      >
+                        <img
+                          src={alt.icon}
+                          alt=""
+                          className="h-7 w-7 rounded"
+                          onError={(e) => {
+                            (e.target as HTMLImageElement).style.display = 'none';
+                          }}
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-sm font-medium">{alt.name}</div>
+                          <div className="truncate text-xs text-muted-foreground">Replaces {rec.proprietary.join(', ')}</div>
+                        </div>
+                        <SelectIndicator selected={isSelected} />
+                      </button>
+                    );
+                  }),
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <WizardNav>
+        <Button variant="ghost" onClick={onBack}>
+          Back
+        </Button>
+        <div className="flex gap-2">
+          <Button variant="ghost" onClick={onSkip}>
+            Skip to Install
+          </Button>
+          <Button intent="primary" onClick={handleContinue} disabled={selected.size === 0}>
+            Continue with {selected.size} app{selected.size === 1 ? '' : 's'}
+          </Button>
         </div>
-      </CardContent>
-    </Card>
+      </WizardNav>
+    </WizardCard>
   );
 };

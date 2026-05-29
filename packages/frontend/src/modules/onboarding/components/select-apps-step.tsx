@@ -1,7 +1,8 @@
 import { Button } from '@/components/ui/Button';
-import { Card, CardContent } from '@/components/ui/Card';
 import { useEffect, useState } from 'react';
+import { Package, X } from 'lucide-react';
 import type { OnboardingApp } from '../helpers/types';
+import { WizardCard, WizardHeader, WizardNav } from './wizard-ui';
 
 interface SelectAppsStepProps {
   selectedApps: OnboardingApp[];
@@ -21,55 +22,65 @@ export const SelectAppsStep = ({ selectedApps, onConfirm, onBack }: SelectAppsSt
   };
 
   return (
-    <Card>
-      <CardContent className="p-6">
-        <div className="mb-4">
-          <h2 className="text-xl font-semibold mb-1">Review Your Selection</h2>
-          <p className="text-sm text-muted-foreground">
-            {apps.length > 0
-              ? `${apps.length} app${apps.length === 1 ? '' : 's'} selected for installation. Remove any you don't need.`
-              : 'No apps selected.'}
-          </p>
-        </div>
+    <WizardCard>
+      <WizardHeader
+        icon={<Package />}
+        title="Review Your Selection"
+        description={
+          apps.length > 0
+            ? `${apps.length} app${apps.length === 1 ? '' : 's'} selected for installation. Remove any you don't need.`
+            : 'No apps selected.'
+        }
+      />
 
-        <div className="space-y-2 max-h-[400px] overflow-y-auto pr-2">
-          {apps.map((app) => (
-            <div key={app.appSlug} className="flex items-center gap-3 p-3 rounded-lg border hover:bg-muted/30 transition-colors">
-              <img
-                src={app.icon}
-                alt=""
-                className="w-8 h-8 rounded"
-                onError={(e) => {
-                  (e.target as HTMLImageElement).style.display = 'none';
-                }}
-              />
-              <div className="flex-1 min-w-0">
-                <div className="text-sm font-medium">{app.name}</div>
-                {app.replacesNames.length > 0 && <div className="text-xs text-muted-foreground">Replaces {app.replacesNames.join(', ')}</div>}
-              </div>
-              <Button variant="ghost" size="sm" onClick={() => removeApp(app.appSlug)} className="text-destructive hover:text-destructive">
-                ✕
-              </Button>
+      <div className="max-h-[400px] space-y-2 overflow-y-auto pr-2">
+        {apps.map((app) => (
+          <div
+            key={app.appSlug}
+            className="flex items-center gap-3 rounded-xl border border-border bg-foreground/[0.015] p-3 transition-colors hover:border-primary/40"
+          >
+            <img
+              src={app.icon}
+              alt=""
+              className="h-8 w-8 rounded"
+              onError={(e) => {
+                (e.target as HTMLImageElement).style.display = 'none';
+              }}
+            />
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-medium">{app.name}</div>
+              {app.replacesNames.length > 0 && <div className="text-xs text-muted-foreground">Replaces {app.replacesNames.join(', ')}</div>}
             </div>
-          ))}
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => removeApp(app.appSlug)}
+              className="text-muted-foreground hover:text-destructive"
+              aria-label={`Remove ${app.name}`}
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+        ))}
 
-          {apps.length === 0 && (
-            <div className="text-center py-8">
-              <div className="text-3xl mb-2">📦</div>
-              <p className="text-muted-foreground">No apps selected. Go back to add some, or continue to Install.</p>
-            </div>
-          )}
-        </div>
+        {apps.length === 0 && (
+          <div className="flex flex-col items-center py-10 text-center">
+            <span className="inline-flex h-12 w-12 items-center justify-center rounded-2xl border border-border bg-foreground/[0.02] text-muted-foreground">
+              <Package className="h-6 w-6" />
+            </span>
+            <p className="mt-3 text-sm text-muted-foreground">No apps selected. Go back to add some, or continue to Install.</p>
+          </div>
+        )}
+      </div>
 
-        <div className="flex justify-between mt-6">
-          <Button variant="ghost" onClick={onBack}>
-            Back
-          </Button>
-          <Button intent="primary" onClick={() => onConfirm(apps)}>
-            Continue to Install
-          </Button>
-        </div>
-      </CardContent>
-    </Card>
+      <WizardNav>
+        <Button variant="ghost" onClick={onBack}>
+          Back
+        </Button>
+        <Button intent="primary" onClick={() => onConfirm(apps)}>
+          Continue to Install
+        </Button>
+      </WizardNav>
+    </WizardCard>
   );
 };

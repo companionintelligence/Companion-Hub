@@ -17,7 +17,7 @@ import { Suspense } from 'react';
 
 function OnboardingWizard() {
   const { user, cloudflareAvailable, tailscaleAvailable } = useAppContext();
-  const defaultExposureMode = cloudflareAvailable ? 'cloudflare' : tailscaleAvailable ? 'tailscale' : 'local';
+  const contextExposureMode = cloudflareAvailable ? 'cloudflare' : tailscaleAvailable ? 'tailscale' : 'local';
   const [currentStep, setCurrentStep] = useState(0);
   // Within the "Local Apps" step (step 2), 'recommend' shows the discovery
   // sub-screen and 'select' shows the review/select sub-screen.
@@ -35,18 +35,14 @@ function OnboardingWizard() {
   const stepTitles = ['Start up', 'AI Setup', 'Local Apps', 'Confirm & Download', 'VPN Setup', 'Done'];
 
   return (
-    <div className="flex items-center justify-center bg-background px-4 py-8" style={{ minHeight: 'calc(100vh - var(--titlebar-height, 0px))' }}>
-      <div className="w-full max-w-3xl">
-        <div className="text-center mb-6">
-          <img
-            alt="Companion Hub logo"
-            src={getLogo(true)}
-            height={80}
-            width={80}
-            className="mx-auto mb-4"
-            style={{ maxWidth: '100%', height: 'auto' }}
-          />
-          <h1 className="text-2xl font-bold text-foreground">Set Up Your Hub</h1>
+    <div className="flex items-center justify-center px-4 py-8" style={{ minHeight: 'calc(100vh - var(--titlebar-height, 0px))' }}>
+      <div className="w-full max-w-4xl">
+        <div className="mb-8 text-center">
+          <span className="mx-auto mb-4 flex h-20 w-20 items-center justify-center rounded-3xl border border-primary/30 bg-primary/5 shadow-lg shadow-primary/15">
+            <img alt="Companion Hub logo" src={getLogo(true)} height={56} width={56} style={{ maxWidth: '100%', height: 'auto' }} />
+          </span>
+          <h1 className="text-3xl font-bold tracking-tight text-foreground">Set Up Your Hub</h1>
+          <p className="mt-1.5 text-sm text-muted-foreground">Configure your private, local-first companion.</p>
         </div>
 
         <Stepper currentStep={currentStep}>
@@ -82,13 +78,15 @@ function OnboardingWizard() {
 
             <StepContent step={1}>
               <AiSetupStep
+                cloudflareAvailable={cloudflareAvailable}
+                tailscaleAvailable={tailscaleAvailable}
                 onComplete={(config) => {
                   setAiSetupConfig(config);
                   setLocalAppsSubStep('recommend');
                   setCurrentStep(2);
                 }}
                 onSkip={() => {
-                  setAiSetupConfig({ selectedModels: [], backend: 'ollama', cloudProviders: [], skipped: true });
+                  setAiSetupConfig({ agentFramework: 'openclaw', selectedModels: [], backend: 'ollama', cloudProviders: [], skipped: true });
                   setLocalAppsSubStep('recommend');
                   setCurrentStep(2);
                 }}
@@ -122,7 +120,7 @@ function OnboardingWizard() {
             <StepContent step={3}>
               <InstallStep
                 apps={selectedApps}
-                defaultExposureMode={defaultExposureMode}
+                defaultExposureMode={aiSetupConfig?.exposureMode ?? contextExposureMode}
                 aiSetupConfig={aiSetupConfig}
                 onComplete={(summary) => {
                   setInstallSummary(summary);

@@ -1,10 +1,10 @@
 import { apiFetch } from '@/lib/api-fetch';
 import { Button } from '@/components/ui/Button';
-import { Card, CardContent } from '@/components/ui/Card';
 import { useAppContext } from '@/context/app-context';
 import { useState } from 'react';
 import { useNavigate } from 'react-router';
 import type { InstallSummary, AiSetupConfig } from '../helpers/types';
+import { IconBadge, WizardCard } from './wizard-ui';
 
 interface CompleteStepProps {
   /** undefined when no install step was executed (user skipped). */
@@ -15,12 +15,7 @@ interface CompleteStepProps {
 
 function completionCopy(summary?: InstallSummary) {
   if (!summary || summary.total === 0) {
-    return {
-      emoji: '🚀',
-      heading: 'Your Hub Is Ready',
-      body: 'You can install apps anytime from the App Store.',
-      cta: 'Go to App Store',
-    };
+    return { emoji: '🚀', heading: 'Your Hub Is Ready', body: 'You can install apps anytime from the App Store.', cta: 'Go to App Store' };
   }
 
   const { running, incomplete, failed, total } = summary;
@@ -78,19 +73,23 @@ export const CompleteStep = ({ installSummary, aiSetupConfig }: CompleteStepProp
   };
 
   return (
-    <Card>
-      <CardContent className="p-8 text-center">
-        <div className="text-5xl mb-4">{copy.emoji}</div>
-        <h2 className="text-xl font-semibold mb-2" data-testid="complete-heading">
+    <WizardCard className="text-center">
+      <div className="flex flex-col items-center">
+        <IconBadge className="text-3xl">
+          <span aria-hidden="true">{copy.emoji}</span>
+        </IconBadge>
+        <h2 className="mt-5 text-2xl font-bold tracking-tight" data-testid="complete-heading">
           {copy.heading}
         </h2>
-        <p className="text-muted-foreground max-w-md mx-auto mb-6" data-testid="complete-body">
+        <p className="mt-2 max-w-md text-muted-foreground" data-testid="complete-body">
           {copy.body}
         </p>
 
-        {/* AI Setup Summary */}
         {aiSetupConfig && (
-          <div className="text-sm text-muted-foreground mb-6 max-w-md mx-auto" data-testid="ai-summary">
+          <div
+            className="mt-5 w-full max-w-md rounded-2xl border border-border bg-foreground/[0.015] p-4 text-sm text-muted-foreground"
+            data-testid="ai-summary"
+          >
             {aiSetupConfig.skipped ? (
               <p>AI not configured. You can set it up anytime in Settings → AI.</p>
             ) : (
@@ -110,10 +109,10 @@ export const CompleteStep = ({ installSummary, aiSetupConfig }: CompleteStepProp
           </div>
         )}
 
-        <Button intent="primary" onClick={handleFinish} loading={loading} disabled={loading} className="w-64" data-testid="complete-cta">
+        <Button intent="primary" onClick={handleFinish} loading={loading} disabled={loading} className="mt-6 w-64" data-testid="complete-cta">
           {copy.cta}
         </Button>
-      </CardContent>
-    </Card>
+      </div>
+    </WizardCard>
   );
 };

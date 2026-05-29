@@ -102,7 +102,11 @@ describe('InstallStep', () => {
 
   it('shows clear text when no apps are selected', async () => {
     render(
-      <InstallStep apps={[]} onComplete={onComplete} aiSetupConfig={{ selectedModels: [], backend: 'ollama', cloudProviders: [], skipped: true }} />,
+      <InstallStep
+        apps={[]}
+        onComplete={onComplete}
+        aiSetupConfig={{ agentFramework: 'openclaw', selectedModels: [], backend: 'ollama', cloudProviders: [], skipped: true }}
+      />,
     );
 
     expect(await screen.findByText('No apps selected for installation.')).toBeInTheDocument();
@@ -115,6 +119,7 @@ describe('InstallStep', () => {
         apps={[]}
         onComplete={onComplete}
         aiSetupConfig={{
+          agentFramework: 'openclaw',
           selectedModels: [],
           backend: 'vllm',
           cloudProviders: [],
@@ -140,6 +145,7 @@ describe('InstallStep', () => {
         apps={[]}
         onComplete={onComplete}
         aiSetupConfig={{
+          agentFramework: 'openclaw',
           selectedModels: ['hermes4-70b'],
           backend: 'ollama',
           cloudProviders: [],
