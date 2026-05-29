@@ -28,6 +28,14 @@ describe('ModelRegistryService', () => {
       expect(modalities.has('llm')).toBe(true);
       expect(modalities.has('tts')).toBe(true);
       expect(modalities.has('stt')).toBe(true);
+      expect(modalities.has('embedding')).toBe(true);
+    });
+
+    it('S-MM-1.5: exposes a 768-dim embedding model recommended on every runnable tier', () => {
+      const emb = service.getRecommendedEmbeddingModel('cpu-only');
+      expect(emb?.id).toBe('nomic-embed-text');
+      expect(emb?.modality).toBe('embedding');
+      expect(service.getRecommendedEmbeddingModel('insufficient')).toBeNull();
     });
 
     it('S-MM-1.2: each model SHALL include minimum hardware requirements', () => {

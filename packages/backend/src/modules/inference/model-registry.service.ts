@@ -119,6 +119,17 @@ export class ModelRegistryService implements OnModuleInit {
     return [...this.selectLlmsForHardware(profile), ...nonLlmRecommended];
   }
 
+  /**
+   * The default embedding model recommended for the tier. Picked independently of
+   * the chat LLM so memory/RAG consumers (e.g. the companion-memory app's pgvector
+   * store) always receive a usable embeddings model. Returns null for an
+   * insufficient tier or when no embedding model is recommended.
+   */
+  getRecommendedEmbeddingModel(tier: HardwareTier): CuratedModel | null {
+    if (tier === 'insufficient') return null;
+    return this.getRecommendedModels(tier).find((m) => m.modality === 'embedding') ?? null;
+  }
+
   /** Get default models to pin for a tier */
   getDefaultPinnedModels(tier: HardwareTier): CuratedModel[] {
     return this.getRecommendedModels(tier).filter((m) => m.runtime.pinnedByDefault);
