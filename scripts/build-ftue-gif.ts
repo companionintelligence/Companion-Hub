@@ -400,14 +400,16 @@ async function captureScreenshots() {
   // ── 3a. Local Apps — Recommendations sub-step
   await page.getByRole('heading', { name: 'Recommended Apps' }).waitFor();
   await page.waitForTimeout(600); // let the list render
-  const cards = page.locator('button.flex.items-center.gap-3.p-3.rounded-lg.border');
+  // Recommendation cards are the buttons that show "Replaces <product>"; selecting by that text is
+  // robust to styling changes in the redesigned wizard.
+  const cards = page.getByRole('button').filter({ hasText: 'Replaces' });
   const count = Math.min(await cards.count(), 4);
   for (let i = 0; i < count; i++) {
     await cards.nth(i).click();
   }
   await snapshot(page, '03-local-apps-discover');
 
-  await page.getByRole('button', { name: /Continue to Select Apps with/ }).click();
+  await page.getByRole('button', { name: /Continue with \d+ app/ }).click();
 
   // ── 3b. Local Apps — Review sub-step
   await page.getByRole('heading', { name: 'Review Your Selection' }).waitFor();
