@@ -191,8 +191,8 @@ export const TailscaleSetupStep = ({ onComplete, onSkip, onBack, embedded = fals
             <div className="flex items-start gap-3 rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-4">
               <Shield className="mt-0.5 h-5 w-5 flex-shrink-0 text-yellow-400" />
               <div className="space-y-1">
-                <p className="text-sm font-medium text-yellow-200">{t('ONBOARDING_TAILSCALE_NOT_AVAILABLE')}</p>
-                <p className="text-xs text-yellow-200/80">{t('ONBOARDING_TAILSCALE_NOT_AVAILABLE_DESC')}</p>
+                <p className="text-sm font-medium text-yellow-900 dark:text-yellow-200">{t('ONBOARDING_TAILSCALE_NOT_AVAILABLE')}</p>
+                <p className="text-xs text-yellow-800/80 dark:text-yellow-200/80">{t('ONBOARDING_TAILSCALE_NOT_AVAILABLE_DESC')}</p>
               </div>
             </div>
           </div>
