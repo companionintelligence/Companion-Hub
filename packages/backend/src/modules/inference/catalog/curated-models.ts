@@ -112,6 +112,7 @@ const FAMILIES = [
     name: 'Mistral',
     purpose: 'general' as ModelPurpose,
     sizes: [
+      { s: '7b', idSize: '7b', p: 7, tier: 'low' as HardwareTier }, // ollama.com/library/mistral
       { s: 'small-3.2', idSize: 'small-3.2', p: 24, tier: 'medium' as HardwareTier },
       { s: 'medium-3.5', idSize: 'medium-3.5', p: 100, tier: 'high' as HardwareTier },
     ],
@@ -207,6 +208,136 @@ const FAMILIES = [
     name: 'Nemotron 3 Super',
     purpose: 'reasoning' as ModelPurpose,
     sizes: [{ s: '120b', idSize: '120b', p: 120, tier: 'high' as HardwareTier }],
+  },
+  {
+    // Base Qwen3 local ladder — ollama.com/library/qwen3
+    prefix: 'qwen3',
+    idPrefix: 'qwen3',
+    name: 'Qwen 3',
+    purpose: 'general' as ModelPurpose,
+    sizes: [
+      { s: '0.6b', idSize: '0-6b', p: 0.6, tier: 'cpu-only' as HardwareTier },
+      { s: '1.7b', idSize: '1-7b', p: 1.7, tier: 'cpu-only' as HardwareTier },
+      { s: '4b', idSize: '4b', p: 4, tier: 'cpu-only' as HardwareTier },
+      { s: '8b', idSize: '8b', p: 8, tier: 'low' as HardwareTier },
+      { s: '14b', idSize: '14b', p: 14, tier: 'low' as HardwareTier },
+      { s: '30b', idSize: '30b', p: 30, tier: 'medium' as HardwareTier },
+      { s: '32b', idSize: '32b', p: 32, tier: 'medium' as HardwareTier },
+      { s: '235b', idSize: '235b', p: 235, tier: 'high' as HardwareTier },
+    ],
+  },
+  {
+    // ollama.com/library/gemma3
+    prefix: 'gemma3',
+    idPrefix: 'gemma3',
+    name: 'Gemma 3',
+    purpose: 'general' as ModelPurpose,
+    sizes: [
+      { s: '270m', idSize: '270m', p: 0.27, tier: 'cpu-only' as HardwareTier },
+      { s: '1b', idSize: '1b', p: 1, tier: 'cpu-only' as HardwareTier },
+      { s: '4b', idSize: '4b', p: 4, tier: 'cpu-only' as HardwareTier },
+      { s: '12b', idSize: '12b', p: 12, tier: 'low' as HardwareTier },
+      { s: '27b', idSize: '27b', p: 27, tier: 'medium' as HardwareTier },
+    ],
+  },
+  {
+    // ollama.com/library/mistral-nemo
+    prefix: 'mistral-nemo',
+    idPrefix: 'mistral-nemo',
+    name: 'Mistral Nemo',
+    purpose: 'general' as ModelPurpose,
+    sizes: [{ s: '12b', idSize: '12b', p: 12, tier: 'low' as HardwareTier }],
+  },
+  {
+    // ollama.com/library/mistral-small
+    prefix: 'mistral-small',
+    idPrefix: 'mistral-small',
+    name: 'Mistral Small',
+    purpose: 'general' as ModelPurpose,
+    sizes: [
+      { s: '22b', idSize: '22b', p: 22, tier: 'medium' as HardwareTier },
+      { s: '24b', idSize: '24b', p: 24, tier: 'medium' as HardwareTier },
+    ],
+  },
+  {
+    // ollama.com/library/mistral-large
+    prefix: 'mistral-large',
+    idPrefix: 'mistral-large',
+    name: 'Mistral Large',
+    purpose: 'general' as ModelPurpose,
+    sizes: [{ s: '123b', idSize: '123b', p: 123, tier: 'high' as HardwareTier }],
+  },
+  {
+    // ollama.com/library/mixtral — sparse MoE; parameterScale tracks total params.
+    prefix: 'mixtral',
+    idPrefix: 'mixtral',
+    name: 'Mixtral',
+    purpose: 'general' as ModelPurpose,
+    sizes: [
+      { s: '8x7b', idSize: '8x7b', p: 47, tier: 'high' as HardwareTier },
+      { s: '8x22b', idSize: '8x22b', p: 141, tier: 'high' as HardwareTier },
+    ],
+  },
+  {
+    // ollama.com/library/llama3.2
+    prefix: 'llama3.2',
+    idPrefix: 'llama3-2',
+    name: 'Llama 3.2',
+    purpose: 'general' as ModelPurpose,
+    sizes: [
+      { s: '1b', idSize: '1b', p: 1, tier: 'cpu-only' as HardwareTier },
+      { s: '3b', idSize: '3b', p: 3, tier: 'cpu-only' as HardwareTier },
+    ],
+  },
+  {
+    // ollama.com/library/llama3.1
+    prefix: 'llama3.1',
+    idPrefix: 'llama3-1',
+    name: 'Llama 3.1',
+    purpose: 'general' as ModelPurpose,
+    sizes: [
+      { s: '8b', idSize: '8b', p: 8, tier: 'low' as HardwareTier },
+      { s: '70b', idSize: '70b', p: 70, tier: 'high' as HardwareTier },
+      { s: '405b', idSize: '405b', p: 405, tier: 'high' as HardwareTier },
+    ],
+  },
+  {
+    // ollama.com/library/llama3.3
+    prefix: 'llama3.3',
+    idPrefix: 'llama3-3',
+    name: 'Llama 3.3',
+    purpose: 'general' as ModelPurpose,
+    sizes: [{ s: '70b', idSize: '70b', p: 70, tier: 'high' as HardwareTier }],
+  },
+  {
+    // ollama.com/library/llama4 — Scout (16x17B) and Maverick (128x17B) MoE; p tracks total params.
+    prefix: 'llama4',
+    idPrefix: 'llama4',
+    name: 'Llama 4',
+    purpose: 'general' as ModelPurpose,
+    sizes: [
+      { s: '16x17b', idSize: '16x17b', p: 109, tier: 'high' as HardwareTier },
+      { s: '128x17b', idSize: '128x17b', p: 400, tier: 'high' as HardwareTier },
+    ],
+  },
+  {
+    // ollama.com/library/deepseek-coder-v2 — MoE coding models.
+    prefix: 'deepseek-coder-v2',
+    idPrefix: 'deepseek-coder-v2',
+    name: 'DeepSeek Coder V2',
+    purpose: 'coding' as ModelPurpose,
+    sizes: [
+      { s: '16b', idSize: '16b', p: 16, tier: 'medium' as HardwareTier },
+      { s: '236b', idSize: '236b', p: 236, tier: 'high' as HardwareTier },
+    ],
+  },
+  {
+    // Community upload (no first-party local build): ollama.com/gabegoodhart/minimax-m2
+    prefix: 'gabegoodhart/minimax-m2',
+    idPrefix: 'minimax-m2-community',
+    name: 'MiniMax M2 (community)',
+    purpose: 'general' as ModelPurpose,
+    sizes: [{ s: '230b', idSize: '230b', p: 230, tier: 'high' as HardwareTier }],
   },
 ];
 
