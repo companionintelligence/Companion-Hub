@@ -504,4 +504,34 @@ const VOICE_MODELS: CuratedModel[] = [
   },
 ];
 
-export const CURATED_MODELS: CuratedModel[] = [...generatedLlms, ...VOICE_MODELS];
+const EMBEDDING_MODELS: CuratedModel[] = [
+  {
+    id: 'nomic-embed-text',
+    backend: 'ollama',
+    backendModelId: 'nomic-embed-text',
+    modality: 'embedding',
+    purpose: 'embedding',
+    displayName: 'Nomic Embed Text',
+    description: 'Local text-embedding model (768-dim). Default embeddings for CI memory / RAG (pgvector). Runs on any hardware.',
+    requirements: {
+      minVramMb: 0,
+      recommendedVramMb: 512,
+      minRamMb: 1024,
+      diskMb: 300,
+      gpuVendors: ['nvidia', 'amd', 'apple', 'cpu'],
+      npuRequired: false,
+      minTier: 'cpu-only',
+    },
+    runtime: {
+      contextWindow: 8192,
+      maxTokens: 0,
+      reasoning: false,
+      input: ['text'],
+      pinnedByDefault: true,
+      memoryFootprintMb: 500,
+    },
+    tiers: { high: 'recommended', medium: 'recommended', low: 'recommended', cpuOnly: 'recommended' },
+  },
+];
+
+export const CURATED_MODELS: CuratedModel[] = [...generatedLlms, ...VOICE_MODELS, ...EMBEDDING_MODELS];
