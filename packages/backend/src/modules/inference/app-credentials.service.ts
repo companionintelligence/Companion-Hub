@@ -2,9 +2,9 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { HardwareInspectorService } from './hardware-inspector.service';
-import { InferenceRouterService } from './inference-router.service';
 import { ModelRegistryService } from './model-registry.service';
 import { ModelPullerService } from './model-puller.service';
+import { CloudFallbackService } from './cloud-fallback.service';
 import { OllamaBackend } from './backends/ollama.backend';
 import type { CuratedModel, HardwareTier } from '@ci-hub/common/types';
 
@@ -15,16 +15,20 @@ export const SUPPORTED_API_VERSIONS = [1] as const;
 export type ApiVersion = (typeof SUPPORTED_API_VERSIONS)[number];
 export const DEFAULT_API_VERSION: ApiVersion = 1;
 
-export interface AppBootstrapConfig {
+export interface AppCredentialsConfig {
   app: AppSlug;
   apiVersion: ApiVersion;
+  /** Where the app should send inference requests directly (Ollama /v1 or a cloud provider). */
   endpointUrl: string;
   endpointReady: boolean;
-  llmModelId: string | null;
-  llmBackendModelId: string | null;
-  llmReady: boolean;
+  /** Chat model id the app should request. Native backend id for Ollama, provider model for cloud. */
+  chatModelId: string | null;
+  /** Embeddings model id (native backend id for Ollama). */
   embeddingsModelId: string | null;
-  embeddingsBackendModelId: string | null;
+  /** True once the recommended local chat model is pulled into Ollama. */
+  chatModelReady: boolean;
+  /** Which connection the app was handed: direct Ollama or a cloud provider. */
+  provider: 'ollama' | 'cloud';
   env: Record<string, string>;
   managedKeys: string[];
 }
@@ -55,13 +59,23 @@ const APP_ENV_KEYS: Record<AppSlug, { baseUrl: string; model: string; embeddings
 const CACHE_TTL_MS = 30_000;
 
 interface CacheEntry {
-  config: AppBootstrapConfig;
+  config: AppCredentialsConfig;
   expiresAt: number;
 }
 
+/**
+ * Distributes inference connection info ("credentials") to sibling apps so they
+ * can talk to inference *directly* — never through the Hub.
+ *
+ * By default an app is pointed at the local Ollama container's OpenAI-compatible
+ * `/v1` endpoint with the recommended model's native backend id. If the operator
+ * has enabled a cloud provider, the connection is overridden with that provider's
+ * base URL / API key / default model instead. Either way the Hub only hands out
+ * the endpoint + key; it does not proxy requests.
+ */
 @Injectable()
-export class AppBootstrapService {
-  /** In-memory bootstrap cache keyed by `${slug}:${apiVersion}`. */
+export class AppCredentialsService {
+  /** In-memory credentials cache keyed by `${slug}:${apiVersion}`. */
   private cache = new Map<string, CacheEntry>();
   /** Catalog IDs currently pulling so we don't fire duplicate background pulls. */
   private pullsInFlight = new Set<string>();
@@ -69,9 +83,9 @@ export class AppBootstrapService {
   constructor(
     private readonly logger: LoggerService,
     private readonly hardwareInspector: HardwareInspectorService,
-    private readonly inferenceRouter: InferenceRouterService,
     private readonly modelRegistry: ModelRegistryService,
     private readonly modelPuller: ModelPullerService,
+    private readonly cloudFallback: CloudFallbackService,
     private readonly ollamaBackend: OllamaBackend,
     private readonly configurationService: ConfigurationService,
   ) {}
@@ -95,12 +109,12 @@ export class AppBootstrapService {
     }
     const parsed = Number.parseInt(candidate, 10);
     if (!Number.isInteger(parsed) || !(SUPPORTED_API_VERSIONS as readonly number[]).includes(parsed)) {
-      throw new BadRequestException(`Unsupported bootstrap API version: ${candidate}. Supported: ${SUPPORTED_API_VERSIONS.join(', ')}`);
+      throw new BadRequestException(`Unsupported credentials API version: ${candidate}. Supported: ${SUPPORTED_API_VERSIONS.join(', ')}`);
     }
     return parsed as ApiVersion;
   }
 
-  async getBootstrap(slug: string, apiVersion: ApiVersion = DEFAULT_API_VERSION): Promise<AppBootstrapConfig> {
+  async getCredentials(slug: string, apiVersion: ApiVersion = DEFAULT_API_VERSION): Promise<AppCredentialsConfig> {
     if (!this.isSupported(slug)) {
       throw new NotFoundException(`Unknown app slug: ${slug}. Supported: ${SUPPORTED_APP_SLUGS.join(', ')}`);
     }
@@ -109,15 +123,17 @@ export class AppBootstrapService {
     const cached = this.cache.get(cacheKey);
     const now = Date.now();
     if (cached && cached.expiresAt > now) {
-      this.logger.info(`[AppBootstrap] cache hit slug=${slug} v=${apiVersion} ttl=${Math.round((cached.expiresAt - now) / 1000)}s`);
+      this.logger.info(`[AppCredentials] cache hit slug=${slug} v=${apiVersion} ttl=${Math.round((cached.expiresAt - now) / 1000)}s`);
       return cached.config;
     }
 
     const profile = await this.hardwareInspector.getProfile();
-    const endpointUrl = this.inferenceRouter.getInferenceEndpoint();
+    // Apps talk to Ollama directly via its own OpenAI-compatible surface, not the Hub.
+    const ollamaBaseUrl = this.ollamaBackend.getBaseUrl();
+    const ollamaOpenAiUrl = `${ollamaBaseUrl}/v1`;
 
     const endpointHealth = await this.ollamaBackend.healthCheck().catch((err) => {
-      this.logger.error(`[AppBootstrap] Ollama health check threw: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger.error(`[AppCredentials] Ollama health check threw: ${err instanceof Error ? err.message : String(err)}`);
       return { running: false, healthy: false, modelsLoaded: [] as string[] };
     });
     const endpointReady = !!(endpointHealth.running && endpointHealth.healthy);
@@ -131,8 +147,10 @@ export class AppBootstrapService {
     // every tier, so this is non-null on any runnable hardware.
     const embeddings = this.modelRegistry.getRecommendedEmbeddingModel(profile.tier);
 
-    const llmReady = llm ? this.isModelPulled(llm.id, endpointHealth.modelsLoaded) : false;
-    if (llm && !llmReady && endpointReady) {
+    const chatModelReady = llm ? this.isModelPulled(llm.id, endpointHealth.modelsLoaded) : false;
+    // The Hub still pulls the recommended models into its own Ollama so the app can
+    // use them directly — we just no longer proxy the actual inference requests.
+    if (llm && !chatModelReady && endpointReady) {
       this.firePrePull(llm.id);
     }
     const embeddingsReady = embeddings ? this.isModelPulled(embeddings.id, endpointHealth.modelsLoaded) : false;
@@ -141,36 +159,58 @@ export class AppBootstrapService {
     }
 
     const keys = APP_ENV_KEYS[slug];
+
+    // ─── Local (default) connection: app → Ollama /v1 directly ───────────
+    // The chat model is the NATIVE backend id (e.g. hermes4:70b) because the app
+    // talks to Ollama, not the Hub — Ollama knows nothing about catalog ids.
+    let provider: 'ollama' | 'cloud' = 'ollama';
+    let endpointUrl = ollamaOpenAiUrl;
+    let apiKey = 'ollama';
+    let chatModelId = llm?.backendModelId ?? null;
+    const embeddingsModelId = embeddings?.backendModelId ?? null;
+
+    // ─── Cloud override: app → cloud provider API directly ───────────────
+    // If the operator enabled+configured a cloud provider, hand the app that
+    // provider's endpoint/key/model so it calls the cloud API with the operator's
+    // key. Distribution only — the Hub never proxies.
+    const cloudProvider = this.cloudFallback.getEnabledProviders()[0];
+    if (cloudProvider) {
+      provider = 'cloud';
+      endpointUrl = cloudProvider.baseUrl || endpointUrl;
+      apiKey = cloudProvider.apiKey || apiKey;
+      chatModelId = cloudProvider.defaultModel || chatModelId;
+    }
+
     const env: Record<string, string> = {
       [keys.baseUrl]: endpointUrl,
-      [keys.apiKey]: 'ollama',
+      [keys.apiKey]: apiKey,
     };
-    if (llm) {
-      env[keys.model] = llm.id;
-      env[`${keys.model}_BACKEND_ID`] = llm.backendModelId;
+    if (chatModelId) {
+      env[keys.model] = chatModelId;
     }
-    if (embeddings) {
-      env[keys.embeddings] = embeddings.id;
-      env[`${keys.embeddings}_BACKEND_ID`] = embeddings.backendModelId;
+    if (embeddingsModelId) {
+      env[keys.embeddings] = embeddingsModelId;
     }
+    // Always expose the direct native Ollama URL so the app can reach Ollama's
+    // native protocol regardless of the OpenAI-compatible / cloud connection above.
+    env.OLLAMA_HOST = ollamaBaseUrl;
 
     const managedKeys = Object.keys(env);
 
     this.logger.info(
-      `[AppBootstrap] resolve slug=${slug} v=${apiVersion} endpoint=${endpointUrl} endpointReady=${endpointReady} ` +
-        `llm=${llm?.id ?? 'none'} llmReady=${llmReady} embeddings=${embeddings?.id ?? 'none'}`,
+      `[AppCredentials] resolve slug=${slug} v=${apiVersion} provider=${provider} endpoint=${endpointUrl} endpointReady=${endpointReady} ` +
+        `chat=${chatModelId ?? 'none'} chatReady=${chatModelReady} embeddings=${embeddingsModelId ?? 'none'}`,
     );
 
-    const config: AppBootstrapConfig = {
+    const config: AppCredentialsConfig = {
       app: slug,
       apiVersion,
       endpointUrl,
       endpointReady,
-      llmModelId: llm?.id ?? null,
-      llmBackendModelId: llm?.backendModelId ?? null,
-      llmReady,
-      embeddingsModelId: embeddings?.id ?? null,
-      embeddingsBackendModelId: embeddings?.backendModelId ?? null,
+      chatModelId,
+      embeddingsModelId,
+      chatModelReady,
+      provider,
       env,
       managedKeys,
     };
@@ -179,7 +219,7 @@ export class AppBootstrapService {
     return config;
   }
 
-  serializeAsDotenv(config: AppBootstrapConfig): string {
+  serializeAsDotenv(config: AppCredentialsConfig): string {
     return `${Object.entries(config.env)
       .map(([k, v]) => `${k}=${this.escapeDotenvValue(v)}`)
       .join('\n')}\n`;
@@ -228,14 +268,14 @@ export class AppBootstrapService {
       return;
     }
     this.pullsInFlight.add(catalogId);
-    this.logger.info(`[AppBootstrap] pre-pull start ${catalogId}`);
+    this.logger.info(`[AppCredentials] pre-pull start ${catalogId}`);
     void this.modelPuller
       .pullModel(catalogId)
       .then(() => {
-        this.logger.info(`[AppBootstrap] pre-pull complete ${catalogId}`);
+        this.logger.info(`[AppCredentials] pre-pull complete ${catalogId}`);
       })
       .catch((err) => {
-        this.logger.error(`[AppBootstrap] pre-pull failed ${catalogId}: ${err instanceof Error ? err.message : String(err)}`);
+        this.logger.error(`[AppCredentials] pre-pull failed ${catalogId}: ${err instanceof Error ? err.message : String(err)}`);
       })
       .finally(() => {
         this.pullsInFlight.delete(catalogId);
