@@ -108,7 +108,7 @@ describe('AppBootstrapService', () => {
       makeLlm('hermes4-70b', 'hermes4:70b', 42000, 126000),
       makeLlm('hermes4-8b', 'hermes4:8b', 4800, 14400),
     ]);
-    modelRegistry.getModelsByModality.mockReturnValue([makeEmbedding('nomic-embed-text', 'nomic-embed-text')]);
+    modelRegistry.getRecommendedEmbeddingModel.mockReturnValue(null);
     modelRegistry.getTrackedModel.mockReturnValue(undefined);
     modelRegistry.getCuratedModel.mockImplementation((id) => {
       if (id === 'hermes4-70b') return makeLlm('hermes4-70b', 'hermes4:70b');
@@ -181,20 +181,43 @@ describe('AppBootstrapService', () => {
       });
     });
 
-    it('does not emit embeddings model fields when embeddings are not bootstrapped', async () => {
-      modelRegistry.getModelsByModality.mockReturnValue([
-        {
-          ...makeEmbedding('huge-emb', 'huge-emb'),
-          requirements: { ...makeEmbedding('huge-emb', 'huge-emb').requirements, minRamMb: 1_000_000 },
-        } as CuratedModel,
-        makeEmbedding('small-emb', 'small-emb'),
-      ]);
+    it('does not emit embeddings model fields when no embedding model is recommended', async () => {
+      modelRegistry.getRecommendedEmbeddingModel.mockReturnValue(null);
 
       const config = await service.getBootstrap('openclaw');
 
       expect(config.embeddingsModelId).toBeNull();
       expect(config.env.EMBEDDINGS_MODEL).toBeUndefined();
       expect(config.env.EMBEDDINGS_MODEL_BACKEND_ID).toBeUndefined();
+    });
+
+    it('emits embeddings model fields and pre-pulls the embedding model when one is recommended', async () => {
+      modelRegistry.getRecommendedEmbeddingModel.mockReturnValue(makeEmbedding('nomic-embed-text', 'nomic-embed-text'));
+
+      const config = await service.getBootstrap('openclaw');
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(config.embeddingsModelId).toBe('nomic-embed-text');
+      expect(config.embeddingsBackendModelId).toBe('nomic-embed-text');
+      expect(config.env.EMBEDDINGS_MODEL).toBe('nomic-embed-text');
+      expect(config.env.EMBEDDINGS_MODEL_BACKEND_ID).toBe('nomic-embed-text');
+      expect(modelPuller.pullModel).toHaveBeenCalledWith('nomic-embed-text');
+    });
+
+    it('returns companion-memory env keyed with LLM_* including embeddings', async () => {
+      modelRegistry.getRecommendedEmbeddingModel.mockReturnValue(makeEmbedding('nomic-embed-text', 'nomic-embed-text'));
+
+      const config = await service.getBootstrap('companion-memory');
+
+      expect(config.app).toBe('companion-memory');
+      expect(config.env).toEqual({
+        LLM_API_BASE: 'http://ci-os-hub:3000/api/inference/v1',
+        LLM_API_KEY: 'ollama',
+        LLM_DEFAULT_CHAT_MODEL: 'hermes4-70b',
+        LLM_DEFAULT_CHAT_MODEL_BACKEND_ID: 'hermes4:70b',
+        LLM_DEFAULT_EMBEDDING_MODEL: 'nomic-embed-text',
+        LLM_DEFAULT_EMBEDDING_MODEL_BACKEND_ID: 'nomic-embed-text',
+      });
     });
 
     it('picks the first model returned by the registry (biggest first)', async () => {
@@ -401,6 +424,7 @@ describe('AppBootstrapService', () => {
     it('recognizes supported slugs', () => {
       expect(service.isSupported('hermes-agent')).toBe(true);
       expect(service.isSupported('openclaw')).toBe(true);
+      expect(service.isSupported('companion-memory')).toBe(true);
     });
 
     it('rejects unknown slugs', () => {

@@ -8,7 +8,7 @@ import { ModelPullerService } from './model-puller.service';
 import { OllamaBackend } from './backends/ollama.backend';
 import type { CuratedModel, HardwareTier } from '@ci-hub/common/types';
 
-export const SUPPORTED_APP_SLUGS = ['hermes-agent', 'openclaw'] as const;
+export const SUPPORTED_APP_SLUGS = ['hermes-agent', 'openclaw', 'companion-memory'] as const;
 export type AppSlug = (typeof SUPPORTED_APP_SLUGS)[number];
 
 export const SUPPORTED_API_VERSIONS = [1] as const;
@@ -41,6 +41,14 @@ const APP_ENV_KEYS: Record<AppSlug, { baseUrl: string; model: string; embeddings
     model: 'DEFAULT_MODEL',
     embeddings: 'EMBEDDINGS_MODEL',
     apiKey: 'OPENAI_API_KEY',
+  },
+  // CI-Server (the "Companion Memory" memory brain). Uses its own LLM_* convention,
+  // which its summary-service already reads and its NestJS API is migrating onto.
+  'companion-memory': {
+    baseUrl: 'LLM_API_BASE',
+    model: 'LLM_DEFAULT_CHAT_MODEL',
+    embeddings: 'LLM_DEFAULT_EMBEDDING_MODEL',
+    apiKey: 'LLM_API_KEY',
   },
 };
 
@@ -117,15 +125,19 @@ export class AppBootstrapService {
     const candidates = this.modelRegistry.getRecommendedModelsForHardware(profile.tier, profile);
     const preferredModelId = this.configurationService.getInferencePreferences().preferredModel;
     const llm = this.resolveLlm(candidates, preferredModelId, profile.tier);
-    // Embeddings picking was disabled in review feedback (a170aa9b). The explicit
-    // `as CuratedModel | null` prevents TS from narrowing the constant to `null`
-    // and breaking the downstream `if (embeddings)` branches — the picker can be
-    // re-enabled without touching consumer code.
-    const embeddings = null as CuratedModel | null;
+    // Embeddings are picked independently of the chat LLM so memory/RAG consumers
+    // (companion-memory / CI-Server pgvector, which is hard-coupled to a 768-dim
+    // model) always receive an embeddings model. nomic-embed-text is recommended on
+    // every tier, so this is non-null on any runnable hardware.
+    const embeddings = this.modelRegistry.getRecommendedEmbeddingModel(profile.tier);
 
     const llmReady = llm ? this.isModelPulled(llm.id, endpointHealth.modelsLoaded) : false;
     if (llm && !llmReady && endpointReady) {
       this.firePrePull(llm.id);
+    }
+    const embeddingsReady = embeddings ? this.isModelPulled(embeddings.id, endpointHealth.modelsLoaded) : false;
+    if (embeddings && !embeddingsReady && endpointReady) {
+      this.firePrePull(embeddings.id);
     }
 
     const keys = APP_ENV_KEYS[slug];
