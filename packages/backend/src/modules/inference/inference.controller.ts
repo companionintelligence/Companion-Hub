@@ -1,6 +1,5 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, Res, UseGuards, UseInterceptors, UploadedFile } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Query, Res, UseGuards } from '@nestjs/common';
 import type { Response } from 'express';
-import { FileInterceptor } from '@nestjs/platform-express';
 import { InferenceRouterService } from './inference-router.service';
 import { HardwareInspectorService } from './hardware-inspector.service';
 import { MemoryManagerService } from './memory-manager.service';
@@ -8,7 +7,7 @@ import { ModelRegistryService } from './model-registry.service';
 import { ModelPullerService } from './model-puller.service';
 import { CloudFallbackService } from './cloud-fallback.service';
 import { OllamaInstallerService } from './ollama-installer.service';
-import { AppBootstrapService } from './app-bootstrap.service';
+import { AppCredentialsService } from './app-credentials.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AuthGuard } from '@/modules/auth/auth.guard';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -19,8 +18,13 @@ import { VllmBackend } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
 
 /**
- * Inference controller — exposes OpenAI-compatible inference endpoints.
- * All apps and agents talk to these endpoints; the router decides which backend handles each request.
+ * Inference controller — exposes Ollama/backend provisioning + management.
+ *
+ * The Hub does NOT proxy inference requests. Apps talk to the Ollama container
+ * (its own OpenAI-compatible `/v1` or native protocol) or a cloud provider
+ * directly. This controller provisions Ollama (install/pull/catalog/hardware),
+ * stores the operator's cloud-provider keys, and distributes connection info to
+ * apps via the credentials endpoints below.
  */
 @Controller('inference')
 export class InferenceController {
@@ -32,7 +36,7 @@ export class InferenceController {
     private readonly modelPuller: ModelPullerService,
     private readonly cloudFallback: CloudFallbackService,
     private readonly ollamaInstaller: OllamaInstallerService,
-    private readonly appBootstrap: AppBootstrapService,
+    private readonly appCredentials: AppCredentialsService,
     private readonly configurationService: ConfigurationService,
     private readonly ollamaBackend: OllamaBackend,
     private readonly vllmBackend: VllmBackend,
@@ -65,126 +69,7 @@ export class InferenceController {
     return profile.tier;
   }
 
-  // ─── OpenAI-Compatible Endpoints ──────────────────────────────────────
-
-  @Post('v1/chat/completions')
-  async chatCompletions(@Body() body: Record<string, unknown>, @Res() res: Response) {
-    try {
-      const result = await this.router.routeChatCompletion(body);
-
-      if (result.stream) {
-        res.setHeader('Content-Type', 'text/event-stream');
-        res.setHeader('Cache-Control', 'no-cache');
-        res.setHeader('Connection', 'keep-alive');
-        res.setHeader('X-Inference-Backend', result.backend);
-        (result.stream as NodeJS.ReadableStream).pipe(res);
-        return;
-      }
-
-      res.setHeader('X-Inference-Backend', result.backend);
-      res.json(result.data);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.logger.error(`[Inference] Chat completion error: ${message}`);
-      res.status(500).json({ error: { message, type: 'server_error', param: null, code: null } });
-    }
-  }
-
-  @Post('v1/completions')
-  async completions(@Body() _body: Record<string, unknown>, @Res() res: Response) {
-    // Legacy completions API not supported — use /v1/chat/completions instead
-    res.status(404).json({
-      error: {
-        message: 'The completions API is not supported. Use /v1/chat/completions instead.',
-        type: 'invalid_request_error',
-        param: null,
-        code: 'unsupported_endpoint',
-      },
-    });
-  }
-
-  @Post('v1/audio/speech')
-  async tts(@Body() body: Record<string, unknown>, @Res() res: Response) {
-    try {
-      const result = await this.router.routeTts(body);
-      res.setHeader('Content-Type', 'audio/mpeg');
-      res.setHeader('X-Inference-Backend', result.backend);
-      res.send(result.data);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.logger.error(`[Inference] TTS error: ${message}`);
-      res.status(500).json({ error: { message, type: 'server_error', param: null, code: null } });
-    }
-  }
-
-  @Post('v1/audio/transcriptions')
-  @UseInterceptors(FileInterceptor('file'))
-  async stt(
-    @UploadedFile() file: { buffer: Buffer; originalname: string; mimetype: string } | undefined,
-    @Body() body: Record<string, string>,
-    @Res() res: Response,
-  ) {
-    try {
-      if (!file) {
-        res.status(400).json({ error: { message: 'No audio file provided', type: 'invalid_request_error', param: 'file', code: null } });
-        return;
-      }
-
-      // Rebuild FormData with the uploaded file for backend forwarding
-      const formData = new FormData();
-      const blob = new Blob([file.buffer], { type: file.mimetype || 'application/octet-stream' });
-      formData.append('file', blob, file.originalname);
-      for (const [key, value] of Object.entries(body)) {
-        formData.append(key, value);
-      }
-
-      const result = await this.router.routeStt(formData);
-      res.setHeader('X-Inference-Backend', result.backend);
-      res.json(result.data);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.logger.error(`[Inference] STT error: ${message}`);
-      res.status(500).json({ error: { message, type: 'server_error', param: null, code: null } });
-    }
-  }
-
-  @Post('v1/embeddings')
-  async embeddings(@Body() body: Record<string, unknown>, @Res() res: Response) {
-    try {
-      const result = await this.router.routeEmbeddings(body);
-      res.setHeader('X-Inference-Backend', result.backend);
-      res.json(result.data);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.logger.error(`[Inference] Embeddings error: ${message}`);
-      res.status(500).json({ error: { message, type: 'server_error', param: null, code: null } });
-    }
-  }
-
-  @Post('v1/images/generations')
-  async imageGen(@Body() body: Record<string, unknown>, @Res() res: Response) {
-    try {
-      // Image gen only available via Lemonade or cloud
-      const provider = this.cloudFallback.getEnabledProviders()[0];
-      if (!provider) {
-        res.status(503).json({ error: { message: 'No image generation backend available', type: 'server_error', param: null, code: null } });
-        return;
-      }
-      const result = await this.cloudFallback.proxyImageGeneration(provider, body);
-      res.json(result.data);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      res.status(500).json({ error: { message, type: 'server_error', param: null, code: null } });
-    }
-  }
-
-  // ─── Discovery & Health ───────────────────────────────────────────────
-
-  @Get('v1/models')
-  async models() {
-    const models = await this.router.listModels();
-    return { object: 'list', data: models };
-  }
+  // ─── Health ───────────────────────────────────────────────────────────
 
   @Get('health')
   async health() {
@@ -407,27 +292,29 @@ export class InferenceController {
     return this.ollamaInstaller.install();
   }
 
-  // ─── App Bootstrap ────────────────────────────────────────────────────
-  // Sibling apps (hermes-agent, openclaw) query these endpoints on container
-  // start to auto-configure themselves against the Hub's local inference.
+  // ─── App Credentials ──────────────────────────────────────────────────
+  // Sibling apps (hermes-agent, openclaw, companion-memory) query these endpoints
+  // on container start to discover where to send inference DIRECTLY — the Ollama
+  // container's OpenAI-compatible /v1 (or a cloud provider endpoint+key). The Hub
+  // distributes connection info only; it never proxies the requests.
 
-  @Get('apps/:slug/bootstrap')
-  async getAppBootstrap(@Param('slug') slug: string, @Query('v') v: string | undefined, @Res() res: Response) {
-    const apiVersion = this.appBootstrap.parseApiVersion(v);
-    const config = await this.appBootstrap.getBootstrap(slug, apiVersion);
-    res.setHeader('X-Hub-Bootstrap-Version', String(config.apiVersion));
+  @Get('apps/:slug/credentials')
+  async getAppCredentials(@Param('slug') slug: string, @Query('v') v: string | undefined, @Res() res: Response) {
+    const apiVersion = this.appCredentials.parseApiVersion(v);
+    const config = await this.appCredentials.getCredentials(slug, apiVersion);
+    res.setHeader('X-Hub-Credentials-Version', String(config.apiVersion));
     res.setHeader('X-Hub-Managed-Keys', config.managedKeys.join(','));
     res.setHeader('Cache-Control', 'no-store');
     res.json(config);
   }
 
-  @Get('apps/:slug/bootstrap.env')
-  async getAppBootstrapEnv(@Param('slug') slug: string, @Query('v') v: string | undefined, @Res() res: Response) {
-    const apiVersion = this.appBootstrap.parseApiVersion(v);
-    const config = await this.appBootstrap.getBootstrap(slug, apiVersion);
-    const body = this.appBootstrap.serializeAsDotenv(config);
+  @Get('apps/:slug/credentials.env')
+  async getAppCredentialsEnv(@Param('slug') slug: string, @Query('v') v: string | undefined, @Res() res: Response) {
+    const apiVersion = this.appCredentials.parseApiVersion(v);
+    const config = await this.appCredentials.getCredentials(slug, apiVersion);
+    const body = this.appCredentials.serializeAsDotenv(config);
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.setHeader('X-Hub-Bootstrap-Version', String(config.apiVersion));
+    res.setHeader('X-Hub-Credentials-Version', String(config.apiVersion));
     res.setHeader('X-Hub-Managed-Keys', config.managedKeys.join(','));
     res.setHeader('Cache-Control', 'no-store');
     res.send(body);

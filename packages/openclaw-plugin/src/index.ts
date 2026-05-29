@@ -128,7 +128,10 @@ async function autoConfigureInference(api: OpenClawPluginApi, hubUrl: string, ap
     );
 
     if (localModels.length > 0 && api.registerProvider) {
-      const inferenceBaseUrl = `${hubUrl.replace(/\/$/, '')}/api/inference/v1`;
+      // The Hub no longer proxies inference — point OpenClaw at the Ollama
+      // container's own OpenAI-compatible /v1 directly (OLLAMA_HOST is injected
+      // into every Hub-installed app).
+      const inferenceBaseUrl = `${(process.env.OLLAMA_HOST ?? 'http://ci-hub-ollama:11434').replace(/\/$/, '')}/v1`;
 
       api.registerProvider({
         id: 'ci-hub',
@@ -165,7 +168,10 @@ async function autoConfigureInference(api: OpenClawPluginApi, hubUrl: string, ap
     const lemonadeBackend = inferenceStatus.backends.find((b) => b.type === 'lemonade');
 
     if (ttsModels.length > 0 && lemonadeBackend?.running && api.registerSpeechProvider) {
-      const inferenceBaseUrl = `${hubUrl.replace(/\/$/, '')}/api/inference/v1`;
+      // The Hub no longer proxies inference — point OpenClaw at the Ollama
+      // container's own OpenAI-compatible /v1 directly (OLLAMA_HOST is injected
+      // into every Hub-installed app).
+      const inferenceBaseUrl = `${(process.env.OLLAMA_HOST ?? 'http://ci-hub-ollama:11434').replace(/\/$/, '')}/v1`;
 
       api.registerSpeechProvider({
         id: 'ci-hub',

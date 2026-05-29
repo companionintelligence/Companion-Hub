@@ -377,11 +377,12 @@ export class AppHelpers {
     }
 
     // --- Inference Integration for all Hub apps ---
-    // Inject inference endpoint URL so any app can use Hub-managed inference
+    // The Hub no longer proxies inference. Point apps directly at the Ollama
+    // container (native protocol); apps that want the OpenAI-compatible surface
+    // append /v1 themselves, and may fetch richer connection info (incl. cloud
+    // overrides) from GET /api/inference/apps/:slug/credentials.
     {
-      const hubContainerName = process.env.HUB_CONTAINER_NAME || 'ci-os-hub';
-      const hubPort = process.env.API_PORT || '3000';
-      envMap.set('HUB_INFERENCE_URL', `http://${hubContainerName}:${hubPort}/api/inference/v1`);
+      envMap.set('OLLAMA_HOST', process.env.OLLAMA_URL || 'http://ci-hub-ollama:11434');
     }
 
     await this.appFilesManager.writeAppEnv(appUrn, this.envUtils.envMapToString(envMap));

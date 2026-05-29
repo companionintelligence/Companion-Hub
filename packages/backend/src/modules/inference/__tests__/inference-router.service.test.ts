@@ -3,17 +3,14 @@ import { InferenceRouterService } from '../inference-router.service';
 import { HardwareInspectorService } from '../hardware-inspector.service';
 import { ModelRegistryService } from '../model-registry.service';
 import { MemoryManagerService } from '../memory-manager.service';
-import { ModelPullerService } from '../model-puller.service';
 import { CloudFallbackService } from '../cloud-fallback.service';
 import { OllamaBackend } from '../backends/ollama.backend';
 import { VllmBackend } from '../backends/vllm.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
 import { LoggerService } from '@/core/logger/logger.service';
 import { mock, type MockProxy } from 'vitest-mock-extended';
-import { vi, describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import type { HardwareProfile, TrackedModel, CuratedModel } from '@ci-hub/common/types';
-
-vi.mock('axios');
 
 describe('InferenceRouterService', () => {
   let service: InferenceRouterService;
@@ -21,7 +18,6 @@ describe('InferenceRouterService', () => {
   let hardwareInspector: MockProxy<HardwareInspectorService>;
   let modelRegistry: MockProxy<ModelRegistryService>;
   let memoryManager: MockProxy<MemoryManagerService>;
-  let modelPuller: MockProxy<ModelPullerService>;
   let cloudFallback: MockProxy<CloudFallbackService>;
   let ollamaBackend: MockProxy<OllamaBackend>;
   let vllmBackend: MockProxy<VllmBackend>;
@@ -41,7 +37,6 @@ describe('InferenceRouterService', () => {
     hardwareInspector = mock<HardwareInspectorService>();
     modelRegistry = mock<ModelRegistryService>();
     memoryManager = mock<MemoryManagerService>();
-    modelPuller = mock<ModelPullerService>();
     cloudFallback = mock<CloudFallbackService>();
     ollamaBackend = mock<OllamaBackend>();
     vllmBackend = mock<VllmBackend>();
@@ -69,7 +64,6 @@ describe('InferenceRouterService', () => {
         { provide: HardwareInspectorService, useValue: hardwareInspector },
         { provide: ModelRegistryService, useValue: modelRegistry },
         { provide: MemoryManagerService, useValue: memoryManager },
-        { provide: ModelPullerService, useValue: modelPuller },
         { provide: CloudFallbackService, useValue: cloudFallback },
         { provide: OllamaBackend, useValue: ollamaBackend },
         { provide: VllmBackend, useValue: vllmBackend },
@@ -80,10 +74,12 @@ describe('InferenceRouterService', () => {
     service = module.get<InferenceRouterService>(InferenceRouterService);
   });
 
-  // ─── S-IR-1: OpenAI-Compatible Endpoints ──────────────────────────
+  // ─── Model listing ────────────────────────────────────────────────
+  // The router no longer proxies requests — it only surfaces the merged model
+  // list + backend health for the management endpoints and credentials service.
 
-  describe('Model listing (IR-1)', () => {
-    it('S-IR-1.5: SHALL return merged model lists from all backends + cloud', async () => {
+  describe('Model listing', () => {
+    it('SHALL return merged model lists from all backends + cloud', async () => {
       modelRegistry.getTrackedModels.mockReturnValue([
         {
           catalogId: 'phi-4-mini',
@@ -119,62 +115,16 @@ describe('InferenceRouterService', () => {
       expect(models.find((m) => m.id === 'phi-4-mini')?.local).toBe(true);
       expect(models.find((m) => m.id === 'gpt-4o')?.local).toBe(false);
     });
-  });
 
-  // ─── S-IR-2: Routing ──────────────────────────────────────────────
+    it('includes discovered backend models not present in the catalog', async () => {
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['llama3:8b'] });
 
-  describe('Routing logic (IR-2)', () => {
-    it('S-IR-2.2: SHALL route "auto" to default pinned LLM', async () => {
-      const pinnedModel: TrackedModel = {
-        catalogId: 'phi-4-mini',
-        backend: 'ollama',
-        backendModelId: 'phi4-mini',
-        state: 'pinned',
-        pinned: true,
-        memoryUsedMb: 2600,
-        requestCount: 5,
-      };
+      const models = await service.listModels();
 
-      modelRegistry.getPinnedModels.mockReturnValue([pinnedModel]);
-      modelRegistry.getTrackedModel.mockReturnValue(pinnedModel);
-      modelRegistry.getCuratedModel.mockReturnValue({ id: 'phi-4-mini', modality: 'llm' } as CuratedModel);
-
-      const axios = await import('axios');
-      (axios.default.post as any) = vi.fn().mockResolvedValue({
-        data: { choices: [{ message: { content: 'Hello' } }] },
-        headers: {},
-      });
-
-      const result = await service.routeChatCompletion({ model: 'auto', messages: [{ role: 'user', content: 'Hi' }] });
-
-      expect(result.backend).toBe('ollama');
-    });
-
-    it('S-IR-2.3: SHALL route cloud model prefixes to cloud fallback', async () => {
-      modelRegistry.getTrackedModel.mockReturnValue(undefined);
-      cloudFallback.resolveProvider.mockReturnValue({
-        provider: 'openai',
-        apiKey: 'sk-test',
-        enabled: true,
-        defaultModel: 'gpt-4o',
-      });
-      cloudFallback.proxyChatCompletion.mockResolvedValue({
-        data: { choices: [{ message: { content: 'Hi' } }] },
-        headers: {},
-      });
-
-      const result = await service.routeChatCompletion({ model: 'gpt-4o', messages: [] });
-      expect(result.backend).toContain('cloud');
-    });
-
-    it('S-IR-2.5: SHALL return error when no model available', async () => {
-      modelRegistry.getTrackedModel.mockReturnValue(undefined);
-      modelRegistry.getPinnedModels.mockReturnValue([]);
-      modelRegistry.getLoadedModels.mockReturnValue([]);
-      cloudFallback.resolveProvider.mockReturnValue(undefined);
-      cloudFallback.getEnabledProviders.mockReturnValue([]);
-
-      await expect(service.routeChatCompletion({ model: 'auto', messages: [] })).rejects.toThrow('No models available');
+      const discovered = models.find((m) => m.id === 'llama3:8b');
+      expect(discovered).toBeDefined();
+      expect(discovered?.backend).toBe('ollama');
+      expect(discovered?.local).toBe(true);
     });
   });
 
@@ -202,49 +152,27 @@ describe('InferenceRouterService', () => {
       expect(status.backends).toHaveLength(3);
       expect(status.memoryBudget).toBeDefined();
     });
-  });
 
-  // ─── TTS / STT / Embeddings error handling ───────────────────────
+    it('reports each backend health + url', async () => {
+      memoryManager.calculateBudget.mockReturnValue({
+        totalVramMb: 0,
+        totalRamMb: 0,
+        systemReservedRamMb: 0,
+        dockerOverheadMb: 0,
+        appContainerBudgetMb: 0,
+        modelBudgetVramMb: 0,
+        modelBudgetRamMb: 0,
+        modelUsedVramMb: 0,
+        modelUsedRamMb: 0,
+        pinnedVramMb: 0,
+        pinnedRamMb: 0,
+      });
 
-  describe('routeTts error handling', () => {
-    it('should log and rethrow when Lemonade TTS request fails', async () => {
-      lemonadeBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [] });
-      const axios = await import('axios');
-      (axios.default.post as any) = vi.fn().mockRejectedValue(new Error('TTS connection reset'));
+      const status = await service.getStatus();
 
-      await expect(service.routeTts({ input: 'hello', voice: 'af' })).rejects.toThrow('TTS connection reset');
-      expect(loggerService.error).toHaveBeenCalledWith(expect.stringContaining('TTS request to Lemonade failed'));
-    });
-  });
-
-  describe('routeStt error handling', () => {
-    it('should log and rethrow when Lemonade STT request fails', async () => {
-      lemonadeBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [] });
-      const axios = await import('axios');
-      (axios.default.post as any) = vi.fn().mockRejectedValue(new Error('STT timeout'));
-
-      await expect(service.routeStt(new FormData())).rejects.toThrow('STT timeout');
-      expect(loggerService.error).toHaveBeenCalledWith(expect.stringContaining('STT request to Lemonade failed'));
-    });
-  });
-
-  describe('routeEmbeddings error handling', () => {
-    it('should log and rethrow when Ollama embeddings request fails', async () => {
-      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [] });
-      const axios = await import('axios');
-      (axios.default.post as any) = vi.fn().mockRejectedValue(new Error('embeddings ECONNRESET'));
-
-      await expect(service.routeEmbeddings({ input: 'test', model: 'nomic-embed-text' })).rejects.toThrow('embeddings ECONNRESET');
-      expect(loggerService.error).toHaveBeenCalledWith(expect.stringContaining('Embeddings request to Ollama failed'));
-    });
-  });
-
-  // ─── Inference Endpoint ───────────────────────────────────────────
-
-  describe('Inference endpoint', () => {
-    it('should return the correct inference endpoint URL', () => {
-      const endpoint = service.getInferenceEndpoint();
-      expect(endpoint).toContain('/api/inference/v1');
+      const ollama = status.backends.find((b) => b.type === 'ollama');
+      expect(ollama?.running).toBe(true);
+      expect(ollama?.url).toBe('http://ci-hub-ollama:11434');
     });
   });
 });

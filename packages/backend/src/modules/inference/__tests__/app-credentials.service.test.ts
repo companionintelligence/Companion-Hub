@@ -2,15 +2,17 @@ import { Test, type TestingModule } from '@nestjs/testing';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { describe, it, expect, beforeEach } from 'vitest';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
-import { AppBootstrapService } from '../app-bootstrap.service';
+import { AppCredentialsService } from '../app-credentials.service';
 import { HardwareInspectorService } from '../hardware-inspector.service';
-import { InferenceRouterService } from '../inference-router.service';
 import { ModelRegistryService } from '../model-registry.service';
 import { ModelPullerService } from '../model-puller.service';
+import { CloudFallbackService } from '../cloud-fallback.service';
 import { OllamaBackend } from '../backends/ollama.backend';
 import { LoggerService } from '@/core/logger/logger.service';
-import { ConfigurationService } from '@/core/config/configuration.service';
-import type { CuratedModel, HardwareProfile } from '@ci-hub/common/types';
+import type { CloudProviderConfig, CuratedModel, HardwareProfile } from '@ci-hub/common/types';
+
+const OLLAMA_BASE_URL = 'http://ci-hub-ollama:11434';
+const OLLAMA_OPENAI_URL = `${OLLAMA_BASE_URL}/v1`;
 
 const makeLlm = (id: string, backendModelId: string, minVramMb = 0, minRamMb = 0): CuratedModel =>
   ({
@@ -81,27 +83,24 @@ const baseProfile: HardwareProfile = {
   tier: 'high',
 };
 
-describe('AppBootstrapService', () => {
-  let service: AppBootstrapService;
+describe('AppCredentialsService', () => {
+  let service: AppCredentialsService;
   let logger: MockProxy<LoggerService>;
   let hardwareInspector: MockProxy<HardwareInspectorService>;
-  let inferenceRouter: MockProxy<InferenceRouterService>;
   let modelRegistry: MockProxy<ModelRegistryService>;
   let modelPuller: MockProxy<ModelPullerService>;
+  let cloudFallback: MockProxy<CloudFallbackService>;
   let ollamaBackend: MockProxy<OllamaBackend>;
-  let configurationService: MockProxy<ConfigurationService>;
 
   beforeEach(async () => {
     logger = mock<LoggerService>();
     hardwareInspector = mock<HardwareInspectorService>();
-    inferenceRouter = mock<InferenceRouterService>();
     modelRegistry = mock<ModelRegistryService>();
     modelPuller = mock<ModelPullerService>();
+    cloudFallback = mock<CloudFallbackService>();
     ollamaBackend = mock<OllamaBackend>();
-    configurationService = mock<ConfigurationService>();
 
-    inferenceRouter.getInferenceEndpoint.mockReturnValue('http://ci-os-hub:3000/api/inference/v1');
-    ollamaBackend.getBaseUrl.mockReturnValue('http://ci-hub-ollama:11434');
+    ollamaBackend.getBaseUrl.mockReturnValue(OLLAMA_BASE_URL);
     ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [] });
     hardwareInspector.getProfile.mockResolvedValue(baseProfile);
     modelRegistry.getRecommendedModelsForHardware.mockReturnValue([
@@ -116,162 +115,166 @@ describe('AppBootstrapService', () => {
       return undefined;
     });
     modelPuller.pullModel.mockResolvedValue(undefined);
-    configurationService.getInferencePreferences.mockReturnValue({ preferredBackend: null, preferredModel: null });
+    cloudFallback.getEnabledProviders.mockReturnValue([]);
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
-        AppBootstrapService,
+        AppCredentialsService,
         { provide: LoggerService, useValue: logger },
         { provide: HardwareInspectorService, useValue: hardwareInspector },
-        { provide: InferenceRouterService, useValue: inferenceRouter },
         { provide: ModelRegistryService, useValue: modelRegistry },
         { provide: ModelPullerService, useValue: modelPuller },
+        { provide: CloudFallbackService, useValue: cloudFallback },
         { provide: OllamaBackend, useValue: ollamaBackend },
-        { provide: ConfigurationService, useValue: configurationService },
       ],
     }).compile();
 
-    service = module.get<AppBootstrapService>(AppBootstrapService);
+    service = module.get<AppCredentialsService>(AppCredentialsService);
   });
 
-  describe('getBootstrap', () => {
+  describe('getCredentials — local (direct Ollama) path', () => {
     it('throws NotFoundException for unknown slugs', async () => {
-      await expect(service.getBootstrap('unknown-app')).rejects.toThrow(NotFoundException);
+      await expect(service.getCredentials('unknown-app')).rejects.toThrow(NotFoundException);
     });
 
-    it('returns hermes-agent env keyed with HERMES_* and biggest runnable LLM', async () => {
-      const config = await service.getBootstrap('hermes-agent');
+    it('points hermes-agent at the DIRECT Ollama /v1 with the NATIVE chat model id', async () => {
+      const config = await service.getCredentials('hermes-agent');
 
       expect(config.app).toBe('hermes-agent');
-      expect(config.endpointUrl).toBe('http://ci-os-hub:3000/api/inference/v1');
-      expect(config.llmModelId).toBe('hermes4-70b');
-      expect(config.llmBackendModelId).toBe('hermes4:70b');
-      expect(config.embeddingsModelId).toBeNull();
+      expect(config.provider).toBe('ollama');
+      // DIRECT ollama endpoint, NOT /api/inference
+      expect(config.endpointUrl).toBe(OLLAMA_OPENAI_URL);
+      // chat model is the NATIVE backend id, not the catalog id
+      expect(config.chatModelId).toBe('hermes4:70b');
       expect(config.env).toEqual({
-        HERMES_OPENAI_BASE_URL: 'http://ci-os-hub:3000/api/inference/v1',
+        HERMES_OPENAI_BASE_URL: OLLAMA_OPENAI_URL,
         HERMES_OPENAI_API_KEY: 'ollama',
-        HERMES_DEFAULT_MODEL: 'hermes4-70b',
-        HERMES_DEFAULT_MODEL_BACKEND_ID: 'hermes4:70b',
+        HERMES_DEFAULT_MODEL: 'hermes4:70b',
+        OLLAMA_HOST: OLLAMA_BASE_URL,
       });
     });
 
-    it('returns openclaw env keyed with OPENAI_API_* and DEFAULT_MODEL', async () => {
-      const config = await service.getBootstrap('openclaw');
+    it('points openclaw at the DIRECT Ollama /v1 keyed with OPENAI_API_* and native DEFAULT_MODEL', async () => {
+      const config = await service.getCredentials('openclaw');
 
       expect(config.app).toBe('openclaw');
       expect(config.env).toEqual({
-        OPENAI_API_BASE: 'http://ci-os-hub:3000/api/inference/v1',
+        OPENAI_API_BASE: OLLAMA_OPENAI_URL,
         OPENAI_API_KEY: 'ollama',
-        DEFAULT_MODEL: 'hermes4-70b',
-        DEFAULT_MODEL_BACKEND_ID: 'hermes4:70b',
+        DEFAULT_MODEL: 'hermes4:70b',
+        OLLAMA_HOST: OLLAMA_BASE_URL,
       });
     });
 
-    it('returns null model ids when no LLM is runnable on the hardware', async () => {
+    it('always includes OLLAMA_HOST (direct native ollama url) even when no model is runnable', async () => {
       modelRegistry.getRecommendedModelsForHardware.mockReturnValue([]);
-      modelRegistry.getModelsByModality.mockReturnValue([]);
-
-      const config = await service.getBootstrap('openclaw');
-
-      expect(config.llmModelId).toBeNull();
-      expect(config.embeddingsModelId).toBeNull();
-      expect(config.env).toEqual({
-        OPENAI_API_BASE: 'http://ci-os-hub:3000/api/inference/v1',
-        OPENAI_API_KEY: 'ollama',
-      });
-    });
-
-    it('does not emit embeddings model fields when no embedding model is recommended', async () => {
       modelRegistry.getRecommendedEmbeddingModel.mockReturnValue(null);
 
-      const config = await service.getBootstrap('openclaw');
+      const config = await service.getCredentials('openclaw');
+
+      expect(config.chatModelId).toBeNull();
+      expect(config.embeddingsModelId).toBeNull();
+      expect(config.env).toEqual({
+        OPENAI_API_BASE: OLLAMA_OPENAI_URL,
+        OPENAI_API_KEY: 'ollama',
+        OLLAMA_HOST: OLLAMA_BASE_URL,
+      });
+    });
+
+    it('does not emit an embeddings key when no embedding model is recommended', async () => {
+      modelRegistry.getRecommendedEmbeddingModel.mockReturnValue(null);
+
+      const config = await service.getCredentials('openclaw');
 
       expect(config.embeddingsModelId).toBeNull();
       expect(config.env.EMBEDDINGS_MODEL).toBeUndefined();
-      expect(config.env.EMBEDDINGS_MODEL_BACKEND_ID).toBeUndefined();
     });
 
-    it('emits embeddings model fields and pre-pulls the embedding model when one is recommended', async () => {
+    it('emits the native embeddings model id and pre-pulls it when one is recommended', async () => {
       modelRegistry.getRecommendedEmbeddingModel.mockReturnValue(makeEmbedding('nomic-embed-text', 'nomic-embed-text'));
 
-      const config = await service.getBootstrap('openclaw');
+      const config = await service.getCredentials('openclaw');
       await new Promise((resolve) => setImmediate(resolve));
 
       expect(config.embeddingsModelId).toBe('nomic-embed-text');
-      expect(config.embeddingsBackendModelId).toBe('nomic-embed-text');
       expect(config.env.EMBEDDINGS_MODEL).toBe('nomic-embed-text');
-      expect(config.env.EMBEDDINGS_MODEL_BACKEND_ID).toBe('nomic-embed-text');
       expect(modelPuller.pullModel).toHaveBeenCalledWith('nomic-embed-text');
     });
 
-    it('returns companion-memory env keyed with LLM_* including embeddings', async () => {
+    it('returns companion-memory env keyed with LLM_* (direct Ollama + native ids) including embeddings', async () => {
       modelRegistry.getRecommendedEmbeddingModel.mockReturnValue(makeEmbedding('nomic-embed-text', 'nomic-embed-text'));
 
-      const config = await service.getBootstrap('companion-memory');
+      const config = await service.getCredentials('companion-memory');
 
       expect(config.app).toBe('companion-memory');
       expect(config.env).toEqual({
-        LLM_API_BASE: 'http://ci-os-hub:3000/api/inference/v1',
+        LLM_API_BASE: OLLAMA_OPENAI_URL,
         LLM_API_KEY: 'ollama',
-        LLM_DEFAULT_CHAT_MODEL: 'hermes4-70b',
-        LLM_DEFAULT_CHAT_MODEL_BACKEND_ID: 'hermes4:70b',
+        LLM_DEFAULT_CHAT_MODEL: 'hermes4:70b',
         LLM_DEFAULT_EMBEDDING_MODEL: 'nomic-embed-text',
-        LLM_DEFAULT_EMBEDDING_MODEL_BACKEND_ID: 'nomic-embed-text',
+        OLLAMA_HOST: OLLAMA_BASE_URL,
       });
     });
 
-    it('picks the first model returned by the registry (biggest first)', async () => {
+    it('picks the first (biggest) recommended model and uses its native id', async () => {
       modelRegistry.getRecommendedModelsForHardware.mockReturnValue([
         makeLlm('biggest-700b', 'family:700b'),
         makeLlm('mid-70b', 'family:70b'),
         makeLlm('small-8b', 'family:8b'),
       ]);
 
-      const config = await service.getBootstrap('hermes-agent');
+      const config = await service.getCredentials('hermes-agent');
 
-      expect(config.llmModelId).toBe('biggest-700b');
+      expect(config.chatModelId).toBe('family:700b');
+    });
+  });
+
+  describe('getCredentials — cloud override', () => {
+    const cloudProvider: CloudProviderConfig = {
+      provider: 'openai',
+      apiKey: 'sk-operator-key',
+      enabled: true,
+      baseUrl: 'https://api.openai.com/v1',
+      defaultModel: 'gpt-4o',
+    };
+
+    it('OVERRIDES base/key/model with the first enabled cloud provider', async () => {
+      cloudFallback.getEnabledProviders.mockReturnValue([cloudProvider]);
+
+      const config = await service.getCredentials('hermes-agent');
+
+      expect(config.provider).toBe('cloud');
+      expect(config.endpointUrl).toBe('https://api.openai.com/v1');
+      expect(config.chatModelId).toBe('gpt-4o');
+      expect(config.env).toEqual({
+        HERMES_OPENAI_BASE_URL: 'https://api.openai.com/v1',
+        HERMES_OPENAI_API_KEY: 'sk-operator-key',
+        HERMES_DEFAULT_MODEL: 'gpt-4o',
+        // OLLAMA_HOST is still exposed so the app can reach Ollama natively too
+        OLLAMA_HOST: OLLAMA_BASE_URL,
+      });
     });
 
-    it('honors the persisted preferred model when it is among the runnable candidates', async () => {
-      configurationService.getInferencePreferences.mockReturnValue({ preferredBackend: 'ollama', preferredModel: 'hermes4-8b' });
+    it('still exposes OLLAMA_HOST as the direct native ollama url under a cloud override', async () => {
+      cloudFallback.getEnabledProviders.mockReturnValue([cloudProvider]);
 
-      const config = await service.getBootstrap('hermes-agent');
+      const config = await service.getCredentials('openclaw');
 
-      expect(config.llmModelId).toBe('hermes4-8b');
-      expect(config.llmBackendModelId).toBe('hermes4:8b');
-      expect(config.env.HERMES_DEFAULT_MODEL).toBe('hermes4-8b');
-    });
-
-    it('honors a preferred model outside the recommended list when it is a runnable LLM for the tier', async () => {
-      configurationService.getInferencePreferences.mockReturnValue({ preferredBackend: 'ollama', preferredModel: 'mid-70b' });
-      modelRegistry.getCuratedModel.mockReturnValue(makeLlm('mid-70b', 'family:70b'));
-      modelRegistry.getModelsForTier.mockReturnValue([makeLlm('mid-70b', 'family:70b')]);
-
-      const config = await service.getBootstrap('openclaw');
-
-      expect(config.llmModelId).toBe('mid-70b');
-      expect(config.env.DEFAULT_MODEL).toBe('mid-70b');
-    });
-
-    it('falls back to the top recommended model when the preferred model is not runnable on the hardware', async () => {
-      configurationService.getInferencePreferences.mockReturnValue({ preferredBackend: 'ollama', preferredModel: 'gpt-oss-120b' });
-      modelRegistry.getCuratedModel.mockReturnValue(undefined);
-      modelRegistry.getModelsForTier.mockReturnValue([]);
-
-      const config = await service.getBootstrap('hermes-agent');
-
-      expect(config.llmModelId).toBe('hermes4-70b');
+      expect(config.env.OLLAMA_HOST).toBe(OLLAMA_BASE_URL);
+      expect(config.env.OPENAI_API_BASE).toBe('https://api.openai.com/v1');
+      expect(config.env.OPENAI_API_KEY).toBe('sk-operator-key');
     });
   });
 
   describe('serializeAsDotenv', () => {
     it('emits KEY=VALUE lines with no quoting for simple values', async () => {
-      const config = await service.getBootstrap('openclaw');
+      const config = await service.getCredentials('openclaw');
       const dotenv = service.serializeAsDotenv(config);
 
-      expect(dotenv).toContain('OPENAI_API_BASE=http://ci-os-hub:3000/api/inference/v1');
+      expect(dotenv).toContain(`OPENAI_API_BASE=${OLLAMA_OPENAI_URL}`);
       expect(dotenv).toContain('OPENAI_API_KEY=ollama');
-      expect(dotenv).toContain('DEFAULT_MODEL=hermes4-70b');
+      expect(dotenv).toContain('DEFAULT_MODEL=hermes4:70b');
+      expect(dotenv).toContain(`OLLAMA_HOST=${OLLAMA_BASE_URL}`);
       expect(dotenv.endsWith('\n')).toBe(true);
     });
 
@@ -281,11 +284,10 @@ describe('AppBootstrapService', () => {
         apiVersion: 1 as const,
         endpointUrl: '',
         endpointReady: false,
-        llmModelId: null,
-        llmBackendModelId: null,
-        llmReady: false,
+        chatModelId: null,
         embeddingsModelId: null,
-        embeddingsBackendModelId: null,
+        chatModelReady: false,
+        provider: 'ollama' as const,
         env: {
           SIMPLE: 'plain',
           WITH_SPACES: 'foo bar',
@@ -307,22 +309,27 @@ describe('AppBootstrapService', () => {
     it('recognizes supported slugs', () => {
       expect(service.isSupported('hermes-agent')).toBe(true);
       expect(service.isSupported('openclaw')).toBe(true);
+      expect(service.isSupported('companion-memory')).toBe(true);
+    });
+
+    it('rejects unknown slugs', () => {
+      expect(service.isSupported('something-else')).toBe(false);
     });
 
     it('reports endpointReady from ollamaBackend.healthCheck', async () => {
       ollamaBackend.healthCheck.mockResolvedValueOnce({ running: false, healthy: false, modelsLoaded: [] });
       service.invalidateCache();
-      const config = await service.getBootstrap('openclaw');
+      const config = await service.getCredentials('openclaw');
       expect(config.endpointReady).toBe(false);
     });
 
     it('exposes managedKeys matching env keys for header consumers', async () => {
-      const config = await service.getBootstrap('hermes-agent');
+      const config = await service.getCredentials('hermes-agent');
       expect(config.managedKeys.sort()).toEqual(Object.keys(config.env).sort());
     });
 
     it('always defaults apiVersion to 1', async () => {
-      const config = await service.getBootstrap('openclaw');
+      const config = await service.getCredentials('openclaw');
       expect(config.apiVersion).toBe(1);
     });
   });
@@ -350,30 +357,29 @@ describe('AppBootstrapService', () => {
 
   describe('caching', () => {
     it('returns the cached value on a second call within TTL without re-querying hardware', async () => {
-      await service.getBootstrap('openclaw');
-      await service.getBootstrap('openclaw');
+      await service.getCredentials('openclaw');
+      await service.getCredentials('openclaw');
       expect(hardwareInspector.getProfile).toHaveBeenCalledTimes(1);
       expect(ollamaBackend.healthCheck).toHaveBeenCalledTimes(1);
     });
 
     it('keeps the cache separate per slug', async () => {
-      await service.getBootstrap('hermes-agent');
-      await service.getBootstrap('openclaw');
+      await service.getCredentials('hermes-agent');
+      await service.getCredentials('openclaw');
       expect(hardwareInspector.getProfile).toHaveBeenCalledTimes(2);
     });
 
     it('invalidateCache() forces a fresh resolve', async () => {
-      await service.getBootstrap('openclaw');
+      await service.getCredentials('openclaw');
       service.invalidateCache();
-      await service.getBootstrap('openclaw');
+      await service.getCredentials('openclaw');
       expect(hardwareInspector.getProfile).toHaveBeenCalledTimes(2);
     });
   });
 
   describe('pre-pull', () => {
-    it('fires an async pull for the recommended LLM when Ollama is reachable and model not yet pulled', async () => {
-      await service.getBootstrap('openclaw');
-      // tick: pullModel is invoked via void promise chain, so it should be queued by now
+    it('fires an async pull for the recommended chat model when Ollama is reachable and not yet pulled', async () => {
+      await service.getCredentials('openclaw');
       await new Promise((resolve) => setImmediate(resolve));
       expect(modelPuller.pullModel).toHaveBeenCalledWith('hermes4-70b');
     });
@@ -381,7 +387,7 @@ describe('AppBootstrapService', () => {
     it('does not pull when Ollama endpoint is unreachable', async () => {
       ollamaBackend.healthCheck.mockResolvedValueOnce({ running: false, healthy: false, modelsLoaded: [] });
       service.invalidateCache();
-      await service.getBootstrap('openclaw');
+      await service.getCredentials('openclaw');
       await new Promise((resolve) => setImmediate(resolve));
       expect(modelPuller.pullModel).not.toHaveBeenCalled();
     });
@@ -389,18 +395,18 @@ describe('AppBootstrapService', () => {
     it('does not pull when the model is already loaded in Ollama (modelsLoaded includes backendModelId)', async () => {
       ollamaBackend.healthCheck.mockResolvedValueOnce({ running: true, healthy: true, modelsLoaded: ['hermes4:70b'] });
       service.invalidateCache();
-      const config = await service.getBootstrap('openclaw');
+      const config = await service.getCredentials('openclaw');
       await new Promise((resolve) => setImmediate(resolve));
-      expect(config.llmReady).toBe(true);
+      expect(config.chatModelReady).toBe(true);
       expect(modelPuller.pullModel).not.toHaveBeenCalled();
     });
 
     it('does not pull when registry reports state=pulled for the catalog id', async () => {
       modelRegistry.getTrackedModel.mockReturnValue({ catalogId: 'hermes4-70b', state: 'pulled' } as any);
       service.invalidateCache();
-      const config = await service.getBootstrap('openclaw');
+      const config = await service.getCredentials('openclaw');
       await new Promise((resolve) => setImmediate(resolve));
-      expect(config.llmReady).toBe(true);
+      expect(config.chatModelReady).toBe(true);
       expect(modelPuller.pullModel).not.toHaveBeenCalled();
     });
 
@@ -411,24 +417,12 @@ describe('AppBootstrapService', () => {
           resolvePull = r;
         }),
       );
-      await service.getBootstrap('openclaw');
+      await service.getCredentials('openclaw');
       service.invalidateCache();
-      await service.getBootstrap('openclaw');
+      await service.getCredentials('openclaw');
       await new Promise((resolve) => setImmediate(resolve));
       expect(modelPuller.pullModel).toHaveBeenCalledTimes(1);
       resolvePull();
-    });
-  });
-
-  describe('isSupported', () => {
-    it('recognizes supported slugs', () => {
-      expect(service.isSupported('hermes-agent')).toBe(true);
-      expect(service.isSupported('openclaw')).toBe(true);
-      expect(service.isSupported('companion-memory')).toBe(true);
-    });
-
-    it('rejects unknown slugs', () => {
-      expect(service.isSupported('something-else')).toBe(false);
     });
   });
 });
