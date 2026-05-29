@@ -89,7 +89,14 @@ vi.mock('../components/tailscale-setup-step', () => ({
 }));
 
 vi.mock('../components/install-step', () => ({
-  InstallStep: () => <div data-testid="install-step">Install</div>,
+  InstallStep: ({ onComplete }: { onComplete: (summary: unknown) => void }) => (
+    <div data-testid="install-step">
+      Install
+      <button type="button" onClick={() => onComplete({ results: [], running: 0, incomplete: 0, failed: 0, total: 0 })}>
+        install-complete
+      </button>
+    </div>
+  ),
 }));
 
 vi.mock('../components/complete-step', () => ({
@@ -111,18 +118,24 @@ vi.mock('@/components/ui/Stepper/Stepper', () => ({
 }));
 
 describe('OnboardingPage', () => {
-  it('shows the renamed Select Apps step title in the stepper', () => {
+  it('renders the reordered step titles in the stepper', () => {
     render(
       <MemoryRouter initialEntries={['/onboarding']}>
         <OnboardingPage />
       </MemoryRouter>,
     );
 
-    expect(screen.getByText('Select Apps')).toBeInTheDocument();
-    expect(screen.queryByText('Select')).not.toBeInTheDocument();
+    for (const title of ['Start up', 'AI Setup', 'Local Apps', 'Confirm & Download', 'VPN Setup', 'Done']) {
+      expect(screen.getByText(title)).toBeInTheDocument();
+    }
+    expect(screen.queryByText('Welcome')).not.toBeInTheDocument();
+    expect(screen.queryByText('Private VPN')).not.toBeInTheDocument();
+    expect(screen.queryByText('Discover')).not.toBeInTheDocument();
+    expect(screen.queryByText('Select Apps')).not.toBeInTheDocument();
+    expect(screen.queryByText('Install')).not.toBeInTheDocument();
   });
 
-  it('routes Welcome continue to AI Setup', async () => {
+  it('routes Start up continue to AI Setup', async () => {
     const user = userEvent.setup();
 
     render(
@@ -137,7 +150,7 @@ describe('OnboardingPage', () => {
     expect(screen.queryByTestId('complete-step')).not.toBeInTheDocument();
   });
 
-  it('routes AI Setup continue to Private VPN', async () => {
+  it('routes AI Setup continue to Local Apps (Discover)', async () => {
     const user = userEvent.setup();
 
     render(
@@ -149,10 +162,10 @@ describe('OnboardingPage', () => {
     await user.click(screen.getByRole('button', { name: 'welcome-next' }));
     await user.click(screen.getByRole('button', { name: 'ai-next' }));
 
-    expect(screen.getByTestId('tailscale-setup-step')).toBeInTheDocument();
+    expect(screen.getByTestId('recommendations-step')).toBeInTheDocument();
   });
 
-  it('routes AI Setup skip to Private VPN', async () => {
+  it('routes AI Setup skip to Local Apps (Discover)', async () => {
     const user = userEvent.setup();
 
     render(
@@ -164,26 +177,10 @@ describe('OnboardingPage', () => {
     await user.click(screen.getByRole('button', { name: 'welcome-next' }));
     await user.click(screen.getByRole('button', { name: 'ai-skip' }));
 
-    expect(screen.getByTestId('tailscale-setup-step')).toBeInTheDocument();
-  });
-
-  it('routes Private VPN continue to Discover', async () => {
-    const user = userEvent.setup();
-
-    render(
-      <MemoryRouter initialEntries={['/onboarding']}>
-        <OnboardingPage />
-      </MemoryRouter>,
-    );
-
-    await user.click(screen.getByRole('button', { name: 'welcome-next' }));
-    await user.click(screen.getByRole('button', { name: 'ai-next' }));
-    await user.click(screen.getByRole('button', { name: 'tailscale-next' }));
-
     expect(screen.getByTestId('recommendations-step')).toBeInTheDocument();
   });
 
-  it('routes Discover skip to Install', async () => {
+  it('routes Local Apps select to the Select review sub-screen', async () => {
     const user = userEvent.setup();
 
     render(
@@ -194,9 +191,61 @@ describe('OnboardingPage', () => {
 
     await user.click(screen.getByRole('button', { name: 'welcome-next' }));
     await user.click(screen.getByRole('button', { name: 'ai-next' }));
-    await user.click(screen.getByRole('button', { name: 'tailscale-next' }));
+    await user.click(screen.getByRole('button', { name: 'recommend-next' }));
+
+    expect(screen.getByRole('button', { name: 'finish-setup' })).toBeInTheDocument();
+    expect(screen.queryByTestId('recommendations-step')).not.toBeInTheDocument();
+  });
+
+  it('routes Local Apps skip to Confirm & Download (Install)', async () => {
+    const user = userEvent.setup();
+
+    render(
+      <MemoryRouter initialEntries={['/onboarding']}>
+        <OnboardingPage />
+      </MemoryRouter>,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'welcome-next' }));
+    await user.click(screen.getByRole('button', { name: 'ai-next' }));
     await user.click(screen.getByRole('button', { name: 'recommend-skip' }));
 
     expect(screen.getByTestId('install-step')).toBeInTheDocument();
+  });
+
+  it('routes Confirm & Download complete to VPN Setup before Done', async () => {
+    const user = userEvent.setup();
+
+    render(
+      <MemoryRouter initialEntries={['/onboarding']}>
+        <OnboardingPage />
+      </MemoryRouter>,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'welcome-next' }));
+    await user.click(screen.getByRole('button', { name: 'ai-next' }));
+    await user.click(screen.getByRole('button', { name: 'recommend-skip' }));
+    await user.click(screen.getByRole('button', { name: 'install-complete' }));
+
+    expect(screen.getByTestId('tailscale-setup-step')).toBeInTheDocument();
+    expect(screen.queryByTestId('complete-step')).not.toBeInTheDocument();
+  });
+
+  it('routes VPN Setup continue to Done', async () => {
+    const user = userEvent.setup();
+
+    render(
+      <MemoryRouter initialEntries={['/onboarding']}>
+        <OnboardingPage />
+      </MemoryRouter>,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'welcome-next' }));
+    await user.click(screen.getByRole('button', { name: 'ai-next' }));
+    await user.click(screen.getByRole('button', { name: 'recommend-skip' }));
+    await user.click(screen.getByRole('button', { name: 'install-complete' }));
+    await user.click(screen.getByRole('button', { name: 'tailscale-next' }));
+
+    expect(screen.getByTestId('complete-step')).toBeInTheDocument();
   });
 });
