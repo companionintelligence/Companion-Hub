@@ -462,7 +462,12 @@ export class TailscaleService {
   }
 
   /**
-   * Disconnect from Tailscale (host or sidecar)
+   * Disconnect from Tailscale.
+   *
+   * Host mode performs a normal `tailscale down`.
+   * Sidecar mode performs a stronger reset by force-stopping `tailscaled`
+   * and deleting the persisted state file, which effectively logs the
+   * sidecar out of Tailscale rather than only disconnecting it.
    */
   async disconnect(): Promise<void> {
     const strategy = await this.resolveStrategy();
