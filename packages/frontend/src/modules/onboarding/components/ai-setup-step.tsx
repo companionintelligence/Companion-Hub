@@ -29,13 +29,19 @@ const isAgentModel = (model: CuratedModel) => model.modality === 'llm' || AGENT_
 const ONBOARDING_BACKEND: InferenceBackendType = 'ollama';
 
 interface AiSetupStepProps {
-  onComplete: (config: AiSetupConfig) => void;
-  onSkip: () => void;
-  onBack: () => void;
+  onComplete?: (config: AiSetupConfig) => void;
+  onSkip?: () => void;
+  onBack?: () => void;
   /** Whether a Cloudflare tunnel is configured — seeds the default agent remote-access choice. */
   cloudflareAvailable?: boolean;
   /** Whether Tailscale is connected — seeds the default agent remote-access choice. */
   tailscaleAvailable?: boolean;
+  /**
+   * Section mode for the single-page FTUE form: hides the step navigation, drops the internal
+   * scroll, and emits the live config via {@link onConfigChange} instead of waiting for a Continue.
+   */
+  embedded?: boolean;
+  onConfigChange?: (config: AiSetupConfig) => void;
 }
 
 interface OllamaStatus {
@@ -48,7 +54,15 @@ interface OllamaStatus {
 const defaultExposureMode = (cloudflareAvailable: boolean, tailscaleAvailable: boolean): ExposureMode =>
   cloudflareAvailable ? 'cloudflare' : tailscaleAvailable ? 'tailscale' : 'local';
 
-export const AiSetupStep = ({ onComplete, onSkip, onBack, cloudflareAvailable = false, tailscaleAvailable = false }: AiSetupStepProps) => {
+export const AiSetupStep = ({
+  onComplete,
+  onSkip,
+  onBack,
+  cloudflareAvailable = false,
+  tailscaleAvailable = false,
+  embedded = false,
+  onConfigChange,
+}: AiSetupStepProps) => {
   const [loading, setLoading] = useState(true);
   const [rescanning, setRescanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -170,10 +184,8 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack, cloudflareAvailable = 
     setSelectedModelIds((prev) => (prev.includes(modelId) ? prev : [...prev, modelId]));
   };
 
-  const handleContinue = () => {
-    if (!profile) {
-      throw new Error('AI profile unavailable');
-    }
+  const buildConfig = (): AiSetupConfig | null => {
+    if (!profile) return null;
     const backendCompatibleSelectedModels = profile.availableModels
       .filter((model) => model.backend === ONBOARDING_BACKEND && selectedModelIds.includes(model.id))
       .map((model) => model.id);
@@ -187,7 +199,7 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack, cloudflareAvailable = 
       preferredModelId && backendCompatibleSelectedModels.includes(preferredModelId)
         ? preferredModelId
         : backendCompatibleSelectedModels.find((id) => profile.availableModels.some((m) => m.id === id && isAgentModel(m)));
-    onComplete({
+    return {
       agentFramework,
       selectedModels: backendCompatibleSelectedModels,
       backend: ONBOARDING_BACKEND,
@@ -195,12 +207,26 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack, cloudflareAvailable = 
       preferredModelId: effectivePreferredModelId,
       exposureMode,
       skipped: false,
-    });
+    };
+  };
+
+  const handleContinue = () => {
+    const config = buildConfig();
+    if (!config) throw new Error('AI profile unavailable');
+    onComplete?.(config);
   };
 
   const handleSkip = () => {
-    onSkip();
+    onSkip?.();
   };
+
+  // In embedded (single-form) mode, surface the live config to the parent as the user edits it.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: emit only when the config inputs change
+  useEffect(() => {
+    if (!embedded || !onConfigChange || !profile) return;
+    const config = buildConfig();
+    if (config) onConfigChange(config);
+  }, [embedded, profile, agentFramework, selectedModelIds, preferredModelId, exposureMode, cloudProviders, onConfigChange]);
 
   if (loading) {
     return (
@@ -244,7 +270,7 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack, cloudflareAvailable = 
   const needsOllama = ollamaStatus === null || !ollamaStatus.ready;
 
   return (
-    <div className="space-y-5 max-h-[66vh] overflow-y-auto pr-2" data-testid="ai-setup-step">
+    <div className={embedded ? 'space-y-5' : 'space-y-5 max-h-[66vh] overflow-y-auto pr-2'} data-testid="ai-setup-step">
       {!isInsufficient && (
         <>
           <AgentFrameworkCard
@@ -298,26 +324,28 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack, cloudflareAvailable = 
         insufficientHardware={isInsufficient}
       />
 
-      <div className="flex items-center justify-between pt-1">
-        <Button variant="ghost" onClick={onBack} data-testid="ai-back-btn">
-          Back
-        </Button>
-        <div className="flex gap-2">
-          <Button variant="outline" onClick={handleSkip} data-testid="ai-skip-btn">
-            Skip to Private VPN
+      {!embedded && (
+        <div className="flex items-center justify-between pt-1">
+          <Button variant="ghost" onClick={onBack} data-testid="ai-back-btn">
+            Back
           </Button>
-          <Button
-            intent="primary"
-            onClick={handleContinue}
-            data-testid="ai-continue-btn"
-            disabled={needsOllama && !isInsufficient && (installingOllama || checkingOllama || !ollamaStatus?.ready)}
-          >
-            {isInsufficient && cloudProviders.filter((p) => p.apiKey.trim()).length === 0
-              ? 'Continue to Private VPN without AI'
-              : 'Continue to Private VPN'}
-          </Button>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={handleSkip} data-testid="ai-skip-btn">
+              Skip to Private VPN
+            </Button>
+            <Button
+              intent="primary"
+              onClick={handleContinue}
+              data-testid="ai-continue-btn"
+              disabled={needsOllama && !isInsufficient && (installingOllama || checkingOllama || !ollamaStatus?.ready)}
+            >
+              {isInsufficient && cloudProviders.filter((p) => p.apiKey.trim()).length === 0
+                ? 'Continue to Private VPN without AI'
+                : 'Continue to Private VPN'}
+            </Button>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 };

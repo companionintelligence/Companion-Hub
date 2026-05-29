@@ -9,9 +9,11 @@ import { openExternal } from '@/lib/helpers/open-external';
 import { IconBadge, WizardCard } from './wizard-ui';
 
 interface TailscaleSetupStepProps {
-  onComplete: () => void;
-  onSkip: () => void;
-  onBack: () => void;
+  onComplete?: () => void;
+  onSkip?: () => void;
+  onBack?: () => void;
+  /** Section mode for the single-page form: hides the step navigation. */
+  embedded?: boolean;
 }
 
 interface TailscaleApiStatus {
@@ -29,7 +31,7 @@ interface AuthStartResponse {
   error?: string;
 }
 
-export const TailscaleSetupStep = ({ onComplete, onSkip, onBack }: TailscaleSetupStepProps) => {
+export const TailscaleSetupStep = ({ onComplete, onSkip, onBack, embedded = false }: TailscaleSetupStepProps) => {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [hasAttemptedConnection, setHasAttemptedConnection] = useState(false);
@@ -221,22 +223,24 @@ export const TailscaleSetupStep = ({ onComplete, onSkip, onBack }: TailscaleSetu
       </div>
 
       {/* Navigation */}
-      <div className="flex items-center justify-between border-t border-border pt-5">
-        <Button type="button" variant="outline" onClick={onBack}>
-          {t('COMMON_BACK')}
-        </Button>
-        <div className="flex gap-2">
-          {isConnected ? (
-            <Button type="button" intent="primary" onClick={onComplete} disabled={isLoading}>
-              {t('ONBOARDING_TAILSCALE_CONTINUE_TO_DISCOVER')}
-            </Button>
-          ) : (
-            <Button type="button" variant="ghost" onClick={onSkip}>
-              {t('ONBOARDING_TAILSCALE_SKIP_TO_DISCOVER')}
-            </Button>
-          )}
+      {!embedded && (
+        <div className="flex items-center justify-between border-t border-border pt-5">
+          <Button type="button" variant="outline" onClick={onBack}>
+            {t('COMMON_BACK')}
+          </Button>
+          <div className="flex gap-2">
+            {isConnected ? (
+              <Button type="button" intent="primary" onClick={onComplete} disabled={isLoading}>
+                {t('ONBOARDING_TAILSCALE_CONTINUE_TO_DISCOVER')}
+              </Button>
+            ) : (
+              <Button type="button" variant="ghost" onClick={onSkip}>
+                {t('ONBOARDING_TAILSCALE_SKIP_TO_DISCOVER')}
+              </Button>
+            )}
+          </div>
         </div>
-      </div>
+      )}
     </WizardCard>
   );
 };

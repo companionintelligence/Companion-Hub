@@ -4,7 +4,7 @@ import { useAppContext } from '@/context/app-context';
 import { portalAlternativesQueryOptions } from '@/lib/portal-alternatives';
 import { useQuery } from '@tanstack/react-query';
 import { LayoutGrid } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { getRecommendedApps } from '../helpers/alternatives';
 import type { DetectedService } from '../helpers/service-detection';
 import type { OnboardingApp } from '../helpers/types';
@@ -13,12 +13,15 @@ import { WizardCard, WizardHeader, WizardNav } from './wizard-ui';
 
 interface RecommendationsStepProps {
   detectedServices: DetectedService[];
-  onSelect: (apps: OnboardingApp[]) => void;
-  onSkip: () => void;
-  onBack: () => void;
+  onSelect?: (apps: OnboardingApp[]) => void;
+  onSkip?: () => void;
+  onBack?: () => void;
+  /** Section mode for the single-page form: hides nav and emits the live selection via onChange. */
+  embedded?: boolean;
+  onChange?: (apps: OnboardingApp[]) => void;
 }
 
-export const RecommendationsStep = ({ detectedServices, onSelect, onSkip, onBack }: RecommendationsStepProps) => {
+export const RecommendationsStep = ({ detectedServices, onSelect, onSkip, onBack, embedded = false, onChange }: RecommendationsStepProps) => {
   const { apps: storeApps } = useAppContext();
   const detectedNames = detectedServices.map((s) => s.friendlyName);
   const {
@@ -56,7 +59,7 @@ export const RecommendationsStep = ({ detectedServices, onSelect, onSkip, onBack
     });
   };
 
-  const handleContinue = () => {
+  const buildApps = (): OnboardingApp[] => {
     const apps: OnboardingApp[] = [];
     for (const rec of recommendations) {
       for (const alt of rec.alternatives) {
@@ -75,8 +78,18 @@ export const RecommendationsStep = ({ detectedServices, onSelect, onSkip, onBack
         }
       }
     }
-    onSelect(apps);
+    return apps;
   };
+
+  const handleContinue = () => {
+    onSelect?.(buildApps());
+  };
+
+  // In embedded (single-form) mode, surface the live selection to the parent as the user toggles.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: emit when the selection changes
+  useEffect(() => {
+    if (embedded && onChange) onChange(buildApps());
+  }, [embedded, selected, recommendations, onChange]);
 
   const categoryLabels: Record<string, string> = {
     utilities: '🔧 Utilities',
@@ -188,19 +201,21 @@ export const RecommendationsStep = ({ detectedServices, onSelect, onSkip, onBack
         ))}
       </div>
 
-      <WizardNav>
-        <Button variant="ghost" onClick={onBack}>
-          Back
-        </Button>
-        <div className="flex gap-2">
-          <Button variant="ghost" onClick={onSkip}>
-            Skip to Install
+      {!embedded && (
+        <WizardNav>
+          <Button variant="ghost" onClick={onBack}>
+            Back
           </Button>
-          <Button intent="primary" onClick={handleContinue} disabled={selected.size === 0}>
-            Continue with {selected.size} app{selected.size === 1 ? '' : 's'}
-          </Button>
-        </div>
-      </WizardNav>
+          <div className="flex gap-2">
+            <Button variant="ghost" onClick={onSkip}>
+              Skip to Install
+            </Button>
+            <Button intent="primary" onClick={handleContinue} disabled={selected.size === 0}>
+              Continue with {selected.size} app{selected.size === 1 ? '' : 's'}
+            </Button>
+          </div>
+        </WizardNav>
+      )}
     </WizardCard>
   );
 };
