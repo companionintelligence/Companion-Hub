@@ -653,6 +653,8 @@
   "ONBOARDING_TAILSCALE_BENEFIT_NAT": "Zero-config networking with automatic NAT traversal",
   "ONBOARDING_TAILSCALE_BENEFIT_ENCRYPTION": "Enterprise-grade encryption for all traffic",
   "ONBOARDING_TAILSCALE_SKIP": "Skip for Now",
+  "ONBOARDING_TAILSCALE_SKIP_TO_DISCOVER": "Skip to Discover",
+  "ONBOARDING_TAILSCALE_CONTINUE_TO_DISCOVER": "Continue to Discover",
   "ONBOARDING_TAILSCALE_CONTINUE_WITHOUT": "Continue Without VPN",
   "ONBOARDING_TAILSCALE_AUTH_ERROR": "Tailscale is not available",
   "ONBOARDING_TAILSCALE_AUTH_OPENING": "Opening Tailscale login in new window...",

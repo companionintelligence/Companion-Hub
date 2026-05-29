@@ -5,6 +5,12 @@ export interface AiSetupConfig {
   selectedModels: string[];
   backend: InferenceBackendType;
   cloudProviders: CloudProviderInput[];
+  /**
+   * Catalog id of the preferred default model that Companion agents (Hermes, OpenClaw) and the Hub
+   * use by default. Always one of `selectedModels` when set. Undefined when AI setup was skipped or
+   * the hardware can't run a local model.
+   */
+  preferredModelId?: string;
   skipped: boolean;
 }
 
@@ -16,6 +22,7 @@ export interface CloudProviderInput {
 
 export interface InferencePreferencesResponse {
   preferredBackend: InferenceBackendType | null;
+  preferredModel: string | null;
 }
 
 export interface RuntimeModelInfo {

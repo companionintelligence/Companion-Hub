@@ -2,15 +2,21 @@ import { apiFetch } from '@/lib/api-fetch';
 import { Button } from '@/components/ui/Button';
 import { useEffect, useState } from 'react';
 import { validateCloudKey, type AiSetupConfig, type CloudProviderInput, type HardwareProfileResponse } from '../helpers/ai-setup-types';
-import type { InferenceBackendType } from '@ci-hub/common/types';
+import type { CuratedModel, InferenceBackendType } from '@ci-hub/common/types';
 import { HardwareProfileCard } from './ai-setup/hardware-profile-card';
 import { ModelSelectionCard } from './ai-setup/model-selection-card';
 import { BackendSelectionCard } from './ai-setup/backend-selection-card';
 import { CloudProviderCard } from './ai-setup/cloud-provider-card';
+import { AgentAppsCard } from './ai-setup/agent-apps-card';
 import { ResourceSummaryBar } from './ai-setup/resource-summary-bar';
 import { OllamaSetupCard } from './ai-setup/ollama-setup-card';
 import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
 import { Loader2 } from 'lucide-react';
+
+// Models a chat agent (Hermes, OpenClaw) can use as its default. LLMs are modality 'llm' in the real
+// catalog; the purpose check keeps this robust across catalog shapes.
+const AGENT_MODEL_PURPOSES = ['general', 'coding', 'reasoning', 'fast'];
+const isAgentModel = (model: CuratedModel) => model.modality === 'llm' || AGENT_MODEL_PURPOSES.includes(model.purpose);
 
 interface AiSetupStepProps {
   onComplete: (config: AiSetupConfig) => void;
@@ -32,6 +38,7 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
   const [ollamaInstallError, setOllamaInstallError] = useState<string | null>(null);
   const [profile, setProfile] = useState<HardwareProfileResponse | null>(null);
   const [selectedModelIds, setSelectedModelIds] = useState<string[]>([]);
+  const [preferredModelId, setPreferredModelId] = useState<string | undefined>(undefined);
   const [selectedBackend, setSelectedBackend] = useState<InferenceBackendType>('ollama');
   const [cloudProviders, setCloudProviders] = useState<CloudProviderInput[]>([]);
   const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus | null>(null);
@@ -40,6 +47,14 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
 
   const getRecommendedModelIdsForBackend = (data: HardwareProfileResponse, backend: InferenceBackendType) =>
     data.recommendedModels.filter((model) => model.backend === backend).map((model) => model.id);
+
+  // The default model Companion agents (Hermes, OpenClaw) use: the top recommended agent model that is
+  // actually installable for the backend, falling back to the first installable agent model.
+  const getDefaultPreferredModelId = (data: HardwareProfileResponse, backend: InferenceBackendType): string | undefined => {
+    const recommendedAgentIds = new Set(data.recommendedModels.filter((m) => m.backend === backend && isAgentModel(m)).map((m) => m.id));
+    const installable = data.availableModels.filter((m) => m.backend === backend && isAgentModel(m));
+    return installable.find((m) => recommendedAgentIds.has(m.id))?.id ?? installable[0]?.id;
+  };
 
   const fetchProfile = async (isRescan = false) => {
     if (!isRescan) setLoading(true);
@@ -51,6 +66,7 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
       setProfile(data);
       setSelectedBackend(data.backends.recommended);
       setSelectedModelIds(getRecommendedModelIdsForBackend(data, data.backends.recommended));
+      setPreferredModelId(getDefaultPreferredModelId(data, data.backends.recommended));
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -118,7 +134,24 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
   };
 
   const handleToggleModel = (modelId: string) => {
-    setSelectedModelIds((prev) => (prev.includes(modelId) ? prev.filter((id) => id !== modelId) : [...prev, modelId]));
+    const isRemoving = selectedModelIds.includes(modelId);
+    const next = isRemoving ? selectedModelIds.filter((id) => id !== modelId) : [...selectedModelIds, modelId];
+    setSelectedModelIds(next);
+    const isAgent = profile?.availableModels.some((m) => m.id === modelId && m.backend === selectedBackend && isAgentModel(m)) ?? false;
+    if (isRemoving && modelId === preferredModelId) {
+      // The agent's preferred model was removed — fall back to another selected agent model.
+      const fallback = profile?.availableModels.find((m) => m.backend === selectedBackend && isAgentModel(m) && next.includes(m.id))?.id;
+      setPreferredModelId(fallback);
+    } else if (!isRemoving && isAgent && !preferredModelId) {
+      // First agent model added back — make it the preferred default.
+      setPreferredModelId(modelId);
+    }
+  };
+
+  // Picking a preferred model also ensures it is installed (added to the selected set).
+  const handleSelectPreferred = (modelId: string) => {
+    setPreferredModelId(modelId);
+    setSelectedModelIds((prev) => (prev.includes(modelId) ? prev : [...prev, modelId]));
   };
 
   const handleContinue = () => {
@@ -132,10 +165,17 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
       if (!p.apiKey.trim()) return false;
       return !validateCloudKey(p.provider, p.apiKey);
     });
+    // Persist the preferred model only when it is actually being installed; otherwise default to the
+    // first selected agent model so Hermes/OpenClaw always have a runnable default.
+    const effectivePreferredModelId =
+      preferredModelId && backendCompatibleSelectedModels.includes(preferredModelId)
+        ? preferredModelId
+        : backendCompatibleSelectedModels.find((id) => profile.availableModels.some((m) => m.id === id && isAgentModel(m)));
     onComplete({
       selectedModels: backendCompatibleSelectedModels,
       backend: selectedBackend,
       cloudProviders: validProviders,
+      preferredModelId: effectivePreferredModelId,
       skipped: false,
     });
   };
@@ -178,6 +218,10 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
   const backendRecommendedModels = profile.recommendedModels.filter((model) => model.backend === selectedBackend);
   const backendAvailableModels = profile.availableModels.filter((model) => model.backend === selectedBackend);
   const selectedModels = backendAvailableModels.filter((model) => selectedModelIds.includes(model.id));
+  const recommendedAgentModelIds = new Set(backendRecommendedModels.filter(isAgentModel).map((m) => m.id));
+  const agentModels = backendAvailableModels
+    .filter(isAgentModel)
+    .sort((a, b) => Number(recommendedAgentModelIds.has(b.id)) - Number(recommendedAgentModelIds.has(a.id)));
   const availableMemoryMb = profile.resourceEstimate.availableMemoryMb;
   const needsOllama = selectedBackend === 'ollama' && (ollamaStatus === null || !ollamaStatus.ready);
 
@@ -187,6 +231,8 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
 
       {!isInsufficient && (
         <>
+          <AgentAppsCard models={agentModels} preferredModelId={preferredModelId} onSelectPreferred={handleSelectPreferred} />
+
           {/* Show Ollama setup card if needed */}
           {needsOllama && (
             <OllamaSetupCard
@@ -205,6 +251,7 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
             availableModels={backendAvailableModels}
             selectedModelIds={selectedModelIds}
             onToggleModel={handleToggleModel}
+            preferredModelId={preferredModelId}
           />
 
           <BackendSelectionCard
@@ -214,6 +261,7 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
             onSelect={(backend) => {
               setSelectedBackend(backend);
               setSelectedModelIds(getRecommendedModelIdsForBackend(profile, backend));
+              setPreferredModelId(getDefaultPreferredModelId(profile, backend));
             }}
           />
 
@@ -229,7 +277,7 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
         </Button>
         <div className="flex gap-2">
           <Button variant="outline" onClick={handleSkip} data-testid="ai-skip-btn">
-            Skip AI Setup
+            Skip to Private VPN
           </Button>
           <Button
             intent="primary"
@@ -237,7 +285,9 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
             data-testid="ai-continue-btn"
             disabled={needsOllama && (installingOllama || checkingOllama || !ollamaStatus?.ready)}
           >
-            {isInsufficient && cloudProviders.filter((p) => p.apiKey.trim()).length === 0 ? 'Continue without AI' : 'Continue'}
+            {isInsufficient && cloudProviders.filter((p) => p.apiKey.trim()).length === 0
+              ? 'Continue to Private VPN without AI'
+              : 'Continue to Private VPN'}
           </Button>
         </div>
       </div>

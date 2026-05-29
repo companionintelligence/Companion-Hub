@@ -1,11 +1,12 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
+import { ConfigurationService } from '@/core/config/configuration.service';
 import { HardwareInspectorService } from './hardware-inspector.service';
 import { InferenceRouterService } from './inference-router.service';
 import { ModelRegistryService } from './model-registry.service';
 import { ModelPullerService } from './model-puller.service';
 import { OllamaBackend } from './backends/ollama.backend';
-import type { CuratedModel } from '@ci-hub/common/types';
+import type { CuratedModel, HardwareTier } from '@ci-hub/common/types';
 
 export const SUPPORTED_APP_SLUGS = ['hermes-agent', 'openclaw'] as const;
 export type AppSlug = (typeof SUPPORTED_APP_SLUGS)[number];
@@ -64,6 +65,7 @@ export class AppBootstrapService {
     private readonly modelRegistry: ModelRegistryService,
     private readonly modelPuller: ModelPullerService,
     private readonly ollamaBackend: OllamaBackend,
+    private readonly configurationService: ConfigurationService,
   ) {}
 
   isSupported(slug: string): slug is AppSlug {
@@ -112,7 +114,9 @@ export class AppBootstrapService {
     });
     const endpointReady = !!(endpointHealth.running && endpointHealth.healthy);
 
-    const llm = this.pickTopRunnableModel(this.modelRegistry.getRecommendedModelsForHardware(profile.tier, profile));
+    const candidates = this.modelRegistry.getRecommendedModelsForHardware(profile.tier, profile);
+    const preferredModelId = this.configurationService.getInferencePreferences().preferredModel;
+    const llm = this.resolveLlm(candidates, preferredModelId, profile.tier);
     // Embeddings picking was disabled in review feedback (a170aa9b). The explicit
     // `as CuratedModel | null` prevents TS from narrowing the constant to `null`
     // and breaking the downstream `if (embeddings)` branches — the picker can be
@@ -174,7 +178,22 @@ export class AppBootstrapService {
     this.cache.clear();
   }
 
-  private pickTopRunnableModel(candidates: CuratedModel[]): CuratedModel | null {
+  /**
+   * Resolve the default LLM for a sibling app. Honors the user's preferred model (set during AI
+   * setup) when it is an LLM that is runnable on the current hardware — otherwise falls back to the
+   * top hardware-recommended model (candidates[0], biggest that fits at q4+). This is what makes the
+   * onboarding "preferred model" selection actually drive what Hermes/OpenClaw default to.
+   */
+  private resolveLlm(candidates: CuratedModel[], preferredId: string | null, tier: HardwareTier): CuratedModel | null {
+    if (preferredId) {
+      const fromCandidates = candidates.find((m) => m.id === preferredId);
+      if (fromCandidates) return fromCandidates;
+      const curated = this.modelRegistry.getCuratedModel(preferredId);
+      if (curated && curated.modality === 'llm' && this.modelRegistry.getModelsForTier(tier).some((m) => m.id === preferredId)) {
+        return curated;
+      }
+      this.logger.warn(`[AppBootstrap] preferred model ${preferredId} is not runnable on tier=${tier}; falling back to recommended.`);
+    }
     return candidates[0] ?? null;
   }
 

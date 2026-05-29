@@ -311,6 +311,7 @@ describe('AiSetupStep', () => {
       selectedModels: ['phi-4-mini'],
       backend: 'ollama',
       cloudProviders: [],
+      preferredModelId: 'phi-4-mini',
       skipped: false,
     });
   });
@@ -421,7 +422,7 @@ describe('AiSetupStep', () => {
     render(<AiSetupStep onComplete={onComplete} onSkip={onSkip} onBack={onBack} />);
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
 
-    expect(screen.getByTestId('ai-continue-btn')).toHaveTextContent('Continue without AI');
+    expect(screen.getByTestId('ai-continue-btn')).toHaveTextContent('Continue to Private VPN without AI');
   });
 
   it('calls onComplete with config when Continue is clicked', async () => {
@@ -436,8 +437,36 @@ describe('AiSetupStep', () => {
       selectedModels: ['phi-4-mini'],
       backend: 'vllm',
       cloudProviders: [],
+      preferredModelId: 'phi-4-mini',
       skipped: false,
     });
+  });
+
+  it('highlights Hermes and OpenClaw and selects a preferred agent model', async () => {
+    const user = userEvent.setup();
+    mockApiFetch.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(highTierProfile) });
+    render(<AiSetupStep onComplete={onComplete} onSkip={onSkip} onBack={onBack} />);
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+    expect(screen.getByTestId('agent-apps-card')).toBeInTheDocument();
+    expect(screen.getByTestId('agent-hermes')).toBeInTheDocument();
+    expect(screen.getByTestId('agent-openclaw')).toBeInTheDocument();
+
+    const select = screen.getByTestId('preferred-model-select') as HTMLSelectElement;
+    expect(select.value).toBe('phi-4-mini');
+
+    // Choosing a different preferred model also adds it to the install set.
+    await user.selectOptions(select, 'qwen-coder');
+    expect(select.value).toBe('qwen-coder');
+
+    await user.click(screen.getByTestId('ai-continue-btn'));
+
+    expect(onComplete).toHaveBeenCalledWith(
+      expect.objectContaining({
+        preferredModelId: 'qwen-coder',
+        selectedModels: expect.arrayContaining(['phi-4-mini', 'qwen-coder']),
+      }),
+    );
   });
 
   it('calls onSkip when Skip button is clicked', async () => {

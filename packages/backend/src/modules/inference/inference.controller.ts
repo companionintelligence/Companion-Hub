@@ -209,7 +209,7 @@ export class InferenceController {
   @UseGuards(AuthGuard)
   @Patch('preferences')
   async updatePreferences(@Body() body: UpdateInferencePreferencesBody) {
-    return this.configurationService.setInferencePreferences(body.backend);
+    return this.configurationService.setInferencePreferences(body.backend, body.model);
   }
 
   @UseGuards(AuthGuard)
