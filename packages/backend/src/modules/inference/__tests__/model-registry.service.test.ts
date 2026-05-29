@@ -3,7 +3,7 @@ import { ModelRegistryService } from '../model-registry.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { describe, it, expect, beforeEach } from 'vitest';
-import type { HardwareProfile } from '@ci-hub/common/types';
+import type { CuratedModel, HardwareProfile, HardwareTier } from '@ci-hub/common/types';
 
 describe('ModelRegistryService', () => {
   let service: ModelRegistryService;
@@ -67,86 +67,109 @@ describe('ModelRegistryService', () => {
       expect(mediumRec.length).toBeGreaterThan(0);
     });
 
-    describe('Hardware Recommendation Tiers', () => {
-      const baseProfile: HardwareProfile = {
-        gpu: { available: true, vendor: 'nvidia', model: 'RTX', vramMb: 0, unifiedMemory: false, driverVersion: '550.0', runtimeAvailable: true },
+    describe('Hardware-aware recommendations (computed from catalog)', () => {
+      const GB = 1024;
+
+      const profile = (overrides: {
+        vendor?: HardwareProfile['gpu']['vendor'];
+        available?: boolean;
+        vramMb?: number;
+        unifiedMemory?: boolean;
+        ramMb: number;
+        tier: HardwareTier;
+      }): HardwareProfile => ({
+        gpu: {
+          available: overrides.available ?? true,
+          vendor: overrides.vendor ?? 'nvidia',
+          model: 'Test GPU',
+          vramMb: overrides.vramMb ?? 0,
+          unifiedMemory: overrides.unifiedMemory ?? false,
+          driverVersion: '550.0',
+          runtimeAvailable: true,
+        },
         npu: { available: false, model: '' },
-        ram: { totalMb: 0, availableMb: 0 },
+        ram: { totalMb: overrides.ramMb, availableMb: overrides.ramMb },
         cpu: { arch: 'x86_64', cores: 16, model: 'Test CPU' },
-        effectiveInferenceMemoryMb: 0,
-        tier: 'high',
-      };
-
-      it('should recommend 2048GB VRAM models for massive datacenter nodes', () => {
-        const profile: HardwareProfile = {
-          ...baseProfile,
-          gpu: { ...baseProfile.gpu, vramMb: 2097152 },
-          ram: { totalMb: 10000000, availableMb: 10000000 },
-          effectiveInferenceMemoryMb: 2097152,
-        };
-        const recs = service.getRecommendedModelsForHardware('high', profile).map((m) => m.id);
-        expect(recs).toContain('gemma4-3t');
-        expect(recs).toContain('qwen3-6-1-5t-q8_0');
+        effectiveInferenceMemoryMb: overrides.unifiedMemory ? overrides.ramMb : (overrides.vramMb ?? 0),
+        tier: overrides.tier,
       });
 
-      it('should recommend 512GB VRAM models (e.g. DeepSeek V4 Pro)', () => {
-        const profile: HardwareProfile = {
-          ...baseProfile,
-          gpu: { ...baseProfile.gpu, vramMb: 524288 },
-          ram: { totalMb: 2000000, availableMb: 2000000 },
-          effectiveInferenceMemoryMb: 524288,
-        };
-        const recs = service.getRecommendedModelsForHardware('high', profile).map((m) => m.id);
-        expect(recs).toContain('deepseek-v4-pro');
-        expect(recs).toContain('qwen3-5-397b-a17b');
+      const topLlm = (models: CuratedModel[]): CuratedModel | undefined => models.find((m) => m.modality === 'llm');
+
+      it('picks a runnable, size-capped LLM for CPU-only machines (regression: previously returned none)', () => {
+        const recs = service.getRecommendedModelsForHardware(
+          'cpu-only',
+          profile({ available: false, vendor: 'none', ramMb: 32 * GB, tier: 'cpu-only' }),
+        );
+        const top = topLlm(recs);
+        expect(top).toBeDefined();
+        expect(top?.backend).toBe('ollama');
+        // CPU inference is slow for big models, so the pick is capped to small/fast sizes...
+        expect(top?.parameterScale ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(14);
+        // ...and it actually fits within system-RAM headroom.
+        expect(top?.runtime.memoryFootprintMb).toBeLessThanOrEqual(32 * GB * 0.7);
       });
 
-      it('should recommend 128GB VRAM models (e.g. MiMo, Qwen 200B)', () => {
-        const profile: HardwareProfile = {
-          ...baseProfile,
-          gpu: { ...baseProfile.gpu, vramMb: 131072 },
-          ram: { totalMb: 1000000, availableMb: 1000000 },
-          effectiveInferenceMemoryMb: 131072,
-        };
-        const recs = service.getRecommendedModelsForHardware('high', profile).map((m) => m.id);
-        expect(recs).toContain('mimo-v2-5-pro');
-        expect(recs).toContain('qwen3-6-200b');
+      it('fully uses discrete VRAM and avoids sub-q4 quants (24GB GPU → ~31B at q4)', () => {
+        const recs = service.getRecommendedModelsForHardware('high', profile({ vramMb: 24 * GB, ramMb: 32 * GB, tier: 'high' }));
+        const top = topLlm(recs);
+        expect(top?.id).toBe('gemma4-31b');
+        expect(top?.runtime.quantization).not.toBe('q3_K_M');
+        expect(top?.runtime.memoryFootprintMb).toBeLessThanOrEqual(24 * GB * 0.9);
       });
 
-      it('should recommend 96GB VRAM models (e.g. GLM 5.1, Mistral Medium)', () => {
-        const profile: HardwareProfile = {
-          ...baseProfile,
-          gpu: { ...baseProfile.gpu, vramMb: 98304 },
-          ram: { totalMb: 500000, availableMb: 500000 },
-          effectiveInferenceMemoryMb: 98304,
-        };
-        const recs = service.getRecommendedModelsForHardware('high', profile).map((m) => m.id);
-        expect(recs).toContain('glm-5-1');
-        expect(recs).toContain('mistral-medium-3.5');
+      it('sizes a discrete GPU by its VRAM, not system RAM (same GPU, different RAM → same pick)', () => {
+        const lessRam = service.getRecommendedModelsForHardware('high', profile({ vramMb: 24 * GB, ramMb: 32 * GB, tier: 'high' }));
+        const moreRam = service.getRecommendedModelsForHardware('high', profile({ vramMb: 24 * GB, ramMb: 64 * GB, tier: 'high' }));
+        expect(topLlm(lessRam)?.id).toBe(topLlm(moreRam)?.id);
       });
 
-      it('should recommend 32GB VRAM models (e.g. QwQ 32B, Kimi V2)', () => {
-        const profile: HardwareProfile = {
-          ...baseProfile,
-          gpu: { ...baseProfile.gpu, vramMb: 32768 },
-          ram: { totalMb: 200000, availableMb: 200000 },
-          effectiveInferenceMemoryMb: 32768,
-        };
-        const recs = service.getRecommendedModelsForHardware('high', profile).map((m) => m.id);
-        expect(recs).toContain('qwq-32b');
-        expect(recs).toContain('kimi-k2-think-v2-q3_K_M');
+      it('sizes a unified-memory Mac to a fraction of total RAM (16GB → ~12B, not 8B)', () => {
+        const recs = service.getRecommendedModelsForHardware(
+          'high',
+          profile({ vendor: 'apple', unifiedMemory: true, vramMb: 16 * GB, ramMb: 16 * GB, tier: 'high' }),
+        );
+        const top = topLlm(recs);
+        expect(top?.parameterScale ?? 0).toBeGreaterThanOrEqual(12);
+        expect(top?.runtime.memoryFootprintMb).toBeLessThanOrEqual(16 * GB * 0.7);
       });
 
-      it('should recommend 24GB VRAM models (e.g. Mistral Small, GPT-OSS 20B)', () => {
-        const profile: HardwareProfile = {
-          ...baseProfile,
-          gpu: { ...baseProfile.gpu, vramMb: 24576 },
-          ram: { totalMb: 200000, availableMb: 200000 },
-          effectiveInferenceMemoryMb: 24576,
-        };
-        const recs = service.getRecommendedModelsForHardware('high', profile).map((m) => m.id);
-        expect(recs).toContain('mistral-small-3.2');
-        expect(recs).toContain('gpt-oss-20b');
+      it('scales the pick up with the budget (bigger VRAM → bigger model)', () => {
+        const gpu16 = topLlm(service.getRecommendedModelsForHardware('high', profile({ vramMb: 16 * GB, ramMb: 32 * GB, tier: 'high' })));
+        const gpu24 = topLlm(service.getRecommendedModelsForHardware('high', profile({ vramMb: 24 * GB, ramMb: 32 * GB, tier: 'high' })));
+        const gpu48 = topLlm(service.getRecommendedModelsForHardware('high', profile({ vramMb: 48 * GB, ramMb: 128 * GB, tier: 'high' })));
+        expect(gpu24?.parameterScale ?? 0).toBeGreaterThan(gpu16?.parameterScale ?? 0);
+        expect(gpu48?.parameterScale ?? 0).toBeGreaterThan(gpu24?.parameterScale ?? 0);
+      });
+
+      it('still recommends a massive model for datacenter-class VRAM', () => {
+        const recs = service.getRecommendedModelsForHardware('high', profile({ vramMb: 2097152, ramMb: 10000000, tier: 'high' }));
+        const top = topLlm(recs);
+        expect(top?.parameterScale ?? 0).toBeGreaterThanOrEqual(500);
+        expect(top?.runtime.quantization).not.toBe('q3_K_M');
+      });
+
+      it('never recommends an LLM that is not browsable for that tier (recommended ⊆ getModelsForTier)', () => {
+        const scenarios: Array<{ tier: HardwareTier; hw: HardwareProfile }> = [
+          { tier: 'high', hw: profile({ vramMb: 24 * GB, ramMb: 32 * GB, tier: 'high' }) },
+          { tier: 'medium', hw: profile({ vramMb: 8 * GB, ramMb: 16 * GB, tier: 'medium' }) },
+          { tier: 'low', hw: profile({ vramMb: 6 * GB, ramMb: 16 * GB, tier: 'low' }) },
+          { tier: 'cpu-only', hw: profile({ available: false, vendor: 'none', ramMb: 32 * GB, tier: 'cpu-only' }) },
+        ];
+        for (const { tier, hw } of scenarios) {
+          const browsableIds = new Set(service.getModelsForTier(tier).map((m) => m.id));
+          const recommendedLlms = service.getRecommendedModelsForHardware(tier, hw).filter((m) => m.modality === 'llm');
+          expect(recommendedLlms.length).toBeGreaterThan(0);
+          for (const m of recommendedLlms) {
+            expect(browsableIds.has(m.id)).toBe(true);
+          }
+        }
+      });
+
+      it('returns no models for an insufficient tier', () => {
+        expect(
+          service.getRecommendedModelsForHardware('insufficient', profile({ available: false, vendor: 'none', ramMb: 4 * GB, tier: 'insufficient' })),
+        ).toEqual([]);
       });
     });
 

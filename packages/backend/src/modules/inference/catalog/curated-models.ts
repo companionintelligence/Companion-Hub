@@ -160,6 +160,7 @@ for (const fam of FAMILIES) {
       baseBackendModelId: `${fam.prefix}:${size.s}`,
       modality: 'llm',
       purpose: fam.purpose,
+      parameterScale: size.p,
       baseDisplayName: `${fam.name} ${size.s.toUpperCase()}`,
       description: `${fam.name} option for ${size.tier} tier systems.`,
       requirements: {
@@ -183,7 +184,9 @@ for (const fam of FAMILIES) {
         high: size.tier === 'high' ? 'recommended' : 'available',
         medium: size.tier === 'medium' ? 'recommended' : size.tier === 'high' ? 'not-recommended' : 'available',
         low: size.tier === 'low' ? 'recommended' : size.tier === 'high' || size.tier === 'medium' ? 'not-recommended' : 'available',
-        cpuOnly: size.tier === 'cpu-only' ? 'recommended' : 'not-recommended',
+        // CPU inference is viable for small/mid models. Mark cpu-only sizes 'recommended' and low-tier
+        // sizes 'available' so the catalog's CPU-only browse set covers what the recommender can pick.
+        cpuOnly: size.tier === 'cpu-only' ? 'recommended' : size.tier === 'low' ? 'available' : 'not-recommended',
       },
     });
   }
@@ -200,6 +203,7 @@ for (const base of BASE_LLMS) {
       backendModelId: isQ4 ? base.baseBackendModelId : `${base.baseBackendModelId}-${q.suffix}`,
       modality: base.modality,
       purpose: base.purpose,
+      parameterScale: base.parameterScale,
       displayName: isQ4 ? base.baseDisplayName : `${base.baseDisplayName} (${q.name})`,
       description: base.description,
       requirements: {

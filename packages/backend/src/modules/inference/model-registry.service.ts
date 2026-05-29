@@ -11,24 +11,44 @@ import type {
 } from '@ci-hub/common/types';
 import { CURATED_MODELS } from './catalog/curated-models';
 
-const LLM_RECOMMENDATION_TABLE: Array<{ minVramMb: number; minRamMb: number; recommendedModelIds: string[] }> = [
-  { minVramMb: 2097152, minRamMb: 3145728, recommendedModelIds: ['gemma4-3t', 'qwen3-6-1-5t-q8_0'] },
-  { minVramMb: 1048576, minRamMb: 1572864, recommendedModelIds: ['qwen3-6-1-5t', 'hermes4-1t-q6_K'] },
-  { minVramMb: 524288, minRamMb: 786432, recommendedModelIds: ['deepseek-v4-pro', 'gemma4-800b', 'qwen3-5-397b-a17b'] },
-  { minVramMb: 262144, minRamMb: 393216, recommendedModelIds: ['nemotron3-340b', 'deepseek-r10528'] },
-  { minVramMb: 131072, minRamMb: 196608, recommendedModelIds: ['qwen3-6-200b', 'mimo-v2-5-pro', 'hermes4-70b-fp16'] },
-  { minVramMb: 98304, minRamMb: 131072, recommendedModelIds: ['glm-5-1', 'mistral-medium-3.5', 'kimi-k2-6', 'minimax-m2-7', 'gpt-oss-120b'] },
-  { minVramMb: 65536, minRamMb: 131072, recommendedModelIds: ['deepseek-v4-flash', 'hermes4-70b', 'gemma4-70b'] },
-  { minVramMb: 32768, minRamMb: 65536, recommendedModelIds: ['qwq-32b', 'kimi-k2-think-v2-q3_K_M', 'gemma4-31b'] },
-  { minVramMb: 24576, minRamMb: 49152, recommendedModelIds: ['mistral-small-3.2', 'nemotron3-22b', 'gpt-oss-20b'] },
-  { minVramMb: 16384, minRamMb: 32768, recommendedModelIds: ['qwen3-6-20b-q3_K_M', 'hermes4-8b-fp16'] },
-  { minVramMb: 12288, minRamMb: 24576, recommendedModelIds: ['gemma4-12b', 'qwen3-6-8b-q8_0'] },
-  { minVramMb: 8192, minRamMb: 16384, recommendedModelIds: ['hermes4-8b', 'qwen3-6-8b'] },
-  { minVramMb: 4096, minRamMb: 8192, recommendedModelIds: ['gemma4-4b', 'hermes4-4b'] },
-  { minVramMb: 2048, minRamMb: 6144, recommendedModelIds: ['hermes4-4b-q3_K_M', 'gemma4-4b-q3_K_M'] },
-  { minVramMb: 0, minRamMb: 8192, recommendedModelIds: ['gemma4-4b', 'qwen3-6-8b-q3_K_M'] },
-  { minVramMb: 0, minRamMb: 4096, recommendedModelIds: ['gemma4-4b-q3_K_M'] },
-];
+// ─── Hardware-fit selection tuning ──────────────────────────────────────────
+// The curated catalog (CURATED_MODELS) is the single source of truth for model sizing.
+// Hardware recommendations are *computed* by fitting each model's real memory footprint into a
+// budget derived from the hardware profile — not picked from a hand-maintained model-ID table,
+// which drifts from the generated catalog and mis-sizes consumer/workstation hardware.
+
+type GpuVendorKey = CuratedModel['requirements']['gpuVendors'][number]; // 'nvidia' | 'amd' | 'intel' | 'apple' | 'cpu'
+
+// Vendors Ollama can actually offload to. Anything else (e.g. Intel) falls back to CPU inference.
+const GPU_INFERENCE_VENDORS = new Set<HardwareProfile['gpu']['vendor']>(['nvidia', 'amd', 'apple']);
+
+// Fraction of each memory pool a model may occupy, leaving headroom for the OS, the app container,
+// KV-cache/context growth, and (for shared pools) everything else running on the machine.
+const VRAM_BUDGET_FRACTION = 0.9; // dedicated discrete-GPU VRAM
+const UNIFIED_MEMORY_BUDGET_FRACTION = 0.7; // Apple Silicon: GPU shares system RAM with the OS/apps
+const SYSTEM_RAM_BUDGET_FRACTION = 0.7; // CPU-only inference, out of system RAM
+
+// CPU inference of large models is impractically slow, so cap CPU-only picks to small/fast models.
+const CPU_ONLY_MAX_PARAMETER_SCALE = 14; // billions of parameters
+
+// How many distinct LLMs to surface as "recommended" (best first). App bootstrap installs index 0.
+const MAX_RECOMMENDED_LLMS = 5;
+
+// Quant preference between equal-size models: q8 is effectively lossless, fp16 is wasteful for no
+// real gain, sub-q4 (q3) is a last resort. Higher = preferred.
+const QUANT_QUALITY_RANK: Record<string, number> = { q8_0: 6, q6_K: 5, q5_K_M: 4, q4_K_M: 3, fp16: 2, q3_K_M: 1 };
+const SUB_Q4_QUANTS = new Set(['q3_K_M']);
+const QUANT_SUFFIX_RE = /-(fp16|q8_0|q6_K|q5_K_M|q4_K_M|q3_K_M)$/;
+
+/** Usable memory budget for inference, derived from the hardware profile. */
+interface InferenceBudget {
+  /** Memory a model may occupy (MB): discrete VRAM, usable unified RAM, or usable system RAM. */
+  budgetMb: number;
+  /** True when inference runs on the CPU out of system RAM (no GPU Ollama can offload to). */
+  cpuOnly: boolean;
+  /** GPU vendor key for catalog requirement matching ('cpu' when there is no usable GPU). */
+  vendor: GpuVendorKey;
+}
 
 @Injectable()
 export class ModelRegistryService implements OnModuleInit {
@@ -63,37 +83,16 @@ export class ModelRegistryService implements OnModuleInit {
     return CURATED_MODELS.filter((m) => m.tiers[tierKey as keyof typeof m.tiers] === 'recommended');
   }
 
-  /** Get hardware-aware recommendations with VRAM/RAM sizing table for Ollama LLMs */
+  /**
+   * Get hardware-aware recommendations: the best-fit Ollama LLMs computed from the catalog (best
+   * first; index 0 is what app bootstrap auto-installs), followed by the tier's recommended non-LLM
+   * models (voice/STT). LLM sizing is derived from each model's real footprint vs. the hardware
+   * budget, so it stays consistent with the catalog instead of a parallel hand-maintained table.
+   */
   getRecommendedModelsForHardware(tier: HardwareTier, profile: HardwareProfile): CuratedModel[] {
-    const tierRecommended = this.getRecommendedModels(tier);
-    const nonOllamaLlmRecommended = tierRecommended.filter((m) => m.backend !== 'ollama' || m.modality !== 'llm');
-    const ollamaLlmCandidates = this.getModelsForTier(tier).filter((m) => m.backend === 'ollama' && m.modality === 'llm');
-
-    if (ollamaLlmCandidates.length === 0) {
-      return tierRecommended;
-    }
-
-    const effectiveVramMb =
-      profile.gpu.available && !profile.gpu.unifiedMemory ? profile.gpu.vramMb : profile.gpu.unifiedMemory ? profile.ram.totalMb : 0;
-    const effectiveRamMb = profile.ram.totalMb;
-
-    const tableMatch = LLM_RECOMMENDATION_TABLE.find((row) => effectiveVramMb >= row.minVramMb && effectiveRamMb >= row.minRamMb) ??
-      LLM_RECOMMENDATION_TABLE[LLM_RECOMMENDATION_TABLE.length - 1] ?? { minVramMb: 0, minRamMb: 0, recommendedModelIds: [] };
-
-    const tableRecommendedLlms = tableMatch.recommendedModelIds
-      .map((id) => ollamaLlmCandidates.find((m) => m.id === id))
-      .filter((m): m is CuratedModel => !!m)
-      .filter((m) => this.canRunOnHardware(m, profile));
-
-    if (tableRecommendedLlms.length > 0) {
-      return [...tableRecommendedLlms, ...nonOllamaLlmRecommended];
-    }
-
-    const fallbackLlms = tierRecommended
-      .filter((m) => m.backend === 'ollama' && m.modality === 'llm')
-      .filter((m) => this.canRunOnHardware(m, profile));
-
-    return [...fallbackLlms, ...nonOllamaLlmRecommended];
+    if (tier === 'insufficient') return [];
+    const nonLlmRecommended = this.getRecommendedModels(tier).filter((m) => m.modality !== 'llm');
+    return [...this.selectLlmsForHardware(profile), ...nonLlmRecommended];
   }
 
   /** Get default models to pin for a tier */
@@ -101,14 +100,61 @@ export class ModelRegistryService implements OnModuleInit {
     return this.getRecommendedModels(tier).filter((m) => m.runtime.pinnedByDefault);
   }
 
-  private canRunOnHardware(model: CuratedModel, profile: HardwareProfile): boolean {
-    const runtimeVramMb = profile.gpu.unifiedMemory ? profile.ram.totalMb : profile.gpu.available ? profile.gpu.vramMb : 0;
-    const gpuVendor = profile.gpu.available && profile.gpu.vendor !== 'none' ? profile.gpu.vendor : 'cpu';
-    return (
-      model.requirements.minRamMb <= profile.ram.totalMb &&
-      model.requirements.minVramMb <= runtimeVramMb &&
-      model.requirements.gpuVendors.includes(gpuVendor)
+  /** Derive the usable inference memory budget (and target device) from the hardware profile. */
+  private computeInferenceBudget(profile: HardwareProfile): InferenceBudget {
+    const totalRamMb = profile.ram.totalMb;
+    if (profile.gpu.unifiedMemory && GPU_INFERENCE_VENDORS.has(profile.gpu.vendor)) {
+      // Apple Silicon: the GPU draws from system RAM shared with the OS and apps.
+      return { budgetMb: Math.floor(totalRamMb * UNIFIED_MEMORY_BUDGET_FRACTION), cpuOnly: false, vendor: profile.gpu.vendor as GpuVendorKey };
+    }
+    if (profile.gpu.available && profile.gpu.vramMb > 0 && GPU_INFERENCE_VENDORS.has(profile.gpu.vendor)) {
+      // Discrete GPU (nvidia/amd): the model must fit in dedicated VRAM.
+      return { budgetMb: Math.floor(profile.gpu.vramMb * VRAM_BUDGET_FRACTION), cpuOnly: false, vendor: profile.gpu.vendor as GpuVendorKey };
+    }
+    // No GPU Ollama can offload to (none, or unsupported like Intel): run on the CPU out of system RAM.
+    return { budgetMb: Math.floor(totalRamMb * SYSTEM_RAM_BUDGET_FRACTION), cpuOnly: true, vendor: 'cpu' };
+  }
+
+  /**
+   * Compute the best-fit Ollama LLMs for the hardware, best first. Single source of truth: a model's
+   * own footprint vs. the hardware budget. Prefers the largest model that fits at q4 or better, only
+   * falling back to sub-q4 quants when nothing else fits, and caps CPU-only picks to small/fast models.
+   */
+  private selectLlmsForHardware(profile: HardwareProfile): CuratedModel[] {
+    const budget = this.computeInferenceBudget(profile);
+
+    const fitting = CURATED_MODELS.filter(
+      (m) =>
+        m.backend === 'ollama' &&
+        m.modality === 'llm' &&
+        m.requirements.gpuVendors.includes(budget.vendor) &&
+        m.runtime.memoryFootprintMb <= budget.budgetMb &&
+        (!budget.cpuOnly || (m.parameterScale ?? Number.POSITIVE_INFINITY) <= CPU_ONLY_MAX_PARAMETER_SCALE),
     );
+
+    fitting.sort((a, b) => {
+      // 1. Avoid sub-q4 quants unless nothing better fits.
+      const aSubQ4 = SUB_Q4_QUANTS.has(a.runtime.quantization ?? '') ? 1 : 0;
+      const bSubQ4 = SUB_Q4_QUANTS.has(b.runtime.quantization ?? '') ? 1 : 0;
+      if (aSubQ4 !== bSubQ4) return aSubQ4 - bSubQ4;
+      // 2. Bigger model = more capable.
+      const params = (b.parameterScale ?? 0) - (a.parameterScale ?? 0);
+      if (params !== 0) return params;
+      // 3. For equal size, prefer the higher-fidelity (but not wasteful) quant.
+      return (QUANT_QUALITY_RANK[b.runtime.quantization ?? ''] ?? 0) - (QUANT_QUALITY_RANK[a.runtime.quantization ?? ''] ?? 0);
+    });
+
+    // Collapse quant variants of the same model; surface a handful of distinct options, best first.
+    const recommended: CuratedModel[] = [];
+    const seenBaseIds = new Set<string>();
+    for (const model of fitting) {
+      const baseId = model.id.replace(QUANT_SUFFIX_RE, '');
+      if (seenBaseIds.has(baseId)) continue;
+      seenBaseIds.add(baseId);
+      recommended.push(model);
+      if (recommended.length >= MAX_RECOMMENDED_LLMS) break;
+    }
+    return recommended;
   }
 
   /** Get models by modality */
