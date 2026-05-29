@@ -15,9 +15,14 @@ const FAMILIES = [
     idPrefix: 'gemma4',
     name: 'Gemma 4',
     purpose: 'general' as ModelPurpose,
+    // Parameter variants per ollama.com/library/gemma4: E2B/E4B (effective-param edge builds),
+    // 26B (MoE, 4B active), 31B (dense). Larger sizes below are forward-looking catalog entries.
     sizes: [
+      { s: 'e2b', idSize: 'e2b', p: 2, tier: 'cpu-only' as HardwareTier },
+      { s: 'e4b', idSize: 'e4b', p: 4, tier: 'cpu-only' as HardwareTier },
       { s: '4b', idSize: '4b', p: 4, tier: 'cpu-only' as HardwareTier },
       { s: '12b', idSize: '12b', p: 12, tier: 'low' as HardwareTier },
+      { s: '26b', idSize: '26b', p: 26, tier: 'medium' as HardwareTier },
       { s: '27b', idSize: '27b', p: 27, tier: 'medium' as HardwareTier },
       { s: '31b', idSize: '31b', p: 31, tier: 'medium' as HardwareTier },
       { s: '70b', idSize: '70b', p: 70, tier: 'high' as HardwareTier },
@@ -31,9 +36,12 @@ const FAMILIES = [
     idPrefix: 'qwen3-6',
     name: 'Qwen 3.6',
     purpose: 'coding' as ModelPurpose,
+    // 27B/35B ship on ollama.com/library/qwen3.6; other sizes are forward-looking catalog entries.
     sizes: [
       { s: '8b', idSize: '8b', p: 8, tier: 'low' as HardwareTier },
       { s: '20b', idSize: '20b', p: 20, tier: 'medium' as HardwareTier },
+      { s: '27b', idSize: '27b', p: 27, tier: 'medium' as HardwareTier },
+      { s: '35b', idSize: '35b', p: 35, tier: 'medium' as HardwareTier },
       { s: '72b', idSize: '72b', p: 72, tier: 'high' as HardwareTier },
       { s: '200b', idSize: '200b', p: 200, tier: 'high' as HardwareTier },
       { s: '500b', idSize: '500b', p: 500, tier: 'high' as HardwareTier },
@@ -45,16 +53,29 @@ const FAMILIES = [
     idPrefix: 'qwen3-5',
     name: 'Qwen 3.5',
     purpose: 'reasoning' as ModelPurpose,
-    sizes: [{ s: '397b-a17b', idSize: '397b-a17b', p: 397, tier: 'high' as HardwareTier }],
+    // Parameter variants per ollama.com/library/qwen3.5 (0.8B → 122B locally; 397B-A17B cloud/MoE).
+    sizes: [
+      { s: '0.8b', idSize: '0-8b', p: 0.8, tier: 'cpu-only' as HardwareTier },
+      { s: '2b', idSize: '2b', p: 2, tier: 'cpu-only' as HardwareTier },
+      { s: '4b', idSize: '4b', p: 4, tier: 'cpu-only' as HardwareTier },
+      { s: '9b', idSize: '9b', p: 9, tier: 'low' as HardwareTier },
+      { s: '27b', idSize: '27b', p: 27, tier: 'medium' as HardwareTier },
+      { s: '35b', idSize: '35b', p: 35, tier: 'medium' as HardwareTier },
+      { s: '122b', idSize: '122b', p: 122, tier: 'high' as HardwareTier },
+      { s: '397b-a17b', idSize: '397b-a17b', p: 397, tier: 'high' as HardwareTier },
+    ],
   },
   {
     prefix: 'nemotron3',
     idPrefix: 'nemotron3',
     name: 'Nemotron 3',
     purpose: 'reasoning' as ModelPurpose,
+    // 33B is the shipped ollama.com/library/nemotron3 size (nano 4B/30B and super 120B are
+    // separate Ollama slugs); other sizes are forward-looking catalog entries.
     sizes: [
       { s: '8b', idSize: '8b', p: 8, tier: 'low' as HardwareTier },
       { s: '22b', idSize: '22b', p: 22, tier: 'medium' as HardwareTier },
+      { s: '33b', idSize: '33b', p: 33, tier: 'medium' as HardwareTier },
       { s: '70b', idSize: '70b', p: 70, tier: 'high' as HardwareTier },
       { s: 'super-120b-a12b', idSize: 'super-120b-a12b', p: 120, tier: 'high' as HardwareTier },
       { s: '340b', idSize: '340b', p: 340, tier: 'high' as HardwareTier },
