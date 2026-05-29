@@ -462,10 +462,42 @@ export class TailscaleService {
   }
 
   /**
-   * Disconnect from Tailscale (host or sidecar)
+   * Disconnect from Tailscale.
+   *
+   * Host mode performs a normal `tailscale down`.
+   * Sidecar mode performs a stronger reset by force-stopping `tailscaled`
+   * and deleting the persisted state file, which effectively logs the
+   * sidecar out of Tailscale rather than only disconnecting it.
    */
   async disconnect(): Promise<void> {
-    await this.execTailscale(['down']);
+    const strategy = await this.resolveStrategy();
+    if (strategy === 'host') {
+      await this.execTailscale(['down']);
+    } else if (strategy === 'sidecar') {
+      await new Promise((resolve, reject) => {
+        execFile(
+          'docker',
+          [
+            'exec',
+            this.sidecarContainer,
+            'sh',
+            '-c',
+            'kill -9 $(pidof tailscaled 2>/dev/null) >/dev/null 2>&1 || true; rm -f /var/lib/tailscale/tailscaled.state',
+          ],
+          { timeout: 15000 },
+          (err, stdout, stderr) => {
+            if (err) {
+              const execErr = err as ExecError;
+              execErr.stdout = stdout;
+              execErr.stderr = stderr;
+              reject(execErr);
+            } else resolve({ stdout: stdout.toString(), stderr: stderr.toString() });
+          },
+        );
+      });
+    } else {
+      throw new Error('Tailscale CLI unavailable (no host socket and no sidecar)');
+    }
     this.invalidateStrategyCache();
   }
 

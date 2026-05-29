@@ -498,7 +498,7 @@ describe('TailscaleService', () => {
           process.nextTick(() => cb(null, '1.82.0', ''));
           return;
         }
-        if (cmd === 'docker' && args[args.length - 1] === 'down') {
+        if (cmd === 'docker' && args[2] === 'sh' && args[3] === '-c') {
           process.nextTick(() => cb(null, '', ''));
           return;
         }
@@ -508,6 +508,39 @@ describe('TailscaleService', () => {
 
     await service.disconnect();
 
-    expect(execFileMock).toHaveBeenCalledWith('docker', ['exec', 'hub-tailscale', 'tailscale', 'down'], expect.any(Object), expect.any(Function));
+    expect(execFileMock).toHaveBeenCalledWith(
+      'docker',
+      [
+        'exec',
+        'hub-tailscale',
+        'sh',
+        '-c',
+        'kill -9 $(pidof tailscaled 2>/dev/null) >/dev/null 2>&1 || true; rm -f /var/lib/tailscale/tailscaled.state',
+      ],
+      expect.any(Object),
+      expect.any(Function),
+    );
+  });
+
+  it('disconnect uses host strategy (tailscale down)', async () => {
+    vi.mocked(access).mockResolvedValue(undefined); // binary + socket accessible
+
+    execFileMock.mockImplementation(
+      (cmd: string, args: string[], _opts: unknown, cb: (err: Error | null, stdout?: string, stderr?: string) => void) => {
+        if (cmd === '/usr/bin/tailscale' && args.includes('version')) {
+          process.nextTick(() => cb(null, '1.82.0\n', ''));
+          return;
+        }
+        if (cmd === '/usr/bin/tailscale' && args.includes('down')) {
+          process.nextTick(() => cb(null, '', ''));
+          return;
+        }
+        process.nextTick(() => cb(new Error('unexpected'), '', ''));
+      },
+    );
+
+    await service.disconnect();
+
+    expect(execFileMock).toHaveBeenCalledWith('/usr/bin/tailscale', ['down'], expect.any(Object), expect.any(Function));
   });
 });
