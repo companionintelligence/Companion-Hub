@@ -112,3 +112,6 @@ repo.zip
 tunnel/*
 
 .env.local
+
+# Generated FTUE screenshot frames (the GIF is committed; PNG frames are intermediate)
+/docs/ftue-screenshots/
