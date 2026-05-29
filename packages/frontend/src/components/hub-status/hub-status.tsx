@@ -158,7 +158,7 @@ function DockerDesktopGuide({
       <div className="text-center max-w-md text-muted-foreground space-y-3">
         <p>Docker Desktop is either not installed or not currently running.</p>
         <p>Companion Hub needs Docker Desktop to run your apps and services.</p>
-        <p>We&apos;ll automatically detect when Docker is ready and continue setup.</p>
+        <p>We&apos;ll automatically detect when Docker is ready and continue setup automatically.</p>
         <p className="text-left font-medium text-foreground">{alreadyInstalledTitle}</p>
         <ol className="text-left list-decimal list-inside space-y-1">
           {alreadyInstalledSteps.map((step) => (
