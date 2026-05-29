@@ -28,28 +28,14 @@ async function registerAndStartOnboarding(page: import('@playwright/test').Page)
   await expect(page.getByText('Set Up Your Hub')).toBeVisible({ timeout: 15000 });
 }
 
-/** Advance through Welcome to reach the AI Setup step. */
+/** Advance through Welcome → Discover to reach the AI Setup step. */
 async function navigateToAiSetupStep(page: import('@playwright/test').Page) {
   await registerAndStartOnboarding(page);
 
-  // Step 0: Welcome — click the primary CTA to continue into AI Setup
+  // Step 0: Welcome — click the primary CTA to start discovery
   await page.getByRole('button', { name: /get started|next|continue/i }).click();
 
-  // Step 1: AI Setup — wait for the loading skeleton or the step content
-  await expect(page.getByTestId('ai-setup-step').or(page.getByTestId('ai-setup-loading')).or(page.getByTestId('ai-setup-error'))).toBeVisible({
-    timeout: 30000,
-  });
-}
-
-/** Advance from AI Setup to Install, passing through Discover and Select Apps. */
-async function advanceFromAiSetupToInstall(page: import('@playwright/test').Page, action: 'continue' | 'skip') {
-  if (action === 'continue') {
-    await page.getByTestId('ai-continue-btn').click();
-  } else {
-    await page.getByTestId('ai-skip-btn').click();
-  }
-
-  // Step 2: Discover — skip or proceed
+  // Step 1: Discover — skip or proceed
   await expect(page.getByRole('button', { name: /skip|next|continue/i }).first()).toBeVisible({
     timeout: 15000,
   });
@@ -58,19 +44,41 @@ async function advanceFromAiSetupToInstall(page: import('@playwright/test').Page
     .first()
     .click();
 
-  // Step 3: Select Apps (shown when at least one app is selected)
-  const selectionVisible = await page
-    .getByText('Review Your Selection')
+  // Step 2: AI Setup — wait for the loading skeleton or the step content
+  await expect(page.getByTestId('ai-setup-step').or(page.getByTestId('ai-setup-loading')).or(page.getByTestId('ai-setup-error'))).toBeVisible({
+    timeout: 30000,
+  });
+}
+
+/** Advance from AI Setup to Install, passing through Select Apps and Private VPN. */
+async function advanceFromAiSetupToInstall(page: import('@playwright/test').Page, action: 'continue' | 'skip') {
+  if (action === 'continue') {
+    await page.getByTestId('ai-continue-btn').click();
+  } else {
+    await page.getByTestId('ai-skip-btn').click();
+  }
+
+  // Step 3: Select Apps
+  await expect(page.getByText('Review Your Selection')).toBeVisible({ timeout: 15000 });
+  await page
+    .getByRole('button', { name: /install|continue/i })
+    .last()
+    .click();
+
+  // Step 4: Private VPN (or already on Install, depending on environment state)
+  const installVisible = await page
+    .getByTestId('install-progress-text')
     .isVisible()
     .catch(() => false);
-  if (selectionVisible) {
+  if (!installVisible) {
+    await expect(page.getByRole('button', { name: /skip|continue/i }).last()).toBeVisible({ timeout: 15000 });
     await page
-      .getByRole('button', { name: /install|continue/i })
+      .getByRole('button', { name: /skip|continue/i })
       .last()
       .click();
   }
 
-  // Step 4: Install
+  // Step 5: Install
   await expect(page.getByTestId('install-progress-text')).toBeVisible({ timeout: 15000 });
 }
 
@@ -80,7 +88,7 @@ test.describe('Onboarding AI Setup', () => {
     await seedOrganization();
   });
 
-  test('AI Setup step is shown after Welcome', async ({ page }) => {
+  test('AI Setup step is shown after Discover', async ({ page }) => {
     await navigateToAiSetupStep(page);
 
     // The AI Setup step should be visible — either loaded or in loading state
@@ -293,14 +301,14 @@ test.describe('Onboarding AI Setup', () => {
     await expect(page.getByTestId('ai-summary')).toContainText('Settings');
   });
 
-  test('back button returns to Welcome step', async ({ page }) => {
+  test('back button returns to Discover step', async ({ page }) => {
     await navigateToAiSetupStep(page);
     await expect(page.getByTestId('ai-setup-step')).toBeVisible({ timeout: 30000 });
 
     // Click Back
     await page.getByTestId('ai-back-btn').click();
 
-    // Should return to the Welcome step and show its primary CTA
+    // Should return to Discover step and show next controls there
     await expect(page.getByRole('button', { name: /skip|next|continue/i }).first()).toBeVisible({
       timeout: 15000,
     });

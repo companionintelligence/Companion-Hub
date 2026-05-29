@@ -109,7 +109,7 @@ describe('InstallStep', () => {
     expect(screen.queryByText(/Installing 1 of 0/)).not.toBeInTheDocument();
   });
 
-  it('persists selected backend preference during AI setup', async () => {
+  it('persists selected backend preference during AI setup (no preferred model)', async () => {
     render(
       <InstallStep
         apps={[]}
@@ -128,7 +128,33 @@ describe('InstallStep', () => {
         '/api/inference/preferences',
         expect.objectContaining({
           method: 'PATCH',
-          body: JSON.stringify({ backend: 'vllm' }),
+          body: JSON.stringify({ backend: 'vllm', model: null }),
+        }),
+      );
+    });
+  });
+
+  it('persists the preferred model alongside the backend during AI setup', async () => {
+    render(
+      <InstallStep
+        apps={[]}
+        onComplete={onComplete}
+        aiSetupConfig={{
+          selectedModels: ['hermes4-70b'],
+          backend: 'ollama',
+          cloudProviders: [],
+          preferredModelId: 'hermes4-70b',
+          skipped: false,
+        }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(mockApiFetch).toHaveBeenCalledWith(
+        '/api/inference/preferences',
+        expect.objectContaining({
+          method: 'PATCH',
+          body: JSON.stringify({ backend: 'ollama', model: 'hermes4-70b' }),
         }),
       );
     });

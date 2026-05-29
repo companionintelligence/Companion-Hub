@@ -386,6 +386,252 @@ fn refresh_nvidia_host_probe_cache(data_dir: &Path) {
     }
 }
 
+/// Parse a macOS memory string like "96 GB", "512 MB", or "2 TB" into megabytes.
+fn parse_memory_str_to_mb(s: &str) -> u64 {
+    let mut parts = s.trim().splitn(2, ' ');
+    let amount: u64 = match parts.next().and_then(|p| p.parse().ok()) {
+        Some(v) => v,
+        None => return 0,
+    };
+    match parts.next().map(|p| p.trim().to_uppercase()).as_deref() {
+        Some("TB") => amount * 1024 * 1024,
+        Some("GB") => amount * 1024,
+        Some("MB") => amount,
+        _ => 0,
+    }
+}
+
+/// Parse a macOS processor count string.
+/// Handles "proc 24:16:8" (total:performance:efficiency) or plain "8".
+fn parse_processor_count(s: &str) -> u32 {
+    let s = s.trim();
+    let numeric_part = s
+        .strip_prefix("proc ")
+        .and_then(|rest| rest.split(':').next())
+        .unwrap_or(s);
+    numeric_part.trim().parse().unwrap_or(0)
+}
+
+/// Get available RAM in MB on macOS by parsing vm_stat output.
+#[cfg(target_os = "macos")]
+fn detect_available_ram_mb_macos() -> u64 {
+    let output = match Command::new("vm_stat").output() {
+        Ok(o) => o,
+        Err(_) => return 0,
+    };
+    let text = String::from_utf8_lossy(&output.stdout);
+
+    // Extract page size from header line:
+    // "Mach Virtual Memory Statistics: (page size of 16384 bytes)"
+    let page_size: u64 = text
+        .lines()
+        .find(|l| l.contains("page size of"))
+        .and_then(|l| {
+            l.split_whitespace()
+                .skip_while(|&w| w != "of")
+                .nth(1)
+                .and_then(|s| s.parse().ok())
+        })
+        .unwrap_or(4096);
+
+    let mut free_pages: u64 = 0;
+    let mut inactive_pages: u64 = 0;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with("Pages free:") {
+            free_pages = line
+                .rsplit(':')
+                .next()
+                .map(|s| s.trim().trim_end_matches('.'))
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+        } else if line.starts_with("Pages inactive:") {
+            inactive_pages = line
+                .rsplit(':')
+                .next()
+                .map(|s| s.trim().trim_end_matches('.'))
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+        }
+    }
+
+    (free_pages + inactive_pages) * page_size / (1024 * 1024)
+}
+
+/// Detect host macOS hardware (RAM, CPU) and write to state/hardware/host_system.json
+/// so the backend container can read the true host hardware instead of Docker VM values.
+/// On non-macOS platforms this is a no-op (the probe file is simply never created).
+#[cfg(target_os = "macos")]
+fn refresh_macos_host_probe_cache(data_dir: &Path) {
+    let probe_path = data_dir.join("state/hardware/host_system.json");
+    if let Some(parent) = probe_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    // Query hardware data via system_profiler
+    let hw_output = Command::new("system_profiler")
+        .args(["SPHardwareDataType", "-json"])
+        .output();
+
+    let hw_json = match hw_output {
+        Ok(output) if output.status.success() => {
+            String::from_utf8_lossy(&output.stdout).to_string()
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            let _ = append_desktop_log_for(
+                data_dir,
+                "hw.probe",
+                &format!("system_profiler SPHardwareDataType failed: {}", stderr),
+            );
+            return;
+        }
+        Err(e) => {
+            let _ = append_desktop_log_for(
+                data_dir,
+                "hw.probe",
+                &format!("Failed to run system_profiler: {}", e),
+            );
+            return;
+        }
+    };
+
+    let hw_data: serde_json::Value = match serde_json::from_str(&hw_json) {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = append_desktop_log_for(
+                data_dir,
+                "hw.probe",
+                &format!("Failed to parse system_profiler SPHardwareDataType output: {}", e),
+            );
+            return;
+        }
+    };
+
+    let hw_info = match hw_data
+        .get("SPHardwareDataType")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.first())
+    {
+        Some(v) => v.clone(),
+        None => {
+            let _ = append_desktop_log_for(
+                data_dir,
+                "hw.probe",
+                "No hardware data found in system_profiler SPHardwareDataType output",
+            );
+            return;
+        }
+    };
+
+    // Parse physical memory: "96 GB" → 98304 MB
+    let ram_str = hw_info
+        .get("physical_memory")
+        .and_then(|v| v.as_str())
+        .unwrap_or("0 GB");
+    let total_ram_mb = parse_memory_str_to_mb(ram_str);
+
+    if total_ram_mb == 0 {
+        let _ = append_desktop_log_for(
+            data_dir,
+            "hw.probe",
+            &format!(
+                "macOS host probe: could not parse RAM from physical_memory='{}'",
+                ram_str
+            ),
+        );
+        return;
+    }
+
+    // Parse CPU model (Apple Silicon: "Apple M2 Ultra"; Intel: "Intel Core i9")
+    let cpu_model = hw_info
+        .get("cpu_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    // Apple Silicon chips have "Apple" prefix in cpu_type
+    let is_apple_silicon = cpu_model.starts_with("Apple");
+
+    // CPU architecture: on Apple Silicon, the Tauri binary is native aarch64
+    let cpu_arch = if std::env::consts::ARCH == "aarch64" {
+        "arm64"
+    } else {
+        "x86_64"
+    };
+
+    // Parse total core count from "proc 24:16:8" or plain "8"
+    let cpu_cores = hw_info
+        .get("number_processors")
+        .and_then(|v| v.as_str())
+        .map(parse_processor_count)
+        .unwrap_or(0);
+
+    // Estimate available RAM via vm_stat (free + inactive pages)
+    let available_ram_mb = detect_available_ram_mb_macos();
+    let effective_available_mb = if available_ram_mb > 0 && available_ram_mb <= total_ram_mb {
+        available_ram_mb
+    } else {
+        // Fallback: assume ~85 % available if vm_stat is unavailable
+        total_ram_mb * 85 / 100
+    };
+
+    let payload = serde_json::json!({
+        "platform": "darwin",
+        "cpuArch": cpu_arch,
+        "cpuModel": cpu_model,
+        "cpuCores": cpu_cores,
+        "totalRamMb": total_ram_mb,
+        "availableRamMb": effective_available_mb,
+        "isAppleSilicon": is_apple_silicon,
+        "source": "desktop-host-macos-system-profiler"
+    });
+
+    let serialized = match serde_json::to_string_pretty(&payload) {
+        Ok(v) => format!("{}\n", v),
+        Err(e) => {
+            let _ = append_desktop_log_for(
+                data_dir,
+                "hw.probe",
+                &format!("Failed to serialize macOS host probe: {}", e),
+            );
+            return;
+        }
+    };
+
+    match std::fs::write(&probe_path, serialized) {
+        Ok(_) => {
+            let _ = append_desktop_log_for(
+                data_dir,
+                "hw.probe",
+                &format!(
+                    "Updated macOS host probe at {} ({} MB RAM, {}, isAppleSilicon={})",
+                    probe_path.display(),
+                    total_ram_mb,
+                    cpu_model,
+                    is_apple_silicon
+                ),
+            );
+        }
+        Err(e) => {
+            let _ = append_desktop_log_for(
+                data_dir,
+                "hw.probe",
+                &format!(
+                    "Failed to write macOS host probe at {}: {}",
+                    probe_path.display(),
+                    e
+                ),
+            );
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn refresh_macos_host_probe_cache(_data_dir: &Path) {
+    // No-op on non-macOS platforms.
+}
+
 /// Find the Docker binary, checking common install locations if not in PATH.
 fn find_docker_binary() -> PathBuf {
     if let Some(path) = command_on_path("docker") {
@@ -667,6 +913,7 @@ fn startup_service_definitions(vpn_on: bool) -> (Vec<(&'static str, &'static str
         optional.push(("hub-tailscale", "Private VPN", false));
     }
     optional.push(("cloudflared", "Tunnel", false));
+    optional.push(("ci-hub-ollama", "Ollama", false));
 
     (core, optional)
 }
@@ -1940,6 +2187,10 @@ fn start_hub_inner(
     // direct GPU devices; this enables runtime-missing warnings instead of
     // misclassifying NVIDIA hosts as "no GPU detected".
     refresh_nvidia_host_probe_cache(data_dir);
+
+    // Surface host macOS hardware (RAM, CPU, Apple Silicon) to the backend so it
+    // can report correct values instead of the Docker VM's constrained resources.
+    refresh_macos_host_probe_cache(data_dir);
 
     // Resolve port conflicts and write to the runtime env file before starting.
     let resolution = crate::port_manager::refresh_ports_if_needed(env_path).map_err(|error| {
@@ -3457,6 +3708,15 @@ mod tests {
         assert!(optional
             .iter()
             .any(|(container, label, required)| *container == "hub-tailscale" && *label == "Private VPN" && !required));
+    }
+
+    #[test]
+    fn startup_progress_includes_ollama_as_optional_non_blocking() {
+        let (_, optional) = startup_service_definitions(false);
+
+        assert!(optional
+            .iter()
+            .any(|(container, label, required)| *container == "ci-hub-ollama" && *label == "Ollama" && !required));
     }
 
     #[test]

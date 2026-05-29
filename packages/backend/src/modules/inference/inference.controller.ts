@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Patch, Post, Query, Res, UseGuards, UseInterceptors, UploadedFile } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Query, Res, UseGuards, UseInterceptors, UploadedFile } from '@nestjs/common';
 import type { Response } from 'express';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { InferenceRouterService } from './inference-router.service';
@@ -8,6 +8,7 @@ import { ModelRegistryService } from './model-registry.service';
 import { ModelPullerService } from './model-puller.service';
 import { CloudFallbackService } from './cloud-fallback.service';
 import { OllamaInstallerService } from './ollama-installer.service';
+import { AppBootstrapService } from './app-bootstrap.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AuthGuard } from '@/modules/auth/auth.guard';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -31,6 +32,7 @@ export class InferenceController {
     private readonly modelPuller: ModelPullerService,
     private readonly cloudFallback: CloudFallbackService,
     private readonly ollamaInstaller: OllamaInstallerService,
+    private readonly appBootstrap: AppBootstrapService,
     private readonly configurationService: ConfigurationService,
     private readonly ollamaBackend: OllamaBackend,
     private readonly vllmBackend: VllmBackend,
@@ -207,7 +209,7 @@ export class InferenceController {
   @UseGuards(AuthGuard)
   @Patch('preferences')
   async updatePreferences(@Body() body: UpdateInferencePreferencesBody) {
-    return this.configurationService.setInferencePreferences(body.backend);
+    return this.configurationService.setInferencePreferences(body.backend, body.model);
   }
 
   @UseGuards(AuthGuard)
@@ -269,7 +271,7 @@ export class InferenceController {
     const profile = await this.hardwareInspector.getProfile();
     return {
       tier: profile.tier,
-      recommended: this.modelRegistry.getRecommendedModels(profile.tier),
+      recommended: this.modelRegistry.getRecommendedModelsForHardware(profile.tier, profile),
       available: this.modelRegistry.getModelsForTier(profile.tier),
     };
   }
@@ -362,7 +364,7 @@ export class InferenceController {
     const profile = await this.hardwareInspector.getProfile();
     const recommendedBackend = this.getRecommendedBackend(profile);
     const tier = this.getOnboardingTier(profile, recommendedBackend);
-    const recommendedModels = this.modelRegistry.getRecommendedModels(tier);
+    const recommendedModels = this.modelRegistry.getRecommendedModelsForHardware(tier, profile);
     const availableModels = this.modelRegistry.getModelsForTier(tier);
     const budget = this.memoryManager.calculateBudget(profile);
     const status = await this.router.getStatus();
@@ -403,5 +405,31 @@ export class InferenceController {
   @Post('ollama/install')
   async installOllama() {
     return this.ollamaInstaller.install();
+  }
+
+  // ─── App Bootstrap ────────────────────────────────────────────────────
+  // Sibling apps (hermes-agent, openclaw) query these endpoints on container
+  // start to auto-configure themselves against the Hub's local inference.
+
+  @Get('apps/:slug/bootstrap')
+  async getAppBootstrap(@Param('slug') slug: string, @Query('v') v: string | undefined, @Res() res: Response) {
+    const apiVersion = this.appBootstrap.parseApiVersion(v);
+    const config = await this.appBootstrap.getBootstrap(slug, apiVersion);
+    res.setHeader('X-Hub-Bootstrap-Version', String(config.apiVersion));
+    res.setHeader('X-Hub-Managed-Keys', config.managedKeys.join(','));
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(config);
+  }
+
+  @Get('apps/:slug/bootstrap.env')
+  async getAppBootstrapEnv(@Param('slug') slug: string, @Query('v') v: string | undefined, @Res() res: Response) {
+    const apiVersion = this.appBootstrap.parseApiVersion(v);
+    const config = await this.appBootstrap.getBootstrap(slug, apiVersion);
+    const body = this.appBootstrap.serializeAsDotenv(config);
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('X-Hub-Bootstrap-Version', String(config.apiVersion));
+    res.setHeader('X-Hub-Managed-Keys', config.managedKeys.join(','));
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(body);
   }
 }

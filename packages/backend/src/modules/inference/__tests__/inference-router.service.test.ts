@@ -204,6 +204,41 @@ describe('InferenceRouterService', () => {
     });
   });
 
+  // ─── TTS / STT / Embeddings error handling ───────────────────────
+
+  describe('routeTts error handling', () => {
+    it('should log and rethrow when Lemonade TTS request fails', async () => {
+      lemonadeBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [] });
+      const axios = await import('axios');
+      (axios.default.post as any) = vi.fn().mockRejectedValue(new Error('TTS connection reset'));
+
+      await expect(service.routeTts({ input: 'hello', voice: 'af' })).rejects.toThrow('TTS connection reset');
+      expect(loggerService.error).toHaveBeenCalledWith(expect.stringContaining('TTS request to Lemonade failed'));
+    });
+  });
+
+  describe('routeStt error handling', () => {
+    it('should log and rethrow when Lemonade STT request fails', async () => {
+      lemonadeBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [] });
+      const axios = await import('axios');
+      (axios.default.post as any) = vi.fn().mockRejectedValue(new Error('STT timeout'));
+
+      await expect(service.routeStt(new FormData())).rejects.toThrow('STT timeout');
+      expect(loggerService.error).toHaveBeenCalledWith(expect.stringContaining('STT request to Lemonade failed'));
+    });
+  });
+
+  describe('routeEmbeddings error handling', () => {
+    it('should log and rethrow when Ollama embeddings request fails', async () => {
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [] });
+      const axios = await import('axios');
+      (axios.default.post as any) = vi.fn().mockRejectedValue(new Error('embeddings ECONNRESET'));
+
+      await expect(service.routeEmbeddings({ input: 'test', model: 'nomic-embed-text' })).rejects.toThrow('embeddings ECONNRESET');
+      expect(loggerService.error).toHaveBeenCalledWith(expect.stringContaining('Embeddings request to Ollama failed'));
+    });
+  });
+
   // ─── Inference Endpoint ───────────────────────────────────────────
 
   describe('Inference endpoint', () => {

@@ -64,6 +64,12 @@ export interface CuratedModel {
   purpose: ModelPurpose;
   displayName: string;
   description: string;
+  /**
+   * Approximate parameter count in billions. Drives hardware-fit ranking
+   * (bigger = more capable) and the CPU-only size cap. Set for LLMs; omitted
+   * for non-sized modalities like TTS/STT.
+   */
+  parameterScale?: number;
   requirements: {
     minVramMb: number;
     recommendedVramMb: number;

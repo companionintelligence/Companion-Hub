@@ -90,7 +90,10 @@ export type DockerDesktopGuidePlatform = 'windows' | 'macos';
 export type DockerDesktopGuideContent = {
   platformLabel: string;
   downloadUrl: string;
-  manualSteps: string[];
+  alreadyInstalledTitle: string;
+  alreadyInstalledSteps: string[];
+  notInstalledTitle: string;
+  notInstalledSteps: string[];
   hint?: string;
 };
 
@@ -99,7 +102,14 @@ export function getDockerDesktopGuideContent(platform: DockerDesktopGuidePlatfor
     return {
       platformLabel: 'Windows',
       downloadUrl: 'https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe',
-      manualSteps: [
+      alreadyInstalledTitle: 'If Docker Desktop is already installed:',
+      alreadyInstalledSteps: [
+        'Open Docker Desktop from your Start Menu',
+        "Wait for Docker to start (you'll see the whale icon in your system tray)",
+        'Come back here — the Hub will continue automatically',
+      ],
+      notInstalledTitle: 'If Docker Desktop is NOT installed:',
+      notInstalledSteps: [
         'Download Docker Desktop for Windows',
         'Run the installer and follow the prompts',
         'Restart your computer if prompted',
@@ -113,7 +123,14 @@ export function getDockerDesktopGuideContent(platform: DockerDesktopGuidePlatfor
   return {
     platformLabel: 'Mac',
     downloadUrl: appleSilicon ? 'https://desktop.docker.com/mac/main/arm64/Docker.dmg' : 'https://desktop.docker.com/mac/main/amd64/Docker.dmg',
-    manualSteps: [
+    alreadyInstalledTitle: 'If Docker Desktop is already installed:',
+    alreadyInstalledSteps: [
+      'Open Docker Desktop from your Applications folder',
+      "Wait for Docker to start (you'll see the whale icon in your menu bar)",
+      'Come back here — the Hub will continue automatically',
+    ],
+    notInstalledTitle: 'If Docker Desktop is NOT installed:',
+    notInstalledSteps: [
       'Download Docker Desktop for Mac',
       'Open the .dmg and drag Docker to Applications',
       'Launch Docker Desktop and grant permissions',
@@ -124,17 +141,33 @@ export function getDockerDesktopGuideContent(platform: DockerDesktopGuidePlatfor
 
 interface DockerDesktopGuideProps extends DockerDesktopGuideContent {
   footer?: ReactNode;
-  description?: string;
 }
 
-function DockerDesktopGuide({ platformLabel, downloadUrl, manualSteps, footer, description }: DockerDesktopGuideProps) {
+function DockerDesktopGuide({
+  platformLabel,
+  downloadUrl,
+  alreadyInstalledTitle,
+  alreadyInstalledSteps,
+  notInstalledTitle,
+  notInstalledSteps,
+  footer,
+}: DockerDesktopGuideProps) {
   return (
     <>
       <h1 className="text-2xl font-semibold text-foreground">Docker Desktop Required</h1>
       <div className="text-center max-w-md text-muted-foreground space-y-3">
-        <p>{description ?? 'Companion Hub requires Docker Desktop to run.'}</p>
+        <p>Docker Desktop is either not installed or not currently running.</p>
+        <p>Companion Hub needs Docker Desktop to run your apps and services.</p>
+        <p>We&apos;ll automatically detect when Docker is ready and continue setup automatically.</p>
+        <p className="text-left font-medium text-foreground">{alreadyInstalledTitle}</p>
         <ol className="text-left list-decimal list-inside space-y-1">
-          {manualSteps.map((step) => (
+          {alreadyInstalledSteps.map((step) => (
+            <li key={step}>{step}</li>
+          ))}
+        </ol>
+        <p className="text-left font-medium text-foreground">{notInstalledTitle}</p>
+        <ol className="text-left list-decimal list-inside space-y-1">
+          {notInstalledSteps.map((step) => (
             <li key={step}>{step}</li>
           ))}
         </ol>
@@ -186,13 +219,7 @@ function DockerInstallGuide() {
 
   if (platform === 'windows') {
     const guide = getDockerDesktopGuideContent('windows', false);
-    return (
-      <DockerDesktopGuide
-        {...guide}
-        description="Download Docker Desktop for your Windows machine. Companion Hub will keep checking and continue automatically once Docker is ready."
-        footer={guide.hint ? <p className="text-xs text-muted-foreground/70">{guide.hint}</p> : undefined}
-      />
-    );
+    return <DockerDesktopGuide {...guide} footer={guide.hint ? <p className="text-xs text-muted-foreground/70">{guide.hint}</p> : undefined} />;
   }
 
   if (platform === 'macos') {

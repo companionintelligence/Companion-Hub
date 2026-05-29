@@ -8,10 +8,28 @@ import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
 
 const execAsync = promisify(exec);
+const INCOMPLETE_GPU_PROFILE_REFRESH_COOLDOWN_MS = 5 * 60 * 1000;
+// systeminformation can return the PCIe BAR/framebuffer size (e.g. 32 MB) instead
+// of actual GDDR VRAM when GPU device passthrough is unavailable inside a container.
+// Any reading below this threshold is treated as unreliable for a discrete GPU.
+const MIN_PLAUSIBLE_DISCRETE_VRAM_MB = 512;
+
+/** Hardware data written by the Tauri desktop app on macOS hosts. */
+interface MacOsHostProbe {
+  platform: 'darwin';
+  cpuArch: 'arm64' | 'x86_64';
+  cpuModel: string;
+  cpuCores: number;
+  totalRamMb: number;
+  availableRamMb: number;
+  isAppleSilicon: boolean;
+  source: string;
+}
 
 @Injectable()
 export class HardwareInspectorService implements OnModuleInit {
   private cachedProfile: HardwareProfile | null = null;
+  private lastIncompleteDiscreteGpuRefreshAt = 0;
 
   constructor(
     private readonly logger: LoggerService,
@@ -20,9 +38,9 @@ export class HardwareInspectorService implements OnModuleInit {
 
   async onModuleInit() {
     try {
-      this.cachedProfile = await this.detect();
+      this.updateCachedProfile(await this.detect());
       this.logger.info(
-        `[HardwareInspector] Detected tier: ${this.cachedProfile.tier}, GPU: ${this.cachedProfile.gpu.vendor} ${this.cachedProfile.gpu.model}`,
+        `[HardwareInspector] Detected tier: ${this.cachedProfile?.tier}, GPU: ${this.cachedProfile?.gpu.vendor} ${this.cachedProfile?.gpu.model}`,
       );
     } catch (err) {
       this.logger.error(`[HardwareInspector] Failed to detect hardware: ${err}`);
@@ -32,26 +50,64 @@ export class HardwareInspectorService implements OnModuleInit {
   /** Get the cached hardware profile, or re-detect if not available */
   async getProfile(): Promise<HardwareProfile> {
     if (!this.cachedProfile) {
-      this.cachedProfile = await this.detect();
+      return this.updateCachedProfile(await this.detect());
     }
+
+    if (this.hasIncompleteDiscreteGpuProfile(this.cachedProfile)) {
+      const now = Date.now();
+      if (now - this.lastIncompleteDiscreteGpuRefreshAt >= INCOMPLETE_GPU_PROFILE_REFRESH_COOLDOWN_MS) {
+        return this.updateCachedProfile(await this.detect());
+      }
+    }
+
     return this.cachedProfile;
   }
 
   /** Force a re-scan of hardware */
   async rescan(): Promise<HardwareProfile> {
-    this.cachedProfile = await this.detect();
-    return this.cachedProfile;
+    return this.updateCachedProfile(await this.detect());
+  }
+
+  private updateCachedProfile(profile: HardwareProfile): HardwareProfile {
+    this.cachedProfile = profile;
+    if (this.hasIncompleteDiscreteGpuProfile(profile)) {
+      this.lastIncompleteDiscreteGpuRefreshAt = Date.now();
+    } else {
+      this.lastIncompleteDiscreteGpuRefreshAt = 0;
+    }
+    return profile;
   }
 
   /** Main detection routine */
   async detect(): Promise<HardwareProfile> {
-    const [gpuInfo, ramInfo, cpuInfo, nvidiaRuntime, rocmSupport] = await Promise.all([
+    const [gpuInfo, rawRamInfo, rawCpuInfo, nvidiaRuntime, rocmSupport] = await Promise.all([
       this.detectGpu(),
       this.detectRam(),
       this.detectCpu(),
       this.detectNvidiaRuntime(),
       this.detectRocmSupport(),
     ]);
+
+    // Read macOS host probe written by the Tauri desktop app.  When the backend
+    // runs inside Docker Desktop on macOS the in-container values (os.arch,
+    // /host/proc/meminfo) reflect the Docker VM, not the real host hardware.
+    const macOsProbe = await this.readMacOsHostProbe();
+    if (macOsProbe) {
+      this.logger.info(
+        `[HardwareInspector] Using macOS host probe: ${macOsProbe.cpuModel}, totalRam=${macOsProbe.totalRamMb} MB, isAppleSilicon=${macOsProbe.isAppleSilicon}`,
+      );
+    }
+
+    // Override in-container RAM / CPU readings with true host values when available.
+    const ramInfo = macOsProbe ? { totalMb: macOsProbe.totalRamMb, availableMb: macOsProbe.availableRamMb } : rawRamInfo;
+
+    const cpuInfo = macOsProbe
+      ? {
+          arch: macOsProbe.cpuArch as 'x86_64' | 'arm64',
+          cores: macOsProbe.cpuCores || rawCpuInfo.cores,
+          model: macOsProbe.cpuModel || rawCpuInfo.model,
+        }
+      : rawCpuInfo;
 
     const hostProbe = await this.readNvidiaHostProbe();
     const effectiveGpuInfo =
@@ -60,22 +116,24 @@ export class HardwareInspectorService implements OnModuleInit {
             available: gpuInfo.available || !!hostProbe.model,
             vendor: 'nvidia' as const,
             model: gpuInfo.model || hostProbe.model,
-            vramMb: gpuInfo.vramMb > 0 ? gpuInfo.vramMb : hostProbe.vramMb,
+            vramMb: gpuInfo.vramMb >= MIN_PLAUSIBLE_DISCRETE_VRAM_MB ? gpuInfo.vramMb : hostProbe.vramMb,
             driverVersion: gpuInfo.driverVersion || hostProbe.driverVersion,
           }
         : gpuInfo;
 
     if (!gpuInfo.available && hostProbe) {
       this.logger.info('[HardwareInspector] Using host NVIDIA probe cache fallback for GPU detection.');
-    } else if (hostProbe && gpuInfo.vendor === 'nvidia' && gpuInfo.vramMb <= 0) {
-      this.logger.info('[HardwareInspector] Augmenting NVIDIA GPU detection with host probe VRAM data.');
+    } else if (hostProbe && gpuInfo.vendor === 'nvidia' && gpuInfo.vramMb < MIN_PLAUSIBLE_DISCRETE_VRAM_MB) {
+      this.logger.info('[HardwareInspector] Augmenting NVIDIA GPU detection with host probe VRAM data (SI reported unreliable value).');
     }
 
-    const platform = this.getHostPlatform();
+    // Determine host platform: probe file presence is authoritative for macOS.
+    const platform = macOsProbe ? 'darwin' : this.getHostPlatform();
     const isAppleSilicon = cpuInfo.arch === 'arm64' && platform === 'darwin';
 
     const gpu: HardwareProfile['gpu'] = {
-      available: effectiveGpuInfo.available,
+      // Apple Silicon always has an integrated GPU; don't rely on container detection.
+      available: isAppleSilicon ? true : effectiveGpuInfo.available,
       vendor: isAppleSilicon ? 'apple' : effectiveGpuInfo.vendor,
       model: isAppleSilicon ? `${cpuInfo.model} (Apple Silicon)` : effectiveGpuInfo.model,
       vramMb: isAppleSilicon ? ramInfo.totalMb : effectiveGpuInfo.vramMb,
@@ -114,6 +172,12 @@ export class HardwareInspectorService implements OnModuleInit {
       if (effectiveVram >= 16384) return 'high';
       if (effectiveVram >= 8192) return 'medium';
       if (effectiveVram >= 4096) return 'low';
+      if (!gpu.unifiedMemory && effectiveVram < MIN_PLAUSIBLE_DISCRETE_VRAM_MB && (gpu.vendor === 'nvidia' || gpu.vendor === 'amd')) {
+        this.logger.warn(
+          `[HardwareInspector] ${gpu.vendor.toUpperCase()} GPU detected with unreliable VRAM reading (${effectiveVram} MB); defaulting tier to low until probe data is available.`,
+        );
+        return 'low';
+      }
     }
     // CPU-only with unified memory check
     if (gpu.unifiedMemory) {
@@ -193,9 +257,9 @@ export class HardwareInspectorService implements OnModuleInit {
       }
 
       let vramMb = best.vramMb;
-      if (best.vendor === 'nvidia' && vramMb <= 0) {
+      if (best.vendor === 'nvidia' && vramMb < MIN_PLAUSIBLE_DISCRETE_VRAM_MB) {
         vramMb = await this.detectNvidiaVram();
-        if (vramMb <= 0 && !best.model) {
+        if (vramMb < MIN_PLAUSIBLE_DISCRETE_VRAM_MB && !best.model) {
           const fromSmi = await this.detectNvidiaFallback();
           if (fromSmi.available) {
             return fromSmi;
@@ -369,7 +433,36 @@ export class HardwareInspectorService implements OnModuleInit {
     return process.env.CI_HUB_HOST_PLATFORM === 'darwin' ? 'darwin' : os.platform();
   }
 
-  /** Detect GPU on macOS using system_profiler */
+  /**
+   * Read the macOS host hardware probe written by the Tauri desktop app.
+   * Returns null when the file is absent (non-macOS hosts, headless installs, etc.).
+   */
+  private async readMacOsHostProbe(): Promise<MacOsHostProbe | null> {
+    try {
+      const raw = await this.filesystem.readTextFile('/data/state/hardware/host_system.json');
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as Partial<MacOsHostProbe>;
+      if (parsed.platform !== 'darwin') return null;
+      if (!parsed.cpuArch || !(['arm64', 'x86_64'] as string[]).includes(parsed.cpuArch)) return null;
+      if (typeof parsed.totalRamMb !== 'number' || parsed.totalRamMb <= 0) return null;
+      return {
+        platform: 'darwin',
+        cpuArch: parsed.cpuArch,
+        cpuModel: typeof parsed.cpuModel === 'string' ? parsed.cpuModel : '',
+        cpuCores: typeof parsed.cpuCores === 'number' && parsed.cpuCores > 0 ? parsed.cpuCores : 0,
+        totalRamMb: parsed.totalRamMb,
+        availableRamMb:
+          typeof parsed.availableRamMb === 'number' && parsed.availableRamMb > 0
+            ? Math.min(parsed.availableRamMb, parsed.totalRamMb)
+            : Math.round(parsed.totalRamMb * 0.85),
+        isAppleSilicon: parsed.isAppleSilicon === true,
+        source: typeof parsed.source === 'string' ? parsed.source : '',
+      };
+    } catch {
+      return null;
+    }
+  }
+
   private async detectMacGpu(): Promise<{
     available: boolean;
     vendor: 'nvidia' | 'amd' | 'intel' | 'none';
@@ -564,5 +657,15 @@ export class HardwareInspectorService implements OnModuleInit {
     } catch {
       return false;
     }
+  }
+
+  private hasIncompleteDiscreteGpuProfile(profile: HardwareProfile): boolean {
+    return (
+      profile.gpu.available &&
+      profile.gpu.runtimeAvailable &&
+      !profile.gpu.unifiedMemory &&
+      (profile.gpu.vendor === 'nvidia' || profile.gpu.vendor === 'amd') &&
+      profile.gpu.vramMb < MIN_PLAUSIBLE_DISCRETE_VRAM_MB
+    );
   }
 }
