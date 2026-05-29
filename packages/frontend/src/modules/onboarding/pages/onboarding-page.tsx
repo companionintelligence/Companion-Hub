@@ -19,6 +19,9 @@ function OnboardingWizard() {
   const { user, cloudflareAvailable, tailscaleAvailable } = useAppContext();
   const defaultExposureMode = cloudflareAvailable ? 'cloudflare' : tailscaleAvailable ? 'tailscale' : 'local';
   const [currentStep, setCurrentStep] = useState(0);
+  // Within the "Local Apps" step (step 2), 'recommend' shows the discovery
+  // sub-screen and 'select' shows the review/select sub-screen.
+  const [localAppsSubStep, setLocalAppsSubStep] = useState<'recommend' | 'select'>('recommend');
   const [detectedServices, setDetectedServices] = useState<DetectedService[]>([]);
   const [selectedApps, setSelectedApps] = useState<OnboardingApp[]>([]);
   const [aiSetupConfig, setAiSetupConfig] = useState<AiSetupConfig | undefined>();
@@ -29,7 +32,7 @@ function OnboardingWizard() {
     return <Navigate to="/dashboard" replace />;
   }
 
-  const stepTitles = ['Welcome', 'AI Setup', 'Private VPN', 'Discover', 'Select Apps', 'Install', 'Done'];
+  const stepTitles = ['Start up', 'AI Setup', 'Local Apps', 'Confirm & Download', 'VPN Setup', 'Done'];
 
   return (
     <div className="flex items-center justify-center bg-background px-4 py-8" style={{ minHeight: 'calc(100vh - var(--titlebar-height, 0px))' }}>
@@ -81,10 +84,12 @@ function OnboardingWizard() {
               <AiSetupStep
                 onComplete={(config) => {
                   setAiSetupConfig(config);
+                  setLocalAppsSubStep('recommend');
                   setCurrentStep(2);
                 }}
                 onSkip={() => {
                   setAiSetupConfig({ selectedModels: [], backend: 'ollama', cloudProviders: [], skipped: true });
+                  setLocalAppsSubStep('recommend');
                   setCurrentStep(2);
                 }}
                 onBack={() => setCurrentStep(0)}
@@ -92,45 +97,45 @@ function OnboardingWizard() {
             </StepContent>
 
             <StepContent step={2}>
-              <TailscaleSetupStep onComplete={() => setCurrentStep(3)} onSkip={() => setCurrentStep(3)} onBack={() => setCurrentStep(1)} />
+              {localAppsSubStep === 'recommend' ? (
+                <RecommendationsStep
+                  detectedServices={detectedServices}
+                  onSelect={(apps) => {
+                    setSelectedApps(apps);
+                    setLocalAppsSubStep('select');
+                  }}
+                  onSkip={() => setCurrentStep(3)}
+                  onBack={() => setCurrentStep(1)}
+                />
+              ) : (
+                <SelectAppsStep
+                  selectedApps={selectedApps}
+                  onConfirm={(apps) => {
+                    setSelectedApps(apps);
+                    setCurrentStep(3);
+                  }}
+                  onBack={() => setLocalAppsSubStep('recommend')}
+                />
+              )}
             </StepContent>
 
             <StepContent step={3}>
-              <RecommendationsStep
-                detectedServices={detectedServices}
-                onSelect={(apps) => {
-                  setSelectedApps(apps);
-                  setCurrentStep(4);
-                }}
-                onSkip={() => setCurrentStep(5)}
-                onBack={() => setCurrentStep(2)}
-              />
-            </StepContent>
-
-            <StepContent step={4}>
-              <SelectAppsStep
-                selectedApps={selectedApps}
-                onConfirm={(apps) => {
-                  setSelectedApps(apps);
-                  setCurrentStep(5);
-                }}
-                onBack={() => setCurrentStep(3)}
-              />
-            </StepContent>
-
-            <StepContent step={5}>
               <InstallStep
                 apps={selectedApps}
                 defaultExposureMode={defaultExposureMode}
                 aiSetupConfig={aiSetupConfig}
                 onComplete={(summary) => {
                   setInstallSummary(summary);
-                  setCurrentStep(6);
+                  setCurrentStep(4);
                 }}
               />
             </StepContent>
 
-            <StepContent step={6}>
+            <StepContent step={4}>
+              <TailscaleSetupStep onComplete={() => setCurrentStep(5)} onSkip={() => setCurrentStep(5)} onBack={() => setCurrentStep(3)} />
+            </StepContent>
+
+            <StepContent step={5}>
               <CompleteStep installSummary={installSummary} aiSetupConfig={aiSetupConfig} />
             </StepContent>
           </div>
