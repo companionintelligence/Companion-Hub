@@ -1,6 +1,6 @@
 import { Card, CardContent } from '@/components/ui/Card';
 import type { InferenceBackendType } from '@ci-hub/common/types';
-import { LemonadeIcon, OllamaIcon, VllmIcon } from './icons';
+import { BrandLogo, LemonadeIcon, VllmIcon } from './icons';
 import { OptionCard, StepSection } from './primitives';
 
 const BACKEND_INFO: Record<InferenceBackendType, { label: string; description: string }> = {
@@ -83,7 +83,7 @@ export const BackendCard = () => {
           testId="backend-option-ollama"
           title="Ollama"
           description="Run models locally with Ollama."
-          icon={<OllamaIcon />}
+          icon={<BrandLogo name="ollama" />}
           selected
           badge="Default"
         />

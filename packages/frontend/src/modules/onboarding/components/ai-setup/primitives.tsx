@@ -83,7 +83,7 @@ export function OptionCard({ title, description, icon, selected = false, disable
       <span className="absolute right-4 top-4">
         <SelectIndicator selected={selected} />
       </span>
-      <span className={cn('block [&_svg]:size-11', selected ? 'text-primary' : 'text-foreground/70 group-hover:text-foreground')}>{icon}</span>
+      <span className={cn('block [&>*]:size-11', selected ? 'text-primary' : 'text-foreground/70 group-hover:text-foreground')}>{icon}</span>
       <span className="block pr-6">
         <span className="flex flex-wrap items-center gap-2">
           <span className="text-base font-semibold">{title}</span>
@@ -126,7 +126,7 @@ export function ModelCard({ title, description, icon, tags, selected, onToggle, 
       <span className="absolute right-4 top-4">
         <SelectIndicator selected={selected} />
       </span>
-      <span className={cn('block [&_svg]:size-10', selected ? 'text-primary' : 'text-foreground/70 group-hover:text-foreground')}>{icon}</span>
+      <span className={cn('block [&>*]:size-10', selected ? 'text-primary' : 'text-foreground/70 group-hover:text-foreground')}>{icon}</span>
       <span className="block pr-6">
         <span className="flex flex-wrap items-center gap-2">
           <span className="text-base font-semibold">{title}</span>

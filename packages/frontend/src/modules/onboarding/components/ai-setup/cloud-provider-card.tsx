@@ -3,6 +3,7 @@ import { Input } from '@/components/ui/Input';
 import type { CloudProviderType } from '@ci-hub/common/types';
 import { useState } from 'react';
 import { type CloudProviderInput, CLOUD_KEY_PATTERNS, validateCloudKey } from '../../helpers/ai-setup-types';
+import { BrandLogo } from './icons';
 
 interface CloudProviderCardProps {
   providers: CloudProviderInput[];
@@ -17,6 +18,12 @@ const PROVIDER_PRESENTATION: Record<CloudProviderType, { title: string; subtitle
   anthropic: { title: 'Anthropic', subtitle: 'Recommended personal AI service' },
   google: { title: 'Google AI' },
   'github-copilot': { title: 'GitHub Copilot' },
+};
+const PROVIDER_BRAND: Record<CloudProviderType, string> = {
+  openai: 'openai',
+  anthropic: 'anthropic',
+  google: 'google',
+  'github-copilot': 'githubcopilot',
 };
 
 /**
@@ -63,7 +70,8 @@ export const CloudProviderCard = ({ providers, insufficientHardware, onUpdate }:
           <div key={type} className="rounded-xl border border-primary/40 bg-primary/[0.06] p-4" data-testid={`cloud-provider-${type}`}>
             <div className="mb-2 flex items-center justify-between gap-2">
               <div>
-                <label className="text-sm font-semibold" htmlFor={`cloud-key-input-${type}`}>
+                <label className="flex items-center gap-2 text-sm font-semibold" htmlFor={`cloud-key-input-${type}`}>
+                  <BrandLogo name={PROVIDER_BRAND[type]} className="h-4 w-4 text-foreground/80" />
                   {presentation.title}
                 </label>
                 {presentation.subtitle && <p className="text-xs text-muted-foreground">{presentation.subtitle}</p>}
@@ -110,7 +118,8 @@ export const CloudProviderCard = ({ providers, insufficientHardware, onUpdate }:
 
               return (
                 <div key={type} className="rounded-lg border border-muted/70 p-3 opacity-85" data-testid={`cloud-provider-${type}`}>
-                  <label className="text-xs font-medium" htmlFor={`cloud-key-input-${type}`}>
+                  <label className="flex items-center gap-2 text-xs font-medium" htmlFor={`cloud-key-input-${type}`}>
+                    <BrandLogo name={PROVIDER_BRAND[type]} className="h-3.5 w-3.5 text-foreground/70" />
                     {presentation.title}
                   </label>
                   <Input

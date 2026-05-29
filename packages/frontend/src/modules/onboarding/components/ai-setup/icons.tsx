@@ -1,10 +1,16 @@
+import { cn } from '@/lib/utils';
 import type { CuratedModel } from '@ci-hub/common/types';
 import type { ReactNode } from 'react';
 
 /**
- * Cohesive line-style iconography for the AI setup wizard. Every icon strokes with `currentColor`
- * (fill: none) so it inherits the surrounding text color — set `text-primary` for the cyan accent.
- * Style: stroke-width 1.75, round caps/joins, 24×24 viewBox. Size via `className` (e.g. `h-10 w-10`).
+ * Iconography for the AI setup wizard.
+ *
+ * - {@link BrandLogo} renders an official brand SVG (hand-sourced into /public/brands) via a CSS
+ *   mask, so it inherits the current text color (theme-adaptive) and stays crisp at any size.
+ * - The hand-drawn line icons below cover Companion's own apps (OpenClaw, Hermes) and marks with no
+ *   official logo (vLLM, Lemonade), plus the system-overview glyphs.
+ *
+ * Wrappers size the icon via `[&>*]:size-N` so both <svg> glyphs and <span> brand logos scale.
  */
 
 interface IconProps {
@@ -28,9 +34,28 @@ function Glyph({ className, children }: { className?: string; children: ReactNod
   );
 }
 
-/* ----------------------------------------------------------------------------------------------- */
-/* Agent frameworks                                                                                 */
-/* ----------------------------------------------------------------------------------------------- */
+/** Official brand mark from /public/brands, colored with the current text color via a CSS mask. */
+export function BrandLogo({ name, className }: { name: string; className?: string }) {
+  const url = `/brands/${name}.svg`;
+  return (
+    <span
+      aria-hidden="true"
+      className={cn('inline-block bg-current', className)}
+      style={{
+        maskImage: `url("${url}")`,
+        WebkitMaskImage: `url("${url}")`,
+        maskRepeat: 'no-repeat',
+        WebkitMaskRepeat: 'no-repeat',
+        maskPosition: 'center',
+        WebkitMaskPosition: 'center',
+        maskSize: 'contain',
+        WebkitMaskSize: 'contain',
+      }}
+    />
+  );
+}
+
+/* ── Companion agent frameworks (own products — custom marks) ────────────────────────────────── */
 
 /** OpenClaw — a crab. */
 export function OpenClawIcon({ className }: IconProps) {
@@ -60,22 +85,7 @@ export function HermesIcon({ className }: IconProps) {
   );
 }
 
-/* ----------------------------------------------------------------------------------------------- */
-/* Inference backends                                                                               */
-/* ----------------------------------------------------------------------------------------------- */
-
-/** Ollama — a llama head. */
-export function OllamaIcon({ className }: IconProps) {
-  return (
-    <Glyph className={className}>
-      <path d="M8.5 20.5v-6.2c0-2.1 1.5-3.8 3.5-3.8s3.5 1.7 3.5 3.8v6.2" />
-      <path d="M9.2 10.7 8 6.4c1.2.2 2.2 1 2.7 2.1M14.8 10.7 16 6.4c-1.2.2-2.2 1-2.7 2.1" />
-      <circle cx="10.6" cy="14" r="0.65" fill="currentColor" stroke="none" />
-      <circle cx="13.4" cy="14" r="0.65" fill="currentColor" stroke="none" />
-      <path d="M11 16.8h2" />
-    </Glyph>
-  );
-}
+/* ── Inference backends without an official logo (custom marks) ──────────────────────────────── */
 
 /** vLLM — a stylized V with a column. */
 export function VllmIcon({ className }: IconProps) {
@@ -98,22 +108,9 @@ export function LemonadeIcon({ className }: IconProps) {
   );
 }
 
-/* ----------------------------------------------------------------------------------------------- */
-/* Models                                                                                           */
-/* ----------------------------------------------------------------------------------------------- */
+/* ── Models ──────────────────────────────────────────────────────────────────────────────────── */
 
-/** Qwen — hex badge with a Q. */
-function QwenIcon({ className }: IconProps) {
-  return (
-    <Glyph className={className}>
-      <path d="M12 3l7.4 4.3v8.6L12 20.2l-7.4-4.3V7.3L12 3Z" />
-      <circle cx="11.6" cy="11.6" r="3.1" />
-      <path d="M13.4 13.4 16 16" />
-    </Glyph>
-  );
-}
-
-/** Isometric cube — generic model fallback (and Nemotron). */
+/** Isometric cube — generic model fallback. */
 function CubeIcon({ className }: IconProps) {
   return (
     <Glyph className={className}>
@@ -123,23 +120,21 @@ function CubeIcon({ className }: IconProps) {
   );
 }
 
-/** Gemma — a four-point sparkle. */
-function SparkIcon({ className }: IconProps) {
-  return (
-    <Glyph className={className}>
-      <path d="M12 3c.6 4.6 1.4 5.4 6 6-4.6.6-5.4 1.4-6 6-.6-4.6-1.4-5.4-6-6 4.6-.6 5.4-1.4 6-6Z" />
-    </Glyph>
-  );
-}
+// Map model families to the company/brand that publishes them.
+const MODEL_BRAND: Array<{ match: RegExp; brand: string }> = [
+  { match: /qwen/, brand: 'qwen' },
+  { match: /gemma|gemini/, brand: 'gemini' },
+  { match: /llama/, brand: 'meta' },
+  { match: /nemotron|nemo/, brand: 'nvidia' },
+  { match: /phi\b|phi-|phi4|phi3/, brand: 'microsoft' },
+  { match: /mistral|mixtral/, brand: 'mistral' },
+];
 
-/** Best-effort icon for a catalog model, matched by family name with a cube fallback. */
+/** Icon for a catalog model: the publisher's official brand mark, with a cube fallback. */
 export function ModelIcon({ model, className }: { model: Pick<CuratedModel, 'id' | 'displayName'>; className?: string }) {
   const key = `${model.displayName ?? ''} ${model.id ?? ''}`.toLowerCase();
-  if (key.includes('qwen')) return <QwenIcon className={className} />;
-  if (key.includes('gemma')) return <SparkIcon className={className} />;
-  if (key.includes('llama')) return <OllamaIcon className={className} />;
-  if (key.includes('nemotron') || key.includes('nemo')) return <CubeIcon className={className} />;
-  return <CubeIcon className={className} />;
+  const brand = MODEL_BRAND.find((b) => b.match.test(key))?.brand;
+  return brand ? <BrandLogo name={brand} className={className} /> : <CubeIcon className={className} />;
 }
 
 /** Generic models / "Other models" drawer. */
@@ -147,9 +142,7 @@ export function CubeModelsIcon({ className }: IconProps) {
   return <CubeIcon className={className} />;
 }
 
-/* ----------------------------------------------------------------------------------------------- */
-/* System overview                                                                                  */
-/* ----------------------------------------------------------------------------------------------- */
+/* ── System overview ─────────────────────────────────────────────────────────────────────────── */
 
 /** GPU — a graphics card with a fan. */
 export function GpuIcon({ className }: IconProps) {
