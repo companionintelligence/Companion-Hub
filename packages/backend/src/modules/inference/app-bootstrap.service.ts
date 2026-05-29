@@ -164,11 +164,9 @@ export class AppBootstrapService {
   }
 
   serializeAsDotenv(config: AppBootstrapConfig): string {
-    return (
-      Object.entries(config.env)
-        .map(([k, v]) => `${k}=${this.escapeDotenvValue(v)}`)
-        .join('\n') + '\n'
-    );
+    return `${Object.entries(config.env)
+      .map(([k, v]) => `${k}=${this.escapeDotenvValue(v)}`)
+      .join('\n')}\n`;
   }
 
   /** Clear the per-slug cache. Tests + admin endpoints can use this. */

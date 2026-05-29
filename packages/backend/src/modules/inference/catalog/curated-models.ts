@@ -1,4 +1,4 @@
-import type { CuratedModel, HardwareTier, ModelModality, ModelPurpose } from '@ci-hub/common/types';
+import type { CuratedModel, HardwareTier, ModelPurpose } from '@ci-hub/common/types';
 
 const QUANTS = [
   { suffix: 'fp16', name: 'FP16', mult: 3.2 },
