@@ -171,6 +171,79 @@ describe('ModelRegistryService', () => {
           service.getRecommendedModelsForHardware('insufficient', profile({ available: false, vendor: 'none', ramMb: 4 * GB, tier: 'insufficient' })),
         ).toEqual([]);
       });
+
+      // ─── Expanded hardware ladder (2GB → 2048GB VRAM) ───────────────────
+      const VRAM_LADDER_GB = [2, 4, 8, 12, 16, 24, 32, 64, 96, 128, 256, 512, 1024, 2048];
+
+      it('recommends a runnable, non-decreasing model across the full VRAM ladder (2GB → 2048GB)', () => {
+        let prevParams = -1;
+        for (const vramGb of VRAM_LADDER_GB) {
+          const ramGb = Math.max(8, vramGb * 2); // RAM tracks VRAM on real machines
+          const hw = profile({ vramMb: vramGb * GB, ramMb: ramGb * GB, tier: 'high' });
+          const top = topLlm(service.getRecommendedModelsForHardware('high', hw));
+          expect(top, `VRAM ${vramGb}GB should yield a runnable LLM`).toBeDefined();
+          // Fits dedicated VRAM (GPU-resident) or, for a sub-minimum GPU, system RAM (CPU fallback).
+          const fitsVram = (top?.runtime.memoryFootprintMb ?? Number.POSITIVE_INFINITY) <= vramGb * GB * 0.9;
+          const fitsRam = (top?.runtime.memoryFootprintMb ?? Number.POSITIVE_INFINITY) <= ramGb * GB * 0.7;
+          expect(fitsVram || fitsRam, `VRAM ${vramGb}GB pick must fit VRAM or RAM`).toBe(true);
+          // Capability never regresses as the budget grows.
+          expect(top?.parameterScale ?? 0, `VRAM ${vramGb}GB should not regress capability`).toBeGreaterThanOrEqual(prevParams);
+          prevParams = top?.parameterScale ?? 0;
+        }
+      });
+
+      it('falls back to a CPU/RAM model when the GPU is too small to hold any model (2GB VRAM + RAM)', () => {
+        const hw = profile({ vramMb: 2 * GB, ramMb: 32 * GB, tier: 'cpu-only' });
+        const top = topLlm(service.getRecommendedModelsForHardware('cpu-only', hw));
+        expect(top).toBeDefined();
+        expect(top?.parameterScale ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(14); // CPU speed cap
+        expect(top?.runtime.memoryFootprintMb).toBeLessThanOrEqual(32 * GB * 0.7);
+      });
+
+      it('considers quantization, not just parameter count (spends VRAM headroom on higher-fidelity quants)', () => {
+        const quants = new Set<string>();
+        for (const vramGb of [8, 12, 16, 24, 32, 64, 96]) {
+          const top = topLlm(service.getRecommendedModelsForHardware('high', profile({ vramMb: vramGb * GB, ramMb: vramGb * 2 * GB, tier: 'high' })));
+          if (top?.runtime.quantization) quants.add(top.runtime.quantization);
+        }
+        // Picks are not all the q4 base — headroom is spent on better quants.
+        expect(quants.size).toBeGreaterThan(1);
+        expect([...quants].some((q) => ['q5_K_M', 'q6_K', 'q8_0'].includes(q))).toBe(true);
+      });
+
+      // ─── Frontier model coverage (installer recommend/include set) ──────
+      const FRONTIER_MODEL_IDS = [
+        'kimi-k2-6', // Kimi K2.6
+        'mimo-v2-5-pro', // MiMo-V2.5-Pro
+        'deepseek-v4-pro', // DeepSeek V4 Pro
+        'glm-5-1', // GLM-5.1
+        'minimax-m2-7', // MiniMax-M2.7
+        'deepseek-v4-flash', // DeepSeek V4 Flash
+        'qwen3-5-397b-a17b', // Qwen3.5 397B-A17B
+        'mistral-medium-3.5', // Mistral Medium 3.5
+        'gemma4-31b', // Gemma 4 31B
+        'nemotron3-super-120b-a12b', // NVIDIA Nemotron 3 Super 120B A12B
+        'gpt-oss-120b', // gpt-oss-120b
+        'deepseek-r10528', // DeepSeek R1 0528
+        'gpt-oss-20b', // gpt-oss-20b
+        'kimi-k2-think-v2', // K2 Think V2
+        'qwq-32b', // QwQ 32B
+        'mistral-small-3.2', // Mistral Small 3.2
+      ];
+
+      it('includes every listed frontier model in the catalog and makes each installable on a top-tier box', () => {
+        const workstationBudgetMb = 2048 * GB * 0.9;
+        const highTierIds = new Set(service.getModelsForTier('high').map((m) => m.id));
+        for (const id of FRONTIER_MODEL_IDS) {
+          const model = service.getCuratedModel(id);
+          expect(model, `frontier model ${id} should exist in the catalog`).toBeDefined();
+          expect(model?.modality).toBe('llm');
+          expect(model?.parameterScale, `frontier model ${id} should declare a parameter scale`).toBeGreaterThan(0);
+          // Runs on a top-tier workstation and is browsable/installable in the high tier.
+          expect(model?.runtime.memoryFootprintMb ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(workstationBudgetMb);
+          expect(highTierIds.has(id), `frontier model ${id} should be installable in the high tier`).toBe(true);
+        }
+      });
     });
 
     it('should filter by modality', () => {

@@ -122,7 +122,21 @@ export class ModelRegistryService implements OnModuleInit {
    */
   private selectLlmsForHardware(profile: HardwareProfile): CuratedModel[] {
     const budget = this.computeInferenceBudget(profile);
+    const picks = this.pickBestFittingLlms(budget);
+    if (picks.length > 0 || budget.cpuOnly) {
+      return picks;
+    }
+    // A discrete GPU too small to hold any model (e.g. 2GB VRAM): fall back to CPU inference out of
+    // system RAM — Ollama offloads to CPU — so a tiny-GPU box still gets a usable, size-capped pick.
+    return this.pickBestFittingLlms({
+      budgetMb: Math.floor(profile.ram.totalMb * SYSTEM_RAM_BUDGET_FRACTION),
+      cpuOnly: true,
+      vendor: 'cpu',
+    });
+  }
 
+  /** Rank and de-duplicate the catalog's Ollama LLMs that fit a given budget; best first. */
+  private pickBestFittingLlms(budget: InferenceBudget): CuratedModel[] {
     const fitting = CURATED_MODELS.filter(
       (m) =>
         m.backend === 'ollama' &&
