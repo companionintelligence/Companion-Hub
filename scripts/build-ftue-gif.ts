@@ -368,10 +368,13 @@ async function captureFlow(page: Page, prefix: string, { finish }: { finish: boo
   await page.waitForTimeout(800);
   await snapshot(page, `${prefix}-01-ai-setup`);
 
-  // Local Apps section — select a few recommended apps (cards show "Replaces <product>").
-  await page.locator('#local-apps').scrollIntoViewIfNeeded();
+  // Local Apps section — select a few recommended apps from the icon grid.
+  await page
+    .getByRole('heading', { name: 'Recommended Apps' })
+    .scrollIntoViewIfNeeded()
+    .catch(() => undefined);
   await page.waitForTimeout(600);
-  const cards = page.getByRole('button').filter({ hasText: 'Replaces' });
+  const cards = page.locator('[data-testid="recommended-app"]');
   const count = Math.min(await cards.count(), 3);
   for (let i = 0; i < count; i++) {
     await cards
@@ -382,7 +385,10 @@ async function captureFlow(page: Page, prefix: string, { finish }: { finish: boo
   await snapshot(page, `${prefix}-02-local-apps`);
 
   // Private VPN section.
-  await page.locator('#vpn').scrollIntoViewIfNeeded();
+  await page
+    .getByRole('heading', { name: 'Set Up Private VPN' })
+    .scrollIntoViewIfNeeded()
+    .catch(() => undefined);
   await page.waitForTimeout(500);
   await snapshot(page, `${prefix}-03-vpn`);
 

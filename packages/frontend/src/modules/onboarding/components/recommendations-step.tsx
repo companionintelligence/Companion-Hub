@@ -91,26 +91,12 @@ export const RecommendationsStep = ({ detectedServices, onSelect, onSkip, onBack
     if (embedded && onChange) onChange(buildApps());
   }, [embedded, selected, recommendations, onChange]);
 
-  const categoryLabels: Record<string, string> = {
-    utilities: '🔧 Utilities',
-    social: '💬 Social & Communication',
-    development: '💻 Development',
-    data: '📊 Data & Storage',
-    media: '🎬 Media & Design',
-    automation: '🤖 Automation',
-    security: '🔒 Security',
-    photography: '📷 Photography',
-    finance: '💰 Finance',
-    ai: '🧠 AI',
-  };
-
-  // Group by category
-  const byCategory = new Map<string, typeof recommendations>();
-  for (const rec of recommendations) {
-    const existing = byCategory.get(rec.category) || [];
-    existing.push(rec);
-    byCategory.set(rec.category, existing);
-  }
+  // Flatten the per-category recommendations into a single list for the icon grid.
+  const flatApps = recommendations.flatMap((rec) =>
+    rec.alternatives
+      .filter((alt) => alt.appSlug)
+      .map((alt) => ({ slug: alt.appSlug as string, name: alt.name, icon: alt.icon, replaces: rec.proprietary.join(', ') })),
+  );
 
   return (
     <WizardCard>
@@ -144,61 +130,58 @@ export const RecommendationsStep = ({ detectedServices, onSelect, onSkip, onBack
         </div>
       )}
 
-      <div className="max-h-[400px] space-y-6 overflow-y-auto pr-2">
+      <div className="max-h-[420px] overflow-y-auto pr-1">
         {isAltsLoading && (
-          <div className="space-y-3 py-4">
-            <div className="h-4 w-[75%] max-w-md animate-pulse rounded bg-muted" />
-            <div className="h-4 w-1/2 max-w-sm animate-pulse rounded bg-muted" />
-            <div className="h-24 animate-pulse rounded-lg bg-muted/50" />
+          <div className="grid grid-cols-3 gap-3 py-1 sm:grid-cols-4">
+            {Array.from({ length: 8 }).map((_, i) => (
+              // biome-ignore lint/suspicious/noArrayIndexKey: static skeleton placeholders
+              <div key={i} className="aspect-square animate-pulse rounded-xl bg-muted/50" />
+            ))}
           </div>
         )}
-        {!isAltsLoading && !isAltsError && recommendations.length === 0 && altsData && Object.keys(altsData).length > 0 && (
+        {!isAltsLoading && !isAltsError && flatApps.length === 0 && altsData && Object.keys(altsData).length > 0 && (
           <p className="py-4 text-sm text-muted-foreground">
             No matching apps are available in your store yet. You can skip this step or sync the app store.
           </p>
         )}
-        {Array.from(byCategory.entries()).map(([category, recs]) => (
-          <div key={category}>
-            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{categoryLabels[category] || category}</h3>
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-              {recs.flatMap((rec) =>
-                rec.alternatives
-                  .filter((alt) => alt.appSlug)
-                  .map((alt) => {
-                    const slug = alt.appSlug as string;
-                    const isSelected = selected.has(slug);
-                    return (
-                      <button
-                        type="button"
-                        key={slug}
-                        onClick={() => toggleApp(slug)}
-                        className={cn(
-                          'flex w-full items-center gap-3 rounded-xl border p-3 text-left transition-colors',
-                          isSelected
-                            ? 'border-primary bg-primary/[0.06] ring-1 ring-primary/30'
-                            : 'border-border bg-foreground/[0.015] hover:border-primary/40',
-                        )}
-                      >
-                        <img
-                          src={alt.icon}
-                          alt=""
-                          className="h-7 w-7 rounded"
-                          onError={(e) => {
-                            (e.target as HTMLImageElement).style.display = 'none';
-                          }}
-                        />
-                        <div className="min-w-0 flex-1">
-                          <div className="truncate text-sm font-medium">{alt.name}</div>
-                          <div className="truncate text-xs text-muted-foreground">Replaces {rec.proprietary.join(', ')}</div>
-                        </div>
-                        <SelectIndicator selected={isSelected} />
-                      </button>
-                    );
-                  }),
-              )}
-            </div>
+        {flatApps.length > 0 && (
+          <div className="grid grid-cols-3 gap-3 sm:grid-cols-4">
+            {flatApps.map((app) => {
+              const isSelected = selected.has(app.slug);
+              return (
+                <button
+                  type="button"
+                  key={app.slug}
+                  data-testid="recommended-app"
+                  title={app.replaces ? `${app.name} — replaces ${app.replaces}` : app.name}
+                  onClick={() => toggleApp(app.slug)}
+                  className={cn(
+                    'group relative flex flex-col items-center gap-2 rounded-xl border p-3 text-center transition-colors',
+                    isSelected
+                      ? 'border-primary bg-primary/[0.08] ring-1 ring-primary/30'
+                      : 'border-border bg-foreground/[0.015] hover:border-primary/40',
+                  )}
+                >
+                  <span className="absolute right-1.5 top-1.5">
+                    <SelectIndicator selected={isSelected} />
+                  </span>
+                  <span className="relative flex h-12 w-12 items-center justify-center overflow-hidden rounded-xl bg-foreground/10 text-base font-semibold text-muted-foreground">
+                    {app.name.charAt(0)}
+                    <img
+                      src={app.icon}
+                      alt=""
+                      className="absolute inset-0 h-full w-full object-contain"
+                      onError={(e) => {
+                        (e.target as HTMLImageElement).style.display = 'none';
+                      }}
+                    />
+                  </span>
+                  <span className="w-full truncate text-xs font-medium">{app.name}</span>
+                </button>
+              );
+            })}
           </div>
-        ))}
+        )}
       </div>
 
       {!embedded && (

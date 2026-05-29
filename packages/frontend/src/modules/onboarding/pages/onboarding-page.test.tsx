@@ -75,11 +75,8 @@ const renderPage = () =>
   );
 
 describe('OnboardingPage (single vertical form)', () => {
-  it('renders the progress rail and all config sections on one page', () => {
+  it('renders all config sections on one page', () => {
     renderPage();
-    for (const id of ['rail-ai-setup', 'rail-local-apps', 'rail-vpn']) {
-      expect(screen.getByTestId(id)).toBeInTheDocument();
-    }
     expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument();
     expect(screen.getByTestId('recommendations-step')).toBeInTheDocument();
     expect(screen.getByTestId('tailscale-setup-step')).toBeInTheDocument();

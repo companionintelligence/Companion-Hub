@@ -2,7 +2,11 @@
   "name": "ci-hub",
   "version": "0.1.0",
   "description": "",
-  "packageManager": "pnpm@10.33.0",
+  "packageManager": "pnpm@10.34.1",
+  "engines": {
+    "node": ">=22",
+    "pnpm": ">=10"
+  },
   "scripts": {
     "dev": "pnpm exec tsx scripts/start.ts dev",
     "dev:app": "POSTGRES_HOST=localhost RABBITMQ_HOST=localhost NODE_ENV=development turbo run local",
