@@ -9,6 +9,7 @@ import { ModelPullerService } from '../model-puller.service';
 import { CloudFallbackService } from '../cloud-fallback.service';
 import { OllamaBackend } from '../backends/ollama.backend';
 import { LoggerService } from '@/core/logger/logger.service';
+import { ConfigurationService } from '@/core/config/configuration.service';
 import type { CloudProviderConfig, CuratedModel, HardwareProfile } from '@ci-hub/common/types';
 
 const OLLAMA_BASE_URL = 'http://ci-hub-ollama:11434';
@@ -91,6 +92,7 @@ describe('AppCredentialsService', () => {
   let modelPuller: MockProxy<ModelPullerService>;
   let cloudFallback: MockProxy<CloudFallbackService>;
   let ollamaBackend: MockProxy<OllamaBackend>;
+  let configurationService: MockProxy<ConfigurationService>;
 
   beforeEach(async () => {
     logger = mock<LoggerService>();
@@ -99,7 +101,9 @@ describe('AppCredentialsService', () => {
     modelPuller = mock<ModelPullerService>();
     cloudFallback = mock<CloudFallbackService>();
     ollamaBackend = mock<OllamaBackend>();
+    configurationService = mock<ConfigurationService>();
 
+    configurationService.getInferencePreferences.mockReturnValue({ preferredBackend: null, preferredModel: null });
     ollamaBackend.getBaseUrl.mockReturnValue(OLLAMA_BASE_URL);
     ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [] });
     hardwareInspector.getProfile.mockResolvedValue(baseProfile);
@@ -126,6 +130,7 @@ describe('AppCredentialsService', () => {
         { provide: ModelPullerService, useValue: modelPuller },
         { provide: CloudFallbackService, useValue: cloudFallback },
         { provide: OllamaBackend, useValue: ollamaBackend },
+        { provide: ConfigurationService, useValue: configurationService },
       ],
     }).compile();
 
