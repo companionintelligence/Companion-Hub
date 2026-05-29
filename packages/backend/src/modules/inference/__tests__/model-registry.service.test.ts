@@ -231,6 +231,20 @@ describe('ModelRegistryService', () => {
         'mistral-small-3.2', // Mistral Small 3.2
       ];
 
+      it('spans size classes (small/medium/large) when the hardware can run a range', () => {
+        const recs = service
+          .getRecommendedModelsForHardware('high', profile({ vramMb: 96 * GB, ramMb: 192 * GB, tier: 'high' }))
+          .filter((m) => m.modality === 'llm');
+        const classOf = (p?: number) => ((p ?? 0) > 70 ? 'large' : (p ?? 0) > 14 ? 'medium' : 'small');
+        const classes = new Set(recs.map((m) => classOf(m.parameterScale)));
+        // index 0 is still the single best (largest) model for auto-install
+        expect(recs[0]?.parameterScale ?? 0).toBeGreaterThan(70);
+        // the list covers more than one size class instead of clustering at the top
+        expect(classes.size).toBeGreaterThanOrEqual(2);
+        // and surfaces a genuinely smaller option
+        expect(classes.has('small') || classes.has('medium')).toBe(true);
+      });
+
       it('includes every listed frontier model in the catalog and makes each installable on a top-tier box', () => {
         const workstationBudgetMb = 2048 * GB * 0.9;
         const highTierIds = new Set(service.getModelsForTier('high').map((m) => m.id));

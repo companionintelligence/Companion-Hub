@@ -40,6 +40,30 @@ const QUANT_QUALITY_RANK: Record<string, number> = { q8_0: 6, q6_K: 5, q5_K_M: 4
 const SUB_Q4_QUANTS = new Set(['q3_K_M']);
 const QUANT_SUFFIX_RE = /-(fp16|q8_0|q6_K|q5_K_M|q4_K_M|q3_K_M)$/;
 
+// Size classes (billions of params) so the recommended list can span small/medium/large instead of
+// clustering at the top end — the installer should surface a useful range the hardware can run.
+type ModelSizeClass = 'small' | 'medium' | 'large';
+const SIZE_CLASS_SMALL_MAX_PARAMS = 14; // ≤14B = small
+const SIZE_CLASS_MEDIUM_MAX_PARAMS = 70; // 15–70B = medium; >70B = large
+const SIZE_CLASS_ORDER: ModelSizeClass[] = ['large', 'medium', 'small'];
+
+function sizeClassOf(model: CuratedModel): ModelSizeClass {
+  const params = model.parameterScale ?? 0;
+  if (params <= SIZE_CLASS_SMALL_MAX_PARAMS) return 'small';
+  if (params <= SIZE_CLASS_MEDIUM_MAX_PARAMS) return 'medium';
+  return 'large';
+}
+
+/** Order LLM candidates best-first: q4+ before sub-q4, then bigger, then higher-fidelity quant. */
+function compareLlmCandidates(a: CuratedModel, b: CuratedModel): number {
+  const aSubQ4 = SUB_Q4_QUANTS.has(a.runtime.quantization ?? '') ? 1 : 0;
+  const bSubQ4 = SUB_Q4_QUANTS.has(b.runtime.quantization ?? '') ? 1 : 0;
+  if (aSubQ4 !== bSubQ4) return aSubQ4 - bSubQ4;
+  const params = (b.parameterScale ?? 0) - (a.parameterScale ?? 0);
+  if (params !== 0) return params;
+  return (QUANT_QUALITY_RANK[b.runtime.quantization ?? ''] ?? 0) - (QUANT_QUALITY_RANK[a.runtime.quantization ?? ''] ?? 0);
+}
+
 /** Usable memory budget for inference, derived from the hardware profile. */
 interface InferenceBudget {
   /** Memory a model may occupy (MB): discrete VRAM, usable unified RAM, or usable system RAM. */
@@ -135,7 +159,11 @@ export class ModelRegistryService implements OnModuleInit {
     });
   }
 
-  /** Rank and de-duplicate the catalog's Ollama LLMs that fit a given budget; best first. */
+  /**
+   * Rank the catalog's Ollama LLMs that fit a given budget and return a short, best-first list that
+   * spans small/medium/large size classes. Index 0 is always the single best model (biggest at q4+),
+   * which app bootstrap auto-installs; the remaining slots cover a useful range of smaller options.
+   */
   private pickBestFittingLlms(budget: InferenceBudget): CuratedModel[] {
     const fitting = CURATED_MODELS.filter(
       (m) =>
@@ -145,30 +173,43 @@ export class ModelRegistryService implements OnModuleInit {
         m.runtime.memoryFootprintMb <= budget.budgetMb &&
         (!budget.cpuOnly || (m.parameterScale ?? Number.POSITIVE_INFINITY) <= CPU_ONLY_MAX_PARAMETER_SCALE),
     );
+    fitting.sort(compareLlmCandidates);
 
-    fitting.sort((a, b) => {
-      // 1. Avoid sub-q4 quants unless nothing better fits.
-      const aSubQ4 = SUB_Q4_QUANTS.has(a.runtime.quantization ?? '') ? 1 : 0;
-      const bSubQ4 = SUB_Q4_QUANTS.has(b.runtime.quantization ?? '') ? 1 : 0;
-      if (aSubQ4 !== bSubQ4) return aSubQ4 - bSubQ4;
-      // 2. Bigger model = more capable.
-      const params = (b.parameterScale ?? 0) - (a.parameterScale ?? 0);
-      if (params !== 0) return params;
-      // 3. For equal size, prefer the higher-fidelity (but not wasteful) quant.
-      return (QUANT_QUALITY_RANK[b.runtime.quantization ?? ''] ?? 0) - (QUANT_QUALITY_RANK[a.runtime.quantization ?? ''] ?? 0);
-    });
-
-    // Collapse quant variants of the same model; surface a handful of distinct options, best first.
-    const recommended: CuratedModel[] = [];
+    // Collapse quant variants of the same model down to one best entry per model, best first.
+    const distinct: CuratedModel[] = [];
     const seenBaseIds = new Set<string>();
     for (const model of fitting) {
       const baseId = model.id.replace(QUANT_SUFFIX_RE, '');
       if (seenBaseIds.has(baseId)) continue;
       seenBaseIds.add(baseId);
-      recommended.push(model);
-      if (recommended.length >= MAX_RECOMMENDED_LLMS) break;
+      distinct.push(model);
     }
-    return recommended;
+    if (distinct.length <= MAX_RECOMMENDED_LLMS) return distinct;
+
+    // Build a size-spanning selection: the overall best, then the best of each size class present,
+    // then fill remaining slots with the next-best models. Re-sorted best-first so index 0 stays
+    // the single best model for auto-install.
+    const selected: CuratedModel[] = [];
+    const selectedIds = new Set<string>();
+    const add = (model: CuratedModel | undefined) => {
+      if (model && !selectedIds.has(model.id)) {
+        selected.push(model);
+        selectedIds.add(model.id);
+      }
+    };
+
+    add(distinct[0]);
+    for (const sizeClass of SIZE_CLASS_ORDER) {
+      if (selected.length >= MAX_RECOMMENDED_LLMS) break;
+      add(distinct.find((m) => sizeClassOf(m) === sizeClass));
+    }
+    for (const model of distinct) {
+      if (selected.length >= MAX_RECOMMENDED_LLMS) break;
+      add(model);
+    }
+
+    selected.sort(compareLlmCandidates);
+    return selected;
   }
 
   /** Get models by modality */
