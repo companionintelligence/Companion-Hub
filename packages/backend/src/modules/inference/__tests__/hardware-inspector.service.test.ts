@@ -587,4 +587,179 @@ describe('HardwareInspectorService', () => {
       expect(profile.ram.totalMb).toBeGreaterThan(0);
     });
   });
+
+  // ─── macOS Host Probe (Docker-on-macOS) ────────────────────────────
+
+  describe('macOS host probe (HW-mac)', () => {
+    const appleM2UltraProbe = JSON.stringify({
+      platform: 'darwin',
+      cpuArch: 'arm64',
+      cpuModel: 'Apple M2 Ultra',
+      cpuCores: 24,
+      totalRamMb: 98304,
+      availableRamMb: 83558,
+      isAppleSilicon: true,
+      source: 'desktop-host-macos-system-profiler',
+    });
+
+    beforeEach(() => {
+      // Default: no GPU detected inside Docker VM, no NVIDIA probe, VM RAM
+      (si.graphics as any) = vi.fn().mockResolvedValue({ controllers: [] });
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 12, brand: 'VirtualApple @ 2.50GHz' });
+      execAsyncMock.mockResolvedValue({ stdout: '{}' });
+    });
+
+    it('should detect Apple Silicon and use host RAM from probe file', async () => {
+      filesystemService.readTextFile.mockImplementation(async (filePath: string) => {
+        if (filePath === '/data/state/hardware/host_system.json') return appleM2UltraProbe;
+        if (filePath === '/host/proc/meminfo') return 'MemTotal: 7897344\nMemAvailable: 6815744';
+        return null;
+      });
+
+      const profile = await service.detect();
+
+      expect(profile.gpu.vendor).toBe('apple');
+      expect(profile.gpu.available).toBe(true);
+      expect(profile.gpu.unifiedMemory).toBe(true);
+      expect(profile.gpu.model).toBe('Apple M2 Ultra (Apple Silicon)');
+      expect(profile.gpu.vramMb).toBe(98304);
+      expect(profile.ram.totalMb).toBe(98304);
+      expect(profile.ram.availableMb).toBe(83558);
+      expect(profile.cpu.arch).toBe('arm64');
+      expect(profile.cpu.model).toBe('Apple M2 Ultra');
+      expect(profile.tier).toBe('high');
+    });
+
+    it('should set gpu.available=true for Apple Silicon even when container GPU detection fails', async () => {
+      filesystemService.readTextFile.mockImplementation(async (filePath: string) => {
+        if (filePath === '/data/state/hardware/host_system.json') return appleM2UltraProbe;
+        return null;
+      });
+
+      const profile = await service.detect();
+
+      expect(profile.gpu.available).toBe(true);
+      expect(profile.gpu.vendor).toBe('apple');
+    });
+
+    it('should use effective inference memory equal to available RAM for unified memory', async () => {
+      filesystemService.readTextFile.mockImplementation(async (filePath: string) => {
+        if (filePath === '/data/state/hardware/host_system.json') return appleM2UltraProbe;
+        return null;
+      });
+
+      const profile = await service.detect();
+
+      expect(profile.effectiveInferenceMemoryMb).toBe(83558);
+    });
+
+    it('should fallback to 85% of total RAM when availableRamMb is absent in probe', async () => {
+      const probeWithoutAvailable = JSON.stringify({
+        platform: 'darwin',
+        cpuArch: 'arm64',
+        cpuModel: 'Apple M2 Ultra',
+        cpuCores: 24,
+        totalRamMb: 98304,
+        isAppleSilicon: true,
+        source: 'desktop-host-macos-system-profiler',
+      });
+      filesystemService.readTextFile.mockImplementation(async (filePath: string) => {
+        if (filePath === '/data/state/hardware/host_system.json') return probeWithoutAvailable;
+        return null;
+      });
+
+      const profile = await service.detect();
+
+      expect(profile.ram.availableMb).toBe(Math.round(98304 * 0.85));
+    });
+
+    it('should correctly compute tier=high for Apple Silicon 96 GB', async () => {
+      filesystemService.readTextFile.mockImplementation(async (filePath: string) => {
+        if (filePath === '/data/state/hardware/host_system.json') return appleM2UltraProbe;
+        return null;
+      });
+
+      const profile = await service.detect();
+
+      expect(profile.tier).toBe('high');
+    });
+
+    it('should ignore the probe file when platform field is not darwin', async () => {
+      const nonMacProbe = JSON.stringify({
+        platform: 'linux',
+        cpuArch: 'arm64',
+        cpuModel: 'Apple M2 Ultra',
+        cpuCores: 24,
+        totalRamMb: 98304,
+        availableRamMb: 83558,
+        isAppleSilicon: true,
+      });
+      filesystemService.readTextFile.mockImplementation(async (filePath: string) => {
+        if (filePath === '/data/state/hardware/host_system.json') return nonMacProbe;
+        if (filePath === '/host/proc/meminfo') return 'MemTotal: 7897344\nMemAvailable: 6815744';
+        return null;
+      });
+
+      const profile = await service.detect();
+
+      // Should use in-container values, not probe
+      expect(profile.ram.totalMb).toBe(7712); // ~7.7 GB VM RAM
+      expect(profile.gpu.vendor).not.toBe('apple');
+    });
+
+    it('should handle Intel Mac (x86_64) from probe without unified memory', async () => {
+      const intelMacProbe = JSON.stringify({
+        platform: 'darwin',
+        cpuArch: 'x86_64',
+        cpuModel: 'Intel Core i9',
+        cpuCores: 8,
+        totalRamMb: 32768,
+        availableRamMb: 24576,
+        isAppleSilicon: false,
+        source: 'desktop-host-macos-system-profiler',
+      });
+      execAsyncMock.mockImplementation(async (command: string) => {
+        if (command.includes('system_profiler')) {
+          return {
+            stdout: JSON.stringify({
+              SPDisplaysDataType: [{ sppci_model: 'AMD Radeon Pro 5500M', sppci_vram: '8 GB' }],
+            }),
+          };
+        }
+        return { stdout: '{}' };
+      });
+      filesystemService.readTextFile.mockImplementation(async (filePath: string) => {
+        if (filePath === '/data/state/hardware/host_system.json') return intelMacProbe;
+        return null;
+      });
+
+      const profile = await service.detect();
+
+      expect(profile.cpu.arch).toBe('x86_64');
+      expect(profile.cpu.model).toBe('Intel Core i9');
+      expect(profile.ram.totalMb).toBe(32768);
+      expect(profile.gpu.unifiedMemory).toBe(false);
+    });
+
+    it('should return null from readMacOsHostProbe when file is absent', async () => {
+      filesystemService.readTextFile.mockResolvedValue(null);
+
+      const probe = await (service as any).readMacOsHostProbe();
+
+      expect(probe).toBeNull();
+    });
+
+    it('should return null from readMacOsHostProbe when totalRamMb is missing', async () => {
+      filesystemService.readTextFile.mockImplementation(async (filePath: string) => {
+        if (filePath === '/data/state/hardware/host_system.json') {
+          return JSON.stringify({ platform: 'darwin', cpuArch: 'arm64' });
+        }
+        return null;
+      });
+
+      const probe = await (service as any).readMacOsHostProbe();
+
+      expect(probe).toBeNull();
+    });
+  });
 });
