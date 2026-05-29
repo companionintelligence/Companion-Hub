@@ -1,0 +1,10 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "anthropic/claude-sonnet-4-6",
+  "instructions": "You are working in CI-Hub, part of the Companion Intelligence platform (Lifescope Inc). Local app runtime. Installs and supervises marketplace apps as Docker Compose deployments. Includes a Tauri desktop app, React frontend, and NestJS backend. Architecture reference: CI-Engineering/architecture/architecture.md. All code is private and confidential. Multiple agents may work this repo in parallel — never use destructive git operations without user confirmation.",
+  "rules": [
+    "Reference CI-Engineering issues in commits and PRs",
+    "Keep changes small and well-scoped",
+    "Never git reset --hard or git clean -f without explicit confirmation"
+  ]
+}
