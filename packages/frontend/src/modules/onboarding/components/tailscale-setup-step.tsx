@@ -151,7 +151,7 @@ export const TailscaleSetupStep = ({ onComplete, onSkip, onBack, embedded = fals
 
               {hasAttemptedConnection && (
                 <div className="flex items-start gap-2 rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-3">
-                  <div className="text-xs text-yellow-200">{t('ONBOARDING_TAILSCALE_AUTH_WAITING')}</div>
+                  <div className="text-xs text-yellow-800 dark:text-yellow-200">{t('ONBOARDING_TAILSCALE_AUTH_WAITING')}</div>
                 </div>
               )}
 
