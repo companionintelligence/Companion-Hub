@@ -1,13 +1,20 @@
 import { apiFetch } from '@/lib/api-fetch';
 import { Button } from '@/components/ui/Button';
 import { useEffect, useState } from 'react';
-import { validateCloudKey, type AiSetupConfig, type CloudProviderInput, type HardwareProfileResponse } from '../helpers/ai-setup-types';
+import {
+  validateCloudKey,
+  type AgentFramework,
+  type AiSetupConfig,
+  type CloudProviderInput,
+  type ExposureMode,
+  type HardwareProfileResponse,
+} from '../helpers/ai-setup-types';
 import type { CuratedModel, InferenceBackendType } from '@ci-hub/common/types';
-import { HardwareProfileCard } from './ai-setup/hardware-profile-card';
-import { ModelSelectionCard } from './ai-setup/model-selection-card';
-import { BackendSelectionCard } from './ai-setup/backend-selection-card';
-import { CloudProviderCard } from './ai-setup/cloud-provider-card';
-import { AgentAppsCard } from './ai-setup/agent-apps-card';
+import { AgentFrameworkCard } from './ai-setup/agent-apps-card';
+import { BackendCard } from './ai-setup/backend-selection-card';
+import { RecommendedModels } from './ai-setup/model-selection-card';
+import { AdvancedDrawers } from './ai-setup/advanced-drawers';
+import { SystemOverview } from './ai-setup/system-overview';
 import { ResourceSummaryBar } from './ai-setup/resource-summary-bar';
 import { OllamaSetupCard } from './ai-setup/ollama-setup-card';
 import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
@@ -18,10 +25,23 @@ import { Loader2 } from 'lucide-react';
 const AGENT_MODEL_PURPOSES = ['general', 'coding', 'reasoning', 'fast'];
 const isAgentModel = (model: CuratedModel) => model.modality === 'llm' || AGENT_MODEL_PURPOSES.includes(model.purpose);
 
+// Onboarding currently runs everything on Ollama; vLLM/Lemonade are shown but disabled.
+const ONBOARDING_BACKEND: InferenceBackendType = 'ollama';
+
 interface AiSetupStepProps {
-  onComplete: (config: AiSetupConfig) => void;
-  onSkip: () => void;
-  onBack: () => void;
+  onComplete?: (config: AiSetupConfig) => void;
+  onSkip?: () => void;
+  onBack?: () => void;
+  /** Whether a Cloudflare tunnel is configured — seeds the default agent remote-access choice. */
+  cloudflareAvailable?: boolean;
+  /** Whether Tailscale is connected — seeds the default agent remote-access choice. */
+  tailscaleAvailable?: boolean;
+  /**
+   * Section mode for the single-page FTUE form: hides the step navigation, drops the internal
+   * scroll, and emits the live config via {@link onConfigChange} instead of waiting for a Continue.
+   */
+  embedded?: boolean;
+  onConfigChange?: (config: AiSetupConfig) => void;
 }
 
 interface OllamaStatus {
@@ -31,15 +51,27 @@ interface OllamaStatus {
   error?: string;
 }
 
-export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) => {
+const defaultExposureMode = (cloudflareAvailable: boolean, tailscaleAvailable: boolean): ExposureMode =>
+  cloudflareAvailable ? 'cloudflare' : tailscaleAvailable ? 'tailscale' : 'local';
+
+export const AiSetupStep = ({
+  onComplete,
+  onSkip,
+  onBack,
+  cloudflareAvailable = false,
+  tailscaleAvailable = false,
+  embedded = false,
+  onConfigChange,
+}: AiSetupStepProps) => {
   const [loading, setLoading] = useState(true);
   const [rescanning, setRescanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [ollamaInstallError, setOllamaInstallError] = useState<string | null>(null);
   const [profile, setProfile] = useState<HardwareProfileResponse | null>(null);
+  const [agentFramework, setAgentFramework] = useState<AgentFramework>('openclaw');
   const [selectedModelIds, setSelectedModelIds] = useState<string[]>([]);
   const [preferredModelId, setPreferredModelId] = useState<string | undefined>(undefined);
-  const [selectedBackend, setSelectedBackend] = useState<InferenceBackendType>('ollama');
+  const [exposureMode, setExposureMode] = useState<ExposureMode>(defaultExposureMode(cloudflareAvailable, tailscaleAvailable));
   const [cloudProviders, setCloudProviders] = useState<CloudProviderInput[]>([]);
   const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus | null>(null);
   const [checkingOllama, setCheckingOllama] = useState(false);
@@ -64,9 +96,8 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data: HardwareProfileResponse = await res.json();
       setProfile(data);
-      setSelectedBackend(data.backends.recommended);
-      setSelectedModelIds(getRecommendedModelIdsForBackend(data, data.backends.recommended));
-      setPreferredModelId(getDefaultPreferredModelId(data, data.backends.recommended));
+      setSelectedModelIds(getRecommendedModelIdsForBackend(data, ONBOARDING_BACKEND));
+      setPreferredModelId(getDefaultPreferredModelId(data, ONBOARDING_BACKEND));
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -103,7 +134,6 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
       const data: { success: boolean; message: string } = await res.json();
 
       if (data.success) {
-        // Re-check status after installation
         await checkOllamaStatus();
       } else {
         setOllamaInstallError(data.message);
@@ -137,10 +167,10 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
     const isRemoving = selectedModelIds.includes(modelId);
     const next = isRemoving ? selectedModelIds.filter((id) => id !== modelId) : [...selectedModelIds, modelId];
     setSelectedModelIds(next);
-    const isAgent = profile?.availableModels.some((m) => m.id === modelId && m.backend === selectedBackend && isAgentModel(m)) ?? false;
+    const isAgent = profile?.availableModels.some((m) => m.id === modelId && m.backend === ONBOARDING_BACKEND && isAgentModel(m)) ?? false;
     if (isRemoving && modelId === preferredModelId) {
       // The agent's preferred model was removed — fall back to another selected agent model.
-      const fallback = profile?.availableModels.find((m) => m.backend === selectedBackend && isAgentModel(m) && next.includes(m.id))?.id;
+      const fallback = profile?.availableModels.find((m) => m.backend === ONBOARDING_BACKEND && isAgentModel(m) && next.includes(m.id))?.id;
       setPreferredModelId(fallback);
     } else if (!isRemoving && isAgent && !preferredModelId) {
       // First agent model added back — make it the preferred default.
@@ -154,46 +184,60 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
     setSelectedModelIds((prev) => (prev.includes(modelId) ? prev : [...prev, modelId]));
   };
 
-  const handleContinue = () => {
-    if (!profile) {
-      throw new Error('AI profile unavailable');
-    }
+  const buildConfig = (): AiSetupConfig | null => {
+    if (!profile) return null;
     const backendCompatibleSelectedModels = profile.availableModels
-      .filter((model) => model.backend === selectedBackend && selectedModelIds.includes(model.id))
+      .filter((model) => model.backend === ONBOARDING_BACKEND && selectedModelIds.includes(model.id))
       .map((model) => model.id);
     const validProviders = cloudProviders.filter((p) => {
       if (!p.apiKey.trim()) return false;
       return !validateCloudKey(p.provider, p.apiKey);
     });
     // Persist the preferred model only when it is actually being installed; otherwise default to the
-    // first selected agent model so Hermes/OpenClaw always have a runnable default.
+    // first selected agent model so the agent always has a runnable default.
     const effectivePreferredModelId =
       preferredModelId && backendCompatibleSelectedModels.includes(preferredModelId)
         ? preferredModelId
         : backendCompatibleSelectedModels.find((id) => profile.availableModels.some((m) => m.id === id && isAgentModel(m)));
-    onComplete({
+    return {
+      agentFramework,
       selectedModels: backendCompatibleSelectedModels,
-      backend: selectedBackend,
+      backend: ONBOARDING_BACKEND,
       cloudProviders: validProviders,
       preferredModelId: effectivePreferredModelId,
+      exposureMode,
       skipped: false,
-    });
+    };
+  };
+
+  const handleContinue = () => {
+    const config = buildConfig();
+    if (!config) throw new Error('AI profile unavailable');
+    onComplete?.(config);
   };
 
   const handleSkip = () => {
-    onSkip();
+    onSkip?.();
   };
+
+  // In embedded (single-form) mode, surface the live config to the parent as the user edits it.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: emit only when the config inputs change
+  useEffect(() => {
+    if (!embedded || !onConfigChange || !profile) return;
+    const config = buildConfig();
+    if (config) onConfigChange(config);
+  }, [embedded, profile, agentFramework, selectedModelIds, preferredModelId, exposureMode, cloudProviders, onConfigChange]);
 
   if (loading) {
     return (
-      <div className="space-y-4 max-h-[62vh] overflow-y-auto pr-2" data-testid="ai-setup-loading">
+      <div className="space-y-4 max-h-[66vh] overflow-y-auto pr-2" data-testid="ai-setup-loading">
         <div className="flex flex-col items-center gap-4 py-4 text-center">
           <Loader2 role="img" aria-label="loading" className="h-8 w-8 animate-spin text-primary" />
           <p className="text-sm text-muted-foreground">Detecting your hardware…</p>
         </div>
-        <Skeleton className="h-24 w-full rounded-lg" />
-        <Skeleton className="h-48 w-full rounded-lg" />
-        <Skeleton className="h-32 w-full rounded-lg" />
+        <Skeleton className="h-24 w-full rounded-3xl" />
+        <Skeleton className="h-48 w-full rounded-3xl" />
+        <Skeleton className="h-32 w-full rounded-3xl" />
       </div>
     );
   }
@@ -215,25 +259,34 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
   }
 
   const isInsufficient = profile.tier === 'insufficient';
-  const backendRecommendedModels = profile.recommendedModels.filter((model) => model.backend === selectedBackend);
-  const backendAvailableModels = profile.availableModels.filter((model) => model.backend === selectedBackend);
+  const backendRecommendedModels = profile.recommendedModels.filter((model) => model.backend === ONBOARDING_BACKEND);
+  const backendAvailableModels = profile.availableModels.filter((model) => model.backend === ONBOARDING_BACKEND);
   const selectedModels = backendAvailableModels.filter((model) => selectedModelIds.includes(model.id));
   const recommendedAgentModelIds = new Set(backendRecommendedModels.filter(isAgentModel).map((m) => m.id));
   const agentModels = backendAvailableModels
     .filter(isAgentModel)
     .sort((a, b) => Number(recommendedAgentModelIds.has(b.id)) - Number(recommendedAgentModelIds.has(a.id)));
   const availableMemoryMb = profile.resourceEstimate.availableMemoryMb;
-  const needsOllama = selectedBackend === 'ollama' && (ollamaStatus === null || !ollamaStatus.ready);
+  const needsOllama = ollamaStatus === null || !ollamaStatus.ready;
 
   return (
-    <div className="space-y-4 max-h-[62vh] overflow-y-auto pr-2" data-testid="ai-setup-step">
-      <HardwareProfileCard hardware={profile.hardware} tier={profile.tier} onRescan={handleRescan} rescanning={rescanning} />
-
+    <div className={embedded ? 'space-y-5' : 'space-y-5 max-h-[66vh] overflow-y-auto pr-2'} data-testid="ai-setup-step">
       {!isInsufficient && (
         <>
-          <AgentAppsCard models={agentModels} preferredModelId={preferredModelId} onSelectPreferred={handleSelectPreferred} />
+          <AgentFrameworkCard
+            framework={agentFramework}
+            onSelectFramework={setAgentFramework}
+            models={agentModels}
+            preferredModelId={preferredModelId}
+            onSelectPreferred={handleSelectPreferred}
+            exposureMode={exposureMode}
+            onSelectExposureMode={setExposureMode}
+            cloudflareAvailable={cloudflareAvailable}
+            tailscaleAvailable={tailscaleAvailable}
+          />
 
-          {/* Show Ollama setup card if needed */}
+          <BackendCard />
+
           {needsOllama && (
             <OllamaSetupCard
               status={ollamaStatus}
@@ -245,7 +298,7 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
             />
           )}
 
-          <ModelSelectionCard
+          <RecommendedModels
             tier={profile.tier}
             recommendedModels={backendRecommendedModels}
             availableModels={backendAvailableModels}
@@ -254,43 +307,45 @@ export const AiSetupStep = ({ onComplete, onSkip, onBack }: AiSetupStepProps) =>
             preferredModelId={preferredModelId}
           />
 
-          <BackendSelectionCard
-            recommended={profile.backends.recommended}
-            available={profile.backends.available}
-            selected={selectedBackend}
-            onSelect={(backend) => {
-              setSelectedBackend(backend);
-              setSelectedModelIds(getRecommendedModelIdsForBackend(profile, backend));
-              setPreferredModelId(getDefaultPreferredModelId(profile, backend));
-            }}
-          />
-
           <ResourceSummaryBar selectedModels={selectedModels} availableMemoryMb={availableMemoryMb} />
         </>
       )}
 
-      <CloudProviderCard providers={cloudProviders} insufficientHardware={isInsufficient} onUpdate={setCloudProviders} />
+      <SystemOverview hardware={profile.hardware} tier={profile.tier} onRescan={handleRescan} rescanning={rescanning} />
 
-      <div className="flex items-center justify-between pt-2">
-        <Button variant="ghost" onClick={onBack} data-testid="ai-back-btn">
-          Back
-        </Button>
-        <div className="flex gap-2">
-          <Button variant="outline" onClick={handleSkip} data-testid="ai-skip-btn">
-            Skip to Private VPN
+      <AdvancedDrawers
+        recommendedModels={backendRecommendedModels}
+        availableModels={backendAvailableModels}
+        selectedModelIds={selectedModelIds}
+        onToggleModel={handleToggleModel}
+        preferredModelId={preferredModelId}
+        providers={cloudProviders}
+        onUpdateProviders={setCloudProviders}
+        insufficientHardware={isInsufficient}
+      />
+
+      {!embedded && (
+        <div className="flex items-center justify-between pt-1">
+          <Button variant="ghost" onClick={onBack} data-testid="ai-back-btn">
+            Back
           </Button>
-          <Button
-            intent="primary"
-            onClick={handleContinue}
-            data-testid="ai-continue-btn"
-            disabled={needsOllama && (installingOllama || checkingOllama || !ollamaStatus?.ready)}
-          >
-            {isInsufficient && cloudProviders.filter((p) => p.apiKey.trim()).length === 0
-              ? 'Continue to Private VPN without AI'
-              : 'Continue to Private VPN'}
-          </Button>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={handleSkip} data-testid="ai-skip-btn">
+              Skip to Private VPN
+            </Button>
+            <Button
+              intent="primary"
+              onClick={handleContinue}
+              data-testid="ai-continue-btn"
+              disabled={needsOllama && !isInsufficient && (installingOllama || checkingOllama || !ollamaStatus?.ready)}
+            >
+              {isInsufficient && cloudProviders.filter((p) => p.apiKey.trim()).length === 0
+                ? 'Continue to Private VPN without AI'
+                : 'Continue to Private VPN'}
+            </Button>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 };

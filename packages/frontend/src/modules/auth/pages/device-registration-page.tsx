@@ -448,14 +448,23 @@ export default function DeviceRegistrationPage() {
       <div className="grid grid-cols-1 items-stretch gap-4 md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] md:gap-5">
         <section className="flex flex-col rounded-xl border border-border/60 bg-muted/20 p-5">
           <h2 className="text-sm font-semibold uppercase tracking-wide text-foreground">Step 1: Get your pairing code</h2>
-          <p className="mt-3 flex-1 text-sm leading-relaxed text-muted-foreground">
-            Log into your Companion Account and create a device. Copy the device&apos;s pairing code and return here.
-          </p>
-          <Button asChild className="mt-5 w-full" intent="primary">
+          <Button asChild className="mt-4 w-full" intent="primary">
             <a href={portalUrl} target="_blank" rel="noopener noreferrer">
               Login to Companion Account
             </a>
           </Button>
+          <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
+            Don&apos;t have an account yet?{' '}
+            <a
+              href={`${portalUrl}/signup`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-medium text-primary underline hover:no-underline"
+            >
+              Create one free
+            </a>{' '}
+            — it only takes a moment, and your data stays on this device.
+          </p>
         </section>
 
         <div aria-hidden="true" className="hidden items-center justify-center text-muted-foreground md:flex">
@@ -544,14 +553,6 @@ export default function DeviceRegistrationPage() {
           </AlertDescription>
         </Alert>
       )}
-
-      <p className="text-center text-xs text-muted-foreground">
-        Don&apos;t have an account yet?{' '}
-        <a href={`${portalUrl}/signup`} target="_blank" rel="noopener noreferrer" className="font-medium text-primary underline hover:no-underline">
-          Create one free
-        </a>{' '}
-        — it only takes a moment, and your data stays on this device.
-      </p>
     </div>
   );
 }

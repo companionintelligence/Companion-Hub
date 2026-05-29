@@ -52,73 +52,78 @@
   --color-sidebar-ring: var(--sidebar-ring);
 }
 
+/*
+ * Companion Intelligence theme — unified deep teal-navy palette shared across the org.
+ * Dark mode uses very dark teal backgrounds (#041620 / #051b27) with a neutral near-white primary
+ * and muted teal borders/accents (#244859 / #70a6af). Light mode is a clean gray with a teal primary.
+ */
 :root {
   --radius: 0.625rem;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.129 0.042 264.695);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.129 0.042 264.695);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.129 0.042 264.695);
-  --primary: oklch(0.208 0.042 265.755);
-  --primary-foreground: oklch(0.984 0.003 247.858);
-  --secondary: oklch(0.968 0.007 247.896);
-  --secondary-foreground: oklch(0.208 0.042 265.755);
-  --muted: oklch(0.968 0.007 247.896);
-  --muted-foreground: oklch(0.554 0.046 257.417);
-  --accent: oklch(0.968 0.007 247.896);
-  --accent-foreground: oklch(0.208 0.042 265.755);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.929 0.013 255.508);
-  --input: oklch(0.929 0.013 255.508);
-  --ring: oklch(0.704 0.04 256.788);
-  --chart-1: oklch(0.646 0.222 41.116);
-  --chart-2: oklch(0.6 0.118 184.704);
-  --chart-3: oklch(0.398 0.07 227.392);
-  --chart-4: oklch(0.828 0.189 84.429);
-  --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.984 0.003 247.858);
-  --sidebar-foreground: oklch(0.129 0.042 264.695);
-  --sidebar-primary: oklch(0.208 0.042 265.755);
-  --sidebar-primary-foreground: oklch(0.984 0.003 247.858);
-  --sidebar-accent: oklch(0.968 0.007 247.896);
-  --sidebar-accent-foreground: oklch(0.208 0.042 265.755);
-  --sidebar-border: oklch(0.929 0.013 255.508);
-  --sidebar-ring: oklch(0.704 0.04 256.788);
+  --background: #f3f3f3;
+  --foreground: #010f16;
+  --card: #f7f7f9;
+  --card-foreground: #041620;
+  --popover: oklch(100% 0 0);
+  --popover-foreground: #041620;
+  --primary: #0f717a;
+  --primary-foreground: oklch(98.4% 0.003 247.858);
+  --secondary: oklch(96.8% 0.007 247.896);
+  --secondary-foreground: #0a222e;
+  --muted: oklch(96.8% 0.007 247.896);
+  --muted-foreground: oklch(55.4% 0.046 257.417);
+  --accent: oklch(96.8% 0.007 247.896);
+  --accent-foreground: #0a222e;
+  --destructive: oklch(57.7% 0.245 27.325);
+  --border: oklch(92.9% 0.013 255.508);
+  --input: oklch(92.9% 0.013 255.508);
+  --ring: oklch(70.4% 0.04 256.788);
+  --chart-1: oklch(64.6% 0.222 41.116);
+  --chart-2: oklch(60% 0.118 184.704);
+  --chart-3: oklch(39.8% 0.07 227.392);
+  --chart-4: oklch(82.8% 0.189 84.429);
+  --chart-5: oklch(76.9% 0.188 70.08);
+  --sidebar: oklch(98.4% 0.003 247.858);
+  --sidebar-foreground: oklch(12.9% 0.042 264.695);
+  --sidebar-primary: oklch(20.8% 0.042 265.755);
+  --sidebar-primary-foreground: oklch(98.4% 0.003 247.858);
+  --sidebar-accent: oklch(96.8% 0.007 247.896);
+  --sidebar-accent-foreground: #0a222e;
+  --sidebar-border: oklch(92.9% 0.013 255.508);
+  --sidebar-ring: #70a6af;
 }
 
 .dark {
-  --background: oklch(0.129 0.042 264.695);
-  --foreground: oklch(0.984 0.003 247.858);
-  --card: oklch(0.208 0.042 265.755);
-  --card-foreground: oklch(0.984 0.003 247.858);
-  --popover: oklch(0.208 0.042 265.755);
-  --popover-foreground: oklch(0.984 0.003 247.858);
-  --primary: oklch(0.929 0.013 255.508);
-  --primary-foreground: oklch(0.208 0.042 265.755);
-  --secondary: oklch(0.279 0.041 260.031);
-  --secondary-foreground: oklch(0.984 0.003 247.858);
-  --muted: oklch(0.279 0.041 260.031);
-  --muted-foreground: oklch(0.704 0.04 256.788);
-  --accent: oklch(0.279 0.041 260.031);
-  --accent-foreground: oklch(0.984 0.003 247.858);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.279 0.041 260.031);
-  --input: oklch(0.279 0.041 260.031);
-  --ring: oklch(0.704 0.04 256.788);
-  --chart-1: oklch(0.646 0.222 41.116);
-  --chart-2: oklch(0.6 0.118 184.704);
-  --chart-3: oklch(0.398 0.07 227.392);
-  --chart-4: oklch(0.828 0.189 84.429);
-  --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.208 0.042 265.755);
-  --sidebar-foreground: oklch(0.984 0.003 247.858);
-  --sidebar-primary: oklch(0.929 0.013 255.508);
-  --sidebar-primary-foreground: oklch(0.208 0.042 265.755);
-  --sidebar-accent: oklch(0.279 0.041 260.031);
-  --sidebar-accent-foreground: oklch(0.984 0.003 247.858);
-  --sidebar-border: oklch(0.279 0.041 260.031);
-  --sidebar-ring: oklch(0.704 0.04 256.788);
+  --background: #041620;
+  --foreground: oklch(98.4% 0.003 247.858);
+  --card: #051b27;
+  --card-foreground: oklch(98.4% 0.003 247.858);
+  --popover: #041620;
+  --popover-foreground: oklch(98.4% 0.003 247.858);
+  --primary: oklch(92.9% 0.013 255.508);
+  --primary-foreground: #0f172b;
+  --secondary: #1d293d;
+  --secondary-foreground: oklch(98.4% 0.003 247.858);
+  --muted: #244859;
+  --muted-foreground: #70a6af;
+  --accent: #0a222e;
+  --accent-foreground: oklch(98.4% 0.003 247.858);
+  --destructive: oklch(57.7% 0.245 27.325);
+  --border: #244859;
+  --input: oklch(27.9% 0.041 260.031);
+  --ring: oklch(70.4% 0.04 256.788);
+  --chart-1: oklch(64.6% 0.222 41.116);
+  --chart-2: oklch(60% 0.118 184.704);
+  --chart-3: oklch(39.8% 0.07 227.392);
+  --chart-4: oklch(82.8% 0.189 84.429);
+  --chart-5: oklch(76.9% 0.188 70.08);
+  --sidebar: #122a35;
+  --sidebar-foreground: oklch(98.4% 0.003 247.858);
+  --sidebar-primary: oklch(92.9% 0.013 255.508);
+  --sidebar-primary-foreground: #041620;
+  --sidebar-accent: #0a222e;
+  --sidebar-accent-foreground: oklch(98.4% 0.003 247.858);
+  --sidebar-border: #244859;
+  --sidebar-ring: oklch(70.4% 0.04 256.788);
 }
 
 @layer base {
@@ -127,5 +132,17 @@
   }
   body {
     @apply bg-background text-foreground;
+    min-height: 100vh;
+  }
+  /* Whisper of depth — a very subtle teal lift at the top, over the flat base color. */
+  .dark body {
+    background-image: radial-gradient(1200px circle at 50% -20%, oklch(0.34 0.04 220 / 0.14) 0%, transparent 52%);
+    background-attachment: fixed;
+    background-repeat: no-repeat;
+  }
+  html:not(.dark) body {
+    background-image: radial-gradient(1200px circle at 50% -20%, oklch(0.5 0.03 220 / 0.05) 0%, transparent 52%);
+    background-attachment: fixed;
+    background-repeat: no-repeat;
   }
 }

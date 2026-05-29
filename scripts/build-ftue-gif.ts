@@ -20,7 +20,8 @@ const SHOTS_DIR = join(ROOT, 'docs', 'ftue-screenshots');
 const OUTPUT_GIF = join(ROOT, 'docs', 'ftue.gif');
 const FRONTEND_PORT = 9091;
 const FRONTEND_URL = `http://localhost:${FRONTEND_PORT}`;
-const VIEWPORT = { width: 960, height: 720 };
+const VIEWPORT = { width: 1120, height: 840 };
+const MOBILE_VIEWPORT = { width: 390, height: 844 };
 
 // ─── Mocks ────────────────────────────────────────────────────────────────
 
@@ -361,90 +362,91 @@ async function snapshot(page: Page, name: string) {
 
 // ─── Main ─────────────────────────────────────────────────────────────────
 
+/** Walk the single-page FTUE: AI Setup → Local Apps → Private VPN, optionally Finish → Install → Done. */
+async function captureFlow(page: Page, prefix: string, { finish }: { finish: boolean }) {
+  await page.locator('[data-testid="ai-setup-step"]').waitFor({ timeout: 30_000 });
+  await page.waitForTimeout(800);
+  await snapshot(page, `${prefix}-01-ai-setup`);
+
+  // Local Apps section — select a few recommended apps from the icon grid.
+  await page
+    .getByRole('heading', { name: 'Recommended Apps' })
+    .scrollIntoViewIfNeeded()
+    .catch(() => undefined);
+  await page.waitForTimeout(600);
+  const cards = page.locator('[data-testid="recommended-app"]');
+  const count = Math.min(await cards.count(), 3);
+  for (let i = 0; i < count; i++) {
+    await cards
+      .nth(i)
+      .click()
+      .catch(() => undefined);
+  }
+  await snapshot(page, `${prefix}-02-local-apps`);
+
+  // Private VPN section.
+  await page
+    .getByRole('heading', { name: 'Set Up Private VPN' })
+    .scrollIntoViewIfNeeded()
+    .catch(() => undefined);
+  await page.waitForTimeout(500);
+  await snapshot(page, `${prefix}-03-vpn`);
+
+  if (!finish) return;
+
+  // Finish → Install → Done (Finish enables once the AI section emits its config).
+  await page
+    .locator('[data-testid="finish-setup-btn"]')
+    .click({ timeout: 20_000 })
+    .catch(() => undefined);
+  await page
+    .locator('[data-testid="install-progress-text"]')
+    .waitFor({ timeout: 15_000 })
+    .catch(() => undefined);
+  await page.waitForTimeout(1200);
+  await snapshot(page, `${prefix}-04-install`);
+
+  await page
+    .locator('[data-testid="install-continue-btn"]')
+    .click({ timeout: 30_000 })
+    .catch(() => undefined);
+  await page
+    .locator('[data-testid="complete-heading"]')
+    .waitFor({ timeout: 15_000 })
+    .catch(() => undefined);
+  await page.waitForTimeout(400);
+  await snapshot(page, `${prefix}-05-done`);
+}
+
 async function captureScreenshots() {
   if (existsSync(SHOTS_DIR)) rmSync(SHOTS_DIR, { recursive: true, force: true });
   mkdirSync(SHOTS_DIR, { recursive: true });
 
   const browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext({
-    viewport: VIEWPORT,
-    deviceScaleFactor: 2,
-    colorScheme: 'light',
-  });
-  const page = await context.newPage();
-  await setupRoutes(page);
 
-  console.log('Loading onboarding page…');
-  // First load may trigger Vite dep optimization → multiple reloads.
-  // Warm up by visiting once and waiting, then reload so the prebundle is in place.
+  // ── Desktop (drives the GIF + desktop doc shots) ──
+  const desktop = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: 2, colorScheme: 'dark' });
+  const page = await desktop.newPage();
+  await setupRoutes(page);
+  console.log('Loading onboarding page (desktop)…');
+  // First load may trigger Vite dep optimization → warm up then reload.
   await page.goto(`${FRONTEND_URL}/onboarding`, { waitUntil: 'domcontentloaded' });
   await page.waitForTimeout(3000);
   await page.goto(`${FRONTEND_URL}/onboarding`, { waitUntil: 'domcontentloaded' });
-  // Best-effort wait — Vite HMR can keep this in flight forever in dev.
   await page.waitForLoadState('networkidle', { timeout: 60_000 }).catch(() => undefined);
   await page.waitForTimeout(1500);
+  await captureFlow(page, 'desktop', { finish: true });
+  await desktop.close();
 
-  // ── 1. Start up (Welcome)
-  await page.getByRole('heading', { name: 'Welcome to Companion Hub' }).waitFor({ timeout: 30_000 });
-  await snapshot(page, '01-start-up');
-
-  await page.getByRole('button', { name: 'Continue to AI Setup' }).click();
-
-  // ── 2. AI Setup
-  await page.locator('[data-testid="ai-setup-step"]').waitFor({ timeout: 15_000 });
-  await page.waitForTimeout(600);
-  await snapshot(page, '02-ai-setup');
-
-  await page.locator('[data-testid="ai-continue-btn"]').click();
-
-  // ── 3a. Local Apps — Recommendations sub-step
-  await page.getByRole('heading', { name: 'Recommended Apps' }).waitFor();
-  await page.waitForTimeout(600); // let the list render
-  const cards = page.locator('button.flex.items-center.gap-3.p-3.rounded-lg.border');
-  const count = Math.min(await cards.count(), 4);
-  for (let i = 0; i < count; i++) {
-    await cards.nth(i).click();
-  }
-  await snapshot(page, '03-local-apps-discover');
-
-  await page.getByRole('button', { name: /Continue to Select Apps with/ }).click();
-
-  // ── 3b. Local Apps — Review sub-step
-  await page.getByRole('heading', { name: 'Review Your Selection' }).waitFor();
-  await page.waitForTimeout(400);
-  await snapshot(page, '04-local-apps-review');
-
-  await page.getByRole('button', { name: 'Continue to Install' }).click();
-
-  // ── 4. Confirm & Download (Install)
-  await page.waitForTimeout(1500);
-  await snapshot(page, '05-confirm-download');
-
-  // ── 5. VPN Setup — InstallStep finishes when the continue button shows.
-  // Click it (waits up to 30s for the install loop to converge).
-  // The button may not appear if installs fail under mocks; fall through either way.
-  await page
-    .locator('[data-testid="install-continue-btn"]')
-    .waitFor({ timeout: 30_000 })
-    .catch(() => undefined);
-  await page
-    .locator('[data-testid="install-continue-btn"]')
-    .click()
-    .catch(() => undefined);
-  await page.getByRole('heading', { name: 'Set Up Private VPN' }).waitFor({ timeout: 15_000 });
-  await page.waitForTimeout(400);
-  await snapshot(page, '06-vpn-setup');
-
-  // ── 6. Done — last stepper trigger is always clickable as a skip-to-end shortcut.
-  // Trigger may already be active; ignore click failures.
-  await page
-    .locator('button:has(span:has-text("Done"))')
-    .first()
-    .click()
-    .catch(() => undefined);
-  await page.locator('[data-testid="complete-heading"]').waitFor({ timeout: 10_000 });
-  await page.waitForTimeout(400);
-  await snapshot(page, '07-done');
+  // ── Mobile (doc shots only) ──
+  const mobile = await browser.newContext({ viewport: MOBILE_VIEWPORT, deviceScaleFactor: 2, colorScheme: 'dark' });
+  const mpage = await mobile.newPage();
+  await setupRoutes(mpage);
+  console.log('Loading onboarding page (mobile)…');
+  await mpage.goto(`${FRONTEND_URL}/onboarding`, { waitUntil: 'domcontentloaded' });
+  await mpage.waitForTimeout(2000);
+  await captureFlow(mpage, 'mobile', { finish: false });
+  await mobile.close();
 
   await browser.close();
 }
@@ -452,15 +454,9 @@ async function captureScreenshots() {
 async function buildGif() {
   console.log('Assembling GIF…');
   // ImageMagick: ordered glob, 1.6s per frame, hold the last frame longer.
-  const frames = [
-    '01-start-up.png',
-    '02-ai-setup.png',
-    '03-local-apps-discover.png',
-    '04-local-apps-review.png',
-    '05-confirm-download.png',
-    '06-vpn-setup.png',
-    '07-done.png',
-  ].map((f) => join(SHOTS_DIR, f));
+  const frames = ['desktop-01-ai-setup.png', 'desktop-02-local-apps.png', 'desktop-03-vpn.png', 'desktop-04-install.png', 'desktop-05-done.png'].map(
+    (f) => join(SHOTS_DIR, f),
+  );
 
   for (const f of frames) {
     if (!existsSync(f)) throw new Error(`Missing frame: ${f}`);
@@ -474,7 +470,7 @@ async function buildGif() {
     args.push('-delay', isLast ? '320' : '160');
     args.push(frames[i]);
   }
-  args.push('-resize', '960x720');
+  args.push('-resize', '1120x840');
   args.push('-layers', 'Optimize');
   args.push(OUTPUT_GIF);
 

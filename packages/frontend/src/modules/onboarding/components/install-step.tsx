@@ -1,10 +1,10 @@
 import { apiFetch } from '@/lib/api-fetch';
 import { Button } from '@/components/ui/Button';
-import { Card, CardContent } from '@/components/ui/Card';
 import { useEffect, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { getInstalledAppsQueryKey } from '@/api-client/@tanstack/react-query.gen';
-import { Loader2 } from 'lucide-react';
+import { Download, Loader2 } from 'lucide-react';
+import { WizardCard } from './wizard-ui';
 import type { OnboardingApp, AppInstallStatus, InstallSummary, AiSetupConfig } from '../helpers/types';
 
 interface InstallStepProps {
@@ -405,89 +405,92 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
           : 'Continue';
 
   return (
-    <Card>
-      <CardContent className="p-6">
-        <div className="mb-4">
-          <h2 className="text-xl font-semibold mb-1">
+    <WizardCard>
+      <div className="mb-5 flex items-center gap-3">
+        <span className="text-primary [&_svg]:h-6 [&_svg]:w-6">
+          <Download />
+        </span>
+        <div>
+          <h2 className="text-lg font-bold tracking-tight sm:text-xl">
             {apps.length === 0 ? 'No Apps Selected' : done ? 'Installation Complete' : 'Installing Apps'}
           </h2>
-          <p className="text-sm text-muted-foreground" data-testid="install-progress-text">
+          <p className="mt-0.5 text-sm text-muted-foreground" data-testid="install-progress-text">
             {progressText}
           </p>
         </div>
+      </div>
 
-        {apps.length > 0 && (
-          <div className="w-full bg-muted rounded-full h-2 mb-4 overflow-hidden">
-            <div className="bg-primary h-2 rounded-full transition-all duration-500 ease-out" style={{ width: `${progress}%` }} />
-          </div>
-        )}
+      {apps.length > 0 && (
+        <div className="mb-4 h-2 w-full overflow-hidden rounded-full bg-muted">
+          <div className="h-2 rounded-full bg-primary transition-all duration-500 ease-out" style={{ width: `${progress}%` }} />
+        </div>
+      )}
 
-        {/* AI Setup Phase */}
-        {aiPhase.status !== 'skipped' && (
-          <div className="mb-4 space-y-1" data-testid="ai-phase-section">
-            <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">AI Setup</div>
-            {aiSetupConfig?.cloudProviders && aiSetupConfig.cloudProviders.length > 0 && (
-              <div className="flex items-center gap-2 px-3 py-1.5 text-sm">
-                <span className="w-4 text-center">{aiPhase.cloudConfigured ? '✓' : aiPhase.status === 'configuring-cloud' ? '●' : '○'}</span>
-                <span>Cloud providers configured</span>
-              </div>
-            )}
-            {aiSetupConfig?.selectedModels.map((modelId) => (
-              <div key={modelId} className="flex items-center gap-2 px-3 py-1.5 text-sm">
-                <span className="w-4 text-center">
-                  {(aiPhase.modelProgress[modelId] ?? 0) >= 100 ? '✓' : aiPhase.status === 'pulling-models' ? '●' : '○'}
-                </span>
-                <span className="flex-1">
-                  {modelId}
-                  {modelId === aiSetupConfig.preferredModelId && <span className="ml-2 text-xs text-primary">agent default</span>}
-                </span>
-                {aiPhase.status === 'pulling-models' && (aiPhase.modelProgress[modelId] ?? 0) < 100 && (
-                  <span className="text-xs text-muted-foreground">{aiPhase.modelProgress[modelId] ?? 0}%</span>
-                )}
-              </div>
-            ))}
-            {aiSetupConfig?.selectedModels && aiSetupConfig.selectedModels.length > 0 && (
-              <div className="flex items-center gap-2 px-3 py-1.5 text-sm">
-                <span className="w-4 text-center">{aiPhase.status === 'done' ? '✓' : aiPhase.status === 'pinning-models' ? '●' : '○'}</span>
-                <span>Pin models</span>
-              </div>
-            )}
-            {aiPhase.status !== 'done' && aiPhase.status !== 'pending' && <div className="h-px bg-border my-2" />}
-          </div>
-        )}
-
-        {/* App Install Phase */}
-        <div className="space-y-1 max-h-[350px] overflow-y-auto pr-2" data-testid="install-app-list">
-          {states.map((state) => (
-            <div
-              key={state.app.appSlug}
-              className="flex items-center gap-3 px-3 py-2 rounded-lg transition-colors"
-              data-testid={`install-row-${state.app.appSlug}`}
-            >
-              <span className="w-5 h-5 flex items-center justify-center text-sm font-semibold">{statusIcon(state.status)}</span>
-              <img
-                src={state.app.icon}
-                alt=""
-                className="w-6 h-6 rounded"
-                onError={(e) => {
-                  (e.target as HTMLImageElement).style.display = 'none';
-                }}
-              />
-              <div className="flex-1 min-w-0">
-                <div className="text-sm font-medium">{state.app.name}</div>
-                <div className="text-xs text-muted-foreground">{statusLabel(state.status)}</div>
-                {state.error && <div className="text-xs text-destructive">{state.error}</div>}
-              </div>
+      {/* AI Setup Phase */}
+      {aiPhase.status !== 'skipped' && (
+        <div className="mb-4 space-y-1" data-testid="ai-phase-section">
+          <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">AI Setup</div>
+          {aiSetupConfig?.cloudProviders && aiSetupConfig.cloudProviders.length > 0 && (
+            <div className="flex items-center gap-2 px-3 py-1.5 text-sm">
+              <span className="w-4 text-center">{aiPhase.cloudConfigured ? '✓' : aiPhase.status === 'configuring-cloud' ? '●' : '○'}</span>
+              <span>Cloud providers configured</span>
+            </div>
+          )}
+          {aiSetupConfig?.selectedModels.map((modelId) => (
+            <div key={modelId} className="flex items-center gap-2 px-3 py-1.5 text-sm">
+              <span className="w-4 text-center">
+                {(aiPhase.modelProgress[modelId] ?? 0) >= 100 ? '✓' : aiPhase.status === 'pulling-models' ? '●' : '○'}
+              </span>
+              <span className="flex-1">
+                {modelId}
+                {modelId === aiSetupConfig.preferredModelId && <span className="ml-2 text-xs text-primary">agent default</span>}
+              </span>
+              {aiPhase.status === 'pulling-models' && (aiPhase.modelProgress[modelId] ?? 0) < 100 && (
+                <span className="text-xs text-muted-foreground">{aiPhase.modelProgress[modelId] ?? 0}%</span>
+              )}
             </div>
           ))}
+          {aiSetupConfig?.selectedModels && aiSetupConfig.selectedModels.length > 0 && (
+            <div className="flex items-center gap-2 px-3 py-1.5 text-sm">
+              <span className="w-4 text-center">{aiPhase.status === 'done' ? '✓' : aiPhase.status === 'pinning-models' ? '●' : '○'}</span>
+              <span>Pin models</span>
+            </div>
+          )}
+          {aiPhase.status !== 'done' && aiPhase.status !== 'pending' && <div className="h-px bg-border my-2" />}
         </div>
+      )}
 
-        <div className="flex justify-end mt-6">
-          <Button intent="primary" onClick={() => onCompleteRef.current(buildSummary(states))} data-testid="install-continue-btn">
-            {continueButtonLabel}
-          </Button>
-        </div>
-      </CardContent>
-    </Card>
+      {/* App Install Phase */}
+      <div className="space-y-1 max-h-[350px] overflow-y-auto pr-2" data-testid="install-app-list">
+        {states.map((state) => (
+          <div
+            key={state.app.appSlug}
+            className="flex items-center gap-3 px-3 py-2 rounded-lg transition-colors"
+            data-testid={`install-row-${state.app.appSlug}`}
+          >
+            <span className="w-5 h-5 flex items-center justify-center text-sm font-semibold">{statusIcon(state.status)}</span>
+            <img
+              src={state.app.icon}
+              alt=""
+              className="w-6 h-6 rounded"
+              onError={(e) => {
+                (e.target as HTMLImageElement).style.display = 'none';
+              }}
+            />
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-medium">{state.app.name}</div>
+              <div className="text-xs text-muted-foreground">{statusLabel(state.status)}</div>
+              {state.error && <div className="text-xs text-destructive">{state.error}</div>}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-6 flex items-center justify-end border-t border-border pt-5">
+        <Button intent="primary" onClick={() => onCompleteRef.current(buildSummary(states))} data-testid="install-continue-btn">
+          {continueButtonLabel}
+        </Button>
+      </div>
+    </WizardCard>
   );
 };

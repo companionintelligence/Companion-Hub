@@ -8,9 +8,7 @@
   "installer": {
     "script": "& \"$dir\\Companion.Hub_0.2.4_x64-setup.exe\" /S"
   },
-  "shortcuts": [
-    ["Companion Hub\\Companion Hub.exe", "Companion Hub"]
-  ],
+  "shortcuts": [["Companion Hub\\Companion Hub.exe", "Companion Hub"]],
   "checkver": {
     "github": "https://github.com/companionintelligence/CI-Hub"
   },
