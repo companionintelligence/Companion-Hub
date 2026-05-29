@@ -12,9 +12,14 @@ pkgs.appimageTools.wrapType2 rec {
   };
 
   extraInstallCommands = ''
-    install -Dm644 ${src} $out/share/applications/companion-hub.desktop
-    # Copy icon if available after extraction
-    mkdir -p $out/share/icons/hicolor/256x256/apps
+    install -Dm644 /dev/stdin $out/share/applications/companion-hub.desktop <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Companion Hub
+Exec=companion-hub
+Icon=companion-hub
+Categories=Utility;
+EOF
   '';
 
   meta = with pkgs.lib; {
@@ -27,7 +32,7 @@ pkgs.appimageTools.wrapType2 rec {
       companion intelligence ecosystem.
     '';
     homepage = "https://github.com/companionintelligence/CI-Hub";
-    license = licenses.unfree;
+    license = licenses.agpl3Only;
     platforms = [ "x86_64-linux" ];
     maintainers = [];
     mainProgram = "companion-hub";

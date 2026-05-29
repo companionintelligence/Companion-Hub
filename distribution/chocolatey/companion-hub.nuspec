@@ -10,7 +10,7 @@
     <title>Companion Hub</title>
     <authors>Companion Intelligence</authors>
     <projectUrl>https://github.com/companionintelligence/CI-Hub</projectUrl>
-    <licenseUrl>https://github.com/companionintelligence/CI-Hub/blob/main/LICENSE</licenseUrl>
+    <licenseUrl>https://github.com/companionintelligence/CI-Hub/blob/main/license.md</licenseUrl>
     <requireLicenseAcceptance>false</requireLicenseAcceptance>
     <projectSourceUrl>https://github.com/companionintelligence/CI-Hub</projectSourceUrl>
     <bugTrackerUrl>https://github.com/companionintelligence/CI-Hub/issues</bugTrackerUrl>

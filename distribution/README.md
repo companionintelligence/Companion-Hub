@@ -70,7 +70,6 @@ nix-prefetch-url https://github.com/companionintelligence/CI-Hub/releases/downlo
 ### Winget
 
 - Fork https://github.com/microsoft/winget-pkgs, copy the `0.2.4/` directory into the right path, and open a PR.
-- The `ProductCode` GUID in the installer manifest should be updated to match the actual MSI ProductCode (use `msiinfo export <file>.msi Property | grep ProductCode`).
 - Winget validates manifests with `winget validate --manifest <path>`.
 
 ### Scoop
@@ -80,7 +79,6 @@ nix-prefetch-url https://github.com/companionintelligence/CI-Hub/releases/downlo
   scoop bucket add companionintelligence https://github.com/companionintelligence/scoop-bucket
   scoop install companion-hub
   ```
-- Remove the comment block at the top of `companion-hub.json` before publishing (Scoop JSON does not allow comments).
 
 ### AUR (Arch Linux)
 
@@ -92,6 +90,7 @@ nix-prefetch-url https://github.com/companionintelligence/CI-Hub/releases/downlo
 
 - `snap/snapcraft.yaml` uses `confinement: classic` because the app manages Docker Compose and needs access to system sockets.
 - Build: `snapcraft` (requires `snapd` and `multipass` or LXD).
+- Request and receive Snap Store approval for `classic` confinement before releasing to stable.
 - Publish: `snapcraft push companion-hub_0.2.4_amd64.snap --release=stable` (requires Ubuntu One login at https://snapcraft.io/).
 
 ### Chocolatey

@@ -7,7 +7,7 @@ description: |
   for the Companion Intelligence platform. It manages Docker Compose stacks,
   coordinates local AI services, and provides a unified interface for the
   companion intelligence ecosystem.
-license: proprietary
+license: AGPL-3.0-only
 # classic confinement is required because the app manages Docker Compose stacks
 # and needs access to system Docker sockets and arbitrary filesystem paths
 confinement: classic
@@ -17,8 +17,6 @@ grade: stable
 architectures:
   - build-on: amd64
     build-for: amd64
-  - build-on: arm64
-    build-for: arm64
 
 parts:
   companion-hub:

@@ -8,17 +8,19 @@ pkgrel=1
 pkgdesc="AI-powered companion intelligence hub"
 arch=('x86_64' 'aarch64')
 url="https://github.com/companionintelligence/CI-Hub"
-license=('custom:Proprietary')
-depends=('webkit2gtk-4.1' 'gtk3' 'libayatana-appindicator3-1' 'glibc')
+license=('AGPL3')
+depends=('webkit2gtk-4.1' 'gtk3' 'libayatana-appindicator' 'glibc')
 provides=('companion-hub')
 conflicts=('companion-hub')
 options=('!strip')
 
 source_x86_64=("https://github.com/companionintelligence/CI-Hub/releases/download/v${pkgver}/Companion.Hub_${pkgver}_amd64.deb")
 source_aarch64=("https://github.com/companionintelligence/CI-Hub/releases/download/v${pkgver}/Companion.Hub_${pkgver}_arm64.deb")
+source=("license.md::https://raw.githubusercontent.com/companionintelligence/CI-Hub/v${pkgver}/license.md")
 
 sha256sums_x86_64=('SKIP')
 sha256sums_aarch64=('SKIP')
+sha256sums=('SKIP')
 
 package() {
     # Extract the deb archive
@@ -48,7 +50,5 @@ package() {
     done
 
     # Install license
-    install -Dm644 /dev/stdin "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE" <<EOF
-Proprietary — see ${url}/blob/main/LICENSE
-EOF
+    install -Dm644 "${srcdir}/license.md" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
 }

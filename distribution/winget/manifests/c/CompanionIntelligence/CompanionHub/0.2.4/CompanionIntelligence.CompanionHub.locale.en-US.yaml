@@ -6,8 +6,8 @@ PublisherUrl: https://github.com/companionintelligence
 PublisherSupportUrl: https://github.com/companionintelligence/CI-Hub/issues
 PackageName: Companion Hub
 PackageUrl: https://github.com/companionintelligence/CI-Hub
-License: Proprietary
-LicenseUrl: https://github.com/companionintelligence/CI-Hub/blob/main/LICENSE
+License: AGPL-3.0-only
+LicenseUrl: https://github.com/companionintelligence/CI-Hub/blob/main/license.md
 ShortDescription: AI-powered companion intelligence hub
 Description: >-
   Companion Hub is a desktop application that serves as an AI-powered companion
