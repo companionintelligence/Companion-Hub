@@ -41,7 +41,7 @@ export class InferenceController {
     private readonly ollamaBackend: OllamaBackend,
     private readonly vllmBackend: VllmBackend,
     private readonly lemonadeBackend: LemonadeBackend,
-    private readonly logger: LoggerService,
+    readonly _logger: LoggerService,
   ) {}
 
   private getRecommendedBackend(profile: HardwareProfile): InferenceBackendType {
