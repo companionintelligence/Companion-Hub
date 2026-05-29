@@ -1,0 +1,22 @@
+pkgbase = companion-hub-bin
+	pkgdesc = AI-powered companion intelligence hub
+	pkgver = 0.2.4
+	pkgrel = 1
+	url = https://github.com/companionintelligence/CI-Hub
+	arch = x86_64
+	arch = aarch64
+	license = AGPL3
+	depends = webkit2gtk-4.1
+	depends = gtk3
+	depends = libayatana-appindicator
+	depends = glibc
+	provides = companion-hub
+	conflicts = companion-hub
+	source_x86_64 = https://github.com/companionintelligence/CI-Hub/releases/download/v0.2.4/Companion.Hub_0.2.4_amd64.deb
+	sha256sums_x86_64 = SKIP
+	source_aarch64 = https://github.com/companionintelligence/CI-Hub/releases/download/v0.2.4/Companion.Hub_0.2.4_arm64.deb
+	sha256sums_aarch64 = SKIP
+	source = license.md::https://raw.githubusercontent.com/companionintelligence/CI-Hub/v0.2.4/license.md
+	sha256sums = SKIP
+
+pkgname = companion-hub-bin
