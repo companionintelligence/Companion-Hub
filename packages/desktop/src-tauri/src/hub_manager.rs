@@ -667,6 +667,7 @@ fn startup_service_definitions(vpn_on: bool) -> (Vec<(&'static str, &'static str
         optional.push(("hub-tailscale", "Private VPN", false));
     }
     optional.push(("cloudflared", "Tunnel", false));
+    optional.push(("ci-hub-ollama", "Ollama", false));
 
     (core, optional)
 }
@@ -3457,6 +3458,15 @@ mod tests {
         assert!(optional
             .iter()
             .any(|(container, label, required)| *container == "hub-tailscale" && *label == "Private VPN" && !required));
+    }
+
+    #[test]
+    fn startup_progress_includes_ollama_as_optional_non_blocking() {
+        let (_, optional) = startup_service_definitions(false);
+
+        assert!(optional
+            .iter()
+            .any(|(container, label, required)| *container == "ci-hub-ollama" && *label == "Ollama" && !required));
     }
 
     #[test]
