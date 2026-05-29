@@ -126,7 +126,7 @@ export function getDockerDesktopGuideContent(platform: DockerDesktopGuidePlatfor
     alreadyInstalledTitle: 'If Docker Desktop is already installed:',
     alreadyInstalledSteps: [
       'Open Docker Desktop from your Applications folder',
-      "Wait for Docker to start (you'll see the whale icon in your system tray)",
+      "Wait for Docker to start (you'll see the whale icon in your menu bar)",
       'Come back here — the Hub will continue automatically',
     ],
     notInstalledTitle: 'If Docker Desktop is NOT installed:',
