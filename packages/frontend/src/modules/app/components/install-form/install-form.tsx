@@ -157,7 +157,7 @@ export const InstallForm: React.FC<IProps> = ({
       const defaultMode = cloudflareAvailable ? 'cloudflare' : tailscaleAvailable ? 'tailscale' : 'local';
       setValue('exposureMode', (initialValues?.exposureMode as FormValues['exposureMode']) || defaultMode);
       setValue('exposedLocal', true); // backward compat
-      setValue('openPort', false); // Always false - apps route through Traefik
+      setValue('openPort', defaultMode === 'local');
       setValue('enableAuth', true); // Enable authentication by default
       if (info.port) {
         setValue('port', info.port.toString());

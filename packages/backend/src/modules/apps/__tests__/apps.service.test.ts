@@ -165,11 +165,31 @@ describe('AppsService', () => {
     });
 
     it('MUST construct local URL (http://internalIp:port) when exposureMode is local', async () => {
-      setupApp({ exposureMode: 'local', port: 8080 });
+      setupApp({ exposureMode: 'local', openPort: true, port: 8080 });
       mockAxiosGet.mockResolvedValue({ status: 200, data: 'OK' });
       const result = await service.checkAppAvailability(appUrn);
       expect(result.available).toBe(true);
       expect(result.appUrl).toBe('http://192.168.1.100:8080');
+    });
+
+    it('MUST map 0.0.0.0 internal IP to 127.0.0.1 for local URLs', async () => {
+      setupApp({ exposureMode: 'local', openPort: true, port: 8080 });
+      configService.getConfig.mockReturnValue({
+        localDomain: 'ci.lan',
+        userSettings: { internalIp: '0.0.0.0', sslPort: 443, domain: 'example.com', localDomain: 'ci.lan' },
+      } as any);
+      const result = await service.checkAppAvailability(appUrn);
+      expect(result.appUrl).toBe('http://127.0.0.1:8080');
+    });
+
+    it('MUST bracket IPv6 internal IPs for local URLs', async () => {
+      setupApp({ exposureMode: 'local', openPort: true, port: 8080 });
+      configService.getConfig.mockReturnValue({
+        localDomain: 'ci.lan',
+        userSettings: { internalIp: '::1', sslPort: 443, domain: 'example.com', localDomain: 'ci.lan' },
+      } as any);
+      const result = await service.checkAppAvailability(appUrn);
+      expect(result.appUrl).toBe('http://[::1]:8080');
     });
 
     it('MUST construct public URL with deviceSlug when exposureMode is cloudflare', async () => {
@@ -284,7 +304,7 @@ describe('AppsService', () => {
     });
 
     it("MUST return errorCode 'PROXY_UPSTREAM_ERROR' for non-Cloudflare 502/503", async () => {
-      setupApp({ exposureMode: 'local', port: 0 });
+      setupApp({ exposureMode: 'cloudflare' });
       mockAxiosGet.mockResolvedValue({ status: 502, data: '<html>Bad Gateway</html>' });
       const result = await service.checkAppAvailability(appUrn);
       // Non-CF 502 is now treated as available (any HTTP response = reachable)

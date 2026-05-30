@@ -250,7 +250,7 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
                 localSubdomain: app.localSubdomain || app.appSlug,
                 exposureMode: defaultExposureMode,
                 exposedLocal: defaultExposureMode === 'cloudflare',
-                openPort: false,
+                openPort: defaultExposureMode === 'local',
               }),
             }),
             minDelay(500),

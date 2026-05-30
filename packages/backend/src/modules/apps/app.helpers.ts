@@ -251,7 +251,6 @@ export class AppHelpers {
     let scheme = 'http';
     let publicHostname = '';
     let publicUrl = '';
-
     // Handle Local Exposure (Cloudflare Tunnel via Traefik)
     if (form.exposedLocal) {
       let subdomain = form.localSubdomain ? form.localSubdomain : `${appName}-${appStoreId}`;

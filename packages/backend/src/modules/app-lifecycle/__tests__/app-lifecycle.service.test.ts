@@ -297,6 +297,17 @@ describe('AppLifecycleService', () => {
 
       expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ exposureMode: 'local' }));
     });
+
+    it('MUST normalize local exposure to openPort=true before duplicate-port checks', async () => {
+      appsRepository.getAppsByPort.mockResolvedValue([{ appName: 'taken-port' }] as any);
+
+      await expect(
+        service.installApp({
+          appUrn,
+          form: { exposureMode: 'local', openPort: false, port: 8080 },
+        }),
+      ).rejects.toThrow('APP_ERROR_PORT_ALREADY_IN_USE');
+    });
   });
 
   describe('startApp', () => {
@@ -463,6 +474,36 @@ describe('AppLifecycleService', () => {
 
       await expect(service.updateAppConfig({ appUrn, form: {} })).rejects.toThrow('APP_ERROR_APP_NOT_FOUND');
       expect(restartSpy).not.toHaveBeenCalled();
+    });
+
+    it('normalizes local exposure to openPort=true before persistence and generate_env', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({
+        id: 1,
+        status: 'stopped',
+        config: {},
+        appName: 'myapp',
+        appStoreSlug: 'ci-marketplace',
+      } as any);
+
+      await service.updateAppConfig({
+        appUrn,
+        form: { exposureMode: 'local', openPort: false, port: 8080 },
+      });
+
+      expect(appEventsQueue.publish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          form: expect.objectContaining({ exposureMode: 'local', openPort: true, port: 8080 }),
+        }),
+      );
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(
+        1,
+        expect.objectContaining({
+          exposureMode: 'local',
+          openPort: true,
+          port: 8080,
+          config: expect.objectContaining({ exposureMode: 'local', openPort: true, port: 8080 }),
+        }),
+      );
     });
   });
 

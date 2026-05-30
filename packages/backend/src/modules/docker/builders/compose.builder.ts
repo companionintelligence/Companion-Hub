@@ -133,11 +133,11 @@ export class DockerComposeBuilder {
       service.setNetwork(mainNetworkName, 1);
     }
 
+    const effectiveExposureMode = form.exposureMode || (form.exposedLocal ? 'cloudflare' : 'local');
+
     if (params.isMain) {
-      // Only expose port on host if openPort is true (for direct local network access)
-      // When exposedLocal=true but openPort=false, Traefik uses Docker internal networking
-      // and doesn't need the host port mapping
-      if (form.openPort && params.internalPort) {
+      // Publish host port for local-mode apps (direct access) or when openPort is explicitly enabled
+      if ((form.openPort || effectiveExposureMode === 'local') && params.internalPort) {
         service.setPort({
           containerPort: params.internalPort,
           // biome-ignore lint/suspicious/noTemplateCurlyInString: intended
@@ -154,17 +154,10 @@ export class DockerComposeBuilder {
 
     // Generate Traefik labels based on exposure mode
     // Traefik routes using Docker internal networking (container IP + internalPort)
-    // It does NOT use host port mappings - only the isMain service gets Traefik labels
+    // It does NOT use host port mappings — only the isMain service gets Traefik labels
     let traefikLabels: Record<string, string | boolean> = {};
-    const effectiveExposureMode = form.exposureMode || (form.exposedLocal ? 'cloudflare' : 'local');
 
     if (effectiveExposureMode !== 'local' && params.isMain && params.internalPort) {
-      // Use org info read in getDockerCompose (set by app.helpers.ts in APP_PUBLIC_HOSTNAME)
-      // Fallback to using this.domain as public domain if not found
-      const publicDomainToUse = this.publicDomain || this.domain;
-
-      // Use full subdomain from APP_PUBLIC_HOSTNAME if available (includes org slug)
-      // Otherwise fall back to constructing it from localSubdomain
       const subdomainToUse = this.fullSubdomain || form.localSubdomain || `${appName}-${appStoreId}`;
 
       const traefikBuilder = new TraefikLabelsBuilder({
@@ -173,11 +166,12 @@ export class DockerComposeBuilder {
         storeId: appStoreId,
         exposureMode: effectiveExposureMode as 'local' | 'cloudflare' | 'tailscale',
         enableAuth: form.enableAuth,
-        localSubdomain: subdomainToUse, // Use full subdomain (with org slug) from APP_PUBLIC_HOSTNAME
-        publicDomain: publicDomainToUse,
+        localSubdomain: subdomainToUse,
+        publicDomain: this.publicDomain || this.domain,
         localDomain: this.localDomain,
         httpsBackend: params.httpsBackend,
       });
+
       traefikBuilder.addExposedLocalLabels();
       traefikBuilder.addTailscaleLabels();
       traefikLabels = traefikBuilder.build();

@@ -221,6 +221,8 @@ async function main() {
       envOverrides,
     );
 
+    run('tsx', ['scripts/sync-postgres-password.ts', envFileStr], envOverrides);
+
     // Run the app in dev/HMR mode. Use dotenv to load the env file into the process
     // and let the existing dev:app script set POSTGRES_HOST and RABBITMQ_HOST to localhost.
     run('dotenv', ['-e', envFileStr, '--', 'pnpm', 'run', 'dev:app'], envOverrides);

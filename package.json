@@ -10,7 +10,7 @@
   "scripts": {
     "dev": "pnpm exec tsx scripts/start.ts dev",
     "dev:app": "POSTGRES_HOST=localhost RABBITMQ_HOST=localhost NODE_ENV=development turbo run local",
-    "infra:up": "ENV_FILE=.env.local docker compose --env-file .env.local --project-name ci-hub -f docker-compose.local.yml up -d ci-os-hub-queue ci-hub-db",
+    "infra:up": "ENV_FILE=.env.local docker compose --env-file .env.local --project-name ci-hub -f docker-compose.local.yml up -d ci-os-hub-queue ci-hub-db && ENV_FILE=.env.local pnpm exec tsx scripts/sync-postgres-password.ts .env.local",
     "infra:down": "docker compose --project-name ci-hub -f docker-compose.local.yml down",
     "cleanup": "pnpm exec tsx scripts/cleanup.ts",
     "bundle": "turbo bundle",
