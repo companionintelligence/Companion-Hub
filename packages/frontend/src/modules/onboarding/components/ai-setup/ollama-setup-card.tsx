@@ -65,13 +65,14 @@ export const OllamaSetupCard = ({ status, checking, onRecheck }: OllamaSetupCard
             <div className="text-sm font-medium text-yellow-900 dark:text-yellow-100 mb-1">Ollama not detected</div>
             <div className="text-xs text-yellow-700 dark:text-yellow-300 mb-3">
               Ollama isn't installed or running on this machine. Install it from{' '}
-              <button
-                type="button"
-                onClick={() => openExternal(OLLAMA_DOWNLOAD_URL)}
+              <a
+                href={OLLAMA_DOWNLOAD_URL}
+                target="_blank"
+                rel="noopener noreferrer"
                 className="font-medium underline underline-offset-2 hover:text-yellow-900 dark:hover:text-yellow-100"
               >
                 ollama.com
-              </button>
+              </a>
               , start it, then re-check.
             </div>
             {status.error && <div className="mb-3 text-xs text-yellow-800 dark:text-yellow-200">{status.error}</div>}

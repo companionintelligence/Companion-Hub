@@ -429,6 +429,14 @@ describe('AiSetupStep', () => {
     await waitFor(() => expect(screen.getByText('Ollama not detected')).toBeInTheDocument());
   });
 
+  it('renders ollama.com as an external link when Ollama is not detected', async () => {
+    api.ollama = ollamaMissing;
+    renderStep();
+    await waitFor(() => expect(screen.getByText('Ollama not detected')).toBeInTheDocument());
+
+    expect(screen.getByRole('link', { name: 'ollama.com' })).toHaveAttribute('href', 'https://ollama.com');
+  });
+
   it('disables Continue while Ollama is not reachable', async () => {
     api.ollama = { ...ollamaMissing, error: 'connect ECONNREFUSED' };
     renderStep();

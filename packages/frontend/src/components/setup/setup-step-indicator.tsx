@@ -14,7 +14,9 @@ interface SetupStepIndicatorProps {
 }
 
 export function SetupStepIndicator({ label, state, icon, onClick, disabled, className }: SetupStepIndicatorProps) {
-  const isClickable = Boolean(onClick) && !disabled && state !== 'upcoming';
+  // Clickability is driven solely by onClick/disabled — the caller decides when a step is
+  // interactive (e.g. alwaysClickable future steps). `state` only controls visual appearance.
+  const isClickable = Boolean(onClick) && !disabled;
 
   const content = (
     <>
