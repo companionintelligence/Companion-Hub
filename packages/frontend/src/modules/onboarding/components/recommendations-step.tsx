@@ -4,7 +4,7 @@ import { useAppContext } from '@/context/app-context';
 import { portalAlternativesQueryOptions } from '@/lib/portal-alternatives';
 import { useQuery } from '@tanstack/react-query';
 import { LayoutGrid } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { getRecommendedApps } from '../helpers/alternatives';
 import type { DetectedService } from '../helpers/service-detection';
 import type { OnboardingApp } from '../helpers/types';
@@ -23,7 +23,9 @@ interface RecommendationsStepProps {
 
 export const RecommendationsStep = ({ detectedServices, onSelect, onSkip, onBack, embedded = false, onChange }: RecommendationsStepProps) => {
   const { apps: storeApps } = useAppContext();
-  const detectedNames = detectedServices.map((s) => s.friendlyName);
+  // Memoized so the `recommendations` memo below keeps a stable identity across re-renders
+  // (an unstable detectedNames array would invalidate it every render and re-fire the emit effect).
+  const detectedNames = useMemo(() => detectedServices.map((s) => s.friendlyName), [detectedServices]);
   const {
     data: altsData,
     isLoading: isAltsLoading,
@@ -86,10 +88,22 @@ export const RecommendationsStep = ({ detectedServices, onSelect, onSkip, onBack
   };
 
   // In embedded (single-form) mode, surface the live selection to the parent as the user toggles.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: emit when the selection changes
+  // Gate on a stable signature of the selected slugs so an unchanged selection reuses the previous
+  // array reference instead of emitting a fresh one — otherwise onChange -> parent setState ->
+  // re-render -> effect re-run would loop indefinitely.
+  const lastEmittedSignature = useRef<string | null>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: buildApps is derived from selected/recommendations/storeApps
   useEffect(() => {
-    if (embedded && onChange) onChange(buildApps());
-  }, [embedded, selected, recommendations, onChange]);
+    if (!embedded || !onChange) return;
+    const apps = buildApps();
+    const signature = apps
+      .map((a) => a.appSlug)
+      .sort()
+      .join('|');
+    if (signature === lastEmittedSignature.current) return;
+    lastEmittedSignature.current = signature;
+    onChange(apps);
+  }, [embedded, selected, recommendations, storeApps, onChange]);
 
   // Flatten the per-category recommendations into a single list for the grid, enriching each
   // entry with the store app's short description so the cards explain what the app is for.
