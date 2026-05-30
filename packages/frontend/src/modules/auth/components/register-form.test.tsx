@@ -18,7 +18,9 @@ describe('RegisterForm', () => {
 
     const passwordInput = screen.getByLabelText('AUTH_FORM_PASSWORD') as HTMLInputElement;
     const confirmationInput = screen.getByLabelText('AUTH_FORM_PASSWORD_CONFIRMATION') as HTMLInputElement;
-    const [passwordToggle, confirmationToggle] = screen.getAllByRole('button', { name: 'APP_INSTALL_FORM_SHOW_PASSWORD' });
+    const toggles = screen.getAllByRole('button', { name: 'APP_INSTALL_FORM_SHOW_PASSWORD' });
+    const passwordToggle = toggles[0] as HTMLElement;
+    const confirmationToggle = toggles[1] as HTMLElement;
 
     expect(passwordInput.type).toBe('password');
     expect(confirmationInput.type).toBe('password');
