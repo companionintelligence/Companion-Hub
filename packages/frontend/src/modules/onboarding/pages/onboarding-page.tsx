@@ -113,11 +113,7 @@ function OnboardingWizard() {
         <div aria-hidden className="h-4" />
 
         <div className="sticky bottom-4 z-10 flex flex-col gap-3 rounded-2xl border border-border bg-card/90 p-4 shadow-lg backdrop-blur sm:flex-row sm:items-center sm:justify-between">
-          <p className="text-sm text-muted-foreground">
-            {canFinish
-              ? `${selectedApps.length} app${selectedApps.length === 1 ? '' : 's'} selected. You can change everything later in Settings.`
-              : 'Detecting your hardware…'}
-          </p>
+          <p className="text-sm text-muted-foreground">{canFinish ? 'You can change everything later in Settings.' : 'Detecting your hardware…'}</p>
           <Button intent="primary" size="lg" disabled={!canFinish} onClick={() => setPhase('installing')} data-testid="finish-setup-btn">
             Finish setup
           </Button>

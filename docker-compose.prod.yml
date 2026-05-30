@@ -193,7 +193,7 @@ services:
   # tailscale.com using TS_AUTHKEY (set TAILSCALE_AUTHKEY in `.env`; HEADSCALE_PREAUTH_KEY is still read as a fallback for old configs).
   # Advertises the Docker bridge by default so tailnet devices can reach the Hub network.
   hub-tailscale:
-    image: tailscale/tailscale:v1.82.5
+    image: tailscale/tailscale:v1.98.3
     pull_policy: if_not_present
     container_name: hub-tailscale
     restart: unless-stopped
