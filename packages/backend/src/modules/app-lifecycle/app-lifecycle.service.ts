@@ -26,6 +26,7 @@ import type { z } from 'zod';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
 
 type AppFormForSubdomain = Pick<z.infer<typeof appFormSchema>, 'exposedLocal' | 'exposureMode' | 'localSubdomain'>;
+type ParsedAppForm = z.infer<typeof appFormSchema>;
 
 /** Trimmed subdomain when Cloudflare or Private VPN routing requires it to be globally unique on this Hub. */
 function uniqueRoutingLocalSubdomain(parsedForm: AppFormForSubdomain): string | undefined {
@@ -35,6 +36,14 @@ function uniqueRoutingLocalSubdomain(parsedForm: AppFormForSubdomain): string | 
     return trimmed;
   }
   return undefined;
+}
+
+function normalizeLocalOpenPort(parsedForm: ParsedAppForm): ParsedAppForm {
+  if ((parsedForm.exposureMode ?? 'local') === 'local' && !parsedForm.openPort) {
+    return { ...parsedForm, openPort: true };
+  }
+
+  return parsedForm;
 }
 
 @Injectable()
@@ -186,7 +195,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
     if (!parsedFormResult.success) {
       throw new TranslatableError('SYSTEM_ERROR_INVALID_BODY', undefined, HttpStatus.BAD_REQUEST, { cause: parsedFormResult.error });
     }
-    const parsedForm = parsedFormResult.data;
+    const parsedForm = normalizeLocalOpenPort(parsedFormResult.data);
 
     if (app) {
       await this.appRepository.updateAppById(app.id, { config: parsedForm, ...parsedForm });
@@ -285,9 +294,9 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       status: 'installing' as const,
       config: parsedForm,
       // Port semantics:
-      // - When openPort=true: Host port (exposed on host, checked for conflicts)
-      // - When exposedLocal=true and openPort=false: Internal port (for APP_PORT env var, not used for host port mapping)
-      // - Traefik routing uses params.internalPort from service definition, not this database field
+      // - Local exposure always publishes the host port, so local mode is normalized to openPort=true.
+      // - Cloudflare/Tailscale with openPort=false keep using params.internalPort for routing instead.
+      // - Traefik routing uses params.internalPort from service definition, not this database field.
       port: parsedForm.port ?? appInfo.port,
       version: appInfo.tipi_version,
       exposed: exposed ?? false,
@@ -480,7 +489,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
     if (!parsedFormResult.success) {
       throw new TranslatableError('SYSTEM_ERROR_INVALID_BODY', undefined, HttpStatus.BAD_REQUEST, { cause: parsedFormResult.error });
     }
-    const parsedForm = parsedFormResult.data;
+    const parsedForm = normalizeLocalOpenPort(parsedFormResult.data);
 
     const { exposed, domain, exposedLocal, enableAuth, openPort, port } = parsedForm;
 
