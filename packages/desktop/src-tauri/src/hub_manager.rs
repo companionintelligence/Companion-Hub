@@ -22,7 +22,23 @@ const MAX_START_RETRIES: u32 = 3;
 static START_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
 /// `(hub .env mtime, is_private_vpn)` — avoids parsing the env file on every hub status poll (~3s).
-static PRIVATE_VPN_ENV_CACHE: Mutex<Option<(Option<std::time::SystemTime>, bool)>> = Mutex::new(None);
+static PRIVATE_VPN_ENV_CACHE: Mutex<Option<(Option<std::time::SystemTime>, bool)>> =
+    Mutex::new(None);
+
+/// After the hub container is healthy and the Tailscale sidecar has been verified once, keep inspecting it
+/// until this grace elapses; then skip docker inspect on steady-state polls.
+const VPN_SIDECARS_STATUS_POLL_GRACE: Duration = Duration::from_secs(90);
+
+#[derive(Debug, Clone, Copy)]
+enum VpnSidecarPollPhase {
+    /// Hub reports healthy but `hub-tailscale` has not yet passed [`vpn_sidecars_ready`] in this cycle.
+    PendingReady,
+    /// Sidecar was ready at least once at `verified_at`.
+    VerifiedSince(Instant),
+}
+
+static VPN_SIDECAR_STATUS_POLL_PHASE: Mutex<VpnSidecarPollPhase> =
+    Mutex::new(VpnSidecarPollPhase::PendingReady);
 
 /// Serialize rotation + append so concurrent callers cannot interleave
 /// renames and writes to `desktop.log`.
@@ -174,8 +190,7 @@ fn refresh_nvidia_host_probe_cache(data_dir: &Path) {
             clear_stale_probe();
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
             let details = if stderr.is_empty() {
-                "No NVIDIA GPU found via Windows WMI; host NVIDIA probe cache cleared."
-                    .to_string()
+                "No NVIDIA GPU found via Windows WMI; host NVIDIA probe cache cleared.".to_string()
             } else {
                 format!("Windows NVIDIA probe command failed: {}", stderr)
             };
@@ -278,110 +293,116 @@ fn refresh_nvidia_host_probe_cache(data_dir: &Path) {
         return;
     }
 
-    let output = Command::new("sh")
+    #[cfg(target_os = "linux")]
+    {
+        let output = Command::new("sh")
         .arg("-lc")
         .arg("nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader,nounits | head -n 1")
         .output();
 
-    let output = match output {
-        Ok(value) => value,
-        Err(error) => {
+        let output = match output {
+            Ok(value) => value,
+            Err(error) => {
+                clear_stale_probe();
+                let _ = append_desktop_log_for(
+                    data_dir,
+                    "gpu.probe",
+                    &format!(
+                        "Skipping host NVIDIA probe cache refresh (nvidia-smi unavailable): {}",
+                        error
+                    ),
+                );
+                return;
+            }
+        };
+
+        if !output.status.success() {
+            clear_stale_probe();
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let details = if stderr.is_empty() {
+                "nvidia-smi command failed".to_string()
+            } else {
+                format!("nvidia-smi command failed: {}", stderr)
+            };
+            let _ = append_desktop_log_for(data_dir, "gpu.probe", &details);
+            return;
+        }
+
+        let first_line = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .unwrap_or("")
+            .to_string();
+        if first_line.is_empty() {
             clear_stale_probe();
             let _ = append_desktop_log_for(
                 data_dir,
                 "gpu.probe",
-                &format!(
-                    "Skipping host NVIDIA probe cache refresh (nvidia-smi unavailable): {}",
-                    error
-                ),
+                "nvidia-smi produced no GPU rows; host NVIDIA probe cache not updated.",
             );
             return;
         }
-    };
 
-    if !output.status.success() {
-        clear_stale_probe();
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let details = if stderr.is_empty() {
-            "nvidia-smi command failed".to_string()
-        } else {
-            format!("nvidia-smi command failed: {}", stderr)
+        let mut parts = first_line.split(',').map(str::trim);
+        let model = parts.next().unwrap_or_default().to_string();
+        let vram_mb = parts
+            .next()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0);
+        let driver_version = parts.next().unwrap_or_default().to_string();
+
+        if model.is_empty() {
+            clear_stale_probe();
+            let _ = append_desktop_log_for(
+                data_dir,
+                "gpu.probe",
+                "nvidia-smi probe row did not include a GPU model; host cache not updated.",
+            );
+            return;
+        }
+
+        let payload = serde_json::json!({
+            "model": model,
+            "vramMb": vram_mb,
+            "driverVersion": driver_version,
+            "source": "desktop-host-nvidia-smi"
+        });
+
+        let serialized = match serde_json::to_string_pretty(&payload) {
+            Ok(value) => format!("{}\n", value),
+            Err(error) => {
+                let _ = append_desktop_log_for(
+                    data_dir,
+                    "gpu.probe",
+                    &format!("Failed to serialize host NVIDIA probe cache: {}", error),
+                );
+                return;
+            }
         };
-        let _ = append_desktop_log_for(data_dir, "gpu.probe", &details);
-        return;
-    }
 
-    let first_line = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .unwrap_or("")
-        .to_string();
-    if first_line.is_empty() {
-        clear_stale_probe();
-        let _ = append_desktop_log_for(
-            data_dir,
-            "gpu.probe",
-            "nvidia-smi produced no GPU rows; host NVIDIA probe cache not updated.",
-        );
-        return;
-    }
-
-    let mut parts = first_line.split(',').map(str::trim);
-    let model = parts.next().unwrap_or_default().to_string();
-    let vram_mb = parts
-        .next()
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(0);
-    let driver_version = parts.next().unwrap_or_default().to_string();
-
-    if model.is_empty() {
-        clear_stale_probe();
-        let _ = append_desktop_log_for(
-            data_dir,
-            "gpu.probe",
-            "nvidia-smi probe row did not include a GPU model; host cache not updated.",
-        );
-        return;
-    }
-
-    let payload = serde_json::json!({
-        "model": model,
-        "vramMb": vram_mb,
-        "driverVersion": driver_version,
-        "source": "desktop-host-nvidia-smi"
-    });
-
-    let serialized = match serde_json::to_string_pretty(&payload) {
-        Ok(value) => format!("{}\n", value),
-        Err(error) => {
-            let _ = append_desktop_log_for(
-                data_dir,
-                "gpu.probe",
-                &format!("Failed to serialize host NVIDIA probe cache: {}", error),
-            );
-            return;
-        }
-    };
-
-    match std::fs::write(&probe_path, serialized) {
-        Ok(_) => {
-            let _ = append_desktop_log_for(
-                data_dir,
-                "gpu.probe",
-                &format!("Updated host NVIDIA probe cache at {}", probe_path.display()),
-            );
-        }
-        Err(error) => {
-            let _ = append_desktop_log_for(
-                data_dir,
-                "gpu.probe",
-                &format!(
-                    "Failed to write host NVIDIA probe cache at {}: {}",
-                    probe_path.display(),
-                    error
-                ),
-            );
+        match std::fs::write(&probe_path, serialized) {
+            Ok(_) => {
+                let _ = append_desktop_log_for(
+                    data_dir,
+                    "gpu.probe",
+                    &format!(
+                        "Updated host NVIDIA probe cache at {}",
+                        probe_path.display()
+                    ),
+                );
+            }
+            Err(error) => {
+                let _ = append_desktop_log_for(
+                    data_dir,
+                    "gpu.probe",
+                    &format!(
+                        "Failed to write host NVIDIA probe cache at {}: {}",
+                        probe_path.display(),
+                        error
+                    ),
+                );
+            }
         }
     }
 }
@@ -502,7 +523,10 @@ fn refresh_macos_host_probe_cache(data_dir: &Path) {
             let _ = append_desktop_log_for(
                 data_dir,
                 "hw.probe",
-                &format!("Failed to parse system_profiler SPHardwareDataType output: {}", e),
+                &format!(
+                    "Failed to parse system_profiler SPHardwareDataType output: {}",
+                    e
+                ),
             );
             return;
         }
@@ -900,7 +924,12 @@ fn service_state_score(state: &ServiceState) -> u8 {
     }
 }
 
-fn startup_service_definitions(vpn_on: bool) -> (Vec<(&'static str, &'static str, bool)>, Vec<(&'static str, &'static str, bool)>) {
+fn startup_service_definitions(
+    vpn_on: bool,
+) -> (
+    Vec<(&'static str, &'static str, bool)>,
+    Vec<(&'static str, &'static str, bool)>,
+) {
     let core = vec![
         ("ci-hub-db", "Database", true),
         ("ci-os-hub-queue", "Message queue", true),
@@ -927,7 +956,11 @@ pub fn get_startup_progress() -> StartupProgress {
     // usable even if the sidecar is still reconnecting.
     let (core, optional) = startup_service_definitions(vpn_on);
 
-    let all_names: Vec<&str> = core.iter().chain(optional.iter()).map(|(n, _, _)| *n).collect();
+    let all_names: Vec<&str> = core
+        .iter()
+        .chain(optional.iter())
+        .map(|(n, _, _)| *n)
+        .collect();
     let states = inspect_containers(&all_names);
 
     let mut services: Vec<ServiceStatus> = Vec::new();
@@ -998,10 +1031,12 @@ pub fn get_hub_status() -> HubStatus {
     // If a start operation is actively running (including first-time image pulls),
     // report Starting so the frontend shows progress instead of a false "Stopped" state.
     if START_IN_PROGRESS.load(Ordering::SeqCst) {
+        reset_vpn_sidecar_status_poll_phase();
         return HubStatus::Starting;
     }
 
     if !is_docker_available() {
+        reset_vpn_sidecar_status_poll_phase();
         return HubStatus::DockerNotAvailable;
     }
 
@@ -1018,6 +1053,7 @@ pub fn get_hub_status() -> HubStatus {
         .unwrap_or_default();
 
     if status.is_empty() || status.contains("No such object") || status.contains("Error") {
+        reset_vpn_sidecar_status_poll_phase();
         return HubStatus::Stopped;
     }
 
@@ -1025,8 +1061,53 @@ pub fn get_hub_status() -> HubStatus {
     let state = parts.first().copied().unwrap_or("");
     let health = parts.get(1).copied().unwrap_or("");
 
+    if !(state == "running" && health == "healthy") {
+        reset_vpn_sidecar_status_poll_phase();
+    }
+
     match (state, health) {
-        ("running", "healthy") => HubStatus::Running,
+        ("running", "healthy") => {
+            let vpn_on = is_private_vpn_enabled();
+            if !vpn_on {
+                reset_vpn_sidecar_status_poll_phase();
+                HubStatus::Running
+            } else {
+                let skip_sidecar_inspect = {
+                    let phase = VPN_SIDECAR_STATUS_POLL_PHASE.lock().unwrap();
+                    matches!(
+                        *phase,
+                        VpnSidecarPollPhase::VerifiedSince(since)
+                            if since.elapsed() >= VPN_SIDECARS_STATUS_POLL_GRACE
+                    )
+                };
+                if skip_sidecar_inspect {
+                    HubStatus::Running
+                } else {
+                    let ready = vpn_sidecars_ready();
+                    let mut phase = VPN_SIDECAR_STATUS_POLL_PHASE.lock().unwrap();
+                    match *phase {
+                        VpnSidecarPollPhase::PendingReady => {
+                            if ready {
+                                *phase = VpnSidecarPollPhase::VerifiedSince(Instant::now());
+                                HubStatus::Running
+                            } else {
+                                HubStatus::Starting
+                            }
+                        }
+                        VpnSidecarPollPhase::VerifiedSince(since) => {
+                            if since.elapsed() >= VPN_SIDECARS_STATUS_POLL_GRACE {
+                                HubStatus::Running
+                            } else if ready {
+                                HubStatus::Running
+                            } else {
+                                *phase = VpnSidecarPollPhase::PendingReady;
+                                HubStatus::Starting
+                            }
+                        }
+                    }
+                }
+            }
+        }
         ("running", _) => HubStatus::Starting,
         ("restarting", _) => {
             // Check if database is still starting — if so, Hub restart is expected
@@ -1195,7 +1276,11 @@ pub fn read_desktop_logs(max_lines: usize) -> String {
     let start = lines.len().saturating_sub(max_lines);
     // If we seeked into the middle of the file, the first "line" is likely
     // a partial line — skip it when we didn't start from the beginning.
-    let start = if read_from > 0 && start == 0 && lines.len() > 1 { 1 } else { start };
+    let start = if read_from > 0 && start == 0 && lines.len() > 1 {
+        1
+    } else {
+        start
+    };
     lines[start..].join("\n")
 }
 
@@ -1323,7 +1408,9 @@ pub(crate) fn append_desktop_log_for(
 
     // Hold the lock across rotation + write so concurrent callers cannot
     // interleave renames and appends.
-    let _lock = LOG_WRITE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _lock = LOG_WRITE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
 
     rotate_log_if_needed(&log_path, &logs_dir, MAX_LOG_SIZE_BYTES);
     match std::fs::OpenOptions::new()
@@ -1618,7 +1705,8 @@ fn clear_traefik_recreate_required(data_dir: &Path) -> Result<(), String> {
 }
 
 fn seeded_traefik_config_contents() -> String {
-    let acme_email = std::env::var("ACME_EMAIL").unwrap_or_else(|_| DEFAULT_TRAEFIK_ACME_EMAIL.to_string());
+    let acme_email =
+        std::env::var("ACME_EMAIL").unwrap_or_else(|_| DEFAULT_TRAEFIK_ACME_EMAIL.to_string());
     TRAEFIK_CONFIG_SEED.replace("{{ACME_EMAIL}}", &acme_email)
 }
 
@@ -1768,11 +1856,7 @@ fn prepare_traefik_runtime_state(data_dir: &Path) -> Result<TraefikRuntimePrefli
 }
 
 fn ensure_internal_docker_config_state(data_dir: &Path) -> Result<TraefikRuntimePreflight, String> {
-    ensure_runtime_file(
-        &data_dir.join(INTERNAL_DOCKER_CONFIG_FILE),
-        "{}",
-        None,
-    )
+    ensure_runtime_file(&data_dir.join(INTERNAL_DOCKER_CONFIG_FILE), "{}", None)
 }
 
 fn ensure_hub_docker_config_state(data_dir: &Path) -> Result<TraefikRuntimePreflight, String> {
@@ -1969,7 +2053,11 @@ fn wait_for_hub_healthy() -> Result<(), String> {
     wait_for_container_healthy("ci-os-hub", "Hub", HUB_START_HEALTHY_TIMEOUT_SECS)
 }
 
-fn start_database_first(compose_path: &Path, env_path: &Path, data_dir: &Path) -> Result<(), String> {
+fn start_database_first(
+    compose_path: &Path,
+    env_path: &Path,
+    data_dir: &Path,
+) -> Result<(), String> {
     let _ = append_desktop_log_for(
         data_dir,
         "hub.start",
@@ -2039,7 +2127,9 @@ pub fn start_hub(compose_path: &Path, env_path: &Path, data_dir: &Path) -> Resul
     clear_user_stopped(data_dir);
 
     // Prevent concurrent start attempts.
-    if START_IN_PROGRESS.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err()
+    if START_IN_PROGRESS
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
     {
         let message = "A Hub start operation is already in progress — skipping duplicate request.";
         let _ = append_desktop_log_for(data_dir, "hub.start", message);
@@ -2133,7 +2223,10 @@ fn start_hub_inner(
                 .unwrap_or(Path::new(".")),
         );
 
-        if let Some(src) = recover_candidates.iter().find(|candidate| candidate.exists()) {
+        if let Some(src) = recover_candidates
+            .iter()
+            .find(|candidate| candidate.exists())
+        {
             std::fs::copy(src, compose_path).map_err(|error| {
                 let message = format!(
                     "Compose file was missing and recovery copy from {} failed: {}",
@@ -2168,7 +2261,10 @@ fn start_hub_inner(
     })?;
 
     let env_changed = ensure_runtime_env_state(data_dir, env_path).map_err(|error| {
-        let message = format!("Failed to prepare runtime env state before startup: {}", error);
+        let message = format!(
+            "Failed to prepare runtime env state before startup: {}",
+            error
+        );
         let _ = append_desktop_log_for(data_dir, "hub.start", &message);
         with_view_logs_hint(message)
     })?;
@@ -2223,7 +2319,10 @@ fn start_hub_inner(
             let _ = append_desktop_log_for(
                 data_dir,
                 "hub.start",
-                &format!("Retry attempt {}/{} after transient failure.", attempt, MAX_START_RETRIES),
+                &format!(
+                    "Retry attempt {}/{} after transient failure.",
+                    attempt, MAX_START_RETRIES
+                ),
             );
         }
 
@@ -2292,7 +2391,10 @@ fn start_hub_inner(
         let _ = append_desktop_log_for(
             data_dir,
             "hub.start",
-            &format!("docker compose up -d failed (attempt {}). {}", attempt, combined_output),
+            &format!(
+                "docker compose up -d failed (attempt {}). {}",
+                attempt, combined_output
+            ),
         );
 
         // Container name conflicts are self-healable: run compose down to clear them,
@@ -2513,18 +2615,42 @@ fn parse_env_file(path: &Path) -> std::collections::HashMap<String, String> {
     map
 }
 
-/// Matches backend `isPrivateVpnEnabled` (`packages/backend/src/common/helpers/private-vpn.ts`): disabled only
-/// when the value is exactly `"false"` (case-sensitive). Missing key ⇒ enabled.
+/// Matches backend `isPrivateVpnEnabled` (`packages/backend/src/common/helpers/private-vpn.ts`): enabled only
+/// when the value is exactly `"true"` (case-sensitive). Missing key ⇒ disabled (safe default for fresh installs).
 fn private_vpn_enabled_from_map(env: &std::collections::HashMap<String, String>) -> bool {
     env.get("PRIVATE_VPN_ENABLED")
-        .map(|v| v.as_str() != "false")
-        .unwrap_or(true)
+        .map(|v| v.as_str() == "true")
+        .unwrap_or(false)
+}
+
+fn reset_vpn_sidecar_status_poll_phase() {
+    *VPN_SIDECAR_STATUS_POLL_PHASE.lock().unwrap() = VpnSidecarPollPhase::PendingReady;
+}
+
+/// `hub-tailscale` must be [`ServiceState::Ready`]: running (no healthcheck → `none` counts as ready).
+fn vpn_sidecars_ready() -> bool {
+    let names = ["hub-tailscale"];
+    let states = inspect_containers(&names);
+    for name in names {
+        match states.get(name) {
+            Some((state, health)) => {
+                let svc_state = derive_service_state(state.as_str(), health.as_str());
+                if !matches!(svc_state, ServiceState::Ready) {
+                    return false;
+                }
+            }
+            None => return false,
+        }
+    }
+    true
 }
 
 /// Cached by hub `.env` file mtime so frequent [`get_hub_status`] polls do not re-read and parse the file.
 fn is_private_vpn_enabled() -> bool {
     let path = hub_env_path();
-    let mtime = std::fs::metadata(&path).ok().and_then(|m| m.modified().ok());
+    let mtime = std::fs::metadata(&path)
+        .ok()
+        .and_then(|m| m.modified().ok());
     let mut guard = PRIVATE_VPN_ENV_CACHE.lock().unwrap();
     if let Some((cached_mtime, cached_val)) = guard.as_ref() {
         if *cached_mtime == mtime {
@@ -2594,9 +2720,9 @@ fn render_runtime_env_content(
         .unwrap_or_else(|| compute_data_dir_str(data_dir));
     let jwt_secret =
         get_non_empty_env_value(existing, "JWT_SECRET").unwrap_or_else(|| generate_hex(64));
-    let postgres_password = get_non_empty_env_value(existing, "POSTGRES_PASSWORD")
-        .unwrap_or_else(|| generate_hex(32));
-    // Private VPN — Tailscale sidecar; disabled only when `PRIVATE_VPN_ENABLED` is exactly `false`.
+    let postgres_password =
+        get_non_empty_env_value(existing, "POSTGRES_PASSWORD").unwrap_or_else(|| generate_hex(32));
+    // Private VPN — Tailscale sidecar; enabled only when `PRIVATE_VPN_ENABLED` is exactly `true`.
     let vpn_on = private_vpn_enabled_from_map(existing);
     let private_vpn_enabled = if vpn_on {
         "true".to_string()
@@ -2688,7 +2814,9 @@ fn generate_hex(bytes: usize) -> String {
 /// Determine the Hub container image tag from the domain.
 fn image_for_domain(domain: &str) -> &'static str {
     match domain {
-        "ci.computer" | "companionintelligence.org" => "ghcr.io/companionintelligence/ci-hub:latest",
+        "ci.computer" | "companionintelligence.org" => {
+            "ghcr.io/companionintelligence/ci-hub:latest"
+        }
         "companionintel.com" => "ghcr.io/companionintelligence/ci-hub:staging",
         _ => "ghcr.io/companionintelligence/ci-hub:dev",
     }
@@ -2840,14 +2968,15 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<HubInitialization, String> 
     })?;
     traefik_preflight.merge(internal_preflight);
 
-    let hub_docker_config_preflight = ensure_hub_docker_config_state(&data_dir).map_err(|error| {
-        let message = format!(
-            "Failed to prepare hub docker-config runtime state: {}",
-            error
-        );
-        let _ = append_desktop_log_for(&data_dir, "initialize", &message);
-        with_view_logs_hint(message)
-    })?;
+    let hub_docker_config_preflight =
+        ensure_hub_docker_config_state(&data_dir).map_err(|error| {
+            let message = format!(
+                "Failed to prepare hub docker-config runtime state: {}",
+                error
+            );
+            let _ = append_desktop_log_for(&data_dir, "initialize", &message);
+            with_view_logs_hint(message)
+        })?;
     traefik_preflight.merge(hub_docker_config_preflight);
 
     if traefik_preflight.changed {
@@ -2922,18 +3051,16 @@ fn generate_container_docker_config(
                 config_path
             ));
         }
-        Ok(metadata) if metadata.is_dir() => {
-            match std::fs::remove_dir_all(&config_path) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => {
-                    return Err(format!(
-                        "Cannot remove stale directory at {:?}: {}",
-                        config_path, e
-                    ));
-                }
+        Ok(metadata) if metadata.is_dir() => match std::fs::remove_dir_all(&config_path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(format!(
+                    "Cannot remove stale directory at {:?}: {}",
+                    config_path, e
+                ));
             }
-        }
+        },
         Ok(_) => {} // Regular file — will be overwritten below
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {} // Does not exist yet
         Err(e) => {
@@ -2995,10 +3122,7 @@ fn generate_container_docker_config(
         for (registry, entry) in auths {
             if let Some(auth) = entry.get("auth").and_then(|a| a.as_str()) {
                 if !auth.is_empty() {
-                    kept.insert(
-                        registry.clone(),
-                        serde_json::json!({ "auth": auth }),
-                    );
+                    kept.insert(registry.clone(), serde_json::json!({ "auth": auth }));
                 }
             }
         }
@@ -3037,9 +3161,8 @@ fn generate_container_docker_config(
     // currentContext, plugins, features, hooks, aliases, experimental, etc.
     // — all host-specific and either unused or harmful in-container.
 
-    let content =
-        serde_json::to_string_pretty(&serde_json::Value::Object(sanitized))
-            .map_err(|e| format!("Cannot serialise docker config: {}", e))?;
+    let content = serde_json::to_string_pretty(&serde_json::Value::Object(sanitized))
+        .map_err(|e| format!("Cannot serialise docker config: {}", e))?;
     std::fs::create_dir_all(&internal_dir)
         .map_err(|e| format!("Cannot create {}: {}", internal_dir.display(), e))?;
 
@@ -3064,8 +3187,14 @@ fn generate_container_docker_config(
             .map_err(|e| format!("Cannot flush {}: {}", tmp_path.display(), e))?;
         file.sync_all()
             .map_err(|e| format!("Cannot sync {}: {}", tmp_path.display(), e))?;
-        std::fs::rename(&tmp_path, &config_path)
-            .map_err(|e| format!("Cannot rename {} -> {}: {}", tmp_path.display(), config_path.display(), e))?;
+        std::fs::rename(&tmp_path, &config_path).map_err(|e| {
+            format!(
+                "Cannot rename {} -> {}: {}",
+                tmp_path.display(),
+                config_path.display(),
+                e
+            )
+        })?;
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
@@ -3592,9 +3721,10 @@ mod tests {
         generate_container_docker_config, is_container_name_conflict, is_oci_runtime_error,
         is_traefik_recreate_required, logs_open_target_for, managed_app_container_ps_args,
         mark_traefik_recreate_required, parse_container_ids, prepare_traefik_runtime_state,
-        seeded_traefik_config_contents, startup_service_definitions, truncate_command_output, tunnel_dir_for,
-        tunnel_token_path_for, DockerAccessState, MAX_COMMAND_OUTPUT_CHARS, TRAEFIK_ACME_FILE,
-        TRAEFIK_CONFIG_FILE, TRAEFIK_DYNAMIC_CONFIG_SEED, TRAEFIK_DYNAMIC_FILE, TRAEFIK_TLS_DIR,
+        seeded_traefik_config_contents, startup_service_definitions, truncate_command_output,
+        tunnel_dir_for, tunnel_token_path_for, DockerAccessState, MAX_COMMAND_OUTPUT_CHARS,
+        TRAEFIK_ACME_FILE, TRAEFIK_CONFIG_FILE, TRAEFIK_DYNAMIC_CONFIG_SEED, TRAEFIK_DYNAMIC_FILE,
+        TRAEFIK_TLS_DIR,
     };
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     use std::os::unix::fs::PermissionsExt;
@@ -3707,7 +3837,9 @@ mod tests {
         assert_eq!(core.len(), 4);
         assert!(optional
             .iter()
-            .any(|(container, label, required)| *container == "hub-tailscale" && *label == "Private VPN" && !required));
+            .any(|(container, label, required)| *container == "hub-tailscale"
+                && *label == "Private VPN"
+                && !required));
     }
 
     #[test]
@@ -3716,7 +3848,9 @@ mod tests {
 
         assert!(optional
             .iter()
-            .any(|(container, label, required)| *container == "ci-hub-ollama" && *label == "Ollama" && !required));
+            .any(|(container, label, required)| *container == "ci-hub-ollama"
+                && *label == "Ollama"
+                && !required));
     }
 
     #[test]
@@ -3916,10 +4050,7 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
         let r2 = logs_dir.join(format!("{}.2", DESKTOP_LOG_FILENAME));
         assert!(r1.exists());
         assert!(r2.exists());
-        assert_eq!(
-            std::fs::read_to_string(&r1).expect("read r1"),
-            new_payload
-        );
+        assert_eq!(std::fs::read_to_string(&r1).expect("read r1"), new_payload);
         assert_eq!(std::fs::read_to_string(&r2).expect("read r2"), payload);
 
         // Repeated rotations should keep updating .1..=MAX_LOG_ROTATIONS even when
@@ -3938,8 +4069,7 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
         }
 
         for rotation in 1..=MAX_LOG_ROTATIONS {
-            let rotated_path =
-                logs_dir.join(format!("{}.{}", DESKTOP_LOG_FILENAME, rotation));
+            let rotated_path = logs_dir.join(format!("{}.{}", DESKTOP_LOG_FILENAME, rotation));
             assert!(
                 rotated_path.exists(),
                 "expected rotated log {} to exist",
@@ -4020,9 +4150,18 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
             Some(&serde_json::json!({ "https://index.docker.io/v1/": { "auth": "dXNlcjpwYXNz" } })),
             "inline auths should be preserved"
         );
-        assert!(parsed.get("credsStore").is_none(), "host-only credsStore stripped");
-        assert!(parsed.get("credHelpers").is_none(), "host-only credHelpers stripped");
-        assert!(parsed.get("currentContext").is_none(), "currentContext stripped");
+        assert!(
+            parsed.get("credsStore").is_none(),
+            "host-only credsStore stripped"
+        );
+        assert!(
+            parsed.get("credHelpers").is_none(),
+            "host-only credHelpers stripped"
+        );
+        assert!(
+            parsed.get("currentContext").is_none(),
+            "currentContext stripped"
+        );
         assert!(parsed.get("plugins").is_none(), "plugins stripped");
 
         // Verify file permissions are restricted on Unix
@@ -4048,7 +4187,10 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
 
         generate_container_docker_config(&data_dir, Some(&docker_dir)).expect("generate config");
 
-        assert!(config_path.is_file(), "stale dir should be replaced with a file");
+        assert!(
+            config_path.is_file(),
+            "stale dir should be replaced with a file"
+        );
         let parsed: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
         assert!(parsed.is_object());

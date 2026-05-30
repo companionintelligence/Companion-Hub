@@ -381,9 +381,7 @@ export class AppHelpers {
     // container (native protocol); apps that want the OpenAI-compatible surface
     // append /v1 themselves, and may fetch richer connection info (incl. cloud
     // overrides) from GET /api/inference/apps/:slug/credentials.
-    {
-      envMap.set('OLLAMA_HOST', process.env.OLLAMA_URL || 'http://ci-hub-ollama:11434');
-    }
+    envMap.set('OLLAMA_HOST', process.env.OLLAMA_URL || 'http://ci-hub-ollama:11434');
 
     await this.appFilesManager.writeAppEnv(appUrn, this.envUtils.envMapToString(envMap));
   };

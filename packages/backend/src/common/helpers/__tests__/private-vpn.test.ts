@@ -6,7 +6,12 @@ describe('private-vpn helpers', () => {
     delete process.env.PRIVATE_VPN_ENABLED;
   });
 
-  it('isPrivateVpnEnabled defaults true', () => {
+  it('isPrivateVpnEnabled defaults false when PRIVATE_VPN_ENABLED is unset', () => {
+    expect(isPrivateVpnEnabled()).toBe(false);
+  });
+
+  it('isPrivateVpnEnabled true only when PRIVATE_VPN_ENABLED=true', () => {
+    process.env.PRIVATE_VPN_ENABLED = 'true';
     expect(isPrivateVpnEnabled()).toBe(true);
   });
 

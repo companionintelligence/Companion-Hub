@@ -3,6 +3,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { HubStatus, getDockerDesktopGuideContent } from './hub-status';
 
+vi.mock('@/lib/theme/theme', () => ({
+  getLogo: () => '/logo.svg',
+}));
+
 type TauriWindow = Window & {
   __TAURI_INTERNALS__?: { invoke: (cmd: string) => Promise<unknown> };
 };
@@ -54,6 +58,12 @@ function renderWithTauriStatus(status: 'DockerNotAvailable' | 'Stopped' | 'Runni
   const invoke = vi.fn<(cmd: string) => Promise<unknown>>(async (cmd: string) => {
     if (cmd === 'get_hub_status_command') {
       return status;
+    }
+    if (cmd === 'check_docker_access_command') {
+      return { state: 'daemon_unavailable', detail: 'No container engine found at /var/run/docker.sock' };
+    }
+    if (cmd === 'get_startup_progress_command') {
+      return { services: [], progress_pct: 0, image_pulled: 0, image_total: 0, image_pull_pct: 0, all_ready: false };
     }
 
     throw new Error(`Unexpected invoke command: ${cmd}`);
@@ -153,7 +163,7 @@ describe('HubStatus Docker guidance', () => {
       'href',
       'https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe',
     );
-    expect(screen.getByText('Docker Desktop is either not installed or not currently running.')).toBeInTheDocument();
+    expect(screen.getByText(/Companion Hub needs Docker Desktop/)).toBeInTheDocument();
     expect(screen.getByText('If Docker Desktop is already installed:')).toBeInTheDocument();
     expect(screen.getByText('Open Docker Desktop from your Start Menu')).toBeInTheDocument();
     expect(screen.getByText('If Docker Desktop is NOT installed:')).toBeInTheDocument();
@@ -199,6 +209,10 @@ describe('HubStatus Docker guidance', () => {
           return 'Running';
         case 'start_hub_command':
           return 'Hub started successfully';
+        case 'check_docker_access_command':
+          return { state: 'daemon_unavailable', detail: null };
+        case 'get_startup_progress_command':
+          return { services: [], progress_pct: 0, image_pulled: 0, image_total: 0, image_pull_pct: 0, all_ready: false };
         default:
           throw new Error(`Unexpected invoke command: ${cmd}`);
       }
@@ -243,6 +257,10 @@ describe('HubStatus Docker guidance', () => {
           return getHubStatusCallCount === 1 ? 'Stopped' : 'Running';
         case 'start_hub_command':
           return 'Hub started successfully';
+        case 'check_docker_access_command':
+          return { state: 'available', detail: null };
+        case 'get_startup_progress_command':
+          return { services: [], progress_pct: 0, image_pulled: 0, image_total: 0, image_pull_pct: 0, all_ready: false };
         default:
           throw new Error(`Unexpected invoke command: ${cmd}`);
       }
@@ -290,9 +308,11 @@ describe('HubStatus diagnostics (View Logs / Open Logs Folder)', () => {
       if (extraHandler) {
         return extraHandler();
       }
-      // get_startup_progress_command is polled by StartupScreen — safe to return null
+      if (cmd === 'check_docker_access_command') {
+        return { state: 'daemon_unavailable', detail: null };
+      }
       if (cmd === 'get_startup_progress_command') {
-        return null;
+        return { services: [], progress_pct: 0, image_pulled: 0, image_total: 0, image_pull_pct: 0, all_ready: false };
       }
       throw new Error(`Unexpected invoke command: ${cmd}`);
     });

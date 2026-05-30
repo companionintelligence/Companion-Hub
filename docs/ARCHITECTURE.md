@@ -502,7 +502,7 @@ The Hub orchestrates its infrastructure and all user-installed apps via Docker C
 | Service | Image | Profile | Purpose |
 |---------|-------|---------|---------|
 | `cloudflared` | `cloudflare/cloudflared:2026.2.0` | `cloudflare` | Tunnel to Cloudflare edge |
-| `hub-tailscale` | `tailscale/tailscale:v1.82.5` | `private-vpn` | Tailscale sidecar ([private-vpn.md](./private-vpn.md)) |
+| `hub-tailscale` | `tailscale/tailscale:v1.98.3` | `private-vpn` | Tailscale sidecar ([private-vpn.md](./private-vpn.md)) |
 
 **User-installed apps** run as separate Docker Compose stacks managed by the backend's `DockerService`. Each app gets its own compose file, network, and data directory.
 

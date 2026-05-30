@@ -2,6 +2,28 @@
 <html lang="en">
   <head>
     <title>Companion Hub</title>
+    <script>
+      (() => {
+                    var storageKey = 'vite-ui-theme';
+                    var defaultTheme = 'system';
+                    var storedTheme;
+
+                    try {
+                      storedTheme = localStorage.getItem(storageKey) || defaultTheme;
+                    } catch {
+                      storedTheme = defaultTheme;
+                    }
+
+                    var theme =
+                      storedTheme === 'system'
+                        ? window.matchMedia('(prefers-color-scheme: dark)').matches
+                          ? 'dark'
+                          : 'light'
+                        : storedTheme;
+
+                    document.documentElement.classList.add(theme);
+                  })();
+    </script>
   </head>
 
   <body>

@@ -1,5 +1,5 @@
 import { Button } from '@/components/ui/Button';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Shield, Loader2, Check, ExternalLink, AlertCircle } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-fetch';
@@ -50,6 +50,9 @@ export const TailscaleSetupStep = ({ onComplete, onSkip, onBack, embedded = fals
       return res.json();
     },
     refetchInterval: 5_000, // Poll every 5s during onboarding for real-time updates
+    // Re-check the moment the user returns to the Hub after authenticating in the
+    // external browser, so the section flips to "connected" without waiting for the poll.
+    refetchOnWindowFocus: true,
   });
 
   const browserAuthMutation = useMutation({
@@ -78,8 +81,20 @@ export const TailscaleSetupStep = ({ onComplete, onSkip, onBack, embedded = fals
     onError: () => toast.error(t('ONBOARDING_TAILSCALE_AUTH_FAILED')),
   });
 
-  const isConnected = status?.installed && status?.connected;
+  const isConnected = Boolean(status?.installed && status?.connected);
   const cliAvailable = status?.installed;
+
+  // Detect the disconnected → connected transition (at any point during onboarding)
+  // and give the user explicit confirmation that Tailscale connected successfully.
+  // Seeded with `null` so an already-connected state on first load doesn't toast.
+  const wasConnectedRef = useRef<boolean | null>(null);
+  useEffect(() => {
+    if (isLoading) return;
+    if (wasConnectedRef.current === false && isConnected) {
+      toast.success(t('ONBOARDING_TAILSCALE_CONNECTED'));
+    }
+    wasConnectedRef.current = isConnected;
+  }, [isConnected, isLoading, t]);
 
   return (
     <WizardCard className="space-y-6">

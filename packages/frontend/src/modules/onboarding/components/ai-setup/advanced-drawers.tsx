@@ -4,8 +4,9 @@ import { ChevronDown, ChevronRight, Cloud } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import type { CloudProviderInput } from '../../helpers/ai-setup-types';
 import { CloudProviderCard } from './cloud-provider-card';
-import { CubeModelsIcon } from './icons';
-import { OtherModels } from './model-selection-card';
+// Other Models section temporarily hidden — re-enable these imports when restoring it.
+// import { CubeModelsIcon } from './icons';
+// import { OtherModels } from './model-selection-card';
 
 interface AdvancedDrawersProps {
   recommendedModels: CuratedModel[];
@@ -57,11 +58,12 @@ function DrawerRow({
 
 /** Collapsible "Advanced" panel holding the Other Models picker and Cloud API Keys inputs. */
 export const AdvancedDrawers = ({
-  recommendedModels,
-  availableModels,
-  selectedModelIds,
-  onToggleModel,
-  preferredModelId,
+  // Other Models picker hidden — restore these with the DrawerRow block below.
+  // recommendedModels,
+  // availableModels,
+  // selectedModelIds,
+  // onToggleModel,
+  // preferredModelId,
   providers,
   onUpdateProviders,
   insufficientHardware,
@@ -83,6 +85,7 @@ export const AdvancedDrawers = ({
 
       {open && (
         <div className="mt-4 space-y-3">
+          {/* Other Models section temporarily hidden.
           {!insufficientHardware && (
             <DrawerRow
               icon={<CubeModelsIcon />}
@@ -99,6 +102,7 @@ export const AdvancedDrawers = ({
               />
             </DrawerRow>
           )}
+          */}
 
           <DrawerRow
             icon={<Cloud />}

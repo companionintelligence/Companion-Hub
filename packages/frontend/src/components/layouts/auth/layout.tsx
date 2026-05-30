@@ -17,13 +17,13 @@ export const AuthLayout = ({ children, wide = false }: AuthLayoutProps) => {
   const { allowAutoThemes } = useUserContext();
   return (
     <div
-      className="flex min-h-screen items-center justify-center bg-background px-4 py-8"
-      style={{ paddingTop: 'calc(var(--titlebar-height, 0px) + 2rem)' }}
+      className="flex flex-col items-center overflow-y-auto bg-background px-4 pb-8"
+      style={{ height: 'calc(100vh - var(--titlebar-height, 0px))', paddingTop: 'calc(var(--titlebar-height, 0px) + 2rem)' }}
     >
       <div className="absolute right-3" style={{ top: 'calc(var(--titlebar-height, 0px) + 0.25rem)' }}>
         <LanguageSelector locale={locale as Locale} />
       </div>
-      <div className={cn('w-full', wide ? 'max-w-4xl' : 'max-w-md')}>
+      <div className={cn('w-full my-auto', wide ? 'max-w-4xl' : 'max-w-md')}>
         <div className="mb-6 text-center">
           <img
             alt="Companion Hub logo"

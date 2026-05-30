@@ -11,6 +11,7 @@ import { client } from './api-client/client.gen';
 import stylesheet from './app.css?url';
 import globalsStylesheet from './styles/globals.css?url';
 import { Providers } from './components/providers/providers';
+import { ThemeProvider } from './components/providers/theme/theme-provider';
 import { TranslatableError } from './types/error.types';
 import { apiFetch, getTauriSessionId } from './lib/api-fetch';
 import type { RegistrationStatus } from './lib/registration-status';
@@ -250,14 +251,16 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <Links />
       </head>
       <body>
-        <Titlebar />
-        {update && <UpdateBanner update={update} onDismiss={dismiss} />}
-        <HubStatus>
-          <main id="root">
-            {children}
-            <ScrollRestoration />
-          </main>
-        </HubStatus>
+        <ThemeProvider defaultTheme="dark">
+          <Titlebar />
+          {update && <UpdateBanner update={update} onDismiss={dismiss} />}
+          <HubStatus>
+            <main id="root">
+              {children}
+              <ScrollRestoration />
+            </main>
+          </HubStatus>
+        </ThemeProvider>
         <Scripts />
       </body>
     </html>

@@ -78,7 +78,8 @@ describe('OnboardingPage (single vertical form)', () => {
   it('renders all config sections on one page', () => {
     renderPage();
     expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument();
-    expect(screen.getByTestId('recommendations-step')).toBeInTheDocument();
+    // Recommended apps section is temporarily hidden.
+    expect(screen.queryByTestId('recommendations-step')).not.toBeInTheDocument();
     expect(screen.getByTestId('tailscale-setup-step')).toBeInTheDocument();
   });
 

@@ -20,7 +20,6 @@ export interface QueueConnectionState {
 export class QueueFactory implements OnApplicationShutdown {
   private rabbit: Connection;
   private connectionAttempts = 0;
-  private isInitialized = false;
   private initializationPromise: Promise<void> | null = null;
   private reconnectPromise: Promise<Error | undefined> | null = null;
   private connectionStatus: QueueConnectionStatus = 'connecting';
@@ -87,7 +86,6 @@ export class QueueFactory implements OnApplicationShutdown {
 
     this.rabbit.on('connection', () => {
       this.connectionAttempts = 0;
-      this.isInitialized = true;
       this.connectionStatus = 'ready';
       this.lastError = undefined;
       this.logger.info('Connected to the queue');
@@ -112,20 +110,26 @@ export class QueueFactory implements OnApplicationShutdown {
     await this.waitForConnection();
   }
 
+  private isConnectionEstablished(): boolean {
+    // Either signal proves the connection is up: the 'connection' event (connectionStatus)
+    // or the library's socket-level `ready` flag. Checking both avoids waiting out the full
+    // timeout when one signal lags the other (and keeps the connect gate from busy-waiting).
+    return this.connectionStatus === 'ready' || Boolean(this.rabbit?.ready);
+  }
+
   private async waitForConnection(maxWaitTime = 30000) {
     const startTime = Date.now();
 
-    while (!this.rabbit.ready && Date.now() - startTime < maxWaitTime) {
+    while (!this.isConnectionEstablished() && Date.now() - startTime < maxWaitTime) {
       await setTimeout(1000);
     }
 
-    if (!this.rabbit.ready) {
+    if (!this.isConnectionEstablished()) {
       throw new Error('Failed to connect to RabbitMQ within timeout period');
     }
   }
 
   private markDegraded(error: Error) {
-    this.isInitialized = false;
     this.connectionStatus = 'degraded';
     this.lastError = error.message;
   }
@@ -158,7 +162,11 @@ export class QueueFactory implements OnApplicationShutdown {
   }
 
   public isReady() {
-    return this.isInitialized && this.rabbit?.ready;
+    // `rabbit.ready` checks internal socket state (readyState === OPEN && !writableCorked)
+    // which can be falsely stuck after a RabbitMQ restart + reconnect even when the AMQP
+    // connection is fully re-established. `connectionStatus` is the reliable signal here:
+    // it's set to 'ready' only after the 'connection' event fires and to 'degraded' on error.
+    return this.connectionStatus === 'ready';
   }
 
   public getConnectionState(): QueueConnectionState {

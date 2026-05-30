@@ -57,6 +57,11 @@ export const CompleteStep = ({ installSummary, aiSetupConfig }: CompleteStepProp
   const [loading, setLoading] = useState(false);
   const copy = completionCopy(installSummary);
 
+  // Only render the AI summary box when it has something to say — otherwise it's an empty box.
+  const hasAiSummary = Boolean(
+    aiSetupConfig && (aiSetupConfig.skipped || aiSetupConfig.selectedModels.length > 0 || aiSetupConfig.cloudProviders.length > 0),
+  );
+
   const handleFinish = async () => {
     setLoading(true);
     try {
@@ -85,7 +90,7 @@ export const CompleteStep = ({ installSummary, aiSetupConfig }: CompleteStepProp
           {copy.body}
         </p>
 
-        {aiSetupConfig && (
+        {hasAiSummary && aiSetupConfig && (
           <div
             className="mt-5 w-full max-w-md rounded-2xl border border-border bg-foreground/[0.015] p-4 text-sm text-muted-foreground"
             data-testid="ai-summary"

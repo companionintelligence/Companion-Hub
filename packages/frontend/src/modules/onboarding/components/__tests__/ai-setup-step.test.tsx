@@ -15,6 +15,11 @@ vi.mock('@/components/ui/Skeleton/Skeleton', () => ({
   Skeleton: ({ className }: { className?: string }) => <div data-testid="skeleton" className={className} />,
 }));
 
+const mockOpenExternal = vi.fn();
+vi.mock('@/lib/helpers/open-external', () => ({
+  openExternal: (...args: unknown[]) => mockOpenExternal(...args),
+}));
+
 // Onboarding pins inference to Ollama, so catalog fixtures use the Ollama backend.
 const highTierProfile: HardwareProfileResponse = {
   hardware: {
@@ -115,7 +120,6 @@ let api: {
   profileReject: boolean;
   ollama: { ready: boolean; running: boolean; endpointUrl: string; error?: string };
   rescanOk: boolean;
-  install: { success: boolean; message: string };
 };
 
 function renderStep(props: Partial<Parameters<typeof AiSetupStep>[0]> = {}) {
@@ -136,7 +140,6 @@ describe('AiSetupStep', () => {
       profileReject: false,
       ollama: ollamaReady,
       rescanOk: true,
-      install: { success: true, message: '' },
     };
 
     mockApiFetch.mockImplementation((url: string) => {
@@ -145,7 +148,6 @@ describe('AiSetupStep', () => {
         return mockResponse(api.profile, api.profileOk);
       }
       if (url === '/api/inference/ollama/status') return mockResponse(api.ollama);
-      if (url === '/api/inference/ollama/install') return mockResponse(api.install);
       if (url === '/api/inference/hardware/rescan') return mockResponse({}, api.rescanOk);
       return mockResponse({});
     });
@@ -251,12 +253,11 @@ describe('AiSetupStep', () => {
     });
   });
 
-  it('shows Ollama as the default backend and disables vLLM and Lemonade', async () => {
+  it('hides the inference backend selection (Ollama is the only option)', async () => {
     renderStep();
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
-    expect(screen.getByTestId('backend-option-ollama')).toHaveAttribute('aria-pressed', 'true');
-    expect(screen.getByTestId('backend-option-vllm')).toBeDisabled();
-    expect(screen.getByTestId('backend-option-lemonade')).toBeDisabled();
+    // The backend picker is hidden — Ollama is implied. The config still defaults to it (see Continue test).
+    expect(screen.queryByTestId('backend-option-ollama')).not.toBeInTheDocument();
   });
 
   it('allows toggling model selection', async () => {
@@ -310,7 +311,7 @@ describe('AiSetupStep', () => {
     });
   });
 
-  it('features OpenClaw and Hermes and selects a preferred agent model', async () => {
+  it('features OpenClaw and Hermes and defaults to the first selected recommended model', async () => {
     const user = userEvent.setup();
     const { onComplete } = renderStep();
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
@@ -321,15 +322,11 @@ describe('AiSetupStep', () => {
     // OpenClaw is the default selection.
     expect(screen.getByTestId('agent-openclaw')).toHaveAttribute('aria-pressed', 'true');
 
-    const select = screen.getByTestId('preferred-model-select') as HTMLSelectElement;
-    expect(select.value).toBe('phi-4-mini');
-    await user.selectOptions(select, 'qwen-coder');
-    expect(select.value).toBe('qwen-coder');
+    // The default-model picker is hidden — the agent automatically uses the first selected recommended model.
+    expect(screen.queryByTestId('preferred-model-select')).not.toBeInTheDocument();
 
     await user.click(screen.getByTestId('ai-continue-btn'));
-    expect(onComplete).toHaveBeenCalledWith(
-      expect.objectContaining({ preferredModelId: 'qwen-coder', selectedModels: expect.arrayContaining(['phi-4-mini', 'qwen-coder']) }),
-    );
+    expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({ preferredModelId: 'phi-4-mini' }));
   });
 
   it('lets the user switch the agent framework to Hermes', async () => {
@@ -426,29 +423,36 @@ describe('AiSetupStep', () => {
     expect(screen.getByText(/Failed to detect hardware/)).toBeInTheDocument();
   });
 
-  it('shows the Ollama setup card when the Ollama container is not running', async () => {
+  it('shows the Ollama setup card when Ollama is not detected on the host', async () => {
     api.ollama = ollamaMissing;
     renderStep();
-    await waitFor(() => expect(screen.getByText('Ollama Container Not Running')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Ollama not detected')).toBeInTheDocument());
+  });
+
+  it('renders ollama.com as an external link when Ollama is not detected', async () => {
+    api.ollama = ollamaMissing;
+    renderStep();
+    await waitFor(() => expect(screen.getByText('Ollama not detected')).toBeInTheDocument());
+
+    expect(screen.getByRole('link', { name: 'ollama.com' })).toHaveAttribute('href', 'https://ollama.com');
   });
 
   it('disables Continue while Ollama is not reachable', async () => {
     api.ollama = { ...ollamaMissing, error: 'connect ECONNREFUSED' };
     renderStep();
-    await waitFor(() => expect(screen.getByText('Ollama Container Not Running')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Ollama not detected')).toBeInTheDocument());
     expect(screen.getByTestId('ai-continue-btn')).toBeDisabled();
-    expect(screen.getByText(/runs inside the Hub container stack/i)).toBeInTheDocument();
+    expect(screen.getByText(/isn't installed or running on this machine/i)).toBeInTheDocument();
   });
 
-  it('keeps the system overview visible when an Ollama connection check fails', async () => {
+  it('opens ollama.com when Ollama is not installed', async () => {
     const user = userEvent.setup();
     api.ollama = ollamaMissing;
-    api.install = { success: false, message: 'Ollama is managed by the ci-hub-ollama container. Start or restart it and re-check.' };
     renderStep();
-    await waitFor(() => expect(screen.getByText('Ollama Container Not Running')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Ollama not detected')).toBeInTheDocument());
 
-    await user.click(screen.getByRole('button', { name: 'Check Ollama Connection' }));
-    await waitFor(() => expect(screen.getByText(api.install.message)).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: /Get Ollama/i }));
+    expect(mockOpenExternal).toHaveBeenCalledWith('https://ollama.com');
     expect(screen.getByTestId('hw-card-title')).toBeInTheDocument();
     expect(screen.queryByTestId('ai-setup-error')).not.toBeInTheDocument();
   });
