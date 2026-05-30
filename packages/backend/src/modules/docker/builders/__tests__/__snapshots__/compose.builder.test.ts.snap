@@ -23,17 +23,6 @@ exports[`DockerComposeBuilder > should be able to parse a compose.json file 1`] 
     labels:
       ci-os-hub.managed: true
       ci-os-hub.appurn: nginx:store-id
-      generated: true
-      traefik.enable: true
-      traefik.docker.network: ci-os-hub_network
-      traefik.http.services.nginx-store-id.loadbalancer.server.port: "8000"
-      traefik.http.routers.nginx-store-id-local-insecure.rule: Host(\`nginx-store-id.ci.lan\`)
-      traefik.http.routers.nginx-store-id-local-insecure.entrypoints: web
-      traefik.http.routers.nginx-store-id-local-insecure.service: nginx-store-id
-      traefik.http.routers.nginx-store-id-local.rule: Host(\`nginx-store-id.ci.lan\`)
-      traefik.http.routers.nginx-store-id-local.entrypoints: websecure
-      traefik.http.routers.nginx-store-id-local.service: nginx-store-id
-      traefik.http.routers.nginx-store-id-local.tls: true
       some-label: some-value
       nginx-store-id.service: true
       com.docker.compose.service: nginx-store-id

@@ -168,38 +168,34 @@ export class AppsService {
     // Build the app URL based on exposure mode
     let appUrl: string | undefined;
     if (exposureMode === 'local') {
-      const localDomain = config.localDomain || userSettings.localDomain || 'ci.lan';
-      const subdomain = baseSubdomain || app.appName;
-
-      if (app.openPort && app.port) {
-        const host = resolveBrowserHost(userSettings.internalIp);
-        appUrl = `http://${host}:${app.port}${urlSuffix}`;
-        return { available: true, appUrl, stage: 'ready' };
+      if (!app.port) {
+        return { available: false, appUrl: undefined, stage: 'error' };
       }
 
-      appUrl = `https://${subdomain}.${localDomain}${urlSuffix}`;
-    } else {
-      // Cloudflare/Tailscale: use public domain
-      const resolvedDomain = app.publicDomain?.trim() || userSettings.domain;
-      if (!organizationSlug || !resolvedDomain) {
-        return { available: false, appUrl, stage: 'error' };
-      }
-
-      // Always include deviceSlug for correct subdomain construction
-      if (!org?.hubSubdomain) {
-        return {
-          available: false,
-          appUrl: undefined,
-          stage: 'error',
-          errorCode: 'NO_DEVICE_REGISTRATION',
-          detail: 'Device not registered with an organization.',
-          resolvable: false,
-        };
-      }
-      const deviceSlug = org.hubSubdomain.replace(/^hub-/, '').replace(new RegExp(`-${organizationSlug}$`), '');
-      const subdomain = `${baseSubdomain}-${deviceSlug}-${organizationSlug}`;
-      appUrl = `https://${subdomain}.${resolvedDomain}${urlSuffix}`;
+      const host = resolveBrowserHost(userSettings.internalIp);
+      appUrl = `http://${host}:${app.port}${urlSuffix}`;
+      return { available: true, appUrl, stage: 'ready' };
     }
+    // Cloudflare/Tailscale: use public domain
+    const resolvedDomain = app.publicDomain?.trim() || userSettings.domain;
+    if (!organizationSlug || !resolvedDomain) {
+      return { available: false, appUrl, stage: 'error' };
+    }
+
+    // Always include deviceSlug for correct subdomain construction
+    if (!org?.hubSubdomain) {
+      return {
+        available: false,
+        appUrl: undefined,
+        stage: 'error',
+        errorCode: 'NO_DEVICE_REGISTRATION',
+        detail: 'Device not registered with an organization.',
+        resolvable: false,
+      };
+    }
+    const deviceSlug = org.hubSubdomain.replace(/^hub-/, '').replace(new RegExp(`-${organizationSlug}$`), '');
+    const subdomain = `${baseSubdomain}-${deviceSlug}-${organizationSlug}`;
+    appUrl = `https://${subdomain}.${resolvedDomain}${urlSuffix}`;
 
     // Helper to determine stage from error code
     const propagatingCodes = new Set(['DNS_NOT_FOUND', 'CF_TUNNEL_NOT_FOUND', 'CF_UPSTREAM_ERROR', 'CF_ORIGIN_DOWN']);

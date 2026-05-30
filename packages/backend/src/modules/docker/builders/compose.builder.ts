@@ -133,11 +133,11 @@ export class DockerComposeBuilder {
       service.setNetwork(mainNetworkName, 1);
     }
 
+    const effectiveExposureMode = form.exposureMode || (form.exposedLocal ? 'cloudflare' : 'local');
+
     if (params.isMain) {
-      // Only expose port on host if openPort is true (for direct local network access)
-      // When exposedLocal=true but openPort=false, Traefik uses Docker internal networking
-      // and doesn't need the host port mapping
-      if (form.openPort && params.internalPort) {
+      // Publish host port for local-mode apps (direct access) or when openPort is explicitly enabled
+      if ((form.openPort || effectiveExposureMode === 'local') && params.internalPort) {
         service.setPort({
           containerPort: params.internalPort,
           // biome-ignore lint/suspicious/noTemplateCurlyInString: intended
@@ -156,9 +156,8 @@ export class DockerComposeBuilder {
     // Traefik routes using Docker internal networking (container IP + internalPort)
     // It does NOT use host port mappings — only the isMain service gets Traefik labels
     let traefikLabels: Record<string, string | boolean> = {};
-    const effectiveExposureMode = form.exposureMode || (form.exposedLocal ? 'cloudflare' : 'local');
 
-    if (params.isMain && params.internalPort) {
+    if (effectiveExposureMode !== 'local' && params.isMain && params.internalPort) {
       const subdomainToUse = this.fullSubdomain || form.localSubdomain || `${appName}-${appStoreId}`;
 
       const traefikBuilder = new TraefikLabelsBuilder({
@@ -173,13 +172,8 @@ export class DockerComposeBuilder {
         httpsBackend: params.httpsBackend,
       });
 
-      if (effectiveExposureMode === 'local') {
-        traefikBuilder.addLocalNetworkLabels();
-      } else {
-        traefikBuilder.addExposedLocalLabels();
-        traefikBuilder.addTailscaleLabels();
-      }
-
+      traefikBuilder.addExposedLocalLabels();
+      traefikBuilder.addTailscaleLabels();
       traefikLabels = traefikBuilder.build();
     }
 
