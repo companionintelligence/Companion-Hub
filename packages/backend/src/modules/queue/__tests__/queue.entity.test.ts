@@ -59,6 +59,33 @@ describe('Queue', () => {
     expect(rpcClient.send).toHaveBeenCalledWith('app-events-queue', { requestId: 'req-1' });
   });
 
+  it('retries once when the queue is briefly closing channels during reconnect', async () => {
+    const logger = mock<LoggerService>();
+    const rabbit = mock<Connection>();
+    const rpcClient = mock<RPCClient>();
+    const publisher = mock<EventPublisher>();
+    const queue = new Queue(
+      rabbit,
+      rpcClient,
+      publisher,
+      'app-events-queue',
+      1,
+      z.object({ requestId: z.string() }),
+      z.object({ success: z.boolean(), message: z.string() }),
+      logger,
+    );
+
+    rpcClient.send
+      .mockRejectedValueOnce(new Error('channel creation failed; connection is closing') as never)
+      .mockResolvedValueOnce({ body: { success: true, message: 'ok-after-retry' } } as never);
+
+    const result = await queue.publish({ requestId: 'req-1' });
+
+    expect(result).toEqual({ success: true, message: 'ok-after-retry' });
+    expect(rpcClient.send).toHaveBeenCalledTimes(2);
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Transient queue error for app-events-queue; retrying once'));
+  });
+
   it('skips cron execution when the queue connection is not ready', async () => {
     vi.useFakeTimers();
 

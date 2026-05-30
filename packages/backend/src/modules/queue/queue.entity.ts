@@ -1,4 +1,5 @@
 import type { LoggerService } from '@/core/logger/logger.service';
+import { setTimeout as sleep } from 'node:timers/promises';
 import * as cron from 'node-cron';
 import type { ScheduledTask } from 'node-cron';
 import { AMQPConnectionError, AMQPError, type Connection, type Consumer, type RPCClient } from 'rabbitmq-client';
@@ -7,6 +8,7 @@ import type { EventPublisher } from './event.publisher';
 import type { QueueConnectionState } from './queue.factory';
 
 export class Queue<T extends z.ZodType, R extends z.ZodType<{ success: boolean; message: string }>> {
+  private static readonly TRANSIENT_QUEUE_ERROR = /channel creation failed; connection is closing|connection is closing|socket closed/i;
   private cronTasks: ScheduledTask[] = [];
   private consumerCallback?: (data: z.output<T> & { eventId: string }, reply: (response: z.input<R>) => Promise<void>) => Promise<void>;
   private activeConsumer?: Consumer;
@@ -107,41 +109,40 @@ export class Queue<T extends z.ZodType, R extends z.ZodType<{ success: boolean; 
   }
 
   async publish(event: z.input<T>): Promise<{ success: boolean; message: string } | z.infer<R>> {
-    try {
-      if (!this.isConnectionReady()) {
-        const result = this.unavailableResult();
-        this.logger.warn(result.message);
-        return result;
-      }
-
-      const eventData = this.eventSchema.safeParse(event);
-
-      if (!eventData.success) {
-        throw new Error('Invalid event data');
-      }
-
-      const res = await this.rpcClient.send(this.queueName, eventData.data);
-      const response = this.resultSchema.safeParse(res.body);
-
-      if (response.success) {
-        return response.data;
-      }
-
-      throw new Error('Invalid response schema');
-    } catch (err) {
-      if (err instanceof AMQPConnectionError) {
-        this.logger.error('Connection to the queue was lost. Try restarting your instance before retrying.');
-      }
-
-      if (err instanceof AMQPError) {
-        if (err.code === 'RPC_TIMEOUT') {
-          this.logger.error('The queue timed out while processing the request. Try restarting your instance before retrying.');
-        }
-        return { success: false, message: err.message };
-      }
-
-      return { success: false, message: String(err) };
+    if (!this.isConnectionReady()) {
+      const result = this.unavailableResult();
+      this.logger.warn(result.message);
+      return result;
     }
+
+    const eventData = this.eventSchema.safeParse(event);
+
+    if (!eventData.success) {
+      throw new Error('Invalid event data');
+    }
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const res = await this.rpcClient.send(this.queueName, eventData.data);
+        const response = this.resultSchema.safeParse(res.body);
+
+        if (response.success) {
+          return response.data;
+        }
+
+        throw new Error('Invalid response schema');
+      } catch (err) {
+        if (attempt === 0 && this.shouldRetry(err)) {
+          this.logger.warn(`Transient queue error for ${this.queueName}; retrying once: ${this.getErrorMessage(err)}`);
+          await sleep(250);
+          continue;
+        }
+
+        return this.toFailureResult(err);
+      }
+    }
+
+    return { success: false, message: 'Queue publish failed after retry' };
   }
 
   public publishRepeatable(data: z.input<T>, cronPattern: string) {
@@ -156,19 +157,52 @@ export class Queue<T extends z.ZodType, R extends z.ZodType<{ success: boolean; 
     }
 
     const task = cron.schedule(cronPattern, async () => {
-      try {
-        if (!this.isConnectionReady()) {
-          const { message } = this.unavailableResult();
-          this.logger.warn(`Skipping cron job for queue ${this.queueName}: ${message}`);
+      if (!this.isConnectionReady()) {
+        const { message } = this.unavailableResult();
+        this.logger.warn(`Skipping cron job for queue ${this.queueName}: ${message}`);
+        return;
+      }
+
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          await this.rpcClient.send(this.queueName, eventData.data);
+          return;
+        } catch (e) {
+          if (attempt === 0 && this.shouldRetry(e)) {
+            this.logger.warn(`Transient cron queue error for ${this.queueName}; retrying once: ${this.getErrorMessage(e)}`);
+            await sleep(250);
+            continue;
+          }
+
+          this.logger.error('Error in cron job:', e);
           return;
         }
-
-        await this.rpcClient.send(this.queueName, eventData.data);
-      } catch (e) {
-        this.logger.error('Error in cron job:', e);
       }
     });
     this.cronTasks.push(task);
+  }
+
+  private shouldRetry(err: unknown): boolean {
+    return Queue.TRANSIENT_QUEUE_ERROR.test(this.getErrorMessage(err));
+  }
+
+  private getErrorMessage(err: unknown): string {
+    return err instanceof Error ? err.message : String(err);
+  }
+
+  private toFailureResult(err: unknown): { success: false; message: string } {
+    if (err instanceof AMQPConnectionError) {
+      this.logger.error('Connection to the queue was lost. Try restarting your instance before retrying.');
+    }
+
+    if (err instanceof AMQPError) {
+      if (err.code === 'RPC_TIMEOUT') {
+        this.logger.error('The queue timed out while processing the request. Try restarting your instance before retrying.');
+      }
+      return { success: false, message: err.message };
+    }
+
+    return { success: false, message: this.getErrorMessage(err) };
   }
 
   private unavailableResult(): { success: false; message: string } {
