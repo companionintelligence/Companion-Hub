@@ -16,6 +16,8 @@ import { spawnSync } from 'node:child_process';
 
 const DB_CONTAINER = 'ci-hub-db';
 const DOCKER_NETWORK = 'ci-os-hub_network';
+const HEALTH_POLL_INTERVAL_MS = 1000;
+const HEALTH_WAIT_TIMEOUT_MS = 60_000;
 
 function parseEnvFile(envFileName: string): Record<string, string> {
   const vars: Record<string, string> = {};
@@ -50,6 +52,51 @@ function containerIsRunning(name: string): boolean {
   return result.status === 0 && result.stdout.trim() === 'true';
 }
 
+function getContainerHealthStatus(name: string): 'healthy' | 'starting' | 'unhealthy' | 'none' | 'unknown' {
+  const result = spawnSync('docker', ['inspect', '-f', '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}', name], {
+    encoding: 'utf-8',
+    stdio: 'pipe',
+  });
+
+  if (result.status !== 0) {
+    return 'unknown';
+  }
+
+  const status = result.stdout.trim();
+  if (status === 'healthy' || status === 'starting' || status === 'unhealthy' || status === 'none') {
+    return status;
+  }
+
+  return 'unknown';
+}
+
+async function waitForContainerHealthy(name: string): Promise<boolean> {
+  const startedAt = Date.now();
+  let lastStatus: ReturnType<typeof getContainerHealthStatus> | undefined;
+
+  while (Date.now() - startedAt < HEALTH_WAIT_TIMEOUT_MS) {
+    if (!containerIsRunning(name)) {
+      return false;
+    }
+
+    const status = getContainerHealthStatus(name);
+    if (status === 'healthy' || status === 'none') {
+      return true;
+    }
+
+    if (status !== lastStatus) {
+      console.log(`sync-postgres-password: waiting for ${name} healthcheck (${status})`);
+      lastStatus = status;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, HEALTH_POLL_INTERVAL_MS));
+  }
+
+  const finalStatus = getContainerHealthStatus(name);
+  console.error(`sync-postgres-password: ${name} did not become healthy within ${HEALTH_WAIT_TIMEOUT_MS}ms (last status: ${finalStatus})`);
+  return false;
+}
+
 function postgresTcpAuthWorks(password: string): boolean {
   const result = spawnSync(
     'docker',
@@ -77,7 +124,7 @@ function syncPostgresPassword(password: string): boolean {
   return result.status === 0;
 }
 
-function main() {
+async function main() {
   const envFile = process.argv[2] || process.env.ENV_FILE || '.env.local';
   const vars = parseEnvFile(envFile);
   const password = process.env.POSTGRES_PASSWORD || vars.POSTGRES_PASSWORD;
@@ -90,6 +137,10 @@ function main() {
   if (!containerIsRunning(DB_CONTAINER)) {
     console.log(`sync-postgres-password: ${DB_CONTAINER} is not running, skipping`);
     return;
+  }
+
+  if (!(await waitForContainerHealthy(DB_CONTAINER))) {
+    process.exit(1);
   }
 
   if (postgresTcpAuthWorks(password)) {
@@ -111,4 +162,4 @@ function main() {
   console.log('sync-postgres-password: Postgres password synced successfully');
 }
 
-main();
+void main();
