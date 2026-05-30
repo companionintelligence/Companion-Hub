@@ -2,6 +2,18 @@
 <html lang="en">
   <head>
     <title>Companion Hub</title>
+    <script>
+      (() => {
+                    var k = 'vite-ui-theme';
+                    var t = localStorage.getItem(k);
+                    if (t === 'light') document.documentElement.classList.add('light');
+                    else if (t === 'system') {
+                      document.documentElement.classList.add(
+                        window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+                      );
+                    } else document.documentElement.classList.add('dark');
+                  })();
+    </script>
   </head>
 
   <body>

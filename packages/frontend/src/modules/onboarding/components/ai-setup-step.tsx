@@ -11,7 +11,8 @@ import {
 } from '../helpers/ai-setup-types';
 import type { CuratedModel, InferenceBackendType } from '@ci-hub/common/types';
 import { AgentFrameworkCard } from './ai-setup/agent-apps-card';
-import { BackendCard } from './ai-setup/backend-selection-card';
+// Inference backend selection hidden — Ollama is the only option, so no choice is needed.
+// import { BackendCard } from './ai-setup/backend-selection-card';
 import { RecommendedModels } from './ai-setup/model-selection-card';
 import { AdvancedDrawers } from './ai-setup/advanced-drawers';
 import { SystemOverview } from './ai-setup/system-overview';
@@ -66,7 +67,6 @@ export const AiSetupStep = ({
   const [loading, setLoading] = useState(true);
   const [rescanning, setRescanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [ollamaInstallError, setOllamaInstallError] = useState<string | null>(null);
   const [profile, setProfile] = useState<HardwareProfileResponse | null>(null);
   const [agentFramework, setAgentFramework] = useState<AgentFramework>('openclaw');
   const [selectedModelIds, setSelectedModelIds] = useState<string[]>([]);
@@ -75,7 +75,6 @@ export const AiSetupStep = ({
   const [cloudProviders, setCloudProviders] = useState<CloudProviderInput[]>([]);
   const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus | null>(null);
   const [checkingOllama, setCheckingOllama] = useState(false);
-  const [installingOllama, setInstallingOllama] = useState(false);
 
   const getRecommendedModelIdsForBackend = (data: HardwareProfileResponse, backend: InferenceBackendType) =>
     data.recommendedModels.filter((model) => model.backend === backend).map((model) => model.id);
@@ -106,9 +105,9 @@ export const AiSetupStep = ({
     }
   };
 
+  // Ollama runs on the host (reached via host.docker.internal); this only checks reachability.
   const checkOllamaStatus = async () => {
     setCheckingOllama(true);
-    setOllamaInstallError(null);
     try {
       const res = await apiFetch('/api/inference/ollama/status', { credentials: 'include' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -119,29 +118,6 @@ export const AiSetupStep = ({
       setOllamaStatus({ ready: false, running: false, endpointUrl: '' });
     } finally {
       setCheckingOllama(false);
-    }
-  };
-
-  const handleInstallOllama = async () => {
-    setOllamaInstallError(null);
-    setInstallingOllama(true);
-    try {
-      const res = await apiFetch('/api/inference/ollama/install', {
-        method: 'POST',
-        credentials: 'include',
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data: { success: boolean; message: string } = await res.json();
-
-      if (data.success) {
-        await checkOllamaStatus();
-      } else {
-        setOllamaInstallError(data.message);
-      }
-    } catch (e) {
-      setOllamaInstallError((e as Error).message);
-    } finally {
-      setInstallingOllama(false);
     }
   };
 
@@ -271,6 +247,8 @@ export const AiSetupStep = ({
 
   return (
     <div className={embedded ? 'space-y-5' : 'space-y-5 max-h-[66vh] overflow-y-auto pr-2'} data-testid="ai-setup-step">
+      <SystemOverview hardware={profile.hardware} tier={profile.tier} onRescan={handleRescan} rescanning={rescanning} />
+
       {!isInsufficient && (
         <>
           <AgentFrameworkCard
@@ -285,18 +263,10 @@ export const AiSetupStep = ({
             tailscaleAvailable={tailscaleAvailable}
           />
 
-          <BackendCard />
+          {/* Inference backend selection hidden — Ollama is the only option.
+          <BackendCard /> */}
 
-          {needsOllama && (
-            <OllamaSetupCard
-              status={ollamaStatus}
-              installing={installingOllama}
-              checking={checkingOllama}
-              onInstall={handleInstallOllama}
-              onRecheck={checkOllamaStatus}
-              errorMessage={ollamaInstallError}
-            />
-          )}
+          {needsOllama && <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={checkOllamaStatus} />}
 
           <RecommendedModels
             tier={profile.tier}
@@ -310,8 +280,6 @@ export const AiSetupStep = ({
           <ResourceSummaryBar selectedModels={selectedModels} availableMemoryMb={availableMemoryMb} />
         </>
       )}
-
-      <SystemOverview hardware={profile.hardware} tier={profile.tier} onRescan={handleRescan} rescanning={rescanning} />
 
       <AdvancedDrawers
         recommendedModels={backendRecommendedModels}
@@ -337,7 +305,7 @@ export const AiSetupStep = ({
               intent="primary"
               onClick={handleContinue}
               data-testid="ai-continue-btn"
-              disabled={needsOllama && !isInsufficient && (installingOllama || checkingOllama || !ollamaStatus?.ready)}
+              disabled={needsOllama && !isInsufficient && (checkingOllama || !ollamaStatus?.ready)}
             >
               {isInsufficient && cloudProviders.filter((p) => p.apiKey.trim()).length === 0
                 ? 'Continue to Private VPN without AI'

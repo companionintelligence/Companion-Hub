@@ -37,10 +37,11 @@ const ACCESS_OPTIONS: Array<{ mode: Exclude<ExposureMode, 'local'>; label: strin
   { mode: 'cloudflare', label: 'Web', transport: 'Cloudflare', Icon: Globe },
 ];
 
-function formatSize(mb: number): string {
-  if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
-  return `${mb} MB`;
-}
+// Used only by the (hidden) default-model picker.
+// function formatSize(mb: number): string {
+//   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
+//   return `${mb} MB`;
+// }
 
 /**
  * Step 1 — Agent Framework. Prominently features OpenClaw (default) and Hermes as the two personal
@@ -50,15 +51,16 @@ function formatSize(mb: number): string {
 export const AgentFrameworkCard = ({
   framework,
   onSelectFramework,
-  models,
-  preferredModelId,
-  onSelectPreferred,
+  // Default-model picker hidden — restore these with the picker block below.
+  // models,
+  // preferredModelId,
+  // onSelectPreferred,
   exposureMode,
   onSelectExposureMode,
   cloudflareAvailable = false,
   tailscaleAvailable = false,
 }: AgentFrameworkCardProps) => {
-  const hasModels = models.length > 0;
+  // const hasModels = models.length > 0;
   const configured: Record<Exclude<ExposureMode, 'local'>, boolean> = { tailscale: tailscaleAvailable, cloudflare: cloudflareAvailable };
 
   return (
@@ -79,7 +81,8 @@ export const AgentFrameworkCard = ({
           ))}
         </div>
 
-        <div className="grid gap-4 rounded-2xl border border-border bg-foreground/[0.015] p-4 sm:grid-cols-2">
+        <div className="rounded-2xl border border-border bg-foreground/[0.015] p-4">
+          {/* Default model picker hidden — the agent automatically uses the first selected recommended model.
           <div>
             <label className="text-xs font-medium" htmlFor="preferred-model-select">
               Default model
@@ -107,6 +110,7 @@ export const AgentFrameworkCard = ({
               </p>
             )}
           </div>
+          */}
 
           <div>
             <span className="text-xs font-medium">Remote access</span>

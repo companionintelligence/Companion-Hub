@@ -92,38 +92,55 @@
   --sidebar-ring: #70a6af;
 }
 
+/*
+ * Companion Intelligence brand palette — dark theme
+ * Shell #041620 → panels #1d293d → nested #0a222e
+ * Teal accents #2c676d / #409b9b, mint #58ebbf; body copy neutral grey
+ */
 .dark {
   --background: #041620;
-  --foreground: oklch(98.4% 0.003 247.858);
-  --card: #051b27;
-  --card-foreground: oklch(98.4% 0.003 247.858);
-  --popover: #041620;
-  --popover-foreground: oklch(98.4% 0.003 247.858);
-  --primary: oklch(92.9% 0.013 255.508);
-  --primary-foreground: #0f172b;
-  --secondary: #1d293d;
-  --secondary-foreground: oklch(98.4% 0.003 247.858);
-  --muted: #244859;
-  --muted-foreground: #70a6af;
-  --accent: #0a222e;
-  --accent-foreground: oklch(98.4% 0.003 247.858);
-  --destructive: oklch(57.7% 0.245 27.325);
-  --border: #244859;
-  --input: oklch(27.9% 0.041 260.031);
-  --ring: oklch(70.4% 0.04 256.788);
-  --chart-1: oklch(64.6% 0.222 41.116);
-  --chart-2: oklch(60% 0.118 184.704);
-  --chart-3: oklch(39.8% 0.07 227.392);
-  --chart-4: oklch(82.8% 0.189 84.429);
-  --chart-5: oklch(76.9% 0.188 70.08);
-  --sidebar: #122a35;
-  --sidebar-foreground: oklch(98.4% 0.003 247.858);
-  --sidebar-primary: oklch(92.9% 0.013 255.508);
+  --foreground: #f5f8fa;
+
+  --card: #1d293d;
+  --card-foreground: #f5f8fa;
+  --popover: #1d293d;
+  --popover-foreground: #f5f8fa;
+
+  --primary: #abd4d8;
+  --primary-foreground: #041620;
+
+  --secondary: #0a222e;
+  --secondary-foreground: #f5f8fa;
+
+  --muted: #0a222e;
+  --muted-foreground: #8f98a3;
+
+  --accent: #2c676d;
+  --accent-foreground: #f5f8fa;
+
+  --destructive: #e85d5d;
+
+  --border: #2c676d;
+  --input: #2c676d;
+  --ring: #58ebbf;
+
+  --chart-1: #58ebbf;
+  --chart-2: #409b9b;
+  --chart-3: #079d99;
+  --chart-4: #70a6af;
+  --chart-5: #2c676d;
+
+  --sidebar: #041620;
+  --sidebar-foreground: #f5f8fa;
+  --sidebar-primary: #abd4d8;
   --sidebar-primary-foreground: #041620;
-  --sidebar-accent: #0a222e;
-  --sidebar-accent-foreground: oklch(98.4% 0.003 247.858);
-  --sidebar-border: #244859;
-  --sidebar-ring: oklch(70.4% 0.04 256.788);
+  --sidebar-accent: #1d293d;
+  --sidebar-accent-foreground: #f5f8fa;
+  --sidebar-border: #2c676d;
+  --sidebar-ring: #58ebbf;
+
+  --tblr-bg-surface: #1d293d;
+  --tblr-border-color: #2c676d;
 }
 
 @layer base {
