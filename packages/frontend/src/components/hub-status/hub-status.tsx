@@ -33,6 +33,10 @@ function getErrorMessage(err: unknown): string {
   return String(err);
 }
 
+export function reloadCurrentWindow() {
+  window.location.reload();
+}
+
 /**
  * Hub listens on 5002 (Docker / typical) or 3000 (some dev setups). We probe both **in parallel**
  * with one Abort deadline each (`TAURI_HUB_HEALTH_PROBE_MS`), so one poll cycle stays bounded by ~that
@@ -499,7 +503,7 @@ export function HubStatus({ children }: HubStatusProps) {
           // health-check fails.
           // Match Docker's ci-os-hub healthcheck (`/api/health` only — not `/api/registration/status`,
           // which can lag right after boot and wedge the loading UI).
-          if (result !== 'Running') {
+          if (result !== 'Running' && !(result === 'Starting' && hubSteadyRunningRef.current)) {
             sawNonRunningRef.current = true;
           }
 
@@ -569,7 +573,7 @@ export function HubStatus({ children }: HubStatusProps) {
     if (isTauri && status === 'Running' && sawNonRunningRef.current && !hasReloadedRef.current) {
       hasReloadedRef.current = true;
       try {
-        window.location.reload();
+        reloadCurrentWindow();
       } catch {
         // JSDOM in tests doesn't support navigation; ignore safely.
       }
