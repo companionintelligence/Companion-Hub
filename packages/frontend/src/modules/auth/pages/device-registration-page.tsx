@@ -5,7 +5,8 @@ import { Alert, AlertDescription } from '@/components/ui/Alert/Alert';
 import { AlertCircle, CheckCircle2, ChevronRight, Copy, Loader2 } from 'lucide-react';
 import { apiFetch } from '@/lib/api-fetch';
 import type { RegistrationStatus } from '@/lib/registration-status';
-import { isRegistrationOperational, isRegistrationPending } from '@/lib/registration-status';
+import { isRegistrationOperational, isRegistrationPending, requiresDeviceRegistration } from '@/lib/registration-status';
+import { cacheRegistrationStatus, clearRegistrationCache } from '@/lib/registration-cache';
 import toast from 'react-hot-toast';
 
 const DEFAULT_PORTAL_URL = (
@@ -22,16 +23,6 @@ type PairingTarget = {
   domain?: string;
   subdomain?: string;
 };
-
-function setRegisteredCache() {
-  sessionStorage.setItem('device-registered', 'true');
-  sessionStorage.setItem('device-registered-at', String(Date.now()));
-}
-
-function clearRegisteredCache() {
-  sessionStorage.removeItem('device-registered');
-  sessionStorage.removeItem('device-registered-at');
-}
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -122,12 +113,18 @@ export default function DeviceRegistrationPage() {
         setRegistrationStatus(status);
         setStatusError(null);
 
-        if (isRegistrationOperational(status)) {
-          setRegisteredCache();
+        if (requiresDeviceRegistration(status)) {
+          completionStartedRef.current = false;
+          clearRegistrationCache();
           return status;
         }
 
-        clearRegisteredCache();
+        if (isRegistrationOperational(status)) {
+          cacheRegistrationStatus(status);
+          return status;
+        }
+
+        clearRegistrationCache();
 
         if (loadDeviceData && status.phase === 'unregistered') {
           await loadDeviceInfo();
@@ -149,7 +146,7 @@ export default function DeviceRegistrationPage() {
     async (status: RegistrationStatus) => {
       const { domain, subdomain } = pendingPairTargetRef.current ?? {};
       pendingPairTargetRef.current = null;
-      setRegisteredCache();
+      cacheRegistrationStatus(status);
 
       if (isTauri) {
         setRedirectStatus('Registration complete! Loading the local Hub...');
@@ -245,6 +242,10 @@ export default function DeviceRegistrationPage() {
 
   useEffect(() => {
     if (!registrationStatus || !isRegistrationOperational(registrationStatus) || completionStartedRef.current) {
+      return;
+    }
+
+    if (requiresDeviceRegistration(registrationStatus)) {
       return;
     }
 

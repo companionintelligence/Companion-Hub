@@ -16,6 +16,7 @@ import { TranslatableError } from './types/error.types';
 import { apiFetch, getTauriSessionId } from './lib/api-fetch';
 import type { RegistrationStatus } from './lib/registration-status';
 import { isRegistrationOperational, requiresDeviceRegistration } from './lib/registration-status';
+import { resolveRegistrationStatus } from './lib/registration-cache';
 
 // Add session header for Tauri release mode (cookies don't work cross-origin over HTTP)
 client.interceptors.request.use((request) => {
@@ -93,41 +94,13 @@ export const links: Route.LinksFunction = () => [
 
 type RegistrationLookup = { kind: 'ok'; status: RegistrationStatus } | { kind: 'unavailable' };
 
-const CACHED_OPERATIONAL_STATUS: RegistrationStatus = {
-  phase: 'locally_ready',
-  degradedReasons: [],
-  registered: true,
-};
-
 async function loadRegistrationLookup(): Promise<RegistrationLookup> {
-  const CACHE_TTL_MS = 60 * 1000;
-  const cachedAt = Number(sessionStorage.getItem('device-registered-at') || '0');
-  const cacheValid = sessionStorage.getItem('device-registered') === 'true' && Date.now() - cachedAt < CACHE_TTL_MS;
-
-  if (cacheValid) {
-    return { kind: 'ok', status: CACHED_OPERATIONAL_STATUS };
-  }
-
-  try {
-    const res = await apiFetch('/api/registration/status');
-    if (!res.ok) {
-      return { kind: 'unavailable' };
-    }
-
-    const status = (await res.json()) as RegistrationStatus;
-
-    if (isRegistrationOperational(status)) {
-      sessionStorage.setItem('device-registered', 'true');
-      sessionStorage.setItem('device-registered-at', String(Date.now()));
-    } else {
-      sessionStorage.removeItem('device-registered');
-      sessionStorage.removeItem('device-registered-at');
-    }
-
+  const status = await resolveRegistrationStatus();
+  if (status) {
     return { kind: 'ok', status };
-  } catch {
-    return { kind: 'unavailable' };
   }
+
+  return { kind: 'unavailable' };
 }
 
 export async function clientLoader({ request }: Route.ActionArgs) {

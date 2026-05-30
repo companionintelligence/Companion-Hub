@@ -720,20 +720,20 @@ describe('RegistrationService', () => {
       expect(status.degradedReasons).toContain('cloud_validation_failed');
     });
 
-    it('transitions to degraded immediately on 400 (device inactive)', async () => {
+    it('clears local registration immediately on 400 (device removed from Portal)', async () => {
       await service.setPhase('paired');
       await service.setPhase('provisioning');
       await service.setPhase('locally_ready');
 
       vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
+      deviceRegistrationRepository.deleteAll.mockResolvedValue(undefined);
       global.fetch = vi.fn().mockResolvedValue({ ok: false, status: 400 }) as any;
 
-      // Single call should be enough — 400 is definitive
       await (service as any).validateRegistrationWithCloud();
 
       const status = service.getRegistrationStatus();
-      expect(status.phase).toBe('degraded');
-      expect(status.degradedReasons).toContain('cloud_validation_failed');
+      expect(status.phase).toBe('unregistered');
+      expect(deviceRegistrationRepository.deleteAll).toHaveBeenCalled();
     });
 
     it('counts network/timeout errors toward the failure threshold', async () => {

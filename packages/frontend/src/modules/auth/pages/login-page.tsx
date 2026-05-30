@@ -1,6 +1,8 @@
 import { userContext } from '@/api-client';
 import { loginMutation, verifyTotpMutation } from '@/api-client/@tanstack/react-query.gen';
-import { setTauriSessionId } from '@/lib/api-fetch';
+import { apiFetch, setTauriSessionId } from '@/lib/api-fetch';
+import { resolveRegistrationStatus } from '@/lib/registration-cache';
+import { requiresDeviceRegistration } from '@/lib/registration-status';
 import { useUserContext } from '@/context/user-context';
 import type { TranslatableError } from '@/types/error.types';
 import { useMutation } from '@tanstack/react-query';
@@ -15,6 +17,11 @@ const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 const isSafeRedirect = (url: string) => new URL(url).host.endsWith(`.${window.location.host}`);
 
 export async function clientLoader() {
+  const registrationStatus = await resolveRegistrationStatus();
+  if (registrationStatus && requiresDeviceRegistration(registrationStatus)) {
+    return redirect('/device-registration');
+  }
+
   const user = await userContext();
 
   if (!user.data?.isConfigured) {
