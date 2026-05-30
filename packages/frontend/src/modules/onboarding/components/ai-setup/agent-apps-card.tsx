@@ -6,9 +6,10 @@ import { HermesIcon, OpenClawIcon } from './icons';
 import { OptionCard, StepSection } from './primitives';
 
 interface AgentFrameworkCardProps {
-  /** Currently selected agent framework. */
-  framework: AgentFramework;
-  onSelectFramework: (framework: AgentFramework) => void;
+  /** Currently selected agent framework, or undefined when the user wants no agent. */
+  framework?: AgentFramework;
+  /** Receives the picked framework, or undefined when the current selection is toggled off. */
+  onSelectFramework: (framework: AgentFramework | undefined) => void;
   /** LLM candidates (for the selected backend) the agent can default to. */
   models: CuratedModel[];
   /** Currently selected preferred model id, if any. */
@@ -64,7 +65,7 @@ export const AgentFrameworkCard = ({
   const configured: Record<Exclude<ExposureMode, 'local'>, boolean> = { tailscale: tailscaleAvailable, cloudflare: cloudflareAvailable };
 
   return (
-    <StepSection number={1} title="Agent Framework" description="Choose the agent framework to power your system.">
+    <StepSection number={1} title="Agent Framework" description="Choose the agent framework to power your system, or skip it for now.">
       <div className="space-y-4" data-testid="agent-apps-card">
         <div className="grid gap-4 sm:grid-cols-2">
           {FRAMEWORKS.map(({ key, name, Icon, description, recommended }) => (
@@ -76,10 +77,17 @@ export const AgentFrameworkCard = ({
               icon={<Icon />}
               selected={framework === key}
               badge={recommended ? 'Recommended' : undefined}
-              onSelect={() => onSelectFramework(key)}
+              // Re-selecting the active framework toggles it off so no agent is installed.
+              onSelect={() => onSelectFramework(framework === key ? undefined : key)}
             />
           ))}
         </div>
+
+        {!framework && (
+          <p className="text-xs text-muted-foreground" data-testid="agent-none-hint">
+            No agent selected — you can add one later from the App Store.
+          </p>
+        )}
 
         <div className="rounded-2xl border border-border bg-foreground/[0.015] p-4">
           {/* Default model picker hidden — the agent automatically uses the first selected recommended model.

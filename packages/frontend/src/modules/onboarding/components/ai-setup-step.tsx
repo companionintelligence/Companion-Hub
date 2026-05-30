@@ -68,7 +68,7 @@ export const AiSetupStep = ({
   const [rescanning, setRescanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [profile, setProfile] = useState<HardwareProfileResponse | null>(null);
-  const [agentFramework, setAgentFramework] = useState<AgentFramework>('openclaw');
+  const [agentFramework, setAgentFramework] = useState<AgentFramework | undefined>('openclaw');
   const [selectedModelIds, setSelectedModelIds] = useState<string[]>([]);
   const [preferredModelId, setPreferredModelId] = useState<string | undefined>(undefined);
   const [exposureMode, setExposureMode] = useState<ExposureMode>(defaultExposureMode(cloudflareAvailable, tailscaleAvailable));
@@ -169,15 +169,25 @@ export const AiSetupStep = ({
       if (!p.apiKey.trim()) return false;
       return !validateCloudKey(p.provider, p.apiKey);
     });
+
+    // Safety net: an agent needs a model to run. If the user chose an agent but selected no local
+    // model and configured no cloud provider, fold in the recommended agent model so it gets pulled
+    // during install. This stays out of UI state, so the user can still freely toggle models above.
+    const selectedModels = [...backendCompatibleSelectedModels];
+    if (agentFramework && selectedModels.length === 0 && validProviders.length === 0) {
+      const fallbackModelId = getDefaultPreferredModelId(profile, ONBOARDING_BACKEND);
+      if (fallbackModelId) selectedModels.push(fallbackModelId);
+    }
+
     // Persist the preferred model only when it is actually being installed; otherwise default to the
     // first selected agent model so the agent always has a runnable default.
     const effectivePreferredModelId =
-      preferredModelId && backendCompatibleSelectedModels.includes(preferredModelId)
+      preferredModelId && selectedModels.includes(preferredModelId)
         ? preferredModelId
-        : backendCompatibleSelectedModels.find((id) => profile.availableModels.some((m) => m.id === id && isAgentModel(m)));
+        : selectedModels.find((id) => profile.availableModels.some((m) => m.id === id && isAgentModel(m)));
     return {
       agentFramework,
-      selectedModels: backendCompatibleSelectedModels,
+      selectedModels,
       backend: ONBOARDING_BACKEND,
       cloudProviders: validProviders,
       preferredModelId: effectivePreferredModelId,
