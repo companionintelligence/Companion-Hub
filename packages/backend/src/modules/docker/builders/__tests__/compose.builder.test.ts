@@ -205,7 +205,21 @@ describe('DockerComposeBuilder', () => {
     expect(yamlObject.services.service.ports[0]).toBe('${APP_PORT}:440');
   });
 
-  it('should only add default labels when service is not exposed', async () => {
+  it('should only add default labels when service is not main', async () => {
+    const service: ServiceInput = {
+      name: 'service',
+      image: 'image',
+      internalPort: 440,
+      isMain: false,
+    };
+
+    const compose = await composeBuilder.getDockerCompose([service], { exposed: false, exposedLocal: false }, urn, subnet);
+    const yamlObject = yaml.parse(compose);
+
+    expect(yamlObject.services.service.labels).toEqual({ 'ci-os-hub.managed': true, 'ci-os-hub.appurn': urn });
+  });
+
+  it('should add Traefik local-domain labels for local exposure mode', async () => {
     const service: ServiceInput = {
       name: 'service',
       image: 'image',
@@ -213,10 +227,18 @@ describe('DockerComposeBuilder', () => {
       isMain: true,
     };
 
-    const compose = await composeBuilder.getDockerCompose([service], { exposed: false, exposedLocal: false }, urn, subnet);
+    const compose = await composeBuilder.getDockerCompose(
+      [service],
+      { exposureMode: 'local', openPort: false, localSubdomain: 'myapp' },
+      urn,
+      subnet,
+      'example.com',
+      'ci.lan',
+    );
     const yamlObject = yaml.parse(compose);
 
-    expect(yamlObject.services.service.labels).toEqual({ 'ci-os-hub.managed': true, 'ci-os-hub.appurn': urn });
+    expect(yamlObject.services.service.labels['traefik.enable']).toBe(true);
+    expect(yamlObject.services.service.labels['traefik.http.routers.nginx-store-id-local.rule']).toBe('Host(`myapp.ci.lan`)');
   });
 
   it('should be able to parse a compose.json file', async () => {

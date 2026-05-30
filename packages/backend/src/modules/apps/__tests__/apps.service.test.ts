@@ -164,12 +164,22 @@ describe('AppsService', () => {
       expect(result.available).toBe(false);
     });
 
-    it('MUST construct local URL (http://internalIp:port) when exposureMode is local', async () => {
-      setupApp({ exposureMode: 'local', port: 8080 });
+    it('MUST construct local URL (http://internalIp:port) when exposureMode is local with openPort', async () => {
+      setupApp({ exposureMode: 'local', openPort: true, port: 8080 });
       mockAxiosGet.mockResolvedValue({ status: 200, data: 'OK' });
       const result = await service.checkAppAvailability(appUrn);
       expect(result.available).toBe(true);
       expect(result.appUrl).toBe('http://192.168.1.100:8080');
+    });
+
+    it('MUST map 0.0.0.0 internal IP to 127.0.0.1 for local openPort URLs', async () => {
+      setupApp({ exposureMode: 'local', openPort: true, port: 8080 });
+      configService.getConfig.mockReturnValue({
+        localDomain: 'ci.lan',
+        userSettings: { internalIp: '0.0.0.0', sslPort: 443, domain: 'example.com', localDomain: 'ci.lan' },
+      } as any);
+      const result = await service.checkAppAvailability(appUrn);
+      expect(result.appUrl).toBe('http://127.0.0.1:8080');
     });
 
     it('MUST construct public URL with deviceSlug when exposureMode is cloudflare', async () => {

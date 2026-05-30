@@ -58,6 +58,37 @@ export class TraefikLabelsBuilder {
     return this;
   }
 
+  addLocalNetworkLabels() {
+    if (this.effectiveMode !== 'local') {
+      return this;
+    }
+
+    const subdomain = this.params.localSubdomain || `${this.params.appId}-${this.params.storeId}`;
+    const localDomain = this.params.localDomain || 'ci.lan';
+    const hostRule = `Host(\`${subdomain}.${localDomain}\`)`;
+    const routerBase = `${this.params.appId}-${this.params.storeId}`;
+
+    Object.assign(this.labels, {
+      'traefik.enable': true,
+      [`traefik.http.routers.${routerBase}-local-insecure.rule`]: hostRule,
+      [`traefik.http.routers.${routerBase}-local-insecure.entrypoints`]: 'web',
+      [`traefik.http.routers.${routerBase}-local-insecure.service`]: `${this.params.appId}-${this.params.storeId}`,
+      [`traefik.http.routers.${routerBase}-local.rule`]: hostRule,
+      [`traefik.http.routers.${routerBase}-local.entrypoints`]: 'websecure',
+      [`traefik.http.routers.${routerBase}-local.service`]: `${this.params.appId}-${this.params.storeId}`,
+      [`traefik.http.routers.${routerBase}-local.tls`]: true,
+    });
+
+    if (this.params.enableAuth) {
+      Object.assign(this.labels, {
+        [`traefik.http.routers.${routerBase}-local.middlewares`]: 'ci-hub@docker',
+        [`traefik.http.routers.${routerBase}-local-insecure.middlewares`]: 'ci-hub@docker',
+      });
+    }
+
+    return this;
+  }
+
   addExposedLocalLabels() {
     if (this.effectiveMode === 'cloudflare') {
       const subdomain = this.params.localSubdomain || `${this.params.appId}-${this.params.storeId}`;

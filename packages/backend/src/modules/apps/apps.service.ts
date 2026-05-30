@@ -1,5 +1,6 @@
 import { TranslatableError } from '@/common/error/translatable-error';
 import { createAppUrn } from '@/common/helpers/app-helpers';
+import { resolveBrowserHost } from '@/common/helpers/browser-host';
 import { pLimit } from '@/common/helpers/file-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -167,15 +168,16 @@ export class AppsService {
     // Build the app URL based on exposure mode
     let appUrl: string | undefined;
     if (exposureMode === 'local') {
-      // Local mode: direct access via internal IP and app port
-      const internalIp = userSettings.internalIp || '127.0.0.1';
-      const appPort = app.port || userSettings.sslPort || 443;
-      appUrl = `http://${internalIp}:${appPort}${urlSuffix}`;
+      const localDomain = config.localDomain || userSettings.localDomain || 'ci.lan';
+      const subdomain = baseSubdomain || app.appName;
 
-      // Local mode with a port: skip HTTP check entirely — container is on localhost
-      if (app.port) {
+      if (app.openPort && app.port) {
+        const host = resolveBrowserHost(userSettings.internalIp);
+        appUrl = `http://${host}:${app.port}${urlSuffix}`;
         return { available: true, appUrl, stage: 'ready' };
       }
+
+      appUrl = `https://${subdomain}.${localDomain}${urlSuffix}`;
     } else {
       // Cloudflare/Tailscale: use public domain
       const resolvedDomain = app.publicDomain?.trim() || userSettings.domain;

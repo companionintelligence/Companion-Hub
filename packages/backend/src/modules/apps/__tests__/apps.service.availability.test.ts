@@ -33,10 +33,12 @@ const createMockService = () => {
   };
 
   const mockConfig = {
+    localDomain: 'ci.lan',
     userSettings: {
       internalIp: '192.168.1.100',
       sslPort: 443,
       domain: 'example.com',
+      localDomain: 'ci.lan',
       ciHubOrganizationSlug: 'myorg',
     },
   };
@@ -72,9 +74,10 @@ describe('AppsService.checkAppAvailability', () => {
     ctx = createMockService();
   });
 
-  // Test 1: local mode with port → returns available immediately without HTTP check
-  it('local mode with port → returns available immediately without HTTP check', async () => {
+  // Test 1: local mode with openPort → returns available immediately without HTTP check
+  it('local mode with openPort → returns available immediately without HTTP check', async () => {
     ctx.mockApp.exposureMode = 'local';
+    ctx.mockApp.openPort = true;
     ctx.mockApp.port = 3000;
 
     const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
@@ -85,18 +88,49 @@ describe('AppsService.checkAppAvailability', () => {
     expect(mockedAxiosGet).not.toHaveBeenCalled();
   });
 
-  // Test 2: local mode without port → falls back to sslPort
-  it('local mode without port → falls back to sslPort', async () => {
+  // Test 1b: local mode maps 0.0.0.0 internal IP to localhost for browser URLs
+  it('local mode with openPort maps 0.0.0.0 internal IP to 127.0.0.1', async () => {
     ctx.mockApp.exposureMode = 'local';
-    ctx.mockApp.port = 0; // falsy
+    ctx.mockApp.openPort = true;
+    ctx.mockApp.port = 3000;
+    ctx.mockConfig.userSettings.internalIp = '0.0.0.0';
+
+    const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+    expect(result.appUrl).toBe('http://127.0.0.1:3000');
+  });
+
+  // Test 1c: local mode without openPort → Traefik local domain URL
+  it('local mode without openPort → uses local domain via Traefik', async () => {
+    ctx.mockApp.exposureMode = 'local';
+    ctx.mockApp.openPort = false;
+    ctx.mockApp.port = 3000;
+    ctx.mockApp.localSubdomain = 'myapp';
+    ctx.mockConfig.localDomain = 'ci.lan';
 
     mockedAxiosGet.mockResolvedValue({ status: 200, data: 'OK' });
 
     const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
 
     expect(result.available).toBe(true);
-    expect(result.appUrl).toContain(':443');
-    expect(mockedAxiosGet).toHaveBeenCalled();
+    expect(result.appUrl).toBe('https://myapp.ci.lan');
+    expect(mockedAxiosGet).toHaveBeenCalledWith('https://myapp.ci.lan', expect.any(Object));
+  });
+
+  // Test 2: local mode without openPort still uses Traefik local domain even when port is unset
+  it('local mode without openPort uses Traefik local domain when port is unset', async () => {
+    ctx.mockApp.exposureMode = 'local';
+    ctx.mockApp.openPort = false;
+    ctx.mockApp.port = 0;
+    ctx.mockApp.localSubdomain = 'testapp';
+
+    mockedAxiosGet.mockResolvedValue({ status: 200, data: 'OK' });
+
+    const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+    expect(result.available).toBe(true);
+    expect(result.appUrl).toBe('https://testapp.ci.lan');
+    expect(mockedAxiosGet).toHaveBeenCalledWith('https://testapp.ci.lan', expect.any(Object));
   });
 
   // Test 3: cloudflare mode → constructs correct subdomain with deviceSlug

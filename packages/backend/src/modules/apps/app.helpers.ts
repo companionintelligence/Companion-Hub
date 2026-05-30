@@ -251,10 +251,17 @@ export class AppHelpers {
     let scheme = 'http';
     let publicHostname = '';
     let publicUrl = '';
+    const exposureMode = form.exposureMode || (form.exposedLocal ? 'cloudflare' : 'local');
+    const localDomain = envMap.get('LOCAL_DOMAIN') || this.config.getConfig().localDomain;
+    const localSubdomain = form.localSubdomain ? form.localSubdomain : `${appName}-${appStoreId}`;
+
+    if (exposureMode === 'local') {
+      envMap.set('APP_LOCAL_DOMAIN', `${localSubdomain}.${localDomain}`);
+    }
 
     // Handle Local Exposure (Cloudflare Tunnel via Traefik)
     if (form.exposedLocal) {
-      let subdomain = form.localSubdomain ? form.localSubdomain : `${appName}-${appStoreId}`;
+      let subdomain = localSubdomain;
       const configDomain = this.config.getConfig().domain;
       // User-selected domain from install form; falls back to current device domain.
       const selectedPublicDomain = typeof form.publicDomain === 'string' && form.publicDomain.trim().length > 0 ? form.publicDomain : undefined;
