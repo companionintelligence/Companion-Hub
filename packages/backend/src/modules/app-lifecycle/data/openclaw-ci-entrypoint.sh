@@ -101,6 +101,10 @@ if [ -n "${OLLAMA_HOST}" ] && [ ! -f "${CONFIG_FILE}" ]; then
 
   echo "CI Hub: discovered $(echo "${MODELS_ARRAY}" | grep -c '"id"') model(s) from inference endpoint"
 
+  # Keep the gateway loopback-only. The published app URL points at the
+  # setup/proxy UI on port 18789, which forwards internally to 127.0.0.1:18790.
+  # That keeps Hub "Open" links working at http://<device-ip>:30189 on the LAN
+  # without exposing the raw gateway listener directly.
   # Write openclaw.json
   cat > "${CONFIG_FILE}" <<OCEOF
 {
