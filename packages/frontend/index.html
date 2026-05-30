@@ -4,15 +4,25 @@
     <title>Companion Hub</title>
     <script>
       (() => {
-                    var k = 'vite-ui-theme';
-                    var t = localStorage.getItem(k);
-                    if (t === 'light') document.documentElement.classList.add('light');
-                    else if (t === 'system') {
-                      document.documentElement.classList.add(
-                        window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
-                      );
-                    } else document.documentElement.classList.add('dark');
-                  })();
+              var storageKey = 'vite-ui-theme';
+              var defaultTheme = 'system';
+              var storedTheme = defaultTheme;
+
+              try {
+                storedTheme = localStorage.getItem(storageKey) || defaultTheme;
+              } catch {
+                storedTheme = defaultTheme;
+              }
+
+              var theme =
+                storedTheme === 'system'
+                  ? window.matchMedia('(prefers-color-scheme: dark)').matches
+                    ? 'dark'
+                    : 'light'
+                  : storedTheme;
+
+              document.documentElement.classList.add(theme);
+            })();
     </script>
   </head>
 

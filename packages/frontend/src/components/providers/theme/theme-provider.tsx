@@ -22,8 +22,13 @@ const ThemeProviderContext = createContext<ThemeProviderState>(initialState);
 
 function readStoredTheme(storageKey: string, defaultTheme: Theme): Theme {
   if (typeof window === 'undefined') return defaultTheme;
-  const stored = localStorage.getItem(storageKey) as Theme | null;
-  return stored ?? defaultTheme;
+
+  try {
+    const stored = localStorage.getItem(storageKey) as Theme | null;
+    return stored ?? defaultTheme;
+  } catch {
+    return defaultTheme;
+  }
 }
 
 export function ThemeProvider({ children, defaultTheme = 'system', storageKey = 'vite-ui-theme' }: ThemeProviderProps) {
@@ -48,7 +53,11 @@ export function ThemeProvider({ children, defaultTheme = 'system', storageKey = 
     theme,
     setTheme: (nextTheme: Theme) => {
       if (typeof window !== 'undefined') {
-        localStorage.setItem(storageKey, nextTheme);
+        try {
+          localStorage.setItem(storageKey, nextTheme);
+        } catch {
+          // Ignore storage write failures so theme changes still apply in memory.
+        }
       }
       setTheme(nextTheme);
     },
