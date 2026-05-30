@@ -113,6 +113,18 @@ describe('AppsService.checkAppAvailability', () => {
     expect(mockedAxiosGet).not.toHaveBeenCalled();
   });
 
+  it('local mode brackets IPv6 loopback for browser URLs', async () => {
+    ctx.mockApp.exposureMode = 'local';
+    ctx.mockApp.openPort = true;
+    ctx.mockApp.port = 3000;
+    ctx.mockConfig.userSettings.internalIp = '::1';
+
+    const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+    expect(result.appUrl).toBe('http://[::1]:3000');
+    expect(mockedAxiosGet).not.toHaveBeenCalled();
+  });
+
   // Test 2: local mode without port → unavailable
   it('local mode without port → unavailable', async () => {
     ctx.mockApp.exposureMode = 'local';

@@ -182,6 +182,16 @@ describe('AppsService', () => {
       expect(result.appUrl).toBe('http://127.0.0.1:8080');
     });
 
+    it('MUST bracket IPv6 internal IPs for local URLs', async () => {
+      setupApp({ exposureMode: 'local', openPort: true, port: 8080 });
+      configService.getConfig.mockReturnValue({
+        localDomain: 'ci.lan',
+        userSettings: { internalIp: '::1', sslPort: 443, domain: 'example.com', localDomain: 'ci.lan' },
+      } as any);
+      const result = await service.checkAppAvailability(appUrn);
+      expect(result.appUrl).toBe('http://[::1]:8080');
+    });
+
     it('MUST construct public URL with deviceSlug when exposureMode is cloudflare', async () => {
       setupApp({ exposureMode: 'cloudflare' });
       registrationService.getDeviceRegistrationInfo.mockResolvedValue({
