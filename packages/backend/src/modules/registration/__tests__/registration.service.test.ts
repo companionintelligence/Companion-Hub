@@ -729,11 +729,15 @@ describe('RegistrationService', () => {
       deviceRegistrationRepository.deleteAll.mockResolvedValue(undefined);
       global.fetch = vi.fn().mockResolvedValue({ ok: false, status: 400 }) as any;
 
-      await (service as any).validateRegistrationWithCloud();
+      try {
+        await (service as any).validateRegistrationWithCloud();
 
-      const status = service.getRegistrationStatus();
-      expect(status.phase).toBe('unregistered');
-      expect(deviceRegistrationRepository.deleteAll).toHaveBeenCalled();
+        const status = service.getRegistrationStatus();
+        expect(status.phase).toBe('unregistered');
+        expect(deviceRegistrationRepository.deleteAll).toHaveBeenCalled();
+      } finally {
+        service.onApplicationShutdown();
+      }
     });
 
     it('counts network/timeout errors toward the failure threshold', async () => {
