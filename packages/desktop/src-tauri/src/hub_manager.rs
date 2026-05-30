@@ -2722,7 +2722,7 @@ fn render_runtime_env_content(
         get_non_empty_env_value(existing, "JWT_SECRET").unwrap_or_else(|| generate_hex(64));
     let postgres_password =
         get_non_empty_env_value(existing, "POSTGRES_PASSWORD").unwrap_or_else(|| generate_hex(32));
-    // Private VPN — Tailscale sidecar; disabled only when `PRIVATE_VPN_ENABLED` is exactly `false`.
+    // Private VPN — Tailscale sidecar; enabled only when `PRIVATE_VPN_ENABLED` is exactly `true`.
     let vpn_on = private_vpn_enabled_from_map(existing);
     let private_vpn_enabled = if vpn_on {
         "true".to_string()
