@@ -54,6 +54,20 @@ vi.mock('../components/ai-setup-step', () => ({
       >
         emit-ai-config-no-agent
       </button>
+      <button
+        type="button"
+        onClick={() =>
+          onConfigChange?.({
+            agentFramework: 'openclaw',
+            selectedModels: [],
+            backend: 'ollama',
+            cloudProviders: [{ provider: 'openai', apiKey: 'sk-test', enabled: true }],
+            skipped: false,
+          })
+        }
+      >
+        emit-ai-config-cloud
+      </button>
     </div>
   ),
 }));
@@ -140,6 +154,29 @@ describe('OnboardingPage (single vertical form)', () => {
 
     expect(screen.queryByTestId('agent-install-card')).not.toBeInTheDocument();
     expect(screen.getByTestId('install-step')).toHaveAttribute('data-apps', '');
+  });
+
+  it('describes the agent model source as local when a model is selected', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(screen.getByRole('button', { name: 'emit-ai-config' }));
+    await user.click(screen.getByTestId('finish-setup-btn'));
+
+    // The base 'emit-ai-config' config selects no local model and no cloud provider, so the agent
+    // falls back to a recommended local model (not the misleading "downloaded model" claim).
+    expect(screen.getByTestId('agent-summary-text')).toHaveTextContent('recommended local model');
+  });
+
+  it('describes the agent model source as the cloud provider when one is configured', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(screen.getByRole('button', { name: 'emit-ai-config-cloud' }));
+    await user.click(screen.getByTestId('finish-setup-btn'));
+
+    expect(screen.getByTestId('agent-summary-text')).toHaveTextContent('OpenAI');
+    expect(screen.getByTestId('agent-summary-text')).not.toHaveTextContent('downloaded model');
   });
 
   it('lets the user deselect the auto-queued agent on the install page', async () => {

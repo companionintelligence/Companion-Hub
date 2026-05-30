@@ -14,6 +14,7 @@ import { InstallStep } from '../components/install-step';
 import { RecommendationsStep } from '../components/recommendations-step';
 import { TailscaleSetupStep } from '../components/tailscale-setup-step';
 import { buildAgentApp, exposureModeLabel, resolveExposureMode } from '../helpers/agent-onboarding';
+import { CLOUD_KEY_PATTERNS } from '../helpers/ai-setup-types';
 import { identifyServices, type DetectedService } from '../helpers/service-detection';
 import type { AiSetupConfig, InstallSummary, OnboardingApp } from '../helpers/types';
 
@@ -98,8 +99,18 @@ function OnboardingWizard() {
   if (phase === 'installing') {
     const AgentIcon = agentFramework === 'hermes' ? HermesIcon : OpenClawIcon;
     const agentUnavailable = !!agentApp && !agentApp.urn;
+    // Describe the model the agent will actually use. A configured cloud provider overrides the
+    // local model (and buildConfig leaves selectedModels empty in that case), so the text must be
+    // driven by what's actually selected rather than always claiming a downloaded model.
+    const hasLocalModel = (aiSetupConfig?.selectedModels.length ?? 0) > 0;
+    const enabledCloudProvider = aiSetupConfig?.cloudProviders.find((p) => p.enabled && p.apiKey.trim());
+    const modelSourceText = hasLocalModel
+      ? 'uses your downloaded model'
+      : enabledCloudProvider
+        ? `uses your ${CLOUD_KEY_PATTERNS[enabledCloudProvider.provider].label} model`
+        : 'uses a recommended local model';
     const agentSummary = agentApp?.urn
-      ? `${exposureModeLabel(installExposureMode)} · uses your downloaded model`
+      ? `${exposureModeLabel(installExposureMode)} · ${modelSourceText}`
       : 'Not available in your app store yet — skipped.';
 
     const selectionSummary = (() => {
@@ -138,7 +149,9 @@ function OnboardingWizard() {
                   {agentApp.name}
                   <span className="ml-2 text-xs font-normal text-muted-foreground">Your agent</span>
                 </span>
-                <span className="mt-0.5 block text-xs leading-snug text-muted-foreground">{agentSummary}</span>
+                <span className="mt-0.5 block text-xs leading-snug text-muted-foreground" data-testid="agent-summary-text">
+                  {agentSummary}
+                </span>
               </span>
               {!agentUnavailable && (
                 <span className="absolute right-2 top-2">

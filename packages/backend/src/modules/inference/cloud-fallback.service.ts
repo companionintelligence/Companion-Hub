@@ -40,10 +40,19 @@ export class CloudFallbackService {
     return CLOUD_BASE_URLS[provider] ?? CLOUD_BASE_URLS.openai;
   }
 
-  /** Configure a cloud provider */
+  /**
+   * Configure a cloud provider. Callers may omit `baseUrl` (e.g. onboarding only sends
+   * provider/key/enabled); we backfill the provider's canonical base URL so app credentials never
+   * point a cloud key/model at the wrong endpoint (the Ollama fallback URL).
+   */
   setProvider(config: CloudProviderConfig): void {
-    this.providers.set(config.provider, config);
-    this.logger.info(`[CloudFallback] Configured provider: ${config.provider} (enabled: ${config.enabled})`);
+    const resolved: CloudProviderConfig = {
+      ...config,
+      baseUrl: config.baseUrl || this.getDefaultBaseUrl(config.provider),
+      defaultModel: config.defaultModel || this.getDefaultModel(config.provider),
+    };
+    this.providers.set(resolved.provider, resolved);
+    this.logger.info(`[CloudFallback] Configured provider: ${resolved.provider} (enabled: ${resolved.enabled}, baseUrl: ${resolved.baseUrl})`);
   }
 
   /** Get a provider config */
