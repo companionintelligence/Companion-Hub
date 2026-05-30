@@ -2053,6 +2053,106 @@ fn wait_for_hub_healthy() -> Result<(), String> {
     wait_for_container_healthy("ci-os-hub", "Hub", HUB_START_HEALTHY_TIMEOUT_SECS)
 }
 
+const POSTGRES_DB_CONTAINER: &str = "ci-hub-db";
+const POSTGRES_DOCKER_NETWORK: &str = "ci-os-hub_network";
+
+fn escape_sql_literal(value: &str) -> String {
+    value.replace('\'', "''")
+}
+
+fn escape_shell_single_quoted(value: &str) -> String {
+    value.replace('\'', "'\\''")
+}
+
+fn postgres_tcp_auth_works(password: &str) -> bool {
+    let pgpassword = escape_shell_single_quoted(password);
+    let script = format!(
+        "PGPASSWORD='{pgpassword}' psql -h {POSTGRES_DB_CONTAINER} -p 6543 -U companion -d companiondb -qt -c 'SELECT 1'"
+    );
+    matches!(
+        docker_command()
+            .args([
+                "run",
+                "--rm",
+                "--network",
+                POSTGRES_DOCKER_NETWORK,
+                "postgres:14",
+                "bash",
+                "-lc",
+                &script,
+            ])
+            .output(),
+        Ok(out) if out.status.success()
+    )
+}
+
+fn sync_postgres_password(password: &str, data_dir: &Path) -> Result<(), String> {
+    let sql = format!(
+        "ALTER USER companion WITH PASSWORD '{}';",
+        escape_sql_literal(password)
+    );
+    let mut cmd = docker_command();
+    cmd.args([
+        "exec",
+        POSTGRES_DB_CONTAINER,
+        "psql",
+        "-U",
+        "companion",
+        "-d",
+        "companiondb",
+        "-p",
+        "6543",
+        "-c",
+        &sql,
+    ]);
+    let output = cmd
+        .output()
+        .map_err(|error| format!("Failed to sync Postgres password: {}", error))?;
+
+    if !output.status.success() {
+        let combined = format_command_output(
+            &String::from_utf8_lossy(&output.stdout),
+            &String::from_utf8_lossy(&output.stderr),
+        );
+        return Err(format!("Postgres password sync failed. {}", combined));
+    }
+
+    let _ = append_desktop_log_for(
+        data_dir,
+        "hub.start",
+        "Synced Postgres role password to match env.",
+    );
+    Ok(())
+}
+
+fn ensure_postgres_password_matches_env(env_path: &Path, data_dir: &Path) -> Result<(), String> {
+    let values = load_runtime_env_values(data_dir, env_path);
+    let Some(password) = get_non_empty_env_value(&values, "POSTGRES_PASSWORD") else {
+        return Ok(());
+    };
+
+    if postgres_tcp_auth_works(&password) {
+        return Ok(());
+    }
+
+    let _ = append_desktop_log_for(
+        data_dir,
+        "hub.start",
+        "Postgres TCP auth failed for configured password; syncing role password.",
+    );
+
+    sync_postgres_password(&password, data_dir)?;
+
+    if !postgres_tcp_auth_works(&password) {
+        return Err(
+            "Postgres password sync did not restore TCP authentication for user companion."
+                .to_string(),
+        );
+    }
+
+    Ok(())
+}
+
 fn start_database_first(
     compose_path: &Path,
     env_path: &Path,
@@ -2311,6 +2411,7 @@ fn start_hub_inner(
     // Bring up PostgreSQL first and wait for health so role/database initialization
     // completes before the rest of the stack starts.
     start_database_first(compose_path, env_path, data_dir)?;
+    ensure_postgres_password_matches_env(env_path, data_dir)?;
 
     // Attempt compose up with automatic retry on transient container conflicts.
     let mut last_error = String::new();
