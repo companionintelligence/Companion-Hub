@@ -62,8 +62,10 @@ export const CompleteStep = ({ installSummary, aiSetupConfig }: CompleteStepProp
 
   // The agent app (openclaw / hermes-agent) that was actually queued for install, if any.
   const agentResult = installSummary?.results.find((r) => AGENT_SLUGS.includes(r.app.appSlug));
-  const agentStatusText =
-    agentResult?.status === 'running' ? 'is running' : agentResult?.status === 'failed' ? 'failed to install' : 'is starting up';
+  const agentFailed = agentResult?.status === 'failed';
+  const agentStatusText = agentFailed ? 'failed to install' : agentResult?.status === 'running' ? 'is running' : 'is starting up';
+  // Only point to the dashboard when the agent didn't fail — a failed install may have no entry.
+  const agentInstruction = agentFailed ? 'You can retry from the App Store.' : 'Open it from the dashboard.';
 
   // Only render the AI summary box when it has something to say — otherwise it's an empty box.
   const hasAiSummary = Boolean(
@@ -106,7 +108,7 @@ export const CompleteStep = ({ installSummary, aiSetupConfig }: CompleteStepProp
             <div className="space-y-1">
               {agentResult && (
                 <p data-testid="agent-summary">
-                  🤖 {agentResult.app.name} agent {agentStatusText} — open it from the dashboard.
+                  {agentFailed ? '⚠️' : '🤖'} {agentResult.app.name} agent {agentStatusText}. {agentInstruction}
                 </p>
               )}
               {aiSetupConfig?.skipped && !agentResult && <p>AI not configured. You can set it up anytime in Settings → AI.</p>}
