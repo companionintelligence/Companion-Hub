@@ -3,8 +3,11 @@ import { Button } from '@/components/ui/Button';
 import { useAppContext } from '@/context/app-context';
 import { useState } from 'react';
 import { useNavigate } from 'react-router';
+import { AGENT_APP_SLUG } from '../helpers/ai-setup-types';
 import type { InstallSummary, AiSetupConfig } from '../helpers/types';
 import { IconBadge, WizardCard } from './wizard-ui';
+
+const AGENT_SLUGS = Object.values(AGENT_APP_SLUG);
 
 interface CompleteStepProps {
   /** undefined when no install step was executed (user skipped). */
@@ -57,9 +60,16 @@ export const CompleteStep = ({ installSummary, aiSetupConfig }: CompleteStepProp
   const [loading, setLoading] = useState(false);
   const copy = completionCopy(installSummary);
 
+  // The agent app (openclaw / hermes-agent) that was actually queued for install, if any.
+  const agentResult = installSummary?.results.find((r) => AGENT_SLUGS.includes(r.app.appSlug));
+  const agentFailed = agentResult?.status === 'failed';
+  const agentStatusText = agentFailed ? 'failed to install' : agentResult?.status === 'running' ? 'is running' : 'is starting up';
+  // Only point to the dashboard when the agent didn't fail — a failed install may have no entry.
+  const agentInstruction = agentFailed ? 'You can retry from the App Store.' : 'Open it from the dashboard.';
+
   // Only render the AI summary box when it has something to say — otherwise it's an empty box.
   const hasAiSummary = Boolean(
-    aiSetupConfig && (aiSetupConfig.skipped || aiSetupConfig.selectedModels.length > 0 || aiSetupConfig.cloudProviders.length > 0),
+    agentResult || (aiSetupConfig && (aiSetupConfig.skipped || aiSetupConfig.selectedModels.length > 0 || aiSetupConfig.cloudProviders.length > 0)),
   );
 
   const handleFinish = async () => {
@@ -90,27 +100,29 @@ export const CompleteStep = ({ installSummary, aiSetupConfig }: CompleteStepProp
           {copy.body}
         </p>
 
-        {hasAiSummary && aiSetupConfig && (
+        {hasAiSummary && (
           <div
             className="mt-5 w-full max-w-md rounded-2xl border border-border bg-foreground/[0.015] p-4 text-sm text-muted-foreground"
             data-testid="ai-summary"
           >
-            {aiSetupConfig.skipped ? (
-              <p>AI not configured. You can set it up anytime in Settings → AI.</p>
-            ) : (
-              <div className="space-y-1">
-                {aiSetupConfig.selectedModels.length > 0 && (
-                  <p>
-                    🧠 {aiSetupConfig.selectedModels.length} AI model{aiSetupConfig.selectedModels.length === 1 ? '' : 's'} configured
-                  </p>
-                )}
-                {aiSetupConfig.cloudProviders.length > 0 && (
-                  <p>
-                    ☁️ {aiSetupConfig.cloudProviders.length} cloud provider{aiSetupConfig.cloudProviders.length === 1 ? '' : 's'} configured
-                  </p>
-                )}
-              </div>
-            )}
+            <div className="space-y-1">
+              {agentResult && (
+                <p data-testid="agent-summary">
+                  {agentFailed ? '⚠️' : '🤖'} {agentResult.app.name} agent {agentStatusText}. {agentInstruction}
+                </p>
+              )}
+              {aiSetupConfig?.skipped && !agentResult && <p>AI not configured. You can set it up anytime in Settings → AI.</p>}
+              {!aiSetupConfig?.skipped && aiSetupConfig && aiSetupConfig.selectedModels.length > 0 && (
+                <p>
+                  🧠 {aiSetupConfig.selectedModels.length} AI model{aiSetupConfig.selectedModels.length === 1 ? '' : 's'} configured
+                </p>
+              )}
+              {!aiSetupConfig?.skipped && aiSetupConfig && aiSetupConfig.cloudProviders.length > 0 && (
+                <p>
+                  ☁️ {aiSetupConfig.cloudProviders.length} cloud provider{aiSetupConfig.cloudProviders.length === 1 ? '' : 's'} configured
+                </p>
+              )}
+            </div>
           </div>
         )}
 

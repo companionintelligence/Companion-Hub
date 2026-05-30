@@ -341,6 +341,21 @@ describe('AiSetupStep', () => {
     expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({ agentFramework: 'hermes' }));
   });
 
+  it('lets the user deselect the agent entirely (no agent framework)', async () => {
+    const user = userEvent.setup();
+    const { onComplete } = renderStep();
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+    // OpenClaw is selected by default; clicking it again toggles it off.
+    expect(screen.getByTestId('agent-openclaw')).toHaveAttribute('aria-pressed', 'true');
+    await user.click(screen.getByTestId('agent-openclaw'));
+    expect(screen.getByTestId('agent-openclaw')).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.getByTestId('agent-none-hint')).toBeInTheDocument();
+
+    await user.click(screen.getByTestId('ai-continue-btn'));
+    expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({ agentFramework: undefined }));
+  });
+
   it('lets the user choose Tailscale or Web remote access for their agent', async () => {
     const user = userEvent.setup();
     const { onComplete } = renderStep();

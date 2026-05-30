@@ -11,6 +11,19 @@ vi.mock('@/context/app-context', () => ({
     user: { hasCompletedOnboarding: false },
     cloudflareAvailable: false,
     tailscaleAvailable: true,
+    apps: [
+      {
+        id: 'openclaw',
+        name: 'OpenClaw',
+        urn: 'urn:store:openclaw',
+        short_desc: 'Agent',
+        available: true,
+        deprecated: false,
+        categories: [],
+        created_at: 0,
+        supported_architectures: [],
+      },
+    ],
   }),
 }));
 
@@ -35,6 +48,26 @@ vi.mock('../components/ai-setup-step', () => ({
       >
         emit-ai-config
       </button>
+      <button
+        type="button"
+        onClick={() => onConfigChange?.({ agentFramework: undefined, selectedModels: [], backend: 'ollama', cloudProviders: [], skipped: false })}
+      >
+        emit-ai-config-no-agent
+      </button>
+      <button
+        type="button"
+        onClick={() =>
+          onConfigChange?.({
+            agentFramework: 'openclaw',
+            selectedModels: [],
+            backend: 'ollama',
+            cloudProviders: [{ provider: 'openai', apiKey: 'sk-test', enabled: true }],
+            skipped: false,
+          })
+        }
+      >
+        emit-ai-config-cloud
+      </button>
     </div>
   ),
 }));
@@ -54,8 +87,8 @@ vi.mock('../components/tailscale-setup-step', () => ({
 }));
 
 vi.mock('../components/install-step', () => ({
-  InstallStep: ({ onComplete }: { onComplete: (summary: unknown) => void }) => (
-    <div data-testid="install-step">
+  InstallStep: ({ apps, onComplete }: { apps: Array<{ appSlug: string }>; onComplete: (summary: unknown) => void }) => (
+    <div data-testid="install-step" data-apps={apps.map((a) => a.appSlug).join(',')}>
       <button type="button" onClick={() => onComplete({ results: [], running: 0, incomplete: 0, failed: 0, total: 0 })}>
         install-complete
       </button>
@@ -75,20 +108,20 @@ const renderPage = () =>
   );
 
 describe('OnboardingPage (single vertical form)', () => {
-  it('renders all config sections on one page', () => {
+  it('renders config sections on the first page (app picker lives on the next page)', () => {
     renderPage();
     expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument();
-    // Recommended apps section is temporarily hidden.
+    // App selection moved to the install/review page, so it is not on the first form page.
     expect(screen.queryByTestId('recommendations-step')).not.toBeInTheDocument();
     expect(screen.getByTestId('tailscale-setup-step')).toBeInTheDocument();
   });
 
-  it('keeps Finish disabled until AI config is provided', () => {
+  it('keeps Continue disabled until AI config is provided', () => {
     renderPage();
     expect(screen.getByTestId('finish-setup-btn')).toBeDisabled();
   });
 
-  it('finishes setup: AI config → Finish → install → done', async () => {
+  it('flows: AI config → Continue → select apps + install on one page → done', async () => {
     const user = userEvent.setup();
     renderPage();
 
@@ -97,9 +130,65 @@ describe('OnboardingPage (single vertical form)', () => {
     expect(finish).toBeEnabled();
 
     await user.click(finish);
+    // The selector and the install/review card appear together on the same page.
+    expect(screen.getByTestId('recommendations-step')).toBeInTheDocument();
     expect(screen.getByTestId('install-step')).toBeInTheDocument();
+    // The chosen agent is auto-queued at the top and included in the install list.
+    expect(screen.getByTestId('agent-install-card')).toBeInTheDocument();
+    expect(screen.getByTestId('install-step')).toHaveAttribute('data-apps', 'openclaw');
+
+    // Confirming the selection begins the install and hides the picker.
+    await user.click(screen.getByTestId('start-install-btn'));
+    expect(screen.queryByTestId('recommendations-step')).not.toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'install-complete' }));
     expect(screen.getByTestId('complete-step')).toBeInTheDocument();
+  });
+
+  it('queues no agent (and shows no agent card) when none was selected', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(screen.getByRole('button', { name: 'emit-ai-config-no-agent' }));
+    await user.click(screen.getByTestId('finish-setup-btn'));
+
+    expect(screen.queryByTestId('agent-install-card')).not.toBeInTheDocument();
+    expect(screen.getByTestId('install-step')).toHaveAttribute('data-apps', '');
+  });
+
+  it('describes the agent model source as local when a model is selected', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(screen.getByRole('button', { name: 'emit-ai-config' }));
+    await user.click(screen.getByTestId('finish-setup-btn'));
+
+    // The base 'emit-ai-config' config selects no local model and no cloud provider, so the agent
+    // falls back to a recommended local model (not the misleading "downloaded model" claim).
+    expect(screen.getByTestId('agent-summary-text')).toHaveTextContent('recommended local model');
+  });
+
+  it('describes the agent model source as the cloud provider when one is configured', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(screen.getByRole('button', { name: 'emit-ai-config-cloud' }));
+    await user.click(screen.getByTestId('finish-setup-btn'));
+
+    expect(screen.getByTestId('agent-summary-text')).toHaveTextContent('OpenAI');
+    expect(screen.getByTestId('agent-summary-text')).not.toHaveTextContent('downloaded model');
+  });
+
+  it('lets the user deselect the auto-queued agent on the install page', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(screen.getByRole('button', { name: 'emit-ai-config' }));
+    await user.click(screen.getByTestId('finish-setup-btn'));
+
+    expect(screen.getByTestId('install-step')).toHaveAttribute('data-apps', 'openclaw');
+    // Toggling the agent card off removes it from the install list.
+    await user.click(screen.getByTestId('agent-install-card'));
+    expect(screen.getByTestId('install-step')).toHaveAttribute('data-apps', '');
   });
 });

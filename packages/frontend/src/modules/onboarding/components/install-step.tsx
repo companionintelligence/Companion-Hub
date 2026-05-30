@@ -14,6 +14,12 @@ interface InstallStepProps {
   /** AI setup configuration from the previous step. */
   aiSetupConfig?: AiSetupConfig;
   onComplete: (summary: InstallSummary) => void;
+  /**
+   * When `false`, the install is deferred and this renders as a live review of the current
+   * selection (no progress, no Continue button) until the parent flips it to `true`. Defaults
+   * to `true` so existing callers auto-run on mount.
+   */
+  start?: boolean;
 }
 
 interface AppInstallState {
@@ -42,7 +48,7 @@ interface AiPhaseState {
   error?: string;
 }
 
-export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupConfig, onComplete }: InstallStepProps) => {
+export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupConfig, onComplete, start = true }: InstallStepProps) => {
   const [states, setStates] = useState<AppInstallState[]>(apps.map((app) => ({ app, status: 'queued' })));
   const [done, setDone] = useState(false);
   const [aiPhase, setAiPhase] = useState<AiPhaseState>({
@@ -56,9 +62,17 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
   onCompleteRef.current = onComplete;
   const queryClient = useQueryClient();
 
+  // While the install is deferred (start === false), mirror the live selection so the
+  // review list below the app picker reflects what the user has chosen.
+  useEffect(() => {
+    if (started.current) return;
+    setStates(apps.map((app) => ({ app, status: 'queued' as AppInstallStatus })));
+  }, [apps]);
+
   // biome-ignore lint/correctness/useExhaustiveDependencies: queryClient is stable from useQueryClient
   useEffect(() => {
     if (started.current) return;
+    if (!start) return;
     started.current = true;
 
     const installAll = async () => {
@@ -317,7 +331,7 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
     };
 
     installAll();
-  }, [apps]);
+  }, [apps, start]);
 
   const statusIcon = (status: AppInstallStatus) => {
     switch (status) {
@@ -379,6 +393,11 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
   if (failedCount > 0) summaryParts.push(`${failedCount} failed`);
 
   const progressText = (() => {
+    if (!start) {
+      if (apps.length === 0) return 'Choose the apps you want above, then finish setup.';
+      return `${apps.length} app${apps.length === 1 ? '' : 's'} ready to install.`;
+    }
+
     if (done) {
       if (apps.length === 0) {
         return hasAiWork ? 'AI setup complete. No apps selected for installation.' : 'No apps selected for installation.';
@@ -412,7 +431,7 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
         </span>
         <div>
           <h2 className="text-lg font-bold tracking-tight sm:text-xl">
-            {apps.length === 0 ? 'No Apps Selected' : done ? 'Installation Complete' : 'Installing Apps'}
+            {apps.length === 0 ? 'No Apps Selected' : start ? (done ? 'Installation Complete' : 'Installing Apps') : 'Review Apps'}
           </h2>
           <p className="mt-0.5 text-sm text-muted-foreground" data-testid="install-progress-text">
             {progressText}
@@ -420,14 +439,14 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
         </div>
       </div>
 
-      {apps.length > 0 && (
+      {start && apps.length > 0 && (
         <div className="mb-4 h-2 w-full overflow-hidden rounded-full bg-muted">
           <div className="h-2 rounded-full bg-primary transition-all duration-500 ease-out" style={{ width: `${progress}%` }} />
         </div>
       )}
 
       {/* AI Setup Phase */}
-      {aiPhase.status !== 'skipped' && (
+      {start && aiPhase.status !== 'skipped' && (
         <div className="mb-4 space-y-1" data-testid="ai-phase-section">
           <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">AI Setup</div>
           {aiSetupConfig?.cloudProviders && aiSetupConfig.cloudProviders.length > 0 && (
@@ -486,11 +505,13 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
         ))}
       </div>
 
-      <div className="mt-6 flex items-center justify-end border-t border-border pt-5">
-        <Button intent="primary" onClick={() => onCompleteRef.current(buildSummary(states))} data-testid="install-continue-btn">
-          {continueButtonLabel}
-        </Button>
-      </div>
+      {start && (
+        <div className="mt-6 flex items-center justify-end border-t border-border pt-5">
+          <Button intent="primary" onClick={() => onCompleteRef.current(buildSummary(states))} data-testid="install-continue-btn">
+            {continueButtonLabel}
+          </Button>
+        </div>
+      )}
     </WizardCard>
   );
 };

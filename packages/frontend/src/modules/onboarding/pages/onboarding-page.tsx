@@ -1,19 +1,22 @@
 import { Button } from '@/components/ui/Button';
 import { AppContextProvider, useAppContext } from '@/context/app-context';
 import { useUserContext } from '@/context/user-context';
+import { apiFetch } from '@/lib/api-fetch';
 import { getLogo } from '@/lib/theme/theme';
-import { Suspense, useState } from 'react';
+import { cn } from '@/lib/utils';
+import { Suspense, useEffect, useMemo, useState } from 'react';
 import { Navigate } from 'react-router';
 import { AiSetupStep } from '../components/ai-setup-step';
+import { HermesIcon, OpenClawIcon } from '../components/ai-setup/icons';
+import { SelectIndicator } from '../components/ai-setup/primitives';
 import { CompleteStep } from '../components/complete-step';
 import { InstallStep } from '../components/install-step';
+import { RecommendationsStep } from '../components/recommendations-step';
 import { TailscaleSetupStep } from '../components/tailscale-setup-step';
+import { buildAgentApp, exposureModeLabel, resolveExposureMode } from '../helpers/agent-onboarding';
+import { CLOUD_KEY_PATTERNS } from '../helpers/ai-setup-types';
+import { identifyServices, type DetectedService } from '../helpers/service-detection';
 import type { AiSetupConfig, InstallSummary, OnboardingApp } from '../helpers/types';
-// Recommended apps section temporarily hidden — restore these with the section below.
-// import { apiFetch } from '@/lib/api-fetch';
-// import { useEffect } from 'react';
-// import { RecommendationsStep } from '../components/recommendations-step';
-// import { identifyServices, type DetectedService } from '../helpers/service-detection';
 
 /** Page chrome shared by every onboarding phase: brand header + centered container. */
 function Shell({ children }: { children: React.ReactNode }) {
@@ -39,55 +42,148 @@ function Shell({ children }: { children: React.ReactNode }) {
 }
 
 function OnboardingWizard() {
-  const { user, cloudflareAvailable, tailscaleAvailable } = useAppContext();
+  const { user, apps: storeApps, cloudflareAvailable, tailscaleAvailable } = useAppContext();
 
   const [phase, setPhase] = useState<'form' | 'installing' | 'done'>('form');
-  const [selectedApps] = useState<OnboardingApp[]>([]);
+  const [selectedApps, setSelectedApps] = useState<OnboardingApp[]>([]);
   const [aiSetupConfig, setAiSetupConfig] = useState<AiSetupConfig | undefined>();
   const [installSummary, setInstallSummary] = useState<InstallSummary | undefined>();
+  const [detectedServices, setDetectedServices] = useState<DetectedService[]>([]);
+  // The install/review page defers the actual install until the user confirms their app selection.
+  const [installStarted, setInstallStarted] = useState(false);
+  // Lets the user opt out of installing their chosen agent on the app-selection page.
+  const [agentExcluded, setAgentExcluded] = useState(false);
 
-  // Recommended apps section temporarily hidden — restore this state + effect with the section below.
-  // const [detectedServices, setDetectedServices] = useState<DetectedService[]>([]);
-  // const [selectedApps, setSelectedApps] = useState<OnboardingApp[]>([]);
-  //
-  // // Detect Docker services once, to seed the Local Apps recommendations.
-  // useEffect(() => {
-  //   let cancelled = false;
-  //   void (async () => {
-  //     try {
-  //       const res = await apiFetch('/api/system/detect-services', { credentials: 'include' });
-  //       if (!res.ok) return;
-  //       const data = await res.json();
-  //       if (!cancelled) setDetectedServices(identifyServices(data.services || []));
-  //     } catch {
-  //       // Non-fatal — recommendations fall back to popular apps.
-  //     }
-  //   })();
-  //   return () => {
-  //     cancelled = true;
-  //   };
-  // }, []);
+  // Detect Docker services once, to seed the Local Apps recommendations.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await apiFetch('/api/system/detect-services', { credentials: 'include' });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled) setDetectedServices(identifyServices(data.services || []));
+      } catch {
+        // Non-fatal — recommendations fall back to popular apps.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
-  const contextExposureMode = cloudflareAvailable ? 'cloudflare' : tailscaleAvailable ? 'tailscale' : 'local';
-  const installExposureMode = aiSetupConfig?.exposureMode ?? contextExposureMode;
   const canFinish = aiSetupConfig !== undefined;
+
+  // Resolve the exposure mode we will actually install with (honoring the user's choice when its
+  // transport is available, otherwise falling back gracefully — see resolveExposureMode).
+  const installExposureMode = resolveExposureMode(aiSetupConfig?.exposureMode, { cloudflareAvailable, tailscaleAvailable });
+
+  // The agent app chosen in the AI step (if any), resolved against the synced store apps. Memoized
+  // so the install list keeps a stable reference (InstallStep syncs off the `apps` identity).
+  const agentFramework = aiSetupConfig?.agentFramework;
+  const agentApp = useMemo(() => (agentFramework ? buildAgentApp(agentFramework, storeApps) : null), [agentFramework, storeApps]);
+  const agentSelected = !!agentApp?.urn && !agentExcluded;
+
+  // Final install list: the selected agent (when included + available) ahead of the picked apps,
+  // de-duplicated by slug. Memoized to avoid handing InstallStep a fresh array every render.
+  const installApps = useMemo(() => {
+    if (!agentApp || !agentSelected) return selectedApps;
+    if (selectedApps.some((a) => a.appSlug === agentApp.appSlug)) return selectedApps;
+    return [agentApp, ...selectedApps];
+  }, [agentApp, agentSelected, selectedApps]);
 
   if (user.hasCompletedOnboarding) {
     return <Navigate to="/dashboard" replace />;
   }
 
   if (phase === 'installing') {
+    const AgentIcon = agentFramework === 'hermes' ? HermesIcon : OpenClawIcon;
+    const agentUnavailable = !!agentApp && !agentApp.urn;
+    // Describe the model the agent will actually use. A configured cloud provider overrides the
+    // local model (and buildConfig leaves selectedModels empty in that case), so the text must be
+    // driven by what's actually selected rather than always claiming a downloaded model.
+    const hasLocalModel = (aiSetupConfig?.selectedModels.length ?? 0) > 0;
+    const enabledCloudProvider = aiSetupConfig?.cloudProviders.find((p) => p.enabled && p.apiKey.trim());
+    const modelSourceText = hasLocalModel
+      ? 'uses your downloaded model'
+      : enabledCloudProvider
+        ? `uses your ${CLOUD_KEY_PATTERNS[enabledCloudProvider.provider].label} model`
+        : 'uses a recommended local model';
+    const agentSummary = agentApp?.urn
+      ? `${exposureModeLabel(installExposureMode)} · ${modelSourceText}`
+      : 'Not available in your app store yet — skipped.';
+
+    const selectionSummary = (() => {
+      const parts: string[] = [];
+      if (agentSelected && agentApp) parts.push(`${agentApp.name} agent`);
+      if (selectedApps.length > 0) parts.push(`${selectedApps.length} app${selectedApps.length === 1 ? '' : 's'}`);
+      if (parts.length === 0) return 'No apps selected — you can add them anytime from the App Store.';
+      return `${parts.join(' + ')} selected.`;
+    })();
+
     return (
       <Shell>
-        <InstallStep
-          apps={selectedApps}
-          defaultExposureMode={installExposureMode}
-          aiSetupConfig={aiSetupConfig}
-          onComplete={(summary) => {
-            setInstallSummary(summary);
-            setPhase('done');
-          }}
-        />
+        <div className="space-y-6">
+          {/* The chosen agent is auto-queued at the top, above the recommendations picker. Once the
+              install begins we hide the selection UI and let InstallStep drive the rest. */}
+          {!installStarted && agentApp && (
+            <button
+              type="button"
+              data-testid="agent-install-card"
+              onClick={() => !agentUnavailable && setAgentExcluded((v) => !v)}
+              aria-pressed={agentSelected}
+              disabled={agentUnavailable}
+              className={cn(
+                'group relative flex w-full items-start gap-3 rounded-2xl border p-4 text-left transition-colors',
+                agentSelected
+                  ? 'border-primary bg-primary/[0.08] ring-1 ring-primary/30'
+                  : 'border-border bg-foreground/[0.015] hover:border-primary/40',
+                agentUnavailable && 'cursor-not-allowed opacity-60',
+              )}
+            >
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-foreground/10 text-primary [&_svg]:h-6 [&_svg]:w-6">
+                <AgentIcon />
+              </span>
+              <span className="min-w-0 flex-1 pr-6">
+                <span className="block text-sm font-medium">
+                  {agentApp.name}
+                  <span className="ml-2 text-xs font-normal text-muted-foreground">Your agent</span>
+                </span>
+                <span className="mt-0.5 block text-xs leading-snug text-muted-foreground" data-testid="agent-summary-text">
+                  {agentSummary}
+                </span>
+              </span>
+              {!agentUnavailable && (
+                <span className="absolute right-2 top-2">
+                  <SelectIndicator selected={agentSelected} />
+                </span>
+              )}
+            </button>
+          )}
+          {!installStarted && <RecommendationsStep embedded detectedServices={detectedServices} onChange={setSelectedApps} />}
+          <InstallStep
+            apps={installApps}
+            start={installStarted}
+            defaultExposureMode={installExposureMode}
+            aiSetupConfig={aiSetupConfig}
+            onComplete={(summary) => {
+              setInstallSummary(summary);
+              setPhase('done');
+            }}
+          />
+          {!installStarted && (
+            <>
+              {/* Breathing room so the sticky bar rests below all content instead of overlapping it. */}
+              <div aria-hidden className="h-2" />
+              <div className="sticky bottom-4 z-10 flex flex-col gap-3 rounded-2xl border border-border bg-card/90 p-4 shadow-lg backdrop-blur sm:flex-row sm:items-center sm:justify-between">
+                <p className="text-sm text-muted-foreground">{selectionSummary}</p>
+                <Button intent="primary" size="lg" onClick={() => setInstallStarted(true)} data-testid="start-install-btn">
+                  Finish setup
+                </Button>
+              </div>
+            </>
+          )}
+        </div>
       </Shell>
     );
   }
@@ -115,7 +211,7 @@ function OnboardingWizard() {
         <div className="sticky bottom-4 z-10 flex flex-col gap-3 rounded-2xl border border-border bg-card/90 p-4 shadow-lg backdrop-blur sm:flex-row sm:items-center sm:justify-between">
           <p className="text-sm text-muted-foreground">{canFinish ? 'You can change everything later in Settings.' : 'Detecting your hardware…'}</p>
           <Button intent="primary" size="lg" disabled={!canFinish} onClick={() => setPhase('installing')} data-testid="finish-setup-btn">
-            Finish setup
+            Continue
           </Button>
         </div>
       </div>
