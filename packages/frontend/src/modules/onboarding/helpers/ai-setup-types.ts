@@ -3,10 +3,16 @@ import type { CloudProviderType, CuratedModel, HardwareProfile, HardwareTier, In
 /** The Companion agent framework that powers the user's system. */
 export type AgentFramework = 'openclaw' | 'hermes';
 
+/** Maps a chosen agent framework to the app store slug (id) that installs it. */
+export const AGENT_APP_SLUG: Record<AgentFramework, string> = {
+  openclaw: 'openclaw',
+  hermes: 'hermes-agent',
+};
+
 /** AI setup state managed by the AiSetupStep and passed down to InstallStep / CompleteStep. */
 export interface AiSetupConfig {
-  /** Chosen agent framework (OpenClaw is the default). */
-  agentFramework: AgentFramework;
+  /** Chosen agent framework. OpenClaw is the default, but the user can deselect to run no agent. */
+  agentFramework?: AgentFramework;
   selectedModels: string[];
   backend: InferenceBackendType;
   cloudProviders: CloudProviderInput[];
