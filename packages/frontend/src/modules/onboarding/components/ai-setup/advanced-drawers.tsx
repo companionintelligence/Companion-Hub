@@ -58,11 +58,12 @@ function DrawerRow({
 
 /** Collapsible "Advanced" panel holding the Other Models picker and Cloud API Keys inputs. */
 export const AdvancedDrawers = ({
-  recommendedModels,
-  availableModels,
-  selectedModelIds,
-  onToggleModel,
-  preferredModelId,
+  // Other Models picker hidden — restore these with the DrawerRow block below.
+  // recommendedModels,
+  // availableModels,
+  // selectedModelIds,
+  // onToggleModel,
+  // preferredModelId,
   providers,
   onUpdateProviders,
   insufficientHardware,
