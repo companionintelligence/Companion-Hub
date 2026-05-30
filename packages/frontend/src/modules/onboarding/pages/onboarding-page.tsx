@@ -110,7 +110,7 @@ function OnboardingWizard() {
         <TailscaleSetupStep embedded />
 
         {/* Breathing room so the sticky finish bar rests below all content instead of overlapping it. */}
-        <div aria-hidden className="h-4" />
+        <div aria-hidden className="h-2" />
 
         <div className="sticky bottom-4 z-10 flex flex-col gap-3 rounded-2xl border border-border bg-card/90 p-4 shadow-lg backdrop-blur sm:flex-row sm:items-center sm:justify-between">
           <p className="text-sm text-muted-foreground">{canFinish ? 'You can change everything later in Settings.' : 'Detecting your hardware…'}</p>
