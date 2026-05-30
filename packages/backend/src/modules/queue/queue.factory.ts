@@ -110,14 +110,21 @@ export class QueueFactory implements OnApplicationShutdown {
     await this.waitForConnection();
   }
 
+  private isConnectionEstablished(): boolean {
+    // Either signal proves the connection is up: the 'connection' event (connectionStatus)
+    // or the library's socket-level `ready` flag. Checking both avoids waiting out the full
+    // timeout when one signal lags the other (and keeps the connect gate from busy-waiting).
+    return this.connectionStatus === 'ready' || Boolean(this.rabbit?.ready);
+  }
+
   private async waitForConnection(maxWaitTime = 30000) {
     const startTime = Date.now();
 
-    while (this.connectionStatus !== 'ready' && Date.now() - startTime < maxWaitTime) {
+    while (!this.isConnectionEstablished() && Date.now() - startTime < maxWaitTime) {
       await setTimeout(1000);
     }
 
-    if (this.connectionStatus !== 'ready') {
+    if (!this.isConnectionEstablished()) {
       throw new Error('Failed to connect to RabbitMQ within timeout period');
     }
   }
