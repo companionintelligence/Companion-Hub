@@ -116,6 +116,9 @@ export default function DeviceRegistrationPage() {
         if (requiresDeviceRegistration(status)) {
           completionStartedRef.current = false;
           clearRegistrationCache();
+          if (status.phase === 'unregistered') {
+            await loadDeviceInfo();
+          }
           return status;
         }
 
@@ -125,10 +128,6 @@ export default function DeviceRegistrationPage() {
         }
 
         clearRegistrationCache();
-
-        if (loadDeviceData && status.phase === 'unregistered') {
-          await loadDeviceInfo();
-        }
 
         return status;
       } catch (error) {
