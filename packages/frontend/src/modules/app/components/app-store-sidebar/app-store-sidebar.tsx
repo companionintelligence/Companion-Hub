@@ -47,7 +47,7 @@ export const AppStoreSidebar = () => {
   );
 
   return (
-    <aside className="w-64 flex-shrink-0 border-r bg-muted/10 hidden md:flex flex-col ml-6 mb-6 rounded-2xl border">
+    <aside className="w-64 flex-shrink-0 self-start bg-muted/10 hidden md:flex flex-col ml-6 mb-6 rounded-2xl border">
       <div className="p-4 border-b">
         <div className="relative">
           <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground z-10" />
