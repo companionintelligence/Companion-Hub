@@ -101,45 +101,42 @@ export default function DeviceRegistrationPage() {
     }
   }, []);
 
-  const refreshRegistrationStatus = useCallback(
-    async ({ loadDeviceData = false }: { loadDeviceData?: boolean } = {}) => {
-      try {
-        const res = await apiFetch('/api/registration/status');
-        if (!res.ok) {
-          throw new Error('Failed to fetch registration status');
-        }
-
-        const status = (await res.json()) as RegistrationStatus;
-        setRegistrationStatus(status);
-        setStatusError(null);
-
-        if (requiresDeviceRegistration(status)) {
-          completionStartedRef.current = false;
-          clearRegistrationCache();
-          if (status.phase === 'unregistered') {
-            await loadDeviceInfo();
-          }
-          return status;
-        }
-
-        if (isRegistrationOperational(status)) {
-          cacheRegistrationStatus(status);
-          return status;
-        }
-
-        clearRegistrationCache();
-
-        return status;
-      } catch (error) {
-        console.error(error);
-        setStatusError('We couldn’t confirm your Hub status right now. This is usually temporary. Please retry in a moment.');
-        return null;
-      } finally {
-        setIsLoading(false);
+  const refreshRegistrationStatus = useCallback(async () => {
+    try {
+      const res = await apiFetch('/api/registration/status');
+      if (!res.ok) {
+        throw new Error('Failed to fetch registration status');
       }
-    },
-    [loadDeviceInfo],
-  );
+
+      const status = (await res.json()) as RegistrationStatus;
+      setRegistrationStatus(status);
+      setStatusError(null);
+
+      if (requiresDeviceRegistration(status)) {
+        completionStartedRef.current = false;
+        clearRegistrationCache();
+        if (status.phase === 'unregistered') {
+          await loadDeviceInfo();
+        }
+        return status;
+      }
+
+      if (isRegistrationOperational(status)) {
+        cacheRegistrationStatus(status);
+        return status;
+      }
+
+      clearRegistrationCache();
+
+      return status;
+    } catch (error) {
+      console.error(error);
+      setStatusError('We couldn’t confirm your Hub status right now. This is usually temporary. Please retry in a moment.');
+      return null;
+    } finally {
+      setIsLoading(false);
+    }
+  }, [loadDeviceInfo]);
 
   const finishRegistrationFlow = useCallback(
     async (status: RegistrationStatus) => {
@@ -215,7 +212,7 @@ export default function DeviceRegistrationPage() {
   );
 
   useEffect(() => {
-    void refreshRegistrationStatus({ loadDeviceData: true });
+    void refreshRegistrationStatus();
   }, [refreshRegistrationStatus]);
 
   useEffect(() => {
@@ -337,7 +334,7 @@ export default function DeviceRegistrationPage() {
 
   const handleRetryStatus = async () => {
     setStatusError(null);
-    await refreshRegistrationStatus({ loadDeviceData: registrationStatus?.phase === 'unregistered' || !registrationStatus });
+    await refreshRegistrationStatus();
   };
 
   const handlePair = async () => {

@@ -13,7 +13,7 @@ import globalsStylesheet from './styles/globals.css?url';
 import { Providers } from './components/providers/providers';
 import { ThemeProvider } from './components/providers/theme/theme-provider';
 import { TranslatableError } from './types/error.types';
-import { apiFetch, getTauriSessionId } from './lib/api-fetch';
+import { getTauriSessionId } from './lib/api-fetch';
 import type { RegistrationStatus } from './lib/registration-status';
 import { isRegistrationOperational, requiresDeviceRegistration } from './lib/registration-status';
 import { resolveRegistrationStatus } from './lib/registration-cache';

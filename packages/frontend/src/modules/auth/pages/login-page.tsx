@@ -1,6 +1,6 @@
 import { userContext } from '@/api-client';
 import { loginMutation, verifyTotpMutation } from '@/api-client/@tanstack/react-query.gen';
-import { apiFetch, setTauriSessionId } from '@/lib/api-fetch';
+import { setTauriSessionId } from '@/lib/api-fetch';
 import { resolveRegistrationStatus } from '@/lib/registration-cache';
 import { requiresDeviceRegistration } from '@/lib/registration-status';
 import { useUserContext } from '@/context/user-context';
