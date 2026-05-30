@@ -1,19 +1,17 @@
 import { Button } from '@/components/ui/Button';
 import { AppContextProvider, useAppContext } from '@/context/app-context';
 import { useUserContext } from '@/context/user-context';
+import { apiFetch } from '@/lib/api-fetch';
 import { getLogo } from '@/lib/theme/theme';
-import { Suspense, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { Navigate } from 'react-router';
 import { AiSetupStep } from '../components/ai-setup-step';
 import { CompleteStep } from '../components/complete-step';
 import { InstallStep } from '../components/install-step';
+import { RecommendationsStep } from '../components/recommendations-step';
 import { TailscaleSetupStep } from '../components/tailscale-setup-step';
+import { identifyServices, type DetectedService } from '../helpers/service-detection';
 import type { AiSetupConfig, InstallSummary, OnboardingApp } from '../helpers/types';
-// Recommended apps section temporarily hidden — restore these with the section below.
-// import { apiFetch } from '@/lib/api-fetch';
-// import { useEffect } from 'react';
-// import { RecommendationsStep } from '../components/recommendations-step';
-// import { identifyServices, type DetectedService } from '../helpers/service-detection';
 
 /** Page chrome shared by every onboarding phase: brand header + centered container. */
 function Shell({ children }: { children: React.ReactNode }) {
@@ -42,31 +40,30 @@ function OnboardingWizard() {
   const { user, cloudflareAvailable, tailscaleAvailable } = useAppContext();
 
   const [phase, setPhase] = useState<'form' | 'installing' | 'done'>('form');
-  const [selectedApps] = useState<OnboardingApp[]>([]);
+  const [selectedApps, setSelectedApps] = useState<OnboardingApp[]>([]);
   const [aiSetupConfig, setAiSetupConfig] = useState<AiSetupConfig | undefined>();
   const [installSummary, setInstallSummary] = useState<InstallSummary | undefined>();
+  const [detectedServices, setDetectedServices] = useState<DetectedService[]>([]);
+  // The install/review page defers the actual install until the user confirms their app selection.
+  const [installStarted, setInstallStarted] = useState(false);
 
-  // Recommended apps section temporarily hidden — restore this state + effect with the section below.
-  // const [detectedServices, setDetectedServices] = useState<DetectedService[]>([]);
-  // const [selectedApps, setSelectedApps] = useState<OnboardingApp[]>([]);
-  //
-  // // Detect Docker services once, to seed the Local Apps recommendations.
-  // useEffect(() => {
-  //   let cancelled = false;
-  //   void (async () => {
-  //     try {
-  //       const res = await apiFetch('/api/system/detect-services', { credentials: 'include' });
-  //       if (!res.ok) return;
-  //       const data = await res.json();
-  //       if (!cancelled) setDetectedServices(identifyServices(data.services || []));
-  //     } catch {
-  //       // Non-fatal — recommendations fall back to popular apps.
-  //     }
-  //   })();
-  //   return () => {
-  //     cancelled = true;
-  //   };
-  // }, []);
+  // Detect Docker services once, to seed the Local Apps recommendations.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await apiFetch('/api/system/detect-services', { credentials: 'include' });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled) setDetectedServices(identifyServices(data.services || []));
+      } catch {
+        // Non-fatal — recommendations fall back to popular apps.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const contextExposureMode = cloudflareAvailable ? 'cloudflare' : tailscaleAvailable ? 'tailscale' : 'local';
   const installExposureMode = aiSetupConfig?.exposureMode ?? contextExposureMode;
@@ -79,15 +76,37 @@ function OnboardingWizard() {
   if (phase === 'installing') {
     return (
       <Shell>
-        <InstallStep
-          apps={selectedApps}
-          defaultExposureMode={installExposureMode}
-          aiSetupConfig={aiSetupConfig}
-          onComplete={(summary) => {
-            setInstallSummary(summary);
-            setPhase('done');
-          }}
-        />
+        <div className="space-y-6">
+          {/* App selection sits above the review/install card on the same page. Once the install
+              begins we hide the picker and let InstallStep drive the rest. */}
+          {!installStarted && <RecommendationsStep embedded detectedServices={detectedServices} onChange={setSelectedApps} />}
+          <InstallStep
+            apps={selectedApps}
+            start={installStarted}
+            defaultExposureMode={installExposureMode}
+            aiSetupConfig={aiSetupConfig}
+            onComplete={(summary) => {
+              setInstallSummary(summary);
+              setPhase('done');
+            }}
+          />
+          {!installStarted && (
+            <>
+              {/* Breathing room so the sticky bar rests below all content instead of overlapping it. */}
+              <div aria-hidden className="h-2" />
+              <div className="sticky bottom-4 z-10 flex flex-col gap-3 rounded-2xl border border-border bg-card/90 p-4 shadow-lg backdrop-blur sm:flex-row sm:items-center sm:justify-between">
+                <p className="text-sm text-muted-foreground">
+                  {selectedApps.length === 0
+                    ? 'No apps selected — you can add them anytime from the App Store.'
+                    : `${selectedApps.length} app${selectedApps.length === 1 ? '' : 's'} selected.`}
+                </p>
+                <Button intent="primary" size="lg" onClick={() => setInstallStarted(true)} data-testid="start-install-btn">
+                  Finish setup
+                </Button>
+              </div>
+            </>
+          )}
+        </div>
       </Shell>
     );
   }
@@ -115,7 +134,7 @@ function OnboardingWizard() {
         <div className="sticky bottom-4 z-10 flex flex-col gap-3 rounded-2xl border border-border bg-card/90 p-4 shadow-lg backdrop-blur sm:flex-row sm:items-center sm:justify-between">
           <p className="text-sm text-muted-foreground">{canFinish ? 'You can change everything later in Settings.' : 'Detecting your hardware…'}</p>
           <Button intent="primary" size="lg" disabled={!canFinish} onClick={() => setPhase('installing')} data-testid="finish-setup-btn">
-            Finish setup
+            Continue
           </Button>
         </div>
       </div>

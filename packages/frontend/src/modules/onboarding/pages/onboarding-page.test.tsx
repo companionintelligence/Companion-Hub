@@ -75,20 +75,20 @@ const renderPage = () =>
   );
 
 describe('OnboardingPage (single vertical form)', () => {
-  it('renders all config sections on one page', () => {
+  it('renders config sections on the first page (app picker lives on the next page)', () => {
     renderPage();
     expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument();
-    // Recommended apps section is temporarily hidden.
+    // App selection moved to the install/review page, so it is not on the first form page.
     expect(screen.queryByTestId('recommendations-step')).not.toBeInTheDocument();
     expect(screen.getByTestId('tailscale-setup-step')).toBeInTheDocument();
   });
 
-  it('keeps Finish disabled until AI config is provided', () => {
+  it('keeps Continue disabled until AI config is provided', () => {
     renderPage();
     expect(screen.getByTestId('finish-setup-btn')).toBeDisabled();
   });
 
-  it('finishes setup: AI config → Finish → install → done', async () => {
+  it('flows: AI config → Continue → select apps + install on one page → done', async () => {
     const user = userEvent.setup();
     renderPage();
 
@@ -97,7 +97,13 @@ describe('OnboardingPage (single vertical form)', () => {
     expect(finish).toBeEnabled();
 
     await user.click(finish);
+    // The selector and the install/review card appear together on the same page.
+    expect(screen.getByTestId('recommendations-step')).toBeInTheDocument();
     expect(screen.getByTestId('install-step')).toBeInTheDocument();
+
+    // Confirming the selection begins the install and hides the picker.
+    await user.click(screen.getByTestId('start-install-btn'));
+    expect(screen.queryByTestId('recommendations-step')).not.toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'install-complete' }));
     expect(screen.getByTestId('complete-step')).toBeInTheDocument();

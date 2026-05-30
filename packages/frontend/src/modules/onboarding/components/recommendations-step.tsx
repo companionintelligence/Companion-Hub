@@ -91,11 +91,21 @@ export const RecommendationsStep = ({ detectedServices, onSelect, onSkip, onBack
     if (embedded && onChange) onChange(buildApps());
   }, [embedded, selected, recommendations, onChange]);
 
-  // Flatten the per-category recommendations into a single list for the icon grid.
+  // Flatten the per-category recommendations into a single list for the grid, enriching each
+  // entry with the store app's short description so the cards explain what the app is for.
   const flatApps = recommendations.flatMap((rec) =>
     rec.alternatives
       .filter((alt) => alt.appSlug)
-      .map((alt) => ({ slug: alt.appSlug as string, name: alt.name, icon: alt.icon, replaces: rec.proprietary.join(', ') })),
+      .map((alt) => {
+        const storeApp = storeApps.find((a) => a.id === alt.appSlug);
+        return {
+          slug: alt.appSlug as string,
+          name: alt.name,
+          icon: alt.icon,
+          replaces: rec.proprietary.join(', '),
+          shortDesc: storeApp?.short_desc ?? '',
+        };
+      }),
   );
 
   return (
@@ -132,10 +142,10 @@ export const RecommendationsStep = ({ detectedServices, onSelect, onSkip, onBack
 
       <div className="max-h-[420px] overflow-y-auto pr-1">
         {isAltsLoading && (
-          <div className="grid grid-cols-3 gap-3 py-1 sm:grid-cols-4">
-            {Array.from({ length: 8 }).map((_, i) => (
+          <div className="grid grid-cols-1 gap-3 py-1 sm:grid-cols-2">
+            {Array.from({ length: 6 }).map((_, i) => (
               // biome-ignore lint/suspicious/noArrayIndexKey: static skeleton placeholders
-              <div key={i} className="aspect-square animate-pulse rounded-xl bg-muted/50" />
+              <div key={i} className="h-16 animate-pulse rounded-xl bg-muted/50" />
             ))}
           </div>
         )}
@@ -145,9 +155,10 @@ export const RecommendationsStep = ({ detectedServices, onSelect, onSkip, onBack
           </p>
         )}
         {flatApps.length > 0 && (
-          <div className="grid grid-cols-3 gap-3 sm:grid-cols-4">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             {flatApps.map((app) => {
               const isSelected = selected.has(app.slug);
+              const description = app.shortDesc || (app.replaces ? `Open-source alternative to ${app.replaces}.` : '');
               return (
                 <button
                   type="button"
@@ -156,16 +167,13 @@ export const RecommendationsStep = ({ detectedServices, onSelect, onSkip, onBack
                   title={app.replaces ? `${app.name} — replaces ${app.replaces}` : app.name}
                   onClick={() => toggleApp(app.slug)}
                   className={cn(
-                    'group relative flex flex-col items-center gap-2 rounded-xl border p-3 text-center transition-colors',
+                    'group relative flex items-start gap-3 rounded-xl border p-3 text-left transition-colors',
                     isSelected
                       ? 'border-primary bg-primary/[0.08] ring-1 ring-primary/30'
                       : 'border-border bg-foreground/[0.015] hover:border-primary/40',
                   )}
                 >
-                  <span className="absolute right-1.5 top-1.5">
-                    <SelectIndicator selected={isSelected} />
-                  </span>
-                  <span className="relative flex h-12 w-12 items-center justify-center overflow-hidden rounded-xl bg-foreground/10 text-base font-semibold text-muted-foreground">
+                  <span className="relative flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-foreground/10 text-base font-semibold text-muted-foreground">
                     {app.name.charAt(0)}
                     <img
                       src={app.icon}
@@ -176,7 +184,13 @@ export const RecommendationsStep = ({ detectedServices, onSelect, onSkip, onBack
                       }}
                     />
                   </span>
-                  <span className="w-full truncate text-xs font-medium">{app.name}</span>
+                  <span className="min-w-0 flex-1 pr-5">
+                    <span className="block truncate text-sm font-medium">{app.name}</span>
+                    {description && <span className="mt-0.5 block text-xs leading-snug text-muted-foreground line-clamp-2">{description}</span>}
+                  </span>
+                  <span className="absolute right-1.5 top-1.5">
+                    <SelectIndicator selected={isSelected} />
+                  </span>
                 </button>
               );
             })}
