@@ -5,7 +5,8 @@ import { Alert, AlertDescription } from '@/components/ui/Alert/Alert';
 import { AlertCircle, CheckCircle2, ChevronRight, Copy, Loader2 } from 'lucide-react';
 import { apiFetch } from '@/lib/api-fetch';
 import type { RegistrationStatus } from '@/lib/registration-status';
-import { isRegistrationOperational, isRegistrationPending } from '@/lib/registration-status';
+import { isRegistrationOperational, isRegistrationPending, requiresDeviceRegistration } from '@/lib/registration-status';
+import { cacheRegistrationStatus, clearRegistrationCache } from '@/lib/registration-cache';
 import toast from 'react-hot-toast';
 
 const DEFAULT_PORTAL_URL = (
@@ -22,16 +23,6 @@ type PairingTarget = {
   domain?: string;
   subdomain?: string;
 };
-
-function setRegisteredCache() {
-  sessionStorage.setItem('device-registered', 'true');
-  sessionStorage.setItem('device-registered-at', String(Date.now()));
-}
-
-function clearRegisteredCache() {
-  sessionStorage.removeItem('device-registered');
-  sessionStorage.removeItem('device-registered-at');
-}
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -110,46 +101,48 @@ export default function DeviceRegistrationPage() {
     }
   }, []);
 
-  const refreshRegistrationStatus = useCallback(
-    async ({ loadDeviceData = false }: { loadDeviceData?: boolean } = {}) => {
-      try {
-        const res = await apiFetch('/api/registration/status');
-        if (!res.ok) {
-          throw new Error('Failed to fetch registration status');
-        }
+  const refreshRegistrationStatus = useCallback(async () => {
+    try {
+      const res = await apiFetch('/api/registration/status');
+      if (!res.ok) {
+        throw new Error('Failed to fetch registration status');
+      }
 
-        const status = (await res.json()) as RegistrationStatus;
-        setRegistrationStatus(status);
-        setStatusError(null);
+      const status = (await res.json()) as RegistrationStatus;
+      setRegistrationStatus(status);
+      setStatusError(null);
 
-        if (isRegistrationOperational(status)) {
-          setRegisteredCache();
-          return status;
-        }
-
-        clearRegisteredCache();
-
-        if (loadDeviceData && status.phase === 'unregistered') {
+      if (requiresDeviceRegistration(status)) {
+        completionStartedRef.current = false;
+        clearRegistrationCache();
+        if (status.phase === 'unregistered') {
           await loadDeviceInfo();
         }
-
         return status;
-      } catch (error) {
-        console.error(error);
-        setStatusError('We couldn’t confirm your Hub status right now. This is usually temporary. Please retry in a moment.');
-        return null;
-      } finally {
-        setIsLoading(false);
       }
-    },
-    [loadDeviceInfo],
-  );
+
+      if (isRegistrationOperational(status)) {
+        cacheRegistrationStatus(status);
+        return status;
+      }
+
+      clearRegistrationCache();
+
+      return status;
+    } catch (error) {
+      console.error(error);
+      setStatusError('We couldn’t confirm your Hub status right now. This is usually temporary. Please retry in a moment.');
+      return null;
+    } finally {
+      setIsLoading(false);
+    }
+  }, [loadDeviceInfo]);
 
   const finishRegistrationFlow = useCallback(
     async (status: RegistrationStatus) => {
       const { domain, subdomain } = pendingPairTargetRef.current ?? {};
       pendingPairTargetRef.current = null;
-      setRegisteredCache();
+      cacheRegistrationStatus(status);
 
       if (isTauri) {
         setRedirectStatus('Registration complete! Loading the local Hub...');
@@ -219,7 +212,7 @@ export default function DeviceRegistrationPage() {
   );
 
   useEffect(() => {
-    void refreshRegistrationStatus({ loadDeviceData: true });
+    void refreshRegistrationStatus();
   }, [refreshRegistrationStatus]);
 
   useEffect(() => {
@@ -245,6 +238,10 @@ export default function DeviceRegistrationPage() {
 
   useEffect(() => {
     if (!registrationStatus || !isRegistrationOperational(registrationStatus) || completionStartedRef.current) {
+      return;
+    }
+
+    if (requiresDeviceRegistration(registrationStatus)) {
       return;
     }
 
@@ -337,7 +334,7 @@ export default function DeviceRegistrationPage() {
 
   const handleRetryStatus = async () => {
     setStatusError(null);
-    await refreshRegistrationStatus({ loadDeviceData: registrationStatus?.phase === 'unregistered' || !registrationStatus });
+    await refreshRegistrationStatus();
   };
 
   const handlePair = async () => {
