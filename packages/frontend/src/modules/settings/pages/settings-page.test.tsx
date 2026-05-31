@@ -68,7 +68,7 @@ describe('SettingsPage', () => {
 
     expect(scrollContainer).toHaveClass('overflow-y-auto');
     expect(scrollContainer).not.toHaveClass('overflow-hidden');
-    expect(innerWrapper).toHaveClass('max-w-3xl');
+    expect(innerWrapper).toHaveClass('max-w-5xl');
     expect(innerWrapper).not.toHaveClass('max-w-none');
     expect(innerWrapper).not.toHaveClass('h-full');
   });
@@ -85,6 +85,6 @@ describe('SettingsPage', () => {
     expect(scrollContainer).not.toHaveClass('overflow-y-auto');
     expect(innerWrapper).toHaveClass('h-full');
     expect(innerWrapper).toHaveClass('max-w-none');
-    expect(innerWrapper).not.toHaveClass('max-w-3xl');
+    expect(innerWrapper).not.toHaveClass('max-w-5xl');
   });
 });
