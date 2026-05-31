@@ -111,11 +111,12 @@ interface AppState {
 interface NodeState {
   name: string;
   ip: string;
-  status: 'idle' | 'syncing' | 'running' | 'done' | 'error' | 'offline';
+  status: 'idle' | 'checking' | 'syncing' | 'running' | 'done' | 'error' | 'offline';
   total: number;
   done: number;
   currentApp: string | null;
   error: string | null;
+  preflight: Record<string, unknown> | null;
 }
 
 const appStates = new Map<string, AppState>(
@@ -148,6 +149,7 @@ const nodeStates = new Map<string, NodeState>(
       done: 0,
       currentApp: null,
       error: null,
+      preflight: null,
     },
   ]),
 );
@@ -197,6 +199,37 @@ function sshSpawn(node: FleetNode, cmd: string): ChildProcess {
   );
 }
 
+function summarizeError(text: string): string {
+  return text.replace(/\s+/g, ' ').trim().slice(0, 300);
+}
+
+function sshCapture(node: FleetNode, cmd: string, timeoutMs = 20_000): Promise<{ ok: boolean; out: string; err: string; code: number | null }> {
+  return new Promise((resolve) => {
+    const proc = sshSpawn(node, cmd);
+    let out = '';
+    let err = '';
+    const timer = setTimeout(() => {
+      proc.kill('SIGTERM');
+      resolve({ ok: false, out, err: `${err}\nTimed out after ${timeoutMs}ms`, code: null });
+    }, timeoutMs);
+
+    proc.stdout?.on('data', (chunk: Buffer) => {
+      out += chunk.toString();
+    });
+    proc.stderr?.on('data', (chunk: Buffer) => {
+      err += chunk.toString();
+    });
+    proc.on('exit', (code) => {
+      clearTimeout(timer);
+      resolve({ ok: code === 0, out, err, code });
+    });
+    proc.on('error', (e) => {
+      clearTimeout(timer);
+      resolve({ ok: false, out, err: `${err}\n${e.message}`, code: null });
+    });
+  });
+}
+
 function scpScreenshot(node: FleetNode, appId: string) {
   const remoteResultsDir = '~/qa-results-fleet';
   spawn(
@@ -213,16 +246,62 @@ function scpScreenshot(node: FleetNode, appId: string) {
   );
 }
 
-async function scpScript(node: FleetNode): Promise<boolean> {
+async function scpScript(node: FleetNode): Promise<{ ok: boolean; error: string | null }> {
   return new Promise((resolve) => {
     const proc = spawn(
       'scp',
       ['-o', 'StrictHostKeyChecking=accept-new', '-o', 'ConnectTimeout=10', STREAM_SCRIPT, `${SSH_USER}@${node.ip}:/tmp/qa-stream.ts`],
-      { stdio: 'ignore' },
+      { stdio: ['ignore', 'ignore', 'pipe'] },
     );
-    proc.on('exit', (code) => resolve(code === 0));
-    proc.on('error', () => resolve(false));
+    let err = '';
+    proc.stderr?.on('data', (chunk: Buffer) => {
+      err += chunk.toString();
+    });
+    proc.on('exit', (code) => resolve({ ok: code === 0, error: code === 0 ? null : summarizeError(err) || `scp exited with code ${code}` }));
+    proc.on('error', (e) => resolve({ ok: false, error: e.message }));
   });
+}
+
+async function preflightNode(node: FleetNode): Promise<boolean> {
+  const ns = nodeStates.get(node.name);
+  if (!ns) return false;
+
+  ns.status = 'checking';
+  ns.error = null;
+  ns.preflight = null;
+  broadcast({ event: 'node_status', node: node.name, ...ns });
+
+  const cmd = [
+    'set -e',
+    'echo host=$(hostname)',
+    'echo user=$(whoami)',
+    'command -v docker >/dev/null',
+    'docker info >/dev/null',
+    '(command -v tsx >/dev/null || command -v pnpm >/dev/null)',
+    `test -d ${STORE_ROOT}/apps`,
+    `test -f ${STORE_ROOT}/apps/code-server/config.json`,
+    'echo ok',
+  ].join(' && ');
+
+  const result = await sshCapture(node, cmd, 30_000);
+  const ok = result.ok && result.out.includes('ok');
+  ns.status = ok ? 'idle' : 'offline';
+  ns.error = ok ? null : summarizeError(result.err || result.out) || 'Preflight failed';
+  ns.preflight = {
+    ok,
+    output: summarizeError(result.out),
+    error: summarizeError(result.err),
+    checkedAt: Date.now(),
+  };
+  broadcast({ event: 'node_status', node: node.name, ...ns });
+  return ok;
+}
+
+async function preflightNodes(nodes: FleetNode[]): Promise<FleetNode[]> {
+  const results = await Promise.all(nodes.map(async (node) => ({ node, ok: await preflightNode(node) })));
+  const ready = results.filter((r) => r.ok).map((r) => r.node);
+  broadcast({ event: 'preflight_complete', ready: ready.map((n) => n.name), total: nodes.length });
+  return ready;
 }
 
 async function runNodeTests(node: FleetNode, apps: AppSpec[]) {
@@ -244,10 +323,10 @@ async function runNodeTests(node: FleetNode, apps: AppSpec[]) {
   broadcast({ event: 'apps_queued', node: node.name, appIds: apps.map((a) => a.id) });
 
   // SCP the streaming script to the node
-  const scpOk = await scpScript(node);
-  if (!scpOk) {
+  const scpResult = await scpScript(node);
+  if (!scpResult.ok) {
     ns.status = 'offline';
-    ns.error = 'Could not SCP qa-stream.ts — node unreachable?';
+    ns.error = scpResult.error ?? 'Could not SCP qa-stream.ts';
     broadcast({ event: 'node_status', node: node.name, ...ns });
     for (const app of apps) {
       const s = appStates.get(app.id);
@@ -269,7 +348,7 @@ async function runNodeTests(node: FleetNode, apps: AppSpec[]) {
     `mkdir -p ${remoteResultsDir}/screenshots`,
     `APP_STORE_DIR=${STORE_ROOT}/apps`,
     `RESULTS_DIR=${remoteResultsDir}`,
-    `tsx /tmp/qa-stream.ts ${appList}`,
+    `(command -v tsx >/dev/null && tsx /tmp/qa-stream.ts ${appList} || pnpm exec tsx /tmp/qa-stream.ts ${appList})`,
   ].join(' && ');
 
   await new Promise<void>((resolve) => {
@@ -399,6 +478,7 @@ function resetState() {
     ns.total = 0;
     ns.currentApp = null;
     ns.error = null;
+    ns.preflight = null;
   }
   broadcast({ event: 'reset' });
   broadcastFleetStatus();
@@ -410,7 +490,21 @@ async function startRun(mode: 'quick' | 'full', selectedNodes?: string[]) {
   runStartTs = Date.now();
   broadcast({ event: 'run_start', mode, ts: runStartTs });
 
-  const nodes = selectedNodes ? FLEET.filter((n) => selectedNodes.includes(n.name)) : FLEET;
+  const requestedNodes = selectedNodes ? FLEET.filter((n) => selectedNodes.includes(n.name)) : FLEET;
+  const nodes = await preflightNodes(requestedNodes);
+
+  if (nodes.length === 0) {
+    broadcast({
+      event: 'run_complete',
+      total: CATALOG.length,
+      pass: 0,
+      warn: 0,
+      fail: 0,
+      durationMs: runStartTs ? Date.now() - runStartTs : 0,
+    });
+    runStartTs = null;
+    return;
+  }
 
   const dist = distributeApps(nodes, mode);
   const nodePromises: Promise<void>[] = [];
@@ -487,6 +581,22 @@ async function handler(req: IncomingMessage, res: ServerResponse) {
     req.on('end', () => {
       const { mode, nodes } = JSON.parse(body || '{}');
       startRun(mode ?? 'quick', nodes);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    return;
+  }
+
+  // ── Preflight
+  if (path === '/api/preflight' && req.method === 'POST') {
+    let body = '';
+    req.on('data', (d) => {
+      body += d;
+    });
+    req.on('end', () => {
+      const { nodes } = JSON.parse(body || '{}');
+      const requestedNodes = nodes ? FLEET.filter((n) => nodes.includes(n.name)) : FLEET;
+      preflightNodes(requestedNodes);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
     });
@@ -622,6 +732,7 @@ header {
 }
 .node-badge.selected { border-color: var(--accent); background: var(--accent-dim); color: var(--accent); }
 .node-badge.online { border-color: var(--pass); }
+.node-badge.checking { border-color: var(--warn); color: var(--warn); animation: pulse 1.5s infinite; }
 .node-badge.running { border-color: var(--accent); animation: pulse 1.5s infinite; }
 .node-badge.done { border-color: var(--pass); background: var(--pass-dim); color: var(--pass); }
 .node-badge.error { border-color: var(--fail); color: var(--fail); }
@@ -731,6 +842,7 @@ header {
   <div class="mode-sep"></div>
   <div class="node-sel" id="node-sel"></div>
   <div class="mode-sep"></div>
+  <button class="btn" id="btn-preflight" onclick="preflight()">Preflight</button>
   <button class="btn primary" id="btn-start" onclick="startRun()">&#9654; Start</button>
   <button class="btn danger" id="btn-stop" onclick="stopRun()" disabled>&#9632; Stop</button>
   <button class="btn" onclick="resetRun()">&#8635; Reset</button>
@@ -779,6 +891,12 @@ function startRun() {
     body: JSON.stringify({ mode: currentMode, nodes: nodes }) });
   document.getElementById('btn-start').disabled = true;
   document.getElementById('btn-stop').disabled = false;
+}
+
+function preflight() {
+  var nodes = selectedNodes.size > 0 ? Array.from(selectedNodes) : null;
+  fetch('/api/preflight', { method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ nodes: nodes }) });
 }
 
 function stopRun() {
@@ -831,7 +949,8 @@ function updateNodeBadge(ns) {
   var pct = ns.total > 0 ? Math.round(ns.done / ns.total * 100) : 0;
   b.title = ns.name + ': ' + ns.done + '/' + ns.total + ' (' + pct + '%)'
     + (ns.currentApp ? ' — ' + ns.currentApp : '')
-    + (ns.error ? ' ERROR: ' + ns.error : '');
+    + (ns.error ? ' ERROR: ' + ns.error : '')
+    + (ns.preflight && ns.preflight.output ? ' PREFLIGHT: ' + ns.preflight.output : '');
 }
 
 function buildGrid(catalog) {

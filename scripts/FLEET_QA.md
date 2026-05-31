@@ -12,6 +12,27 @@ We use a fleet of servers to parallelize App Store QA testing:
 
 ## Quick Start
 
+### Live Dashboard Runner
+
+Use this for manual release QA when you want to watch app testing in real time:
+
+```bash
+# From CI-Hub on the control machine
+./node_modules/.bin/tsx scripts/fleet-qa-server.ts --port=4244
+```
+
+Open <http://127.0.0.1:4244/> locally or the printed LAN/Tailscale URL from another device.
+
+Recommended flow:
+
+1. Click **Preflight**. Every selected node must pass SSH, Docker, `tsx`/`pnpm`, and CI-Marketplace checks.
+2. Select one node and run **Quick** to confirm the stream path and screenshots.
+3. Select all ready nodes, switch to **Full (100 apps)**, then click **Start**.
+
+The dashboard automatically runs preflight before starting a run and skips nodes that fail. Hover a node badge to see the exact failure.
+
+If all nodes report `tailscale: tailnet policy does not permit you to SSH to this node`, fix the Tailscale SSH ACL for the fleet before testing. The control machine/user needs SSH permission to `tag:tagged-devices` as `ci` (or set `FLEET_SSH_USER` to the allowed user).
+
 ### Run QA on Single Server
 ```bash
 # Test a single app

@@ -119,7 +119,7 @@ async function qaApp(appId: string) {
     }
 
     // ── Pull ──────────────────────────────────────────────────
-    phase(appId, 'pull', `Pulling ${result.image}`);
+    phase(appId, 'pulling', `Pulling ${result.image}`);
     const pullT0 = Date.now();
     const pull = execQuiet(`docker pull ${result.image}`, 300_000);
     result.pullMs = Date.now() - pullT0;
@@ -136,7 +136,7 @@ async function qaApp(appId: string) {
     result.imageMb = sizeR.ok ? Math.round(Number(sizeR.out) / 1024 / 1024) : 0;
 
     // ── Start ─────────────────────────────────────────────────
-    phase(appId, 'start', `Starting container on port ${result.port}`);
+    phase(appId, 'starting', `Starting container on port ${result.port}`);
     const startT0 = Date.now();
     const run = execQuiet(`docker run -d --name ${containerName} -p ${result.port}:${result.port} ${result.image}`, 60_000);
     if (!run.ok) {
@@ -178,7 +178,7 @@ async function qaApp(appId: string) {
 
     // ── Screenshot ────────────────────────────────────────────
     const screenshotPath = join(SCREENSHOTS_DIR, `${appId}.png`);
-    if (SKIP_SCREENSHOT) {
+    if (SKIP_SCREENSHOT || config.no_gui) {
       result.hasScreenshot = false;
     } else {
       phase(appId, 'screenshot', 'Taking screenshot');
