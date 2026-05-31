@@ -124,7 +124,7 @@ async function generateTestFile(apps: AppTestSpec[], serverIndex: number): Promi
  * Apps: ${apps.length}
  */
 
-import { expect, installApp, loginUser, test } from '../fixtures/fixtures';
+import { expect, loginUser, test } from '../fixtures/fixtures';
 
 const APPS = ${JSON.stringify(apps, null, 2)};
 

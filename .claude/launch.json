@@ -2,6 +2,13 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "fleet-qa",
+      "runtimeExecutable": "/Users/liam/devel/ci/CI-Hub/node_modules/.bin/tsx",
+      "runtimeArgs": ["/Users/liam/devel/ci/CI-Hub/scripts/fleet-qa-server.ts"],
+      "port": 4242,
+      "autoPort": false
+    },
+    {
       "name": "frontend",
       "runtimeExecutable": "pnpm",
       "runtimeArgs": ["--filter", "frontend", "dev"],

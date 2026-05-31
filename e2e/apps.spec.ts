@@ -10,7 +10,7 @@ test('should navigate to app store', async ({ page }) => {
 
 test('should search for an app', async ({ page }) => {
   await loginUser(page);
-  await page.goto('/app-store');
+  await page.goto('/store');
 
   const searchBox = page.getByPlaceholder('Search apps...').first();
   await searchBox.fill('test-app');

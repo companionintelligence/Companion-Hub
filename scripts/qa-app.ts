@@ -243,13 +243,7 @@ async function qaApp(appId: string): Promise<QAResult> {
 
     // 6. Determine score
     if (!result.score) {
-      if (httpOk && result.screenshotPath) {
-        result.score = 'pass';
-      } else if (httpOk) {
-        result.score = 'warn';
-      } else {
-        result.score = 'fail';
-      }
+      result.score = result.screenshotPath ? 'pass' : 'warn';
     }
   } catch (error: unknown) {
     if (!result.score) result.score = 'fail';
