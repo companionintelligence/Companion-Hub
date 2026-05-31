@@ -16,6 +16,7 @@ import { inferencePreferencesSchema } from '../inference.dto';
 import { OllamaBackend } from '../backends/ollama.backend';
 import { VllmBackend } from '../backends/vllm.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
+import { HostMetricsService } from '@/modules/system/host-metrics.service';
 
 describe('InferenceController — preferences', () => {
   let controller: InferenceController;
@@ -34,6 +35,7 @@ describe('InferenceController — preferences', () => {
         { provide: CloudFallbackService, useValue: mock<CloudFallbackService>() },
         { provide: OllamaInstallerService, useValue: mock<OllamaInstallerService>() },
         { provide: AppCredentialsService, useValue: mock<AppCredentialsService>() },
+        { provide: HostMetricsService, useValue: mock<HostMetricsService>() },
         { provide: ConfigurationService, useValue: mock<ConfigurationService>() },
         { provide: OllamaBackend, useValue: mock<OllamaBackend>() },
         { provide: VllmBackend, useValue: mock<VllmBackend>() },
