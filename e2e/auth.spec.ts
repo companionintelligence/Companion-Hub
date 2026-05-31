@@ -8,7 +8,7 @@ test('should register a new user', async ({ page }) => {
   await page.getByPlaceholder('Enter your password').fill(testUser.password);
   await page.getByPlaceholder('Confirm your password').fill(testUser.password);
 
-  await page.getByRole('button', { name: 'Register' }).click();
+  await page.getByRole('button', { name: 'Create Local Admin User' }).click();
 
   // New users are redirected to onboarding wizard
   await expect(page.getByText('Welcome to Companion Hub')).toBeVisible({ timeout: 15000 });
