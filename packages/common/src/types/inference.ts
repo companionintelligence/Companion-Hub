@@ -94,6 +94,33 @@ export interface CuratedModel {
     low: TierRecommendation;
     cpuOnly: TierRecommendation;
   };
+  /**
+   * Reference metadata sourced from the Artificial Analysis open-weights leaderboard
+   * (artificialanalysis.ai, snapshot 2026-05). Optional: `creator`/`capabilities` are set for every
+   * catalog LLM; `intelligenceIndex` and `perf` only for models present on the leaderboard. `perf`
+   * figures are AA's cloud-hosted measurements — indicative only, since local speed depends on the
+   * user's own hardware and quantization.
+   */
+  metadata?: {
+    /** Model creator / lab, e.g. "Meta", "Alibaba", "DeepSeek". */
+    creator?: string;
+    /** Artificial Analysis Intelligence Index (higher = more capable). */
+    intelligenceIndex?: number;
+    capabilities?: {
+      reasoning?: boolean;
+      vision?: boolean;
+      tools?: boolean;
+      audio?: boolean;
+    };
+    perf?: {
+      /** Median output tokens/second (AA cloud reference). */
+      tokensPerSec?: number;
+      /** Median latency to first chunk, seconds (AA cloud reference). */
+      firstChunkSeconds?: number;
+      /** Median end-to-end response time, seconds (AA cloud reference). */
+      totalResponseSeconds?: number;
+    };
+  };
 }
 
 export interface TrackedModel {

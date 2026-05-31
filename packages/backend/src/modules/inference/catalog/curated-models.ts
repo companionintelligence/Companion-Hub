@@ -1,320 +1,203 @@
 import type { CuratedModel, HardwareTier, ModelPurpose } from '@ci-hub/common/types';
 
-// ─── Real Ollama model families ─────────────────────────────────────────────
-// Every family + size below is verified to exist on ollama.com/library (checked 2026-05), and the
-// `gb` value is the model's actual default (q4_K_M) on-disk size as listed there. The catalog lists
-// only the bare `model:size` default tag — the one that is guaranteed to be pullable — so it never
-// surfaces a model the user can't actually install. Sizing (RAM/VRAM/disk) is anchored to the real
-// file size, not a parameter-count formula, so the installer's footprints match reality.
+// ─── LLM catalog (TOON) ──────────────────────────────────────────────────────
+// The LLM catalog is authored as a TOON table (https://toonformat.dev) — one compact, pipe-delimited
+// row per model. Every family + size is verified to exist on ollama.com/library (checked 2026-05) and
+// the catalog lists only the bare `model:size` default tag (the guaranteed-pullable q4_K_M build).
 //
-// `p` is the parameter count in billions, used only for best-fit ranking and the CPU size cap.
-// `tier` is the lowest hardware tier for which the size is surfaced as a default recommendation.
-const FAMILIES: {
-  prefix: string;
-  idPrefix: string;
-  name: string;
-  purpose: ModelPurpose;
-  sizes: { s: string; idSize: string; p: number; gb: number; tier: HardwareTier }[];
-}[] = [
-  {
-    prefix: 'gemma4',
-    idPrefix: 'gemma4',
-    name: 'Gemma 4',
-    purpose: 'general',
-    // ollama.com/library/gemma4 — E2B/E4B edge builds, 26B (MoE, 4B active), 31B dense.
-    sizes: [
-      { s: 'e2b', idSize: 'e2b', p: 2, gb: 7.2, tier: 'cpu-only' },
-      { s: 'e4b', idSize: 'e4b', p: 4, gb: 9.6, tier: 'cpu-only' },
-      { s: '26b', idSize: '26b', p: 26, gb: 18, tier: 'medium' },
-      { s: '31b', idSize: '31b', p: 31, gb: 20, tier: 'medium' },
-    ],
-  },
-  {
-    prefix: 'qwen3.6',
-    idPrefix: 'qwen3-6',
-    name: 'Qwen 3.6',
-    purpose: 'coding',
-    // ollama.com/library/qwen3.6 — 27B dense, 35B (MoE, 3B active).
-    sizes: [
-      { s: '27b', idSize: '27b', p: 27, gb: 17, tier: 'medium' },
-      { s: '35b', idSize: '35b', p: 35, gb: 24, tier: 'medium' },
-    ],
-  },
-  {
-    prefix: 'qwen3.5',
-    idPrefix: 'qwen3-5',
-    name: 'Qwen 3.5',
-    purpose: 'reasoning',
-    // ollama.com/library/qwen3.5
-    sizes: [
-      { s: '0.8b', idSize: '0-8b', p: 0.8, gb: 1.0, tier: 'cpu-only' },
-      { s: '2b', idSize: '2b', p: 2, gb: 2.7, tier: 'cpu-only' },
-      { s: '4b', idSize: '4b', p: 4, gb: 3.4, tier: 'cpu-only' },
-      { s: '9b', idSize: '9b', p: 9, gb: 6.6, tier: 'low' },
-      { s: '27b', idSize: '27b', p: 27, gb: 17, tier: 'medium' },
-      { s: '35b', idSize: '35b', p: 35, gb: 24, tier: 'medium' },
-      { s: '122b', idSize: '122b', p: 122, gb: 81, tier: 'high' },
-    ],
-  },
-  {
-    prefix: 'nemotron3',
-    idPrefix: 'nemotron3',
-    name: 'Nemotron 3',
-    purpose: 'reasoning',
-    // ollama.com/library/nemotron3 — 33B (nano/super are separate slugs below).
-    sizes: [{ s: '33b', idSize: '33b', p: 33, gb: 28, tier: 'medium' }],
-  },
-  {
-    prefix: 'nemotron-3-nano',
-    idPrefix: 'nemotron-3-nano',
-    name: 'Nemotron 3 Nano',
-    purpose: 'reasoning',
-    // ollama.com/library/nemotron-3-nano
-    sizes: [
-      { s: '4b', idSize: '4b', p: 4, gb: 2.8, tier: 'cpu-only' },
-      { s: '30b', idSize: '30b', p: 30, gb: 24, tier: 'medium' },
-    ],
-  },
-  {
-    prefix: 'nemotron-3-super',
-    idPrefix: 'nemotron-3-super',
-    name: 'Nemotron 3 Super',
-    purpose: 'reasoning',
-    // ollama.com/library/nemotron-3-super — 120B MoE, ~12B active.
-    sizes: [{ s: '120b', idSize: '120b', p: 120, gb: 87, tier: 'high' }],
-  },
-  {
-    prefix: 'gpt-oss',
-    idPrefix: 'gpt-oss',
-    name: 'GPT-OSS',
-    purpose: 'general',
-    // ollama.com/library/gpt-oss
-    sizes: [
-      { s: '20b', idSize: '20b', p: 20, gb: 14, tier: 'medium' },
-      { s: '120b', idSize: '120b', p: 120, gb: 65, tier: 'high' },
-    ],
-  },
-  {
-    prefix: 'deepseek-r1',
-    idPrefix: 'deepseek-r1',
-    name: 'DeepSeek R1',
-    purpose: 'reasoning',
-    // ollama.com/library/deepseek-r1
-    sizes: [
-      { s: '1.5b', idSize: '1-5b', p: 1.5, gb: 1.1, tier: 'cpu-only' },
-      { s: '7b', idSize: '7b', p: 7, gb: 4.7, tier: 'low' },
-      { s: '8b', idSize: '8b', p: 8, gb: 5.2, tier: 'low' },
-      { s: '14b', idSize: '14b', p: 14, gb: 9.0, tier: 'low' },
-      { s: '32b', idSize: '32b', p: 32, gb: 20, tier: 'medium' },
-      { s: '70b', idSize: '70b', p: 70, gb: 43, tier: 'high' },
-      { s: '671b', idSize: '671b', p: 671, gb: 404, tier: 'high' },
-    ],
-  },
-  {
-    prefix: 'deepseek-coder-v2',
-    idPrefix: 'deepseek-coder-v2',
-    name: 'DeepSeek Coder V2',
-    purpose: 'coding',
-    // ollama.com/library/deepseek-coder-v2 — MoE coding models.
-    sizes: [
-      { s: '16b', idSize: '16b', p: 16, gb: 8.9, tier: 'medium' },
-      { s: '236b', idSize: '236b', p: 236, gb: 133, tier: 'high' },
-    ],
-  },
-  {
-    prefix: 'qwen3',
-    idPrefix: 'qwen3',
-    name: 'Qwen 3',
-    purpose: 'general',
-    // ollama.com/library/qwen3
-    sizes: [
-      { s: '0.6b', idSize: '0-6b', p: 0.6, gb: 0.5, tier: 'cpu-only' },
-      { s: '1.7b', idSize: '1-7b', p: 1.7, gb: 1.4, tier: 'cpu-only' },
-      { s: '4b', idSize: '4b', p: 4, gb: 2.5, tier: 'cpu-only' },
-      { s: '8b', idSize: '8b', p: 8, gb: 5.2, tier: 'low' },
-      { s: '14b', idSize: '14b', p: 14, gb: 9.3, tier: 'low' },
-      { s: '30b', idSize: '30b', p: 30, gb: 19, tier: 'medium' },
-      { s: '32b', idSize: '32b', p: 32, gb: 20, tier: 'medium' },
-      { s: '235b', idSize: '235b', p: 235, gb: 142, tier: 'high' },
-    ],
-  },
-  {
-    prefix: 'qwq',
-    idPrefix: 'qwq',
-    name: 'QwQ',
-    purpose: 'reasoning',
-    // ollama.com/library/qwq
-    sizes: [{ s: '32b', idSize: '32b', p: 32, gb: 20, tier: 'medium' }],
-  },
-  {
-    prefix: 'gemma3',
-    idPrefix: 'gemma3',
-    name: 'Gemma 3',
-    purpose: 'general',
-    // ollama.com/library/gemma3
-    sizes: [
-      { s: '270m', idSize: '270m', p: 0.27, gb: 0.3, tier: 'cpu-only' },
-      { s: '1b', idSize: '1b', p: 1, gb: 0.8, tier: 'cpu-only' },
-      { s: '4b', idSize: '4b', p: 4, gb: 3.3, tier: 'cpu-only' },
-      { s: '12b', idSize: '12b', p: 12, gb: 8.1, tier: 'low' },
-      { s: '27b', idSize: '27b', p: 27, gb: 17, tier: 'medium' },
-    ],
-  },
-  {
-    prefix: 'mistral',
-    idPrefix: 'mistral',
-    name: 'Mistral',
-    purpose: 'general',
-    // ollama.com/library/mistral — 7B only (Small/Large/Nemo are separate slugs below).
-    sizes: [{ s: '7b', idSize: '7b', p: 7, gb: 4.4, tier: 'low' }],
-  },
-  {
-    prefix: 'mistral-nemo',
-    idPrefix: 'mistral-nemo',
-    name: 'Mistral Nemo',
-    purpose: 'general',
-    // ollama.com/library/mistral-nemo
-    sizes: [{ s: '12b', idSize: '12b', p: 12, gb: 7.1, tier: 'low' }],
-  },
-  {
-    prefix: 'mistral-small',
-    idPrefix: 'mistral-small',
-    name: 'Mistral Small',
-    purpose: 'general',
-    // ollama.com/library/mistral-small
-    sizes: [
-      { s: '22b', idSize: '22b', p: 22, gb: 13, tier: 'medium' },
-      { s: '24b', idSize: '24b', p: 24, gb: 14, tier: 'medium' },
-    ],
-  },
-  {
-    prefix: 'mistral-large',
-    idPrefix: 'mistral-large',
-    name: 'Mistral Large',
-    purpose: 'general',
-    // ollama.com/library/mistral-large
-    sizes: [{ s: '123b', idSize: '123b', p: 123, gb: 73, tier: 'high' }],
-  },
-  {
-    prefix: 'mixtral',
-    idPrefix: 'mixtral',
-    name: 'Mixtral',
-    purpose: 'general',
-    // ollama.com/library/mixtral — sparse MoE; `p` tracks total params.
-    sizes: [
-      { s: '8x7b', idSize: '8x7b', p: 47, gb: 26, tier: 'high' },
-      { s: '8x22b', idSize: '8x22b', p: 141, gb: 80, tier: 'high' },
-    ],
-  },
-  {
-    prefix: 'llama3.2',
-    idPrefix: 'llama3-2',
-    name: 'Llama 3.2',
-    purpose: 'general',
-    // ollama.com/library/llama3.2
-    sizes: [
-      { s: '1b', idSize: '1b', p: 1, gb: 1.3, tier: 'cpu-only' },
-      { s: '3b', idSize: '3b', p: 3, gb: 2.0, tier: 'cpu-only' },
-    ],
-  },
-  {
-    prefix: 'llama3.1',
-    idPrefix: 'llama3-1',
-    name: 'Llama 3.1',
-    purpose: 'general',
-    // ollama.com/library/llama3.1
-    sizes: [
-      { s: '8b', idSize: '8b', p: 8, gb: 4.9, tier: 'low' },
-      { s: '70b', idSize: '70b', p: 70, gb: 43, tier: 'high' },
-      { s: '405b', idSize: '405b', p: 405, gb: 243, tier: 'high' },
-    ],
-  },
-  {
-    prefix: 'llama3.3',
-    idPrefix: 'llama3-3',
-    name: 'Llama 3.3',
-    purpose: 'general',
-    // ollama.com/library/llama3.3
-    sizes: [{ s: '70b', idSize: '70b', p: 70, gb: 43, tier: 'high' }],
-  },
-  {
-    prefix: 'llama4',
-    idPrefix: 'llama4',
-    name: 'Llama 4',
-    purpose: 'general',
-    // ollama.com/library/llama4 — Scout (16x17B) and Maverick (128x17B) MoE; `p` tracks total params.
-    sizes: [
-      { s: '16x17b', idSize: '16x17b', p: 109, gb: 67, tier: 'high' },
-      { s: '128x17b', idSize: '128x17b', p: 400, gb: 245, tier: 'high' },
-    ],
-  },
-  {
-    prefix: 'glm4',
-    idPrefix: 'glm4',
-    name: 'GLM-4',
-    purpose: 'general',
-    // ollama.com/library/glm4
-    sizes: [{ s: '9b', idSize: '9b', p: 9, gb: 5.5, tier: 'low' }],
-  },
-  {
-    prefix: 'gabegoodhart/minimax-m2',
-    idPrefix: 'minimax-m2-community',
-    name: 'MiniMax M2 (community)',
-    purpose: 'general',
-    // Community upload (no first-party local build): ollama.com/gabegoodhart/minimax-m2
-    sizes: [{ s: '230b', idSize: '230b', p: 230, gb: 56, tier: 'high' }],
-  },
-];
+// Columns:
+//   id              catalog id (`${family}-${size}`)
+//   backendModelId  the exact ollama pull tag (`family:size`)
+//   name            display name
+//   purpose         general | coding | reasoning
+//   params          parameter count in billions (best-fit ranking + CPU size cap)
+//   gb              real default (q4_K_M) on-disk size in GB — requirements are anchored to this
+//   tier            lowest hardware tier the size is surfaced as a default recommendation for
+//   ctxK            context window in thousands of tokens (blank → default 128K)
+//   creator         model creator / lab
+//   intel           Artificial Analysis Intelligence Index (blank when not on the leaderboard)
+//   reason          1 = reasoning model
+//   vision          1 = accepts image input
+//   tools           1 = supports tool / function calling
+//   audio           1 = accepts audio/speech input
+//   tps             AA median output tokens/sec (cloud reference; blank when unknown)
+//   ttft            AA median latency to first chunk, seconds (cloud reference)
+//   e2e             AA median end-to-end response time, seconds (cloud reference)
+//
+// `intel`, `tps`, `ttft`, `e2e` are Artificial Analysis open-weights leaderboard figures
+// (artificialanalysis.ai, snapshot 2026-05); perf numbers are AA's cloud-hosted measurements and are
+// indicative only — real local speed depends on the user's hardware and quantization.
+const CATALOG_TOON = `
+llms[59|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,reason,vision,tools,audio,tps,ttft,e2e}:
+  gemma4-e2b|gemma4:e2b|Gemma 4 E2B|general|2|7.2|cpu-only|128|Google|12.1|0|1|1|1|||
+  gemma4-e4b|gemma4:e4b|Gemma 4 E4B|general|4|9.6|cpu-only|128|Google|14.8|0|1|1|1|||
+  gemma4-26b|gemma4:26b|Gemma 4 26B|general|26|18|medium|256|Google|27.1|0|1|1|0|78|1.59|8
+  gemma4-31b|gemma4:31b|Gemma 4 31B|general|31|20|medium|256|Google|32.3|0|1|1|0|17|1.38|30.7
+  qwen3-6-27b|qwen3.6:27b|Qwen 3.6 27B|coding|27|17|medium|262|Alibaba|37.1|0|1|1|0|56|3.86|12.8
+  qwen3-6-35b|qwen3.6:35b|Qwen 3.6 35B|coding|35|24|medium|262|Alibaba|31.5|0|1|1|0|179|2.56|5.4
+  qwen3-5-0-8b|qwen3.5:0.8b|Qwen 3.5 0.8B|reasoning|0.8|1|cpu-only|262|Alibaba|9.9|1|1|1|0|74|0.45|7.2
+  qwen3-5-2b|qwen3.5:2b|Qwen 3.5 2B|reasoning|2|2.7|cpu-only|262|Alibaba|14.7|1|1|1|0|247|0.42|2.4
+  qwen3-5-4b|qwen3.5:4b|Qwen 3.5 4B|reasoning|4|3.4|cpu-only|262|Alibaba|22.6|1|1|1|0|198|0.45|3
+  qwen3-5-9b|qwen3.5:9b|Qwen 3.5 9B|reasoning|9|6.6|low|262|Alibaba|27.3|1|1|1|0|||
+  qwen3-5-27b|qwen3.5:27b|Qwen 3.5 27B|reasoning|27|17|medium||Alibaba||1|0|1|0|||
+  qwen3-5-35b|qwen3.5:35b|Qwen 3.5 35B|reasoning|35|24|medium|262|Alibaba|30.7|1|1|1|0|155|2.13|5.4
+  qwen3-5-122b|qwen3.5:122b|Qwen 3.5 122B|reasoning|122|81|high|262|Alibaba|35.9|1|1|1|0|162|2.53|5.6
+  nemotron3-33b|nemotron3:33b|Nemotron 3 33B|reasoning|33|28|medium||NVIDIA||1|0|1|0|||
+  nemotron-3-nano-4b|nemotron-3-nano:4b|Nemotron 3 Nano 4B|reasoning|4|2.8|cpu-only|262|NVIDIA|14.7|1|0|1|0|||
+  nemotron-3-nano-30b|nemotron-3-nano:30b|Nemotron 3 Nano 30B|reasoning|30|24|medium|1000|NVIDIA|13.2|1|0|1|0|83|0.43|6.4
+  nemotron-3-super-120b|nemotron-3-super:120b|Nemotron 3 Super 120B|reasoning|120|87|high|1000|NVIDIA|36|1|0|1|0|181|1.82|15.6
+  gpt-oss-20b|gpt-oss:20b|GPT-OSS 20B|general|20|14|medium|131|OpenAI|24.5|1|0|1|0|239|0.74|11.2
+  gpt-oss-120b|gpt-oss:120b|GPT-OSS 120B|general|120|65|high|131|OpenAI|33.3|1|0|1|0|322|0.86|8.6
+  deepseek-r1-1-5b|deepseek-r1:1.5b|DeepSeek R1 1.5B|reasoning|1.5|1.1|cpu-only||DeepSeek||1|0|1|0|||
+  deepseek-r1-7b|deepseek-r1:7b|DeepSeek R1 7B|reasoning|7|4.7|low||DeepSeek||1|0|1|0|||
+  deepseek-r1-8b|deepseek-r1:8b|DeepSeek R1 8B|reasoning|8|5.2|low||DeepSeek||1|0|1|0|||
+  deepseek-r1-14b|deepseek-r1:14b|DeepSeek R1 14B|reasoning|14|9|low||DeepSeek||1|0|1|0|||
+  deepseek-r1-32b|deepseek-r1:32b|DeepSeek R1 32B|reasoning|32|20|medium||DeepSeek||1|0|1|0|||
+  deepseek-r1-70b|deepseek-r1:70b|DeepSeek R1 70B|reasoning|70|43|high||DeepSeek||1|0|1|0|||
+  deepseek-r1-671b|deepseek-r1:671b|DeepSeek R1 671B|reasoning|671|404|high||DeepSeek||1|0|1|0|||
+  deepseek-coder-v2-16b|deepseek-coder-v2:16b|DeepSeek Coder V2 16B|coding|16|8.9|medium||DeepSeek||0|0|1|0|||
+  deepseek-coder-v2-236b|deepseek-coder-v2:236b|DeepSeek Coder V2 236B|coding|236|133|high||DeepSeek||0|0|1|0|||
+  qwen3-0-6b|qwen3:0.6b|Qwen 3 0.6B|general|0.6|0.5|cpu-only||Alibaba||0|0|1|0|||
+  qwen3-1-7b|qwen3:1.7b|Qwen 3 1.7B|general|1.7|1.4|cpu-only||Alibaba||0|0|1|0|||
+  qwen3-4b|qwen3:4b|Qwen 3 4B|general|4|2.5|cpu-only||Alibaba||0|0|1|0|||
+  qwen3-8b|qwen3:8b|Qwen 3 8B|general|8|5.2|low||Alibaba||0|0|1|0|||
+  qwen3-14b|qwen3:14b|Qwen 3 14B|general|14|9.3|low||Alibaba||0|0|1|0|||
+  qwen3-30b|qwen3:30b|Qwen 3 30B|general|30|19|medium||Alibaba||0|0|1|0|||
+  qwen3-32b|qwen3:32b|Qwen 3 32B|general|32|20|medium||Alibaba||0|0|1|0|||
+  qwen3-235b|qwen3:235b|Qwen 3 235B|general|235|142|high||Alibaba||0|0|1|0|||
+  qwq-32b|qwq:32b|QwQ 32B|reasoning|32|20|medium||Alibaba||1|0|1|0|||
+  gemma3-270m|gemma3:270m|Gemma 3 270M|general|0.27|0.3|cpu-only|32|Google|7.7|0|0|1|0|||
+  gemma3-1b|gemma3:1b|Gemma 3 1B|general|1|0.8|cpu-only||Google||0|0|1|0|||
+  gemma3-4b|gemma3:4b|Gemma 3 4B|general|4|3.3|cpu-only||Google||0|0|1|0|||
+  gemma3-12b|gemma3:12b|Gemma 3 12B|general|12|8.1|low||Google||0|0|1|0|||
+  gemma3-27b|gemma3:27b|Gemma 3 27B|general|27|17|medium||Google||0|0|1|0|||
+  mistral-7b|mistral:7b|Mistral 7B|general|7|4.4|low||Mistral||0|0|1|0|||
+  mistral-nemo-12b|mistral-nemo:12b|Mistral Nemo 12B|general|12|7.1|low||Mistral||0|0|1|0|||
+  mistral-small-22b|mistral-small:22b|Mistral Small 22B|general|22|13|medium||Mistral||0|0|1|0|||
+  mistral-small-24b|mistral-small:24b|Mistral Small 24B|general|24|14|medium||Mistral||0|0|1|0|||
+  mistral-large-123b|mistral-large:123b|Mistral Large 123B|general|123|73|high||Mistral||0|0|1|0|||
+  mixtral-8x7b|mixtral:8x7b|Mixtral 8X7B|general|47|26|high||Mistral||0|0|1|0|||
+  mixtral-8x22b|mixtral:8x22b|Mixtral 8X22B|general|141|80|high||Mistral||0|0|1|0|||
+  llama3-2-1b|llama3.2:1b|Llama 3.2 1B|general|1|1.3|cpu-only||Meta||0|0|1|0|||
+  llama3-2-3b|llama3.2:3b|Llama 3.2 3B|general|3|2|cpu-only||Meta||0|0|1|0|||
+  llama3-1-8b|llama3.1:8b|Llama 3.1 8B|general|8|4.9|low||Meta||0|0|1|0|||
+  llama3-1-70b|llama3.1:70b|Llama 3.1 70B|general|70|43|high||Meta||0|0|1|0|||
+  llama3-1-405b|llama3.1:405b|Llama 3.1 405B|general|405|243|high|128|Meta|17.4|0|0|1|0|40|2.35|15
+  llama3-3-70b|llama3.3:70b|Llama 3.3 70B|general|70|43|high|128|Meta|14.5|0|0|1|0|80|1.61|7.8
+  llama4-16x17b|llama4:16x17b|Llama 4 16X17B|general|109|67|high|10000|Meta|13.5|0|1|1|0|105|0.85|5.6
+  llama4-128x17b|llama4:128x17b|Llama 4 128X17B|general|400|245|high|1000|Meta|18.4|0|1|1|0|111|0.98|5.5
+  glm4-9b|glm4:9b|GLM-4 9B|general|9|5.5|low||Z AI||0|0|1|0|||
+  minimax-m2-community-230b|gabegoodhart/minimax-m2:230b|MiniMax M2 (community) 230B|general|230|56|high||MiniMax||0|0|1|0|||
+`;
 
-// The default ollama pull (`model:size`) is the q4_K_M build; the catalog records that explicitly.
-const DEFAULT_QUANT = 'q4_K_M';
+/** A decoded TOON row: every column mapped to its raw string cell (empty string when blank). */
+type ToonRow = Record<string, string>;
 
-const generatedLlms: CuratedModel[] = [];
-
-for (const fam of FAMILIES) {
-  for (const size of fam.sizes) {
-    const diskMb = Math.round(size.gb * 1024);
-    // Runtime RAM ≈ weights on disk plus KV-cache / runtime overhead. The tier budget fractions
-    // (0.9 VRAM, 0.7 unified/RAM) provide the remaining headroom for the OS, app container, and context.
-    const footprintMb = Math.round(diskMb * 1.1);
-    generatedLlms.push({
-      id: `${fam.idPrefix}-${size.idSize}`,
-      backend: 'ollama',
-      backendModelId: `${fam.prefix}:${size.s}`,
-      modality: 'llm',
-      purpose: fam.purpose,
-      parameterScale: size.p,
-      displayName: `${fam.name} ${size.s.toUpperCase()}`,
-      description: `${fam.name} option for ${size.tier} tier systems.`,
-      requirements: {
-        minVramMb: diskMb,
-        recommendedVramMb: Math.round(diskMb * 1.1 + 1024),
-        minRamMb: Math.round(diskMb * 1.15),
-        diskMb,
-        gpuVendors: ['nvidia', 'amd', 'apple', 'cpu'],
-        npuRequired: false,
-        minTier: size.tier,
-      },
-      runtime: {
-        contextWindow: 131072,
-        maxTokens: 8192,
-        reasoning: fam.purpose === 'reasoning',
-        input: ['text'],
-        quantization: DEFAULT_QUANT,
-        pinnedByDefault: size.p <= 4,
-        memoryFootprintMb: footprintMb,
-      },
-      tiers: {
-        high: size.tier === 'high' ? 'recommended' : 'available',
-        medium: size.tier === 'medium' ? 'recommended' : size.tier === 'high' ? 'not-recommended' : 'available',
-        low: size.tier === 'low' ? 'recommended' : size.tier === 'high' || size.tier === 'medium' ? 'not-recommended' : 'available',
-        // CPU inference is viable for small/mid models. Mark cpu-only sizes 'recommended' and low-tier
-        // sizes 'available' so the catalog's CPU-only browse set covers what the recommender can pick.
-        cpuOnly: size.tier === 'cpu-only' ? 'recommended' : size.tier === 'low' ? 'available' : 'not-recommended',
-      },
+/**
+ * Minimal decoder for the pipe-delimited tabular TOON subset this catalog uses:
+ * a `name[N|]{col,col,...}:` header followed by N indented rows of `|`-separated values.
+ * No catalog field contains a pipe, so a plain split is unambiguous (no quoting needed). We avoid the
+ * official `@toon-format/toon` package because it is ESM-only and this module loads in the CJS backend.
+ */
+function decodeToonTable(doc: string): ToonRow[] {
+  const lines = doc.split('\n');
+  const headerIdx = lines.findIndex((l) => /^[A-Za-z_]\w*\[\d+\|\]\{.+\}:$/.test(l.trim()));
+  if (headerIdx === -1) throw new Error('curated-models: TOON header not found');
+  const header = (lines[headerIdx] ?? '').trim();
+  const match = header.match(/^[A-Za-z_]\w*\[(\d+)\|\]\{(.+)\}:$/);
+  if (!match) throw new Error('curated-models: malformed TOON header');
+  const count = Number(match[1]);
+  const cols = (match[2] ?? '').split(',');
+  const rows: ToonRow[] = [];
+  for (let i = headerIdx + 1; i < lines.length && rows.length < count; i++) {
+    const line = (lines[i] ?? '').trim();
+    if (!line) continue;
+    const cells = line.split('|');
+    const row: ToonRow = {};
+    cols.forEach((col, j) => {
+      row[col] = (cells[j] ?? '').trim();
     });
+    rows.push(row);
   }
+  if (rows.length !== count) {
+    throw new Error(`curated-models: TOON declared ${count} rows but parsed ${rows.length}`);
+  }
+  return rows;
 }
+
+const numOrUndef = (s: string | undefined): number | undefined => (s == null || s === '' ? undefined : Number(s));
+const flag = (s: string | undefined): boolean => s === '1';
+
+const generatedLlms: CuratedModel[] = decodeToonTable(CATALOG_TOON).map((row): CuratedModel => {
+  const params = Number(row.params);
+  const gb = Number(row.gb);
+  const tier = (row.tier ?? 'cpu-only') as HardwareTier;
+  const diskMb = Math.round(gb * 1024);
+  // Runtime RAM ≈ weights on disk plus KV-cache / runtime overhead. The tier budget fractions
+  // (0.9 VRAM, 0.7 unified/RAM) provide the remaining headroom for the OS, app container, and context.
+  const footprintMb = Math.round(diskMb * 1.1);
+  const reasoning = flag(row.reason);
+  const vision = flag(row.vision);
+  const audio = flag(row.audio);
+  const tools = flag(row.tools);
+  const contextWindowK = numOrUndef(row.ctxK);
+  const intelligenceIndex = numOrUndef(row.intel);
+  const tokensPerSec = numOrUndef(row.tps);
+  const firstChunkSeconds = numOrUndef(row.ttft);
+  const totalResponseSeconds = numOrUndef(row.e2e);
+
+  const input: ('text' | 'image' | 'audio')[] = ['text'];
+  if (vision) input.push('image');
+  if (audio) input.push('audio');
+
+  const perf =
+    tokensPerSec !== undefined || firstChunkSeconds !== undefined || totalResponseSeconds !== undefined
+      ? { tokensPerSec, firstChunkSeconds, totalResponseSeconds }
+      : undefined;
+
+  return {
+    id: row.id ?? '',
+    backend: 'ollama',
+    backendModelId: row.backendModelId ?? '',
+    modality: 'llm',
+    purpose: (row.purpose ?? 'general') as ModelPurpose,
+    displayName: row.name ?? '',
+    description: `${row.name} — ${row.creator || 'open'} model for ${tier} tier systems.`,
+    parameterScale: params,
+    requirements: {
+      minVramMb: diskMb,
+      recommendedVramMb: Math.round(diskMb * 1.1 + 1024),
+      minRamMb: Math.round(diskMb * 1.15),
+      diskMb,
+      gpuVendors: ['nvidia', 'amd', 'apple', 'cpu'],
+      npuRequired: false,
+      minTier: tier,
+    },
+    runtime: {
+      contextWindow: contextWindowK ? contextWindowK * 1000 : 131072,
+      maxTokens: 8192,
+      reasoning,
+      input,
+      quantization: 'q4_K_M',
+      pinnedByDefault: params <= 4,
+      memoryFootprintMb: footprintMb,
+    },
+    tiers: {
+      high: tier === 'high' ? 'recommended' : 'available',
+      medium: tier === 'medium' ? 'recommended' : tier === 'high' ? 'not-recommended' : 'available',
+      low: tier === 'low' ? 'recommended' : tier === 'high' || tier === 'medium' ? 'not-recommended' : 'available',
+      // CPU inference is viable for small/mid models. Mark cpu-only sizes 'recommended' and low-tier
+      // sizes 'available' so the catalog's CPU-only browse set covers what the recommender can pick.
+      cpuOnly: tier === 'cpu-only' ? 'recommended' : tier === 'low' ? 'available' : 'not-recommended',
+    },
+    metadata: {
+      ...(row.creator ? { creator: row.creator } : {}),
+      ...(intelligenceIndex === undefined ? {} : { intelligenceIndex }),
+      capabilities: { reasoning, vision, tools, audio },
+      ...(perf ? { perf } : {}),
+    },
+  };
+});
 
 const VOICE_MODELS: CuratedModel[] = [
   {
@@ -343,6 +226,7 @@ const VOICE_MODELS: CuratedModel[] = [
       memoryFootprintMb: 350,
     },
     tiers: { high: 'recommended', medium: 'recommended', low: 'recommended', cpuOnly: 'recommended' },
+    metadata: { creator: 'Hexgrad', capabilities: { reasoning: false, vision: false, tools: false, audio: false } },
   },
   {
     id: 'whisper-large-v3-turbo',
@@ -370,6 +254,7 @@ const VOICE_MODELS: CuratedModel[] = [
       memoryFootprintMb: 1500,
     },
     tiers: { high: 'recommended', medium: 'recommended', low: 'not-recommended', cpuOnly: 'not-recommended' },
+    metadata: { creator: 'OpenAI', capabilities: { reasoning: false, vision: false, tools: false, audio: true } },
   },
   {
     id: 'whisper-base',
@@ -397,6 +282,7 @@ const VOICE_MODELS: CuratedModel[] = [
       memoryFootprintMb: 200,
     },
     tiers: { high: 'available', medium: 'available', low: 'recommended', cpuOnly: 'recommended' },
+    metadata: { creator: 'OpenAI', capabilities: { reasoning: false, vision: false, tools: false, audio: true } },
   },
 ];
 
@@ -427,6 +313,7 @@ const EMBEDDING_MODELS: CuratedModel[] = [
       memoryFootprintMb: 500,
     },
     tiers: { high: 'recommended', medium: 'recommended', low: 'recommended', cpuOnly: 'recommended' },
+    metadata: { creator: 'Nomic', capabilities: { reasoning: false, vision: false, tools: false, audio: false } },
   },
   {
     id: 'embeddinggemma',
@@ -455,6 +342,7 @@ const EMBEDDING_MODELS: CuratedModel[] = [
       memoryFootprintMb: 700,
     },
     tiers: { high: 'available', medium: 'available', low: 'available', cpuOnly: 'available' },
+    metadata: { creator: 'Google', capabilities: { reasoning: false, vision: false, tools: false, audio: false } },
   },
   {
     id: 'nomic-embed-text-v2-moe',
@@ -483,6 +371,7 @@ const EMBEDDING_MODELS: CuratedModel[] = [
       memoryFootprintMb: 900,
     },
     tiers: { high: 'available', medium: 'available', low: 'available', cpuOnly: 'available' },
+    metadata: { creator: 'Nomic', capabilities: { reasoning: false, vision: false, tools: false, audio: false } },
   },
   {
     id: 'qwen3-embedding',
@@ -511,6 +400,7 @@ const EMBEDDING_MODELS: CuratedModel[] = [
       memoryFootprintMb: 800,
     },
     tiers: { high: 'available', medium: 'available', low: 'available', cpuOnly: 'available' },
+    metadata: { creator: 'Alibaba', capabilities: { reasoning: false, vision: false, tools: false, audio: false } },
   },
 ];
 
