@@ -69,12 +69,12 @@ describe('SystemService', () => {
       expect(result.percentUsedMemory).toBe(50);
     });
 
-    it('should handle meminfo read failure', async () => {
-      filesystemService.readTextFile.mockRejectedValue(new Error('Fail'));
+    it('should fall back to si.mem() when /host/proc/meminfo is unavailable', async () => {
+      // readTextFile returns null when the file is missing (never throws).
+      filesystemService.readTextFile.mockResolvedValue(null);
 
       const result = await service.getSystemLoad();
 
-      // Falls back to si.mem() — no error logged at this level, just the graceful fallback.
       // si.mem mock returns 16 GB total, 8 GB available → 50% used.
       expect(si.mem).toHaveBeenCalled();
       expect(result.memoryTotal).toBe(16);
