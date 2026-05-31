@@ -21,8 +21,9 @@ touch "$DATA_DIR/state/traefik/acme_storage.json"
 MARKETPLACE_SRC="${CI_MARKETPLACE_DIR:-$(pwd)/../CI-Marketplace}"
 MARKETPLACE_LINK="$DATA_DIR/repos/ci-marketplace"
 mkdir -p "$MARKETPLACE_LINK"
+rm -rf "$MARKETPLACE_LINK/apps"          # Remove any stale dir or nested symlink
 if [ -d "$MARKETPLACE_SRC/apps" ]; then
-  ln -sfn "$(realpath "$MARKETPLACE_SRC/apps")" "$MARKETPLACE_LINK/apps"
+  ln -s "$(realpath "$MARKETPLACE_SRC/apps")" "$MARKETPLACE_LINK/apps"
   echo "CI-Marketplace: linked $(ls "$MARKETPLACE_LINK/apps" | wc -l | tr -d ' ') apps from $MARKETPLACE_SRC"
 else
   mkdir -p "$MARKETPLACE_LINK/apps"
