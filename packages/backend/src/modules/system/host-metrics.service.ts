@@ -49,8 +49,8 @@ export class HostMetricsService {
       host && host.totalRamMb > 0 ? Math.round(((host.totalRamMb - host.availableRamMb) / host.totalRamMb) * 100) : container.memoryPercentUsed;
 
     const useHostDisk = Boolean(host && host.diskTotalGb > 0);
-    const diskSize = useHostDisk ? host!.diskTotalGb : hasVmWedge ? 0 : container.diskTotalGb;
-    const diskUsed = useHostDisk ? host!.diskUsedGb : hasVmWedge ? 0 : container.diskUsedGb;
+    const diskSize = useHostDisk && host ? host.diskTotalGb : hasVmWedge ? 0 : container.diskTotalGb;
+    const diskUsed = useHostDisk && host ? host.diskUsedGb : hasVmWedge ? 0 : container.diskUsedGb;
     const percentUsed = diskSize > 0 ? Math.round((diskUsed / diskSize) * 100) : 0;
 
     const cpuCores = host?.cpuCores && host.cpuCores > 0 ? host.cpuCores : cpuCoresFromSi;
