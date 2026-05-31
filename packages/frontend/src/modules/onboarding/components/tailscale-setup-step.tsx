@@ -1,12 +1,21 @@
 import { Button } from '@/components/ui/Button';
 import { useEffect, useRef, useState } from 'react';
-import { Shield, Loader2, Check, ExternalLink, AlertCircle } from 'lucide-react';
+import { Shield, Loader2, Check, ExternalLink, AlertCircle, Smartphone } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-fetch';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
 import { openExternal } from '@/lib/helpers/open-external';
-import { IconBadge, WizardCard } from './wizard-ui';
+import { BrandLogo } from './ai-setup/icons';
+import { StepSection } from './ai-setup/primitives';
+
+/** Per-platform Tailscale download links (the client app to install on each device). */
+const TAILSCALE_DOWNLOADS: { label: string; href: string; brand?: string }[] = [
+  { label: 'Windows', href: 'https://tailscale.com/download/windows', brand: 'microsoft' },
+  { label: 'macOS', href: 'https://tailscale.com/download/mac', brand: 'apple' },
+  { label: 'Linux', href: 'https://tailscale.com/download/linux', brand: 'linux' },
+  { label: 'Mobile', href: 'https://tailscale.com/download' },
+];
 
 interface TailscaleSetupStepProps {
   onComplete?: () => void;
@@ -97,20 +106,9 @@ export const TailscaleSetupStep = ({ onComplete, onSkip, onBack, embedded = fals
   }, [isConnected, isLoading, t]);
 
   return (
-    <WizardCard className="space-y-6">
-      {/* Hero Section */}
-      <div className="space-y-3 text-center">
-        <div className="flex justify-center">
-          <IconBadge className={isConnected ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-400' : undefined}>
-            {isConnected ? <Check /> : <Shield />}
-          </IconBadge>
-        </div>
-        <h2 className="text-xl font-bold tracking-tight">{t('ONBOARDING_TAILSCALE_TITLE')}</h2>
-        <p className="mx-auto max-w-xl text-sm text-muted-foreground">{t('ONBOARDING_TAILSCALE_DESCRIPTION')}</p>
-      </div>
-
-      {/* Status Card */}
-      <div className="space-y-4 rounded-2xl border border-border bg-foreground/[0.02] p-5">
+    <StepSection number={3} title={t('ONBOARDING_TAILSCALE_TITLE')} className="space-y-4">
+      {/* Status (borderless — sits directly within the step panel) */}
+      <div className="space-y-4">
         {isLoading ? (
           <div className="flex items-center justify-center gap-2 py-4 text-muted-foreground">
             <Loader2 className="h-5 w-5 animate-spin" />
@@ -222,19 +220,29 @@ export const TailscaleSetupStep = ({ onComplete, onSkip, onBack, embedded = fals
             <span className="text-primary">✓</span>
             <span>{t('ONBOARDING_TAILSCALE_BENEFIT_ACCESS')}</span>
           </li>
-          <li className="flex items-start gap-2">
-            <span className="text-primary">✓</span>
-            <span>{t('ONBOARDING_TAILSCALE_BENEFIT_DEVICES')}</span>
-          </li>
-          <li className="flex items-start gap-2">
-            <span className="text-primary">✓</span>
-            <span>{t('ONBOARDING_TAILSCALE_BENEFIT_NAT')}</span>
-          </li>
-          <li className="flex items-start gap-2">
-            <span className="text-primary">✓</span>
-            <span>{t('ONBOARDING_TAILSCALE_BENEFIT_ENCRYPTION')}</span>
-          </li>
         </ul>
+        <div className="space-y-2">
+          <p className="text-xs text-muted-foreground">Install the Tailscale app on your devices:</p>
+          <div className="flex flex-wrap gap-2">
+            {TAILSCALE_DOWNLOADS.map((p) => (
+              <a
+                key={p.label}
+                href={p.href}
+                target="_blank"
+                rel="noopener noreferrer"
+                data-testid={`tailscale-download-${p.label.toLowerCase()}`}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium transition-colors hover:border-primary/50 hover:bg-muted/50"
+              >
+                {p.brand ? (
+                  <BrandLogo name={p.brand} className="h-3.5 w-3.5 text-foreground/80" />
+                ) : (
+                  <Smartphone className="h-3.5 w-3.5 text-foreground/80" />
+                )}
+                <span>{p.label}</span>
+              </a>
+            ))}
+          </div>
+        </div>
       </div>
 
       {/* Navigation */}
@@ -256,6 +264,6 @@ export const TailscaleSetupStep = ({ onComplete, onSkip, onBack, embedded = fals
           </div>
         </div>
       )}
-    </WizardCard>
+    </StepSection>
   );
 };

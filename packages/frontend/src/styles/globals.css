@@ -99,12 +99,12 @@
  */
 .dark {
   --background: #041620;
-  --foreground: #f5f8fa;
+  --foreground: #88a29e;
 
-  --card: #1d293d;
-  --card-foreground: #f5f8fa;
-  --popover: #1d293d;
-  --popover-foreground: #f5f8fa;
+  --card: #0a222e;
+  --card-foreground: #88a29e;
+  --popover: #0a222e;
+  --popover-foreground: #88a29e;
 
   --primary: #abd4d8;
   --primary-foreground: #041620;
@@ -121,7 +121,7 @@
   --destructive: #e85d5d;
 
   --border: #2c676d;
-  --input: #2c676d;
+  --input: #6992a2;
   --ring: #58ebbf;
 
   --chart-1: #58ebbf;

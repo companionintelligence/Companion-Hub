@@ -1,5 +1,9 @@
+import { cn } from '@/lib/utils';
 import type { CuratedModel, HardwareTier } from '@ci-hub/common/types';
-import { ModelIcon } from './icons';
+import { ChevronRight } from 'lucide-react';
+import { type ReactNode, useState } from 'react';
+import { CubeModelsIcon, ModelIcon } from './icons';
+import { ARTIFICIAL_ANALYSIS_URL, type LevelColor, LEVEL_TAG, LEVEL_TEXT, resourceColor, scoreColor, TIER_TAG_COLOR, TIER_TAG_LABEL } from './levels';
 import { ModelCard, StepSection } from './primitives';
 
 interface RecommendedModelsProps {
@@ -9,6 +13,8 @@ interface RecommendedModelsProps {
   selectedModelIds: string[];
   onToggleModel: (modelId: string) => void;
   preferredModelId?: string;
+  /** Rendered at the bottom of the section (e.g. the collapsible Other Models drawer). */
+  children?: ReactNode;
 }
 
 function formatSize(mb: number): string {
@@ -23,23 +29,25 @@ const MODALITY_TAG: Record<string, string> = {
   'image-gen': 'Image',
 };
 
-const PURPOSE_TAG: Record<string, string> = {
-  fast: 'Fast',
-  general: 'Balanced',
-  coding: 'Coding',
-  reasoning: 'Best for agents',
-  transcription: 'Speech',
-};
-
-/** 1–2 short tags for a model, derived from its purpose/modality (matches the mock's pill style). */
+/**
+ * Capability pills for a model — what it can do, to help users pick the right local AI:
+ * Reasoning / Vision / Tools / Audio (from catalog capability metadata) for LLMs, and a single
+ * descriptive tag for non-LLM modalities (Embedding / Speech / Transcription).
+ */
 function modelTags(model: CuratedModel): string[] {
-  const modalityTag = model.modality && model.modality !== 'llm' ? MODALITY_TAG[model.modality] : undefined;
-  if (modalityTag) return [modalityTag];
+  if (model.modality && model.modality !== 'llm') {
+    return [MODALITY_TAG[model.modality] ?? 'Model'];
+  }
+  const caps = model.metadata?.capabilities;
+  const tags: string[] = [];
+  if (caps?.reasoning) tags.push('Reasoning');
+  if (caps?.vision) tags.push('Vision');
+  if (caps?.tools) tags.push('Tools');
+  if (caps?.audio) tags.push('Audio');
+  if (tags.length > 0) return tags;
+  // Fallback for entries without capability metadata.
   const purpose = model.purpose as string | undefined;
-  const purposeTag = purpose ? PURPOSE_TAG[purpose] : undefined;
-  if (purposeTag) return [purposeTag];
-  if (purpose) return [purpose.charAt(0).toUpperCase() + purpose.slice(1)];
-  return [];
+  return purpose ? [purpose.charAt(0).toUpperCase() + purpose.slice(1)] : [];
 }
 
 function modelMeta(model: CuratedModel): string {
@@ -47,7 +55,13 @@ function modelMeta(model: CuratedModel): string {
   return model.requirements?.diskMb == null ? ram : `${ram} · ${formatSize(model.requirements.diskMb)} disk`;
 }
 
-/** Step 3 — Recommended Models. Top catalog models for the detected hardware, as selectable tiles. */
+/** Artificial Analysis benchmark scores (0–100ish) shown on each model — intelligence + tool calling. */
+function modelScores(model: CuratedModel): { intelligence?: number; toolCalling?: number } {
+  return { intelligence: model.metadata?.intelligenceIndex, toolCalling: model.metadata?.toolCallingIndex };
+}
+
+/** Step 2 — Recommended Models. Top catalog models for the detected hardware, as selectable tiles.
+ * The collapsible Other Models drawer is rendered via `children` at the bottom of the section. */
 export const RecommendedModels = ({
   tier,
   recommendedModels,
@@ -55,6 +69,7 @@ export const RecommendedModels = ({
   selectedModelIds,
   onToggleModel,
   preferredModelId,
+  children,
 }: RecommendedModelsProps) => {
   if (tier === 'insufficient') return null;
 
@@ -63,27 +78,34 @@ export const RecommendedModels = ({
     .filter((m) => recommendedIds.has(m.id))
     .sort((a, b) => Number(b.id === preferredModelId) - Number(a.id === preferredModelId));
 
-  if (models.length === 0) return null;
-
   return (
-    <StepSection number={3} title="Recommended Models" description="Top models that work great with your setup.">
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3" data-testid="model-card-title">
-        {models.map((model) => (
-          <ModelCard
-            key={model.id}
-            testId={`model-row-${model.id}`}
-            checkboxTestId={`model-checkbox-${model.id}`}
-            title={model.displayName}
-            description={model.description}
-            icon={<ModelIcon model={model} />}
-            tags={modelTags(model)}
-            selected={selectedModelIds.includes(model.id)}
-            onToggle={() => onToggleModel(model.id)}
-            agentDefault={model.id === preferredModelId}
-            meta={modelMeta(model)}
-          />
-        ))}
-      </div>
+    <StepSection
+      number={2}
+      title="Recommended Models"
+      description="Your agents use the best fit for your hardware (pre-selected). Add more if you like — only checked models are installed."
+    >
+      {models.length > 0 ? (
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3" data-testid="model-card-title">
+          {models.map((model) => (
+            <ModelCard
+              key={model.id}
+              testId={`model-row-${model.id}`}
+              checkboxTestId={`model-checkbox-${model.id}`}
+              title={model.displayName}
+              icon={<ModelIcon model={model} />}
+              tags={modelTags(model)}
+              selected={selectedModelIds.includes(model.id)}
+              onToggle={() => onToggleModel(model.id)}
+              agentDefault={model.id === preferredModelId}
+              meta={modelMeta(model)}
+              scores={modelScores(model)}
+            />
+          ))}
+        </div>
+      ) : (
+        <p className="text-sm text-muted-foreground">No recommended models for your hardware — browse all installable models below.</p>
+      )}
+      {children}
     </StepSection>
   );
 };
@@ -96,46 +118,262 @@ interface OtherModelsProps {
   preferredModelId?: string;
 }
 
-/** Compact list of non-recommended installable models, shown inside the Advanced drawer. */
+/* ── Other Models table: color-coded levels (red → orange → gold → green → blue) live in ./levels ── */
+
+function ScoreCell({ value }: { value?: number }) {
+  if (value == null) return <span className="text-muted-foreground/50">—</span>;
+  return <span className={cn('font-semibold tabular-nums', LEVEL_TEXT[scoreColor(value)])}>{Math.round(value)}</span>;
+}
+
+function ResourceCell({ mb }: { mb?: number }) {
+  if (mb == null) return <span className="text-muted-foreground/50">—</span>;
+  const gb = mb / 1024;
+  return <span className={cn('tabular-nums', LEVEL_TEXT[resourceColor(gb)])}>{gb >= 1 ? `${gb.toFixed(1)} GB` : `${Math.round(mb)} MB`}</span>;
+}
+
+/** One model as a table row: select + name + colored tier / capability tags / scores / resources. */
+function ModelTableRow({
+  model,
+  selected,
+  isAgentDefault,
+  onToggle,
+}: {
+  model: CuratedModel;
+  selected: boolean;
+  isAgentDefault: boolean;
+  onToggle: () => void;
+}) {
+  const tier = model.requirements.minTier;
+  const inputId = `model-checkbox-${model.id}`;
+  return (
+    <tr
+      data-testid={`model-row-${model.id}`}
+      className={cn('border-t border-border/40 transition-colors hover:bg-muted/40', selected && 'bg-primary/[0.06]')}
+    >
+      <td className="py-2 pl-3 pr-2 align-middle">
+        <input
+          type="checkbox"
+          id={inputId}
+          checked={selected}
+          onChange={onToggle}
+          className="size-4 cursor-pointer rounded border-border accent-primary"
+          data-testid={inputId}
+        />
+      </td>
+      <td className="py-2 pr-3 align-middle">
+        <label htmlFor={inputId} className="flex cursor-pointer items-center gap-2">
+          <span className="flex-shrink-0 text-foreground/70 [&>*]:size-4">
+            <ModelIcon model={model} />
+          </span>
+          <span className="whitespace-nowrap text-sm font-medium">{model.displayName}</span>
+          {isAgentDefault && <span className="rounded bg-primary px-1.5 py-0.5 text-[10px] font-medium text-primary-foreground">Default</span>}
+        </label>
+      </td>
+      <td className="py-2 pr-3 align-middle">
+        <span
+          className={cn('rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide', LEVEL_TAG[TIER_TAG_COLOR[tier] ?? 'gold'])}
+        >
+          {TIER_TAG_LABEL[tier] ?? tier}
+        </span>
+      </td>
+      <td className="py-2 pr-3 align-middle">
+        <span className="flex flex-wrap gap-1">
+          {modelTags(model).map((tag) => (
+            <span key={tag} className="rounded border border-primary/30 px-1.5 py-0.5 text-[10px] font-medium text-primary/90">
+              {tag}
+            </span>
+          ))}
+        </span>
+      </td>
+      <td className="py-2 pr-3 text-right align-middle">
+        <ScoreCell value={model.metadata?.intelligenceIndex} />
+      </td>
+      <td className="py-2 pr-3 text-right align-middle">
+        <ScoreCell value={model.metadata?.toolCallingIndex} />
+      </td>
+      <td className="py-2 pr-3 text-right align-middle">
+        <ResourceCell mb={model.runtime.memoryFootprintMb} />
+      </td>
+      <td className="py-2 pr-3 text-right align-middle">
+        <ResourceCell mb={model.requirements.diskMb} />
+      </td>
+    </tr>
+  );
+}
+
+interface OtherModelGroup {
+  key: string;
+  title: string;
+  testId: string;
+  color: LevelColor;
+  items: CuratedModel[];
+}
+
+/** A color-coded, collapsible model category, rendered as a sortable-looking table when expanded. */
+function ModelGroup({
+  group,
+  selectedModelIds,
+  onToggleModel,
+  preferredModelId,
+}: {
+  group: OtherModelGroup;
+  selectedModelIds: string[];
+  onToggleModel: (id: string) => void;
+  preferredModelId?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className={cn('overflow-hidden rounded-lg border', LEVEL_TAG[group.color])}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        data-testid={group.testId}
+        className="flex w-full items-center gap-2 px-3 py-2 text-left"
+      >
+        <ChevronRight className={cn('h-4 w-4 flex-shrink-0 transition-transform', open && 'rotate-90')} />
+        <span className="flex-1 text-sm font-semibold">{group.title}</span>
+        <span className="rounded-full bg-background/40 px-2 py-0.5 text-xs">{group.items.length}</span>
+      </button>
+      {open && (
+        <div className="overflow-x-auto border-t border-border/60 bg-card">
+          <table className="w-full border-collapse text-left">
+            <thead>
+              <tr className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                <th className="w-8" aria-label="select" />
+                <th className="py-1.5 pr-3 font-medium">Model</th>
+                <th className="py-1.5 pr-3 font-medium">Tier</th>
+                <th className="py-1.5 pr-3 font-medium">Capabilities</th>
+                <th className="py-1.5 pr-3 text-right font-medium">Intelligence</th>
+                <th className="py-1.5 pr-3 text-right font-medium">Tool use</th>
+                <th className="py-1.5 pr-3 text-right font-medium">RAM</th>
+                <th className="py-1.5 pr-3 text-right font-medium">Disk</th>
+              </tr>
+            </thead>
+            <tbody>
+              {group.items.map((model) => (
+                <ModelTableRow
+                  key={model.id}
+                  model={model}
+                  selected={selectedModelIds.includes(model.id)}
+                  isAgentDefault={model.id === preferredModelId}
+                  onToggle={() => onToggleModel(model.id)}
+                />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Parameter-count ranges (small ≤14B, medium 15–70B, large >70B) plus embedding/speech. Each category
+// gets its own level color, red → orange → gold → green → blue.
+const OTHER_MODEL_GROUPS: { key: string; title: string; testId: string; color: LevelColor; match: (m: CuratedModel) => boolean }[] = [
+  {
+    key: 'large',
+    title: 'Large models · 70B+',
+    testId: 'other-group-large',
+    color: 'red',
+    match: (m) => m.modality === 'llm' && (m.parameterScale ?? 0) > 70,
+  },
+  {
+    key: 'medium',
+    title: 'Medium models · 15–70B',
+    testId: 'other-group-medium',
+    color: 'orange',
+    match: (m) => m.modality === 'llm' && (m.parameterScale ?? 0) > 14 && (m.parameterScale ?? 0) <= 70,
+  },
+  {
+    key: 'small',
+    title: 'Small models · ≤14B',
+    testId: 'other-group-small',
+    color: 'gold',
+    match: (m) => m.modality === 'llm' && (m.parameterScale ?? 0) <= 14,
+  },
+  { key: 'embedding', title: 'Embedding models', testId: 'other-group-embedding', color: 'green', match: (m) => m.modality === 'embedding' },
+  {
+    key: 'other',
+    title: 'Speech & other models',
+    testId: 'other-group-other',
+    color: 'blue',
+    match: (m) => m.modality !== 'llm' && m.modality !== 'embedding',
+  },
+];
+
+/**
+ * Non-recommended installable models, as a color-coded table grouped by parameter range (plus
+ * embedding/speech). Each category is collapsed by default; rows show colored tier and capability
+ * tags alongside intelligence / tool-use scores and RAM / disk. De-duplicated by id.
+ */
 export const OtherModels = ({ recommendedModels, availableModels, selectedModelIds, onToggleModel, preferredModelId }: OtherModelsProps) => {
   const recommendedIds = new Set(recommendedModels.map((m) => m.id));
-  const models = availableModels.filter((m) => !recommendedIds.has(m.id));
+  // Exclude the recommended models and de-duplicate by id (guards against repeated entries).
+  const models: CuratedModel[] = [];
+  const seen = new Set<string>();
+  for (const m of availableModels) {
+    if (recommendedIds.has(m.id) || seen.has(m.id)) continue;
+    seen.add(m.id);
+    models.push(m);
+  }
 
   if (models.length === 0) {
     return <p className="text-xs text-muted-foreground">No additional models are available for your hardware.</p>;
   }
 
+  // Assign each model to the first matching group so it never appears twice.
+  const assigned = new Set<string>();
+  const groups: OtherModelGroup[] = OTHER_MODEL_GROUPS.map((group) => {
+    const items = models.filter((m) => !assigned.has(m.id) && group.match(m));
+    for (const m of items) assigned.add(m.id);
+    return { ...group, items };
+  }).filter((group) => group.items.length > 0);
+
   return (
-    <div className="space-y-1" data-testid="other-models-list">
-      {models.map((model) => {
-        const isSelected = selectedModelIds.includes(model.id);
-        const isAgentDefault = model.id === preferredModelId;
-        return (
-          <label
-            key={model.id}
-            data-testid={`model-row-${model.id}`}
-            className="flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2 transition-colors hover:bg-muted/50"
-          >
-            <input
-              type="checkbox"
-              checked={isSelected}
-              onChange={() => onToggleModel(model.id)}
-              className="rounded border-border"
-              data-testid={`model-checkbox-${model.id}`}
-            />
-            <span className="min-w-0 flex-1">
-              <span className="flex items-center gap-2">
-                <span className="text-sm font-medium">{model.displayName}</span>
-                {isAgentDefault && (
-                  <span className="rounded bg-primary px-1.5 py-0.5 text-[10px] font-medium text-primary-foreground">Agent default</span>
-                )}
-              </span>
-              <span className="block truncate text-xs text-muted-foreground">{model.description}</span>
-            </span>
-            <span className="whitespace-nowrap text-right text-xs text-muted-foreground">{modelMeta(model)}</span>
-          </label>
-        );
-      })}
+    <div className="space-y-2" data-testid="other-models-list">
+      {groups.map((group) => (
+        <ModelGroup
+          key={group.key}
+          group={group}
+          selectedModelIds={selectedModelIds}
+          onToggleModel={onToggleModel}
+          preferredModelId={preferredModelId}
+        />
+      ))}
+    </div>
+  );
+};
+
+/**
+ * Always-visible "Other Models" section at the bottom of the Recommended Models step (not a drawer).
+ * The header is fixed; the long browse-all list stays tidy because each parameter-range group inside
+ * {@link OtherModels} is itself collapsible.
+ */
+export const OtherModelsSection = (props: OtherModelsProps) => {
+  return (
+    <div className="mt-4 rounded-2xl border border-border bg-foreground/[0.015] p-4">
+      <div className="mb-3 flex items-center gap-3">
+        <span className="text-primary [&_svg]:h-5 [&_svg]:w-5">
+          <CubeModelsIcon />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-sm font-semibold">Other Models</span>
+        </span>
+      </div>
+      <OtherModels {...props} />
+      <p className="mt-3 text-[11px] text-muted-foreground">
+        Intelligence &amp; tool-use scores from{' '}
+        <a
+          href={ARTIFICIAL_ANALYSIS_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="font-medium text-primary underline-offset-2 hover:underline"
+        >
+          Artificial Analysis
+        </a>
+        .
+      </p>
     </div>
   );
 };

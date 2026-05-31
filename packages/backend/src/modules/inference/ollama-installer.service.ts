@@ -46,7 +46,7 @@ export class OllamaInstallerService {
   }
 
   /**
-   * Validate Ollama container availability and provide container-first guidance.
+   * Validate Ollama availability and provide host-first guidance.
    */
   async install(): Promise<{ success: boolean; message: string }> {
     try {
@@ -54,13 +54,13 @@ export class OllamaInstallerService {
       if (status.ready) {
         return {
           success: true,
-          message: 'Ollama container is already running and reachable.',
+          message: `Ollama is running and reachable at ${status.endpointUrl}.`,
         };
       }
 
       return {
         success: false,
-        message: `Ollama is managed by the ci-hub-ollama container. Start or restart that container and re-check ${status.endpointUrl}.`,
+        message: `Ollama isn't reachable at ${status.endpointUrl}. Install it from ollama.com and start it on the host (the Hub reaches it over host.docker.internal), then re-check.`,
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

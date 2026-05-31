@@ -10,6 +10,8 @@ interface SystemOverviewProps {
   tier: HardwareTier;
   onRescan: () => Promise<void>;
   rescanning?: boolean;
+  availableDiskMb?: number;
+  diskTotalMb?: number;
 }
 
 const TIER_BADGES: Record<HardwareTier, { label: string; color: string; emoji: string }> = {
@@ -60,10 +62,11 @@ function OverviewItem({ icon, label, value, sub, testId }: { icon: ReactNode; la
  * guidance that gates accelerated inference. Replaces the old "Hardware Detected" card visually but
  * keeps all of its detection warnings.
  *
- * Note: the hardware profile is the Hub's; OS is derived from the connecting client and total
- * storage isn't reported by the profile API yet, so it shows "—".
+ * Note: the hardware profile is the Hub's. OS shows the host OS/codename from the profile when
+ * available (falling back to the connecting client), and storage total/free come from the profile's
+ * resource estimate.
  */
-export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false }: SystemOverviewProps) => {
+export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, availableDiskMb, diskTotalMb }: SystemOverviewProps) => {
   const badge = TIER_BADGES[tier];
   const os = getClientPlatform();
   const noGpu = !hardware.gpu.available;
@@ -96,7 +99,7 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false }:
       </div>
 
       <div className="mt-5 grid grid-cols-2 gap-x-4 gap-y-5 border-t border-border pt-5 sm:grid-cols-3 lg:grid-cols-6">
-        <OverviewItem icon={<Monitor />} label="OS" value={os.label} sub={os.arch} />
+        <OverviewItem icon={<Monitor />} label="OS" value={hardware.os?.name || os.label} sub={hardware.os?.version || os.arch} testId="hw-os" />
         <OverviewItem
           icon={<Cpu />}
           label="CPU"
@@ -124,7 +127,12 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false }:
           value={hardware.gpu.available ? (hardware.gpu.unifiedMemory ? 'Unified' : formatMemory(hardware.gpu.vramMb)) : '—'}
           sub={hardware.gpu.unifiedMemory ? 'Unified Memory' : undefined}
         />
-        <OverviewItem icon={<HardDrive />} label="Storage" value="—" />
+        <OverviewItem
+          icon={<HardDrive />}
+          label="Storage"
+          value={diskTotalMb ? formatMemory(diskTotalMb) : '—'}
+          sub={availableDiskMb ? `${formatMemory(availableDiskMb)} free` : undefined}
+        />
       </div>
 
       {noGpu && (

@@ -376,11 +376,14 @@ export class AppHelpers {
     }
 
     // --- Inference Integration for all Hub apps ---
-    // The Hub no longer proxies inference. Point apps directly at the Ollama
-    // container (native protocol); apps that want the OpenAI-compatible surface
-    // append /v1 themselves, and may fetch richer connection info (incl. cloud
-    // overrides) from GET /api/inference/apps/:slug/credentials.
-    envMap.set('OLLAMA_HOST', process.env.OLLAMA_URL || 'http://ci-hub-ollama:11434');
+    // The Hub no longer proxies inference. Point apps directly at Ollama (native
+    // protocol); apps that want the OpenAI-compatible surface append /v1
+    // themselves, and may fetch richer connection info (incl. cloud overrides)
+    // from GET /api/inference/apps/:slug/credentials. Installed apps run as Docker
+    // containers, so the fallback targets the host's Ollama over the host-gateway
+    // bridge (host.docker.internal) — not loopback, which would be the app's own
+    // container. OLLAMA_URL, when set by compose, already points there.
+    envMap.set('OLLAMA_HOST', process.env.OLLAMA_URL || 'http://host.docker.internal:11434');
 
     await this.appFilesManager.writeAppEnv(appUrn, this.envUtils.envMapToString(envMap));
   };

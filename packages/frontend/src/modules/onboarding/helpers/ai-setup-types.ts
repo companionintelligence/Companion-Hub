@@ -9,10 +9,13 @@ export const AGENT_APP_SLUG: Record<AgentFramework, string> = {
   hermes: 'hermes-agent',
 };
 
+/** A remote-access transport the user can enable (maps to ExposureMode minus 'local'). */
+export type RemoteAccessMode = Exclude<ExposureMode, 'local'>;
+
 /** AI setup state managed by the AiSetupStep and passed down to InstallStep / CompleteStep. */
 export interface AiSetupConfig {
-  /** Chosen agent framework. OpenClaw is the default, but the user can deselect to run no agent. */
-  agentFramework?: AgentFramework;
+  /** Chosen agent frameworks — one or more (OpenClaw is the default); empty to run no agent. */
+  agentFrameworks: AgentFramework[];
   selectedModels: string[];
   backend: InferenceBackendType;
   cloudProviders: CloudProviderInput[];
@@ -23,10 +26,14 @@ export interface AiSetupConfig {
    */
   preferredModelId?: string;
   /**
-   * Preferred remote-access transport for the user's Companion agents (Hermes, OpenClaw) and Hub
-   * services: 'tailscale' (private VPN), 'cloudflare' (public web URL), or 'local' (no remote
-   * exposure). Seeds the default exposure mode used when onboarding installs apps. Undefined when
-   * AI setup was skipped.
+   * Remote-access transports the user enabled for their Companion agents (Hermes, OpenClaw) and Hub
+   * services — any of 'tailscale' (private VPN) and/or 'cloudflare' (public web URL). Empty means
+   * local-only (no remote exposure).
+   */
+  remoteAccess: RemoteAccessMode[];
+  /**
+   * Single primary remote-access transport derived from {@link remoteAccess} for back-compat with
+   * the app installer (which exposes each app under one mode): 'cloudflare' > 'tailscale' > 'local'.
    */
   exposureMode?: ExposureMode;
   skipped: boolean;
@@ -73,6 +80,8 @@ export interface HardwareProfileResponse {
     totalDiskMb: number;
     totalMemoryMb: number;
     availableMemoryMb: number;
+    availableDiskMb: number;
+    diskTotalMb: number;
   };
 }
 

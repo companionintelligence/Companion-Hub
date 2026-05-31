@@ -155,15 +155,35 @@ export class HardwareInspectorService implements OnModuleInit {
     const effectiveInferenceMemoryMb = gpu.unifiedMemory ? ramInfo.availableMb : gpu.available ? gpu.vramMb : ramInfo.availableMb;
 
     const tier = this.computeTier(gpu, ramInfo);
+    const os = await this.detectOs(platform, !!macOsProbe);
 
     return {
       gpu,
       npu: { available: false, model: '' },
       ram: ramInfo,
       cpu: cpuInfo,
+      os,
       effectiveInferenceMemoryMb,
       tier,
     };
+  }
+
+  /**
+   * Host OS name + release codename. In dev (backend on the host) systeminformation reports the real
+   * OS (e.g. macOS "Tahoe"). When the macOS host probe is present the backend runs inside Docker, so
+   * si.osInfo() would describe the Linux VM — we report 'macOS' with an unknown version instead.
+   */
+  private async detectOs(platform: NodeJS.Platform | 'darwin', fromMacProbe: boolean): Promise<{ platform: string; name: string; version: string }> {
+    if (fromMacProbe) {
+      return { platform: 'darwin', name: 'macOS', version: '' };
+    }
+    try {
+      const info = await si.osInfo();
+      const name = info.distro || (platform === 'darwin' ? 'macOS' : String(platform));
+      return { platform: info.platform || String(platform), name, version: info.codename || info.release || '' };
+    } catch {
+      return { platform: String(platform), name: platform === 'darwin' ? 'macOS' : String(platform), version: '' };
+    }
   }
 
   computeTier(gpu: HardwareProfile['gpu'], ram: HardwareProfile['ram']): HardwareTier {

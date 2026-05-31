@@ -105,7 +105,7 @@ describe('InstallStep', () => {
       <InstallStep
         apps={[]}
         onComplete={onComplete}
-        aiSetupConfig={{ agentFramework: 'openclaw', selectedModels: [], backend: 'ollama', cloudProviders: [], skipped: true }}
+        aiSetupConfig={{ agentFrameworks: ['openclaw'], selectedModels: [], backend: 'ollama', cloudProviders: [], remoteAccess: [], skipped: true }}
       />,
     );
 
@@ -119,7 +119,8 @@ describe('InstallStep', () => {
         apps={[]}
         onComplete={onComplete}
         aiSetupConfig={{
-          agentFramework: 'openclaw',
+          agentFrameworks: ['openclaw'],
+          remoteAccess: [],
           selectedModels: [],
           backend: 'vllm',
           cloudProviders: [],
@@ -145,11 +146,12 @@ describe('InstallStep', () => {
         apps={[]}
         onComplete={onComplete}
         aiSetupConfig={{
-          agentFramework: 'openclaw',
-          selectedModels: ['hermes4-70b'],
+          agentFrameworks: ['openclaw'],
+          remoteAccess: [],
+          selectedModels: ['llama3-3-70b'],
           backend: 'ollama',
           cloudProviders: [],
-          preferredModelId: 'hermes4-70b',
+          preferredModelId: 'llama3-3-70b',
           skipped: false,
         }}
       />,
@@ -160,7 +162,7 @@ describe('InstallStep', () => {
         '/api/inference/preferences',
         expect.objectContaining({
           method: 'PATCH',
-          body: JSON.stringify({ backend: 'ollama', model: 'hermes4-70b' }),
+          body: JSON.stringify({ backend: 'ollama', model: 'llama3-3-70b' }),
         }),
       );
     });

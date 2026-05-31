@@ -3,11 +3,12 @@ import { Markdown } from '@/components/markdown/markdown';
 import { Button } from '@/components/ui/Button';
 import { useAppContext } from '@/context/app-context';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/Card';
-import { Star, ArrowUpCircle, Loader2 } from 'lucide-react';
+import { Star, ArrowUpCircle, Loader2, Wand2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import semver from 'semver';
 import { UpdateRepoModal } from '../components/update-repo-modal/update-repo-modal';
 import { useState, useEffect, useCallback } from 'react';
+import toast from 'react-hot-toast';
 
 export const GeneralActionsContainer = () => {
   const { t } = useTranslation();
@@ -17,6 +18,22 @@ export const GeneralActionsContainer = () => {
   const [updateMessage, setUpdateMessage] = useState<string | null>(null);
   const [autoUpdates, setAutoUpdates] = useState(true);
   const [autoUpdatesLoading, setAutoUpdatesLoading] = useState(false);
+  const [restartingWizard, setRestartingWizard] = useState(false);
+
+  // Re-arm the first-time setup wizard, then send the user back into it. A full navigation reloads the
+  // app context so the (now false) onboarding flag is picked up and the onboarding route renders.
+  const handleRestartWizard = useCallback(async () => {
+    setRestartingWizard(true);
+    try {
+      // apiFetch doesn't throw on non-2xx, so only navigate once the flag is actually reset.
+      const res = await apiFetch('/api/restart-onboarding', { method: 'PATCH', credentials: 'include' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      window.location.href = '/onboarding';
+    } catch {
+      setRestartingWizard(false);
+      toast.error('Could not restart the setup wizard. Please try again.');
+    }
+  }, []);
 
   const isLatest = semver.valid(version.current) && semver.valid(version.latest) && semver.gte(version.current, version.latest);
 
@@ -155,6 +172,28 @@ export const GeneralActionsContainer = () => {
             <p className="text-sm text-muted-foreground mb-3">{t('SETTINGS_ACTIONS_UPDATE_REPO_SUBTITLE')}</p>
             <UpdateRepoModal />
           </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <Wand2 className="h-5 w-5 text-muted-foreground" />
+            <CardTitle className="text-xl">Setup Wizard</CardTitle>
+          </div>
+          <CardDescription>Re-run the first-time setup wizard to reconfigure your agents, models, and remote access.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Button onClick={handleRestartWizard} disabled={restartingWizard} data-testid="restart-wizard-btn">
+            {restartingWizard ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                Restarting…
+              </>
+            ) : (
+              'Restart Setup Wizard'
+            )}
+          </Button>
         </CardContent>
       </Card>
     </div>

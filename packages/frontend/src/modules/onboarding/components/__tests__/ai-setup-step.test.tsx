@@ -93,7 +93,7 @@ const highTierProfile: HardwareProfileResponse = {
       { type: 'vllm', running: false, healthy: false },
     ],
   },
-  resourceEstimate: { totalDiskMb: 2048, totalMemoryMb: 2048, availableMemoryMb: 24064 },
+  resourceEstimate: { totalDiskMb: 2048, totalMemoryMb: 2048, availableMemoryMb: 24064, availableDiskMb: 500000, diskTotalMb: 1000000 },
 };
 
 const insufficientProfile: HardwareProfileResponse = {
@@ -107,7 +107,7 @@ const insufficientProfile: HardwareProfileResponse = {
   },
   recommendedModels: [],
   availableModels: [],
-  resourceEstimate: { totalDiskMb: 0, totalMemoryMb: 0, availableMemoryMb: 0 },
+  resourceEstimate: { totalDiskMb: 0, totalMemoryMb: 0, availableMemoryMb: 0, availableDiskMb: 0, diskTotalMb: 0 },
 };
 
 const ollamaReady = { ready: true, running: true, endpointUrl: 'http://ci-hub-ollama:11434' };
@@ -243,11 +243,12 @@ describe('AiSetupStep', () => {
 
     await user.click(screen.getByTestId('ai-continue-btn'));
     expect(onComplete).toHaveBeenCalledWith({
-      agentFramework: 'openclaw',
+      agentFrameworks: ['openclaw'],
       selectedModels: ['phi-4-mini'],
       backend: 'ollama',
       cloudProviders: [],
       preferredModelId: 'phi-4-mini',
+      remoteAccess: [],
       exposureMode: 'local',
       skipped: false,
     });
@@ -301,11 +302,12 @@ describe('AiSetupStep', () => {
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
     await user.click(screen.getByTestId('ai-continue-btn'));
     expect(onComplete).toHaveBeenCalledWith({
-      agentFramework: 'openclaw',
+      agentFrameworks: ['openclaw'],
       selectedModels: ['phi-4-mini'],
       backend: 'ollama',
       cloudProviders: [],
       preferredModelId: 'phi-4-mini',
+      remoteAccess: [],
       exposureMode: 'local',
       skipped: false,
     });
@@ -329,16 +331,18 @@ describe('AiSetupStep', () => {
     expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({ preferredModelId: 'phi-4-mini' }));
   });
 
-  it('lets the user switch the agent framework to Hermes', async () => {
+  it('lets the user add Hermes as a second agent framework (multi-select)', async () => {
     const user = userEvent.setup();
     const { onComplete } = renderStep();
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
 
+    // OpenClaw starts selected; checking Hermes adds it without deselecting OpenClaw.
     await user.click(screen.getByTestId('agent-hermes'));
     expect(screen.getByTestId('agent-hermes')).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByTestId('agent-openclaw')).toHaveAttribute('aria-pressed', 'true');
 
     await user.click(screen.getByTestId('ai-continue-btn'));
-    expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({ agentFramework: 'hermes' }));
+    expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({ agentFrameworks: ['openclaw', 'hermes'] }));
   });
 
   it('lets the user deselect the agent entirely (no agent framework)', async () => {
@@ -353,7 +357,7 @@ describe('AiSetupStep', () => {
     expect(screen.getByTestId('agent-none-hint')).toBeInTheDocument();
 
     await user.click(screen.getByTestId('ai-continue-btn'));
-    expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({ agentFramework: undefined }));
+    expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({ agentFrameworks: [] }));
   });
 
   it('lets the user choose Tailscale or Web remote access for their agent', async () => {
@@ -402,20 +406,37 @@ describe('AiSetupStep', () => {
     expect(screen.getByText(/1 model selected/)).toBeInTheDocument();
   });
 
-  it('shows resource warning when models exceed available memory', async () => {
-    api.profile = { ...highTierProfile, resourceEstimate: { totalDiskMb: 2048, totalMemoryMb: 2048, availableMemoryMb: 1024 } };
+  it('shows resource warning when selected models exceed available disk', async () => {
+    // The summary bar tracks download size (disk), not RAM: a recommended model larger than the
+    // free disk must trip the warning even when there is plenty of memory.
+    const bigModel = {
+      id: 'phi-4-mini',
+      displayName: 'Phi-4 Mini',
+      description: 'Small language model',
+      modality: 'llm',
+      purpose: 'general',
+      backend: 'ollama',
+      requirements: { diskMb: 60000 },
+      runtime: { backendModelId: 'phi4-mini', input: ['text'], pinnedByDefault: true, memoryFootprintMb: 2048 },
+      tiers: { high: 'recommended', medium: 'recommended', low: 'available', cpuOnly: 'available' },
+    };
+    api.profile = {
+      ...highTierProfile,
+      recommendedModels: [bigModel] as any,
+      availableModels: [bigModel] as any,
+      resourceEstimate: { totalDiskMb: 60000, totalMemoryMb: 2048, availableMemoryMb: 24064, availableDiskMb: 1024, diskTotalMb: 1000000 },
+    };
     renderStep();
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
     expect(screen.getByTestId('resource-warning')).toBeInTheDocument();
   });
 
-  it('validates cloud API key format in the Advanced drawer', async () => {
+  it('validates cloud API key format in the Advanced step', async () => {
     const user = userEvent.setup();
     renderStep();
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
 
-    // Advanced is open by default; open the Cloud API Keys drawer, then enter an invalid key.
-    await user.click(screen.getByTestId('cloud-toggle'));
+    // Advanced is now a numbered step with the Cloud API Keys shown inline (no accordion).
     await user.type(screen.getByTestId('cloud-key-openai'), 'invalid-key');
     expect(screen.getByTestId('cloud-error-openai')).toHaveTextContent('should start with "sk-"');
   });

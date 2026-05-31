@@ -8,16 +8,18 @@ import {
   type CloudProviderInput,
   type ExposureMode,
   type HardwareProfileResponse,
+  type RemoteAccessMode,
 } from '../helpers/ai-setup-types';
 import type { CuratedModel, InferenceBackendType } from '@ci-hub/common/types';
 import { AgentFrameworkCard } from './ai-setup/agent-apps-card';
 // Inference backend selection hidden — Ollama is the only option, so no choice is needed.
 // import { BackendCard } from './ai-setup/backend-selection-card';
-import { RecommendedModels } from './ai-setup/model-selection-card';
+import { OtherModelsSection, RecommendedModels } from './ai-setup/model-selection-card';
 import { AdvancedDrawers } from './ai-setup/advanced-drawers';
 import { SystemOverview } from './ai-setup/system-overview';
 import { ResourceSummaryBar } from './ai-setup/resource-summary-bar';
 import { OllamaSetupCard } from './ai-setup/ollama-setup-card';
+import { TailscaleSetupStep } from './tailscale-setup-step';
 import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
 import { Loader2 } from 'lucide-react';
 
@@ -52,8 +54,17 @@ interface OllamaStatus {
   error?: string;
 }
 
-const defaultExposureMode = (cloudflareAvailable: boolean, tailscaleAvailable: boolean): ExposureMode =>
-  cloudflareAvailable ? 'cloudflare' : tailscaleAvailable ? 'tailscale' : 'local';
+// Seed the multi-select remote-access with whatever transports are already configured.
+const defaultRemoteAccess = (cloudflareAvailable: boolean, tailscaleAvailable: boolean): RemoteAccessMode[] => {
+  const modes: RemoteAccessMode[] = [];
+  if (cloudflareAvailable) modes.push('cloudflare');
+  if (tailscaleAvailable) modes.push('tailscale');
+  return modes;
+};
+
+// The app installer exposes each app under a single mode; derive that primary from the selection.
+const primaryExposureMode = (remoteAccess: RemoteAccessMode[]): ExposureMode =>
+  remoteAccess.includes('cloudflare') ? 'cloudflare' : remoteAccess.includes('tailscale') ? 'tailscale' : 'local';
 
 export const AiSetupStep = ({
   onComplete,
@@ -68,23 +79,31 @@ export const AiSetupStep = ({
   const [rescanning, setRescanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [profile, setProfile] = useState<HardwareProfileResponse | null>(null);
-  const [agentFramework, setAgentFramework] = useState<AgentFramework | undefined>('openclaw');
+  const [agentFrameworks, setAgentFrameworks] = useState<AgentFramework[]>(['openclaw']);
   const [selectedModelIds, setSelectedModelIds] = useState<string[]>([]);
   const [preferredModelId, setPreferredModelId] = useState<string | undefined>(undefined);
-  const [exposureMode, setExposureMode] = useState<ExposureMode>(defaultExposureMode(cloudflareAvailable, tailscaleAvailable));
+  const [remoteAccess, setRemoteAccess] = useState<RemoteAccessMode[]>(defaultRemoteAccess(cloudflareAvailable, tailscaleAvailable));
   const [cloudProviders, setCloudProviders] = useState<CloudProviderInput[]>([]);
   const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus | null>(null);
   const [checkingOllama, setCheckingOllama] = useState(false);
 
-  const getRecommendedModelIdsForBackend = (data: HardwareProfileResponse, backend: InferenceBackendType) =>
-    data.recommendedModels.filter((model) => model.backend === backend).map((model) => model.id);
-
-  // The default model Companion agents (Hermes, OpenClaw) use: the top recommended agent model that is
-  // actually installable for the backend, falling back to the first installable agent model.
+  // The default model Companion agents (Hermes, OpenClaw) use: the BEST-FIT agent LLM. recommendedModels
+  // is ordered best-first (index 0 is the largest model that fits the hardware budget), so we walk it
+  // in order and take the top installable agent LLM — not whatever happens to come first in the catalog.
+  // Both agents read this single model from the Hub's bootstrap.env, so it must be the best-fit pick.
   const getDefaultPreferredModelId = (data: HardwareProfileResponse, backend: InferenceBackendType): string | undefined => {
-    const recommendedAgentIds = new Set(data.recommendedModels.filter((m) => m.backend === backend && isAgentModel(m)).map((m) => m.id));
-    const installable = data.availableModels.filter((m) => m.backend === backend && isAgentModel(m));
-    return installable.find((m) => recommendedAgentIds.has(m.id))?.id ?? installable[0]?.id;
+    const installableAgentIds = new Set(data.availableModels.filter((m) => m.backend === backend && isAgentModel(m)).map((m) => m.id));
+    const topRecommended = data.recommendedModels.find((m) => m.backend === backend && isAgentModel(m) && installableAgentIds.has(m.id));
+    return topRecommended?.id ?? data.availableModels.find((m) => m.backend === backend && isAgentModel(m))?.id;
+  };
+
+  // What's pre-selected for install: only the single best-fit agent LLM (the agents' default) plus
+  // the recommended non-LLM models (e.g. the embedder needed for memory/RAG). The other recommended
+  // LLMs are shown in the grid but left unchecked so the user opts in rather than pulling them all.
+  const getDefaultSelectedModelIds = (data: HardwareProfileResponse, backend: InferenceBackendType): string[] => {
+    const bestFitLlm = getDefaultPreferredModelId(data, backend);
+    const nonLlmRecommended = data.recommendedModels.filter((m) => m.backend === backend && m.modality !== 'llm').map((m) => m.id);
+    return [...new Set([bestFitLlm, ...nonLlmRecommended].filter((id): id is string => Boolean(id)))];
   };
 
   const fetchProfile = async (isRescan = false) => {
@@ -95,8 +114,8 @@ export const AiSetupStep = ({
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data: HardwareProfileResponse = await res.json();
       setProfile(data);
-      setSelectedModelIds(getRecommendedModelIdsForBackend(data, ONBOARDING_BACKEND));
       setPreferredModelId(getDefaultPreferredModelId(data, ONBOARDING_BACKEND));
+      setSelectedModelIds(getDefaultSelectedModelIds(data, ONBOARDING_BACKEND));
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -154,10 +173,14 @@ export const AiSetupStep = ({
     }
   };
 
-  // Picking a preferred model also ensures it is installed (added to the selected set).
-  const handleSelectPreferred = (modelId: string) => {
-    setPreferredModelId(modelId);
-    setSelectedModelIds((prev) => (prev.includes(modelId) ? prev : [...prev, modelId]));
+  // Agent frameworks are multi-select; deselecting all is allowed (run no agent, add one later).
+  const toggleFramework = (framework: AgentFramework) => {
+    setAgentFrameworks((prev) => (prev.includes(framework) ? prev.filter((f) => f !== framework) : [...prev, framework]));
+  };
+
+  // Remote access is multi-select and optional (empty = local-only).
+  const toggleAccess = (mode: RemoteAccessMode) => {
+    setRemoteAccess((prev) => (prev.includes(mode) ? prev.filter((m) => m !== mode) : [...prev, mode]));
   };
 
   const buildConfig = (): AiSetupConfig | null => {
@@ -174,7 +197,7 @@ export const AiSetupStep = ({
     // model and configured no cloud provider, fold in the recommended agent model so it gets pulled
     // during install. This stays out of UI state, so the user can still freely toggle models above.
     const selectedModels = [...backendCompatibleSelectedModels];
-    if (agentFramework && selectedModels.length === 0 && validProviders.length === 0) {
+    if (agentFrameworks.length > 0 && selectedModels.length === 0 && validProviders.length === 0) {
       const fallbackModelId = getDefaultPreferredModelId(profile, ONBOARDING_BACKEND);
       if (fallbackModelId) selectedModels.push(fallbackModelId);
     }
@@ -186,12 +209,13 @@ export const AiSetupStep = ({
         ? preferredModelId
         : selectedModels.find((id) => profile.availableModels.some((m) => m.id === id && isAgentModel(m)));
     return {
-      agentFramework,
+      agentFrameworks,
       selectedModels,
       backend: ONBOARDING_BACKEND,
       cloudProviders: validProviders,
       preferredModelId: effectivePreferredModelId,
-      exposureMode,
+      remoteAccess,
+      exposureMode: primaryExposureMode(remoteAccess),
       skipped: false,
     };
   };
@@ -212,7 +236,7 @@ export const AiSetupStep = ({
     if (!embedded || !onConfigChange || !profile) return;
     const config = buildConfig();
     if (config) onConfigChange(config);
-  }, [embedded, profile, agentFramework, selectedModelIds, preferredModelId, exposureMode, cloudProviders, onConfigChange]);
+  }, [embedded, profile, agentFrameworks, selectedModelIds, preferredModelId, remoteAccess, cloudProviders, onConfigChange]);
 
   if (loading) {
     return (
@@ -248,27 +272,28 @@ export const AiSetupStep = ({
   const backendRecommendedModels = profile.recommendedModels.filter((model) => model.backend === ONBOARDING_BACKEND);
   const backendAvailableModels = profile.availableModels.filter((model) => model.backend === ONBOARDING_BACKEND);
   const selectedModels = backendAvailableModels.filter((model) => selectedModelIds.includes(model.id));
-  const recommendedAgentModelIds = new Set(backendRecommendedModels.filter(isAgentModel).map((m) => m.id));
-  const agentModels = backendAvailableModels
-    .filter(isAgentModel)
-    .sort((a, b) => Number(recommendedAgentModelIds.has(b.id)) - Number(recommendedAgentModelIds.has(a.id)));
-  const availableMemoryMb = profile.resourceEstimate.availableMemoryMb;
+  const availableDiskMb = profile.resourceEstimate.availableDiskMb;
+  const diskTotalMb = profile.resourceEstimate.diskTotalMb;
   const needsOllama = ollamaStatus === null || !ollamaStatus.ready;
 
   return (
     <div className={embedded ? 'space-y-5' : 'space-y-5 max-h-[66vh] overflow-y-auto pr-2'} data-testid="ai-setup-step">
-      <SystemOverview hardware={profile.hardware} tier={profile.tier} onRescan={handleRescan} rescanning={rescanning} />
+      <SystemOverview
+        hardware={profile.hardware}
+        tier={profile.tier}
+        onRescan={handleRescan}
+        rescanning={rescanning}
+        availableDiskMb={availableDiskMb}
+        diskTotalMb={diskTotalMb}
+      />
 
       {!isInsufficient && (
         <>
           <AgentFrameworkCard
-            framework={agentFramework}
-            onSelectFramework={setAgentFramework}
-            models={agentModels}
-            preferredModelId={preferredModelId}
-            onSelectPreferred={handleSelectPreferred}
-            exposureMode={exposureMode}
-            onSelectExposureMode={setExposureMode}
+            frameworks={agentFrameworks}
+            onToggleFramework={toggleFramework}
+            remoteAccess={remoteAccess}
+            onToggleAccess={toggleAccess}
             cloudflareAvailable={cloudflareAvailable}
             tailscaleAvailable={tailscaleAvailable}
           />
@@ -278,6 +303,9 @@ export const AiSetupStep = ({
 
           {needsOllama && <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={checkOllamaStatus} />}
 
+          {/* Disk-available summary sits above the model selection so the budget is visible first. */}
+          <ResourceSummaryBar selectedModels={selectedModels} availableStorageMb={availableDiskMb} />
+
           <RecommendedModels
             tier={profile.tier}
             recommendedModels={backendRecommendedModels}
@@ -285,22 +313,23 @@ export const AiSetupStep = ({
             selectedModelIds={selectedModelIds}
             onToggleModel={handleToggleModel}
             preferredModelId={preferredModelId}
-          />
-
-          <ResourceSummaryBar selectedModels={selectedModels} availableMemoryMb={availableMemoryMb} />
+          >
+            {/* Other Models lives at the bottom of the model-selection section (always visible). */}
+            <OtherModelsSection
+              recommendedModels={backendRecommendedModels}
+              availableModels={backendAvailableModels}
+              selectedModelIds={selectedModelIds}
+              onToggleModel={handleToggleModel}
+              preferredModelId={preferredModelId}
+            />
+          </RecommendedModels>
         </>
       )}
 
-      <AdvancedDrawers
-        recommendedModels={backendRecommendedModels}
-        availableModels={backendAvailableModels}
-        selectedModelIds={selectedModelIds}
-        onToggleModel={handleToggleModel}
-        preferredModelId={preferredModelId}
-        providers={cloudProviders}
-        onUpdateProviders={setCloudProviders}
-        insufficientHardware={isInsufficient}
-      />
+      {/* Step 3 — Private VPN. Rendered inline in the single-page form; the standalone wizard shows it as its own step. */}
+      {embedded && <TailscaleSetupStep embedded />}
+
+      <AdvancedDrawers providers={cloudProviders} onUpdateProviders={setCloudProviders} insufficientHardware={isInsufficient} />
 
       {!embedded && (
         <div className="flex items-center justify-between pt-1">
