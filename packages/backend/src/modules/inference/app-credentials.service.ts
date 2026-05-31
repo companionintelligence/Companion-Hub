@@ -140,18 +140,19 @@ export class AppCredentialsService {
 
     const candidates = this.modelRegistry.getRecommendedModelsForHardware(profile.tier, profile);
     const preferredModelId = this.configurationService.getInferencePreferences().preferredModel;
-    const llm = this.resolveLlm(candidates, preferredModelId, profile.tier);
+    const recommendedLlm = this.resolveRecommendedLlm(candidates, preferredModelId, profile.tier);
+    const availableLlm = this.resolveAvailableLlm(candidates, preferredModelId, profile.tier, endpointHealth.modelsLoaded);
     // Embeddings are picked independently of the chat LLM so memory/RAG consumers
     // (companion-memory / CI-Server pgvector, which is hard-coupled to a 768-dim
     // model) always receive an embeddings model. nomic-embed-text is recommended on
     // every tier, so this is non-null on any runnable hardware.
     const embeddings = this.modelRegistry.getRecommendedEmbeddingModel(profile.tier);
 
-    const chatModelReady = llm ? this.isModelPulled(llm.id, endpointHealth.modelsLoaded) : false;
+    const chatModelReady = recommendedLlm ? this.isModelPulled(recommendedLlm.id, endpointHealth.modelsLoaded) : false;
     // The Hub still pulls the recommended models into its own Ollama so the app can
     // use them directly — we just no longer proxy the actual inference requests.
-    if (llm && !chatModelReady && endpointReady) {
-      this.firePrePull(llm.id);
+    if (recommendedLlm && !chatModelReady && endpointReady) {
+      this.firePrePull(recommendedLlm.id);
     }
     const embeddingsReady = embeddings ? this.isModelPulled(embeddings.id, endpointHealth.modelsLoaded) : false;
     if (embeddings && !embeddingsReady && endpointReady) {
@@ -166,7 +167,7 @@ export class AppCredentialsService {
     let provider: 'ollama' | 'cloud' = 'ollama';
     let endpointUrl = ollamaOpenAiUrl;
     let apiKey = 'ollama';
-    let chatModelId = llm?.backendModelId ?? null;
+    let chatModelId = availableLlm?.backendModelId ?? null;
     const embeddingsModelId = embeddings?.backendModelId ?? null;
 
     // ─── Cloud override: app → cloud provider API directly ───────────────
@@ -236,7 +237,7 @@ export class AppCredentialsService {
    * top hardware-recommended model (candidates[0], biggest that fits at q4+). This is what makes the
    * onboarding "preferred model" selection actually drive what Hermes/OpenClaw default to.
    */
-  private resolveLlm(candidates: CuratedModel[], preferredId: string | null, tier: HardwareTier): CuratedModel | null {
+  private resolveRecommendedLlm(candidates: CuratedModel[], preferredId: string | null, tier: HardwareTier): CuratedModel | null {
     if (preferredId) {
       const fromCandidates = candidates.find((m) => m.id === preferredId);
       if (fromCandidates) return fromCandidates;
@@ -247,6 +248,44 @@ export class AppCredentialsService {
       this.logger.warn(`[AppBootstrap] preferred model ${preferredId} is not runnable on tier=${tier}; falling back to recommended.`);
     }
     return candidates[0] ?? null;
+  }
+
+  private resolveAvailableLlm(
+    candidates: CuratedModel[],
+    preferredId: string | null,
+    tier: HardwareTier,
+    modelsLoaded: string[],
+  ): CuratedModel | null {
+    const pickIfAvailable = (model: CuratedModel | null | undefined): CuratedModel | null => {
+      if (!model || model.modality !== 'llm') return null;
+      return this.isCuratedModelAvailable(model, modelsLoaded) ? model : null;
+    };
+
+    if (preferredId) {
+      const fromCandidates = candidates.find((m) => m.id === preferredId);
+      const preferred = pickIfAvailable(fromCandidates);
+      if (preferred) return preferred;
+
+      const curated = this.modelRegistry.getCuratedModel(preferredId);
+      if (curated && curated.modality === 'llm' && this.modelRegistry.getModelsForTier(tier).some((m) => m.id === preferredId)) {
+        const preferredCurated = pickIfAvailable(curated);
+        if (preferredCurated) return preferredCurated;
+      }
+
+      this.logger.warn(`[AppBootstrap] preferred model ${preferredId} is not available in Ollama; falling back to a pulled model.`);
+    }
+
+    for (const candidate of candidates) {
+      const available = pickIfAvailable(candidate);
+      if (available) return available;
+    }
+
+    return null;
+  }
+
+  private isCuratedModelAvailable(model: CuratedModel, modelsLoaded: string[]): boolean {
+    if (this.isModelPulled(model.id, modelsLoaded)) return true;
+    return modelsLoaded.some((name) => name === model.backendModelId || name.startsWith(`${model.backendModelId}:`));
   }
 
   private isModelPulled(catalogId: string, modelsLoaded: string[]): boolean {

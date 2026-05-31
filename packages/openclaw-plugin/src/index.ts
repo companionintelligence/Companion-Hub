@@ -124,21 +124,18 @@ async function autoConfigureInference(api: OpenClawPluginApi, hubUrl: string, ap
 
     // S-OC-1.2: Register local models as an OpenClaw provider.
     // Prefer direct Ollama discovery so OpenClaw always receives the native model IDs
-    // it must pass to the OpenAI-compatible /v1 surface.
-    const inferenceBaseUrl = `${(process.env.OLLAMA_HOST ?? 'http://ci-hub-ollama:11434').replace(/\/$/, '')}/v1`;
+    // it must pass to the native Ollama API surface.
+    const ollamaNativeUrl = (process.env.OLLAMA_HOST ?? 'http://ci-hub-ollama:11434').replace(/\/$/, '');
+    const isEmbeddingModel = (id: string) => /embed/i.test(id);
     let localModels = [] as Array<{ id: string; context_window?: number; max_tokens?: number }>;
     try {
-      const response = await fetch(`${inferenceBaseUrl}/models`);
+      const response = await fetch(`${ollamaNativeUrl}/api/tags`);
       if (response.ok) {
-        const payload = (await response.json()) as { data?: Array<{ id?: string; context_window?: number; max_tokens?: number }> };
-        localModels = (payload.data ?? [])
-          .filter(
-            (model): model is { id: string; context_window?: number; max_tokens?: number } => typeof model.id === 'string' && model.id.length > 0,
-          )
+        const payload = (await response.json()) as { models?: Array<{ name?: string }> };
+        localModels = (payload.models ?? [])
+          .filter((model): model is { name: string } => typeof model.name === 'string' && model.name.length > 0 && !isEmbeddingModel(model.name))
           .map((model) => ({
-            id: model.id,
-            context_window: model.context_window,
-            max_tokens: model.max_tokens,
+            id: model.name,
           }));
       }
     } catch {
@@ -152,7 +149,8 @@ async function autoConfigureInference(api: OpenClawPluginApi, hubUrl: string, ap
           id: m.id,
           context_window: m.context_window,
           max_tokens: m.max_tokens,
-        }));
+        }))
+        .filter((m) => m.id.includes(':'));
     }
 
     if (localModels.length > 0 && api.registerProvider) {
@@ -167,9 +165,9 @@ async function autoConfigureInference(api: OpenClawPluginApi, hubUrl: string, ap
           order: 'simple',
           run: async () => ({
             provider: {
-              baseUrl: inferenceBaseUrl,
-              apiKey,
-              api: 'openai-completions',
+              baseUrl: ollamaNativeUrl,
+              apiKey: 'ollama',
+              api: 'ollama',
               models: localModels.map((m) => ({
                 id: m.id,
                 name: m.id,

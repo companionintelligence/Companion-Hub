@@ -305,32 +305,32 @@ const baseEntry = (id, name, caps) => {
     discovered = tagsPayload.models.map((model) => ({ id: model.name }));
   }
 
+  const discoveredIds = new Set(
+    discovered.map((model) => model?.id).filter((id) => typeof id === 'string' && id.length > 0),
+  );
+
   const models = [];
   const seen = new Set();
   const addModel = async (id, name) => {
-    if (typeof id !== 'string' || id.length === 0 || seen.has(id) || isEmbeddingModel(id)) return;
+    if (typeof id !== 'string' || id.length === 0 || seen.has(id) || isEmbeddingModel(id)) return false;
+    if (!discoveredIds.has(id)) return false;
     seen.add(id);
     const caps = await modelCapabilities(id);
     models.push(baseEntry(id, name || id, caps));
+    return true;
   };
 
   for (const model of discovered) {
     await addModel(model?.id, model?.id);
   }
-  if (defaultModel) {
-    await addModel(defaultModel, defaultModel);
-  }
 
-  if (defaultModel) {
-    const autoCaps = await modelCapabilities(defaultModel);
-    models.unshift(baseEntry('auto', 'Hub Auto (' + defaultModel + ')', autoCaps));
-  } else if (models.length > 0) {
-    const first = models[0];
-    models.unshift(baseEntry('auto', 'Hub Auto (' + first.id + ')', {
-      supportsTools: first.compat?.supportsTools === true,
-      reasoning: first.reasoning === true,
-      vision: Array.isArray(first.input) && first.input.includes('image'),
-    }));
+  const defaultModelAvailable = defaultModel && discoveredIds.has(defaultModel) ? defaultModel : null;
+  const firstModelId = models.find((model) => model.id !== 'auto')?.id ?? null;
+  const autoTargetId = defaultModelAvailable || firstModelId;
+
+  if (autoTargetId) {
+    const autoCaps = await modelCapabilities(autoTargetId);
+    models.unshift(baseEntry('auto', 'Hub Auto (' + autoTargetId + ')', autoCaps));
   }
 
   const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
@@ -344,24 +344,43 @@ const baseEntry = (id, name, caps) => {
     models,
   };
 
+  const existingModels = config.agents?.defaults?.models ?? {};
   const map = {};
   for (const model of models) {
-    map['ci-hub/' + model.id] = {};
+    const key = 'ci-hub/' + model.id;
+    map[key] = existingModels[key] ?? {};
   }
 
   config.agents = config.agents || { defaults: {} };
   config.agents.defaults = config.agents.defaults || {};
   config.agents.defaults.models = map;
 
-  const primaryId = defaultModel || models.find((model) => model.id !== 'auto')?.id || null;
+  const availableIds = new Set(models.map((model) => model.id));
+  const existingPrimary = config.agents.defaults.model?.primary;
+  let primaryId = null;
+  if (typeof existingPrimary === 'string' && existingPrimary.startsWith('ci-hub/')) {
+    const existingId = existingPrimary.slice('ci-hub/'.length);
+    if (availableIds.has(existingId)) {
+      primaryId = existingId;
+    }
+  }
+  if (!primaryId) {
+    primaryId = defaultModelAvailable || firstModelId;
+  }
   if (primaryId) {
     config.agents.defaults.model = { primary: 'ci-hub/' + primaryId };
+  } else {
+    config.agents.defaults.model = { primary: null };
   }
 
-  const defaultEntry = models.find((model) => model.id === (defaultModel || primaryId));
   const hasToolCapableModel = models.some((model) => model.compat?.supportsTools === true);
   config.tools = config.tools || {};
   config.tools.profile = hasToolCapableModel ? 'coding' : 'minimal';
+
+  if (models.length === 0) {
+    console.warn('CI Hub: no local Ollama chat models found at ' + ollamaNativeUrl + '; left existing agent defaults intact');
+    return;
+  }
 
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
   console.log('CI Hub: synced ' + models.length + ' Ollama model(s) via native API at ' + ollamaNativeUrl);
