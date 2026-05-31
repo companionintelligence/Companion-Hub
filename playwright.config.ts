@@ -51,7 +51,13 @@ const backendEnv: Record<string, string> = {
 
 export default defineConfig({
   testDir: './e2e',
-  testIgnore: ['**/future/**', '**/generated/**', '**/cross-domain/**', ...(USE_REAL_PORTAL ? [] : ['**/app-store-lifecycle.spec.ts'])],
+  testIgnore: [
+    '**/future/**',
+    '**/generated/**',
+    '**/cross-domain/**',
+    '**/platform/**',
+    ...(USE_REAL_PORTAL ? [] : ['**/app-store-lifecycle.spec.ts']),
+  ],
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,

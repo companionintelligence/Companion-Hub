@@ -12,7 +12,7 @@
 import { readdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-const APP_STORE_PATH = '../CI-App-Store/apps';
+const APP_STORE_PATH = process.env.APP_STORE_PATH ?? '../CI-Marketplace/apps';
 const OUTPUT_PATH = './e2e/generated';
 
 interface AppConfig {
@@ -196,8 +196,8 @@ async function main() {
   // Save full catalog
   await writeFile(join(OUTPUT_PATH, 'catalog.json'), JSON.stringify(catalog, null, 2));
 
-  // Split into batches for 7 servers
-  const SERVERS = 7;
+  // Split into batches for 11 servers (full online fleet)
+  const SERVERS = 11;
   const batchSize = Math.ceil(catalog.length / SERVERS);
 
   for (let i = 0; i < SERVERS; i++) {

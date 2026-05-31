@@ -158,7 +158,7 @@ async function runTestsOnServer(server: FleetServer, _verbose: boolean): Promise
   console.log(`📦 [${server.name}] Starting batch ${server.batch}...`);
 
   const sshCommand = `
-    cd ~/devel/CI-OS-Hub && 
+    cd ~/devel/CI-Hub &&
     git pull --quiet origin dev 2>/dev/null || true &&
     pnpm install --silent 2>/dev/null || true &&
     pnpm exec playwright test e2e/generated/catalog-batch-${server.batch}.spec.ts \
@@ -189,7 +189,7 @@ async function runTestsOnServer(server: FleetServer, _verbose: boolean): Promise
 
     // Collect screenshots
     try {
-      execSync(`scp ${SSH_OPTIONS} -r ${SSH_USER}@${server.ip}:~/devel/CI-OS-Hub/e2e/screenshots/current/ ${SCREENSHOTS_DIR}/${server.name}/`, {
+      execSync(`scp ${SSH_OPTIONS} -r ${SSH_USER}@${server.ip}:~/devel/CI-Hub/e2e/screenshots/current/ ${SCREENSHOTS_DIR}/${server.name}/`, {
         stdio: 'pipe',
       });
     } catch {
