@@ -2,13 +2,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR } from '@/common/constants';
 import { faker } from '@faker-js/faker';
-import type { AppInfo, AppInfoInput } from '@ci-hub/common/schemas';
+import type { AppInfo } from '@ci-hub/common/schemas';
+import { appInfoSchema } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 
-export const createAppInStore = async (storeId: string, app: Partial<AppInfo> = {}) => {
+export const createAppInStore = async (storeId: string, app: Partial<AppInfo> = {}): Promise<AppInfo> => {
   const id = app.id ?? faker.lorem.words(3).split(' ').join('-').toLowerCase();
 
-  const appInfo: AppInfoInput = {
+  const appInfo = appInfoSchema.parse({
     id,
     urn: `${id}:${storeId}` as AppUrn,
     name: faker.lorem.words(2),
@@ -34,7 +35,7 @@ export const createAppInStore = async (storeId: string, app: Partial<AppInfo> = 
     generate_vapid_keys: false,
     form_fields: [],
     ...app,
-  };
+  });
 
   const composeJson = {
     services: [

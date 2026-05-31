@@ -116,9 +116,13 @@ export const appInfoObjectSchema = z.object({
 
 export const appInfoSchema = z.preprocess(normalizeAppInfoInput, appInfoObjectSchema);
 
-// Derived types
-export type AppInfoInput = z.input<typeof appInfoSchema>;
-export type AppInfo = z.output<typeof appInfoSchema>;
+export type LegacyAppInfoFields = {
+  tipi_version?: number;
+  min_tipi_version?: string;
+};
+
+export type AppInfoInput = z.input<typeof appInfoObjectSchema> & LegacyAppInfoFields;
+export type AppInfo = z.output<typeof appInfoObjectSchema>;
 export type FormField = z.output<typeof formFieldSchema>;
 
 export const frontmatterSchema = z

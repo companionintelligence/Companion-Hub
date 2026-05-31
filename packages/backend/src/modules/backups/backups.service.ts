@@ -86,8 +86,6 @@ export class BackupsService {
 
         if (typeof restoredAppConfig?.cihub_app_version === 'number') {
           await this.appsRepository.updateAppById(app.id, { version: restoredAppConfig.cihub_app_version });
-        } else if (typeof restoredAppConfig?.tipi_version === 'number') {
-          await this.appsRepository.updateAppById(app.id, { version: restoredAppConfig.tipi_version });
         }
 
         if (appStatusBeforeUpdate === 'running') {
