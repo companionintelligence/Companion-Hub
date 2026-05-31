@@ -242,7 +242,7 @@ describe('AppLifecycleService', () => {
       urn: 'urn:app:testapp',
       name: 'Test App',
       port: 8080,
-      tipi_version: 1,
+      cihub_app_version: 1,
       exposable: true,
       supported_architectures: ['amd64'],
     };
@@ -307,6 +307,28 @@ describe('AppLifecycleService', () => {
           form: { exposureMode: 'local', openPort: false, port: 8080 },
         }),
       ).rejects.toThrow('APP_ERROR_PORT_ALREADY_IN_USE');
+    });
+
+    it('MUST reject duplicate port for cloudflare exposedLocal when openPort is false', async () => {
+      appsRepository.getAppsByPort.mockResolvedValue([{ appName: 'taken-port' }] as any);
+
+      await expect(
+        service.installApp({
+          appUrn,
+          form: { exposureMode: 'cloudflare', exposedLocal: true, openPort: false, port: 8080 },
+        }),
+      ).rejects.toThrow('APP_ERROR_PORT_ALREADY_IN_USE');
+    });
+
+    it('MUST skip duplicate-port checks when cloudflare apps do not publish a host port', async () => {
+      appsRepository.getAppsByPort.mockResolvedValue([{ appName: 'taken-port' }] as any);
+
+      await service.installApp({
+        appUrn,
+        form: { exposureMode: 'cloudflare', exposedLocal: false, openPort: false, port: 8080 },
+      });
+
+      expect(appsRepository.getAppsByPort).not.toHaveBeenCalled();
     });
   });
 
@@ -412,7 +434,7 @@ describe('AppLifecycleService', () => {
     const baseAppInfo = {
       id: 'myapp',
       port: 8080,
-      tipi_version: 1,
+      cihub_app_version: 1,
       exposable: true,
       supported_architectures: ['amd64'],
     };
@@ -662,22 +684,27 @@ describe('AppLifecycleService', () => {
 
     // ── uninstallApp ─────────────────────────────────────────────────────
     it('uninstallApp success: DB delete committed before SSE', async () => {
-      await service.uninstallApp({ appUrn, removeBackups: false });
+      await service.uninstallApp({ appUrn, deleteAllData: true });
       await flushMicrotasks();
 
       const delIdx = callOrder.indexOf('db_delete');
       const sseIdx = callOrder.indexOf('sse:uninstall_success');
       expect(delIdx).toBeGreaterThanOrEqual(0);
       expect(sseIdx).toBeGreaterThan(delIdx);
+      expect(backupManager.deleteAppBackupsByUrn).toHaveBeenCalledWith(appUrn);
+      expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'uninstall', appUrn, deleteAllData: true }));
     });
 
     it('uninstallApp error: DB committed before SSE', async () => {
       appEventsQueue.publish.mockResolvedValue({ success: false, message: 'fail' } as any);
 
-      await service.uninstallApp({ appUrn, removeBackups: false });
+      await service.uninstallApp({ appUrn, deleteAllData: false });
       await flushMicrotasks();
 
       expectEventAfterNthUpdate('uninstall_error', 1);
+      // Backups are always removed on uninstall, even when app data/volumes are preserved.
+      expect(backupManager.deleteAppBackupsByUrn).toHaveBeenCalledWith(appUrn);
+      expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'uninstall', appUrn, deleteAllData: false }));
     });
 
     // ── resetApp ─────────────────────────────────────────────────────────
@@ -719,7 +746,7 @@ describe('AppLifecycleService', () => {
 
     // ── installApp ───────────────────────────────────────────────────────
     it('installApp success: DB committed before SSE', async () => {
-      const baseAppInfo = { id: 'myapp', port: 8080, tipi_version: 1, exposable: true, supported_architectures: ['amd64'] };
+      const baseAppInfo = { id: 'myapp', port: 8080, cihub_app_version: 1, exposable: true, supported_architectures: ['amd64'] };
       marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(baseAppInfo as any);
       appsRepository.getAppByUrn.mockResolvedValue(null as any);
       appsRepository.getAppsByDomain.mockResolvedValue([]);
@@ -742,7 +769,7 @@ describe('AppLifecycleService', () => {
     });
 
     it('installApp error: DB delete committed before SSE', async () => {
-      const baseAppInfo = { id: 'myapp', port: 8080, tipi_version: 1, exposable: true, supported_architectures: ['amd64'] };
+      const baseAppInfo = { id: 'myapp', port: 8080, cihub_app_version: 1, exposable: true, supported_architectures: ['amd64'] };
       marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(baseAppInfo as any);
       appsRepository.getAppByUrn.mockResolvedValue(null as any);
       appsRepository.getAppsByDomain.mockResolvedValue([]);
@@ -760,7 +787,7 @@ describe('AppLifecycleService', () => {
     });
 
     it('installApp: status_change emitted after DB create (not before)', async () => {
-      const baseAppInfo = { id: 'myapp', port: 8080, tipi_version: 1, exposable: true, supported_architectures: ['amd64'] };
+      const baseAppInfo = { id: 'myapp', port: 8080, cihub_app_version: 1, exposable: true, supported_architectures: ['amd64'] };
       marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(baseAppInfo as any);
       appsRepository.getAppByUrn.mockResolvedValue(null as any);
       appsRepository.getAppsByDomain.mockResolvedValue([]);
@@ -788,7 +815,7 @@ describe('AppLifecycleService', () => {
     it('updateApp success restores stopped state before emitting update_success', async () => {
       vi.spyOn(service, 'updateAppConfig').mockResolvedValue({ requestId: crypto.randomUUID() });
       vi.spyOn(service, 'startApp').mockResolvedValue({ requestId: crypto.randomUUID() });
-      appFilesManager.getInstalledAppInfo.mockResolvedValue({ tipi_version: 2 } as any);
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ cihub_app_version: 2 } as any);
 
       await service.updateApp({ appUrn, performBackup: false });
       await flushMicrotasks();
@@ -799,7 +826,7 @@ describe('AppLifecycleService', () => {
 
     // ── exposure sync uses committed state ───────────────────────────────
     it('installApp success: syncExposure reads committed running state (no sleep)', async () => {
-      const baseAppInfo = { id: 'myapp', port: 8080, tipi_version: 1, exposable: true, supported_architectures: ['amd64'] };
+      const baseAppInfo = { id: 'myapp', port: 8080, cihub_app_version: 1, exposable: true, supported_architectures: ['amd64'] };
       marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(baseAppInfo as any);
       appsRepository.getAppByUrn.mockResolvedValue(null as any);
       appsRepository.getAppsByDomain.mockResolvedValue([]);

@@ -39,7 +39,6 @@ const commonAppCommandSchema = z.object({
     z.literal('start'),
     z.literal('stop'),
     z.literal('install'),
-    z.literal('uninstall'),
     z.literal('reset'),
     z.literal('restart'),
     z.literal('generate_env'),
@@ -66,7 +65,15 @@ const updateAppCommandSchema = z.object({
   requestId: z.uuid(),
 });
 
-export const appEventSchema = commonAppCommandSchema.or(restoreAppCommandSchema).or(updateAppCommandSchema);
+const uninstallAppCommandSchema = z.object({
+  command: z.literal('uninstall'),
+  appUrn: zodAppUrn,
+  form: queueAppFormSchema,
+  deleteAllData: z.boolean().optional().default(true),
+  requestId: z.uuid(),
+});
+
+export const appEventSchema = commonAppCommandSchema.or(restoreAppCommandSchema).or(updateAppCommandSchema).or(uninstallAppCommandSchema);
 export type AppEvent = z.infer<typeof appEventSchema>;
 
 export const appEventResultSchema = z.object({

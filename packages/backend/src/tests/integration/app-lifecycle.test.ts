@@ -54,8 +54,8 @@ function cleanTree(tree: Record<string, string | null>) {
     if (value && (key.endsWith('config.json') || key.endsWith('app-data.json'))) {
       try {
         const json = JSON.parse(value);
-        if (json.created_at) json.created_at = 1769810550000;
-        if (json.updated_at) json.updated_at = 1769810550000;
+        if (json.created_at !== undefined) json.created_at = 1769810550000;
+        if (json.updated_at !== undefined) json.updated_at = 1769810550000;
         newTree[key] = JSON.stringify(json, null, 2);
       } catch (_e) {
         newTree[key] = value;
@@ -266,7 +266,7 @@ describe('App lifecycle', () => {
   describe('update app', () => {
     it('should successfully update an app to a newer version', async () => {
       // arrange
-      const appInfo = await createAppInStore('test', { tipi_version: 1 });
+      const appInfo = await createAppInStore('test', { cihub_app_version: 1 });
 
       await appLifecycleService.installApp({ appUrn: appInfo.urn, form: {} });
 
@@ -276,7 +276,7 @@ describe('App lifecycle', () => {
         expect(app?.version).toBe(1);
       });
 
-      await createAppInStore('test', { id: appInfo.id, tipi_version: 2 });
+      await createAppInStore('test', { id: appInfo.id, cihub_app_version: 2 });
 
       await fs.promises.mkdir(`${APP_DATA_DIR}/test/${appInfo.id}/data`, { recursive: true });
       await fs.promises.writeFile(`${APP_DATA_DIR}/test/${appInfo.id}/data/preserved.txt`, 'data to preserve');
@@ -301,9 +301,9 @@ describe('App lifecycle', () => {
   describe('update all apps', () => {
     it('should update multiple apps that have newer versions available', async () => {
       // arrange
-      const app1Info = await createAppInStore('test', { id: 'app1', tipi_version: 1 });
-      const app2Info = await createAppInStore('test', { id: 'app2', tipi_version: 2 });
-      const app3Info = await createAppInStore('test', { id: 'app3', tipi_version: 3 });
+      const app1Info = await createAppInStore('test', { id: 'app1', cihub_app_version: 1 });
+      const app2Info = await createAppInStore('test', { id: 'app2', cihub_app_version: 2 });
+      const app3Info = await createAppInStore('test', { id: 'app3', cihub_app_version: 3 });
 
       await appLifecycleService.installApp({ appUrn: app1Info.urn, form: {} });
       await appLifecycleService.installApp({ appUrn: app2Info.urn, form: {} });
@@ -318,8 +318,8 @@ describe('App lifecycle', () => {
         expect(app3?.status).toBe('running');
       });
 
-      await createAppInStore('test', { id: 'app1', tipi_version: 2 });
-      await createAppInStore('test', { id: 'app3', tipi_version: 4 });
+      await createAppInStore('test', { id: 'app1', cihub_app_version: 2 });
+      await createAppInStore('test', { id: 'app3', cihub_app_version: 4 });
 
       // act
       await appLifecycleService.updateAllApps();
@@ -391,6 +391,7 @@ describe('App lifecycle', () => {
       configurationService.get.calledWith('architecture').mockReturnValue('arm64');
       const appInfo = await createAppInStore('test', { id: 'arch-test' });
       const composeJson = {
+        schemaVersion: 2,
         services: [
           {
             name: 'app',

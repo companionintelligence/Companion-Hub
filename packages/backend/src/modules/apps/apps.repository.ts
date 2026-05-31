@@ -4,7 +4,7 @@ import { app } from '@/core/database/drizzle/schema';
 import type { AppStatus, NewApp } from '@/core/database/drizzle/types';
 import { Inject, Injectable } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
-import { and, asc, eq, ne, notInArray } from 'drizzle-orm';
+import { and, asc, eq, ne, notInArray, or } from 'drizzle-orm';
 
 @Injectable()
 export class AppsRepository {
@@ -125,16 +125,13 @@ export class AppsRepository {
   }
 
   /**
-   * Given a port, return all apps that have this port, are open and not the given id
-   *
-   * @param {number} port - The port to search for
-   * @param {number} id - The id of the app to exclude
+   * Apps that bind this host port (openPort, local exposure, or exposedLocal LAN publishing).
    */
   public async getAppsByPort(port: number, id?: number) {
-    if (!id) {
-      return this.db.query.app.findMany({ where: and(eq(app.port, port), eq(app.openPort, true)) });
-    }
-    return this.db.query.app.findMany({ where: and(eq(app.port, port), eq(app.openPort, true), ne(app.id, id)) });
+    const publishesHostPortCondition = or(eq(app.openPort, true), eq(app.exposedLocal, true), eq(app.exposureMode, 'local'));
+    const where = id ? and(eq(app.port, port), publishesHostPortCondition, ne(app.id, id)) : and(eq(app.port, port), publishesHostPortCondition);
+
+    return this.db.query.app.findMany({ where });
   }
 
   /**

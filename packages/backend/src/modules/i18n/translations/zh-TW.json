@@ -273,7 +273,7 @@
   "APP_STORE_ADD_FORM_URL": "Appstore URL",
   "APP_STORE_ADD_FORM_SUBMIT": "Create new appstore",
   "APP_STORE_ADD_SUCCESS": "Appstore added successfully",
-  "APP_UNINSTALL_FORM_REMOVE_BACKUPS": "Remove backups",
+  "APP_UNINSTALL_FORM_REMOVE_BACKUPS": "刪除備份",
   "APP_UNINSTALL_FORM_SUBMIT": "卸載",
   "APP_UNINSTALL_FORM_SUBTITLE": "此應用程式的所有資料將會遺失。",
   "APP_UNINSTALL_FORM_TITLE": "卸載{{name}}？",
@@ -611,5 +611,6 @@
   "MULTI_SERVICE_BACK_TO_FORM": "Back to form",
   "MULTI_SERVICE_UNSAVED_CHANGES_CONFIRM": "You have unsaved changes. Are you sure you want to leave without saving?",
   "MULTI_SERVICE_JSON_UPDATE_SUCCESS": "Service configuration updated successfully",
-  "MULTI_SERVICE_JSON_REFERENCE": "Dynamic Compose Reference"
+  "MULTI_SERVICE_JSON_REFERENCE": "Dynamic Compose Reference",
+  "APP_UNINSTALL_FORM_DELETE_ALL_DATA": "刪除所有資料"
 }

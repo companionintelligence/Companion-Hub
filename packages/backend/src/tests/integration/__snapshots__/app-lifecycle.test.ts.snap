@@ -28,42 +28,47 @@ OLLAMA_HOST=http://host.docker.internal:11434
   "/data/apps/test/test2/config.json": "{
   "id": "test2",
   "urn": "test2:test",
-  "name": "color cursim",
-  "port": 9040,
-  "https": false,
-  "author": "Tyreek.Muller",
-  "no_gui": false,
   "available": true,
-  "exposable": true,
-  "dynamic_config": true,
-  "source": "https://extroverted-jazz.org",
+  "deprecated": false,
+  "port": 9040,
+  "name": "color cursim",
+  "description": "Pax impedit conicio cognomen cur stabilis utique dolore sortitus.",
   "version": "5.12.2",
+  "cihub_app_version": 1,
+  "short_desc": "Quibusdam spero turbo agnosco tenax careo autem.",
+  "author": "Tyreek.Muller",
+  "source": "https://extroverted-jazz.org",
+  "website": "https://burly-swordfish.name",
+  "force_expose": false,
+  "generate_vapid_keys": false,
   "categories": [
     "utilities"
   ],
-  "description": "Pax impedit conicio cognomen cur stabilis utique dolore sortitus.",
-  "short_desc": "Quibusdam spero turbo agnosco tenax careo autem.",
-  "website": "https://burly-swordfish.name",
+  "form_fields": [],
+  "https": false,
+  "exposable": true,
+  "no_gui": false,
   "supported_architectures": [],
+  "dynamic_config": true,
   "created_at": 1769810550000,
   "updated_at": 1769810550000,
-  "deprecated": false,
-  "tipi_version": 1,
-  "force_expose": false,
-  "generate_vapid_keys": false,
-  "form_fields": []
+  "force_pull": false
 }",
   "/data/apps/test/test2/data": null,
   "/data/apps/test/test2/docker-compose.json": "{
+  "schemaVersion": 2,
   "services": [
     {
       "name": "test2",
       "image": "nginx:latest",
       "isMain": true,
       "internalPort": 80,
-      "environment": {
-        "TEST": "test"
-      }
+      "environment": [
+        {
+          "key": "TEST",
+          "value": "test"
+        }
+      ]
     }
   ]
 }",
@@ -102,42 +107,47 @@ networks:
   "/data/repos/test/apps/test2/config.json": "{
   "id": "test2",
   "urn": "test2:test",
-  "name": "color cursim",
-  "port": 9040,
-  "https": false,
-  "author": "Tyreek.Muller",
-  "no_gui": false,
   "available": true,
-  "exposable": true,
-  "dynamic_config": true,
-  "source": "https://extroverted-jazz.org",
+  "deprecated": false,
+  "port": 9040,
+  "name": "color cursim",
+  "description": "Pax impedit conicio cognomen cur stabilis utique dolore sortitus.",
   "version": "5.12.2",
+  "cihub_app_version": 1,
+  "short_desc": "Quibusdam spero turbo agnosco tenax careo autem.",
+  "author": "Tyreek.Muller",
+  "source": "https://extroverted-jazz.org",
+  "website": "https://burly-swordfish.name",
+  "force_expose": false,
+  "generate_vapid_keys": false,
   "categories": [
     "utilities"
   ],
-  "description": "Pax impedit conicio cognomen cur stabilis utique dolore sortitus.",
-  "short_desc": "Quibusdam spero turbo agnosco tenax careo autem.",
-  "website": "https://burly-swordfish.name",
+  "form_fields": [],
+  "https": false,
+  "exposable": true,
+  "no_gui": false,
   "supported_architectures": [],
+  "dynamic_config": true,
   "created_at": 1769810550000,
   "updated_at": 1769810550000,
-  "deprecated": false,
-  "tipi_version": 1,
-  "force_expose": false,
-  "generate_vapid_keys": false,
-  "form_fields": []
+  "force_pull": false
 }",
   "/data/repos/test/apps/test2/data": null,
   "/data/repos/test/apps/test2/docker-compose.json": "{
+  "schemaVersion": 2,
   "services": [
     {
       "name": "test2",
       "image": "nginx:latest",
       "isMain": true,
       "internalPort": 80,
-      "environment": {
-        "TEST": "test"
-      }
+      "environment": [
+        {
+          "key": "TEST",
+          "value": "test"
+        }
+      ]
     }
   ]
 }",
@@ -174,42 +184,47 @@ OLLAMA_HOST=http://host.docker.internal:11434
   "/data/apps/test/test/config.json": "{
   "id": "test",
   "urn": "test:test",
-  "name": "subito circumvenio",
-  "port": 3041,
-  "https": false,
-  "author": "Katlyn_Kassulke",
-  "no_gui": false,
   "available": true,
-  "exposable": true,
-  "dynamic_config": true,
-  "source": "https://growing-rationale.info/",
+  "deprecated": false,
+  "port": 3041,
+  "name": "subito circumvenio",
+  "description": "Atque exercitationem exercitationem reiciendis.",
   "version": "0.8.15",
+  "cihub_app_version": 1,
+  "short_desc": "Surculus perferendis suppono commodi conturbo calco claudeo quos aliquam.",
+  "author": "Katlyn_Kassulke",
+  "source": "https://growing-rationale.info/",
+  "website": "https://international-kettledrum.info/",
+  "force_expose": false,
+  "generate_vapid_keys": false,
   "categories": [
     "utilities"
   ],
-  "description": "Atque exercitationem exercitationem reiciendis.",
-  "short_desc": "Surculus perferendis suppono commodi conturbo calco claudeo quos aliquam.",
-  "website": "https://international-kettledrum.info/",
+  "form_fields": [],
+  "https": false,
+  "exposable": true,
+  "no_gui": false,
   "supported_architectures": [],
+  "dynamic_config": true,
   "created_at": 1769810550000,
   "updated_at": 1769810550000,
-  "deprecated": false,
-  "tipi_version": 1,
-  "force_expose": false,
-  "generate_vapid_keys": false,
-  "form_fields": []
+  "force_pull": false
 }",
   "/data/apps/test/test/data": null,
   "/data/apps/test/test/docker-compose.json": "{
+  "schemaVersion": 2,
   "services": [
     {
       "name": "test",
       "image": "nginx:latest",
       "isMain": true,
       "internalPort": 80,
-      "environment": {
-        "TEST": "test"
-      }
+      "environment": [
+        {
+          "key": "TEST",
+          "value": "test"
+        }
+      ]
     }
   ]
 }",
@@ -248,42 +263,47 @@ networks:
   "/data/repos/test/apps/test/config.json": "{
   "id": "test",
   "urn": "test:test",
-  "name": "subito circumvenio",
-  "port": 3041,
-  "https": false,
-  "author": "Katlyn_Kassulke",
-  "no_gui": false,
   "available": true,
-  "exposable": true,
-  "dynamic_config": true,
-  "source": "https://growing-rationale.info/",
+  "deprecated": false,
+  "port": 3041,
+  "name": "subito circumvenio",
+  "description": "Atque exercitationem exercitationem reiciendis.",
   "version": "0.8.15",
+  "cihub_app_version": 1,
+  "short_desc": "Surculus perferendis suppono commodi conturbo calco claudeo quos aliquam.",
+  "author": "Katlyn_Kassulke",
+  "source": "https://growing-rationale.info/",
+  "website": "https://international-kettledrum.info/",
+  "force_expose": false,
+  "generate_vapid_keys": false,
   "categories": [
     "utilities"
   ],
-  "description": "Atque exercitationem exercitationem reiciendis.",
-  "short_desc": "Surculus perferendis suppono commodi conturbo calco claudeo quos aliquam.",
-  "website": "https://international-kettledrum.info/",
+  "form_fields": [],
+  "https": false,
+  "exposable": true,
+  "no_gui": false,
   "supported_architectures": [],
+  "dynamic_config": true,
   "created_at": 1769810550000,
   "updated_at": 1769810550000,
-  "deprecated": false,
-  "tipi_version": 1,
-  "force_expose": false,
-  "generate_vapid_keys": false,
-  "form_fields": []
+  "force_pull": false
 }",
   "/data/repos/test/apps/test/data": null,
   "/data/repos/test/apps/test/docker-compose.json": "{
+  "schemaVersion": 2,
   "services": [
     {
       "name": "test",
       "image": "nginx:latest",
       "isMain": true,
       "internalPort": 80,
-      "environment": {
-        "TEST": "test"
-      }
+      "environment": [
+        {
+          "key": "TEST",
+          "value": "test"
+        }
+      ]
     }
   ]
 }",
@@ -364,42 +384,47 @@ OLLAMA_HOST=http://host.docker.internal:11434
   "/data/apps/test/app1/config.json": "{
   "id": "app1",
   "urn": "app1:test",
-  "name": "soleo uredo",
-  "port": 1227,
-  "https": false,
-  "author": "Dock_Bergstrom",
-  "no_gui": false,
   "available": true,
-  "exposable": true,
-  "dynamic_config": true,
-  "source": "https://cautious-department.com/",
+  "deprecated": false,
+  "port": 1227,
+  "name": "soleo uredo",
+  "description": "Copiose explicabo arx.",
   "version": "6.5.7",
+  "cihub_app_version": 2,
+  "short_desc": "Clarus ratione acquiro valens acceptus antepono tergiversatio.",
+  "author": "Dock_Bergstrom",
+  "source": "https://cautious-department.com/",
+  "website": "https://scary-vista.org/",
+  "force_expose": false,
+  "generate_vapid_keys": false,
   "categories": [
     "utilities"
   ],
-  "description": "Copiose explicabo arx.",
-  "short_desc": "Clarus ratione acquiro valens acceptus antepono tergiversatio.",
-  "website": "https://scary-vista.org/",
+  "form_fields": [],
+  "https": false,
+  "exposable": true,
+  "no_gui": false,
   "supported_architectures": [],
+  "dynamic_config": true,
   "created_at": 1769810550000,
   "updated_at": 1769810550000,
-  "deprecated": false,
-  "tipi_version": 2,
-  "force_expose": false,
-  "generate_vapid_keys": false,
-  "form_fields": []
+  "force_pull": false
 }",
   "/data/apps/test/app1/data": null,
   "/data/apps/test/app1/docker-compose.json": "{
+  "schemaVersion": 2,
   "services": [
     {
       "name": "app1",
       "image": "nginx:latest",
       "isMain": true,
       "internalPort": 80,
-      "environment": {
-        "TEST": "test"
-      }
+      "environment": [
+        {
+          "key": "TEST",
+          "value": "test"
+        }
+      ]
     }
   ]
 }",
@@ -437,42 +462,47 @@ networks:
   "/data/apps/test/app2/config.json": "{
   "id": "app2",
   "urn": "app2:test",
-  "name": "curriculum libero",
-  "port": 2100,
-  "https": false,
-  "author": "Colleen_Koss",
-  "no_gui": false,
   "available": true,
-  "exposable": true,
-  "dynamic_config": true,
-  "source": "https://our-cricket.net",
+  "deprecated": false,
+  "port": 2100,
+  "name": "curriculum libero",
+  "description": "Adduco tamdiu demergo animus illo aeger solitudo vulnus.",
   "version": "3.14.0",
+  "cihub_app_version": 2,
+  "short_desc": "Natus ambulo subseco solvo admiratio textor earum cursim tertius.",
+  "author": "Colleen_Koss",
+  "source": "https://our-cricket.net",
+  "website": "https://long-conservative.com/",
+  "force_expose": false,
+  "generate_vapid_keys": false,
   "categories": [
     "utilities"
   ],
-  "description": "Adduco tamdiu demergo animus illo aeger solitudo vulnus.",
-  "short_desc": "Natus ambulo subseco solvo admiratio textor earum cursim tertius.",
-  "website": "https://long-conservative.com/",
+  "form_fields": [],
+  "https": false,
+  "exposable": true,
+  "no_gui": false,
   "supported_architectures": [],
+  "dynamic_config": true,
   "created_at": 1769810550000,
   "updated_at": 1769810550000,
-  "deprecated": false,
-  "tipi_version": 2,
-  "force_expose": false,
-  "generate_vapid_keys": false,
-  "form_fields": []
+  "force_pull": false
 }",
   "/data/apps/test/app2/data": null,
   "/data/apps/test/app2/docker-compose.json": "{
+  "schemaVersion": 2,
   "services": [
     {
       "name": "app2",
       "image": "nginx:latest",
       "isMain": true,
       "internalPort": 80,
-      "environment": {
-        "TEST": "test"
-      }
+      "environment": [
+        {
+          "key": "TEST",
+          "value": "test"
+        }
+      ]
     }
   ]
 }",
@@ -510,42 +540,47 @@ networks:
   "/data/apps/test/app3/config.json": "{
   "id": "app3",
   "urn": "app3:test",
-  "name": "sulum vitae",
-  "port": 4868,
-  "https": false,
-  "author": "Scarlett94",
-  "no_gui": false,
   "available": true,
-  "exposable": true,
-  "dynamic_config": true,
-  "source": "https://cluttered-necklace.biz",
+  "deprecated": false,
+  "port": 4868,
+  "name": "sulum vitae",
+  "description": "Utique convoco harum minus.",
   "version": "7.0.1",
+  "cihub_app_version": 4,
+  "short_desc": "Mollitia solvo coadunatio curatio.",
+  "author": "Scarlett94",
+  "source": "https://cluttered-necklace.biz",
+  "website": "https://violent-morning.org/",
+  "force_expose": false,
+  "generate_vapid_keys": false,
   "categories": [
     "utilities"
   ],
-  "description": "Utique convoco harum minus.",
-  "short_desc": "Mollitia solvo coadunatio curatio.",
-  "website": "https://violent-morning.org/",
+  "form_fields": [],
+  "https": false,
+  "exposable": true,
+  "no_gui": false,
   "supported_architectures": [],
+  "dynamic_config": true,
   "created_at": 1769810550000,
   "updated_at": 1769810550000,
-  "deprecated": false,
-  "tipi_version": 4,
-  "force_expose": false,
-  "generate_vapid_keys": false,
-  "form_fields": []
+  "force_pull": false
 }",
   "/data/apps/test/app3/data": null,
   "/data/apps/test/app3/docker-compose.json": "{
+  "schemaVersion": 2,
   "services": [
     {
       "name": "app3",
       "image": "nginx:latest",
       "isMain": true,
       "internalPort": 80,
-      "environment": {
-        "TEST": "test"
-      }
+      "environment": [
+        {
+          "key": "TEST",
+          "value": "test"
+        }
+      ]
     }
   ]
 }",
@@ -584,42 +619,47 @@ networks:
   "/data/repos/test/apps/app1/config.json": "{
   "id": "app1",
   "urn": "app1:test",
-  "name": "soleo uredo",
-  "port": 1227,
-  "https": false,
-  "author": "Dock_Bergstrom",
-  "no_gui": false,
   "available": true,
-  "exposable": true,
-  "dynamic_config": true,
-  "source": "https://cautious-department.com/",
+  "deprecated": false,
+  "port": 1227,
+  "name": "soleo uredo",
+  "description": "Copiose explicabo arx.",
   "version": "6.5.7",
+  "cihub_app_version": 2,
+  "short_desc": "Clarus ratione acquiro valens acceptus antepono tergiversatio.",
+  "author": "Dock_Bergstrom",
+  "source": "https://cautious-department.com/",
+  "website": "https://scary-vista.org/",
+  "force_expose": false,
+  "generate_vapid_keys": false,
   "categories": [
     "utilities"
   ],
-  "description": "Copiose explicabo arx.",
-  "short_desc": "Clarus ratione acquiro valens acceptus antepono tergiversatio.",
-  "website": "https://scary-vista.org/",
+  "form_fields": [],
+  "https": false,
+  "exposable": true,
+  "no_gui": false,
   "supported_architectures": [],
+  "dynamic_config": true,
   "created_at": 1769810550000,
   "updated_at": 1769810550000,
-  "deprecated": false,
-  "tipi_version": 2,
-  "force_expose": false,
-  "generate_vapid_keys": false,
-  "form_fields": []
+  "force_pull": false
 }",
   "/data/repos/test/apps/app1/data": null,
   "/data/repos/test/apps/app1/docker-compose.json": "{
+  "schemaVersion": 2,
   "services": [
     {
       "name": "app1",
       "image": "nginx:latest",
       "isMain": true,
       "internalPort": 80,
-      "environment": {
-        "TEST": "test"
-      }
+      "environment": [
+        {
+          "key": "TEST",
+          "value": "test"
+        }
+      ]
     }
   ]
 }",
@@ -627,42 +667,47 @@ networks:
   "/data/repos/test/apps/app2/config.json": "{
   "id": "app2",
   "urn": "app2:test",
-  "name": "curriculum libero",
-  "port": 2100,
-  "https": false,
-  "author": "Colleen_Koss",
-  "no_gui": false,
   "available": true,
-  "exposable": true,
-  "dynamic_config": true,
-  "source": "https://our-cricket.net",
+  "deprecated": false,
+  "port": 2100,
+  "name": "curriculum libero",
+  "description": "Adduco tamdiu demergo animus illo aeger solitudo vulnus.",
   "version": "3.14.0",
+  "cihub_app_version": 2,
+  "short_desc": "Natus ambulo subseco solvo admiratio textor earum cursim tertius.",
+  "author": "Colleen_Koss",
+  "source": "https://our-cricket.net",
+  "website": "https://long-conservative.com/",
+  "force_expose": false,
+  "generate_vapid_keys": false,
   "categories": [
     "utilities"
   ],
-  "description": "Adduco tamdiu demergo animus illo aeger solitudo vulnus.",
-  "short_desc": "Natus ambulo subseco solvo admiratio textor earum cursim tertius.",
-  "website": "https://long-conservative.com/",
+  "form_fields": [],
+  "https": false,
+  "exposable": true,
+  "no_gui": false,
   "supported_architectures": [],
+  "dynamic_config": true,
   "created_at": 1769810550000,
   "updated_at": 1769810550000,
-  "deprecated": false,
-  "tipi_version": 2,
-  "force_expose": false,
-  "generate_vapid_keys": false,
-  "form_fields": []
+  "force_pull": false
 }",
   "/data/repos/test/apps/app2/data": null,
   "/data/repos/test/apps/app2/docker-compose.json": "{
+  "schemaVersion": 2,
   "services": [
     {
       "name": "app2",
       "image": "nginx:latest",
       "isMain": true,
       "internalPort": 80,
-      "environment": {
-        "TEST": "test"
-      }
+      "environment": [
+        {
+          "key": "TEST",
+          "value": "test"
+        }
+      ]
     }
   ]
 }",
@@ -670,42 +715,47 @@ networks:
   "/data/repos/test/apps/app3/config.json": "{
   "id": "app3",
   "urn": "app3:test",
-  "name": "sulum vitae",
-  "port": 4868,
-  "https": false,
-  "author": "Scarlett94",
-  "no_gui": false,
   "available": true,
-  "exposable": true,
-  "dynamic_config": true,
-  "source": "https://cluttered-necklace.biz",
+  "deprecated": false,
+  "port": 4868,
+  "name": "sulum vitae",
+  "description": "Utique convoco harum minus.",
   "version": "7.0.1",
+  "cihub_app_version": 4,
+  "short_desc": "Mollitia solvo coadunatio curatio.",
+  "author": "Scarlett94",
+  "source": "https://cluttered-necklace.biz",
+  "website": "https://violent-morning.org/",
+  "force_expose": false,
+  "generate_vapid_keys": false,
   "categories": [
     "utilities"
   ],
-  "description": "Utique convoco harum minus.",
-  "short_desc": "Mollitia solvo coadunatio curatio.",
-  "website": "https://violent-morning.org/",
+  "form_fields": [],
+  "https": false,
+  "exposable": true,
+  "no_gui": false,
   "supported_architectures": [],
+  "dynamic_config": true,
   "created_at": 1769810550000,
   "updated_at": 1769810550000,
-  "deprecated": false,
-  "tipi_version": 4,
-  "force_expose": false,
-  "generate_vapid_keys": false,
-  "form_fields": []
+  "force_pull": false
 }",
   "/data/repos/test/apps/app3/data": null,
   "/data/repos/test/apps/app3/docker-compose.json": "{
+  "schemaVersion": 2,
   "services": [
     {
       "name": "app3",
       "image": "nginx:latest",
       "isMain": true,
       "internalPort": 80,
-      "environment": {
-        "TEST": "test"
-      }
+      "environment": [
+        {
+          "key": "TEST",
+          "value": "test"
+        }
+      ]
     }
   ]
 }",

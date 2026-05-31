@@ -1,6 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
+import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { PortManagerService } from '@/modules/network/port-manager.service';
+import { HostMetricsService } from './host-metrics.service';
+import type { RuntimeKind } from '@ci-hub/common/types';
 import si from 'systeminformation';
 import Dockerode from 'dockerode';
 import { Inject } from '@nestjs/common';
@@ -31,6 +34,22 @@ interface PortStatus {
   containerState: string | null;
 }
 
+interface HostResourceGuidance {
+  hasVmWedge: boolean;
+  runtimeKind: RuntimeKind;
+  hostMemoryTotalGb: number;
+  hostMemoryUsedGb: number;
+  hostDiskTotalGb: number;
+  hostDiskUsedGb: number;
+  containerMemoryTotalGb?: number;
+  containerMemoryUsedGb?: number;
+  containerDiskTotalGb?: number;
+  containerDiskUsedGb?: number;
+  recommendedDockerRamMb?: number;
+  tuningNotes?: string;
+  platformGuidance: string;
+}
+
 interface SystemHealth {
   cpu: { load: number; cores: number; model: string };
   memory: { total: number; used: number; free: number; percent: number };
@@ -40,6 +59,7 @@ interface SystemHealth {
   hostname: string;
   dockerVersion: string | null;
   containerCount: { running: number; stopped: number; total: number };
+  hostResources?: HostResourceGuidance;
 }
 
 @Injectable()
@@ -47,6 +67,8 @@ export class SystemInspectorService {
   constructor(
     private readonly logger: LoggerService,
     private readonly portManager: PortManagerService,
+    private readonly hostMetrics: HostMetricsService,
+    private readonly filesystem: FilesystemService,
     @Inject(DOCKERODE) private readonly docker: Dockerode,
   ) {}
 
@@ -145,39 +167,45 @@ export class SystemInspectorService {
 
   async getSystemHealth(): Promise<SystemHealth> {
     try {
-      const [cpuLoad, cpuInfo, mem, disk, dockerInfo] = await Promise.all([
+      const [cpuLoad, cpuInfo, displayLoad, dockerInfo, hostProbe] = await Promise.all([
         si.currentLoad(),
         si.cpu(),
-        this.getMemoryInfo(),
-        si.fsSize(),
+        this.hostMetrics.getDisplayLoad(0, 0),
         this.getDockerInfo(),
+        this.hostMetrics.readHostProbe(),
       ]);
 
-      const disk0 = disk[0] ?? { available: 0, size: 0, used: 0 };
+      const memoryTotalBytes = displayLoad.memoryTotal * 1024 * 1024 * 1024;
+      const memoryUsedBytes = displayLoad.memoryUsed * 1024 * 1024 * 1024;
+      const diskTotalGb = displayLoad.diskSize;
+      const diskUsedGb = displayLoad.diskUsed;
+
+      const hostResources = await this.buildHostResourceGuidance(displayLoad, hostProbe);
 
       return {
         cpu: {
           load: Math.round(cpuLoad.currentLoad * 10) / 10,
-          cores: cpuInfo.cores,
-          model: `${cpuInfo.manufacturer} ${cpuInfo.brand}`,
+          cores: displayLoad.cpuCores || cpuInfo.cores,
+          model: hostProbe?.host.cpuModel || `${cpuInfo.manufacturer} ${cpuInfo.brand}`,
         },
         memory: {
-          total: mem.total,
-          used: mem.used,
-          free: mem.available,
-          percent: mem.total > 0 ? Math.round(((mem.total - mem.available) / mem.total) * 100) : 0,
+          total: memoryTotalBytes,
+          used: memoryUsedBytes,
+          free: Math.max(0, memoryTotalBytes - memoryUsedBytes),
+          percent: displayLoad.percentUsedMemory,
         },
         disk: {
-          total: Math.round(disk0.size / 1024 / 1024 / 1024),
-          used: Math.round((disk0.size - disk0.available) / 1024 / 1024 / 1024),
-          free: Math.round(disk0.available / 1024 / 1024 / 1024),
-          percent: disk0.size > 0 ? Math.round(((disk0.size - disk0.available) / disk0.size) * 100) : 0,
+          total: diskTotalGb,
+          used: diskUsedGb,
+          free: Math.max(0, diskTotalGb - diskUsedGb),
+          percent: displayLoad.percentUsed,
         },
         uptime: os.uptime(),
         platform: `${os.type()} ${os.release()} (${os.arch()})`,
         hostname: os.hostname(),
         dockerVersion: dockerInfo.version,
         containerCount: dockerInfo.containers,
+        hostResources,
       };
     } catch (err) {
       this.logger.error(`Failed to get system health: ${err}`);
@@ -194,13 +222,51 @@ export class SystemInspectorService {
     }
   }
 
-  private async getMemoryInfo() {
-    try {
-      const mem = await si.mem();
-      return { total: mem.total, used: mem.used, available: mem.available };
-    } catch {
-      return { total: os.totalmem(), used: os.totalmem() - os.freemem(), available: os.freemem() };
+  private async buildHostResourceGuidance(
+    displayLoad: Awaited<ReturnType<HostMetricsService['getDisplayLoad']>>,
+    hostProbe: Awaited<ReturnType<HostMetricsService['readHostProbe']>>,
+  ): Promise<HostResourceGuidance | undefined> {
+    if (!hostProbe?.host) return undefined;
+
+    const tuningRaw = await this.filesystem.readTextFile('/data/state/hardware/docker-tuning.json');
+    let tuningNotes: string | undefined;
+    if (tuningRaw) {
+      try {
+        const tuning = JSON.parse(tuningRaw) as { action?: string; reason?: string };
+        if (tuning.reason) tuningNotes = tuning.reason;
+      } catch {
+        // ignore
+      }
     }
+
+    return {
+      hasVmWedge: displayLoad.hasVmWedge,
+      runtimeKind: displayLoad.runtimeKind,
+      hostMemoryTotalGb: displayLoad.memoryTotal,
+      hostMemoryUsedGb: displayLoad.memoryUsed,
+      hostDiskTotalGb: displayLoad.diskSize,
+      hostDiskUsedGb: displayLoad.diskUsed,
+      containerMemoryTotalGb: displayLoad.containerMemoryTotal,
+      containerMemoryUsedGb: displayLoad.containerMemoryUsed,
+      containerDiskTotalGb: displayLoad.containerDiskTotal,
+      containerDiskUsedGb: displayLoad.containerDiskUsed,
+      recommendedDockerRamMb: displayLoad.recommendedDockerRamMb,
+      tuningNotes,
+      platformGuidance: this.getPlatformGuidance(displayLoad.runtimeKind, hostProbe.platform),
+    };
+  }
+
+  private getPlatformGuidance(runtimeKind: RuntimeKind, platform: string): string {
+    if (runtimeKind === 'linux-native' || runtimeKind === 'host-native') {
+      return 'Resources reflect this machine directly. No Docker Desktop VM limits apply.';
+    }
+    if (runtimeKind === 'wsl2-vm' || platform === 'win32') {
+      return 'Increase WSL2 memory in %UserProfile%\\.wslconfig (memory=, processors=), then run wsl --shutdown and restart Docker Desktop.';
+    }
+    if (runtimeKind === 'docker-desktop-vm' || platform === 'darwin') {
+      return 'Open Docker Desktop → Settings → Resources to raise memory and CPU limits for Hub containers.';
+    }
+    return 'If stats look low, check Docker Desktop or WSL2 resource limits on your host.';
   }
 
   private async getDockerInfo(): Promise<{ version: string | null; containers: { running: number; stopped: number; total: number } }> {

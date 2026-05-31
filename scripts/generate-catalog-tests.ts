@@ -22,7 +22,7 @@ interface AppConfig {
   url_suffix?: string;
   no_gui?: boolean;
   supported_architectures?: string[];
-  tipiVersion?: number;
+  cihubAppVersion?: number;
   categories?: string[];
 }
 

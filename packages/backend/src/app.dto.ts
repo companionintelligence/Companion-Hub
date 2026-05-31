@@ -4,7 +4,7 @@ import { createZodDto } from '@/common/zod-dto';
 import { userSchema } from './modules/user/dto/user.dto';
 
 import { LOG_LEVEL_ENUM } from './core/logger/logger.service';
-import { appInfoSchema } from '@ci-hub/common/schemas';
+import { appInfoObjectSchema } from '@ci-hub/common/schemas';
 
 export const settingsSchema = z.object({
   advancedSettings: z.boolean(),
@@ -41,7 +41,7 @@ export const settingsSchema = z.object({
   inferenceModel: z.string().trim().optional(),
 });
 
-const simpleAppInfoSchema = appInfoSchema.pick({
+const simpleAppInfoSchema = appInfoObjectSchema.pick({
   id: true,
   urn: true,
   name: true,

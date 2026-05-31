@@ -51,6 +51,21 @@ interface SystemHealth {
   hostname: string;
   dockerVersion: string | null;
   containerCount: { running: number; stopped: number; total: number };
+  hostResources?: {
+    hasVmWedge: boolean;
+    runtimeKind: string;
+    hostMemoryTotalGb: number;
+    hostMemoryUsedGb: number;
+    hostDiskTotalGb: number;
+    hostDiskUsedGb: number;
+    containerMemoryTotalGb?: number;
+    containerMemoryUsedGb?: number;
+    containerDiskTotalGb?: number;
+    containerDiskUsedGb?: number;
+    recommendedDockerRamMb?: number;
+    tuningNotes?: string;
+    platformGuidance: string;
+  };
 }
 
 interface InspectionData {
@@ -135,6 +150,48 @@ const Badge = ({ children, variant = 'default' }: { children: React.ReactNode; v
   };
   return <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${colors[variant]}`}>{children}</span>;
 };
+
+const HostResourcesSection = ({ hostResources }: { hostResources: NonNullable<SystemHealth['hostResources']> }) => (
+  <section className="rounded-3xl border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
+    <div className="flex items-center gap-3 mb-5">
+      <Server className="h-6 w-6 text-primary" />
+      <h2 className="text-base font-bold uppercase tracking-wide sm:text-lg">Host vs Container Resources</h2>
+      {hostResources.hasVmWedge && <Badge variant="warning">VM wedge detected</Badge>}
+    </div>
+
+    <p className="text-sm text-muted-foreground mb-4">{hostResources.platformGuidance}</p>
+
+    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 border-t border-border pt-5">
+      <div className="rounded-xl border border-border p-4">
+        <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-2">Physical host</div>
+        <div className="text-sm">
+          Memory: {hostResources.hostMemoryUsedGb} / {hostResources.hostMemoryTotalGb} GB
+        </div>
+        <div className="text-sm">
+          Disk: {hostResources.hostDiskUsedGb} / {hostResources.hostDiskTotalGb} GB
+        </div>
+      </div>
+      {hostResources.hasVmWedge && (
+        <div className="rounded-xl border border-border p-4">
+          <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-2">Docker / VM allocated</div>
+          <div className="text-sm">
+            Memory: {hostResources.containerMemoryUsedGb ?? '—'} / {hostResources.containerMemoryTotalGb ?? '—'} GB
+          </div>
+          <div className="text-sm">
+            Disk: {hostResources.containerDiskUsedGb ?? '—'} / {hostResources.containerDiskTotalGb ?? '—'} GB
+          </div>
+          {hostResources.recommendedDockerRamMb && (
+            <div className="text-xs text-muted-foreground mt-2">
+              Recommended Docker memory: {Math.round(hostResources.recommendedDockerRamMb / 1024)} GB
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+
+    {hostResources.tuningNotes && <div className="mt-4 text-xs text-muted-foreground border-t border-border pt-4">{hostResources.tuningNotes}</div>}
+  </section>
+);
 
 // ─── System Health Section ───────────────────────────────────────────────────
 
@@ -459,6 +516,7 @@ export const SystemInspectorContainer = () => {
       </div>
 
       <SystemHealthSection health={data.health} />
+      {data.health.hostResources && <HostResourcesSection hostResources={data.health.hostResources} />}
       <ContainersSection containers={data.containers} />
       <PortManagementSection ports={data.ports} />
     </div>

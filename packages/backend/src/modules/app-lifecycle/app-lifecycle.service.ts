@@ -24,6 +24,7 @@ import { APP_ASYNC_MUTEX } from '@/utils/mutex/mutex.module';
 import type { AsyncMutex } from '@/utils/mutex/async-mutex';
 import type { z } from 'zod';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
+import { publishesHostPort } from '../apps/app-exposure.helpers';
 
 type AppFormForSubdomain = Pick<z.infer<typeof appFormSchema>, 'exposedLocal' | 'exposureMode' | 'localSubdomain'>;
 type ParsedAppForm = z.infer<typeof appFormSchema>;
@@ -274,7 +275,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       }
     }
 
-    if (openPort && port) {
+    if (publishesHostPort(parsedForm) && port) {
       const appsWithSamePort = await this.appRepository.getAppsByPort(port);
 
       if (appsWithSamePort.length > 0) {
@@ -294,11 +295,11 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       status: 'installing' as const,
       config: parsedForm,
       // Port semantics:
-      // - Local exposure always publishes the host port, so local mode is normalized to openPort=true.
-      // - Cloudflare/Tailscale with openPort=false keep using params.internalPort for routing instead.
-      // - Traefik routing uses params.internalPort from service definition, not this database field.
+      // - Local exposure always publishes the host port (normalized to openPort=true when needed).
+      // - Cloudflare/Tailscale with exposedLocal also publish the host port for LAN access during DNS propagation.
+      // - Traefik routing uses params.internalPort from the service definition, not this database field.
       port: parsedForm.port ?? appInfo.port,
-      version: appInfo.tipi_version,
+      version: appInfo.cihub_app_version,
       exposed: exposed ?? false,
       domain: domain ?? null,
       localSubdomain: parsedForm.localSubdomain ?? null,
@@ -406,8 +407,8 @@ export class AppLifecycleService implements OnApplicationBootstrap {
   /**
    * Uninstall an app by its ID
    */
-  public async uninstallApp(params: { appUrn: AppUrn; removeBackups: boolean }) {
-    const { appUrn, removeBackups } = params;
+  public async uninstallApp(params: { appUrn: AppUrn; deleteAllData: boolean }) {
+    const { appUrn, deleteAllData } = params;
 
     const app = await this.appRepository.getAppByUrn(appUrn);
 
@@ -415,15 +416,14 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn });
     }
 
-    if (removeBackups) {
-      await this.backupManager.deleteAppBackupsByUrn(appUrn);
-    }
+    // Backups are always removed on uninstall (not exposed in the UI; independent of deleteAllData).
+    await this.backupManager.deleteAppBackupsByUrn(appUrn);
 
     await this.appRepository.updateAppById(app.id, { status: 'uninstalling' });
     this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'uninstalling' });
 
     const requestId = crypto.randomUUID();
-    this.appEventsQueue.publish({ command: 'uninstall', appUrn, requestId, form: app.config }).then(async ({ success, message }) => {
+    this.appEventsQueue.publish({ command: 'uninstall', appUrn, requestId, form: app.config, deleteAllData }).then(async ({ success, message }) => {
       if (success) {
         this.logger.info(`App ${appUrn} uninstalled successfully`);
         await this.appRepository.deleteAppById(app.id);
@@ -491,7 +491,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
     }
     const parsedForm = normalizeLocalOpenPort(parsedFormResult.data);
 
-    const { exposed, domain, exposedLocal, enableAuth, openPort, port } = parsedForm;
+    const { exposed, domain, exposedLocal, enableAuth, port } = parsedForm;
 
     // Prevent exposing to internet in production - use exposedLocal with Cloudflare tunnel instead
     const { isProduction } = this.config.getConfig();
@@ -560,7 +560,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       }
     }
 
-    if (openPort && port) {
+    if (publishesHostPort(parsedForm) && port) {
       const appsWithSamePort = await this.appRepository.getAppsByPort(port, app.id);
 
       if (appsWithSamePort.length > 0) {
@@ -811,7 +811,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
         const restoredStatus = appStatusBeforeUpdate === 'running' ? 'stopped' : appStatusBeforeUpdate;
 
         await this.updateAppConfig({ appUrn, form: app.config });
-        await this.appRepository.updateAppById(app.id, { version: appInfo?.tipi_version, status: restoredStatus });
+        await this.appRepository.updateAppById(app.id, { version: appInfo?.cihub_app_version, status: restoredStatus });
         this.sseService.emit('app', { event: 'update_success', appUrn, appStatus: restoredStatus });
         this.agentNotifyService?.notify('update_success', { appUrn }, 'info');
 

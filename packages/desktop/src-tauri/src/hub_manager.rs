@@ -407,6 +407,164 @@ fn refresh_nvidia_host_probe_cache(data_dir: &Path) {
     }
 }
 
+/// Parse primary macOS system volume disk usage via `df -k /`.
+#[cfg(target_os = "macos")]
+fn detect_macos_primary_disk_gb() -> (u64, u64, String) {
+    let output = match Command::new("df").args(["-k", "/"]).output() {
+        Ok(value) if value.status.success() => value,
+        _ => return (0, 0, "/".to_string()),
+    };
+    let line = match String::from_utf8_lossy(&output.stdout).lines().nth(1) {
+        Some(value) => value.to_string(),
+        None => return (0, 0, "/".to_string()),
+    };
+    let fields: Vec<&str> = line.split_whitespace().collect();
+    if fields.len() < 6 {
+        return (0, 0, "/".to_string());
+    }
+    let total_kb: u64 = fields.get(1).and_then(|v| v.parse().ok()).unwrap_or(0);
+    let used_kb: u64 = fields.get(2).and_then(|v| v.parse().ok()).unwrap_or(0);
+    let mount = fields.last().copied().unwrap_or("/").to_string();
+    let total_gb = total_kb / 1024 / 1024;
+    let used_gb = used_kb / 1024 / 1024;
+    (total_gb, used_gb, mount)
+}
+
+fn write_host_metrics_probe_file(data_dir: &Path, payload: serde_json::Value, log_tag: &str) {
+    let probe_path = data_dir.join("state/hardware/host_metrics.json");
+    if let Some(parent) = probe_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let serialized = match serde_json::to_string_pretty(&payload) {
+        Ok(value) => format!("{}\n", value),
+        Err(error) => {
+            let _ = append_desktop_log_for(
+                data_dir,
+                log_tag,
+                &format!("Failed to serialize host_metrics.json: {}", error),
+            );
+            return;
+        }
+    };
+    match std::fs::write(&probe_path, serialized) {
+        Ok(_) => {
+            let _ = append_desktop_log_for(
+                data_dir,
+                log_tag,
+                &format!("Updated host metrics probe at {}", probe_path.display()),
+            );
+        }
+        Err(error) => {
+            let _ = append_desktop_log_for(
+                data_dir,
+                log_tag,
+                &format!(
+                    "Failed to write host metrics probe at {}: {}",
+                    probe_path.display(),
+                    error
+                ),
+            );
+        }
+    }
+}
+
+/// Probe Windows host RAM and system disk via WMI and write host_metrics.json.
+#[cfg(target_os = "windows")]
+fn refresh_windows_host_metrics_probe_cache(data_dir: &Path) {
+    let mut command = Command::new("powershell.exe");
+    command
+        .creation_flags(CREATE_NO_WINDOW)
+        .arg("-NoProfile")
+        .arg("-NonInteractive")
+        .arg("-Command")
+        .arg("$os = Get-CimInstance Win32_OperatingSystem; $disk = Get-CimInstance Win32_LogicalDisk -Filter \"DeviceID='C:'\"; $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1; [PSCustomObject]@{ TotalRamMb = [math]::Round($os.TotalVisibleMemorySize/1024); AvailableRamMb = [math]::Round($os.FreePhysicalMemory/1024); CpuCores = ($cpu.NumberOfLogicalProcessors); CpuModel = $cpu.Name; DiskTotalGb = [math]::Round($disk.Size/1GB); DiskFreeGb = [math]::Round($disk.FreeSpace/1GB); DiskMount = 'C:' } | ConvertTo-Json -Compress");
+
+    let output = match command.output() {
+        Ok(value) => value,
+        Err(error) => {
+            let _ = append_desktop_log_for(
+                data_dir,
+                "hw.probe",
+                &format!("Windows host metrics probe failed to start PowerShell: {}", error),
+            );
+            return;
+        }
+    };
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let _ = append_desktop_log_for(
+            data_dir,
+            "hw.probe",
+            &format!("Windows host metrics probe command failed: {}", stderr),
+        );
+        return;
+    }
+
+    let parsed: serde_json::Value = match serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()) {
+        Ok(value) => value,
+        Err(error) => {
+            let _ = append_desktop_log_for(
+                data_dir,
+                "hw.probe",
+                &format!("Failed to parse Windows host metrics probe output: {}", error),
+            );
+            return;
+        }
+    };
+
+    let total_ram_mb = parsed.get("TotalRamMb").and_then(|v| v.as_u64()).unwrap_or(0);
+    if total_ram_mb == 0 {
+        return;
+    }
+
+    let available_ram_mb = parsed.get("AvailableRamMb").and_then(|v| v.as_u64()).unwrap_or(0);
+    let cpu_cores = parsed
+        .get("CpuCores")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
+    let cpu_model = parsed
+        .get("CpuModel")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let disk_total_gb = parsed.get("DiskTotalGb").and_then(|v| v.as_u64()).unwrap_or(0);
+    let disk_free_gb = parsed.get("DiskFreeGb").and_then(|v| v.as_u64()).unwrap_or(0);
+    let disk_mount = parsed
+        .get("DiskMount")
+        .and_then(|v| v.as_str())
+        .unwrap_or("C:")
+        .to_string();
+    let cpu_arch = if std::env::consts::ARCH == "aarch64" {
+        "arm64"
+    } else {
+        "x86_64"
+    };
+
+    let payload = serde_json::json!({
+        "schemaVersion": 1,
+        "platform": "win32",
+        "cpuArch": cpu_arch,
+        "source": "desktop-host-windows",
+        "probedAt": chrono::Utc::now().to_rfc3339(),
+        "host": {
+            "totalRamMb": total_ram_mb,
+            "availableRamMb": available_ram_mb,
+            "cpuCores": cpu_cores,
+            "cpuModel": cpu_model,
+            "diskTotalGb": disk_total_gb,
+            "diskUsedGb": disk_total_gb.saturating_sub(disk_free_gb),
+            "diskMount": disk_mount
+        }
+    });
+
+    write_host_metrics_probe_file(data_dir, payload, "hw.probe");
+}
+
+#[cfg(not(target_os = "windows"))]
+fn refresh_windows_host_metrics_probe_cache(_data_dir: &Path) {}
+
 /// Parse a macOS memory string like "96 GB", "512 MB", or "2 TB" into megabytes.
 fn parse_memory_str_to_mb(s: &str) -> u64 {
     let mut parts = s.trim().splitn(2, ' ');
@@ -625,6 +783,25 @@ fn refresh_macos_host_probe_cache(data_dir: &Path) {
 
     match std::fs::write(&probe_path, serialized) {
         Ok(_) => {
+            let (disk_total_gb, disk_used_gb, disk_mount) = detect_macos_primary_disk_gb();
+            let host_metrics = serde_json::json!({
+                "schemaVersion": 1,
+                "platform": "darwin",
+                "cpuArch": cpu_arch,
+                "source": "desktop-host-macos",
+                "probedAt": chrono::Utc::now().to_rfc3339(),
+                "host": {
+                    "totalRamMb": total_ram_mb,
+                    "availableRamMb": effective_available_mb,
+                    "cpuCores": cpu_cores,
+                    "cpuModel": cpu_model,
+                    "diskTotalGb": disk_total_gb,
+                    "diskUsedGb": disk_used_gb,
+                    "diskMount": disk_mount
+                }
+            });
+            write_host_metrics_probe_file(data_dir, host_metrics, "hw.probe");
+
             let _ = append_desktop_log_for(
                 data_dir,
                 "hw.probe",
@@ -2387,6 +2564,7 @@ fn start_hub_inner(
     // Surface host macOS hardware (RAM, CPU, Apple Silicon) to the backend so it
     // can report correct values instead of the Docker VM's constrained resources.
     refresh_macos_host_probe_cache(data_dir);
+    refresh_windows_host_metrics_probe_cache(data_dir);
 
     // Resolve port conflicts and write to the runtime env file before starting.
     let resolution = crate::port_manager::refresh_ports_if_needed(env_path).map_err(|error| {

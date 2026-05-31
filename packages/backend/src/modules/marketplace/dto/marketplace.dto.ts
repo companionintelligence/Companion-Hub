@@ -1,4 +1,4 @@
-import { APP_CATEGORIES, appInfoSchema } from '@ci-hub/common/schemas';
+import { APP_CATEGORIES, appInfoObjectSchema, appInfoSchema } from '@ci-hub/common/schemas';
 import { z } from 'zod';
 import { createZodDto } from '@/common/zod-dto';
 
@@ -18,7 +18,7 @@ const searchAppQuerySchema = z.object({
   storeId: z.string().optional(),
 });
 
-const simpleAppInfoSchema = appInfoSchema.pick({
+const simpleAppInfoSchema = appInfoObjectSchema.pick({
   id: true,
   urn: true,
   name: true,

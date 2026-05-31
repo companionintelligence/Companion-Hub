@@ -35,7 +35,7 @@ export class AppLifecycleCommandFactory {
       case 'restart':
         return new RestartAppCommand(this.moduleRef, this.docker);
       case 'uninstall':
-        return new UninstallAppCommand(this.moduleRef, this.docker);
+        return new UninstallAppCommand(this.moduleRef, this.docker, eventData.deleteAllData);
       case 'reset':
         return new ResetAppCommand(this.moduleRef, this.docker);
       case 'backup':

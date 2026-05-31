@@ -42,10 +42,10 @@ RUN apk add --no-cache curl openssl git docker-cli dmidecode pciutils
 # ---- BUILDER ----
 FROM builder_base AS builder
 
-ARG TIPI_VERSION
+ARG CI_HUB_VERSION
 ARG LOCAL
 
-ENV TIPI_VERSION=${TIPI_VERSION}
+ENV CI_HUB_VERSION=${CI_HUB_VERSION}
 
 WORKDIR /app
 
@@ -76,7 +76,7 @@ ENV CI_CLOUD_URL=${CI_CLOUD_URL}
 
 RUN pnpm run build
 
-RUN echo "TIPI_VERSION: ${TIPI_VERSION}"
+RUN echo "CI_HUB_VERSION: ${CI_HUB_VERSION}"
 RUN echo "LOCAL: ${LOCAL}"
 
 RUN cd /app && pnpm run bundle 2>&1 | tail -100 || true
