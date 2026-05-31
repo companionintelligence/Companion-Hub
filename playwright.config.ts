@@ -92,7 +92,21 @@ export default defineConfig({
             },
           },
         ]
-      : []),
+      : [
+          {
+            // Lightweight mock portal — simulates CI Portal for local/CI E2E without hitting production.
+            command: 'pnpm exec tsx e2e/mock-portal/server.ts',
+            url: `http://localhost:${MOCK_PORTAL_PORT}/___control`,
+            reuseExistingServer: !process.env.CI,
+            timeout: 15000,
+            stdout: 'pipe',
+            stderr: 'pipe',
+            env: {
+              MOCK_PORTAL_PORT,
+              MOCK_PORTAL_SCENARIO: 'registered',
+            },
+          },
+        ]),
     {
       command: 'bash e2e/start-backend.sh',
       url: `http://localhost:${BACKEND_PORT}/api/health`,

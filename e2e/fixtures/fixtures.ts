@@ -1,9 +1,20 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { type BrowserContext, type Page, expect, test as base } from '@playwright/test';
 import { user } from '../../packages/backend/src/core/database/drizzle/schema';
 import { testUser } from '../helpers/constants';
 import { clearDatabase, db, seedOrganization } from '../helpers/db';
 
 const BACKEND_URL = `http://localhost:${process.env.BACKEND_PORT || '3000'}`;
+const DATA_DIR = process.env.CI_HUB_DATA_DIR || '/tmp/ci-hub-e2e';
+const TUNNEL_DIR = process.env.CI_HUB_TUNNEL_DIR || path.join(DATA_DIR, 'tunnel');
+const TUNNEL_TOKEN_PATH = path.join(TUNNEL_DIR, 'token');
+
+/** Recreate the tunnel token so isRegistered() returns true even after freshUnregistered() tests. */
+function ensureTunnelToken() {
+  if (!fs.existsSync(TUNNEL_DIR)) fs.mkdirSync(TUNNEL_DIR, { recursive: true });
+  fs.writeFileSync(TUNNEL_TOKEN_PATH, 'e2e-mock-tunnel-token', 'utf-8');
+}
 
 async function resetBackendState() {
   try {
@@ -15,9 +26,11 @@ async function resetBackendState() {
 
 export const test = base.extend({
   page: async ({ page }, use) => {
-    await resetBackendState();
+    await resetBackendState(); // clear backend memory before DB wipe
     await clearDatabase();
     await seedOrganization();
+    ensureTunnelToken(); // restore token after freshUnregistered() may have deleted it
+    await resetBackendState(); // sync backend with the new DB + token state
     await use(page);
   },
 });
