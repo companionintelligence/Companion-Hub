@@ -1,23 +1,25 @@
 {
-  "generated": "2026-05-31T16:04:12.526Z",
-  "totalApps": 100,
+  "generated": "2026-05-31T17:54:12.918Z",
+  "totalApps": 124,
   "batches": 10,
-  "appsPerBatch": 10,
+  "appsPerBatch": 13,
   "byPriority": {
     "high": 9,
-    "medium": 19,
-    "low": 72
+    "medium": 25,
+    "low": 90
   },
   "byCategory": {
-    "development": 15,
+    "development": 21,
     "automation": 5,
-    "data": 24,
+    "featured": 16,
+    "data": 33,
     "media": 8,
     "photography": 1,
-    "ai": 15,
-    "utilities": 37,
-    "network": 6,
+    "ai": 17,
+    "utilities": 54,
+    "network": 9,
     "security": 3,
+    "mcp": 24,
     "finance": 4,
     "social": 7,
     "books": 1

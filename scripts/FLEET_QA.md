@@ -27,7 +27,7 @@ Recommended flow:
 
 1. Click **Preflight**. Every selected node must pass SSH, Docker, `tsx`/`pnpm`, and CI-Marketplace checks.
 2. Select one node and run **Quick** to confirm the stream path and screenshots.
-3. Select all ready nodes, switch to **Full (100 apps)**, then click **Start**.
+3. Select all ready nodes, switch to **Full** for the current generated catalog, then click **Start**.
 
 The dashboard automatically runs preflight before starting a run and skips nodes that fail. Hover a node badge to see the exact failure.
 

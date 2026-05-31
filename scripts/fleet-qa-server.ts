@@ -838,7 +838,7 @@ header {
 
 <div class="controls">
   <button class="btn active" id="mode-quick" onclick="setMode('quick')">Quick (high-priority)</button>
-  <button class="btn" id="mode-full" onclick="setMode('full')">Full (100 apps)</button>
+  <button class="btn" id="mode-full" onclick="setMode('full')">Full (${CATALOG.length} apps)</button>
   <div class="mode-sep"></div>
   <div class="node-sel" id="node-sel"></div>
   <div class="mode-sep"></div>

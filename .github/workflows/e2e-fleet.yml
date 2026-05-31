@@ -37,7 +37,7 @@ on:
 env:
   # Fleet server Tailscale IPs — stored as GitHub Actions secrets.
   # Add FLEET_<NAME>_IP under Settings → Secrets and variables → Actions.
-  # Names: CORE_1, CORE_2, CORE_4_KVM, CORE_5, CORE_6, CORE_8, CORE_9, CORE_10, CORE_13, BETA_1, BETA_RED
+  # Names: CORE_1, CORE_2, CORE_5, CORE_6, CORE_8, CORE_9, CORE_10, CORE_13, BETA_1, BETA_RED
   CORE_1_IP: ${{ secrets.FLEET_CORE_1_IP }}
   CORE_2_IP: ${{ secrets.FLEET_CORE_2_IP }}
   CORE_5_IP: ${{ secrets.FLEET_CORE_5_IP }}

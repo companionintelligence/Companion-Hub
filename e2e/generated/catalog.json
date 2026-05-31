@@ -6,7 +6,9 @@
     "expectedPort": 8138,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["development"],
+    "categories": [
+      "development"
+    ],
     "priority": "high"
   },
   {
@@ -16,7 +18,10 @@
     "expectedPort": 7659,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["automation"],
+    "categories": [
+      "automation",
+      "featured"
+    ],
     "priority": "high"
   },
   {
@@ -26,7 +31,12 @@
     "expectedPort": 9008,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["data", "media", "photography"],
+    "categories": [
+      "data",
+      "featured",
+      "media",
+      "photography"
+    ],
     "priority": "high"
   },
   {
@@ -36,7 +46,10 @@
     "expectedPort": 8096,
     "healthEndpoint": "/web/index.html",
     "hasGui": true,
-    "categories": ["media"],
+    "categories": [
+      "featured",
+      "media"
+    ],
     "priority": "high"
   },
   {
@@ -46,7 +59,10 @@
     "expectedPort": 8301,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["data"],
+    "categories": [
+      "data",
+      "featured"
+    ],
     "priority": "high"
   },
   {
@@ -56,7 +72,10 @@
     "expectedPort": 2876,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["ai"],
+    "categories": [
+      "ai",
+      "featured"
+    ],
     "priority": "high"
   },
   {
@@ -66,7 +85,9 @@
     "expectedPort": 32400,
     "healthEndpoint": "/web/index.html",
     "hasGui": true,
-    "categories": ["media"],
+    "categories": [
+      "media"
+    ],
     "priority": "high"
   },
   {
@@ -76,7 +97,10 @@
     "expectedPort": 8125,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["utilities", "network"],
+    "categories": [
+      "utilities",
+      "network"
+    ],
     "priority": "high"
   },
   {
@@ -86,7 +110,11 @@
     "expectedPort": 9010,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["data", "security"],
+    "categories": [
+      "data",
+      "featured",
+      "security"
+    ],
     "priority": "high"
   },
   {
@@ -96,7 +124,9 @@
     "expectedPort": 8924,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["development"],
+    "categories": [
+      "development"
+    ],
     "priority": "medium"
   },
   {
@@ -106,7 +136,9 @@
     "expectedPort": 8443,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["development"],
+    "categories": [
+      "development"
+    ],
     "priority": "medium"
   },
   {
@@ -116,7 +148,9 @@
     "expectedPort": 8000,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["development"],
+    "categories": [
+      "development"
+    ],
     "priority": "medium"
   },
   {
@@ -126,7 +160,9 @@
     "expectedPort": 8164,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["media"],
+    "categories": [
+      "media"
+    ],
     "priority": "medium"
   },
   {
@@ -136,7 +172,22 @@
     "expectedPort": 8101,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["development"],
+    "categories": [
+      "development"
+    ],
+    "priority": "medium"
+  },
+  {
+    "id": "git-mcp",
+    "storeSlug": "ci-apps",
+    "name": "Git MCP",
+    "expectedPort": 80,
+    "healthEndpoint": "/",
+    "hasGui": false,
+    "categories": [
+      "mcp",
+      "development"
+    ],
     "priority": "medium"
   },
   {
@@ -146,7 +197,23 @@
     "expectedPort": 8283,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["development"],
+    "categories": [
+      "development",
+      "featured"
+    ],
+    "priority": "medium"
+  },
+  {
+    "id": "github-mcp",
+    "storeSlug": "ci-apps",
+    "name": "GitHub MCP",
+    "expectedPort": 80,
+    "healthEndpoint": "/",
+    "hasGui": false,
+    "categories": [
+      "mcp",
+      "development"
+    ],
     "priority": "medium"
   },
   {
@@ -156,7 +223,9 @@
     "expectedPort": 8929,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["development"],
+    "categories": [
+      "development"
+    ],
     "priority": "medium"
   },
   {
@@ -166,7 +235,9 @@
     "expectedPort": 8080,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["media"],
+    "categories": [
+      "media"
+    ],
     "priority": "medium"
   },
   {
@@ -176,7 +247,9 @@
     "expectedPort": 8188,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["media"],
+    "categories": [
+      "media"
+    ],
     "priority": "medium"
   },
   {
@@ -186,7 +259,23 @@
     "expectedPort": 8920,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["media"],
+    "categories": [
+      "media"
+    ],
+    "priority": "medium"
+  },
+  {
+    "id": "n8n-mcp",
+    "storeSlug": "ci-apps",
+    "name": "n8n MCP",
+    "expectedPort": 80,
+    "healthEndpoint": "/",
+    "hasGui": false,
+    "categories": [
+      "mcp",
+      "development",
+      "utilities"
+    ],
     "priority": "medium"
   },
   {
@@ -196,7 +285,10 @@
     "expectedPort": 4019,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["ai", "development"],
+    "categories": [
+      "ai",
+      "development"
+    ],
     "priority": "medium"
   },
   {
@@ -206,7 +298,9 @@
     "expectedPort": 9001,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["development"],
+    "categories": [
+      "development"
+    ],
     "priority": "medium"
   },
   {
@@ -216,7 +310,23 @@
     "expectedPort": 9092,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["development"],
+    "categories": [
+      "development"
+    ],
+    "priority": "medium"
+  },
+  {
+    "id": "playwright-mcp",
+    "storeSlug": "ci-apps",
+    "name": "Playwright MCP",
+    "expectedPort": 80,
+    "healthEndpoint": "/",
+    "hasGui": false,
+    "categories": [
+      "mcp",
+      "network",
+      "development"
+    ],
     "priority": "medium"
   },
   {
@@ -226,7 +336,9 @@
     "expectedPort": 5400,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["development"],
+    "categories": [
+      "development"
+    ],
     "priority": "medium"
   },
   {
@@ -236,7 +348,10 @@
     "expectedPort": 8184,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["media"],
+    "categories": [
+      "media",
+      "featured"
+    ],
     "priority": "medium"
   },
   {
@@ -246,7 +361,9 @@
     "expectedPort": 8290,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["development"],
+    "categories": [
+      "development"
+    ],
     "priority": "medium"
   },
   {
@@ -256,7 +373,10 @@
     "expectedPort": 8322,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["utilities", "development"],
+    "categories": [
+      "utilities",
+      "development"
+    ],
     "priority": "medium"
   },
   {
@@ -266,7 +386,37 @@
     "expectedPort": 25727,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["development"],
+    "categories": [
+      "development"
+    ],
+    "priority": "medium"
+  },
+  {
+    "id": "unity-mcp-ivanmurzak",
+    "storeSlug": "ci-apps",
+    "name": "Unity MCP (Ivan Murzak)",
+    "expectedPort": 80,
+    "healthEndpoint": "/",
+    "hasGui": false,
+    "categories": [
+      "mcp",
+      "utilities",
+      "development"
+    ],
+    "priority": "medium"
+  },
+  {
+    "id": "unreal-engine-mcp",
+    "storeSlug": "ci-apps",
+    "name": "Unreal Engine MCP",
+    "expectedPort": 80,
+    "healthEndpoint": "/",
+    "hasGui": false,
+    "categories": [
+      "mcp",
+      "utilities",
+      "development"
+    ],
     "priority": "medium"
   },
   {
@@ -276,7 +426,9 @@
     "expectedPort": 8000,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["development"],
+    "categories": [
+      "development"
+    ],
     "priority": "medium"
   },
   {
@@ -286,7 +438,9 @@
     "expectedPort": 8146,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["automation"],
+    "categories": [
+      "automation"
+    ],
     "priority": "low"
   },
   {
@@ -296,7 +450,10 @@
     "expectedPort": 8436,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["network", "utilities"],
+    "categories": [
+      "network",
+      "utilities"
+    ],
     "priority": "low"
   },
   {
@@ -306,7 +463,9 @@
     "expectedPort": 3013,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["data"],
+    "categories": [
+      "data"
+    ],
     "priority": "low"
   },
   {
@@ -316,7 +475,10 @@
     "expectedPort": 3001,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["ai", "utilities"],
+    "categories": [
+      "ai",
+      "utilities"
+    ],
     "priority": "low"
   },
   {
@@ -326,7 +488,9 @@
     "expectedPort": 9036,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["data"],
+    "categories": [
+      "data"
+    ],
     "priority": "low"
   },
   {
@@ -336,7 +500,10 @@
     "expectedPort": 8428,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["data", "utilities"],
+    "categories": [
+      "data",
+      "utilities"
+    ],
     "priority": "low"
   },
   {
@@ -346,7 +513,10 @@
     "expectedPort": 8317,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["data", "utilities"],
+    "categories": [
+      "data",
+      "utilities"
+    ],
     "priority": "low"
   },
   {
@@ -356,7 +526,50 @@
     "expectedPort": 8333,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["finance"],
+    "categories": [
+      "finance"
+    ],
+    "priority": "low"
+  },
+  {
+    "id": "blender-mcp",
+    "storeSlug": "ci-apps",
+    "name": "Blender MCP",
+    "expectedPort": 80,
+    "healthEndpoint": "/",
+    "hasGui": false,
+    "categories": [
+      "mcp",
+      "utilities"
+    ],
+    "priority": "low"
+  },
+  {
+    "id": "brewers-almanack-mcp",
+    "storeSlug": "ci-apps",
+    "name": "Brewers Almanack MCP",
+    "expectedPort": 80,
+    "healthEndpoint": "/",
+    "hasGui": false,
+    "categories": [
+      "mcp",
+      "data",
+      "utilities"
+    ],
+    "priority": "low"
+  },
+  {
+    "id": "chess-mcp",
+    "storeSlug": "ci-apps",
+    "name": "MCP Chess",
+    "expectedPort": 80,
+    "healthEndpoint": "/",
+    "hasGui": false,
+    "categories": [
+      "mcp",
+      "ai",
+      "utilities"
+    ],
     "priority": "low"
   },
   {
@@ -366,7 +579,10 @@
     "expectedPort": 18790,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["ai", "utilities"],
+    "categories": [
+      "ai",
+      "utilities"
+    ],
     "priority": "low"
   },
   {
@@ -376,7 +592,10 @@
     "expectedPort": 18789,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["ai", "utilities"],
+    "categories": [
+      "ai",
+      "utilities"
+    ],
     "priority": "low"
   },
   {
@@ -386,7 +605,10 @@
     "expectedPort": 9980,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["utilities"],
+    "categories": [
+      "featured",
+      "utilities"
+    ],
     "priority": "low"
   },
   {
@@ -396,7 +618,10 @@
     "expectedPort": 8188,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["ai"],
+    "categories": [
+      "ai",
+      "featured"
+    ],
     "priority": "low"
   },
   {
@@ -406,7 +631,9 @@
     "expectedPort": 8001,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["ai"],
+    "categories": [
+      "ai"
+    ],
     "priority": "low"
   },
   {
@@ -416,7 +643,10 @@
     "expectedPort": 3040,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["data", "utilities"],
+    "categories": [
+      "data",
+      "utilities"
+    ],
     "priority": "low"
   },
   {
@@ -426,7 +656,9 @@
     "expectedPort": 8319,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["utilities"],
+    "categories": [
+      "utilities"
+    ],
     "priority": "low"
   },
   {
@@ -436,7 +668,23 @@
     "expectedPort": 5341,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["utilities"],
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low"
+  },
+  {
+    "id": "doordash-mcp",
+    "storeSlug": "ci-apps",
+    "name": "DoorDash MCP Server",
+    "expectedPort": 80,
+    "healthEndpoint": "/",
+    "hasGui": false,
+    "categories": [
+      "mcp",
+      "network",
+      "utilities"
+    ],
     "priority": "low"
   },
   {
@@ -446,7 +694,9 @@
     "expectedPort": 8088,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["social"],
+    "categories": [
+      "social"
+    ],
     "priority": "low"
   },
   {
@@ -456,7 +706,9 @@
     "expectedPort": 8922,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["data"],
+    "categories": [
+      "data"
+    ],
     "priority": "low"
   },
   {
@@ -466,7 +718,36 @@
     "expectedPort": 4422,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["data"],
+    "categories": [
+      "data",
+      "featured"
+    ],
+    "priority": "low"
+  },
+  {
+    "id": "excalidraw-mcp",
+    "storeSlug": "ci-apps",
+    "name": "Excalidraw MCP",
+    "expectedPort": 80,
+    "healthEndpoint": "/",
+    "hasGui": false,
+    "categories": [
+      "mcp",
+      "utilities"
+    ],
+    "priority": "low"
+  },
+  {
+    "id": "fetch-mcp",
+    "storeSlug": "ci-apps",
+    "name": "Fetch MCP",
+    "expectedPort": 80,
+    "healthEndpoint": "/",
+    "hasGui": false,
+    "categories": [
+      "mcp",
+      "network"
+    ],
     "priority": "low"
   },
   {
@@ -476,7 +757,22 @@
     "expectedPort": 7421,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["data"],
+    "categories": [
+      "data"
+    ],
+    "priority": "low"
+  },
+  {
+    "id": "filesystem-mcp",
+    "storeSlug": "ci-apps",
+    "name": "Filesystem MCP",
+    "expectedPort": 80,
+    "healthEndpoint": "/",
+    "hasGui": false,
+    "categories": [
+      "mcp",
+      "utilities"
+    ],
     "priority": "low"
   },
   {
@@ -486,7 +782,9 @@
     "expectedPort": 3002,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["ai"],
+    "categories": [
+      "ai"
+    ],
     "priority": "low"
   },
   {
@@ -496,7 +794,9 @@
     "expectedPort": 5004,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["automation"],
+    "categories": [
+      "automation"
+    ],
     "priority": "low"
   },
   {
@@ -506,7 +806,9 @@
     "expectedPort": 8081,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["finance"],
+    "categories": [
+      "finance"
+    ],
     "priority": "low"
   },
   {
@@ -516,7 +818,10 @@
     "expectedPort": 3368,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["data"],
+    "categories": [
+      "data",
+      "featured"
+    ],
     "priority": "low"
   },
   {
@@ -526,7 +831,10 @@
     "expectedPort": 9000,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["security", "data"],
+    "categories": [
+      "security",
+      "data"
+    ],
     "priority": "low"
   },
   {
@@ -536,7 +844,11 @@
     "expectedPort": 9119,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["ai", "utilities"],
+    "categories": [
+      "ai",
+      "utilities",
+      "featured"
+    ],
     "priority": "low"
   },
   {
@@ -546,7 +858,9 @@
     "expectedPort": 3000,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["utilities"],
+    "categories": [
+      "utilities"
+    ],
     "priority": "low"
   },
   {
@@ -556,7 +870,9 @@
     "expectedPort": 8443,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["utilities"],
+    "categories": [
+      "utilities"
+    ],
     "priority": "low"
   },
   {
@@ -566,7 +882,9 @@
     "expectedPort": 9015,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["data"],
+    "categories": [
+      "data"
+    ],
     "priority": "low"
   },
   {
@@ -576,7 +894,10 @@
     "expectedPort": 4000,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["utilities", "network"],
+    "categories": [
+      "utilities",
+      "network"
+    ],
     "priority": "low"
   },
   {
@@ -586,7 +907,10 @@
     "expectedPort": 8169,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["books", "utilities"],
+    "categories": [
+      "books",
+      "utilities"
+    ],
     "priority": "low"
   },
   {
@@ -596,7 +920,23 @@
     "expectedPort": 8247,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["utilities"],
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low"
+  },
+  {
+    "id": "lego-oracle-mcp",
+    "storeSlug": "ci-apps",
+    "name": "LEGO Oracle MCP",
+    "expectedPort": 80,
+    "healthEndpoint": "/",
+    "hasGui": false,
+    "categories": [
+      "mcp",
+      "data",
+      "utilities"
+    ],
     "priority": "low"
   },
   {
@@ -606,7 +946,9 @@
     "expectedPort": 3080,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["ai"],
+    "categories": [
+      "ai"
+    ],
     "priority": "low"
   },
   {
@@ -616,7 +958,9 @@
     "expectedPort": 5001,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["data"],
+    "categories": [
+      "data"
+    ],
     "priority": "low"
   },
   {
@@ -626,7 +970,9 @@
     "expectedPort": 9000,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["utilities"],
+    "categories": [
+      "utilities"
+    ],
     "priority": "low"
   },
   {
@@ -636,7 +982,9 @@
     "expectedPort": 7455,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["ai"],
+    "categories": [
+      "ai"
+    ],
     "priority": "low"
   },
   {
@@ -646,7 +994,10 @@
     "expectedPort": 8323,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["utilities", "data"],
+    "categories": [
+      "utilities",
+      "data"
+    ],
     "priority": "low"
   },
   {
@@ -656,7 +1007,9 @@
     "expectedPort": 8006,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["utilities"],
+    "categories": [
+      "utilities"
+    ],
     "priority": "low"
   },
   {
@@ -666,7 +1019,9 @@
     "expectedPort": 8420,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["utilities"],
+    "categories": [
+      "utilities"
+    ],
     "priority": "low"
   },
   {
@@ -676,7 +1031,36 @@
     "expectedPort": 8265,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["social"],
+    "categories": [
+      "social"
+    ],
+    "priority": "low"
+  },
+  {
+    "id": "memory-mcp",
+    "storeSlug": "ci-apps",
+    "name": "Memory MCP",
+    "expectedPort": 80,
+    "healthEndpoint": "/",
+    "hasGui": false,
+    "categories": [
+      "mcp",
+      "ai",
+      "data"
+    ],
+    "priority": "low"
+  },
+  {
+    "id": "miro-mcp",
+    "storeSlug": "ci-apps",
+    "name": "Miro MCP",
+    "expectedPort": 80,
+    "healthEndpoint": "/",
+    "hasGui": false,
+    "categories": [
+      "mcp",
+      "utilities"
+    ],
     "priority": "low"
   },
   {
@@ -686,7 +1070,10 @@
     "expectedPort": 9000,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["social", "automation"],
+    "categories": [
+      "social",
+      "automation"
+    ],
     "priority": "low"
   },
   {
@@ -696,7 +1083,10 @@
     "expectedPort": 8579,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["automation"],
+    "categories": [
+      "automation",
+      "featured"
+    ],
     "priority": "low"
   },
   {
@@ -706,7 +1096,9 @@
     "expectedPort": 19999,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["utilities"],
+    "categories": [
+      "utilities"
+    ],
     "priority": "low"
   },
   {
@@ -716,7 +1108,23 @@
     "expectedPort": 9020,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["data"],
+    "categories": [
+      "data"
+    ],
+    "priority": "low"
+  },
+  {
+    "id": "notion-mcp",
+    "storeSlug": "ci-apps",
+    "name": "Notion MCP",
+    "expectedPort": 80,
+    "healthEndpoint": "/",
+    "hasGui": false,
+    "categories": [
+      "mcp",
+      "utilities",
+      "data"
+    ],
     "priority": "low"
   },
   {
@@ -726,7 +1134,24 @@
     "expectedPort": 3579,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["utilities", "ai"],
+    "categories": [
+      "utilities",
+      "ai"
+    ],
+    "priority": "low"
+  },
+  {
+    "id": "obsidian-mcp",
+    "storeSlug": "ci-apps",
+    "name": "Obsidian MCP",
+    "expectedPort": 80,
+    "healthEndpoint": "/",
+    "hasGui": false,
+    "categories": [
+      "mcp",
+      "utilities",
+      "data"
+    ],
     "priority": "low"
   },
   {
@@ -736,7 +1161,9 @@
     "expectedPort": 8069,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["utilities"],
+    "categories": [
+      "utilities"
+    ],
     "priority": "low"
   },
   {
@@ -746,7 +1173,23 @@
     "expectedPort": 6829,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["utilities"],
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low"
+  },
+  {
+    "id": "onlyoffice-docspace-mcp",
+    "storeSlug": "ci-apps",
+    "name": "ONLYOFFICE DocSpace MCP",
+    "expectedPort": 80,
+    "healthEndpoint": "/",
+    "hasGui": false,
+    "categories": [
+      "mcp",
+      "utilities",
+      "data"
+    ],
     "priority": "low"
   },
   {
@@ -756,7 +1199,11 @@
     "expectedPort": 30189,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["ai", "utilities"],
+    "categories": [
+      "ai",
+      "utilities",
+      "featured"
+    ],
     "priority": "low"
   },
   {
@@ -766,7 +1213,10 @@
     "expectedPort": 8080,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["data", "utilities"],
+    "categories": [
+      "data",
+      "utilities"
+    ],
     "priority": "low"
   },
   {
@@ -776,7 +1226,9 @@
     "expectedPort": 8888,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["ai"],
+    "categories": [
+      "ai"
+    ],
     "priority": "low"
   },
   {
@@ -786,7 +1238,10 @@
     "expectedPort": 8321,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["utilities", "network"],
+    "categories": [
+      "utilities",
+      "network"
+    ],
     "priority": "low"
   },
   {
@@ -796,7 +1251,9 @@
     "expectedPort": 4000,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["social"],
+    "categories": [
+      "social"
+    ],
     "priority": "low"
   },
   {
@@ -806,7 +1263,9 @@
     "expectedPort": 8085,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["security"],
+    "categories": [
+      "security"
+    ],
     "priority": "low"
   },
   {
@@ -816,7 +1275,9 @@
     "expectedPort": 8087,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["data"],
+    "categories": [
+      "data"
+    ],
     "priority": "low"
   },
   {
@@ -826,7 +1287,10 @@
     "expectedPort": 8082,
     "healthEndpoint": "/admin",
     "hasGui": true,
-    "categories": ["network"],
+    "categories": [
+      "network",
+      "featured"
+    ],
     "priority": "low"
   },
   {
@@ -836,7 +1300,22 @@
     "expectedPort": 8080,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["utilities"],
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low"
+  },
+  {
+    "id": "postgres-mcp",
+    "storeSlug": "ci-apps",
+    "name": "Postgres MCP",
+    "expectedPort": 80,
+    "healthEndpoint": "/",
+    "hasGui": false,
+    "categories": [
+      "mcp",
+      "data"
+    ],
     "priority": "low"
   },
   {
@@ -846,7 +1325,9 @@
     "expectedPort": 8921,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["social"],
+    "categories": [
+      "social"
+    ],
     "priority": "low"
   },
   {
@@ -856,7 +1337,9 @@
     "expectedPort": 8923,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["finance"],
+    "categories": [
+      "finance"
+    ],
     "priority": "low"
   },
   {
@@ -866,7 +1349,9 @@
     "expectedPort": 9090,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["utilities"],
+    "categories": [
+      "utilities"
+    ],
     "priority": "low"
   },
   {
@@ -876,7 +1361,9 @@
     "expectedPort": 3000,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["social"],
+    "categories": [
+      "social"
+    ],
     "priority": "low"
   },
   {
@@ -886,7 +1373,9 @@
     "expectedPort": 8920,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["data"],
+    "categories": [
+      "data"
+    ],
     "priority": "low"
   },
   {
@@ -896,7 +1385,9 @@
     "expectedPort": 8325,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["utilities"],
+    "categories": [
+      "utilities"
+    ],
     "priority": "low"
   },
   {
@@ -906,7 +1397,22 @@
     "expectedPort": 8925,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["ai"],
+    "categories": [
+      "ai"
+    ],
+    "priority": "low"
+  },
+  {
+    "id": "smartest-tv-mcp",
+    "storeSlug": "ci-apps",
+    "name": "Smartest TV MCP",
+    "expectedPort": 80,
+    "healthEndpoint": "/",
+    "hasGui": false,
+    "categories": [
+      "mcp",
+      "utilities"
+    ],
     "priority": "low"
   },
   {
@@ -916,7 +1422,22 @@
     "expectedPort": 8050,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["utilities"],
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low"
+  },
+  {
+    "id": "sqlite-mcp",
+    "storeSlug": "ci-apps",
+    "name": "SQLite MCP",
+    "expectedPort": 80,
+    "healthEndpoint": "/",
+    "hasGui": false,
+    "categories": [
+      "mcp",
+      "data"
+    ],
     "priority": "low"
   },
   {
@@ -926,7 +1447,10 @@
     "expectedPort": 8677,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["network", "utilities"],
+    "categories": [
+      "network",
+      "utilities"
+    ],
     "priority": "low"
   },
   {
@@ -936,7 +1460,23 @@
     "expectedPort": 9032,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["data"],
+    "categories": [
+      "data"
+    ],
+    "priority": "low"
+  },
+  {
+    "id": "steam-mcp",
+    "storeSlug": "ci-apps",
+    "name": "Steam MCP",
+    "expectedPort": 80,
+    "healthEndpoint": "/",
+    "hasGui": false,
+    "categories": [
+      "mcp",
+      "data",
+      "utilities"
+    ],
     "priority": "low"
   },
   {
@@ -946,7 +1486,10 @@
     "expectedPort": 8234,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["utilities", "data"],
+    "categories": [
+      "utilities",
+      "data"
+    ],
     "priority": "low"
   },
   {
@@ -956,7 +1499,9 @@
     "expectedPort": 8925,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["data"],
+    "categories": [
+      "data"
+    ],
     "priority": "low"
   },
   {
@@ -966,7 +1511,22 @@
     "expectedPort": 2020,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["data"],
+    "categories": [
+      "data"
+    ],
+    "priority": "low"
+  },
+  {
+    "id": "unity-mcp",
+    "storeSlug": "ci-apps",
+    "name": "Unity MCP",
+    "expectedPort": 80,
+    "healthEndpoint": "/",
+    "hasGui": false,
+    "categories": [
+      "mcp",
+      "utilities"
+    ],
     "priority": "low"
   },
   {
@@ -976,7 +1536,10 @@
     "expectedPort": 8222,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["finance", "utilities"],
+    "categories": [
+      "finance",
+      "utilities"
+    ],
     "priority": "low"
   },
   {
@@ -986,7 +1549,9 @@
     "expectedPort": 8006,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["utilities"],
+    "categories": [
+      "utilities"
+    ],
     "priority": "low"
   },
   {
@@ -996,7 +1561,9 @@
     "expectedPort": 8213,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["social"],
+    "categories": [
+      "social"
+    ],
     "priority": "low"
   }
 ]
