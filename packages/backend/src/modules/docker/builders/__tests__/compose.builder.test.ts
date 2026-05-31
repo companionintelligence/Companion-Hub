@@ -174,7 +174,7 @@ describe('DockerComposeBuilder', () => {
     expect(compose).toMatchSnapshot();
   });
 
-  it('should NOT add port mapping when cloudflare exposure has openPort false', async () => {
+  it('should publish host port for cloudflare exposed apps even when openPort is false', async () => {
     const service: ServiceInput = {
       name: 'service',
       image: 'image',
@@ -190,7 +190,7 @@ describe('DockerComposeBuilder', () => {
     );
     const yamlObject = yaml.parse(compose);
 
-    expect(yamlObject.services.service.ports).toBeUndefined();
+    expect(yamlObject.services.service.ports).toEqual(['${APP_PORT}:440']);
   });
 
   it('should add port mapping when openPort is enabled', async () => {

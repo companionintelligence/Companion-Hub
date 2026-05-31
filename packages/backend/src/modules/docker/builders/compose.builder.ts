@@ -136,8 +136,9 @@ export class DockerComposeBuilder {
     const effectiveExposureMode = form.exposureMode || (form.exposedLocal ? 'cloudflare' : 'local');
 
     if (params.isMain) {
-      // Publish host port for local-mode apps (direct access) or when openPort is explicitly enabled
-      if ((form.openPort || effectiveExposureMode === 'local') && params.internalPort) {
+      // Publish host port for local-mode apps, explicit openPort, or Cloudflare/Tailscale
+      // exposed apps so the UI remains reachable on the LAN during DNS propagation.
+      if ((form.openPort || effectiveExposureMode === 'local' || form.exposedLocal) && params.internalPort) {
         service.setPort({
           containerPort: params.internalPort,
           // biome-ignore lint/suspicious/noTemplateCurlyInString: intended
