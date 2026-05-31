@@ -491,7 +491,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
     }
     const parsedForm = normalizeLocalOpenPort(parsedFormResult.data);
 
-    const { exposed, domain, exposedLocal, enableAuth, openPort, port } = parsedForm;
+    const { exposed, domain, exposedLocal, enableAuth, port } = parsedForm;
 
     // Prevent exposing to internet in production - use exposedLocal with Cloudflare tunnel instead
     const { isProduction } = this.config.getConfig();
