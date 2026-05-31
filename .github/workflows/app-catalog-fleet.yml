@@ -24,7 +24,6 @@ on:
         options:
           - core-1
           - core-2
-          - core-4-kvm
           - core-5
           - core-6
           - core-8
@@ -39,7 +38,6 @@ env:
   # Add FLEET_<NAME>_IP under Settings → Secrets and variables → Actions.
   CORE_1_IP: ${{ secrets.FLEET_CORE_1_IP }}
   CORE_2_IP: ${{ secrets.FLEET_CORE_2_IP }}
-  CORE_4_KVM_IP: ${{ secrets.FLEET_CORE_4_KVM_IP }}
   CORE_5_IP: ${{ secrets.FLEET_CORE_5_IP }}
   CORE_6_IP: ${{ secrets.FLEET_CORE_6_IP }}
   CORE_8_IP: ${{ secrets.FLEET_CORE_8_IP }}
@@ -69,15 +67,14 @@ jobs:
             echo "matrix={\"include\":[
               {\"server\":\"core-1\",\"ip\":\"$CORE_1_IP\",\"batch\":0},
               {\"server\":\"core-2\",\"ip\":\"$CORE_2_IP\",\"batch\":1},
-              {\"server\":\"core-4-kvm\",\"ip\":\"$CORE_4_KVM_IP\",\"batch\":2},
-              {\"server\":\"core-5\",\"ip\":\"$CORE_5_IP\",\"batch\":3},
-              {\"server\":\"core-6\",\"ip\":\"$CORE_6_IP\",\"batch\":4},
-              {\"server\":\"core-8\",\"ip\":\"$CORE_8_IP\",\"batch\":5},
-              {\"server\":\"core-9\",\"ip\":\"$CORE_9_IP\",\"batch\":6},
-              {\"server\":\"core-10\",\"ip\":\"$CORE_10_IP\",\"batch\":7},
-              {\"server\":\"core-13\",\"ip\":\"$CORE_13_IP\",\"batch\":8},
-              {\"server\":\"beta-1\",\"ip\":\"$BETA_1_IP\",\"batch\":9},
-              {\"server\":\"beta-red\",\"ip\":\"$BETA_RED_IP\",\"batch\":10}
+              {\"server\":\"core-5\",\"ip\":\"$CORE_5_IP\",\"batch\":2},
+              {\"server\":\"core-6\",\"ip\":\"$CORE_6_IP\",\"batch\":3},
+              {\"server\":\"core-8\",\"ip\":\"$CORE_8_IP\",\"batch\":4},
+              {\"server\":\"core-9\",\"ip\":\"$CORE_9_IP\",\"batch\":5},
+              {\"server\":\"core-10\",\"ip\":\"$CORE_10_IP\",\"batch\":6},
+              {\"server\":\"core-13\",\"ip\":\"$CORE_13_IP\",\"batch\":7},
+              {\"server\":\"beta-1\",\"ip\":\"$BETA_1_IP\",\"batch\":8},
+              {\"server\":\"beta-red\",\"ip\":\"$BETA_RED_IP\",\"batch\":9}
             ]}" >> $GITHUB_OUTPUT
             echo "total_apps=602" >> $GITHUB_OUTPUT
             
@@ -94,10 +91,9 @@ jobs:
             
             # Map server to IP via env vars (values come from secrets)
             case $SERVER in
-              core-1)     IP="$CORE_1_IP" ;;
-              core-2)     IP="$CORE_2_IP" ;;
-              core-4-kvm) IP="$CORE_4_KVM_IP" ;;
-              core-5)     IP="$CORE_5_IP" ;;
+              core-1)  IP="$CORE_1_IP" ;;
+              core-2)  IP="$CORE_2_IP" ;;
+              core-5)  IP="$CORE_5_IP" ;;
               core-6)     IP="$CORE_6_IP" ;;
               core-8)     IP="$CORE_8_IP" ;;
               core-9)     IP="$CORE_9_IP" ;;
@@ -125,7 +121,7 @@ jobs:
     timeout-minutes: 180  # 3 hours max per server
     strategy:
       fail-fast: false
-      max-parallel: 11
+      max-parallel: 10
       matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
     
     steps:
@@ -360,7 +356,7 @@ jobs:
                 "fields": [
                   {"name": "Mode", "value": "${{ github.event.inputs.mode || 'full' }}", "inline": true},
                   {"name": "Apps", "value": "${{ needs.prepare.outputs.total_apps }}", "inline": true},
-                  {"name": "Servers", "value": "11", "inline": true}
+                  {"name": "Servers", "value": "10", "inline": true}
                 ],
                 "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
               }]

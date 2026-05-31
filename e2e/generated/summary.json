@@ -1,7 +1,7 @@
 {
-  "generated": "2026-05-31T15:37:35.479Z",
+  "generated": "2026-05-31T16:04:12.526Z",
   "totalApps": 100,
-  "batches": 11,
+  "batches": 10,
   "appsPerBatch": 10,
   "byPriority": {
     "high": 9,

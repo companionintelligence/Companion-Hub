@@ -48,15 +48,14 @@ interface FleetNode {
 const BUILTIN_FLEET: FleetNode[] = [
   { name: 'core-1', ip: '100.108.17.53', batch: 0 },
   { name: 'core-2', ip: '100.101.156.33', batch: 1 },
-  { name: 'core-4-kvm', ip: '100.79.195.54', batch: 2 },
-  { name: 'core-5', ip: '100.73.255.24', batch: 3 },
-  { name: 'core-6', ip: '100.95.23.128', batch: 4 },
-  { name: 'core-8', ip: '100.98.33.44', batch: 5 },
-  { name: 'core-9', ip: '100.113.188.103', batch: 6 },
-  { name: 'core-10', ip: '100.87.68.116', batch: 7 },
-  { name: 'core-13', ip: '100.76.114.122', batch: 8 },
-  { name: 'beta-1', ip: '100.124.211.75', batch: 9 },
-  { name: 'beta-red', ip: '100.86.79.25', batch: 10 },
+  { name: 'core-5', ip: '100.73.255.24', batch: 2 },
+  { name: 'core-6', ip: '100.95.23.128', batch: 3 },
+  { name: 'core-8', ip: '100.98.33.44', batch: 4 },
+  { name: 'core-9', ip: '100.113.188.103', batch: 5 },
+  { name: 'core-10', ip: '100.87.68.116', batch: 6 },
+  { name: 'core-13', ip: '100.76.114.122', batch: 7 },
+  { name: 'beta-1', ip: '100.124.211.75', batch: 8 },
+  { name: 'beta-red', ip: '100.86.79.25', batch: 9 },
 ];
 
 const FLEET: FleetNode[] = process.env.FLEET_CONFIG_JSON ? JSON.parse(process.env.FLEET_CONFIG_JSON) : BUILTIN_FLEET;

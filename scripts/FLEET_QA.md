@@ -5,9 +5,10 @@ This document describes the QA testing infrastructure for the CI App Store.
 ## Overview
 
 We use a fleet of servers to parallelize App Store QA testing:
-- **9 core servers** (core-1, core-2, core-4-kvm, core-5, core-6, core-8, core-9, core-10, core-13) - Primary testing fleet
+- **8 core servers** (core-1, core-2, core-5, core-6, core-8, core-9, core-10, core-13) - Primary testing fleet
 - **2 beta servers** (beta-1, beta-red) - Extended fleet
 - **core-4** (100.121.17.113) — offline, excluded from test runs
+- **core-4-kvm** (100.79.195.54) — excluded from test runs
 
 ## Quick Start
 
@@ -24,17 +25,16 @@ BATCH=0 TOTAL_BATCHES=11 pnpm exec tsx scripts/qa-batch.ts
 ```bash
 # From control machine (liam-mbp) — requires FLEET_CONFIG_JSON set:
 export FLEET_CONFIG_JSON='[
-  {"name":"core-1","ip":"100.108.17.53","batch":0},
-  {"name":"core-2","ip":"100.101.156.33","batch":1},
-  {"name":"core-4-kvm","ip":"100.79.195.54","batch":2},
-  {"name":"core-5","ip":"100.73.255.24","batch":3},
-  {"name":"core-6","ip":"100.95.23.128","batch":4},
-  {"name":"core-8","ip":"100.98.33.44","batch":5},
-  {"name":"core-9","ip":"100.113.188.103","batch":6},
-  {"name":"core-10","ip":"100.87.68.116","batch":7},
-  {"name":"core-13","ip":"100.76.114.122","batch":8},
-  {"name":"beta-1","ip":"100.124.211.75","batch":9},
-  {"name":"beta-red","ip":"100.86.79.25","batch":10}
+  {"name":"core-1",  "ip":"100.108.17.53",  "batch":0},
+  {"name":"core-2",  "ip":"100.101.156.33", "batch":1},
+  {"name":"core-5",  "ip":"100.73.255.24",  "batch":2},
+  {"name":"core-6",  "ip":"100.95.23.128",  "batch":3},
+  {"name":"core-8",  "ip":"100.98.33.44",   "batch":4},
+  {"name":"core-9",  "ip":"100.113.188.103","batch":5},
+  {"name":"core-10", "ip":"100.87.68.116",  "batch":6},
+  {"name":"core-13", "ip":"100.76.114.122", "batch":7},
+  {"name":"beta-1",  "ip":"100.124.211.75", "batch":8},
+  {"name":"beta-red","ip":"100.86.79.25",   "batch":9}
 ]'
 pnpm exec tsx scripts/run-fleet-tests.ts --execute
 ```
@@ -138,24 +138,24 @@ pnpm exec tsx scripts/generate-catalog-tests.ts
 APP_STORE_PATH=/path/to/CI-Marketplace/apps pnpm exec tsx scripts/generate-catalog-tests.ts
 ```
 
-This creates 11 batch files (`catalog-batch-0.spec.ts` ... `catalog-batch-10.spec.ts`), one per server.
+This creates 10 batch files (`catalog-batch-0.spec.ts` ... `catalog-batch-9.spec.ts`), one per server.
 
 ## Server Fleet
 
 | Server | Tailscale IP | Batch | Status |
 |--------|-------------|-------|--------|
-| core-1 | 100.108.17.53 | 0 | Ready (registry cache host) |
-| core-2 | 100.101.156.33 | 1 | Ready |
-| core-4-kvm | 100.79.195.54 | 2 | Ready |
-| core-5 | 100.73.255.24 | 3 | Ready |
-| core-6 | 100.95.23.128 | 4 | Ready |
-| core-8 | 100.98.33.44 | 5 | Ready |
-| core-9 | 100.113.188.103 | 6 | Ready |
-| core-10 | 100.87.68.116 | 7 | Ready |
-| core-13 | 100.76.114.122 | 8 | Ready |
-| beta-1 | 100.124.211.75 | 9 | Ready |
-| beta-red | 100.86.79.25 | 10 | Ready |
-| core-4 | 100.121.17.113 | -- | Offline |
+| core-1   | 100.108.17.53  | 0 | Ready (registry cache host) |
+| core-2   | 100.101.156.33 | 1 | Ready |
+| core-5   | 100.73.255.24  | 2 | Ready |
+| core-6   | 100.95.23.128  | 3 | Ready |
+| core-8   | 100.98.33.44   | 4 | Ready |
+| core-9   | 100.113.188.103| 5 | Ready |
+| core-10  | 100.87.68.116  | 6 | Ready |
+| core-13  | 100.76.114.122 | 7 | Ready |
+| beta-1   | 100.124.211.75 | 8 | Ready |
+| beta-red | 100.86.79.25   | 9 | Ready |
+| core-4   | 100.121.17.113 | — | Offline |
+| core-4-kvm | 100.79.195.54| — | Excluded |
 
 ## GitHub Actions Secrets Required
 
@@ -165,7 +165,6 @@ Add under Settings > Secrets and variables > Actions:
 |--------|-------|
 | `FLEET_CORE_1_IP` | Tailscale IP for core-1 |
 | `FLEET_CORE_2_IP` | Tailscale IP for core-2 |
-| `FLEET_CORE_4_KVM_IP` | Tailscale IP for core-4-kvm |
 | `FLEET_CORE_5_IP` | Tailscale IP for core-5 |
 | `FLEET_CORE_6_IP` | Tailscale IP for core-6 |
 | `FLEET_CORE_8_IP` | Tailscale IP for core-8 |

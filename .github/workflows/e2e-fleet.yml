@@ -12,7 +12,6 @@ on:
         options:
           - core-1
           - core-2
-          - core-4-kvm
           - core-5
           - core-6
           - core-8
@@ -41,7 +40,6 @@ env:
   # Names: CORE_1, CORE_2, CORE_4_KVM, CORE_5, CORE_6, CORE_8, CORE_9, CORE_10, CORE_13, BETA_1, BETA_RED
   CORE_1_IP: ${{ secrets.FLEET_CORE_1_IP }}
   CORE_2_IP: ${{ secrets.FLEET_CORE_2_IP }}
-  CORE_4_KVM_IP: ${{ secrets.FLEET_CORE_4_KVM_IP }}
   CORE_5_IP: ${{ secrets.FLEET_CORE_5_IP }}
   CORE_6_IP: ${{ secrets.FLEET_CORE_6_IP }}
   CORE_8_IP: ${{ secrets.FLEET_CORE_8_IP }}
@@ -73,10 +71,9 @@ jobs:
         run: |
           SERVER="${{ github.event.inputs.server || 'core-6' }}"
           case $SERVER in
-            core-1)     echo "ip=${{ env.CORE_1_IP }}" >> $GITHUB_OUTPUT ;;
-            core-2)     echo "ip=${{ env.CORE_2_IP }}" >> $GITHUB_OUTPUT ;;
-            core-4-kvm) echo "ip=${{ env.CORE_4_KVM_IP }}" >> $GITHUB_OUTPUT ;;
-            core-5)     echo "ip=${{ env.CORE_5_IP }}" >> $GITHUB_OUTPUT ;;
+            core-1)   echo "ip=${{ env.CORE_1_IP }}" >> $GITHUB_OUTPUT ;;
+            core-2)   echo "ip=${{ env.CORE_2_IP }}" >> $GITHUB_OUTPUT ;;
+            core-5)   echo "ip=${{ env.CORE_5_IP }}" >> $GITHUB_OUTPUT ;;
             core-6)     echo "ip=${{ env.CORE_6_IP }}" >> $GITHUB_OUTPUT ;;
             core-8)     echo "ip=${{ env.CORE_8_IP }}" >> $GITHUB_OUTPUT ;;
             core-9)     echo "ip=${{ env.CORE_9_IP }}" >> $GITHUB_OUTPUT ;;

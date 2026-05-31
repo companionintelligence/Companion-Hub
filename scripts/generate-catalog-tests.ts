@@ -196,8 +196,8 @@ async function main() {
   // Save full catalog
   await writeFile(join(OUTPUT_PATH, 'catalog.json'), JSON.stringify(catalog, null, 2));
 
-  // Split into batches for 11 servers (full online fleet)
-  const SERVERS = 11;
+  // Split into batches for 10 servers (full online fleet, core-4-kvm excluded)
+  const SERVERS = 10;
   const batchSize = Math.ceil(catalog.length / SERVERS);
 
   for (let i = 0; i < SERVERS; i++) {
