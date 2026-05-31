@@ -122,17 +122,40 @@ async function autoConfigureInference(api: OpenClawPluginApi, hubUrl: string, ap
       );
     }
 
-    // S-OC-1.2: Register local models as an OpenClaw provider
-    const localModels = inferenceStatus.models.filter(
-      (m) => m.local && m.modality.includes('text') && (m.state === 'loaded' || m.state === 'pinned'),
-    );
+    // S-OC-1.2: Register local models as an OpenClaw provider.
+    // Prefer direct Ollama discovery so OpenClaw always receives the native model IDs
+    // it must pass to the OpenAI-compatible /v1 surface.
+    const inferenceBaseUrl = `${(process.env.OLLAMA_HOST ?? 'http://ci-hub-ollama:11434').replace(/\/$/, '')}/v1`;
+    let localModels = [] as Array<{ id: string; context_window?: number; max_tokens?: number }>;
+    try {
+      const response = await fetch(`${inferenceBaseUrl}/models`);
+      if (response.ok) {
+        const payload = (await response.json()) as { data?: Array<{ id?: string; context_window?: number; max_tokens?: number }> };
+        localModels = (payload.data ?? [])
+          .filter(
+            (model): model is { id: string; context_window?: number; max_tokens?: number } => typeof model.id === 'string' && model.id.length > 0,
+          )
+          .map((model) => ({
+            id: model.id,
+            context_window: model.context_window,
+            max_tokens: model.max_tokens,
+          }));
+      }
+    } catch {
+      api.log.debug('Direct Ollama model discovery unavailable — falling back to Hub inference status');
+    }
+
+    if (localModels.length === 0) {
+      localModels = inferenceStatus.models
+        .filter((m) => m.local && m.modality.includes('text') && (m.state === 'pulled' || m.state === 'loaded' || m.state === 'pinned'))
+        .map((m) => ({
+          id: m.id,
+          context_window: m.context_window,
+          max_tokens: m.max_tokens,
+        }));
+    }
 
     if (localModels.length > 0 && api.registerProvider) {
-      // The Hub no longer proxies inference — point OpenClaw at the Ollama
-      // container's own OpenAI-compatible /v1 directly (OLLAMA_HOST is injected
-      // into every Hub-installed app).
-      const inferenceBaseUrl = `${(process.env.OLLAMA_HOST ?? 'http://ci-hub-ollama:11434').replace(/\/$/, '')}/v1`;
-
       api.registerProvider({
         id: 'ci-hub',
         label: 'CI Hub (Local)',

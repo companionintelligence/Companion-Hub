@@ -1,7 +1,9 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { HubStatus, getDockerDesktopGuideContent } from './hub-status';
+import * as hubStatusModule from './hub-status';
+
+const { HubStatus, getDockerDesktopGuideContent } = hubStatusModule;
 
 vi.mock('@/lib/theme/theme', () => ({
   getLogo: () => '/logo.svg',
@@ -387,5 +389,31 @@ describe('HubStatus diagnostics (View Logs / Open Logs Folder)', () => {
     // No blocking screens should be shown
     expect(screen.queryByRole('button', { name: 'Start Hub' })).not.toBeInTheDocument();
     expect(screen.queryByText('Starting Companion Hub')).not.toBeInTheDocument();
+  });
+
+  it('does not reload after a transient Starting blip once the hub is already running', async () => {
+    vi.useFakeTimers();
+    const reloadSpy = vi.spyOn(hubStatusModule, 'reloadCurrentWindow').mockImplementation(() => {});
+
+    mockMacTauriWithStatus(['Running', 'Starting', 'Running']);
+
+    await flushAsyncWork();
+    expect(screen.getByText('Hub child')).toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    await flushAsyncWork();
+
+    expect(screen.getByText('Hub child')).toBeInTheDocument();
+    expect(screen.queryByText('Starting Companion Hub')).not.toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    await flushAsyncWork();
+
+    expect(reloadSpy).not.toHaveBeenCalled();
+    expect(screen.getByText('Hub child')).toBeInTheDocument();
   });
 });

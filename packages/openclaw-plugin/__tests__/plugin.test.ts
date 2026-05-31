@@ -6,6 +6,8 @@ function createMockApi(): OpenClawPluginApi {
   return {
     registerTool: vi.fn(),
     registerHttpRoute: vi.fn(),
+    registerProvider: vi.fn(),
+    registerSpeechProvider: vi.fn(),
     wake: vi.fn(),
     log: {
       info: vi.fn(),
@@ -115,6 +117,76 @@ describe('CI-Hub Plugin', () => {
     await register(api, baseConfig);
 
     expect(api.log.warn).toHaveBeenCalled();
+  });
+
+  it('registers the ci-hub provider with real Ollama model ids', async () => {
+    const fetchSpy = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes('/api/health')) return { ok: true };
+      if (url.includes('/api/mcp/sse')) return { ok: true, body: createSseStream('http://localhost:5002/api/mcp/messages') };
+      if (url === 'http://ci-hub-ollama:11434/v1/models') {
+        return {
+          ok: true,
+          json: async () => ({
+            data: [{ id: 'qwen3:8b', context_window: 131072, max_tokens: 8192 }],
+          }),
+        };
+      }
+      const body = init?.body ? JSON.parse(String(init.body)) : null;
+      if (body?.method === 'initialize') {
+        return { ok: true, json: async () => ({ jsonrpc: '2.0', id: body.id, result: { serverInfo: {} } }) };
+      }
+      if (body?.method === 'tools/list') {
+        return { ok: true, json: async () => ({ jsonrpc: '2.0', id: body.id, result: { tools: [] } }) };
+      }
+      if (body?.method === 'tools/call' && body?.params?.name === 'hub_get_inference_status') {
+        return {
+          ok: true,
+          json: async () => ({
+            jsonrpc: '2.0',
+            id: body.id,
+            result: {
+              hardwareTier: 'high',
+              backends: [],
+              memoryBudget: {},
+              cloudProviders: [],
+              models: [
+                {
+                  id: 'catalog-model-id',
+                  object: 'model',
+                  owned_by: 'local:ollama',
+                  state: 'pinned',
+                  backend: 'ollama',
+                  modality: ['text'],
+                  local: true,
+                },
+              ],
+            },
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({ jsonrpc: '2.0', id: body?.id ?? 1, result: {} }) };
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+    process.env.OLLAMA_HOST = 'http://ci-hub-ollama:11434';
+
+    await register(api, baseConfig);
+
+    expect(api.registerProvider).toHaveBeenCalledTimes(1);
+    const provider = vi.mocked(api.registerProvider).mock.calls[0]?.[0];
+    expect(provider?.id).toBe('ci-hub');
+    expect(provider).toBeDefined();
+
+    const catalog = await provider.catalog.run({});
+    expect(catalog.provider.baseUrl).toBe('http://ci-hub-ollama:11434/v1');
+    expect(catalog.provider.models).toEqual([
+      expect.objectContaining({
+        id: 'qwen3:8b',
+        name: 'qwen3:8b',
+        contextWindow: 131072,
+        maxTokens: 8192,
+      }),
+    ]);
+    expect(catalog.provider.models.find((model) => model.id === 'auto')).toBeUndefined();
   });
 
   describe('R-PLG: Env var fallback', () => {
