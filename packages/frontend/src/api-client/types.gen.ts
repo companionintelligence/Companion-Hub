@@ -270,7 +270,7 @@ export type MyAppsDto = {
             urn: string;
             version: string;
             gid?: number;
-            min_cihub_app_version?: string;
+            min_hub_version?: string;
             port?: number;
             uid?: number;
             url_suffix?: string;
@@ -351,7 +351,7 @@ export type GuestAppsDto = {
             urn: string;
             version: string;
             gid?: number;
-            min_cihub_app_version?: string;
+            min_hub_version?: string;
             port?: number;
             uid?: number;
             url_suffix?: string;
@@ -414,7 +414,7 @@ export type GetAppDto = {
         urn: string;
         version: string;
         gid?: number;
-        min_cihub_app_version?: string;
+        min_hub_version?: string;
         port?: number;
         uid?: number;
         url_suffix?: string;

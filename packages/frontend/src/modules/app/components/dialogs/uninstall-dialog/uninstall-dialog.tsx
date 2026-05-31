@@ -58,7 +58,7 @@ export const UninstallDialog = ({ info, isOpen, onClose }: IProps) => {
               className="text-start"
               checked={shouldDeleteAllData}
               onCheckedChange={setShouldDeleteAllData}
-              label={t('APP_UNINSTALL_FORM_REMOVE_BACKUPS')}
+              label={t('APP_UNINSTALL_FORM_DELETE_ALL_DATA')}
             />
           </div>
         </DialogDescription>

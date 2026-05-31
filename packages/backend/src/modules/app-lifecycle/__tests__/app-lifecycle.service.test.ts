@@ -308,6 +308,28 @@ describe('AppLifecycleService', () => {
         }),
       ).rejects.toThrow('APP_ERROR_PORT_ALREADY_IN_USE');
     });
+
+    it('MUST reject duplicate port for cloudflare exposedLocal when openPort is false', async () => {
+      appsRepository.getAppsByPort.mockResolvedValue([{ appName: 'taken-port' }] as any);
+
+      await expect(
+        service.installApp({
+          appUrn,
+          form: { exposureMode: 'cloudflare', exposedLocal: true, openPort: false, port: 8080 },
+        }),
+      ).rejects.toThrow('APP_ERROR_PORT_ALREADY_IN_USE');
+    });
+
+    it('MUST skip duplicate-port checks when cloudflare apps do not publish a host port', async () => {
+      appsRepository.getAppsByPort.mockResolvedValue([{ appName: 'taken-port' }] as any);
+
+      await service.installApp({
+        appUrn,
+        form: { exposureMode: 'cloudflare', exposedLocal: false, openPort: false, port: 8080 },
+      });
+
+      expect(appsRepository.getAppsByPort).not.toHaveBeenCalled();
+    });
   });
 
   describe('startApp', () => {
@@ -680,6 +702,7 @@ describe('AppLifecycleService', () => {
       await flushMicrotasks();
 
       expectEventAfterNthUpdate('uninstall_error', 1);
+      // Backups are always removed on uninstall, even when app data/volumes are preserved.
       expect(backupManager.deleteAppBackupsByUrn).toHaveBeenCalledWith(appUrn);
       expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'uninstall', appUrn, deleteAllData: false }));
     });

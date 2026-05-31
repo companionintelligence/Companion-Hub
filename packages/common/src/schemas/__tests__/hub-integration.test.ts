@@ -112,6 +112,15 @@ describe('hubIntegrationSchema', () => {
       }
     });
 
+    it('should default cihub_app_version to 1 when omitted', () => {
+      const { cihub_app_version: _, ...withoutVersion } = minimalAppInfo;
+      const result = appInfoSchema.safeParse(withoutVersion);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.cihub_app_version).toBe(1);
+      }
+    });
+
     it('should parse appInfoSchema without hub_integration', () => {
       const result = appInfoSchema.safeParse(minimalAppInfo);
       expect(result.success).toBe(true);

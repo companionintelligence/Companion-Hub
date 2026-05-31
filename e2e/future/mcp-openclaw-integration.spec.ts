@@ -384,7 +384,7 @@ test.describe('Full OpenClaw install with GitHub Copilot provider', () => {
       await fetch(`${BACKEND_URL}/api/app-lifecycle/${encodeURIComponent(APP_URN)}/uninstall`, {
         method: 'DELETE',
         headers: authHeaders(sessionId, 'application/json'),
-        body: JSON.stringify({ removeBackups: true }),
+        body: JSON.stringify({ deleteAllData: true }),
       });
       await new Promise((r) => setTimeout(r, 3000));
     } catch {

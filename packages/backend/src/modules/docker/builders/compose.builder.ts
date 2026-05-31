@@ -6,6 +6,7 @@ import type { AppUrn } from '@ci-hub/common/types';
 import * as yaml from 'yaml';
 import { type BuiltService, ServiceBuilder } from './service.builder';
 import { TraefikLabelsBuilder } from './traefik-labels.builder';
+import { publishesHostPort } from '@/modules/apps/app-exposure.helpers';
 import { z } from 'zod';
 
 interface Network {
@@ -138,7 +139,7 @@ export class DockerComposeBuilder {
     if (params.isMain) {
       // Publish host port for local-mode apps, explicit openPort, or Cloudflare/Tailscale
       // exposed apps so the UI remains reachable on the LAN during DNS propagation.
-      if ((form.openPort || effectiveExposureMode === 'local' || form.exposedLocal) && params.internalPort) {
+      if (publishesHostPort(form) && params.internalPort) {
         service.setPort({
           containerPort: params.internalPort,
           // biome-ignore lint/suspicious/noTemplateCurlyInString: intended

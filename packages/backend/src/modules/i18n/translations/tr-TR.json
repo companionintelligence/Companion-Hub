@@ -275,7 +275,7 @@
   "APP_STORE_ADD_FORM_URL": "Uygulama mağazası URL'si",
   "APP_STORE_ADD_FORM_SUBMIT": "Yeni uygulama mağazası oluştur",
   "APP_STORE_ADD_SUCCESS": "Uygulama mağazası başarıyla eklendi",
-  "APP_UNINSTALL_FORM_REMOVE_BACKUPS": "Delete all data",
+  "APP_UNINSTALL_FORM_REMOVE_BACKUPS": "Yedeklemeleri kaldır",
   "APP_UNINSTALL_FORM_SUBMIT": "Kaldır",
   "APP_UNINSTALL_FORM_SUBTITLE": "Bu uygulamaya ait tüm veriler kaybolacak.",
   "APP_UNINSTALL_FORM_TITLE": "{{name}} kaldırılsın mı?",
@@ -613,5 +613,6 @@
   "MULTI_SERVICE_BACK_TO_FORM": "Forma geri dön",
   "MULTI_SERVICE_UNSAVED_CHANGES_CONFIRM": "Kaydedilmemiş değişiklikleriniz var. Kaydetmeden ayrılmak istediğinizden emin misiniz?",
   "MULTI_SERVICE_JSON_UPDATE_SUCCESS": "Servis yapılandırması başarıyla güncellendi",
-  "MULTI_SERVICE_JSON_REFERENCE": "Dinamik Compose Referansı"
+  "MULTI_SERVICE_JSON_REFERENCE": "Dinamik Compose Referansı",
+  "APP_UNINSTALL_FORM_DELETE_ALL_DATA": "Tüm verileri sil"
 }

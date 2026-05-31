@@ -27,6 +27,7 @@ describe('UninstallAppCommand', () => {
     logger = mockDeep<LoggerService>();
     appFilesManager = mock<AppFilesManager>();
     appFilesManager.deleteAppFolder.mockResolvedValue();
+    appFilesManager.deleteAppDataDir.mockResolvedValue();
 
     portManager = mock<PortManagerService>();
     portManager.releaseAll.mockResolvedValue(1);
@@ -61,6 +62,7 @@ describe('UninstallAppCommand', () => {
     expect(dockerService.removeAppImages).toHaveBeenCalledWith(appUrn, ['sha256:a']);
     expect(dockerService.removeAppNetworks).toHaveBeenCalledWith(appUrn);
     expect(appFilesManager.deleteAppFolder).toHaveBeenCalledWith(appUrn);
+    expect(appFilesManager.deleteAppDataDir).toHaveBeenCalledWith(appUrn);
 
     const snapshotOrder = dockerService.snapshotAppImageIds.mock.invocationCallOrder[0];
     const downOrder = dockerService.composeApp.mock.invocationCallOrder[0];
@@ -92,6 +94,8 @@ describe('UninstallAppCommand', () => {
 
     expect(result).toEqual({ success: true, message: `App ${appUrn} uninstalled successfully` });
     expect(dockerService.composeApp).toHaveBeenCalledWith(appUrn, 'down --remove-orphans --rmi all');
+    expect(appFilesManager.deleteAppFolder).toHaveBeenCalledWith(appUrn);
+    expect(appFilesManager.deleteAppDataDir).not.toHaveBeenCalled();
   });
 
   it('continues uninstall when compose down fails and cleanup helpers remain non-fatal', async () => {

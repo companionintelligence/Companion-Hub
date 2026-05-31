@@ -275,7 +275,7 @@
   "APP_STORE_ADD_FORM_URL": "App Store URL",
   "APP_STORE_ADD_FORM_SUBMIT": "Neuen App Store erstellen",
   "APP_STORE_ADD_SUCCESS": "App Store erfolgreich hinzugefügt",
-  "APP_UNINSTALL_FORM_REMOVE_BACKUPS": "Delete all data",
+  "APP_UNINSTALL_FORM_REMOVE_BACKUPS": "Backups entfernen",
   "APP_UNINSTALL_FORM_SUBMIT": "Deinstallieren",
   "APP_UNINSTALL_FORM_SUBTITLE": "Alle Daten für diese Anwendung werden gelöscht.",
   "APP_UNINSTALL_FORM_TITLE": "{{name}} deinstallieren?",
@@ -613,5 +613,6 @@
   "MULTI_SERVICE_BACK_TO_FORM": "Back to form",
   "MULTI_SERVICE_UNSAVED_CHANGES_CONFIRM": "You have unsaved changes. Are you sure you want to leave without saving?",
   "MULTI_SERVICE_JSON_UPDATE_SUCCESS": "Service configuration updated successfully",
-  "MULTI_SERVICE_JSON_REFERENCE": "Dynamic Compose Reference"
+  "MULTI_SERVICE_JSON_REFERENCE": "Dynamic Compose Reference",
+  "APP_UNINSTALL_FORM_DELETE_ALL_DATA": "Alle Daten löschen"
 }

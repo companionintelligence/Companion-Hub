@@ -1,7 +1,8 @@
 #!/usr/bin/env tsx
 /**
  * Probe physical host RAM, CPU, and disk before Hub containers start.
- * Writes state/hardware/host_metrics.json under ROOT_FOLDER_HOST.
+ * Writes state/hardware/host_metrics.json under the configured state directory
+ * (CI_HUB_STATE_PATH/STATE_PATH, ROOT_FOLDER_HOST/state, or .internal/state).
  */
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';

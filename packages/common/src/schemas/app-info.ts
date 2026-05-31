@@ -77,7 +77,7 @@ export const appInfoObjectSchema = z.object({
   name: z.string(),
   description: z.string().optional().default(''),
   version: z.string().optional().default('latest'),
-  cihub_app_version: z.number(),
+  cihub_app_version: z.number().optional().default(1),
   short_desc: z.string(),
   author: z.string(),
   source: z.string(),
@@ -116,12 +116,7 @@ export const appInfoObjectSchema = z.object({
 
 export const appInfoSchema = z.preprocess(normalizeAppInfoInput, appInfoObjectSchema);
 
-export type LegacyAppInfoFields = {
-  tipi_version?: number;
-  min_tipi_version?: string;
-};
-
-export type AppInfoInput = z.input<typeof appInfoObjectSchema> & LegacyAppInfoFields;
+export type AppInfoInput = z.input<typeof appInfoObjectSchema>;
 export type AppInfo = z.output<typeof appInfoObjectSchema>;
 export type FormField = z.output<typeof formFieldSchema>;
 

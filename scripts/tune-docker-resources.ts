@@ -1,6 +1,8 @@
 #!/usr/bin/env tsx
 /**
  * Raise Docker Desktop / WSL2 memory toward a safe host maximum on first Hub start.
+ * Reads host_metrics.json and writes docker-tuning.json under the same state directory
+ * as init-host-probe (CI_HUB_STATE_PATH/STATE_PATH, ROOT_FOLDER_HOST/state, or .internal/state).
  * Linux native Docker is a no-op. Never reduces existing limits.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -45,6 +47,9 @@ function parseEnvFile(filePath: string): Record<string, string> {
 }
 
 function resolveStateDir(): string {
+  const internalDir = process.env.CI_HUB_STATE_PATH || process.env.STATE_PATH;
+  if (internalDir) return path.join(internalDir, 'state');
+
   const envFile = process.env.ENV_FILE;
   if (envFile) {
     const fromEnvFile = parseEnvFile(path.resolve(process.cwd(), envFile)).ROOT_FOLDER_HOST;
@@ -53,11 +58,13 @@ function resolveStateDir(): string {
       return path.join(rootFolder, 'state');
     }
   }
+
   const rootFromEnv = process.env.ROOT_FOLDER_HOST;
   if (rootFromEnv) {
     const rootFolder = path.isAbsolute(rootFromEnv) ? rootFromEnv : path.resolve(process.cwd(), rootFromEnv);
     return path.join(rootFolder, 'state');
   }
+
   return path.resolve(process.cwd(), '.internal', 'state');
 }
 
@@ -134,8 +141,37 @@ function tuneMacOsDocker(hostRamMb: number): DockerTuningRecord {
   };
 }
 
+function getWsl2SectionBounds(lines: string[]): { start: number; end: number } | null {
+  const headerRe = /^\s*\[wsl2\]\s*$/i;
+  const anySectionRe = /^\s*\[.+\]\s*$/;
+
+  for (let i = 0; i < lines.length; i++) {
+    if (!headerRe.test(lines[i])) continue;
+
+    let end = lines.length;
+    for (let j = i + 1; j < lines.length; j++) {
+      if (anySectionRe.test(lines[j])) {
+        end = j;
+        break;
+      }
+    }
+    return { start: i, end };
+  }
+
+  return null;
+}
+
+function getWsl2SectionText(content: string): string | null {
+  const bounds = getWsl2SectionBounds(content.split('\n'));
+  if (!bounds) return null;
+  return content.split('\n').slice(bounds.start, bounds.end).join('\n');
+}
+
 function parseWslMemoryMb(content: string): number | null {
-  const match = content.match(/^\s*memory\s*=\s*(\d+)\s*(GB|MB)?/im);
+  const section = getWsl2SectionText(content);
+  if (!section) return null;
+
+  const match = section.match(/^\s*memory\s*=\s*(\d+)\s*(GB|MB)?/im);
   if (!match) return null;
   const value = Number.parseInt(match[1] ?? '', 10);
   if (!Number.isFinite(value) || value <= 0) return null;
@@ -143,18 +179,33 @@ function parseWslMemoryMb(content: string): number | null {
   return unit === 'GB' ? value * 1024 : value;
 }
 
+function hasWsl2ConfigKey(content: string, key: string): boolean {
+  const section = getWsl2SectionText(content);
+  if (!section) return false;
+  return new RegExp(`^\\s*${key}\\s*=`, 'im').test(section);
+}
+
 function upsertWslConfigLine(content: string, key: string, value: string): string {
+  const lines = content.split('\n');
   const line = `${key}=${value}`;
-  const pattern = new RegExp(`^\\s*${key}\\s*=.*$`, 'im');
-  if (pattern.test(content)) {
-    return content.replace(pattern, line);
+  const keyPattern = new RegExp(`^\\s*${key}\\s*=.*$`, 'i');
+  const bounds = getWsl2SectionBounds(lines);
+
+  if (!bounds) {
+    const trimmed = content.trimEnd();
+    const prefix = trimmed.length > 0 ? `${trimmed}\n\n` : '';
+    return `${prefix}[wsl2]\n${line}\n`;
   }
-  const trimmed = content.trimEnd();
-  const prefix = trimmed.length > 0 ? `${trimmed}\n` : '[wsl2]\n';
-  if (!/\[wsl2\]/i.test(prefix)) {
-    return `[wsl2]\n${line}\n`;
+
+  for (let i = bounds.start + 1; i < bounds.end; i++) {
+    if (keyPattern.test(lines[i])) {
+      lines[i] = line;
+      return lines.join('\n');
+    }
   }
-  return `${prefix}${line}\n`;
+
+  lines.splice(bounds.end, 0, line);
+  return lines.join('\n');
 }
 
 function tuneWindowsWsl(hostRamMb: number): DockerTuningRecord {
@@ -178,7 +229,7 @@ function tuneWindowsWsl(hostRamMb: number): DockerTuningRecord {
 
   let updated = upsertWslConfigLine(existing, 'memory', `${targetGb}GB`);
   const hostCores = os.cpus().length;
-  if (hostCores > 0 && !/^\s*processors\s*=/im.test(updated)) {
+  if (hostCores > 0 && !hasWsl2ConfigKey(updated, 'processors')) {
     updated = upsertWslConfigLine(updated, 'processors', String(Math.min(hostCores, 12)));
   }
   writeFileSync(wslConfigPath, updated.endsWith('\n') ? updated : `${updated}\n`, 'utf8');

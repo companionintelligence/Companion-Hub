@@ -35,8 +35,8 @@ export class HostMetricsService {
 
   async getDisplayLoad(cpuLoad: number, cpuCoresFromSi: number): Promise<HostMetricsDisplayLoad> {
     const [hostProbe, container] = await Promise.all([this.loadHostProbe(), this.readContainerMetrics()]);
-    const runtimeKind = this.detectRuntimeKind(hostProbe, container);
-    const hasVmWedge = runtimeKind === 'docker-desktop-vm' || runtimeKind === 'wsl2-vm';
+    const runtimeKind = this.detectRuntimeKind(hostProbe);
+    const hasVmWedge = this.detectVmWedge(hostProbe, container);
 
     const host = hostProbe?.host;
     const memoryTotalGb = host ? Math.round(host.totalRamMb / 1024) : container.memoryTotalGb;
@@ -92,7 +92,7 @@ export class HostMetricsService {
     return Math.max(MIN_DOCKER_RAM_MB, Math.min(capped, reserved, hostRamMb));
   }
 
-  detectRuntimeKind(hostProbe: HostMetricsProbeFile | null, container: HostMetricsContainerSection & { memoryTotalGb: number }): RuntimeKind {
+  detectRuntimeKind(hostProbe: HostMetricsProbeFile | null): RuntimeKind {
     if (!hostProbe?.host?.totalRamMb) {
       if (process.env.NODE_ENV === 'development' && !process.env.CI_HUB_IN_DOCKER) {
         return 'host-native';
@@ -100,23 +100,30 @@ export class HostMetricsService {
       return 'container-only';
     }
 
-    const hostRamMb = hostProbe.host.totalRamMb;
-    const containerRamMb = container.totalRamMb;
-
-    if (containerRamMb > 0 && hostRamMb > containerRamMb * VM_WEDGE_RATIO) {
-      if (hostProbe.platform === 'win32') return 'wsl2-vm';
-      return 'docker-desktop-vm';
-    }
-
     if (hostProbe.platform === 'linux') {
       return 'linux-native';
+    }
+    if (hostProbe.platform === 'win32') {
+      return 'wsl2-vm';
+    }
+    if (hostProbe.platform === 'darwin') {
+      return 'docker-desktop-vm';
     }
 
     if (process.env.NODE_ENV === 'development') {
       return 'host-native';
     }
 
-    return 'linux-native';
+    return 'container-only';
+  }
+
+  detectVmWedge(hostProbe: HostMetricsProbeFile | null, container: Pick<HostMetricsContainerSection, 'totalRamMb'>): boolean {
+    const hostRamMb = hostProbe?.host?.totalRamMb;
+    const containerRamMb = container.totalRamMb;
+    if (!hostRamMb || containerRamMb <= 0) {
+      return false;
+    }
+    return hostRamMb > containerRamMb * VM_WEDGE_RATIO;
   }
 
   private async loadHostProbe(): Promise<HostMetricsProbeFile | null> {

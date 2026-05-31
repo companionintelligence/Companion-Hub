@@ -272,7 +272,7 @@
   "APP_STORE_ADD_FORM_URL": "应用商店URL",
   "APP_STORE_ADD_FORM_SUBMIT": "创建新应用商店",
   "APP_STORE_ADD_SUCCESS": "应用商店添加成功",
-  "APP_UNINSTALL_FORM_REMOVE_BACKUPS": "Delete all data",
+  "APP_UNINSTALL_FORM_REMOVE_BACKUPS": "删除备份",
   "APP_UNINSTALL_FORM_SUBMIT": "卸载",
   "APP_UNINSTALL_FORM_SUBTITLE": "此应用的所有数据将丢失。",
   "APP_UNINSTALL_FORM_TITLE": "卸载 {{name}} 吗？",
@@ -610,5 +610,6 @@
   "MULTI_SERVICE_BACK_TO_FORM": "Back to form",
   "MULTI_SERVICE_UNSAVED_CHANGES_CONFIRM": "You have unsaved changes. Are you sure you want to leave without saving?",
   "MULTI_SERVICE_JSON_UPDATE_SUCCESS": "Service configuration updated successfully",
-  "MULTI_SERVICE_JSON_REFERENCE": "Dynamic Compose Reference"
+  "MULTI_SERVICE_JSON_REFERENCE": "Dynamic Compose Reference",
+  "APP_UNINSTALL_FORM_DELETE_ALL_DATA": "删除所有数据"
 }

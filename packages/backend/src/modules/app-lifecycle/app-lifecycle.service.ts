@@ -24,6 +24,7 @@ import { APP_ASYNC_MUTEX } from '@/utils/mutex/mutex.module';
 import type { AsyncMutex } from '@/utils/mutex/async-mutex';
 import type { z } from 'zod';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
+import { publishesHostPort } from '../apps/app-exposure.helpers';
 
 type AppFormForSubdomain = Pick<z.infer<typeof appFormSchema>, 'exposedLocal' | 'exposureMode' | 'localSubdomain'>;
 type ParsedAppForm = z.infer<typeof appFormSchema>;
@@ -274,7 +275,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       }
     }
 
-    if (openPort && port) {
+    if (publishesHostPort(parsedForm) && port) {
       const appsWithSamePort = await this.appRepository.getAppsByPort(port);
 
       if (appsWithSamePort.length > 0) {
@@ -294,9 +295,9 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       status: 'installing' as const,
       config: parsedForm,
       // Port semantics:
-      // - Local exposure always publishes the host port, so local mode is normalized to openPort=true.
-      // - Cloudflare/Tailscale with openPort=false keep using params.internalPort for routing instead.
-      // - Traefik routing uses params.internalPort from service definition, not this database field.
+      // - Local exposure always publishes the host port (normalized to openPort=true when needed).
+      // - Cloudflare/Tailscale with exposedLocal also publish the host port for LAN access during DNS propagation.
+      // - Traefik routing uses params.internalPort from the service definition, not this database field.
       port: parsedForm.port ?? appInfo.port,
       version: appInfo.cihub_app_version,
       exposed: exposed ?? false,
@@ -415,6 +416,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn });
     }
 
+    // Backups are always removed on uninstall (not exposed in the UI; independent of deleteAllData).
     await this.backupManager.deleteAppBackupsByUrn(appUrn);
 
     await this.appRepository.updateAppById(app.id, { status: 'uninstalling' });
@@ -558,7 +560,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       }
     }
 
-    if (openPort && port) {
+    if (publishesHostPort(parsedForm) && port) {
       const appsWithSamePort = await this.appRepository.getAppsByPort(port, app.id);
 
       if (appsWithSamePort.length > 0) {

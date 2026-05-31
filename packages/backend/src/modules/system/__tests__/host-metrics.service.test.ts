@@ -63,51 +63,50 @@ describe('HostMetricsService', () => {
     });
 
   describe('detectRuntimeKind', () => {
-    it('detects docker-desktop-vm when host RAM exceeds container RAM', () => {
-      const kind = service.detectRuntimeKind(JSON.parse(hostProbeJson()) as any, {
-        totalRamMb: 8192,
-        availableRamMb: 4096,
-        diskTotalGb: 452,
-        diskUsedGb: 40,
-        memoryTotalGb: 8,
-      });
+    it('detects docker-desktop-vm from darwin host probe', () => {
+      const kind = service.detectRuntimeKind(JSON.parse(hostProbeJson()) as any);
       expect(kind).toBe('docker-desktop-vm');
     });
 
-    it('detects wsl2-vm on Windows host probe', () => {
+    it('detects wsl2-vm from Windows host probe', () => {
       const probe = JSON.parse(hostProbeJson({ platform: 'win32', cpuArch: 'x86_64' })) as any;
-      const kind = service.detectRuntimeKind(probe, {
-        totalRamMb: 8192,
-        availableRamMb: 4096,
-        diskTotalGb: 256,
-        diskUsedGb: 120,
-        memoryTotalGb: 8,
-      });
-      expect(kind).toBe('wsl2-vm');
+      expect(service.detectRuntimeKind(probe)).toBe('wsl2-vm');
     });
 
-    it('detects linux-native when host and container RAM are similar', () => {
+    it('detects linux-native from linux host probe', () => {
       const probe = JSON.parse(hostProbeJson({ platform: 'linux', cpuArch: 'x86_64' })) as any;
+      expect(service.detectRuntimeKind(probe)).toBe('linux-native');
+    });
+
+    it('keeps docker-desktop-vm on darwin when Docker RAM is close to host RAM', () => {
+      const probe = JSON.parse(hostProbeJson()) as any;
       probe.host.totalRamMb = 16384;
-      const kind = service.detectRuntimeKind(probe, {
-        totalRamMb: 16000,
-        availableRamMb: 8000,
-        diskTotalGb: 500,
-        diskUsedGb: 200,
-        memoryTotalGb: 16,
-      });
-      expect(kind).toBe('linux-native');
+      expect(service.detectRuntimeKind(probe)).toBe('docker-desktop-vm');
     });
 
     it('returns container-only when probe is missing', () => {
-      const kind = service.detectRuntimeKind(null, {
-        totalRamMb: 8192,
-        availableRamMb: 4096,
-        diskTotalGb: 100,
-        diskUsedGb: 50,
-        memoryTotalGb: 8,
-      });
-      expect(kind).toBe('container-only');
+      expect(service.detectRuntimeKind(null)).toBe('container-only');
+    });
+  });
+
+  describe('detectVmWedge', () => {
+    it('detects wedge when host RAM exceeds container RAM by ratio threshold', () => {
+      const probe = JSON.parse(hostProbeJson()) as any;
+      expect(
+        service.detectVmWedge(probe, {
+          totalRamMb: 8192,
+        }),
+      ).toBe(true);
+    });
+
+    it('does not detect wedge when host and container RAM are similar', () => {
+      const probe = JSON.parse(hostProbeJson()) as any;
+      probe.host.totalRamMb = 16384;
+      expect(
+        service.detectVmWedge(probe, {
+          totalRamMb: 16000,
+        }),
+      ).toBe(false);
     });
   });
 
@@ -162,6 +161,32 @@ describe('HostMetricsService', () => {
       expect(load.diskSize).toBe(100);
       expect(load.hasVmWedge).toBe(false);
       expect(load.runtimeKind).toBe('container-only');
+    });
+
+    it('keeps docker-desktop-vm runtime when Docker RAM is close to host RAM', async () => {
+      filesystemService.readTextFile.mockImplementation(async (path: string) => {
+        if (path === '/data/state/hardware/host_metrics.json') {
+          return hostProbeJson({
+            host: {
+              totalRamMb: 16384,
+              availableRamMb: 8192,
+              cpuCores: 12,
+              cpuModel: 'Apple M2 Pro',
+              diskTotalGb: 494,
+              diskUsedGb: 477,
+              diskMount: '/',
+            },
+          });
+        }
+        if (path === '/host/proc/meminfo') return 'MemTotal: 16777216\nMemAvailable: 8388608';
+        return null;
+      });
+
+      const load = await service.getDisplayLoad(12.5, 8);
+
+      expect(load.runtimeKind).toBe('docker-desktop-vm');
+      expect(load.hasVmWedge).toBe(false);
+      expect(load.containerMemoryTotal).toBeUndefined();
     });
   });
 
