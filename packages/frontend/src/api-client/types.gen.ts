@@ -140,6 +140,7 @@ export type LoadDto = {
     containerDiskTotal?: number;
     containerDiskUsed?: number;
     recommendedDockerRamMb?: number;
+    platformGuidance?: string;
 };
 
 export type LoginBody = {

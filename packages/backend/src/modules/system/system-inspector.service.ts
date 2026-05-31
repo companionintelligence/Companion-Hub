@@ -3,6 +3,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { PortManagerService } from '@/modules/network/port-manager.service';
 import { HostMetricsService } from './host-metrics.service';
+import { getVmResourceGuidance } from './host-metrics-guidance';
 import type { RuntimeKind } from '@ci-hub/common/types';
 import si from 'systeminformation';
 import Dockerode from 'dockerode';
@@ -252,21 +253,8 @@ export class SystemInspectorService {
       containerDiskUsedGb: displayLoad.containerDiskUsed,
       recommendedDockerRamMb: displayLoad.recommendedDockerRamMb,
       tuningNotes,
-      platformGuidance: this.getPlatformGuidance(displayLoad.runtimeKind, hostProbe.platform),
+      platformGuidance: getVmResourceGuidance(displayLoad.runtimeKind, hostProbe.platform),
     };
-  }
-
-  private getPlatformGuidance(runtimeKind: RuntimeKind, platform: string): string {
-    if (runtimeKind === 'linux-native' || runtimeKind === 'host-native') {
-      return 'Resources reflect this machine directly. No Docker Desktop VM limits apply.';
-    }
-    if (runtimeKind === 'wsl2-vm' || platform === 'win32') {
-      return 'Increase WSL2 memory in %UserProfile%\\.wslconfig (memory=, processors=), then run wsl --shutdown and restart Docker Desktop.';
-    }
-    if (runtimeKind === 'docker-desktop-vm' || platform === 'darwin') {
-      return 'Open Docker Desktop → Settings → Resources to raise memory and CPU limits for Hub containers.';
-    }
-    return 'If stats look low, check Docker Desktop or WSL2 resource limits on your host.';
   }
 
   private async getDockerInfo(): Promise<{ version: string | null; containers: { running: number; stopped: number; total: number } }> {

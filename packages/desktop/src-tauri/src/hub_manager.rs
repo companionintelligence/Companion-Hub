@@ -409,25 +409,80 @@ fn refresh_nvidia_host_probe_cache(data_dir: &Path) {
 
 /// Parse primary macOS system volume disk usage via `df -k /`.
 #[cfg(target_os = "macos")]
-fn detect_macos_primary_disk_gb() -> (u64, u64, String) {
-    let output = match Command::new("df").args(["-k", "/"]).output() {
-        Ok(value) if value.status.success() => value,
-        _ => return (0, 0, "/".to_string()),
-    };
-    let line = match String::from_utf8_lossy(&output.stdout).lines().nth(1) {
-        Some(value) => value.to_string(),
-        None => return (0, 0, "/".to_string()),
-    };
+const DARWIN_DATA_MOUNT: &str = "/System/Volumes/Data";
+
+fn detect_macos_primary_disk_from_storage_profiler() -> Option<(u64, u64, String)> {
+    let output = Command::new("system_profiler")
+        .args(["SPStorageDataType", "-json"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let parsed: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    let volumes = parsed.get("SPStorageDataType")?.as_array()?;
+
+    let data_vol = volumes
+        .iter()
+        .find(|entry| entry.get("mount_point").and_then(|v| v.as_str()) == Some(DARWIN_DATA_MOUNT))
+        .or_else(|| {
+            volumes
+                .iter()
+                .find(|entry| entry.get("_name").and_then(|v| v.as_str()) == Some("Macintosh HD"))
+        })
+        .or_else(|| {
+            volumes
+                .iter()
+                .find(|entry| entry.get("mount_point").and_then(|v| v.as_str()) == Some("/"))
+        })?;
+
+    let size_bytes = data_vol.get("size_in_bytes")?.as_u64()?;
+    if size_bytes == 0 {
+        return None;
+    }
+    let free_bytes = data_vol
+        .get("free_space_in_bytes")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let used_bytes = size_bytes.saturating_sub(free_bytes);
+    let mount = data_vol
+        .get("mount_point")
+        .and_then(|v| v.as_str())
+        .unwrap_or(DARWIN_DATA_MOUNT)
+        .to_string();
+
+    Some((
+        size_bytes / 1_000_000_000,
+        used_bytes / 1_000_000_000,
+        mount,
+    ))
+}
+
+fn detect_macos_primary_disk_from_df(mount: &str) -> Option<(u64, u64, String)> {
+    let output = Command::new("df").args(["-k", mount]).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let line = String::from_utf8_lossy(&output.stdout).lines().nth(1)?.to_string();
     let fields: Vec<&str> = line.split_whitespace().collect();
     if fields.len() < 6 {
-        return (0, 0, "/".to_string());
+        return None;
     }
-    let total_kb: u64 = fields.get(1).and_then(|v| v.parse().ok()).unwrap_or(0);
-    let used_kb: u64 = fields.get(2).and_then(|v| v.parse().ok()).unwrap_or(0);
-    let mount = fields.last().copied().unwrap_or("/").to_string();
-    let total_gb = total_kb / 1024 / 1024;
-    let used_gb = used_kb / 1024 / 1024;
-    (total_gb, used_gb, mount)
+    let total_kb: u64 = fields.get(1).and_then(|v| v.parse().ok())?;
+    let used_kb: u64 = fields.get(2).and_then(|v| v.parse().ok())?;
+    if total_kb == 0 {
+        return None;
+    }
+    let mount_point = fields.last().copied().unwrap_or(mount).to_string();
+    Some((total_kb / 1024 / 1024, used_kb / 1024 / 1024, mount_point))
+}
+
+fn detect_macos_primary_disk_gb() -> (u64, u64, String) {
+    detect_macos_primary_disk_from_storage_profiler()
+        .or_else(|| detect_macos_primary_disk_from_df(DARWIN_DATA_MOUNT))
+        .or_else(|| detect_macos_primary_disk_from_df("/"))
+        .unwrap_or((0, 0, "/".to_string()))
 }
 
 fn write_host_metrics_probe_file(data_dir: &Path, payload: serde_json::Value, log_tag: &str) {
@@ -758,7 +813,7 @@ fn refresh_macos_host_probe_cache(data_dir: &Path) {
         total_ram_mb * 85 / 100
     };
 
-    let payload = serde_json::json!({
+    let mut payload = serde_json::json!({
         "platform": "darwin",
         "cpuArch": cpu_arch,
         "cpuModel": cpu_model,
@@ -768,6 +823,15 @@ fn refresh_macos_host_probe_cache(data_dir: &Path) {
         "isAppleSilicon": is_apple_silicon,
         "source": "desktop-host-macos-system-profiler"
     });
+
+    let (disk_total_gb, disk_used_gb, disk_mount) = detect_macos_primary_disk_gb();
+    if disk_total_gb > 0 {
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert("diskTotalGb".to_string(), serde_json::json!(disk_total_gb));
+            obj.insert("diskUsedGb".to_string(), serde_json::json!(disk_used_gb));
+            obj.insert("diskMount".to_string(), serde_json::json!(disk_mount));
+        }
+    }
 
     let serialized = match serde_json::to_string_pretty(&payload) {
         Ok(v) => format!("{}\n", v),
@@ -783,7 +847,6 @@ fn refresh_macos_host_probe_cache(data_dir: &Path) {
 
     match std::fs::write(&probe_path, serialized) {
         Ok(_) => {
-            let (disk_total_gb, disk_used_gb, disk_mount) = detect_macos_primary_disk_gb();
             let host_metrics = serde_json::json!({
                 "schemaVersion": 1,
                 "platform": "darwin",

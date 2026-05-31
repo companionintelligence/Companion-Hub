@@ -159,7 +159,13 @@ const HostResourcesSection = ({ hostResources }: { hostResources: NonNullable<Sy
       {hostResources.hasVmWedge && <Badge variant="warning">VM wedge detected</Badge>}
     </div>
 
-    <p className="text-sm text-muted-foreground mb-4">{hostResources.platformGuidance}</p>
+    <div className="rounded-xl border border-border bg-muted/30 p-4 mb-4">
+      <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-2">Docker resource limits</div>
+      <p className="text-sm text-muted-foreground leading-relaxed">{hostResources.platformGuidance}</p>
+      {hostResources.recommendedDockerRamMb && (
+        <p className="text-sm font-medium mt-2">Recommended Docker memory: {Math.round(hostResources.recommendedDockerRamMb / 1024)} GB</p>
+      )}
+    </div>
 
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 border-t border-border pt-5">
       <div className="rounded-xl border border-border p-4">
@@ -515,8 +521,8 @@ export const SystemInspectorContainer = () => {
         </div>
       </div>
 
-      <SystemHealthSection health={data.health} />
       {data.health.hostResources && <HostResourcesSection hostResources={data.health.hostResources} />}
+      <SystemHealthSection health={data.health} />
       <ContainersSection containers={data.containers} />
       <PortManagementSection ports={data.ports} />
     </div>

@@ -4,6 +4,7 @@
  * Writes state/hardware/host_metrics.json under the configured state directory
  * (CI_HUB_STATE_PATH/STATE_PATH, ROOT_FOLDER_HOST/state, or .internal/state).
  */
+import { spawnSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -94,12 +95,81 @@ function pickPrimaryFilesystem(filesystems: si.Systeminformation.FsSizeData[]) {
   return filesystems.find((entry) => entry.mount === '/') ?? [...filesystems].sort((a, b) => b.size - a.size)[0];
 }
 
+const DARWIN_DATA_MOUNT = '/System/Volumes/Data';
+
+interface StorageVolumeEntry {
+  _name?: string;
+  mount_point?: string;
+  size_in_bytes?: number;
+  free_space_in_bytes?: number;
+}
+
+/** Matches macOS System Settings storage totals (decimal GB on the Data APFS volume). */
+function probeDarwinDiskFromStorageProfiler(): { diskTotalGb: number; diskUsedGb: number; diskMount: string } | null {
+  const result = spawnSync('system_profiler', ['SPStorageDataType', '-json'], {
+    encoding: 'utf8',
+    maxBuffer: 10 * 1024 * 1024,
+  });
+  if (result.status !== 0 || !result.stdout) return null;
+
+  try {
+    const parsed = JSON.parse(result.stdout) as { SPStorageDataType?: StorageVolumeEntry[] };
+    const volumes = parsed.SPStorageDataType ?? [];
+    const dataVol =
+      volumes.find((entry) => entry.mount_point === DARWIN_DATA_MOUNT) ??
+      volumes.find((entry) => entry._name === 'Macintosh HD') ??
+      volumes.find((entry) => entry.mount_point === '/');
+    const sizeBytes = dataVol?.size_in_bytes;
+    if (!sizeBytes || sizeBytes <= 0) return null;
+
+    const freeBytes = dataVol?.free_space_in_bytes ?? 0;
+    const usedBytes = Math.max(0, sizeBytes - freeBytes);
+
+    return {
+      diskTotalGb: Math.round(sizeBytes / 1e9),
+      diskUsedGb: Math.round(usedBytes / 1e9),
+      diskMount: dataVol?.mount_point ?? DARWIN_DATA_MOUNT,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function probeDarwinDiskFromDf(mount: string): { diskTotalGb: number; diskUsedGb: number; diskMount: string } | null {
+  const result = spawnSync('df', ['-k', mount], { encoding: 'utf8' });
+  if (result.status !== 0 || !result.stdout) return null;
+
+  const line = result.stdout.split('\n')[1]?.trim();
+  if (!line) return null;
+
+  const fields = line.split(/\s+/);
+  if (fields.length < 6) return null;
+
+  const totalKb = Number.parseInt(fields[1] ?? '', 10);
+  const usedKb = Number.parseInt(fields[2] ?? '', 10);
+  if (!Number.isFinite(totalKb) || totalKb <= 0 || !Number.isFinite(usedKb) || usedKb < 0) return null;
+
+  return {
+    diskTotalGb: Math.round(totalKb / 1024 / 1024),
+    diskUsedGb: Math.round(usedKb / 1024 / 1024),
+    diskMount: fields.at(-1) ?? mount,
+  };
+}
+
+/** APFS user storage lives on the Data volume; df on "/" only sees the sealed system snapshot. */
+function probeDarwinDiskGb(): { diskTotalGb: number; diskUsedGb: number; diskMount: string } | null {
+  return probeDarwinDiskFromStorageProfiler() ?? probeDarwinDiskFromDf(DARWIN_DATA_MOUNT) ?? probeDarwinDiskFromDf('/');
+}
+
 export async function probeHostMetrics(): Promise<HostMetricsProbeFile> {
   const [mem, cpu, fsSizes] = await Promise.all([si.mem(), si.cpu(), si.fsSize()]);
-  const disk = pickPrimaryFilesystem(fsSizes);
+  const darwinDisk = process.platform === 'darwin' ? probeDarwinDiskGb() : null;
+  const disk = darwinDisk ? null : pickPrimaryFilesystem(fsSizes);
 
-  const diskTotalGb = disk ? Math.round(disk.size / 1024 / 1024 / 1024) : 0;
-  const diskFreeGb = disk ? Math.round(disk.available / 1024 / 1024 / 1024) : 0;
+  const diskTotalGb = darwinDisk?.diskTotalGb ?? (disk ? Math.round(disk.size / 1024 / 1024 / 1024) : 0);
+  const diskUsedGb =
+    darwinDisk?.diskUsedGb ?? (disk ? Math.max(0, Math.round(disk.size / 1024 / 1024 / 1024) - Math.round(disk.available / 1024 / 1024 / 1024)) : 0);
+  const diskMount = darwinDisk?.diskMount ?? disk?.mount ?? (process.platform === 'win32' ? 'C:' : '/');
 
   return {
     schemaVersion: 1,
@@ -113,8 +183,8 @@ export async function probeHostMetrics(): Promise<HostMetricsProbeFile> {
       cpuCores: cpu?.cores || os.cpus().length,
       cpuModel: cpu?.brand ? `${cpu.manufacturer} ${cpu.brand}`.trim() : undefined,
       diskTotalGb,
-      diskUsedGb: Math.max(0, diskTotalGb - diskFreeGb),
-      diskMount: disk?.mount || (process.platform === 'win32' ? 'C:' : '/'),
+      diskUsedGb,
+      diskMount,
     },
   };
 }

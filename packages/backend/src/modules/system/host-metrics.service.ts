@@ -9,6 +9,7 @@ import type {
   RuntimeKind,
 } from '@ci-hub/common/types';
 import si from 'systeminformation';
+import { getVmResourceGuidance } from './host-metrics-guidance';
 
 const HOST_METRICS_PATH = '/data/state/hardware/host_metrics.json';
 const LEGACY_HOST_SYSTEM_PATH = '/data/state/hardware/host_system.json';
@@ -24,6 +25,9 @@ interface LegacyMacHostProbe {
   cpuCores?: number;
   totalRamMb?: number;
   availableRamMb?: number;
+  diskTotalGb?: number;
+  diskUsedGb?: number;
+  diskMount?: string;
 }
 
 @Injectable()
@@ -38,14 +42,15 @@ export class HostMetricsService {
     const runtimeKind = this.detectRuntimeKind(hostProbe);
     const hasVmWedge = this.detectVmWedge(hostProbe, container);
 
-    const host = hostProbe?.host;
+    const host = hostProbe?.host ? await this.enrichHostDisk(hostProbe.host, hostProbe.platform) : undefined;
     const memoryTotalGb = host ? Math.round(host.totalRamMb / 1024) : container.memoryTotalGb;
     const memoryUsedGb = host ? Math.round((host.totalRamMb - host.availableRamMb) / 1024) : container.memoryUsedGb;
     const percentUsedMemory =
       host && host.totalRamMb > 0 ? Math.round(((host.totalRamMb - host.availableRamMb) / host.totalRamMb) * 100) : container.memoryPercentUsed;
 
-    const diskSize = host && host.diskTotalGb > 0 ? host.diskTotalGb : container.diskTotalGb;
-    const diskUsed = host && host.diskTotalGb > 0 ? host.diskUsedGb : container.diskUsedGb;
+    const useHostDisk = Boolean(host && host.diskTotalGb > 0);
+    const diskSize = useHostDisk ? host!.diskTotalGb : hasVmWedge ? 0 : container.diskTotalGb;
+    const diskUsed = useHostDisk ? host!.diskUsedGb : hasVmWedge ? 0 : container.diskUsedGb;
     const percentUsed = diskSize > 0 ? Math.round((diskUsed / diskSize) * 100) : 0;
 
     const cpuCores = host?.cpuCores && host.cpuCores > 0 ? host.cpuCores : cpuCoresFromSi;
@@ -62,6 +67,10 @@ export class HostMetricsService {
       hasVmWedge,
       runtimeKind,
     };
+
+    if (hostProbe) {
+      display.platformGuidance = getVmResourceGuidance(runtimeKind, hostProbe.platform);
+    }
 
     if (hasVmWedge) {
       display.containerMemoryTotal = container.memoryTotalGb;
@@ -129,7 +138,10 @@ export class HostMetricsService {
   private async loadHostProbe(): Promise<HostMetricsProbeFile | null> {
     const metrics = await this.readProbeFile(HOST_METRICS_PATH);
     if (metrics) {
-      return metrics;
+      return {
+        ...metrics,
+        host: await this.enrichHostDisk(metrics.host, metrics.platform),
+      };
     }
 
     return this.readLegacyMacProbe();
@@ -158,6 +170,7 @@ export class HostMetricsService {
       if (parsed.platform !== 'darwin' || typeof parsed.totalRamMb !== 'number' || parsed.totalRamMb <= 0) {
         return null;
       }
+      const legacyDisk = await this.readLegacyMacDiskFields();
       return {
         schemaVersion: 1,
         platform: 'darwin',
@@ -172,10 +185,67 @@ export class HostMetricsService {
               : Math.round(parsed.totalRamMb * 0.85),
           cpuCores: typeof parsed.cpuCores === 'number' && parsed.cpuCores > 0 ? parsed.cpuCores : 0,
           cpuModel: typeof parsed.cpuModel === 'string' ? parsed.cpuModel : undefined,
-          diskTotalGb: 0,
-          diskUsedGb: 0,
-          diskMount: '/',
+          diskTotalGb: legacyDisk?.diskTotalGb ?? 0,
+          diskUsedGb: legacyDisk?.diskUsedGb ?? 0,
+          diskMount: legacyDisk?.diskMount ?? '/',
         },
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private isStaleDarwinRootDiskProbe(host: HostMetricsHostSection, platform?: string): boolean {
+    if (platform !== 'darwin' || host.diskTotalGb <= 0) return false;
+    if (host.diskMount !== '/') return false;
+    return host.diskUsedGb / host.diskTotalGb < 0.25;
+  }
+
+  private async enrichHostDisk(host: HostMetricsHostSection, platform?: string): Promise<HostMetricsHostSection> {
+    if (host.diskTotalGb > 0 && !this.isStaleDarwinRootDiskProbe(host, platform)) {
+      return host;
+    }
+
+    const legacyDisk = await this.readLegacyMacDiskFields();
+    if (legacyDisk) {
+      return { ...host, ...legacyDisk };
+    }
+
+    const metricsDisk = await this.readProbeDiskFields(HOST_METRICS_PATH);
+    if (metricsDisk) {
+      return { ...host, ...metricsDisk };
+    }
+
+    return host;
+  }
+
+  private async readLegacyMacDiskFields(): Promise<Pick<HostMetricsHostSection, 'diskTotalGb' | 'diskUsedGb' | 'diskMount'> | null> {
+    try {
+      const raw = await this.filesystem.readTextFile(LEGACY_HOST_SYSTEM_PATH);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as LegacyMacHostProbe;
+      if (typeof parsed.diskTotalGb !== 'number' || parsed.diskTotalGb <= 0) return null;
+      return {
+        diskTotalGb: parsed.diskTotalGb,
+        diskUsedGb: typeof parsed.diskUsedGb === 'number' && parsed.diskUsedGb >= 0 ? parsed.diskUsedGb : 0,
+        diskMount: typeof parsed.diskMount === 'string' ? parsed.diskMount : '/',
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private async readProbeDiskFields(filePath: string): Promise<Pick<HostMetricsHostSection, 'diskTotalGb' | 'diskUsedGb' | 'diskMount'> | null> {
+    try {
+      const raw = await this.filesystem.readTextFile(filePath);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as { host?: Partial<HostMetricsHostSection> };
+      const diskTotalGb = parsed.host?.diskTotalGb;
+      if (typeof diskTotalGb !== 'number' || diskTotalGb <= 0) return null;
+      return {
+        diskTotalGb,
+        diskUsedGb: typeof parsed.host?.diskUsedGb === 'number' && parsed.host.diskUsedGb >= 0 ? parsed.host.diskUsedGb : 0,
+        diskMount: typeof parsed.host?.diskMount === 'string' ? parsed.host.diskMount : '/',
       };
     } catch {
       return null;
