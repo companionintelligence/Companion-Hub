@@ -315,7 +315,9 @@ export class InferenceController {
     res.json(config);
   }
 
-  @Get('apps/:slug/credentials.env')
+  // `bootstrap.env` is an alias of `credentials.env`: the CI-OpenClaw / CI-Hermes bootstrap-from-hub.sh
+  // scripts fetch `/api/inference/apps/:slug/bootstrap.env`, so both paths must serve the dotenv body.
+  @Get(['apps/:slug/credentials.env', 'apps/:slug/bootstrap.env'])
   async getAppCredentialsEnv(@Param('slug') slug: string, @Query('v') v: string | undefined, @Res() res: Response) {
     const apiVersion = this.appCredentials.parseApiVersion(v);
     const config = await this.appCredentials.getCredentials(slug, apiVersion);

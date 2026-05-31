@@ -57,17 +57,20 @@ export function BrandLogo({ name, className }: { name: string; className?: strin
 
 /* ── Companion agent frameworks (own products — custom marks) ────────────────────────────────── */
 
-/** OpenClaw — a crab. */
+/** OpenClaw — an open mechanical claw/pincer gripping a core. */
 export function OpenClawIcon({ className }: IconProps) {
   return (
     <Glyph className={className}>
-      <path d="M5.5 14.5c0-3 2.9-5 6.5-5s6.5 2 6.5 5v.5a3 3 0 0 1-3 3H8.5a3 3 0 0 1-3-3v-.5Z" />
-      <circle cx="9.8" cy="13.6" r="0.7" fill="currentColor" stroke="none" />
-      <circle cx="14.2" cy="13.6" r="0.7" fill="currentColor" stroke="none" />
-      <path d="M9.4 9.7 8.4 7.2M14.6 9.7l1-2.5" />
-      <path d="M6.4 13.3 4 11.6a2 2 0 0 1 .3-3.6M4.6 9.5l2 .6" />
-      <path d="M17.6 13.3 20 11.6a2 2 0 0 0-.3-3.6M19.4 9.5l-2 .6" />
-      <path d="M8 18.2l-1.7 1.9M10.6 19.1l-.8 2.2M13.4 19.1l.8 2.2M16 18.2l1.7 1.9" />
+      {/* central core */}
+      <circle cx="12" cy="12" r="2.3" />
+      {/* upper pincer */}
+      <path d="M9.8 10.2 6.4 6.8a2.4 2.4 0 0 0-3.4 3.4l2.7 2.7" />
+      <path d="M3 6.6l.5 3.3 3.3.5" />
+      {/* lower pincer */}
+      <path d="M9.8 13.8 6.4 17.2a2.4 2.4 0 0 1-3.4-3.4l2.7-2.7" />
+      <path d="M3 17.4l.5-3.3 3.3-.5" />
+      {/* arm */}
+      <path d="M14.3 12h6.4M18 9.2l2.7 2.8-2.7 2.8" />
     </Glyph>
   );
 }
@@ -76,11 +79,15 @@ export function OpenClawIcon({ className }: IconProps) {
 export function HermesIcon({ className }: IconProps) {
   return (
     <Glyph className={className}>
-      <path d="M6.5 13a5.5 5.5 0 0 1 11 0v.5h-11V13Z" />
-      <path d="M6.5 13.5h11l-1.3 3.2a1 1 0 0 1-.9.6H8.7a1 1 0 0 1-.9-.6L6.5 13.5Z" />
-      <path d="M17 8.6c1.8-1.2 3.7-1.4 5.2-.6-1.2 1.4-3 2-5 2" />
-      <path d="M17.4 11c1.3-.6 2.7-.7 3.9-.2" />
-      <path d="M11.5 17.4 11 20.5" />
+      {/* helmet dome */}
+      <path d="M7.5 12.5a4.5 4.5 0 0 1 9 0v.6h-9z" />
+      {/* helmet brim + face guard */}
+      <path d="M7 13.1h9.5l-1 2.2a1.2 1.2 0 0 1-1.1.7H9.1a1.2 1.2 0 0 1-1.1-.7z" />
+      {/* crest */}
+      <path d="M12 8v-2" />
+      {/* layered wing */}
+      <path d="M16.5 9.2c1.9-1.5 4-1.8 5.5-.9-1.2 1.6-3.2 2.3-5.2 2.2" />
+      <path d="M16.8 11.6c1.4-.7 2.9-.8 4.2-.3" />
     </Glyph>
   );
 }
@@ -120,21 +127,70 @@ function CubeIcon({ className }: IconProps) {
   );
 }
 
-// Map model families to the company/brand that publishes them.
+/** Embedding model — a vector/latent-space mark (points + connecting edges). */
+function EmbeddingIcon({ className }: IconProps) {
+  return (
+    <Glyph className={className}>
+      <circle cx="6" cy="7" r="1.6" />
+      <circle cx="18" cy="6" r="1.6" />
+      <circle cx="17" cy="17" r="1.6" />
+      <circle cx="7" cy="17.5" r="1.6" />
+      <path d="M7.5 7.6 16.4 6.4M7.4 16.2 16.2 7.2M7 15.9V9M16.6 15.6 8.3 17.2" />
+    </Glyph>
+  );
+}
+
+/** Speech / audio model — a soundwave. */
+function WaveIcon({ className }: IconProps) {
+  return (
+    <Glyph className={className}>
+      <path d="M3 12h1.5M19.5 12H21" />
+      <path d="M6.5 9v6M9.5 6.5v11M12 9.5v5M14.5 7.5v9M17.5 10v4" />
+    </Glyph>
+  );
+}
+
+// Brand mark by model creator (from catalog metadata) — preferred, since it's exact. Creators with
+// no official brand SVG in /public/brands (e.g. Z AI, Nomic, Hexgrad) fall through to a modality glyph.
+const CREATOR_BRAND: Record<string, string> = {
+  google: 'gemini',
+  alibaba: 'qwen',
+  meta: 'meta',
+  nvidia: 'nvidia',
+  deepseek: 'deepseek',
+  openai: 'openai',
+  mistral: 'mistral',
+  minimax: 'minimax',
+  microsoft: 'microsoft',
+  anthropic: 'anthropic',
+};
+
+// Fallback: map model families to their publisher's brand by name (for entries without creator metadata).
 const MODEL_BRAND: Array<{ match: RegExp; brand: string }> = [
-  { match: /qwen/, brand: 'qwen' },
+  { match: /qwen|qwq/, brand: 'qwen' },
   { match: /gemma|gemini/, brand: 'gemini' },
   { match: /llama/, brand: 'meta' },
   { match: /nemotron|nemo/, brand: 'nvidia' },
   { match: /phi\b|phi-|phi4|phi3/, brand: 'microsoft' },
   { match: /mistral|mixtral/, brand: 'mistral' },
+  { match: /deepseek/, brand: 'deepseek' },
+  { match: /gpt-oss|whisper/, brand: 'openai' },
+  { match: /minimax/, brand: 'minimax' },
 ];
 
-/** Icon for a catalog model: the publisher's official brand mark, with a cube fallback. */
-export function ModelIcon({ model, className }: { model: Pick<CuratedModel, 'id' | 'displayName'>; className?: string }) {
+/**
+ * Icon for a catalog model: the publisher's official brand mark (resolved from the model's creator
+ * metadata first, then a name regex), falling back to a modality glyph (embedding / speech) and finally
+ * a generic cube.
+ */
+export function ModelIcon({ model, className }: { model: Pick<CuratedModel, 'id' | 'displayName' | 'modality' | 'metadata'>; className?: string }) {
+  const creator = model.metadata?.creator?.toLowerCase();
   const key = `${model.displayName ?? ''} ${model.id ?? ''}`.toLowerCase();
-  const brand = MODEL_BRAND.find((b) => b.match.test(key))?.brand;
-  return brand ? <BrandLogo name={brand} className={className} /> : <CubeIcon className={className} />;
+  const brand = (creator ? CREATOR_BRAND[creator] : undefined) ?? MODEL_BRAND.find((b) => b.match.test(key))?.brand;
+  if (brand) return <BrandLogo name={brand} className={className} />;
+  if (model.modality === 'embedding') return <EmbeddingIcon className={className} />;
+  if (model.modality === 'tts' || model.modality === 'stt') return <WaveIcon className={className} />;
+  return <CubeIcon className={className} />;
 }
 
 /** Generic models / "Other models" drawer. */

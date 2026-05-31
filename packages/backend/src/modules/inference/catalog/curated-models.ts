@@ -1,4 +1,4 @@
-import type { CuratedModel, HardwareTier, ModelPurpose } from '@ci-hub/common/types';
+import type { CuratedModel, HardwareTier, InferenceBackendType, ModelModality, ModelPurpose, TierRecommendation } from '@ci-hub/common/types';
 
 // ─── LLM catalog (TOON) ──────────────────────────────────────────────────────
 // The LLM catalog is authored as a TOON table (https://toonformat.dev) — one compact, pipe-delimited
@@ -99,13 +99,14 @@ type ToonRow = Record<string, string>;
  * No catalog field contains a pipe, so a plain split is unambiguous (no quoting needed). We avoid the
  * official `@toon-format/toon` package because it is ESM-only and this module loads in the CJS backend.
  */
-function decodeToonTable(doc: string): ToonRow[] {
+function decodeToonTable(doc: string, tableName: string): ToonRow[] {
   const lines = doc.split('\n');
-  const headerIdx = lines.findIndex((l) => /^[A-Za-z_]\w*\[\d+\|\]\{.+\}:$/.test(l.trim()));
-  if (headerIdx === -1) throw new Error('curated-models: TOON header not found');
+  const headerRe = new RegExp(`^${tableName}\\[\\d+\\|\\]\\{.+\\}:$`);
+  const headerIdx = lines.findIndex((l) => headerRe.test(l.trim()));
+  if (headerIdx === -1) throw new Error(`curated-models: TOON table "${tableName}" not found`);
   const header = (lines[headerIdx] ?? '').trim();
   const match = header.match(/^[A-Za-z_]\w*\[(\d+)\|\]\{(.+)\}:$/);
-  if (!match) throw new Error('curated-models: malformed TOON header');
+  if (!match) throw new Error(`curated-models: malformed TOON header for "${tableName}"`);
   const count = Number(match[1]);
   const cols = (match[2] ?? '').split(',');
   const rows: ToonRow[] = [];
@@ -128,7 +129,7 @@ function decodeToonTable(doc: string): ToonRow[] {
 const numOrUndef = (s: string | undefined): number | undefined => (s == null || s === '' ? undefined : Number(s));
 const flag = (s: string | undefined): boolean => s === '1';
 
-const generatedLlms: CuratedModel[] = decodeToonTable(CATALOG_TOON).map((row): CuratedModel => {
+const generatedLlms: CuratedModel[] = decodeToonTable(CATALOG_TOON, 'llms').map((row): CuratedModel => {
   const params = Number(row.params);
   const gb = Number(row.gb);
   const tier = (row.tier ?? 'cpu-only') as HardwareTier;
@@ -199,209 +200,56 @@ const generatedLlms: CuratedModel[] = decodeToonTable(CATALOG_TOON).map((row): C
   };
 });
 
-const VOICE_MODELS: CuratedModel[] = [
-  {
-    id: 'kokoro-v1',
-    backend: 'lemonade',
-    backendModelId: 'kokoro-v1',
-    modality: 'tts',
-    purpose: 'voice',
-    displayName: 'Kokoro v1 TTS',
-    description: 'High-quality text-to-speech. Low latency, natural sounding.',
-    requirements: {
-      minVramMb: 0,
-      recommendedVramMb: 512,
-      minRamMb: 1024,
-      diskMb: 300,
-      gpuVendors: ['nvidia', 'amd', 'apple', 'cpu'],
-      npuRequired: false,
-      minTier: 'cpu-only',
-    },
-    runtime: {
-      contextWindow: 0,
-      maxTokens: 0,
-      reasoning: false,
-      input: ['text'],
-      pinnedByDefault: true,
-      memoryFootprintMb: 350,
-    },
-    tiers: { high: 'recommended', medium: 'recommended', low: 'recommended', cpuOnly: 'recommended' },
-    metadata: { creator: 'Hexgrad', capabilities: { reasoning: false, vision: false, tools: false, audio: false } },
-  },
-  {
-    id: 'whisper-large-v3-turbo',
-    backend: 'lemonade',
-    backendModelId: 'whisper-large-v3-turbo',
-    modality: 'stt',
-    purpose: 'transcription',
-    displayName: 'Whisper Large v3 Turbo',
-    description: "OpenAI's speech-to-text model. Fast and accurate transcription.",
-    requirements: {
-      minVramMb: 4096,
-      recommendedVramMb: 6144,
-      minRamMb: 8192,
-      diskMb: 1500,
-      gpuVendors: ['nvidia', 'amd', 'apple'],
-      npuRequired: false,
-      minTier: 'medium',
-    },
-    runtime: {
-      contextWindow: 0,
-      maxTokens: 0,
-      reasoning: false,
-      input: ['audio'],
-      pinnedByDefault: false,
-      memoryFootprintMb: 1500,
-    },
-    tiers: { high: 'recommended', medium: 'recommended', low: 'not-recommended', cpuOnly: 'not-recommended' },
-    metadata: { creator: 'OpenAI', capabilities: { reasoning: false, vision: false, tools: false, audio: true } },
-  },
-  {
-    id: 'whisper-base',
-    backend: 'lemonade',
-    backendModelId: 'whisper-base',
-    modality: 'stt',
-    purpose: 'transcription',
-    displayName: 'Whisper Base',
-    description: 'Lightweight speech-to-text for resource-constrained environments.',
-    requirements: {
-      minVramMb: 0,
-      recommendedVramMb: 512,
-      minRamMb: 1024,
-      diskMb: 150,
-      gpuVendors: ['nvidia', 'amd', 'apple', 'cpu'],
-      npuRequired: false,
-      minTier: 'cpu-only',
-    },
-    runtime: {
-      contextWindow: 0,
-      maxTokens: 0,
-      reasoning: false,
-      input: ['audio'],
-      pinnedByDefault: false,
-      memoryFootprintMb: 200,
-    },
-    tiers: { high: 'available', medium: 'available', low: 'recommended', cpuOnly: 'recommended' },
-    metadata: { creator: 'OpenAI', capabilities: { reasoning: false, vision: false, tools: false, audio: true } },
-  },
-];
+// Non-LLM models (voice + embedding) in TOON. Unlike the LLM table these carry explicit requirements
+// (they aren't derived from a parameter count); purpose and input modality are derived from `modality`.
+// Voice models run on the Lemonade backend; embedders on Ollama. cpu=1 means CPU inference is supported.
+const EXTRAS_TOON = `
+extras[7|]{id,backendModelId,backend,modality,name,creator,diskMb,footprintMb,minRamMb,recVramMb,minVramMb,ctx,minTier,cpu,pinned,tierHigh,tierMed,tierLow,tierCpu,desc}:
+  kokoro-v1|kokoro-v1|lemonade|tts|Kokoro v1 TTS|Hexgrad|300|350|1024|512|0|0|cpu-only|1|1|recommended|recommended|recommended|recommended|High-quality text-to-speech. Low latency, natural sounding.
+  whisper-large-v3-turbo|whisper-large-v3-turbo|lemonade|stt|Whisper Large v3 Turbo|OpenAI|1500|1500|8192|6144|4096|0|medium|0|0|recommended|recommended|not-recommended|not-recommended|OpenAI's speech-to-text model. Fast and accurate transcription.
+  whisper-base|whisper-base|lemonade|stt|Whisper Base|OpenAI|150|200|1024|512|0|0|cpu-only|1|0|available|available|recommended|recommended|Lightweight speech-to-text for resource-constrained environments.
+  nomic-embed-text|nomic-embed-text|ollama|embedding|Nomic Embed Text|Nomic|300|500|1024|512|0|8192|cpu-only|1|1|recommended|recommended|recommended|recommended|Local text-embedding model (768-dim). Default embeddings for CI memory / RAG (pgvector). Runs on any hardware.
+  embeddinggemma|embeddinggemma|ollama|embedding|EmbeddingGemma|Google|622|700|1536|1024|0|2048|cpu-only|1|0|available|available|available|available|Google's 300M embedding model (768-dim, Matryoshka-truncatable to 512/256/128). Multilingual (100+ languages), 2K context. Drop-in pgvector replacement for Nomic at the same 768 dimensions, with stronger retrieval. Runs on any hardware.
+  nomic-embed-text-v2-moe|nomic-embed-text-v2-moe|ollama|embedding|Nomic Embed Text v2 (MoE)|Nomic|900|900|2048|1024|0|512|cpu-only|1|0|available|available|available|available|Nomic Embed v2, a mixture-of-experts embedding model (~305M active / 475M total params, 768-dim). Multilingual (~100 languages) and pgvector-compatible with the 768-dim Nomic default. Runs on any hardware.
+  qwen3-embedding|qwen3-embedding|ollama|embedding|Qwen3 Embedding (0.6B)|Alibaba|640|800|2048|1536|0|32768|cpu-only|1|0|available|available|available|available|Qwen3 Embedding 0.6B (1024-dim, 32K context). Tops the multilingual MTEB leaderboard for its size across 100+ languages. Note: 1024-dim — switching from the 768-dim default requires re-embedding existing memories. Runs on any hardware.
+`;
 
-const EMBEDDING_MODELS: CuratedModel[] = [
-  {
-    id: 'nomic-embed-text',
-    backend: 'ollama',
-    backendModelId: 'nomic-embed-text',
-    modality: 'embedding',
-    purpose: 'embedding',
-    displayName: 'Nomic Embed Text',
-    description: 'Local text-embedding model (768-dim). Default embeddings for CI memory / RAG (pgvector). Runs on any hardware.',
-    requirements: {
-      minVramMb: 0,
-      recommendedVramMb: 512,
-      minRamMb: 1024,
-      diskMb: 300,
-      gpuVendors: ['nvidia', 'amd', 'apple', 'cpu'],
-      npuRequired: false,
-      minTier: 'cpu-only',
-    },
-    runtime: {
-      contextWindow: 8192,
-      maxTokens: 0,
-      reasoning: false,
-      input: ['text'],
-      pinnedByDefault: true,
-      memoryFootprintMb: 500,
-    },
-    tiers: { high: 'recommended', medium: 'recommended', low: 'recommended', cpuOnly: 'recommended' },
-    metadata: { creator: 'Nomic', capabilities: { reasoning: false, vision: false, tools: false, audio: false } },
-  },
-  {
-    id: 'embeddinggemma',
-    backend: 'ollama',
-    backendModelId: 'embeddinggemma',
-    modality: 'embedding',
-    purpose: 'embedding',
-    displayName: 'EmbeddingGemma',
-    description:
-      "Google's 300M embedding model (768-dim, Matryoshka-truncatable to 512/256/128). Multilingual (100+ languages), 2K context. Drop-in pgvector replacement for Nomic at the same 768 dimensions, with stronger retrieval. Runs on any hardware.",
-    requirements: {
-      minVramMb: 0,
-      recommendedVramMb: 1024,
-      minRamMb: 1536,
-      diskMb: 622,
-      gpuVendors: ['nvidia', 'amd', 'apple', 'cpu'],
-      npuRequired: false,
-      minTier: 'cpu-only',
-    },
-    runtime: {
-      contextWindow: 2048,
-      maxTokens: 0,
-      reasoning: false,
-      input: ['text'],
-      pinnedByDefault: false,
-      memoryFootprintMb: 700,
-    },
-    tiers: { high: 'available', medium: 'available', low: 'available', cpuOnly: 'available' },
-    metadata: { creator: 'Google', capabilities: { reasoning: false, vision: false, tools: false, audio: false } },
-  },
-  {
-    id: 'nomic-embed-text-v2-moe',
-    backend: 'ollama',
-    backendModelId: 'nomic-embed-text-v2-moe',
-    modality: 'embedding',
-    purpose: 'embedding',
-    displayName: 'Nomic Embed Text v2 (MoE)',
-    description:
-      'Nomic Embed v2, a mixture-of-experts embedding model (~305M active / 475M total params, 768-dim). Multilingual (~100 languages) and pgvector-compatible with the 768-dim Nomic default. Runs on any hardware.',
-    requirements: {
-      minVramMb: 0,
-      recommendedVramMb: 1024,
-      minRamMb: 2048,
-      diskMb: 900,
-      gpuVendors: ['nvidia', 'amd', 'apple', 'cpu'],
-      npuRequired: false,
-      minTier: 'cpu-only',
-    },
-    runtime: {
-      contextWindow: 512,
-      maxTokens: 0,
-      reasoning: false,
-      input: ['text'],
-      pinnedByDefault: false,
-      memoryFootprintMb: 900,
-    },
-    tiers: { high: 'available', medium: 'available', low: 'available', cpuOnly: 'available' },
-    metadata: { creator: 'Nomic', capabilities: { reasoning: false, vision: false, tools: false, audio: false } },
-  },
-  {
-    id: 'qwen3-embedding',
-    backend: 'ollama',
-    backendModelId: 'qwen3-embedding',
-    modality: 'embedding',
-    purpose: 'embedding',
-    displayName: 'Qwen3 Embedding (0.6B)',
-    description:
-      'Qwen3 Embedding 0.6B (1024-dim, 32K context). Tops the multilingual MTEB leaderboard for its size across 100+ languages. Note: 1024-dim — switching from the 768-dim default requires re-embedding existing memories. Runs on any hardware.',
-    requirements: {
-      minVramMb: 0,
-      recommendedVramMb: 1536,
-      minRamMb: 2048,
-      diskMb: 640,
-      gpuVendors: ['nvidia', 'amd', 'apple', 'cpu'],
-      npuRequired: false,
-      minTier: 'cpu-only',
-    },
-    runtime: {
-      contextWindow: 32768,
-      maxTokens: 0,
-      reasoning: false,
-      input: ['text'],
-      pinnedByDefault: false,
-      memoryFootprintMb: 800,
-    },
-    tiers: { high: 'available', medium: 'available', low: 'available', cpuOnly: 'available' },
-    metadata: { creator: 'Alibaba', capabilities: { reasoning: false, vision: false, tools: false, audio: false } },
-  },
-];
+const tierRec = (rec: string | undefined): TierRecommendation => (rec === 'recommended' || rec === 'not-recommended' ? rec : 'available');
 
-export const CURATED_MODELS: CuratedModel[] = [...generatedLlms, ...VOICE_MODELS, ...EMBEDDING_MODELS];
+const extraModels: CuratedModel[] = decodeToonTable(EXTRAS_TOON, 'extras').map((row): CuratedModel => {
+  const modality = (row.modality ?? 'embedding') as ModelModality;
+  const purpose: ModelPurpose = modality === 'tts' ? 'voice' : modality === 'stt' ? 'transcription' : 'embedding';
+  const input: ('text' | 'image' | 'audio')[] = modality === 'stt' ? ['audio'] : ['text'];
+  const audio = modality === 'stt';
+  const gpuVendors: ('nvidia' | 'amd' | 'apple' | 'cpu')[] = flag(row.cpu) ? ['nvidia', 'amd', 'apple', 'cpu'] : ['nvidia', 'amd', 'apple'];
+  return {
+    id: row.id ?? '',
+    backend: (row.backend ?? 'ollama') as InferenceBackendType,
+    backendModelId: row.backendModelId ?? '',
+    modality,
+    purpose,
+    displayName: row.name ?? '',
+    description: row.desc ?? '',
+    requirements: {
+      minVramMb: Number(row.minVramMb),
+      recommendedVramMb: Number(row.recVramMb),
+      minRamMb: Number(row.minRamMb),
+      diskMb: Number(row.diskMb),
+      gpuVendors,
+      npuRequired: false,
+      minTier: (row.minTier ?? 'cpu-only') as HardwareTier,
+    },
+    runtime: {
+      contextWindow: Number(row.ctx),
+      maxTokens: 0,
+      reasoning: false,
+      input,
+      pinnedByDefault: flag(row.pinned),
+      memoryFootprintMb: Number(row.footprintMb),
+    },
+    tiers: { high: tierRec(row.tierHigh), medium: tierRec(row.tierMed), low: tierRec(row.tierLow), cpuOnly: tierRec(row.tierCpu) },
+    metadata: { creator: row.creator || undefined, capabilities: { reasoning: false, vision: false, tools: false, audio } },
+  };
+});
+
+export const CURATED_MODELS: CuratedModel[] = [...generatedLlms, ...extraModels];

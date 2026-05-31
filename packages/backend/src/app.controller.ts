@@ -269,4 +269,14 @@ export class AppController {
     }
     await this.userRepository.updateUser(req.user.id, { hasCompletedOnboarding: true });
   }
+
+  /** Re-arm the first-time setup wizard so the user can run it again from Settings. */
+  @Patch('/restart-onboarding')
+  @UseGuards(AuthGuard)
+  async restartOnboarding(@Req() req: Request) {
+    if (!req.user) {
+      return;
+    }
+    await this.userRepository.updateUser(req.user.id, { hasCompletedOnboarding: false });
+  }
 }
