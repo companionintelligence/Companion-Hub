@@ -2,7 +2,8 @@ import type { CuratedModel } from '@ci-hub/common/types';
 
 interface ResourceSummaryBarProps {
   selectedModels: CuratedModel[];
-  availableMemoryMb: number;
+  /** Available disk space in MB — the bar tracks download size, not RAM. */
+  availableStorageMb: number;
 }
 
 function formatSize(mb: number): string {
@@ -10,10 +11,10 @@ function formatSize(mb: number): string {
   return `${mb} MB`;
 }
 
-export const ResourceSummaryBar = ({ selectedModels, availableMemoryMb }: ResourceSummaryBarProps) => {
-  const totalMemoryMb = selectedModels.reduce((sum, m) => sum + m.runtime.memoryFootprintMb, 0);
-  const overBudget = totalMemoryMb > availableMemoryMb;
-  const percent = availableMemoryMb > 0 ? Math.min(100, Math.round((totalMemoryMb / availableMemoryMb) * 100)) : 0;
+export const ResourceSummaryBar = ({ selectedModels, availableStorageMb }: ResourceSummaryBarProps) => {
+  const totalDiskMb = selectedModels.reduce((sum, m) => sum + (m.requirements?.diskMb ?? 0), 0);
+  const overBudget = totalDiskMb > availableStorageMb;
+  const percent = availableStorageMb > 0 ? Math.min(100, Math.round((totalDiskMb / availableStorageMb) * 100)) : 0;
 
   if (selectedModels.length === 0) return null;
 
@@ -24,7 +25,7 @@ export const ResourceSummaryBar = ({ selectedModels, availableMemoryMb }: Resour
           {selectedModels.length} model{selectedModels.length === 1 ? '' : 's'} selected
         </span>
         <span className={overBudget ? 'text-destructive font-medium' : 'text-muted-foreground'}>
-          {formatSize(totalMemoryMb)} / {formatSize(availableMemoryMb)} available
+          {formatSize(totalDiskMb)} / {formatSize(availableStorageMb)} disk available
         </span>
       </div>
 
@@ -37,7 +38,7 @@ export const ResourceSummaryBar = ({ selectedModels, availableMemoryMb }: Resour
 
       {overBudget && (
         <p className="text-xs text-destructive mt-1.5" data-testid="resource-warning">
-          Selected models exceed available memory. Consider deselecting some models or adding a cloud provider as fallback.
+          Selected models exceed available disk space. Consider deselecting some models or adding a cloud provider as fallback.
         </p>
       )}
     </div>

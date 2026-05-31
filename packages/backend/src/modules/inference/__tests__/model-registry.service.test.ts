@@ -118,11 +118,14 @@ describe('ModelRegistryService', () => {
         expect(top?.runtime.memoryFootprintMb).toBeLessThanOrEqual(32 * GB * 0.7);
       });
 
-      it('fully uses discrete VRAM and avoids sub-q4 quants (24GB GPU → ~31B at q4)', () => {
+      it('fully uses discrete VRAM with a sizable model that actually fits (24GB GPU)', () => {
         const recs = service.getRecommendedModelsForHardware('high', profile({ vramMb: 24 * GB, ramMb: 32 * GB, tier: 'high' }));
         const top = topLlm(recs);
-        expect(top?.id).toBe('gemma4-31b');
+        expect(top).toBeDefined();
+        // A 24GB GPU should land on a substantial (~30B-class) model, not a tiny one…
+        expect(top?.parameterScale ?? 0).toBeGreaterThanOrEqual(24);
         expect(top?.runtime.quantization).not.toBe('q3_K_M');
+        // …and the pick must genuinely fit the VRAM budget.
         expect(top?.runtime.memoryFootprintMb).toBeLessThanOrEqual(24 * GB * 0.9);
       });
 
@@ -208,35 +211,41 @@ describe('ModelRegistryService', () => {
         expect(top?.runtime.memoryFootprintMb).toBeLessThanOrEqual(32 * GB * 0.7);
       });
 
-      it('considers quantization, not just parameter count (spends VRAM headroom on higher-fidelity quants)', () => {
-        const quants = new Set<string>();
+      it('recommends the real default (q4_K_M) build and never overflows the VRAM budget', () => {
+        // The catalog lists only the bare `model:size` tag each model actually ships, which is the
+        // q4_K_M default pull — so every pick is real/installable and must fit the budget.
         for (const vramGb of [8, 12, 16, 24, 32, 64, 96]) {
           const top = topLlm(service.getRecommendedModelsForHardware('high', profile({ vramMb: vramGb * GB, ramMb: vramGb * 2 * GB, tier: 'high' })));
-          if (top?.runtime.quantization) quants.add(top.runtime.quantization);
+          expect(top, `VRAM ${vramGb}GB should yield a runnable LLM`).toBeDefined();
+          expect(top?.runtime.quantization).toBe('q4_K_M');
+          expect(top?.runtime.memoryFootprintMb, `VRAM ${vramGb}GB pick must fit VRAM`).toBeLessThanOrEqual(vramGb * GB * 0.9);
         }
-        // Picks are not all the q4 base — headroom is spent on better quants.
-        expect(quants.size).toBeGreaterThan(1);
-        expect([...quants].some((q) => ['q5_K_M', 'q6_K', 'q8_0'].includes(q))).toBe(true);
       });
 
       // ─── Frontier model coverage (installer recommend/include set) ──────
+      // Every id here is verified to exist on ollama.com/library (the catalog lists only real,
+      // pullable model:size tags). Earlier this list held speculative models (Kimi K2.6, DeepSeek V4,
+      // GLM-5.1, MiniMax-M2.7, Mistral Medium 3.5, …) that 404 on ollama.com — they were removed.
       const FRONTIER_MODEL_IDS = [
-        'kimi-k2-6', // Kimi K2.6
-        'mimo-v2-5-pro', // MiMo-V2.5-Pro
-        'deepseek-v4-pro', // DeepSeek V4 Pro
-        'glm-5-1', // GLM-5.1
-        'minimax-m2-7', // MiniMax-M2.7
-        'deepseek-v4-flash', // DeepSeek V4 Flash
-        'qwen3-5-397b-a17b', // Qwen3.5 397B-A17B
-        'mistral-medium-3.5', // Mistral Medium 3.5
         'gemma4-31b', // Gemma 4 31B
-        'nemotron3-super-120b-a12b', // NVIDIA Nemotron 3 Super 120B A12B
-        'gpt-oss-120b', // gpt-oss-120b
-        'deepseek-r10528', // DeepSeek R1 0528
-        'gpt-oss-20b', // gpt-oss-20b
-        'kimi-k2-think-v2', // K2 Think V2
+        'qwen3-6-35b', // Qwen 3.6 35B (MoE)
+        'qwen3-5-122b', // Qwen 3.5 122B
+        'qwen3-235b', // Qwen 3 235B
+        'nemotron3-33b', // Nemotron 3 33B
+        'nemotron-3-super-120b', // NVIDIA Nemotron 3 Super 120B (MoE)
+        'gpt-oss-120b', // gpt-oss 120B
+        'gpt-oss-20b', // gpt-oss 20B
         'qwq-32b', // QwQ 32B
-        'mistral-small-3.2', // Mistral Small 3.2
+        'deepseek-r1-671b', // DeepSeek R1 671B
+        'deepseek-r1-70b', // DeepSeek R1 70B
+        'deepseek-coder-v2-236b', // DeepSeek Coder V2 236B
+        'llama3-1-405b', // Llama 3.1 405B
+        'llama3-3-70b', // Llama 3.3 70B
+        'llama4-128x17b', // Llama 4 Maverick (128x17B MoE)
+        'llama4-16x17b', // Llama 4 Scout (16x17B MoE)
+        'mistral-large-123b', // Mistral Large 123B
+        'mixtral-8x22b', // Mixtral 8x22B
+        'minimax-m2-community-230b', // MiniMax M2 230B (community upload)
       ];
 
       it('spans size classes (small/medium/large) when the hardware can run a range', () => {

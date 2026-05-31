@@ -64,12 +64,13 @@ describe('OllamaInstallerService', () => {
     expect(loggerService.error).toHaveBeenCalledWith(expect.stringContaining('socket hang up'));
   });
 
-  it('returns container guidance when Ollama is not reachable', async () => {
+  it('returns host-first guidance when Ollama is not reachable', async () => {
     const result = await service.install();
 
     expect(result).toEqual({
       success: false,
-      message: 'Ollama is managed by the ci-hub-ollama container. Start or restart that container and re-check http://ci-hub-ollama:11434.',
+      message:
+        "Ollama isn't reachable at http://ci-hub-ollama:11434. Install it from ollama.com and start it on the host (the Hub reaches it over host.docker.internal), then re-check.",
     });
   });
 
@@ -77,14 +78,14 @@ describe('OllamaInstallerService', () => {
     ollamaBackend.healthCheck.mockResolvedValue({
       running: true,
       healthy: true,
-      modelsLoaded: ['qwen3.6:8b'],
+      modelsLoaded: ['qwen3.6:35b'],
     });
 
     const result = await service.install();
 
     expect(result).toEqual({
       success: true,
-      message: 'Ollama container is already running and reachable.',
+      message: 'Ollama is running and reachable at http://ci-hub-ollama:11434.',
     });
   });
 });

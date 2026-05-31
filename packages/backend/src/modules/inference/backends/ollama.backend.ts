@@ -10,7 +10,11 @@ export class OllamaBackend implements InferenceBackend {
   private baseUrl: string;
 
   constructor(private readonly logger: LoggerService) {
-    this.baseUrl = process.env.OLLAMA_URL || 'http://ci-hub-ollama:11434';
+    // OLLAMA_URL is injected by docker-compose as http://host.docker.internal:11434 (the Hub
+    // container reaches the host's native Ollama over the host-gateway bridge). When the backend
+    // runs directly on the host (`pnpm dev`), there is no compose env and no ci-hub-ollama
+    // container, so default to the loopback address where a host Ollama listens.
+    this.baseUrl = process.env.OLLAMA_URL || 'http://localhost:11434';
   }
 
   getBaseUrl(): string {

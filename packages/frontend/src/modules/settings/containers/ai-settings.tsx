@@ -340,7 +340,7 @@ export const AiSettingsContainer = () => {
   const isInsufficient = profile.tier === 'insufficient';
   const backendCompatibleRecommendedModels = profile.recommendedModels.filter((model) => model.backend === selectedBackend);
   const selectedModels = profile.availableModels.filter((model) => selectedModelIds.includes(model.id) && model.backend === selectedBackend);
-  const availableMemoryMb = profile.resourceEstimate.availableMemoryMb;
+  const availableStorageMb = profile.resourceEstimate.availableDiskMb ?? 0;
 
   return (
     <div className="space-y-6">
@@ -451,7 +451,7 @@ export const AiSettingsContainer = () => {
                 onSelect={setSelectedBackend}
               />
 
-              <ResourceSummaryBar selectedModels={selectedModels} availableMemoryMb={availableMemoryMb} />
+              <ResourceSummaryBar selectedModels={selectedModels} availableStorageMb={availableStorageMb} />
             </>
           )}
 

@@ -1,19 +1,10 @@
 import { cn } from '@/lib/utils';
-import type { CuratedModel } from '@ci-hub/common/types';
 import { ChevronDown, ChevronRight, Cloud } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import type { CloudProviderInput } from '../../helpers/ai-setup-types';
 import { CloudProviderCard } from './cloud-provider-card';
-// Other Models section temporarily hidden — re-enable these imports when restoring it.
-// import { CubeModelsIcon } from './icons';
-// import { OtherModels } from './model-selection-card';
 
 interface AdvancedDrawersProps {
-  recommendedModels: CuratedModel[];
-  availableModels: CuratedModel[];
-  selectedModelIds: string[];
-  onToggleModel: (modelId: string) => void;
-  preferredModelId?: string;
   providers: CloudProviderInput[];
   onUpdateProviders: (providers: CloudProviderInput[]) => void;
   insufficientHardware: boolean;
@@ -56,19 +47,11 @@ function DrawerRow({
   );
 }
 
-/** Collapsible "Advanced" panel holding the Other Models picker and Cloud API Keys inputs. */
-export const AdvancedDrawers = ({
-  // Other Models picker hidden — restore these with the DrawerRow block below.
-  // recommendedModels,
-  // availableModels,
-  // selectedModelIds,
-  // onToggleModel,
-  // preferredModelId,
-  providers,
-  onUpdateProviders,
-  insufficientHardware,
-}: AdvancedDrawersProps) => {
-  const [open, setOpen] = useState(true);
+/** Collapsible "Advanced" panel holding the Cloud API Keys inputs. Other Models now lives at the
+ * bottom of the Recommended Models section. */
+export const AdvancedDrawers = ({ providers, onUpdateProviders, insufficientHardware }: AdvancedDrawersProps) => {
+  // When the hardware can't run local models, cloud keys are the primary path — keep Advanced open.
+  const [open, setOpen] = useState(insufficientHardware);
 
   return (
     <section className="rounded-3xl border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
@@ -85,25 +68,6 @@ export const AdvancedDrawers = ({
 
       {open && (
         <div className="mt-4 space-y-3">
-          {/* Other Models section temporarily hidden.
-          {!insufficientHardware && (
-            <DrawerRow
-              icon={<CubeModelsIcon />}
-              title="Other Models"
-              subtitle="Browse and select from more models."
-              toggleTestId="other-models-toggle"
-            >
-              <OtherModels
-                recommendedModels={recommendedModels}
-                availableModels={availableModels}
-                selectedModelIds={selectedModelIds}
-                onToggleModel={onToggleModel}
-                preferredModelId={preferredModelId}
-              />
-            </DrawerRow>
-          )}
-          */}
-
           <DrawerRow
             icon={<Cloud />}
             title="Cloud API Keys"

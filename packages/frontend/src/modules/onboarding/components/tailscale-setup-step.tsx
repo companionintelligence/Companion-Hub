@@ -6,7 +6,7 @@ import { apiFetch } from '@/lib/api-fetch';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
 import { openExternal } from '@/lib/helpers/open-external';
-import { IconBadge, WizardCard } from './wizard-ui';
+import { StepSection } from './ai-setup/primitives';
 
 interface TailscaleSetupStepProps {
   onComplete?: () => void;
@@ -97,18 +97,7 @@ export const TailscaleSetupStep = ({ onComplete, onSkip, onBack, embedded = fals
   }, [isConnected, isLoading, t]);
 
   return (
-    <WizardCard className="space-y-6">
-      {/* Hero Section */}
-      <div className="space-y-3 text-center">
-        <div className="flex justify-center">
-          <IconBadge className={isConnected ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-400' : undefined}>
-            {isConnected ? <Check /> : <Shield />}
-          </IconBadge>
-        </div>
-        <h2 className="text-xl font-bold tracking-tight">{t('ONBOARDING_TAILSCALE_TITLE')}</h2>
-        <p className="mx-auto max-w-xl text-sm text-muted-foreground">{t('ONBOARDING_TAILSCALE_DESCRIPTION')}</p>
-      </div>
-
+    <StepSection number={3} title={t('ONBOARDING_TAILSCALE_TITLE')} description={t('ONBOARDING_TAILSCALE_DESCRIPTION')} className="space-y-4">
       {/* Status Card */}
       <div className="space-y-4 rounded-2xl border border-border bg-foreground/[0.02] p-5">
         {isLoading ? (
@@ -256,6 +245,6 @@ export const TailscaleSetupStep = ({ onComplete, onSkip, onBack, embedded = fals
           </div>
         </div>
       )}
-    </WizardCard>
+    </StepSection>
   );
 };

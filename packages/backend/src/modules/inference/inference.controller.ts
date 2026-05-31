@@ -1,4 +1,5 @@
 import { Body, Controller, Get, Param, Patch, Post, Query, Res, UseGuards } from '@nestjs/common';
+import si from 'systeminformation';
 import type { Response } from 'express';
 import { InferenceRouterService } from './inference-router.service';
 import { HardwareInspectorService } from './hardware-inspector.service';
@@ -260,6 +261,10 @@ export class InferenceController {
         ? budget.modelBudgetVramMb - budget.modelUsedVramMb
         : budget.modelBudgetRamMb - budget.modelUsedRamMb;
 
+    const [disk0] = await si.fsSize().catch(() => [null]);
+    const availableDiskMb = disk0 ? Math.floor(disk0.available / 1024 / 1024) : 0;
+    const totalDiskMb = disk0 ? Math.floor(disk0.size / 1024 / 1024) : 0;
+
     return {
       hardware: profile,
       tier,
@@ -274,6 +279,8 @@ export class InferenceController {
         totalDiskMb: recommendedModels.reduce((sum, m) => sum + m.requirements.diskMb, 0),
         totalMemoryMb,
         availableMemoryMb: Math.max(0, availableMemoryMb),
+        availableDiskMb,
+        diskTotalMb: totalDiskMb,
       },
     };
   }

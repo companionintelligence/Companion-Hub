@@ -44,13 +44,22 @@ vi.mock('../components/ai-setup-step', () => ({
       AI Setup
       <button
         type="button"
-        onClick={() => onConfigChange?.({ agentFramework: 'openclaw', selectedModels: [], backend: 'ollama', cloudProviders: [], skipped: false })}
+        onClick={() =>
+          onConfigChange?.({
+            agentFrameworks: ['openclaw'],
+            selectedModels: [],
+            backend: 'ollama',
+            cloudProviders: [],
+            remoteAccess: [],
+            skipped: false,
+          })
+        }
       >
         emit-ai-config
       </button>
       <button
         type="button"
-        onClick={() => onConfigChange?.({ agentFramework: undefined, selectedModels: [], backend: 'ollama', cloudProviders: [], skipped: false })}
+        onClick={() => onConfigChange?.({ agentFrameworks: [], selectedModels: [], backend: 'ollama', cloudProviders: [], remoteAccess: [], skipped: false })}
       >
         emit-ai-config-no-agent
       </button>
@@ -58,10 +67,11 @@ vi.mock('../components/ai-setup-step', () => ({
         type="button"
         onClick={() =>
           onConfigChange?.({
-            agentFramework: 'openclaw',
+            agentFrameworks: ['openclaw'],
             selectedModels: [],
             backend: 'ollama',
             cloudProviders: [{ provider: 'openai', apiKey: 'sk-test', enabled: true }],
+            remoteAccess: [],
             skipped: false,
           })
         }
@@ -80,10 +90,6 @@ vi.mock('../components/recommendations-step', () => ({
       </button>
     </div>
   ),
-}));
-
-vi.mock('../components/tailscale-setup-step', () => ({
-  TailscaleSetupStep: () => <div data-testid="tailscale-setup-step">VPN</div>,
 }));
 
 vi.mock('../components/install-step', () => ({
@@ -110,10 +116,10 @@ const renderPage = () =>
 describe('OnboardingPage (single vertical form)', () => {
   it('renders config sections on the first page (app picker lives on the next page)', () => {
     renderPage();
+    // AiSetupStep now owns the whole ordered form, including the Private VPN step (Step 3).
     expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument();
     // App selection moved to the install/review page, so it is not on the first form page.
     expect(screen.queryByTestId('recommendations-step')).not.toBeInTheDocument();
-    expect(screen.getByTestId('tailscale-setup-step')).toBeInTheDocument();
   });
 
   it('keeps Continue disabled until AI config is provided', () => {
@@ -134,7 +140,7 @@ describe('OnboardingPage (single vertical form)', () => {
     expect(screen.getByTestId('recommendations-step')).toBeInTheDocument();
     expect(screen.getByTestId('install-step')).toBeInTheDocument();
     // The chosen agent is auto-queued at the top and included in the install list.
-    expect(screen.getByTestId('agent-install-card')).toBeInTheDocument();
+    expect(screen.getByTestId('agent-install-card-openclaw')).toBeInTheDocument();
     expect(screen.getByTestId('install-step')).toHaveAttribute('data-apps', 'openclaw');
 
     // Confirming the selection begins the install and hides the picker.
@@ -152,7 +158,7 @@ describe('OnboardingPage (single vertical form)', () => {
     await user.click(screen.getByRole('button', { name: 'emit-ai-config-no-agent' }));
     await user.click(screen.getByTestId('finish-setup-btn'));
 
-    expect(screen.queryByTestId('agent-install-card')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('agent-install-card-openclaw')).not.toBeInTheDocument();
     expect(screen.getByTestId('install-step')).toHaveAttribute('data-apps', '');
   });
 
@@ -165,7 +171,7 @@ describe('OnboardingPage (single vertical form)', () => {
 
     // The base 'emit-ai-config' config selects no local model and no cloud provider, so the agent
     // falls back to a recommended local model (not the misleading "downloaded model" claim).
-    expect(screen.getByTestId('agent-summary-text')).toHaveTextContent('recommended local model');
+    expect(screen.getByTestId('agent-summary-text-openclaw')).toHaveTextContent('recommended local model');
   });
 
   it('describes the agent model source as the cloud provider when one is configured', async () => {
@@ -175,8 +181,8 @@ describe('OnboardingPage (single vertical form)', () => {
     await user.click(screen.getByRole('button', { name: 'emit-ai-config-cloud' }));
     await user.click(screen.getByTestId('finish-setup-btn'));
 
-    expect(screen.getByTestId('agent-summary-text')).toHaveTextContent('OpenAI');
-    expect(screen.getByTestId('agent-summary-text')).not.toHaveTextContent('downloaded model');
+    expect(screen.getByTestId('agent-summary-text-openclaw')).toHaveTextContent('OpenAI');
+    expect(screen.getByTestId('agent-summary-text-openclaw')).not.toHaveTextContent('downloaded model');
   });
 
   it('lets the user deselect the auto-queued agent on the install page', async () => {
@@ -188,7 +194,7 @@ describe('OnboardingPage (single vertical form)', () => {
 
     expect(screen.getByTestId('install-step')).toHaveAttribute('data-apps', 'openclaw');
     // Toggling the agent card off removes it from the install list.
-    await user.click(screen.getByTestId('agent-install-card'));
+    await user.click(screen.getByTestId('agent-install-card-openclaw'));
     expect(screen.getByTestId('install-step')).toHaveAttribute('data-apps', '');
   });
 });

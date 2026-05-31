@@ -10,6 +10,8 @@ interface SystemOverviewProps {
   tier: HardwareTier;
   onRescan: () => Promise<void>;
   rescanning?: boolean;
+  availableDiskMb?: number;
+  diskTotalMb?: number;
 }
 
 const TIER_BADGES: Record<HardwareTier, { label: string; color: string; emoji: string }> = {
@@ -63,7 +65,7 @@ function OverviewItem({ icon, label, value, sub, testId }: { icon: ReactNode; la
  * Note: the hardware profile is the Hub's; OS is derived from the connecting client and total
  * storage isn't reported by the profile API yet, so it shows "—".
  */
-export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false }: SystemOverviewProps) => {
+export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, availableDiskMb, diskTotalMb }: SystemOverviewProps) => {
   const badge = TIER_BADGES[tier];
   const os = getClientPlatform();
   const noGpu = !hardware.gpu.available;
@@ -124,7 +126,12 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false }:
           value={hardware.gpu.available ? (hardware.gpu.unifiedMemory ? 'Unified' : formatMemory(hardware.gpu.vramMb)) : '—'}
           sub={hardware.gpu.unifiedMemory ? 'Unified Memory' : undefined}
         />
-        <OverviewItem icon={<HardDrive />} label="Storage" value="—" />
+        <OverviewItem
+          icon={<HardDrive />}
+          label="Storage"
+          value={diskTotalMb ? formatMemory(diskTotalMb) : '—'}
+          sub={availableDiskMb ? `${formatMemory(availableDiskMb)} free` : undefined}
+        />
       </div>
 
       {noGpu && (

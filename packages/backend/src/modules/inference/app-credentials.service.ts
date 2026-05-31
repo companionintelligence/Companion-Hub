@@ -161,7 +161,7 @@ export class AppCredentialsService {
     const keys = APP_ENV_KEYS[slug];
 
     // ─── Local (default) connection: app → Ollama /v1 directly ───────────
-    // The chat model is the NATIVE backend id (e.g. hermes4:70b) because the app
+    // The chat model is the NATIVE backend id (e.g. llama3.3:70b) because the app
     // talks to Ollama, not the Hub — Ollama knows nothing about catalog ids.
     let provider: 'ollama' | 'cloud' = 'ollama';
     let endpointUrl = ollamaOpenAiUrl;
