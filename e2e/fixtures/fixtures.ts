@@ -3,8 +3,19 @@ import { user } from '../../packages/backend/src/core/database/drizzle/schema';
 import { testUser } from '../helpers/constants';
 import { clearDatabase, db, seedOrganization } from '../helpers/db';
 
+const BACKEND_URL = `http://localhost:${process.env.BACKEND_PORT || '3000'}`;
+
+async function resetBackendState() {
+  try {
+    await fetch(`${BACKEND_URL}/api/registration/reset`, { method: 'POST', signal: AbortSignal.timeout(5000) });
+  } catch {
+    // Non-fatal — backend may already be unregistered or unreachable
+  }
+}
+
 export const test = base.extend({
   page: async ({ page }, use) => {
+    await resetBackendState();
     await clearDatabase();
     await seedOrganization();
     await use(page);
