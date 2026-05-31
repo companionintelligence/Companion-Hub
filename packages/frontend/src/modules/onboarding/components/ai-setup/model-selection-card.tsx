@@ -28,23 +28,25 @@ const MODALITY_TAG: Record<string, string> = {
   'image-gen': 'Image',
 };
 
-const PURPOSE_TAG: Record<string, string> = {
-  fast: 'Fast',
-  general: 'Balanced',
-  coding: 'Coding',
-  reasoning: 'Best for agents',
-  transcription: 'Speech',
-};
-
-/** 1–2 short tags for a model, derived from its purpose/modality (matches the mock's pill style). */
+/**
+ * Capability pills for a model — what it can do, to help users pick the right local AI:
+ * Reasoning / Vision / Tools / Audio (from catalog capability metadata) for LLMs, and a single
+ * descriptive tag for non-LLM modalities (Embedding / Speech / Transcription).
+ */
 function modelTags(model: CuratedModel): string[] {
-  const modalityTag = model.modality && model.modality !== 'llm' ? MODALITY_TAG[model.modality] : undefined;
-  if (modalityTag) return [modalityTag];
+  if (model.modality && model.modality !== 'llm') {
+    return [MODALITY_TAG[model.modality] ?? 'Model'];
+  }
+  const caps = model.metadata?.capabilities;
+  const tags: string[] = [];
+  if (caps?.reasoning) tags.push('Reasoning');
+  if (caps?.vision) tags.push('Vision');
+  if (caps?.tools) tags.push('Tools');
+  if (caps?.audio) tags.push('Audio');
+  if (tags.length > 0) return tags;
+  // Fallback for entries without capability metadata.
   const purpose = model.purpose as string | undefined;
-  const purposeTag = purpose ? PURPOSE_TAG[purpose] : undefined;
-  if (purposeTag) return [purposeTag];
-  if (purpose) return [purpose.charAt(0).toUpperCase() + purpose.slice(1)];
-  return [];
+  return purpose ? [purpose.charAt(0).toUpperCase() + purpose.slice(1)] : [];
 }
 
 function modelMeta(model: CuratedModel): string {
@@ -234,7 +236,6 @@ export const OtherModelsSection = (props: OtherModelsProps) => {
         </span>
         <span className="min-w-0 flex-1">
           <span className="block text-sm font-semibold">Other Models</span>
-          <span className="block text-xs text-muted-foreground">Install any model your hardware can run — including alternative embedders.</span>
         </span>
       </div>
       <OtherModels {...props} />

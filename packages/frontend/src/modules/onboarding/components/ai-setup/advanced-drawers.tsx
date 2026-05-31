@@ -18,15 +18,11 @@ export const AdvancedDrawers = ({ providers, onUpdateProviders, insufficientHard
     <StepSection
       number={4}
       title="Advanced"
-      description="Add cloud provider API keys as a fallback or alternative to local models."
       action={<span className="rounded-full bg-muted px-2.5 py-0.5 text-xs font-medium text-muted-foreground">Optional</span>}
     >
       <div className="mb-3 flex items-center gap-2">
         <Cloud className="h-5 w-5 text-primary" />
-        <div>
-          <p className="text-sm font-semibold">Cloud API Keys</p>
-          <p className="text-xs text-muted-foreground">Add API keys for cloud providers.</p>
-        </div>
+        <p className="text-sm font-semibold">Cloud API Keys</p>
       </div>
       <CloudProviderCard providers={providers} insufficientHardware={insufficientHardware} onUpdate={onUpdateProviders} />
     </StepSection>

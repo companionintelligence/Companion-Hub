@@ -97,7 +97,7 @@ export const TailscaleSetupStep = ({ onComplete, onSkip, onBack, embedded = fals
   }, [isConnected, isLoading, t]);
 
   return (
-    <StepSection number={3} title={t('ONBOARDING_TAILSCALE_TITLE')} description={t('ONBOARDING_TAILSCALE_DESCRIPTION')} className="space-y-4">
+    <StepSection number={3} title={t('ONBOARDING_TAILSCALE_TITLE')} className="space-y-4">
       {/* Status (borderless — sits directly within the step panel) */}
       <div className="space-y-4">
         {isLoading ? (
@@ -214,14 +214,6 @@ export const TailscaleSetupStep = ({ onComplete, onSkip, onBack, embedded = fals
           <li className="flex items-start gap-2">
             <span className="text-primary">✓</span>
             <span>{t('ONBOARDING_TAILSCALE_BENEFIT_DEVICES')}</span>
-          </li>
-          <li className="flex items-start gap-2">
-            <span className="text-primary">✓</span>
-            <span>{t('ONBOARDING_TAILSCALE_BENEFIT_NAT')}</span>
-          </li>
-          <li className="flex items-start gap-2">
-            <span className="text-primary">✓</span>
-            <span>{t('ONBOARDING_TAILSCALE_BENEFIT_ENCRYPTION')}</span>
           </li>
         </ul>
       </div>
