@@ -22,21 +22,6 @@ export default () => {
 
   const isLoading = !systemData;
   const memoryUsed = systemData?.memoryUsed ?? (systemData ? Math.round((systemData.memoryTotal * systemData.percentUsedMemory) / 100) : 0);
-  const vmWedge = systemData?.hasVmWedge ?? false;
-  const containerMemorySubtitle =
-    vmWedge && systemData?.containerMemoryTotal
-      ? `Container limit: ${systemData.containerMemoryUsed ?? '—'} / ${systemData.containerMemoryTotal} GB`
-      : undefined;
-  const containerDiskSubtitle =
-    vmWedge && systemData?.containerDiskTotal
-      ? `Container limit: ${systemData.containerDiskUsed ?? '—'} / ${systemData.containerDiskTotal} GB`
-      : undefined;
-  const dockerResourceHint = [
-    systemData?.platformGuidance,
-    systemData?.recommendedDockerRamMb ? `Recommended Docker memory: ${Math.round(systemData.recommendedDockerRamMb / 1024)} GB` : undefined,
-  ]
-    .filter(Boolean)
-    .join(' ');
 
   return (
     <div className="h-full overflow-y-auto">
@@ -54,8 +39,6 @@ export default () => {
                 title={t('DASHBOARD_DISK_SPACE_TITLE')}
                 metric={`${systemData.percentUsed}%`}
                 subtitle={`${systemData.diskUsed} / ${systemData.diskSize} GB`}
-                secondarySubtitle={containerDiskSubtitle}
-                hint={vmWedge && systemData.diskSize === 0 ? dockerResourceHint : undefined}
                 icon={Database}
                 progress={systemData.percentUsed}
               />
@@ -72,8 +55,6 @@ export default () => {
                 title={t('DASHBOARD_MEMORY_TITLE')}
                 metric={`${systemData.percentUsedMemory}%`}
                 subtitle={`${memoryUsed} / ${systemData.memoryTotal} GB`}
-                secondarySubtitle={containerMemorySubtitle}
-                hint={dockerResourceHint}
                 icon={MemoryStick}
                 progress={systemData.percentUsedMemory}
               />
