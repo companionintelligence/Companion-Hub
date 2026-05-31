@@ -14,7 +14,7 @@ interface CompactSystemStatProps {
 export const CompactSystemStat = ({ title, metric, subtitle, secondarySubtitle, icon: Icon, progress, isLoading }: CompactSystemStatProps) => {
   const barColor = progress > 90 ? 'bg-red-500' : progress > 70 ? 'bg-yellow-500' : 'bg-primary';
   return (
-    <div className="rounded-2xl border border-border bg-gradient-to-b from-card to-card/60 p-3 sm:p-4 shadow-sm">
+    <div className="rounded-2xl border border-border bg-linear-to-b from-card to-card/60 p-3 sm:p-4 shadow-sm dark:from-card/80 dark:to-card/40">
       <div className="flex items-start gap-2.5">
         <span className="mt-0.5 text-primary">
           <Icon size={20} />

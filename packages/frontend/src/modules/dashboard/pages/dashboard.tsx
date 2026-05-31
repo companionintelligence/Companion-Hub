@@ -74,7 +74,7 @@ export default () => {
         </div>
 
         {/* Apps section */}
-        <div className="rounded-2xl border border-border bg-gradient-to-b from-card to-card/60 p-4 shadow-sm">
+        <div className="rounded-2xl border border-border bg-linear-to-b from-card to-card/60 p-4 shadow-sm">
           {appsData ? <HorizontalAppList apps={appsData.installed} /> : <LoadingSpinner />}
         </div>
       </div>

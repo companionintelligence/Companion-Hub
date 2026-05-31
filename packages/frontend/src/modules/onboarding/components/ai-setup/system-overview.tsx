@@ -77,7 +77,7 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
   const ready = tier !== 'insufficient';
 
   return (
-    <section className="rounded-3xl border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
+    <section className="rounded-3xl border border-border bg-linear-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <Monitor className="h-6 w-6 text-primary" />
@@ -137,7 +137,7 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
 
       {noGpu && (
         <div className="mt-4 flex items-start gap-2 rounded-md border border-yellow-200 bg-yellow-50 p-2.5 dark:border-yellow-800 dark:bg-yellow-950">
-          <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0 text-yellow-600 dark:text-yellow-400" />
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-yellow-600 dark:text-yellow-400" />
           <div className="text-xs text-yellow-800 dark:text-yellow-200">
             <strong>No GPU detected.</strong> AI services will run on CPU only. Performance may be slower. Consider installing a graphics card for
             better performance.
@@ -147,7 +147,7 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
 
       {amdRuntimeMissing && (
         <div className="mt-4 flex items-start gap-2 rounded-md border border-yellow-200 bg-yellow-50 p-2.5 dark:border-yellow-800 dark:bg-yellow-950">
-          <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0 text-yellow-600 dark:text-yellow-400" />
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-yellow-600 dark:text-yellow-400" />
           <div className="text-xs text-yellow-800 dark:text-yellow-200">
             <strong>Container GPU runtime not available.</strong> Your {hardware.gpu.vendor} GPU was detected, but containerized backends do not have
             ROCm access yet. Host-side Ollama can still use the GPU once it is installed and reachable. Please install the appropriate drivers (AMD
