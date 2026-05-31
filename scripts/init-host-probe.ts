@@ -3,7 +3,7 @@
  * Probe physical host RAM, CPU, and disk before Hub containers start.
  * Writes state/hardware/host_metrics.json under ROOT_FOLDER_HOST.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import si from 'systeminformation';

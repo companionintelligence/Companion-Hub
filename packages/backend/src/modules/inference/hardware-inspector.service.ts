@@ -474,15 +474,6 @@ export class HardwareInspectorService implements OnModuleInit {
     };
   }
 
-  /**
-   * @deprecated Use HostMetricsService.readHostProbe() — kept for tests that mock the legacy path.
-   */
-  private async readMacOsHostProbe(): Promise<MacOsHostProbe | null> {
-    const hostProbe = await this.hostMetrics.readHostProbe();
-    if (!hostProbe || hostProbe.platform !== 'darwin') return null;
-    return this.toMacOsHostProbe(hostProbe);
-  }
-
   private async detectMacGpu(): Promise<{
     available: boolean;
     vendor: 'nvidia' | 'amd' | 'intel' | 'none';

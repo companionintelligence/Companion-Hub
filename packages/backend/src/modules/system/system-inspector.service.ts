@@ -269,15 +269,6 @@ export class SystemInspectorService {
     return 'If stats look low, check Docker Desktop or WSL2 resource limits on your host.';
   }
 
-  private async getMemoryInfo() {
-    try {
-      const mem = await si.mem();
-      return { total: mem.total, used: mem.used, available: mem.available };
-    } catch {
-      return { total: os.totalmem(), used: os.totalmem() - os.freemem(), available: os.freemem() };
-    }
-  }
-
   private async getDockerInfo(): Promise<{ version: string | null; containers: { running: number; stopped: number; total: number } }> {
     try {
       const info = await this.docker.info();

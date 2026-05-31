@@ -601,17 +601,6 @@ describe('HardwareInspectorService', () => {
   // ─── macOS Host Probe (Docker-on-macOS) ────────────────────────────
 
   describe('macOS host probe (HW-mac)', () => {
-    const appleM2UltraProbe = JSON.stringify({
-      platform: 'darwin',
-      cpuArch: 'arm64',
-      cpuModel: 'Apple M2 Ultra',
-      cpuCores: 24,
-      totalRamMb: 98304,
-      availableRamMb: 83558,
-      isAppleSilicon: true,
-      source: 'desktop-host-macos-system-profiler',
-    });
-
     beforeEach(() => {
       // Default: no GPU detected inside Docker VM, no NVIDIA probe, VM RAM
       (si.graphics as any) = vi.fn().mockResolvedValue({ controllers: [] });
@@ -764,15 +753,6 @@ describe('HardwareInspectorService', () => {
 
     it('should ignore the probe file when platform field is not darwin', async () => {
       process.env.CI_HUB_HOST_PLATFORM = 'linux';
-      const nonMacProbe = JSON.stringify({
-        platform: 'linux',
-        cpuArch: 'arm64',
-        cpuModel: 'Apple M2 Ultra',
-        cpuCores: 24,
-        totalRamMb: 98304,
-        availableRamMb: 83558,
-        isAppleSilicon: true,
-      });
       filesystemService.readTextFile.mockImplementation(async (filePath: string) => {
         if (filePath === '/data/state/hardware/host_metrics.json') {
           return JSON.stringify({
@@ -836,25 +816,32 @@ describe('HardwareInspectorService', () => {
       expect(profile.gpu.unifiedMemory).toBe(false);
     });
 
-    it('should return null from readMacOsHostProbe when file is absent', async () => {
-      filesystemService.readTextFile.mockResolvedValue(null);
-
-      const probe = await (service as any).readMacOsHostProbe();
-
-      expect(probe).toBeNull();
-    });
-
-    it('should return null from readMacOsHostProbe when totalRamMb is missing', async () => {
+    it('should fall back to container RAM when host metrics file is absent', async () => {
       filesystemService.readTextFile.mockImplementation(async (filePath: string) => {
-        if (filePath === '/data/state/hardware/host_system.json') {
-          return JSON.stringify({ platform: 'darwin', cpuArch: 'arm64' });
-        }
+        if (filePath === '/data/state/hardware/host_metrics.json') return null;
+        if (filePath === '/data/state/hardware/host_system.json') return null;
+        if (filePath === '/host/proc/meminfo') return 'MemTotal: 7897344\nMemAvailable: 6815744';
         return null;
       });
 
-      const probe = await (service as any).readMacOsHostProbe();
+      const profile = await service.detect();
 
-      expect(probe).toBeNull();
+      expect(profile.ram.totalMb).toBe(7712);
+    });
+
+    it('should fall back to container RAM when host metrics file is invalid', async () => {
+      filesystemService.readTextFile.mockImplementation(async (filePath: string) => {
+        if (filePath === '/data/state/hardware/host_metrics.json') {
+          return JSON.stringify({ schemaVersion: 1, platform: 'darwin', cpuArch: 'arm64' });
+        }
+        if (filePath === '/data/state/hardware/host_system.json') return null;
+        if (filePath === '/host/proc/meminfo') return 'MemTotal: 7897344\nMemAvailable: 6815744';
+        return null;
+      });
+
+      const profile = await service.detect();
+
+      expect(profile.ram.totalMb).toBe(7712);
     });
   });
 });

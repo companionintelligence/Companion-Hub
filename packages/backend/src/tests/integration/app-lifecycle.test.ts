@@ -54,8 +54,8 @@ function cleanTree(tree: Record<string, string | null>) {
     if (value && (key.endsWith('config.json') || key.endsWith('app-data.json'))) {
       try {
         const json = JSON.parse(value);
-        if (json.created_at) json.created_at = 1769810550000;
-        if (json.updated_at) json.updated_at = 1769810550000;
+        if (json.created_at !== undefined) json.created_at = 1769810550000;
+        if (json.updated_at !== undefined) json.updated_at = 1769810550000;
         newTree[key] = JSON.stringify(json, null, 2);
       } catch (_e) {
         newTree[key] = value;
@@ -391,6 +391,7 @@ describe('App lifecycle', () => {
       configurationService.get.calledWith('architecture').mockReturnValue('arm64');
       const appInfo = await createAppInStore('test', { id: 'arch-test' });
       const composeJson = {
+        schemaVersion: 2,
         services: [
           {
             name: 'app',

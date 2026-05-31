@@ -27,8 +27,8 @@ export const createAppInStore = async (storeId: string, app: Partial<AppInfo> = 
     short_desc: faker.lorem.sentence(),
     website: faker.internet.url(),
     supported_architectures: [],
-    created_at: Date.now(),
-    updated_at: Date.now(),
+    created_at: 0,
+    updated_at: 0,
     deprecated: false,
     cihub_app_version: 1,
     force_expose: false,
@@ -38,15 +38,14 @@ export const createAppInStore = async (storeId: string, app: Partial<AppInfo> = 
   });
 
   const composeJson = {
+    schemaVersion: 2,
     services: [
       {
         name: appInfo.id,
         image: 'nginx:latest',
         isMain: true,
         internalPort: 80,
-        environment: {
-          TEST: 'test',
-        },
+        environment: [{ key: 'TEST', value: 'test' }],
       },
     ],
   };
