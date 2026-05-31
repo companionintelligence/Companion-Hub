@@ -1,6 +1,6 @@
 import { cn } from '@/lib/utils';
 import type { CuratedModel, HardwareTier } from '@ci-hub/common/types';
-import { ChevronRight } from 'lucide-react';
+import { ChevronRight, HardDrive, MemoryStick } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { CubeModelsIcon, ModelIcon } from './icons';
 import { ARTIFICIAL_ANALYSIS_URL, type LevelColor, LEVEL_TAG, LEVEL_TEXT, resourceColor, scoreColor, TIER_TAG_COLOR, TIER_TAG_LABEL } from './levels';
@@ -17,7 +17,7 @@ interface RecommendedModelsProps {
   children?: ReactNode;
 }
 
-function formatSize(mb: number): string {
+export function formatSize(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
   return `${mb} MB`;
 }
@@ -34,7 +34,7 @@ const MODALITY_TAG: Record<string, string> = {
  * Reasoning / Vision / Tools / Audio (from catalog capability metadata) for LLMs, and a single
  * descriptive tag for non-LLM modalities (Embedding / Speech / Transcription).
  */
-function modelTags(model: CuratedModel): string[] {
+export function modelTags(model: CuratedModel): string[] {
   if (model.modality && model.modality !== 'llm') {
     return [MODALITY_TAG[model.modality] ?? 'Model'];
   }
@@ -50,13 +50,25 @@ function modelTags(model: CuratedModel): string[] {
   return purpose ? [purpose.charAt(0).toUpperCase() + purpose.slice(1)] : [];
 }
 
-function modelMeta(model: CuratedModel): string {
-  const ram = `${formatSize(model.runtime.memoryFootprintMb)} RAM`;
-  return model.requirements?.diskMb == null ? ram : `${ram} · ${formatSize(model.requirements.diskMb)} disk`;
+export function modelMeta(model: CuratedModel): ReactNode {
+  return (
+    <span className="flex items-center gap-3">
+      <span className="flex items-center gap-1">
+        <MemoryStick className="h-3 w-3 flex-shrink-0" />
+        {formatSize(model.runtime.memoryFootprintMb)}
+      </span>
+      {model.requirements?.diskMb != null && (
+        <span className="flex items-center gap-1">
+          <HardDrive className="h-3 w-3 flex-shrink-0" />
+          {formatSize(model.requirements.diskMb)}
+        </span>
+      )}
+    </span>
+  );
 }
 
 /** Artificial Analysis benchmark scores (0–100ish) shown on each model — intelligence + tool calling. */
-function modelScores(model: CuratedModel): { intelligence?: number; toolCalling?: number } {
+export function modelScores(model: CuratedModel): { intelligence?: number; toolCalling?: number } {
   return { intelligence: model.metadata?.intelligenceIndex, toolCalling: model.metadata?.toolCallingIndex };
 }
 

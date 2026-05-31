@@ -19,9 +19,19 @@ interface RecommendationsStepProps {
   /** Section mode for the single-page form: hides nav and emits the live selection via onChange. */
   embedded?: boolean;
   onChange?: (apps: OnboardingApp[]) => void;
+  /** App slugs that are always shown at the top and pre-selected by default. */
+  pinnedSlugs?: string[];
 }
 
-export const RecommendationsStep = ({ detectedServices, onSelect, onSkip, onBack, embedded = false, onChange }: RecommendationsStepProps) => {
+export const RecommendationsStep = ({
+  detectedServices,
+  onSelect,
+  onSkip,
+  onBack,
+  embedded = false,
+  onChange,
+  pinnedSlugs = [],
+}: RecommendationsStepProps) => {
   const { apps: storeApps } = useAppContext();
   // Memoized so the `recommendations` memo below keeps a stable identity across re-renders
   // (an unstable detectedNames array would invalidate it every render and re-fire the emit effect).
@@ -46,7 +56,15 @@ export const RecommendationsStep = ({ detectedServices, onSelect, onSkip, onBack
       }))
       .filter((rec) => rec.alternatives.length > 0);
   }, [altsData, detectedNames, storeApps]);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  // Pinned apps that exist in the store, shown at the top and pre-selected.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: pinnedSlugs is stable (passed from parent constant)
+  const pinnedApps = useMemo(
+    () => pinnedSlugs.map((slug) => storeApps.find((a) => a.id === slug)).filter((a): a is NonNullable<typeof a> => a != null),
+    [storeApps],
+  );
+
+  const [selected, setSelected] = useState<Set<string>>(() => new Set(pinnedSlugs.filter((slug) => storeApps.some((a) => a.id === slug))));
 
   // Pre-select popular/recommended ones
   const toggleApp = (slug: string) => {
@@ -63,10 +81,24 @@ export const RecommendationsStep = ({ detectedServices, onSelect, onSkip, onBack
 
   const buildApps = (): OnboardingApp[] => {
     const apps: OnboardingApp[] = [];
+    // Include pinned apps that are selected
+    for (const app of pinnedApps) {
+      if (selected.has(app.id)) {
+        apps.push({
+          appSlug: app.id,
+          name: app.name,
+          icon: '',
+          category: 'featured',
+          replacesNames: [],
+          urn: app.urn,
+          localSubdomain: app.id,
+        });
+      }
+    }
+    // Include alt-derived apps that are selected
     for (const rec of recommendations) {
       for (const alt of rec.alternatives) {
-        if (alt.appSlug && selected.has(alt.appSlug)) {
-          // Try to find the URN from the store
+        if (alt.appSlug && selected.has(alt.appSlug) && !pinnedSet.has(alt.appSlug)) {
           const storeApp = storeApps.find((a) => a.id === alt.appSlug);
           apps.push({
             appSlug: alt.appSlug,
@@ -107,9 +139,10 @@ export const RecommendationsStep = ({ detectedServices, onSelect, onSkip, onBack
 
   // Flatten the per-category recommendations into a single list for the grid, enriching each
   // entry with the store app's short description so the cards explain what the app is for.
-  const flatApps = recommendations.flatMap((rec) =>
+  const pinnedSet = new Set(pinnedSlugs);
+  const flatAppsFromAlts = recommendations.flatMap((rec) =>
     rec.alternatives
-      .filter((alt) => alt.appSlug)
+      .filter((alt) => alt.appSlug && !pinnedSet.has(alt.appSlug))
       .map((alt) => {
         const storeApp = storeApps.find((a) => a.id === alt.appSlug);
         return {
@@ -121,19 +154,19 @@ export const RecommendationsStep = ({ detectedServices, onSelect, onSkip, onBack
         };
       }),
   );
+  const flatApps = [
+    ...pinnedApps.map((app) => ({
+      slug: app.id,
+      name: app.name,
+      icon: '',
+      replaces: '',
+      shortDesc: app.short_desc ?? '',
+    })),
+    ...flatAppsFromAlts,
+  ];
 
-  return (
-    <WizardCard>
-      <WizardHeader
-        icon={<LayoutGrid />}
-        title="Recommended Apps"
-        description={
-          detectedServices.length > 0
-            ? `We found ${detectedServices.length} Docker service${detectedServices.length > 1 ? 's' : ''} on this device. Here are some open-source alternatives you might like.`
-            : 'Here are some popular open-source apps you can self-host.'
-        }
-      />
-
+  const content = (
+    <>
       {isAltsError && (
         <div className="mb-3 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           Could not load app recommendations
@@ -227,6 +260,23 @@ export const RecommendationsStep = ({ detectedServices, onSelect, onSkip, onBack
           </div>
         </WizardNav>
       )}
+    </>
+  );
+
+  if (embedded) return content;
+
+  return (
+    <WizardCard>
+      <WizardHeader
+        icon={<LayoutGrid />}
+        title="Recommended Apps"
+        description={
+          detectedServices.length > 0
+            ? `We found ${detectedServices.length} Docker service${detectedServices.length > 1 ? 's' : ''} on this device. Here are some open-source alternatives you might like.`
+            : 'Here are some popular open-source apps you can self-host.'
+        }
+      />
+      {content}
     </WizardCard>
   );
 };

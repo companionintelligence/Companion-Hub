@@ -12,10 +12,10 @@ export default [
   route('onboarding', './modules/onboarding/pages/onboarding-page.tsx', { id: 'onboarding' }),
   // Authenticated routes
   layout('./components/routes/authenticated-route.tsx', [
-    route('dashboard', './modules/dashboard/pages/dashboard.tsx', { id: 'dashboard' }),
+    route('home', './modules/dashboard/pages/dashboard.tsx', { id: 'dashboard' }),
 
     // App store routes
-    ...prefix('app-store', [
+    ...prefix('store', [
       layout('./modules/app/layouts/app-store-layout.tsx', [
         index('./modules/app/pages/app-store-page.tsx', { id: 'app-store' }),
         route(':storeId', './modules/app/pages/app-store-page.tsx', { id: 'app-store-id' }),

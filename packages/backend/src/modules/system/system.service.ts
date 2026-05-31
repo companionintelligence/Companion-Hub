@@ -17,14 +17,26 @@ export class SystemService {
 
     const memResult = { total: 0, used: 0, available: 0 };
 
-    try {
-      const memInfo = await this.filesystem.readTextFile('/host/proc/meminfo');
-
-      memResult.total = Number(memInfo?.toString().match(/MemTotal:\s+(\d+)/)?.[1] ?? 0) * 1024;
-      memResult.available = Number(memInfo?.toString().match(/MemAvailable:\s+(\d+)/)?.[1] ?? 0) * 1024;
+    // readTextFile returns null when the file is missing (never throws).
+    // /host/proc/meminfo is only available inside the Docker stack; fall back
+    // to systeminformation's si.mem() when running on the host.
+    const memInfo = await this.filesystem.readTextFile('/host/proc/meminfo');
+    if (memInfo) {
+      memResult.total = Number(memInfo.match(/MemTotal:\s+(\d+)/)?.[1] ?? 0) * 1024;
+      memResult.available = Number(memInfo.match(/MemAvailable:\s+(\d+)/)?.[1] ?? 0) * 1024;
       memResult.used = memResult.total - memResult.available;
-    } catch (e) {
-      this.logger.error(`Unable to read /host/proc/meminfo: ${e}`);
+    }
+
+    if (!memResult.total) {
+      // Fall back to systeminformation (works on macOS and Linux host).
+      try {
+        const mem = await si.mem();
+        memResult.total = mem.total;
+        memResult.available = mem.available;
+        memResult.used = mem.used;
+      } catch (e) {
+        this.logger.error(`Unable to read memory info: ${e}`);
+      }
     }
 
     const [disk0] = await si.fsSize();

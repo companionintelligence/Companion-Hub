@@ -52,12 +52,12 @@ export const Header = (props: HeaderProps) => {
 
   return (
     <header
-      className="fixed left-1/2 z-50 flex h-14 w-[96%] md:w-[77%] lg:w-[70%] xl:w-[53%] -translate-x-1/2 items-center gap-2 rounded-full border bg-background/80 px-3 shadow-md backdrop-blur-md"
-      style={{ top: 'calc(var(--titlebar-height, 0px) + 1rem)' }}
+      className="fixed left-0 top-0 z-50 flex h-14 w-full items-center gap-2 border-b bg-background/90 px-4 shadow-sm backdrop-blur-md"
+      style={{ top: 'var(--titlebar-height, 0px)' }}
     >
       {/* Logo (Left) */}
       <div className="flex items-center justify-start">
-        <Link to="/dashboard" className="flex items-center">
+        <Link to="/home" className="flex items-center">
           <img
             src="/2024_CI__Logo_Banner_Color_small.svg"
             alt="Companion Intelligence Logo"
@@ -74,11 +74,11 @@ export const Header = (props: HeaderProps) => {
       {/* Navigation (Center) — aligned with CI Portal (absolute center, lg+ only) */}
       {isLoggedIn && (
         <nav className="absolute left-1/2 -translate-x-1/2 hidden lg:flex items-center justify-center gap-2">
-          <NavLink to="/dashboard" className={getNavLinkClass}>
+          <NavLink to="/home" className={getNavLinkClass}>
             <Home className="mr-2 size-4" />
             Home
           </NavLink>
-          <NavLink to="/app-store" className={getNavLinkClass}>
+          <NavLink to="/store" className={getNavLinkClass}>
             <Store className="mr-2 size-4" />
             Store
           </NavLink>
@@ -131,13 +131,13 @@ export const Header = (props: HeaderProps) => {
             {isLoggedIn ? (
               <>
                 <DropdownMenuItem asChild>
-                  <Link to="/dashboard" className="w-full cursor-pointer flex items-center">
+                  <Link to="/home" className="w-full cursor-pointer flex items-center">
                     <Home className="mr-2 size-4" />
                     Home
                   </Link>
                 </DropdownMenuItem>
                 <DropdownMenuItem asChild>
-                  <Link to="/app-store" className="w-full cursor-pointer flex items-center">
+                  <Link to="/store" className="w-full cursor-pointer flex items-center">
                     <Store className="mr-2 size-4" />
                     Store
                   </Link>

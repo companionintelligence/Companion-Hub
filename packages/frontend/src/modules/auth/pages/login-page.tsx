@@ -29,7 +29,7 @@ export async function clientLoader() {
   }
 
   if (user.data?.isLoggedIn) {
-    return redirect('/dashboard');
+    return redirect('/home');
   }
 }
 
@@ -63,7 +63,7 @@ export default () => {
           window.location.href = redirect_url;
           return;
         }
-        navigate('/dashboard');
+        navigate('/home');
       }
     },
     onError: (e: TranslatableError) => {
@@ -84,7 +84,7 @@ export default () => {
         window.location.href = redirect_url;
         return;
       }
-      navigate('/dashboard');
+      navigate('/home');
     },
   });
 
@@ -93,7 +93,7 @@ export default () => {
       window.location.href = redirect_url;
       return;
     }
-    return <Navigate to="/dashboard" />;
+    return <Navigate to="/home" />;
   }
 
   if (!isConfigured) {

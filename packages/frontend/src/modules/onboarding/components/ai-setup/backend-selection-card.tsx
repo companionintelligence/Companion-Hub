@@ -15,13 +15,22 @@ interface BackendSelectionCardProps {
   selected: InferenceBackendType;
   onSelect: (backend: InferenceBackendType) => void;
   disabled?: boolean;
+  /** Backend types that are known-unavailable and should be grayed out (unselectable). */
+  unavailableTypes?: InferenceBackendType[];
 }
 
 /**
  * Functional backend selector used by the Settings page (and reusable elsewhere). Onboarding uses
  * the simpler {@link BackendCard} instead.
  */
-export const BackendSelectionCard = ({ recommended, available, selected, onSelect, disabled = false }: BackendSelectionCardProps) => {
+export const BackendSelectionCard = ({
+  recommended,
+  available,
+  selected,
+  onSelect,
+  disabled = false,
+  unavailableTypes = [],
+}: BackendSelectionCardProps) => {
   return (
     <Card className={disabled ? 'opacity-60' : undefined}>
       <CardContent className="p-4">
@@ -35,29 +44,41 @@ export const BackendSelectionCard = ({ recommended, available, selected, onSelec
             const info = BACKEND_INFO[type];
             const isRecommended = type === recommended;
             const isSelected = type === selected;
+            const isUnavailable = unavailableTypes.includes(type);
+            const isDisabled = disabled || isUnavailable;
 
             return (
               <label
                 key={type}
-                className={`flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${disabled ? 'cursor-default' : 'cursor-pointer'} ${isSelected ? 'bg-primary/5 ring-1 ring-primary/20' : disabled ? '' : 'hover:bg-muted/50'}`}
+                className={`flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${
+                  isDisabled ? 'cursor-not-allowed opacity-40' : 'cursor-pointer'
+                } ${isSelected && !isUnavailable ? 'bg-primary/5 ring-1 ring-primary/20' : isDisabled ? '' : 'hover:bg-muted/50'}`}
                 data-testid={`backend-option-${type}`}
               >
                 <input
                   type="radio"
                   name="inference-backend"
-                  checked={isSelected}
-                  disabled={disabled}
-                  onChange={() => onSelect(type)}
+                  checked={isSelected && !isUnavailable}
+                  disabled={isDisabled}
+                  onChange={() => !isUnavailable && onSelect(type)}
                   className="text-primary"
                 />
                 <div className="flex-1">
                   <div className="flex items-center gap-2">
                     <span className="text-sm font-medium">{info.label}</span>
-                    {isRecommended && <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary/10 text-primary font-medium">Recommended</span>}
-                    <span
-                      className={`w-2 h-2 rounded-full ${healthy ? 'bg-green-500' : running ? 'bg-yellow-500' : 'bg-muted-foreground/30'}`}
-                      title={healthy ? 'Healthy' : running ? 'Running' : 'Not running'}
-                    />
+                    {isRecommended && !isUnavailable && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary/10 text-primary font-medium">Recommended</span>
+                    )}
+                    {isUnavailable ? (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded border border-border bg-muted/50 text-muted-foreground font-medium">
+                        Unavailable
+                      </span>
+                    ) : (
+                      <span
+                        className={`w-2 h-2 rounded-full ${healthy ? 'bg-green-500' : running ? 'bg-yellow-500' : 'bg-muted-foreground/30'}`}
+                        title={healthy ? 'Healthy' : running ? 'Running' : 'Not running'}
+                      />
+                    )}
                   </div>
                   <div className="text-xs text-muted-foreground">{info.description}</div>
                 </div>

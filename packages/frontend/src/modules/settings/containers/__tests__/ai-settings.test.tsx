@@ -37,8 +37,8 @@ vi.mock('@/components/ui/Skeleton/Skeleton', () => ({
   Skeleton: () => <div data-testid="skeleton" />,
 }));
 
-vi.mock('@/modules/onboarding/components/ai-setup/hardware-profile-card', () => ({
-  HardwareProfileCard: ({ onRescan }: { onRescan: () => Promise<void> }) => (
+vi.mock('@/modules/onboarding/components/ai-setup/system-overview', () => ({
+  SystemOverview: ({ onRescan }: { onRescan: () => Promise<void> }) => (
     <div data-testid="hardware-profile-card">
       <button type="button" data-testid="rescan-btn" onClick={() => void onRescan()}>
         Rescan
@@ -48,7 +48,24 @@ vi.mock('@/modules/onboarding/components/ai-setup/hardware-profile-card', () => 
 }));
 
 vi.mock('@/modules/onboarding/components/ai-setup/model-selection-card', () => ({
-  ModelSelectionCard: () => <div data-testid="model-selection-card" />,
+  modelTags: () => [],
+  modelMeta: () => null,
+  modelScores: () => ({}),
+  RecommendedModels: () => <div data-testid="model-selection-card" />,
+  OtherModelsSection: () => null,
+}));
+
+vi.mock('@/modules/onboarding/components/ai-setup/primitives', () => ({
+  ModelCard: ({ title, checkboxTestId, selected, onToggle }: any) => (
+    <div data-testid={`model-card-${title}`}>
+      <input type="checkbox" data-testid={checkboxTestId} checked={selected} onChange={onToggle} readOnly />
+      {title}
+    </div>
+  ),
+}));
+
+vi.mock('@/modules/onboarding/components/ai-setup/icons', () => ({
+  ModelIcon: () => null,
 }));
 
 vi.mock('@/modules/onboarding/components/ai-setup/backend-selection-card', () => ({
@@ -179,7 +196,7 @@ describe('AiSettingsContainer', () => {
 
     expect(screen.getByTestId('recommended-model-checkbox-m1')).toBeInTheDocument();
     expect(screen.queryByTestId('runtime-model-checkbox-llama3.2:latest')).not.toBeInTheDocument();
-    expect(screen.getByText('Read-only list of models currently loaded in the selected inference backend at runtime.')).toBeInTheDocument();
+    expect(screen.getByText('Models currently active in the inference backend.')).toBeInTheDocument();
   });
 
   it('keeps curated model selection independent of runtime model discovery', async () => {

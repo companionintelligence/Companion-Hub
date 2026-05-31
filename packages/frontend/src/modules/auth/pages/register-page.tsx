@@ -16,7 +16,7 @@ export async function clientLoader() {
   }
 
   if (user.data?.isLoggedIn) {
-    return redirect('/dashboard');
+    return redirect('/home');
   }
 }
 
@@ -39,7 +39,7 @@ export default () => {
   });
 
   if (isLoggedIn) {
-    return <Navigate to="/dashboard" />;
+    return <Navigate to="/home" />;
   }
 
   if (isConfigured) {

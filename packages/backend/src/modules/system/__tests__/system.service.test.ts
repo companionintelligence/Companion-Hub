@@ -25,6 +25,8 @@ describe('SystemService', () => {
     // Mock systeminformation
     (si.currentLoad as any) = vi.fn().mockResolvedValue({ currentLoad: 50, cpus: [{}, {}, {}, {}] });
     (si.fsSize as any) = vi.fn().mockResolvedValue([{ available: 50 * 1024 * 1024 * 1024, size: 100 * 1024 * 1024 * 1024 }]);
+    // Fallback memory source used when /host/proc/meminfo is unavailable (host dev mode).
+    (si.mem as any) = vi.fn().mockResolvedValue({ total: 16 * 1024 * 1024 * 1024, available: 8 * 1024 * 1024 * 1024, used: 8 * 1024 * 1024 * 1024 });
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -67,14 +69,16 @@ describe('SystemService', () => {
       expect(result.percentUsedMemory).toBe(50);
     });
 
-    it('should handle meminfo read failure', async () => {
-      filesystemService.readTextFile.mockRejectedValue(new Error('Fail'));
+    it('should fall back to si.mem() when /host/proc/meminfo is unavailable', async () => {
+      // readTextFile returns null when the file is missing (never throws).
+      filesystemService.readTextFile.mockResolvedValue(null);
 
       const result = await service.getSystemLoad();
 
-      expect(loggerService.error).toHaveBeenCalled();
-      // Should default to 0
-      expect(result.memoryTotal).toBe(0);
+      // si.mem mock returns 16 GB total, 8 GB available → 50% used.
+      expect(si.mem).toHaveBeenCalled();
+      expect(result.memoryTotal).toBe(16);
+      expect(result.percentUsedMemory).toBe(50);
     });
 
     it('should handle missing disk info', async () => {

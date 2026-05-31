@@ -5,7 +5,8 @@
       "name": "frontend",
       "runtimeExecutable": "pnpm",
       "runtimeArgs": ["--filter", "frontend", "dev"],
-      "port": 9091
+      "port": 9091,
+      "autoPort": false
     },
     {
       "name": "backend",

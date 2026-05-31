@@ -45,6 +45,8 @@ interface AiSetupStepProps {
    */
   embedded?: boolean;
   onConfigChange?: (config: AiSetupConfig) => void;
+  /** Extra sections rendered between VPN (step 3) and Advanced (step 5) — used for step 4 on the one-page form. */
+  children?: React.ReactNode;
 }
 
 interface OllamaStatus {
@@ -74,6 +76,7 @@ export const AiSetupStep = ({
   tailscaleAvailable = false,
   embedded = false,
   onConfigChange,
+  children,
 }: AiSetupStepProps) => {
   const [loading, setLoading] = useState(true);
   const [rescanning, setRescanning] = useState(false);
@@ -328,6 +331,9 @@ export const AiSetupStep = ({
 
       {/* Step 3 — Private VPN. Rendered inline in the single-page form; the standalone wizard shows it as its own step. */}
       {embedded && <TailscaleSetupStep embedded />}
+
+      {/* Step 4 slot — injected by the parent (e.g. Recommended Apps on the one-page FTUE form). */}
+      {embedded && children}
 
       <AdvancedDrawers providers={cloudProviders} onUpdateProviders={setCloudProviders} insufficientHardware={isInsufficient} />
 

@@ -16,7 +16,7 @@ interface AdvancedDrawersProps {
 export const AdvancedDrawers = ({ providers, onUpdateProviders, insufficientHardware }: AdvancedDrawersProps) => {
   return (
     <StepSection
-      number={4}
+      number={5}
       title="Advanced"
       action={<span className="rounded-full bg-muted px-2.5 py-0.5 text-xs font-medium text-muted-foreground">Optional</span>}
     >
