@@ -662,22 +662,26 @@ describe('AppLifecycleService', () => {
 
     // ── uninstallApp ─────────────────────────────────────────────────────
     it('uninstallApp success: DB delete committed before SSE', async () => {
-      await service.uninstallApp({ appUrn, removeBackups: false });
+      await service.uninstallApp({ appUrn, deleteAllData: true });
       await flushMicrotasks();
 
       const delIdx = callOrder.indexOf('db_delete');
       const sseIdx = callOrder.indexOf('sse:uninstall_success');
       expect(delIdx).toBeGreaterThanOrEqual(0);
       expect(sseIdx).toBeGreaterThan(delIdx);
+      expect(backupManager.deleteAppBackupsByUrn).toHaveBeenCalledWith(appUrn);
+      expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'uninstall', appUrn, deleteAllData: true }));
     });
 
     it('uninstallApp error: DB committed before SSE', async () => {
       appEventsQueue.publish.mockResolvedValue({ success: false, message: 'fail' } as any);
 
-      await service.uninstallApp({ appUrn, removeBackups: false });
+      await service.uninstallApp({ appUrn, deleteAllData: false });
       await flushMicrotasks();
 
       expectEventAfterNthUpdate('uninstall_error', 1);
+      expect(backupManager.deleteAppBackupsByUrn).toHaveBeenCalledWith(appUrn);
+      expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'uninstall', appUrn, deleteAllData: false }));
     });
 
     // ── resetApp ─────────────────────────────────────────────────────────

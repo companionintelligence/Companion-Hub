@@ -275,7 +275,7 @@
   "APP_STORE_ADD_FORM_URL": "URL de l'App Store",
   "APP_STORE_ADD_FORM_SUBMIT": "Créer un nouvel App Store",
   "APP_STORE_ADD_SUCCESS": "App Store ajouté avec succès",
-  "APP_UNINSTALL_FORM_REMOVE_BACKUPS": "Supprimer les sauvegardes",
+  "APP_UNINSTALL_FORM_REMOVE_BACKUPS": "Delete all data",
   "APP_UNINSTALL_FORM_SUBMIT": "Désinstaller",
   "APP_UNINSTALL_FORM_SUBTITLE": "Toutes les données de cette application seront perdues.",
   "APP_UNINSTALL_FORM_TITLE": "Désinstaller {{name}}?",

@@ -74,6 +74,26 @@ describe('UninstallAppCommand', () => {
     expect(removeNetworksOrder).toBeLessThan(deleteFolderOrder);
   });
 
+  it('preserves Docker volumes when deleteAllData is false', async () => {
+    const moduleRef = {
+      get: vi.fn((token: unknown) => {
+        if (token === LoggerService) return logger;
+        if (token === AppFilesManager) return appFilesManager;
+        if (token === DockerService) return dockerService;
+        if (token === PortManagerService) return portManager;
+        return null;
+      }),
+    } as unknown as ModuleRef;
+
+    const dockerode = mock<Dockerode>();
+    const preserveDataCommand = new UninstallAppCommand(moduleRef, dockerode, false);
+
+    const result = await preserveDataCommand.execute(appUrn);
+
+    expect(result).toEqual({ success: true, message: `App ${appUrn} uninstalled successfully` });
+    expect(dockerService.composeApp).toHaveBeenCalledWith(appUrn, 'down --remove-orphans --rmi all');
+  });
+
   it('continues uninstall when compose down fails and cleanup helpers remain non-fatal', async () => {
     dockerService.snapshotAppImageIds.mockResolvedValueOnce([]);
     dockerService.composeApp.mockRejectedValueOnce(new Error('compose failed'));

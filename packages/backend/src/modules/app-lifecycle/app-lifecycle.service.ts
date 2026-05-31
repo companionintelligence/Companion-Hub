@@ -406,8 +406,8 @@ export class AppLifecycleService implements OnApplicationBootstrap {
   /**
    * Uninstall an app by its ID
    */
-  public async uninstallApp(params: { appUrn: AppUrn; removeBackups: boolean }) {
-    const { appUrn, removeBackups } = params;
+  public async uninstallApp(params: { appUrn: AppUrn; deleteAllData: boolean }) {
+    const { appUrn, deleteAllData } = params;
 
     const app = await this.appRepository.getAppByUrn(appUrn);
 
@@ -415,15 +415,13 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn });
     }
 
-    if (removeBackups) {
-      await this.backupManager.deleteAppBackupsByUrn(appUrn);
-    }
+    await this.backupManager.deleteAppBackupsByUrn(appUrn);
 
     await this.appRepository.updateAppById(app.id, { status: 'uninstalling' });
     this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'uninstalling' });
 
     const requestId = crypto.randomUUID();
-    this.appEventsQueue.publish({ command: 'uninstall', appUrn, requestId, form: app.config }).then(async ({ success, message }) => {
+    this.appEventsQueue.publish({ command: 'uninstall', appUrn, requestId, form: app.config, deleteAllData }).then(async ({ success, message }) => {
       if (success) {
         this.logger.info(`App ${appUrn} uninstalled successfully`);
         await this.appRepository.deleteAppById(app.id);

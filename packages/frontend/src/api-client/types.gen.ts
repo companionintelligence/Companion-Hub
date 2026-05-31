@@ -525,7 +525,7 @@ export type LifecycleRequestDto = {
 };
 
 export type UninstallAppBody = {
-    removeBackups: boolean;
+    deleteAllData?: boolean;
 };
 
 export type UpdateAppBody = {

@@ -275,7 +275,7 @@
   "APP_STORE_ADD_FORM_URL": "Uygulama mağazası URL'si",
   "APP_STORE_ADD_FORM_SUBMIT": "Yeni uygulama mağazası oluştur",
   "APP_STORE_ADD_SUCCESS": "Uygulama mağazası başarıyla eklendi",
-  "APP_UNINSTALL_FORM_REMOVE_BACKUPS": "Yedekleri kaldır",
+  "APP_UNINSTALL_FORM_REMOVE_BACKUPS": "Delete all data",
   "APP_UNINSTALL_FORM_SUBMIT": "Kaldır",
   "APP_UNINSTALL_FORM_SUBTITLE": "Bu uygulamaya ait tüm veriler kaybolacak.",
   "APP_UNINSTALL_FORM_TITLE": "{{name}} kaldırılsın mı?",
