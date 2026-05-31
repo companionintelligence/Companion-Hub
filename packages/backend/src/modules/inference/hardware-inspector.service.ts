@@ -129,8 +129,9 @@ export class HardwareInspectorService implements OnModuleInit {
       this.logger.info('[HardwareInspector] Augmenting NVIDIA GPU detection with host probe VRAM data (SI reported unreliable value).');
     }
 
-    // Determine host platform: darwin host probe is authoritative for Apple Silicon detection.
-    const platform = macOsProbe ? 'darwin' : this.getHostPlatform();
+    // Host probe platform is authoritative on Docker Desktop (macOS/Windows); the container reports linux.
+    const hostPlatform = hostProbe?.platform;
+    const platform = hostPlatform ?? this.getHostPlatform();
     const isAppleSilicon =
       macOsProbe?.isAppleSilicon === true ||
       (hostProbe?.platform === 'darwin' && hostProbe.cpuArch === 'arm64' && (hostProbe.host.cpuModel?.startsWith('Apple') ?? false));
@@ -159,7 +160,7 @@ export class HardwareInspectorService implements OnModuleInit {
     const effectiveInferenceMemoryMb = gpu.unifiedMemory ? ramInfo.availableMb : gpu.available ? gpu.vramMb : ramInfo.availableMb;
 
     const tier = this.computeTier(gpu, ramInfo);
-    const os = await this.detectOs(platform, !!macOsProbe);
+    const os = await this.detectOs(platform, hostPlatform === 'darwin' || hostPlatform === 'win32');
 
     return {
       gpu,
@@ -174,12 +175,18 @@ export class HardwareInspectorService implements OnModuleInit {
 
   /**
    * Host OS name + release codename. In dev (backend on the host) systeminformation reports the real
-   * OS (e.g. macOS "Tahoe"). When the macOS host probe is present the backend runs inside Docker, so
-   * si.osInfo() would describe the Linux VM — we report 'macOS' with an unknown version instead.
+   * OS (e.g. macOS "Tahoe"). When a macOS or Windows host probe is present the backend runs inside
+   * Docker, so si.osInfo() would describe the Linux VM — report the probed host OS instead.
    */
-  private async detectOs(platform: NodeJS.Platform | 'darwin', fromMacProbe: boolean): Promise<{ platform: string; name: string; version: string }> {
-    if (fromMacProbe) {
+  private async detectOs(
+    platform: NodeJS.Platform | 'darwin',
+    fromVmHostProbe: boolean,
+  ): Promise<{ platform: string; name: string; version: string }> {
+    if (fromVmHostProbe && platform === 'darwin') {
       return { platform: 'darwin', name: 'macOS', version: '' };
+    }
+    if (fromVmHostProbe && platform === 'win32') {
+      return { platform: 'win32', name: 'Windows', version: '' };
     }
     try {
       const info = await si.osInfo();
@@ -454,7 +461,11 @@ export class HardwareInspectorService implements OnModuleInit {
   }
 
   private getHostPlatform(): NodeJS.Platform {
-    if (process.env.CI_HUB_HOST_PLATFORM === 'darwin' || process.env.CI_HUB_HOST_PLATFORM === 'linux') {
+    if (
+      process.env.CI_HUB_HOST_PLATFORM === 'darwin' ||
+      process.env.CI_HUB_HOST_PLATFORM === 'linux' ||
+      process.env.CI_HUB_HOST_PLATFORM === 'win32'
+    ) {
       return process.env.CI_HUB_HOST_PLATFORM;
     }
     return os.platform();

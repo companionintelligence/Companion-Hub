@@ -150,6 +150,8 @@ describe('HostMetricsService', () => {
       const load = await service.getDisplayLoad(5, 8);
       expect(load.memoryTotal).toBe(96);
       expect(load.hasVmWedge).toBe(true);
+      expect(load.diskSize).toBe(100);
+      expect(load.diskUsed).toBe(50);
     });
 
     it('uses container metrics when no probe exists', async () => {

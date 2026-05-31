@@ -844,4 +844,52 @@ describe('HardwareInspectorService', () => {
       expect(profile.ram.totalMb).toBe(7712);
     });
   });
+
+  describe('Windows host probe (HW-win)', () => {
+    beforeEach(() => {
+      process.env.CI_HUB_HOST_PLATFORM = 'linux';
+      (si.graphics as any) = vi.fn().mockResolvedValue({ controllers: [] });
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 8, brand: 'Virtual CPU' });
+      (si.osInfo as any) = vi.fn().mockResolvedValue({
+        platform: 'linux',
+        distro: 'Alpine Linux',
+        codename: 'Docker Desktop VM',
+        release: '6.6.0',
+      });
+      execAsyncMock.mockResolvedValue({ stdout: '{}' });
+    });
+
+    it('should report Windows host OS and use probe RAM when win32 probe is present', async () => {
+      filesystemService.readTextFile.mockImplementation(async (filePath: string) => {
+        if (filePath === '/data/state/hardware/host_metrics.json') {
+          return JSON.stringify({
+            schemaVersion: 1,
+            platform: 'win32',
+            cpuArch: 'x86_64',
+            source: 'init-host-probe',
+            probedAt: '2026-01-01T00:00:00.000Z',
+            host: {
+              totalRamMb: 32768,
+              availableRamMb: 16384,
+              cpuCores: 16,
+              cpuModel: 'Intel Core i7-12700K',
+              diskTotalGb: 1024,
+              diskUsedGb: 512,
+              diskMount: 'C:',
+            },
+          });
+        }
+        if (filePath === '/host/proc/meminfo') return 'MemTotal: 8388608\nMemAvailable: 4194304';
+        return null;
+      });
+
+      const profile = await service.detect();
+
+      expect(profile.ram.totalMb).toBe(32768);
+      expect(profile.ram.availableMb).toBe(16384);
+      expect(profile.cpu.model).toBe('Intel Core i7-12700K');
+      expect(profile.os).toEqual({ platform: 'win32', name: 'Windows', version: '' });
+      expect(si.osInfo).not.toHaveBeenCalled();
+    });
+  });
 });

@@ -263,9 +263,9 @@ export class InferenceController {
         : budget.modelBudgetRamMb - budget.modelUsedRamMb;
 
     const hostSection = await this.hostMetrics.readHostSection();
-    const displayLoad = hostSection ? null : await this.hostMetrics.getDisplayLoad(0, 0);
-    const diskTotalGb = hostSection && hostSection.diskTotalGb > 0 ? hostSection.diskTotalGb : (displayLoad?.diskSize ?? 0);
-    const diskUsedGb = hostSection && hostSection.diskTotalGb > 0 ? hostSection.diskUsedGb : (displayLoad?.diskUsed ?? 0);
+    const displayLoad = await this.hostMetrics.getDisplayLoad(0, 0);
+    const diskTotalGb = hostSection && hostSection.diskTotalGb > 0 ? hostSection.diskTotalGb : displayLoad.diskSize;
+    const diskUsedGb = hostSection && hostSection.diskTotalGb > 0 ? hostSection.diskUsedGb : displayLoad.diskUsed;
     const diskTotalMb = diskTotalGb * 1024;
     const availableDiskMb = Math.max(0, (diskTotalGb - diskUsedGb) * 1024);
 
