@@ -31,6 +31,12 @@ export default () => {
     vmWedge && systemData?.containerDiskTotal
       ? `Container limit: ${systemData.containerDiskUsed ?? '—'} / ${systemData.containerDiskTotal} GB`
       : undefined;
+  const dockerResourceHint = [
+    systemData?.platformGuidance,
+    systemData?.recommendedDockerRamMb ? `Recommended Docker memory: ${Math.round(systemData.recommendedDockerRamMb / 1024)} GB` : undefined,
+  ]
+    .filter(Boolean)
+    .join(' ');
 
   return (
     <div className="h-full overflow-y-auto">
@@ -49,6 +55,7 @@ export default () => {
                 metric={`${systemData.percentUsed}%`}
                 subtitle={`${systemData.diskUsed} / ${systemData.diskSize} GB`}
                 secondarySubtitle={containerDiskSubtitle}
+                hint={vmWedge && systemData.diskSize === 0 ? dockerResourceHint : undefined}
                 icon={Database}
                 progress={systemData.percentUsed}
               />
@@ -66,6 +73,7 @@ export default () => {
                 metric={`${systemData.percentUsedMemory}%`}
                 subtitle={`${memoryUsed} / ${systemData.memoryTotal} GB`}
                 secondarySubtitle={containerMemorySubtitle}
+                hint={dockerResourceHint}
                 icon={MemoryStick}
                 progress={systemData.percentUsedMemory}
               />
@@ -74,7 +82,7 @@ export default () => {
         </div>
 
         {/* Apps section */}
-        <div className="rounded-2xl border border-border bg-gradient-to-b from-card to-card/60 p-4 shadow-sm">
+        <div className="rounded-2xl border border-border bg-linear-to-b from-card to-card/60 p-4 shadow-sm">
           {appsData ? <HorizontalAppList apps={appsData.installed} /> : <LoadingSpinner />}
         </div>
       </div>

@@ -152,14 +152,20 @@ const Badge = ({ children, variant = 'default' }: { children: React.ReactNode; v
 };
 
 const HostResourcesSection = ({ hostResources }: { hostResources: NonNullable<SystemHealth['hostResources']> }) => (
-  <section className="rounded-3xl border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
+  <section className="rounded-3xl border border-border bg-linear-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
     <div className="flex items-center gap-3 mb-5">
       <Server className="h-6 w-6 text-primary" />
       <h2 className="text-base font-bold uppercase tracking-wide sm:text-lg">Host vs Container Resources</h2>
       {hostResources.hasVmWedge && <Badge variant="warning">VM wedge detected</Badge>}
     </div>
 
-    <p className="text-sm text-muted-foreground mb-4">{hostResources.platformGuidance}</p>
+    <div className="rounded-xl border border-border bg-muted/30 p-4 mb-4">
+      <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-2">Docker resource limits</div>
+      <p className="text-sm text-muted-foreground leading-relaxed">{hostResources.platformGuidance}</p>
+      {hostResources.recommendedDockerRamMb && (
+        <p className="text-sm font-medium mt-2">Recommended Docker memory: {Math.round(hostResources.recommendedDockerRamMb / 1024)} GB</p>
+      )}
+    </div>
 
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 border-t border-border pt-5">
       <div className="rounded-xl border border-border p-4">
@@ -196,7 +202,7 @@ const HostResourcesSection = ({ hostResources }: { hostResources: NonNullable<Sy
 // ─── System Health Section ───────────────────────────────────────────────────
 
 const SystemHealthSection = ({ health }: { health: SystemHealth }) => (
-  <section className="rounded-3xl border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
+  <section className="rounded-3xl border border-border bg-linear-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
     <div className="flex items-center gap-3 mb-5">
       <Activity className="h-6 w-6 text-primary" />
       <h2 className="text-base font-bold uppercase tracking-wide sm:text-lg">System Health</h2>
@@ -257,9 +263,9 @@ const ContainersSection = ({ containers }: { containers: ContainerInfo[] }) => {
   const sorted = [...running, ...stopped];
 
   return (
-    <section className="rounded-3xl border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
+    <section className="rounded-3xl border border-border bg-linear-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
       <div className="flex items-center gap-3 mb-5">
-        <Container className="h-6 w-6 text-primary flex-shrink-0" />
+        <Container className="h-6 w-6 text-primary shrink-0" />
         <h2 className="text-base font-bold uppercase tracking-wide sm:text-lg">Docker Containers</h2>
         <Badge>{containers.length} total</Badge>
       </div>
@@ -334,9 +340,9 @@ const PortManagementSection = ({ ports }: { ports: { allocations: PortStatus[]; 
   const [showUntracked, setShowUntracked] = useState(true);
 
   return (
-    <section className="rounded-3xl border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
+    <section className="rounded-3xl border border-border bg-linear-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
       <div className="flex items-center gap-3 mb-5 flex-wrap">
-        <Network className="h-6 w-6 text-primary flex-shrink-0" />
+        <Network className="h-6 w-6 text-primary shrink-0" />
         <h2 className="text-base font-bold uppercase tracking-wide sm:text-lg">Port Allocations</h2>
         <Badge>{ports.allocations.length} managed</Badge>
         {ports.untracked.length > 0 && (
@@ -424,9 +430,9 @@ const PortManagementSection = ({ ports }: { ports: { allocations: PortStatus[]; 
             {ports.allocations.map((p) => (
               <div key={`m-${p.hostPort}-${p.protocol}`} className="rounded-lg border p-3 flex items-center gap-3">
                 {p.bound ? (
-                  <CheckCircle2 className="h-4 w-4 text-green-500 flex-shrink-0" />
+                  <CheckCircle2 className="h-4 w-4 text-green-500 shrink-0" />
                 ) : (
-                  <XCircle className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+                  <XCircle className="h-4 w-4 text-muted-foreground shrink-0" />
                 )}
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
@@ -447,7 +453,7 @@ const PortManagementSection = ({ ports }: { ports: { allocations: PortStatus[]; 
                   key={`m-untracked-${u.port}`}
                   className="rounded-lg border border-yellow-200 dark:border-yellow-800 p-3 flex items-center gap-3 bg-yellow-50/50 dark:bg-yellow-900/10"
                 >
-                  <AlertTriangle className="h-4 w-4 text-yellow-500 flex-shrink-0" />
+                  <AlertTriangle className="h-4 w-4 text-yellow-500 shrink-0" />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <span className="font-mono text-xs font-semibold">{u.port}</span>
@@ -501,7 +507,7 @@ export const SystemInspectorContainer = () => {
     <div className="flex flex-col gap-5">
       <div className="flex items-center justify-between gap-2">
         <p className="text-xs text-muted-foreground">Real-time overview of containers, ports, and system resources</p>
-        <div className="flex items-center gap-2 flex-shrink-0">
+        <div className="flex items-center gap-2 shrink-0">
           <span className="text-xs text-muted-foreground">Updated {lastUpdated}</span>
           <button
             type="button"
@@ -515,8 +521,8 @@ export const SystemInspectorContainer = () => {
         </div>
       </div>
 
-      <SystemHealthSection health={data.health} />
       {data.health.hostResources && <HostResourcesSection hostResources={data.health.hostResources} />}
+      <SystemHealthSection health={data.health} />
       <ContainersSection containers={data.containers} />
       <PortManagementSection ports={data.ports} />
     </div>

@@ -19,6 +19,7 @@ const loadSchema = z.object({
   containerDiskTotal: z.number().optional(),
   containerDiskUsed: z.number().optional(),
   recommendedDockerRamMb: z.number().optional(),
+  platformGuidance: z.string().optional(),
 });
 
 // Load

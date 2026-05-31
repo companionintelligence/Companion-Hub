@@ -143,6 +143,8 @@ describe('AppCredentialsService', () => {
     });
 
     it('points hermes-agent at the DIRECT Ollama /v1 with the NATIVE chat model id', async () => {
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['hermes4:70b'] });
+      service.invalidateCache();
       const config = await service.getCredentials('hermes-agent');
 
       expect(config.app).toBe('hermes-agent');
@@ -160,6 +162,8 @@ describe('AppCredentialsService', () => {
     });
 
     it('points openclaw at the DIRECT Ollama /v1 keyed with OPENAI_API_* and native DEFAULT_MODEL', async () => {
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['hermes4:70b'] });
+      service.invalidateCache();
       const config = await service.getCredentials('openclaw');
 
       expect(config.app).toBe('openclaw');
@@ -207,7 +211,9 @@ describe('AppCredentialsService', () => {
     });
 
     it('returns companion-memory env keyed with LLM_* (direct Ollama + native ids) including embeddings', async () => {
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['hermes4:70b', 'nomic-embed-text'] });
       modelRegistry.getRecommendedEmbeddingModel.mockReturnValue(makeEmbedding('nomic-embed-text', 'nomic-embed-text'));
+      service.invalidateCache();
 
       const config = await service.getCredentials('companion-memory');
 
@@ -222,6 +228,7 @@ describe('AppCredentialsService', () => {
     });
 
     it('picks the first (biggest) recommended model and uses its native id', async () => {
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['family:700b', 'family:70b', 'family:8b'] });
       modelRegistry.getRecommendedModelsForHardware.mockReturnValue([
         makeLlm('biggest-700b', 'family:700b'),
         makeLlm('mid-70b', 'family:70b'),
@@ -231,6 +238,16 @@ describe('AppCredentialsService', () => {
       const config = await service.getCredentials('hermes-agent');
 
       expect(config.chatModelId).toBe('family:700b');
+    });
+
+    it('does not emit DEFAULT_MODEL when the recommended model is not present in Ollama', async () => {
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [] });
+      service.invalidateCache();
+
+      const config = await service.getCredentials('openclaw');
+
+      expect(config.chatModelId).toBeNull();
+      expect(config.env.DEFAULT_MODEL).toBeUndefined();
     });
   });
 
@@ -273,6 +290,8 @@ describe('AppCredentialsService', () => {
 
   describe('serializeAsDotenv', () => {
     it('emits KEY=VALUE lines with no quoting for simple values', async () => {
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['hermes4:70b'] });
+      service.invalidateCache();
       const config = await service.getCredentials('openclaw');
       const dotenv = service.serializeAsDotenv(config);
 

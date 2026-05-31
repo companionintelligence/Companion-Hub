@@ -141,6 +141,9 @@ describe('HostMetricsService', () => {
             totalRamMb: 98304,
             availableRamMb: 83558,
             isAppleSilicon: true,
+            diskTotalGb: 494,
+            diskUsedGb: 477,
+            diskMount: '/',
           });
         }
         if (path === '/host/proc/meminfo') return 'MemTotal: 8388608\nMemAvailable: 4194304';
@@ -150,8 +153,70 @@ describe('HostMetricsService', () => {
       const load = await service.getDisplayLoad(5, 8);
       expect(load.memoryTotal).toBe(96);
       expect(load.hasVmWedge).toBe(true);
-      expect(load.diskSize).toBe(100);
-      expect(load.diskUsed).toBe(50);
+      expect(load.diskSize).toBe(494);
+      expect(load.diskUsed).toBe(477);
+      expect(load.percentUsed).toBe(97);
+      expect(load.platformGuidance).toContain('Docker Desktop');
+    });
+
+    it('does not use container disk as primary display when host probe lacks disk on Docker Desktop', async () => {
+      filesystemService.readTextFile.mockImplementation(async (path: string) => {
+        if (path === '/data/state/hardware/host_metrics.json') {
+          return hostProbeJson({
+            host: {
+              totalRamMb: 32768,
+              availableRamMb: 16384,
+              cpuCores: 12,
+              cpuModel: 'Apple M2 Pro',
+              diskTotalGb: 0,
+              diskUsedGb: 0,
+              diskMount: '/',
+            },
+          });
+        }
+        if (path === '/host/proc/meminfo') return 'MemTotal: 8388608\nMemAvailable: 4194304';
+        return null;
+      });
+
+      const load = await service.getDisplayLoad(5, 8);
+
+      expect(load.hasVmWedge).toBe(true);
+      expect(load.diskSize).toBe(0);
+      expect(load.containerDiskTotal).toBe(100);
+    });
+
+    it('replaces stale darwin root disk probe with legacy host_system disk fields', async () => {
+      filesystemService.readTextFile.mockImplementation(async (path: string) => {
+        if (path === '/data/state/hardware/host_metrics.json') {
+          return hostProbeJson({
+            host: {
+              totalRamMb: 32768,
+              availableRamMb: 16384,
+              cpuCores: 12,
+              cpuModel: 'Apple M2 Pro',
+              diskTotalGb: 460,
+              diskUsedGb: 10,
+              diskMount: '/',
+            },
+          });
+        }
+        if (path === '/data/state/hardware/host_system.json') {
+          return JSON.stringify({
+            platform: 'darwin',
+            diskTotalGb: 494,
+            diskUsedGb: 477,
+            diskMount: '/System/Volumes/Data',
+          });
+        }
+        if (path === '/host/proc/meminfo') return 'MemTotal: 8388608\nMemAvailable: 4194304';
+        return null;
+      });
+
+      const load = await service.getDisplayLoad(5, 8);
+
+      expect(load.diskSize).toBe(494);
+      expect(load.diskUsed).toBe(477);
+      expect(load.percentUsed).toBe(97);
     });
 
     it('uses container metrics when no probe exists', async () => {

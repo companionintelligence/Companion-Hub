@@ -45,4 +45,5 @@ export interface HostMetricsDisplayLoad {
   containerDiskTotal?: number;
   containerDiskUsed?: number;
   recommendedDockerRamMb?: number;
+  platformGuidance?: string;
 }

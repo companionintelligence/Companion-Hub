@@ -61,6 +61,9 @@ export interface McpToolDefinition {
   inputSchema: Record<string, unknown>;
 }
 
+/** Provider API modes supported by OpenClaw's model catalog. */
+export type OpenClawProviderApi = 'openai-completions' | 'ollama';
+
 /** Provider registration for OpenClaw model catalog */
 export interface OpenClawProvider {
   id: string;
@@ -72,7 +75,7 @@ export interface OpenClawProvider {
       provider: {
         baseUrl: string;
         apiKey: string;
-        api: 'openai-completions';
+        api: OpenClawProviderApi;
         models: OpenClawModelEntry[];
       };
     }>;
