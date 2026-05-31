@@ -162,7 +162,7 @@ function OnboardingWizard() {
                       unavailable && 'cursor-not-allowed opacity-60',
                     )}
                   >
-                    <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-foreground/10 text-primary [&_svg]:h-6 [&_svg]:w-6">
+                    <span className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-foreground/10 text-primary [&>*]:h-full [&>*]:w-full">
                       <AgentIcon />
                     </span>
                     <span className="min-w-0 flex-1 pr-6">

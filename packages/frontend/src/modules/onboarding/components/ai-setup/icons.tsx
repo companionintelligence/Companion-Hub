@@ -57,39 +57,15 @@ export function BrandLogo({ name, className }: { name: string; className?: strin
 
 /* ── Companion agent frameworks (own products — custom marks) ────────────────────────────────── */
 
-/** OpenClaw — an open mechanical claw/pincer gripping a core. */
+// OpenClaw / Hermes use their official CI-Marketplace app-store logos (full-color raster), rendered as
+// an <img>. Callers size them via a parent box (e.g. OptionCard's `[&>*]:size-11`) or an explicit
+// className, and object-contain keeps the square logo crisp inside it.
 export function OpenClawIcon({ className }: IconProps) {
-  return (
-    <Glyph className={className}>
-      {/* central core */}
-      <circle cx="12" cy="12" r="2.3" />
-      {/* upper pincer */}
-      <path d="M9.8 10.2 6.4 6.8a2.4 2.4 0 0 0-3.4 3.4l2.7 2.7" />
-      <path d="M3 6.6l.5 3.3 3.3.5" />
-      {/* lower pincer */}
-      <path d="M9.8 13.8 6.4 17.2a2.4 2.4 0 0 1-3.4-3.4l2.7-2.7" />
-      <path d="M3 17.4l.5-3.3 3.3-.5" />
-      {/* arm */}
-      <path d="M14.3 12h6.4M18 9.2l2.7 2.8-2.7 2.8" />
-    </Glyph>
-  );
+  return <img src="/agents/openclaw.png" alt="OpenClaw" className={cn('rounded-md object-contain', className)} />;
 }
 
-/** Hermes — a winged helmet. */
 export function HermesIcon({ className }: IconProps) {
-  return (
-    <Glyph className={className}>
-      {/* helmet dome */}
-      <path d="M7.5 12.5a4.5 4.5 0 0 1 9 0v.6h-9z" />
-      {/* helmet brim + face guard */}
-      <path d="M7 13.1h9.5l-1 2.2a1.2 1.2 0 0 1-1.1.7H9.1a1.2 1.2 0 0 1-1.1-.7z" />
-      {/* crest */}
-      <path d="M12 8v-2" />
-      {/* layered wing */}
-      <path d="M16.5 9.2c1.9-1.5 4-1.8 5.5-.9-1.2 1.6-3.2 2.3-5.2 2.2" />
-      <path d="M16.8 11.6c1.4-.7 2.9-.8 4.2-.3" />
-    </Glyph>
-  );
+  return <img src="/agents/hermes.png" alt="Hermes" className={cn('rounded-md object-contain', className)} />;
 }
 
 /* ── Inference backends without an official logo (custom marks) ──────────────────────────────── */

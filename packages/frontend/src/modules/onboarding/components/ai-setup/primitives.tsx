@@ -1,6 +1,7 @@
 import { cn } from '@/lib/utils';
 import { Check } from 'lucide-react';
 import type { ReactNode } from 'react';
+import { LEVEL_BG, LEVEL_TEXT, scoreColor } from './levels';
 
 /* Shared presentational building blocks for the redesigned AI setup wizard. */
 
@@ -99,7 +100,7 @@ export function OptionCard({ title, description, icon, selected = false, disable
 
 interface ModelCardProps {
   title: string;
-  description: string;
+  description?: string;
   icon: ReactNode;
   tags: string[];
   selected: boolean;
@@ -114,16 +115,17 @@ interface ModelCardProps {
   checkboxTestId?: string;
 }
 
-/** A small labeled benchmark score with a proportional bar (0–60 reference scale). */
+/** A small labeled benchmark score with a proportional bar, colored by level (red → blue). */
 function ScoreBar({ label, value, testId }: { label: string; value: number; testId?: string }) {
   const pct = Math.max(4, Math.min(100, (value / 60) * 100));
+  const color = scoreColor(value);
   return (
     <span className="flex items-center gap-1.5" data-testid={testId}>
       <span className="text-[11px] text-muted-foreground">{label}</span>
       <span className="h-1 w-10 overflow-hidden rounded-full bg-muted">
-        <span className="block h-full rounded-full bg-primary" style={{ width: `${pct}%` }} />
+        <span className={cn('block h-full rounded-full', LEVEL_BG[color])} style={{ width: `${pct}%` }} />
       </span>
-      <span className="text-[11px] font-semibold tabular-nums">{Math.round(value)}</span>
+      <span className={cn('text-[11px] font-semibold tabular-nums', LEVEL_TEXT[color])}>{Math.round(value)}</span>
     </span>
   );
 }
@@ -160,7 +162,7 @@ export function ModelCard({
           <span className="text-base font-semibold">{title}</span>
           {agentDefault && <span className="rounded bg-primary px-1.5 py-0.5 text-[10px] font-medium text-primary-foreground">Agent default</span>}
         </span>
-        <span className="mt-1 block text-sm text-muted-foreground">{description}</span>
+        {description && <span className="mt-1 block text-sm text-muted-foreground">{description}</span>}
       </span>
       {tags.length > 0 && (
         <span className="mt-auto flex flex-wrap gap-2 pt-1">

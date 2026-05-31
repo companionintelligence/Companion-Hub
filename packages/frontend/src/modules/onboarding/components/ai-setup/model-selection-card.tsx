@@ -3,6 +3,7 @@ import type { CuratedModel, HardwareTier } from '@ci-hub/common/types';
 import { ChevronRight } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { CubeModelsIcon, ModelIcon } from './icons';
+import { ARTIFICIAL_ANALYSIS_URL, type LevelColor, LEVEL_TAG, LEVEL_TEXT, resourceColor, scoreColor, TIER_TAG_COLOR, TIER_TAG_LABEL } from './levels';
 import { ModelCard, StepSection } from './primitives';
 
 interface RecommendedModelsProps {
@@ -91,7 +92,6 @@ export const RecommendedModels = ({
               testId={`model-row-${model.id}`}
               checkboxTestId={`model-checkbox-${model.id}`}
               title={model.displayName}
-              description={model.description}
               icon={<ModelIcon model={model} />}
               tags={modelTags(model)}
               selected={selectedModelIds.includes(model.id)}
@@ -118,30 +118,7 @@ interface OtherModelsProps {
   preferredModelId?: string;
 }
 
-/* ── Other Models table: color-coded levels (red → orange → gold → green → blue) ───────────────── */
-
-type LevelColor = 'red' | 'orange' | 'gold' | 'green' | 'blue';
-const LEVEL_TEXT: Record<LevelColor, string> = {
-  red: 'text-red-400',
-  orange: 'text-orange-400',
-  gold: 'text-amber-400',
-  green: 'text-emerald-400',
-  blue: 'text-sky-400',
-};
-const LEVEL_TAG: Record<LevelColor, string> = {
-  red: 'border-red-500/30 bg-red-500/15 text-red-300',
-  orange: 'border-orange-500/30 bg-orange-500/15 text-orange-300',
-  gold: 'border-amber-500/30 bg-amber-500/15 text-amber-300',
-  green: 'border-emerald-500/30 bg-emerald-500/15 text-emerald-300',
-  blue: 'border-sky-500/30 bg-sky-500/15 text-sky-300',
-};
-
-// Tier tag color: a heavier hardware requirement is warmer (green = runs anywhere → red = high-end only).
-const TIER_TAG_COLOR: Record<string, LevelColor> = { 'cpu-only': 'green', low: 'gold', medium: 'orange', high: 'red' };
-const TIER_TAG_LABEL: Record<string, string> = { 'cpu-only': 'cpu', low: 'low', medium: 'medium', high: 'high', insufficient: 'n/a' };
-// Benchmark score (0–~65): higher is better → cooler (blue). Resource size (GB): bigger is heavier → warmer (red).
-const scoreColor = (v: number): LevelColor => (v >= 50 ? 'blue' : v >= 38 ? 'green' : v >= 26 ? 'gold' : v >= 14 ? 'orange' : 'red');
-const resourceColor = (gb: number): LevelColor => (gb >= 48 ? 'red' : gb >= 16 ? 'orange' : gb >= 4 ? 'gold' : 'green');
+/* ── Other Models table: color-coded levels (red → orange → gold → green → blue) live in ./levels ── */
 
 function ScoreCell({ value }: { value?: number }) {
   if (value == null) return <span className="text-muted-foreground/50">—</span>;
@@ -174,11 +151,18 @@ function ModelTableRow({
       className={cn('border-t border-border/40 transition-colors hover:bg-muted/40', selected && 'bg-primary/[0.06]')}
     >
       <td className="py-2 pl-3 pr-2 align-middle">
-        <input type="checkbox" id={inputId} checked={selected} onChange={onToggle} className="rounded border-border" data-testid={inputId} />
+        <input
+          type="checkbox"
+          id={inputId}
+          checked={selected}
+          onChange={onToggle}
+          className="size-4 cursor-pointer rounded border-border accent-primary"
+          data-testid={inputId}
+        />
       </td>
       <td className="py-2 pr-3 align-middle">
         <label htmlFor={inputId} className="flex cursor-pointer items-center gap-2">
-          <span className="text-foreground/70 [&_svg]:h-4 [&_svg]:w-4">
+          <span className="flex-shrink-0 text-foreground/70 [&>*]:size-4">
             <ModelIcon model={model} />
           </span>
           <span className="whitespace-nowrap text-sm font-medium">{model.displayName}</span>
@@ -378,6 +362,18 @@ export const OtherModelsSection = (props: OtherModelsProps) => {
         </span>
       </div>
       <OtherModels {...props} />
+      <p className="mt-3 text-[11px] text-muted-foreground">
+        Intelligence &amp; tool-use scores from{' '}
+        <a
+          href={ARTIFICIAL_ANALYSIS_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="font-medium text-primary underline-offset-2 hover:underline"
+        >
+          Artificial Analysis
+        </a>
+        .
+      </p>
     </div>
   );
 };
