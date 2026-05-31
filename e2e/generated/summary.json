@@ -1,12 +1,12 @@
 {
-  "generated": "2026-05-31T17:54:12.918Z",
-  "totalApps": 124,
+  "generated": "2026-05-31T18:47:03.869Z",
+  "totalApps": 126,
   "batches": 10,
   "appsPerBatch": 13,
   "byPriority": {
     "high": 9,
     "medium": 25,
-    "low": 90
+    "low": 92
   },
   "byCategory": {
     "development": 21,
@@ -15,8 +15,8 @@
     "data": 33,
     "media": 8,
     "photography": 1,
-    "ai": 17,
-    "utilities": 54,
+    "ai": 18,
+    "utilities": 55,
     "network": 9,
     "security": 3,
     "mcp": 24,

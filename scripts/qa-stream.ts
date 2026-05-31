@@ -220,7 +220,8 @@ async function qaApp(appId: string) {
     result.cpuPct = samples ? Math.round((cpuTotal / samples) * 10) / 10 : 0;
 
     // ── Score ─────────────────────────────────────────────────
-    result.score = httpOk && result.hasScreenshot ? 'pass' : httpOk ? 'warn' : 'fail';
+    // httpOk is guaranteed true here (the !httpOk early-return is above)
+    result.score = result.hasScreenshot ? 'pass' : 'warn';
   } catch (err) {
     result.score = 'fail';
     result.notes = err instanceof Error ? err.message.slice(0, 300) : String(err).slice(0, 300);

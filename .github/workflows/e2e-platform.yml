@@ -67,6 +67,31 @@ jobs:
       - name: Install Playwright browsers
         run: bunx playwright install --with-deps chromium
 
+      - name: Seed test app into Hub marketplace
+        run: |
+          # The Hub resolves app configs from its data dir at repos/<store>/apps/<id>/
+          # Discover the Hub's data directory from the running process env or common paths
+          HUB_DATA=""
+          HUB_PID=$(pgrep -f "ci-os-hub-desktop\|ci-hub-desktop\|main\.js" | head -1 || true)
+          if [ -n "$HUB_PID" ]; then
+            HUB_DATA=$(tr '\0' '\n' < /proc/$HUB_PID/environ 2>/dev/null \
+              | grep "^CI_HUB_DATA_DIR=" | cut -d= -f2 || true)
+          fi
+          if [ -z "$HUB_DATA" ]; then
+            for d in /opt/ci-hub "$HOME/.ci-hub" "$HOME/ci-hub" /var/lib/ci-hub; do
+              [ -d "$d/repos" ] && HUB_DATA="$d" && break
+            done
+          fi
+          if [ -z "$HUB_DATA" ]; then
+            echo "ERROR: Could not find Hub data directory. Set HUB_DATA_DIR or ensure the Hub is running."
+            exit 1
+          fi
+          echo "Hub data dir: $HUB_DATA"
+          APP_DEST="$HUB_DATA/repos/ci-marketplace/apps/ci-e2e-test-app"
+          mkdir -p "$APP_DEST"
+          cp e2e/platform-test-app/config.json e2e/platform-test-app/docker-compose.json "$APP_DEST/"
+          echo "Seeded ci-e2e-test-app to $APP_DEST"
+
       - name: Install test app via Hub API
         run: |
           # Login

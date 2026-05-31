@@ -76,7 +76,7 @@ jobs:
               {\"server\":\"beta-1\",\"ip\":\"$BETA_1_IP\",\"batch\":8},
               {\"server\":\"beta-red\",\"ip\":\"$BETA_RED_IP\",\"batch\":9}
             ]}" >> $GITHUB_OUTPUT
-            echo "total_apps=124" >> $GITHUB_OUTPUT
+            echo "total_apps=126" >> $GITHUB_OUTPUT
             
           elif [[ "$MODE" == "high-priority" ]]; then
             # High priority apps only (9 apps, single server)
