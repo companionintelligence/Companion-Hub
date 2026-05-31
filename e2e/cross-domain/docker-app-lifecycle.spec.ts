@@ -39,7 +39,7 @@ const TEST_APP_CONFIG = {
   name: 'E2E Whoami',
   description: 'Minimal HTTP responder for E2E testing',
   version: '1.0.0',
-  tipi_version: 1,
+  cihub_app_version: 1,
   short_desc: 'E2E test app',
   author: 'E2E',
   source: 'https://github.com/traefik/whoami',

@@ -78,7 +78,7 @@ export class DebugService {
     const apps = await this.db.select().from(app).where(eq(app.appStoreSlug, 'seed'));
 
     for (const app of apps) {
-      await updateAppInStore(app.appStoreSlug, app.appName, { tipi_version: app.version + 1 });
+      await updateAppInStore(app.appStoreSlug, app.appName, { cihub_app_version: app.version + 1 });
     }
   }
 

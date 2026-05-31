@@ -467,7 +467,7 @@
   "SETTINGS_GENERAL_LANGUAGE_HELP_TRANSLATE": "Помочь перевести Companion Hub",
   "SETTINGS_GENERAL_LOCAL_DOMAIN": "Локальный домен",
   "SETTINGS_GENERAL_LOCAL_DOMAIN_HINT": "Доменное имя, используемое для доступа к приложениям в вашей локальной сети. Ваши приложения будут доступны по адресу app-name.local-domain.",
-  "SETTINGS_GENERAL_SETTINGS_UPDATED_RESTART": "Настройки обновлены. Перезапустите сервер Tipi для применения новых настроек.",
+  "SETTINGS_GENERAL_SETTINGS_UPDATED_RESTART": "Настройки обновлены. Перезапустите сервер Companion Hub для применения новых настроек.",
   "SETTINGS_GENERAL_SETTINGS_UPDATED": "Настройки обновлены.",
   "SETTINGS_GENERAL_APP_DATA_PATH": "Путь к данным приложения",
   "SETTINGS_GENERAL_APP_DATA_PATH_HINT": "Расположение, в котором хранятся данные приложения.",

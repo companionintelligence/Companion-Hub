@@ -198,7 +198,8 @@ export class ReposHelpers {
           categories: Array.isArray(app.categories) ? app.categories : ['utilities'],
           port: typeof app.port === 'number' ? app.port : 8080,
           version: typeof app.version === 'string' ? app.version : '0.0.1',
-          tipi_version: typeof app.tipi_version === 'number' ? app.tipi_version : 1,
+          cihub_app_version:
+            typeof app.cihub_app_version === 'number' ? app.cihub_app_version : typeof app.tipi_version === 'number' ? app.tipi_version : 1,
           source: typeof app.source === 'string' ? app.source : 'https://github.com/example/repo',
           supported_architectures: Array.isArray(app.supported_architectures) ? app.supported_architectures : ['amd64', 'arm64'],
         };
@@ -231,8 +232,8 @@ export class ReposHelpers {
         }
       }
 
-      // Also write a repo.json or config.json so Tipi sees it as a valid repo?
-      // Tipi (CI-OS-Hub) expects `repo.json` in root of repo?
+      // Also write a repo.json or config.json so Hub sees it as a valid repo?
+      // CI Hub expects `repo.json` in root of repo?
       // Existing `downloadZipRepo` unzips a file.
       // Let's check `downloadZipRepo` implementation to see what files are expected.
 

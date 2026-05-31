@@ -22,8 +22,7 @@
  */
 
 import { test, expect } from '@playwright/test';
-import { eq } from 'drizzle-orm';
-import { db, seedOrganization } from '../helpers/db';
+import { db, deleteAppByName, seedOrganization } from '../helpers/db';
 import { testUser } from '../helpers/constants';
 import * as schema from '../../packages/backend/src/core/database/drizzle/schema';
 
@@ -48,7 +47,7 @@ const OPENCLAW_APP_CONFIG = {
   short_desc: 'AI agent with Hub MCP',
   categories: ['ai'] as const,
   port: 3100,
-  tipi_version: 1,
+  cihub_app_version: 1,
   author: 'OpenClaw',
   source: 'https://github.com/openclaw/openclaw',
   available: true,
@@ -433,7 +432,7 @@ test.describe('Full OpenClaw install with GitHub Copilot provider', () => {
 
     // Step 4: Delete the DB app record so install follows the FULL path
     // (env generation, docker-compose up, webhook registration)
-    await db.delete(schema.app).where(eq(schema.app.appName, 'openclaw'));
+    await deleteAppByName('openclaw');
   });
 
   test('install OpenClaw with GitHub Copilot as LLM provider', async () => {

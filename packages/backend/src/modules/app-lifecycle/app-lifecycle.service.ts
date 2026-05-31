@@ -298,7 +298,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       // - Cloudflare/Tailscale with openPort=false keep using params.internalPort for routing instead.
       // - Traefik routing uses params.internalPort from service definition, not this database field.
       port: parsedForm.port ?? appInfo.port,
-      version: appInfo.tipi_version,
+      version: appInfo.cihub_app_version,
       exposed: exposed ?? false,
       domain: domain ?? null,
       localSubdomain: parsedForm.localSubdomain ?? null,
@@ -809,7 +809,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
         const restoredStatus = appStatusBeforeUpdate === 'running' ? 'stopped' : appStatusBeforeUpdate;
 
         await this.updateAppConfig({ appUrn, form: app.config });
-        await this.appRepository.updateAppById(app.id, { version: appInfo?.tipi_version, status: restoredStatus });
+        await this.appRepository.updateAppById(app.id, { version: appInfo?.cihub_app_version, status: restoredStatus });
         this.sseService.emit('app', { event: 'update_success', appUrn, appStatus: restoredStatus });
         this.agentNotifyService?.notify('update_success', { appUrn }, 'info');
 

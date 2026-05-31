@@ -46,7 +46,7 @@ Screenshots are **required** for bugs involving UI/UX changes. Attach screenshot
 **Server (please complete the following information):**
 
 - OS: [e.g. Ubuntu 20.04]
-- Tipi Version [e.g. 2.0.5] (can be found in settings page)
+- Companion Hub Version [e.g. 2.0.5] (can be found in settings page)
 
 **Additional context**
 Please include logs here `runtipi/logs/error.log` and add any other context about the problem here. Like results of the `start` script or container logs `docker logs ...` or include your custom docker compose file if its being used

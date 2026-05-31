@@ -190,7 +190,7 @@ export class AppStoreFilesManager {
     if (config) {
       return {
         ...paths,
-        latestVersion: config.tipi_version,
+        latestVersion: config.cihub_app_version,
         minHubVersion: config.min_hub_version ?? null,
         latestDockerVersion: config.version,
       };

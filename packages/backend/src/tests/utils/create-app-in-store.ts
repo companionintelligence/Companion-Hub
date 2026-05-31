@@ -29,7 +29,7 @@ export const createAppInStore = async (storeId: string, app: Partial<AppInfo> = 
     created_at: Date.now(),
     updated_at: Date.now(),
     deprecated: false,
-    tipi_version: 1,
+    cihub_app_version: 1,
     force_expose: false,
     generate_vapid_keys: false,
     form_fields: [],

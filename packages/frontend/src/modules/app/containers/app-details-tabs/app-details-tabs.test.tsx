@@ -42,7 +42,7 @@ function makeInfo(overrides: Partial<AppInfo> = {}): AppInfo {
     author: 'Test Author',
     source: 'https://github.com/test',
     version: '2.0.0',
-    tipi_version: 1,
+    cihub_app_version: 1,
     available: true,
     deprecated: false,
     port: 8080,

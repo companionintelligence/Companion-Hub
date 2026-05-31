@@ -242,7 +242,7 @@ describe('AppLifecycleService', () => {
       urn: 'urn:app:testapp',
       name: 'Test App',
       port: 8080,
-      tipi_version: 1,
+      cihub_app_version: 1,
       exposable: true,
       supported_architectures: ['amd64'],
     };
@@ -412,7 +412,7 @@ describe('AppLifecycleService', () => {
     const baseAppInfo = {
       id: 'myapp',
       port: 8080,
-      tipi_version: 1,
+      cihub_app_version: 1,
       exposable: true,
       supported_architectures: ['amd64'],
     };
@@ -723,7 +723,7 @@ describe('AppLifecycleService', () => {
 
     // ── installApp ───────────────────────────────────────────────────────
     it('installApp success: DB committed before SSE', async () => {
-      const baseAppInfo = { id: 'myapp', port: 8080, tipi_version: 1, exposable: true, supported_architectures: ['amd64'] };
+      const baseAppInfo = { id: 'myapp', port: 8080, cihub_app_version: 1, exposable: true, supported_architectures: ['amd64'] };
       marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(baseAppInfo as any);
       appsRepository.getAppByUrn.mockResolvedValue(null as any);
       appsRepository.getAppsByDomain.mockResolvedValue([]);
@@ -746,7 +746,7 @@ describe('AppLifecycleService', () => {
     });
 
     it('installApp error: DB delete committed before SSE', async () => {
-      const baseAppInfo = { id: 'myapp', port: 8080, tipi_version: 1, exposable: true, supported_architectures: ['amd64'] };
+      const baseAppInfo = { id: 'myapp', port: 8080, cihub_app_version: 1, exposable: true, supported_architectures: ['amd64'] };
       marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(baseAppInfo as any);
       appsRepository.getAppByUrn.mockResolvedValue(null as any);
       appsRepository.getAppsByDomain.mockResolvedValue([]);
@@ -764,7 +764,7 @@ describe('AppLifecycleService', () => {
     });
 
     it('installApp: status_change emitted after DB create (not before)', async () => {
-      const baseAppInfo = { id: 'myapp', port: 8080, tipi_version: 1, exposable: true, supported_architectures: ['amd64'] };
+      const baseAppInfo = { id: 'myapp', port: 8080, cihub_app_version: 1, exposable: true, supported_architectures: ['amd64'] };
       marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(baseAppInfo as any);
       appsRepository.getAppByUrn.mockResolvedValue(null as any);
       appsRepository.getAppsByDomain.mockResolvedValue([]);
@@ -792,7 +792,7 @@ describe('AppLifecycleService', () => {
     it('updateApp success restores stopped state before emitting update_success', async () => {
       vi.spyOn(service, 'updateAppConfig').mockResolvedValue({ requestId: crypto.randomUUID() });
       vi.spyOn(service, 'startApp').mockResolvedValue({ requestId: crypto.randomUUID() });
-      appFilesManager.getInstalledAppInfo.mockResolvedValue({ tipi_version: 2 } as any);
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ cihub_app_version: 2 } as any);
 
       await service.updateApp({ appUrn, performBackup: false });
       await flushMicrotasks();
@@ -803,7 +803,7 @@ describe('AppLifecycleService', () => {
 
     // ── exposure sync uses committed state ───────────────────────────────
     it('installApp success: syncExposure reads committed running state (no sleep)', async () => {
-      const baseAppInfo = { id: 'myapp', port: 8080, tipi_version: 1, exposable: true, supported_architectures: ['amd64'] };
+      const baseAppInfo = { id: 'myapp', port: 8080, cihub_app_version: 1, exposable: true, supported_architectures: ['amd64'] };
       marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(baseAppInfo as any);
       appsRepository.getAppByUrn.mockResolvedValue(null as any);
       appsRepository.getAppsByDomain.mockResolvedValue([]);
