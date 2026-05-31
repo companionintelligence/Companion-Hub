@@ -76,7 +76,7 @@ export const CloudProviderCard = ({ providers, insufficientHardware, onUpdate }:
                 </label>
                 {presentation.subtitle && <p className="text-xs text-muted-foreground">{presentation.subtitle}</p>}
               </div>
-              <span className="rounded-full bg-primary/15 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-primary">Recommended</span>
+              <span className="rounded-full bg-primary/15 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-primary">Optional</span>
             </div>
             <Input
               id={`cloud-key-input-${type}`}

@@ -98,7 +98,7 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
       </div>
 
       <div className="mt-5 grid grid-cols-2 gap-x-4 gap-y-5 border-t border-border pt-5 sm:grid-cols-3 lg:grid-cols-6">
-        <OverviewItem icon={<Monitor />} label="OS" value={os.label} sub={os.arch} />
+        <OverviewItem icon={<Monitor />} label="OS" value={hardware.os?.name || os.label} sub={hardware.os?.version || os.arch} testId="hw-os" />
         <OverviewItem
           icon={<Cpu />}
           label="CPU"

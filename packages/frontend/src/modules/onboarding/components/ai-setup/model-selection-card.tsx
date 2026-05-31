@@ -221,21 +221,14 @@ export const OtherModels = ({ recommendedModels, availableModels, selectedModelI
 };
 
 /**
- * Collapsible "Other Models" drawer, collapsed by default, meant to sit at the bottom of the
- * Recommended Models section. Wraps the grouped {@link OtherModels} list so the (long) browse-all
- * set stays hidden until the user opens it.
+ * Always-visible "Other Models" section at the bottom of the Recommended Models step (not a drawer).
+ * The header is fixed; the long browse-all list stays tidy because each parameter-range group inside
+ * {@link OtherModels} is itself collapsible.
  */
-export const OtherModelsDrawer = (props: OtherModelsProps) => {
-  const [open, setOpen] = useState(false);
+export const OtherModelsSection = (props: OtherModelsProps) => {
   return (
-    <div className="mt-4 rounded-2xl border border-border bg-foreground/[0.015]">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-        data-testid="other-models-toggle"
-        className="flex w-full items-center gap-3 p-4 text-left"
-      >
+    <div className="mt-4 rounded-2xl border border-border bg-foreground/[0.015] p-4">
+      <div className="mb-3 flex items-center gap-3">
         <span className="text-primary [&_svg]:h-5 [&_svg]:w-5">
           <CubeModelsIcon />
         </span>
@@ -243,13 +236,8 @@ export const OtherModelsDrawer = (props: OtherModelsProps) => {
           <span className="block text-sm font-semibold">Other Models</span>
           <span className="block text-xs text-muted-foreground">Install any model your hardware can run — including alternative embedders.</span>
         </span>
-        <ChevronRight className={cn('h-4 w-4 flex-shrink-0 text-muted-foreground transition-transform', open && 'rotate-90')} />
-      </button>
-      {open && (
-        <div className="border-t border-border p-4">
-          <OtherModels {...props} />
-        </div>
-      )}
+      </div>
+      <OtherModels {...props} />
     </div>
   );
 };

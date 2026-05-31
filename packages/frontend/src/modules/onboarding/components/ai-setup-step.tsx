@@ -14,7 +14,7 @@ import type { CuratedModel, InferenceBackendType } from '@ci-hub/common/types';
 import { AgentFrameworkCard } from './ai-setup/agent-apps-card';
 // Inference backend selection hidden — Ollama is the only option, so no choice is needed.
 // import { BackendCard } from './ai-setup/backend-selection-card';
-import { OtherModelsDrawer, RecommendedModels } from './ai-setup/model-selection-card';
+import { OtherModelsSection, RecommendedModels } from './ai-setup/model-selection-card';
 import { AdvancedDrawers } from './ai-setup/advanced-drawers';
 import { SystemOverview } from './ai-setup/system-overview';
 import { ResourceSummaryBar } from './ai-setup/resource-summary-bar';
@@ -314,8 +314,8 @@ export const AiSetupStep = ({
             onToggleModel={handleToggleModel}
             preferredModelId={preferredModelId}
           >
-            {/* Other Models drawer lives at the bottom of the model-selection section. */}
-            <OtherModelsDrawer
+            {/* Other Models lives at the bottom of the model-selection section (always visible). */}
+            <OtherModelsSection
               recommendedModels={backendRecommendedModels}
               availableModels={backendAvailableModels}
               selectedModelIds={selectedModelIds}

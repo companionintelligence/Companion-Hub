@@ -98,8 +98,8 @@ export const TailscaleSetupStep = ({ onComplete, onSkip, onBack, embedded = fals
 
   return (
     <StepSection number={3} title={t('ONBOARDING_TAILSCALE_TITLE')} description={t('ONBOARDING_TAILSCALE_DESCRIPTION')} className="space-y-4">
-      {/* Status Card */}
-      <div className="space-y-4 rounded-2xl border border-border bg-foreground/[0.02] p-5">
+      {/* Status (borderless — sits directly within the step panel) */}
+      <div className="space-y-4">
         {isLoading ? (
           <div className="flex items-center justify-center gap-2 py-4 text-muted-foreground">
             <Loader2 className="h-5 w-5 animate-spin" />

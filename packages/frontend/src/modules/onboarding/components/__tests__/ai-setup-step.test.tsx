@@ -431,14 +431,12 @@ describe('AiSetupStep', () => {
     expect(screen.getByTestId('resource-warning')).toBeInTheDocument();
   });
 
-  it('validates cloud API key format in the Advanced drawer', async () => {
+  it('validates cloud API key format in the Advanced step', async () => {
     const user = userEvent.setup();
     renderStep();
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
 
-    // Advanced is collapsed by default for capable hardware — open it, then the Cloud API Keys drawer.
-    await user.click(screen.getByTestId('advanced-toggle'));
-    await user.click(screen.getByTestId('cloud-toggle'));
+    // Advanced is now a numbered step with the Cloud API Keys shown inline (no accordion).
     await user.type(screen.getByTestId('cloud-key-openai'), 'invalid-key');
     expect(screen.getByTestId('cloud-error-openai')).toHaveTextContent('should start with "sk-"');
   });

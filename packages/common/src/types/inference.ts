@@ -23,6 +23,15 @@ export interface HardwareProfile {
     cores: number;
     model: string;
   };
+  /** Host operating system. Optional — absent on older profiles / test fixtures. */
+  os?: {
+    /** Node platform: 'darwin' | 'linux' | 'win32'. */
+    platform: string;
+    /** Friendly OS name, e.g. 'macOS', 'Ubuntu', 'Windows'. */
+    name: string;
+    /** Release codename when known (e.g. 'Tahoe', 'Sequoia'), else the numeric release. */
+    version: string;
+  };
   effectiveInferenceMemoryMb: number;
   tier: HardwareTier;
 }
