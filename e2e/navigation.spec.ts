@@ -9,7 +9,7 @@ test.describe('Navigation', () => {
 
     // App Store
     await page.getByRole('link', { name: 'Store' }).click();
-    await page.waitForURL(/\/app-store/);
+    await page.waitForURL(/\/store/);
     await expect(page.getByRole('heading', { name: 'App Store' })).toBeVisible({ timeout: 30000 });
 
     // Settings — wait for page to stabilize after navigation (React re-renders)
@@ -22,7 +22,7 @@ test.describe('Navigation', () => {
 
     // Back to Dashboard
     await page.getByRole('link', { name: 'Home' }).click();
-    await page.waitForURL(/\/dashboard/);
+    await page.waitForURL(/\/home/);
     await expect(page.getByText('Disk space')).toBeVisible({ timeout: 30000 });
   });
 
@@ -38,7 +38,7 @@ test.describe('Navigation', () => {
     }).toPass({ timeout: 30000 });
 
     await page.getByRole('link', { name: 'Companion Intelligence Logo' }).click();
-    await expect(page).toHaveURL(/\/dashboard/);
+    await expect(page).toHaveURL(/\/home/);
     await expect(page.getByText('Disk space')).toBeVisible({ timeout: 30000 });
   });
 

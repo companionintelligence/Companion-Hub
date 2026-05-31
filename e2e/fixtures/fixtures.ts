@@ -29,6 +29,6 @@ export const loginUser = async (page: Page, _?: BrowserContext) => {
   await page.getByPlaceholder('Enter your password').fill(testUser.password);
   await page.getByRole('button', { name: 'Login' }).click();
 
-  await page.waitForURL(/\/dashboard/, { timeout: 30000 });
+  await page.waitForURL(/\/home/, { timeout: 30000 });
   await expect(page.getByText('Disk space')).toBeVisible({ timeout: 30000 });
 };
