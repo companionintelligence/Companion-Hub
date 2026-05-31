@@ -17,14 +17,21 @@ export class SystemService {
 
     const memResult = { total: 0, used: 0, available: 0 };
 
-    try {
-      const memInfo = await this.filesystem.readTextFile('/host/proc/meminfo');
-
-      memResult.total = Number(memInfo?.toString().match(/MemTotal:\s+(\d+)/)?.[1] ?? 0) * 1024;
-      memResult.available = Number(memInfo?.toString().match(/MemAvailable:\s+(\d+)/)?.[1] ?? 0) * 1024;
+    const memInfo = await this.filesystem.readTextFile('/host/proc/meminfo');
+    if (memInfo) {
+      memResult.total = Number(memInfo.match(/MemTotal:\s+(\d+)/)?.[1] ?? 0) * 1024;
+      memResult.available = Number(memInfo.match(/MemAvailable:\s+(\d+)/)?.[1] ?? 0) * 1024;
       memResult.used = memResult.total - memResult.available;
-    } catch (e) {
-      this.logger.error(`Unable to read /host/proc/meminfo: ${e}`);
+    } else {
+      // /host/proc/meminfo is only mounted in Docker — fall back to systeminformation on the host.
+      try {
+        const mem = await si.mem();
+        memResult.total = mem.total;
+        memResult.available = mem.available;
+        memResult.used = mem.used;
+      } catch (e) {
+        this.logger.error(`Unable to read memory info: ${e}`);
+      }
     }
 
     const [disk0] = await si.fsSize();

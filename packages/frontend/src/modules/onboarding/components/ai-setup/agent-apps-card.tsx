@@ -15,13 +15,12 @@ interface AgentFrameworkCardProps {
   tailscaleAvailable?: boolean;
 }
 
-const FRAMEWORKS: Array<{ key: AgentFramework; name: string; Icon: typeof OpenClawIcon; description: string; recommended?: boolean }> = [
+const FRAMEWORKS: Array<{ key: AgentFramework; name: string; Icon: typeof OpenClawIcon; description: string }> = [
   {
     key: 'openclaw',
     name: 'OpenClaw',
     Icon: OpenClawIcon,
     description: 'Open source coding & computer-use agent that runs on your Hub.',
-    recommended: true,
   },
   { key: 'hermes', name: 'Hermes', Icon: HermesIcon, description: 'Advanced reasoning assistant for your tools, memory, and notifications.' },
 ];
@@ -50,7 +49,7 @@ export const AgentFrameworkCard = ({
     <StepSection number={1} title="Agent Framework" description="Choose one or more agent frameworks to power your system.">
       <div className="space-y-4" data-testid="agent-apps-card">
         <div className="grid gap-4 sm:grid-cols-2">
-          {FRAMEWORKS.map(({ key, name, Icon, description, recommended }) => (
+          {FRAMEWORKS.map(({ key, name, Icon, description }) => (
             <OptionCard
               key={key}
               testId={`agent-${key}`}
@@ -58,7 +57,7 @@ export const AgentFrameworkCard = ({
               description={description}
               icon={<Icon />}
               selected={frameworks.includes(key)}
-              badge={recommended ? 'Recommended' : undefined}
+              badge={undefined}
               onSelect={() => onToggleFramework(key)}
             />
           ))}

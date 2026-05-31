@@ -14,7 +14,7 @@ export const LogsContainer = () => {
   let nextId = 0;
   const [logs, setLogs] = useState<{ id: number; text: string }[]>([]);
   const [isDownloading, setIsDownloading] = useState(false);
-  const maxLines = useRef(300);
+  const maxLines = useRef(1000);
 
   useSSE({
     topic: 'ci-hub-logs',

@@ -14,7 +14,7 @@ export const DashboardLayoutSuspense = ({ children }: PropsWithChildren) => {
   return (
     <div className="flex bg-background overflow-hidden w-screen flex-col" style={{ height: 'calc(100vh - var(--titlebar-height, 0px))' }}>
       <Header isLoggedIn={false} isUpdateAvailable={false} allowAutoThemes={false} />
-      <div className="flex flex-1 flex-col pt-24 px-4 container mx-auto h-full overflow-y-auto no-scrollbar">
+      <div className="flex flex-1 flex-col pt-16 px-4 container mx-auto h-full overflow-y-auto no-scrollbar">
         <div className="rounded-xl border bg-card text-card-foreground shadow p-6">{children}</div>
       </div>
     </div>
@@ -56,8 +56,8 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
 
   // Transition logic
   const getDepth = (path: string) => {
-    if (path === '/dashboard') return 0;
-    if (path.startsWith('/apps') || path.startsWith('/app-store') || path.startsWith('/settings')) {
+    if (path === '/home') return 0;
+    if (path.startsWith('/apps') || path.startsWith('/store') || path.startsWith('/settings')) {
       const parts = path.split('/').filter(Boolean);
       if (parts.length > 1 && (parts[0] === 'apps' || parts[0] === 'app-store')) return 2;
       return 1;
@@ -69,7 +69,7 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
   // animation key so the outer wrapper (sidebar + header) doesn't re-mount
   // and swipe during navigation within the same section.
   const getAnimationKey = (path: string) => {
-    if (path.startsWith('/app-store')) return '/app-store';
+    if (path.startsWith('/store')) return '/store';
     return path;
   };
 
@@ -100,7 +100,7 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
   return (
     <div className="flex bg-background overflow-hidden w-screen flex-col" style={{ height: 'calc(100vh - var(--titlebar-height, 0px))' }}>
       <Header isLoggedIn={isLoggedIn} isUpdateAvailable={!isLatest} allowAutoThemes={userSettings.allowAutoThemes} />
-      <main className="relative flex flex-1 flex-col gap-4 pt-24 px-4 container mx-auto h-full overflow-y-auto overflow-x-hidden no-scrollbar">
+      <main className="relative flex flex-1 flex-col gap-4 pt-16 px-4 container mx-auto h-full overflow-y-auto overflow-x-hidden no-scrollbar">
         {!isDismissed && (
           <CoreServerBanner
             onDismiss={dismiss}

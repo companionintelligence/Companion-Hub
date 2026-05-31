@@ -3,19 +3,15 @@ import { AppContextProvider, useAppContext } from '@/context/app-context';
 import { useUserContext } from '@/context/user-context';
 import { apiFetch } from '@/lib/api-fetch';
 import { getLogo } from '@/lib/theme/theme';
-import { cn } from '@/lib/utils';
 import { Suspense, useEffect, useMemo, useState } from 'react';
-import { Navigate } from 'react-router';
+import { Navigate, useNavigate } from 'react-router';
 import { AiSetupStep } from '../components/ai-setup-step';
-import { HermesIcon, OpenClawIcon } from '../components/ai-setup/icons';
-import { SelectIndicator } from '../components/ai-setup/primitives';
-import { CompleteStep } from '../components/complete-step';
+import { StepSection } from '../components/ai-setup/primitives';
 import { InstallStep } from '../components/install-step';
 import { RecommendationsStep } from '../components/recommendations-step';
-import { buildAgentApp, exposureModeLabel, resolveExposureMode } from '../helpers/agent-onboarding';
-import { CLOUD_KEY_PATTERNS } from '../helpers/ai-setup-types';
+import { buildAgentApp, resolveExposureMode } from '../helpers/agent-onboarding';
 import { identifyServices, type DetectedService } from '../helpers/service-detection';
-import type { AiSetupConfig, InstallSummary, OnboardingApp } from '../helpers/types';
+import type { AiSetupConfig, OnboardingApp } from '../helpers/types';
 
 /** Page chrome shared by every onboarding phase: brand header + centered container. */
 function Shell({ children }: { children: React.ReactNode }) {
@@ -44,18 +40,13 @@ function Shell({ children }: { children: React.ReactNode }) {
 
 function OnboardingWizard() {
   const { user, apps: storeApps, cloudflareAvailable, tailscaleAvailable } = useAppContext();
+  const navigate = useNavigate();
 
-  const [phase, setPhase] = useState<'form' | 'installing' | 'done'>('form');
+  const [phase, setPhase] = useState<'form' | 'installing'>('form');
   const [selectedApps, setSelectedApps] = useState<OnboardingApp[]>([]);
   const [aiSetupConfig, setAiSetupConfig] = useState<AiSetupConfig | undefined>();
-  const [installSummary, setInstallSummary] = useState<InstallSummary | undefined>();
   const [detectedServices, setDetectedServices] = useState<DetectedService[]>([]);
-  // The install/review page defers the actual install until the user confirms their app selection.
-  const [installStarted, setInstallStarted] = useState(false);
-  // Lets the user opt out of installing individual chosen agents on the app-selection page (by slug).
-  const [excludedAgentSlugs, setExcludedAgentSlugs] = useState<Set<string>>(new Set());
 
-  // Detect Docker services once, to seed the Local Apps recommendations.
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -74,25 +65,14 @@ function OnboardingWizard() {
   }, []);
 
   const canFinish = aiSetupConfig !== undefined;
-
-  // Resolve the exposure mode we will actually install with (honoring the user's choice when its
-  // transport is available, otherwise falling back gracefully — see resolveExposureMode).
   const installExposureMode = resolveExposureMode(aiSetupConfig?.exposureMode, { cloudflareAvailable, tailscaleAvailable });
 
-  // The agent apps chosen in the AI step, resolved against the synced store apps. Memoized so the
-  // install list keeps a stable reference (InstallStep syncs off the `apps` identity).
   const agentFrameworks = aiSetupConfig?.agentFrameworks ?? [];
   const agentApps = useMemo(
     () => agentFrameworks.map((framework) => ({ framework, app: buildAgentApp(framework, storeApps) })),
     [agentFrameworks, storeApps],
   );
-  // Agents the user is actually installing: present in the store and not toggled off.
-  const includedAgentApps = useMemo(
-    () => agentApps.filter(({ app }) => !!app.urn && !excludedAgentSlugs.has(app.appSlug)),
-    [agentApps, excludedAgentSlugs],
-  );
-
-  // Final install list: the included agents ahead of the picked apps, de-duplicated by slug.
+  const includedAgentApps = useMemo(() => agentApps.filter(({ app }) => !!app.urn), [agentApps]);
   const installApps = useMemo(() => {
     const merged: OnboardingApp[] = includedAgentApps.map(({ app }) => app);
     for (const a of selectedApps) {
@@ -102,141 +82,56 @@ function OnboardingWizard() {
   }, [includedAgentApps, selectedApps]);
 
   if (user.hasCompletedOnboarding) {
-    return <Navigate to="/dashboard" replace />;
+    return <Navigate to="/home" replace />;
   }
 
   if (phase === 'installing') {
-    // Describe the model the agents will use. A configured cloud provider overrides the local model
-    // (and buildConfig leaves selectedModels empty in that case), so drive the text by what's selected.
-    const hasLocalModel = (aiSetupConfig?.selectedModels.length ?? 0) > 0;
-    const enabledCloudProvider = aiSetupConfig?.cloudProviders.find((p) => p.enabled && p.apiKey.trim());
-    const modelSourceText = hasLocalModel
-      ? 'uses your downloaded model'
-      : enabledCloudProvider
-        ? `uses your ${CLOUD_KEY_PATTERNS[enabledCloudProvider.provider].label} model`
-        : 'uses a recommended local model';
-
-    const selectionSummary = (() => {
-      const parts: string[] = [];
-      if (includedAgentApps.length > 0) parts.push(`${includedAgentApps.length} agent${includedAgentApps.length === 1 ? '' : 's'}`);
-      if (selectedApps.length > 0) parts.push(`${selectedApps.length} app${selectedApps.length === 1 ? '' : 's'}`);
-      if (parts.length === 0) return 'No apps selected — you can add them anytime from the App Store.';
-      return `${parts.join(' + ')} selected.`;
-    })();
-
     return (
       <Shell>
-        <div className="space-y-6">
-          {/* The chosen agents are auto-queued at the top, above the recommendations picker. Once the
-              install begins we hide the selection UI and let InstallStep drive the rest. */}
-          {!installStarted && agentApps.length > 0 && (
-            <div className="space-y-3">
-              {agentApps.map(({ framework, app }) => {
-                const AgentIcon = framework === 'hermes' ? HermesIcon : OpenClawIcon;
-                const unavailable = !app.urn;
-                const selected = !!app.urn && !excludedAgentSlugs.has(app.appSlug);
-                const summary = app.urn
-                  ? `${exposureModeLabel(installExposureMode)} · ${modelSourceText}`
-                  : 'Not available in your app store yet — skipped.';
-                return (
-                  <button
-                    key={app.appSlug}
-                    type="button"
-                    data-testid={`agent-install-card-${framework}`}
-                    onClick={() =>
-                      !unavailable &&
-                      setExcludedAgentSlugs((prev) => {
-                        const next = new Set(prev);
-                        if (next.has(app.appSlug)) next.delete(app.appSlug);
-                        else next.add(app.appSlug);
-                        return next;
-                      })
-                    }
-                    aria-pressed={selected}
-                    disabled={unavailable}
-                    className={cn(
-                      'group relative flex w-full items-start gap-3 rounded-2xl border p-4 text-left transition-colors',
-                      selected
-                        ? 'border-primary bg-primary/[0.08] ring-1 ring-primary/30'
-                        : 'border-border bg-foreground/[0.015] hover:border-primary/40',
-                      unavailable && 'cursor-not-allowed opacity-60',
-                    )}
-                  >
-                    <span className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-foreground/10 text-primary [&>*]:h-full [&>*]:w-full">
-                      <AgentIcon />
-                    </span>
-                    <span className="min-w-0 flex-1 pr-6">
-                      <span className="block text-sm font-medium">
-                        {app.name}
-                        <span className="ml-2 text-xs font-normal text-muted-foreground">Your agent</span>
-                      </span>
-                      <span className="mt-0.5 block text-xs leading-snug text-muted-foreground" data-testid={`agent-summary-text-${framework}`}>
-                        {summary}
-                      </span>
-                    </span>
-                    {!unavailable && (
-                      <span className="absolute right-2 top-2">
-                        <SelectIndicator selected={selected} />
-                      </span>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-          )}
-          {!installStarted && <RecommendationsStep embedded detectedServices={detectedServices} onChange={setSelectedApps} />}
-          <InstallStep
-            apps={installApps}
-            start={installStarted}
-            defaultExposureMode={installExposureMode}
-            aiSetupConfig={aiSetupConfig}
-            onComplete={(summary) => {
-              setInstallSummary(summary);
-              setPhase('done');
-            }}
-          />
-          {!installStarted && (
-            <>
-              {/* Breathing room so the sticky bar rests below all content instead of overlapping it. */}
-              <div aria-hidden className="h-2" />
-              <div className="sticky bottom-4 z-10 flex flex-col gap-3 rounded-2xl border border-border bg-card/90 p-4 shadow-lg backdrop-blur sm:flex-row sm:items-center sm:justify-between">
-                <p className="text-sm text-muted-foreground">{selectionSummary}</p>
-                <Button intent="primary" size="lg" onClick={() => setInstallStarted(true)} data-testid="start-install-btn">
-                  Finish setup
-                </Button>
-              </div>
-            </>
-          )}
-        </div>
-      </Shell>
-    );
-  }
-
-  if (phase === 'done') {
-    return (
-      <Shell>
-        <CompleteStep installSummary={installSummary} aiSetupConfig={aiSetupConfig} />
+        <InstallStep
+          apps={installApps}
+          start={true}
+          defaultExposureMode={installExposureMode}
+          aiSetupConfig={aiSetupConfig}
+          onComplete={async () => {
+            try {
+              await apiFetch('/api/complete-onboarding', { method: 'PATCH', credentials: 'include' });
+            } catch {
+              // Non-fatal — navigate anyway.
+            }
+            navigate('/store', { replace: true });
+          }}
+        />
       </Shell>
     );
   }
 
   return (
     <Shell>
-      <div className="space-y-6">
-        {/* AiSetupStep (embedded) renders the full ordered form: Step 1 Agent Framework, Step 2
-            Recommended Models (with Other Models), Step 3 Private VPN, then Advanced. */}
-        <AiSetupStep embedded onConfigChange={setAiSetupConfig} cloudflareAvailable={cloudflareAvailable} tailscaleAvailable={tailscaleAvailable} />
-        {/* Recommended apps section temporarily hidden.
-        <RecommendationsStep embedded detectedServices={detectedServices} onChange={setSelectedApps} />
-        */}
+      <div className="space-y-5">
+        {/* Steps 1–3 + step 5 (Advanced) rendered by AiSetupStep in embedded mode.
+            Step 4 (Recommended Apps) is passed as children, inserted between step 3 and step 5. */}
+        <AiSetupStep embedded onConfigChange={setAiSetupConfig} cloudflareAvailable={cloudflareAvailable} tailscaleAvailable={tailscaleAvailable}>
+          <StepSection
+            number={4}
+            title="Recommended Apps"
+            description="Here are some popular open-source apps you can self-host. Select any you'd like installed."
+          >
+            <RecommendationsStep
+              embedded
+              detectedServices={detectedServices}
+              pinnedSlugs={['steam-headless', 'comfyui']}
+              onChange={setSelectedApps}
+            />
+          </StepSection>
+        </AiSetupStep>
 
-        {/* Breathing room so the sticky finish bar rests below all content instead of overlapping it. */}
         <div aria-hidden className="h-2" />
 
         <div className="sticky bottom-4 z-10 flex flex-col gap-3 rounded-2xl border border-border bg-card/90 p-4 shadow-lg backdrop-blur sm:flex-row sm:items-center sm:justify-between">
           <p className="text-sm text-muted-foreground">{canFinish ? 'You can change everything later in Settings.' : 'Detecting your hardware…'}</p>
           <Button intent="primary" size="lg" disabled={!canFinish} onClick={() => setPhase('installing')} data-testid="finish-setup-btn">
-            Continue
+            Install & Finish
           </Button>
         </div>
       </div>

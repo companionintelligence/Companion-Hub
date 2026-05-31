@@ -149,7 +149,7 @@ export async function clientLoader({ request }: Route.ActionArgs) {
     return redirect('/login');
   }
 
-  return redirect('/dashboard');
+  return redirect('/home');
 }
 
 export function Layout({ children }: { children: React.ReactNode }) {

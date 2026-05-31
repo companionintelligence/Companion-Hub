@@ -81,20 +81,10 @@ const formatUptime = (seconds: number) => {
 
 // ─── Shared Components ───────────────────────────────────────────────────────
 
-const ProgressBar = ({ percent, color = 'primary' }: { percent: number; color?: string }) => {
-  const barColor =
-    percent > 90
-      ? 'bg-red-500'
-      : percent > 70
-        ? 'bg-yellow-500'
-        : color === 'primary'
-          ? 'bg-primary'
-          : color === 'green'
-            ? 'bg-green-500'
-            : 'bg-blue-500';
-
+const ProgressBar = ({ percent }: { percent: number }) => {
+  const barColor = percent > 90 ? 'bg-red-500' : percent > 70 ? 'bg-yellow-500' : 'bg-primary';
   return (
-    <div className="w-full h-2 bg-muted rounded-full overflow-hidden">
+    <div className="w-full h-1.5 bg-foreground/10 rounded-full overflow-hidden">
       <div className={`h-full rounded-full transition-all duration-500 ${barColor}`} style={{ width: `${Math.min(percent, 100)}%` }} />
     </div>
   );
@@ -106,23 +96,27 @@ const StatCard = ({
   value,
   subtitle,
   percent,
-  color,
 }: {
   icon: React.ComponentType<{ className?: string }>;
   title: string;
   value: string;
   subtitle?: string;
   percent?: number;
-  color?: string;
 }) => (
-  <div className="rounded-lg border p-3 sm:p-4 flex flex-col gap-1.5 sm:gap-2">
-    <div className="flex items-center gap-2 text-muted-foreground">
-      <Icon className="h-4 w-4 flex-shrink-0" />
-      <span className="text-xs font-medium uppercase tracking-wider">{title}</span>
+  <div className="flex items-start gap-3">
+    <span className="mt-0.5 text-primary">
+      <Icon className="h-6 w-6" />
+    </span>
+    <div className="min-w-0 flex-1">
+      <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{title}</div>
+      <div className="truncate text-sm font-semibold">{value}</div>
+      {subtitle && <div className="truncate text-xs text-muted-foreground">{subtitle}</div>}
+      {percent !== undefined && (
+        <div className="mt-1.5">
+          <ProgressBar percent={percent} />
+        </div>
+      )}
     </div>
-    <div className="text-xl sm:text-2xl font-bold truncate">{value}</div>
-    {subtitle && <div className="text-xs text-muted-foreground truncate">{subtitle}</div>}
-    {percent !== undefined && <ProgressBar percent={percent} color={color} />}
   </div>
 );
 
@@ -145,13 +139,13 @@ const Badge = ({ children, variant = 'default' }: { children: React.ReactNode; v
 // ─── System Health Section ───────────────────────────────────────────────────
 
 const SystemHealthSection = ({ health }: { health: SystemHealth }) => (
-  <div className="flex flex-col gap-4">
-    <div className="flex items-center gap-2">
-      <Activity className="h-5 w-5 text-primary" />
-      <h3 className="text-base font-semibold">System Health</h3>
+  <section className="rounded-3xl border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
+    <div className="flex items-center gap-3 mb-5">
+      <Activity className="h-6 w-6 text-primary" />
+      <h2 className="text-base font-bold uppercase tracking-wide sm:text-lg">System Health</h2>
     </div>
 
-    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+    <div className="grid grid-cols-2 gap-x-4 gap-y-5 border-t border-border pt-5 sm:grid-cols-2 lg:grid-cols-4">
       <StatCard icon={Cpu} title="CPU" value={`${health.cpu.load}%`} subtitle={`${health.cpu.cores} cores`} percent={health.cpu.load} />
       <StatCard
         icon={MemoryStick}
@@ -164,38 +158,38 @@ const SystemHealthSection = ({ health }: { health: SystemHealth }) => (
         icon={HardDrive}
         title="Disk"
         value={`${health.disk.percent}%`}
-        subtitle={`${health.disk.used} GB / ${health.disk.total} GB`}
+        subtitle={`${formatBytes(health.disk.used * 1024 * 1024 * 1024)} / ${formatBytes(health.disk.total * 1024 * 1024 * 1024)}`}
         percent={health.disk.percent}
       />
       <StatCard icon={Clock} title="Uptime" value={formatUptime(health.uptime)} subtitle={health.platform} />
     </div>
 
-    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-      <div className="rounded-lg border p-3">
-        <div className="text-xs text-muted-foreground mb-1">Hostname</div>
-        <div className="text-xs truncate" title={health.hostname}>
+    <div className="mt-5 grid grid-cols-2 gap-x-4 gap-y-3 border-t border-border pt-5 sm:grid-cols-4 text-sm">
+      <div>
+        <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-0.5">Hostname</div>
+        <div className="text-xs truncate font-medium" title={health.hostname}>
           {health.hostname}
         </div>
       </div>
-      <div className="rounded-lg border p-3">
-        <div className="text-xs text-muted-foreground mb-1">Docker</div>
+      <div>
+        <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-0.5">Docker</div>
         <div className="font-mono text-xs">{health.dockerVersion || 'N/A'}</div>
       </div>
-      <div className="rounded-lg border p-3">
-        <div className="text-xs text-muted-foreground mb-1">Containers</div>
+      <div>
+        <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-0.5">Containers</div>
         <div className="flex gap-1.5 items-center flex-wrap">
-          <Badge variant="success">{health.containerCount.running} run</Badge>
-          {health.containerCount.stopped > 0 && <Badge variant="danger">{health.containerCount.stopped} stop</Badge>}
+          <Badge variant="success">{health.containerCount.running} running</Badge>
+          {health.containerCount.stopped > 0 && <Badge variant="danger">{health.containerCount.stopped} stopped</Badge>}
         </div>
       </div>
-      <div className="rounded-lg border p-3">
-        <div className="text-xs text-muted-foreground mb-1">CPU Model</div>
-        <div className="text-xs truncate" title={health.cpu.model}>
+      <div>
+        <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-0.5">CPU Model</div>
+        <div className="text-xs truncate font-medium" title={health.cpu.model}>
           {health.cpu.model}
         </div>
       </div>
     </div>
-  </div>
+  </section>
 );
 
 // ─── Containers Section ─────────────────────────────────────────────────────
@@ -206,15 +200,15 @@ const ContainersSection = ({ containers }: { containers: ContainerInfo[] }) => {
   const sorted = [...running, ...stopped];
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className="flex items-center gap-2">
-        <Container className="h-5 w-5 text-primary flex-shrink-0" />
-        <h3 className="text-sm sm:text-base font-semibold whitespace-nowrap">Docker Containers</h3>
+    <section className="rounded-3xl border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
+      <div className="flex items-center gap-3 mb-5">
+        <Container className="h-6 w-6 text-primary flex-shrink-0" />
+        <h2 className="text-base font-bold uppercase tracking-wide sm:text-lg">Docker Containers</h2>
         <Badge>{containers.length} total</Badge>
       </div>
 
       {sorted.length === 0 ? (
-        <div className="text-sm text-muted-foreground rounded-lg border border-dashed p-4 text-center">No containers found</div>
+        <div className="text-sm text-muted-foreground rounded-xl border border-dashed p-4 text-center">No containers found</div>
       ) : (
         <div className="rounded-lg border overflow-hidden">
           <div className="overflow-x-auto">
@@ -273,7 +267,7 @@ const ContainersSection = ({ containers }: { containers: ContainerInfo[] }) => {
           </div>
         </div>
       )}
-    </div>
+    </section>
   );
 };
 
@@ -283,10 +277,10 @@ const PortManagementSection = ({ ports }: { ports: { allocations: PortStatus[]; 
   const [showUntracked, setShowUntracked] = useState(true);
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className="flex items-center gap-2 flex-wrap">
-        <Network className="h-5 w-5 text-primary flex-shrink-0" />
-        <h3 className="text-sm sm:text-base font-semibold whitespace-nowrap">Port Allocations</h3>
+    <section className="rounded-3xl border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
+      <div className="flex items-center gap-3 mb-5 flex-wrap">
+        <Network className="h-6 w-6 text-primary flex-shrink-0" />
+        <h2 className="text-base font-bold uppercase tracking-wide sm:text-lg">Port Allocations</h2>
         <Badge>{ports.allocations.length} managed</Badge>
         {ports.untracked.length > 0 && (
           <button type="button" onClick={() => setShowUntracked(!showUntracked)} className="ml-auto">
@@ -296,7 +290,7 @@ const PortManagementSection = ({ ports }: { ports: { allocations: PortStatus[]; 
       </div>
 
       {ports.allocations.length === 0 && ports.untracked.length === 0 ? (
-        <div className="text-sm text-muted-foreground rounded-lg border border-dashed p-4 text-center">
+        <div className="text-sm text-muted-foreground rounded-xl border border-dashed p-4 text-center">
           No port allocations yet. Install an app to see port assignments here.
         </div>
       ) : (
@@ -409,7 +403,7 @@ const PortManagementSection = ({ ports }: { ports: { allocations: PortStatus[]; 
           </div>
         </>
       )}
-    </div>
+    </section>
   );
 };
 
@@ -447,19 +441,16 @@ export const SystemInspectorContainer = () => {
   const lastUpdated = dataUpdatedAt ? new Date(dataUpdatedAt).toLocaleTimeString() : '';
 
   return (
-    <div className="flex flex-col gap-6">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-        <div>
-          <h3 className="text-lg font-medium">System Inspector</h3>
-          <p className="text-xs sm:text-sm text-muted-foreground">Real-time overview of containers, ports, and system resources</p>
-        </div>
+    <div className="flex flex-col gap-5">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs text-muted-foreground">Real-time overview of containers, ports, and system resources</p>
         <div className="flex items-center gap-2 flex-shrink-0">
           <span className="text-xs text-muted-foreground">Updated {lastUpdated}</span>
           <button
             type="button"
             onClick={() => refetch()}
             disabled={isFetching}
-            className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground transition-colors disabled:opacity-50"
+            className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1 text-xs text-muted-foreground hover:bg-muted/50 hover:text-foreground transition-colors disabled:opacity-50"
           >
             <RefreshCw className={`h-3 w-3 ${isFetching ? 'animate-spin' : ''}`} />
             Refresh

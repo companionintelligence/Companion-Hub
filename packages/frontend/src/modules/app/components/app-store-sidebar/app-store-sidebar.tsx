@@ -24,7 +24,7 @@ export const AppStoreSidebar = () => {
 
   const navigatePreservingStore = useCallback(() => {
     if (!STORE_INDEX_PATTERN.test(location.pathname)) {
-      const target = storeId ? `/app-store?store=${storeId}` : '/app-store';
+      const target = storeId ? `/store?store=${storeId}` : '/store';
       navigate(target);
     }
   }, [navigate, location.pathname, storeId]);

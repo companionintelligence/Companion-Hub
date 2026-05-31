@@ -51,7 +51,7 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
       }
 
       if (appStoreId === '_user' && event === 'uninstall_success') {
-        navigate('/app-store', { replace: true });
+        navigate('/store', { replace: true });
       }
 
       switch (event) {

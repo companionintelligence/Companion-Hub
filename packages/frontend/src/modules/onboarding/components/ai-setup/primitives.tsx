@@ -74,25 +74,27 @@ export function OptionCard({ title, description, icon, selected = false, disable
       data-testid={testId}
       onClick={onSelect}
       className={cn(
-        'group relative flex w-full flex-col gap-3 rounded-2xl border p-5 text-left transition-all',
+        'group relative flex w-full items-start gap-4 rounded-2xl border p-4 text-left transition-all',
         selected
           ? 'border-primary bg-primary/[0.06] shadow-lg shadow-primary/20'
           : 'border-border bg-foreground/[0.015] hover:border-primary/50 hover:bg-foreground/[0.03]',
         disabled && 'cursor-not-allowed opacity-45 hover:border-border hover:bg-foreground/[0.015]',
       )}
     >
-      <span className="absolute right-4 top-4">
-        <SelectIndicator selected={selected} />
+      <span className={cn('mt-0.5 flex-shrink-0 [&>*]:size-9', selected ? 'text-primary' : 'text-foreground/70 group-hover:text-foreground')}>
+        {icon}
       </span>
-      <span className={cn('block [&>*]:size-11', selected ? 'text-primary' : 'text-foreground/70 group-hover:text-foreground')}>{icon}</span>
-      <span className="block pr-6">
+      <span className="min-w-0 flex-1 pr-6">
         <span className="flex flex-wrap items-center gap-2">
           <span className="text-base font-semibold">{title}</span>
           {badge && (
             <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary">{badge}</span>
           )}
         </span>
-        <span className="mt-1 block text-sm text-muted-foreground">{description}</span>
+        <span className="mt-0.5 block text-sm text-muted-foreground">{description}</span>
+      </span>
+      <span className="absolute right-3 top-3">
+        <SelectIndicator selected={selected} />
       </span>
     </button>
   );
@@ -148,28 +150,31 @@ export function ModelCard({
     <label
       data-testid={testId}
       className={cn(
-        'group relative flex h-full cursor-pointer flex-col gap-3 rounded-2xl border p-5 text-left transition-all',
+        'group relative flex h-full cursor-pointer flex-col gap-2.5 rounded-2xl border p-4 text-left transition-all',
         selected ? 'border-primary bg-primary/[0.06] shadow-lg shadow-primary/20' : 'border-border bg-foreground/[0.015] hover:border-primary/50',
       )}
     >
       <input type="checkbox" className="sr-only" checked={selected} onChange={onToggle} data-testid={checkboxTestId} />
-      <span className="absolute right-4 top-4">
+      <span className="absolute right-3 top-3">
         <SelectIndicator selected={selected} />
       </span>
-      <span className={cn('block [&>*]:size-10', selected ? 'text-primary' : 'text-foreground/70 group-hover:text-foreground')}>{icon}</span>
-      <span className="block pr-6">
-        <span className="flex flex-wrap items-center gap-2">
-          <span className="text-base font-semibold">{title}</span>
-          {agentDefault && <span className="rounded bg-primary px-1.5 py-0.5 text-[10px] font-medium text-primary-foreground">Agent default</span>}
+      {/* Icon + title inline */}
+      <span className="flex items-center gap-2.5 pr-6">
+        <span className={cn('flex-shrink-0 [&>*]:size-8', selected ? 'text-primary' : 'text-foreground/70 group-hover:text-foreground')}>{icon}</span>
+        <span className="min-w-0">
+          <span className="flex flex-wrap items-center gap-1.5">
+            <span className="text-sm font-semibold leading-tight">{title}</span>
+            {agentDefault && <span className="rounded bg-primary px-1.5 py-0.5 text-[10px] font-medium text-primary-foreground">Agent default</span>}
+          </span>
+          {description && <span className="mt-0.5 block text-xs text-muted-foreground">{description}</span>}
         </span>
-        {description && <span className="mt-1 block text-sm text-muted-foreground">{description}</span>}
       </span>
       {tags.length > 0 && (
-        <span className="mt-auto flex flex-wrap gap-2 pt-1">
+        <span className="flex flex-wrap gap-1.5">
           {tags.map((tag) => (
             <span
               key={tag}
-              className="rounded-md border border-primary/40 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary"
+              className="rounded-md border border-primary/40 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary"
             >
               {tag}
             </span>
@@ -177,7 +182,7 @@ export function ModelCard({
         </span>
       )}
       {scores && (scores.intelligence != null || scores.toolCalling != null) && (
-        <span className="flex flex-wrap gap-x-4 gap-y-1" data-testid="model-scores">
+        <span className="flex flex-wrap gap-x-3 gap-y-1" data-testid="model-scores">
           {scores.intelligence != null && <ScoreBar label="Intelligence" value={scores.intelligence} testId="score-intelligence" />}
           {scores.toolCalling != null && <ScoreBar label="Tool use" value={scores.toolCalling} testId="score-tools" />}
         </span>
