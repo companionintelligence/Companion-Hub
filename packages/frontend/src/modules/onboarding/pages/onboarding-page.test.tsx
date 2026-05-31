@@ -59,7 +59,9 @@ vi.mock('../components/ai-setup-step', () => ({
       </button>
       <button
         type="button"
-        onClick={() => onConfigChange?.({ agentFrameworks: [], selectedModels: [], backend: 'ollama', cloudProviders: [], remoteAccess: [], skipped: false })}
+        onClick={() =>
+          onConfigChange?.({ agentFrameworks: [], selectedModels: [], backend: 'ollama', cloudProviders: [], remoteAccess: [], skipped: false })
+        }
       >
         emit-ai-config-no-agent
       </button>
