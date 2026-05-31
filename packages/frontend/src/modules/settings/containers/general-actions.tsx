@@ -8,6 +8,7 @@ import { useTranslation } from 'react-i18next';
 import semver from 'semver';
 import { UpdateRepoModal } from '../components/update-repo-modal/update-repo-modal';
 import { useState, useEffect, useCallback } from 'react';
+import toast from 'react-hot-toast';
 
 export const GeneralActionsContainer = () => {
   const { t } = useTranslation();
@@ -24,10 +25,13 @@ export const GeneralActionsContainer = () => {
   const handleRestartWizard = useCallback(async () => {
     setRestartingWizard(true);
     try {
-      await apiFetch('/api/restart-onboarding', { method: 'PATCH', credentials: 'include' });
+      // apiFetch doesn't throw on non-2xx, so only navigate once the flag is actually reset.
+      const res = await apiFetch('/api/restart-onboarding', { method: 'PATCH', credentials: 'include' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       window.location.href = '/onboarding';
     } catch {
       setRestartingWizard(false);
+      toast.error('Could not restart the setup wizard. Please try again.');
     }
   }, []);
 

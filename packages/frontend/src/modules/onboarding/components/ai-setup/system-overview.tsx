@@ -62,8 +62,9 @@ function OverviewItem({ icon, label, value, sub, testId }: { icon: ReactNode; la
  * guidance that gates accelerated inference. Replaces the old "Hardware Detected" card visually but
  * keeps all of its detection warnings.
  *
- * Note: the hardware profile is the Hub's; OS is derived from the connecting client and total
- * storage isn't reported by the profile API yet, so it shows "—".
+ * Note: the hardware profile is the Hub's. OS shows the host OS/codename from the profile when
+ * available (falling back to the connecting client), and storage total/free come from the profile's
+ * resource estimate.
  */
 export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, availableDiskMb, diskTotalMb }: SystemOverviewProps) => {
   const badge = TIER_BADGES[tier];
