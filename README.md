@@ -25,6 +25,16 @@ Part of the [CI OS](https://github.com/companionintelligence) ecosystem. License
 
 ---
 
+## CI-Portal — Cloud Control Plane
+
+<p align="center">
+  <img src="docs/ci-portal/ci-portal.gif" alt="CI-Portal app launcher walkthrough" width="720" />
+</p>
+
+[CI-Portal](https://github.com/companionintelligence/CI-Portal) is the cloud-hosted companion to CI-Hub — providing OIDC identity, device registry, marketplace distribution, and a unified app launcher so you can reach all your self-hosted apps from any browser.
+
+---
+
 ## Tech Stack
 
 | Layer | Technologies |
