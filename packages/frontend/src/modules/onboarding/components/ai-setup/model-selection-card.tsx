@@ -54,6 +54,11 @@ function modelMeta(model: CuratedModel): string {
   return model.requirements?.diskMb == null ? ram : `${ram} · ${formatSize(model.requirements.diskMb)} disk`;
 }
 
+/** Artificial Analysis benchmark scores (0–100ish) shown on each model — intelligence + tool calling. */
+function modelScores(model: CuratedModel): { intelligence?: number; toolCalling?: number } {
+  return { intelligence: model.metadata?.intelligenceIndex, toolCalling: model.metadata?.toolCallingIndex };
+}
+
 /** Step 2 — Recommended Models. Top catalog models for the detected hardware, as selectable tiles.
  * The collapsible Other Models drawer is rendered via `children` at the bottom of the section. */
 export const RecommendedModels = ({
@@ -93,6 +98,7 @@ export const RecommendedModels = ({
               onToggle={() => onToggleModel(model.id)}
               agentDefault={model.id === preferredModelId}
               meta={modelMeta(model)}
+              scores={modelScores(model)}
             />
           ))}
         </div>
@@ -137,6 +143,20 @@ function ModelRow({
         </span>
         <span className="block truncate text-xs text-muted-foreground">{model.description}</span>
       </span>
+      {(model.metadata?.intelligenceIndex != null || model.metadata?.toolCallingIndex != null) && (
+        <span className="hidden shrink-0 items-center gap-3 text-[11px] text-muted-foreground sm:flex">
+          {model.metadata?.intelligenceIndex != null && (
+            <span>
+              Intel <b className="font-semibold tabular-nums text-foreground">{Math.round(model.metadata.intelligenceIndex)}</b>
+            </span>
+          )}
+          {model.metadata?.toolCallingIndex != null && (
+            <span>
+              Tools <b className="font-semibold tabular-nums text-foreground">{Math.round(model.metadata.toolCallingIndex)}</b>
+            </span>
+          )}
+        </span>
+      )}
       <span className="whitespace-nowrap text-right text-xs text-muted-foreground">{modelMeta(model)}</span>
     </label>
   );

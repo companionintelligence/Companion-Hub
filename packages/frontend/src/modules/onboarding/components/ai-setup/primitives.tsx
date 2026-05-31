@@ -108,12 +108,40 @@ interface ModelCardProps {
   agentDefault?: boolean;
   /** Right-aligned resource footer (RAM / disk). */
   meta?: ReactNode;
+  /** Artificial Analysis benchmark scores (omitted fields are hidden). */
+  scores?: { intelligence?: number; toolCalling?: number };
   testId?: string;
   checkboxTestId?: string;
 }
 
-/** A selectable model tile with family icon, tags, and resource footprint. */
-export function ModelCard({ title, description, icon, tags, selected, onToggle, agentDefault, meta, testId, checkboxTestId }: ModelCardProps) {
+/** A small labeled benchmark score with a proportional bar (0–60 reference scale). */
+function ScoreBar({ label, value, testId }: { label: string; value: number; testId?: string }) {
+  const pct = Math.max(4, Math.min(100, (value / 60) * 100));
+  return (
+    <span className="flex items-center gap-1.5" data-testid={testId}>
+      <span className="text-[11px] text-muted-foreground">{label}</span>
+      <span className="h-1 w-10 overflow-hidden rounded-full bg-muted">
+        <span className="block h-full rounded-full bg-primary" style={{ width: `${pct}%` }} />
+      </span>
+      <span className="text-[11px] font-semibold tabular-nums">{Math.round(value)}</span>
+    </span>
+  );
+}
+
+/** A selectable model tile with family icon, tags, benchmark scores, and resource footprint. */
+export function ModelCard({
+  title,
+  description,
+  icon,
+  tags,
+  selected,
+  onToggle,
+  agentDefault,
+  meta,
+  scores,
+  testId,
+  checkboxTestId,
+}: ModelCardProps) {
   return (
     <label
       data-testid={testId}
@@ -144,6 +172,12 @@ export function ModelCard({ title, description, icon, tags, selected, onToggle, 
               {tag}
             </span>
           ))}
+        </span>
+      )}
+      {scores && (scores.intelligence != null || scores.toolCalling != null) && (
+        <span className="flex flex-wrap gap-x-4 gap-y-1" data-testid="model-scores">
+          {scores.intelligence != null && <ScoreBar label="Intelligence" value={scores.intelligence} testId="score-intelligence" />}
+          {scores.toolCalling != null && <ScoreBar label="Tool use" value={scores.toolCalling} testId="score-tools" />}
         </span>
       )}
       {meta && <span className="block text-xs text-muted-foreground">{meta}</span>}
