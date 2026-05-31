@@ -123,11 +123,11 @@ describe('CI-Hub Plugin', () => {
     const fetchSpy = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
       if (url.includes('/api/health')) return { ok: true };
       if (url.includes('/api/mcp/sse')) return { ok: true, body: createSseStream('http://localhost:5002/api/mcp/messages') };
-      if (url === 'http://ci-hub-ollama:11434/v1/models') {
+      if (url === 'http://ci-hub-ollama:11434/api/tags') {
         return {
           ok: true,
           json: async () => ({
-            data: [{ id: 'qwen3:8b', context_window: 131072, max_tokens: 8192 }],
+            models: [{ name: 'qwen3:8b' }],
           }),
         };
       }
@@ -177,12 +177,13 @@ describe('CI-Hub Plugin', () => {
     expect(provider).toBeDefined();
 
     const catalog = await provider.catalog.run({});
-    expect(catalog.provider.baseUrl).toBe('http://ci-hub-ollama:11434/v1');
+    expect(catalog.provider.baseUrl).toBe('http://ci-hub-ollama:11434');
+    expect(catalog.provider.api).toBe('ollama');
     expect(catalog.provider.models).toEqual([
       expect.objectContaining({
         id: 'qwen3:8b',
         name: 'qwen3:8b',
-        contextWindow: 131072,
+        contextWindow: 32768,
         maxTokens: 8192,
       }),
     ]);
