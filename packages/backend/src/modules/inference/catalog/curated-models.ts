@@ -88,7 +88,7 @@ llms[59|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,agent
   llama4-16x17b|llama4:16x17b|Llama 4 16X17B|general|109|67|high|10000|Meta|13.5|5.2|0|1|1|0|105|0.85|5.6
   llama4-128x17b|llama4:128x17b|Llama 4 128X17B|general|400|245|high|1000|Meta|18.4|7.2|0|1|1|0|111|0.98|5.5
   glm4-9b|glm4:9b|GLM-4 9B|general|9|5.5|low||Z AI|||0|0|1|0|||
-  minimax-m2-community-230b|gabegoodhart/minimax-m2:230b|MiniMax M2 (community) 230B|general|230|56|high||MiniMax|||0|0|1|0|||
+  minimax-m2-community-230b|gabegoodhart/minimax-m2:230b|MiniMax M2 230B|general|230|56|high|205|MiniMax|36.1|47.5|1|0|1|0|||
 `;
 
 /** A decoded TOON row: every column mapped to its raw string cell (empty string when blank). */

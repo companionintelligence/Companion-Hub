@@ -21,7 +21,7 @@ import type { AiSetupConfig, InstallSummary, OnboardingApp } from '../helpers/ty
 function Shell({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex flex-col items-center overflow-y-auto px-4 py-8" style={{ height: 'calc(100vh - var(--titlebar-height, 0px))' }}>
-      <div className="w-full max-w-[69.12rem]">
+      <div className="w-full max-w-[82.94rem]">
         <div className="mb-6 flex items-center gap-3">
           <img
             alt="Companion Hub logo"
