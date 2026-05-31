@@ -130,8 +130,16 @@ export type LoadDto = {
     diskSize: number;
     diskUsed: number;
     memoryTotal: number;
+    memoryUsed: number;
     percentUsed: number;
     percentUsedMemory: number;
+    hasVmWedge: boolean;
+    runtimeKind: 'container-only' | 'docker-desktop-vm' | 'wsl2-vm' | 'linux-native' | 'host-native';
+    containerMemoryTotal?: number;
+    containerMemoryUsed?: number;
+    containerDiskTotal?: number;
+    containerDiskUsed?: number;
+    recommendedDockerRamMb?: number;
 };
 
 export type LoginBody = {

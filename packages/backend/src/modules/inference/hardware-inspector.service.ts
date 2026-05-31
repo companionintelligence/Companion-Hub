@@ -1,6 +1,7 @@
 import { Injectable, type OnModuleInit } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
+import { HostMetricsService } from '@/modules/system/host-metrics.service';
 import type { HardwareProfile, HardwareTier } from '@ci-hub/common/types';
 import si from 'systeminformation';
 import os from 'node:os';
@@ -34,6 +35,7 @@ export class HardwareInspectorService implements OnModuleInit {
   constructor(
     private readonly logger: LoggerService,
     private readonly filesystem: FilesystemService,
+    private readonly hostMetrics: HostMetricsService,
   ) {}
 
   async onModuleInit() {
@@ -88,36 +90,36 @@ export class HardwareInspectorService implements OnModuleInit {
       this.detectRocmSupport(),
     ]);
 
-    // Read macOS host probe written by the Tauri desktop app.  When the backend
-    // runs inside Docker Desktop on macOS the in-container values (os.arch,
-    // /host/proc/meminfo) reflect the Docker VM, not the real host hardware.
-    const macOsProbe = await this.readMacOsHostProbe();
+    // Read cross-platform host probe (init-host-probe, Tauri desktop, or legacy macOS file).
+    const hostProbe = await this.hostMetrics.readHostProbe();
+    const macOsProbe = hostProbe?.platform === 'darwin' ? this.toMacOsHostProbe(hostProbe) : null;
     if (macOsProbe) {
       this.logger.info(
-        `[HardwareInspector] Using macOS host probe: ${macOsProbe.cpuModel}, totalRam=${macOsProbe.totalRamMb} MB, isAppleSilicon=${macOsProbe.isAppleSilicon}`,
+        `[HardwareInspector] Using host probe: ${macOsProbe.cpuModel}, totalRam=${macOsProbe.totalRamMb} MB, isAppleSilicon=${macOsProbe.isAppleSilicon}`,
       );
+    } else if (hostProbe) {
+      this.logger.info(`[HardwareInspector] Using host probe: ${hostProbe.host.cpuModel ?? 'unknown CPU'}, totalRam=${hostProbe.host.totalRamMb} MB`);
     }
 
-    // Override in-container RAM / CPU readings with true host values when available.
-    const ramInfo = macOsProbe ? { totalMb: macOsProbe.totalRamMb, availableMb: macOsProbe.availableRamMb } : rawRamInfo;
+    const ramInfo = hostProbe ? { totalMb: hostProbe.host.totalRamMb, availableMb: hostProbe.host.availableRamMb } : rawRamInfo;
 
-    const cpuInfo = macOsProbe
+    const cpuInfo = hostProbe
       ? {
-          arch: macOsProbe.cpuArch as 'x86_64' | 'arm64',
-          cores: macOsProbe.cpuCores || rawCpuInfo.cores,
-          model: macOsProbe.cpuModel || rawCpuInfo.model,
+          arch: hostProbe.cpuArch as 'x86_64' | 'arm64',
+          cores: hostProbe.host.cpuCores || rawCpuInfo.cores,
+          model: hostProbe.host.cpuModel || rawCpuInfo.model,
         }
       : rawCpuInfo;
 
-    const hostProbe = await this.readNvidiaHostProbe();
+    const nvidiaHostProbe = await this.readNvidiaHostProbe();
     const effectiveGpuInfo =
-      hostProbe && (gpuInfo.vendor === 'nvidia' || !gpuInfo.available)
+      nvidiaHostProbe && (gpuInfo.vendor === 'nvidia' || !gpuInfo.available)
         ? {
-            available: gpuInfo.available || !!hostProbe.model,
+            available: gpuInfo.available || !!nvidiaHostProbe.model,
             vendor: 'nvidia' as const,
-            model: gpuInfo.model || hostProbe.model,
-            vramMb: gpuInfo.vramMb >= MIN_PLAUSIBLE_DISCRETE_VRAM_MB ? gpuInfo.vramMb : hostProbe.vramMb,
-            driverVersion: gpuInfo.driverVersion || hostProbe.driverVersion,
+            model: gpuInfo.model || nvidiaHostProbe.model,
+            vramMb: gpuInfo.vramMb >= MIN_PLAUSIBLE_DISCRETE_VRAM_MB ? gpuInfo.vramMb : nvidiaHostProbe.vramMb,
+            driverVersion: gpuInfo.driverVersion || nvidiaHostProbe.driverVersion,
           }
         : gpuInfo;
 
@@ -127,9 +129,11 @@ export class HardwareInspectorService implements OnModuleInit {
       this.logger.info('[HardwareInspector] Augmenting NVIDIA GPU detection with host probe VRAM data (SI reported unreliable value).');
     }
 
-    // Determine host platform: probe file presence is authoritative for macOS.
+    // Determine host platform: darwin host probe is authoritative for Apple Silicon detection.
     const platform = macOsProbe ? 'darwin' : this.getHostPlatform();
-    const isAppleSilicon = cpuInfo.arch === 'arm64' && platform === 'darwin';
+    const isAppleSilicon =
+      macOsProbe?.isAppleSilicon === true ||
+      (hostProbe?.platform === 'darwin' && hostProbe.cpuArch === 'arm64' && (hostProbe.host.cpuModel?.startsWith('Apple') ?? false));
 
     const gpu: HardwareProfile['gpu'] = {
       // Apple Silicon always has an integrated GPU; don't rely on container detection.
@@ -450,37 +454,33 @@ export class HardwareInspectorService implements OnModuleInit {
   }
 
   private getHostPlatform(): NodeJS.Platform {
-    return process.env.CI_HUB_HOST_PLATFORM === 'darwin' ? 'darwin' : os.platform();
+    if (process.env.CI_HUB_HOST_PLATFORM === 'darwin' || process.env.CI_HUB_HOST_PLATFORM === 'linux') {
+      return process.env.CI_HUB_HOST_PLATFORM;
+    }
+    return os.platform();
+  }
+
+  private toMacOsHostProbe(hostProbe: NonNullable<Awaited<ReturnType<HostMetricsService['readHostProbe']>>>): MacOsHostProbe {
+    const cpuModel = hostProbe.host.cpuModel ?? '';
+    return {
+      platform: 'darwin',
+      cpuArch: hostProbe.cpuArch,
+      cpuModel,
+      cpuCores: hostProbe.host.cpuCores,
+      totalRamMb: hostProbe.host.totalRamMb,
+      availableRamMb: hostProbe.host.availableRamMb,
+      isAppleSilicon: hostProbe.cpuArch === 'arm64' && cpuModel.startsWith('Apple'),
+      source: hostProbe.source,
+    };
   }
 
   /**
-   * Read the macOS host hardware probe written by the Tauri desktop app.
-   * Returns null when the file is absent (non-macOS hosts, headless installs, etc.).
+   * @deprecated Use HostMetricsService.readHostProbe() — kept for tests that mock the legacy path.
    */
   private async readMacOsHostProbe(): Promise<MacOsHostProbe | null> {
-    try {
-      const raw = await this.filesystem.readTextFile('/data/state/hardware/host_system.json');
-      if (!raw) return null;
-      const parsed = JSON.parse(raw) as Partial<MacOsHostProbe>;
-      if (parsed.platform !== 'darwin') return null;
-      if (!parsed.cpuArch || !(['arm64', 'x86_64'] as string[]).includes(parsed.cpuArch)) return null;
-      if (typeof parsed.totalRamMb !== 'number' || parsed.totalRamMb <= 0) return null;
-      return {
-        platform: 'darwin',
-        cpuArch: parsed.cpuArch,
-        cpuModel: typeof parsed.cpuModel === 'string' ? parsed.cpuModel : '',
-        cpuCores: typeof parsed.cpuCores === 'number' && parsed.cpuCores > 0 ? parsed.cpuCores : 0,
-        totalRamMb: parsed.totalRamMb,
-        availableRamMb:
-          typeof parsed.availableRamMb === 'number' && parsed.availableRamMb > 0
-            ? Math.min(parsed.availableRamMb, parsed.totalRamMb)
-            : Math.round(parsed.totalRamMb * 0.85),
-        isAppleSilicon: parsed.isAppleSilicon === true,
-        source: typeof parsed.source === 'string' ? parsed.source : '',
-      };
-    } catch {
-      return null;
-    }
+    const hostProbe = await this.hostMetrics.readHostProbe();
+    if (!hostProbe || hostProbe.platform !== 'darwin') return null;
+    return this.toMacOsHostProbe(hostProbe);
   }
 
   private async detectMacGpu(): Promise<{

@@ -20,7 +20,7 @@
     "test:integration": "turbo run test:integration",
     "start": "pnpm exec tsx scripts/start.ts start",
     "start:docker": "ENV_FILE=.env.local docker compose --env-file .env.local --project-name ci-hub -f docker-compose.local.yml up --build",
-    "init:host": "pnpm exec tsx scripts/init-traefik.ts && pnpm exec tsx scripts/init-docker-config.ts && pnpm exec tsx scripts/init-gpu-runtime.ts",
+    "init:host": "pnpm exec tsx scripts/init-traefik.ts && pnpm exec tsx scripts/init-docker-config.ts && pnpm exec tsx scripts/init-gpu-runtime.ts && pnpm exec tsx scripts/init-host-probe.ts && pnpm exec tsx scripts/tune-docker-resources.ts",
     "start:prod": "pnpm run init:host && ENV_FILE=.env.prod docker compose --env-file .env.prod --project-name ci-hub --profile private-vpn -f docker-compose.prod.yml up --build",
     "start:staging": "pnpm run init:host && ENV_FILE=.env.staging docker compose --env-file .env.staging --project-name ci-hub --profile private-vpn -f docker-compose.prod.yml up --build",
     "start:dev": "pnpm run init:host && ENV_FILE=.env.dev docker compose --env-file .env.dev --project-name ci-hub --profile private-vpn -f docker-compose.prod.yml up --build",
@@ -59,6 +59,7 @@
     "dotenv-cli": "^10.0.0",
     "husky": "^9.1.7",
     "lint-staged": "^16.2.7",
+    "systeminformation": "^5.25.11",
     "turbo": "^2.8.17",
     "tsx": "^4.19.2"
   },

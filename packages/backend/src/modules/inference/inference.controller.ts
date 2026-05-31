@@ -1,5 +1,4 @@
 import { Body, Controller, Get, Param, Patch, Post, Query, Res, UseGuards } from '@nestjs/common';
-import si from 'systeminformation';
 import type { Response } from 'express';
 import { InferenceRouterService } from './inference-router.service';
 import { HardwareInspectorService } from './hardware-inspector.service';
@@ -9,6 +8,7 @@ import { ModelPullerService } from './model-puller.service';
 import { CloudFallbackService } from './cloud-fallback.service';
 import { OllamaInstallerService } from './ollama-installer.service';
 import { AppCredentialsService } from './app-credentials.service';
+import { HostMetricsService } from '@/modules/system/host-metrics.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AuthGuard } from '@/modules/auth/auth.guard';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -38,6 +38,7 @@ export class InferenceController {
     private readonly cloudFallback: CloudFallbackService,
     private readonly ollamaInstaller: OllamaInstallerService,
     private readonly appCredentials: AppCredentialsService,
+    private readonly hostMetrics: HostMetricsService,
     private readonly configurationService: ConfigurationService,
     private readonly ollamaBackend: OllamaBackend,
     private readonly vllmBackend: VllmBackend,
@@ -261,9 +262,12 @@ export class InferenceController {
         ? budget.modelBudgetVramMb - budget.modelUsedVramMb
         : budget.modelBudgetRamMb - budget.modelUsedRamMb;
 
-    const [disk0] = await si.fsSize().catch(() => [null]);
-    const availableDiskMb = disk0 ? Math.floor(disk0.available / 1024 / 1024) : 0;
-    const totalDiskMb = disk0 ? Math.floor(disk0.size / 1024 / 1024) : 0;
+    const hostSection = await this.hostMetrics.readHostSection();
+    const displayLoad = hostSection ? null : await this.hostMetrics.getDisplayLoad(0, 0);
+    const diskTotalGb = hostSection && hostSection.diskTotalGb > 0 ? hostSection.diskTotalGb : (displayLoad?.diskSize ?? 0);
+    const diskUsedGb = hostSection && hostSection.diskTotalGb > 0 ? hostSection.diskUsedGb : (displayLoad?.diskUsed ?? 0);
+    const diskTotalMb = diskTotalGb * 1024;
+    const availableDiskMb = Math.max(0, (diskTotalGb - diskUsedGb) * 1024);
 
     return {
       hardware: profile,
@@ -280,7 +284,7 @@ export class InferenceController {
         totalMemoryMb,
         availableMemoryMb: Math.max(0, availableMemoryMb),
         availableDiskMb,
-        diskTotalMb: totalDiskMb,
+        diskTotalMb: diskTotalMb,
       },
     };
   }

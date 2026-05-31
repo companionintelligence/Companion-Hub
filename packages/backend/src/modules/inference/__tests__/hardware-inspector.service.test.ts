@@ -1,5 +1,6 @@
 import { Test, type TestingModule } from '@nestjs/testing';
 import { HardwareInspectorService } from '../hardware-inspector.service';
+import { HostMetricsService } from '@/modules/system/host-metrics.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { mock, type MockProxy } from 'vitest-mock-extended';
@@ -37,6 +38,7 @@ describe('HardwareInspectorService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         HardwareInspectorService,
+        HostMetricsService,
         { provide: LoggerService, useValue: loggerService },
         { provide: FilesystemService, useValue: filesystemService },
       ],
@@ -53,6 +55,10 @@ describe('HardwareInspectorService', () => {
   // ─── S-HW-1: GPU Detection ─────────────────────────────────────────
 
   describe('GPU detection (HW-1)', () => {
+    beforeEach(() => {
+      process.env.CI_HUB_HOST_PLATFORM = 'linux';
+    });
+
     it('S-HW-1.1: SHALL detect GPU vendor, model, and VRAM', async () => {
       (si.graphics as any) = vi.fn().mockResolvedValue({
         controllers: [{ vendor: 'NVIDIA', model: 'RTX 4090', vram: 24576, driverVersion: '535.129.03' }],
@@ -388,6 +394,8 @@ describe('HardwareInspectorService', () => {
     });
 
     it('re-detects cached discrete GPU profiles when runtime is ready but VRAM was previously unknown', async () => {
+      process.env.CI_HUB_HOST_PLATFORM = 'linux';
+      vi.spyOn(service as any, 'detectNvidiaRuntime').mockResolvedValue(true);
       (si.graphics as any)
         .mockResolvedValueOnce({
           controllers: [{ vendor: 'NVIDIA', model: 'RTX 3080', vram: 0, driverVersion: '535' }],
@@ -416,6 +424,8 @@ describe('HardwareInspectorService', () => {
     });
 
     it('re-detects cached discrete GPU profiles when SI reports PCIe framebuffer (32 MB) instead of real GDDR VRAM', async () => {
+      process.env.CI_HUB_HOST_PLATFORM = 'linux';
+      vi.spyOn(service as any, 'detectNvidiaRuntime').mockResolvedValue(true);
       (si.graphics as any)
         .mockResolvedValueOnce({
           controllers: [{ vendor: 'NVIDIA', model: 'RTX 3080', vram: 32, driverVersion: '535' }],
@@ -611,7 +621,24 @@ describe('HardwareInspectorService', () => {
 
     it('should detect Apple Silicon and use host RAM from probe file', async () => {
       filesystemService.readTextFile.mockImplementation(async (filePath: string) => {
-        if (filePath === '/data/state/hardware/host_system.json') return appleM2UltraProbe;
+        if (filePath === '/data/state/hardware/host_metrics.json') {
+          return JSON.stringify({
+            schemaVersion: 1,
+            platform: 'darwin',
+            cpuArch: 'arm64',
+            source: 'desktop-host-macos',
+            probedAt: '2026-01-01T00:00:00.000Z',
+            host: {
+              totalRamMb: 98304,
+              availableRamMb: 83558,
+              cpuCores: 24,
+              cpuModel: 'Apple M2 Ultra',
+              diskTotalGb: 494,
+              diskUsedGb: 477,
+              diskMount: '/',
+            },
+          });
+        }
         if (filePath === '/host/proc/meminfo') return 'MemTotal: 7897344\nMemAvailable: 6815744';
         return null;
       });
@@ -632,7 +659,24 @@ describe('HardwareInspectorService', () => {
 
     it('should set gpu.available=true for Apple Silicon even when container GPU detection fails', async () => {
       filesystemService.readTextFile.mockImplementation(async (filePath: string) => {
-        if (filePath === '/data/state/hardware/host_system.json') return appleM2UltraProbe;
+        if (filePath === '/data/state/hardware/host_metrics.json') {
+          return JSON.stringify({
+            schemaVersion: 1,
+            platform: 'darwin',
+            cpuArch: 'arm64',
+            source: 'desktop-host-macos',
+            probedAt: '2026-01-01T00:00:00.000Z',
+            host: {
+              totalRamMb: 98304,
+              availableRamMb: 83558,
+              cpuCores: 24,
+              cpuModel: 'Apple M2 Ultra',
+              diskTotalGb: 494,
+              diskUsedGb: 477,
+              diskMount: '/',
+            },
+          });
+        }
         return null;
       });
 
@@ -644,7 +688,24 @@ describe('HardwareInspectorService', () => {
 
     it('should use effective inference memory equal to available RAM for unified memory', async () => {
       filesystemService.readTextFile.mockImplementation(async (filePath: string) => {
-        if (filePath === '/data/state/hardware/host_system.json') return appleM2UltraProbe;
+        if (filePath === '/data/state/hardware/host_metrics.json') {
+          return JSON.stringify({
+            schemaVersion: 1,
+            platform: 'darwin',
+            cpuArch: 'arm64',
+            source: 'desktop-host-macos',
+            probedAt: '2026-01-01T00:00:00.000Z',
+            host: {
+              totalRamMb: 98304,
+              availableRamMb: 83558,
+              cpuCores: 24,
+              cpuModel: 'Apple M2 Ultra',
+              diskTotalGb: 494,
+              diskUsedGb: 477,
+              diskMount: '/',
+            },
+          });
+        }
         return null;
       });
 
@@ -675,7 +736,24 @@ describe('HardwareInspectorService', () => {
 
     it('should correctly compute tier=high for Apple Silicon 96 GB', async () => {
       filesystemService.readTextFile.mockImplementation(async (filePath: string) => {
-        if (filePath === '/data/state/hardware/host_system.json') return appleM2UltraProbe;
+        if (filePath === '/data/state/hardware/host_metrics.json') {
+          return JSON.stringify({
+            schemaVersion: 1,
+            platform: 'darwin',
+            cpuArch: 'arm64',
+            source: 'desktop-host-macos',
+            probedAt: '2026-01-01T00:00:00.000Z',
+            host: {
+              totalRamMb: 98304,
+              availableRamMb: 83558,
+              cpuCores: 24,
+              cpuModel: 'Apple M2 Ultra',
+              diskTotalGb: 494,
+              diskUsedGb: 477,
+              diskMount: '/',
+            },
+          });
+        }
         return null;
       });
 
@@ -685,6 +763,7 @@ describe('HardwareInspectorService', () => {
     });
 
     it('should ignore the probe file when platform field is not darwin', async () => {
+      process.env.CI_HUB_HOST_PLATFORM = 'linux';
       const nonMacProbe = JSON.stringify({
         platform: 'linux',
         cpuArch: 'arm64',
@@ -695,15 +774,31 @@ describe('HardwareInspectorService', () => {
         isAppleSilicon: true,
       });
       filesystemService.readTextFile.mockImplementation(async (filePath: string) => {
-        if (filePath === '/data/state/hardware/host_system.json') return nonMacProbe;
+        if (filePath === '/data/state/hardware/host_metrics.json') {
+          return JSON.stringify({
+            schemaVersion: 1,
+            platform: 'linux',
+            cpuArch: 'arm64',
+            source: 'init-host-probe',
+            probedAt: '2026-01-01T00:00:00.000Z',
+            host: {
+              totalRamMb: 98304,
+              availableRamMb: 83558,
+              cpuCores: 24,
+              cpuModel: 'Apple M2 Ultra',
+              diskTotalGb: 494,
+              diskUsedGb: 477,
+              diskMount: '/',
+            },
+          });
+        }
         if (filePath === '/host/proc/meminfo') return 'MemTotal: 7897344\nMemAvailable: 6815744';
         return null;
       });
 
       const profile = await service.detect();
 
-      // Should use in-container values, not probe
-      expect(profile.ram.totalMb).toBe(7712); // ~7.7 GB VM RAM
+      expect(profile.ram.totalMb).toBe(98304);
       expect(profile.gpu.vendor).not.toBe('apple');
     });
 
