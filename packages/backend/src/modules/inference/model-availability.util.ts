@@ -14,7 +14,7 @@ export function isCuratedModelInstalled(model: CuratedModel, ollamaTags: string[
   return ollamaTags.some((name) => isOllamaTagForModel(name, model.backendModelId));
 }
 
-export function isCatalogModelInstalled(catalogId: string, curated: CuratedModel | undefined, ollamaTags: string[], trackedPulled = false): boolean {
+export function isCatalogModelInstalled(curated: CuratedModel | undefined, ollamaTags: string[], trackedPulled = false): boolean {
   if (!curated) return false;
   return isCuratedModelInstalled(curated, ollamaTags, trackedPulled);
 }

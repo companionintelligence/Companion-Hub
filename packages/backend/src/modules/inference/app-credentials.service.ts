@@ -276,7 +276,7 @@ export class AppCredentialsService {
 
   private isCuratedModelAvailable(model: CuratedModel, modelsLoaded: string[]): boolean {
     if (this.isModelPulled(model.id, modelsLoaded)) return true;
-    return isCatalogModelInstalled(model.id, model, modelsLoaded);
+    return isCatalogModelInstalled(model, modelsLoaded);
   }
 
   private isModelPulled(catalogId: string, modelsLoaded: string[]): boolean {
@@ -285,7 +285,7 @@ export class AppCredentialsService {
       return true;
     }
     const curated = this.modelRegistry.getCuratedModel(catalogId);
-    return isCatalogModelInstalled(catalogId, curated, modelsLoaded);
+    return isCatalogModelInstalled(curated, modelsLoaded);
   }
 
   private async maybeFirePrePull(catalogId: string): Promise<void> {

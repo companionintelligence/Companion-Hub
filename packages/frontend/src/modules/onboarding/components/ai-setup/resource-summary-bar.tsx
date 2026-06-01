@@ -63,5 +63,3 @@ export const ResourceSummaryBar = ({ selectedModels, installedCatalogIds, availa
     </div>
   );
 };
-
-export { computeSelectionBudget, isSelectionWithinBudget } from '../../helpers/onboarding-model-selection';

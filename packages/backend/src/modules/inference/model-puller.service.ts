@@ -74,7 +74,7 @@ export class ModelPullerService {
 
     const tracked = this.modelRegistry.getTrackedModel(catalogId);
     const trackedPulled = tracked?.state === 'pulled' || tracked?.state === 'loaded' || tracked?.state === 'pinned';
-    const alreadyInstalled = isCatalogModelInstalled(catalogId, curated, ollamaTags, trackedPulled);
+    const alreadyInstalled = isCatalogModelInstalled(curated, ollamaTags, trackedPulled);
 
     if (alreadyInstalled) {
       return {
@@ -157,7 +157,10 @@ export class ModelPullerService {
       throw new Error(evaluation.reason ?? `Pull blocked for ${catalogId}`);
     }
 
-    const curated = this.modelRegistry.getCuratedModel(catalogId)!;
+    const curated = this.modelRegistry.getCuratedModel(catalogId);
+    if (!curated) {
+      throw new Error(`Model ${catalogId} not found in catalog`);
+    }
     const backend = this.getBackend(curated.backend);
 
     this.modelRegistry.trackModel(catalogId, 'pulling');
