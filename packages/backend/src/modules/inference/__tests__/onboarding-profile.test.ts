@@ -26,6 +26,7 @@ describe('InferenceController — onboarding-profile', () => {
   let memoryManager: MockProxy<MemoryManagerService>;
   let router: MockProxy<InferenceRouterService>;
   let hostMetrics: MockProxy<HostMetricsService>;
+  let ollamaBackend: MockProxy<OllamaBackend>;
 
   const fakeProfile: HardwareProfile = {
     gpu: {
@@ -94,6 +95,10 @@ describe('InferenceController — onboarding-profile', () => {
     memoryManager = moduleRef.get(MemoryManagerService);
     router = moduleRef.get(InferenceRouterService);
     hostMetrics = moduleRef.get(HostMetricsService);
+    ollamaBackend = moduleRef.get(OllamaBackend);
+    ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['phi4-mini'] });
+    modelRegistry.getCatalog.mockReturnValue([{ id: 'phi-4-mini', backendModelId: 'phi4-mini', backend: 'ollama' }] as any);
+    modelRegistry.getTrackedModel.mockReturnValue(undefined);
     hostMetrics.readHostSection.mockResolvedValue(null);
     hostMetrics.getDisplayLoad.mockResolvedValue({
       diskSize: 0,
@@ -127,6 +132,7 @@ describe('InferenceController — onboarding-profile', () => {
     expect(result.backends.recommended).toBe('vllm');
     expect(result.backends.available).toHaveLength(2);
     expect(result.resourceEstimate.availableMemoryMb).toBeGreaterThanOrEqual(0);
+    expect(result.installedCatalogIds).toEqual(['phi-4-mini']);
   });
 
   it('should recommend vllm for AMD GPU with runtime', async () => {

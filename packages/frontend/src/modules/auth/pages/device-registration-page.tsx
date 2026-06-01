@@ -443,20 +443,20 @@ export default function DeviceRegistrationPage() {
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 items-stretch gap-4 md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] md:gap-5">
-        <section className="flex flex-col rounded-xl border border-border/60 bg-muted/20 p-5">
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-foreground">Step 1: Get your pairing code</h2>
-          <Button asChild className="mt-4 w-full" intent="primary">
+        <section className="flex flex-col rounded-xl border border-border/60 bg-muted/20 p-6 md:p-8">
+          <h2 className="text-xl font-semibold leading-snug text-foreground md:text-2xl">Step 1: Get your pairing code</h2>
+          <Button asChild className="mt-6 h-12 w-full text-base font-semibold md:h-14 md:text-lg" intent="primary" size="lg">
             <a href={portalUrl} target="_blank" rel="noopener noreferrer">
               Login to Companion Account
             </a>
           </Button>
-          <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
+          <p className="mt-5 text-base leading-relaxed text-muted-foreground md:text-lg">
             Don&apos;t have an account yet?{' '}
             <a
               href={`${portalUrl}/signup`}
               target="_blank"
               rel="noopener noreferrer"
-              className="font-medium text-primary underline hover:no-underline"
+              className="font-semibold text-primary underline hover:no-underline"
             >
               Create one free
             </a>{' '}

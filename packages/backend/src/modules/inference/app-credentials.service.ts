@@ -7,6 +7,7 @@ import { ModelPullerService } from './model-puller.service';
 import { CloudFallbackService } from './cloud-fallback.service';
 import { OllamaBackend } from './backends/ollama.backend';
 import type { CuratedModel, HardwareTier } from '@ci-hub/common/types';
+import { isCatalogModelInstalled } from './model-availability.util';
 
 export const SUPPORTED_APP_SLUGS = ['hermes-agent', 'openclaw', 'companion-memory'] as const;
 export type AppSlug = (typeof SUPPORTED_APP_SLUGS)[number];
@@ -142,28 +143,22 @@ export class AppCredentialsService {
     const preferredModelId = this.configurationService.getInferencePreferences().preferredModel;
     const recommendedLlm = this.resolveRecommendedLlm(candidates, preferredModelId, profile.tier);
     const availableLlm = this.resolveAvailableLlm(candidates, preferredModelId, profile.tier, endpointHealth.modelsLoaded);
-    // Embeddings are picked independently of the chat LLM so memory/RAG consumers
-    // (companion-memory / CI-Server pgvector, which is hard-coupled to a 768-dim
-    // model) always receive an embeddings model. nomic-embed-text is recommended on
-    // every tier, so this is non-null on any runnable hardware.
     const embeddings = this.modelRegistry.getRecommendedEmbeddingModel(profile.tier);
 
+    const cloudProvider = this.cloudFallback.getEnabledProviders()[0];
+
     const chatModelReady = recommendedLlm ? this.isModelPulled(recommendedLlm.id, endpointHealth.modelsLoaded) : false;
-    // The Hub still pulls the recommended models into its own Ollama so the app can
-    // use them directly — we just no longer proxy the actual inference requests.
-    if (recommendedLlm && !chatModelReady && endpointReady) {
-      this.firePrePull(recommendedLlm.id);
+    if (!cloudProvider && recommendedLlm && !chatModelReady && endpointReady) {
+      void this.maybeFirePrePull(recommendedLlm.id);
     }
     const embeddingsReady = embeddings ? this.isModelPulled(embeddings.id, endpointHealth.modelsLoaded) : false;
     if (embeddings && !embeddingsReady && endpointReady) {
-      this.firePrePull(embeddings.id);
+      void this.maybeFirePrePull(embeddings.id);
     }
 
     const keys = APP_ENV_KEYS[slug];
 
     // ─── Local (default) connection: app → Ollama /v1 directly ───────────
-    // The chat model is the NATIVE backend id (e.g. llama3.3:70b) because the app
-    // talks to Ollama, not the Hub — Ollama knows nothing about catalog ids.
     let provider: 'ollama' | 'cloud' = 'ollama';
     let endpointUrl = ollamaOpenAiUrl;
     let apiKey = 'ollama';
@@ -171,10 +166,6 @@ export class AppCredentialsService {
     const embeddingsModelId = embeddings?.backendModelId ?? null;
 
     // ─── Cloud override: app → cloud provider API directly ───────────────
-    // If the operator enabled+configured a cloud provider, hand the app that
-    // provider's endpoint/key/model so it calls the cloud API with the operator's
-    // key. Distribution only — the Hub never proxies.
-    const cloudProvider = this.cloudFallback.getEnabledProviders()[0];
     if (cloudProvider) {
       provider = 'cloud';
       endpointUrl = cloudProvider.baseUrl || endpointUrl;
@@ -285,7 +276,7 @@ export class AppCredentialsService {
 
   private isCuratedModelAvailable(model: CuratedModel, modelsLoaded: string[]): boolean {
     if (this.isModelPulled(model.id, modelsLoaded)) return true;
-    return modelsLoaded.some((name) => name === model.backendModelId || name.startsWith(`${model.backendModelId}:`));
+    return isCatalogModelInstalled(model.id, model, modelsLoaded);
   }
 
   private isModelPulled(catalogId: string, modelsLoaded: string[]): boolean {
@@ -294,8 +285,26 @@ export class AppCredentialsService {
       return true;
     }
     const curated = this.modelRegistry.getCuratedModel(catalogId);
-    if (!curated) return false;
-    return modelsLoaded.some((name) => name === curated.backendModelId || name.startsWith(`${curated.backendModelId}:`));
+    return isCatalogModelInstalled(catalogId, curated, modelsLoaded);
+  }
+
+  private async maybeFirePrePull(catalogId: string): Promise<void> {
+    if (this.pullsInFlight.has(catalogId)) {
+      return;
+    }
+    try {
+      const evaluation = await this.modelPuller.evaluatePull(catalogId);
+      if (evaluation.alreadyInstalled) {
+        return;
+      }
+      if (!evaluation.canPull) {
+        this.logger.warn(`[AppCredentials] pre-pull skipped ${catalogId}: ${evaluation.reason ?? 'blocked'}`);
+        return;
+      }
+      this.firePrePull(catalogId);
+    } catch (err) {
+      this.logger.warn(`[AppCredentials] pre-pull evaluation failed ${catalogId}: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   /**

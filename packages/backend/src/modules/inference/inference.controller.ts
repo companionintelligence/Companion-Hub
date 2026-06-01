@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, Res, UseGuards } from '@nestjs/common';
+import { Body, Controller, ConflictException, Get, Param, Patch, Post, Query, Res, UseGuards } from '@nestjs/common';
 import type { Response } from 'express';
 import { InferenceRouterService } from './inference-router.service';
 import { HardwareInspectorService } from './hardware-inspector.service';
@@ -17,6 +17,7 @@ import { RuntimeModelsQueryDto, UpdateInferencePreferencesBody } from './inferen
 import { OllamaBackend } from './backends/ollama.backend';
 import { VllmBackend } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
+import { resolveInstalledCatalogIds } from './model-availability.util';
 
 /**
  * Inference controller — exposes Ollama/backend provisioning + management.
@@ -170,8 +171,21 @@ export class InferenceController {
   }
 
   @UseGuards(AuthGuard)
+  @Get('models/pull-preflight')
+  async pullPreflight(@Query('modelId') modelId: string) {
+    if (!modelId?.trim()) {
+      return { canPull: false, reason: 'modelId is required' };
+    }
+    return this.modelPuller.evaluatePull(modelId.trim());
+  }
+
+  @UseGuards(AuthGuard)
   @Post('models/pull')
   async pullModel(@Body() body: { modelId: string }) {
+    const evaluation = await this.modelPuller.evaluatePull(body.modelId);
+    if (!evaluation.canPull && !evaluation.alreadyInstalled) {
+      throw new ConflictException(evaluation.reason ?? `Pull blocked for ${body.modelId}`);
+    }
     await this.modelPuller.pullModel(body.modelId);
     return { success: true, message: `Model ${body.modelId} pulled` };
   }
@@ -269,11 +283,23 @@ export class InferenceController {
     const diskTotalMb = diskTotalGb * 1024;
     const availableDiskMb = Math.max(0, (diskTotalGb - diskUsedGb) * 1024);
 
+    const ollamaHealth = await this.ollamaBackend.healthCheck().catch(() => ({
+      running: false,
+      healthy: false,
+      modelsLoaded: [] as string[],
+    }));
+    const installedCatalogIds = resolveInstalledCatalogIds(
+      this.modelRegistry.getCatalog(),
+      ollamaHealth.modelsLoaded ?? [],
+      (id) => this.modelRegistry.getTrackedModel(id)?.state,
+    );
+
     return {
       hardware: profile,
       tier,
       recommendedModels,
       availableModels,
+      installedCatalogIds,
       memoryBudget: budget,
       backends: {
         recommended: recommendedBackend,

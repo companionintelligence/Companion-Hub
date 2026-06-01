@@ -109,6 +109,8 @@ interface ModelCardProps {
   onToggle: () => void;
   /** Pill marking the agent's default model. */
   agentDefault?: boolean;
+  /** Pill when the model is already present in Ollama. */
+  installed?: boolean;
   /** Right-aligned resource footer (RAM / disk). */
   meta?: ReactNode;
   /** Artificial Analysis benchmark scores (omitted fields are hidden). */
@@ -141,6 +143,7 @@ export function ModelCard({
   selected,
   onToggle,
   agentDefault,
+  installed,
   meta,
   scores,
   testId,
@@ -165,6 +168,7 @@ export function ModelCard({
           <span className="flex flex-wrap items-center gap-1.5">
             <span className="text-sm font-semibold leading-tight">{title}</span>
             {agentDefault && <span className="rounded bg-primary px-1.5 py-0.5 text-[10px] font-medium text-primary-foreground">Agent default</span>}
+            {installed && <span className="rounded bg-green-600/90 px-1.5 py-0.5 text-[10px] font-medium text-white">Installed</span>}
           </span>
           {description && <span className="mt-0.5 block text-xs text-muted-foreground">{description}</span>}
         </span>
