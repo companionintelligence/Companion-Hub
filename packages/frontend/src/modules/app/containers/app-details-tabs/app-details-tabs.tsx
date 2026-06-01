@@ -12,6 +12,7 @@ import React from 'react';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
+import { getCategoryLabel } from '../../helpers/category-label';
 
 const AppDescriptionEditor = React.lazy(() =>
   import('../../components/app-description-editor/app-description-editor').then((module) => ({ default: module.AppDescriptionEditor })),
@@ -141,9 +142,7 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, 
               <div className="border-t border-border/40" />
               <div className="flex justify-between items-start">
                 <span className="text-sm text-muted-foreground">{t('APP_DETAILS_CATEGORIES_TITLE')}</span>
-                <span className="text-sm font-medium text-right capitalize">
-                  {info.categories?.map((c) => t(`APP_CATEGORY_${c.toUpperCase() as Uppercase<typeof c>}`)).join(', ')}
-                </span>
+                <span className="text-sm font-medium text-right">{(info.categories ?? []).map((c) => getCategoryLabel(t, c)).join(', ')}</span>
               </div>
               <div className="border-t border-border/40" />
               {updatedDate && (
