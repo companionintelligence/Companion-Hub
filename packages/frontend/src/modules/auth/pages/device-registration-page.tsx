@@ -8,6 +8,14 @@ import type { RegistrationStatus } from '@/lib/registration-status';
 import { isRegistrationOperational, isRegistrationPending, requiresDeviceRegistration } from '@/lib/registration-status';
 import { cacheRegistrationStatus, clearRegistrationCache } from '@/lib/registration-cache';
 import toast from 'react-hot-toast';
+import { HintText, LabelWithHint } from '@/components/ui/field-hint/field-hint';
+import {
+  REGISTRATION_ACCOUNT_HINT,
+  REGISTRATION_DEVICE_ID_HINT,
+  REGISTRATION_DNS_HINT,
+  REGISTRATION_PAIRING_CODE_HINT,
+  REGISTRATION_PROVISIONING_HINT,
+} from '@/components/hub-status/hub-status-tooltips';
 
 const DEFAULT_PORTAL_URL = (
   (import.meta.env.CI_CLOUD_URL as string | undefined)?.trim() ||
@@ -33,6 +41,7 @@ function getProgressCopy(status: RegistrationStatus | null, redirectStatus: stri
     return {
       title: 'Checking registration status...',
       description: 'Please wait while we confirm your Hub status.',
+      hint: undefined as string | undefined,
     };
   }
 
@@ -42,21 +51,25 @@ function getProgressCopy(status: RegistrationStatus | null, redirectStatus: stri
         title: 'Provisioning your domain',
         description:
           'Your pairing code worked. We are finishing DNS and secure routing for your Hub so it can be reached on the web. That often takes a few minutes—please keep this window open.',
+        hint: REGISTRATION_PROVISIONING_HINT,
       };
     case 'provisioning':
       return {
         title: 'Setting up your Hub',
         description: 'We are turning on local services and your public connection. DNS propagation can add another minute or two.',
+        hint: REGISTRATION_DNS_HINT,
       };
     case 'degraded':
       return {
         title: 'Hub setup needs attention',
         description: redirectStatus,
+        hint: undefined,
       };
     default:
       return {
         title: 'Registration complete',
         description: redirectStatus,
+        hint: undefined,
       };
   }
 }
@@ -389,7 +402,20 @@ export default function DeviceRegistrationPage() {
           <Loader2 role="img" aria-label="loading" className="h-10 w-10 animate-spin text-primary" />
         )}
         <div>
-          <h2 className="text-xl font-semibold text-foreground">{progressCopy.title}</h2>
+          <div className="flex items-center justify-center gap-1 flex-wrap">
+            {progressCopy.hint ? (
+              <HintText
+                id={`reg-progress-${registrationStatus?.phase}`}
+                hint={progressCopy.hint}
+                as="h2"
+                className="text-xl font-semibold text-foreground"
+              >
+                {progressCopy.title}
+              </HintText>
+            ) : (
+              <h2 className="text-xl font-semibold text-foreground">{progressCopy.title}</h2>
+            )}
+          </div>
           <p className="mt-3 text-sm text-muted-foreground">{progressCopy.description}</p>
         </div>
 
@@ -444,7 +470,16 @@ export default function DeviceRegistrationPage() {
     <div className="space-y-6">
       <div className="grid grid-cols-1 items-stretch gap-4 md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] md:gap-5">
         <section className="flex flex-col rounded-xl border border-border/60 bg-muted/20 p-6 md:p-8">
-          <h2 className="text-xl font-semibold leading-snug text-foreground md:text-2xl">Step 1: Get your pairing code</h2>
+          <div className="flex items-start gap-1 flex-wrap">
+            <HintText
+              id="reg-account"
+              hint={REGISTRATION_ACCOUNT_HINT}
+              as="h2"
+              className="text-xl font-semibold leading-snug text-foreground md:text-2xl"
+            >
+              Step 1: Get your pairing code
+            </HintText>
+          </div>
           <Button asChild className="mt-6 h-12 w-full text-base font-semibold md:h-14 md:text-lg" intent="primary" size="lg">
             <a href={portalUrl} target="_blank" rel="noopener noreferrer">
               Login to Companion Account
@@ -474,7 +509,9 @@ export default function DeviceRegistrationPage() {
 
           <div className="mt-5 space-y-4">
             <div className="space-y-2">
-              <p className="text-sm text-muted-foreground">Current Device ID:</p>
+              <div className="text-sm text-muted-foreground">
+                <LabelWithHint label="Current Device ID:" hint={REGISTRATION_DEVICE_ID_HINT} hintId="reg-device-id" />
+              </div>
               <div className="flex items-center gap-2 rounded-lg border border-border/60 bg-background/60 px-3 py-2">
                 <p className="min-w-0 flex-1 break-all font-mono text-sm text-foreground">{deviceId ?? 'Loading device ID...'}</p>
                 <Button
@@ -494,7 +531,9 @@ export default function DeviceRegistrationPage() {
 
             <div className="space-y-2">
               <label htmlFor="pairing-code" className="block text-sm text-muted-foreground">
-                Enter Pairing Code:
+                <HintText id="reg-pairing-code" hint={REGISTRATION_PAIRING_CODE_HINT}>
+                  Enter Pairing Code:
+                </HintText>
               </label>
               <div className="flex gap-2">
                 <input

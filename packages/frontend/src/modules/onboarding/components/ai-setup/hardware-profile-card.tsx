@@ -1,5 +1,7 @@
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent } from '@/components/ui/Card';
+import { LabelWithHint } from '@/components/ui/field-hint/field-hint';
+import { ONBOARDING_HW_TIER_HINT, ONBOARDING_HW_UNIFIED_MEMORY_HINT } from '@/components/hub-status/hub-status-tooltips';
 import { AlertTriangle } from 'lucide-react';
 import type { HardwareProfile, HardwareTier } from '@ci-hub/common/types';
 
@@ -51,8 +53,8 @@ export const HardwareProfileCard = ({ hardware, tier, onRescan, rescanning = fal
             Hardware Detected
           </h3>
           <div className="flex items-center gap-2">
-            <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${badge.color}`} data-testid="tier-badge">
-              {badge.emoji} {badge.label}
+            <span className={`text-xs px-2 py-0.5 rounded-full font-medium inline-flex items-center ${badge.color}`} data-testid="tier-badge">
+              {badge.emoji} <LabelWithHint label={badge.label} hint={ONBOARDING_HW_TIER_HINT} hintId="hw-tier" />
             </span>
             <Button variant="ghost" size="sm" onClick={onRescan} loading={rescanning} data-testid="rescan-btn">
               Rescan
@@ -66,7 +68,11 @@ export const HardwareProfileCard = ({ hardware, tier, onRescan, rescanning = fal
             <div className="font-medium">{hardware.gpu.available ? `${hardware.gpu.model}` : 'No GPU detected'}</div>
             {hardware.gpu.available && (
               <div className="text-xs text-muted-foreground">
-                {hardware.gpu.unifiedMemory ? 'Unified Memory' : formatMemory(hardware.gpu.vramMb)} VRAM
+                {hardware.gpu.unifiedMemory ? (
+                  <LabelWithHint label="Unified Memory" hint={ONBOARDING_HW_UNIFIED_MEMORY_HINT} hintId="hw-unified-memory" />
+                ) : (
+                  `${formatMemory(hardware.gpu.vramMb)} VRAM`
+                )}
               </div>
             )}
           </div>

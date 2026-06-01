@@ -1,4 +1,5 @@
 import { cn } from '@/lib/utils';
+import { HintText } from '@/components/ui/field-hint/field-hint';
 import { Check } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { LEVEL_BG, LEVEL_TEXT, scoreColor } from './levels';
@@ -9,6 +10,8 @@ interface StepSectionProps {
   number: number;
   title: string;
   description?: string;
+  /** Optional short tooltip beside the step title. */
+  titleHint?: string;
   children: ReactNode;
   /** Optional content rendered on the right of the section header (e.g. a tier badge). */
   action?: ReactNode;
@@ -16,7 +19,7 @@ interface StepSectionProps {
 }
 
 /** A numbered panel: cyan step badge + uppercase title + description, wrapping its content. */
-export function StepSection({ number, title, description, children, action, className }: StepSectionProps) {
+export function StepSection({ number, title, description, titleHint, children, action, className }: StepSectionProps) {
   return (
     <section className={cn('rounded-3xl border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6', className)}>
       <div className="mb-4 flex items-start justify-between gap-3">
@@ -25,7 +28,15 @@ export function StepSection({ number, title, description, children, action, clas
             {number}
           </span>
           <div>
-            <h2 className="text-base font-bold uppercase tracking-wide sm:text-lg">{title}</h2>
+            <h2 className="text-base font-bold uppercase tracking-wide sm:text-lg">
+              {titleHint ? (
+                <HintText id={`step-${number}-title`} hint={titleHint}>
+                  {title}
+                </HintText>
+              ) : (
+                title
+              )}
+            </h2>
             {description && <p className="mt-0.5 text-xs text-muted-foreground sm:text-sm">{description}</p>}
           </div>
         </div>
@@ -60,12 +71,14 @@ interface OptionCardProps {
   disabled?: boolean;
   /** Small pill rendered next to the title (e.g. "Recommended", "Soon"). */
   badge?: string;
+  /** Optional short tooltip beside the title. */
+  hint?: string;
   onSelect?: () => void;
   testId?: string;
 }
 
 /** A large, icon-led selectable card used for the Agent Framework and Inference Backend steps. */
-export function OptionCard({ title, description, icon, selected = false, disabled = false, badge, onSelect, testId }: OptionCardProps) {
+export function OptionCard({ title, description, icon, selected = false, disabled = false, badge, hint, onSelect, testId }: OptionCardProps) {
   return (
     <button
       type="button"
@@ -86,7 +99,15 @@ export function OptionCard({ title, description, icon, selected = false, disable
       </span>
       <span className="min-w-0 flex-1 pr-6">
         <span className="flex flex-wrap items-center gap-2">
-          <span className="text-base font-semibold">{title}</span>
+          <span className="text-base font-semibold">
+            {hint ? (
+              <HintText id={`option-${testId ?? title}`} hint={hint}>
+                {title}
+              </HintText>
+            ) : (
+              title
+            )}
+          </span>
           {badge && (
             <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary">{badge}</span>
           )}

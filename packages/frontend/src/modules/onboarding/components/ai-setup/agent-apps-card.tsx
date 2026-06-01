@@ -1,6 +1,8 @@
 import { cn } from '@/lib/utils';
 import { Globe, Shield } from 'lucide-react';
 import type { AgentFramework, RemoteAccessMode } from '../../helpers/ai-setup-types';
+import { ONBOARDING_REMOTE_VPN_HINT, ONBOARDING_REMOTE_WEB_HINT } from '@/components/hub-status/hub-status-tooltips';
+import { LabelWithHint } from '@/components/ui/field-hint/field-hint';
 import { HermesIcon, OpenClawIcon } from './icons';
 import { OptionCard, StepSection } from './primitives';
 
@@ -91,7 +93,13 @@ export const AgentFrameworkCard = ({
                   />
                   <Icon className={cn('mt-0.5 h-4 w-4 flex-shrink-0', isSelected ? 'text-primary' : 'text-muted-foreground')} />
                   <span className="min-w-0">
-                    <span className="block text-sm font-medium">{label}</span>
+                    <span className="block text-sm font-medium">
+                      {mode === 'tailscale' ? (
+                        <LabelWithHint label={label} hint={ONBOARDING_REMOTE_VPN_HINT} hintId="onboarding-remote-vpn" />
+                      ) : (
+                        <LabelWithHint label={label} hint={ONBOARDING_REMOTE_WEB_HINT} hintId="onboarding-remote-web" />
+                      )}
+                    </span>
                     <span className="block text-xs text-muted-foreground">
                       {transport}
                       {!configured[mode] && ' · set up later'}
