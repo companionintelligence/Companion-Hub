@@ -1,14 +1,22 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="406" height="276" viewBox="0 0 406 276" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="240" viewBox="0 0 800 240" role="img" aria-labelledby="title desc">
   <title id="title">CI-Hub CLI screenshot</title>
-  <desc id="desc">Terminal capture for setup</desc>
-  <rect width="406" height="276" rx="14" fill="#0d1117"/>
-  <rect x="0" y="0" width="406" height="34" rx="14" fill="#161b22"/>
-  <rect x="0" y="20" width="406" height="14" fill="#161b22"/>
+  <desc id="desc">Terminal capture for cihub setup local</desc>
+  <rect width="800" height="240" rx="14" fill="#0d1117"/>
+  <rect x="0" y="0" width="800" height="34" rx="14" fill="#161b22"/>
+  <rect x="0" y="20" width="800" height="14" fill="#161b22"/>
   <circle cx="18" cy="17" r="5" fill="#ff5f57"/>
   <circle cx="36" cy="17" r="5" fill="#febc2e"/>
   <circle cx="54" cy="17" r="5" fill="#28c840"/>
-  <text x="203.0" y="22" text-anchor="middle" fill="#8b949e" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace">setup</text>
-  <g font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace" font-size="16" xml:space="preserve">
-    <text x="24" y="56" fill="#e6edf3">$ cihub setup local</text><text x="24" y="78" fill="#e6edf3">▶ tsx scripts/init-traefik.ts</text><text x="24" y="100" fill="#e6edf3">Traefik config initialized for demo</text><text x="24" y="122" fill="#e6edf3">▶ tsx scripts/init-docker-config.ts</text><text x="24" y="144" fill="#e6edf3">Docker auth config initialized for demo</text><text x="24" y="166" fill="#e6edf3">┌─ Setup complete──────────────────┐</text><text x="24" y="188" fill="#e6edf3">│ Prepared host assets for local. │</text><text x="24" y="210" fill="#e6edf3">│ You can now run cihub up local  │</text><text x="24" y="232" fill="#e6edf3">└──────────────────────────────────┘</text>
+  <text x="400" y="22" text-anchor="middle" fill="#8b949e" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace">setup</text>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace" font-size="14" xml:space="preserve">
+    <text x="24" y="56"  fill="#7ee787">$ cihub setup local</text>
+    <text x="24" y="76"  fill="#484f58">  ▶ tsx scripts/init-traefik.ts</text>
+    <text x="24" y="96"  fill="#e6edf3">Traefik config initialized.</text>
+    <text x="24" y="116" fill="#484f58">  ▶ tsx scripts/init-docker-config.ts</text>
+    <text x="24" y="136" fill="#e6edf3">Docker auth config initialized.</text>
+    <text x="24" y="156" fill="#3fb950">┌─ Setup complete ────────────────────────────────────────────────────────────────┐</text>
+    <text x="24" y="176" fill="#e6edf3">  Host assets prepared for local.</text>
+    <text x="24" y="196" fill="#e6edf3">  Next: cihub register local</text>
+    <text x="24" y="216" fill="#3fb950">└─────────────────────────────────────────────────────────────────────────────────┘</text>
   </g>
 </svg>

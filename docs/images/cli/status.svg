@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="440" viewBox="0 0 900 440" role="img" aria-labelledby="title desc">
+  <title id="title">CI-Hub CLI screenshot</title>
+  <desc id="desc">Terminal capture for cihub status local — containers, Cloudflare, Tailscale, models</desc>
+  <rect width="900" height="440" rx="14" fill="#0d1117"/>
+  <rect x="0" y="0" width="900" height="34" rx="14" fill="#161b22"/>
+  <rect x="0" y="20" width="900" height="14" fill="#161b22"/>
+  <circle cx="18" cy="17" r="5" fill="#ff5f57"/>
+  <circle cx="36" cy="17" r="5" fill="#febc2e"/>
+  <circle cx="54" cy="17" r="5" fill="#28c840"/>
+  <text x="450" y="22" text-anchor="middle" fill="#8b949e" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace">status</text>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace" font-size="14" xml:space="preserve">
+    <text x="24" y="56"  fill="#7ee787">$ cihub status local</text>
+    <text x="24" y="76"  fill="#30363d">┌─ Hub status  [local] ───────────────────────────────────────────────────────────────┐</text>
+    <text x="24" y="96"  fill="#484f58">  Containers</text>
+    <text x="24" y="116" fill="#e6edf3">  <tspan fill="#3fb950">●</tspan> ci-hub-backend    <tspan fill="#484f58">Up 3 hours</tspan>   0.0.0.0:3000-&gt;3000/tcp</text>
+    <text x="24" y="136" fill="#e6edf3">  <tspan fill="#3fb950">●</tspan> ci-hub-frontend   <tspan fill="#484f58">Up 3 hours</tspan>   0.0.0.0:5002-&gt;5002/tcp</text>
+    <text x="24" y="156" fill="#e6edf3">  <tspan fill="#3fb950">●</tspan> ci-hub-db         <tspan fill="#484f58">Up 3 hours</tspan></text>
+    <text x="24" y="176" fill="#e6edf3">  <tspan fill="#3fb950">●</tspan> ci-hub-ollama     <tspan fill="#484f58">Up 3 hours</tspan>   0.0.0.0:11434-&gt;11434/tcp</text>
+    <text x="24" y="196" fill="#e6edf3">  <tspan fill="#f85149">✗</tspan> ci-os-hub-queue   <tspan fill="#484f58">Exited (1) 2 minutes ago</tspan></text>
+    <text x="24" y="216" fill="#484f58">  Network</text>
+    <text x="24" y="236" fill="#e6edf3">  Dashboard      <tspan fill="#58a6ff">http://localhost:5002</tspan></text>
+    <text x="24" y="256" fill="#e6edf3">  Cloudflare     <tspan fill="#3fb950">● active</tspan>  <tspan fill="#58a6ff">https://my-hub.trycloudflare.com</tspan></text>
+    <text x="24" y="276" fill="#e6edf3">  Tailscale VPN  <tspan fill="#3fb950">● active</tspan>  <tspan fill="#58a6ff">100.64.0.3</tspan></text>
+    <text x="24" y="296" fill="#484f58">  Models (Ollama)</text>
+    <text x="24" y="316" fill="#484f58">  NAME                   ID              SIZE    MODIFIED</text>
+    <text x="24" y="336" fill="#484f58">  llama3:latest          365c0bd3c000    4.7 GB  2 days ago</text>
+    <text x="24" y="356" fill="#484f58">  mistral:latest         61e88e884507    4.1 GB  5 days ago</text>
+    <text x="24" y="376" fill="#30363d">└────────────────────────────────────────────────────────────────────────────────────────┘</text>
+  </g>
+</svg>

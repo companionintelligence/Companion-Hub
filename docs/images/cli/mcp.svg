@@ -1,14 +1,33 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="673" height="782" viewBox="0 0 673 782" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="620" viewBox="0 0 900 620" role="img" aria-labelledby="title desc">
   <title id="title">CI-Hub CLI screenshot</title>
-  <desc id="desc">Terminal capture for mcp</desc>
-  <rect width="673" height="782" rx="14" fill="#0d1117"/>
-  <rect x="0" y="0" width="673" height="34" rx="14" fill="#161b22"/>
-  <rect x="0" y="20" width="673" height="14" fill="#161b22"/>
+  <desc id="desc">Terminal captures for cihub mcp setup, config, and shutdown</desc>
+  <rect width="900" height="620" rx="14" fill="#0d1117"/>
+  <rect x="0" y="0" width="900" height="34" rx="14" fill="#161b22"/>
+  <rect x="0" y="20" width="900" height="14" fill="#161b22"/>
   <circle cx="18" cy="17" r="5" fill="#ff5f57"/>
   <circle cx="36" cy="17" r="5" fill="#febc2e"/>
   <circle cx="54" cy="17" r="5" fill="#28c840"/>
-  <text x="336.5" y="22" text-anchor="middle" fill="#8b949e" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace">mcp</text>
-  <g font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace" font-size="16" xml:space="preserve">
-    <text x="24" y="56" fill="#e6edf3">$ cihub mcp setup local</text><text x="24" y="78" fill="#e6edf3">┌─ MCP enabled─────────────────────────────────────────────────────┐</text><text x="24" y="100" fill="#e6edf3">│ environment      local                                          │</text><text x="24" y="122" fill="#e6edf3">│ env file         .env.local                                     │</text><text x="24" y="144" fill="#e6edf3">│ root folder      /tmp/cihub-doc-captures/workdir/.internal-demo │</text><text x="24" y="166" fill="#e6edf3">│ cloud url        https://hub.companionintelligence.com          │</text><text x="24" y="188" fill="#e6edf3">│ compose profiles private-vpn                                    │</text><text x="24" y="210" fill="#e6edf3">│ mcp enabled      true                                           │</text><text x="24" y="232" fill="#e6edf3">│ mcp api key      &lt;set&gt;                                          │</text><text x="24" y="254" fill="#e6edf3">└──────────────────────────────────────────────────────────────────┘</text><text x="24" y="276" fill="#e6edf3"></text><text x="24" y="298" fill="#e6edf3">$ cihub mcp config local</text><text x="24" y="320" fill="#e6edf3">┌─ CI-Hub configuration────────────────────────────────────────────┐</text><text x="24" y="342" fill="#e6edf3">│ environment      local                                          │</text><text x="24" y="364" fill="#e6edf3">│ env file         .env.local                                     │</text><text x="24" y="386" fill="#e6edf3">│ root folder      /tmp/cihub-doc-captures/workdir/.internal-demo │</text><text x="24" y="408" fill="#e6edf3">│ cloud url        https://hub.companionintelligence.com          │</text><text x="24" y="430" fill="#e6edf3">│ compose profiles private-vpn                                    │</text><text x="24" y="452" fill="#e6edf3">│ mcp enabled      true                                           │</text><text x="24" y="474" fill="#e6edf3">│ mcp api key      &lt;set&gt;                                          │</text><text x="24" y="496" fill="#e6edf3">└──────────────────────────────────────────────────────────────────┘</text><text x="24" y="518" fill="#e6edf3"></text><text x="24" y="540" fill="#e6edf3">$ cihub mcp shutdown local</text><text x="24" y="562" fill="#e6edf3">┌─ MCP disabled────────────────────────────────────────────────────┐</text><text x="24" y="584" fill="#e6edf3">│ environment      local                                          │</text><text x="24" y="606" fill="#e6edf3">│ env file         .env.local                                     │</text><text x="24" y="628" fill="#e6edf3">│ root folder      /tmp/cihub-doc-captures/workdir/.internal-demo │</text><text x="24" y="650" fill="#e6edf3">│ cloud url        https://hub.companionintelligence.com          │</text><text x="24" y="672" fill="#e6edf3">│ compose profiles private-vpn                                    │</text><text x="24" y="694" fill="#e6edf3">│ mcp enabled      false                                          │</text><text x="24" y="716" fill="#e6edf3">│ mcp api key      &lt;set&gt;                                          │</text><text x="24" y="738" fill="#e6edf3">└──────────────────────────────────────────────────────────────────┘</text>
+  <text x="450" y="22" text-anchor="middle" fill="#8b949e" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace">mcp</text>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace" font-size="14" xml:space="preserve">
+    <text x="24" y="56"  fill="#7ee787">$ cihub mcp setup local</text>
+    <text x="24" y="76"  fill="#3fb950">┌─ MCP enabled ───────────────────────────────────────────────────────────────────────┐</text>
+    <text x="24" y="96"  fill="#e6edf3">  environment      local</text>
+    <text x="24" y="116" fill="#e6edf3">  mcp enabled      true</text>
+    <text x="24" y="136" fill="#e6edf3">  mcp api key      &lt;set&gt;</text>
+    <text x="24" y="156" fill="#3fb950">└─────────────────────────────────────────────────────────────────────────────────────┘</text>
+    <text x="24" y="196" fill="#7ee787">$ cihub mcp config local</text>
+    <text x="24" y="216" fill="#30363d">┌─ CI-Hub configuration ──────────────────────────────────────────────────────────────┐</text>
+    <text x="24" y="236" fill="#e6edf3">  environment      local</text>
+    <text x="24" y="256" fill="#e6edf3">  cloud url        https://hub.companionintelligence.com</text>
+    <text x="24" y="276" fill="#e6edf3">  compose profiles private-vpn</text>
+    <text x="24" y="296" fill="#e6edf3">  mcp enabled      true</text>
+    <text x="24" y="316" fill="#e6edf3">  mcp api key      &lt;set&gt;</text>
+    <text x="24" y="336" fill="#30363d">└─────────────────────────────────────────────────────────────────────────────────────┘</text>
+    <text x="24" y="376" fill="#7ee787">$ cihub mcp shutdown local</text>
+    <text x="24" y="396" fill="#b08800">┌─ MCP disabled ──────────────────────────────────────────────────────────────────────┐</text>
+    <text x="24" y="416" fill="#e6edf3">  environment      local</text>
+    <text x="24" y="436" fill="#e6edf3">  mcp enabled      false</text>
+    <text x="24" y="456" fill="#e6edf3">  mcp api key      &lt;set&gt;</text>
+    <text x="24" y="476" fill="#b08800">└─────────────────────────────────────────────────────────────────────────────────────┘</text>
   </g>
 </svg>

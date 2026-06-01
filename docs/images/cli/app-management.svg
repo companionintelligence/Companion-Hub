@@ -1,14 +1,42 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="747" height="1112" viewBox="0 0 747 1112" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="720" viewBox="0 0 900 720" role="img" aria-labelledby="title desc">
   <title id="title">CI-Hub CLI screenshot</title>
-  <desc id="desc">Terminal capture for app-management</desc>
-  <rect width="747" height="1112" rx="14" fill="#0d1117"/>
-  <rect x="0" y="0" width="747" height="34" rx="14" fill="#161b22"/>
-  <rect x="0" y="20" width="747" height="14" fill="#161b22"/>
+  <desc id="desc">Terminal captures for cihub app add, edit, start, stop, restart, delete</desc>
+  <rect width="900" height="720" rx="14" fill="#0d1117"/>
+  <rect x="0" y="0" width="900" height="34" rx="14" fill="#161b22"/>
+  <rect x="0" y="20" width="900" height="14" fill="#161b22"/>
   <circle cx="18" cy="17" r="5" fill="#ff5f57"/>
   <circle cx="36" cy="17" r="5" fill="#febc2e"/>
   <circle cx="54" cy="17" r="5" fill="#28c840"/>
-  <text x="373.5" y="22" text-anchor="middle" fill="#8b949e" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace">app-management</text>
-  <g font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace" font-size="16" xml:space="preserve">
-    <text x="24" y="56" fill="#e6edf3">$ cihub app add demo-app nginx:alpine --port 8080:80 --env MODE=demo</text><text x="24" y="78" fill="#e6edf3">┌─ Adding container app─┐</text><text x="24" y="100" fill="#e6edf3">│ Name: demo-app       │</text><text x="24" y="122" fill="#e6edf3">│ Image: nginx:alpine  │</text><text x="24" y="144" fill="#e6edf3">│ Ports: 8080:80       │</text><text x="24" y="166" fill="#e6edf3">│ Env: MODE=demo       │</text><text x="24" y="188" fill="#e6edf3">└───────────────────────┘</text><text x="24" y="210" fill="#e6edf3">▶ docker run -d --name demo-app -p 8080:80 -e MODE=demo nginx:alpine</text><text x="24" y="232" fill="#e6edf3">c0ffee-demo-container</text><text x="24" y="254" fill="#e6edf3"></text><text x="24" y="276" fill="#e6edf3">$ cihub app edit demo-app nginx:stable-alpine --port 8080:80 --env MODE=prod</text><text x="24" y="298" fill="#e6edf3">┌─ Editing container app──────┐</text><text x="24" y="320" fill="#e6edf3">│ Name: demo-app             │</text><text x="24" y="342" fill="#e6edf3">│ Image: nginx:stable-alpine │</text><text x="24" y="364" fill="#e6edf3">│ Ports: 8080:80             │</text><text x="24" y="386" fill="#e6edf3">│ Env: MODE=prod             │</text><text x="24" y="408" fill="#e6edf3">└─────────────────────────────┘</text><text x="24" y="430" fill="#e6edf3">▶ docker run -d --name demo-app -p 8080:80 -e MODE=prod nginx:stable-alpine</text><text x="24" y="452" fill="#e6edf3">c0ffee-demo-container</text><text x="24" y="474" fill="#e6edf3"></text><text x="24" y="496" fill="#e6edf3">$ cihub app start demo-app</text><text x="24" y="518" fill="#e6edf3">┌─ Container app lifecycle─┐</text><text x="24" y="540" fill="#e6edf3">│ start demo-app          │</text><text x="24" y="562" fill="#e6edf3">└──────────────────────────┘</text><text x="24" y="584" fill="#e6edf3">▶ docker start demo-app</text><text x="24" y="606" fill="#e6edf3">start: demo-app</text><text x="24" y="628" fill="#e6edf3"></text><text x="24" y="650" fill="#e6edf3">$ cihub app stop demo-app</text><text x="24" y="672" fill="#e6edf3">┌─ Container app lifecycle─┐</text><text x="24" y="694" fill="#e6edf3">│ stop demo-app           │</text><text x="24" y="716" fill="#e6edf3">└──────────────────────────┘</text><text x="24" y="738" fill="#e6edf3">▶ docker stop demo-app</text><text x="24" y="760" fill="#e6edf3">stop: demo-app</text><text x="24" y="782" fill="#e6edf3"></text><text x="24" y="804" fill="#e6edf3">$ cihub app restart demo-app</text><text x="24" y="826" fill="#e6edf3">┌─ Container app lifecycle─┐</text><text x="24" y="848" fill="#e6edf3">│ restart demo-app        │</text><text x="24" y="870" fill="#e6edf3">└──────────────────────────┘</text><text x="24" y="892" fill="#e6edf3">▶ docker restart demo-app</text><text x="24" y="914" fill="#e6edf3">restart: demo-app</text><text x="24" y="936" fill="#e6edf3"></text><text x="24" y="958" fill="#e6edf3">$ cihub app delete demo-app</text><text x="24" y="980" fill="#e6edf3">┌─ Container app lifecycle─┐</text><text x="24" y="1002" fill="#e6edf3">│ delete demo-app         │</text><text x="24" y="1024" fill="#e6edf3">└──────────────────────────┘</text><text x="24" y="1046" fill="#e6edf3">▶ docker rm -f demo-app</text><text x="24" y="1068" fill="#e6edf3">removed: demo-app</text>
+  <text x="450" y="22" text-anchor="middle" fill="#8b949e" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace">app-management</text>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace" font-size="14" xml:space="preserve">
+    <text x="24" y="56"  fill="#7ee787">$ cihub app add demo-app nginx:alpine --port 8080:80 --env MODE=demo</text>
+    <text x="24" y="76"  fill="#3fb950">┌─ Adding container app ─────────────────────────────────────────────────────────────┐</text>
+    <text x="24" y="96"  fill="#e6edf3">  name   demo-app</text>
+    <text x="24" y="116" fill="#e6edf3">  image  nginx:alpine</text>
+    <text x="24" y="136" fill="#e6edf3">  ports  8080:80</text>
+    <text x="24" y="156" fill="#e6edf3">  env    MODE=demo</text>
+    <text x="24" y="176" fill="#3fb950">└────────────────────────────────────────────────────────────────────────────────────────┘</text>
+    <text x="24" y="196" fill="#484f58">  ▶ docker run -d --name demo-app -p 8080:80 -e MODE=demo nginx:alpine</text>
+    <text x="24" y="216" fill="#e6edf3">c0ffee1234567890</text>
+    <text x="24" y="256" fill="#7ee787">$ cihub app inspect demo-app</text>
+    <text x="24" y="276" fill="#30363d">┌─ Inspect: demo-app ─────────────────────────────────────────────────────────────────┐</text>
+    <text x="24" y="296" fill="#e6edf3">  image   nginx:alpine</text>
+    <text x="24" y="316" fill="#e6edf3">  status  <tspan fill="#3fb950">Up 30 seconds</tspan></text>
+    <text x="24" y="336" fill="#e6edf3">  ports   8080 → 80/tcp</text>
+    <text x="24" y="356" fill="#e6edf3">  env     MODE=demo</text>
+    <text x="24" y="376" fill="#30363d">└────────────────────────────────────────────────────────────────────────────────────────┘</text>
+    <text x="24" y="416" fill="#7ee787">$ cihub app logs demo-app --tail 5</text>
+    <text x="24" y="436" fill="#30363d">┌─ Container logs ────────────────────────────────────────────────────────────────────┐</text>
+    <text x="24" y="456" fill="#e6edf3">  Container: demo-app</text>
+    <text x="24" y="476" fill="#e6edf3">  Tail: 5 lines</text>
+    <text x="24" y="496" fill="#30363d">└────────────────────────────────────────────────────────────────────────────────────────┘</text>
+    <text x="24" y="516" fill="#484f58">  ▶ docker logs --tail 5 --timestamps demo-app</text>
+    <text x="24" y="536" fill="#e6edf3">2026-05-31T22:00:00Z nginx: worker process is running...</text>
+    <text x="24" y="576" fill="#7ee787">$ cihub app delete demo-app</text>
+    <text x="24" y="596" fill="#b08800">┌─ Container app lifecycle ───────────────────────────────────────────────────────────┐</text>
+    <text x="24" y="616" fill="#e6edf3">  Removing container: demo-app</text>
+    <text x="24" y="636" fill="#b08800">└────────────────────────────────────────────────────────────────────────────────────────┘</text>
+    <text x="24" y="656" fill="#484f58">  ▶ docker rm -f demo-app</text>
+    <text x="24" y="676" fill="#e6edf3">demo-app</text>
   </g>
 </svg>

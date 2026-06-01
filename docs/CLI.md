@@ -121,7 +121,9 @@ cihub config [env]             # show resolved config values only
 ```
 
 - `--detached` runs the stack in the background (equivalent to `docker compose up -d`).
-- `status` queries the `ci-hub` compose project and color-codes each container: **green** = running, **red** = exited.
+- `status` shows three sections: **Containers** (color-coded ●/✗), **Network** (local URL, Cloudflare tunnel URL from `CF_DOMAIN`/`DOMAIN`, Tailscale VPN IP), and **Models** (installed Ollama models).
+
+![Screenshot of cihub status local](./images/cli/status.svg)
 
 ![Screenshots of cihub config, cihub up, and cihub shutdown](./images/cli/lifecycle.svg)
 
@@ -153,7 +155,9 @@ demo-webui     Exited (1) 2 minutes ago
 
 `app inspect` parses `docker inspect` JSON and prints a structured summary of image, status, ports, environment variables, and volume mounts.
 
-![Screenshot of cihub app list](./images/cli/app-list.svg)
+![Screenshot of cihub models list and models install](./images/cli/models.svg)
+
+![Screenshot of cihub app list and app status](./images/cli/app-list.svg)
 
 ![Screenshots of cihub app add/edit/start/stop/restart/delete](./images/cli/app-management.svg)
 

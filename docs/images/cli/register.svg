@@ -1,14 +1,19 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="857" height="210" viewBox="0 0 857 210" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="200" viewBox="0 0 900 200" role="img" aria-labelledby="title desc">
   <title id="title">CI-Hub CLI screenshot</title>
-  <desc id="desc">Terminal capture for register</desc>
-  <rect width="857" height="210" rx="14" fill="#0d1117"/>
-  <rect x="0" y="0" width="857" height="34" rx="14" fill="#161b22"/>
-  <rect x="0" y="20" width="857" height="14" fill="#161b22"/>
+  <desc id="desc">Terminal capture for cihub register local</desc>
+  <rect width="900" height="200" rx="14" fill="#0d1117"/>
+  <rect x="0" y="0" width="900" height="34" rx="14" fill="#161b22"/>
+  <rect x="0" y="20" width="900" height="14" fill="#161b22"/>
   <circle cx="18" cy="17" r="5" fill="#ff5f57"/>
   <circle cx="36" cy="17" r="5" fill="#febc2e"/>
   <circle cx="54" cy="17" r="5" fill="#28c840"/>
-  <text x="428.5" y="22" text-anchor="middle" fill="#8b949e" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace">register</text>
-  <g font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace" font-size="16" xml:space="preserve">
-    <text x="24" y="56" fill="#e6edf3">$ cihub register local</text><text x="24" y="78" fill="#e6edf3">┌─ Device registration─────────────────────────────────────────────────────────────────┐</text><text x="24" y="100" fill="#e6edf3">│ device id  demo-device-1234                                                         │</text><text x="24" y="122" fill="#e6edf3">│ portal     https://hub.companionintelligence.com/register?deviceId=demo-device-1234 │</text><text x="24" y="144" fill="#e6edf3">│ Open the URL, finish cloud pairing, then return to cihub wizard.                    │</text><text x="24" y="166" fill="#e6edf3">└──────────────────────────────────────────────────────────────────────────────────────┘</text>
+  <text x="450" y="22" text-anchor="middle" fill="#8b949e" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace">register</text>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace" font-size="14" xml:space="preserve">
+    <text x="24" y="56"  fill="#7ee787">$ cihub register local</text>
+    <text x="24" y="76"  fill="#3fb950">┌─ Device registration ──────────────────────────────────────────────────────────────────┐</text>
+    <text x="24" y="96"  fill="#e6edf3">  device id  a1b2c3d4-e5f6-7890-abcd-ef1234567890</text>
+    <text x="24" y="116" fill="#e6edf3">  portal     https://hub.companionintelligence.com/register?deviceId=a1b2c3d4...</text>
+    <text x="24" y="136" fill="#e6edf3">  Open the URL above to pair this device, then run: cihub up local</text>
+    <text x="24" y="156" fill="#3fb950">└────────────────────────────────────────────────────────────────────────────────────────┘</text>
   </g>
 </svg>

@@ -1,13 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="380" viewBox="0 0 1040 380" role="img" aria-labelledby="title desc">
-  <title id="title">CLI banner preview from cihub wizard</title>
-  <desc id="desc">Zoomed terminal capture showing the Companion Intelligence ASCII art banner.</desc>
-  <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#0d1117"/>
-      <stop offset="100%" stop-color="#111827"/>
-    </linearGradient>
-  </defs>
-  <rect width="1040" height="380" rx="18" fill="url(#bg)"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="400" viewBox="0 0 1040 400" role="img" aria-labelledby="title desc">
+  <title id="title">CLI banner preview — cihub wizard</title>
+  <desc id="desc">Zoomed terminal capture showing the Companion Intelligence block ASCII art banner.</desc>
+  <defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#0d1117"/><stop offset="100%" stop-color="#111827"/></linearGradient></defs>
+  <rect width="1040" height="400" rx="18" fill="url(#bg)"/>
   <rect x="0" y="0" width="1040" height="40" rx="18" fill="#161b22"/>
   <rect x="0" y="22" width="1040" height="18" fill="#161b22"/>
   <circle cx="22" cy="20" r="6" fill="#ff5f57"/>
@@ -15,16 +10,18 @@
   <circle cx="62" cy="20" r="6" fill="#28c840"/>
   <text x="520" y="25" text-anchor="middle" fill="#8b949e" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace">banner-wizard</text>
   <g font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace" xml:space="preserve">
-    <text x="32" y="72"  fill="#7ee787" font-size="16">$ cihub wizard</text>
-    <text x="32" y="100" fill="#3fb950" font-size="18"> __   __         __               __                 </text>
-    <text x="32" y="124" fill="#3fb950" font-size="18">/  ` /  \  |\/| |__)  /\  |\ | | /  \ |\ |           </text>
-    <text x="32" y="148" fill="#3fb950" font-size="18">\__, \__/  |  | |    /~~\ | \| | \__/ | \|           </text>
-    <text x="32" y="172" fill="#0d1117"  font-size="18">                                                     </text>
-    <text x="32" y="196" fill="#3fb950" font-size="18">       ___  ___              __   ___       __   ___ </text>
-    <text x="32" y="220" fill="#3fb950" font-size="18">| |\ |  |  |__  |    |    | / _` |__  |\ | /  ` |__  </text>
-    <text x="32" y="244" fill="#3fb950" font-size="18">| | \|  |  |___ |___ |___ | \__&gt; |___ | \| \__, |___</text>
-    <text x="32" y="278" fill="#484f58" font-size="15">Companion Intelligence Hub  ·  companionintelligence.com</text>
-    <text x="32" y="314" fill="#e6edf3" font-size="15">The banner appears before every wizard prompt.</text>
-    <text x="32" y="348" fill="#8b949e" font-size="13">Setup Wizard  ·  FTUE first-run detection  ·  step tracker  ·  action menu</text>
+    <text x="32" y="70"  fill="#7ee787" font-size="15">$ cihub wizard</text>
+    <text x="32" y="96"  fill="#3fb950" font-size="17"> ▗▄▄▖ ▗▄▖ ▗▖  ▗▖▗▄▄▖  ▗▄▖ ▗▖  ▗▖▗▄▄▄▖ ▗▄▖ ▗▖  ▗▖              </text>
+    <text x="32" y="118" fill="#3fb950" font-size="17">▐▌   ▐▌ ▐▌▐▛▚▞▜▌▐▌ ▐▌▐▌ ▐▌▐▛▚▖▐▌  █  ▐▌ ▐▌▐▛▚▖▐▌              </text>
+    <text x="32" y="140" fill="#3fb950" font-size="17">▐▌   ▐▌ ▐▌▐▌  ▐▌▐▛▀▘ ▐▛▀▜▌▐▌ ▝▜▌  █  ▐▌ ▐▌▐▌ ▝▜▌              </text>
+    <text x="32" y="162" fill="#3fb950" font-size="17">▝▚▄▄▖▝▚▄▞▘▐▌  ▐▌▐▌   ▐▌ ▐▌▐▌  ▐▌▗▄█▄▖▝▚▄▞▘▐▌  ▐▌              </text>
+    <text x="32" y="184" fill="#3fb950" font-size="17">                                                              </text>
+    <text x="32" y="206" fill="#3fb950" font-size="17">▗▄▄▄▖▗▖  ▗▖▗▄▄▄▖▗▄▄▄▖▗▖   ▗▖   ▗▄▄▄▖ ▗▄▄▖▗▄▄▄▖▗▖  ▗▖ ▗▄▄▖▗▄▄▄▖</text>
+    <text x="32" y="228" fill="#3fb950" font-size="17">  █  ▐▛▚▖▐▌  █  ▐▌   ▐▌   ▐▌     █  ▐▌   ▐▌   ▐▛▚▖▐▌▐▌   ▐▌  </text>
+    <text x="32" y="250" fill="#3fb950" font-size="17">  █  ▐▌ ▝▜▌  █  ▐▛▀▀▘▐▌   ▐▌     █  ▐▌▝▜▌▐▛▀▀▘▐▌ ▝▜▌▐▌   ▐▛▀▀▘</text>
+    <text x="32" y="272" fill="#3fb950" font-size="17">▗▄█▄▖▐▌  ▐▌  █  ▐▙▄▄▖▐▙▄▄▖▐▙▄▄▖▗▄█▄▖▝▚▄▞▘▐▙▄▄▖▐▌  ▐▌▝▚▄▄▖▐▙▄▄▖</text>
+    <text x="32" y="300" fill="#484f58" font-size="14">Companion Intelligence Hub  ·  companionintelligence.com</text>
+    <text x="32" y="336" fill="#e6edf3" font-size="14">The banner appears before every wizard prompt.</text>
+    <text x="32" y="368" fill="#8b949e" font-size="12">6-step FTUE  ·  prerequisites  ·  setup  ·  register  ·  start  ·  model install</text>
   </g>
 </svg>
