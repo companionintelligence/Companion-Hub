@@ -34,9 +34,9 @@ export const NavBar: React.FC<IProps> = ({ isUpdateAvailable: _isUpdateAvailable
     <div id="navbar-menu" className="collapse navbar-collapse">
       <div className="flex flex-col md:flex-row flex-1 items-stretch md:items-center">
         <ul className="navbar-nav gap-1">
-          {renderItem(t('HEADER_DASHBOARD'), 'dashboard', Home)}
+          {renderItem(t('HEADER_DASHBOARD'), 'home', Home)}
           {renderItem(t('HEADER_APPS'), 'apps', LayoutGrid)}
-          {renderItem(t('HEADER_APP_STORE'), 'app-store', ShoppingBag)}
+          {renderItem(t('HEADER_APP_STORE'), 'store', ShoppingBag)}
           {renderItem(t('HEADER_SETTINGS'), 'settings', Settings)}
         </ul>
       </div>

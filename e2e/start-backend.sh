@@ -16,6 +16,20 @@ mkdir -p "$DATA_DIR"/{state,logs,apps,app-data,repos,backups,user-config,media}
 mkdir -p "$DATA_DIR/state/traefik"/{config,dynamic,tls}
 touch "$DATA_DIR/state/traefik/acme_storage.json"
 
+# Link CI-Marketplace so app-store tests find apps in E2E
+# The backend resolves apps at $DATA_DIR/repos/<store-slug>/apps/
+MARKETPLACE_SRC="${CI_MARKETPLACE_DIR:-$(pwd)/../CI-Marketplace}"
+MARKETPLACE_LINK="$DATA_DIR/repos/ci-marketplace"
+mkdir -p "$MARKETPLACE_LINK"
+rm -rf "$MARKETPLACE_LINK/apps"          # Remove any stale dir or nested symlink
+if [ -d "$MARKETPLACE_SRC/apps" ]; then
+  ln -s "$(realpath "$MARKETPLACE_SRC/apps")" "$MARKETPLACE_LINK/apps"
+  echo "CI-Marketplace: linked $(ls "$MARKETPLACE_LINK/apps" | wc -l | tr -d ' ') apps from $MARKETPLACE_SRC"
+else
+  mkdir -p "$MARKETPLACE_LINK/apps"
+  echo "Warning: CI-Marketplace not found at $MARKETPLACE_SRC — app store will be empty"
+fi
+
 # Create dummy tunnel token so isRegistered() returns true in E2E
 # Without this, the frontend gates all pages behind device-registration
 mkdir -p "$TUNNEL_DIR"

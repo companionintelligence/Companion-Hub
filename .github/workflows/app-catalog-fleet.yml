@@ -8,12 +8,12 @@ on:
         default: 'full'
         type: choice
         options:
-          - full        # All 602 apps across 7 servers
+          - full        # All apps across 10 servers
           - high-priority  # Only high priority apps
           - single-batch   # Single batch on single server
           - quick       # Quick smoke test (10 apps)
       batch:
-        description: 'Batch number (0-6) for single-batch mode'
+        description: 'Batch number (0-9) for single-batch mode'
         required: false
         default: '0'
       server:
@@ -24,22 +24,28 @@ on:
         options:
           - core-1
           - core-2
-          - core-3
-          - core-4
           - core-5
           - core-6
-          - core-7
+          - core-8
+          - core-9
+          - core-10
+          - core-13
+          - beta-1
+          - beta-red
 
 env:
   # Fleet server Tailscale IPs — stored as GitHub Actions secrets (not hardcoded).
-  # Add FLEET_CORE_1_IP … FLEET_CORE_7_IP under Settings → Secrets and variables → Actions.
+  # Add FLEET_<NAME>_IP under Settings → Secrets and variables → Actions.
   CORE_1_IP: ${{ secrets.FLEET_CORE_1_IP }}
   CORE_2_IP: ${{ secrets.FLEET_CORE_2_IP }}
-  CORE_3_IP: ${{ secrets.FLEET_CORE_3_IP }}
-  CORE_4_IP: ${{ secrets.FLEET_CORE_4_IP }}
   CORE_5_IP: ${{ secrets.FLEET_CORE_5_IP }}
   CORE_6_IP: ${{ secrets.FLEET_CORE_6_IP }}
-  CORE_7_IP: ${{ secrets.FLEET_CORE_7_IP }}
+  CORE_8_IP: ${{ secrets.FLEET_CORE_8_IP }}
+  CORE_9_IP: ${{ secrets.FLEET_CORE_9_IP }}
+  CORE_10_IP: ${{ secrets.FLEET_CORE_10_IP }}
+  CORE_13_IP: ${{ secrets.FLEET_CORE_13_IP }}
+  BETA_1_IP: ${{ secrets.FLEET_BETA_1_IP }}
+  BETA_RED_IP: ${{ secrets.FLEET_BETA_RED_IP }}
   SSH_USER: ${{ secrets.FLEET_SSH_USER }}
 
 jobs:
@@ -57,24 +63,27 @@ jobs:
           MODE="${{ github.event.inputs.mode || 'full' }}"
           
           if [[ "$MODE" == "full" ]] || [[ "$MODE" == "" ]]; then
-            # Full fleet - all 7 servers (IPs injected from env vars sourced from secrets)
+            # Full fleet - all 10 online servers (IPs injected from env vars sourced from secrets)
             echo "matrix={\"include\":[
               {\"server\":\"core-1\",\"ip\":\"$CORE_1_IP\",\"batch\":0},
               {\"server\":\"core-2\",\"ip\":\"$CORE_2_IP\",\"batch\":1},
-              {\"server\":\"core-3\",\"ip\":\"$CORE_3_IP\",\"batch\":2},
-              {\"server\":\"core-4\",\"ip\":\"$CORE_4_IP\",\"batch\":3},
-              {\"server\":\"core-5\",\"ip\":\"$CORE_5_IP\",\"batch\":4},
-              {\"server\":\"core-6\",\"ip\":\"$CORE_6_IP\",\"batch\":5},
-              {\"server\":\"core-7\",\"ip\":\"$CORE_7_IP\",\"batch\":6}
+              {\"server\":\"core-5\",\"ip\":\"$CORE_5_IP\",\"batch\":2},
+              {\"server\":\"core-6\",\"ip\":\"$CORE_6_IP\",\"batch\":3},
+              {\"server\":\"core-8\",\"ip\":\"$CORE_8_IP\",\"batch\":4},
+              {\"server\":\"core-9\",\"ip\":\"$CORE_9_IP\",\"batch\":5},
+              {\"server\":\"core-10\",\"ip\":\"$CORE_10_IP\",\"batch\":6},
+              {\"server\":\"core-13\",\"ip\":\"$CORE_13_IP\",\"batch\":7},
+              {\"server\":\"beta-1\",\"ip\":\"$BETA_1_IP\",\"batch\":8},
+              {\"server\":\"beta-red\",\"ip\":\"$BETA_RED_IP\",\"batch\":9}
             ]}" >> $GITHUB_OUTPUT
-            echo "total_apps=602" >> $GITHUB_OUTPUT
+            echo "total_apps=126" >> $GITHUB_OUTPUT
             
           elif [[ "$MODE" == "high-priority" ]]; then
-            # High priority apps only (12 apps, single server)
+            # High priority apps only (9 apps, single server)
             echo "matrix={\"include\":[
               {\"server\":\"core-1\",\"ip\":\"$CORE_1_IP\",\"batch\":\"high\"}
             ]}" >> $GITHUB_OUTPUT
-            echo "total_apps=12" >> $GITHUB_OUTPUT
+            echo "total_apps=9" >> $GITHUB_OUTPUT
             
           elif [[ "$MODE" == "single-batch" ]]; then
             SERVER="${{ github.event.inputs.server || 'core-1' }}"
@@ -82,17 +91,20 @@ jobs:
             
             # Map server to IP via env vars (values come from secrets)
             case $SERVER in
-              core-1) IP="$CORE_1_IP" ;;
-              core-2) IP="$CORE_2_IP" ;;
-              core-3) IP="$CORE_3_IP" ;;
-              core-4) IP="$CORE_4_IP" ;;
-              core-5) IP="$CORE_5_IP" ;;
-              core-6) IP="$CORE_6_IP" ;;
-              core-7) IP="$CORE_7_IP" ;;
+              core-1)  IP="$CORE_1_IP" ;;
+              core-2)  IP="$CORE_2_IP" ;;
+              core-5)  IP="$CORE_5_IP" ;;
+              core-6)     IP="$CORE_6_IP" ;;
+              core-8)     IP="$CORE_8_IP" ;;
+              core-9)     IP="$CORE_9_IP" ;;
+              core-10)    IP="$CORE_10_IP" ;;
+              core-13)    IP="$CORE_13_IP" ;;
+              beta-1)     IP="$BETA_1_IP" ;;
+              beta-red)   IP="$BETA_RED_IP" ;;
             esac
             
             echo "matrix={\"include\":[{\"server\":\"$SERVER\",\"ip\":\"$IP\",\"batch\":$BATCH}]}" >> $GITHUB_OUTPUT
-            echo "total_apps=86" >> $GITHUB_OUTPUT
+            echo "total_apps=13" >> $GITHUB_OUTPUT
             
           elif [[ "$MODE" == "quick" ]]; then
             # Quick smoke test - 10 essential apps on one server
@@ -109,7 +121,7 @@ jobs:
     timeout-minutes: 180  # 3 hours max per server
     strategy:
       fail-fast: false
-      max-parallel: 7
+      max-parallel: 10
       matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
     
     steps:
@@ -131,10 +143,11 @@ jobs:
       - name: Prepare test environment
         run: |
           ssh -o StrictHostKeyChecking=no ${{ env.SSH_USER }}@${{ matrix.ip }} << 'ENDSSH'
-            # Update code
-            cd ~/devel/CI-OS-Hub
-            git fetch origin dev
-            git reset --hard origin/dev
+            # Update code to the workflow ref under test, not always dev.
+            cd ~/devel/CI-Hub
+            git fetch --quiet origin "${{ github.ref_name }}"
+            git checkout --detach "${{ github.sha }}"
+            git rev-parse --short HEAD
             
             # Install dependencies
             pnpm install --frozen-lockfile 2>/dev/null || pnpm install
@@ -145,7 +158,7 @@ jobs:
             # Check Docker
             docker info > /dev/null 2>&1 || echo "Warning: Docker not accessible"
             
-            # Check CI-OS-Hub service
+            # Check CI-Hub service
             systemctl --user status ci-hub 2>/dev/null || echo "Hub service not found"
           ENDSSH
 
@@ -155,13 +168,14 @@ jobs:
           BATCH="${{ matrix.batch }}"
           
           ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=60 ${{ env.SSH_USER }}@${{ matrix.ip }} << ENDSSH
-            cd ~/devel/CI-OS-Hub
+            cd ~/devel/CI-Hub
             
             # Set environment
             export BATCH=$BATCH
             export TEST_DOMAIN=test.ci.computer
             export E2E_TEST_EMAIL=e2e-test@ci.computer
             export E2E_TEST_PASSWORD="${{ secrets.E2E_TEST_PASSWORD }}"
+            mkdir -p e2e/results
             
             # Determine test file
             if [[ "$BATCH" == "high" ]]; then
@@ -178,6 +192,7 @@ jobs:
             echo "Server: ${{ matrix.server }}"
             
             # Run Playwright tests with extended timeout
+            export PLAYWRIGHT_JSON_OUTPUT_NAME=e2e/results/catalog-batch-${BATCH}.json
             pnpm exec playwright test \$TEST_FILE \
               --timeout=300000 \
               --reporter=json,html \
@@ -201,17 +216,22 @@ jobs:
           
           # Copy test results
           scp -o StrictHostKeyChecking=no -r \
-            ${{ env.SSH_USER }}@${{ matrix.ip }}:~/devel/CI-OS-Hub/test-results-batch-${BATCH} \
+            ${{ env.SSH_USER }}@${{ matrix.ip }}:~/devel/CI-Hub/test-results-batch-${BATCH} \
             results-${{ matrix.server }}/ 2>/dev/null || true
+
+          # Copy JSON summary
+          scp -o StrictHostKeyChecking=no \
+            ${{ env.SSH_USER }}@${{ matrix.ip }}:~/devel/CI-Hub/e2e/results/catalog-batch-${BATCH}.json \
+            results-${{ matrix.server }}/catalog-batch-${BATCH}.json 2>/dev/null || true
           
           # Copy report
           scp -o StrictHostKeyChecking=no -r \
-            ${{ env.SSH_USER }}@${{ matrix.ip }}:~/devel/CI-OS-Hub/playwright-report \
+            ${{ env.SSH_USER }}@${{ matrix.ip }}:~/devel/CI-Hub/playwright-report \
             results-${{ matrix.server }}/ 2>/dev/null || true
           
           # Copy screenshots
           scp -o StrictHostKeyChecking=no -r \
-            ${{ env.SSH_USER }}@${{ matrix.ip }}:~/devel/CI-OS-Hub/e2e/screenshots/current \
+            ${{ env.SSH_USER }}@${{ matrix.ip }}:~/devel/CI-Hub/e2e/screenshots/current \
             results-${{ matrix.server }}/screenshots/ 2>/dev/null || true
 
       - name: Upload artifacts
@@ -256,7 +276,8 @@ jobs:
             const dirs = fs.readdirSync(resultsDir);
             
             for (const dir of dirs) {
-              const reportPath = path.join(resultsDir, dir, 'playwright-report', 'report.json');
+              const batchFile = fs.readdirSync(path.join(resultsDir, dir)).find((f) => /^catalog-batch-.*\.json$/.test(f));
+              const reportPath = batchFile ? path.join(resultsDir, dir, batchFile) : '';
               
               if (fs.existsSync(reportPath)) {
                 try {
@@ -344,7 +365,7 @@ jobs:
                 "fields": [
                   {"name": "Mode", "value": "${{ github.event.inputs.mode || 'full' }}", "inline": true},
                   {"name": "Apps", "value": "${{ needs.prepare.outputs.total_apps }}", "inline": true},
-                  {"name": "Servers", "value": "7", "inline": true}
+                  {"name": "Servers", "value": "10", "inline": true}
                 ],
                 "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
               }]
