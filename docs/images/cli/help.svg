@@ -1,68 +1,65 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="920" height="1464" viewBox="0 0 920 1464" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="1380" viewBox="0 0 960 1380" role="img" aria-labelledby="title desc">
   <title id="title">CI-Hub CLI screenshot</title>
   <desc id="desc">Terminal capture for cihub --help</desc>
-  <rect width="920" height="1464" rx="14" fill="#0d1117"/>
-  <rect x="0" y="0" width="920" height="34" rx="14" fill="#161b22"/>
-  <rect x="0" y="20" width="920" height="14" fill="#161b22"/>
+  <rect width="960" height="1380" rx="14" fill="#0d1117"/>
+  <rect x="0" y="0" width="960" height="34" rx="14" fill="#161b22"/>
+  <rect x="0" y="20" width="960" height="14" fill="#161b22"/>
   <circle cx="18" cy="17" r="5" fill="#ff5f57"/>
   <circle cx="36" cy="17" r="5" fill="#febc2e"/>
   <circle cx="54" cy="17" r="5" fill="#28c840"/>
-  <text x="460" y="22" text-anchor="middle" fill="#8b949e" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace">help</text>
+  <text x="480" y="22" text-anchor="middle" fill="#8b949e" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace">help</text>
   <g font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace" font-size="14" xml:space="preserve">
     <text x="24" y="56"  fill="#7ee787">$ cihub --help</text>
-    <text x="24" y="78"  fill="#3fb950">  ___                           _          </text>
-    <text x="24" y="98"  fill="#3fb950"> / __|___ _ __  _ __  __ _ _ _ (_)___ _ _  </text>
-    <text x="24" y="118" fill="#3fb950">| (__/ _ \ '  \| '_ \/ _` | ' \| / _ \ ' \ </text>
-    <text x="24" y="138" fill="#3fb950"> \___\___/_|_|_| .__/\__,_|_||_|_\___/_||_|</text>
-    <text x="24" y="158" fill="#3fb950">               |_|                         </text>
-    <text x="24" y="178" fill="#3fb950"> ___     _       _ _ _                      </text>
-    <text x="24" y="198" fill="#3fb950">|_ _|_ _| |_ ___| | (_)__ _ ___ _ _  __ ___ </text>
-    <text x="24" y="218" fill="#3fb950"> | || ' \  _/ -_) | | / _` / -_) ' \/ _/ -_)</text>
-    <text x="24" y="238" fill="#3fb950">|___|_||_\__\___|_|_|_\__, \___|_||_\__\___|</text>
-    <text x="24" y="258" fill="#3fb950">                      |___/                 </text>
-    <text x="24" y="278" fill="#484f58">Companion Intelligence Hub  ·  companionintelligence.com</text>
-    <text x="24" y="318" fill="#30363d">┌─ Quick start───────────────────────────────────────┐</text>
-    <text x="24" y="338" fill="#e6edf3">│ First run  cihub wizard                            │</text>
-    <text x="24" y="358" fill="#e6edf3">│ Install    npm install -g ci-hub                   │</text>
-    <text x="24" y="378" fill="#e6edf3">│ NPX        npx --package ci-hub cihub --help       │</text>
-    <text x="24" y="398" fill="#e6edf3">│ Dev        pnpm run hub -- --help                  │</text>
-    <text x="24" y="418" fill="#30363d">└─────────────────────────────────────────────────────┘</text>
-    <text x="24" y="458" fill="#30363d">┌─ Setup &amp; Registration────────────────────────────────────────────────────────────┐</text>
-    <text x="24" y="478" fill="#e6edf3">│ cihub wizard [env]    Guided first-time or re-setup wizard                      │</text>
-    <text x="24" y="498" fill="#e6edf3">│ cihub setup [env]     Initialize host state, Traefik, and Docker auth config    │</text>
-    <text x="24" y="518" fill="#e6edf3">│ cihub register [env]  Print cloud portal registration URL for this device       │</text>
-    <text x="24" y="538" fill="#30363d">└────────────────────────────────────────────────────────────────────────────────────┘</text>
-    <text x="24" y="578" fill="#30363d">┌─ Hub lifecycle──────────────────────────────────────────────────────────────────┐</text>
-    <text x="24" y="598" fill="#e6edf3">│ cihub up [env] [--detached]  Start the hub stack                               │</text>
-    <text x="24" y="618" fill="#e6edf3">│ cihub shutdown [env]         Stop the hub stack                                │</text>
-    <text x="24" y="638" fill="#e6edf3">│ cihub status [env]           Show running containers and hub health            │</text>
-    <text x="24" y="658" fill="#e6edf3">│ cihub config [env]           Show resolved configuration values                │</text>
-    <text x="24" y="678" fill="#30363d">└─────────────────────────────────────────────────────────────────────────────────┘</text>
-    <text x="24" y="718" fill="#30363d">┌─ App lifecycle──────────────────────────────────────────────────────────────────────────────┐</text>
-    <text x="24" y="738" fill="#e6edf3">│ cihub app list                              List managed Docker containers              │</text>
-    <text x="24" y="758" fill="#e6edf3">│ cihub app status [name]                     Show container status with ports (color)     │</text>
-    <text x="24" y="778" fill="#e6edf3">│ cihub app logs &lt;name&gt; [--tail N]            Stream container logs                        │</text>
-    <text x="24" y="798" fill="#e6edf3">│ cihub app add &lt;name&gt; &lt;image&gt;                Launch a new Docker container app            │</text>
-    <text x="24" y="818" fill="#e6edf3">│ cihub app edit &lt;name&gt; &lt;image&gt;               Recreate a Docker container app              │</text>
-    <text x="24" y="838" fill="#e6edf3">│ cihub app start|stop|restart|delete &lt;name&gt;  Container lifecycle controls                 │</text>
-    <text x="24" y="858" fill="#e6edf3">│ cihub app inspect &lt;name&gt;                    Show container ports, env, and mounts        │</text>
-    <text x="24" y="878" fill="#30363d">└─────────────────────────────────────────────────────────────────────────────────────────────┘</text>
-    <text x="24" y="918" fill="#30363d">┌─ MCP──────────────────────────────────────────────────────────────────────────┐</text>
-    <text x="24" y="938" fill="#e6edf3">│ cihub mcp setup [env]     Enable MCP and provision MCP_API_KEY               │</text>
-    <text x="24" y="958" fill="#e6edf3">│ cihub mcp shutdown [env]  Disable MCP in the target env file                 │</text>
-    <text x="24" y="978" fill="#e6edf3">│ cihub mcp config [env]    Show current MCP settings                          │</text>
-    <text x="24" y="998" fill="#30363d">└───────────────────────────────────────────────────────────────────────────────┘</text>
-    <text x="24" y="1038" fill="#30363d">┌─ Developer workflow──────────────────────────────────────────────────────────────────┐</text>
-    <text x="24" y="1058" fill="#e6edf3">│ cihub hot-reload [env]  Run infra + backend/frontend with hot reload                │</text>
-    <text x="24" y="1078" fill="#e6edf3">│ cihub purge [--yes]     Remove Docker state + CI-Hub caches/configs                 │</text>
-    <text x="24" y="1098" fill="#30363d">└──────────────────────────────────────────────────────────────────────────────────────┘</text>
-    <text x="24" y="1138" fill="#30363d">┌─ Help &amp; docs──────────────────────────────────────────┐</text>
-    <text x="24" y="1158" fill="#e6edf3">│ cihub man          Manual-style command reference     │</text>
-    <text x="24" y="1178" fill="#e6edf3">│ cihub --help       This help output                   │</text>
-    <text x="24" y="1198" fill="#e6edf3">│ cihub version      Show version from package.json     │</text>
-    <text x="24" y="1218" fill="#30363d">└───────────────────────────────────────────────────────┘</text>
-    <text x="24" y="1258" fill="#b08800">┌─ Environments───────────────────────────────────┐</text>
-    <text x="24" y="1278" fill="#e6edf3">│ local  ·  dev  ·  staging  ·  prod              │</text>
-    <text x="24" y="1298" fill="#b08800">└─────────────────────────────────────────────────┘</text>
+    <text x="24" y="76"  fill="#3fb950"> __   __         __               __                 </text>
+    <text x="24" y="96"  fill="#3fb950">/  ` /  \  |\/| |__)  /\  |\ | | /  \ |\ |           </text>
+    <text x="24" y="116" fill="#3fb950">\__, \__/  |  | |    /~~\ | \| | \__/ | \|           </text>
+    <text x="24" y="136" fill="#3fb950">                                                     </text>
+    <text x="24" y="156" fill="#3fb950">       ___  ___              __   ___       __   ___ </text>
+    <text x="24" y="176" fill="#3fb950">| |\ |  |  |__  |    |    | / _` |__  |\ | /  ` |__  </text>
+    <text x="24" y="196" fill="#3fb950">| | \|  |  |___ |___ |___ | \__&gt; |___ | \| \__, |___</text>
+    <text x="24" y="216" fill="#484f58">Companion Intelligence Hub  ·  companionintelligence.com</text>
+    <text x="24" y="256" fill="#3fb950">┌─ Quick start ──────────────────────────────────────────────────────────────────────────┐</text>
+    <text x="24" y="276" fill="#e6edf3">  First run  cihub wizard</text>
+    <text x="24" y="296" fill="#e6edf3">  Install    npm install -g ci-hub</text>
+    <text x="24" y="316" fill="#e6edf3">  NPX        npx --package ci-hub cihub --help</text>
+    <text x="24" y="336" fill="#e6edf3">  Dev        pnpm run hub -- --help</text>
+    <text x="24" y="356" fill="#3fb950">└────────────────────────────────────────────────────────────────────────────────────────┘</text>
+    <text x="24" y="396" fill="#30363d">┌─ Setup &amp; Registration ───────────────────────────────────────────────────────────────────┐</text>
+    <text x="24" y="416" fill="#e6edf3">  cihub wizard [env]    Guided first-time or re-setup wizard</text>
+    <text x="24" y="436" fill="#e6edf3">  cihub setup [env]     Initialize host state, Traefik, and Docker auth config</text>
+    <text x="24" y="456" fill="#e6edf3">  cihub register [env]  Print cloud portal registration URL for this device</text>
+    <text x="24" y="476" fill="#30363d">└──────────────────────────────────────────────────────────────────────────────────────────┘</text>
+    <text x="24" y="516" fill="#30363d">┌─ Hub lifecycle ──────────────────────────────────────────────────────────────────────────┐</text>
+    <text x="24" y="536" fill="#e6edf3">  cihub up [env] [--detached]  Start the hub stack</text>
+    <text x="24" y="556" fill="#e6edf3">  cihub shutdown [env]         Stop the hub stack</text>
+    <text x="24" y="576" fill="#e6edf3">  cihub status [env]           Show running containers and hub health</text>
+    <text x="24" y="596" fill="#e6edf3">  cihub config [env]           Show resolved configuration values</text>
+    <text x="24" y="616" fill="#30363d">└──────────────────────────────────────────────────────────────────────────────────────────┘</text>
+    <text x="24" y="656" fill="#30363d">┌─ App lifecycle ──────────────────────────────────────────────────────────────────────────┐</text>
+    <text x="24" y="676" fill="#e6edf3">  cihub app list                              List managed Docker containers</text>
+    <text x="24" y="696" fill="#e6edf3">  cihub app status [name]                     Show container status with ports (color-coded)</text>
+    <text x="24" y="716" fill="#e6edf3">  cihub app logs &lt;name&gt; [--tail N]            Stream container logs</text>
+    <text x="24" y="736" fill="#e6edf3">  cihub app add &lt;name&gt; &lt;image&gt;                Launch a new Docker container app</text>
+    <text x="24" y="756" fill="#e6edf3">  cihub app edit &lt;name&gt; &lt;image&gt;               Recreate a Docker container app</text>
+    <text x="24" y="776" fill="#e6edf3">  cihub app start|stop|restart|delete &lt;name&gt;  Container lifecycle controls</text>
+    <text x="24" y="796" fill="#e6edf3">  cihub app inspect &lt;name&gt;                    Show container ports, env, and mounts</text>
+    <text x="24" y="816" fill="#30363d">└──────────────────────────────────────────────────────────────────────────────────────────┘</text>
+    <text x="24" y="856" fill="#30363d">┌─ MCP ───────────────────────────────────────────────────────────────────────────────────┐</text>
+    <text x="24" y="876" fill="#e6edf3">  cihub mcp setup [env]     Enable MCP and provision MCP_API_KEY</text>
+    <text x="24" y="896" fill="#e6edf3">  cihub mcp shutdown [env]  Disable MCP in the target env file</text>
+    <text x="24" y="916" fill="#e6edf3">  cihub mcp config [env]    Show current MCP settings</text>
+    <text x="24" y="936" fill="#30363d">└──────────────────────────────────────────────────────────────────────────────────────────┘</text>
+    <text x="24" y="976" fill="#30363d">┌─ Developer workflow ─────────────────────────────────────────────────────────────────────┐</text>
+    <text x="24" y="996"  fill="#e6edf3">  cihub hot-reload [env]  Run infra + backend/frontend with hot reload</text>
+    <text x="24" y="1016" fill="#e6edf3">  cihub purge [--yes]     Remove Docker state + CI-Hub caches/configs</text>
+    <text x="24" y="1036" fill="#30363d">└──────────────────────────────────────────────────────────────────────────────────────────┘</text>
+    <text x="24" y="1076" fill="#30363d">┌─ Help &amp; docs ────────────────────────────────────────────────────────────────────────────┐</text>
+    <text x="24" y="1096" fill="#e6edf3">  cihub man          Manual-style command reference</text>
+    <text x="24" y="1116" fill="#e6edf3">  cihub --help       This help output</text>
+    <text x="24" y="1136" fill="#e6edf3">  cihub version      Show version from package.json</text>
+    <text x="24" y="1156" fill="#30363d">└──────────────────────────────────────────────────────────────────────────────────────────┘</text>
+    <text x="24" y="1196" fill="#b08800">┌─ Environments ───────────────────────────────────────────────────────────────────────────┐</text>
+    <text x="24" y="1216" fill="#e6edf3">  local  ·  dev  ·  staging  ·  prod</text>
+    <text x="24" y="1236" fill="#b08800">└──────────────────────────────────────────────────────────────────────────────────────────┘</text>
   </g>
 </svg>

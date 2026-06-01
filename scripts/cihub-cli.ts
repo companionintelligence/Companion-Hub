@@ -23,18 +23,14 @@ const BASE_COMMAND = 'cihub';
 const COMPAT_COMMAND = 'pnpm run hub --';
 const CI_CLOUD_DEFAULT = 'https://hub.companionintelligence.com';
 
-// "small" figlet font — matches Stick Letters style from patorjk.com
 const COMPANY_ART = [
-  '  ___                           _          ',
-  ' / __|___ _ __  _ __  __ _ _ _ (_)___ _ _  ',
-  "| (__/ _ \\ '  \\| '_ \\/ _` | ' \\| / _ \\ ' \\ ",
-  ' \\___\\___/_|_|_| .__/\\__,_|_||_|_\\___/_||_|',
-  '               |_|                         ',
-  ' ___     _       _ _ _                      ',
-  '|_ _|_ _| |_ ___| | (_)__ _ ___ _ _  __ ___ ',
-  " | || ' \\  _/ -_) | | / _` / -_) ' \\/ _/ -_)",
-  '|___|_||_\\__\\___|_|_|_\\__, \\___|_||_\\__\\___|',
-  '                      |___/                 ',
+  ' __   __         __               __                 ',
+  '/  ` /  \\  |\\/| |__)  /\\  |\\ | | /  \\ |\\ |           ',
+  '\\__, \\__/  |  | |    /~~\\ | \\| | \\__/ | \\|           ',
+  '                                                     ',
+  '       ___  ___              __   ___       __   ___ ',
+  '| |\\ |  |  |__  |    |    | / _` |__  |\\ | /  ` |__  ',
+  '| | \\|  |  |___ |___ |___ | \\__> |___ | \\| \\__, |___',
 ].join('\n');
 
 const TAGLINE = 'Companion Intelligence Hub  ·  companionintelligence.com';
@@ -130,18 +126,23 @@ function pad(value: string, width: number) {
   return `${value}${' '.repeat(Math.max(width - stripAnsi(value).length, 0))}`;
 }
 
-function hr(width = 60, tone: Tone = 'dim') {
-  return colorize('─'.repeat(width), tone);
+function termWidth() {
+  return process.stdout.columns || 80;
+}
+
+function hr(tone: Tone = 'dim') {
+  return colorize('─'.repeat(termWidth()), tone);
 }
 
 // ─── boxes ───────────────────────────────────────────────────────────────────
 
 function box(title: string, lines: string[], tone: Tone = 'cyan') {
-  const content = lines.length > 0 ? lines : [''];
-  const width = Math.max(stripAnsi(title).length, ...content.map((l) => stripAnsi(l).length));
-  const top = `┌─ ${title}${'─'.repeat(Math.max(width - stripAnsi(title).length + 1, 1))}┐`;
-  const bottom = `└${'─'.repeat(width + 3)}┘`;
-  const body = content.map((l) => `│ ${pad(l, width)} │`);
+  const w = termWidth();
+  const titleLen = stripAnsi(title).length;
+  const fill = Math.max(w - titleLen - 5, 1);
+  const top = `┌─ ${title} ${'─'.repeat(fill)}┐`;
+  const bottom = `└${'─'.repeat(w - 2)}┘`;
+  const body = (lines.length > 0 ? lines : ['']).map((l) => `  ${l}`);
   return [colorize(top, tone), ...body, colorize(bottom, tone)].join('\n');
 }
 
@@ -929,7 +930,7 @@ async function runWizard(defaultEnv: HubEnv = 'local') {
       startHub(detached === 'y' || detached === 'yes' ? 'start:detached' : 'start', env);
       console.log(renderStep(4, 4, 'Hub launched', 'done'));
       console.log();
-      console.log(hr(60, 'dim'));
+      console.log(hr('dim'));
       console.log(colorize('  Setup complete! Your Companion Intelligence Hub is running.', 'green'));
       console.log(dim(`  Open http://localhost:5002 · manage with: ${BASE_COMMAND} --help`));
       return;

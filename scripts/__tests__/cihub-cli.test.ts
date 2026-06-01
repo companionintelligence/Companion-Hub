@@ -19,10 +19,12 @@ import {
 // ─── banner ───────────────────────────────────────────────────────────────────
 
 describe('banner', () => {
-  it('contains the Companion Intelligence ASCII art (slant/small style)', () => {
+  it('contains the Companion Intelligence ASCII art', () => {
     const plain = stripAnsi(renderBanner());
-    expect(plain).toContain('/ __|___ _ __  _ __  __ _ _ _ (_)___ _ _');
-    expect(plain).toContain('|_ _|_ _| |_ ___| | (_)__ _ ___ _ _  __ ___');
+    // Line 1 of Companion (no backslashes — safe for string matching)
+    expect(plain).toContain(' __   __         __               __');
+    // Line 5 — start of Intelligence
+    expect(plain).toContain('       ___  ___              __   ___');
   });
 
   it('shows the company tagline', () => {
@@ -39,9 +41,20 @@ describe('banner', () => {
 
   it('wizard welcome embeds the banner', () => {
     const plain = stripAnsi(renderWizardWelcome());
-    expect(plain).toContain('/ __|___ _ __');
+    expect(plain).toContain(' __   __         __               __');
     expect(plain).toContain('Setup Wizard');
     expect(plain).toContain('cihub man');
+  });
+
+  it('box sections have no side | borders on content lines', () => {
+    const plain = stripAnsi(renderHelp());
+    // Content lines should start with 2-space indent, not │
+    for (const line of plain.split('\n')) {
+      if (line.startsWith('  ') && !line.startsWith('  ┌') && !line.startsWith('  └')) {
+        expect(line.startsWith('│')).toBe(false);
+        expect(line.endsWith('│')).toBe(false);
+      }
+    }
   });
 });
 
