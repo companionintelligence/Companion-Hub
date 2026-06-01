@@ -120,7 +120,15 @@ let api: {
   profile: HardwareProfileResponse;
   profileOk: boolean;
   profileReject: boolean;
-  ollama: { ready: boolean; running: boolean; endpointUrl: string; error?: string };
+  ollama: {
+    ready: boolean;
+    running: boolean;
+    endpointUrl: string;
+    bridgeUnreachable?: boolean;
+    displayEndpoint?: string;
+    hint?: string;
+    error?: string;
+  };
   rescanOk: boolean;
 };
 
