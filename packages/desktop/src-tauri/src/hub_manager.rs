@@ -287,7 +287,7 @@ fn refresh_nvidia_host_probe_cache(data_dir: &Path) {
         return;
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     {
         clear_stale_probe();
         return;
@@ -411,6 +411,7 @@ fn refresh_nvidia_host_probe_cache(data_dir: &Path) {
 #[cfg(target_os = "macos")]
 const DARWIN_DATA_MOUNT: &str = "/System/Volumes/Data";
 
+#[cfg(target_os = "macos")]
 fn detect_macos_primary_disk_from_storage_profiler() -> Option<(u64, u64, String)> {
     let output = Command::new("system_profiler")
         .args(["SPStorageDataType", "-json"])
@@ -459,6 +460,7 @@ fn detect_macos_primary_disk_from_storage_profiler() -> Option<(u64, u64, String
     ))
 }
 
+#[cfg(target_os = "macos")]
 fn detect_macos_primary_disk_from_df(mount: &str) -> Option<(u64, u64, String)> {
     let output = Command::new("df").args(["-k", mount]).output().ok()?;
     if !output.status.success() {
@@ -478,6 +480,7 @@ fn detect_macos_primary_disk_from_df(mount: &str) -> Option<(u64, u64, String)> 
     Some((total_kb / 1024 / 1024, used_kb / 1024 / 1024, mount_point))
 }
 
+#[cfg(target_os = "macos")]
 fn detect_macos_primary_disk_gb() -> (u64, u64, String) {
     detect_macos_primary_disk_from_storage_profiler()
         .or_else(|| detect_macos_primary_disk_from_df(DARWIN_DATA_MOUNT))
