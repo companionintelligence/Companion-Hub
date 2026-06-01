@@ -9,7 +9,7 @@
  *
  * Environment variables:
  *   RESULTS_DIR   - Directory for QA results (default: ~/qa-results)
- *   APP_STORE_DIR - Path to CI-App-Store/apps (default: ~/devel/CI-App-Store/apps)
+ *   APP_STORE_DIR - Path to CI-Marketplace/apps (default: ~/devel/CI-Marketplace/apps)
  *
  * Examples:
  *   pnpm exec tsx scripts/qa-app.ts nextcloud
@@ -22,7 +22,7 @@ import { join } from 'node:path';
 
 const RESULTS_DIR = process.env.RESULTS_DIR || join(process.env.HOME || '~', 'qa-results');
 const SCREENSHOTS_DIR = join(RESULTS_DIR, 'screenshots');
-const APP_STORE_DIR = process.env.APP_STORE_DIR || join(process.env.HOME || '~', 'devel/CI-App-Store/apps');
+const APP_STORE_DIR = process.env.APP_STORE_DIR || join(process.env.HOME || '~', 'devel/CI-Marketplace/apps');
 
 interface QAResult {
   appId: string;

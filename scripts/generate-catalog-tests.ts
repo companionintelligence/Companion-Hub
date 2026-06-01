@@ -12,7 +12,7 @@
 import { readdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-const APP_STORE_PATH = '../CI-App-Store/apps';
+const APP_STORE_PATH = process.env.APP_STORE_PATH ?? '../CI-Marketplace/apps';
 const OUTPUT_PATH = './e2e/generated';
 
 interface AppConfig {
@@ -124,7 +124,7 @@ async function generateTestFile(apps: AppTestSpec[], serverIndex: number): Promi
  * Apps: ${apps.length}
  */
 
-import { expect, installApp, loginUser, test } from '../fixtures/fixtures';
+import { expect, loginUser, test } from '../fixtures/fixtures';
 
 const APPS = ${JSON.stringify(apps, null, 2)};
 
@@ -196,7 +196,7 @@ async function main() {
   // Save full catalog
   await writeFile(join(OUTPUT_PATH, 'catalog.json'), JSON.stringify(catalog, null, 2));
 
-  // Split into batches for 7 servers
+  // Split into batches for 10 servers (full online fleet, core-4-kvm excluded)
   const SERVERS = 10;
   const batchSize = Math.ceil(catalog.length / SERVERS);
 

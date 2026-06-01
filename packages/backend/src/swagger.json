@@ -137,6 +137,20 @@
         ]
       }
     },
+    "/api/restart-onboarding": {
+      "patch": {
+        "operationId": "restartOnboarding",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "App"
+        ]
+      }
+    },
     "/api/registration/reset": {
       "post": {
         "operationId": "resetRegistration",
@@ -3183,7 +3197,30 @@
     },
     "/api/inference/apps/{slug}/credentials.env": {
       "get": {
-        "operationId": "getAppCredentialsEnv",
+        "operationId": "getAppCredentialsEnv[0]",
+        "parameters": [
+          {
+            "name": "slug",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/apps/{slug}/bootstrap.env": {
+      "get": {
+        "operationId": "getAppCredentialsEnv[1]",
         "parameters": [
           {
             "name": "slug",

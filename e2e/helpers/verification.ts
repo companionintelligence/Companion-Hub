@@ -94,7 +94,7 @@ export async function verifyDashboard(page: Page) {
 
 /** Verify the app store page loads and shows expected UI. */
 export async function verifyAppStorePage(page: Page) {
-  await page.goto('/app-store');
+  await page.goto('/store');
   await expect(page.getByRole('heading', { name: 'App Store' })).toBeVisible({ timeout: 30000 });
   await expect(page.getByPlaceholder('Search apps...').first()).toBeVisible({ timeout: 30000 });
 }

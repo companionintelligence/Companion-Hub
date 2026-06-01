@@ -1,0 +1,85 @@
+{
+  "schemaVersion": 2,
+  "services": [
+    {
+      "name": "ci-e2e-test-app",
+      "image": "ci-e2e-test-app-web:latest",
+      "isMain": true,
+      "internalPort": 3000,
+      "environment": [
+        { "key": "DB_HOST", "value": "ci-e2e-test-app-db" },
+        { "key": "DB_PORT", "value": "5432" },
+        { "key": "DB_USER", "value": "e2e" },
+        { "key": "DB_PASSWORD", "value": "e2e" },
+        { "key": "DB_NAME", "value": "e2e" },
+        { "key": "REDIS_HOST", "value": "ci-e2e-test-app-cache" },
+        { "key": "UPLOAD_DIR", "value": "/data/uploads" },
+        { "key": "E2E_TEXT_FIELD", "value": "${E2E_TEXT_FIELD}" },
+        { "key": "E2E_PASSWORD", "value": "${E2E_PASSWORD}" },
+        { "key": "E2E_EMAIL", "value": "${E2E_EMAIL}" },
+        { "key": "E2E_NUMBER", "value": "${E2E_NUMBER}" },
+        { "key": "E2E_URL", "value": "${E2E_URL}" },
+        { "key": "E2E_BOOLEAN", "value": "${E2E_BOOLEAN}" },
+        { "key": "E2E_RANDOM_HEX", "value": "${E2E_RANDOM_HEX}" },
+        { "key": "E2E_RANDOM_B64", "value": "${E2E_RANDOM_B64}" }
+      ],
+      "volumes": [{ "hostPath": "${APP_DATA_DIR}/data/uploads", "containerPath": "/data/uploads" }],
+      "dependsOn": {
+        "ci-e2e-test-app-db": { "condition": "service_healthy" },
+        "ci-e2e-test-app-cache": { "condition": "service_healthy" }
+      },
+      "capAdd": ["NET_ADMIN"],
+      "healthCheck": {
+        "test": "wget -qO- http://localhost:3000/api/health || exit 1",
+        "interval": "10s",
+        "timeout": "5s",
+        "retries": 3
+      }
+    },
+    {
+      "name": "ci-e2e-test-app-db",
+      "image": "postgres:16-alpine",
+      "environment": [
+        { "key": "POSTGRES_USER", "value": "e2e" },
+        { "key": "POSTGRES_PASSWORD", "value": "e2e" },
+        { "key": "POSTGRES_DB", "value": "e2e" }
+      ],
+      "volumes": [{ "hostPath": "${APP_DATA_DIR}/data/postgres", "containerPath": "/var/lib/postgresql/data" }],
+      "healthCheck": {
+        "test": "pg_isready -U e2e",
+        "interval": "5s",
+        "timeout": "5s",
+        "retries": 5
+      }
+    },
+    {
+      "name": "ci-e2e-test-app-cache",
+      "image": "redis:7-alpine",
+      "healthCheck": {
+        "test": "redis-cli ping | grep PONG",
+        "interval": "5s",
+        "timeout": "5s",
+        "retries": 5
+      }
+    },
+    {
+      "name": "ci-e2e-test-app-worker",
+      "image": "ci-e2e-test-app-worker:latest",
+      "environment": [
+        { "key": "DB_HOST", "value": "ci-e2e-test-app-db" },
+        { "key": "DB_PORT", "value": "5432" },
+        { "key": "DB_USER", "value": "e2e" },
+        { "key": "DB_PASSWORD", "value": "e2e" },
+        { "key": "DB_NAME", "value": "e2e" }
+      ],
+      "dependsOn": {
+        "ci-e2e-test-app-db": { "condition": "service_healthy" }
+      }
+    },
+    {
+      "name": "ci-e2e-test-app-udp",
+      "image": "ci-e2e-test-app-udp:latest",
+      "addPorts": [{ "containerPort": 9999, "hostPort": 9999, "udp": true }]
+    }
+  ]
+}
