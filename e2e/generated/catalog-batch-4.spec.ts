@@ -140,7 +140,7 @@ const APPS = [
 ];
 
 test.describe('App Catalog Batch 4', () => {
-  test.beforeEach(async ({ page, context }) => {
+  test.beforeEach(async ({ context }) => {
     await loginUser(page, context);
   });
 
@@ -155,7 +155,7 @@ test.describe('App Catalog Batch 4', () => {
       });
 
       if (app.hasGui) {
-        test(`access ${app.id} via subdomain`, async ({ page, context }) => {
+        test(`access ${app.id} via subdomain`, async ({ context }) => {
           const subdomain = `test-${app.id}`;
           const url = `https://${subdomain}.${process.env.TEST_DOMAIN || 'test.ci.computer'}${app.healthEndpoint}`;
 
