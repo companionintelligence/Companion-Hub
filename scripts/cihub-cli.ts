@@ -527,7 +527,21 @@ function registerHub(env: HubEnv) {
   const fileVars = parseEnvFile(envFileName);
   const cloudUrl = process.env.CI_CLOUD_URL || fileVars.CI_CLOUD_URL || CI_CLOUD_DEFAULT;
   const result = spawnSync('tsx', ['scripts/get-device-id.ts'], { encoding: 'utf-8', stdio: 'pipe' });
-  if (result.status !== 0) throw new Error(`Failed to resolve device ID. ${formatSpawnOutput(result)}`);
+  if (result.status !== 0) {
+    printMessageBox(
+      'Device ID unavailable',
+      [
+        'Could not resolve a hardware device ID on this machine.',
+        'On Linux: ensure dmidecode is available, or check /etc/machine-id.',
+        'On macOS: ioreg should work automatically — check scripts/get-device-id.ts.',
+        '',
+        'You can register manually at:',
+        `  ${colorize(cloudUrl, 'cyan')}`,
+      ],
+      'red',
+    );
+    return;
+  }
   const deviceId = (result.stdout || '').trim();
   const registrationUrl = `${cloudUrl.replace(/\/$/, '')}/register?deviceId=${encodeURIComponent(deviceId)}`;
   printMessageBox(
@@ -689,7 +703,10 @@ function runModelsCommand(args: string[]) {
 
 async function confirmPurge(force: boolean) {
   if (force) return true;
-  if (!process.stdin.isTTY) usageAndExit(`Purge is destructive. Re-run with ${BASE_COMMAND} purge --yes to skip confirmation.`);
+  if (!process.stdin.isTTY) {
+    console.error(colorize(`  ✗ Purge is destructive — requires an interactive terminal or: ${BASE_COMMAND} purge --yes`, 'red'));
+    process.exit(2);
+  }
   const rl = createInterface({ input, output });
   try {
     const ans = (await rl.question('Purge Docker state + CI-Hub caches/configs? [y/N]: ')).trim().toLowerCase();
@@ -785,9 +802,11 @@ function runAppCommand(args: string[]) {
     }
     const lines = rows.map((row) => {
       const [n, s, p] = row.split('\t');
+      const isUp = (s || '').toLowerCase().startsWith('up');
+      const dot = isUp ? colorize('●', 'green') : colorize('✗', 'red');
       const statusStr = appStatusColor(s || '');
       const portsStr = p ? dim(` → ${p}`) : '';
-      return `${bold(n || '')}  ${statusStr}${portsStr}`;
+      return `${dot} ${bold(n || '')}  ${statusStr}${portsStr}`;
     });
     printMessageBox('App status', lines, 'cyan');
     return;
