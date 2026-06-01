@@ -181,13 +181,27 @@ export class InferenceController {
 
   @UseGuards(AuthGuard)
   @Post('models/pull')
-  async pullModel(@Body() body: { modelId: string }) {
+  async pullModel(@Body() body: { modelId: string; bestEffort?: boolean }) {
     const evaluation = await this.modelPuller.evaluatePull(body.modelId);
     if (!evaluation.canPull && !evaluation.alreadyInstalled) {
+      if (body.bestEffort) {
+        return { success: false, skipped: true, message: evaluation.reason ?? `Pull blocked for ${body.modelId}` };
+      }
       throw new ConflictException(evaluation.reason ?? `Pull blocked for ${body.modelId}`);
     }
-    await this.modelPuller.pullModel(body.modelId);
-    return { success: true, message: `Model ${body.modelId} pulled` };
+
+    try {
+      await this.modelPuller.pullModel(body.modelId);
+      return { success: true, message: `Model ${body.modelId} pulled` };
+    } catch (err) {
+      const curated = this.modelRegistry.getCuratedModel(body.modelId);
+      const msg = err instanceof Error ? err.message : String(err);
+      if (body.bestEffort && curated?.backend === 'ollama') {
+        this._logger.warn(`[Inference] Best-effort Ollama pull skipped for ${body.modelId}: ${msg}`);
+        return { success: false, skipped: true, message: msg };
+      }
+      throw err;
+    }
   }
 
   @UseGuards(AuthGuard)

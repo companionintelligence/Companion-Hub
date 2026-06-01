@@ -1,7 +1,19 @@
 import { Card, CardContent } from '@/components/ui/Card';
 import type { InferenceBackendType } from '@ci-hub/common/types';
+import { LabelWithHint } from '@/components/ui/field-hint/field-hint';
+import {
+  ONBOARDING_BACKEND_LEMONADE_HINT,
+  ONBOARDING_BACKEND_OLLAMA_HINT,
+  ONBOARDING_BACKEND_VLLM_HINT,
+} from '@/components/hub-status/hub-status-tooltips';
 import { BrandLogo, LemonadeIcon, VllmIcon } from './icons';
 import { OptionCard, StepSection } from './primitives';
+
+const BACKEND_HINTS: Record<InferenceBackendType, string> = {
+  ollama: ONBOARDING_BACKEND_OLLAMA_HINT,
+  vllm: ONBOARDING_BACKEND_VLLM_HINT,
+  lemonade: ONBOARDING_BACKEND_LEMONADE_HINT,
+};
 
 const BACKEND_INFO: Record<InferenceBackendType, { label: string; description: string }> = {
   ollama: { label: 'Ollama', description: 'General-purpose inference. Works on all hardware.' },
@@ -65,7 +77,7 @@ export const BackendSelectionCard = ({
                 />
                 <div className="flex-1">
                   <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium">{info.label}</span>
+                    <LabelWithHint label={info.label} hint={BACKEND_HINTS[type]} hintId={`backend-hint-${type}`} className="text-sm font-medium" />
                     {isRecommended && !isUnavailable && (
                       <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary/10 text-primary font-medium">Recommended</span>
                     )}
@@ -107,6 +119,7 @@ export const BackendCard = () => {
           icon={<BrandLogo name="ollama" />}
           selected
           badge="Default"
+          hint={ONBOARDING_BACKEND_OLLAMA_HINT}
         />
         <OptionCard
           testId="backend-option-vllm"
@@ -115,6 +128,7 @@ export const BackendCard = () => {
           icon={<VllmIcon />}
           disabled
           badge="Soon"
+          hint={ONBOARDING_BACKEND_VLLM_HINT}
         />
         <OptionCard
           testId="backend-option-lemonade"
@@ -123,6 +137,7 @@ export const BackendCard = () => {
           icon={<LemonadeIcon />}
           disabled
           badge="Soon"
+          hint={ONBOARDING_BACKEND_LEMONADE_HINT}
         />
       </div>
     </StepSection>

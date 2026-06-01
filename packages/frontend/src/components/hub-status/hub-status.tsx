@@ -2,7 +2,15 @@ import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
 import { client } from '@/api-client/client.gen';
 import { SetupCard } from '@/components/setup/setup-card';
 import { SetupPageShell } from '@/components/setup/setup-page-shell';
+import { HintText } from '@/components/ui/field-hint/field-hint';
 import { DockerAccessStatusPanel } from './docker-access-status-panel';
+import {
+  DOCKER_MAC_ARCH_HINT,
+  DOCKER_REQUIRED_HINT,
+  STARTUP_IMAGE_PULL_HINT,
+  STARTUP_PROGRESS_HINT,
+  STARTUP_SERVICE_HINTS,
+} from './hub-status-tooltips';
 import { Container, Download } from 'lucide-react';
 
 interface HubStatusProps {
@@ -188,7 +196,11 @@ function DockerDesktopGuide({
         <div className="space-y-6">
           <div className="flex items-start justify-between gap-4">
             <div className="space-y-1">
-              <h2 className="text-xl font-semibold text-foreground">Docker Desktop Required</h2>
+              <div className="flex items-start gap-1 flex-wrap">
+                <HintText id="docker-required" hint={DOCKER_REQUIRED_HINT} as="h2" className="text-xl font-semibold text-foreground">
+                  Docker Desktop Required
+                </HintText>
+              </div>
               <p className="text-sm text-muted-foreground max-w-lg">
                 Companion Hub needs Docker Desktop to run your apps and services. We&apos;ll automatically detect when Docker is ready.
               </p>
@@ -212,21 +224,28 @@ function DockerDesktopGuide({
               Download Docker Desktop for {platformLabel}
             </a>
             {isMac && (
-              <div className="flex justify-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setMacArch('arm')}
-                  className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${macArch === 'arm' ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:text-foreground'}`}
-                >
-                  Apple Silicon
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setMacArch('intel')}
-                  className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${macArch === 'intel' ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:text-foreground'}`}
-                >
-                  Intel Chip
-                </button>
+              <div className="flex flex-col items-center gap-2">
+                <div className="flex justify-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setMacArch('arm')}
+                    className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${macArch === 'arm' ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:text-foreground'}`}
+                  >
+                    Apple Silicon
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setMacArch('intel')}
+                    className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${macArch === 'intel' ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:text-foreground'}`}
+                  >
+                    Intel Chip
+                  </button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  <HintText id="docker-mac-arch" hint={DOCKER_MAC_ARCH_HINT}>
+                    Which Mac do I have?
+                  </HintText>
+                </p>
               </div>
             )}
             {footer}
@@ -246,7 +265,11 @@ function LinuxDockerGuide() {
         <div className="space-y-4">
           <div className="flex items-start justify-between gap-4">
             <div className="space-y-1">
-              <h2 className="text-xl font-semibold text-foreground">Docker Engine Required</h2>
+              <div className="flex items-start gap-1 flex-wrap">
+                <HintText id="docker-linux-required" hint={DOCKER_REQUIRED_HINT} as="h2" className="text-xl font-semibold text-foreground">
+                  Docker Engine Required
+                </HintText>
+              </div>
               <p className="text-sm text-muted-foreground">Companion Hub requires Docker to run.</p>
             </div>
             <Container className="h-10 w-10 shrink-0 text-primary" aria-hidden />
@@ -317,15 +340,25 @@ const SERVICE_LABEL: Record<ServiceState, string> = {
 
 function ServiceRow({ service }: { service: ServiceStatus }) {
   const color = SERVICE_COLOR[service.state];
+  const hint = STARTUP_SERVICE_HINTS[service.container];
+
   return (
     <div className="flex items-center justify-between gap-4 py-1.5">
-      <div className="flex items-center gap-2.5">
+      <div className="flex items-center gap-2.5 min-w-0">
         <span className={`text-sm font-medium tabular-nums ${color} ${service.state === 'starting' ? 'animate-pulse' : ''}`}>
           {SERVICE_ICON[service.state]}
         </span>
-        <span className="text-sm text-foreground">{service.label}</span>
+        <span className="text-sm text-foreground min-w-0">
+          {hint ? (
+            <HintText id={`svc-${service.container}`} hint={hint}>
+              {service.label}
+            </HintText>
+          ) : (
+            service.label
+          )}
+        </span>
       </div>
-      <span className={`text-xs tabular-nums ${color}`}>{SERVICE_LABEL[service.state]}</span>
+      <span className={`text-xs tabular-nums shrink-0 ${color}`}>{SERVICE_LABEL[service.state]}</span>
     </div>
   );
 }
@@ -383,7 +416,11 @@ function StartupScreen({ elapsedSeconds }: { elapsedSeconds: number }) {
             <div className="h-full rounded-full bg-primary transition-all duration-700 ease-out" style={{ width: `${Math.max(pct, 4)}%` }} />
           </div>
           <div className="flex justify-between text-xs text-muted-foreground/60 tabular-nums">
-            <span>{pct}%</span>
+            <span className="inline-flex items-center">
+              <HintText id="startup-progress" hint={STARTUP_PROGRESS_HINT}>
+                {pct}%
+              </HintText>
+            </span>
             <span>{elapsed} elapsed</span>
           </div>
           {progress && (
@@ -393,7 +430,9 @@ function StartupScreen({ elapsedSeconds }: { elapsedSeconds: number }) {
                 {serviceCounts.failed > 0 ? `, ${serviceCounts.failed} failed` : ''}
               </div>
               <div className="text-xs text-muted-foreground/70">
-                Image pulls: {progress.image_pulled}/{progress.image_total} ({progress.image_pull_pct}%)
+                <HintText id="startup-image-pull" hint={STARTUP_IMAGE_PULL_HINT}>
+                  Image pulls: {progress.image_pulled}/{progress.image_total} ({progress.image_pull_pct}%)
+                </HintText>
               </div>
             </div>
           )}

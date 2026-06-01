@@ -54,6 +54,9 @@ interface OllamaStatus {
   ready: boolean;
   running: boolean;
   endpointUrl: string;
+  bridgeUnreachable?: boolean;
+  displayEndpoint?: string;
+  hint?: string;
   error?: string;
 }
 

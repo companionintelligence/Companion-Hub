@@ -150,24 +150,37 @@ describe('InstallStep', () => {
   });
 
   it('persists the preferred model alongside the backend during AI setup', async () => {
-    mockApiFetch.mockImplementation(async (url: string) => {
+    mockApiFetch.mockImplementation(async (url: string, init?: RequestInit) => {
       if (url.includes('/api/inference/models/pull-preflight')) {
         return { ok: true, json: async () => ({ canPull: true, alreadyInstalled: false }) };
       }
+      if (url.includes('/api/inference/models/pull')) {
+        const body = JSON.parse(String(init?.body ?? '{}')) as { modelId?: string };
+        if (body.modelId === 'bad-model') {
+          return { ok: true, json: async () => ({ success: false, skipped: true, message: 'connect ECONNREFUSED' }) };
+        }
+        return { ok: true, json: async () => ({ success: true }) };
+      }
       if (url.includes('/api/inference/models/tracked')) {
-        return { ok: true, json: async () => [{ catalogId: 'llama3-3-70b', state: 'pulled' }] };
+        return {
+          ok: true,
+          json: async () => [
+            { catalogId: 'llama3-3-70b', state: 'pulled' },
+            { catalogId: 'bad-model', state: 'error', error: 'connect ECONNREFUSED' },
+          ],
+        };
       }
       return { ok: true, json: async () => ({}) };
     });
 
     render(
       <InstallStep
-        apps={[]}
+        apps={[makeApp('nextcloud', 'Nextcloud', 'nextcloud:store1')]}
         onComplete={onComplete}
         aiSetupConfig={{
           agentFrameworks: ['openclaw'],
           remoteAccess: [],
-          selectedModels: ['llama3-3-70b'],
+          selectedModels: ['llama3-3-70b', 'bad-model'],
           installedCatalogIds: [],
           backend: 'ollama',
           cloudProviders: [],
@@ -177,8 +190,24 @@ describe('InstallStep', () => {
       />,
     );
 
-    await waitFor(() => {
-      expect(mockApiFetch).toHaveBeenCalledWith(expect.stringContaining('/api/inference/models/pull-preflight'), expect.anything());
-    });
+    await waitFor(
+      () => {
+        expect(mockApiFetch).toHaveBeenCalledWith(
+          '/api/inference/models/pull',
+          expect.objectContaining({
+            body: JSON.stringify({ modelId: 'llama3-3-70b', bestEffort: true }),
+          }),
+        );
+      },
+      { timeout: 5000 },
+    );
+
+    // App install should still proceed after a model pull failure
+    await waitFor(
+      () => {
+        expect(mockApiFetch).toHaveBeenCalledWith(expect.stringContaining('/api/app-lifecycle/'), expect.anything());
+      },
+      { timeout: 10000 },
+    );
   });
 });

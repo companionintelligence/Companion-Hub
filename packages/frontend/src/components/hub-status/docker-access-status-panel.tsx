@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react';
+import { HintText } from '@/components/ui/field-hint/field-hint';
+import { DOCKER_DAEMON_HINT } from './hub-status-tooltips';
 
 type DockerAccessState = 'available' | 'permission_denied' | 'daemon_unavailable' | 'not_installed' | 'error';
 
@@ -70,7 +72,11 @@ export function DockerAccessStatusPanel() {
     <div className="w-full rounded-lg border border-border/80 bg-muted/20 p-4 space-y-2">
       <div className="flex items-center gap-2 text-sm text-foreground">
         <span className="h-2 w-2 shrink-0 rounded-full bg-primary animate-pulse" aria-hidden />
-        <span>{headline}</span>
+        <span className="inline-flex items-center">
+          <HintText id="docker-daemon-status" hint={DOCKER_DAEMON_HINT}>
+            {headline}
+          </HintText>
+        </span>
       </div>
       <pre className="text-xs font-mono text-muted-foreground whitespace-pre-wrap leading-relaxed">{logLines.join('\n')}</pre>
     </div>
