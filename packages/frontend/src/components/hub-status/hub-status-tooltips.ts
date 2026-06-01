@@ -10,7 +10,7 @@ export const STARTUP_SERVICE_HINTS: Record<string, string> = {
 };
 
 export const STARTUP_PROGRESS_HINT = 'How close the core Hub services are to being ready.';
-export const STARTUP_IMAGE_PULL_HINT = 'App images downloading on first launch — can take a few minutes.';
+export const STARTUP_IMAGE_PULL_HINT = 'App images downloading on first launch; can take a few minutes.';
 
 export const DOCKER_REQUIRED_HINT = 'Hub runs your apps in Docker. Install and open Docker before the Hub can start.';
 export const DOCKER_MAC_ARCH_HINT = 'Pick the version that matches your Mac chip.';
@@ -18,7 +18,7 @@ export const DOCKER_DAEMON_HINT = 'Docker is installed but not running yet. Open
 
 export const REGISTRATION_DEVICE_ID_HINT = 'Copy this ID into the Companion Account portal to link this computer.';
 export const REGISTRATION_PAIRING_CODE_HINT = 'Six-character code from the portal after you sign in.';
-export const REGISTRATION_ACCOUNT_HINT = 'Your cloud account for linking devices — not the same as your local Hub password.';
+export const REGISTRATION_ACCOUNT_HINT = 'Your cloud account for linking devices; not the same as your local Hub password.';
 export const REGISTRATION_PROVISIONING_HINT = 'Setting up your web address and secure connection. Usually a few minutes.';
 export const REGISTRATION_DNS_HINT = 'Web address changes can take a few minutes to work everywhere.';
 
@@ -28,4 +28,4 @@ export const ONBOARDING_BACKEND_OLLAMA_HINT = 'Runs AI models on your computer. 
 export const ONBOARDING_BACKEND_VLLM_HINT = 'High-speed AI for powerful NVIDIA GPUs.';
 export const ONBOARDING_BACKEND_LEMONADE_HINT = 'AI tuned for laptops with a built-in NPU chip.';
 export const ONBOARDING_HW_TIER_HINT = 'A rough guide to which AI models fit your computer.';
-export const ONBOARDING_HW_UNIFIED_MEMORY_HINT = 'GPU and RAM share the same memory — common on Apple Silicon Macs.';
+export const ONBOARDING_HW_UNIFIED_MEMORY_HINT = 'GPU and RAM share the same memory; common on Apple Silicon Macs.';
