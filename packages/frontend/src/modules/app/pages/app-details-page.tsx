@@ -95,7 +95,7 @@ export default () => {
               <>
                 <div className="h-8 w-px bg-border" />
                 <div className="flex flex-col items-center">
-                  <span className="font-semibold capitalize">{getCategoryLabel(t, primaryCategory)}</span>
+                  <span className="font-semibold">{getCategoryLabel(t, primaryCategory)}</span>
                   <span className="text-xs text-muted-foreground">{t('APP_DETAILS_CATEGORIES_TITLE')}</span>
                 </div>
               </>

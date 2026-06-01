@@ -142,7 +142,7 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, 
               <div className="border-t border-border/40" />
               <div className="flex justify-between items-start">
                 <span className="text-sm text-muted-foreground">{t('APP_DETAILS_CATEGORIES_TITLE')}</span>
-                <span className="text-sm font-medium text-right capitalize">{info.categories?.map((c) => getCategoryLabel(t, c)).join(', ')}</span>
+                <span className="text-sm font-medium text-right">{(info.categories ?? []).map((c) => getCategoryLabel(t, c)).join(', ')}</span>
               </div>
               <div className="border-t border-border/40" />
               {updatedDate && (
