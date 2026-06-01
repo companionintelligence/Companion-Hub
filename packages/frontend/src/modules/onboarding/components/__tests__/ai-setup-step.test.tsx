@@ -495,8 +495,9 @@ describe('AiSetupStep', () => {
   it('shows bridge-specific guidance when Ollama is installed but unreachable from the Hub container', async () => {
     api.ollama = {
       ...ollamaMissing,
+      bridgeUnreachable: true,
       error: 'connect ECONNREFUSED 172.17.0.1:11434',
-      hint: 'Ollama may already be installed on this machine, but the Hub container could not connect over the Docker bridge.',
+      hint: 'Ollama may already be installed on this machine, but the Hub container could not connect to it. Ensure the Ollama app is running (check the menu bar), then re-check.',
     };
     renderStep();
     await waitFor(() => expect(screen.getByText('Ollama not reachable from Hub')).toBeInTheDocument());

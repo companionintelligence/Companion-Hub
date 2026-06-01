@@ -9,7 +9,7 @@ interface OllamaStatus {
   ready: boolean;
   running: boolean;
   endpointUrl: string;
-  reachableVia?: 'direct' | 'host-network';
+  bridgeUnreachable?: boolean;
   displayEndpoint?: string;
   hint?: string;
   error?: string;
@@ -21,9 +21,8 @@ interface OllamaSetupCardProps {
   onRecheck: () => Promise<void>;
 }
 
-function isBridgeRefused(error?: string): boolean {
-  if (!error) return false;
-  return error.includes('ECONNREFUSED') && (error.includes('172.17.') || error.includes('172.18.') || error.includes('host.docker.internal'));
+function isBridgeRefused(status: OllamaStatus): boolean {
+  return status.bridgeUnreachable === true;
 }
 
 export const OllamaSetupCard = ({ status, checking, onRecheck }: OllamaSetupCardProps) => {
@@ -45,10 +44,6 @@ export const OllamaSetupCard = ({ status, checking, onRecheck }: OllamaSetupCard
 
   if (status.ready) {
     const endpoint = status.displayEndpoint ?? status.endpointUrl;
-    const bridgeNote =
-      status.reachableVia === 'host-network'
-        ? 'Reachable on the host via the Hub bridge. App containers may need OLLAMA_HOST=0.0.0.0 on the host Ollama service.'
-        : undefined;
 
     return (
       <Card className="border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-950">
@@ -59,9 +54,7 @@ export const OllamaSetupCard = ({ status, checking, onRecheck }: OllamaSetupCard
               <div>
                 <div className="text-sm font-medium text-green-900 dark:text-green-100">Ollama detected</div>
                 <div className="text-xs text-green-700 dark:text-green-300">{endpoint}</div>
-                {(bridgeNote || status.hint) && (
-                  <div className="mt-1 text-xs text-green-700/90 dark:text-green-300/90">{bridgeNote ?? status.hint}</div>
-                )}
+                {status.hint && <div className="mt-1 text-xs text-green-700/90 dark:text-green-300/90">{status.hint}</div>}
               </div>
             </div>
             <Button variant="ghost" size="sm" onClick={onRecheck} loading={checking} aria-label="Re-check Ollama" className="shrink-0">
@@ -73,14 +66,10 @@ export const OllamaSetupCard = ({ status, checking, onRecheck }: OllamaSetupCard
     );
   }
 
-  const bridgeUnreachable = isBridgeRefused(status.error);
+  const bridgeUnreachable = isBridgeRefused(status);
   const title = bridgeUnreachable ? 'Ollama not reachable from Hub' : 'Ollama not detected';
   const description = bridgeUnreachable ? (
-    <>
-      Ollama may already be installed on this machine, but the Hub could not connect to it yet. Ensure the Ollama service is running on the host, then
-      re-check. If the Hub runs in Docker on Linux, Ollama often needs{' '}
-      <code className="rounded bg-yellow-100 px-1 py-0.5 text-[11px] dark:bg-yellow-900">OLLAMA_HOST=0.0.0.0:11434</code> so containers can reach it.
-    </>
+    (status.hint ?? 'Ollama may already be installed on this machine, but the Hub could not connect to it yet.')
   ) : (
     <>
       Ollama isn't installed or running on this machine. Install it from{' '}

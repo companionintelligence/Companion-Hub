@@ -1,17 +1,18 @@
 import { Injectable } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
-import { isBridgeConnectionRefused } from './backends/ollama-host-bridge';
+import { HostMetricsService } from '@/modules/system/host-metrics.service';
+import { buildBridgeConnectionHint, isBridgeConnectionRefused, resolveHostPlatform } from './backends/ollama-host-bridge';
 import { OllamaBackend } from './backends/ollama.backend';
 
 export interface OllamaInstallStatus {
   ready: boolean;
   running: boolean;
   endpointUrl: string;
-  /** Where the Hub reached Ollama, when ready. */
-  reachableVia?: 'direct' | 'host-network';
-  /** User-facing endpoint label. */
+  /** True when host Ollama is likely installed but unreachable from the Hub container. */
+  bridgeUnreachable?: boolean;
+  /** User-facing endpoint label when ready. */
   displayEndpoint?: string;
-  /** Actionable guidance when not ready or when apps may need extra host config. */
+  /** Actionable guidance when not ready. */
   hint?: string;
   error?: string;
 }
@@ -21,64 +22,61 @@ export class OllamaInstallerService {
   constructor(
     private readonly logger: LoggerService,
     private readonly ollamaBackend: OllamaBackend,
+    private readonly hostMetrics: HostMetricsService,
   ) {}
 
-  /**
-   * Check whether host Ollama is reachable (directly or via the Hub's host-network bridge).
-   */
+  /** Check whether host Ollama is reachable at the configured endpoint. */
   async checkInstallation(): Promise<OllamaInstallStatus> {
     const endpointUrl = this.ollamaBackend.getBaseUrl();
-    this.ollamaBackend.resetTransportCache();
 
     try {
       const endpointHealth = await this.ollamaBackend.healthCheck();
       const ready = endpointHealth.running && endpointHealth.healthy;
-      const reachableVia = ready ? this.ollamaBackend.getTransport() : undefined;
-      const displayEndpoint = ready ? this.ollamaBackend.getDisplayEndpoint() : endpointUrl;
-      const hint = this.buildHint(ready, reachableVia, endpointHealth.error);
+      const { bridgeUnreachable, hint } = await this.buildUnreachableHint(ready, endpointHealth.error, endpointUrl);
 
       this.logger.info(
-        `[OllamaInstaller] Health check — ready=${ready} running=${endpointHealth.running} url=${endpointUrl} via=${reachableVia ?? 'none'}`,
+        `[OllamaInstaller] Health check — ready=${ready} running=${endpointHealth.running} url=${endpointUrl} bridgeUnreachable=${bridgeUnreachable}`,
       );
 
       return {
         ready,
         running: endpointHealth.running,
         endpointUrl,
-        reachableVia,
-        displayEndpoint,
+        bridgeUnreachable,
+        displayEndpoint: ready ? endpointUrl : undefined,
         hint,
         error: ready ? undefined : endpointHealth.error,
       };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.error(`[OllamaInstaller] Health check threw unexpectedly: ${msg}`);
+      const { bridgeUnreachable, hint } = await this.buildUnreachableHint(false, msg, endpointUrl);
       return {
         ready: false,
         running: false,
         endpointUrl,
-        hint: this.buildHint(false, undefined, msg),
+        bridgeUnreachable,
+        hint,
         error: msg,
       };
     }
   }
 
-  private buildHint(ready: boolean, reachableVia?: 'direct' | 'host-network', error?: string): string | undefined {
-    if (ready && reachableVia === 'host-network') {
-      return 'Ollama is running on the host. App containers may also need OLLAMA_HOST=0.0.0.0 in the host Ollama service to reach it directly.';
+  private async buildUnreachableHint(
+    ready: boolean,
+    error: string | undefined,
+    endpointUrl: string,
+  ): Promise<{ bridgeUnreachable: boolean; hint?: string }> {
+    if (ready) return { bridgeUnreachable: false, hint: undefined };
+    if (!isBridgeConnectionRefused(error, endpointUrl)) {
+      return { bridgeUnreachable: false, hint: undefined };
     }
 
-    if (ready) return undefined;
-
-    if (isBridgeConnectionRefused(error)) {
-      return 'Ollama may already be installed on this machine, but the Hub container could not connect over the Docker bridge. Ensure Ollama is running (systemctl status ollama). On Linux, set OLLAMA_HOST=0.0.0.0:11434 in the Ollama service so containers can reach it, then re-check.';
-    }
-
-    if (error?.includes('docker curl exited') || error?.includes('Cannot connect to the Docker daemon')) {
-      return 'The Hub could not probe host Ollama. Ensure Docker is running and Ollama is started on the host, then re-check.';
-    }
-
-    return undefined;
+    const hostProbe = await this.hostMetrics.readHostProbe();
+    return {
+      bridgeUnreachable: true,
+      hint: buildBridgeConnectionHint(hostProbe?.platform ?? resolveHostPlatform()),
+    };
   }
 
   /**

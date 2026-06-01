@@ -54,7 +54,7 @@ interface OllamaStatus {
   ready: boolean;
   running: boolean;
   endpointUrl: string;
-  reachableVia?: 'direct' | 'host-network';
+  bridgeUnreachable?: boolean;
   displayEndpoint?: string;
   hint?: string;
   error?: string;
