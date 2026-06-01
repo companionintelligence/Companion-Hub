@@ -1,10 +1,11 @@
 import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   normalizeCliArgs,
   renderHelp,
   renderManPage,
   renderWizardWelcome,
+  resolveEnvFromArgs,
   resolveWizardActionInput,
   resolveWizardEnvInput,
   stripAnsi,
@@ -54,6 +55,28 @@ describe('wizard selections', () => {
     expect(resolveWizardActionInput('5')).toBe('mcp-setup');
     expect(resolveWizardActionInput('9')).toBe('purge');
     expect(resolveWizardActionInput('10')).toBe('hot-reload');
+  });
+});
+
+describe('resolveEnvFromArgs', () => {
+  it('returns local by default when no args', () => {
+    expect(resolveEnvFromArgs([])).toBe('local');
+  });
+
+  it('picks the named env from the arg list', () => {
+    expect(resolveEnvFromArgs(['staging'])).toBe('staging');
+    expect(resolveEnvFromArgs(['prod'])).toBe('prod');
+  });
+
+  it('rejects unrecognised arguments so typos are caught', () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((_code) => {
+      throw new Error('process.exit called');
+    });
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect(() => resolveEnvFromArgs(['lokl'])).toThrow();
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    exitSpy.mockRestore();
+    consoleSpy.mockRestore();
   });
 });
 

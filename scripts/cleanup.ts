@@ -29,9 +29,20 @@ function addNames(output: string, set: Set<string>) {
 
 function removeDir(targetPath: string, label: string) {
   if (!existsSync(targetPath)) return false;
-  rmSync(targetPath, { recursive: true, force: true });
-  console.log(`   Removed ${label}: ${targetPath}`);
-  return true;
+  try {
+    rmSync(targetPath, { recursive: true, force: true });
+    console.log(`   Removed ${label}: ${targetPath}`);
+    return true;
+  } catch (error) {
+    console.error(`   Failed to remove ${label}: ${targetPath} — ${String(error)}`);
+    console.error(`   If owned by root, try: sudo rm -rf ${targetPath}`);
+    return false;
+  }
+}
+
+function isWithinHome(targetPath: string): boolean {
+  const home = homedir();
+  return targetPath === home || targetPath.startsWith(home + path.sep);
 }
 
 function getDeveloperStateDirs() {
@@ -39,6 +50,10 @@ function getDeveloperStateDirs() {
   const xdgDataHome = process.env.XDG_DATA_HOME || path.join(home, '.local', 'share');
   const xdgConfigHome = process.env.XDG_CONFIG_HOME || path.join(home, '.config');
   const xdgCacheHome = process.env.XDG_CACHE_HOME || path.join(home, '.cache');
+
+  if (!isWithinHome(xdgDataHome) || !isWithinHome(xdgConfigHome) || !isWithinHome(xdgCacheHome)) {
+    throw new Error('XDG environment variables point outside the home directory — aborting to avoid unintended deletions.');
+  }
   const names = ['Companion Hub', 'companion-hub', 'ci-hub', 'CI-Hub', 'computer.ci.app.hub'];
 
   return [

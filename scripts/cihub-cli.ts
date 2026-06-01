@@ -364,11 +364,11 @@ function getComposeFiles(env: HubEnv): string[] {
   return ['docker-compose.prod.yml'];
 }
 
-function resolveEnvFromArgs(args: string[], defaultEnv: HubEnv = 'local'): HubEnv {
+export function resolveEnvFromArgs(args: string[], defaultEnv: HubEnv = 'local'): HubEnv {
   const found = args.find((arg) => allowedEnvs.includes(arg as HubEnv));
-  const env = (found || defaultEnv) as HubEnv;
-  if (!allowedEnvs.includes(env)) usageAndExit(`Unknown env: ${env}`);
-  return env;
+  const unknown = args.filter((arg) => !allowedEnvs.includes(arg as HubEnv));
+  if (unknown.length > 0) usageAndExit(`Unexpected argument: ${unknown[0]}`);
+  return (found || defaultEnv) as HubEnv;
 }
 
 function buildEnvOverrides(envFileName: string) {
@@ -425,7 +425,8 @@ function startHub(mode: StartMode, env: HubEnv) {
       ],
       envOverrides,
     );
-    run('dotenv', ['-e', envFileName, '--', 'pnpm', 'run', 'dev:app'], envOverrides);
+    const fileVars = parseEnvFile(envFileName);
+    run('pnpm', ['run', 'dev:app'], { ...fileVars, ...envOverrides });
     return;
   }
 
@@ -807,7 +808,8 @@ export async function runCli(rawArgs: string[]) {
 
   if (first === 'up') {
     const detached = args.includes('--detached');
-    startHub(detached ? 'start:detached' : 'start', resolveEnvFromArgs(args.slice(1)));
+    const envArgs = args.slice(1).filter((arg) => arg !== '--detached');
+    startHub(detached ? 'start:detached' : 'start', resolveEnvFromArgs(envArgs));
     return;
   }
 
