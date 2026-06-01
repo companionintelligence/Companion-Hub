@@ -50,7 +50,7 @@ jobs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
       total_apps: ${{ steps.set-matrix.outputs.total_apps }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       
       - id: set-matrix
         run: |
@@ -113,7 +113,7 @@ jobs:
       matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
     
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       
       - name: Setup Tailscale
         uses: tailscale/github-action@v3
@@ -229,7 +229,7 @@ jobs:
     if: always()
     
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       
       - name: Download all results
         uses: actions/download-artifact@v4
