@@ -15,7 +15,25 @@ import { readFileSync } from 'node:fs';
  * 2. Fall back to /sys/class/dmi/id/product_uuid (same source systeminformation uses)
  */
 function getDeviceId(): string {
-  // Primary: dmidecode system-serial-number (needs root, so invoke via sudo)
+  // macOS: ioreg IOPlatformUUID
+  if (process.platform === 'darwin') {
+    try {
+      const out = execSync('ioreg -rd1 -c IOPlatformExpertDevice', { timeout: 5000, encoding: 'utf-8' });
+      const match = /IOPlatformUUID\s*=\s*"([^"]+)"/.exec(out);
+      if (match?.[1]) return match[1];
+    } catch {
+      console.error('ioreg failed on macOS, trying serial number');
+    }
+    try {
+      const serial = execSync('system_profiler SPHardwareDataType', { timeout: 5000, encoding: 'utf-8' });
+      const match = /Serial Number.*?:\s*(\S+)/.exec(serial);
+      if (match?.[1]) return match[1];
+    } catch {
+      console.error('system_profiler failed');
+    }
+  }
+
+  // Linux primary: dmidecode system-serial-number (needs root)
   try {
     const serial = execSync('sudo dmidecode -s system-serial-number', {
       timeout: 5000,
@@ -31,14 +49,14 @@ function getDeviceId(): string {
     console.error('dmidecode failed, falling back to hardware UUID');
   }
 
-  // Fallback: read hardware UUID directly (same as systeminformation's si.uuid().hardware)
+  // Linux fallback: /sys/class/dmi/id/product_uuid
   try {
     return readFileSync('/sys/class/dmi/id/product_uuid', 'utf-8').trim();
   } catch {
     console.error('Could not read /sys/class/dmi/id/product_uuid');
   }
 
-  // Last resort: /etc/machine-id
+  // Last resort: /etc/machine-id (Linux)
   try {
     return readFileSync('/etc/machine-id', 'utf-8').trim();
   } catch {

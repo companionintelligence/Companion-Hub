@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="810" height="540" viewBox="0 0 810 540" role="img" aria-label="cihub cihub mcp setup · config · shutdown">
+  <rect width="810" height="540" rx="12" fill="#0d1117"/>
+  <rect x="0" y="0" width="810" height="36" rx="12" fill="#161b22"/>
+  <rect x="0" y="24" width="810" height="12" fill="#161b22"/>
+  <circle cx="20" cy="18" r="6" fill="#ff5f57"/>
+  <circle cx="40" cy="18" r="6" fill="#febc2e"/>
+  <circle cx="60" cy="18" r="6" fill="#28c840"/>
+  <text x="405" y="23" text-anchor="middle" fill="#8b949e" font-size="12" font-family='ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace'>cihub mcp setup · config · shutdown</text>
+  <g font-family='ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace' font-size="15" xml:space="preserve">
+    <text x="18" y="62" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#56d364">$</text>
+    <text x="36" y="62" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">cihub</text>
+    <text x="90" y="62" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">mcp</text>
+    <text x="126" y="62" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">setup</text>
+    <text x="180" y="62" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">local</text>
+    <text x="18" y="83" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#3fb950">┌─</text>
+    <text x="45" y="83" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#3fb950">MCP</text>
+    <text x="81" y="83" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#3fb950">enabled</text>
+    <text x="153" y="83" textLength="621" lengthAdjust="spacingAndGlyphs" fill="#3fb950">────────────────────────────────────────────────────────────────────┐</text>
+    <text x="36" y="104" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">environment</text>
+    <text x="189" y="104" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">local</text>
+    <text x="36" y="125" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">mcp</text>
+    <text x="72" y="125" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">enabled</text>
+    <text x="189" y="125" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">true</text>
+    <text x="36" y="146" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">mcp</text>
+    <text x="72" y="146" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">api</text>
+    <text x="108" y="146" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">key</text>
+    <text x="189" y="146" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">&lt;set&gt;</text>
+    <text x="18" y="167" textLength="756" lengthAdjust="spacingAndGlyphs" fill="#3fb950">└──────────────────────────────────────────────────────────────────────────────────┘</text>
+    <text x="18" y="209" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#56d364">$</text>
+    <text x="36" y="209" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">cihub</text>
+    <text x="90" y="209" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">mcp</text>
+    <text x="126" y="209" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">config</text>
+    <text x="189" y="209" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">local</text>
+    <text x="18" y="230" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">┌─</text>
+    <text x="45" y="230" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">CI-Hub</text>
+    <text x="108" y="230" textLength="117" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">configuration</text>
+    <text x="234" y="230" textLength="540" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">───────────────────────────────────────────────────────────┐</text>
+    <text x="36" y="251" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">environment</text>
+    <text x="189" y="251" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">local</text>
+    <text x="36" y="272" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">cloud</text>
+    <text x="90" y="272" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">url</text>
+    <text x="189" y="272" textLength="333" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">https://hub.companionintelligence.com</text>
+    <text x="36" y="293" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">compose</text>
+    <text x="108" y="293" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">profiles</text>
+    <text x="189" y="293" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">private-vpn</text>
+    <text x="36" y="314" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">mcp</text>
+    <text x="72" y="314" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">enabled</text>
+    <text x="189" y="314" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">true</text>
+    <text x="36" y="335" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">mcp</text>
+    <text x="72" y="335" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">api</text>
+    <text x="108" y="335" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">key</text>
+    <text x="189" y="335" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">&lt;set&gt;</text>
+    <text x="18" y="356" textLength="756" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">└──────────────────────────────────────────────────────────────────────────────────┘</text>
+    <text x="18" y="398" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#56d364">$</text>
+    <text x="36" y="398" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">cihub</text>
+    <text x="90" y="398" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">mcp</text>
+    <text x="126" y="398" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">shutdown</text>
+    <text x="207" y="398" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">local</text>
+    <text x="18" y="419" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#d29922">┌─</text>
+    <text x="45" y="419" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#d29922">MCP</text>
+    <text x="81" y="419" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#d29922">disabled</text>
+    <text x="162" y="419" textLength="612" lengthAdjust="spacingAndGlyphs" fill="#d29922">───────────────────────────────────────────────────────────────────┐</text>
+    <text x="36" y="440" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">environment</text>
+    <text x="189" y="440" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">local</text>
+    <text x="36" y="461" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">mcp</text>
+    <text x="72" y="461" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">enabled</text>
+    <text x="189" y="461" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">false</text>
+    <text x="36" y="482" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">mcp</text>
+    <text x="72" y="482" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">api</text>
+    <text x="108" y="482" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">key</text>
+    <text x="189" y="482" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">&lt;set&gt;</text>
+    <text x="18" y="503" textLength="756" lengthAdjust="spacingAndGlyphs" fill="#d29922">└──────────────────────────────────────────────────────────────────────────────────┘</text>
+  </g>
+</svg>
