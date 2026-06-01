@@ -23,19 +23,7 @@ const BASE_COMMAND = 'cihub';
 const COMPAT_COMMAND = 'pnpm run hub --';
 const CI_CLOUD_DEFAULT = 'https://hub.companionintelligence.com';
 
-const COMPANY_ART = [
-  ' ▗▄▄▖ ▗▄▖ ▗▖  ▗▖▗▄▄▖  ▗▄▖ ▗▖  ▗▖▗▄▄▄▖ ▗▄▖ ▗▖  ▗▖              ',
-  '▐▌   ▐▌ ▐▌▐▛▚▞▜▌▐▌ ▐▌▐▌ ▐▌▐▛▚▖▐▌  █  ▐▌ ▐▌▐▛▚▖▐▌              ',
-  '▐▌   ▐▌ ▐▌▐▌  ▐▌▐▛▀▘ ▐▛▀▜▌▐▌ ▝▜▌  █  ▐▌ ▐▌▐▌ ▝▜▌              ',
-  '▝▚▄▄▖▝▚▄▞▘▐▌  ▐▌▐▌   ▐▌ ▐▌▐▌  ▐▌▗▄█▄▖▝▚▄▞▘▐▌  ▐▌              ',
-  '                                                              ',
-  '▗▄▄▄▖▗▖  ▗▖▗▄▄▄▖▗▄▄▄▖▗▖   ▗▖   ▗▄▄▄▖ ▗▄▄▖▗▄▄▄▖▗▖  ▗▖ ▗▄▄▖▗▄▄▄▖',
-  '  █  ▐▛▚▖▐▌  █  ▐▌   ▐▌   ▐▌     █  ▐▌   ▐▌   ▐▛▚▖▐▌▐▌   ▐▌  ',
-  '  █  ▐▌ ▝▜▌  █  ▐▛▀▀▘▐▌   ▐▌     █  ▐▌▝▜▌▐▛▀▀▘▐▌ ▝▜▌▐▌   ▐▛▀▀▘',
-  '▗▄█▄▖▐▌  ▐▌  █  ▐▙▄▄▖▐▙▄▄▖▐▙▄▄▖▗▄█▄▖▝▚▄▞▘▐▙▄▄▖▐▌  ▐▌▝▚▄▄▖▐▙▄▄▖',
-].join('\n');
-
-const TAGLINE = 'Companion Intelligence Hub  ·  companionintelligence.com';
+const COMPANY_ART = 'Companion Intelligence Hub\nci.computer';
 
 const envFileMap: Record<HubEnv, string> = {
   local: '.env.local',
@@ -179,9 +167,7 @@ export function renderStep(n: number, total: number, label: string, status: Step
 // ─── banner ───────────────────────────────────────────────────────────────────
 
 export function renderBanner() {
-  const art = colorize(COMPANY_ART, 'green');
-  const tag = dim(TAGLINE);
-  return `${art}\n${tag}`;
+  return colorize(COMPANY_ART, 'green');
 }
 
 export function renderWizardWelcome() {

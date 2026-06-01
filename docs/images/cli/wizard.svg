@@ -1,7 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="900" height="1060" viewBox="0 0 900 1060" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="900" viewBox="0 0 900 900" role="img" aria-labelledby="title desc">
   <title id="title">CI-Hub CLI screenshot</title>
   <desc id="desc">Terminal capture for cihub wizard — 6-step FTUE first-run mode</desc>
-  <rect width="900" height="1060" rx="14" fill="#0d1117"/>
+  <rect width="900" height="900" rx="14" fill="#0d1117"/>
   <rect x="0" y="0" width="900" height="34" rx="14" fill="#161b22"/>
   <rect x="0" y="20" width="900" height="14" fill="#161b22"/>
   <circle cx="18" cy="17" r="5" fill="#ff5f57"/>
@@ -10,47 +10,39 @@
   <text x="450" y="22" text-anchor="middle" fill="#8b949e" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace">wizard</text>
   <g font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace" font-size="14" xml:space="preserve">
     <text x="24" y="56"  fill="#7ee787">$ cihub wizard</text>
-    <text x="24" y="76"  fill="#3fb950"> ▗▄▄▖ ▗▄▖ ▗▖  ▗▖▗▄▄▖  ▗▄▖ ▗▖  ▗▖▗▄▄▄▖ ▗▄▖ ▗▖  ▗▖              </text>
-    <text x="24" y="96"  fill="#3fb950">▐▌   ▐▌ ▐▌▐▛▚▞▜▌▐▌ ▐▌▐▌ ▐▌▐▛▚▖▐▌  █  ▐▌ ▐▌▐▛▚▖▐▌              </text>
-    <text x="24" y="116" fill="#3fb950">▐▌   ▐▌ ▐▌▐▌  ▐▌▐▛▀▘ ▐▛▀▜▌▐▌ ▝▜▌  █  ▐▌ ▐▌▐▌ ▝▜▌              </text>
-    <text x="24" y="136" fill="#3fb950">▝▚▄▄▖▝▚▄▞▘▐▌  ▐▌▐▌   ▐▌ ▐▌▐▌  ▐▌▗▄█▄▖▝▚▄▞▘▐▌  ▐▌              </text>
-    <text x="24" y="156" fill="#3fb950">                                                              </text>
-    <text x="24" y="176" fill="#3fb950">▗▄▄▄▖▗▖  ▗▖▗▄▄▄▖▗▄▄▄▖▗▖   ▗▖   ▗▄▄▄▖ ▗▄▄▖▗▄▄▄▖▗▖  ▗▖ ▗▄▄▖▗▄▄▄▖</text>
-    <text x="24" y="196" fill="#3fb950">  █  ▐▛▚▖▐▌  █  ▐▌   ▐▌   ▐▌     █  ▐▌   ▐▌   ▐▛▚▖▐▌▐▌   ▐▌  </text>
-    <text x="24" y="216" fill="#3fb950">  █  ▐▌ ▝▜▌  █  ▐▛▀▀▘▐▌   ▐▌     █  ▐▌▝▜▌▐▛▀▀▘▐▌ ▝▜▌▐▌   ▐▛▀▀▘</text>
-    <text x="24" y="236" fill="#3fb950">▗▄█▄▖▐▌  ▐▌  █  ▐▙▄▄▖▐▙▄▄▖▐▙▄▄▖▗▄█▄▖▝▚▄▞▘▐▙▄▄▖▐▌  ▐▌▝▚▄▄▖▐▙▄▄▖</text>
-    <text x="24" y="256" fill="#484f58">Companion Intelligence Hub  ·  companionintelligence.com</text>
-    <text x="24" y="296" fill="#3fb950">┌─ Setup Wizard ─────────────────────────────────────────────────────────────────────┐</text>
-    <text x="24" y="316" fill="#e6edf3">  Goal  Launch, configure, and register your Hub in one guided flow.</text>
-    <text x="24" y="336" fill="#e6edf3">  Tip   Press Enter to accept the shown default for each prompt.</text>
-    <text x="24" y="356" fill="#e6edf3">  Docs  cihub man  ·  cihub --help</text>
-    <text x="24" y="376" fill="#3fb950">└─────────────────────────────────────────────────────────────────────────────────────┘</text>
-    <text x="24" y="416" fill="#b08800">┌─ First-time setup detected ────────────────────────────────────────────────────────┐</text>
-    <text x="24" y="436" fill="#e6edf3">  No .env.local found — wizard will guide you through initial setup.</text>
-    <text x="24" y="456" fill="#484f58">  ○ [1/6] Choose environment</text>
-    <text x="24" y="476" fill="#484f58">  ○ [2/6] Check prerequisites</text>
-    <text x="24" y="496" fill="#484f58">  ○ [3/6] Initialize host &amp; Docker config</text>
-    <text x="24" y="516" fill="#484f58">  ○ [4/6] Register with CI Cloud</text>
-    <text x="24" y="536" fill="#484f58">  ○ [5/6] Start the Hub</text>
-    <text x="24" y="556" fill="#484f58">  ○ [6/6] Install initial model (optional)</text>
-    <text x="24" y="576" fill="#b08800">└─────────────────────────────────────────────────────────────────────────────────────┘</text>
-    <text x="24" y="616" fill="#58a6ff">● [1/6] Choose environment</text>
-    <text x="24" y="636" fill="#30363d">┌─ Choose environment ────────────────────────────────────────────────────────────────┐</text>
-    <text x="24" y="656" fill="#e6edf3">  1. local    — Local Docker compose stack  (default)</text>
-    <text x="24" y="676" fill="#e6edf3">  2. dev      — Shared dev environment</text>
-    <text x="24" y="696" fill="#e6edf3">  3. staging  — Shared staging environment</text>
-    <text x="24" y="716" fill="#e6edf3">  4. prod     — Production environment</text>
-    <text x="24" y="736" fill="#30363d">└─────────────────────────────────────────────────────────────────────────────────────┘</text>
-    <text x="24" y="756" fill="#e6edf3">  Environment [1-4, default 1]: <tspan fill="#7ee787">1</tspan></text>
-    <text x="24" y="776" fill="#3fb950">✓ [1/6] Environment: local</text>
-    <text x="24" y="816" fill="#58a6ff">● [2/6] Checking prerequisites…</text>
-    <text x="24" y="836" fill="#30363d">┌─ Prerequisites ─────────────────────────────────────────────────────────────────────┐</text>
-    <text x="24" y="856" fill="#e6edf3">  Docker:           <tspan fill="#3fb950">● available</tspan></text>
-    <text x="24" y="876" fill="#e6edf3">  Docker Compose:   <tspan fill="#3fb950">● available</tspan></text>
-    <text x="24" y="896" fill="#e6edf3">  Tailscale VPN:    <tspan fill="#3fb950">● 100.64.0.3</tspan></text>
-    <text x="24" y="916" fill="#e6edf3">  Env file:         <tspan fill="#d29922">○ will be created</tspan></text>
-    <text x="24" y="936" fill="#30363d">└─────────────────────────────────────────────────────────────────────────────────────┘</text>
-    <text x="24" y="956" fill="#3fb950">✓ [2/6] Prerequisites checked</text>
-    <text x="24" y="996" fill="#484f58">● [3/6] Initializing host assets… → ✓ [4/6] Register → ✓ [5/6] Hub launched → [6/6] Model…</text>
+    <text x="24" y="80"  fill="#3fb950" font-size="20">Companion Intelligence Hub</text>
+    <text x="24" y="104" fill="#3fb950" font-size="16">ci.computer</text>
+    <text x="24" y="144" fill="#3fb950">┌─ Setup Wizard ─────────────────────────────────────────────────────────────────────┐</text>
+    <text x="24" y="164" fill="#e6edf3">  Goal  Launch, configure, and register your Hub in one guided flow.</text>
+    <text x="24" y="184" fill="#e6edf3">  Tip   Press Enter to accept the shown default for each prompt.</text>
+    <text x="24" y="204" fill="#e6edf3">  Docs  cihub man  ·  cihub --help</text>
+    <text x="24" y="224" fill="#3fb950">└─────────────────────────────────────────────────────────────────────────────────────┘</text>
+    <text x="24" y="264" fill="#b08800">┌─ First-time setup detected ────────────────────────────────────────────────────────┐</text>
+    <text x="24" y="284" fill="#e6edf3">  No .env.local found — wizard will guide you through initial setup.</text>
+    <text x="24" y="304" fill="#484f58">  ○ [1/6] Choose environment</text>
+    <text x="24" y="324" fill="#484f58">  ○ [2/6] Check prerequisites</text>
+    <text x="24" y="344" fill="#484f58">  ○ [3/6] Initialize host &amp; Docker config</text>
+    <text x="24" y="364" fill="#484f58">  ○ [4/6] Register with CI Cloud</text>
+    <text x="24" y="384" fill="#484f58">  ○ [5/6] Start the Hub</text>
+    <text x="24" y="404" fill="#484f58">  ○ [6/6] Install initial model (optional)</text>
+    <text x="24" y="424" fill="#b08800">└─────────────────────────────────────────────────────────────────────────────────────┘</text>
+    <text x="24" y="464" fill="#58a6ff">● [1/6] Choose environment</text>
+    <text x="24" y="484" fill="#30363d">┌─ Choose environment ────────────────────────────────────────────────────────────────┐</text>
+    <text x="24" y="504" fill="#e6edf3">  1. local    — Local Docker compose stack  (default)</text>
+    <text x="24" y="524" fill="#e6edf3">  2. dev      — Shared dev environment</text>
+    <text x="24" y="544" fill="#e6edf3">  3. staging  — Shared staging environment</text>
+    <text x="24" y="564" fill="#e6edf3">  4. prod     — Production environment</text>
+    <text x="24" y="584" fill="#30363d">└─────────────────────────────────────────────────────────────────────────────────────┘</text>
+    <text x="24" y="604" fill="#e6edf3">  Environment [1-4, default 1]: <tspan fill="#7ee787">1</tspan></text>
+    <text x="24" y="624" fill="#3fb950">✓ [1/6] Environment: local</text>
+    <text x="24" y="664" fill="#58a6ff">● [2/6] Checking prerequisites…</text>
+    <text x="24" y="684" fill="#30363d">┌─ Prerequisites ─────────────────────────────────────────────────────────────────────┐</text>
+    <text x="24" y="704" fill="#e6edf3">  Docker:           <tspan fill="#3fb950">● available</tspan></text>
+    <text x="24" y="724" fill="#e6edf3">  Docker Compose:   <tspan fill="#3fb950">● available</tspan></text>
+    <text x="24" y="744" fill="#e6edf3">  Tailscale VPN:    <tspan fill="#3fb950">● 100.64.0.3</tspan></text>
+    <text x="24" y="764" fill="#e6edf3">  Env file:         <tspan fill="#d29922">○ will be created</tspan></text>
+    <text x="24" y="784" fill="#30363d">└─────────────────────────────────────────────────────────────────────────────────────┘</text>
+    <text x="24" y="804" fill="#3fb950">✓ [2/6] Prerequisites checked</text>
+    <text x="24" y="844" fill="#484f58">● [3/6] → ✓ [4/6] → ✓ [5/6] Hub launched → [6/6] Model install (optional)</text>
   </g>
 </svg>

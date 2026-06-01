@@ -1,7 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="900" height="1080" viewBox="0 0 900 1080" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="1000" viewBox="0 0 900 1000" role="img" aria-labelledby="title desc">
   <title id="title">CI-Hub CLI screenshot</title>
   <desc id="desc">Terminal capture for cihub man</desc>
-  <rect width="900" height="1080" rx="14" fill="#0d1117"/>
+  <rect width="900" height="1000" rx="14" fill="#0d1117"/>
   <rect x="0" y="0" width="900" height="34" rx="14" fill="#161b22"/>
   <rect x="0" y="20" width="900" height="14" fill="#161b22"/>
   <circle cx="18" cy="17" r="5" fill="#ff5f57"/>
@@ -15,42 +15,37 @@
     <text x="24" y="136" fill="#e6edf3">  cihub &lt;command&gt; [args]</text>
     <text x="24" y="156" fill="#e6edf3">  pnpm run hub -- &lt;command&gt; [args]</text>
     <text x="24" y="176" fill="#30363d">└─────────────────────────────────────────────────────────────────────────────────────┘</text>
-    <text x="24" y="216" fill="#30363d">┌─ Description ───────────────────────────────────────────────────────────────────────┐</text>
-    <text x="24" y="236" fill="#e6edf3">  Companion Intelligence Hub CLI — setup, registration, Docker lifecycle,</text>
-    <text x="24" y="256" fill="#e6edf3">  MCP toggles, developer purge/hot-reload flows, and app management.</text>
-    <text x="24" y="276" fill="#e6edf3">  All commands accept optional [env]: local (default), dev, staging, prod.</text>
+    <text x="24" y="216" fill="#30363d">┌─ Setup &amp; Registration ─────────────────────────────────────────────────────────────┐</text>
+    <text x="24" y="236" fill="#e6edf3">  cihub wizard [env]    Guided first-time or re-setup wizard (6-step FTUE)</text>
+    <text x="24" y="256" fill="#e6edf3">  cihub setup [env]     Initialize host state, Traefik, and Docker auth config</text>
+    <text x="24" y="276" fill="#e6edf3">  cihub register [env]  Print cloud portal registration URL for this device</text>
     <text x="24" y="296" fill="#30363d">└─────────────────────────────────────────────────────────────────────────────────────┘</text>
-    <text x="24" y="336" fill="#30363d">┌─ Setup &amp; Registration ─────────────────────────────────────────────────────────────┐</text>
-    <text x="24" y="356" fill="#e6edf3">  cihub wizard [env]    Guided first-time or re-setup wizard (6-step FTUE)</text>
-    <text x="24" y="376" fill="#e6edf3">  cihub setup [env]     Initialize host state, Traefik, and Docker auth config</text>
-    <text x="24" y="396" fill="#e6edf3">  cihub register [env]  Print cloud portal registration URL for this device</text>
-    <text x="24" y="416" fill="#30363d">└─────────────────────────────────────────────────────────────────────────────────────┘</text>
-    <text x="24" y="456" fill="#30363d">┌─ Hub lifecycle ─────────────────────────────────────────────────────────────────────┐</text>
-    <text x="24" y="476" fill="#e6edf3">  cihub up [env] [--detached]  Start the hub stack</text>
-    <text x="24" y="496" fill="#e6edf3">  cihub shutdown [env]         Stop the hub stack</text>
-    <text x="24" y="516" fill="#e6edf3">  cihub status [env]           Containers, Cloudflare tunnel, Tailscale VPN, models</text>
-    <text x="24" y="536" fill="#e6edf3">  cihub config [env]           Show resolved configuration values</text>
+    <text x="24" y="336" fill="#30363d">┌─ Hub lifecycle ─────────────────────────────────────────────────────────────────────┐</text>
+    <text x="24" y="356" fill="#e6edf3">  cihub up [env] [--detached]  Start the hub stack</text>
+    <text x="24" y="376" fill="#e6edf3">  cihub shutdown [env]         Stop the hub stack</text>
+    <text x="24" y="396" fill="#e6edf3">  cihub status [env]           Containers, Cloudflare tunnel, Tailscale VPN, models</text>
+    <text x="24" y="416" fill="#e6edf3">  cihub config [env]           Show resolved configuration values</text>
+    <text x="24" y="436" fill="#30363d">└─────────────────────────────────────────────────────────────────────────────────────┘</text>
+    <text x="24" y="476" fill="#30363d">┌─ Models ────────────────────────────────────────────────────────────────────────────┐</text>
+    <text x="24" y="496" fill="#e6edf3">  cihub models list            List installed Ollama models</text>
+    <text x="24" y="516" fill="#e6edf3">  cihub models install &lt;name&gt;  Pull a model (llama3, mistral, phi3, codestral)</text>
+    <text x="24" y="536" fill="#e6edf3">  cihub models rm &lt;name&gt;       Remove an installed model</text>
     <text x="24" y="556" fill="#30363d">└─────────────────────────────────────────────────────────────────────────────────────┘</text>
-    <text x="24" y="596" fill="#30363d">┌─ Models ────────────────────────────────────────────────────────────────────────────┐</text>
-    <text x="24" y="616" fill="#e6edf3">  cihub models list            List installed Ollama models</text>
-    <text x="24" y="636" fill="#e6edf3">  cihub models install &lt;name&gt;  Pull a model (llama3, mistral, phi3, codestral)</text>
-    <text x="24" y="656" fill="#e6edf3">  cihub models rm &lt;name&gt;       Remove an installed model</text>
+    <text x="24" y="596" fill="#30363d">┌─ App lifecycle ─────────────────────────────────────────────────────────────────────┐</text>
+    <text x="24" y="616" fill="#e6edf3">  cihub app list / status [name] / logs &lt;name&gt; / inspect &lt;name&gt;</text>
+    <text x="24" y="636" fill="#e6edf3">  cihub app add|edit &lt;name&gt; &lt;image&gt; [--port h:c] [--env K=V]</text>
+    <text x="24" y="656" fill="#e6edf3">  cihub app start|stop|restart|delete &lt;name&gt;</text>
     <text x="24" y="676" fill="#30363d">└─────────────────────────────────────────────────────────────────────────────────────┘</text>
-    <text x="24" y="716" fill="#30363d">┌─ App lifecycle ─────────────────────────────────────────────────────────────────────┐</text>
-    <text x="24" y="736" fill="#e6edf3">  cihub app list / status [name] / logs &lt;name&gt; / inspect &lt;name&gt;</text>
-    <text x="24" y="756" fill="#e6edf3">  cihub app add|edit &lt;name&gt; &lt;image&gt; [--port h:c] [--env K=V]</text>
-    <text x="24" y="776" fill="#e6edf3">  cihub app start|stop|restart|delete &lt;name&gt;</text>
-    <text x="24" y="796" fill="#30363d">└─────────────────────────────────────────────────────────────────────────────────────┘</text>
-    <text x="24" y="836" fill="#30363d">┌─ Developer workflow ────────────────────────────────────────────────────────────────┐</text>
-    <text x="24" y="856" fill="#e6edf3">  cihub hot-reload [env]  Infra up + backend/frontend from source</text>
-    <text x="24" y="876" fill="#e6edf3">  cihub purge [--yes]     Remove Docker state + XDG config/cache dirs</text>
-    <text x="24" y="896" fill="#30363d">└─────────────────────────────────────────────────────────────────────────────────────┘</text>
-    <text x="24" y="936" fill="#b08800">┌─ Packaging ─────────────────────────────────────────────────────────────────────────┐</text>
-    <text x="24" y="956" fill="#e6edf3">  npm/pnpm/bun global installs expose cihub on PATH via the package bin entry.</text>
-    <text x="24" y="976" fill="#e6edf3">  In-repo compat: pnpm run hub -- &lt;command&gt;</text>
-    <text x="24" y="996" fill="#b08800">└─────────────────────────────────────────────────────────────────────────────────────┘</text>
-    <text x="24" y="1036" fill="#484f58">┌─ On-device testing loop ────────────────────────────────────────────────────────────┐</text>
-    <text x="24" y="1056" fill="#e6edf3">  cihub purge --yes  ·  cihub hot-reload local  ·  cihub wizard  ·  pnpm run test:cli</text>
-    <text x="24" y="1076" fill="#484f58">└─────────────────────────────────────────────────────────────────────────────────────┘</text>
+    <text x="24" y="716" fill="#30363d">┌─ Developer workflow ────────────────────────────────────────────────────────────────┐</text>
+    <text x="24" y="736" fill="#e6edf3">  cihub hot-reload [env]  Infra up + backend/frontend from source</text>
+    <text x="24" y="756" fill="#e6edf3">  cihub purge [--yes]     Remove Docker state + XDG config/cache dirs</text>
+    <text x="24" y="776" fill="#30363d">└─────────────────────────────────────────────────────────────────────────────────────┘</text>
+    <text x="24" y="816" fill="#b08800">┌─ Packaging ─────────────────────────────────────────────────────────────────────────┐</text>
+    <text x="24" y="836" fill="#e6edf3">  npm/pnpm/bun global installs expose cihub on PATH via the package bin entry.</text>
+    <text x="24" y="856" fill="#e6edf3">  In-repo compat: pnpm run hub -- &lt;command&gt;</text>
+    <text x="24" y="876" fill="#b08800">└─────────────────────────────────────────────────────────────────────────────────────┘</text>
+    <text x="24" y="916" fill="#484f58">┌─ On-device testing loop ────────────────────────────────────────────────────────────┐</text>
+    <text x="24" y="936" fill="#e6edf3">  cihub purge --yes  ·  cihub hot-reload local  ·  cihub wizard  ·  pnpm run test:cli</text>
+    <text x="24" y="956" fill="#484f58">└─────────────────────────────────────────────────────────────────────────────────────┘</text>
   </g>
 </svg>

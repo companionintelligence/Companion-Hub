@@ -19,17 +19,10 @@ import {
 // ─── banner ───────────────────────────────────────────────────────────────────
 
 describe('banner', () => {
-  it('contains the Companion Intelligence block ASCII art', () => {
+  it('shows Companion Intelligence Hub and ci.computer in green', () => {
     const plain = stripAnsi(renderBanner());
-    // First line of Companion block art
-    expect(plain).toContain('▗▄▄▖');
-    // First line of Intelligence block art
-    expect(plain).toContain('▗▄▄▄▖▗▖');
-  });
-
-  it('shows the company tagline', () => {
-    const plain = stripAnsi(renderBanner());
-    expect(plain).toContain('companionintelligence.com');
+    expect(plain).toContain('Companion Intelligence Hub');
+    expect(plain).toContain('ci.computer');
   });
 
   it('renders ANSI green colour when FORCE_COLOR is set', () => {
@@ -41,7 +34,7 @@ describe('banner', () => {
 
   it('wizard welcome embeds the banner', () => {
     const plain = stripAnsi(renderWizardWelcome());
-    expect(plain).toContain('▗▄▄▖');
+    expect(plain).toContain('Companion Intelligence Hub');
     expect(plain).toContain('Setup Wizard');
     expect(plain).toContain('cihub man');
   });
