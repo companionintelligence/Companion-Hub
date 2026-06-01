@@ -18,4 +18,15 @@ describe('HintText', () => {
     render(<LabelWithHint label="Pairing Code" hint="Copy me" hintId="pairing-code" />);
     expect(screen.getByText('Pairing Code')).toBeInTheDocument();
   });
+
+  it('sanitizes id with spaces into a single anchor class', () => {
+    render(
+      <HintText id="My Feature Title" hint="help">
+        Label
+      </HintText>,
+    );
+    const anchor = screen.getByText('Label');
+    expect(anchor).toHaveClass('field-hint-My-Feature-Title');
+    expect(anchor.className.split(/\s+/).filter((c) => c.startsWith('field-hint-'))).toHaveLength(1);
+  });
 });

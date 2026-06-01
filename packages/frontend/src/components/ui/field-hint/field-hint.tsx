@@ -2,8 +2,18 @@ import { cn } from '@/lib/utils';
 import type { ElementType, ReactNode } from 'react';
 import { Tooltip } from 'react-tooltip';
 
+/** Turn a logical hint id into one CSS class token for react-tooltip's anchorSelect. */
+function toFieldHintAnchorClass(id: string): string {
+  const safe = id
+    .trim()
+    .replace(/[^\w-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+  return `field-hint-${safe || 'default'}`;
+}
+
 type HintTextProps = {
-  /** Unique id — used as anchor class (must be stable across renders). */
+  /** Unique id — sanitized into a single anchor class (must be stable across renders). */
   id: string;
   hint: ReactNode;
   children: ReactNode;
@@ -16,7 +26,7 @@ type HintTextProps = {
  * Hover the visible text to see a tooltip — no extra icon. The anchor is the label itself.
  */
 export function HintText({ id, hint, children, className, place = 'top', as: Tag = 'span' }: HintTextProps) {
-  const anchorClass = `field-hint-${id}`;
+  const anchorClass = toFieldHintAnchorClass(id);
   const hintString = typeof hint === 'string' ? hint : undefined;
 
   return (
