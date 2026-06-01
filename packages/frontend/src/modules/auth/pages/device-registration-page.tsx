@@ -475,28 +475,24 @@ export default function DeviceRegistrationPage() {
               id="reg-account"
               hint={REGISTRATION_ACCOUNT_HINT}
               as="h2"
-              className="text-xl font-semibold leading-snug text-foreground md:text-2xl"
+              className="text-lg font-semibold leading-snug text-foreground md:text-xl"
             >
               Step 1: Get your pairing code
             </HintText>
           </div>
-          <Button asChild className="mt-6 h-12 w-full text-base font-semibold md:h-14 md:text-lg" intent="primary" size="lg">
+          <Button asChild className="mt-6 h-10 w-full text-sm font-semibold md:h-11 md:text-base" intent="primary">
             <a href={portalUrl} target="_blank" rel="noopener noreferrer">
               Login to Companion Account
             </a>
           </Button>
-          <p className="mt-5 text-base leading-relaxed text-muted-foreground md:text-lg">
-            Don&apos;t have an account yet?{' '}
-            <a
-              href={`${portalUrl}/signup`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="font-semibold text-primary underline hover:no-underline"
-            >
-              Create one free
-            </a>{' '}
-            — it only takes a moment, and your data stays on this device.
-          </p>
+          <div className="mt-6 space-y-3 border-t border-border/60 pt-5">
+            <p className="text-center text-sm text-muted-foreground">Don&apos;t have an account yet?</p>
+            <Button asChild variant="outline" className="h-10 w-full text-sm font-semibold md:h-11 md:text-base">
+              <a href={`${portalUrl}/signup`} target="_blank" rel="noopener noreferrer">
+                Create account
+              </a>
+            </Button>
+          </div>
         </section>
 
         <div aria-hidden="true" className="hidden items-center justify-center text-muted-foreground md:flex">
