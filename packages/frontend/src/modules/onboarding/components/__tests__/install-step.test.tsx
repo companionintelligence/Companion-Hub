@@ -105,7 +105,15 @@ describe('InstallStep', () => {
       <InstallStep
         apps={[]}
         onComplete={onComplete}
-        aiSetupConfig={{ agentFrameworks: ['openclaw'], selectedModels: [], backend: 'ollama', cloudProviders: [], remoteAccess: [], skipped: true }}
+        aiSetupConfig={{
+          agentFrameworks: ['openclaw'],
+          selectedModels: [],
+          installedCatalogIds: [],
+          backend: 'ollama',
+          cloudProviders: [],
+          remoteAccess: [],
+          skipped: true,
+        }}
       />,
     );
 
@@ -122,6 +130,7 @@ describe('InstallStep', () => {
           agentFrameworks: ['openclaw'],
           remoteAccess: [],
           selectedModels: [],
+          installedCatalogIds: [],
           backend: 'vllm',
           cloudProviders: [],
           skipped: false,
@@ -141,6 +150,16 @@ describe('InstallStep', () => {
   });
 
   it('persists the preferred model alongside the backend during AI setup', async () => {
+    mockApiFetch.mockImplementation(async (url: string) => {
+      if (url.includes('/api/inference/models/pull-preflight')) {
+        return { ok: true, json: async () => ({ canPull: true, alreadyInstalled: false }) };
+      }
+      if (url.includes('/api/inference/models/tracked')) {
+        return { ok: true, json: async () => [{ catalogId: 'llama3-3-70b', state: 'pulled' }] };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+
     render(
       <InstallStep
         apps={[]}
@@ -149,6 +168,7 @@ describe('InstallStep', () => {
           agentFrameworks: ['openclaw'],
           remoteAccess: [],
           selectedModels: ['llama3-3-70b'],
+          installedCatalogIds: [],
           backend: 'ollama',
           cloudProviders: [],
           preferredModelId: 'llama3-3-70b',
@@ -158,13 +178,7 @@ describe('InstallStep', () => {
     );
 
     await waitFor(() => {
-      expect(mockApiFetch).toHaveBeenCalledWith(
-        '/api/inference/preferences',
-        expect.objectContaining({
-          method: 'PATCH',
-          body: JSON.stringify({ backend: 'ollama', model: 'llama3-3-70b' }),
-        }),
-      );
+      expect(mockApiFetch).toHaveBeenCalledWith(expect.stringContaining('/api/inference/models/pull-preflight'), expect.anything());
     });
   });
 });

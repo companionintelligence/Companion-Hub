@@ -104,6 +104,15 @@ describe('AppCredentialsService', () => {
     configurationService = mock<ConfigurationService>();
 
     configurationService.getInferencePreferences.mockReturnValue({ preferredBackend: null, preferredModel: null });
+    modelPuller.evaluatePull.mockResolvedValue({
+      catalogId: 'hermes4-70b',
+      alreadyInstalled: false,
+      canPull: true,
+      requiredDiskMb: 0,
+      requiredMemoryMb: 0,
+      availableDiskMb: 100000,
+      availableMemoryMb: 100000,
+    });
     ollamaBackend.getBaseUrl.mockReturnValue(OLLAMA_BASE_URL);
     ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [] });
     hardwareInspector.getProfile.mockResolvedValue(baseProfile);
@@ -447,6 +456,33 @@ describe('AppCredentialsService', () => {
       await new Promise((resolve) => setImmediate(resolve));
       expect(modelPuller.pullModel).toHaveBeenCalledTimes(1);
       resolvePull();
+    });
+
+    it('does not pre-pull chat models when a cloud provider is enabled', async () => {
+      cloudFallback.getEnabledProviders.mockReturnValue([
+        { provider: 'openai', apiKey: 'sk-test', enabled: true, defaultModel: 'gpt-4o', baseUrl: 'https://api.openai.com/v1' },
+      ] as CloudProviderConfig[]);
+      service.invalidateCache();
+      await service.getCredentials('openclaw');
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(modelPuller.pullModel).not.toHaveBeenCalledWith('hermes4-70b');
+    });
+
+    it('skips pre-pull when evaluatePull blocks the download', async () => {
+      modelPuller.evaluatePull.mockResolvedValueOnce({
+        catalogId: 'hermes4-70b',
+        alreadyInstalled: false,
+        canPull: false,
+        reason: 'Not enough disk',
+        requiredDiskMb: 50000,
+        requiredMemoryMb: 4096,
+        availableDiskMb: 100,
+        availableMemoryMb: 8000,
+      });
+      service.invalidateCache();
+      await service.getCredentials('openclaw');
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(modelPuller.pullModel).not.toHaveBeenCalled();
     });
   });
 });

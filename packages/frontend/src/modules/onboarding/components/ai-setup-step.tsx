@@ -20,6 +20,7 @@ import { SystemOverview } from './ai-setup/system-overview';
 import { ResourceSummaryBar } from './ai-setup/resource-summary-bar';
 import { OllamaSetupCard } from './ai-setup/ollama-setup-card';
 import { TailscaleSetupStep } from './tailscale-setup-step';
+import { computeSelectionBudget } from '../helpers/onboarding-model-selection';
 import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
 import { Loader2 } from 'lucide-react';
 
@@ -94,19 +95,24 @@ export const AiSetupStep = ({
   // is ordered best-first (index 0 is the largest model that fits the hardware budget), so we walk it
   // in order and take the top installable agent LLM — not whatever happens to come first in the catalog.
   // Both agents read this single model from the Hub's bootstrap.env, so it must be the best-fit pick.
-  const getDefaultPreferredModelId = (data: HardwareProfileResponse, backend: InferenceBackendType): string | undefined => {
+  const getDefaultPreferredModelId = (data: HardwareProfileResponse, backend: InferenceBackendType, selectedIds?: string[]): string | undefined => {
+    const installed = new Set(data.installedCatalogIds ?? []);
+    const selected = selectedIds ?? data.availableModels.filter((m) => m.backend === backend && installed.has(m.id)).map((m) => m.id);
+    const fromSelected = selected.find((id) => {
+      const model = data.availableModels.find((m) => m.id === id);
+      return model && model.backend === backend && isAgentModel(model);
+    });
+    if (fromSelected) return fromSelected;
+
     const installableAgentIds = new Set(data.availableModels.filter((m) => m.backend === backend && isAgentModel(m)).map((m) => m.id));
     const topRecommended = data.recommendedModels.find((m) => m.backend === backend && isAgentModel(m) && installableAgentIds.has(m.id));
     return topRecommended?.id ?? data.availableModels.find((m) => m.backend === backend && isAgentModel(m))?.id;
   };
 
-  // What's pre-selected for install: only the single best-fit agent LLM (the agents' default) plus
-  // the recommended non-LLM models (e.g. the embedder needed for memory/RAG). The other recommended
-  // LLMs are shown in the grid but left unchecked so the user opts in rather than pulling them all.
+  // Pre-select only models already present in Ollama. New downloads require an explicit checkbox.
   const getDefaultSelectedModelIds = (data: HardwareProfileResponse, backend: InferenceBackendType): string[] => {
-    const bestFitLlm = getDefaultPreferredModelId(data, backend);
-    const nonLlmRecommended = data.recommendedModels.filter((m) => m.backend === backend && m.modality !== 'llm').map((m) => m.id);
-    return [...new Set([bestFitLlm, ...nonLlmRecommended].filter((id): id is string => Boolean(id)))];
+    const installed = new Set(data.installedCatalogIds ?? []);
+    return data.availableModels.filter((m) => m.backend === backend && installed.has(m.id)).map((m) => m.id);
   };
 
   const fetchProfile = async (isRescan = false) => {
@@ -117,8 +123,9 @@ export const AiSetupStep = ({
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data: HardwareProfileResponse = await res.json();
       setProfile(data);
-      setPreferredModelId(getDefaultPreferredModelId(data, ONBOARDING_BACKEND));
-      setSelectedModelIds(getDefaultSelectedModelIds(data, ONBOARDING_BACKEND));
+      const defaultSelected = getDefaultSelectedModelIds(data, ONBOARDING_BACKEND);
+      setSelectedModelIds(defaultSelected);
+      setPreferredModelId(getDefaultPreferredModelId(data, ONBOARDING_BACKEND, defaultSelected));
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -196,17 +203,28 @@ export const AiSetupStep = ({
       return !validateCloudKey(p.provider, p.apiKey);
     });
 
-    // Safety net: an agent needs a model to run. If the user chose an agent but selected no local
-    // model and configured no cloud provider, fold in the recommended agent model so it gets pulled
-    // during install. This stays out of UI state, so the user can still freely toggle models above.
     const selectedModels = [...backendCompatibleSelectedModels];
-    if (agentFrameworks.length > 0 && selectedModels.length === 0 && validProviders.length === 0) {
-      const fallbackModelId = getDefaultPreferredModelId(profile, ONBOARDING_BACKEND);
-      if (fallbackModelId) selectedModels.push(fallbackModelId);
+    const installedCatalogIds = profile.installedCatalogIds ?? [];
+
+    let installBlocked = false;
+    let installBlockReason: string | undefined;
+
+    if (profile.tier !== 'insufficient' && agentFrameworks.length > 0 && selectedModels.length === 0 && validProviders.length === 0) {
+      installBlocked = true;
+      installBlockReason = 'Select a model to download, use one already installed in Ollama, or add a cloud provider API key.';
     }
 
-    // Persist the preferred model only when it is actually being installed; otherwise default to the
-    // first selected agent model so the agent always has a runnable default.
+    const budget = computeSelectionBudget(
+      profile.availableModels.filter((m) => selectedModels.includes(m.id)),
+      installedCatalogIds,
+      profile.resourceEstimate.availableDiskMb,
+      profile.resourceEstimate.availableMemoryMb,
+    );
+    if (budget.overDisk || budget.overMemory) {
+      installBlocked = true;
+      installBlockReason = budget.reason;
+    }
+
     const effectivePreferredModelId =
       preferredModelId && selectedModels.includes(preferredModelId)
         ? preferredModelId
@@ -220,6 +238,9 @@ export const AiSetupStep = ({
       remoteAccess,
       exposureMode: primaryExposureMode(remoteAccess),
       skipped: false,
+      installedCatalogIds,
+      installBlocked,
+      installBlockReason,
     };
   };
 
@@ -275,9 +296,12 @@ export const AiSetupStep = ({
   const backendRecommendedModels = profile.recommendedModels.filter((model) => model.backend === ONBOARDING_BACKEND);
   const backendAvailableModels = profile.availableModels.filter((model) => model.backend === ONBOARDING_BACKEND);
   const selectedModels = backendAvailableModels.filter((model) => selectedModelIds.includes(model.id));
+  const installedCatalogIds = profile.installedCatalogIds ?? [];
   const availableDiskMb = profile.resourceEstimate.availableDiskMb;
   const diskTotalMb = profile.resourceEstimate.diskTotalMb;
+  const availableMemoryMb = profile.resourceEstimate.availableMemoryMb;
   const needsOllama = ollamaStatus === null || !ollamaStatus.ready;
+  const liveConfig = buildConfig();
 
   return (
     <div className={embedded ? 'space-y-5' : 'space-y-5 max-h-[66vh] overflow-y-auto pr-2'} data-testid="ai-setup-step">
@@ -307,12 +331,27 @@ export const AiSetupStep = ({
           {needsOllama && <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={checkOllamaStatus} />}
 
           {/* Disk-available summary sits above the model selection so the budget is visible first. */}
-          <ResourceSummaryBar selectedModels={selectedModels} availableStorageMb={availableDiskMb} />
+          <ResourceSummaryBar
+            selectedModels={selectedModels}
+            installedCatalogIds={installedCatalogIds}
+            availableStorageMb={availableDiskMb}
+            availableMemoryMb={availableMemoryMb}
+          />
+
+          {liveConfig?.installBlocked && liveConfig.installBlockReason && (
+            <p
+              className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+              data-testid="install-block-reason"
+            >
+              {liveConfig.installBlockReason}
+            </p>
+          )}
 
           <RecommendedModels
             tier={profile.tier}
             recommendedModels={backendRecommendedModels}
             availableModels={backendAvailableModels}
+            installedCatalogIds={installedCatalogIds}
             selectedModelIds={selectedModelIds}
             onToggleModel={handleToggleModel}
             preferredModelId={preferredModelId}
@@ -321,6 +360,7 @@ export const AiSetupStep = ({
             <OtherModelsSection
               recommendedModels={backendRecommendedModels}
               availableModels={backendAvailableModels}
+              installedCatalogIds={installedCatalogIds}
               selectedModelIds={selectedModelIds}
               onToggleModel={handleToggleModel}
               preferredModelId={preferredModelId}

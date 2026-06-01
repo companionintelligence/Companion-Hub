@@ -37,6 +37,11 @@ export interface AiSetupConfig {
    */
   exposureMode?: ExposureMode;
   skipped: boolean;
+  /** Catalog ids already present in Ollama — install skips re-download for these. */
+  installedCatalogIds: string[];
+  /** When true, onboarding install must not proceed (budget or missing agent model). */
+  installBlocked?: boolean;
+  installBlockReason?: string;
 }
 
 /** How the user reaches their agents/Hub from other devices. "Web" in the UI maps to 'cloudflare'. */
@@ -71,6 +76,8 @@ export interface HardwareProfileResponse {
   tier: HardwareTier;
   recommendedModels: CuratedModel[];
   availableModels: CuratedModel[];
+  /** Catalog ids already pulled in Ollama (from live /api/tags). */
+  installedCatalogIds: string[];
   memoryBudget: MemoryBudget;
   backends: {
     recommended: InferenceBackendType;

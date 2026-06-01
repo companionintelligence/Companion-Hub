@@ -10,6 +10,7 @@ interface RecommendedModelsProps {
   tier: HardwareTier;
   recommendedModels: CuratedModel[];
   availableModels: CuratedModel[];
+  installedCatalogIds: string[];
   selectedModelIds: string[];
   onToggleModel: (modelId: string) => void;
   preferredModelId?: string;
@@ -78,6 +79,7 @@ export const RecommendedModels = ({
   tier,
   recommendedModels,
   availableModels,
+  installedCatalogIds,
   selectedModelIds,
   onToggleModel,
   preferredModelId,
@@ -85,6 +87,7 @@ export const RecommendedModels = ({
 }: RecommendedModelsProps) => {
   if (tier === 'insufficient') return null;
 
+  const installed = new Set(installedCatalogIds);
   const recommendedIds = new Set(recommendedModels.map((m) => m.id));
   const models = availableModels
     .filter((m) => recommendedIds.has(m.id))
@@ -94,7 +97,7 @@ export const RecommendedModels = ({
     <StepSection
       number={2}
       title="Recommended Models"
-      description="Your agents use the best fit for your hardware (pre-selected). Add more if you like — only checked models are installed."
+      description="Models already in Ollama are pre-selected. Check any additional models you want to download — unchecked models will not be installed."
     >
       {models.length > 0 ? (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3" data-testid="model-card-title">
@@ -109,6 +112,7 @@ export const RecommendedModels = ({
               selected={selectedModelIds.includes(model.id)}
               onToggle={() => onToggleModel(model.id)}
               agentDefault={model.id === preferredModelId}
+              installed={installed.has(model.id)}
               meta={modelMeta(model)}
               scores={modelScores(model)}
             />
@@ -125,6 +129,7 @@ export const RecommendedModels = ({
 interface OtherModelsProps {
   recommendedModels: CuratedModel[];
   availableModels: CuratedModel[];
+  installedCatalogIds: string[];
   selectedModelIds: string[];
   onToggleModel: (modelId: string) => void;
   preferredModelId?: string;
@@ -148,11 +153,13 @@ function ModelTableRow({
   model,
   selected,
   isAgentDefault,
+  isInstalled,
   onToggle,
 }: {
   model: CuratedModel;
   selected: boolean;
   isAgentDefault: boolean;
+  isInstalled: boolean;
   onToggle: () => void;
 }) {
   const tier = model.requirements.minTier;
@@ -179,6 +186,7 @@ function ModelTableRow({
           </span>
           <span className="whitespace-nowrap text-sm font-medium">{model.displayName}</span>
           {isAgentDefault && <span className="rounded bg-primary px-1.5 py-0.5 text-[10px] font-medium text-primary-foreground">Default</span>}
+          {isInstalled && <span className="rounded bg-green-600/90 px-1.5 py-0.5 text-[10px] font-medium text-white">Installed</span>}
         </label>
       </td>
       <td className="py-2 pr-3 align-middle">
@@ -224,16 +232,19 @@ interface OtherModelGroup {
 /** A color-coded, collapsible model category, rendered as a sortable-looking table when expanded. */
 function ModelGroup({
   group,
+  installedCatalogIds,
   selectedModelIds,
   onToggleModel,
   preferredModelId,
 }: {
   group: OtherModelGroup;
+  installedCatalogIds: string[];
   selectedModelIds: string[];
   onToggleModel: (id: string) => void;
   preferredModelId?: string;
 }) {
   const [open, setOpen] = useState(false);
+  const installed = new Set(installedCatalogIds);
   return (
     <div className={cn('overflow-hidden rounded-lg border', LEVEL_TAG[group.color])}>
       <button
@@ -269,6 +280,7 @@ function ModelGroup({
                   model={model}
                   selected={selectedModelIds.includes(model.id)}
                   isAgentDefault={model.id === preferredModelId}
+                  isInstalled={installed.has(model.id)}
                   onToggle={() => onToggleModel(model.id)}
                 />
               ))}
@@ -319,7 +331,14 @@ const OTHER_MODEL_GROUPS: { key: string; title: string; testId: string; color: L
  * embedding/speech). Each category is collapsed by default; rows show colored tier and capability
  * tags alongside intelligence / tool-use scores and RAM / disk. De-duplicated by id.
  */
-export const OtherModels = ({ recommendedModels, availableModels, selectedModelIds, onToggleModel, preferredModelId }: OtherModelsProps) => {
+export const OtherModels = ({
+  recommendedModels,
+  availableModels,
+  installedCatalogIds,
+  selectedModelIds,
+  onToggleModel,
+  preferredModelId,
+}: OtherModelsProps) => {
   const recommendedIds = new Set(recommendedModels.map((m) => m.id));
   // Exclude the recommended models and de-duplicate by id (guards against repeated entries).
   const models: CuratedModel[] = [];
@@ -348,6 +367,7 @@ export const OtherModels = ({ recommendedModels, availableModels, selectedModelI
         <ModelGroup
           key={group.key}
           group={group}
+          installedCatalogIds={installedCatalogIds}
           selectedModelIds={selectedModelIds}
           onToggleModel={onToggleModel}
           preferredModelId={preferredModelId}

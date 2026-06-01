@@ -94,6 +94,7 @@ const highTierProfile: HardwareProfileResponse = {
     ],
   },
   resourceEstimate: { totalDiskMb: 2048, totalMemoryMb: 2048, availableMemoryMb: 24064, availableDiskMb: 500000, diskTotalMb: 1000000 },
+  installedCatalogIds: ['phi-4-mini'],
 };
 
 const insufficientProfile: HardwareProfileResponse = {
@@ -108,6 +109,7 @@ const insufficientProfile: HardwareProfileResponse = {
   recommendedModels: [],
   availableModels: [],
   resourceEstimate: { totalDiskMb: 0, totalMemoryMb: 0, availableMemoryMb: 0, availableDiskMb: 0, diskTotalMb: 0 },
+  installedCatalogIds: [],
 };
 
 const ollamaReady = { ready: true, running: true, endpointUrl: 'http://ci-hub-ollama:11434' };
@@ -226,10 +228,18 @@ describe('AiSetupStep', () => {
     expect(screen.queryByText(/sudo apt-get update/i)).not.toBeInTheDocument();
   });
 
-  it('pre-selects recommended models', async () => {
+  it('pre-selects only models already installed in Ollama', async () => {
     renderStep();
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
     expect((screen.getByTestId('model-checkbox-phi-4-mini') as HTMLInputElement).checked).toBe(true);
+  });
+
+  it('does not pre-select recommended models that are not installed', async () => {
+    api.profile = { ...highTierProfile, installedCatalogIds: [] };
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+    expect((screen.getByTestId('model-checkbox-phi-4-mini') as HTMLInputElement).checked).toBe(false);
+    expect(screen.getByTestId('install-block-reason')).toBeInTheDocument();
   });
 
   it('submits only Ollama-backed models with the agent framework and exposure', async () => {
@@ -251,6 +261,9 @@ describe('AiSetupStep', () => {
       remoteAccess: [],
       exposureMode: 'local',
       skipped: false,
+      installedCatalogIds: ['phi-4-mini'],
+      installBlocked: false,
+      installBlockReason: undefined,
     });
   });
 
@@ -310,6 +323,9 @@ describe('AiSetupStep', () => {
       remoteAccess: [],
       exposureMode: 'local',
       skipped: false,
+      installedCatalogIds: ['phi-4-mini'],
+      installBlocked: false,
+      installBlockReason: undefined,
     });
   });
 
@@ -422,12 +438,15 @@ describe('AiSetupStep', () => {
     };
     api.profile = {
       ...highTierProfile,
+      installedCatalogIds: [],
       recommendedModels: [bigModel] as any,
       availableModels: [bigModel] as any,
       resourceEstimate: { totalDiskMb: 60000, totalMemoryMb: 2048, availableMemoryMb: 24064, availableDiskMb: 1024, diskTotalMb: 1000000 },
     };
     renderStep();
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId('model-checkbox-phi-4-mini'));
     expect(screen.getByTestId('resource-warning')).toBeInTheDocument();
   });
 

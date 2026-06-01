@@ -116,78 +116,137 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
           setAiPhase((prev) => ({ ...prev, cloudConfigured: true }));
         }
 
-        // Pull selected models
+        const installedSet = new Set(aiSetupConfig.installedCatalogIds ?? []);
+        const modelsToPull = aiSetupConfig.selectedModels.filter((id) => !installedSet.has(id));
+
         if (aiSetupConfig.selectedModels.length > 0) {
-          setAiPhase((prev) => ({ ...prev, status: 'pulling-models' }));
-          for (const modelId of aiSetupConfig.selectedModels) {
+          for (const modelId of modelsToPull) {
             try {
-              const res = await apiFetch('/api/inference/models/pull', {
-                method: 'POST',
+              const preflightRes = await apiFetch(`/api/inference/models/pull-preflight?modelId=${encodeURIComponent(modelId)}`, {
                 credentials: 'include',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ modelId }),
               });
-              if (!res.ok) {
-                setAiPhase((prev) => ({ ...prev, error: `Failed to pull model ${modelId}: HTTP ${res.status}` }));
+              if (!preflightRes.ok) {
+                setAiPhase((prev) => ({
+                  ...prev,
+                  status: 'done',
+                  error: `Cannot download model ${modelId}: preflight check failed (HTTP ${preflightRes.status}).`,
+                }));
+                setDone(true);
+                return;
+              }
+              const preflight = (await preflightRes.json()) as { canPull?: boolean; alreadyInstalled?: boolean; reason?: string };
+              if (!preflight.canPull && !preflight.alreadyInstalled) {
+                setAiPhase((prev) => ({
+                  ...prev,
+                  status: 'done',
+                  error: preflight.reason ?? `Cannot download model ${modelId}.`,
+                }));
+                setDone(true);
+                return;
               }
             } catch {
-              // Non-fatal
+              setAiPhase((prev) => ({
+                ...prev,
+                status: 'done',
+                error: `Cannot verify download safety for model ${modelId}.`,
+              }));
+              setDone(true);
+              return;
             }
           }
 
-          // Poll for pull progress
-          const pollPullProgress = async (): Promise<boolean> => {
-            try {
-              const res = await apiFetch('/api/inference/models/tracked', { credentials: 'include' });
-              if (!res.ok) return false;
-              const tracked = await res.json();
-              const progress: Record<string, number> = {};
-              let allDone = true;
-              for (const model of tracked) {
-                if (aiSetupConfig.selectedModels.includes(model.catalogId)) {
-                  progress[model.catalogId] =
-                    model.pullProgress ?? (model.state === 'pulled' || model.state === 'loaded' || model.state === 'pinned' ? 100 : 0);
-                  if (model.state !== 'pulled' && model.state !== 'loaded' && model.state !== 'pinned' && model.state !== 'error') {
-                    allDone = false;
-                  }
-                }
-              }
-              setAiPhase((prev) => ({ ...prev, modelProgress: progress }));
-              return allDone;
-            } catch {
-              return false;
-            }
-          };
-
-          const pullTimeout = 600_000; // 10 min
-          const pullStart = Date.now();
-          let pullsComplete = false;
-          while (Date.now() - pullStart < pullTimeout) {
-            await minDelay(2000);
-            if (await pollPullProgress()) {
-              pullsComplete = true;
-              break;
-            }
-          }
-
-          if (!pullsComplete) {
-            setAiPhase((prev) => ({ ...prev, error: 'Model pulls are still in progress — they will complete in the background.' }));
-          }
-
-          // Pin models only if pulls completed
-          if (pullsComplete) {
-            setAiPhase((prev) => ({ ...prev, status: 'pinning-models' }));
-            for (const modelId of aiSetupConfig.selectedModels) {
+          if (modelsToPull.length > 0) {
+            setAiPhase((prev) => ({ ...prev, status: 'pulling-models' }));
+            for (const modelId of modelsToPull) {
               try {
-                await apiFetch('/api/inference/models/pin', {
+                const res = await apiFetch('/api/inference/models/pull', {
                   method: 'POST',
                   credentials: 'include',
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({ modelId }),
                 });
+                if (!res.ok) {
+                  const data = (await res.json().catch(() => ({}))) as { message?: string };
+                  setAiPhase((prev) => ({
+                    ...prev,
+                    status: 'done',
+                    error: data.message ?? `Failed to pull model ${modelId}: HTTP ${res.status}`,
+                  }));
+                  setDone(true);
+                  return;
+                }
               } catch {
-                // Non-fatal
+                setAiPhase((prev) => ({
+                  ...prev,
+                  status: 'done',
+                  error: `Failed to pull model ${modelId}.`,
+                }));
+                setDone(true);
+                return;
               }
+            }
+
+            const pollPullProgress = async (): Promise<boolean> => {
+              try {
+                const res = await apiFetch('/api/inference/models/tracked', { credentials: 'include' });
+                if (!res.ok) return false;
+                const tracked = await res.json();
+                const progress: Record<string, number> = {};
+                let allDone = true;
+                for (const model of tracked) {
+                  if (modelsToPull.includes(model.catalogId)) {
+                    progress[model.catalogId] =
+                      model.pullProgress ?? (model.state === 'pulled' || model.state === 'loaded' || model.state === 'pinned' ? 100 : 0);
+                    if (model.state !== 'pulled' && model.state !== 'loaded' && model.state !== 'pinned' && model.state !== 'error') {
+                      allDone = false;
+                    }
+                  }
+                }
+                for (const modelId of modelsToPull) {
+                  if (progress[modelId] === undefined) {
+                    allDone = false;
+                  }
+                }
+                setAiPhase((prev) => ({ ...prev, modelProgress: progress }));
+                return allDone;
+              } catch {
+                return false;
+              }
+            };
+
+            const pullTimeout = 600_000;
+            const pullStart = Date.now();
+            let pullsComplete = false;
+            while (Date.now() - pullStart < pullTimeout) {
+              await minDelay(2000);
+              if (await pollPullProgress()) {
+                pullsComplete = true;
+                break;
+              }
+            }
+
+            if (!pullsComplete) {
+              setAiPhase((prev) => ({
+                ...prev,
+                status: 'done',
+                error: 'Model downloads did not finish in time. Free disk space or choose smaller models, then try again.',
+              }));
+              setDone(true);
+              return;
+            }
+          }
+
+          setAiPhase((prev) => ({ ...prev, status: 'pinning-models' }));
+          for (const modelId of aiSetupConfig.selectedModels) {
+            try {
+              await apiFetch('/api/inference/models/pin', {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ modelId }),
+              });
+            } catch {
+              // Non-fatal
             }
           }
         }

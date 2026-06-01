@@ -48,11 +48,13 @@ vi.mock('../components/ai-setup-step', () => ({
         onClick={() =>
           onConfigChange?.({
             agentFrameworks: ['openclaw'],
-            selectedModels: [],
+            selectedModels: ['phi-4-mini'],
+            installedCatalogIds: ['phi-4-mini'],
             backend: 'ollama',
             cloudProviders: [],
             remoteAccess: [],
             skipped: false,
+            installBlocked: false,
           })
         }
       >
@@ -61,7 +63,16 @@ vi.mock('../components/ai-setup-step', () => ({
       <button
         type="button"
         onClick={() =>
-          onConfigChange?.({ agentFrameworks: [], selectedModels: [], backend: 'ollama', cloudProviders: [], remoteAccess: [], skipped: false })
+          onConfigChange?.({
+            agentFrameworks: [],
+            selectedModels: [],
+            installedCatalogIds: [],
+            backend: 'ollama',
+            cloudProviders: [],
+            remoteAccess: [],
+            skipped: false,
+            installBlocked: false,
+          })
         }
       >
         emit-ai-config-no-agent
@@ -72,10 +83,12 @@ vi.mock('../components/ai-setup-step', () => ({
           onConfigChange?.({
             agentFrameworks: ['openclaw'],
             selectedModels: [],
+            installedCatalogIds: [],
             backend: 'ollama',
             cloudProviders: [{ provider: 'openai', apiKey: 'sk-test', enabled: true }],
             remoteAccess: [],
             skipped: false,
+            installBlocked: false,
           })
         }
       >

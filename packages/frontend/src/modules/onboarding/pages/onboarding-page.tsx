@@ -64,7 +64,7 @@ function OnboardingWizard() {
     };
   }, []);
 
-  const canFinish = aiSetupConfig !== undefined;
+  const canFinish = aiSetupConfig !== undefined && !aiSetupConfig.installBlocked;
   const installExposureMode = resolveExposureMode(aiSetupConfig?.exposureMode, { cloudflareAvailable, tailscaleAvailable });
 
   const agentFrameworks = aiSetupConfig?.agentFrameworks ?? [];
@@ -129,7 +129,9 @@ function OnboardingWizard() {
         <div aria-hidden className="h-2" />
 
         <div className="sticky bottom-4 z-10 flex flex-col gap-3 rounded-2xl border border-border bg-card/90 p-4 shadow-lg backdrop-blur sm:flex-row sm:items-center sm:justify-between">
-          <p className="text-sm text-muted-foreground">{canFinish ? 'You can change everything later in Settings.' : 'Detecting your hardware…'}</p>
+          <p className="text-sm text-muted-foreground">
+            {aiSetupConfig?.installBlockReason ?? (canFinish ? 'You can change everything later in Settings.' : 'Detecting your hardware…')}
+          </p>
           <Button intent="primary" size="lg" disabled={!canFinish} onClick={() => setPhase('installing')} data-testid="finish-setup-btn">
             Install & Finish
           </Button>
