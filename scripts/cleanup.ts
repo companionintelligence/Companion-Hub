@@ -186,7 +186,13 @@ for (const td of tunnelDirs) {
 
 // Step 7: Remove local config/cache/data directories for clean-slate developer tests
 console.log('\n Removing CI-Hub config and cache directories...');
-const removedDeveloperDirs = getDeveloperStateDirs().filter(({ path: targetPath, label }) => removeDir(targetPath, label));
+const developerStateDirs = getDeveloperStateDirs();
+const existingDirs = developerStateDirs.filter(({ path: targetPath }) => existsSync(targetPath));
+if (existingDirs.length > 0) {
+  console.log('   The following CI-Hub directories will be removed:');
+  for (const { path: targetPath } of existingDirs) console.log(`     - ${targetPath}`);
+}
+const removedDeveloperDirs = developerStateDirs.filter(({ path: targetPath, label }) => removeDir(targetPath, label));
 if (removedDeveloperDirs.length === 0) {
   console.log('   No CI-Hub config/cache directories found');
 }

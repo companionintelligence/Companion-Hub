@@ -405,9 +405,37 @@ function checkDockerAvailable(): boolean {
   return runCapture('docker', ['info']).ok;
 }
 
-function checkDockerContainersRunning(): boolean {
-  const { stdout, ok } = runCapture('docker', ['ps', '--filter', 'label=com.docker.compose.project=ci-hub', '--format', '{{.Names}}']);
-  return ok && stdout.length > 0;
+/**
+ * Commands that drive setup/lifecycle shell out to the repo's helper scripts
+ * (tsx scripts/*.ts) and Docker Compose files, all resolved from process.cwd().
+ * A global/npm install of cihub run outside a CI-Hub checkout has none of these,
+ * so fail early with an actionable message instead of a cryptic tsx/docker error.
+ */
+export function isHubRepoRoot(cwd: string = process.cwd()): boolean {
+  const pkgPath = join(cwd, 'package.json');
+  if (!existsSync(pkgPath) || !existsSync(join(cwd, 'scripts'))) return false;
+  try {
+    return (JSON.parse(readFileSync(pkgPath, 'utf-8')) as { name?: string }).name === 'ci-hub';
+  } catch {
+    return false;
+  }
+}
+
+function requireRepoRoot(action: string): void {
+  if (isHubRepoRoot()) return;
+  printMessageBox(
+    'Run from a CI-Hub checkout',
+    [
+      `${action} runs CI-Hub's setup scripts and Docker Compose files,`,
+      'so it must be run from a CI-Hub repository directory (the one containing',
+      'package.json and docker-compose.local.yml).',
+      '',
+      'Packaged/global installs support: --help, man, version, status,',
+      'config, and the app/models Docker passthrough commands.',
+    ],
+    'red',
+  );
+  process.exit(2);
 }
 
 export function isFirstRun(envFile = '.env.local'): boolean {
@@ -460,6 +488,7 @@ function ensureRootFolderOwnership(envFileName: string) {
 // ─── hub lifecycle ────────────────────────────────────────────────────────────
 
 function startHub(mode: StartMode, env: HubEnv) {
+  requireRepoRoot(mode === 'dev' ? 'cihub dev / hot-reload' : 'cihub up');
   const envFileName = getEnvFileOrExit(env);
   ensureRootFolderOwnership(envFileName);
   const envOverrides = buildEnvOverrides(envFileName);
@@ -512,6 +541,7 @@ function startHub(mode: StartMode, env: HubEnv) {
 }
 
 function setupHub(env: HubEnv) {
+  requireRepoRoot('cihub setup');
   const envFileName = getEnvFileOrExit(env);
   ensureRootFolderOwnership(envFileName);
   const envOverrides = buildEnvOverrides(envFileName);
@@ -525,6 +555,7 @@ function printConfig(env: HubEnv) {
 }
 
 function registerHub(env: HubEnv) {
+  requireRepoRoot('cihub register');
   const envFileName = getEnvFileOrExit(env);
   const fileVars = parseEnvFile(envFileName);
   const cloudUrl = process.env.CI_CLOUD_URL || fileVars.CI_CLOUD_URL || CI_CLOUD_DEFAULT;
@@ -719,6 +750,7 @@ async function confirmPurge(force: boolean) {
 }
 
 async function purgeHub(args: string[]) {
+  requireRepoRoot('cihub purge');
   const force = args.includes('--yes');
   const bad = args.filter((a) => a !== '--yes');
   if (bad.length > 0) usageAndExit(`Unknown purge option: ${bad[0]}`);

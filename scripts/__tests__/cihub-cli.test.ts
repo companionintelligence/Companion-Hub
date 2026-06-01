@@ -6,6 +6,7 @@ import {
   box,
   getComposeFiles,
   isFirstRun,
+  isHubRepoRoot,
   mergeComposeProfilesFromEnvFile,
   normalizeCliArgs,
   parseAppRuntimeArgs,
@@ -154,6 +155,22 @@ describe('isFirstRun', () => {
   it('returns false when the env file exists', () => {
     const found = existsSync(join(process.cwd(), '.env.local'));
     expect(isFirstRun('.env.local')).toBe(!found);
+  });
+});
+
+// ─── repo-root guard ───────────────────────────────────────────────────────────
+
+describe('isHubRepoRoot', () => {
+  it('recognises the CI-Hub repo from its package.json name + scripts dir', () => {
+    expect(isHubRepoRoot(process.cwd())).toBe(true);
+  });
+
+  it('returns false for an unrelated directory', () => {
+    expect(isHubRepoRoot('/tmp')).toBe(false);
+  });
+
+  it('returns false when the directory does not exist', () => {
+    expect(isHubRepoRoot('/no/such/dir/__xyz__')).toBe(false);
   });
 });
 
