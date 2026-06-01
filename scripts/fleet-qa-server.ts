@@ -43,19 +43,20 @@ interface FleetNode {
   name: string;
   ip: string;
   batch: number;
+  user?: string; // overrides SSH_USER for this node
 }
 
 const BUILTIN_FLEET: FleetNode[] = [
+  // core-5: ci user has permission error — skip until fixed
+  // core-8/9: Docker not in PATH — skip until provisioned
   { name: 'core-1', ip: '100.108.17.53', batch: 0 },
   { name: 'core-2', ip: '100.101.156.33', batch: 1 },
-  { name: 'core-5', ip: '100.73.255.24', batch: 2 },
-  { name: 'core-6', ip: '100.95.23.128', batch: 3 },
-  { name: 'core-8', ip: '100.98.33.44', batch: 4 },
-  { name: 'core-9', ip: '100.113.188.103', batch: 5 },
-  { name: 'core-10', ip: '100.87.68.116', batch: 6 },
-  { name: 'core-13', ip: '100.76.114.122', batch: 7 },
-  { name: 'beta-1', ip: '100.124.211.75', batch: 8 },
-  { name: 'beta-red', ip: '100.86.79.25', batch: 9 },
+  { name: 'core-6', ip: '100.95.23.128', batch: 2 },
+  // core-10: no Node.js installed — skip until provisioned
+  // { name: 'core-10',  ip: '100.87.68.116',  batch: 3 },
+  { name: 'core-13', ip: '100.76.114.122', batch: 4 },
+  { name: 'beta-1', ip: '100.124.211.75', batch: 5 },
+  { name: 'beta-red', ip: '100.86.79.25', batch: 6 },
 ];
 
 const FLEET: FleetNode[] = process.env.FLEET_CONFIG_JSON ? JSON.parse(process.env.FLEET_CONFIG_JSON) : BUILTIN_FLEET;
@@ -117,6 +118,7 @@ interface NodeState {
   currentApp: string | null;
   error: string | null;
   preflight: Record<string, unknown> | null;
+  storeDir: string | null; // resolved during preflight: CI-Marketplace or CI-App-Store
 }
 
 const appStates = new Map<string, AppState>(
@@ -150,6 +152,7 @@ const nodeStates = new Map<string, NodeState>(
       currentApp: null,
       error: null,
       preflight: null,
+      storeDir: null,
     },
   ]),
 );
@@ -191,10 +194,26 @@ function broadcastFleetStatus() {
 
 // ─── SSH + Stream Orchestration ─────────────────────────────────────────────
 
+// Source tool managers before running commands — handles NVM, ASDF, Bun without login-shell noise
+const REMOTE_TOOL_INIT =
+  'source ~/.nvm/nvm.sh 2>/dev/null; source ~/.asdf/asdf.sh 2>/dev/null; ' +
+  'source ~/.bun/env 2>/dev/null; ' +
+  'export PATH="$HOME/.nvm/versions/node/$(ls $HOME/.nvm/versions/node/ 2>/dev/null | sort -V | tail -1)/bin:$HOME/.bun/bin:$HOME/.local/bin:$HOME/.cargo/bin:/usr/local/bin:$PATH"';
+
 function sshSpawn(node: FleetNode, cmd: string): ChildProcess {
+  const user = node.user ?? SSH_USER;
   return spawn(
     'ssh',
-    ['-o', 'StrictHostKeyChecking=accept-new', '-o', 'ConnectTimeout=10', '-o', 'ServerAliveInterval=30', `${SSH_USER}@${node.ip}`, cmd],
+    [
+      '-o',
+      'StrictHostKeyChecking=accept-new',
+      '-o',
+      'ConnectTimeout=10',
+      '-o',
+      'ServerAliveInterval=30',
+      `${user}@${node.ip}`,
+      `${REMOTE_TOOL_INIT}; ${cmd}`,
+    ],
     { stdio: ['ignore', 'pipe', 'pipe'] },
   );
 }
@@ -239,7 +258,7 @@ function scpScreenshot(node: FleetNode, appId: string) {
       'StrictHostKeyChecking=accept-new',
       '-o',
       'ConnectTimeout=5',
-      `${SSH_USER}@${node.ip}:${remoteResultsDir}/screenshots/${appId}.png`,
+      `${node.user ?? SSH_USER}@${node.ip}:${remoteResultsDir}/screenshots/${appId}.png`,
       join(SCREENSHOTS_DIR, `${node.name}_${appId}.png`),
     ],
     { stdio: 'ignore' },
@@ -250,7 +269,7 @@ async function scpScript(node: FleetNode): Promise<{ ok: boolean; error: string 
   return new Promise((resolve) => {
     const proc = spawn(
       'scp',
-      ['-o', 'StrictHostKeyChecking=accept-new', '-o', 'ConnectTimeout=10', STREAM_SCRIPT, `${SSH_USER}@${node.ip}:/tmp/qa-stream.ts`],
+      ['-o', 'StrictHostKeyChecking=accept-new', '-o', 'ConnectTimeout=10', STREAM_SCRIPT, `${node.user ?? SSH_USER}@${node.ip}:/tmp/qa-stream.ts`],
       { stdio: ['ignore', 'ignore', 'pipe'] },
     );
     let err = '';
@@ -275,16 +294,22 @@ async function preflightNode(node: FleetNode): Promise<boolean> {
     'set -e',
     'echo host=$(hostname)',
     'echo user=$(whoami)',
-    'command -v docker >/dev/null',
-    'docker info >/dev/null',
-    '(command -v tsx >/dev/null || command -v pnpm >/dev/null)',
-    `test -d ${STORE_ROOT}/apps`,
-    `test -f ${STORE_ROOT}/apps/code-server/config.json`,
+    'command -v docker >/dev/null 2>&1',
+    'docker info >/dev/null 2>&1',
+    '(command -v tsx >/dev/null 2>&1 || command -v pnpm >/dev/null 2>&1)',
+    // Try CI-Marketplace, CI-App-Store (legacy), and /tmp fallback
+    `(test -d ${STORE_ROOT}/apps || test -d ~/devel/CI-App-Store/apps || test -d /tmp/CI-Marketplace/apps)`,
+    `(test -f ${STORE_ROOT}/apps/code-server/config.json || test -f ~/devel/CI-App-Store/apps/code-server/config.json || test -f /tmp/CI-Marketplace/apps/code-server/config.json)`,
+    // Emit which store dir was found so the run command can use it
+    `echo storeDir=$(test -d ${STORE_ROOT}/apps && echo ${STORE_ROOT} || test -d ~/devel/CI-App-Store/apps && echo ~/devel/CI-App-Store || echo /tmp/CI-Marketplace)`,
     'echo ok',
   ].join(' && ');
 
   const result = await sshCapture(node, cmd, 30_000);
   const ok = result.ok && result.out.includes('ok');
+  // Parse storeDir from preflight output: "storeDir=~/devel/CI-App-Store" or similar
+  const storeDirMatch = result.out.match(/storeDir=(\S+)/);
+  ns.storeDir = storeDirMatch ? storeDirMatch[1] : null;
   ns.status = ok ? 'idle' : 'offline';
   ns.error = ok ? null : summarizeError(result.err || result.out) || 'Preflight failed';
   ns.preflight = {
@@ -292,6 +317,7 @@ async function preflightNode(node: FleetNode): Promise<boolean> {
     output: summarizeError(result.out),
     error: summarizeError(result.err),
     checkedAt: Date.now(),
+    storeDir: ns.storeDir,
   };
   broadcast({ event: 'node_status', node: node.name, ...ns });
   return ok;
@@ -344,11 +370,12 @@ async function runNodeTests(node: FleetNode, apps: AppSpec[]) {
 
   const remoteResultsDir = '~/qa-results-fleet';
   const appList = apps.map((a) => a.id).join(' ');
+  // Use the storeDir resolved at preflight (CI-Marketplace or CI-App-Store)
+  const resolvedStore = ns.storeDir ?? STORE_ROOT;
   const cmd = [
     `mkdir -p ${remoteResultsDir}/screenshots`,
-    `APP_STORE_DIR=${STORE_ROOT}/apps`,
-    `RESULTS_DIR=${remoteResultsDir}`,
-    `(command -v tsx >/dev/null && tsx /tmp/qa-stream.ts ${appList} || pnpm exec tsx /tmp/qa-stream.ts ${appList})`,
+    `(command -v tsx >/dev/null 2>&1 && APP_STORE_DIR=${resolvedStore}/apps RESULTS_DIR=${remoteResultsDir} tsx /tmp/qa-stream.ts ${appList}` +
+      ` || APP_STORE_DIR=${resolvedStore}/apps RESULTS_DIR=${remoteResultsDir} pnpm exec tsx /tmp/qa-stream.ts ${appList})`,
   ].join(' && ');
 
   await new Promise<void>((resolve) => {
