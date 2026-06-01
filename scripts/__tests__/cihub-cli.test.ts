@@ -1,9 +1,15 @@
-import { readFileSync, existsSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  appStatusColor,
+  box,
+  getComposeFiles,
   isFirstRun,
+  mergeComposeProfilesFromEnvFile,
   normalizeCliArgs,
+  parseAppRuntimeArgs,
+  parseEnvFile,
   renderBanner,
   renderHelp,
   renderManPage,
@@ -14,6 +20,7 @@ import {
   resolveWizardActionInput,
   resolveWizardEnvInput,
   stripAnsi,
+  upsertEnvVar,
 } from '../cihub-cli';
 
 // ─── banner ───────────────────────────────────────────────────────────────────
@@ -203,6 +210,217 @@ describe('wizard selections', () => {
     expect(resolveWizardActionInput('9')).toBe('purge');
     expect(resolveWizardActionInput('10')).toBe('hot-reload');
     expect(resolveWizardActionInput('')).toBe('setup');
+  });
+
+  it('accepts the spelled-out env names case-insensitively', () => {
+    expect(resolveWizardEnvInput('PROD')).toBe('prod');
+    expect(resolveWizardEnvInput('  staging  ')).toBe('staging');
+  });
+
+  it('exits on an unrecognised env selection', () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
+      throw new Error('exit');
+    });
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect(() => resolveWizardEnvInput('99')).toThrow();
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    exitSpy.mockRestore();
+    consoleSpy.mockRestore();
+  });
+
+  it('exits on an unrecognised action selection', () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
+      throw new Error('exit');
+    });
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect(() => resolveWizardActionInput('nope')).toThrow();
+    exitSpy.mockRestore();
+    consoleSpy.mockRestore();
+  });
+});
+
+// ─── stripAnsi ──────────────────────────────────────────────────────────────────
+
+describe('stripAnsi', () => {
+  it('removes SGR colour and style codes', () => {
+    expect(stripAnsi('[32mgreen[0m')).toBe('green');
+    expect(stripAnsi('[1m[36mbold cyan[0m')).toBe('bold cyan');
+  });
+
+  it('leaves plain text untouched', () => {
+    expect(stripAnsi('no codes here')).toBe('no codes here');
+  });
+});
+
+// ─── compose file mapping ──────────────────────────────────────────────────────
+
+describe('getComposeFiles', () => {
+  it('returns the local compose file for local', () => {
+    expect(getComposeFiles('local')).toEqual(['docker-compose.local.yml']);
+  });
+
+  it('returns the prod compose file for dev and prod', () => {
+    expect(getComposeFiles('dev')).toEqual(['docker-compose.prod.yml']);
+    expect(getComposeFiles('prod')).toEqual(['docker-compose.prod.yml']);
+  });
+
+  it('layers staging on top of prod for staging', () => {
+    expect(getComposeFiles('staging')).toEqual(['docker-compose.prod.yml', 'docker-compose.staging.yml']);
+  });
+});
+
+// ─── env file round-trip ───────────────────────────────────────────────────────
+
+describe('parseEnvFile / upsertEnvVar', () => {
+  const TMP = '.env.__vitest__';
+  const abs = join(process.cwd(), TMP);
+
+  afterEach(() => {
+    if (existsSync(abs)) rmSync(abs);
+  });
+
+  it('returns an empty object when the file is missing', () => {
+    expect(parseEnvFile('.env.__does_not_exist__')).toEqual({});
+  });
+
+  it('round-trips a value through upsert then parse', () => {
+    upsertEnvVar(TMP, 'FOO', 'bar');
+    expect(parseEnvFile(TMP).FOO).toBe('bar');
+  });
+
+  it('replaces an existing key instead of appending a duplicate', () => {
+    upsertEnvVar(TMP, 'KEY', 'one');
+    upsertEnvVar(TMP, 'KEY', 'two');
+    const raw = readFileSync(abs, 'utf-8');
+    expect(parseEnvFile(TMP).KEY).toBe('two');
+    expect(raw.match(/^KEY=/gm)?.length).toBe(1);
+  });
+
+  it('strips surrounding quotes and ignores comments/blank lines', () => {
+    upsertEnvVar(TMP, 'A', '"quoted"');
+    upsertEnvVar(TMP, 'B', "'single'");
+    upsertEnvVar(TMP, 'C', 'plain');
+    const vars = parseEnvFile(TMP);
+    expect(vars.A).toBe('quoted');
+    expect(vars.B).toBe('single');
+    expect(vars.C).toBe('plain');
+  });
+
+  it('keeps multiple distinct keys', () => {
+    upsertEnvVar(TMP, 'X', '1');
+    upsertEnvVar(TMP, 'Y', '2');
+    const vars = parseEnvFile(TMP);
+    expect(vars.X).toBe('1');
+    expect(vars.Y).toBe('2');
+  });
+});
+
+// ─── compose profiles / private-vpn ─────────────────────────────────────────────
+
+describe('mergeComposeProfilesFromEnvFile', () => {
+  const TMP = '.env.__vitest_vpn__';
+  const abs = join(process.cwd(), TMP);
+
+  afterEach(() => {
+    if (existsSync(abs)) rmSync(abs);
+    delete process.env.COMPOSE_PROFILES;
+  });
+
+  it('adds private-vpn by default when the env file has values but no opt-out', () => {
+    upsertEnvVar(TMP, 'ROOT_FOLDER_HOST', '/tmp/x');
+    expect(mergeComposeProfilesFromEnvFile(TMP).split(',')).toContain('private-vpn');
+  });
+
+  it('removes private-vpn when PRIVATE_VPN_ENABLED=false', () => {
+    upsertEnvVar(TMP, 'PRIVATE_VPN_ENABLED', 'false');
+    expect(mergeComposeProfilesFromEnvFile(TMP).split(',')).not.toContain('private-vpn');
+  });
+
+  it('preserves existing COMPOSE_PROFILES from the file', () => {
+    upsertEnvVar(TMP, 'COMPOSE_PROFILES', 'gpu');
+    const profiles = mergeComposeProfilesFromEnvFile(TMP).split(',');
+    expect(profiles).toContain('gpu');
+    expect(profiles).toContain('private-vpn');
+  });
+});
+
+// ─── app runtime arg parsing ────────────────────────────────────────────────────
+
+describe('parseAppRuntimeArgs', () => {
+  it('returns empty arrays for no args', () => {
+    expect(parseAppRuntimeArgs([])).toEqual({ ports: [], envVars: [] });
+  });
+
+  it('collects multiple --port and --env flags in order', () => {
+    const r = parseAppRuntimeArgs(['--port', '8080:80', '--env', 'A=1', '--port', '443:443', '--env', 'B=2']);
+    expect(r.ports).toEqual(['8080:80', '443:443']);
+    expect(r.envVars).toEqual(['A=1', 'B=2']);
+  });
+
+  it('exits on an unknown option', () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
+      throw new Error('exit');
+    });
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect(() => parseAppRuntimeArgs(['--bogus'])).toThrow();
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    exitSpy.mockRestore();
+    consoleSpy.mockRestore();
+  });
+
+  it('exits when --port has no value', () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
+      throw new Error('exit');
+    });
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect(() => parseAppRuntimeArgs(['--port'])).toThrow();
+    exitSpy.mockRestore();
+    consoleSpy.mockRestore();
+  });
+});
+
+// ─── status colour coding ───────────────────────────────────────────────────────
+
+describe('appStatusColor', () => {
+  beforeEach(() => {
+    process.env.FORCE_COLOR = '1';
+  });
+  afterEach(() => {
+    delete process.env.FORCE_COLOR;
+  });
+
+  it('colours running containers green', () => {
+    expect(appStatusColor('Up 3 hours')).toContain('[32m');
+  });
+
+  it('colours exited containers red', () => {
+    expect(appStatusColor('Exited (1) 2 minutes ago')).toContain('[31m');
+  });
+
+  it('colours paused containers yellow', () => {
+    expect(appStatusColor('Paused')).toContain('[33m');
+  });
+
+  it('dims unknown statuses', () => {
+    expect(appStatusColor('Created')).toContain('[2m');
+  });
+});
+
+// ─── box rendering primitive ────────────────────────────────────────────────────
+
+describe('box', () => {
+  it('renders a title header, indented body, and a closing rule', () => {
+    const lines = stripAnsi(box('Title', ['line one', 'line two'])).split('\n');
+    expect(lines[0]).toContain('┌─ Title');
+    expect(lines[0]).toContain('┐');
+    expect(lines[1]).toBe('  line one');
+    expect(lines[2]).toBe('  line two');
+    expect(lines[lines.length - 1]).toContain('└');
+    expect(lines[lines.length - 1]).toContain('┘');
+  });
+
+  it('handles an empty body without throwing', () => {
+    expect(() => box('Empty', [])).not.toThrow();
   });
 });
 

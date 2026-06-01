@@ -134,7 +134,7 @@ function hr(tone: Tone = 'dim') {
 
 // ─── boxes ───────────────────────────────────────────────────────────────────
 
-function box(title: string, lines: string[], tone: Tone = 'cyan') {
+export function box(title: string, lines: string[], tone: Tone = 'cyan') {
   const w = termWidth();
   const titleLen = stripAnsi(title).length;
   const fill = Math.max(w - titleLen - 5, 1);
@@ -254,7 +254,7 @@ export function resolveEnvFromArgs(args: string[], defaultEnv: HubEnv = 'local')
 
 // ─── env file parsing ─────────────────────────────────────────────────────────
 
-function parseEnvFile(envFileName: string): Record<string, string> {
+export function parseEnvFile(envFileName: string): Record<string, string> {
   const abs = join(process.cwd(), envFileName);
   const vars: Record<string, string> = {};
   let fileContent = '';
@@ -278,7 +278,7 @@ function parseEnvFile(envFileName: string): Record<string, string> {
   return vars;
 }
 
-function upsertEnvVar(envFileName: string, key: string, value: string) {
+export function upsertEnvVar(envFileName: string, key: string, value: string) {
   const abs = join(process.cwd(), envFileName);
   const line = `${key}=${value}`;
   const current = existsSync(abs) ? readFileSync(abs, 'utf-8') : '';
@@ -333,7 +333,7 @@ function getEnvFileOrExit(env: string): string {
   return f;
 }
 
-function getComposeFiles(env: HubEnv): string[] {
+export function getComposeFiles(env: HubEnv): string[] {
   if (env === 'local') return ['docker-compose.local.yml'];
   if (env === 'staging') return ['docker-compose.prod.yml', 'docker-compose.staging.yml'];
   return ['docker-compose.prod.yml'];
@@ -345,7 +345,7 @@ function resolveRootFolderHost(envFileName: string): string {
   return path.isAbsolute(configured) ? configured : path.resolve(process.cwd(), configured);
 }
 
-function mergeComposeProfilesFromEnvFile(envFileName: string): string {
+export function mergeComposeProfilesFromEnvFile(envFileName: string): string {
   const vars = parseEnvFile(envFileName);
   const hasEnvFile = Object.keys(vars).length > 0;
   if (!hasEnvFile) {
@@ -749,7 +749,7 @@ function setMcpState(env: HubEnv, enabled: boolean) {
 
 // ─── app lifecycle ────────────────────────────────────────────────────────────
 
-function parseAppRuntimeArgs(args: string[]) {
+export function parseAppRuntimeArgs(args: string[]) {
   const ports: string[] = [];
   const envVars: string[] = [];
   for (let i = 0; i < args.length; i += 1) {
@@ -771,7 +771,7 @@ function parseAppRuntimeArgs(args: string[]) {
   return { ports, envVars };
 }
 
-function appStatusColor(status: string): string {
+export function appStatusColor(status: string): string {
   const s = status.toLowerCase();
   if (s.startsWith('up')) return colorize(status, 'green');
   if (s.startsWith('exit')) return colorize(status, 'red');

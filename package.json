@@ -44,7 +44,7 @@
     "fresh:local": "pnpm run cleanup && pnpm start local",
     "dev:desktop": "cd packages/desktop && cargo tauri dev",
     "build:desktop": "cd packages/desktop && cargo tauri build",
-    "test:cli": "pnpm exec vitest run scripts/__tests__/cihub-cli.test.ts"
+    "test:cli": "pnpm exec vitest run scripts/__tests__/"
   },
   "lint-staged": {
     "*": [
