@@ -2,11 +2,11 @@
 /**
  * Fleet Test Orchestrator
  *
- * Distributes app catalog tests across 7 fleet servers
+ * Distributes app catalog tests across the fleet servers
  * and collects results for unified reporting. Dry run by default.
  *
  * Usage:
- *   pnpm exec tsx scripts/run-fleet-tests.ts [--batch=<0-6>] [--execute] [--verbose]
+ *   pnpm exec tsx scripts/run-fleet-tests.ts [--batch=<0-9>] [--execute] [--verbose]
  *
  * Examples:
  *   pnpm exec tsx scripts/run-fleet-tests.ts
@@ -14,7 +14,7 @@
  */
 
 import { execSync } from 'node:child_process';
-import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 interface FleetServer {
@@ -70,6 +70,16 @@ const SSH_USER = process.env.FLEET_SSH_USER ?? 'ci';
 const SSH_OPTIONS = '-o StrictHostKeyChecking=no -o ConnectTimeout=30';
 const RESULTS_DIR = 'e2e/results';
 const SCREENSHOTS_DIR = 'e2e/screenshots';
+const HUB_REF = process.env.FLEET_HUB_REF ?? execSync('git branch --show-current', { encoding: 'utf-8' }).trim();
+const HUB_SHA = process.env.FLEET_HUB_SHA ?? execSync('git rev-parse HEAD', { encoding: 'utf-8' }).trim();
+const APPS_PER_BATCH = (() => {
+  try {
+    const summary = JSON.parse(readFileSync('e2e/generated/summary.json', 'utf-8'));
+    return Number(summary.appsPerBatch) || 10;
+  } catch {
+    return 10;
+  }
+})();
 
 async function main() {
   const args = process.argv.slice(2);
@@ -130,7 +140,7 @@ async function main() {
       server: serversToRun[i],
       success: false,
       passed: 0,
-      failed: 86, // Assume all failed
+      failed: APPS_PER_BATCH,
       skipped: 0,
       duration: 0,
       apps: [],
@@ -158,9 +168,11 @@ async function runTestsOnServer(server: FleetServer, _verbose: boolean): Promise
   console.log(`📦 [${server.name}] Starting batch ${server.batch}...`);
 
   const sshCommand = `
-    cd ~/devel/CI-OS-Hub && 
-    git pull --quiet origin dev 2>/dev/null || true &&
-    pnpm install --silent 2>/dev/null || true &&
+    cd ~/devel/CI-Hub &&
+    git fetch --quiet origin ${HUB_REF} &&
+    git checkout --detach ${HUB_SHA} &&
+    git rev-parse --short HEAD &&
+    (pnpm install --silent 2>/dev/null || true) &&
     pnpm exec playwright test e2e/generated/catalog-batch-${server.batch}.spec.ts \
       --reporter=json \
       --timeout=300000 \
@@ -189,7 +201,7 @@ async function runTestsOnServer(server: FleetServer, _verbose: boolean): Promise
 
     // Collect screenshots
     try {
-      execSync(`scp ${SSH_OPTIONS} -r ${SSH_USER}@${server.ip}:~/devel/CI-OS-Hub/e2e/screenshots/current/ ${SCREENSHOTS_DIR}/${server.name}/`, {
+      execSync(`scp ${SSH_OPTIONS} -r ${SSH_USER}@${server.ip}:~/devel/CI-Hub/e2e/screenshots/current/ ${SCREENSHOTS_DIR}/${server.name}/`, {
         stdio: 'pipe',
       });
     } catch {
@@ -213,7 +225,7 @@ async function runTestsOnServer(server: FleetServer, _verbose: boolean): Promise
       server,
       success: false,
       passed: 0,
-      failed: 86,
+      failed: APPS_PER_BATCH,
       skipped: 0,
       duration,
       apps: [],

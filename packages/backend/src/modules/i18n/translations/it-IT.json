@@ -275,7 +275,7 @@
   "APP_STORE_ADD_FORM_URL": "Indirizzo URL dell'app store",
   "APP_STORE_ADD_FORM_SUBMIT": "Crea nuovo app store",
   "APP_STORE_ADD_SUCCESS": "App store agg",
-  "APP_UNINSTALL_FORM_REMOVE_BACKUPS": "Elimina backups",
+  "APP_UNINSTALL_FORM_REMOVE_BACKUPS": "Rimuovi backup",
   "APP_UNINSTALL_FORM_SUBMIT": "Disinstalla",
   "APP_UNINSTALL_FORM_SUBTITLE": "Tutti i dati relativi a questa app verranno persi.",
   "APP_UNINSTALL_FORM_TITLE": "Disinstallare {{name}} ?",
@@ -435,7 +435,7 @@
   "SETTINGS_ACTIONS_MAINTENANCE_TITLE": "Manutenzione",
   "SETTINGS_ACTIONS_NEW_VERSION": "È disponibile una nuova versione di Companion Hub ({{version}})",
   "SETTINGS_ACTIONS_RESTART": "Riavvia",
-  "SETTINGS_ACTIONS_STAY_UP_TO_DATE": "Rimani aggiornato all'ultima versione di Tipi",
+  "SETTINGS_ACTIONS_STAY_UP_TO_DATE": "Rimani aggiornato all'ultima versione di Companion Hub",
   "SETTINGS_ACTIONS_TAB_TITLE": "Azioni",
   "SETTINGS_ACTIONS_TITLE": "Azioni",
   "SETTINGS_ACTIONS_UPDATE_REPO_TITLE": "Aggiorna gli App Stores",
@@ -464,7 +464,7 @@
   "SETTINGS_GENERAL_INVALID_IP": "Indirizzo IP invalido",
   "SETTINGS_GENERAL_INVALID_URL": "URL invalido",
   "SETTINGS_GENERAL_LANGUAGE": "Lingua",
-  "SETTINGS_GENERAL_LANGUAGE_HELP_TRANSLATE": "Aiutaci a tradurre Tipi",
+  "SETTINGS_GENERAL_LANGUAGE_HELP_TRANSLATE": "Aiutaci a tradurre Companion Hub",
   "SETTINGS_GENERAL_LOCAL_DOMAIN": "Nome di dominio locale",
   "SETTINGS_GENERAL_LOCAL_DOMAIN_HINT": "Nome di dominio utilizzato per accedere alle app nella tua rete locale. Le tue app saranno accessibili all'indirizzo nome-app.nome-di-dominio-locale.",
   "SETTINGS_GENERAL_SETTINGS_UPDATED_RESTART": "Impostazioni aggiornate. Riavvia la tua istanza per applicare le nuove impostazioni.",
@@ -613,5 +613,6 @@
   "MULTI_SERVICE_BACK_TO_FORM": "Torna al modulo",
   "MULTI_SERVICE_UNSAVED_CHANGES_CONFIRM": "Le modifiche non sono state salvate. Vuoi davvero non salvarle?",
   "MULTI_SERVICE_JSON_UPDATE_SUCCESS": "Configurazione del servizio aggiornata correttamente",
-  "MULTI_SERVICE_JSON_REFERENCE": "Riferimento Dynamic Compose"
+  "MULTI_SERVICE_JSON_REFERENCE": "Riferimento Dynamic Compose",
+  "APP_UNINSTALL_FORM_DELETE_ALL_DATA": "Elimina tutti i dati"
 }

@@ -267,15 +267,13 @@
   "APP_STORE_DELETE_DIALOG_SUBTITLE": "Are you sure you want to delete this appstore?",
   "APP_STORE_DELETE_DIALOG_WARNING": "The appstore {{name}} will be deleted but your app data will be kept.",
   "APP_STORE_DELETE_DIALOG_SUBMIT": "刪除",
-  "APP_STORE_DELETE_SUCCESS": "",
-  "APP_STORE_DELETE_ERROR_LAST_STORE": "",
   "APP_STORE_DELETE_ERROR_APPS_EXIST": "There are installed apps that belong to this appstore. Please uninstall them first",
   "APP_STORE_ADD_DIALOG_TITLE": "Add appstore",
   "APP_STORE_ADD_FORM_NAME": "Appstore name",
   "APP_STORE_ADD_FORM_URL": "Appstore URL",
   "APP_STORE_ADD_FORM_SUBMIT": "Create new appstore",
   "APP_STORE_ADD_SUCCESS": "Appstore added successfully",
-  "APP_UNINSTALL_FORM_REMOVE_BACKUPS": "Remove backups",
+  "APP_UNINSTALL_FORM_REMOVE_BACKUPS": "刪除備份",
   "APP_UNINSTALL_FORM_SUBMIT": "卸載",
   "APP_UNINSTALL_FORM_SUBTITLE": "此應用程式的所有資料將會遺失。",
   "APP_UNINSTALL_FORM_TITLE": "卸載{{name}}？",
@@ -613,5 +611,6 @@
   "MULTI_SERVICE_BACK_TO_FORM": "Back to form",
   "MULTI_SERVICE_UNSAVED_CHANGES_CONFIRM": "You have unsaved changes. Are you sure you want to leave without saving?",
   "MULTI_SERVICE_JSON_UPDATE_SUCCESS": "Service configuration updated successfully",
-  "MULTI_SERVICE_JSON_REFERENCE": "Dynamic Compose Reference"
+  "MULTI_SERVICE_JSON_REFERENCE": "Dynamic Compose Reference",
+  "APP_UNINSTALL_FORM_DELETE_ALL_DATA": "刪除所有資料"
 }

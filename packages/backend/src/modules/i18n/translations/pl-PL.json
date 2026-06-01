@@ -613,5 +613,6 @@
   "MULTI_SERVICE_BACK_TO_FORM": "Wróć do formularza",
   "MULTI_SERVICE_UNSAVED_CHANGES_CONFIRM": "Masz niezapisane zmiany. Czy na pewno chcesz wyjść bez zapisywania zmian?",
   "MULTI_SERVICE_JSON_UPDATE_SUCCESS": "Konfiguracja usługi zaktualizowana pomyślnie",
-  "MULTI_SERVICE_JSON_REFERENCE": "Dynamic Compose Reference"
+  "MULTI_SERVICE_JSON_REFERENCE": "Dynamic Compose Reference",
+  "APP_UNINSTALL_FORM_DELETE_ALL_DATA": "Usuń wszystkie dane"
 }

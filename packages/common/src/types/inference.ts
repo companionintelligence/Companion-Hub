@@ -23,6 +23,15 @@ export interface HardwareProfile {
     cores: number;
     model: string;
   };
+  /** Host operating system. Optional — absent on older profiles / test fixtures. */
+  os?: {
+    /** Node platform: 'darwin' | 'linux' | 'win32'. */
+    platform: string;
+    /** Friendly OS name, e.g. 'macOS', 'Ubuntu', 'Windows'. */
+    name: string;
+    /** Release codename when known (e.g. 'Tahoe', 'Sequoia'), else the numeric release. */
+    version: string;
+  };
   effectiveInferenceMemoryMb: number;
   tier: HardwareTier;
 }
@@ -64,6 +73,12 @@ export interface CuratedModel {
   purpose: ModelPurpose;
   displayName: string;
   description: string;
+  /**
+   * Approximate parameter count in billions. Drives hardware-fit ranking
+   * (bigger = more capable) and the CPU-only size cap. Set for LLMs; omitted
+   * for non-sized modalities like TTS/STT.
+   */
+  parameterScale?: number;
   requirements: {
     minVramMb: number;
     recommendedVramMb: number;
@@ -87,6 +102,35 @@ export interface CuratedModel {
     medium: TierRecommendation;
     low: TierRecommendation;
     cpuOnly: TierRecommendation;
+  };
+  /**
+   * Reference metadata sourced from the Artificial Analysis open-weights leaderboard
+   * (artificialanalysis.ai, snapshot 2026-05). Optional: `creator`/`capabilities` are set for every
+   * catalog LLM; `intelligenceIndex` and `perf` only for models present on the leaderboard. `perf`
+   * figures are AA's cloud-hosted measurements — indicative only, since local speed depends on the
+   * user's own hardware and quantization.
+   */
+  metadata?: {
+    /** Model creator / lab, e.g. "Meta", "Alibaba", "DeepSeek". */
+    creator?: string;
+    /** Artificial Analysis Intelligence Index (higher = more capable). */
+    intelligenceIndex?: number;
+    /** Artificial Analysis agentic / tool-calling index (higher = better at tool use). */
+    toolCallingIndex?: number;
+    capabilities?: {
+      reasoning?: boolean;
+      vision?: boolean;
+      tools?: boolean;
+      audio?: boolean;
+    };
+    perf?: {
+      /** Median output tokens/second (AA cloud reference). */
+      tokensPerSec?: number;
+      /** Median latency to first chunk, seconds (AA cloud reference). */
+      firstChunkSeconds?: number;
+      /** Median end-to-end response time, seconds (AA cloud reference). */
+      totalResponseSeconds?: number;
+    };
   };
 }
 

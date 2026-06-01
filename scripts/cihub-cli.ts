@@ -463,6 +463,7 @@ function startHub(mode: StartMode, env: HubEnv) {
   const envFileName = getEnvFileOrExit(env);
   ensureRootFolderOwnership(envFileName);
   const envOverrides = buildEnvOverrides(envFileName);
+  run('tsx', ['scripts/init-gpu-runtime.ts'], envOverrides);
 
   if (mode === 'dev') {
     printMessageBox(
@@ -487,6 +488,7 @@ function startHub(mode: StartMode, env: HubEnv) {
       ],
       envOverrides,
     );
+    run('tsx', ['scripts/sync-postgres-password.ts', envFileName], envOverrides);
     const fileVars = parseEnvFile(envFileName);
     run('pnpm', ['run', 'dev:app'], { ...fileVars, ...envOverrides });
     return;

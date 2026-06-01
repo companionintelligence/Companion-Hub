@@ -1,10 +1,10 @@
 import { apiFetch } from '@/lib/api-fetch';
 import { Button } from '@/components/ui/Button';
-import { Card, CardContent } from '@/components/ui/Card';
 import { useEffect, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { getInstalledAppsQueryKey } from '@/api-client/@tanstack/react-query.gen';
-import { Loader2 } from 'lucide-react';
+import { Download, Loader2 } from 'lucide-react';
+import { WizardCard } from './wizard-ui';
 import type { OnboardingApp, AppInstallStatus, InstallSummary, AiSetupConfig } from '../helpers/types';
 
 interface InstallStepProps {
@@ -14,6 +14,12 @@ interface InstallStepProps {
   /** AI setup configuration from the previous step. */
   aiSetupConfig?: AiSetupConfig;
   onComplete: (summary: InstallSummary) => void;
+  /**
+   * When `false`, the install is deferred and this renders as a live review of the current
+   * selection (no progress, no Continue button) until the parent flips it to `true`. Defaults
+   * to `true` so existing callers auto-run on mount.
+   */
+  start?: boolean;
 }
 
 interface AppInstallState {
@@ -38,17 +44,19 @@ interface AiPhaseState {
   status: AiPhaseStatus;
   cloudConfigured: boolean;
   modelProgress: Record<string, number>; // modelId -> 0-100
+  modelErrors: Record<string, string>;
   modelsDone: boolean;
   error?: string;
 }
 
-export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupConfig, onComplete }: InstallStepProps) => {
+export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupConfig, onComplete, start = true }: InstallStepProps) => {
   const [states, setStates] = useState<AppInstallState[]>(apps.map((app) => ({ app, status: 'queued' })));
   const [done, setDone] = useState(false);
   const [aiPhase, setAiPhase] = useState<AiPhaseState>({
     status: aiSetupConfig && !aiSetupConfig.skipped ? 'pending' : 'skipped',
     cloudConfigured: false,
     modelProgress: {},
+    modelErrors: {},
     modelsDone: false,
   });
   const started = useRef(false);
@@ -56,9 +64,17 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
   onCompleteRef.current = onComplete;
   const queryClient = useQueryClient();
 
+  // While the install is deferred (start === false), mirror the live selection so the
+  // review list below the app picker reflects what the user has chosen.
+  useEffect(() => {
+    if (started.current) return;
+    setStates(apps.map((app) => ({ app, status: 'queued' as AppInstallStatus })));
+  }, [apps]);
+
   // biome-ignore lint/correctness/useExhaustiveDependencies: queryClient is stable from useQueryClient
   useEffect(() => {
     if (started.current) return;
+    if (!start) return;
     started.current = true;
 
     const installAll = async () => {
@@ -72,7 +88,7 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
             method: 'PATCH',
             credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ backend: aiSetupConfig.backend }),
+            body: JSON.stringify({ backend: aiSetupConfig.backend, model: aiSetupConfig.preferredModelId ?? null }),
           });
           if (!preferenceRes.ok) {
             setAiPhase((prev) => ({ ...prev, error: `Failed to save preferred backend: HTTP ${preferenceRes.status}` }));
@@ -102,78 +118,138 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
           setAiPhase((prev) => ({ ...prev, cloudConfigured: true }));
         }
 
-        // Pull selected models
+        const installedSet = new Set(aiSetupConfig.installedCatalogIds ?? []);
+        const modelsToPull = aiSetupConfig.selectedModels.filter((id) => !installedSet.has(id));
+
         if (aiSetupConfig.selectedModels.length > 0) {
-          setAiPhase((prev) => ({ ...prev, status: 'pulling-models' }));
+          const modelErrors: Record<string, string> = {};
+
+          for (const modelId of modelsToPull) {
+            try {
+              const preflightRes = await apiFetch(`/api/inference/models/pull-preflight?modelId=${encodeURIComponent(modelId)}`, {
+                credentials: 'include',
+              });
+              if (!preflightRes.ok) {
+                modelErrors[modelId] = `Preflight check failed (HTTP ${preflightRes.status})`;
+                continue;
+              }
+              const preflight = (await preflightRes.json()) as { canPull?: boolean; alreadyInstalled?: boolean; reason?: string };
+              if (!preflight.canPull && !preflight.alreadyInstalled) {
+                modelErrors[modelId] = preflight.reason ?? `Cannot download model ${modelId}.`;
+              }
+            } catch {
+              modelErrors[modelId] = `Cannot verify download safety for model ${modelId}.`;
+            }
+          }
+
+          const pullableModels = modelsToPull.filter((id) => !modelErrors[id]);
+
+          if (pullableModels.length > 0) {
+            setAiPhase((prev) => ({ ...prev, status: 'pulling-models', modelErrors }));
+            for (const modelId of pullableModels) {
+              try {
+                const res = await apiFetch('/api/inference/models/pull', {
+                  method: 'POST',
+                  credentials: 'include',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ modelId, bestEffort: true }),
+                });
+                const data = (await res.json().catch(() => ({}))) as { success?: boolean; skipped?: boolean; message?: string };
+                if (!res.ok || data.skipped || data.success === false) {
+                  modelErrors[modelId] = data.message ?? `Failed to pull model ${modelId}: HTTP ${res.status}`;
+                  setAiPhase((prev) => ({ ...prev, modelErrors: { ...modelErrors } }));
+                }
+              } catch {
+                modelErrors[modelId] = `Failed to pull model ${modelId}.`;
+                setAiPhase((prev) => ({ ...prev, modelErrors: { ...modelErrors } }));
+              }
+            }
+
+            const modelProgress: Record<string, number> = {};
+
+            const pollPullProgress = async (): Promise<boolean> => {
+              try {
+                const res = await apiFetch('/api/inference/models/tracked', { credentials: 'include' });
+                if (!res.ok) return false;
+                const tracked = await res.json();
+                let allDone = true;
+                for (const model of tracked) {
+                  if (pullableModels.includes(model.catalogId)) {
+                    modelProgress[model.catalogId] =
+                      model.pullProgress ?? (model.state === 'pulled' || model.state === 'loaded' || model.state === 'pinned' ? 100 : 0);
+                    if (model.state === 'error') {
+                      modelErrors[model.catalogId] = model.error ?? modelErrors[model.catalogId] ?? 'Download failed';
+                      modelProgress[model.catalogId] = modelProgress[model.catalogId] ?? 0;
+                    }
+                    if (model.state !== 'pulled' && model.state !== 'loaded' && model.state !== 'pinned' && model.state !== 'error') {
+                      allDone = false;
+                    }
+                  }
+                }
+                for (const modelId of pullableModels) {
+                  if (modelErrors[modelId]) continue;
+                  if (modelProgress[modelId] === undefined) {
+                    allDone = false;
+                  }
+                }
+                setAiPhase((prev) => ({ ...prev, modelProgress: { ...modelProgress }, modelErrors: { ...modelErrors } }));
+                return allDone;
+              } catch {
+                return false;
+              }
+            };
+
+            const pullTimeout = 600_000;
+            const pullStart = Date.now();
+            let pullsComplete = false;
+            while (Date.now() - pullStart < pullTimeout) {
+              await minDelay(2000);
+              if (await pollPullProgress()) {
+                pullsComplete = true;
+                break;
+              }
+            }
+
+            if (!pullsComplete) {
+              for (const modelId of pullableModels) {
+                if (!modelErrors[modelId] && (modelProgress[modelId] ?? 0) < 100) {
+                  modelErrors[modelId] = 'Download timed out';
+                }
+              }
+              setAiPhase((prev) => ({
+                ...prev,
+                modelErrors: { ...modelErrors },
+                error:
+                  Object.keys(modelErrors).length > 0
+                    ? `${Object.keys(modelErrors).length} model download(s) did not finish. You can retry from Settings.`
+                    : 'Model downloads did not finish in time. Free disk space or choose smaller models, then try again.',
+              }));
+            } else if (Object.keys(modelErrors).length > 0) {
+              setAiPhase((prev) => ({
+                ...prev,
+                modelErrors: { ...modelErrors },
+                error: `${Object.keys(modelErrors).length} model download(s) failed. App installs will continue; retry from Settings.`,
+              }));
+            }
+          } else if (Object.keys(modelErrors).length > 0) {
+            setAiPhase((prev) => ({
+              ...prev,
+              modelErrors,
+              error: `${Object.keys(modelErrors).length} model download(s) could not start. App installs will continue; retry from Settings.`,
+            }));
+          }
+
+          setAiPhase((prev) => ({ ...prev, status: 'pinning-models', modelErrors }));
           for (const modelId of aiSetupConfig.selectedModels) {
             try {
-              const res = await apiFetch('/api/inference/models/pull', {
+              await apiFetch('/api/inference/models/pin', {
                 method: 'POST',
                 credentials: 'include',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ modelId }),
               });
-              if (!res.ok) {
-                setAiPhase((prev) => ({ ...prev, error: `Failed to pull model ${modelId}: HTTP ${res.status}` }));
-              }
             } catch {
               // Non-fatal
-            }
-          }
-
-          // Poll for pull progress
-          const pollPullProgress = async (): Promise<boolean> => {
-            try {
-              const res = await apiFetch('/api/inference/models/tracked', { credentials: 'include' });
-              if (!res.ok) return false;
-              const tracked = await res.json();
-              const progress: Record<string, number> = {};
-              let allDone = true;
-              for (const model of tracked) {
-                if (aiSetupConfig.selectedModels.includes(model.catalogId)) {
-                  progress[model.catalogId] =
-                    model.pullProgress ?? (model.state === 'pulled' || model.state === 'loaded' || model.state === 'pinned' ? 100 : 0);
-                  if (model.state !== 'pulled' && model.state !== 'loaded' && model.state !== 'pinned' && model.state !== 'error') {
-                    allDone = false;
-                  }
-                }
-              }
-              setAiPhase((prev) => ({ ...prev, modelProgress: progress }));
-              return allDone;
-            } catch {
-              return false;
-            }
-          };
-
-          const pullTimeout = 600_000; // 10 min
-          const pullStart = Date.now();
-          let pullsComplete = false;
-          while (Date.now() - pullStart < pullTimeout) {
-            await minDelay(2000);
-            if (await pollPullProgress()) {
-              pullsComplete = true;
-              break;
-            }
-          }
-
-          if (!pullsComplete) {
-            setAiPhase((prev) => ({ ...prev, error: 'Model pulls are still in progress — they will complete in the background.' }));
-          }
-
-          // Pin models only if pulls completed
-          if (pullsComplete) {
-            setAiPhase((prev) => ({ ...prev, status: 'pinning-models' }));
-            for (const modelId of aiSetupConfig.selectedModels) {
-              try {
-                await apiFetch('/api/inference/models/pin', {
-                  method: 'POST',
-                  credentials: 'include',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ modelId }),
-                });
-              } catch {
-                // Non-fatal
-              }
             }
           }
         }
@@ -236,7 +312,7 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
                 localSubdomain: app.localSubdomain || app.appSlug,
                 exposureMode: defaultExposureMode,
                 exposedLocal: defaultExposureMode === 'cloudflare',
-                openPort: false,
+                openPort: defaultExposureMode === 'local',
               }),
             }),
             minDelay(500),
@@ -317,7 +393,7 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
     };
 
     installAll();
-  }, [apps]);
+  }, [apps, start]);
 
   const statusIcon = (status: AppInstallStatus) => {
     switch (status) {
@@ -379,6 +455,11 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
   if (failedCount > 0) summaryParts.push(`${failedCount} failed`);
 
   const progressText = (() => {
+    if (!start) {
+      if (apps.length === 0) return 'Choose the apps you want above, then finish setup.';
+      return `${apps.length} app${apps.length === 1 ? '' : 's'} ready to install.`;
+    }
+
     if (done) {
       if (apps.length === 0) {
         return hasAiWork ? 'AI setup complete. No apps selected for installation.' : 'No apps selected for installation.';
@@ -405,86 +486,112 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
           : 'Continue';
 
   return (
-    <Card>
-      <CardContent className="p-6">
-        <div className="mb-4">
-          <h2 className="text-xl font-semibold mb-1">
-            {apps.length === 0 ? 'No Apps Selected' : done ? 'Installation Complete' : 'Installing Apps'}
+    <WizardCard>
+      <div className="mb-5 flex items-center gap-3">
+        <span className="text-primary [&_svg]:h-6 [&_svg]:w-6">
+          <Download />
+        </span>
+        <div>
+          <h2 className="text-lg font-bold tracking-tight sm:text-xl">
+            {apps.length === 0 ? 'No Apps Selected' : start ? (done ? 'Installation Complete' : 'Installing Apps') : 'Review Apps'}
           </h2>
-          <p className="text-sm text-muted-foreground" data-testid="install-progress-text">
+          <p className="mt-0.5 text-sm text-muted-foreground" data-testid="install-progress-text">
             {progressText}
           </p>
         </div>
+      </div>
 
-        {apps.length > 0 && (
-          <div className="w-full bg-muted rounded-full h-2 mb-4 overflow-hidden">
-            <div className="bg-primary h-2 rounded-full transition-all duration-500 ease-out" style={{ width: `${progress}%` }} />
-          </div>
-        )}
+      {start && apps.length > 0 && (
+        <div className="mb-4 h-2 w-full overflow-hidden rounded-full bg-muted">
+          <div className="h-2 rounded-full bg-primary transition-all duration-500 ease-out" style={{ width: `${progress}%` }} />
+        </div>
+      )}
 
-        {/* AI Setup Phase */}
-        {aiPhase.status !== 'skipped' && (
-          <div className="mb-4 space-y-1" data-testid="ai-phase-section">
-            <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">AI Setup</div>
-            {aiSetupConfig?.cloudProviders && aiSetupConfig.cloudProviders.length > 0 && (
-              <div className="flex items-center gap-2 px-3 py-1.5 text-sm">
-                <span className="w-4 text-center">{aiPhase.cloudConfigured ? '✓' : aiPhase.status === 'configuring-cloud' ? '●' : '○'}</span>
-                <span>Cloud providers configured</span>
-              </div>
-            )}
-            {aiSetupConfig?.selectedModels.map((modelId) => (
-              <div key={modelId} className="flex items-center gap-2 px-3 py-1.5 text-sm">
-                <span className="w-4 text-center">
-                  {(aiPhase.modelProgress[modelId] ?? 0) >= 100 ? '✓' : aiPhase.status === 'pulling-models' ? '●' : '○'}
+      {/* AI Setup Phase */}
+      {start && aiPhase.status !== 'skipped' && (
+        <div className="mb-4 space-y-1" data-testid="ai-phase-section">
+          <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">AI Setup</div>
+          {aiSetupConfig?.cloudProviders && aiSetupConfig.cloudProviders.length > 0 && (
+            <div className="flex items-center gap-2 px-3 py-1.5 text-sm">
+              <span className="w-4 text-center">{aiPhase.cloudConfigured ? '✓' : aiPhase.status === 'configuring-cloud' ? '●' : '○'}</span>
+              <span>Cloud providers configured</span>
+            </div>
+          )}
+          {aiSetupConfig?.selectedModels.map((modelId) => (
+            <div key={modelId} className="flex items-center gap-2 px-3 py-1.5 text-sm">
+              <span className="w-4 text-center">
+                {aiPhase.modelErrors[modelId]
+                  ? '✕'
+                  : (aiPhase.modelProgress[modelId] ?? 0) >= 100
+                    ? '✓'
+                    : aiPhase.status === 'pulling-models'
+                      ? '●'
+                      : '○'}
+              </span>
+              <span className="flex-1">
+                {modelId}
+                {modelId === aiSetupConfig.preferredModelId && <span className="ml-2 text-xs text-primary">agent default</span>}
+              </span>
+              {aiPhase.modelErrors[modelId] ? (
+                <span className="text-xs text-destructive max-w-[200px] truncate" title={aiPhase.modelErrors[modelId]}>
+                  Skipped
                 </span>
-                <span className="flex-1">{modelId}</span>
-                {aiPhase.status === 'pulling-models' && (aiPhase.modelProgress[modelId] ?? 0) < 100 && (
+              ) : (
+                aiPhase.status === 'pulling-models' &&
+                (aiPhase.modelProgress[modelId] ?? 0) < 100 && (
                   <span className="text-xs text-muted-foreground">{aiPhase.modelProgress[modelId] ?? 0}%</span>
-                )}
-              </div>
-            ))}
-            {aiSetupConfig?.selectedModels && aiSetupConfig.selectedModels.length > 0 && (
-              <div className="flex items-center gap-2 px-3 py-1.5 text-sm">
-                <span className="w-4 text-center">{aiPhase.status === 'done' ? '✓' : aiPhase.status === 'pinning-models' ? '●' : '○'}</span>
-                <span>Pin models</span>
-              </div>
-            )}
-            {aiPhase.status !== 'done' && aiPhase.status !== 'pending' && <div className="h-px bg-border my-2" />}
-          </div>
-        )}
-
-        {/* App Install Phase */}
-        <div className="space-y-1 max-h-[350px] overflow-y-auto pr-2" data-testid="install-app-list">
-          {states.map((state) => (
-            <div
-              key={state.app.appSlug}
-              className="flex items-center gap-3 px-3 py-2 rounded-lg transition-colors"
-              data-testid={`install-row-${state.app.appSlug}`}
-            >
-              <span className="w-5 h-5 flex items-center justify-center text-sm font-semibold">{statusIcon(state.status)}</span>
-              <img
-                src={state.app.icon}
-                alt=""
-                className="w-6 h-6 rounded"
-                onError={(e) => {
-                  (e.target as HTMLImageElement).style.display = 'none';
-                }}
-              />
-              <div className="flex-1 min-w-0">
-                <div className="text-sm font-medium">{state.app.name}</div>
-                <div className="text-xs text-muted-foreground">{statusLabel(state.status)}</div>
-                {state.error && <div className="text-xs text-destructive">{state.error}</div>}
-              </div>
+                )
+              )}
             </div>
           ))}
+          {aiPhase.error && (
+            <div className="px-3 py-1 text-xs text-yellow-600 dark:text-yellow-500" data-testid="ai-phase-warning">
+              {aiPhase.error}
+            </div>
+          )}
+          {aiSetupConfig?.selectedModels && aiSetupConfig.selectedModels.length > 0 && (
+            <div className="flex items-center gap-2 px-3 py-1.5 text-sm">
+              <span className="w-4 text-center">{aiPhase.status === 'done' ? '✓' : aiPhase.status === 'pinning-models' ? '●' : '○'}</span>
+              <span>Pin models</span>
+            </div>
+          )}
+          {aiPhase.status !== 'done' && aiPhase.status !== 'pending' && <div className="h-px bg-border my-2" />}
         </div>
+      )}
 
-        <div className="flex justify-end mt-6">
+      {/* App Install Phase */}
+      <div className="space-y-1 max-h-[350px] overflow-y-auto pr-2" data-testid="install-app-list">
+        {states.map((state) => (
+          <div
+            key={state.app.appSlug}
+            className="flex items-center gap-3 px-3 py-2 rounded-lg transition-colors"
+            data-testid={`install-row-${state.app.appSlug}`}
+          >
+            <span className="w-5 h-5 flex items-center justify-center text-sm font-semibold">{statusIcon(state.status)}</span>
+            <img
+              src={state.app.icon}
+              alt=""
+              className="w-6 h-6 rounded"
+              onError={(e) => {
+                (e.target as HTMLImageElement).style.display = 'none';
+              }}
+            />
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-medium">{state.app.name}</div>
+              <div className="text-xs text-muted-foreground">{statusLabel(state.status)}</div>
+              {state.error && <div className="text-xs text-destructive">{state.error}</div>}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {start && (
+        <div className="mt-6 flex items-center justify-end border-t border-border pt-5">
           <Button intent="primary" onClick={() => onCompleteRef.current(buildSummary(states))} data-testid="install-continue-btn">
             {continueButtonLabel}
           </Button>
         </div>
-      </CardContent>
-    </Card>
+      )}
+    </WizardCard>
   );
 };

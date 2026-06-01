@@ -15,5 +15,5 @@ test('should display login page for unauthenticated user', async ({ page }) => {
   await page.goto('/');
   // Should redirect to login
   await expect(page).toHaveURL(/\/login/);
-  await expect(page.getByRole('heading', { name: 'Login to your account' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Login to your local admin account' })).toBeVisible();
 });

@@ -1,7 +1,13 @@
-import { act, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { HubStatus, getDockerDesktopGuideContent } from './hub-status';
+import * as hubStatusModule from './hub-status';
+
+const { HubStatus, getDockerDesktopGuideContent } = hubStatusModule;
+
+vi.mock('@/lib/theme/theme', () => ({
+  getLogo: () => '/logo.svg',
+}));
 
 type TauriWindow = Window & {
   __TAURI_INTERNALS__?: { invoke: (cmd: string) => Promise<unknown> };
@@ -55,6 +61,12 @@ function renderWithTauriStatus(status: 'DockerNotAvailable' | 'Stopped' | 'Runni
     if (cmd === 'get_hub_status_command') {
       return status;
     }
+    if (cmd === 'check_docker_access_command') {
+      return { state: 'daemon_unavailable', detail: 'No container engine found at /var/run/docker.sock' };
+    }
+    if (cmd === 'get_startup_progress_command') {
+      return { services: [], progress_pct: 0, image_pulled: 0, image_total: 0, image_pull_pct: 0, all_ready: false };
+    }
 
     throw new Error(`Unexpected invoke command: ${cmd}`);
   });
@@ -101,7 +113,14 @@ describe('getDockerDesktopGuideContent', () => {
     expect(getDockerDesktopGuideContent('windows', false)).toEqual({
       platformLabel: 'Windows',
       downloadUrl: 'https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe',
-      manualSteps: [
+      alreadyInstalledTitle: 'If Docker Desktop is already installed:',
+      alreadyInstalledSteps: [
+        'Open Docker Desktop from your Start Menu',
+        "Wait for Docker to start (you'll see the whale icon in your system tray)",
+        'Come back here — the Hub will continue automatically',
+      ],
+      notInstalledTitle: 'If Docker Desktop is NOT installed:',
+      notInstalledSteps: [
         'Download Docker Desktop for Windows',
         'Run the installer and follow the prompts',
         'Restart your computer if prompted',
@@ -116,7 +135,14 @@ describe('getDockerDesktopGuideContent', () => {
     expect(getDockerDesktopGuideContent('macos', true)).toEqual({
       platformLabel: 'Mac',
       downloadUrl: 'https://desktop.docker.com/mac/main/arm64/Docker.dmg',
-      manualSteps: [
+      alreadyInstalledTitle: 'If Docker Desktop is already installed:',
+      alreadyInstalledSteps: [
+        'Open Docker Desktop from your Applications folder',
+        "Wait for Docker to start (you'll see the whale icon in your menu bar)",
+        'Come back here — the Hub will continue automatically',
+      ],
+      notInstalledTitle: 'If Docker Desktop is NOT installed:',
+      notInstalledSteps: [
         'Download Docker Desktop for Mac',
         'Open the .dmg and drag Docker to Applications',
         'Launch Docker Desktop and grant permissions',
@@ -139,11 +165,10 @@ describe('HubStatus Docker guidance', () => {
       'href',
       'https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe',
     );
-    expect(
-      screen.getByText(
-        'Download Docker Desktop for your Windows machine. Companion Hub will keep checking and continue automatically once Docker is ready.',
-      ),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/Companion Hub needs Docker Desktop/)).toBeInTheDocument();
+    expect(screen.getByText('If Docker Desktop is already installed:')).toBeInTheDocument();
+    expect(screen.getByText('Open Docker Desktop from your Start Menu')).toBeInTheDocument();
+    expect(screen.getByText('If Docker Desktop is NOT installed:')).toBeInTheDocument();
     expect(screen.getByText('Run the installer and follow the prompts')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Install Docker Desktop' })).not.toBeInTheDocument();
     expect(invoke).toHaveBeenCalledWith('get_hub_status_command');
@@ -158,6 +183,7 @@ describe('HubStatus Docker guidance', () => {
       'href',
       'https://desktop.docker.com/mac/main/arm64/Docker.dmg',
     );
+    expect(screen.getByText('Open Docker Desktop from your Applications folder')).toBeInTheDocument();
     expect(screen.getByText('Open the .dmg and drag Docker to Applications')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Install Docker Desktop' })).not.toBeInTheDocument();
   });
@@ -185,6 +211,10 @@ describe('HubStatus Docker guidance', () => {
           return 'Running';
         case 'start_hub_command':
           return 'Hub started successfully';
+        case 'check_docker_access_command':
+          return { state: 'daemon_unavailable', detail: null };
+        case 'get_startup_progress_command':
+          return { services: [], progress_pct: 0, image_pulled: 0, image_total: 0, image_pull_pct: 0, all_ready: false };
         default:
           throw new Error(`Unexpected invoke command: ${cmd}`);
       }
@@ -229,6 +259,10 @@ describe('HubStatus Docker guidance', () => {
           return getHubStatusCallCount === 1 ? 'Stopped' : 'Running';
         case 'start_hub_command':
           return 'Hub started successfully';
+        case 'check_docker_access_command':
+          return { state: 'available', detail: null };
+        case 'get_startup_progress_command':
+          return { services: [], progress_pct: 0, image_pulled: 0, image_total: 0, image_pull_pct: 0, all_ready: false };
         default:
           throw new Error(`Unexpected invoke command: ${cmd}`);
       }
@@ -261,5 +295,125 @@ describe('HubStatus Docker guidance', () => {
 
     expect(await screen.findByText('Hub child')).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Docker Desktop Required' })).not.toBeInTheDocument();
+  });
+});
+
+describe('HubStatus diagnostics (View Logs / Open Logs Folder)', () => {
+  function mockMacTauriWithStatus(statusSequence: string[], extraHandlers: Record<string, () => Promise<unknown>> = {}) {
+    let callCount = 0;
+    const invoke = vi.fn<(cmd: string) => Promise<unknown>>(async (cmd: string) => {
+      if (cmd === 'get_hub_status_command') {
+        const status = statusSequence[Math.min(callCount++, statusSequence.length - 1)];
+        return status;
+      }
+      const extraHandler = extraHandlers[cmd];
+      if (extraHandler) {
+        return extraHandler();
+      }
+      if (cmd === 'check_docker_access_command') {
+        return { state: 'daemon_unavailable', detail: null };
+      }
+      if (cmd === 'get_startup_progress_command') {
+        return { services: [], progress_pct: 0, image_pulled: 0, image_total: 0, image_pull_pct: 0, all_ready: false };
+      }
+      throw new Error(`Unexpected invoke command: ${cmd}`);
+    });
+
+    setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5)');
+    Object.defineProperty(tauriWindow, '__TAURI_INTERNALS__', {
+      value: { invoke },
+      configurable: true,
+    });
+
+    render(
+      <HubStatus>
+        <div>Hub child</div>
+      </HubStatus>,
+    );
+
+    return { invoke };
+  }
+
+  it('shows View Logs and Open Logs Folder buttons when the hub is Stopped', async () => {
+    mockMacTauriWithStatus(['Stopped']);
+
+    expect(await screen.findByRole('button', { name: 'View Logs' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Open Logs Folder' })).toBeInTheDocument();
+  });
+
+  it('View Logs button fetches log content and shows it inline', async () => {
+    const fakeLog = 'line1\nline2\nline3';
+    const { invoke } = mockMacTauriWithStatus(['Stopped'], {
+      read_desktop_logs_command: async () => fakeLog,
+    });
+
+    const viewLogsBtn = await screen.findByRole('button', { name: 'View Logs' });
+    await act(async () => {
+      fireEvent.click(viewLogsBtn);
+      await Promise.resolve();
+    });
+
+    expect(invoke).toHaveBeenCalledWith('read_desktop_logs_command');
+    expect(await screen.findByText('Recent Logs')).toBeInTheDocument();
+    // The <pre> renders raw newline-separated text — check for a specific line.
+    expect(screen.getByText(/line1/)).toBeInTheDocument();
+  });
+
+  it('hides the log panel when Hide is clicked', async () => {
+    mockMacTauriWithStatus(['Stopped'], {
+      read_desktop_logs_command: async () => 'some log',
+    });
+
+    const viewLogsBtn = await screen.findByRole('button', { name: 'View Logs' });
+    await act(async () => {
+      fireEvent.click(viewLogsBtn);
+      await Promise.resolve();
+    });
+
+    expect(await screen.findByRole('button', { name: 'Hide' })).toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Hide' }));
+    });
+
+    expect(screen.queryByText('Recent Logs')).not.toBeInTheDocument();
+  });
+
+  it('renders Hub child immediately when status starts as Running (no prior non-running state)', async () => {
+    // The sawNonRunningRef guard ensures we don't attempt a reload when the Hub
+    // was already Running on first check. We can only observe this indirectly
+    // in JSDOM (reload is a no-op there), but we verify the component renders
+    // normally without error.
+    mockMacTauriWithStatus(['Running']);
+    expect(await screen.findByText('Hub child')).toBeInTheDocument();
+    // No blocking screens should be shown
+    expect(screen.queryByRole('button', { name: 'Start Hub' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Starting Companion Hub')).not.toBeInTheDocument();
+  });
+
+  it('does not reload after a transient Starting blip once the hub is already running', async () => {
+    vi.useFakeTimers();
+    const reloadSpy = vi.spyOn(hubStatusModule, 'reloadCurrentWindow').mockImplementation(() => {});
+
+    mockMacTauriWithStatus(['Running', 'Starting', 'Running']);
+
+    await flushAsyncWork();
+    expect(screen.getByText('Hub child')).toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    await flushAsyncWork();
+
+    expect(screen.getByText('Hub child')).toBeInTheDocument();
+    expect(screen.queryByText('Starting Companion Hub')).not.toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    await flushAsyncWork();
+
+    expect(reloadSpy).not.toHaveBeenCalled();
+    expect(screen.getByText('Hub child')).toBeInTheDocument();
   });
 });

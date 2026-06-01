@@ -18,8 +18,21 @@ import path from 'node:path';
 import * as schema from '../../packages/backend/src/core/database/drizzle/schema';
 import { clearDatabase, db, seedOrganization } from '../helpers/db';
 
-const TUNNEL_TOKEN_PATH = path.join(process.env.CI_HUB_APP_DIR || process.cwd(), 'tunnel', 'token');
 const DATA_DIR = process.env.CI_HUB_DATA_DIR || '/tmp/ci-hub-e2e';
+const TUNNEL_TOKEN_PATH = path.join(process.env.CI_HUB_TUNNEL_DIR || path.join(DATA_DIR, 'tunnel'), 'token');
+const BACKEND_URL = `http://localhost:${process.env.BACKEND_PORT || '3000'}`;
+
+/**
+ * Ask the backend to reset its in-memory registration state to unregistered.
+ * This syncs the backend's cached phase with whatever we're about to set in the DB.
+ */
+async function resetBackendState(): Promise<void> {
+  try {
+    await fetch(`${BACKEND_URL}/api/registration/reset`, { method: 'POST', signal: AbortSignal.timeout(5000) });
+  } catch {
+    // Non-fatal — backend may already be unregistered or unreachable
+  }
+}
 
 /** Ensure the tunnel token file exists on disk (backend checks this). */
 function writeTunnelToken(token = 'e2e-mock-tunnel-token') {
@@ -55,6 +68,7 @@ function ensureDataDirs() {
 
 /** Fresh unregistered Hub — no org, no users, no tunnel token. */
 export async function freshUnregistered() {
+  await resetBackendState();
   await clearDatabase();
   removeTunnelToken();
   ensureDataDirs();
@@ -68,6 +82,7 @@ export async function freshUnregistered() {
  * the Hub's isRegistered() check (DB + tunnel token file) returns true.
  */
 export async function locallyReady() {
+  await resetBackendState();
   await clearDatabase();
   await seedOrganization();
   writeTunnelToken();
@@ -82,6 +97,7 @@ export async function locallyReady() {
  * reachable from the internet. Same DB state as locallyReady.
  */
 export async function publiclyDelayed() {
+  await resetBackendState();
   await clearDatabase();
   await seedOrganization();
   writeTunnelToken();
@@ -97,6 +113,7 @@ export async function publiclyDelayed() {
  * being healthy for normal operation.
  */
 export async function degradedHub() {
+  await resetBackendState();
   await clearDatabase();
   await seedOrganization();
   writeTunnelToken();

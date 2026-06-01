@@ -44,7 +44,7 @@ export default () => {
     <div className="flex flex-col h-full">
       <div className="flex flex-col flex-1 overflow-hidden">
         <Tabs value={currentTab} onValueChange={handleTabChange} className="flex-1 flex flex-col h-full overflow-hidden">
-          <div className="max-w-3xl mx-auto w-full">
+          <div className="max-w-5xl mx-auto w-full">
             <TabsList className="bg-card/50 border border-border/50">
               <TabsTrigger value="settings">{t('SETTINGS_GENERAL_TAB_TITLE')}</TabsTrigger>
               <TabsTrigger value="security">{t('SETTINGS_SECURITY_TAB_TITLE')}</TabsTrigger>
@@ -78,7 +78,7 @@ export default () => {
             </TabsList>
           </div>
           <div className={cn('p-3 flex-1 min-h-0', isLogsTab ? 'overflow-hidden' : 'overflow-y-auto')} data-testid="settings-scroll-container">
-            <div className={cn('mx-auto w-full', isLogsTab ? 'h-full max-w-none' : 'max-w-3xl')}>
+            <div className={cn('mx-auto w-full', isLogsTab ? 'h-full max-w-none' : 'max-w-5xl')}>
               <TabsContent value="settings">
                 <Suspense fallback={<div>Loading...</div>}>
                   <UserSettingsContainer initialValues={userSettings} publicHubHostname={publicHubHostname} />

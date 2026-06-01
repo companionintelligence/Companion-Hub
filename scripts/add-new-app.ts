@@ -74,7 +74,7 @@ async function addNewApp(config: AppConfig): Promise<void> {
       port: config.port,
       categories: config.categories,
       description: config.description,
-      tipi_version: 1,
+      cihub_app_version: 1,
       version: config.version || '1.0.0',
       source: config.source || '',
       website: config.website || '',

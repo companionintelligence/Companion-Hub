@@ -27,6 +27,7 @@ describe('UninstallAppCommand', () => {
     logger = mockDeep<LoggerService>();
     appFilesManager = mock<AppFilesManager>();
     appFilesManager.deleteAppFolder.mockResolvedValue();
+    appFilesManager.deleteAppDataDir.mockResolvedValue();
 
     portManager = mock<PortManagerService>();
     portManager.releaseAll.mockResolvedValue(1);
@@ -61,6 +62,7 @@ describe('UninstallAppCommand', () => {
     expect(dockerService.removeAppImages).toHaveBeenCalledWith(appUrn, ['sha256:a']);
     expect(dockerService.removeAppNetworks).toHaveBeenCalledWith(appUrn);
     expect(appFilesManager.deleteAppFolder).toHaveBeenCalledWith(appUrn);
+    expect(appFilesManager.deleteAppDataDir).toHaveBeenCalledWith(appUrn);
 
     const snapshotOrder = dockerService.snapshotAppImageIds.mock.invocationCallOrder[0];
     const downOrder = dockerService.composeApp.mock.invocationCallOrder[0];
@@ -72,6 +74,28 @@ describe('UninstallAppCommand', () => {
     expect(downOrder).toBeLessThan(removeImagesOrder);
     expect(removeImagesOrder).toBeLessThan(removeNetworksOrder);
     expect(removeNetworksOrder).toBeLessThan(deleteFolderOrder);
+  });
+
+  it('preserves Docker volumes when deleteAllData is false', async () => {
+    const moduleRef = {
+      get: vi.fn((token: unknown) => {
+        if (token === LoggerService) return logger;
+        if (token === AppFilesManager) return appFilesManager;
+        if (token === DockerService) return dockerService;
+        if (token === PortManagerService) return portManager;
+        return null;
+      }),
+    } as unknown as ModuleRef;
+
+    const dockerode = mock<Dockerode>();
+    const preserveDataCommand = new UninstallAppCommand(moduleRef, dockerode, false);
+
+    const result = await preserveDataCommand.execute(appUrn);
+
+    expect(result).toEqual({ success: true, message: `App ${appUrn} uninstalled successfully` });
+    expect(dockerService.composeApp).toHaveBeenCalledWith(appUrn, 'down --remove-orphans --rmi all');
+    expect(appFilesManager.deleteAppFolder).toHaveBeenCalledWith(appUrn);
+    expect(appFilesManager.deleteAppDataDir).not.toHaveBeenCalled();
   });
 
   it('continues uninstall when compose down fails and cleanup helpers remain non-fatal', async () => {

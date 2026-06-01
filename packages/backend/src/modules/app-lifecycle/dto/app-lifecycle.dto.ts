@@ -30,7 +30,7 @@ export const appFormSchema = z
   .passthrough();
 
 const uninstallAppBodySchema = z.object({
-  removeBackups: z.boolean(),
+  deleteAllData: z.boolean().optional().default(true),
 });
 
 const updateAppBodySchema = z.object({

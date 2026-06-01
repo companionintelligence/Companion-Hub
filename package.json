@@ -2,11 +2,15 @@
   "name": "ci-hub",
   "version": "0.1.0",
   "description": "Companion Intelligence Hub CLI and self-hosted app platform runtime.",
-  "packageManager": "pnpm@10.33.0",
+  "packageManager": "pnpm@10.34.1",
+  "engines": {
+    "node": ">=22",
+    "pnpm": ">=10"
+  },
   "scripts": {
     "dev": "pnpm exec tsx scripts/start.ts dev",
     "dev:app": "POSTGRES_HOST=localhost RABBITMQ_HOST=localhost NODE_ENV=development turbo run local",
-    "infra:up": "ENV_FILE=.env.local docker compose --env-file .env.local --project-name ci-hub -f docker-compose.local.yml up -d ci-os-hub-queue ci-hub-db",
+    "infra:up": "ENV_FILE=.env.local docker compose --env-file .env.local --project-name ci-hub -f docker-compose.local.yml up -d ci-os-hub-queue ci-hub-db && ENV_FILE=.env.local pnpm exec tsx scripts/sync-postgres-password.ts .env.local",
     "infra:down": "docker compose --project-name ci-hub -f docker-compose.local.yml down",
     "cleanup": "pnpm exec tsx scripts/cleanup.ts",
     "bundle": "turbo bundle",
@@ -16,7 +20,7 @@
     "test:integration": "turbo run test:integration",
     "start": "pnpm exec tsx scripts/start.ts start",
     "start:docker": "ENV_FILE=.env.local docker compose --env-file .env.local --project-name ci-hub -f docker-compose.local.yml up --build",
-    "init:host": "pnpm exec tsx scripts/init-traefik.ts && pnpm exec tsx scripts/init-docker-config.ts",
+    "init:host": "pnpm exec tsx scripts/init-traefik.ts && pnpm exec tsx scripts/init-docker-config.ts && pnpm exec tsx scripts/init-gpu-runtime.ts && pnpm exec tsx scripts/init-host-probe.ts && pnpm exec tsx scripts/tune-docker-resources.ts",
     "start:prod": "pnpm run init:host && ENV_FILE=.env.prod docker compose --env-file .env.prod --project-name ci-hub --profile private-vpn -f docker-compose.prod.yml up --build",
     "start:staging": "pnpm run init:host && ENV_FILE=.env.staging docker compose --env-file .env.staging --project-name ci-hub --profile private-vpn -f docker-compose.prod.yml up --build",
     "start:dev": "pnpm run init:host && ENV_FILE=.env.dev docker compose --env-file .env.dev --project-name ci-hub --profile private-vpn -f docker-compose.prod.yml up --build",
@@ -64,6 +68,7 @@
     "dotenv-cli": "^10.0.0",
     "husky": "^9.1.7",
     "lint-staged": "^16.2.7",
+    "systeminformation": "^5.25.11",
     "turbo": "^2.8.17",
     "vitest": "^4.1.4"
   },

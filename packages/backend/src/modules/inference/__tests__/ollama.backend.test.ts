@@ -74,6 +74,13 @@ describe('OllamaBackend', () => {
       );
     });
 
+    it('should log error and rethrow when loadModel fails', async () => {
+      (axios.post as any) = vi.fn().mockRejectedValue(new Error('connection refused'));
+
+      await expect(backend.loadModel('phi4-mini')).rejects.toThrow('connection refused');
+      expect(loggerService.error).toHaveBeenCalledWith(expect.stringContaining('Failed to load model phi4-mini'));
+    });
+
     it('should unload model with keep_alive=0', async () => {
       (axios.post as any) = vi.fn().mockResolvedValue({ data: {} });
 
@@ -84,6 +91,13 @@ describe('OllamaBackend', () => {
         expect.objectContaining({ model: 'phi4-mini', keep_alive: 0 }),
         expect.any(Object),
       );
+    });
+
+    it('should log error and rethrow when unloadModel fails', async () => {
+      (axios.post as any) = vi.fn().mockRejectedValue(new Error('timeout'));
+
+      await expect(backend.unloadModel('phi4-mini')).rejects.toThrow('timeout');
+      expect(loggerService.error).toHaveBeenCalledWith(expect.stringContaining('Failed to unload model phi4-mini'));
     });
 
     it('should check if model is loaded via /api/ps', async () => {

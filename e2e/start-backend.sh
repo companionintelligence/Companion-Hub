@@ -5,6 +5,7 @@
 set -euo pipefail
 
 DATA_DIR="${CI_HUB_DATA_DIR:-/tmp/ci-hub-e2e}"
+TUNNEL_DIR="${CI_HUB_TUNNEL_DIR:-$DATA_DIR/tunnel}"
 
 
 # Fail fast with a clear message if Postgres / RabbitMQ are unavailable.
@@ -15,10 +16,24 @@ mkdir -p "$DATA_DIR"/{state,logs,apps,app-data,repos,backups,user-config,media}
 mkdir -p "$DATA_DIR/state/traefik"/{config,dynamic,tls}
 touch "$DATA_DIR/state/traefik/acme_storage.json"
 
+# Link CI-Marketplace so app-store tests find apps in E2E
+# The backend resolves apps at $DATA_DIR/repos/<store-slug>/apps/
+MARKETPLACE_SRC="${CI_MARKETPLACE_DIR:-$(pwd)/../CI-Marketplace}"
+MARKETPLACE_LINK="$DATA_DIR/repos/ci-marketplace"
+mkdir -p "$MARKETPLACE_LINK"
+rm -rf "$MARKETPLACE_LINK/apps"          # Remove any stale dir or nested symlink
+if [ -d "$MARKETPLACE_SRC/apps" ]; then
+  ln -s "$(realpath "$MARKETPLACE_SRC/apps")" "$MARKETPLACE_LINK/apps"
+  echo "CI-Marketplace: linked $(ls "$MARKETPLACE_LINK/apps" | wc -l | tr -d ' ') apps from $MARKETPLACE_SRC"
+else
+  mkdir -p "$MARKETPLACE_LINK/apps"
+  echo "Warning: CI-Marketplace not found at $MARKETPLACE_SRC — app store will be empty"
+fi
+
 # Create dummy tunnel token so isRegistered() returns true in E2E
 # Without this, the frontend gates all pages behind device-registration
-mkdir -p "$(pwd)/tunnel"
-echo "e2e-mock-tunnel-token" > "$(pwd)/tunnel/token"
+mkdir -p "$TUNNEL_DIR"
+echo "e2e-mock-tunnel-token" > "$TUNNEL_DIR/token"
 
 # Build workspace dependencies (common package must be compiled before backend can start)
 echo "Building @ci-hub/common..."
@@ -73,6 +88,7 @@ DEVICE_ID=${DEVICE_ID:-test-device-e2e}
 CI_HUB_DATA_DIR=$DATA_DIR
 CI_HUB_APP_DATA_DIR=$DATA_DIR/app-data
 CI_HUB_APP_DIR=$(pwd)
+CI_HUB_TUNNEL_DIR=$TUNNEL_DIR
 E2E_TEST=${E2E_TEST:-true}
 EOF
 

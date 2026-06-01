@@ -2,15 +2,15 @@
 /**
  * QA Batch Runner
  *
- * Run QA on a batch of apps based on BATCH env var (0-6).
+ * Run QA on a batch of apps based on BATCH and TOTAL_BATCHES env vars.
  *
  * Usage:
- *   BATCH=<0-6> pnpm exec tsx scripts/qa-batch.ts
+ *   BATCH=<0-9> TOTAL_BATCHES=10 pnpm exec tsx scripts/qa-batch.ts
  *
  * Environment variables:
  *   BATCH         - Batch number 0-6 (default: 0)
  *   RESULTS_DIR   - Directory for QA results (default: ~/qa-results)
- *   APP_STORE_DIR - Path to CI-App-Store/apps (default: ~/devel/CI-App-Store/apps)
+ *   APP_STORE_DIR - Path to CI-Marketplace/apps (default: ~/devel/CI-Marketplace/apps)
  */
 
 import { execSync } from 'node:child_process';
@@ -18,9 +18,9 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { join } from 'node:path';
 
 const RESULTS_DIR = process.env.RESULTS_DIR || join(process.env.HOME || '~', 'qa-results');
-const APP_STORE_DIR = process.env.APP_STORE_DIR || join(process.env.HOME || '~', 'devel/CI-App-Store/apps');
+const APP_STORE_DIR = process.env.APP_STORE_DIR || join(process.env.HOME || '~', 'devel/CI-Marketplace/apps');
 const BATCH = Number.parseInt(process.env.BATCH || '0', 10);
-const BATCH_SIZE = 86;
+const TOTAL_BATCHES = Number.parseInt(process.env.TOTAL_BATCHES || '10', 10);
 
 interface QAResult {
   appId: string;
@@ -47,8 +47,9 @@ async function main() {
   console.log(`Total apps: ${allApps.length}`);
 
   // Get batch
-  const startIdx = BATCH * BATCH_SIZE;
-  const endIdx = Math.min(startIdx + BATCH_SIZE, allApps.length);
+  const batchSize = Math.ceil(allApps.length / TOTAL_BATCHES);
+  const startIdx = BATCH * batchSize;
+  const endIdx = Math.min(startIdx + batchSize, allApps.length);
   const batchApps = allApps.slice(startIdx, endIdx);
 
   console.log(`Batch ${BATCH}: apps ${startIdx + 1} to ${endIdx} (${batchApps.length} apps)\n`);

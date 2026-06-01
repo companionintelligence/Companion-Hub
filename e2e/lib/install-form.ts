@@ -115,7 +115,7 @@ export async function installApp(
   const unfillableFields: FormField[] = [];
 
   // ── Navigate to app store and search ──
-  await page.goto(`${hubUrl}/app-store`);
+  await page.goto(`${hubUrl}/store`);
   await expect(page.getByRole('heading', { name: /app store/i })).toBeVisible({ timeout: 20_000 });
 
   const searchBox = page.getByPlaceholder('Search apps...').first();

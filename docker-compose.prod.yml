@@ -54,7 +54,7 @@ services:
       dockerfile: Dockerfile
       args:
         CI_HUB_VERSION: ${CI_HUB_VERSION:-4.5.0}
-        CI_CLOUD_URL: ${CI_CLOUD_URL:-}
+        CI_CLOUD_URL: ${CI_CLOUD_URL:-https://hub.ci.computer}
         LOCAL: ${LOCAL:-false}
         TARGETARCH: ${TARGETARCH:-amd64}
         DOCKER_PLATFORM: ${DOCKER_PLATFORM:-linux/amd64}
@@ -114,6 +114,7 @@ services:
       VLLM_URL: ${VLLM_URL:-http://ci-hub-vllm:8000}
       LEMONADE_URL: ${LEMONADE_URL:-http://ci-hub-lemonade:13305}
       API_PORT: 5002
+      CI_HUB_ENVIRONMENT: ${CI_HUB_ENVIRONMENT:-production}
       LOCAL: ${LOCAL:-false}
       NODE_ENV: ${NODE_ENV:-production}
       ROOT_FOLDER_HOST: ${ROOT_FOLDER_HOST:?ROOT_FOLDER_HOST must be set to an absolute host path}
@@ -128,7 +129,7 @@ services:
       INTERNAL_IP: ${INTERNAL_IP:-127.0.0.1}
       CI_HUB_VERSION: ${CI_HUB_VERSION:-4.5.0}
       LOG_LEVEL: ${LOG_LEVEL:-info}
-      CI_CLOUD_URL: ${CI_CLOUD_URL:-https://hub.companionintelligence.com}
+      CI_CLOUD_URL: ${CI_CLOUD_URL:-https://hub.ci.computer}
     env_file:
       - path: ${ENV_FILE:-.env}
         required: false
@@ -192,7 +193,7 @@ services:
   # tailscale.com using TS_AUTHKEY (set TAILSCALE_AUTHKEY in `.env`; HEADSCALE_PREAUTH_KEY is still read as a fallback for old configs).
   # Advertises the Docker bridge by default so tailnet devices can reach the Hub network.
   hub-tailscale:
-    image: tailscale/tailscale:v1.82.5
+    image: tailscale/tailscale:v1.98.3
     pull_policy: if_not_present
     container_name: hub-tailscale
     restart: unless-stopped
@@ -202,7 +203,7 @@ services:
       - SYS_MODULE
     environment:
       TS_AUTHKEY: ${TAILSCALE_AUTHKEY:-${HEADSCALE_PREAUTH_KEY:-}}
-      TS_EXTRA_ARGS: ${HUB_TAILSCALE_EXTRA_ARGS:---accept-routes --advertise-routes=172.18.0.0/16}
+      TS_EXTRA_ARGS: ${HUB_TAILSCALE_EXTRA_ARGS:---login-server=https://controlplane.tailscale.com --accept-routes --advertise-routes=172.18.0.0/16}
       TS_STATE_DIR: /var/lib/tailscale
       TS_USERSPACE: "false"
       TS_SOCKET: /var/run/tailscale/tailscaled.sock

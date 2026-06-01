@@ -130,8 +130,17 @@ export type LoadDto = {
     diskSize: number;
     diskUsed: number;
     memoryTotal: number;
+    memoryUsed: number;
     percentUsed: number;
     percentUsedMemory: number;
+    hasVmWedge: boolean;
+    runtimeKind: 'container-only' | 'docker-desktop-vm' | 'wsl2-vm' | 'linux-native' | 'host-native';
+    containerMemoryTotal?: number;
+    containerMemoryUsed?: number;
+    containerDiskTotal?: number;
+    containerDiskUsed?: number;
+    recommendedDockerRamMb?: number;
+    platformGuidance?: string;
 };
 
 export type LoginBody = {
@@ -257,12 +266,12 @@ export type MyAppsDto = {
             short_desc: string;
             source: string;
             supported_architectures: Array<'amd64' | 'arm64'>;
-            tipi_version: number;
+            cihub_app_version: number;
             updated_at: number;
             urn: string;
             version: string;
             gid?: number;
-            min_tipi_version?: string;
+            min_hub_version?: string;
             port?: number;
             uid?: number;
             url_suffix?: string;
@@ -338,12 +347,12 @@ export type GuestAppsDto = {
             short_desc: string;
             source: string;
             supported_architectures: Array<'amd64' | 'arm64'>;
-            tipi_version: number;
+            cihub_app_version: number;
             updated_at: number;
             urn: string;
             version: string;
             gid?: number;
-            min_tipi_version?: string;
+            min_hub_version?: string;
             port?: number;
             uid?: number;
             url_suffix?: string;
@@ -401,12 +410,12 @@ export type GetAppDto = {
         short_desc: string;
         source: string;
         supported_architectures: Array<'amd64' | 'arm64'>;
-        tipi_version: number;
+        cihub_app_version: number;
         updated_at: number;
         urn: string;
         version: string;
         gid?: number;
-        min_tipi_version?: string;
+        min_hub_version?: string;
         port?: number;
         uid?: number;
         url_suffix?: string;
@@ -525,7 +534,7 @@ export type LifecycleRequestDto = {
 };
 
 export type UninstallAppBody = {
-    removeBackups: boolean;
+    deleteAllData?: boolean;
 };
 
 export type UpdateAppBody = {

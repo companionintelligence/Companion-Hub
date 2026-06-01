@@ -41,7 +41,7 @@ export class AppLifecycleController {
   @Delete(':urn/uninstall')
   @ApiResponse({ type: LifecycleRequestDto })
   async uninstallApp(@Param('urn') urn: string, @Body() body: UninstallAppBody) {
-    const res = await this.appLifecycleService.uninstallApp({ appUrn: castAppUrn(urn), removeBackups: body.removeBackups });
+    const res = await this.appLifecycleService.uninstallApp({ appUrn: castAppUrn(urn), deleteAllData: body.deleteAllData });
     return LifecycleRequestDto.parse(res, { reportOnly: true });
   }
 

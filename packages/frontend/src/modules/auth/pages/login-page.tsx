@@ -1,6 +1,8 @@
 import { userContext } from '@/api-client';
 import { loginMutation, verifyTotpMutation } from '@/api-client/@tanstack/react-query.gen';
 import { setTauriSessionId } from '@/lib/api-fetch';
+import { resolveRegistrationStatus } from '@/lib/registration-cache';
+import { requiresDeviceRegistration } from '@/lib/registration-status';
 import { useUserContext } from '@/context/user-context';
 import type { TranslatableError } from '@/types/error.types';
 import { useMutation } from '@tanstack/react-query';
@@ -15,6 +17,11 @@ const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 const isSafeRedirect = (url: string) => new URL(url).host.endsWith(`.${window.location.host}`);
 
 export async function clientLoader() {
+  const registrationStatus = await resolveRegistrationStatus();
+  if (registrationStatus && requiresDeviceRegistration(registrationStatus)) {
+    return redirect('/device-registration');
+  }
+
   const user = await userContext();
 
   if (!user.data?.isConfigured) {
@@ -22,7 +29,7 @@ export async function clientLoader() {
   }
 
   if (user.data?.isLoggedIn) {
-    return redirect('/dashboard');
+    return redirect('/home');
   }
 }
 
@@ -34,7 +41,7 @@ export default () => {
   const redirect_url = searchParams.get('redirect_url');
   const app = searchParams.get('app');
 
-  const loginType = capitalize(app ?? '') || 'your account';
+  const loginType = capitalize(app ?? '') || 'your local admin account';
 
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -56,7 +63,7 @@ export default () => {
           window.location.href = redirect_url;
           return;
         }
-        navigate('/dashboard');
+        navigate('/home');
       }
     },
     onError: (e: TranslatableError) => {
@@ -77,7 +84,7 @@ export default () => {
         window.location.href = redirect_url;
         return;
       }
-      navigate('/dashboard');
+      navigate('/home');
     },
   });
 
@@ -86,7 +93,7 @@ export default () => {
       window.location.href = redirect_url;
       return;
     }
-    return <Navigate to="/dashboard" />;
+    return <Navigate to="/home" />;
   }
 
   if (!isConfigured) {

@@ -1,5 +1,6 @@
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
+import { PasswordInput } from '@/components/ui/PasswordInput/PasswordInput';
 import { zodResolver } from '@hookform/resolvers/zod';
 import type React from 'react';
 import { useForm } from 'react-hook-form';
@@ -50,13 +51,12 @@ export const LoginForm: React.FC<IProps> = ({ loading, onSubmit, loginType }) =>
           className="mb-3"
           placeholder={t('AUTH_FORM_EMAIL_PLACEHOLDER')}
         />
-        <Input
+        <PasswordInput
           {...register('password')}
           name="password"
           label={t('AUTH_FORM_PASSWORD')}
           error={errors.password?.message}
           disabled={loading}
-          type="password"
           className="mb-3 password-input"
           placeholder={t('AUTH_FORM_PASSWORD_PLACEHOLDER')}
         />

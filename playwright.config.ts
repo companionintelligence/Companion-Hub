@@ -45,12 +45,19 @@ const backendEnv: Record<string, string> = {
   CI_HUB_DATA_DIR: process.env.CI_HUB_DATA_DIR || '/tmp/ci-hub-e2e',
   CI_HUB_APP_DATA_DIR: process.env.CI_HUB_APP_DATA_DIR || '/tmp/ci-hub-e2e/app-data',
   CI_HUB_APP_DIR: process.env.CI_HUB_APP_DIR || process.cwd(),
+  CI_HUB_TUNNEL_DIR: process.env.CI_HUB_TUNNEL_DIR || '/tmp/ci-hub-e2e/tunnel',
   MCP_API_KEY: process.env.MCP_API_KEY || 'test-mcp-api-key-e2e',
 };
 
 export default defineConfig({
   testDir: './e2e',
-  testIgnore: ['**/future/**', '**/generated/**', '**/cross-domain/**', ...(USE_REAL_PORTAL ? [] : ['**/app-store-lifecycle.spec.ts'])],
+  testIgnore: [
+    '**/future/**',
+    '**/generated/**',
+    '**/cross-domain/**',
+    '**/platform/**',
+    ...(USE_REAL_PORTAL ? [] : ['**/app-store-lifecycle.spec.ts']),
+  ],
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
@@ -85,7 +92,21 @@ export default defineConfig({
             },
           },
         ]
-      : []),
+      : [
+          {
+            // Lightweight mock portal — simulates CI Portal for local/CI E2E without hitting production.
+            command: 'pnpm exec tsx e2e/mock-portal/server.ts',
+            url: `http://localhost:${MOCK_PORTAL_PORT}/___control`,
+            reuseExistingServer: !process.env.CI,
+            timeout: 15000,
+            stdout: 'pipe',
+            stderr: 'pipe',
+            env: {
+              MOCK_PORTAL_PORT,
+              MOCK_PORTAL_SCENARIO: 'registered',
+            },
+          },
+        ]),
     {
       command: 'bash e2e/start-backend.sh',
       url: `http://localhost:${BACKEND_PORT}/api/health`,

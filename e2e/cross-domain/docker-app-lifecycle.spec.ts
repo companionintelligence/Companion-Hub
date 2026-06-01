@@ -39,7 +39,7 @@ const TEST_APP_CONFIG = {
   name: 'E2E Whoami',
   description: 'Minimal HTTP responder for E2E testing',
   version: '1.0.0',
-  tipi_version: 1,
+  cihub_app_version: 1,
   short_desc: 'E2E test app',
   author: 'E2E',
   source: 'https://github.com/traefik/whoami',
@@ -242,7 +242,7 @@ test.describe
         await fetch(`${HUB_BACKEND_URL}/api/app-lifecycle/${encodeURIComponent(TEST_APP_URN)}/uninstall`, {
           method: 'DELETE',
           headers: authHeaders(sessionId, 'application/json'),
-          body: JSON.stringify({ removeBackups: true }),
+          body: JSON.stringify({ deleteAllData: true }),
         });
         // Wait a bit for Docker cleanup
         await new Promise((r) => setTimeout(r, 5000));
@@ -331,7 +331,7 @@ test.describe
       const res = await fetch(`${HUB_BACKEND_URL}/api/app-lifecycle/${encodeURIComponent(TEST_APP_URN)}/uninstall`, {
         method: 'DELETE',
         headers: authHeaders(sessionId, 'application/json'),
-        body: JSON.stringify({ removeBackups: true }),
+        body: JSON.stringify({ deleteAllData: true }),
       });
 
       expect(res.ok, `Uninstall request failed: ${await res.text()}`).toBeTruthy();

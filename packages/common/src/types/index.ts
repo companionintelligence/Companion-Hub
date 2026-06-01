@@ -32,3 +32,13 @@ export type {
   BackendModelInfo,
   PullProgress,
 } from './inference.js';
+export type {
+  HostPlatform,
+  HostCpuArch,
+  HostMetricsSource,
+  RuntimeKind,
+  HostMetricsHostSection,
+  HostMetricsContainerSection,
+  HostMetricsProbeFile,
+  HostMetricsDisplayLoad,
+} from './host-metrics.js';

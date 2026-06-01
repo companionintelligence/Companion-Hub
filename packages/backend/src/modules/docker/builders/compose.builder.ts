@@ -6,6 +6,7 @@ import type { AppUrn } from '@ci-hub/common/types';
 import * as yaml from 'yaml';
 import { type BuiltService, ServiceBuilder } from './service.builder';
 import { TraefikLabelsBuilder } from './traefik-labels.builder';
+import { publishesHostPort } from '@/modules/apps/app-exposure.helpers';
 import { z } from 'zod';
 
 interface Network {
@@ -133,11 +134,12 @@ export class DockerComposeBuilder {
       service.setNetwork(mainNetworkName, 1);
     }
 
+    const effectiveExposureMode = form.exposureMode || (form.exposedLocal ? 'cloudflare' : 'local');
+
     if (params.isMain) {
-      // Only expose port on host if openPort is true (for direct local network access)
-      // When exposedLocal=true but openPort=false, Traefik uses Docker internal networking
-      // and doesn't need the host port mapping
-      if (form.openPort && params.internalPort) {
+      // Publish host port for local-mode apps, explicit openPort, or Cloudflare/Tailscale
+      // exposed apps so the UI remains reachable on the LAN during DNS propagation.
+      if (publishesHostPort(form) && params.internalPort) {
         service.setPort({
           containerPort: params.internalPort,
           // biome-ignore lint/suspicious/noTemplateCurlyInString: intended
@@ -154,17 +156,10 @@ export class DockerComposeBuilder {
 
     // Generate Traefik labels based on exposure mode
     // Traefik routes using Docker internal networking (container IP + internalPort)
-    // It does NOT use host port mappings - only the isMain service gets Traefik labels
+    // It does NOT use host port mappings — only the isMain service gets Traefik labels
     let traefikLabels: Record<string, string | boolean> = {};
-    const effectiveExposureMode = form.exposureMode || (form.exposedLocal ? 'cloudflare' : 'local');
 
     if (effectiveExposureMode !== 'local' && params.isMain && params.internalPort) {
-      // Use org info read in getDockerCompose (set by app.helpers.ts in APP_PUBLIC_HOSTNAME)
-      // Fallback to using this.domain as public domain if not found
-      const publicDomainToUse = this.publicDomain || this.domain;
-
-      // Use full subdomain from APP_PUBLIC_HOSTNAME if available (includes org slug)
-      // Otherwise fall back to constructing it from localSubdomain
       const subdomainToUse = this.fullSubdomain || form.localSubdomain || `${appName}-${appStoreId}`;
 
       const traefikBuilder = new TraefikLabelsBuilder({
@@ -173,11 +168,12 @@ export class DockerComposeBuilder {
         storeId: appStoreId,
         exposureMode: effectiveExposureMode as 'local' | 'cloudflare' | 'tailscale',
         enableAuth: form.enableAuth,
-        localSubdomain: subdomainToUse, // Use full subdomain (with org slug) from APP_PUBLIC_HOSTNAME
-        publicDomain: publicDomainToUse,
+        localSubdomain: subdomainToUse,
+        publicDomain: this.publicDomain || this.domain,
         localDomain: this.localDomain,
         httpsBackend: params.httpsBackend,
       });
+
       traefikBuilder.addExposedLocalLabels();
       traefikBuilder.addTailscaleLabels();
       traefikLabels = traefikBuilder.build();

@@ -1,5 +1,6 @@
 import { LoggerService } from '@/core/logger/logger.service';
 import { Test } from '@nestjs/testing';
+import { HttpException, HttpStatus } from '@nestjs/common';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { InferenceController } from '../inference.controller';
@@ -9,11 +10,14 @@ import { MemoryManagerService } from '../memory-manager.service';
 import { ModelRegistryService } from '../model-registry.service';
 import { ModelPullerService } from '../model-puller.service';
 import { CloudFallbackService } from '../cloud-fallback.service';
+import { OllamaInstallerService } from '../ollama-installer.service';
+import { AppCredentialsService } from '../app-credentials.service';
 import type { HardwareProfile, InferenceStatus } from '@ci-hub/common/types';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { OllamaBackend } from '../backends/ollama.backend';
 import { VllmBackend } from '../backends/vllm.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
+import { HostMetricsService } from '@/modules/system/host-metrics.service';
 
 describe('InferenceController — onboarding-profile', () => {
   let controller: InferenceController;
@@ -21,6 +25,8 @@ describe('InferenceController — onboarding-profile', () => {
   let modelRegistry: MockProxy<ModelRegistryService>;
   let memoryManager: MockProxy<MemoryManagerService>;
   let router: MockProxy<InferenceRouterService>;
+  let hostMetrics: MockProxy<HostMetricsService>;
+  let ollamaBackend: MockProxy<OllamaBackend>;
 
   const fakeProfile: HardwareProfile = {
     gpu: {
@@ -72,6 +78,9 @@ describe('InferenceController — onboarding-profile', () => {
         { provide: ModelRegistryService, useValue: mock<ModelRegistryService>() },
         { provide: ModelPullerService, useValue: mock<ModelPullerService>() },
         { provide: CloudFallbackService, useValue: mock<CloudFallbackService>() },
+        { provide: OllamaInstallerService, useValue: mock<OllamaInstallerService>() },
+        { provide: AppCredentialsService, useValue: mock<AppCredentialsService>() },
+        { provide: HostMetricsService, useValue: mock<HostMetricsService>() },
         { provide: ConfigurationService, useValue: mock<ConfigurationService>() },
         { provide: OllamaBackend, useValue: mock<OllamaBackend>() },
         { provide: VllmBackend, useValue: mock<VllmBackend>() },
@@ -85,6 +94,24 @@ describe('InferenceController — onboarding-profile', () => {
     modelRegistry = moduleRef.get(ModelRegistryService);
     memoryManager = moduleRef.get(MemoryManagerService);
     router = moduleRef.get(InferenceRouterService);
+    hostMetrics = moduleRef.get(HostMetricsService);
+    ollamaBackend = moduleRef.get(OllamaBackend);
+    ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['phi4-mini'] });
+    modelRegistry.getCatalog.mockReturnValue([{ id: 'phi-4-mini', backendModelId: 'phi4-mini', backend: 'ollama' }] as any);
+    modelRegistry.getTrackedModel.mockReturnValue(undefined);
+    hostMetrics.readHostSection.mockResolvedValue(null);
+    hostMetrics.getDisplayLoad.mockResolvedValue({
+      diskSize: 0,
+      diskUsed: 0,
+      percentUsed: 0,
+      cpuLoad: 0,
+      cpuCores: 0,
+      memoryTotal: 0,
+      memoryUsed: 0,
+      percentUsedMemory: 0,
+      hasVmWedge: false,
+      runtimeKind: 'container-only',
+    });
   });
 
   it('should be defined', () => {
@@ -93,7 +120,7 @@ describe('InferenceController — onboarding-profile', () => {
 
   it('should return aggregated onboarding profile', async () => {
     hardwareInspector.getProfile.mockResolvedValue(fakeProfile);
-    modelRegistry.getRecommendedModels.mockReturnValue([]);
+    modelRegistry.getRecommendedModelsForHardware.mockReturnValue([]);
     modelRegistry.getModelsForTier.mockReturnValue([]);
     memoryManager.calculateBudget.mockReturnValue(fakeStatus.memoryBudget);
     router.getStatus.mockResolvedValue(fakeStatus);
@@ -105,12 +132,13 @@ describe('InferenceController — onboarding-profile', () => {
     expect(result.backends.recommended).toBe('vllm');
     expect(result.backends.available).toHaveLength(2);
     expect(result.resourceEstimate.availableMemoryMb).toBeGreaterThanOrEqual(0);
+    expect(result.installedCatalogIds).toEqual(['phi-4-mini']);
   });
 
   it('should recommend vllm for AMD GPU with runtime', async () => {
     const amdProfile = { ...fakeProfile, gpu: { ...fakeProfile.gpu, vendor: 'amd' as const } };
     hardwareInspector.getProfile.mockResolvedValue(amdProfile);
-    modelRegistry.getRecommendedModels.mockReturnValue([]);
+    modelRegistry.getRecommendedModelsForHardware.mockReturnValue([]);
     modelRegistry.getModelsForTier.mockReturnValue([]);
     memoryManager.calculateBudget.mockReturnValue(fakeStatus.memoryBudget);
     router.getStatus.mockResolvedValue(fakeStatus);
@@ -122,13 +150,74 @@ describe('InferenceController — onboarding-profile', () => {
   it('should recommend ollama for nvidia without runtime', async () => {
     const noRuntimeProfile = { ...fakeProfile, gpu: { ...fakeProfile.gpu, runtimeAvailable: false } };
     hardwareInspector.getProfile.mockResolvedValue(noRuntimeProfile);
-    modelRegistry.getRecommendedModels.mockReturnValue([]);
+    modelRegistry.getRecommendedModelsForHardware.mockReturnValue([]);
     modelRegistry.getModelsForTier.mockReturnValue([]);
     memoryManager.calculateBudget.mockReturnValue(fakeStatus.memoryBudget);
     router.getStatus.mockResolvedValue(fakeStatus);
 
     const result = await controller.getOnboardingProfile();
     expect(result.backends.recommended).toBe('ollama');
+  });
+
+  it('should keep a GPU tier for Ollama onboarding when host GPU VRAM is available but container runtime is not', async () => {
+    const noRuntimeProfile: HardwareProfile = {
+      ...fakeProfile,
+      gpu: { ...fakeProfile.gpu, runtimeAvailable: false },
+      tier: 'cpu-only',
+    };
+
+    hardwareInspector.getProfile.mockResolvedValue(noRuntimeProfile);
+    hardwareInspector.computeTier.mockReturnValue('high');
+    modelRegistry.getRecommendedModelsForHardware.mockReturnValue([]);
+    modelRegistry.getModelsForTier.mockReturnValue([]);
+    memoryManager.calculateBudget.mockReturnValue(fakeStatus.memoryBudget);
+    router.getStatus.mockResolvedValue(fakeStatus);
+
+    const result = await controller.getOnboardingProfile();
+
+    expect(result.backends.recommended).toBe('ollama');
+    expect(result.tier).toBe('high');
+    expect(hardwareInspector.computeTier).toHaveBeenCalledWith(
+      expect.objectContaining({ runtimeAvailable: true, vramMb: 24576 }),
+      noRuntimeProfile.ram,
+    );
+    expect(modelRegistry.getRecommendedModelsForHardware).toHaveBeenCalledWith('high', noRuntimeProfile);
+    expect(modelRegistry.getModelsForTier).toHaveBeenCalledWith('high');
+    expect(result.resourceEstimate.availableMemoryMb).toBe(fakeStatus.memoryBudget.modelBudgetVramMb - fakeStatus.memoryBudget.modelUsedVramMb);
+  });
+
+  it('should use display disk metrics when legacy host probe has no disk total', async () => {
+    hardwareInspector.getProfile.mockResolvedValue(fakeProfile);
+    modelRegistry.getRecommendedModelsForHardware.mockReturnValue([]);
+    modelRegistry.getModelsForTier.mockReturnValue([]);
+    memoryManager.calculateBudget.mockReturnValue(fakeStatus.memoryBudget);
+    router.getStatus.mockResolvedValue(fakeStatus);
+    hostMetrics.readHostSection.mockResolvedValue({
+      totalRamMb: 98304,
+      availableRamMb: 83558,
+      cpuCores: 24,
+      diskTotalGb: 0,
+      diskUsedGb: 0,
+      diskMount: '/',
+    });
+    hostMetrics.getDisplayLoad.mockResolvedValue({
+      diskSize: 100,
+      diskUsed: 40,
+      percentUsed: 40,
+      cpuLoad: 0,
+      cpuCores: 24,
+      memoryTotal: 96,
+      memoryUsed: 14,
+      percentUsedMemory: 15,
+      hasVmWedge: true,
+      runtimeKind: 'docker-desktop-vm',
+    });
+
+    const result = await controller.getOnboardingProfile();
+
+    expect(hostMetrics.getDisplayLoad).toHaveBeenCalledWith(0, 0);
+    expect(result.resourceEstimate.diskTotalMb).toBe(102400);
+    expect(result.resourceEstimate.availableDiskMb).toBe(61440);
   });
 
   it('should calculate resource estimates from recommended models', async () => {
@@ -138,7 +227,7 @@ describe('InferenceController — onboarding-profile', () => {
     ] as any;
 
     hardwareInspector.getProfile.mockResolvedValue(fakeProfile);
-    modelRegistry.getRecommendedModels.mockReturnValue(fakeModels);
+    modelRegistry.getRecommendedModelsForHardware.mockReturnValue(fakeModels);
     modelRegistry.getModelsForTier.mockReturnValue(fakeModels);
     memoryManager.calculateBudget.mockReturnValue(fakeStatus.memoryBudget);
     router.getStatus.mockResolvedValue(fakeStatus);
@@ -154,12 +243,20 @@ describe('InferenceController — onboarding-profile', () => {
       gpu: { ...fakeProfile.gpu, unifiedMemory: true },
     };
     hardwareInspector.getProfile.mockResolvedValue(unifiedProfile);
-    modelRegistry.getRecommendedModels.mockReturnValue([]);
+    modelRegistry.getRecommendedModelsForHardware.mockReturnValue([]);
     modelRegistry.getModelsForTier.mockReturnValue([]);
     memoryManager.calculateBudget.mockReturnValue(fakeStatus.memoryBudget);
     router.getStatus.mockResolvedValue(fakeStatus);
 
     const result = await controller.getOnboardingProfile();
     expect(result.resourceEstimate.availableMemoryMb).toBe(fakeStatus.memoryBudget.modelBudgetRamMb - fakeStatus.memoryBudget.modelUsedRamMb);
+  });
+
+  it('should propagate rescan HttpException from hardware inspector', async () => {
+    const err = new HttpException('rescan unavailable', HttpStatus.SERVICE_UNAVAILABLE);
+    hardwareInspector.rescan.mockRejectedValue(err);
+
+    await expect(controller.rescanHardware()).rejects.toBe(err);
+    expect(hardwareInspector.rescan).toHaveBeenCalledOnce();
   });
 });

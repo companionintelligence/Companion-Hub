@@ -122,14 +122,38 @@ async function autoConfigureInference(api: OpenClawPluginApi, hubUrl: string, ap
       );
     }
 
-    // S-OC-1.2: Register local models as an OpenClaw provider
-    const localModels = inferenceStatus.models.filter(
-      (m) => m.local && m.modality.includes('text') && (m.state === 'loaded' || m.state === 'pinned'),
-    );
+    // S-OC-1.2: Register local models as an OpenClaw provider.
+    // Prefer direct Ollama discovery so OpenClaw always receives the native model IDs
+    // it must pass to the native Ollama API surface.
+    const ollamaNativeUrl = (process.env.OLLAMA_HOST ?? 'http://ci-hub-ollama:11434').replace(/\/$/, '');
+    const isEmbeddingModel = (id: string) => /embed/i.test(id);
+    let localModels = [] as Array<{ id: string; context_window?: number; max_tokens?: number }>;
+    try {
+      const response = await fetch(`${ollamaNativeUrl}/api/tags`);
+      if (response.ok) {
+        const payload = (await response.json()) as { models?: Array<{ name?: string }> };
+        localModels = (payload.models ?? [])
+          .filter((model): model is { name: string } => typeof model.name === 'string' && model.name.length > 0 && !isEmbeddingModel(model.name))
+          .map((model) => ({
+            id: model.name,
+          }));
+      }
+    } catch {
+      api.log.debug('Direct Ollama model discovery unavailable — falling back to Hub inference status');
+    }
+
+    if (localModels.length === 0) {
+      localModels = inferenceStatus.models
+        .filter((m) => m.local && m.modality.includes('text') && (m.state === 'pulled' || m.state === 'loaded' || m.state === 'pinned'))
+        .map((m) => ({
+          id: m.id,
+          context_window: m.context_window,
+          max_tokens: m.max_tokens,
+        }))
+        .filter((m) => m.id.includes(':'));
+    }
 
     if (localModels.length > 0 && api.registerProvider) {
-      const inferenceBaseUrl = `${hubUrl.replace(/\/$/, '')}/api/inference/v1`;
-
       api.registerProvider({
         id: 'ci-hub',
         label: 'CI Hub (Local)',
@@ -141,9 +165,9 @@ async function autoConfigureInference(api: OpenClawPluginApi, hubUrl: string, ap
           order: 'simple',
           run: async () => ({
             provider: {
-              baseUrl: inferenceBaseUrl,
-              apiKey,
-              api: 'openai-completions',
+              baseUrl: ollamaNativeUrl,
+              apiKey: 'ollama',
+              api: 'ollama',
               models: localModels.map((m) => ({
                 id: m.id,
                 name: m.id,
@@ -165,7 +189,10 @@ async function autoConfigureInference(api: OpenClawPluginApi, hubUrl: string, ap
     const lemonadeBackend = inferenceStatus.backends.find((b) => b.type === 'lemonade');
 
     if (ttsModels.length > 0 && lemonadeBackend?.running && api.registerSpeechProvider) {
-      const inferenceBaseUrl = `${hubUrl.replace(/\/$/, '')}/api/inference/v1`;
+      // The Hub no longer proxies inference — point OpenClaw at the Ollama
+      // container's own OpenAI-compatible /v1 directly (OLLAMA_HOST is injected
+      // into every Hub-installed app).
+      const inferenceBaseUrl = `${(process.env.OLLAMA_HOST ?? 'http://ci-hub-ollama:11434').replace(/\/$/, '')}/v1`;
 
       api.registerSpeechProvider({
         id: 'ci-hub',

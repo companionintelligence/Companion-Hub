@@ -55,7 +55,20 @@ export const formFieldSchema = z.object({
   encoding: z.enum(RANDOM_ENCODINGS).optional(),
 });
 
-export const appInfoSchema = z.object({
+/** Accept legacy Runtipi field names when parsing app config.json from stores or backups. */
+function normalizeAppInfoInput(input: unknown): unknown {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return input;
+  const raw = input as Record<string, unknown>;
+  return {
+    ...raw,
+    cihub_app_version:
+      typeof raw.cihub_app_version === 'number' ? raw.cihub_app_version : typeof raw.tipi_version === 'number' ? raw.tipi_version : 1,
+    min_hub_version:
+      typeof raw.min_hub_version === 'string' ? raw.min_hub_version : typeof raw.min_tipi_version === 'string' ? raw.min_tipi_version : undefined,
+  };
+}
+
+export const appInfoObjectSchema = z.object({
   id: z.string().refine((v) => v.split(':').length === 1),
   urn: zodAppUrn,
   available: z.boolean(),
@@ -64,7 +77,7 @@ export const appInfoSchema = z.object({
   name: z.string(),
   description: z.string().optional().default(''),
   version: z.string().optional().default('latest'),
-  tipi_version: z.number(),
+  cihub_app_version: z.number().optional().default(1),
   short_desc: z.string(),
   author: z.string(),
   source: z.string(),
@@ -101,22 +114,23 @@ export const appInfoSchema = z.object({
   hub_integration: hubIntegrationSchema,
 });
 
-// Derived types
-export type AppInfoInput = z.input<typeof appInfoSchema>;
-export type AppInfo = z.output<typeof appInfoSchema>;
+export const appInfoSchema = z.preprocess(normalizeAppInfoInput, appInfoObjectSchema);
+
+export type AppInfoInput = z.input<typeof appInfoObjectSchema>;
+export type AppInfo = z.output<typeof appInfoObjectSchema>;
 export type FormField = z.output<typeof formFieldSchema>;
 
 export const frontmatterSchema = z
   .object({
-    name: appInfoSchema.shape.name.optional(),
-    short_desc: appInfoSchema.shape.short_desc.optional(),
-    description: appInfoSchema.shape.description.optional(),
-    source: appInfoSchema.shape.source.optional(),
-    website: appInfoSchema.shape.website.optional(),
-    author: appInfoSchema.shape.author.optional(),
-    categories: appInfoSchema.shape.categories.optional().default(['development']),
-    version: appInfoSchema.shape.version.optional(),
-    port: appInfoSchema.shape.port.optional(),
-    supported_architectures: appInfoSchema.shape.supported_architectures.optional().default(['amd64', 'arm64']),
+    name: appInfoObjectSchema.shape.name.optional(),
+    short_desc: appInfoObjectSchema.shape.short_desc.optional(),
+    description: appInfoObjectSchema.shape.description.optional(),
+    source: appInfoObjectSchema.shape.source.optional(),
+    website: appInfoObjectSchema.shape.website.optional(),
+    author: appInfoObjectSchema.shape.author.optional(),
+    categories: appInfoObjectSchema.shape.categories.optional().default(['development']),
+    version: appInfoObjectSchema.shape.version.optional(),
+    port: appInfoObjectSchema.shape.port.optional(),
+    supported_architectures: appInfoObjectSchema.shape.supported_architectures.optional().default(['amd64', 'arm64']),
   })
   .optional();

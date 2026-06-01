@@ -1,5 +1,6 @@
 import { TranslatableError } from '@/common/error/translatable-error';
 import { createAppUrn } from '@/common/helpers/app-helpers';
+import { resolveBrowserHost } from '@/common/helpers/browser-host';
 import { pLimit } from '@/common/helpers/file-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -167,37 +168,34 @@ export class AppsService {
     // Build the app URL based on exposure mode
     let appUrl: string | undefined;
     if (exposureMode === 'local') {
-      // Local mode: direct access via internal IP and app port
-      const internalIp = userSettings.internalIp || '127.0.0.1';
-      const appPort = app.port || userSettings.sslPort || 443;
-      appUrl = `http://${internalIp}:${appPort}${urlSuffix}`;
-
-      // Local mode with a port: skip HTTP check entirely — container is on localhost
-      if (app.port) {
-        return { available: true, appUrl, stage: 'ready' };
-      }
-    } else {
-      // Cloudflare/Tailscale: use public domain
-      const resolvedDomain = app.publicDomain?.trim() || userSettings.domain;
-      if (!organizationSlug || !resolvedDomain) {
-        return { available: false, appUrl, stage: 'error' };
+      if (!app.port) {
+        return { available: false, appUrl: undefined, stage: 'error' };
       }
 
-      // Always include deviceSlug for correct subdomain construction
-      if (!org?.hubSubdomain) {
-        return {
-          available: false,
-          appUrl: undefined,
-          stage: 'error',
-          errorCode: 'NO_DEVICE_REGISTRATION',
-          detail: 'Device not registered with an organization.',
-          resolvable: false,
-        };
-      }
-      const deviceSlug = org.hubSubdomain.replace(/^hub-/, '').replace(new RegExp(`-${organizationSlug}$`), '');
-      const subdomain = `${baseSubdomain}-${deviceSlug}-${organizationSlug}`;
-      appUrl = `https://${subdomain}.${resolvedDomain}${urlSuffix}`;
+      const host = resolveBrowserHost(userSettings.internalIp);
+      appUrl = `http://${host}:${app.port}${urlSuffix}`;
+      return { available: true, appUrl, stage: 'ready' };
     }
+    // Cloudflare/Tailscale: use public domain
+    const resolvedDomain = app.publicDomain?.trim() || userSettings.domain;
+    if (!organizationSlug || !resolvedDomain) {
+      return { available: false, appUrl, stage: 'error' };
+    }
+
+    // Always include deviceSlug for correct subdomain construction
+    if (!org?.hubSubdomain) {
+      return {
+        available: false,
+        appUrl: undefined,
+        stage: 'error',
+        errorCode: 'NO_DEVICE_REGISTRATION',
+        detail: 'Device not registered with an organization.',
+        resolvable: false,
+      };
+    }
+    const deviceSlug = org.hubSubdomain.replace(/^hub-/, '').replace(new RegExp(`-${organizationSlug}$`), '');
+    const subdomain = `${baseSubdomain}-${deviceSlug}-${organizationSlug}`;
+    appUrl = `https://${subdomain}.${resolvedDomain}${urlSuffix}`;
 
     // Helper to determine stage from error code
     const propagatingCodes = new Set(['DNS_NOT_FOUND', 'CF_TUNNEL_NOT_FOUND', 'CF_UPSTREAM_ERROR', 'CF_ORIGIN_DOWN']);

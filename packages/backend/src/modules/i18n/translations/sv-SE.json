@@ -433,7 +433,7 @@
   "SETTINGS_ACTIONS_CURRENT_VERSION": "Nuvarande version: {{version}}",
   "SETTINGS_ACTIONS_MAINTENANCE_SUBTITLE": "Vanliga åtgärder att utföra på din instans",
   "SETTINGS_ACTIONS_MAINTENANCE_TITLE": "Underhåll",
-  "SETTINGS_ACTIONS_NEW_VERSION": "En ny version ({{version}}) av Tipi är tillgänglig",
+  "SETTINGS_ACTIONS_NEW_VERSION": "En ny version ({{version}}) av Companion Hub är tillgänglig",
   "SETTINGS_ACTIONS_RESTART": "Starta om",
   "SETTINGS_ACTIONS_STAY_UP_TO_DATE": "Håll dig uppdaterad med den senaste versionen av Companion Hub",
   "SETTINGS_ACTIONS_TAB_TITLE": "Handlingar",
@@ -613,5 +613,6 @@
   "MULTI_SERVICE_BACK_TO_FORM": "Back to form",
   "MULTI_SERVICE_UNSAVED_CHANGES_CONFIRM": "You have unsaved changes. Are you sure you want to leave without saving?",
   "MULTI_SERVICE_JSON_UPDATE_SUCCESS": "Service configuration updated successfully",
-  "MULTI_SERVICE_JSON_REFERENCE": "Dynamic Compose Reference"
+  "MULTI_SERVICE_JSON_REFERENCE": "Dynamic Compose Reference",
+  "APP_UNINSTALL_FORM_DELETE_ALL_DATA": "Ta bort all data"
 }

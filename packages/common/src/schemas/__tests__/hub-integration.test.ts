@@ -82,7 +82,7 @@ describe('hubIntegrationSchema', () => {
       short_desc: 'Test app',
       author: 'Test',
       source: 'https://example.com',
-      tipi_version: 1,
+      cihub_app_version: 1,
     };
 
     it('should parse appInfoSchema with hub_integration', () => {
@@ -97,6 +97,27 @@ describe('hubIntegrationSchema', () => {
       expect(result.success).toBe(true);
       if (result.success) {
         expect(result.data.hub_integration?.mcp_client).toBe(true);
+      }
+    });
+
+    it('should parse legacy tipi_version as cihub_app_version', () => {
+      const { cihub_app_version: _, ...legacyAppInfo } = minimalAppInfo;
+      const result = appInfoSchema.safeParse({
+        ...legacyAppInfo,
+        tipi_version: 3,
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.cihub_app_version).toBe(3);
+      }
+    });
+
+    it('should default cihub_app_version to 1 when omitted', () => {
+      const { cihub_app_version: _, ...withoutVersion } = minimalAppInfo;
+      const result = appInfoSchema.safeParse(withoutVersion);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.cihub_app_version).toBe(1);
       }
     });
 

@@ -33,10 +33,12 @@ const createMockService = () => {
   };
 
   const mockConfig = {
+    localDomain: 'ci.lan',
     userSettings: {
       internalIp: '192.168.1.100',
       sslPort: 443,
       domain: 'example.com',
+      localDomain: 'ci.lan',
       ciHubOrganizationSlug: 'myorg',
     },
   };
@@ -72,9 +74,10 @@ describe('AppsService.checkAppAvailability', () => {
     ctx = createMockService();
   });
 
-  // Test 1: local mode with port → returns available immediately without HTTP check
-  it('local mode with port → returns available immediately without HTTP check', async () => {
+  // Test 1: local mode → returns available immediately without HTTP check
+  it('local mode → returns available immediately without HTTP check', async () => {
     ctx.mockApp.exposureMode = 'local';
+    ctx.mockApp.openPort = true;
     ctx.mockApp.port = 3000;
 
     const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
@@ -85,18 +88,54 @@ describe('AppsService.checkAppAvailability', () => {
     expect(mockedAxiosGet).not.toHaveBeenCalled();
   });
 
-  // Test 2: local mode without port → falls back to sslPort
-  it('local mode without port → falls back to sslPort', async () => {
+  // Test 1b: local mode maps 0.0.0.0 internal IP to localhost for browser URLs
+  it('local mode maps 0.0.0.0 internal IP to 127.0.0.1', async () => {
     ctx.mockApp.exposureMode = 'local';
-    ctx.mockApp.port = 0; // falsy
+    ctx.mockApp.openPort = true;
+    ctx.mockApp.port = 3000;
+    ctx.mockConfig.userSettings.internalIp = '0.0.0.0';
 
-    mockedAxiosGet.mockResolvedValue({ status: 200, data: 'OK' });
+    const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+    expect(result.appUrl).toBe('http://127.0.0.1:3000');
+  });
+
+  // Test 1c: local mode without openPort still uses host port URL
+  it('local mode without openPort → uses host port URL', async () => {
+    ctx.mockApp.exposureMode = 'local';
+    ctx.mockApp.openPort = false;
+    ctx.mockApp.port = 3000;
 
     const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
 
     expect(result.available).toBe(true);
-    expect(result.appUrl).toContain(':443');
-    expect(mockedAxiosGet).toHaveBeenCalled();
+    expect(result.appUrl).toBe('http://192.168.1.100:3000');
+    expect(mockedAxiosGet).not.toHaveBeenCalled();
+  });
+
+  it('local mode brackets IPv6 loopback for browser URLs', async () => {
+    ctx.mockApp.exposureMode = 'local';
+    ctx.mockApp.openPort = true;
+    ctx.mockApp.port = 3000;
+    ctx.mockConfig.userSettings.internalIp = '::1';
+
+    const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+    expect(result.appUrl).toBe('http://[::1]:3000');
+    expect(mockedAxiosGet).not.toHaveBeenCalled();
+  });
+
+  // Test 2: local mode without port → unavailable
+  it('local mode without port → unavailable', async () => {
+    ctx.mockApp.exposureMode = 'local';
+    ctx.mockApp.openPort = false;
+    ctx.mockApp.port = 0;
+
+    const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+    expect(result.available).toBe(false);
+    expect(result.stage).toBe('error');
+    expect(mockedAxiosGet).not.toHaveBeenCalled();
   });
 
   // Test 3: cloudflare mode → constructs correct subdomain with deviceSlug

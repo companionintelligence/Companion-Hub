@@ -5,7 +5,6 @@ import { ErrorBoundary } from 'react-error-boundary';
 import { ErrorPage } from '../error/error-page';
 import { I18nProvider } from './i18n/i18n-provider';
 import { AutoThemeProvider } from './theme/auto-theme-provider';
-import { ThemeProvider } from './theme/theme-provider';
 import { DebugPanel } from '../debug-panel/debug-panel';
 import { openExternal } from '@/lib/helpers/open-external';
 
@@ -62,11 +61,9 @@ export const Providers = ({ children }: PropsWithChildren) => {
           >
             <Suspense fallback={<PageSuspense />}>
               <UserContextProvider>
-                <ThemeProvider defaultTheme="dark">
-                  <AutoThemeProvider>
-                    <I18nProvider>{children}</I18nProvider>
-                  </AutoThemeProvider>
-                </ThemeProvider>
+                <AutoThemeProvider>
+                  <I18nProvider>{children}</I18nProvider>
+                </AutoThemeProvider>
               </UserContextProvider>
             </Suspense>
           </ErrorBoundary>

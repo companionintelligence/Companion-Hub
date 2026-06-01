@@ -2,6 +2,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AiSettingsContainer } from '../ai-settings';
+import toast from 'react-hot-toast';
 
 const mockApiFetch = vi.fn();
 
@@ -36,12 +37,35 @@ vi.mock('@/components/ui/Skeleton/Skeleton', () => ({
   Skeleton: () => <div data-testid="skeleton" />,
 }));
 
-vi.mock('@/modules/onboarding/components/ai-setup/hardware-profile-card', () => ({
-  HardwareProfileCard: () => <div data-testid="hardware-profile-card" />,
+vi.mock('@/modules/onboarding/components/ai-setup/system-overview', () => ({
+  SystemOverview: ({ onRescan }: { onRescan: () => Promise<void> }) => (
+    <div data-testid="hardware-profile-card">
+      <button type="button" data-testid="rescan-btn" onClick={() => void onRescan()}>
+        Rescan
+      </button>
+    </div>
+  ),
 }));
 
 vi.mock('@/modules/onboarding/components/ai-setup/model-selection-card', () => ({
-  ModelSelectionCard: () => <div data-testid="model-selection-card" />,
+  modelTags: () => [],
+  modelMeta: () => null,
+  modelScores: () => ({}),
+  RecommendedModels: () => <div data-testid="model-selection-card" />,
+  OtherModelsSection: () => null,
+}));
+
+vi.mock('@/modules/onboarding/components/ai-setup/primitives', () => ({
+  ModelCard: ({ title, checkboxTestId, selected, onToggle }: any) => (
+    <div data-testid={`model-card-${title}`}>
+      <input type="checkbox" data-testid={checkboxTestId} checked={selected} onChange={onToggle} readOnly />
+      {title}
+    </div>
+  ),
+}));
+
+vi.mock('@/modules/onboarding/components/ai-setup/icons', () => ({
+  ModelIcon: () => null,
 }));
 
 vi.mock('@/modules/onboarding/components/ai-setup/backend-selection-card', () => ({
@@ -172,7 +196,7 @@ describe('AiSettingsContainer', () => {
 
     expect(screen.getByTestId('recommended-model-checkbox-m1')).toBeInTheDocument();
     expect(screen.queryByTestId('runtime-model-checkbox-llama3.2:latest')).not.toBeInTheDocument();
-    expect(screen.getByText('Read-only list of models currently loaded in the selected inference backend at runtime.')).toBeInTheDocument();
+    expect(screen.getByText('Models currently active in the inference backend.')).toBeInTheDocument();
   });
 
   it('keeps curated model selection independent of runtime model discovery', async () => {
@@ -339,5 +363,45 @@ describe('AiSettingsContainer', () => {
         expect.objectContaining({ body: JSON.stringify({ modelId: 'whisper-base' }) }),
       );
     });
+  });
+
+  it('shows rescan error toast and skips profile refresh when rescan returns non-OK', async () => {
+    mockApiFetch.mockImplementation((url: string) => {
+      if (url === '/api/inference/onboarding-profile') {
+        return Promise.resolve({ ok: true, json: async () => profile });
+      }
+      if (url === '/api/inference/preferences') {
+        return Promise.resolve({ ok: true, json: async () => ({ preferredBackend: 'vllm' }) });
+      }
+      if (url === '/api/inference/models/tracked') {
+        return Promise.resolve({ ok: true, json: async () => [] });
+      }
+      if (url.includes('/api/inference/models/runtime?backend=')) {
+        return Promise.resolve({ ok: true, json: async () => ({ backend: 'vllm', discoveryUnavailable: false, models: [] }) });
+      }
+      if (url === '/api/inference/cloud-providers') {
+        return Promise.resolve({ ok: true, json: async () => [] });
+      }
+      if (url === '/api/inference/hardware/rescan') {
+        return Promise.resolve({ ok: false, status: 503 });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) });
+    });
+
+    const user = userEvent.setup();
+    render(<AiSettingsContainer />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('hardware-profile-card')).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByTestId('rescan-btn'));
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith('Rescan failed: HTTP 503');
+    });
+
+    const profileCalls = mockApiFetch.mock.calls.filter(([url]) => url === '/api/inference/onboarding-profile');
+    expect(profileCalls).toHaveLength(1);
   });
 });

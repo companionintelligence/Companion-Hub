@@ -3,6 +3,7 @@ import { SystemService } from '../system.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
+import { HostMetricsService } from '../host-metrics.service';
 import { mock, MockProxy } from 'vitest-mock-extended';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import si from 'systeminformation';
@@ -14,17 +15,32 @@ describe('SystemService', () => {
   let configService: MockProxy<ConfigurationService>;
   let filesystemService: MockProxy<FilesystemService>;
   let loggerService: MockProxy<LoggerService>;
+  let hostMetricsService: MockProxy<HostMetricsService>;
 
   beforeEach(async () => {
     configService = mock<ConfigurationService>();
     filesystemService = mock<FilesystemService>();
     loggerService = mock<LoggerService>();
+    hostMetricsService = mock<HostMetricsService>();
 
     configService.get.mockReturnValue({ dataDir: '/data' } as any);
 
-    // Mock systeminformation
     (si.currentLoad as any) = vi.fn().mockResolvedValue({ currentLoad: 50, cpus: [{}, {}, {}, {}] });
-    (si.fsSize as any) = vi.fn().mockResolvedValue([{ available: 50 * 1024 * 1024 * 1024, size: 100 * 1024 * 1024 * 1024 }]);
+
+    hostMetricsService.getDisplayLoad.mockResolvedValue({
+      diskUsed: 50,
+      diskSize: 100,
+      percentUsed: 50,
+      cpuLoad: 50,
+      cpuCores: 4,
+      memoryTotal: 32,
+      memoryUsed: 16,
+      percentUsedMemory: 50,
+      hasVmWedge: true,
+      runtimeKind: 'docker-desktop-vm',
+      containerMemoryTotal: 8,
+      containerMemoryUsed: 3,
+    });
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -32,6 +48,7 @@ describe('SystemService', () => {
         { provide: ConfigurationService, useValue: configService },
         { provide: FilesystemService, useValue: filesystemService },
         { provide: LoggerService, useValue: loggerService },
+        { provide: HostMetricsService, useValue: hostMetricsService },
       ],
     }).compile();
 
@@ -43,44 +60,17 @@ describe('SystemService', () => {
   });
 
   describe('getSystemLoad', () => {
-    it('should return system load stats', async () => {
-      // Mock meminfo
-      const keyMemTotal = 'MemTotal:';
-      const keyMemAvail = 'MemAvailable:';
-      const memTotal = 8 * 1024 * 1024; // 8GB in KB
-      const memAvail = 4 * 1024 * 1024; // 4GB in KB
-      const memInfo = `${keyMemTotal} ${memTotal}\n${keyMemAvail} ${memAvail}`;
-
-      filesystemService.readTextFile.mockResolvedValue(memInfo);
-
+    it('should return host-primary load stats from HostMetricsService', async () => {
       const result = await service.getSystemLoad();
 
       expect(si.currentLoad).toHaveBeenCalled();
-      expect(si.fsSize).toHaveBeenCalled();
-      expect(filesystemService.readTextFile).toHaveBeenCalledWith('/host/proc/meminfo');
-
+      expect(hostMetricsService.getDisplayLoad).toHaveBeenCalledWith(50, 4);
       expect(result.cpuLoad).toBe(50);
       expect(result.cpuCores).toBe(4);
       expect(result.diskSize).toBe(100);
-      expect(result.diskUsed).toBe(50);
-      expect(result.memoryTotal).toBe(8);
-      expect(result.percentUsedMemory).toBe(50);
-    });
-
-    it('should handle meminfo read failure', async () => {
-      filesystemService.readTextFile.mockRejectedValue(new Error('Fail'));
-
-      const result = await service.getSystemLoad();
-
-      expect(loggerService.error).toHaveBeenCalled();
-      // Should default to 0
-      expect(result.memoryTotal).toBe(0);
-    });
-
-    it('should handle missing disk info', async () => {
-      (si.fsSize as any).mockResolvedValue([]);
-      const result = await service.getSystemLoad();
-      expect(result.diskSize).toBe(0);
+      expect(result.memoryTotal).toBe(32);
+      expect(result.hasVmWedge).toBe(true);
+      expect(result.containerMemoryTotal).toBe(8);
     });
   });
 

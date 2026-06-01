@@ -97,10 +97,16 @@ export class ConfigurationService {
     const { NODE_ENV } = process.env;
 
     // Load settings.json manually to get credentials, bypassing .env
-    let settingsValues: { ciHubApiKey: string | null; ciHubOrganizationId: string | null; inferenceBackend: InferenceBackendType | undefined } = {
+    let settingsValues: {
+      ciHubApiKey: string | null;
+      ciHubOrganizationId: string | null;
+      inferenceBackend: InferenceBackendType | undefined;
+      inferenceModel: string | undefined;
+    } = {
       ciHubApiKey: null,
       ciHubOrganizationId: null,
       inferenceBackend: undefined,
+      inferenceModel: undefined,
     };
     try {
       const settingsPath = path.join(DATA_DIR, 'state', 'settings.json');
@@ -111,6 +117,7 @@ export class ConfigurationService {
           ciHubApiKey: settings.ciHubApiKey || null,
           ciHubOrganizationId: settings.ciHubOrganizationId || null,
           inferenceBackend: settings.inferenceBackend,
+          inferenceModel: settings.inferenceModel,
         };
       }
     } catch (_e) {
@@ -164,6 +171,7 @@ export class ConfigurationService {
         themeBase: env.data.THEME_BASE,
         themeColor: env.data.THEME_COLOR,
         inferenceBackend: settingsValues.inferenceBackend,
+        inferenceModel: settingsValues.inferenceModel,
         experimental: {
           insecureCookie: env.data.EXPERIMENTAL_INSECURE_COOKIE,
         },
@@ -227,11 +235,21 @@ export class ConfigurationService {
   public getInferencePreferences() {
     return {
       preferredBackend: this.config.userSettings.inferenceBackend ?? null,
+      preferredModel: this.config.userSettings.inferenceModel ?? null,
     };
   }
 
-  public async setInferencePreferences(backend: InferenceBackendType) {
-    await this.setUserSettings({ inferenceBackend: backend });
+  /**
+   * Persist inference preferences. `model` is the catalog id of the default model Companion agents
+   * (Hermes, OpenClaw) and the Hub use by default. Pass `null` to clear it; omit it to leave it
+   * unchanged.
+   */
+  public async setInferencePreferences(backend: InferenceBackendType, model?: string | null) {
+    const settings: { inferenceBackend: InferenceBackendType; inferenceModel?: string } = { inferenceBackend: backend };
+    if (model !== undefined) {
+      settings.inferenceModel = model ?? undefined;
+    }
+    await this.setUserSettings(settings);
     return this.getInferencePreferences();
   }
 

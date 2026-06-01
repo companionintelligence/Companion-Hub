@@ -104,7 +104,7 @@ describe('CompleteStep', () => {
     render(<CompleteStep installSummary={makeSummary(1, 0, 0)} />);
 
     await userEvent.click(screen.getByTestId('complete-cta'));
-    expect(mockNavigate).toHaveBeenCalledWith('/app-store', { replace: true });
+    expect(mockNavigate).toHaveBeenCalledWith('/store', { replace: true });
   });
 
   it('singular grammar for single app', () => {

@@ -72,14 +72,14 @@ export async function verifyDeviceRegistrationGate(page: Page) {
 export async function verifyFirstUserRegistrationPage(page: Page) {
   await page.goto('/');
   await expect(page).toHaveURL(/register/, { timeout: 15000 });
-  await expect(page.getByRole('heading', { name: /Register your account/i })).toBeVisible({ timeout: 15000 });
+  await expect(page.getByRole('heading', { name: /Create local admin user for this device/i })).toBeVisible({ timeout: 15000 });
 }
 
 /** Verify the page shows the login screen for a registered Hub with no session. */
 export async function verifyLoginScreen(page: Page) {
   await page.goto('/');
   await expect(page).toHaveURL(/login/, { timeout: 15000 });
-  await expect(page.getByRole('heading', { name: /Login to your account/i })).toBeVisible({ timeout: 15000 });
+  await expect(page.getByRole('heading', { name: /Login to your local admin account/i })).toBeVisible({ timeout: 15000 });
 }
 
 /** Verify the dashboard loads after login. */
@@ -94,7 +94,7 @@ export async function verifyDashboard(page: Page) {
 
 /** Verify the app store page loads and shows expected UI. */
 export async function verifyAppStorePage(page: Page) {
-  await page.goto('/app-store');
+  await page.goto('/store');
   await expect(page.getByRole('heading', { name: 'App Store' })).toBeVisible({ timeout: 30000 });
   await expect(page.getByPlaceholder('Search apps...').first()).toBeVisible({ timeout: 30000 });
 }

@@ -1,11 +1,11 @@
 import z from 'zod';
 import { dynamicComposeUnion, dynamicComposeSchema } from '../src/schemas/dynamic-compose.js';
 import fs from 'node:fs/promises';
-import { appInfoSchema } from '../src/schemas/app-info.js';
+import { appInfoObjectSchema } from '../src/schemas/app-info.js';
 import { dynamicComposeSchemaV1 } from '../src/schemas/utils/converters/v1.js';
 
 const dynamicCompose = z.toJSONSchema(dynamicComposeUnion, { unrepresentable: 'any' });
-const appInfo = z.toJSONSchema(appInfoSchema.omit({ urn: true }), { unrepresentable: 'any', io: 'input' });
+const appInfo = z.toJSONSchema(appInfoObjectSchema.omit({ urn: true }), { unrepresentable: 'any', io: 'input' });
 
 const outDir = './json-schemas';
 

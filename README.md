@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/ftue.gif" alt="Companion Hub onboarding walkthrough" width="720" />
+</p>
+
 # [Companion Hub](https://ci.computer/hub)
 
 **Self-hosted app platform.** Install and manage Docker apps from the Companion Intelligence marketplace with one click. Your machine, your data.
@@ -18,6 +22,16 @@ Part of the [CI OS](https://github.com/companionintelligence) ecosystem. License
 - **Custom apps** — Define your own Docker Compose apps directly in the Hub UI
 - **Multi-language** — i18n support with community translations via Crowdin
 - **Two-factor auth** — TOTP-based 2FA, Argon2 password hashing, JWT sessions
+
+---
+
+## CI-Portal — Cloud Control Plane
+
+<p align="center">
+  <img src="docs/ci-portal/ci-portal.gif" alt="CI-Portal app launcher walkthrough" width="720" />
+</p>
+
+[CI-Portal](https://github.com/companionintelligence/CI-Portal) is the cloud-hosted companion to CI-Hub — providing OIDC identity, device registry, marketplace distribution, and a unified app launcher so you can reach all your self-hosted apps from any browser.
 
 ---
 
@@ -173,6 +187,8 @@ pnpm run hub -- hot-reload local
 pnpm run test:cli
 ```
 
+See [e2e/README.md](e2e/README.md) for the E2E test matrix, including the AI-driven App Explorer Test.
+
 ---
 
 ## Networking
@@ -188,7 +204,13 @@ echo "YOUR_TUNNEL_TOKEN" > tunnel/token
 
 ### Private VPN (Tailscale, optional)
 
-The **`hub-tailscale`** Docker sidecar joins your Tailscale tailnet for private access to the Hub network. See **[docs/private-vpn.md](docs/private-vpn.md)**.
+Use Tailscale when you want private remote access to the Hub and its apps without exposing them publicly.
+
+- Set up Tailscale from the onboarding flow or **Settings → Network**
+- Use **`TAILSCALE_AUTHKEY`** for unattended deployments
+- Access the Hub with its Tailscale hostname and expose apps privately with the **Tailscale** exposure mode
+
+See **[docs/private-vpn.md](docs/private-vpn.md)** for setup, URL examples, troubleshooting, and the recommended remote administration workflow.
 
 ---
 

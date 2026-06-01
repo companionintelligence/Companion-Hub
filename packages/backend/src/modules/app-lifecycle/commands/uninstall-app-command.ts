@@ -8,6 +8,14 @@ import type { AppUrn } from '@ci-hub/common/types';
 import { AppLifecycleCommand } from './command';
 
 export class UninstallAppCommand extends AppLifecycleCommand {
+  constructor(
+    moduleRef: ConstructorParameters<typeof AppLifecycleCommand>[0],
+    docker: ConstructorParameters<typeof AppLifecycleCommand>[1],
+    private readonly deleteAllData = true,
+  ) {
+    super(moduleRef, docker);
+  }
+
   public async execute(appUrn: AppUrn): Promise<{ success: boolean; message: string }> {
     const logger = this.moduleRef.get(LoggerService, { strict: false });
     const appFilesManager = this.moduleRef.get(AppFilesManager, { strict: false });
@@ -34,7 +42,8 @@ export class UninstallAppCommand extends AppLifecycleCommand {
       const snapshotImageIds = await dockerService.snapshotAppImageIds(appUrn);
 
       try {
-        await dockerService.composeApp(appUrn, 'down --remove-orphans -v --rmi all');
+        const downCommand = this.deleteAllData ? 'down --remove-orphans -v --rmi all' : 'down --remove-orphans --rmi all';
+        await dockerService.composeApp(appUrn, downCommand);
         logger.info(`Successfully cleaned up all Docker resources for ${appUrn}`);
       } catch (err) {
         logger.warn('Error taking down app', appUrn, err);
@@ -68,6 +77,10 @@ export class UninstallAppCommand extends AppLifecycleCommand {
       }
 
       await appFilesManager.deleteAppFolder(appUrn);
+
+      if (this.deleteAllData) {
+        await appFilesManager.deleteAppDataDir(appUrn);
+      }
 
       return { success: true, message: `App ${appUrn} uninstalled successfully` };
     } catch (err) {

@@ -137,6 +137,20 @@
         ]
       }
     },
+    "/api/restart-onboarding": {
+      "patch": {
+        "operationId": "restartOnboarding",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "App"
+        ]
+      }
+    },
     "/api/registration/reset": {
       "post": {
         "operationId": "resetRegistration",
@@ -401,8 +415,37 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "domain",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Cloudflare"
+        ]
+      }
+    },
+    "/api/cloudflare/domains": {
+      "get": {
+        "operationId": "getDomains",
+        "parameters": [],
         "responses": {
           "default": {
             "description": "",
@@ -2843,104 +2886,6 @@
         ]
       }
     },
-    "/api/inference/v1/chat/completions": {
-      "post": {
-        "operationId": "chatCompletions",
-        "parameters": [],
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Inference"
-        ]
-      }
-    },
-    "/api/inference/v1/completions": {
-      "post": {
-        "operationId": "completions",
-        "parameters": [],
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Inference"
-        ]
-      }
-    },
-    "/api/inference/v1/audio/speech": {
-      "post": {
-        "operationId": "tts",
-        "parameters": [],
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Inference"
-        ]
-      }
-    },
-    "/api/inference/v1/audio/transcriptions": {
-      "post": {
-        "operationId": "stt",
-        "parameters": [],
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Inference"
-        ]
-      }
-    },
-    "/api/inference/v1/embeddings": {
-      "post": {
-        "operationId": "embeddings",
-        "parameters": [],
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Inference"
-        ]
-      }
-    },
-    "/api/inference/v1/images/generations": {
-      "post": {
-        "operationId": "imageGen",
-        "parameters": [],
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Inference"
-        ]
-      }
-    },
-    "/api/inference/v1/models": {
-      "get": {
-        "operationId": "models",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Inference"
-        ]
-      }
-    },
     "/api/inference/health": {
       "get": {
         "operationId": "health",
@@ -3189,6 +3134,103 @@
       "get": {
         "operationId": "getOnboardingProfile",
         "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/ollama/status": {
+      "get": {
+        "operationId": "getOllamaStatus",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/ollama/install": {
+      "post": {
+        "operationId": "installOllama",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/apps/{slug}/credentials": {
+      "get": {
+        "operationId": "getAppCredentials",
+        "parameters": [
+          {
+            "name": "slug",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/apps/{slug}/credentials.env": {
+      "get": {
+        "operationId": "getAppCredentialsEnv[0]",
+        "parameters": [
+          {
+            "name": "slug",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/apps/{slug}/bootstrap.env": {
+      "get": {
+        "operationId": "getAppCredentialsEnv[1]",
+        "parameters": [
+          {
+            "name": "slug",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": ""

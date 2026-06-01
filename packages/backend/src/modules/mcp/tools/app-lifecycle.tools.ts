@@ -46,13 +46,13 @@ export class AppLifecycleTools implements OnModuleInit {
     });
     this.registry.register({
       name: 'hub_uninstall_app',
-      description: 'Uninstall an app. Optionally remove its backups. Returns a requestId.',
+      description: 'Uninstall an app. Optionally delete all Docker data volumes. Returns a requestId.',
       inputSchema: {
         type: 'object',
-        properties: { appUrn: urnProp, removeBackups: { type: 'boolean', description: 'Also delete backups (default false)' } },
+        properties: { appUrn: urnProp, deleteAllData: { type: 'boolean', description: 'Delete Docker volumes and app data (default true)' } },
         required: ['appUrn'],
       },
-      handler: (p) => this.uninstallApp(p as { appUrn: string; removeBackups?: boolean }),
+      handler: (p) => this.uninstallApp(p as { appUrn: string; deleteAllData?: boolean }),
     });
     this.registry.register({
       name: 'hub_reset_app',
@@ -118,8 +118,8 @@ export class AppLifecycleTools implements OnModuleInit {
   async restartApp(params: { appUrn: string }) {
     return this.appLifecycleService.restartApp({ appUrn: castAppUrn(params.appUrn) });
   }
-  async uninstallApp(params: { appUrn: string; removeBackups?: boolean }) {
-    return this.appLifecycleService.uninstallApp({ appUrn: castAppUrn(params.appUrn), removeBackups: params.removeBackups ?? false });
+  async uninstallApp(params: { appUrn: string; deleteAllData?: boolean }) {
+    return this.appLifecycleService.uninstallApp({ appUrn: castAppUrn(params.appUrn), deleteAllData: params.deleteAllData ?? true });
   }
   async resetApp(params: { appUrn: string }) {
     return this.appLifecycleService.resetApp({ appUrn: castAppUrn(params.appUrn) });

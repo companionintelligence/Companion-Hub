@@ -5,10 +5,22 @@ import { Alert, AlertDescription } from '@/components/ui/Alert/Alert';
 import { AlertCircle, CheckCircle2, ChevronRight, Copy, Loader2 } from 'lucide-react';
 import { apiFetch } from '@/lib/api-fetch';
 import type { RegistrationStatus } from '@/lib/registration-status';
-import { isRegistrationOperational, isRegistrationPending } from '@/lib/registration-status';
+import { isRegistrationOperational, isRegistrationPending, requiresDeviceRegistration } from '@/lib/registration-status';
+import { cacheRegistrationStatus, clearRegistrationCache } from '@/lib/registration-cache';
 import toast from 'react-hot-toast';
+import { HintText, LabelWithHint } from '@/components/ui/field-hint/field-hint';
+import {
+  REGISTRATION_ACCOUNT_HINT,
+  REGISTRATION_DEVICE_ID_HINT,
+  REGISTRATION_DNS_HINT,
+  REGISTRATION_PAIRING_CODE_HINT,
+  REGISTRATION_PROVISIONING_HINT,
+} from '@/components/hub-status/hub-status-tooltips';
 
-const DEFAULT_PORTAL_URL = 'https://hub.companionintelligence.com';
+const DEFAULT_PORTAL_URL = (
+  (import.meta.env.CI_CLOUD_URL as string | undefined)?.trim() ||
+  (import.meta.env.DEV ? 'https://hub.companionintelligence.com' : 'https://hub.ci.computer')
+).replace(/\/+$/, '');
 const STATUS_POLL_INTERVAL_MS = 3000;
 const HEADLESS_POLL_INTERVAL_MS = 5000; // slower poll when idle, waiting for external registration
 const DOMAIN_PROBE_INTERVAL_MS = 5000;
@@ -20,16 +32,6 @@ type PairingTarget = {
   subdomain?: string;
 };
 
-function setRegisteredCache() {
-  sessionStorage.setItem('device-registered', 'true');
-  sessionStorage.setItem('device-registered-at', String(Date.now()));
-}
-
-function clearRegisteredCache() {
-  sessionStorage.removeItem('device-registered');
-  sessionStorage.removeItem('device-registered-at');
-}
-
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -39,6 +41,7 @@ function getProgressCopy(status: RegistrationStatus | null, redirectStatus: stri
     return {
       title: 'Checking registration status...',
       description: 'Please wait while we confirm your Hub status.',
+      hint: undefined as string | undefined,
     };
   }
 
@@ -48,21 +51,25 @@ function getProgressCopy(status: RegistrationStatus | null, redirectStatus: stri
         title: 'Provisioning your domain',
         description:
           'Your pairing code worked. We are finishing DNS and secure routing for your Hub so it can be reached on the web. That often takes a few minutes—please keep this window open.',
+        hint: REGISTRATION_PROVISIONING_HINT,
       };
     case 'provisioning':
       return {
         title: 'Setting up your Hub',
         description: 'We are turning on local services and your public connection. DNS propagation can add another minute or two.',
+        hint: REGISTRATION_DNS_HINT,
       };
     case 'degraded':
       return {
         title: 'Hub setup needs attention',
         description: redirectStatus,
+        hint: undefined,
       };
     default:
       return {
         title: 'Registration complete',
         description: redirectStatus,
+        hint: undefined,
       };
   }
 }
@@ -107,46 +114,48 @@ export default function DeviceRegistrationPage() {
     }
   }, []);
 
-  const refreshRegistrationStatus = useCallback(
-    async ({ loadDeviceData = false }: { loadDeviceData?: boolean } = {}) => {
-      try {
-        const res = await apiFetch('/api/registration/status');
-        if (!res.ok) {
-          throw new Error('Failed to fetch registration status');
-        }
+  const refreshRegistrationStatus = useCallback(async () => {
+    try {
+      const res = await apiFetch('/api/registration/status');
+      if (!res.ok) {
+        throw new Error('Failed to fetch registration status');
+      }
 
-        const status = (await res.json()) as RegistrationStatus;
-        setRegistrationStatus(status);
-        setStatusError(null);
+      const status = (await res.json()) as RegistrationStatus;
+      setRegistrationStatus(status);
+      setStatusError(null);
 
-        if (isRegistrationOperational(status)) {
-          setRegisteredCache();
-          return status;
-        }
-
-        clearRegisteredCache();
-
-        if (loadDeviceData && status.phase === 'unregistered') {
+      if (requiresDeviceRegistration(status)) {
+        completionStartedRef.current = false;
+        clearRegistrationCache();
+        if (status.phase === 'unregistered') {
           await loadDeviceInfo();
         }
-
         return status;
-      } catch (error) {
-        console.error(error);
-        setStatusError('We couldn’t confirm your Hub status right now. This is usually temporary. Please retry in a moment.');
-        return null;
-      } finally {
-        setIsLoading(false);
       }
-    },
-    [loadDeviceInfo],
-  );
+
+      if (isRegistrationOperational(status)) {
+        cacheRegistrationStatus(status);
+        return status;
+      }
+
+      clearRegistrationCache();
+
+      return status;
+    } catch (error) {
+      console.error(error);
+      setStatusError('We couldn’t confirm your Hub status right now. This is usually temporary. Please retry in a moment.');
+      return null;
+    } finally {
+      setIsLoading(false);
+    }
+  }, [loadDeviceInfo]);
 
   const finishRegistrationFlow = useCallback(
     async (status: RegistrationStatus) => {
       const { domain, subdomain } = pendingPairTargetRef.current ?? {};
       pendingPairTargetRef.current = null;
-      setRegisteredCache();
+      cacheRegistrationStatus(status);
 
       if (isTauri) {
         setRedirectStatus('Registration complete! Loading the local Hub...');
@@ -216,7 +225,7 @@ export default function DeviceRegistrationPage() {
   );
 
   useEffect(() => {
-    void refreshRegistrationStatus({ loadDeviceData: true });
+    void refreshRegistrationStatus();
   }, [refreshRegistrationStatus]);
 
   useEffect(() => {
@@ -242,6 +251,10 @@ export default function DeviceRegistrationPage() {
 
   useEffect(() => {
     if (!registrationStatus || !isRegistrationOperational(registrationStatus) || completionStartedRef.current) {
+      return;
+    }
+
+    if (requiresDeviceRegistration(registrationStatus)) {
       return;
     }
 
@@ -334,7 +347,7 @@ export default function DeviceRegistrationPage() {
 
   const handleRetryStatus = async () => {
     setStatusError(null);
-    await refreshRegistrationStatus({ loadDeviceData: registrationStatus?.phase === 'unregistered' || !registrationStatus });
+    await refreshRegistrationStatus();
   };
 
   const handlePair = async () => {
@@ -389,7 +402,20 @@ export default function DeviceRegistrationPage() {
           <Loader2 role="img" aria-label="loading" className="h-10 w-10 animate-spin text-primary" />
         )}
         <div>
-          <h2 className="text-xl font-semibold text-foreground">{progressCopy.title}</h2>
+          <div className="flex items-center justify-center gap-1 flex-wrap">
+            {progressCopy.hint ? (
+              <HintText
+                id={`reg-progress-${registrationStatus?.phase}`}
+                hint={progressCopy.hint}
+                as="h2"
+                className="text-xl font-semibold text-foreground"
+              >
+                {progressCopy.title}
+              </HintText>
+            ) : (
+              <h2 className="text-xl font-semibold text-foreground">{progressCopy.title}</h2>
+            )}
+          </div>
           <p className="mt-3 text-sm text-muted-foreground">{progressCopy.description}</p>
         </div>
 
@@ -443,16 +469,30 @@ export default function DeviceRegistrationPage() {
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 items-stretch gap-4 md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] md:gap-5">
-        <section className="flex flex-col rounded-xl border border-border/60 bg-muted/20 p-5">
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-foreground">Step 1: Get your pairing code</h2>
-          <p className="mt-3 flex-1 text-sm leading-relaxed text-muted-foreground">
-            Log into your Companion Account and create a device. Copy the device&apos;s pairing code and return here.
-          </p>
-          <Button asChild className="mt-5 w-full" intent="primary">
+        <section className="flex flex-col rounded-xl border border-border/60 bg-muted/20 p-6 md:p-8">
+          <div className="flex items-start gap-1 flex-wrap">
+            <HintText
+              id="reg-account"
+              hint={REGISTRATION_ACCOUNT_HINT}
+              as="h2"
+              className="text-lg font-semibold leading-snug text-foreground md:text-xl"
+            >
+              Step 1: Get your pairing code
+            </HintText>
+          </div>
+          <Button asChild className="mt-6 h-10 w-full text-sm font-semibold md:h-11 md:text-base" intent="primary">
             <a href={portalUrl} target="_blank" rel="noopener noreferrer">
               Login to Companion Account
             </a>
           </Button>
+          <div className="mt-6 space-y-3 border-t border-border/60 pt-5">
+            <p className="text-center text-sm text-muted-foreground">Don&apos;t have an account yet?</p>
+            <Button asChild variant="outline" className="h-10 w-full text-sm font-semibold md:h-11 md:text-base">
+              <a href={`${portalUrl}/signup`} target="_blank" rel="noopener noreferrer">
+                Create account
+              </a>
+            </Button>
+          </div>
         </section>
 
         <div aria-hidden="true" className="hidden items-center justify-center text-muted-foreground md:flex">
@@ -465,7 +505,9 @@ export default function DeviceRegistrationPage() {
 
           <div className="mt-5 space-y-4">
             <div className="space-y-2">
-              <p className="text-sm text-muted-foreground">Current Device ID:</p>
+              <div className="text-sm text-muted-foreground">
+                <LabelWithHint label="Current Device ID:" hint={REGISTRATION_DEVICE_ID_HINT} hintId="reg-device-id" />
+              </div>
               <div className="flex items-center gap-2 rounded-lg border border-border/60 bg-background/60 px-3 py-2">
                 <p className="min-w-0 flex-1 break-all font-mono text-sm text-foreground">{deviceId ?? 'Loading device ID...'}</p>
                 <Button
@@ -485,7 +527,9 @@ export default function DeviceRegistrationPage() {
 
             <div className="space-y-2">
               <label htmlFor="pairing-code" className="block text-sm text-muted-foreground">
-                Enter Pairing Code:
+                <HintText id="reg-pairing-code" hint={REGISTRATION_PAIRING_CODE_HINT}>
+                  Enter Pairing Code:
+                </HintText>
               </label>
               <div className="flex gap-2">
                 <input
@@ -508,9 +552,15 @@ export default function DeviceRegistrationPage() {
                   }}
                   maxLength={6}
                   disabled={isPairing}
-                  className={`h-9 flex-1 rounded-md border bg-background/60 px-3 py-1 text-base font-mono tracking-widest shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 md:text-sm ${pairingError ? 'border-destructive focus-visible:ring-destructive' : 'border-input'}`}
+                  className={`h-9 min-w-0 flex-1 rounded-md border bg-background/60 px-3 py-1 text-base font-mono tracking-widest shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 md:text-sm ${pairingError ? 'border-destructive focus-visible:ring-destructive' : 'border-input'}`}
                 />
-                <Button intent="primary" onClick={() => void handlePair()} disabled={pairingCode.length !== 6 || isPairing} loading={isPairing}>
+                <Button
+                  intent="primary"
+                  onClick={() => void handlePair()}
+                  disabled={pairingCode.length !== 6 || isPairing}
+                  loading={isPairing}
+                  className="w-40 shrink-0"
+                >
                   {isPairing ? 'Registering...' : 'Register'}
                 </Button>
               </div>
@@ -541,14 +591,6 @@ export default function DeviceRegistrationPage() {
           </AlertDescription>
         </Alert>
       )}
-
-      <p className="text-center text-xs text-muted-foreground">
-        Don&apos;t have an account yet?{' '}
-        <a href={`${portalUrl}/signup`} target="_blank" rel="noopener noreferrer" className="font-medium text-primary underline hover:no-underline">
-          Create one free
-        </a>{' '}
-        — it only takes a moment, and your data stays on this device.
-      </p>
     </div>
   );
 }

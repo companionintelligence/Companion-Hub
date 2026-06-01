@@ -4,7 +4,7 @@ import path from 'node:path';
 import { Injectable, type OnApplicationBootstrap, type OnApplicationShutdown, Inject, forwardRef, Optional } from '@nestjs/common';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import { APP_DIR } from '@/common/constants';
+import { APP_DIR, TUNNEL_DIR } from '@/common/constants';
 import { CloudflareClientService } from '../cloudflare/cloudflare-client.service';
 import { TraefikConfigService } from '../docker/traefik-config.service';
 import { DeviceRegistrationRepository } from './device-registration.repository';
@@ -23,6 +23,8 @@ import {
 import si from 'systeminformation';
 
 const PERIODIC_VALIDATION_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
+const CLOUD_VALIDATION_THROTTLE_MS = 30 * 1000;
+const BOOTSTRAP_VALIDATION_TIMEOUT_MS = 10 * 1000;
 
 @Injectable()
 export class RegistrationService implements OnApplicationBootstrap, OnApplicationShutdown {
@@ -31,6 +33,8 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   private checkInterval: NodeJS.Timeout | null = null;
   private periodicValidationInterval: NodeJS.Timeout | null = null;
   private consecutiveValidationFailures = 0;
+  private lastCloudValidationAt = 0;
+  private cloudValidationInFlight: Promise<void> | null = null;
 
   constructor(
     private readonly config: ConfigurationService,
@@ -88,6 +92,14 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     }
 
     if (isOperational(this._currentPhase)) {
+      await Promise.race([
+        this.validateRegistrationWithCloud(),
+        new Promise<void>((resolve) => {
+          setTimeout(resolve, BOOTSTRAP_VALIDATION_TIMEOUT_MS);
+        }),
+      ]).catch((e) => this.logger.error('Initial registration validation failed', e));
+
+      this.lastCloudValidationAt = Date.now();
       this.startPeriodicValidation();
     } else {
       this.pollRegistration();
@@ -198,7 +210,39 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
    */
   public async getLiveRegistrationStatus(): Promise<RegistrationStatus> {
     await this.refreshPhaseFromSources();
+    await this.maybeValidateWithCloud();
     return this.getRegistrationStatus();
+  }
+
+  /**
+   * Throttled, deduped Portal check-in for status endpoints.
+   * Non-fatal when Portal is unreachable.
+   */
+  private async maybeValidateWithCloud(): Promise<void> {
+    if (!isOperational(this._currentPhase)) {
+      return;
+    }
+
+    const { ciCloudUrl } = this.config.getConfig();
+    if (!ciCloudUrl) {
+      return;
+    }
+
+    const now = Date.now();
+    if (this.lastCloudValidationAt > 0 && now - this.lastCloudValidationAt < CLOUD_VALIDATION_THROTTLE_MS) {
+      return;
+    }
+
+    if (!this.cloudValidationInFlight) {
+      this.cloudValidationInFlight = this.validateRegistrationWithCloud()
+        .catch((e) => this.logger.error('Registration validation check failed', e))
+        .finally(() => {
+          this.lastCloudValidationAt = Date.now();
+          this.cloudValidationInFlight = null;
+        });
+    }
+
+    await this.cloudValidationInFlight;
   }
 
   /**
@@ -321,8 +365,6 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       return;
     }
 
-    this.validateRegistrationWithCloud().catch((e) => this.logger.error('Initial registration validation failed', e));
-
     this.periodicValidationInterval = setInterval(() => {
       this.validateRegistrationWithCloud().catch((e) => this.logger.error('Registration validation check failed', e));
     }, PERIODIC_VALIDATION_INTERVAL_MS);
@@ -364,11 +406,10 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       });
 
       if (response.status === 400) {
-        // 400 is a definitive "device inactive/unregistered" signal from CI Portal —
-        // degrade immediately rather than waiting for 3 strikes.
+        // 400 is definitive — device was removed or deactivated in CI Portal.
         this.consecutiveValidationFailures = 0;
-        this.logger.warn('Registration validation: device is no longer active in CI Portal (400) — transitioning to degraded immediately');
-        await this.setPhase('degraded', ['cloud_validation_failed']);
+        this.logger.warn('Registration validation: device is no longer active in CI Portal (400) — clearing local registration for re-pairing');
+        await this.resetRegistration({ reason: 'portal_rejected' });
         return;
       }
 
@@ -427,8 +468,13 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
    * Reset device registration to allow re-pairing.
    * Clears in-memory state, database records, tunnel token, and resolved env.
    */
-  public async resetRegistration(): Promise<void> {
-    this.logger.info('Resetting device registration...');
+  public async resetRegistration(options?: { reason?: 'manual' | 'portal_rejected' }): Promise<void> {
+    const reason = options?.reason ?? 'manual';
+    if (reason === 'portal_rejected') {
+      this.logger.info('Clearing local device registration after CI Portal rejected check-in');
+    } else {
+      this.logger.info('Resetting device registration...');
+    }
 
     // Transition via setPhase so the change is logged consistently.
     // Reset → unregistered is always a legal transition.
@@ -444,7 +490,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     await this.deviceRegistrationRepository.deleteAll();
 
     // Delete the tunnel token file from disk
-    const tokenPath = path.join(APP_DIR, 'tunnel', 'token');
+    const tokenPath = path.join(TUNNEL_DIR, 'token');
     try {
       await fs.promises.unlink(tokenPath);
     } catch {
@@ -526,7 +572,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   }
 
   private hasTunnelToken(): boolean {
-    const tokenPath = path.join(APP_DIR, 'tunnel', 'token');
+    const tokenPath = path.join(TUNNEL_DIR, 'token');
     try {
       const stat = fs.statSync(tokenPath);
       return stat.isFile() && stat.size > 0;
