@@ -29,6 +29,7 @@ export const APP_CATEGORIES = [
   'finance',
   'gaming',
   'ai',
+  'companion-intelligence',
 ] as const;
 export type AppCategory = (typeof APP_CATEGORIES)[number];
 export const ARCHITECTURES = ['arm64', 'amd64'] as const;

@@ -11,6 +11,7 @@ import { PageLoadingSpinner } from '@/components/ui/LoadingSpinner/loading-spinn
 import { getMarketplaceAppImageUrl } from '@/lib/marketplace-image-url';
 import { Star } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { getCategoryLabel } from '../helpers/category-label';
 
 export async function clientLoader({ params }: Route.ClientLoaderArgs) {
   const { storeId } = params;
@@ -94,9 +95,7 @@ export default () => {
               <>
                 <div className="h-8 w-px bg-border" />
                 <div className="flex flex-col items-center">
-                  <span className="font-semibold capitalize">
-                    {t(`APP_CATEGORY_${primaryCategory.toUpperCase() as Uppercase<typeof primaryCategory>}`)}
-                  </span>
+                  <span className="font-semibold capitalize">{getCategoryLabel(t, primaryCategory)}</span>
                   <span className="text-xs text-muted-foreground">{t('APP_DETAILS_CATEGORIES_TITLE')}</span>
                 </div>
               </>
