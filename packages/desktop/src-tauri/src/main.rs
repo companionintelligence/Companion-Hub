@@ -101,15 +101,9 @@ pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.set_focus();
-                let _ = window.unminimize();
-            }
+            focus_main_window(app);
             for arg in &args {
-                if let Some(code) = extract_pairing_code(arg) {
-                    let _ = app.emit("deep-link-pair", code);
-                }
+                handle_deep_link_url(app, arg);
             }
         }))
         .plugin(tauri_plugin_opener::init())
@@ -334,10 +328,7 @@ pub fn run() {
 
             let app_handle = app.handle().clone();
             app.listen("deep-link://new-url", move |event| {
-                let raw = event.payload().trim_matches('"');
-                if let Some(code) = extract_pairing_code(raw) {
-                    let _ = app_handle.emit("deep-link-pair", code);
-                }
+                handle_deep_link_payload(&app_handle, event.payload());
             });
 
             Ok(())
@@ -352,6 +343,50 @@ pub fn run() {
 }
 
 use sha2::{Digest, Sha256};
+
+fn focus_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+        let _ = window.unminimize();
+    }
+}
+
+fn emit_pairing_code(app: &tauri::AppHandle, code: &str) {
+    let _ = app.emit("deep-link-pair", code);
+}
+
+fn handle_deep_link_url(app: &tauri::AppHandle, url: &str) {
+    if let Some(code) = extract_pairing_code(url) {
+        focus_main_window(app);
+        emit_pairing_code(app, &code);
+    }
+}
+
+fn deep_link_urls_from_payload(payload: &str) -> Vec<String> {
+    if let Ok(urls) = serde_json::from_str::<Vec<String>>(payload) {
+        return urls;
+    }
+
+    let trimmed = payload.trim();
+    if trimmed.starts_with('"') {
+        if let Ok(url) = serde_json::from_str::<String>(trimmed) {
+            return vec![url];
+        }
+    }
+
+    if !trimmed.is_empty() {
+        return vec![trimmed.to_string()];
+    }
+
+    Vec::new()
+}
+
+fn handle_deep_link_payload(app: &tauri::AppHandle, payload: &str) {
+    for url in deep_link_urls_from_payload(payload) {
+        handle_deep_link_url(app, &url);
+    }
+}
 
 fn extract_pairing_code(url: &str) -> Option<String> {
     let trimmed = url.trim();
@@ -375,6 +410,43 @@ fn extract_pairing_code(url: &str) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{deep_link_urls_from_payload, extract_pairing_code};
+
+    #[test]
+    fn extract_pairing_code_from_query_param() {
+        assert_eq!(
+            extract_pairing_code("cihub://pair?code=abc123"),
+            Some("ABC123".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_pairing_code_from_path() {
+        assert_eq!(
+            extract_pairing_code("cihub://pair/abc123"),
+            Some("ABC123".to_string())
+        );
+    }
+
+    #[test]
+    fn deep_link_urls_from_json_array_payload() {
+        assert_eq!(
+            deep_link_urls_from_payload(r#"["cihub://pair?code=abc123"]"#),
+            vec!["cihub://pair?code=abc123".to_string()]
+        );
+    }
+
+    #[test]
+    fn deep_link_urls_from_plain_url_payload() {
+        assert_eq!(
+            deep_link_urls_from_payload("cihub://pair?code=abc123"),
+            vec!["cihub://pair?code=abc123".to_string()]
+        );
+    }
 }
 
 /// Compute a SHA256 hash of the .env and compose file contents.
