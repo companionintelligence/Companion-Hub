@@ -197,7 +197,7 @@ export class InferenceController {
       const curated = this.modelRegistry.getCuratedModel(body.modelId);
       const msg = err instanceof Error ? err.message : String(err);
       if (body.bestEffort && curated?.backend === 'ollama') {
-        this.logger.warn(`[Inference] Best-effort Ollama pull skipped for ${body.modelId}: ${msg}`);
+        this._logger.warn(`[Inference] Best-effort Ollama pull skipped for ${body.modelId}: ${msg}`);
         return { success: false, skipped: true, message: msg };
       }
       throw err;

@@ -19,7 +19,7 @@ export class OllamaBackend implements InferenceBackend {
   private configuredUrl: string;
   private transport: OllamaTransport = 'direct';
   private transportResolved = false;
-  private transportPromise: Promise<OllamaTransport> | null = null;
+  private transportPromise: Promise<{ transport: OllamaTransport; reachable: boolean }> | null = null;
 
   constructor(private readonly logger: LoggerService) {
     // OLLAMA_URL is injected by docker-compose as http://host.docker.internal:11434 (the Hub
@@ -54,9 +54,11 @@ export class OllamaBackend implements InferenceBackend {
 
   private async resolveTransport(force = false): Promise<OllamaTransport> {
     if (this.transportResolved && !force) return this.transport;
-    if (this.transportPromise && !force) return this.transportPromise;
 
-    this.transportPromise = this.probeTransport();
+    if (!this.transportPromise || force) {
+      this.transportPromise = this.probeTransport();
+    }
+
     const resolved = await this.transportPromise;
     this.transport = resolved.transport;
     this.transportResolved = resolved.reachable;
