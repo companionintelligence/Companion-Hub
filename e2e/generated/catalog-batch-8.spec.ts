@@ -140,7 +140,7 @@ const APPS = [
 ];
 
 test.describe('App Catalog Batch 8', () => {
-  test.beforeEach(async ({ page, context }) => {
+  test.beforeEach(async ({ context }) => {
     await loginUser(page, context);
   });
 
