@@ -33,9 +33,6 @@ const DEFAULT_MODE = (process.argv.find((a) => a.startsWith('--mode='))?.split('
 const SSH_USER = process.env.FLEET_SSH_USER ?? 'ci';
 const _HUB_ROOT = process.env.HUB_ROOT_REMOTE ?? '~/devel/CI-Hub';
 const STORE_ROOT = process.env.STORE_ROOT_REMOTE ?? '~/devel/CI-Marketplace';
-// PATH prefix for non-interactive SSH sessions — adds NVM and common tool paths
-const REMOTE_PATH_PREFIX =
-  'export PATH="$HOME/.nvm/versions/node/$(ls $HOME/.nvm/versions/node/ 2>/dev/null | sort -V | tail -1)/bin:$HOME/.bun/bin:$HOME/.local/bin:/usr/local/bin:$PATH"';
 const SCREENSHOTS_DIR = join(homedir(), 'qa-results', 'fleet-screenshots');
 const STREAM_SCRIPT = join(__dir, 'qa-stream.ts');
 const CATALOG_FILE = join(__dir, '..', 'e2e', 'generated', 'catalog.json');
@@ -201,7 +198,7 @@ function broadcastFleetStatus() {
 const REMOTE_TOOL_INIT =
   'source ~/.nvm/nvm.sh 2>/dev/null; source ~/.asdf/asdf.sh 2>/dev/null; ' +
   'source ~/.bun/env 2>/dev/null; ' +
-  'export PATH="$HOME/.local/bin:$HOME/.cargo/bin:/usr/local/bin:$PATH"';
+  'export PATH="$HOME/.nvm/versions/node/$(ls $HOME/.nvm/versions/node/ 2>/dev/null | sort -V | tail -1)/bin:$HOME/.bun/bin:$HOME/.local/bin:$HOME/.cargo/bin:/usr/local/bin:$PATH"';
 
 function sshSpawn(node: FleetNode, cmd: string): ChildProcess {
   const user = node.user ?? SSH_USER;
@@ -261,7 +258,7 @@ function scpScreenshot(node: FleetNode, appId: string) {
       'StrictHostKeyChecking=accept-new',
       '-o',
       'ConnectTimeout=5',
-      `${SSH_USER}@${node.ip}:${remoteResultsDir}/screenshots/${appId}.png`,
+      `${node.user ?? SSH_USER}@${node.ip}:${remoteResultsDir}/screenshots/${appId}.png`,
       join(SCREENSHOTS_DIR, `${node.name}_${appId}.png`),
     ],
     { stdio: 'ignore' },
