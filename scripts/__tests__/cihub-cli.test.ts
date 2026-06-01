@@ -19,12 +19,12 @@ import {
 // ─── banner ───────────────────────────────────────────────────────────────────
 
 describe('banner', () => {
-  it('contains the Companion Intelligence ASCII art', () => {
+  it('contains the Companion Intelligence block ASCII art', () => {
     const plain = stripAnsi(renderBanner());
-    // Line 1 of Companion (no backslashes — safe for string matching)
-    expect(plain).toContain(' __   __         __               __');
-    // Line 5 — start of Intelligence
-    expect(plain).toContain('       ___  ___              __   ___');
+    // First line of Companion block art
+    expect(plain).toContain('▗▄▄▖');
+    // First line of Intelligence block art
+    expect(plain).toContain('▗▄▄▄▖▗▖');
   });
 
   it('shows the company tagline', () => {
@@ -41,7 +41,7 @@ describe('banner', () => {
 
   it('wizard welcome embeds the banner', () => {
     const plain = stripAnsi(renderWizardWelcome());
-    expect(plain).toContain(' __   __         __               __');
+    expect(plain).toContain('▗▄▄▖');
     expect(plain).toContain('Setup Wizard');
     expect(plain).toContain('cihub man');
   });
@@ -75,6 +75,14 @@ describe('renderHelp', () => {
     expect(plain).toContain('app status');
     expect(plain).toContain('app logs');
     expect(plain).toContain('app inspect');
+  });
+
+  it('lists the Models section with install/rm', () => {
+    const plain = stripAnsi(renderHelp());
+    expect(plain).toContain('Models');
+    expect(plain).toContain('models list');
+    expect(plain).toContain('models install');
+    expect(plain).toContain('models rm');
   });
 
   it('shows the cihub status command', () => {

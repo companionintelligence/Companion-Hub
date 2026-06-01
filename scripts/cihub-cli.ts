@@ -24,13 +24,15 @@ const COMPAT_COMMAND = 'pnpm run hub --';
 const CI_CLOUD_DEFAULT = 'https://hub.companionintelligence.com';
 
 const COMPANY_ART = [
-  ' __   __         __               __                 ',
-  '/  ` /  \\  |\\/| |__)  /\\  |\\ | | /  \\ |\\ |           ',
-  '\\__, \\__/  |  | |    /~~\\ | \\| | \\__/ | \\|           ',
-  '                                                     ',
-  '       ___  ___              __   ___       __   ___ ',
-  '| |\\ |  |  |__  |    |    | / _` |__  |\\ | /  ` |__  ',
-  '| | \\|  |  |___ |___ |___ | \\__> |___ | \\| \\__, |___',
+  ' ▗▄▄▖ ▗▄▖ ▗▖  ▗▖▗▄▄▖  ▗▄▖ ▗▖  ▗▖▗▄▄▄▖ ▗▄▖ ▗▖  ▗▖              ',
+  '▐▌   ▐▌ ▐▌▐▛▚▞▜▌▐▌ ▐▌▐▌ ▐▌▐▛▚▖▐▌  █  ▐▌ ▐▌▐▛▚▖▐▌              ',
+  '▐▌   ▐▌ ▐▌▐▌  ▐▌▐▛▀▘ ▐▛▀▜▌▐▌ ▝▜▌  █  ▐▌ ▐▌▐▌ ▝▜▌              ',
+  '▝▚▄▄▖▝▚▄▞▘▐▌  ▐▌▐▌   ▐▌ ▐▌▐▌  ▐▌▗▄█▄▖▝▚▄▞▘▐▌  ▐▌              ',
+  '                                                              ',
+  '▗▄▄▄▖▗▖  ▗▖▗▄▄▄▖▗▄▄▄▖▗▖   ▗▖   ▗▄▄▄▖ ▗▄▄▖▗▄▄▄▖▗▖  ▗▖ ▗▄▄▖▗▄▄▄▖',
+  '  █  ▐▛▚▖▐▌  █  ▐▌   ▐▌   ▐▌     █  ▐▌   ▐▌   ▐▛▚▖▐▌▐▌   ▐▌  ',
+  '  █  ▐▌ ▝▜▌  █  ▐▛▀▀▘▐▌   ▐▌     █  ▐▌▝▜▌▐▛▀▀▘▐▌ ▝▜▌▐▌   ▐▛▀▀▘',
+  '▗▄█▄▖▐▌  ▐▌  █  ▐▙▄▄▖▐▙▄▄▖▐▙▄▄▖▗▄█▄▖▝▚▄▞▘▐▙▄▄▖▐▌  ▐▌▝▚▄▄▖▐▙▄▄▖',
 ].join('\n');
 
 const TAGLINE = 'Companion Intelligence Hub  ·  companionintelligence.com';
@@ -56,8 +58,16 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
     entries: [
       { command: `${BASE_COMMAND} up [env] [--detached]`, description: 'Start the hub stack' },
       { command: `${BASE_COMMAND} shutdown [env]`, description: 'Stop the hub stack' },
-      { command: `${BASE_COMMAND} status [env]`, description: 'Show running containers and hub health' },
+      { command: `${BASE_COMMAND} status [env]`, description: 'Containers, Cloudflare tunnel, Tailscale VPN, and models' },
       { command: `${BASE_COMMAND} config [env]`, description: 'Show resolved configuration values' },
+    ],
+  },
+  {
+    title: 'Models',
+    entries: [
+      { command: `${BASE_COMMAND} models list`, description: 'List installed Ollama models' },
+      { command: `${BASE_COMMAND} models install <name>`, description: 'Pull an Ollama model (e.g. llama3, mistral)' },
+      { command: `${BASE_COMMAND} models rm <name>`, description: 'Remove an installed Ollama model' },
     ],
   },
   {
@@ -565,13 +575,30 @@ function hotReloadHub(env: HubEnv) {
   startHub('dev', env);
 }
 
+function findComposeName(keyword: string): string {
+  const { stdout } = runCapture('docker', [
+    'ps',
+    '--filter',
+    'label=com.docker.compose.project=ci-hub',
+    '--filter',
+    `name=${keyword}`,
+    '--format',
+    '{{.Names}}',
+  ]);
+  return stdout.split('\n').find(Boolean) || '';
+}
+
 function showStatus(env: HubEnv) {
-  const dockerOk = checkDockerAvailable();
-  if (!dockerOk) {
+  if (!checkDockerAvailable()) {
     printMessageBox('Hub status', ['Docker is not running or not reachable.'], 'red');
     return;
   }
 
+  const envFileName = getEnvFileOrExit(env);
+  const fileVars = parseEnvFile(envFileName);
+  const lines: string[] = [];
+
+  // ── containers ────────────────────────────────────────────────────────────
   const { stdout: psOut } = runCapture('docker', [
     'ps',
     '-a',
@@ -580,21 +607,96 @@ function showStatus(env: HubEnv) {
     '--format',
     '{{.Names}}\t{{.Status}}\t{{.Ports}}',
   ]);
-
-  const lines: string[] = [];
+  lines.push(dim('Containers'));
   if (psOut) {
     for (const row of psOut.split('\n').filter(Boolean)) {
       const [name, status, ports] = row.split('\t');
       const isUp = (status || '').toLowerCase().startsWith('up');
-      const statusColored = isUp ? colorize(status || '', 'green') : colorize(status || '', 'red');
-      const portsStr = ports ? dim(` → ${ports}`) : '';
-      lines.push(`${bold(name || '')}  ${statusColored}${portsStr}`);
+      const dot = isUp ? colorize('●', 'green') : colorize('✗', 'red');
+      const portsStr = ports ? dim(`  ${ports}`) : '';
+      lines.push(`  ${dot} ${bold(name || '')}  ${dim(status || '')}${portsStr}`);
+    }
+  } else {
+    lines.push(`  ${dim('No CI-Hub containers — run: cihub up')}`);
+  }
+
+  // ── network / access URLs ─────────────────────────────────────────────────
+  lines.push('');
+  lines.push(dim('Network'));
+  const localPort = fileVars.FRONTEND_PORT || fileVars.BACKEND_PORT || '5002';
+  lines.push(`  Dashboard      ${colorize(`http://localhost:${localPort}`, 'cyan')}`);
+
+  const cfDomain = process.env.CF_DOMAIN || fileVars.CF_DOMAIN || fileVars.DOMAIN || fileVars.CLOUDFLARE_DOMAIN;
+  const tunnelContainer = findComposeName('tunnel') || findComposeName('cloudflared');
+  const tunnelUp = tunnelContainer.length > 0;
+  if (cfDomain) {
+    const cfStatus = tunnelUp ? colorize('● active', 'green') : colorize('○ tunnel down', 'yellow');
+    lines.push(`  Cloudflare     ${cfStatus}  ${colorize(`https://${cfDomain}`, 'cyan')}`);
+  } else {
+    lines.push(`  Cloudflare     ${tunnelUp ? colorize('● active', 'green') : colorize('○ not configured', 'dim')}`);
+  }
+
+  const headscaleContainer = findComposeName('headscale');
+  const { stdout: tsIp } = runCapture('tailscale', ['ip', '--4']);
+  const tsIpClean = tsIp.trim();
+  const tailscaleActive = tsIpClean.length > 0 || headscaleContainer.length > 0;
+  if (tailscaleActive) {
+    lines.push(`  Tailscale VPN  ${colorize('● active', 'green')}  ${tsIpClean ? colorize(tsIpClean, 'cyan') : dim('(headscale)')}`);
+  } else {
+    lines.push(`  Tailscale VPN  ${colorize('○ inactive', 'dim')}`);
+  }
+
+  // ── ollama models ─────────────────────────────────────────────────────────
+  const ollamaContainer = findComposeName('ollama');
+  if (ollamaContainer) {
+    lines.push('');
+    lines.push(dim('Models (Ollama)'));
+    const { stdout: modelOut, ok } = runCapture('docker', ['exec', ollamaContainer, 'ollama', 'list']);
+    const models = ok ? modelOut.split('\n').filter(Boolean).slice(1) : [];
+    if (models.length > 0) {
+      for (const m of models) lines.push(`  ${dim(m)}`);
+    } else {
+      lines.push(`  ${dim('None installed — run: cihub models install llama3')}`);
     }
   }
 
-  if (lines.length === 0) lines.push(dim('No CI-Hub containers found — run: cihub up'));
   printMessageBox(`Hub status  [${env}]`, lines, 'cyan');
-  printConfig(env);
+}
+
+// ─── models ───────────────────────────────────────────────────────────────────
+
+function runModelsCommand(args: string[]) {
+  const subcommand = args[0] || 'list';
+
+  const ollamaContainer = findComposeName('ollama');
+  if (!ollamaContainer) {
+    printMessageBox('Models', ['Ollama container not running. Start the hub first: cihub up'], 'yellow');
+    return;
+  }
+
+  if (subcommand === 'list') {
+    printMessageBox('Installed models', [`Container: ${ollamaContainer}`], 'cyan');
+    run('docker', ['exec', ollamaContainer, 'ollama', 'list']);
+    return;
+  }
+
+  if (subcommand === 'install' || subcommand === 'pull') {
+    const name = args[1];
+    if (!name) usageAndExit('Usage: models install <model-name>  (e.g. llama3, mistral, phi3)');
+    printMessageBox('Installing model', [`Pulling ${bold(name)} via Ollama — this may take a few minutes…`], 'green');
+    run('docker', ['exec', '-it', ollamaContainer, 'ollama', 'pull', name]);
+    return;
+  }
+
+  if (subcommand === 'rm' || subcommand === 'remove') {
+    const name = args[1];
+    if (!name) usageAndExit('Usage: models rm <model-name>');
+    printMessageBox('Removing model', [`Removing ${bold(name)} from Ollama…`], 'yellow');
+    run('docker', ['exec', ollamaContainer, 'ollama', 'rm', name]);
+    return;
+  }
+
+  usageAndExit(`Unknown models subcommand: ${subcommand}. Use: list, install, rm`);
 }
 
 // ─── purge ────────────────────────────────────────────────────────────────────
@@ -855,6 +957,8 @@ async function runWizard(defaultEnv: HubEnv = 'local') {
   const firstRun = isFirstRun(envFileMap[defaultEnv]);
   console.log(renderWizardWelcome());
 
+  const FTUE_STEPS = 6;
+
   if (firstRun) {
     console.log();
     console.log(
@@ -863,10 +967,12 @@ async function runWizard(defaultEnv: HubEnv = 'local') {
         [
           `No ${envFileMap[defaultEnv]} found — the wizard will guide you through initial setup.`,
           '',
-          renderStep(1, 4, 'Choose environment', 'pending'),
-          renderStep(2, 4, 'Setup host & Docker', 'pending'),
-          renderStep(3, 4, 'Register with CI Cloud', 'pending'),
-          renderStep(4, 4, 'Start the Hub', 'pending'),
+          renderStep(1, FTUE_STEPS, 'Choose environment', 'pending'),
+          renderStep(2, FTUE_STEPS, 'Check prerequisites', 'pending'),
+          renderStep(3, FTUE_STEPS, 'Initialize host & Docker config', 'pending'),
+          renderStep(4, FTUE_STEPS, 'Register with CI Cloud', 'pending'),
+          renderStep(5, FTUE_STEPS, 'Start the Hub', 'pending'),
+          renderStep(6, FTUE_STEPS, 'Install initial model (optional)', 'pending'),
         ],
         'yellow',
       ),
@@ -878,7 +984,7 @@ async function runWizard(defaultEnv: HubEnv = 'local') {
 
   try {
     // ── Step 1: environment ────────────────────────────────────────────────
-    if (firstRun) console.log(renderStep(1, 4, 'Choose environment', 'active'));
+    if (firstRun) console.log(renderStep(1, FTUE_STEPS, 'Choose environment', 'active'));
     printMessageBox(
       'Choose environment',
       [
@@ -891,18 +997,23 @@ async function runWizard(defaultEnv: HubEnv = 'local') {
     );
     const envAnswer = await rl.question('  Environment [1-4, default 1]: ');
     const env = resolveWizardEnvInput(envAnswer, defaultEnv);
-    if (firstRun) console.log(renderStep(1, 4, `Environment: ${bold(env)}`, 'done'));
+    if (firstRun) console.log(renderStep(1, FTUE_STEPS, `Environment: ${bold(env)}`, 'done'));
 
     if (firstRun) {
-      // ── FTUE: always run setup → register → up ──────────────────────────
-      const dockerOk = checkDockerAvailable();
+      // ── Step 2: prerequisites ──────────────────────────────────────────
       console.log();
+      console.log(renderStep(2, FTUE_STEPS, 'Checking prerequisites…', 'active'));
+      const dockerOk = checkDockerAvailable();
+      const { stdout: dcVersion } = runCapture('docker', ['compose', 'version']);
+      const { stdout: tsIp } = runCapture('tailscale', ['ip', '--4']);
       console.log(
         box(
           'Prerequisites',
           [
-            `Docker:        ${dockerOk ? colorize('● available', 'green') : colorize('✗ not running', 'red')}`,
-            `Env file:      ${existsSync(join(process.cwd(), envFileMap[env])) ? colorize('● found', 'green') : colorize('○ will be created', 'yellow')}`,
+            `Docker:           ${dockerOk ? colorize('● available', 'green') : colorize('✗ not running', 'red')}`,
+            `Docker Compose:   ${dcVersion ? colorize('● available', 'green') : colorize('✗ not found', 'red')}`,
+            `Tailscale VPN:    ${tsIp.trim() ? colorize(`● ${tsIp.trim()}`, 'green') : colorize('○ not connected (optional)', 'dim')}`,
+            `Env file:         ${existsSync(join(process.cwd(), envFileMap[env])) ? colorize('● found', 'green') : colorize('○ will be created', 'yellow')}`,
           ],
           'cyan',
         ),
@@ -911,28 +1022,63 @@ async function runWizard(defaultEnv: HubEnv = 'local') {
         printMessageBox('Docker required', ['Please start Docker Desktop and re-run the wizard.'], 'red');
         return;
       }
+      console.log(renderStep(2, FTUE_STEPS, 'Prerequisites checked', 'done'));
 
+      // ── Step 3: setup ──────────────────────────────────────────────────
       console.log();
-      console.log(renderStep(2, 4, 'Setting up host assets…', 'active'));
+      console.log(renderStep(3, FTUE_STEPS, 'Initializing host assets…', 'active'));
       setupHub(env);
-      console.log(renderStep(2, 4, 'Setup complete', 'done'));
+      console.log(renderStep(3, FTUE_STEPS, 'Host initialized', 'done'));
 
+      // ── Step 4: register ──────────────────────────────────────────────
       console.log();
-      console.log(renderStep(3, 4, 'Registering with CI Cloud…', 'active'));
+      console.log(renderStep(4, FTUE_STEPS, 'Registering with CI Cloud…', 'active'));
       registerHub(env);
-      console.log(renderStep(3, 4, 'Registration info shown above — open the URL then continue', 'done'));
+      console.log(renderStep(4, FTUE_STEPS, 'Open the URL above to pair this device, then continue', 'done'));
       const cont = await rl.question('  Press Enter once you have registered, or Ctrl+C to exit: ');
       void cont;
 
+      // ── Step 5: start ─────────────────────────────────────────────────
       console.log();
-      console.log(renderStep(4, 4, 'Starting the Hub…', 'active'));
+      console.log(renderStep(5, FTUE_STEPS, 'Starting the Hub…', 'active'));
       const detached = (await rl.question('  Run detached (background)? [y/N]: ')).trim().toLowerCase();
       startHub(detached === 'y' || detached === 'yes' ? 'start:detached' : 'start', env);
-      console.log(renderStep(4, 4, 'Hub launched', 'done'));
+      console.log(renderStep(5, FTUE_STEPS, 'Hub launched', 'done'));
+
+      // ── Step 6: optional model ────────────────────────────────────────
+      console.log();
+      console.log(renderStep(6, FTUE_STEPS, 'Install initial AI model (optional)', 'active'));
+      printMessageBox(
+        'Recommended models',
+        [
+          'llama3        4.7 GB — general purpose, fast',
+          'mistral       4.1 GB — good reasoning, efficient',
+          'phi3          2.3 GB — lightweight, great for low VRAM',
+          'codestral    18.8 GB — code-focused',
+          '',
+          'Press Enter to skip model installation.',
+        ],
+        'cyan',
+      );
+      const modelAnswer = (await rl.question('  Model to install [llama3 / name / Enter to skip]: ')).trim();
+      if (modelAnswer) {
+        runModelsCommand(['install', modelAnswer]);
+        console.log(renderStep(6, FTUE_STEPS, `Model ${bold(modelAnswer)} installed`, 'done'));
+      } else {
+        console.log(renderStep(6, FTUE_STEPS, 'Skipped — install later with: cihub models install llama3', 'pending'));
+      }
+
+      // ── completion ────────────────────────────────────────────────────
+      const envFileName = getEnvFileOrExit(env);
+      const fileVars = parseEnvFile(envFileName);
+      const cfDomain = process.env.CF_DOMAIN || fileVars.CF_DOMAIN || fileVars.DOMAIN;
       console.log();
       console.log(hr('dim'));
-      console.log(colorize('  Setup complete! Your Companion Intelligence Hub is running.', 'green'));
-      console.log(dim(`  Open http://localhost:5002 · manage with: ${BASE_COMMAND} --help`));
+      console.log(colorize('  ✓ Setup complete! Your Companion Intelligence Hub is running.', 'green'));
+      console.log(dim(`  Local     http://localhost:${fileVars.FRONTEND_PORT || fileVars.BACKEND_PORT || '5002'}`));
+      if (cfDomain) console.log(dim(`  Cloud     https://${cfDomain}`));
+      if (tsIp.trim()) console.log(dim(`  Tailscale ${tsIp.trim()}`));
+      console.log(dim(`  Manage    ${BASE_COMMAND} status · ${BASE_COMMAND} models list · ${BASE_COMMAND} --help`));
       return;
     }
 
@@ -1092,6 +1238,11 @@ export async function runCli(rawArgs: string[]) {
 
   if (first === 'app') {
     runAppCommand(args.slice(1));
+    return;
+  }
+
+  if (first === 'models') {
+    runModelsCommand(args.slice(1));
     return;
   }
 
