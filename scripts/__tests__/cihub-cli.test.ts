@@ -19,9 +19,9 @@ import {
 // ─── banner ───────────────────────────────────────────────────────────────────
 
 describe('banner', () => {
-  it('shows Companion Intelligence Hub and ci.computer in green', () => {
+  it('shows COMPANION HUB and ci.computer in green', () => {
     const plain = stripAnsi(renderBanner());
-    expect(plain).toContain('Companion Intelligence Hub');
+    expect(plain).toContain('COMPANION HUB');
     expect(plain).toContain('ci.computer');
   });
 
@@ -34,7 +34,7 @@ describe('banner', () => {
 
   it('wizard welcome embeds the banner', () => {
     const plain = stripAnsi(renderWizardWelcome());
-    expect(plain).toContain('Companion Intelligence Hub');
+    expect(plain).toContain('COMPANION HUB');
     expect(plain).toContain('Setup Wizard');
     expect(plain).toContain('cihub man');
   });

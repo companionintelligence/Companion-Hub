@@ -23,7 +23,7 @@ const BASE_COMMAND = 'cihub';
 const COMPAT_COMMAND = 'pnpm run hub --';
 const CI_CLOUD_DEFAULT = 'https://hub.companionintelligence.com';
 
-const COMPANY_ART = 'Companion Intelligence Hub\nci.computer';
+const COMPANY_ART = 'COMPANION HUB\nci.computer';
 
 const envFileMap: Record<HubEnv, string> = {
   local: '.env.local',

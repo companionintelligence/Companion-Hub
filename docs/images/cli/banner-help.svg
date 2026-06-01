@@ -11,7 +11,7 @@
   <text x="400" y="25" text-anchor="middle" fill="#8b949e" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace">banner-help</text>
   <g font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace" xml:space="preserve">
     <text x="32" y="80"  fill="#7ee787" font-size="15">$ cihub --help</text>
-    <text x="32" y="126" fill="#3fb950" font-size="28">Companion Intelligence Hub</text>
+    <text x="32" y="126" fill="#3fb950" font-size="28">COMPANION HUB</text>
     <text x="32" y="168" fill="#3fb950" font-size="22">ci.computer</text>
     <text x="32" y="210" fill="#e6edf3" font-size="14">The banner appears at the top of every command.</text>
     <text x="32" y="238" fill="#8b949e" font-size="12">wizard  ·  status  ·  models  ·  app lifecycle  ·  MCP  ·  Cloudflare  ·  Tailscale</text>
