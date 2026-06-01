@@ -1,51 +1,341 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="900" height="1000" viewBox="0 0 900 1000" role="img" aria-labelledby="title desc">
-  <title id="title">CI-Hub CLI screenshot</title>
-  <desc id="desc">Terminal capture for cihub man</desc>
-  <rect width="900" height="1000" rx="14" fill="#0d1117"/>
-  <rect x="0" y="0" width="900" height="34" rx="14" fill="#161b22"/>
-  <rect x="0" y="20" width="900" height="14" fill="#161b22"/>
-  <circle cx="18" cy="17" r="5" fill="#ff5f57"/>
-  <circle cx="36" cy="17" r="5" fill="#febc2e"/>
-  <circle cx="54" cy="17" r="5" fill="#28c840"/>
-  <text x="450" y="22" text-anchor="middle" fill="#8b949e" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace">man</text>
-  <g font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace" font-size="14" xml:space="preserve">
-    <text x="24" y="56"  fill="#7ee787">$ cihub man</text>
-    <text x="24" y="76"  fill="#58a6ff">CIHUB(1)</text>
-    <text x="24" y="116" fill="#30363d">┌─ Synopsis ──────────────────────────────────────────────────────────────────────────┐</text>
-    <text x="24" y="136" fill="#e6edf3">  cihub &lt;command&gt; [args]</text>
-    <text x="24" y="156" fill="#e6edf3">  pnpm run hub -- &lt;command&gt; [args]</text>
-    <text x="24" y="176" fill="#30363d">└─────────────────────────────────────────────────────────────────────────────────────┘</text>
-    <text x="24" y="216" fill="#30363d">┌─ Setup &amp; Registration ─────────────────────────────────────────────────────────────┐</text>
-    <text x="24" y="236" fill="#e6edf3">  cihub wizard [env]    Guided first-time or re-setup wizard (6-step FTUE)</text>
-    <text x="24" y="256" fill="#e6edf3">  cihub setup [env]     Initialize host state, Traefik, and Docker auth config</text>
-    <text x="24" y="276" fill="#e6edf3">  cihub register [env]  Print cloud portal registration URL for this device</text>
-    <text x="24" y="296" fill="#30363d">└─────────────────────────────────────────────────────────────────────────────────────┘</text>
-    <text x="24" y="336" fill="#30363d">┌─ Hub lifecycle ─────────────────────────────────────────────────────────────────────┐</text>
-    <text x="24" y="356" fill="#e6edf3">  cihub up [env] [--detached]  Start the hub stack</text>
-    <text x="24" y="376" fill="#e6edf3">  cihub shutdown [env]         Stop the hub stack</text>
-    <text x="24" y="396" fill="#e6edf3">  cihub status [env]           Containers, Cloudflare tunnel, Tailscale VPN, models</text>
-    <text x="24" y="416" fill="#e6edf3">  cihub config [env]           Show resolved configuration values</text>
-    <text x="24" y="436" fill="#30363d">└─────────────────────────────────────────────────────────────────────────────────────┘</text>
-    <text x="24" y="476" fill="#30363d">┌─ Models ────────────────────────────────────────────────────────────────────────────┐</text>
-    <text x="24" y="496" fill="#e6edf3">  cihub models list            List installed Ollama models</text>
-    <text x="24" y="516" fill="#e6edf3">  cihub models install &lt;name&gt;  Pull a model (llama3, mistral, phi3, codestral)</text>
-    <text x="24" y="536" fill="#e6edf3">  cihub models rm &lt;name&gt;       Remove an installed model</text>
-    <text x="24" y="556" fill="#30363d">└─────────────────────────────────────────────────────────────────────────────────────┘</text>
-    <text x="24" y="596" fill="#30363d">┌─ App lifecycle ─────────────────────────────────────────────────────────────────────┐</text>
-    <text x="24" y="616" fill="#e6edf3">  cihub app list / status [name] / logs &lt;name&gt; / inspect &lt;name&gt;</text>
-    <text x="24" y="636" fill="#e6edf3">  cihub app add|edit &lt;name&gt; &lt;image&gt; [--port h:c] [--env K=V]</text>
-    <text x="24" y="656" fill="#e6edf3">  cihub app start|stop|restart|delete &lt;name&gt;</text>
-    <text x="24" y="676" fill="#30363d">└─────────────────────────────────────────────────────────────────────────────────────┘</text>
-    <text x="24" y="716" fill="#30363d">┌─ Developer workflow ────────────────────────────────────────────────────────────────┐</text>
-    <text x="24" y="736" fill="#e6edf3">  cihub hot-reload [env]  Infra up + backend/frontend from source</text>
-    <text x="24" y="756" fill="#e6edf3">  cihub purge [--yes]     Remove Docker state + XDG config/cache dirs</text>
-    <text x="24" y="776" fill="#30363d">└─────────────────────────────────────────────────────────────────────────────────────┘</text>
-    <text x="24" y="816" fill="#b08800">┌─ Packaging ─────────────────────────────────────────────────────────────────────────┐</text>
-    <text x="24" y="836" fill="#e6edf3">  npm/pnpm/bun global installs expose cihub on PATH via the package bin entry.</text>
-    <text x="24" y="856" fill="#e6edf3">  In-repo compat: pnpm run hub -- &lt;command&gt;</text>
-    <text x="24" y="876" fill="#b08800">└─────────────────────────────────────────────────────────────────────────────────────┘</text>
-    <text x="24" y="916" fill="#484f58">┌─ On-device testing loop ────────────────────────────────────────────────────────────┐</text>
-    <text x="24" y="936" fill="#e6edf3">  cihub purge --yes  ·  cihub hot-reload local  ·  cihub wizard  ·  pnpm run test:cli</text>
-    <text x="24" y="956" fill="#484f58">└─────────────────────────────────────────────────────────────────────────────────────┘</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="864" height="1527" viewBox="0 0 864 1527" role="img" aria-label="cihub cihub man">
+  <rect width="864" height="1527" rx="12" fill="#0d1117"/>
+  <rect x="0" y="0" width="864" height="36" rx="12" fill="#161b22"/>
+  <rect x="0" y="24" width="864" height="12" fill="#161b22"/>
+  <circle cx="20" cy="18" r="6" fill="#ff5f57"/>
+  <circle cx="40" cy="18" r="6" fill="#febc2e"/>
+  <circle cx="60" cy="18" r="6" fill="#28c840"/>
+  <text x="432" y="23" text-anchor="middle" fill="#8b949e" font-size="12" font-family='ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace'>cihub man</text>
+  <g font-family='ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace' font-size="15" xml:space="preserve">
+    <text x="18" y="62" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#56d364">$</text>
+    <text x="36" y="62" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">cihub</text>
+    <text x="90" y="62" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">man</text>
+    <text x="18" y="83" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">CIHUB(1)</text>
+    <text x="18" y="167" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">┌─</text>
+    <text x="45" y="167" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">Synopsis</text>
+    <text x="126" y="167" textLength="612" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">───────────────────────────────────────────────────────────────────┐</text>
+    <text x="36" y="188" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">cihub</text>
+    <text x="90" y="188" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">&lt;command&gt;</text>
+    <text x="180" y="188" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">[args]</text>
+    <text x="36" y="209" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">pnpm</text>
+    <text x="81" y="209" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">run</text>
+    <text x="117" y="209" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">hub</text>
+    <text x="153" y="209" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">--</text>
+    <text x="180" y="209" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">&lt;command&gt;</text>
+    <text x="270" y="209" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">[args]</text>
+    <text x="18" y="230" textLength="720" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">└──────────────────────────────────────────────────────────────────────────────┘</text>
+    <text x="18" y="272" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">┌─</text>
+    <text x="45" y="272" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">Description</text>
+    <text x="153" y="272" textLength="585" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">────────────────────────────────────────────────────────────────┐</text>
+    <text x="36" y="293" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Companion</text>
+    <text x="126" y="293" textLength="108" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Intelligence</text>
+    <text x="243" y="293" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Hub</text>
+    <text x="279" y="293" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">CLI</text>
+    <text x="315" y="293" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">—</text>
+    <text x="333" y="293" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">setup,</text>
+    <text x="396" y="293" textLength="117" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">registration,</text>
+    <text x="522" y="293" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Docker</text>
+    <text x="585" y="293" textLength="90" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">lifecycle,</text>
+    <text x="36" y="314" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">MCP</text>
+    <text x="72" y="314" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">toggles,</text>
+    <text x="153" y="314" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">developer</text>
+    <text x="243" y="314" textLength="144" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">purge/hot-reload</text>
+    <text x="396" y="314" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">flows,</text>
+    <text x="459" y="314" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">and</text>
+    <text x="495" y="314" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">app</text>
+    <text x="531" y="314" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">management.</text>
+    <text x="36" y="356" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">All</text>
+    <text x="72" y="356" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">commands</text>
+    <text x="153" y="356" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">accept</text>
+    <text x="216" y="356" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">an</text>
+    <text x="243" y="356" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">optional</text>
+    <text x="324" y="356" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">[env]</text>
+    <text x="378" y="356" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">argument:</text>
+    <text x="468" y="356" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">local</text>
+    <text x="522" y="356" textLength="90" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">(default),</text>
+    <text x="621" y="356" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">dev,</text>
+    <text x="666" y="356" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">staging,</text>
+    <text x="747" y="356" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">prod.</text>
+    <text x="18" y="377" textLength="720" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">└──────────────────────────────────────────────────────────────────────────────┘</text>
+    <text x="18" y="419" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">┌─</text>
+    <text x="45" y="419" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">Setup</text>
+    <text x="99" y="419" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">&amp;</text>
+    <text x="117" y="419" textLength="108" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">Registration</text>
+    <text x="234" y="419" textLength="504" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">───────────────────────────────────────────────────────┐</text>
+    <text x="36" y="440" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#3fb950">cihub</text>
+    <text x="90" y="440" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#3fb950">wizard</text>
+    <text x="153" y="440" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#3fb950">[env]</text>
+    <text x="234" y="440" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Guided</text>
+    <text x="297" y="440" textLength="90" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">first-time</text>
+    <text x="396" y="440" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">or</text>
+    <text x="423" y="440" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">re-setup</text>
+    <text x="504" y="440" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">wizard</text>
+    <text x="36" y="461" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#3fb950">cihub</text>
+    <text x="90" y="461" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#3fb950">setup</text>
+    <text x="144" y="461" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#3fb950">[env]</text>
+    <text x="234" y="461" textLength="90" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Initialize</text>
+    <text x="333" y="461" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">host</text>
+    <text x="378" y="461" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">state,</text>
+    <text x="441" y="461" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Traefik,</text>
+    <text x="522" y="461" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">and</text>
+    <text x="558" y="461" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Docker</text>
+    <text x="621" y="461" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">auth</text>
+    <text x="666" y="461" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">config</text>
+    <text x="36" y="482" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#3fb950">cihub</text>
+    <text x="90" y="482" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#3fb950">register</text>
+    <text x="171" y="482" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#3fb950">[env]</text>
+    <text x="234" y="482" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Print</text>
+    <text x="288" y="482" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">cloud</text>
+    <text x="342" y="482" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">portal</text>
+    <text x="405" y="482" textLength="108" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">registration</text>
+    <text x="522" y="482" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">URL</text>
+    <text x="558" y="482" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">for</text>
+    <text x="594" y="482" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">this</text>
+    <text x="639" y="482" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">device</text>
+    <text x="18" y="503" textLength="720" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">└──────────────────────────────────────────────────────────────────────────────┘</text>
+    <text x="18" y="545" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">┌─</text>
+    <text x="45" y="545" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">Hub</text>
+    <text x="81" y="545" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">lifecycle</text>
+    <text x="171" y="545" textLength="567" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">──────────────────────────────────────────────────────────────┐</text>
+    <text x="36" y="566" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#3fb950">cihub</text>
+    <text x="90" y="566" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#3fb950">up</text>
+    <text x="117" y="566" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#3fb950">[env]</text>
+    <text x="171" y="566" textLength="108" lengthAdjust="spacingAndGlyphs" fill="#3fb950">[--detached]</text>
+    <text x="297" y="566" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Start</text>
+    <text x="351" y="566" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">the</text>
+    <text x="387" y="566" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">hub</text>
+    <text x="423" y="566" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">stack</text>
+    <text x="36" y="587" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#3fb950">cihub</text>
+    <text x="90" y="587" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#3fb950">shutdown</text>
+    <text x="171" y="587" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#3fb950">[env]</text>
+    <text x="297" y="587" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Stop</text>
+    <text x="342" y="587" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">the</text>
+    <text x="378" y="587" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">hub</text>
+    <text x="414" y="587" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">stack</text>
+    <text x="36" y="608" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#3fb950">cihub</text>
+    <text x="90" y="608" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#3fb950">status</text>
+    <text x="153" y="608" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#3fb950">[env]</text>
+    <text x="297" y="608" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Containers,</text>
+    <text x="405" y="608" textLength="90" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Cloudflare</text>
+    <text x="504" y="608" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">tunnel,</text>
+    <text x="576" y="608" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Tailscale</text>
+    <text x="666" y="608" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">VPN,</text>
+    <text x="711" y="608" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">and</text>
+    <text x="747" y="608" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">models</text>
+    <text x="36" y="629" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#3fb950">cihub</text>
+    <text x="90" y="629" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#3fb950">config</text>
+    <text x="153" y="629" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#3fb950">[env]</text>
+    <text x="297" y="629" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Show</text>
+    <text x="342" y="629" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">resolved</text>
+    <text x="423" y="629" textLength="117" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">configuration</text>
+    <text x="549" y="629" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">values</text>
+    <text x="18" y="650" textLength="720" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">└──────────────────────────────────────────────────────────────────────────────┘</text>
+    <text x="18" y="692" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">┌─</text>
+    <text x="45" y="692" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">Models</text>
+    <text x="108" y="692" textLength="630" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">─────────────────────────────────────────────────────────────────────┐</text>
+    <text x="36" y="713" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#3fb950">cihub</text>
+    <text x="90" y="713" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#3fb950">models</text>
+    <text x="153" y="713" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#3fb950">list</text>
+    <text x="297" y="713" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">List</text>
+    <text x="342" y="713" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">installed</text>
+    <text x="432" y="713" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Ollama</text>
+    <text x="495" y="713" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">models</text>
+    <text x="36" y="734" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#3fb950">cihub</text>
+    <text x="90" y="734" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#3fb950">models</text>
+    <text x="153" y="734" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#3fb950">install</text>
+    <text x="225" y="734" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#3fb950">&lt;name&gt;</text>
+    <text x="297" y="734" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Pull</text>
+    <text x="342" y="734" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">an</text>
+    <text x="369" y="734" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Ollama</text>
+    <text x="432" y="734" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">model</text>
+    <text x="486" y="734" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">(e.g.</text>
+    <text x="540" y="734" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">llama3,</text>
+    <text x="612" y="734" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">mistral)</text>
+    <text x="36" y="755" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#3fb950">cihub</text>
+    <text x="90" y="755" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#3fb950">models</text>
+    <text x="153" y="755" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#3fb950">rm</text>
+    <text x="180" y="755" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#3fb950">&lt;name&gt;</text>
+    <text x="297" y="755" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Remove</text>
+    <text x="360" y="755" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">an</text>
+    <text x="387" y="755" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">installed</text>
+    <text x="477" y="755" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Ollama</text>
+    <text x="540" y="755" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">model</text>
+    <text x="18" y="776" textLength="720" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">└──────────────────────────────────────────────────────────────────────────────┘</text>
+    <text x="18" y="818" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">┌─</text>
+    <text x="45" y="818" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">App</text>
+    <text x="81" y="818" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">lifecycle</text>
+    <text x="171" y="818" textLength="567" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">──────────────────────────────────────────────────────────────┐</text>
+    <text x="36" y="839" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#3fb950">cihub</text>
+    <text x="90" y="839" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#3fb950">app</text>
+    <text x="126" y="839" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#3fb950">list</text>
+    <text x="432" y="839" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">List</text>
+    <text x="477" y="839" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">managed</text>
+    <text x="549" y="839" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Docker</text>
+    <text x="612" y="839" textLength="90" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">containers</text>
+    <text x="36" y="860" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#3fb950">cihub</text>
+    <text x="90" y="860" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#3fb950">app</text>
+    <text x="126" y="860" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#3fb950">status</text>
+    <text x="189" y="860" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#3fb950">[name]</text>
+    <text x="432" y="860" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Show</text>
+    <text x="477" y="860" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">container</text>
+    <text x="567" y="860" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">status</text>
+    <text x="630" y="860" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">with</text>
+    <text x="675" y="860" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">ports</text>
+    <text x="729" y="860" textLength="117" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">(color-coded)</text>
+    <text x="36" y="881" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#3fb950">cihub</text>
+    <text x="90" y="881" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#3fb950">app</text>
+    <text x="126" y="881" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#3fb950">logs</text>
+    <text x="171" y="881" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#3fb950">&lt;name&gt;</text>
+    <text x="234" y="881" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#3fb950">[--tail</text>
+    <text x="306" y="881" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#3fb950">N]</text>
+    <text x="432" y="881" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Stream</text>
+    <text x="495" y="881" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">container</text>
+    <text x="585" y="881" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">logs</text>
+    <text x="36" y="902" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#3fb950">cihub</text>
+    <text x="90" y="902" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#3fb950">app</text>
+    <text x="126" y="902" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#3fb950">add</text>
+    <text x="162" y="902" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#3fb950">&lt;name&gt;</text>
+    <text x="225" y="902" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#3fb950">&lt;image&gt;</text>
+    <text x="432" y="902" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Launch</text>
+    <text x="495" y="902" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">a</text>
+    <text x="513" y="902" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">new</text>
+    <text x="549" y="902" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Docker</text>
+    <text x="612" y="902" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">container</text>
+    <text x="702" y="902" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">app</text>
+    <text x="36" y="923" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#3fb950">cihub</text>
+    <text x="90" y="923" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#3fb950">app</text>
+    <text x="126" y="923" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#3fb950">edit</text>
+    <text x="171" y="923" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#3fb950">&lt;name&gt;</text>
+    <text x="234" y="923" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#3fb950">&lt;image&gt;</text>
+    <text x="432" y="923" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Recreate</text>
+    <text x="513" y="923" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">a</text>
+    <text x="531" y="923" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Docker</text>
+    <text x="594" y="923" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">container</text>
+    <text x="684" y="923" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">app</text>
+    <text x="36" y="944" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#3fb950">cihub</text>
+    <text x="90" y="944" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#3fb950">app</text>
+    <text x="126" y="944" textLength="225" lengthAdjust="spacingAndGlyphs" fill="#3fb950">start|stop|restart|delete</text>
+    <text x="360" y="944" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#3fb950">&lt;name&gt;</text>
+    <text x="432" y="944" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Container</text>
+    <text x="522" y="944" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">lifecycle</text>
+    <text x="612" y="944" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">controls</text>
+    <text x="36" y="965" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#3fb950">cihub</text>
+    <text x="90" y="965" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#3fb950">app</text>
+    <text x="126" y="965" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#3fb950">inspect</text>
+    <text x="198" y="965" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#3fb950">&lt;name&gt;</text>
+    <text x="432" y="965" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Show</text>
+    <text x="477" y="965" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">container</text>
+    <text x="567" y="965" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">ports,</text>
+    <text x="630" y="965" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">env,</text>
+    <text x="675" y="965" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">and</text>
+    <text x="711" y="965" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">mounts</text>
+    <text x="18" y="986" textLength="720" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">└──────────────────────────────────────────────────────────────────────────────┘</text>
+    <text x="18" y="1028" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">┌─</text>
+    <text x="45" y="1028" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">MCP</text>
+    <text x="81" y="1028" textLength="657" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">────────────────────────────────────────────────────────────────────────┐</text>
+    <text x="36" y="1049" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#3fb950">cihub</text>
+    <text x="90" y="1049" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#3fb950">mcp</text>
+    <text x="126" y="1049" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#3fb950">setup</text>
+    <text x="180" y="1049" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#3fb950">[env]</text>
+    <text x="270" y="1049" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Enable</text>
+    <text x="333" y="1049" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">MCP</text>
+    <text x="369" y="1049" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">and</text>
+    <text x="405" y="1049" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">provision</text>
+    <text x="495" y="1049" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">MCP_API_KEY</text>
+    <text x="36" y="1070" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#3fb950">cihub</text>
+    <text x="90" y="1070" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#3fb950">mcp</text>
+    <text x="126" y="1070" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#3fb950">shutdown</text>
+    <text x="207" y="1070" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#3fb950">[env]</text>
+    <text x="270" y="1070" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Disable</text>
+    <text x="342" y="1070" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">MCP</text>
+    <text x="378" y="1070" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">in</text>
+    <text x="405" y="1070" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">the</text>
+    <text x="441" y="1070" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">target</text>
+    <text x="504" y="1070" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">env</text>
+    <text x="540" y="1070" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">file</text>
+    <text x="36" y="1091" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#3fb950">cihub</text>
+    <text x="90" y="1091" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#3fb950">mcp</text>
+    <text x="126" y="1091" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#3fb950">config</text>
+    <text x="189" y="1091" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#3fb950">[env]</text>
+    <text x="270" y="1091" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Show</text>
+    <text x="315" y="1091" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">current</text>
+    <text x="387" y="1091" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">MCP</text>
+    <text x="423" y="1091" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">settings</text>
+    <text x="18" y="1112" textLength="720" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">└──────────────────────────────────────────────────────────────────────────────┘</text>
+    <text x="18" y="1154" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">┌─</text>
+    <text x="45" y="1154" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">Developer</text>
+    <text x="135" y="1154" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">workflow</text>
+    <text x="216" y="1154" textLength="522" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">─────────────────────────────────────────────────────────┐</text>
+    <text x="36" y="1175" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#3fb950">cihub</text>
+    <text x="90" y="1175" textLength="90" lengthAdjust="spacingAndGlyphs" fill="#3fb950">hot-reload</text>
+    <text x="189" y="1175" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#3fb950">[env]</text>
+    <text x="252" y="1175" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Run</text>
+    <text x="288" y="1175" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">infra</text>
+    <text x="342" y="1175" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">+</text>
+    <text x="360" y="1175" textLength="144" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">backend/frontend</text>
+    <text x="513" y="1175" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">with</text>
+    <text x="558" y="1175" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">hot</text>
+    <text x="594" y="1175" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">reload</text>
+    <text x="36" y="1196" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#3fb950">cihub</text>
+    <text x="90" y="1196" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#3fb950">purge</text>
+    <text x="144" y="1196" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#3fb950">[--yes]</text>
+    <text x="252" y="1196" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Remove</text>
+    <text x="315" y="1196" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Docker</text>
+    <text x="378" y="1196" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">state</text>
+    <text x="432" y="1196" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">+</text>
+    <text x="450" y="1196" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">CI-Hub</text>
+    <text x="513" y="1196" textLength="126" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">caches/configs</text>
+    <text x="18" y="1217" textLength="720" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">└──────────────────────────────────────────────────────────────────────────────┘</text>
+    <text x="18" y="1259" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#d29922">┌─</text>
+    <text x="45" y="1259" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#d29922">Packaging</text>
+    <text x="135" y="1259" textLength="603" lengthAdjust="spacingAndGlyphs" fill="#d29922">──────────────────────────────────────────────────────────────────┐</text>
+    <text x="36" y="1280" textLength="108" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">npm/pnpm/bun</text>
+    <text x="153" y="1280" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">global</text>
+    <text x="216" y="1280" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">installs</text>
+    <text x="297" y="1280" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">expose</text>
+    <text x="360" y="1280" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">cihub</text>
+    <text x="414" y="1280" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">on</text>
+    <text x="441" y="1280" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">PATH</text>
+    <text x="486" y="1280" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">via</text>
+    <text x="522" y="1280" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">the</text>
+    <text x="558" y="1280" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">package</text>
+    <text x="630" y="1280" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">bin</text>
+    <text x="666" y="1280" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">entry.</text>
+    <text x="36" y="1301" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Homebrew</text>
+    <text x="117" y="1301" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">and</text>
+    <text x="153" y="1301" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">other</text>
+    <text x="207" y="1301" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">package</text>
+    <text x="279" y="1301" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">managers</text>
+    <text x="360" y="1301" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">should</text>
+    <text x="423" y="1301" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">install</text>
+    <text x="495" y="1301" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">the</text>
+    <text x="531" y="1301" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">same</text>
+    <text x="576" y="1301" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">cihub</text>
+    <text x="630" y="1301" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">executable.</text>
+    <text x="36" y="1322" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">In-repo</text>
+    <text x="108" y="1322" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">compat:</text>
+    <text x="180" y="1322" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">pnpm</text>
+    <text x="225" y="1322" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">run</text>
+    <text x="261" y="1322" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">hub</text>
+    <text x="297" y="1322" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">--</text>
+    <text x="324" y="1322" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">&lt;command&gt;</text>
+    <text x="18" y="1343" textLength="720" lengthAdjust="spacingAndGlyphs" fill="#d29922">└──────────────────────────────────────────────────────────────────────────────┘</text>
+    <text x="18" y="1385" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#6e7681">┌─</text>
+    <text x="45" y="1385" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#6e7681">On-device</text>
+    <text x="135" y="1385" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#6e7681">testing</text>
+    <text x="207" y="1385" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#6e7681">loop</text>
+    <text x="252" y="1385" textLength="486" lengthAdjust="spacingAndGlyphs" fill="#6e7681">─────────────────────────────────────────────────────┐</text>
+    <text x="36" y="1406" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">cihub</text>
+    <text x="90" y="1406" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">purge</text>
+    <text x="144" y="1406" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">--yes</text>
+    <text x="36" y="1427" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">cihub</text>
+    <text x="90" y="1427" textLength="90" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">hot-reload</text>
+    <text x="189" y="1427" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">local</text>
+    <text x="36" y="1448" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">cihub</text>
+    <text x="90" y="1448" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">wizard</text>
+    <text x="36" y="1469" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">pnpm</text>
+    <text x="81" y="1469" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">run</text>
+    <text x="117" y="1469" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">test:cli</text>
+    <text x="18" y="1490" textLength="720" lengthAdjust="spacingAndGlyphs" fill="#6e7681">└──────────────────────────────────────────────────────────────────────────────┘</text>
   </g>
 </svg>

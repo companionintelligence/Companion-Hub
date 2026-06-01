@@ -1,19 +1,37 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="800" height="260" viewBox="0 0 800 260" role="img" aria-labelledby="title desc">
-  <title id="title">CLI banner — cihub wizard</title>
-  <desc id="desc">Terminal showing Companion Intelligence Hub and ci.computer in green.</desc>
-  <defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#0d1117"/><stop offset="100%" stop-color="#111827"/></linearGradient></defs>
-  <rect width="800" height="260" rx="18" fill="url(#bg)"/>
-  <rect x="0" y="0" width="800" height="40" rx="18" fill="#161b22"/>
-  <rect x="0" y="22" width="800" height="18" fill="#161b22"/>
-  <circle cx="22" cy="20" r="6" fill="#ff5f57"/>
-  <circle cx="42" cy="20" r="6" fill="#febc2e"/>
-  <circle cx="62" cy="20" r="6" fill="#28c840"/>
-  <text x="400" y="25" text-anchor="middle" fill="#8b949e" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace">banner-wizard</text>
-  <g font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace" xml:space="preserve">
-    <text x="32" y="80"  fill="#7ee787" font-size="15">$ cihub wizard</text>
-    <text x="32" y="126" fill="#3fb950" font-size="28">COMPANION HUB</text>
-    <text x="32" y="168" fill="#3fb950" font-size="22">ci.computer</text>
-    <text x="32" y="210" fill="#e6edf3" font-size="14">The banner appears before every wizard prompt.</text>
-    <text x="32" y="238" fill="#8b949e" font-size="12">6-step FTUE  ·  prerequisites  ·  setup  ·  register  ·  start  ·  model install</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="810" height="204" viewBox="0 0 810 204" role="img" aria-label="cihub cihub wizard">
+  <rect width="810" height="204" rx="12" fill="#0d1117"/>
+  <rect x="0" y="0" width="810" height="36" rx="12" fill="#161b22"/>
+  <rect x="0" y="24" width="810" height="12" fill="#161b22"/>
+  <circle cx="20" cy="18" r="6" fill="#ff5f57"/>
+  <circle cx="40" cy="18" r="6" fill="#febc2e"/>
+  <circle cx="60" cy="18" r="6" fill="#28c840"/>
+  <text x="405" y="23" text-anchor="middle" fill="#8b949e" font-size="12" font-family='ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace'>cihub wizard</text>
+  <g font-family='ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace' font-size="15" xml:space="preserve">
+    <text x="18" y="62" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#56d364">$</text>
+    <text x="36" y="62" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">cihub</text>
+    <text x="90" y="62" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">wizard</text>
+    <text x="18" y="83" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#3fb950" font-weight="bold">COMPANION</text>
+    <text x="108" y="83" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#3fb950" font-weight="bold">HUB</text>
+    <text x="18" y="104" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#3fb950">ci.computer</text>
+    <text x="18" y="146" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">The</text>
+    <text x="54" y="146" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">banner</text>
+    <text x="117" y="146" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">appears</text>
+    <text x="189" y="146" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">before</text>
+    <text x="252" y="146" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">every</text>
+    <text x="306" y="146" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">wizard</text>
+    <text x="369" y="146" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">prompt.</text>
+    <text x="18" y="167" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#6e7681">6-step</text>
+    <text x="81" y="167" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#6e7681">FTUE</text>
+    <text x="126" y="167" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#6e7681">·</text>
+    <text x="144" y="167" textLength="117" lengthAdjust="spacingAndGlyphs" fill="#6e7681">prerequisites</text>
+    <text x="270" y="167" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#6e7681">·</text>
+    <text x="288" y="167" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#6e7681">setup</text>
+    <text x="342" y="167" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#6e7681">·</text>
+    <text x="360" y="167" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#6e7681">register</text>
+    <text x="441" y="167" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#6e7681">·</text>
+    <text x="459" y="167" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#6e7681">start</text>
+    <text x="513" y="167" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#6e7681">·</text>
+    <text x="531" y="167" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#6e7681">model</text>
+    <text x="585" y="167" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#6e7681">install</text>
   </g>
 </svg>

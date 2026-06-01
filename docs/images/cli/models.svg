@@ -1,30 +1,91 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="900" height="420" viewBox="0 0 900 420" role="img" aria-labelledby="title desc">
-  <title id="title">CI-Hub CLI screenshot</title>
-  <desc id="desc">Terminal captures for cihub models list and models install</desc>
-  <rect width="900" height="420" rx="14" fill="#0d1117"/>
-  <rect x="0" y="0" width="900" height="34" rx="14" fill="#161b22"/>
-  <rect x="0" y="20" width="900" height="14" fill="#161b22"/>
-  <circle cx="18" cy="17" r="5" fill="#ff5f57"/>
-  <circle cx="36" cy="17" r="5" fill="#febc2e"/>
-  <circle cx="54" cy="17" r="5" fill="#28c840"/>
-  <text x="450" y="22" text-anchor="middle" fill="#8b949e" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace">models</text>
-  <g font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace" font-size="14" xml:space="preserve">
-    <text x="24" y="56"  fill="#7ee787">$ cihub models list</text>
-    <text x="24" y="76"  fill="#30363d">┌─ Installed models ──────────────────────────────────────────────────────────────────┐</text>
-    <text x="24" y="96"  fill="#e6edf3">  Container: ci-hub-ollama</text>
-    <text x="24" y="116" fill="#30363d">└────────────────────────────────────────────────────────────────────────────────────────┘</text>
-    <text x="24" y="136" fill="#484f58">  ▶ docker exec ci-hub-ollama ollama list</text>
-    <text x="24" y="156" fill="#e6edf3">NAME                   ID              SIZE    MODIFIED</text>
-    <text x="24" y="176" fill="#e6edf3">llama3:latest          365c0bd3c000    4.7 GB  2 days ago</text>
-    <text x="24" y="196" fill="#e6edf3">mistral:latest         61e88e884507    4.1 GB  5 days ago</text>
-    <text x="24" y="216" fill="#e6edf3">phi3:latest            4f2222927938    2.3 GB  1 week ago</text>
-    <text x="24" y="256" fill="#7ee787">$ cihub models install codestral</text>
-    <text x="24" y="276" fill="#3fb950">┌─ Installing model ──────────────────────────────────────────────────────────────────┐</text>
-    <text x="24" y="296" fill="#e6edf3">  Pulling codestral via Ollama — this may take a few minutes…</text>
-    <text x="24" y="316" fill="#3fb950">└────────────────────────────────────────────────────────────────────────────────────────┘</text>
-    <text x="24" y="336" fill="#484f58">  ▶ docker exec -it ci-hub-ollama ollama pull codestral</text>
-    <text x="24" y="356" fill="#e6edf3">pulling manifest...</text>
-    <text x="24" y="376" fill="#e6edf3">pulling d7b23a42b423... 100% ▕████████████████▏ 18.8 GB</text>
-    <text x="24" y="396" fill="#3fb950">success</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="810" height="456" viewBox="0 0 810 456" role="img" aria-label="cihub cihub models list · install">
+  <rect width="810" height="456" rx="12" fill="#0d1117"/>
+  <rect x="0" y="0" width="810" height="36" rx="12" fill="#161b22"/>
+  <rect x="0" y="24" width="810" height="12" fill="#161b22"/>
+  <circle cx="20" cy="18" r="6" fill="#ff5f57"/>
+  <circle cx="40" cy="18" r="6" fill="#febc2e"/>
+  <circle cx="60" cy="18" r="6" fill="#28c840"/>
+  <text x="405" y="23" text-anchor="middle" fill="#8b949e" font-size="12" font-family='ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace'>cihub models list · install</text>
+  <g font-family='ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace' font-size="15" xml:space="preserve">
+    <text x="18" y="62" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#56d364">$</text>
+    <text x="36" y="62" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">cihub</text>
+    <text x="90" y="62" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">models</text>
+    <text x="153" y="62" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">list</text>
+    <text x="18" y="83" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">┌─</text>
+    <text x="45" y="83" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">Installed</text>
+    <text x="135" y="83" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">models</text>
+    <text x="198" y="83" textLength="576" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">───────────────────────────────────────────────────────────────┐</text>
+    <text x="36" y="104" textLength="90" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Container:</text>
+    <text x="135" y="104" textLength="117" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">ci-hub-ollama</text>
+    <text x="18" y="125" textLength="756" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">└──────────────────────────────────────────────────────────────────────────────────┘</text>
+    <text x="18" y="146" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#6e7681">▶</text>
+    <text x="36" y="146" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#6e7681">docker</text>
+    <text x="99" y="146" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#6e7681">exec</text>
+    <text x="144" y="146" textLength="117" lengthAdjust="spacingAndGlyphs" fill="#6e7681">ci-hub-ollama</text>
+    <text x="270" y="146" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#6e7681">ollama</text>
+    <text x="333" y="146" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#6e7681">list</text>
+    <text x="18" y="167" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">NAME</text>
+    <text x="180" y="167" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">ID</text>
+    <text x="306" y="167" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">SIZE</text>
+    <text x="378" y="167" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">MODIFIED</text>
+    <text x="18" y="188" textLength="117" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">llama3:latest</text>
+    <text x="180" y="188" textLength="108" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">365c0bd3c000</text>
+    <text x="306" y="188" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">4.7</text>
+    <text x="342" y="188" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">GB</text>
+    <text x="378" y="188" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">2</text>
+    <text x="396" y="188" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">days</text>
+    <text x="441" y="188" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">ago</text>
+    <text x="18" y="209" textLength="126" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">mistral:latest</text>
+    <text x="180" y="209" textLength="108" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">61e88e884507</text>
+    <text x="306" y="209" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">4.1</text>
+    <text x="342" y="209" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">GB</text>
+    <text x="378" y="209" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">5</text>
+    <text x="396" y="209" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">days</text>
+    <text x="441" y="209" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">ago</text>
+    <text x="18" y="230" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">phi3:latest</text>
+    <text x="180" y="230" textLength="108" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">4f2222927938</text>
+    <text x="306" y="230" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">2.3</text>
+    <text x="342" y="230" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">GB</text>
+    <text x="378" y="230" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">1</text>
+    <text x="396" y="230" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">week</text>
+    <text x="441" y="230" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">ago</text>
+    <text x="18" y="272" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#56d364">$</text>
+    <text x="36" y="272" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">cihub</text>
+    <text x="90" y="272" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">models</text>
+    <text x="153" y="272" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">install</text>
+    <text x="225" y="272" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">codestral</text>
+    <text x="18" y="293" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#3fb950">┌─</text>
+    <text x="45" y="293" textLength="90" lengthAdjust="spacingAndGlyphs" fill="#3fb950">Installing</text>
+    <text x="144" y="293" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#3fb950">model</text>
+    <text x="198" y="293" textLength="576" lengthAdjust="spacingAndGlyphs" fill="#3fb950">───────────────────────────────────────────────────────────────┐</text>
+    <text x="36" y="314" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Pulling</text>
+    <text x="108" y="314" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9" font-weight="bold">codestral</text>
+    <text x="198" y="314" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">via</text>
+    <text x="234" y="314" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Ollama</text>
+    <text x="297" y="314" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">—</text>
+    <text x="315" y="314" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">this</text>
+    <text x="360" y="314" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">may</text>
+    <text x="396" y="314" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">take</text>
+    <text x="441" y="314" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">a</text>
+    <text x="459" y="314" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">few</text>
+    <text x="495" y="314" textLength="72" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">minutes…</text>
+    <text x="18" y="335" textLength="756" lengthAdjust="spacingAndGlyphs" fill="#3fb950">└──────────────────────────────────────────────────────────────────────────────────┘</text>
+    <text x="18" y="356" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#6e7681">▶</text>
+    <text x="36" y="356" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#6e7681">docker</text>
+    <text x="99" y="356" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#6e7681">exec</text>
+    <text x="144" y="356" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#6e7681">-it</text>
+    <text x="180" y="356" textLength="117" lengthAdjust="spacingAndGlyphs" fill="#6e7681">ci-hub-ollama</text>
+    <text x="306" y="356" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#6e7681">ollama</text>
+    <text x="369" y="356" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#6e7681">pull</text>
+    <text x="414" y="356" textLength="81" lengthAdjust="spacingAndGlyphs" fill="#6e7681">codestral</text>
+    <text x="18" y="377" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">pulling</text>
+    <text x="90" y="377" textLength="99" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">manifest...</text>
+    <text x="18" y="398" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">pulling</text>
+    <text x="90" y="398" textLength="135" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">d7b23a42b423...</text>
+    <text x="234" y="398" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">100%</text>
+    <text x="279" y="398" textLength="162" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">▕████████████████▏</text>
+    <text x="450" y="398" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">18.8</text>
+    <text x="495" y="398" textLength="18" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">GB</text>
+    <text x="18" y="419" textLength="63" lengthAdjust="spacingAndGlyphs" fill="#3fb950">success</text>
   </g>
 </svg>
