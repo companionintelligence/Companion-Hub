@@ -492,6 +492,18 @@ describe('AiSetupStep', () => {
     expect(screen.getByRole('link', { name: 'ollama.com' })).toHaveAttribute('href', 'https://ollama.com');
   });
 
+  it('shows bridge-specific guidance when Ollama is installed but unreachable from the Hub container', async () => {
+    api.ollama = {
+      ...ollamaMissing,
+      error: 'connect ECONNREFUSED 172.17.0.1:11434',
+      hint: 'Ollama may already be installed on this machine, but the Hub container could not connect over the Docker bridge.',
+    };
+    renderStep();
+    await waitFor(() => expect(screen.getByText('Ollama not reachable from Hub')).toBeInTheDocument());
+    expect(screen.getByText(/may already be installed on this machine/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Get Ollama/i })).not.toBeInTheDocument();
+  });
+
   it('disables Continue while Ollama is not reachable', async () => {
     api.ollama = { ...ollamaMissing, error: 'connect ECONNREFUSED' };
     renderStep();

@@ -44,6 +44,7 @@ interface AiPhaseState {
   status: AiPhaseStatus;
   cloudConfigured: boolean;
   modelProgress: Record<string, number>; // modelId -> 0-100
+  modelErrors: Record<string, string>;
   modelsDone: boolean;
   error?: string;
 }
@@ -55,6 +56,7 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
     status: aiSetupConfig && !aiSetupConfig.skipped ? 'pending' : 'skipped',
     cloudConfigured: false,
     modelProgress: {},
+    modelErrors: {},
     modelsDone: false,
   });
   const started = useRef(false);
@@ -120,94 +122,77 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
         const modelsToPull = aiSetupConfig.selectedModels.filter((id) => !installedSet.has(id));
 
         if (aiSetupConfig.selectedModels.length > 0) {
+          const modelErrors: Record<string, string> = {};
+
           for (const modelId of modelsToPull) {
             try {
               const preflightRes = await apiFetch(`/api/inference/models/pull-preflight?modelId=${encodeURIComponent(modelId)}`, {
                 credentials: 'include',
               });
               if (!preflightRes.ok) {
-                setAiPhase((prev) => ({
-                  ...prev,
-                  status: 'done',
-                  error: `Cannot download model ${modelId}: preflight check failed (HTTP ${preflightRes.status}).`,
-                }));
-                setDone(true);
-                return;
+                modelErrors[modelId] = `Preflight check failed (HTTP ${preflightRes.status})`;
+                continue;
               }
               const preflight = (await preflightRes.json()) as { canPull?: boolean; alreadyInstalled?: boolean; reason?: string };
               if (!preflight.canPull && !preflight.alreadyInstalled) {
-                setAiPhase((prev) => ({
-                  ...prev,
-                  status: 'done',
-                  error: preflight.reason ?? `Cannot download model ${modelId}.`,
-                }));
-                setDone(true);
-                return;
+                modelErrors[modelId] = preflight.reason ?? `Cannot download model ${modelId}.`;
               }
             } catch {
-              setAiPhase((prev) => ({
-                ...prev,
-                status: 'done',
-                error: `Cannot verify download safety for model ${modelId}.`,
-              }));
-              setDone(true);
-              return;
+              modelErrors[modelId] = `Cannot verify download safety for model ${modelId}.`;
             }
           }
 
-          if (modelsToPull.length > 0) {
-            setAiPhase((prev) => ({ ...prev, status: 'pulling-models' }));
-            for (const modelId of modelsToPull) {
+          const pullableModels = modelsToPull.filter((id) => !modelErrors[id]);
+
+          if (pullableModels.length > 0) {
+            setAiPhase((prev) => ({ ...prev, status: 'pulling-models', modelErrors }));
+            for (const modelId of pullableModels) {
               try {
                 const res = await apiFetch('/api/inference/models/pull', {
                   method: 'POST',
                   credentials: 'include',
                   headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ modelId }),
+                  body: JSON.stringify({ modelId, bestEffort: true }),
                 });
-                if (!res.ok) {
-                  const data = (await res.json().catch(() => ({}))) as { message?: string };
-                  setAiPhase((prev) => ({
-                    ...prev,
-                    status: 'done',
-                    error: data.message ?? `Failed to pull model ${modelId}: HTTP ${res.status}`,
-                  }));
-                  setDone(true);
-                  return;
+                const data = (await res.json().catch(() => ({}))) as { success?: boolean; skipped?: boolean; message?: string };
+                if (!res.ok || data.skipped || data.success === false) {
+                  modelErrors[modelId] = data.message ?? `Failed to pull model ${modelId}: HTTP ${res.status}`;
+                  setAiPhase((prev) => ({ ...prev, modelErrors: { ...modelErrors } }));
                 }
               } catch {
-                setAiPhase((prev) => ({
-                  ...prev,
-                  status: 'done',
-                  error: `Failed to pull model ${modelId}.`,
-                }));
-                setDone(true);
-                return;
+                modelErrors[modelId] = `Failed to pull model ${modelId}.`;
+                setAiPhase((prev) => ({ ...prev, modelErrors: { ...modelErrors } }));
               }
             }
+
+            const modelProgress: Record<string, number> = {};
 
             const pollPullProgress = async (): Promise<boolean> => {
               try {
                 const res = await apiFetch('/api/inference/models/tracked', { credentials: 'include' });
                 if (!res.ok) return false;
                 const tracked = await res.json();
-                const progress: Record<string, number> = {};
                 let allDone = true;
                 for (const model of tracked) {
-                  if (modelsToPull.includes(model.catalogId)) {
-                    progress[model.catalogId] =
+                  if (pullableModels.includes(model.catalogId)) {
+                    modelProgress[model.catalogId] =
                       model.pullProgress ?? (model.state === 'pulled' || model.state === 'loaded' || model.state === 'pinned' ? 100 : 0);
+                    if (model.state === 'error') {
+                      modelErrors[model.catalogId] = model.error ?? modelErrors[model.catalogId] ?? 'Download failed';
+                      modelProgress[model.catalogId] = modelProgress[model.catalogId] ?? 0;
+                    }
                     if (model.state !== 'pulled' && model.state !== 'loaded' && model.state !== 'pinned' && model.state !== 'error') {
                       allDone = false;
                     }
                   }
                 }
-                for (const modelId of modelsToPull) {
-                  if (progress[modelId] === undefined) {
+                for (const modelId of pullableModels) {
+                  if (modelErrors[modelId]) continue;
+                  if (modelProgress[modelId] === undefined) {
                     allDone = false;
                   }
                 }
-                setAiPhase((prev) => ({ ...prev, modelProgress: progress }));
+                setAiPhase((prev) => ({ ...prev, modelProgress: { ...modelProgress }, modelErrors: { ...modelErrors } }));
                 return allDone;
               } catch {
                 return false;
@@ -226,17 +211,35 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
             }
 
             if (!pullsComplete) {
+              for (const modelId of pullableModels) {
+                if (!modelErrors[modelId] && (modelProgress[modelId] ?? 0) < 100) {
+                  modelErrors[modelId] = 'Download timed out';
+                }
+              }
               setAiPhase((prev) => ({
                 ...prev,
-                status: 'done',
-                error: 'Model downloads did not finish in time. Free disk space or choose smaller models, then try again.',
+                modelErrors: { ...modelErrors },
+                error:
+                  Object.keys(modelErrors).length > 0
+                    ? `${Object.keys(modelErrors).length} model download(s) did not finish. You can retry from Settings.`
+                    : 'Model downloads did not finish in time. Free disk space or choose smaller models, then try again.',
               }));
-              setDone(true);
-              return;
+            } else if (Object.keys(modelErrors).length > 0) {
+              setAiPhase((prev) => ({
+                ...prev,
+                modelErrors: { ...modelErrors },
+                error: `${Object.keys(modelErrors).length} model download(s) failed. App installs will continue; retry from Settings.`,
+              }));
             }
+          } else if (Object.keys(modelErrors).length > 0) {
+            setAiPhase((prev) => ({
+              ...prev,
+              modelErrors,
+              error: `${Object.keys(modelErrors).length} model download(s) could not start. App installs will continue; retry from Settings.`,
+            }));
           }
 
-          setAiPhase((prev) => ({ ...prev, status: 'pinning-models' }));
+          setAiPhase((prev) => ({ ...prev, status: 'pinning-models', modelErrors }));
           for (const modelId of aiSetupConfig.selectedModels) {
             try {
               await apiFetch('/api/inference/models/pin', {
@@ -517,17 +520,35 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
           {aiSetupConfig?.selectedModels.map((modelId) => (
             <div key={modelId} className="flex items-center gap-2 px-3 py-1.5 text-sm">
               <span className="w-4 text-center">
-                {(aiPhase.modelProgress[modelId] ?? 0) >= 100 ? '✓' : aiPhase.status === 'pulling-models' ? '●' : '○'}
+                {aiPhase.modelErrors[modelId]
+                  ? '✕'
+                  : (aiPhase.modelProgress[modelId] ?? 0) >= 100
+                    ? '✓'
+                    : aiPhase.status === 'pulling-models'
+                      ? '●'
+                      : '○'}
               </span>
               <span className="flex-1">
                 {modelId}
                 {modelId === aiSetupConfig.preferredModelId && <span className="ml-2 text-xs text-primary">agent default</span>}
               </span>
-              {aiPhase.status === 'pulling-models' && (aiPhase.modelProgress[modelId] ?? 0) < 100 && (
-                <span className="text-xs text-muted-foreground">{aiPhase.modelProgress[modelId] ?? 0}%</span>
+              {aiPhase.modelErrors[modelId] ? (
+                <span className="text-xs text-destructive max-w-[200px] truncate" title={aiPhase.modelErrors[modelId]}>
+                  Skipped
+                </span>
+              ) : (
+                aiPhase.status === 'pulling-models' &&
+                (aiPhase.modelProgress[modelId] ?? 0) < 100 && (
+                  <span className="text-xs text-muted-foreground">{aiPhase.modelProgress[modelId] ?? 0}%</span>
+                )
               )}
             </div>
           ))}
+          {aiPhase.error && (
+            <div className="px-3 py-1 text-xs text-yellow-600 dark:text-yellow-500" data-testid="ai-phase-warning">
+              {aiPhase.error}
+            </div>
+          )}
           {aiSetupConfig?.selectedModels && aiSetupConfig.selectedModels.length > 0 && (
             <div className="flex items-center gap-2 px-3 py-1.5 text-sm">
               <span className="w-4 text-center">{aiPhase.status === 'done' ? '✓' : aiPhase.status === 'pinning-models' ? '●' : '○'}</span>
