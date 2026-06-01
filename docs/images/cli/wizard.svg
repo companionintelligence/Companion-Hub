@@ -1,14 +1,55 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="719" height="1024" viewBox="0 0 719 1024" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="780" height="980" viewBox="0 0 780 980" role="img" aria-labelledby="title desc">
   <title id="title">CI-Hub CLI screenshot</title>
-  <desc id="desc">Terminal capture for wizard</desc>
-  <rect width="719" height="1024" rx="14" fill="#0d1117"/>
-  <rect x="0" y="0" width="719" height="34" rx="14" fill="#161b22"/>
-  <rect x="0" y="20" width="719" height="14" fill="#161b22"/>
+  <desc id="desc">Terminal capture for cihub wizard (FTUE first-run mode)</desc>
+  <rect width="780" height="980" rx="14" fill="#0d1117"/>
+  <rect x="0" y="0" width="780" height="34" rx="14" fill="#161b22"/>
+  <rect x="0" y="20" width="780" height="14" fill="#161b22"/>
   <circle cx="18" cy="17" r="5" fill="#ff5f57"/>
   <circle cx="36" cy="17" r="5" fill="#febc2e"/>
   <circle cx="54" cy="17" r="5" fill="#28c840"/>
-  <text x="359.5" y="22" text-anchor="middle" fill="#8b949e" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace">wizard</text>
-  <g font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace" font-size="16" xml:space="preserve">
-    <text x="24" y="56" fill="#e6edf3">$ cihub wizard</text><text x="24" y="78" fill="#e6edf3"> __   __         __               __                 </text><text x="24" y="100" fill="#e6edf3">/  ` /  \  |\/| |__)  /\  |\ | | /  \ |\ |           </text><text x="24" y="122" fill="#e6edf3">\__, \__/  |  | |    /~~\ | \| | \__/ | \|           </text><text x="24" y="144" fill="#e6edf3">                                                     </text><text x="24" y="166" fill="#e6edf3">       ___  ___              __   ___       __   ___ </text><text x="24" y="188" fill="#e6edf3">| |\ |  |  |__  |    |    | / _` |__  |\ | /  ` |__  </text><text x="24" y="210" fill="#e6edf3">| | \|  |  |___ |___ |___ | \__&gt; |___ | \| \__, |___ </text><text x="24" y="232" fill="#e6edf3"></text><text x="24" y="254" fill="#e6edf3">┌─ CI-Hub Setup Wizard──────────────────────────────────────────────────┐</text><text x="24" y="276" fill="#e6edf3">│ Goal  Launch, configure, and register your hub from one guided flow. │</text><text x="24" y="298" fill="#e6edf3">│ Tip   The preferred executable for packaged installs is cihub.       │</text><text x="24" y="320" fill="#e6edf3">│ Path  Global package-manager installs place cihub on your PATH.      │</text><text x="24" y="342" fill="#e6edf3">└───────────────────────────────────────────────────────────────────────┘</text><text x="24" y="364" fill="#e6edf3">┌─ Choose environment─────────────────────┐</text><text x="24" y="386" fill="#e6edf3">│ 1. local    Local Docker compose stack │</text><text x="24" y="408" fill="#e6edf3">│ 2. dev      Shared dev environment     │</text><text x="24" y="430" fill="#e6edf3">│ 3. staging  Shared staging environment │</text><text x="24" y="452" fill="#e6edf3">│ 4. prod     Production environment     │</text><text x="24" y="474" fill="#e6edf3">└─────────────────────────────────────────┘</text><text x="24" y="496" fill="#e6edf3">Environment [1-4] [1]: 1</text><text x="24" y="518" fill="#e6edf3"></text><text x="24" y="540" fill="#e6edf3">┌─ Choose action─────────────────────────────────┐</text><text x="24" y="562" fill="#e6edf3">│ 1. setup         Prepare host assets          │</text><text x="24" y="584" fill="#e6edf3">│ 2. up            Start the hub stack          │</text><text x="24" y="606" fill="#e6edf3">│ 3. register      Print cloud registration URL │</text><text x="24" y="628" fill="#e6edf3">│ 4. config        Show resolved configuration  │</text><text x="24" y="650" fill="#e6edf3">│ 5. mcp-setup     Enable MCP                   │</text><text x="24" y="672" fill="#e6edf3">│ 6. mcp-shutdown  Disable MCP                  │</text><text x="24" y="694" fill="#e6edf3">│ 7. shutdown      Stop the hub stack           │</text><text x="24" y="716" fill="#e6edf3">│ 8. app-list      List local Docker apps       │</text><text x="24" y="738" fill="#e6edf3">└────────────────────────────────────────────────┘</text><text x="24" y="760" fill="#e6edf3">Action [1-8] [1]: 4</text><text x="24" y="782" fill="#e6edf3"></text><text x="24" y="804" fill="#e6edf3">┌─ CI-Hub configuration────────────────────────────────────────────┐</text><text x="24" y="826" fill="#e6edf3">│ environment      local                                          │</text><text x="24" y="848" fill="#e6edf3">│ env file         .env.local                                     │</text><text x="24" y="870" fill="#e6edf3">│ root folder      /tmp/cihub-doc-captures/workdir/.internal-demo │</text><text x="24" y="892" fill="#e6edf3">│ cloud url        https://hub.companionintelligence.com          │</text><text x="24" y="914" fill="#e6edf3">│ compose profiles private-vpn                                    │</text><text x="24" y="936" fill="#e6edf3">│ mcp enabled      true                                           │</text><text x="24" y="958" fill="#e6edf3">│ mcp api key      &lt;not set&gt;                                      │</text><text x="24" y="980" fill="#e6edf3">└──────────────────────────────────────────────────────────────────┘</text>
+  <text x="390" y="22" text-anchor="middle" fill="#8b949e" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace">wizard</text>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace" font-size="14" xml:space="preserve">
+    <text x="24" y="56"  fill="#7ee787">$ cihub wizard</text>
+    <text x="24" y="76"  fill="#3fb950">  ___                           _          </text>
+    <text x="24" y="96"  fill="#3fb950"> / __|___ _ __  _ __  __ _ _ _ (_)___ _ _  </text>
+    <text x="24" y="116" fill="#3fb950">| (__/ _ \ '  \| '_ \/ _` | ' \| / _ \ ' \ </text>
+    <text x="24" y="136" fill="#3fb950"> \___\___/_|_|_| .__/\__,_|_||_|_\___/_||_|</text>
+    <text x="24" y="156" fill="#3fb950">               |_|                         </text>
+    <text x="24" y="176" fill="#3fb950"> ___     _       _ _ _                      </text>
+    <text x="24" y="196" fill="#3fb950">|_ _|_ _| |_ ___| | (_)__ _ ___ _ _  __ ___ </text>
+    <text x="24" y="216" fill="#3fb950"> | || ' \  _/ -_) | | / _` / -_) ' \/ _/ -_)</text>
+    <text x="24" y="236" fill="#3fb950">|___|_||_\__\___|_|_|_\__, \___|_||_\__\___|</text>
+    <text x="24" y="256" fill="#3fb950">                      |___/                 </text>
+    <text x="24" y="276" fill="#484f58">Companion Intelligence Hub  ·  companionintelligence.com</text>
+    <text x="24" y="314" fill="#3fb950">┌─ Setup Wizard──────────────────────────────────────────────────────────────┐</text>
+    <text x="24" y="334" fill="#e6edf3">│ Goal  Launch, configure, and register your Hub in one guided flow.       │</text>
+    <text x="24" y="354" fill="#e6edf3">│ Tip   Press Enter to accept the shown default for each prompt.           │</text>
+    <text x="24" y="374" fill="#e6edf3">│ Docs  cihub man  ·  cihub --help                                         │</text>
+    <text x="24" y="394" fill="#3fb950">└────────────────────────────────────────────────────────────────────────────┘</text>
+    <text x="24" y="434" fill="#b08800">┌─ First-time setup detected────────────────────────────────────────────────┐</text>
+    <text x="24" y="454" fill="#e6edf3">│ No .env.local found — wizard will guide you through initial setup.       │</text>
+    <text x="24" y="474" fill="#e6edf3">│                                                                          │</text>
+    <text x="24" y="494" fill="#e6edf3">│ ○ [1/4] Choose environment                                               │</text>
+    <text x="24" y="514" fill="#e6edf3">│ ○ [2/4] Setup host &amp; Docker                                              │</text>
+    <text x="24" y="534" fill="#e6edf3">│ ○ [3/4] Register with CI Cloud                                           │</text>
+    <text x="24" y="554" fill="#e6edf3">│ ○ [4/4] Start the Hub                                                    │</text>
+    <text x="24" y="574" fill="#b08800">└────────────────────────────────────────────────────────────────────────────┘</text>
+    <text x="24" y="614" fill="#58a6ff">● [1/4] Choose environment</text>
+    <text x="24" y="634" fill="#30363d">┌─ Choose environment──────────────────────────────────────────────────────┐</text>
+    <text x="24" y="654" fill="#e6edf3">│ 1. local    — Local Docker compose stack  (default)                     │</text>
+    <text x="24" y="674" fill="#e6edf3">│ 2. dev      — Shared dev environment                                    │</text>
+    <text x="24" y="694" fill="#e6edf3">│ 3. staging  — Shared staging environment                                │</text>
+    <text x="24" y="714" fill="#e6edf3">│ 4. prod     — Production environment                                    │</text>
+    <text x="24" y="734" fill="#30363d">└──────────────────────────────────────────────────────────────────────────┘</text>
+    <text x="24" y="754" fill="#e6edf3">  Environment [1-4, default 1]: <tspan fill="#7ee787">1</tspan></text>
+    <text x="24" y="774" fill="#3fb950">✓ [1/4] Environment: local</text>
+    <text x="24" y="814" fill="#58a6ff">● [2/4] Setting up host assets…</text>
+    <text x="24" y="834" fill="#484f58">▶ tsx scripts/init-traefik.ts</text>
+    <text x="24" y="854" fill="#484f58">▶ tsx scripts/init-docker-config.ts</text>
+    <text x="24" y="874" fill="#3fb950">✓ [2/4] Setup complete</text>
+    <text x="24" y="914" fill="#58a6ff">● [3/4] Registering with CI Cloud…</text>
+    <text x="24" y="934" fill="#3fb950">┌─ Device registration──────────────────────────────────────────────────────┐</text>
+    <text x="24" y="954" fill="#e6edf3">│ device id  a1b2c3d4-e5f6-7890-abcd-ef1234567890                          │</text>
+    <text x="24" y="974" fill="#3fb950">└────────────────────────────────────────────────────────────────────────────┘</text>
   </g>
 </svg>

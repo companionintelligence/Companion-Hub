@@ -6,149 +6,191 @@ The preferred packaged executable is:
 cihub <command> [args]
 ```
 
-Compatibility command while developing inside the repository:
+In-repo compatibility alias:
 
 ```bash
 pnpm run hub -- <command> [args]
 ```
 
-## Package-manager installs
+## Install
 
 ```bash
 npm install -g ci-hub
 cihub --help
 ```
 
-One-off execution with NPX:
+One-off without installing:
 
 ```bash
 npx --package ci-hub cihub --help
 ```
 
-Homebrew and other package managers should expose the same `cihub` executable on the user's `PATH`.
+Homebrew and other package managers expose the same `cihub` executable on `PATH`.
 
-The screenshots below were captured from the packaged `cihub` executable in a demo sandbox so each command flow renders consistently without depending on live Docker services or root access.
+---
 
-## On-device CLI / TUI testing loop
+## On-device testing loop
 
-Use the packaged CLI together with the focused Vitest suite for fast local verification of command rendering and developer workflows:
+Use this loop when iterating on CLI/TUI or developer workflow changes:
 
 ```bash
-cihub purge --yes
-cihub hot-reload local
-cihub wizard
-pnpm run test:cli
+cihub purge --yes        # clean Docker state + caches
+cihub hot-reload local   # infra + backend/frontend from source
+cihub wizard             # run the full interactive flow
+pnpm run test:cli        # presentation tests (25 cases)
 ```
 
-- `cihub purge --yes` removes CI-Hub Docker state plus CI-Hub entries from `.local`, `.config`, and `.cache` so clean-slate installs are reproducible on one machine.
-- `cihub hot-reload local` starts infra plus backend/frontend from source, which keeps CLI/TUI iteration tight without rebuilding the full Docker stack.
-- `pnpm run test:cli` is the focused on-device presentation harness for help, MAN, and wizard flows.
+- **`cihub purge --yes`** — removes Docker containers/volumes plus CI-Hub entries from `.local`, `.config`, and `.cache` for clean-slate testing.
+- **`cihub hot-reload local`** — brings up infra then starts backend/frontend from source; no Docker rebuild needed.
+- **`pnpm run test:cli`** — Vitest suite covering banner, step renderer, FTUE detection, arg validation, all wizard selectors, and help/man output.
 
-## Branded terminal preview
+---
 
-These zoomed previews keep the Companion Intelligence ASCII banner readable before the full command walkthroughs below.
+## ASCII banner
+
+Every command entry point shows the Companion Intelligence ASCII banner followed by the company tagline:
 
 <p>
-  <img src="./images/cli/banner-help.svg" alt="Zoomed screenshot of the cihub help banner" width="960" />
+  <img src="./images/cli/banner-help.svg" alt="Companion Intelligence ASCII banner from cihub --help" width="960" />
 </p>
 
 <p>
-  <img src="./images/cli/banner-wizard.svg" alt="Zoomed screenshot of the cihub wizard banner" width="960" />
+  <img src="./images/cli/banner-wizard.svg" alt="Companion Intelligence ASCII banner from cihub wizard" width="960" />
 </p>
+
+---
 
 ## Help and MAN
 
-- `cihub --help` (or `-h`) prints command help
-- `cihub man` prints a manual-style command reference
-
-![Screenshot of `cihub --help`](./images/cli/help.svg)
-
-![Screenshot of `cihub man`](./images/cli/man.svg)
-
-## Commands
-
-### Wizard
-
 ```bash
-cihub wizard [env]
+cihub --help     # command reference
+cihub man        # manual-style reference with packaging notes
+cihub version    # print version from package.json
 ```
 
-Runs a guided interactive flow for setup/start/register/config actions.
+![Screenshot of cihub --help](./images/cli/help.svg)
 
-![Screenshot of `cihub wizard`](./images/cli/wizard.svg)
+![Screenshot of cihub man](./images/cli/man.svg)
 
-### Setup
+---
+
+## Setup & Registration
+
+### `cihub wizard [env]`
+
+Runs the guided setup wizard. On **first run** (no `env` file found) it enters FTUE mode: shows a step tracker, checks Docker availability, runs setup and registration automatically, then launches the Hub.
 
 ```bash
-cihub setup [env]
+cihub wizard          # local env, first-run auto-detected
+cihub wizard staging  # target a specific environment
 ```
 
-Initializes Traefik and Docker auth config.
+![Screenshot of cihub wizard (FTUE mode)](./images/cli/wizard.svg)
 
-![Screenshot of `cihub setup local`](./images/cli/setup.svg)
+Returning users get the action menu: setup, up, register, config, MCP, shutdown, app-list, purge, hot-reload.
 
-### Register with Cloud Portal
+### `cihub setup [env]`
+
+Initializes Traefik and Docker auth config for the target environment.
 
 ```bash
-cihub register [env]
+cihub setup local
 ```
 
-Prints a registration URL containing your machine device ID for CI Cloud pairing.
+![Screenshot of cihub setup local](./images/cli/setup.svg)
 
-![Screenshot of `cihub register local`](./images/cli/register.svg)
+### `cihub register [env]`
 
-### Hub lifecycle
+Prints your device ID and the CI Cloud registration URL. Open the URL in a browser to pair the device, then proceed to `cihub up`.
 
 ```bash
-cihub up [env] [--detached]
-cihub shutdown [env]
-cihub config [env]
+cihub register local
 ```
 
-Starts/stops the Hub stack and prints resolved config values.
+![Screenshot of cihub register local](./images/cli/register.svg)
 
-![Screenshots of `cihub config`, `cihub up`, and `cihub shutdown`](./images/cli/lifecycle.svg)
+---
 
-### Developer workflow
+## Hub lifecycle
 
 ```bash
-cihub purge [--yes]
-cihub hot-reload [env]
+cihub up [env] [--detached]   # start the hub stack
+cihub shutdown [env]           # stop the hub stack
+cihub status [env]             # show container health + resolved config
+cihub config [env]             # show resolved config values only
 ```
 
-- `cihub purge` is the clean-slate command for local troubleshooting, credential resets, and reinstall testing. It removes Docker containers/networks/volumes plus CI-Hub config and cache directories.
-- `cihub hot-reload` starts the backend and frontend from source after bringing up local infrastructure, so CLI/TUI and marketplace iteration can be checked without a full rebuild.
+- `--detached` runs the stack in the background (equivalent to `docker compose up -d`).
+- `status` queries the `ci-hub` compose project and color-codes each container: **green** = running, **red** = exited.
 
-### MCP lifecycle
+![Screenshots of cihub config, cihub up, and cihub shutdown](./images/cli/lifecycle.svg)
 
-```bash
-cihub mcp setup [env]
-cihub mcp shutdown [env]
-cihub mcp config [env]
-```
+---
 
-Enables/disables MCP in the env file and ensures `MCP_API_KEY` exists when enabled.
+## App lifecycle
 
-![Screenshots of `cihub mcp setup`, `cihub mcp config`, and `cihub mcp shutdown`](./images/cli/mcp.svg)
-
-### Container app lifecycle (local Docker)
+Manage individual Docker containers on the host machine, independently of the compose stack.
 
 ```bash
-cihub app list
-cihub app add <name> <image> [--port host:container] [--env KEY=VALUE]
-cihub app edit <name> <image> [--port host:container] [--env KEY=VALUE]
+cihub app list                                        # list all containers
+cihub app status [name]                               # color-coded status (all or one)
+cihub app logs <name> [--tail N]                      # stream logs (default tail 50)
+cihub app inspect <name>                              # ports, env vars, mounts
+cihub app add <name> <image> [--port h:c] [--env K=V] # launch new container
+cihub app edit <name> <image> [--port h:c] [--env K=V] # recreate (rm -f then run)
 cihub app start <name>
 cihub app stop <name>
 cihub app restart <name>
-cihub app delete <name>
+cihub app delete <name>                               # docker rm -f
 ```
 
-These commands manage local Docker containers directly.
+`app status` shows each container with a color-coded status and the bound ports:
 
-![Screenshot of `cihub app list`](./images/cli/app-list.svg)
+```
+demo-ollama    Up 3 hours → 0.0.0.0:11434->11434/tcp
+demo-webui     Exited (1) 2 minutes ago
+```
 
-![Screenshots of `cihub app add`, `app edit`, `app start`, `app stop`, `app restart`, and `app delete`](./images/cli/app-management.svg)
+`app inspect` parses `docker inspect` JSON and prints a structured summary of image, status, ports, environment variables, and volume mounts.
+
+![Screenshot of cihub app list](./images/cli/app-list.svg)
+
+![Screenshots of cihub app add/edit/start/stop/restart/delete](./images/cli/app-management.svg)
+
+---
+
+## MCP
+
+```bash
+cihub mcp setup [env]     # set MCP_ENABLED=true, generate MCP_API_KEY if absent
+cihub mcp shutdown [env]  # set MCP_ENABLED=false
+cihub mcp config [env]    # show current MCP settings
+```
+
+![Screenshots of cihub mcp setup, config, and shutdown](./images/cli/mcp.svg)
+
+---
+
+## Developer workflow
+
+```bash
+cihub hot-reload [env]   # infra up (detached) + pnpm run dev:app
+cihub purge [--yes]      # full clean: Docker + .internal + XDG config/cache dirs
+```
+
+Both commands are available in the wizard's action menu (options 9 and 10).
+
+`purge` validates that XDG environment variables point inside the home directory before deleting anything, and wraps each directory removal in a try/catch — printing a `sudo rm -rf` hint if a root-owned directory can't be removed.
+
+---
 
 ## Environments
 
-Supported environment values: `local`, `dev`, `staging`, `prod`.
+All commands accept an optional `[env]` argument:
+
+| Value | Env file | Compose files |
+|-------|----------|---------------|
+| `local` (default) | `.env.local` | `docker-compose.local.yml` |
+| `dev` | `.env.dev` | `docker-compose.prod.yml` |
+| `staging` | `.env.staging` | `docker-compose.prod.yml` + `docker-compose.staging.yml` |
+| `prod` | `.env.prod` | `docker-compose.prod.yml` |
