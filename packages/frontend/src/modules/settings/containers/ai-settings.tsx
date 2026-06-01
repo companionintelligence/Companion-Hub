@@ -331,6 +331,8 @@ export const AiSettingsContainer = () => {
   const backendAvailableModels = profile.availableModels.filter((model) => model.backend === selectedBackend);
   const selectedModels = backendAvailableModels.filter((model) => selectedModelIds.includes(model.id));
   const availableStorageMb = profile.resourceEstimate.availableDiskMb ?? 0;
+  const availableMemoryMb = profile.resourceEstimate.availableMemoryMb ?? 0;
+  const installedCatalogIds = profile.installedCatalogIds ?? [];
 
   return (
     <div className="space-y-5">
@@ -404,6 +406,7 @@ export const AiSettingsContainer = () => {
                 <OtherModelsSection
                   recommendedModels={backendCompatibleRecommendedModels}
                   availableModels={backendAvailableModels}
+                  installedCatalogIds={installedCatalogIds}
                   selectedModelIds={selectedModelIds}
                   onToggleModel={handleToggleModel}
                 />
@@ -456,7 +459,12 @@ export const AiSettingsContainer = () => {
             unavailableTypes={['vllm', 'lemonade']}
           />
 
-          <ResourceSummaryBar selectedModels={selectedModels} availableStorageMb={availableStorageMb} />
+          <ResourceSummaryBar
+            selectedModels={selectedModels}
+            installedCatalogIds={installedCatalogIds}
+            availableStorageMb={availableStorageMb}
+            availableMemoryMb={availableMemoryMb}
+          />
         </>
       )}
 

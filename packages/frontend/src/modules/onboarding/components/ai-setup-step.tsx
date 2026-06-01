@@ -19,6 +19,7 @@ import { AdvancedDrawers } from './ai-setup/advanced-drawers';
 import { SystemOverview } from './ai-setup/system-overview';
 import { ResourceSummaryBar } from './ai-setup/resource-summary-bar';
 import { OllamaSetupCard } from './ai-setup/ollama-setup-card';
+import { TailscaleSetupStep } from './tailscale-setup-step';
 import { computeSelectionBudget } from '../helpers/onboarding-model-selection';
 import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
 import { Loader2 } from 'lucide-react';
