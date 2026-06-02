@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react';
+import { useDeepLinkPairCapture } from '@/hooks/use-deep-link-pair-capture';
 import { client } from '@/api-client/client.gen';
 import { SetupCard } from '@/components/setup/setup-card';
 import { SetupPageShell } from '@/components/setup/setup-page-shell';
@@ -468,6 +469,7 @@ function StartupScreen({ elapsedSeconds }: { elapsedSeconds: number }) {
 // ─── Main HubStatus gate ──────────────────────────────────────────────────────
 
 export function HubStatus({ children }: HubStatusProps) {
+  useDeepLinkPairCapture();
   const [status, setStatus] = useState<HubStatusResponse | null>(null);
   const [startupElapsed, setStartupElapsed] = useState(0);
   const [logs, setLogs] = useState<string | null>(null);
