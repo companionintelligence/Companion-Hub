@@ -394,7 +394,6 @@ async function runNodeTests(node: FleetNode, apps: AppSpec[]) {
   const resolvedStore = ns.storeDir ?? STORE_ROOT;
   const cmd = [
     `mkdir -p ${remoteResultsDir}/screenshots`,
-    `cd ${HUB_ROOT}`,
     `(command -v tsx >/dev/null 2>&1 && APP_STORE_DIR=${resolvedStore}/apps RESULTS_DIR=${remoteResultsDir} tsx /tmp/qa-stream.ts ${appList}` +
       ` || APP_STORE_DIR=${resolvedStore}/apps RESULTS_DIR=${remoteResultsDir} pnpm exec tsx /tmp/qa-stream.ts ${appList})`,
   ].join(' && ');
