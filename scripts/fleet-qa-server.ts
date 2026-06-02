@@ -222,6 +222,10 @@ function summarizeError(text: string): string {
   return text.replace(/\s+/g, ' ').trim().slice(0, 300);
 }
 
+function logNode(nodeName: string, message: string) {
+  console.log(`[fleet:${nodeName}] ${message}`);
+}
+
 function sshCapture(node: FleetNode, cmd: string, timeoutMs = 20_000): Promise<{ ok: boolean; out: string; err: string; code: number | null }> {
   return new Promise((resolve) => {
     const proc = sshSpawn(node, cmd);
@@ -309,7 +313,7 @@ async function preflightNode(node: FleetNode): Promise<boolean> {
   const ok = result.ok && result.out.includes('ok');
   // Parse storeDir from preflight output: "storeDir=~/devel/CI-App-Store" or similar
   const storeDirMatch = result.out.match(/storeDir=(\S+)/);
-  ns.storeDir = storeDirMatch ? storeDirMatch[1] : null;
+  ns.storeDir = storeDirMatch?.[1] ?? null;
   ns.status = ok ? 'idle' : 'offline';
   ns.error = ok ? null : summarizeError(result.err || result.out) || 'Preflight failed';
   ns.preflight = {
@@ -319,6 +323,15 @@ async function preflightNode(node: FleetNode): Promise<boolean> {
     checkedAt: Date.now(),
     storeDir: ns.storeDir,
   };
+
+  if (ok) {
+    logNode(node.name, `preflight OK (storeDir=${ns.storeDir ?? 'unknown'})`);
+  } else {
+    logNode(node.name, `preflight FAILED: ${ns.error ?? 'unknown error'}`);
+    if (result.out) logNode(node.name, `  stdout: ${summarizeError(result.out)}`);
+    if (result.err) logNode(node.name, `  stderr: ${summarizeError(result.err)}`);
+  }
+
   broadcast({ event: 'node_status', node: node.name, ...ns });
   return ok;
 }
@@ -326,6 +339,10 @@ async function preflightNode(node: FleetNode): Promise<boolean> {
 async function preflightNodes(nodes: FleetNode[]): Promise<FleetNode[]> {
   const results = await Promise.all(nodes.map(async (node) => ({ node, ok: await preflightNode(node) })));
   const ready = results.filter((r) => r.ok).map((r) => r.node);
+  console.log(`[fleet] preflight complete: ${ready.length}/${nodes.length} ready`);
+  if (ready.length > 0) {
+    console.log(`[fleet] ready nodes: ${ready.map((n) => n.name).join(', ')}`);
+  }
   broadcast({ event: 'preflight_complete', ready: ready.map((n) => n.name), total: nodes.length });
   return ready;
 }
@@ -336,6 +353,7 @@ async function runNodeTests(node: FleetNode, apps: AppSpec[]) {
   ns.total = apps.length;
   ns.done = 0;
   ns.status = 'syncing';
+  logNode(node.name, `assigned ${apps.length} app(s)`);
   broadcast({ event: 'node_status', node: node.name, ...ns });
 
   // Mark apps as queued
@@ -353,6 +371,7 @@ async function runNodeTests(node: FleetNode, apps: AppSpec[]) {
   if (!scpResult.ok) {
     ns.status = 'offline';
     ns.error = scpResult.error ?? 'Could not SCP qa-stream.ts';
+    logNode(node.name, `SCP failed: ${ns.error}`);
     broadcast({ event: 'node_status', node: node.name, ...ns });
     for (const app of apps) {
       const s = appStates.get(app.id);
@@ -366,6 +385,7 @@ async function runNodeTests(node: FleetNode, apps: AppSpec[]) {
   }
 
   ns.status = 'running';
+  logNode(node.name, 'starting remote qa-stream runner');
   broadcast({ event: 'node_status', node: node.name, ...ns });
 
   const remoteResultsDir = '~/qa-results-fleet';
@@ -392,7 +412,8 @@ async function runNodeTests(node: FleetNode, apps: AppSpec[]) {
         try {
           handleStreamEvent(node, JSON.parse(line));
         } catch {
-          // non-JSON log line — ignore
+          // Print non-JSON lines so remote runtime/setup failures are visible.
+          console.log(`[${node.name}] ${line}`);
         }
       }
     });
@@ -405,6 +426,7 @@ async function runNodeTests(node: FleetNode, apps: AppSpec[]) {
     proc.on('exit', (code) => {
       ns.status = code === 0 ? 'done' : 'error';
       if (code !== 0) ns.error = `SSH exited with code ${code}`;
+      logNode(node.name, code === 0 ? 'completed successfully' : `failed (${ns.error})`);
       ns.currentApp = null;
       broadcast({ event: 'node_status', node: node.name, ...ns });
       sshProcesses.delete(node.name);
@@ -415,6 +437,7 @@ async function runNodeTests(node: FleetNode, apps: AppSpec[]) {
     proc.on('error', (err) => {
       ns.status = 'error';
       ns.error = err.message;
+      logNode(node.name, `runner process error: ${err.message}`);
       broadcast({ event: 'node_status', node: node.name, ...ns });
       sshProcesses.delete(node.name);
       broadcastFleetStatus();
@@ -436,6 +459,7 @@ function handleStreamEvent(node: FleetNode, raw: Record<string, unknown>) {
       s.logs = [];
     }
     ns.currentApp = appId;
+    logNode(node.name, `app_start ${appId}`);
     broadcast({ event: 'app_start', node: node.name, appId, ts: raw.ts });
     broadcast({ event: 'node_status', node: node.name, ...ns });
   } else if (event === 'app_phase' && appId) {
@@ -457,6 +481,7 @@ function handleStreamEvent(node: FleetNode, raw: Record<string, unknown>) {
       s.message = String(res?.notes ?? '');
     }
     ns.done++;
+    logNode(node.name, `app_result ${appId}: ${(res?.score as string) ?? 'unknown'}${res?.notes ? ` (${String(res.notes)})` : ''}`);
     broadcast({ event: 'app_result', node: node.name, appId, result: res });
     broadcast({ event: 'node_status', node: node.name, ...ns });
     if (res?.hasScreenshot) scpScreenshot(node, appId);
@@ -515,12 +540,14 @@ async function startRun(mode: 'quick' | 'full', selectedNodes?: string[]) {
   resetState();
   runMode = mode;
   runStartTs = Date.now();
+  console.log(`[fleet] run_start mode=${mode}${selectedNodes?.length ? ` nodes=${selectedNodes.join(',')}` : ' nodes=all'}`);
   broadcast({ event: 'run_start', mode, ts: runStartTs });
 
   const requestedNodes = selectedNodes ? FLEET.filter((n) => selectedNodes.includes(n.name)) : FLEET;
   const nodes = await preflightNodes(requestedNodes);
 
   if (nodes.length === 0) {
+    console.warn('[fleet] run aborted: preflight returned 0 ready nodes');
     broadcast({
       event: 'run_complete',
       total: CATALOG.length,
@@ -544,13 +571,17 @@ async function startRun(mode: 'quick' | 'full', selectedNodes?: string[]) {
 
   Promise.all(nodePromises).then(() => {
     const states = Array.from(appStates.values());
+    const durationMs = runStartTs ? Date.now() - runStartTs : 0;
+    console.log(
+      `[fleet] run_complete total=${states.length} pass=${states.filter((s) => s.status === 'pass').length} warn=${states.filter((s) => s.status === 'warn').length} fail=${states.filter((s) => s.status === 'fail').length} duration=${Math.round(durationMs / 1000)}s`,
+    );
     broadcast({
       event: 'run_complete',
       total: states.length,
       pass: states.filter((s) => s.status === 'pass').length,
       warn: states.filter((s) => s.status === 'warn').length,
       fail: states.filter((s) => s.status === 'fail').length,
-      durationMs: runStartTs ? Date.now() - runStartTs : 0,
+      durationMs,
     });
     runStartTs = null;
   });
