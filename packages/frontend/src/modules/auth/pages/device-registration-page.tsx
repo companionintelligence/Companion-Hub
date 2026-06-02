@@ -20,7 +20,7 @@ import { normalizePairingCode, resolvePendingPairingCode, stashPendingPairingCod
 
 const DEFAULT_PORTAL_URL = (
   (import.meta.env.CI_CLOUD_URL as string | undefined)?.trim() ||
-  (import.meta.env.DEV ? 'https://hub.companionintelligence.com' : 'https://hub.ci.computer')
+  (import.meta.env.CI_HUB_ENVIRONMENT === 'production' ? 'https://hub.ci.computer' : 'https://hub.companionintelligence.com')
 ).replace(/\/+$/, '');
 const STATUS_POLL_INTERVAL_MS = 3000;
 const HEADLESS_POLL_INTERVAL_MS = 5000; // slower poll when idle, waiting for external registration
