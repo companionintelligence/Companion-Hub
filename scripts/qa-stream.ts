@@ -233,17 +233,24 @@ async function qaApp(appId: string) {
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
-const appIds = process.argv.slice(2);
-if (appIds.length === 0) {
-  process.stderr.write('Usage: qa-stream.ts <app-id> [app-id...]\n');
+async function main() {
+  const appIds = process.argv.slice(2);
+  if (appIds.length === 0) {
+    process.stderr.write('Usage: qa-stream.ts <app-id> [app-id...]\n');
+    process.exit(1);
+  }
+
+  emit({ event: 'batch_start', apps: appIds, storeDir: APP_STORE_DIR, ts: Date.now() });
+
+  for (const appId of appIds) {
+    await qaApp(appId);
+  }
+
+  const results = appIds.length;
+  emit({ event: 'batch_done', total: results, ts: Date.now() });
+}
+
+void main().catch((err) => {
+  process.stderr.write(`${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`);
   process.exit(1);
-}
-
-emit({ event: 'batch_start', apps: appIds, storeDir: APP_STORE_DIR, ts: Date.now() });
-
-for (const appId of appIds) {
-  await qaApp(appId);
-}
-
-const results = appIds.length;
-emit({ event: 'batch_done', total: results, ts: Date.now() });
+});

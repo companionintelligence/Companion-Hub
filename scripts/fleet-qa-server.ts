@@ -12,7 +12,6 @@
  * Environment:
  *   FLEET_CONFIG_JSON   JSON array [{name,ip,batch},...] — same format as run-fleet-tests.ts
  *   FLEET_SSH_USER      SSH user on fleet nodes (default: ci)
- *   HUB_ROOT_REMOTE     Path to CI-Hub checkout on fleet nodes  (default: ~/devel/CI-Hub)
  *   STORE_ROOT_REMOTE   Path to CI-Marketplace on fleet nodes   (default: ~/devel/CI-Marketplace)
  *   QA_PORT             HTTP port to listen on                  (default: 4242)
  */
@@ -31,7 +30,6 @@ const __dir = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.QA_PORT ?? process.argv.find((a) => a.startsWith('--port='))?.split('=')[1] ?? 4242);
 const DEFAULT_MODE = (process.argv.find((a) => a.startsWith('--mode='))?.split('=')[1] ?? 'quick') as 'quick' | 'full';
 const SSH_USER = process.env.FLEET_SSH_USER ?? 'ci';
-const _HUB_ROOT = process.env.HUB_ROOT_REMOTE ?? '~/devel/CI-Hub';
 const STORE_ROOT = process.env.STORE_ROOT_REMOTE ?? '~/devel/CI-Marketplace';
 const SCREENSHOTS_DIR = join(homedir(), 'qa-results', 'fleet-screenshots');
 const STREAM_SCRIPT = join(__dir, 'qa-stream.ts');
@@ -395,7 +393,7 @@ async function runNodeTests(node: FleetNode, apps: AppSpec[]) {
   const cmd = [
     `mkdir -p ${remoteResultsDir}/screenshots`,
     `(command -v tsx >/dev/null 2>&1 && APP_STORE_DIR=${resolvedStore}/apps RESULTS_DIR=${remoteResultsDir} tsx /tmp/qa-stream.ts ${appList}` +
-      ` || APP_STORE_DIR=${resolvedStore}/apps RESULTS_DIR=${remoteResultsDir} pnpm exec tsx /tmp/qa-stream.ts ${appList})`,
+      ` || APP_STORE_DIR=${resolvedStore}/apps RESULTS_DIR=${remoteResultsDir} pnpm dlx tsx /tmp/qa-stream.ts ${appList})`,
   ].join(' && ');
 
   await new Promise<void>((resolve) => {
