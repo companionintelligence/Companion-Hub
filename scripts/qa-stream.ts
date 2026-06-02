@@ -51,6 +51,10 @@ function execQuiet(cmd: string, timeoutMs = 120_000): { ok: boolean; out: string
   }
 }
 
+function summarizeText(text: string, maxLen = 220): string {
+  return text.replace(/\s+/g, ' ').trim().slice(0, maxLen);
+}
+
 interface AppConfig {
   name?: string;
   port?: number;
@@ -178,16 +182,32 @@ async function qaApp(appId: string) {
 
     // ── Screenshot ────────────────────────────────────────────
     const screenshotPath = join(SCREENSHOTS_DIR, `${appId}.png`);
+    let screenshotReason = '';
     if (SKIP_SCREENSHOT || config.no_gui) {
       result.hasScreenshot = false;
+      screenshotReason = SKIP_SCREENSHOT ? 'SKIP_SCREENSHOT=1' : 'config.no_gui=true';
     } else {
       phase(appId, 'screenshot', 'Taking screenshot');
       const ss = spawnSync(
-        'pnpm',
-        ['exec', 'playwright', 'screenshot', `http://localhost:${result.port}/`, screenshotPath, '--wait-for-timeout=3000'],
+        'bash',
+        [
+          '-lc',
+          'if command -v playwright >/dev/null 2>&1; then ' +
+            `playwright screenshot http://localhost:${result.port}/ ${screenshotPath} --wait-for-timeout=3000; ` +
+            'elif command -v pnpm >/dev/null 2>&1; then ' +
+            `pnpm dlx playwright screenshot http://localhost:${result.port}/ ${screenshotPath} --wait-for-timeout=3000; ` +
+            'else ' +
+            `echo "no playwright or pnpm found" >&2; exit 127; ` +
+            'fi',
+        ],
         { timeout: 30_000, stdio: 'pipe' },
       );
       result.hasScreenshot = ss.status === 0;
+      if (!result.hasScreenshot) {
+        const stderr = summarizeText(ss.stderr?.toString() ?? '');
+        const stdout = summarizeText(ss.stdout?.toString() ?? '');
+        screenshotReason = stderr || stdout || `screenshot command exited ${ss.status ?? 'unknown'}`;
+      }
     }
 
     // ── Benchmark ─────────────────────────────────────────────
@@ -222,6 +242,9 @@ async function qaApp(appId: string) {
     // ── Score ─────────────────────────────────────────────────
     // httpOk is guaranteed true here (the !httpOk early-return is above)
     result.score = result.hasScreenshot ? 'pass' : 'warn';
+    if (!result.hasScreenshot && !result.notes) {
+      result.notes = `Screenshot unavailable: ${screenshotReason || 'unknown reason'}`;
+    }
   } catch (err) {
     result.score = 'fail';
     result.notes = err instanceof Error ? err.message.slice(0, 300) : String(err).slice(0, 300);
