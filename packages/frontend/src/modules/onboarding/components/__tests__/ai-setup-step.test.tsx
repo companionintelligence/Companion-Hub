@@ -184,6 +184,33 @@ describe('AiSetupStep', () => {
     expect(screen.getByTestId('hw-gpu')).toHaveTextContent('RTX 4090');
   });
 
+  it('shows APU badge and shared VRAM for AMD unified-memory hardware', async () => {
+    api.profile = {
+      ...highTierProfile,
+      tier: 'high',
+      hardware: {
+        ...highTierProfile.hardware,
+        cpu: { arch: 'x86_64', cores: 32, model: 'RYZEN AI MAX+ 395 w/ Radeon 8060S' },
+        ram: { totalMb: 125_829, availableMb: 115_000 },
+        gpu: {
+          available: true,
+          vendor: 'amd',
+          model: 'Radeon 8060S',
+          vramMb: 125_829,
+          unifiedMemory: true,
+          driverVersion: '',
+          runtimeAvailable: false,
+        },
+      },
+    };
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+    expect(screen.getByTestId('tier-badge')).toHaveTextContent('APU');
+    expect(screen.getByTestId('hw-gpu')).toHaveTextContent('Radeon 8060S');
+    expect(screen.getByText('Shared · APU')).toBeInTheDocument();
+    expect(screen.queryByText('No GPU detected.')).not.toBeInTheDocument();
+  });
+
   it('shows no GPU warning copy when gpu.available is false', async () => {
     api.profile = {
       ...highTierProfile,
