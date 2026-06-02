@@ -488,6 +488,7 @@ fn detect_macos_primary_disk_gb() -> (u64, u64, String) {
         .unwrap_or((0, 0, "/".to_string()))
 }
 
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn write_host_metrics_probe_file(data_dir: &Path, payload: serde_json::Value, log_tag: &str) {
     let probe_path = data_dir.join("state/hardware/host_metrics.json");
     if let Some(parent) = probe_path.parent() {
@@ -624,6 +625,7 @@ fn refresh_windows_host_metrics_probe_cache(data_dir: &Path) {
 fn refresh_windows_host_metrics_probe_cache(_data_dir: &Path) {}
 
 /// Parse a macOS memory string like "96 GB", "512 MB", or "2 TB" into megabytes.
+#[cfg(target_os = "macos")]
 fn parse_memory_str_to_mb(s: &str) -> u64 {
     let mut parts = s.trim().splitn(2, ' ');
     let amount: u64 = match parts.next().and_then(|p| p.parse().ok()) {
@@ -640,6 +642,7 @@ fn parse_memory_str_to_mb(s: &str) -> u64 {
 
 /// Parse a macOS processor count string.
 /// Handles "proc 24:16:8" (total:performance:efficiency) or plain "8".
+#[cfg(target_os = "macos")]
 fn parse_processor_count(s: &str) -> u32 {
     let s = s.trim();
     let numeric_part = s
