@@ -481,7 +481,7 @@ function handleStreamEvent(node: FleetNode, raw: Record<string, unknown>) {
       s.message = String(res?.notes ?? '');
     }
     ns.done++;
-    logNode(node.name, `app_result ${appId}: ${(res?.score as string) ?? 'unknown'}${res?.notes ? ` (${String(res.notes)})` : ''}`);
+    logNode(node.name, `app_result ${appId}: ${String(res?.score ?? 'unknown')}${res?.notes ? ` (${summarizeError(String(res.notes))})` : ''}`);
     broadcast({ event: 'app_result', node: node.name, appId, result: res });
     broadcast({ event: 'node_status', node: node.name, ...ns });
     if (res?.hasScreenshot) scpScreenshot(node, appId);
