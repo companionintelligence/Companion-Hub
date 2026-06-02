@@ -55,6 +55,10 @@ function summarizeText(text: string, maxLen = 220): string {
   return text.replace(/\s+/g, ' ').trim().slice(0, maxLen);
 }
 
+function screenshotWith(cmd: string, args: string[], timeout = 30_000) {
+  return spawnSync(cmd, args, { timeout, stdio: 'pipe' });
+}
+
 interface AppConfig {
   name?: string;
   port?: number;
@@ -188,25 +192,19 @@ async function qaApp(appId: string) {
       screenshotReason = SKIP_SCREENSHOT ? 'SKIP_SCREENSHOT=1' : 'config.no_gui=true';
     } else {
       phase(appId, 'screenshot', 'Taking screenshot');
-      const ss = spawnSync(
-        'bash',
-        [
-          '-lc',
-          'if command -v playwright >/dev/null 2>&1; then ' +
-            `playwright screenshot http://localhost:${result.port}/ ${screenshotPath} --wait-for-timeout=3000; ` +
-            'elif command -v pnpm >/dev/null 2>&1; then ' +
-            `pnpm dlx playwright screenshot http://localhost:${result.port}/ ${screenshotPath} --wait-for-timeout=3000; ` +
-            'else ' +
-            `echo "no playwright or pnpm found" >&2; exit 127; ` +
-            'fi',
-        ],
-        { timeout: 30_000, stdio: 'pipe' },
-      );
+      const url = `http://localhost:${result.port}/`;
+      const screenshotArgs = ['screenshot', url, screenshotPath, '--wait-for-timeout=3000'];
+      let ss = screenshotWith('playwright', screenshotArgs);
+      // If playwright CLI isn't directly available, fallback to pnpm dlx playwright.
+      if (ss.status !== 0 && ss.error) {
+        ss = screenshotWith('pnpm', ['dlx', 'playwright', ...screenshotArgs]);
+      }
       result.hasScreenshot = ss.status === 0;
       if (!result.hasScreenshot) {
+        const spawnErr = summarizeText(ss.error?.message ?? '');
         const stderr = summarizeText(ss.stderr?.toString() ?? '');
         const stdout = summarizeText(ss.stdout?.toString() ?? '');
-        screenshotReason = stderr || stdout || `screenshot command exited ${ss.status ?? 'unknown'}`;
+        screenshotReason = spawnErr || stderr || stdout || `screenshot command exited ${ss.status ?? 'unknown'}`;
       }
     }
 

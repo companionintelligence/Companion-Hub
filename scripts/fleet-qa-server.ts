@@ -398,8 +398,11 @@ async function runNodeTests(node: FleetNode, apps: AppSpec[]) {
   const resolvedStore = ns.storeDir ?? STORE_ROOT;
   const cmd = [
     `mkdir -p ${remoteResultsDir}/screenshots`,
-    `(command -v tsx >/dev/null 2>&1 && APP_STORE_DIR=${resolvedStore}/apps RESULTS_DIR=${remoteResultsDir} tsx /tmp/qa-stream.ts ${appList}` +
-      ` || APP_STORE_DIR=${resolvedStore}/apps RESULTS_DIR=${remoteResultsDir} pnpm dlx tsx@${TSX_DLX_VERSION} /tmp/qa-stream.ts ${appList})`,
+    'if command -v tsx >/dev/null 2>&1; then ' +
+      `APP_STORE_DIR=${resolvedStore}/apps RESULTS_DIR=${remoteResultsDir} tsx /tmp/qa-stream.ts ${appList}; ` +
+      'else ' +
+      `APP_STORE_DIR=${resolvedStore}/apps RESULTS_DIR=${remoteResultsDir} pnpm dlx tsx@${TSX_DLX_VERSION} /tmp/qa-stream.ts ${appList}; ` +
+      'fi',
   ].join(' && ');
 
   await new Promise<void>((resolve) => {
