@@ -413,7 +413,7 @@ async function runNodeTests(node: FleetNode, apps: AppSpec[]) {
           handleStreamEvent(node, JSON.parse(line));
         } catch {
           // Print non-JSON lines so remote runtime/setup failures are visible.
-          console.log(`[${node.name}] ${line}`);
+          logNode(node.name, `stdout: ${summarizeError(line)}`);
         }
       }
     });
