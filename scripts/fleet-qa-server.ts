@@ -220,6 +220,11 @@ function summarizeError(text: string): string {
   return text.replace(/\s+/g, ' ').trim().slice(0, 300);
 }
 
+function shellEscapeArg(value: string): string {
+  // Single-quote shell escaping: 'foo' -> 'foo', a'b -> 'a'"'"'b'
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
 function logNode(nodeName: string, message: string) {
   console.log(`[fleet:${nodeName}] ${message}`);
 }
@@ -387,13 +392,14 @@ async function runNodeTests(node: FleetNode, apps: AppSpec[]) {
   broadcast({ event: 'node_status', node: node.name, ...ns });
 
   const remoteResultsDir = '~/qa-results-fleet';
-  const appList = apps.map((a) => a.id).join(' ');
+  const appList = apps.map((a) => shellEscapeArg(a.id)).join(' ');
+  const TSX_DLX_VERSION = '4.21.0';
   // Use the storeDir resolved at preflight (CI-Marketplace or CI-App-Store)
   const resolvedStore = ns.storeDir ?? STORE_ROOT;
   const cmd = [
     `mkdir -p ${remoteResultsDir}/screenshots`,
     `(command -v tsx >/dev/null 2>&1 && APP_STORE_DIR=${resolvedStore}/apps RESULTS_DIR=${remoteResultsDir} tsx /tmp/qa-stream.ts ${appList}` +
-      ` || APP_STORE_DIR=${resolvedStore}/apps RESULTS_DIR=${remoteResultsDir} pnpm dlx tsx /tmp/qa-stream.ts ${appList})`,
+      ` || APP_STORE_DIR=${resolvedStore}/apps RESULTS_DIR=${remoteResultsDir} pnpm dlx tsx@${TSX_DLX_VERSION} /tmp/qa-stream.ts ${appList})`,
   ].join(' && ');
 
   await new Promise<void>((resolve) => {
