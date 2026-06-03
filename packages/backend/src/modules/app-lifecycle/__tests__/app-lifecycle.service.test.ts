@@ -839,6 +839,26 @@ describe('AppLifecycleService', () => {
       expect(appsRepository.updateAppById).toHaveBeenCalledWith(42, expect.objectContaining({ status: 'installing' }));
     });
 
+    it('installApp retry: syncs exposure from submitted exposedLocal, not stale existing record', async () => {
+      const baseAppInfo = { id: 'myapp', port: 8080, cihub_app_version: 1, exposable: true, supported_architectures: ['amd64'] };
+      marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(baseAppInfo as any);
+      appsRepository.getAppByUrn.mockResolvedValue({
+        ...fakeApp,
+        status: 'install_failed',
+        exposedLocal: false,
+      } as any);
+      appsRepository.getAppsByDomain.mockResolvedValue([]);
+      appsRepository.getAppsByLocalSubdomain.mockResolvedValue([]);
+      appsRepository.getAppsByPort.mockResolvedValue([]);
+      appsRepository.getApps.mockResolvedValue([]);
+      const syncSpy = vi.spyOn(service as any, 'syncExposure').mockResolvedValue(undefined);
+
+      await service.installApp({ appUrn, form: { exposedLocal: true } });
+      await flushMicrotasks();
+
+      expect(syncSpy).toHaveBeenCalled();
+    });
+
     it('installApp RPC timeout: keeps app record and does not emit install_error', async () => {
       const baseAppInfo = { id: 'myapp', port: 8080, cihub_app_version: 1, exposable: true, supported_architectures: ['amd64'] };
       marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(baseAppInfo as any);

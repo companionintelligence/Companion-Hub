@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   appStatusColor,
   box,
+  buildEnvOverrides,
   getComposeFiles,
   isFirstRun,
   isHubRepoRoot,
@@ -123,10 +124,10 @@ describe('renderStep', () => {
   });
 
   it('uses the right icon for each status', () => {
-    expect(stripAnsi(renderStep(1, 3, 'x', 'pending'))).toContain('○');
-    expect(stripAnsi(renderStep(1, 3, 'x', 'active'))).toContain('●');
-    expect(stripAnsi(renderStep(1, 3, 'x', 'done'))).toContain('✓');
-    expect(stripAnsi(renderStep(1, 3, 'x', 'fail'))).toContain('✗');
+    expect(stripAnsi(renderStep(1, 3, 'x', 'pending'))).toContain('?');
+    expect(stripAnsi(renderStep(1, 3, 'x', 'active'))).toContain('?');
+    expect(stripAnsi(renderStep(1, 3, 'x', 'done'))).toContain('?');
+    expect(stripAnsi(renderStep(1, 3, 'x', 'fail'))).toContain('?');
   });
 });
 
@@ -380,6 +381,35 @@ describe('mergeComposeProfilesFromEnvFile', () => {
   });
 });
 
+describe('buildEnvOverrides', () => {
+  const TMP = '.env.__vitest_overrides__';
+  const abs = join(process.cwd(), TMP);
+
+  afterEach(() => {
+    if (existsSync(abs)) rmSync(abs);
+    delete process.env.CI_HUB_CONTAINER_UID;
+    delete process.env.CI_HUB_CONTAINER_GID;
+  });
+
+  it('propagates container UID/GID from the env file when set (Docker Desktop root)', () => {
+    upsertEnvVar(TMP, 'CI_HUB_CONTAINER_UID', '0');
+    upsertEnvVar(TMP, 'CI_HUB_CONTAINER_GID', '0');
+    expect(buildEnvOverrides(TMP)).toMatchObject({
+      ENV_FILE: TMP,
+      CI_HUB_CONTAINER_UID: '0',
+      CI_HUB_CONTAINER_GID: '0',
+    });
+  });
+
+  it('does not inject host getuid when the env file omits container identity', () => {
+    upsertEnvVar(TMP, 'ROOT_FOLDER_HOST', '/tmp/hub-state');
+    const overrides = buildEnvOverrides(TMP);
+    expect(overrides.ENV_FILE).toBe(TMP);
+    expect(overrides).not.toHaveProperty('CI_HUB_CONTAINER_UID');
+    expect(overrides).not.toHaveProperty('CI_HUB_CONTAINER_GID');
+  });
+});
+
 // ??? app runtime arg parsing ????????????????????????????????????????????????????
 
 describe('parseAppRuntimeArgs', () => {
@@ -447,12 +477,12 @@ describe('appStatusColor', () => {
 describe('box', () => {
   it('renders a title header, indented body, and a closing rule', () => {
     const lines = stripAnsi(box('Title', ['line one', 'line two'])).split('\n');
-    expect(lines[0]).toContain('┌─ Title');
-    expect(lines[0]).toContain('─');
+    expect(lines[0]).toContain('?? Title');
+    expect(lines[0]).toContain('?');
     expect(lines[1]).toBe('  line one');
     expect(lines[2]).toBe('  line two');
-    expect(lines[lines.length - 1]).toContain('└');
-    expect(lines[lines.length - 1]).toContain('─');
+    expect(lines[lines.length - 1]).toContain('?');
+    expect(lines[lines.length - 1]).toContain('?');
   });
 
   it('handles an empty body without throwing', () => {

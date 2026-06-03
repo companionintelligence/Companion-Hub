@@ -362,7 +362,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
 
     const requestId = crypto.randomUUID();
     const appId = installRecord.id;
-    const recordExposedLocal = existingApp?.exposedLocal ?? exposedLocal ?? !!appInfo.exposable;
+    const recordExposedLocal = exposedLocal ?? existingApp?.exposedLocal ?? !!appInfo.exposable;
 
     this.appEventsQueue.publish({ appUrn, command: 'install', requestId, form: { ...parsedForm, skipRun } }).then(async ({ success, message }) => {
       if (success) {

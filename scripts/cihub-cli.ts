@@ -390,22 +390,19 @@ export function mergeComposeProfilesFromEnvFile(envFileName: string): string {
   return [...set].join(',');
 }
 
-function hostContainerUidGid(): { uid: string; gid: string } {
-  if (typeof process.getuid === 'function' && typeof process.getgid === 'function') {
-    return { uid: String(process.getuid()), gid: String(process.getgid()) };
-  }
-  return { uid: '1000', gid: '1000' };
-}
-
-function buildEnvOverrides(envFileName: string) {
+export function buildEnvOverrides(envFileName: string) {
   const composeProfiles = mergeComposeProfilesFromEnvFile(envFileName);
-  const { uid, gid } = hostContainerUidGid();
+  const fileVars = parseEnvFile(envFileName);
   const overrides: Record<string, string | undefined> = {
     ENV_FILE: envFileName,
-    CI_HUB_CONTAINER_UID: uid,
-    CI_HUB_CONTAINER_GID: gid,
   };
   if (composeProfiles) overrides.COMPOSE_PROFILES = composeProfiles;
+
+  // Identity comes from init:host / the env file (e.g. UID 0 on Docker Desktop). Never
+  // replace with getuid() here — shell env wins over --env-file for compose interpolation.
+  if (fileVars.CI_HUB_CONTAINER_UID) overrides.CI_HUB_CONTAINER_UID = fileVars.CI_HUB_CONTAINER_UID;
+  if (fileVars.CI_HUB_CONTAINER_GID) overrides.CI_HUB_CONTAINER_GID = fileVars.CI_HUB_CONTAINER_GID;
+
   return overrides;
 }
 
