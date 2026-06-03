@@ -3737,6 +3737,21 @@ fn render_runtime_env_content(
         format!("COMPOSE_PROFILES={compose_profiles}\n")
     };
 
+    // Inject a stable device ID from the host's /etc/machine-id so the backend
+    // container always uses the same host-level identity regardless of container
+    // restarts or recreation (container machine-id differs from host machine-id).
+    let device_id_line = match std::fs::read_to_string("/etc/machine-id") {
+        Ok(id) => {
+            let id = id.trim();
+            if id.is_empty() {
+                String::new()
+            } else {
+                format!("DEVICE_ID={id}\n")
+            }
+        }
+        Err(_) => String::new(),
+    };
+
     let domain = option_env!("CI_HUB_DOMAIN").unwrap_or(default_public_domain());
     let cloud_url = option_env!("CI_HUB_CLOUD_URL").unwrap_or(default_ci_cloud_url());
     let hub_version = option_env!("CI_HUB_BUILD_VERSION").unwrap_or("4.7.0");
@@ -3765,7 +3780,8 @@ fn render_runtime_env_content(
          DOCKER_CONFIG_PATH={docker_config_path}\n\
          PRIVATE_VPN_ENABLED={private_vpn_enabled}\n\
          {private_vpn_user_disabled_line}\
-         {compose_profiles_line}",
+         {compose_profiles_line}\
+         {device_id_line}",
         root_folder_host = root_folder_host,
         jwt_secret = jwt_secret,
         postgres_password = postgres_password,
@@ -3778,6 +3794,7 @@ fn render_runtime_env_content(
         private_vpn_enabled = private_vpn_enabled,
         private_vpn_user_disabled_line = private_vpn_user_disabled_line,
         compose_profiles_line = compose_profiles_line,
+        device_id_line = device_id_line,
     )
 }
 
@@ -3858,7 +3875,7 @@ fn compose_resource_candidates(resource_dir: &Path) -> Vec<PathBuf> {
 ///
 /// Uses a regenerate-and-preserve approach:
 /// - Preserved values (read from existing .env, generated if missing): ROOT_FOLDER_HOST, JWT_SECRET, POSTGRES_PASSWORD
-/// - Derived values (always recomputed from the current binary): INTERNAL_IP, DOMAIN, CI_CLOUD_URL, CI_HUB_VERSION, CI_HUB_IMAGE, DOCKER_PLATFORM, DOCKER_CONFIG_PATH
+/// - Derived values (always recomputed from the current binary): INTERNAL_IP, DOMAIN, CI_CLOUD_URL, CI_HUB_VERSION, CI_HUB_IMAGE, DOCKER_PLATFORM, DOCKER_CONFIG_PATH, DEVICE_ID
 ///
 /// Returns the initialized desktop data paths and Traefik preflight result.
 pub fn initialize_hub(resource_dir: &Path) -> Result<HubInitialization, String> {
