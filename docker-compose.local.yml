@@ -68,9 +68,9 @@ services:
       - 9091:9091
     volumes:
       # Hot reload
-      - ./packages/backend:/app/packages/backend
-      - ./packages/frontend:/app/packages/frontend
-      - ./packages/common:/app/packages/common
+      - ./packages/backend/src:/app/packages/backend/src
+      - ./packages/frontend/src:/app/packages/frontend/src
+      - ./packages/common/src:/app/packages/common/src
       # Migrations
       - ./packages/backend/src/core/database/drizzle:/app/assets/migrations
       # Data
