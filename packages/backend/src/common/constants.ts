@@ -90,6 +90,8 @@ export const DEFAULT_ALLOW_AUTO_THEMES = 'true';
 export const DEFAULT_ALLOW_ERROR_MONITORING = 'false';
 export const DEFAULT_PERSIST_TRAEFIK_CONFIG = 'false';
 export const DEFAULT_QUEUE_TIMEOUT_IN_MINUTES = '5';
+/** Minimum RPC/status grace for app install while large images pull (e.g. OpenClaw ~1GB). */
+export const DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES = 45;
 export const DEFAULT_MAX_BACKUPS = '0';
 export const DEFAULT_ADVANCED_SETTINGS = 'false';
 export const DEFAULT_LOG_LEVEL = 'info';

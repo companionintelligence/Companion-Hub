@@ -236,18 +236,48 @@ describe('AiSetupStep', () => {
     expect(screen.getByText(/NVIDIA GPU detected, but the container GPU runtime is not ready yet/i)).toBeInTheDocument();
   });
 
-  it('shows AMD runtime warning copy when AMD GPU runtime is unavailable', async () => {
+  it('shows host ROCm ready notice when AMD GPU has host ROCm', async () => {
     api.profile = {
       ...highTierProfile,
       hardware: {
         ...highTierProfile.hardware,
-        gpu: { ...highTierProfile.hardware.gpu, available: true, runtimeAvailable: false, vendor: 'amd', model: 'Radeon RX 7900 XTX' },
+        gpu: {
+          ...highTierProfile.hardware.gpu,
+          available: true,
+          runtimeAvailable: false,
+          hostRocmAvailable: true,
+          vendor: 'amd',
+          model: 'Radeon RX 7900 XTX',
+        },
       },
     };
     renderStep();
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
-    expect(screen.getByText('Container GPU runtime not available.')).toBeInTheDocument();
-    expect(screen.getByText(/Host-side Ollama can still use the GPU/i)).toBeInTheDocument();
+    expect(screen.getByTestId('amd-host-rocm-ready')).toBeInTheDocument();
+    expect(screen.getByText(/Host ROCm detected/i)).toBeInTheDocument();
+    expect(screen.queryByText('Container GPU runtime not available.')).not.toBeInTheDocument();
+  });
+
+  it('shows host ROCm install hint when AMD GPU lacks host ROCm', async () => {
+    api.profile = {
+      ...highTierProfile,
+      hardware: {
+        ...highTierProfile.hardware,
+        gpu: {
+          ...highTierProfile.hardware.gpu,
+          available: true,
+          runtimeAvailable: false,
+          hostRocmAvailable: false,
+          vendor: 'amd',
+          model: 'Radeon RX 7900 XTX',
+        },
+      },
+    };
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+    expect(screen.getByTestId('amd-host-rocm-hint')).toBeInTheDocument();
+    expect(screen.getByText(/Install ROCm on the host/i)).toBeInTheDocument();
+    expect(screen.queryByText('Container GPU runtime not available.')).not.toBeInTheDocument();
   });
 
   it('shows generic non-Linux NVIDIA guidance without Linux shell commands', async () => {

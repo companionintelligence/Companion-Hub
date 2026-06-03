@@ -7,8 +7,11 @@ import { DOCKERODE } from '../docker/docker.module';
 import { AppsRepository } from '../apps/apps.repository';
 import type { AppStatus } from '@/core/database/drizzle/types';
 import { SystemEventsQueue } from '../queue/entities/system-events';
+import { DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES } from '@/common/constants';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
+
+const LONG_RUNNING_TRANSITIONAL_STATES: AppStatus[] = ['installing', 'updating'];
 
 const TRANSITIONAL_STATES: AppStatus[] = [
   'installing',
@@ -82,9 +85,10 @@ export class AppStatusSyncService {
         const appUrn: AppUrn = `${app.appName}:${app.appStoreSlug}` as AppUrn;
 
         const isTransitional = TRANSITIONAL_STATES.includes(app.status);
+        const transitionalGraceMs = this.getTransitionalGraceMs(app.status);
         if (isTransitional) {
           const timeSinceUpdate = Date.now() - new Date(app.updatedAt).getTime();
-          if (timeSinceUpdate < this.configuration.get('userSettings').eventsTimeout * 60 * 1000) {
+          if (timeSinceUpdate < transitionalGraceMs) {
             this.logger.debug(`Skipping ${appUrn} - in recent transitional state '${app.status}'`);
             skippedCount++;
             continue;
@@ -96,6 +100,11 @@ export class AppStatusSyncService {
         let newStatus: AppStatus;
 
         if (!dockerStatus || dockerStatus.total === 0) {
+          // Large image pulls can exceed the default queue grace; don't mark as missing mid-install.
+          if (app.status === 'installing') {
+            skippedCount++;
+            continue;
+          }
           newStatus = 'missing';
         } else if (dockerStatus.running + dockerStatus.exitZero === dockerStatus.total) {
           newStatus = 'running';
@@ -139,5 +148,13 @@ export class AppStatusSyncService {
         totalApps: 0,
       };
     }
+  }
+
+  private getTransitionalGraceMs(status: AppStatus): number {
+    const eventsTimeoutMinutes = this.configuration.get('userSettings').eventsTimeout;
+    const minutes = LONG_RUNNING_TRANSITIONAL_STATES.includes(status)
+      ? Math.max(eventsTimeoutMinutes, Number(DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES))
+      : eventsTimeoutMinutes;
+    return minutes * 60 * 1000;
   }
 }

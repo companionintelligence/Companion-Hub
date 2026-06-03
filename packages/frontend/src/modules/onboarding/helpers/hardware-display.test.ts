@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { HardwareProfile } from '@ci-hub/common/types';
-import { isAmdApu, resolveTierBadge, resolveVramDisplay } from './hardware-display';
+import { isAmdApu, resolveAmdHostRocmNotice, resolveTierBadge, resolveVramDisplay } from './hardware-display';
 
 function makeHardware(overrides: Partial<HardwareProfile['gpu']> = {}, ramTotalMb = 125_000): HardwareProfile {
   return {
@@ -34,5 +34,17 @@ describe('hardware-display', () => {
     const vram = resolveVramDisplay(hardware);
     expect(vram.value).toBe('122.1 GB');
     expect(vram.sub).toBe('Shared · APU');
+  });
+
+  it('returns host ROCm ready notice when hostRocmAvailable is true', () => {
+    const notice = resolveAmdHostRocmNotice(makeHardware({ hostRocmAvailable: true }));
+    expect(notice?.tone).toBe('ready');
+    expect(notice?.title).toBe('Host ROCm detected');
+  });
+
+  it('returns install hint when AMD GPU lacks host ROCm', () => {
+    const notice = resolveAmdHostRocmNotice(makeHardware({ hostRocmAvailable: false }));
+    expect(notice?.tone).toBe('hint');
+    expect(notice?.body).toMatch(/Install ROCm on the host/i);
   });
 });

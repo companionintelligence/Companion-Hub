@@ -319,14 +319,25 @@ export class AppLifecycleService implements OnApplicationBootstrap {
     this.appEventsQueue.publish({ appUrn, command: 'install', requestId, form: { ...parsedForm, skipRun } }).then(async ({ success, message }) => {
       if (success) {
         this.logger.info(`App ${appUrn} installed successfully`);
-        await this.appRepository.updateAppById(createdApp.id, { status: 'running' });
-        this.sseService.emit('app', { event: 'install_success', appUrn, appStatus: 'running' });
+        const latest = await this.appRepository.getAppById(createdApp.id);
+        if (latest?.status === 'installing') {
+          await this.appRepository.updateAppById(createdApp.id, { status: 'running' });
+          this.sseService.emit('app', { event: 'install_success', appUrn, appStatus: 'running' });
+        }
 
         // Check if we need to sync Cloudflare state (if app is exposedLocal)
         if (createdApp.exposedLocal || (appInfo.exposable && !exposedLocal)) {
           await this.syncExposure();
         }
       } else {
+        const isRpcTimeout = /timed out|RPC_TIMEOUT/i.test(message);
+        if (isRpcTimeout) {
+          this.logger.warn(
+            `Install RPC timed out for ${appUrn}; the worker may still be pulling images or starting containers. Keeping the app in 'installing' until the worker finishes.`,
+          );
+          return;
+        }
+
         this.logger.error(`Failed to install app ${appUrn}: ${message}`);
         await this.appRepository.deleteAppById(createdApp.id);
         this.sseService.emit('app', { event: 'install_error', appUrn, appStatus: 'missing', error: message });

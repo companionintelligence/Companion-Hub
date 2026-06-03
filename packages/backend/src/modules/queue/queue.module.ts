@@ -1,3 +1,4 @@
+import { DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES } from '@/common/constants';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { Module } from '@nestjs/common';
 import { TerminusModule } from '@nestjs/terminus';
@@ -15,7 +16,9 @@ import { QueueHealthIndicator } from './queue.health';
     {
       provide: AppEventsQueue,
       useFactory: async (queueFactory: QueueFactory, config: ConfigurationService) => {
-        const timeout = config.get('userSettings').eventsTimeout * 60 * 1000;
+        const eventsTimeoutMinutes = config.get('userSettings').eventsTimeout;
+        const timeoutMinutes = Math.max(eventsTimeoutMinutes, Number(DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES));
+        const timeout = timeoutMinutes * 60 * 1000;
 
         return await queueFactory.createQueue({
           queueName: 'app-events-queue',

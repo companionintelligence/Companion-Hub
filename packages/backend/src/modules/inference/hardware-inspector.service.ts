@@ -156,6 +156,16 @@ export class HardwareInspectorService implements OnModuleInit {
       gpu = this.applyIntegratedGpuInference(gpu, cpuInfo.model, ramInfo.totalMb, rocmSupport);
     }
 
+    if (gpu.vendor === 'amd') {
+      const hostRocmProbe = await this.readRocmHostProbe();
+      gpu = { ...gpu, hostRocmAvailable: hostRocmProbe?.available ?? false };
+      if (gpu.hostRocmAvailable) {
+        this.logger.info('[HardwareInspector] AMD GPU detected and host ROCm is available.');
+      } else if (gpu.available) {
+        this.logger.info('[HardwareInspector] AMD GPU detected; host ROCm not detected (install on host for Ollama GPU acceleration).');
+      }
+    }
+
     if (gpu.vendor === 'nvidia') {
       if (gpu.runtimeAvailable) {
         this.logger.info('[HardwareInspector] NVIDIA GPU detected and NVIDIA container runtime is available.');
@@ -521,6 +531,18 @@ export class HardwareInspectorService implements OnModuleInit {
       vramMb: cached.vramMb,
       driverVersion: cached.driverVersion,
     };
+  }
+
+  private async readRocmHostProbe(): Promise<{ available: boolean } | null> {
+    try {
+      const raw = await this.filesystem.readTextFile('/data/state/hardware/rocm.json');
+      if (!raw) return null;
+
+      const parsed = JSON.parse(raw) as { available?: boolean };
+      return { available: parsed.available === true };
+    } catch {
+      return null;
+    }
   }
 
   private async readNvidiaHostProbe(): Promise<{ model: string; vramMb: number; driverVersion: string } | null> {

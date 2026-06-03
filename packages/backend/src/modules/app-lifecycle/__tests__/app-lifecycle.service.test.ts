@@ -585,6 +585,7 @@ describe('AppLifecycleService', () => {
         callOrder.push('db_create');
         return { id: 42, ...data } as any;
       });
+      appsRepository.getAppById.mockImplementation(async (id: number) => ({ id, status: 'installing' }) as any);
 
       sseService.emit.mockImplementation((_channel: any, payload: any) => {
         callOrder.push(`sse:${payload.event}`);
@@ -784,6 +785,22 @@ describe('AppLifecycleService', () => {
       const sseIdx = callOrder.indexOf('sse:install_error');
       expect(delIdx).toBeGreaterThanOrEqual(0);
       expect(sseIdx).toBeGreaterThan(delIdx);
+    });
+
+    it('installApp RPC timeout: keeps app record and does not emit install_error', async () => {
+      const baseAppInfo = { id: 'myapp', port: 8080, cihub_app_version: 1, exposable: true, supported_architectures: ['amd64'] };
+      marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(baseAppInfo as any);
+      appsRepository.getAppByUrn.mockResolvedValue(null as any);
+      appsRepository.getAppsByDomain.mockResolvedValue([]);
+      appsRepository.getAppsByLocalSubdomain.mockResolvedValue([]);
+      appsRepository.getAppsByPort.mockResolvedValue([]);
+      appEventsQueue.publish.mockResolvedValue({ success: false, message: 'RPC response timed out' } as any);
+
+      await service.installApp({ appUrn, form: {} });
+      await flushMicrotasks();
+
+      expect(callOrder).not.toContain('db_delete');
+      expect(callOrder).not.toContain('sse:install_error');
     });
 
     it('installApp: status_change emitted after DB create (not before)', async () => {

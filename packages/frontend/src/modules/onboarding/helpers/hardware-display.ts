@@ -49,6 +49,32 @@ export function resolveGpuSubLabel(hardware: HardwareProfile): string | undefine
   return hardware.gpu.vendor.toUpperCase();
 }
 
+export type AmdHostRocmNotice = { tone: 'ready' | 'hint'; title: string; body: string };
+
+export function resolveAmdHostRocmNotice(hardware: HardwareProfile): AmdHostRocmNotice | null {
+  if (!hardware.gpu.available || hardware.gpu.vendor !== 'amd') {
+    return null;
+  }
+
+  if (hardware.gpu.hostRocmAvailable) {
+    return {
+      tone: 'ready',
+      title: 'Host ROCm detected',
+      body: isAmdApu(hardware)
+        ? `ROCm is available on the host for your ${hardware.gpu.model} APU. Companion Hub uses host Ollama for GPU inference; container GPU passthrough is not required.`
+        : 'ROCm is available on the host. Companion Hub uses host Ollama for GPU inference; container GPU passthrough is not required.',
+    };
+  }
+
+  return {
+    tone: 'hint',
+    title: 'AMD GPU detected',
+    body: isAmdApu(hardware)
+      ? `Install ROCm on the host to use your ${hardware.gpu.model} APU with host Ollama. Container GPU passthrough is optional for Companion Hub.`
+      : 'Install ROCm on the host to enable GPU-accelerated host Ollama. Container GPU passthrough is optional for Companion Hub.',
+  };
+}
+
 export function resolveVramDisplay(hardware: HardwareProfile): { value: string; sub?: string } {
   if (!hardware.gpu.available) {
     return { value: '—' };

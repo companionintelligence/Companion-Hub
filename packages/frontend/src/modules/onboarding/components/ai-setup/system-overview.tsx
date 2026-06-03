@@ -1,7 +1,13 @@
 import { Button } from '@/components/ui/Button';
 import { cn } from '@/lib/utils';
 import type { HardwareProfile, HardwareTier } from '@ci-hub/common/types';
-import { formatMemoryMb, isAmdApu, resolveGpuSubLabel, resolveTierBadge, resolveVramDisplay } from '@/modules/onboarding/helpers/hardware-display';
+import {
+  formatMemoryMb,
+  resolveAmdHostRocmNotice,
+  resolveGpuSubLabel,
+  resolveTierBadge,
+  resolveVramDisplay,
+} from '@/modules/onboarding/helpers/hardware-display';
 import { AlertTriangle, Cpu, HardDrive, MemoryStick, Monitor } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { GpuIcon, VramIcon } from './icons';
@@ -46,9 +52,7 @@ function OverviewItem({ icon, label, value, sub, testId }: { icon: ReactNode; la
 }
 
 /**
- * System overview strip (OS / CPU / RAM / GPU / VRAM / Storage) plus the GPU container-runtime
- * guidance that gates accelerated inference. Replaces the old "Hardware Detected" card visually but
- * keeps all of its detection warnings.
+ * System overview strip (OS / CPU / RAM / GPU / VRAM / Storage) plus host GPU guidance where relevant.
  *
  * Note: the hardware profile is the Hub's. OS shows the host OS/codename from the profile when
  * available (falling back to the connecting client), and storage total/free come from the profile's
@@ -58,9 +62,8 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
   const badge = resolveTierBadge(tier, hardware);
   const vramDisplay = resolveVramDisplay(hardware);
   const os = getClientPlatform();
-  const isApu = isAmdApu(hardware);
   const noGpu = !hardware.gpu.available;
-  const amdRuntimeMissing = hardware.gpu.vendor === 'amd' && hardware.gpu.available && !hardware.gpu.runtimeAvailable;
+  const amdHostRocm = resolveAmdHostRocmNotice(hardware);
   const nvidiaRuntimeMissing = hardware.gpu.vendor === 'nvidia' && !hardware.gpu.runtimeAvailable;
   const nvidiaRuntimeReady = hardware.gpu.vendor === 'nvidia' && hardware.gpu.runtimeAvailable;
   const showLinuxRuntimeSteps = isLinuxClient();
@@ -130,24 +133,18 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
         </div>
       )}
 
-      {amdRuntimeMissing && (
-        <div className="mt-4 flex items-start gap-2 rounded-md border border-yellow-200 bg-yellow-50 p-2.5 dark:border-yellow-800 dark:bg-yellow-950">
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-yellow-600 dark:text-yellow-400" />
-          <div className="text-xs text-yellow-800 dark:text-yellow-200">
-            <strong>Container GPU runtime not available.</strong>{' '}
-            {isApu ? (
-              <>
-                Your {hardware.gpu.model} APU was detected with {formatMemoryMb(hardware.ram.totalMb)} of shared memory, but containerized backends do
-                not have ROCm access yet. Host-side Ollama can still use the integrated GPU once ROCm is installed on the host.
-              </>
-            ) : (
-              <>
-                Your {hardware.gpu.vendor} GPU was detected, but containerized backends do not have ROCm access yet. Host-side Ollama can still use
-                the GPU once it is installed and reachable. Please install the appropriate drivers (AMD ROCm) to enable container GPU acceleration
-                too.
-              </>
-            )}
-          </div>
+      {amdHostRocm && (
+        <div
+          className={cn(
+            'mt-4 rounded-md border p-3 text-xs',
+            amdHostRocm.tone === 'ready'
+              ? 'border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-100'
+              : 'border-border bg-muted/40 text-muted-foreground',
+          )}
+          data-testid={amdHostRocm.tone === 'ready' ? 'amd-host-rocm-ready' : 'amd-host-rocm-hint'}
+        >
+          <p className="font-semibold text-foreground">{amdHostRocm.title}</p>
+          <p className="mt-1">{amdHostRocm.body}</p>
         </div>
       )}
 

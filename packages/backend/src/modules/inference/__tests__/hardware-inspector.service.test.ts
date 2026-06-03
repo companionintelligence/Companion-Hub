@@ -289,6 +289,26 @@ describe('HardwareInspectorService', () => {
       expect(profile.gpu.available).toBe(true);
     });
 
+    it('should set hostRocmAvailable from host ROCm probe cache', async () => {
+      (si.graphics as any) = vi.fn().mockResolvedValue({
+        controllers: [{ vendor: 'Advanced Micro Devices', model: 'Radeon RX 7900 XTX', vram: 24576, driverVersion: '6.2.0' }],
+      });
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 16, brand: 'AMD Ryzen 9' });
+      filesystemService.readTextFile.mockImplementation(async (filePath: string) => {
+        if (filePath === '/data/state/hardware/rocm.json') {
+          return '{"available":true,"source":"host-dev-kfd"}';
+        }
+        return 'MemTotal: 67108864\nMemAvailable: 50331648';
+      });
+      filesystemService.pathExists.mockResolvedValue(false);
+
+      const profile = await service.detect();
+
+      expect(profile.gpu.vendor).toBe('amd');
+      expect(profile.gpu.hostRocmAvailable).toBe(true);
+      expect(profile.gpu.runtimeAvailable).toBe(false);
+    });
+
     it('SHALL parse rocm-smi VRAM total bytes instead of the card column', async () => {
       (si.graphics as any) = vi.fn().mockResolvedValue({
         controllers: [{ vendor: 'Advanced Micro Devices', model: 'Radeon RX 7900 XTX', vram: 0, driverVersion: '6.2.0' }],
