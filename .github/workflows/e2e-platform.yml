@@ -2,7 +2,7 @@ name: E2E Platform Tests
 
 on:
   pull_request:
-    branches: [dev]
+    branches: [dev, main]
     types: [opened, synchronize, ready_for_review]
 
 concurrency:
@@ -11,7 +11,9 @@ concurrency:
 
 jobs:
   e2e-platform:
-    if: ${{ !github.event.pull_request.draft }}
+    if: >-
+      ${{ !github.event.pull_request.draft &&
+          (github.head_ref == 'dev' || github.head_ref == 'main') }}
     runs-on: [self-hosted, ci-core]
     timeout-minutes: 15
 
