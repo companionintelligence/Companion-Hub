@@ -3,6 +3,7 @@ import { Controller, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '../auth/auth.guard';
 import { AppsService } from './apps.service';
 import { GetAppDto, GetComposeDiffDto, GetConfigDiffDto, GetRandomPortDto, GuestAppsDto, MyAppsDto } from './dto/app.dto';
+import { InstallQueueDto } from './dto/install-queue.dto';
 import { ApiResponse } from '@nestjs/swagger';
 
 @Controller('apps')
@@ -15,6 +16,14 @@ export class AppsController {
   async getInstalledApps() {
     const installed = await this.appsService.getInstalledApps();
     return MyAppsDto.parse({ installed }, { reportOnly: true });
+  }
+
+  @Get('install-queue')
+  @UseGuards(AuthGuard)
+  @ApiResponse({ type: InstallQueueDto })
+  async getInstallQueue() {
+    const queue = await this.appsService.getInstallQueueState();
+    return InstallQueueDto.parse(queue, { reportOnly: true });
   }
 
   @Get('guest')

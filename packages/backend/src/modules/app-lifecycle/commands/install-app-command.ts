@@ -277,7 +277,8 @@ export class InstallAppCommand extends AppLifecycleCommand {
       //   ci-entrypoint.sh — the actual Hub inference auto-config script
       // Ensure both exist even if copyDataDir was skipped or the app payload was incomplete.
       if (appName === 'openclaw') {
-        const { appInstalledDir, appRepoDir } = appFilesManager.getAppPaths(appUrn);
+        const { appInstalledDir } = appFilesManager.getAppPaths(appUrn);
+        const appRepoDir = path.join(directories.dataDir, 'repos', appStoreId, 'apps', appName);
         const targetDir = path.join(containerAppDataPath, 'data');
         await fs.promises.mkdir(targetDir, { recursive: true });
 

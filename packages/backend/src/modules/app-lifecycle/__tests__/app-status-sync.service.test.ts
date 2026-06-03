@@ -34,6 +34,23 @@ describe('AppStatusSyncService', () => {
     service = new AppStatusSyncService(mock<LoggerService>(), appRepository, mock<SSEService>(), systemEventsQueue, config, docker);
   });
 
+  it('does not mark install_failed apps as missing while no containers exist', async () => {
+    appRepository.getApps.mockResolvedValue([
+      {
+        id: 3,
+        appName: 'plane',
+        appStoreSlug: 'ci-marketplace',
+        status: 'install_failed',
+        updatedAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+      },
+    ] as any);
+
+    const result = await service.syncAllAppStatuses();
+
+    expect(appRepository.updateAppById).not.toHaveBeenCalled();
+    expect(result.skippedCount).toBe(1);
+  });
+
   it('does not mark installing apps as missing while no containers exist', async () => {
     const updatedAt = new Date(Date.now() - 10 * 60 * 1000).toISOString();
     appRepository.getApps.mockResolvedValue([

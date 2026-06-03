@@ -101,7 +101,7 @@ export class AppStatusSyncService {
 
         if (!dockerStatus || dockerStatus.total === 0) {
           // Large image pulls can exceed the default queue grace; don't mark as missing mid-install.
-          if (app.status === 'installing') {
+          if (app.status === 'installing' || app.status === 'install_failed') {
             skippedCount++;
             continue;
           }

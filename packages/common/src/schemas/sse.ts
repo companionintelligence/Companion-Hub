@@ -28,6 +28,7 @@ export const sseSchema = z.union([
         z.literal('backup_error'),
         z.literal('restore_success'),
         z.literal('restore_error'),
+        z.literal('install_queue'),
       ]),
       appUrn: z.string().refine((v) => v.split(':').length === 2),
       appStatus: z
@@ -39,6 +40,7 @@ export const sseSchema = z.union([
           'updating',
           'missing',
           'installing',
+          'install_failed',
           'uninstalling',
           'resetting',
           'restarting',
@@ -49,6 +51,21 @@ export const sseSchema = z.union([
         .optional(),
       error: z.string().optional(),
       progress: z.number().min(0).max(99).optional(),
+      active: z
+        .object({
+          urn: z.string(),
+          name: z.string(),
+        })
+        .nullable()
+        .optional(),
+      queued: z
+        .array(
+          z.object({
+            urn: z.string(),
+            name: z.string(),
+          }),
+        )
+        .optional(),
     }),
   }),
   z.object({
