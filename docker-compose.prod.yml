@@ -65,6 +65,7 @@ services:
         condition: service_healthy
     container_name: ci-os-hub
     restart: unless-stopped
+    user: "0:0"
     ports:
       - "5002:5002"
     healthcheck:
@@ -117,6 +118,7 @@ services:
       CI_HUB_ENVIRONMENT: ${CI_HUB_ENVIRONMENT:-production}
       LOCAL: ${LOCAL:-false}
       NODE_ENV: ${NODE_ENV:-production}
+      NODE_OPTIONS: ${NODE_OPTIONS:---disable-warning=ExperimentalWarning}
       ROOT_FOLDER_HOST: ${ROOT_FOLDER_HOST:?ROOT_FOLDER_HOST must be set to an absolute host path}
       POSTGRES_HOST: ci-hub-db
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}

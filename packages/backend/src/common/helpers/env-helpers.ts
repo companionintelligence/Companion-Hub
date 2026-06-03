@@ -130,13 +130,73 @@ function boolStr(val: boolean | undefined): string | undefined {
   return typeof val === 'boolean' ? String(val) : undefined;
 }
 
+function isFsErrorWithCode(error: unknown, code: string): boolean {
+  return Boolean(error && typeof error === 'object' && 'code' in error && (error as NodeJS.ErrnoException).code === code);
+}
+
+/** Ensure bind-mounted state/ is writable across host UID ↔ container UID mappings. */
+export async function ensureHubStateDirWritable(stateDir: string): Promise<void> {
+  await fs.promises.mkdir(stateDir, { recursive: true, mode: 0o777 });
+  try {
+    await fs.promises.chmod(stateDir, 0o777);
+  } catch {
+    // chmod may fail on some mounts; write retry logic still applies.
+  }
+}
+
+/** Best-effort persistence of resolved env; returns false when the mount blocks writes. */
+export async function writeResolvedEnvFile(targetPath: string, content: string): Promise<boolean> {
+  const stateDir = path.dirname(targetPath);
+  await ensureHubStateDirWritable(stateDir);
+
+  try {
+    await fs.promises.unlink(targetPath);
+  } catch {
+    // File may not exist yet.
+  }
+
+  const attemptWrite = async () => {
+    await fs.promises.writeFile(targetPath, content, { mode: 0o664 });
+  };
+
+  try {
+    await attemptWrite();
+    return true;
+  } catch (error: unknown) {
+    if (!isFsErrorWithCode(error, 'EACCES') && !isFsErrorWithCode(error, 'EROFS')) {
+      throw error;
+    }
+    try {
+      await fs.promises.chmod(targetPath, 0o664);
+    } catch {
+      // ignore
+    }
+    try {
+      await attemptWrite();
+      return true;
+    } catch (retryError: unknown) {
+      if (isFsErrorWithCode(retryError, 'EACCES') || isFsErrorWithCode(retryError, 'EROFS')) {
+        return false;
+      }
+      throw retryError;
+    }
+  }
+}
+
+function applyEnvMapToProcess(envMap: Map<string, string>) {
+  for (const [key, value] of envMap.entries()) {
+    process.env[key] = value;
+  }
+}
+
 export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   const logger = new LoggerService('backend', path.join(path.join(DATA_DIR, 'logs')), process.env.LOG_LEVEL as LogLevel);
   logger.debug('Checking system env file');
 
   const envUtils = new EnvUtils();
 
-  await fs.promises.mkdir(path.join(DATA_DIR, 'state'), { recursive: true });
+  const stateDir = path.join(DATA_DIR, 'state');
+  await ensureHubStateDirWritable(stateDir);
 
   const settingsFilePath = path.join(DATA_DIR, 'state', 'settings.json');
   const envFilePath = path.join(DATA_DIR, '.env');
@@ -329,20 +389,16 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
 
   const newEnvContent = envUtils.envMapToString(envMap);
 
-  try {
-    await fs.promises.writeFile(resolvedEnvFilePath, newEnvContent);
-    logger.debug('Resolved environment written to state/.env.resolved');
-  } catch (error: unknown) {
-    if (error && typeof error === 'object' && 'code' in error && error.code === 'EROFS') {
-      logger.warn('Cannot write resolved env (read-only mount). Continuing with existing values.');
-    } else {
-      throw error;
-    }
-  }
+  applyEnvMapToProcess(envMap);
 
-  // Load the resolved env into process.env as DEFAULTS only.
-  // .env.local values already in process.env are NOT overwritten.
-  dotenv.config({ path: resolvedEnvFilePath, override: false, quiet: true });
+  const wroteResolved = await writeResolvedEnvFile(resolvedEnvFilePath, newEnvContent);
+  if (wroteResolved) {
+    logger.debug('Resolved environment written to state/.env.resolved');
+    // Load from disk as defaults only — values already set on process.env above win.
+    dotenv.config({ path: resolvedEnvFilePath, override: false, quiet: true });
+  } else {
+    logger.warn('Could not write state/.env.resolved (permission denied on bind mount). Using in-memory resolved environment for this process.');
+  }
 
   return envMap;
 };

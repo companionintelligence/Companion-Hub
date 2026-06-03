@@ -85,6 +85,7 @@ RUN cd /app && pnpm run bundle 2>&1 | tail -100 || true
 FROM runner_base AS runner
 
 ENV NODE_ENV="production"
+ENV NODE_OPTIONS="--disable-warning=ExperimentalWarning"
 
 WORKDIR /app
 
@@ -112,4 +113,5 @@ EXPOSE 3000
     # Ensure Node treats .js as ESM (esbuild outputs ESM format)
     RUN node -e "const p = require('./package.json'); p.type = 'module'; require('fs').writeFileSync('./package.json', JSON.stringify(p, null, 2))"
 
-    CMD ["node", "./main.js"]
+    # Bind-mounted state/ may be root-owned from a prior container UID; normalize before bootstrap.
+    CMD ["sh", "-c", "mkdir -p /data/state && chmod 777 /data/state 2>/dev/null || true; rm -f /data/state/.env.resolved 2>/dev/null || true; exec node ./main.js"]

@@ -46,7 +46,7 @@ vi.mock('@/modules/env/env.utils', () => {
 
 import fs from 'node:fs';
 import dotenv from 'dotenv';
-import { generateSystemEnvFile } from '../env-helpers';
+import { generateSystemEnvFile, writeResolvedEnvFile } from '../env-helpers';
 
 const mockedFs = vi.mocked(fs);
 const savedEnv: Record<string, string | undefined> = {};
@@ -135,5 +135,36 @@ describe('env-helpers — resolve() priority chain', () => {
     setupMocks({ settingsJson: { guestDashboard: true } });
     const envMap = await generateSystemEnvFile();
     expect(envMap.get('GUEST_DASHBOARD')).toBe('true');
+  });
+
+  it('MUST complete bootstrap when state/.env.resolved cannot be written (EACCES)', async () => {
+    setupMocks({});
+    const target = '/tmp/ci-hub-env-test/state/.env.resolved';
+    (mockedFs.promises.writeFile as any).mockImplementation(async (filePath: string) => {
+      if (String(filePath).endsWith('.env.resolved')) {
+        const error = new Error('EACCES') as NodeJS.ErrnoException;
+        error.code = 'EACCES';
+        throw error;
+      }
+    });
+
+    const envMap = await generateSystemEnvFile();
+    expect(envMap.get('ROOT_FOLDER_HOST')).toBe('/home/user/ci-os-hub');
+    expect(process.env.ROOT_FOLDER_HOST).toBe('/home/user/ci-os-hub');
+    expect(mockedFs.promises.writeFile).toHaveBeenCalled();
+    void target;
+  });
+});
+
+describe('writeResolvedEnvFile', () => {
+  it('returns false when the target path is not writable', async () => {
+    (mockedFs.promises.writeFile as any).mockImplementation(async () => {
+      const error = new Error('EACCES') as NodeJS.ErrnoException;
+      error.code = 'EACCES';
+      throw error;
+    });
+
+    const wrote = await writeResolvedEnvFile('/data/state/.env.resolved', 'KEY=value\n');
+    expect(wrote).toBe(false);
   });
 });
