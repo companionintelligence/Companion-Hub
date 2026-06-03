@@ -123,10 +123,10 @@ describe('renderStep', () => {
   });
 
   it('uses the right icon for each status', () => {
-    expect(stripAnsi(renderStep(1, 3, 'x', 'pending'))).toContain('?');
-    expect(stripAnsi(renderStep(1, 3, 'x', 'active'))).toContain('?');
-    expect(stripAnsi(renderStep(1, 3, 'x', 'done'))).toContain('?');
-    expect(stripAnsi(renderStep(1, 3, 'x', 'fail'))).toContain('?');
+    expect(stripAnsi(renderStep(1, 3, 'x', 'pending'))).toContain('○');
+    expect(stripAnsi(renderStep(1, 3, 'x', 'active'))).toContain('●');
+    expect(stripAnsi(renderStep(1, 3, 'x', 'done'))).toContain('✓');
+    expect(stripAnsi(renderStep(1, 3, 'x', 'fail'))).toContain('✗');
   });
 });
 
@@ -447,12 +447,12 @@ describe('appStatusColor', () => {
 describe('box', () => {
   it('renders a title header, indented body, and a closing rule', () => {
     const lines = stripAnsi(box('Title', ['line one', 'line two'])).split('\n');
-    expect(lines[0]).toContain('?? Title');
-    expect(lines[0]).toContain('?');
+    expect(lines[0]).toContain('┌─ Title');
+    expect(lines[0]).toContain('─');
     expect(lines[1]).toBe('  line one');
     expect(lines[2]).toBe('  line two');
-    expect(lines[lines.length - 1]).toContain('?');
-    expect(lines[lines.length - 1]).toContain('?');
+    expect(lines[lines.length - 1]).toContain('└');
+    expect(lines[lines.length - 1]).toContain('─');
   });
 
   it('handles an empty body without throwing', () => {

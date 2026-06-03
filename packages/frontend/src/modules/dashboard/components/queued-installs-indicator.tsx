@@ -10,7 +10,7 @@ interface QueuedInstallsIndicatorProps {
 export const QueuedInstallsIndicator = ({ queue, isLoading }: QueuedInstallsIndicatorProps) => {
   const { t } = useTranslation();
 
-  if (isLoading || !queue || queue.queued.length === 0) {
+  if (isLoading || !queue || (queue.queued?.length ?? 0) === 0) {
     return null;
   }
 

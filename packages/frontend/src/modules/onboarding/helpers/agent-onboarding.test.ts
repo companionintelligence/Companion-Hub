@@ -10,7 +10,14 @@ const storeApps: StoreAppLite[] = [
 describe('buildAgentApp', () => {
   it('resolves openclaw to its store app (name + urn)', () => {
     const app = buildAgentApp('openclaw', storeApps);
-    expect(app).toMatchObject({ appSlug: 'openclaw', name: 'OpenClaw', urn: 'urn:store:openclaw', localSubdomain: 'openclaw', category: 'ai' });
+    expect(app).toMatchObject({
+      appSlug: 'openclaw',
+      name: 'OpenClaw',
+      urn: 'urn:store:openclaw',
+      icon: '/agents/openclaw.png',
+      localSubdomain: 'openclaw',
+      category: 'ai',
+    });
   });
 
   it('maps hermes framework to the hermes-agent store slug', () => {

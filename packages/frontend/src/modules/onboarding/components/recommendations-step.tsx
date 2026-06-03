@@ -9,6 +9,7 @@ import { getRecommendedApps } from '../helpers/alternatives';
 import type { DetectedService } from '../helpers/service-detection';
 import type { OnboardingApp } from '../helpers/types';
 import { SelectIndicator } from './ai-setup/primitives';
+import { OnboardingAppIcon } from './onboarding-app-icon';
 import { WizardCard, WizardHeader, WizardNav } from './wizard-ui';
 
 interface RecommendationsStepProps {
@@ -149,6 +150,7 @@ export const RecommendationsStep = ({
           slug: alt.appSlug as string,
           name: alt.name,
           icon: alt.icon,
+          urn: storeApp?.urn,
           replaces: rec.proprietary.join(', '),
           shortDesc: storeApp?.short_desc ?? '',
         };
@@ -159,6 +161,7 @@ export const RecommendationsStep = ({
       slug: app.id,
       name: app.name,
       icon: '',
+      urn: app.urn,
       replaces: '',
       shortDesc: app.short_desc ?? '',
     })),
@@ -220,17 +223,7 @@ export const RecommendationsStep = ({
                       : 'border-border bg-foreground/[0.015] hover:border-primary/40',
                   )}
                 >
-                  <span className="relative flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-foreground/10 text-base font-semibold text-muted-foreground">
-                    {app.name.charAt(0)}
-                    <img
-                      src={app.icon}
-                      alt=""
-                      className="absolute inset-0 h-full w-full object-contain"
-                      onError={(e) => {
-                        (e.target as HTMLImageElement).style.display = 'none';
-                      }}
-                    />
-                  </span>
+                  <OnboardingAppIcon app={{ appSlug: app.slug, name: app.name, icon: app.icon, urn: app.urn }} size={40} />
                   <span className="min-w-0 flex-1 pr-5">
                     <span className="block truncate text-sm font-medium">{app.name}</span>
                     {description && <span className="mt-0.5 block text-xs leading-snug text-muted-foreground line-clamp-2">{description}</span>}

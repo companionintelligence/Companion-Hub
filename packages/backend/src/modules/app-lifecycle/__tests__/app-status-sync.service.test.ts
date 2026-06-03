@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { AppStatusSyncService } from '../app-status-sync.service';
 import { LoggerService } from '@/core/logger/logger.service';

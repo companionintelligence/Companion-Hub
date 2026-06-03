@@ -9,7 +9,6 @@ export function addOptimisticInstalledApp(queryClient: QueryClient, params: { ur
   const existing = queryClient.getQueryData(installedKey) as GetInstalledAppsResponse | undefined;
   const installedList = existing?.installed ?? [];
   const filtered = installedList.filter((it) => it.info?.urn !== params.urn);
-  const tempId = `pending-${params.slug}-${Date.now()}`;
   const optimistic: InstalledEntry = {
     info: {
       urn: params.urn,
@@ -18,9 +17,18 @@ export function addOptimisticInstalledApp(queryClient: QueryClient, params: { ur
       available: true,
     } as InstalledEntry['info'],
     app: {
-      id: tempId,
+      id: -1,
       status: 'installing',
-    } as InstalledEntry['app'],
+      domain: null,
+      exposed: false,
+      exposedLocal: false,
+      ignoredVersion: null,
+      isVisibleOnGuestDashboard: false,
+      openPort: false,
+      pendingRestart: false,
+      port: null,
+      version: 0,
+    },
     metadata: { latestVersion: 0, localSubdomain: params.localSubdomain ?? '' } as InstalledEntry['metadata'],
   };
   queryClient.setQueryData(installedKey, { installed: [optimistic, ...filtered] });

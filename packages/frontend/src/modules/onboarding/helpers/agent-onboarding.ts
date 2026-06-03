@@ -13,11 +13,15 @@ const AGENT_FALLBACK_NAME: Record<AgentFramework, string> = {
   hermes: 'Hermes',
 };
 
+const AGENT_ICON_URL: Record<AgentFramework, string> = {
+  openclaw: '/agents/openclaw.png',
+  hermes: '/agents/hermes.png',
+};
+
 /**
  * Resolve the chosen agent framework to an installable {@link OnboardingApp}, pulling its name/urn
  * from the synced store apps. `urn` is undefined when the agent app is not present in the store
- * (callers should treat that as unavailable). `icon` is intentionally empty — the onboarding UI
- * renders the framework's own icon component rather than a store image.
+ * (callers should treat that as unavailable).
  */
 export function buildAgentApp(framework: AgentFramework, storeApps: StoreAppLite[]): OnboardingApp {
   const slug = AGENT_APP_SLUG[framework];
@@ -25,7 +29,7 @@ export function buildAgentApp(framework: AgentFramework, storeApps: StoreAppLite
   return {
     appSlug: slug,
     name: store?.name ?? AGENT_FALLBACK_NAME[framework],
-    icon: '',
+    icon: AGENT_ICON_URL[framework],
     category: 'ai',
     replacesNames: [],
     urn: store?.urn,
