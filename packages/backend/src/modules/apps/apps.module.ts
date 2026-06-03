@@ -9,12 +9,13 @@ import { AppHelpers } from './app.helpers';
 import { AppsController } from './apps.controller';
 import { AppsRepository } from './apps.repository';
 import { AppsService } from './apps.service';
+import { InstallPipelineTracker } from './install-pipeline.tracker';
 import { RegistrationModule } from '../registration/registration.module';
 
 @Module({
   imports: [QueueModule, EnvModule, MarketplaceModule, forwardRef(() => RegistrationModule)],
   controllers: [AppsController],
-  providers: [AppFilesManager, AppsRepository, AppHelpers, AppsService, ConfigurationService, PortAllocationRepository],
-  exports: [AppsRepository, AppFilesManager, AppHelpers, AppsService],
+  providers: [AppFilesManager, AppsRepository, AppHelpers, AppsService, ConfigurationService, PortAllocationRepository, InstallPipelineTracker],
+  exports: [AppsRepository, AppFilesManager, AppHelpers, AppsService, InstallPipelineTracker],
 })
 export class AppsModule {}

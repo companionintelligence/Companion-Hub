@@ -64,7 +64,14 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     isLoading,
     refreshAppContext,
     setAppContext: (newAppContext: Partial<AppContextDto>) => {
-      queryClient.setQueryData(['appContext'], { ...resolved, ...newAppContext });
+      queryClient.setQueryData(appContextQueryKey(), (current: AppContextDto | undefined) => {
+        const base = current ?? resolved;
+        return {
+          ...base,
+          ...newAppContext,
+          user: newAppContext.user ? { ...base.user, ...newAppContext.user } : base.user,
+        };
+      });
     },
   };
 

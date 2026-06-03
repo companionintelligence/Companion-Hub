@@ -4,6 +4,8 @@ import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { CompactSystemStat } from '../components/compact-system-stat';
 import { HorizontalAppList } from '../components/horizontal-app-list';
+import { QueuedInstallsIndicator } from '../components/queued-installs-indicator';
+import { useInstallQueue } from '@/modules/app/helpers/use-install-queue';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner/loading-spinner';
 
 export default () => {
@@ -19,6 +21,9 @@ export default () => {
     ...getInstalledAppsOptions(),
     staleTime: 30_000,
   });
+
+  const installingCount = appsData?.installed.filter((entry) => entry.app.status === 'installing').length ?? 0;
+  const { data: installQueue, isLoading: installQueueLoading } = useInstallQueue(installingCount > 0);
 
   const isLoading = !systemData;
   const memoryUsed = systemData?.memoryUsed ?? (systemData ? Math.round((systemData.memoryTotal * systemData.percentUsedMemory) / 100) : 0);
@@ -64,6 +69,7 @@ export default () => {
 
         {/* Apps section */}
         <div className="rounded-2xl border border-border bg-linear-to-b from-card to-card/60 p-4 shadow-sm">
+          <QueuedInstallsIndicator queue={installQueue} isLoading={installQueueLoading && installingCount > 0} />
           {appsData ? <HorizontalAppList apps={appsData.installed} /> : <LoadingSpinner />}
         </div>
       </div>

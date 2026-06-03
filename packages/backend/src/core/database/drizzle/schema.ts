@@ -5,6 +5,7 @@ export const appStatusEnum = pgEnum('app_status_enum', [
   'running',
   'stopped',
   'installing',
+  'install_failed',
   'uninstalling',
   'stopping',
   'starting',

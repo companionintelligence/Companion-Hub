@@ -242,9 +242,10 @@ export class AppService implements OnApplicationShutdown {
    * Creates missing directories and logs warnings for potential data loss.
    */
   private async validateDataDirectories(): Promise<void> {
+    // Bind-mounted subtrees must be writable; /data itself is often root-owned in the image.
     const criticalDirs = [
-      { name: 'data', path: DATA_DIR },
       { name: 'app-data', path: APP_DATA_DIR },
+      { name: 'cache', path: path.join(DATA_DIR, 'cache') },
       { name: 'state', path: path.join(DATA_DIR, 'state') },
       { name: 'apps', path: path.join(DATA_DIR, 'apps') },
       { name: 'user-config', path: path.join(DATA_DIR, 'user-config') },

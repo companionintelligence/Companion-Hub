@@ -212,10 +212,7 @@ export const AiSetupStep = ({
     let installBlocked = false;
     let installBlockReason: string | undefined;
 
-    if (profile.tier !== 'insufficient' && agentFrameworks.length > 0 && selectedModels.length === 0 && validProviders.length === 0) {
-      installBlocked = true;
-      installBlockReason = 'Select a model to download, use one already installed in Ollama, or add a cloud provider API key.';
-    }
+    // Selecting no models is allowed — users can add AI later from settings.
 
     const budget = computeSelectionBudget(
       profile.availableModels.filter((m) => selectedModels.includes(m.id)),

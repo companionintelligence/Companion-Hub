@@ -1,6 +1,13 @@
 import { Button } from '@/components/ui/Button';
 import { cn } from '@/lib/utils';
 import type { HardwareProfile, HardwareTier } from '@ci-hub/common/types';
+import {
+  formatMemoryMb,
+  resolveAmdHostRocmNotice,
+  resolveGpuSubLabel,
+  resolveTierBadge,
+  resolveVramDisplay,
+} from '@/modules/onboarding/helpers/hardware-display';
 import { AlertTriangle, Cpu, HardDrive, MemoryStick, Monitor } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { GpuIcon, VramIcon } from './icons';
@@ -12,19 +19,6 @@ interface SystemOverviewProps {
   rescanning?: boolean;
   availableDiskMb?: number;
   diskTotalMb?: number;
-}
-
-const TIER_BADGES: Record<HardwareTier, { label: string; color: string; emoji: string }> = {
-  high: { label: 'High', color: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200', emoji: '🚀' },
-  medium: { label: 'Medium', color: 'bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-300', emoji: '⚡' },
-  low: { label: 'Low', color: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200', emoji: '💡' },
-  'cpu-only': { label: 'CPU Only', color: 'bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200', emoji: '🔧' },
-  insufficient: { label: 'Insufficient', color: 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200', emoji: '☁️' },
-};
-
-function formatMemory(mb: number): string {
-  if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
-  return `${mb} MB`;
 }
 
 function getClientPlatform(): { label: string; arch: string } {
@@ -58,19 +52,18 @@ function OverviewItem({ icon, label, value, sub, testId }: { icon: ReactNode; la
 }
 
 /**
- * System overview strip (OS / CPU / RAM / GPU / VRAM / Storage) plus the GPU container-runtime
- * guidance that gates accelerated inference. Replaces the old "Hardware Detected" card visually but
- * keeps all of its detection warnings.
+ * System overview strip (OS / CPU / RAM / GPU / VRAM / Storage) plus host GPU guidance where relevant.
  *
  * Note: the hardware profile is the Hub's. OS shows the host OS/codename from the profile when
  * available (falling back to the connecting client), and storage total/free come from the profile's
  * resource estimate.
  */
 export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, availableDiskMb, diskTotalMb }: SystemOverviewProps) => {
-  const badge = TIER_BADGES[tier];
+  const badge = resolveTierBadge(tier, hardware);
+  const vramDisplay = resolveVramDisplay(hardware);
   const os = getClientPlatform();
   const noGpu = !hardware.gpu.available;
-  const amdRuntimeMissing = hardware.gpu.vendor === 'amd' && hardware.gpu.available && !hardware.gpu.runtimeAvailable;
+  const amdHostRocm = resolveAmdHostRocmNotice(hardware);
   const nvidiaRuntimeMissing = hardware.gpu.vendor === 'nvidia' && !hardware.gpu.runtimeAvailable;
   const nvidiaRuntimeReady = hardware.gpu.vendor === 'nvidia' && hardware.gpu.runtimeAvailable;
   const showLinuxRuntimeSteps = isLinuxClient();
@@ -110,28 +103,23 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
         <OverviewItem
           icon={<MemoryStick />}
           label="RAM"
-          value={formatMemory(hardware.ram.totalMb)}
-          sub={`${formatMemory(hardware.ram.availableMb)} free`}
+          value={formatMemoryMb(hardware.ram.totalMb)}
+          sub={`${formatMemoryMb(hardware.ram.availableMb)} free`}
           testId="hw-ram"
         />
         <OverviewItem
           icon={<GpuIcon />}
           label="GPU"
           value={hardware.gpu.available ? hardware.gpu.model : 'No GPU detected'}
-          sub={hardware.gpu.available ? hardware.gpu.vendor.toUpperCase() : undefined}
+          sub={resolveGpuSubLabel(hardware)}
           testId="hw-gpu"
         />
-        <OverviewItem
-          icon={<VramIcon />}
-          label="VRAM"
-          value={hardware.gpu.available ? (hardware.gpu.unifiedMemory ? 'Unified' : formatMemory(hardware.gpu.vramMb)) : '—'}
-          sub={hardware.gpu.unifiedMemory ? 'Unified Memory' : undefined}
-        />
+        <OverviewItem icon={<VramIcon />} label="VRAM" value={vramDisplay.value} sub={vramDisplay.sub} />
         <OverviewItem
           icon={<HardDrive />}
           label="Storage"
-          value={diskTotalMb ? formatMemory(diskTotalMb) : '—'}
-          sub={availableDiskMb ? `${formatMemory(availableDiskMb)} free` : undefined}
+          value={diskTotalMb ? formatMemoryMb(diskTotalMb) : '—'}
+          sub={availableDiskMb ? `${formatMemoryMb(availableDiskMb)} free` : undefined}
         />
       </div>
 
@@ -145,14 +133,18 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
         </div>
       )}
 
-      {amdRuntimeMissing && (
-        <div className="mt-4 flex items-start gap-2 rounded-md border border-yellow-200 bg-yellow-50 p-2.5 dark:border-yellow-800 dark:bg-yellow-950">
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-yellow-600 dark:text-yellow-400" />
-          <div className="text-xs text-yellow-800 dark:text-yellow-200">
-            <strong>Container GPU runtime not available.</strong> Your {hardware.gpu.vendor} GPU was detected, but containerized backends do not have
-            ROCm access yet. Host-side Ollama can still use the GPU once it is installed and reachable. Please install the appropriate drivers (AMD
-            ROCm) to enable container GPU acceleration too.
-          </div>
+      {amdHostRocm && (
+        <div
+          className={cn(
+            'mt-4 rounded-md border p-3 text-xs',
+            amdHostRocm.tone === 'ready'
+              ? 'border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-100'
+              : 'border-border bg-muted/40 text-muted-foreground',
+          )}
+          data-testid={amdHostRocm.tone === 'ready' ? 'amd-host-rocm-ready' : 'amd-host-rocm-hint'}
+        >
+          <p className="font-semibold text-foreground">{amdHostRocm.title}</p>
+          <p className="mt-1">{amdHostRocm.body}</p>
         </div>
       )}
 

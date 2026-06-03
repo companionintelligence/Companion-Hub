@@ -1,9 +1,11 @@
-import { existsSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   appStatusColor,
+  BOX_CHARS,
   box,
+  buildEnvOverrides,
   getComposeFiles,
   isFirstRun,
   isHubRepoRoot,
@@ -15,6 +17,7 @@ import {
   renderHelp,
   renderManPage,
   renderStep,
+  STEP_ICONS,
   renderVersion,
   renderWizardWelcome,
   resolveEnvFromArgs,
@@ -24,7 +27,7 @@ import {
   upsertEnvVar,
 } from '../cihub-cli';
 
-// ─── banner ───────────────────────────────────────────────────────────────────
+// ??? banner ???????????????????????????????????????????????????????????????????
 
 describe('banner', () => {
   it('shows COMPANION HUB and ci.computer in green', () => {
@@ -49,17 +52,17 @@ describe('banner', () => {
 
   it('box sections have no side | borders on content lines', () => {
     const plain = stripAnsi(renderHelp());
-    // Content lines should start with 2-space indent, not │
+    // Content lines should start with 2-space indent, not ?
     for (const line of plain.split('\n')) {
-      if (line.startsWith('  ') && !line.startsWith('  ┌') && !line.startsWith('  └')) {
-        expect(line.startsWith('│')).toBe(false);
-        expect(line.endsWith('│')).toBe(false);
+      if (line.startsWith('  ') && !line.startsWith('  ?') && !line.startsWith('  ?')) {
+        expect(line.startsWith('?')).toBe(false);
+        expect(line.endsWith('?')).toBe(false);
       }
     }
   });
 });
 
-// ─── help & man ───────────────────────────────────────────────────────────────
+// ??? help & man ???????????????????????????????????????????????????????????????
 
 describe('renderHelp', () => {
   it('lists all command groups', () => {
@@ -113,7 +116,7 @@ describe('renderManPage', () => {
   });
 });
 
-// ─── step renderer ────────────────────────────────────────────────────────────
+// ??? step renderer ????????????????????????????????????????????????????????????
 
 describe('renderStep', () => {
   it('shows counter and label', () => {
@@ -123,14 +126,14 @@ describe('renderStep', () => {
   });
 
   it('uses the right icon for each status', () => {
-    expect(stripAnsi(renderStep(1, 3, 'x', 'pending'))).toContain('○');
-    expect(stripAnsi(renderStep(1, 3, 'x', 'active'))).toContain('●');
-    expect(stripAnsi(renderStep(1, 3, 'x', 'done'))).toContain('✓');
-    expect(stripAnsi(renderStep(1, 3, 'x', 'fail'))).toContain('✗');
+    expect(stripAnsi(renderStep(1, 3, 'x', 'pending'))).toContain(STEP_ICONS.pending);
+    expect(stripAnsi(renderStep(1, 3, 'x', 'active'))).toContain(STEP_ICONS.active);
+    expect(stripAnsi(renderStep(1, 3, 'x', 'done'))).toContain(STEP_ICONS.done);
+    expect(stripAnsi(renderStep(1, 3, 'x', 'fail'))).toContain(STEP_ICONS.fail);
   });
 });
 
-// ─── version ─────────────────────────────────────────────────────────────────
+// ??? version ?????????????????????????????????????????????????????????????????
 
 describe('renderVersion', () => {
   it('includes the cihub command name', () => {
@@ -145,7 +148,7 @@ describe('renderVersion', () => {
   });
 });
 
-// ─── first-run detection ──────────────────────────────────────────────────────
+// ??? first-run detection ??????????????????????????????????????????????????????
 
 describe('isFirstRun', () => {
   it('returns true when the env file does not exist', () => {
@@ -158,7 +161,7 @@ describe('isFirstRun', () => {
   });
 });
 
-// ─── repo-root guard ───────────────────────────────────────────────────────────
+// ??? repo-root guard ???????????????????????????????????????????????????????????
 
 describe('isHubRepoRoot', () => {
   it('recognises the CI-Hub repo from its package.json name + scripts dir', () => {
@@ -174,7 +177,7 @@ describe('isHubRepoRoot', () => {
   });
 });
 
-// ─── arg helpers ─────────────────────────────────────────────────────────────
+// ??? arg helpers ?????????????????????????????????????????????????????????????
 
 describe('normalizeCliArgs', () => {
   it('strips the npm forwarded double dash', () => {
@@ -209,7 +212,7 @@ describe('resolveEnvFromArgs', () => {
   });
 });
 
-// ─── wizard selections ────────────────────────────────────────────────────────
+// ??? wizard selections ????????????????????????????????????????????????????????
 
 describe('wizard selections', () => {
   it('maps numeric shortcuts to environment names', () => {
@@ -256,7 +259,7 @@ describe('wizard selections', () => {
   });
 });
 
-// ─── stripAnsi ──────────────────────────────────────────────────────────────────
+// ??? stripAnsi ??????????????????????????????????????????????????????????????????
 
 describe('stripAnsi', () => {
   it('removes SGR colour and style codes', () => {
@@ -269,7 +272,7 @@ describe('stripAnsi', () => {
   });
 });
 
-// ─── compose file mapping ──────────────────────────────────────────────────────
+// ??? compose file mapping ??????????????????????????????????????????????????????
 
 describe('getComposeFiles', () => {
   it('returns the local compose file for local', () => {
@@ -286,7 +289,7 @@ describe('getComposeFiles', () => {
   });
 });
 
-// ─── env file round-trip ───────────────────────────────────────────────────────
+// ??? env file round-trip ???????????????????????????????????????????????????????
 
 describe('parseEnvFile / upsertEnvVar', () => {
   const TMP = '.env.__vitest__';
@@ -332,7 +335,7 @@ describe('parseEnvFile / upsertEnvVar', () => {
   });
 });
 
-// ─── compose profiles / private-vpn ─────────────────────────────────────────────
+// ??? compose profiles / private-vpn ?????????????????????????????????????????????
 
 describe('mergeComposeProfilesFromEnvFile', () => {
   const TMP = '.env.__vitest_vpn__';
@@ -348,9 +351,14 @@ describe('mergeComposeProfilesFromEnvFile', () => {
     expect(mergeComposeProfilesFromEnvFile(TMP).split(',')).toContain('private-vpn');
   });
 
-  it('removes private-vpn when PRIVATE_VPN_ENABLED=false', () => {
-    upsertEnvVar(TMP, 'PRIVATE_VPN_ENABLED', 'false');
+  it('removes private-vpn when PRIVATE_VPN_USER_DISABLED=true', () => {
+    upsertEnvVar(TMP, 'PRIVATE_VPN_USER_DISABLED', 'true');
     expect(mergeComposeProfilesFromEnvFile(TMP).split(',')).not.toContain('private-vpn');
+  });
+
+  it('keeps private-vpn when legacy PRIVATE_VPN_ENABLED=false is present', () => {
+    upsertEnvVar(TMP, 'PRIVATE_VPN_ENABLED', 'false');
+    expect(mergeComposeProfilesFromEnvFile(TMP).split(',')).toContain('private-vpn');
   });
 
   it('preserves existing COMPOSE_PROFILES from the file', () => {
@@ -359,9 +367,52 @@ describe('mergeComposeProfilesFromEnvFile', () => {
     expect(profiles).toContain('gpu');
     expect(profiles).toContain('private-vpn');
   });
+
+  it('adds cloudflare profile when tunnel/token exists under ROOT_FOLDER_HOST', () => {
+    const root = join(process.cwd(), '.internal.__vitest_tunnel__');
+    const tokenDir = join(root, '..', 'tunnel');
+    mkdirSync(tokenDir, { recursive: true });
+    writeFileSync(join(tokenDir, 'token'), 'test-tunnel-token\n', 'utf8');
+    upsertEnvVar(TMP, 'ROOT_FOLDER_HOST', root);
+    try {
+      expect(mergeComposeProfilesFromEnvFile(TMP).split(',')).toContain('cloudflare');
+    } finally {
+      rmSync(join(root, '..', 'tunnel'), { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
-// ─── app runtime arg parsing ────────────────────────────────────────────────────
+describe('buildEnvOverrides', () => {
+  const TMP = '.env.__vitest_overrides__';
+  const abs = join(process.cwd(), TMP);
+
+  afterEach(() => {
+    if (existsSync(abs)) rmSync(abs);
+    delete process.env.CI_HUB_CONTAINER_UID;
+    delete process.env.CI_HUB_CONTAINER_GID;
+  });
+
+  it('propagates container UID/GID from the env file when set (Docker Desktop root)', () => {
+    upsertEnvVar(TMP, 'CI_HUB_CONTAINER_UID', '0');
+    upsertEnvVar(TMP, 'CI_HUB_CONTAINER_GID', '0');
+    expect(buildEnvOverrides(TMP)).toMatchObject({
+      ENV_FILE: TMP,
+      CI_HUB_CONTAINER_UID: '0',
+      CI_HUB_CONTAINER_GID: '0',
+    });
+  });
+
+  it('does not inject host getuid when the env file omits container identity', () => {
+    upsertEnvVar(TMP, 'ROOT_FOLDER_HOST', '/tmp/hub-state');
+    const overrides = buildEnvOverrides(TMP);
+    expect(overrides.ENV_FILE).toBe(TMP);
+    expect(overrides).not.toHaveProperty('CI_HUB_CONTAINER_UID');
+    expect(overrides).not.toHaveProperty('CI_HUB_CONTAINER_GID');
+  });
+});
+
+// ??? app runtime arg parsing ????????????????????????????????????????????????????
 
 describe('parseAppRuntimeArgs', () => {
   it('returns empty arrays for no args', () => {
@@ -396,7 +447,7 @@ describe('parseAppRuntimeArgs', () => {
   });
 });
 
-// ─── status colour coding ───────────────────────────────────────────────────────
+// ??? status colour coding ???????????????????????????????????????????????????????
 
 describe('appStatusColor', () => {
   beforeEach(() => {
@@ -423,17 +474,17 @@ describe('appStatusColor', () => {
   });
 });
 
-// ─── box rendering primitive ────────────────────────────────────────────────────
+// ??? box rendering primitive ????????????????????????????????????????????????????
 
 describe('box', () => {
   it('renders a title header, indented body, and a closing rule', () => {
     const lines = stripAnsi(box('Title', ['line one', 'line two'])).split('\n');
-    expect(lines[0]).toContain('┌─ Title');
-    expect(lines[0]).toContain('┐');
+    expect(lines[0]).toContain(`${BOX_CHARS.topLeft}${BOX_CHARS.horizontal} Title`);
+    expect(lines[0]).toContain(BOX_CHARS.horizontal);
     expect(lines[1]).toBe('  line one');
     expect(lines[2]).toBe('  line two');
-    expect(lines[lines.length - 1]).toContain('└');
-    expect(lines[lines.length - 1]).toContain('┘');
+    expect(lines[lines.length - 1]).toContain(BOX_CHARS.bottomLeft);
+    expect(lines[lines.length - 1]).toContain(BOX_CHARS.horizontal);
   });
 
   it('handles an empty body without throwing', () => {
@@ -441,7 +492,7 @@ describe('box', () => {
   });
 });
 
-// ─── package metadata ─────────────────────────────────────────────────────────
+// ??? package metadata ?????????????????????????????????????????????????????????
 
 describe('package metadata', () => {
   it('publishes the cihub bin entry', () => {

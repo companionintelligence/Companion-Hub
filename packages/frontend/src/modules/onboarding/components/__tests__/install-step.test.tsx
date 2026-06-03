@@ -4,6 +4,8 @@ import { InstallStep } from '../install-step';
 import type { OnboardingApp } from '../../helpers/types';
 
 const mockApiFetch = vi.fn();
+const mockInvalidateQueries = vi.fn();
+const mockSetQueryData = vi.fn();
 
 vi.mock('@/lib/api-fetch', () => ({
   apiFetch: (...args: unknown[]) => mockApiFetch(...args),
@@ -12,8 +14,8 @@ vi.mock('@/lib/api-fetch', () => ({
 vi.mock('@tanstack/react-query', () => ({
   useQueryClient: () => ({
     getQueryData: vi.fn(() => ({ installed: [] })),
-    setQueryData: vi.fn(),
-    invalidateQueries: vi.fn(),
+    setQueryData: mockSetQueryData,
+    invalidateQueries: mockInvalidateQueries,
   }),
 }));
 
@@ -37,6 +39,7 @@ describe('InstallStep', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockApiFetch.mockResolvedValue({ ok: true, json: async () => ({}) });
+    mockInvalidateQueries.mockResolvedValue(undefined);
   });
 
   it('renders all apps in queued state initially', () => {
@@ -209,5 +212,49 @@ describe('InstallStep', () => {
       },
       { timeout: 10000 },
     );
+  });
+
+  it('invalidates installed apps on HTTP install failure (server truth)', async () => {
+    mockApiFetch.mockImplementation(async (url: string) => {
+      if (url.includes('/api/app-lifecycle/') && url.includes('/install')) {
+        return { ok: false, json: async () => ({ message: 'Server error' }) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+
+    render(<InstallStep apps={[makeApp('plane', 'Plane', 'plane:store1')]} onComplete={onComplete} />);
+
+    await waitFor(() => {
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ['installed-apps'] });
+    });
+  });
+
+  it('marks app failed when poll sees install_failed', async () => {
+    mockApiFetch.mockImplementation(async (url: string) => {
+      if (url.includes('/api/app-lifecycle/') && url.includes('/install')) {
+        return { ok: true, json: async () => ({ requestId: '1' }) };
+      }
+      if (url === '/api/apps/installed') {
+        return {
+          ok: true,
+          json: async () => ({
+            installed: [
+              {
+                info: { urn: 'plane:store1', name: 'Plane' },
+                app: { status: 'install_failed' },
+              },
+            ],
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+
+    render(<InstallStep apps={[makeApp('plane', 'Plane', 'plane:store1')]} onComplete={onComplete} />);
+
+    expect(await screen.findByText('Install failed — retry from My Apps', {}, { timeout: 8000 })).toBeInTheDocument();
+    await waitFor(() => {
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ['installed-apps'] });
+    });
   });
 });

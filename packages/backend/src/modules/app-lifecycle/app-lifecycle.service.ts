@@ -10,6 +10,7 @@ import validator from 'validator';
 import { AppFilesManager } from '../apps/app-files-manager';
 import { AppsRepository } from '../apps/apps.repository';
 import { AppsService } from '../apps/apps.service';
+import { InstallPipelineTracker } from '../apps/install-pipeline.tracker';
 import { BackupManager } from '../backups/backup.manager';
 import { CloudflareClientService, AppInfo } from '../cloudflare/cloudflare-client.service';
 import { TailscaleService } from '../tailscale/tailscale.service';
@@ -20,6 +21,7 @@ import { AppStoreService } from '../app-stores/app-store.service';
 import { AppEventsQueue, appEventResultSchema, appEventSchema } from '../queue/entities/app-events';
 import { AppLifecycleCommandFactory } from './app-lifecycle-command.factory';
 import { appFormSchema } from './dto/app-lifecycle.dto';
+import { INSTALL_PIPELINE_MUTEX_KEY } from '@/common/constants';
 import { APP_ASYNC_MUTEX } from '@/utils/mutex/mutex.module';
 import type { AsyncMutex } from '@/utils/mutex/async-mutex';
 import type { z } from 'zod';
@@ -66,6 +68,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
     private readonly appStoreService: AppStoreService,
     private readonly moduleRef: ModuleRef,
     @Inject(APP_ASYNC_MUTEX) private mutex: AsyncMutex,
+    private readonly installPipelineTracker: InstallPipelineTracker,
     @Optional() private readonly agentNotifyService?: AgentNotifyService,
   ) {
     this.logger.debug('Subscribing to app events...');
@@ -97,7 +100,21 @@ export class AppLifecycleService implements OnApplicationBootstrap {
     }, 10000); // Wait 10s for all services to be ready
   }
 
+  private async emitInstallQueueUpdate() {
+    const queue = await this.appsService.getInstallQueueState();
+    this.sseService.emit('app', { event: 'install_queue', active: queue.active, queued: queue.queued });
+  }
+
   async invokeCommand(data: z.infer<typeof appEventSchema>, reply: (response: z.output<typeof appEventResultSchema>) => Promise<void>) {
+    // Serialize installs so a second "Install" cannot compete with an in-progress image pull.
+    let releasePipeline: (() => void) | undefined;
+    const isInstall = data.command === 'install';
+    if (isInstall) {
+      releasePipeline = await this.mutex.acquire(INSTALL_PIPELINE_MUTEX_KEY);
+      this.installPipelineTracker.setActive(data.appUrn);
+      void this.emitInstallQueueUpdate();
+    }
+
     const release = await this.mutex.acquire(data.appUrn);
 
     try {
@@ -116,6 +133,11 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       await reply({ success: false, message: String(err) });
     } finally {
       release();
+      if (isInstall) {
+        this.installPipelineTracker.setActive(null);
+        releasePipeline?.();
+        void this.emitInstallQueueUpdate();
+      }
     }
   }
 
@@ -190,18 +212,13 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       }
     }
 
-    const app = await this.appRepository.getAppByUrn(appUrn);
+    const existingApp = await this.appRepository.getAppByUrn(appUrn);
 
     const parsedFormResult = appFormSchema.safeParse(form);
     if (!parsedFormResult.success) {
       throw new TranslatableError('SYSTEM_ERROR_INVALID_BODY', undefined, HttpStatus.BAD_REQUEST, { cause: parsedFormResult.error });
     }
     const parsedForm = normalizeLocalOpenPort(parsedFormResult.data);
-
-    if (app) {
-      await this.appRepository.updateAppById(app.id, { config: parsedForm, ...parsedForm });
-      return this.startApp({ appUrn });
-    }
 
     const { exposed, exposedLocal, openPort, domain, isVisibleOnGuestDashboard, enableAuth, port } = parsedForm;
     const apps = await this.appRepository.getApps();
@@ -255,8 +272,11 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       throw new TranslatableError('APP_ERROR_APP_FORCE_EXPOSED', { id: appUrn });
     }
 
+    const conflictsOtherApp = <T extends { id?: number }>(candidates: T[]) =>
+      existingApp ? candidates.filter((candidate) => candidate.id !== existingApp.id) : candidates;
+
     if (exposed && domain) {
-      const appsWithSameDomain = await this.appRepository.getAppsByDomain(domain);
+      const appsWithSameDomain = conflictsOtherApp(await this.appRepository.getAppsByDomain(domain));
 
       if (appsWithSameDomain.length > 0) {
         throw new TranslatableError('APP_ERROR_DOMAIN_ALREADY_IN_USE', { domain, id: appsWithSameDomain[0]?.appName });
@@ -265,7 +285,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
 
     const routingSubdomain = uniqueRoutingLocalSubdomain(parsedForm);
     if (routingSubdomain) {
-      const appsWithSameLocalSubdomain = await this.appRepository.getAppsByLocalSubdomain(routingSubdomain);
+      const appsWithSameLocalSubdomain = conflictsOtherApp(await this.appRepository.getAppsByLocalSubdomain(routingSubdomain));
 
       if (appsWithSameLocalSubdomain.length > 0) {
         throw new TranslatableError('APP_ERROR_LOCAL_SUBDOMAIN_ALREADY_IN_USE', {
@@ -276,11 +296,16 @@ export class AppLifecycleService implements OnApplicationBootstrap {
     }
 
     if (publishesHostPort(parsedForm) && port) {
-      const appsWithSamePort = await this.appRepository.getAppsByPort(port);
+      const appsWithSamePort = conflictsOtherApp(await this.appRepository.getAppsByPort(port));
 
       if (appsWithSamePort.length > 0) {
         throw new TranslatableError('APP_ERROR_PORT_ALREADY_IN_USE', { port: port.toString(), id: appsWithSamePort[0]?.appName });
       }
+    }
+
+    if (existingApp && existingApp.status !== 'install_failed') {
+      await this.appRepository.updateAppById(existingApp.id, { config: parsedForm, ...parsedForm });
+      return this.startApp({ appUrn });
     }
 
     // TODO: Re-enable version gating once Hub versioning is stable
@@ -290,46 +315,81 @@ export class AppLifecycleService implements OnApplicationBootstrap {
     //   throw new TranslatableError('APP_UPDATE_ERROR_MIN_HUB_VERSION', { id: appUrn, minVersion: appInfo.min_hub_version });
     // }
 
-    const createdApp = await this.appRepository.createApp({
-      appName,
-      status: 'installing' as const,
-      config: parsedForm,
-      // Port semantics:
-      // - Local exposure always publishes the host port (normalized to openPort=true when needed).
-      // - Cloudflare/Tailscale with exposedLocal also publish the host port for LAN access during DNS propagation.
-      // - Traefik routing uses params.internalPort from the service definition, not this database field.
-      port: parsedForm.port ?? appInfo.port,
-      version: appInfo.cihub_app_version,
-      exposed: exposed ?? false,
-      domain: domain ?? null,
-      localSubdomain: parsedForm.localSubdomain ?? null,
-      publicDomain: parsedForm.publicDomain ?? null,
-      openPort: openPort ?? false,
-      exposedLocal: exposedLocal ?? !!appInfo.exposable,
-      exposureMode: parsedForm.exposureMode ?? 'local',
-      appStoreSlug: appStoreId,
-      isVisibleOnGuestDashboard,
-      enableAuth: enableAuth ?? false,
-    });
+    const installRecord =
+      existingApp ??
+      (await this.appRepository.createApp({
+        appName,
+        status: 'installing' as const,
+        config: parsedForm,
+        // Port semantics:
+        // - Local exposure always publishes the host port (normalized to openPort=true when needed).
+        // - Cloudflare/Tailscale with exposedLocal also publish the host port for LAN access during DNS propagation.
+        // - Traefik routing uses params.internalPort from the service definition, not this database field.
+        port: parsedForm.port ?? appInfo.port,
+        version: appInfo.cihub_app_version,
+        exposed: exposed ?? false,
+        domain: domain ?? null,
+        localSubdomain: parsedForm.localSubdomain ?? null,
+        publicDomain: parsedForm.publicDomain ?? null,
+        openPort: openPort ?? false,
+        exposedLocal: exposedLocal ?? !!appInfo.exposable,
+        exposureMode: parsedForm.exposureMode ?? 'local',
+        appStoreSlug: appStoreId,
+        isVisibleOnGuestDashboard,
+        enableAuth: enableAuth ?? false,
+      }));
+
+    if (existingApp) {
+      await this.appRepository.updateAppById(existingApp.id, {
+        status: 'installing',
+        config: parsedForm,
+        port: parsedForm.port ?? existingApp.port ?? appInfo.port,
+        version: appInfo.cihub_app_version,
+        exposed: exposed ?? false,
+        domain: domain ?? null,
+        localSubdomain: parsedForm.localSubdomain ?? null,
+        publicDomain: parsedForm.publicDomain ?? null,
+        openPort: openPort ?? false,
+        exposedLocal: exposedLocal ?? !!appInfo.exposable,
+        exposureMode: parsedForm.exposureMode ?? 'local',
+        isVisibleOnGuestDashboard,
+        enableAuth: enableAuth ?? false,
+      });
+    }
 
     this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'installing' });
+    void this.emitInstallQueueUpdate();
 
     const requestId = crypto.randomUUID();
+    const appId = installRecord.id;
+    const recordExposedLocal = exposedLocal ?? existingApp?.exposedLocal ?? !!appInfo.exposable;
 
     this.appEventsQueue.publish({ appUrn, command: 'install', requestId, form: { ...parsedForm, skipRun } }).then(async ({ success, message }) => {
       if (success) {
         this.logger.info(`App ${appUrn} installed successfully`);
-        await this.appRepository.updateAppById(createdApp.id, { status: 'running' });
-        this.sseService.emit('app', { event: 'install_success', appUrn, appStatus: 'running' });
+        const latest = await this.appRepository.getAppById(appId);
+        if (latest?.status === 'installing') {
+          await this.appRepository.updateAppById(appId, { status: 'running' });
+          this.sseService.emit('app', { event: 'install_success', appUrn, appStatus: 'running' });
+        }
+        void this.emitInstallQueueUpdate();
 
-        // Check if we need to sync Cloudflare state (if app is exposedLocal)
-        if (createdApp.exposedLocal || (appInfo.exposable && !exposedLocal)) {
+        if (recordExposedLocal || (appInfo.exposable && !exposedLocal)) {
           await this.syncExposure();
         }
       } else {
+        const isRpcTimeout = /timed out|RPC_TIMEOUT/i.test(message);
+        if (isRpcTimeout) {
+          this.logger.warn(
+            `Install RPC timed out for ${appUrn}; the worker may still be pulling images or starting containers. Keeping the app in 'installing' until the worker finishes.`,
+          );
+          return;
+        }
+
         this.logger.error(`Failed to install app ${appUrn}: ${message}`);
-        await this.appRepository.deleteAppById(createdApp.id);
-        this.sseService.emit('app', { event: 'install_error', appUrn, appStatus: 'missing', error: message });
+        await this.appRepository.updateAppById(appId, { status: 'install_failed' });
+        this.sseService.emit('app', { event: 'install_error', appUrn, appStatus: 'install_failed', error: message });
+        void this.emitInstallQueueUpdate();
         this.agentNotifyService?.notify('install_error', { appUrn }, 'high');
       }
     });

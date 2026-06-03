@@ -184,6 +184,33 @@ describe('AiSetupStep', () => {
     expect(screen.getByTestId('hw-gpu')).toHaveTextContent('RTX 4090');
   });
 
+  it('shows APU badge and shared VRAM for AMD unified-memory hardware', async () => {
+    api.profile = {
+      ...highTierProfile,
+      tier: 'high',
+      hardware: {
+        ...highTierProfile.hardware,
+        cpu: { arch: 'x86_64', cores: 32, model: 'RYZEN AI MAX+ 395 w/ Radeon 8060S' },
+        ram: { totalMb: 125_829, availableMb: 115_000 },
+        gpu: {
+          available: true,
+          vendor: 'amd',
+          model: 'Radeon 8060S',
+          vramMb: 125_829,
+          unifiedMemory: true,
+          driverVersion: '',
+          runtimeAvailable: false,
+        },
+      },
+    };
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+    expect(screen.getByTestId('tier-badge')).toHaveTextContent('APU');
+    expect(screen.getByTestId('hw-gpu')).toHaveTextContent('Radeon 8060S');
+    expect(screen.getByText('Shared · APU')).toBeInTheDocument();
+    expect(screen.queryByText('No GPU detected.')).not.toBeInTheDocument();
+  });
+
   it('shows no GPU warning copy when gpu.available is false', async () => {
     api.profile = {
       ...highTierProfile,
@@ -209,18 +236,48 @@ describe('AiSetupStep', () => {
     expect(screen.getByText(/NVIDIA GPU detected, but the container GPU runtime is not ready yet/i)).toBeInTheDocument();
   });
 
-  it('shows AMD runtime warning copy when AMD GPU runtime is unavailable', async () => {
+  it('shows host ROCm ready notice when AMD GPU has host ROCm', async () => {
     api.profile = {
       ...highTierProfile,
       hardware: {
         ...highTierProfile.hardware,
-        gpu: { ...highTierProfile.hardware.gpu, available: true, runtimeAvailable: false, vendor: 'amd', model: 'Radeon RX 7900 XTX' },
+        gpu: {
+          ...highTierProfile.hardware.gpu,
+          available: true,
+          runtimeAvailable: false,
+          hostRocmAvailable: true,
+          vendor: 'amd',
+          model: 'Radeon RX 7900 XTX',
+        },
       },
     };
     renderStep();
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
-    expect(screen.getByText('Container GPU runtime not available.')).toBeInTheDocument();
-    expect(screen.getByText(/Host-side Ollama can still use the GPU/i)).toBeInTheDocument();
+    expect(screen.getByTestId('amd-host-rocm-ready')).toBeInTheDocument();
+    expect(screen.getByText(/Host ROCm detected/i)).toBeInTheDocument();
+    expect(screen.queryByText('Container GPU runtime not available.')).not.toBeInTheDocument();
+  });
+
+  it('shows host ROCm install hint when AMD GPU lacks host ROCm', async () => {
+    api.profile = {
+      ...highTierProfile,
+      hardware: {
+        ...highTierProfile.hardware,
+        gpu: {
+          ...highTierProfile.hardware.gpu,
+          available: true,
+          runtimeAvailable: false,
+          hostRocmAvailable: false,
+          vendor: 'amd',
+          model: 'Radeon RX 7900 XTX',
+        },
+      },
+    };
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+    expect(screen.getByTestId('amd-host-rocm-hint')).toBeInTheDocument();
+    expect(screen.getByText(/Install ROCm on the host/i)).toBeInTheDocument();
+    expect(screen.queryByText('Container GPU runtime not available.')).not.toBeInTheDocument();
   });
 
   it('shows generic non-Linux NVIDIA guidance without Linux shell commands', async () => {
@@ -247,7 +304,8 @@ describe('AiSetupStep', () => {
     renderStep();
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
     expect((screen.getByTestId('model-checkbox-phi-4-mini') as HTMLInputElement).checked).toBe(false);
-    expect(screen.getByTestId('install-block-reason')).toBeInTheDocument();
+    // No install-block-reason: selecting no models is allowed (users can add AI later in Settings).
+    expect(screen.queryByTestId('install-block-reason')).not.toBeInTheDocument();
   });
 
   it('submits only Ollama-backed models with the agent framework and exposure', async () => {

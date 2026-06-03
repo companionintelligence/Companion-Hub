@@ -8,7 +8,9 @@ import { useLocation, Navigate } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
 import { systemLoadOptions } from '@/api-client/@tanstack/react-query.gen';
 import { CoreServerBanner } from '@/components/core-server-banner/core-server-banner';
+import { detectClientPlatform, shouldShowCoreServerBanner } from '@/components/core-server-banner/core-server-banner-visibility';
 import { useCoreServerBanner } from '@/hooks/use-core-server-banner';
+import { apiFetch } from '@/lib/api-fetch';
 
 export const DashboardLayoutSuspense = ({ children }: PropsWithChildren) => {
   return (
@@ -27,11 +29,35 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
   const prevPathRef = useRef(location.pathname);
   const { isLoggedIn } = useUserContext();
   const { isDismissed, dismiss } = useCoreServerBanner();
+  const clientPlatform = detectClientPlatform();
 
   const { data: systemData } = useQuery({
     ...systemLoadOptions(),
     staleTime: 30_000,
   });
+
+  const { data: deviceId } = useQuery({
+    queryKey: ['registration', 'device-id'],
+    queryFn: async () => {
+      const res = await apiFetch('/api/registration/device-id');
+      if (!res.ok) return undefined;
+      const data = (await res.json()) as { device_id?: string };
+      return data.device_id;
+    },
+    staleTime: 300_000,
+  });
+
+  const systemSnapshot = systemData
+    ? { memoryTotal: systemData.memoryTotal, diskSize: systemData.diskSize, cpuCores: systemData.cpuCores }
+    : undefined;
+
+  const showCoreServerBanner =
+    !isDismissed &&
+    shouldShowCoreServerBanner({
+      clientPlatform,
+      deviceId,
+      system: systemSnapshot,
+    });
 
   useEffect(() => {
     prevPathRef.current = location.pathname;
@@ -101,12 +127,7 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
     <div className="flex bg-background overflow-hidden w-screen flex-col" style={{ height: 'calc(100vh - var(--titlebar-height, 0px))' }}>
       <Header isLoggedIn={isLoggedIn} isUpdateAvailable={!isLatest} allowAutoThemes={userSettings.allowAutoThemes} />
       <main className="relative flex flex-1 flex-col gap-4 pt-16 px-4 container mx-auto h-full overflow-y-auto overflow-x-hidden no-scrollbar">
-        {!isDismissed && (
-          <CoreServerBanner
-            onDismiss={dismiss}
-            system={systemData ? { memoryTotal: systemData.memoryTotal, diskSize: systemData.diskSize, cpuCores: systemData.cpuCores } : undefined}
-          />
-        )}
+        {showCoreServerBanner && <CoreServerBanner onDismiss={dismiss} system={systemSnapshot} />}
         <AnimatePresence mode="popLayout" custom={direction}>
           <motion.div
             key={getAnimationKey(location.pathname)}

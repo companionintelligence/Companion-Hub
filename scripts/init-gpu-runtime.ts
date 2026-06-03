@@ -148,6 +148,41 @@ function nvidiaProbePath(): string {
   return path.join(resolveStateDir(), 'hardware', 'nvidia.json');
 }
 
+type RocmProbe = {
+  available: boolean;
+  source: 'host-rocm-smi' | 'host-dev-kfd';
+  updatedAt: string;
+};
+
+function rocmProbePath(): string {
+  return path.join(resolveStateDir(), 'hardware', 'rocm.json');
+}
+
+function writeRocmProbe(probe: RocmProbe): void {
+  const outPath = rocmProbePath();
+  mkdirSync(path.dirname(outPath), { recursive: true });
+  writeFileSync(outPath, `${JSON.stringify(probe, null, 2)}\n`, 'utf8');
+  console.log(`init-gpu-runtime: wrote ROCm probe cache to ${outPath} (available=${probe.available})`);
+}
+
+function collectHostRocmProbeLinux(): RocmProbe {
+  const hasKfd = existsSync('/dev/kfd') && existsSync('/dev/dri');
+  if (hasKfd) {
+    return { available: true, source: 'host-dev-kfd', updatedAt: new Date().toISOString() };
+  }
+
+  const smi = runCapture('sh', ['-lc', 'rocm-smi --version']);
+  if (smi.ok && smi.stdout.trim().length > 0) {
+    return { available: true, source: 'host-rocm-smi', updatedAt: new Date().toISOString() };
+  }
+
+  return { available: false, source: 'host-dev-kfd', updatedAt: new Date().toISOString() };
+}
+
+function probeHostRocmLinux(): void {
+  writeRocmProbe(collectHostRocmProbeLinux());
+}
+
 function writeNvidiaProbe(probe: NvidiaProbe): void {
   const outPath = nvidiaProbePath();
   mkdirSync(path.dirname(outPath), { recursive: true });
@@ -388,6 +423,8 @@ function main() {
   }
 
   if (platform === 'linux') {
+    probeHostRocmLinux();
+
     if (!hasCommand('docker')) {
       warnCpuFallback('Docker is not available yet, skipping GPU runtime setup.');
       return;

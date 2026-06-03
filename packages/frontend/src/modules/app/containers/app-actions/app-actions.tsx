@@ -242,6 +242,15 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
 
   const StopButton = <ActionButton key="stop" IconComponent={Pause} onClick={stopDisclosure.open} title={t('APP_ACTION_STOP')} intent="default" />;
   const InstallButton = <ActionButton key="install" onClick={installDisclosure.open} title={t('APP_ACTION_INSTALL')} intent="success" />;
+  const RetryInstallButton = (
+    <ActionButton
+      key="retry-install"
+      IconComponent={RotateCw}
+      onClick={installDisclosure.open}
+      title={t('APP_ACTION_RETRY_INSTALL')}
+      intent="warning"
+    />
+  );
 
   // Availability check state
   const [checkError, setCheckError] = useState<string | null>(null);
@@ -561,6 +570,11 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
     case 'restoring':
       buttons.push(LoadingButton);
       listItems.push(CancelListItem);
+      break;
+    case 'install_failed':
+      buttons.push(RetryInstallButton);
+      listItems.push(SettingsListItem);
+      listItemsDestructive.push(RemoveListItem);
       break;
     case 'missing':
       buttons.push(InstallButton);

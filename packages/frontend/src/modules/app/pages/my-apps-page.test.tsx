@@ -36,6 +36,10 @@ vi.mock('@/lib/hooks/use-disclosure', () => ({
   }),
 }));
 
+vi.mock('@/modules/app/helpers/use-install-queue', () => ({
+  useInstallQueue: () => ({ data: undefined, isLoading: false }),
+}));
+
 vi.mock('../components/dialogs/add-link/add-link-dialog', () => ({
   AddLinkDialog: () => null,
 }));

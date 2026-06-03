@@ -46,7 +46,7 @@ vi.mock('@/modules/env/env.utils', () => {
 
 import fs from 'node:fs';
 import dotenv from 'dotenv';
-import { generateSystemEnvFile } from '../env-helpers';
+import { generateSystemEnvFile, writeResolvedEnvFile } from '../env-helpers';
 
 const mockedFs = vi.mocked(fs);
 const savedEnv: Record<string, string | undefined> = {};
@@ -56,7 +56,7 @@ describe('env-helpers — resolve() priority chain', () => {
     vi.clearAllMocks();
 
     // Save and set required env vars
-    for (const key of ['ROOT_FOLDER_HOST', 'CI_CLOUD_URL', 'DOMAIN', 'GUEST_DASHBOARD', 'DEMO_MODE']) {
+    for (const key of ['ROOT_FOLDER_HOST', 'CI_CLOUD_URL', 'DOMAIN', 'GUEST_DASHBOARD', 'DEMO_MODE', 'JWT_SECRET', 'MCP_API_KEY']) {
       savedEnv[key] = process.env[key];
     }
     process.env.ROOT_FOLDER_HOST = '/home/user/ci-os-hub';
@@ -135,5 +135,57 @@ describe('env-helpers — resolve() priority chain', () => {
     setupMocks({ settingsJson: { guestDashboard: true } });
     const envMap = await generateSystemEnvFile();
     expect(envMap.get('GUEST_DASHBOARD')).toBe('true');
+  });
+
+  it('MUST keep process.env JWT_SECRET when set, even if data .env differs', async () => {
+    process.env.JWT_SECRET = 'runtime-jwt-secret';
+    setupMocks({ dataEnv: 'JWT_SECRET=from-data' });
+    await generateSystemEnvFile();
+    expect(process.env.JWT_SECRET).toBe('runtime-jwt-secret');
+  });
+
+  it('MUST keep process.env MCP_API_KEY when set, even if data .env differs', async () => {
+    process.env.MCP_API_KEY = 'runtime-mcp-key';
+    setupMocks({ dataEnv: 'MCP_API_KEY=from-data' });
+    await generateSystemEnvFile();
+    expect(process.env.MCP_API_KEY).toBe('runtime-mcp-key');
+  });
+
+  it('MUST put runtime JWT_SECRET in envMap via resolve()', async () => {
+    process.env.JWT_SECRET = 'runtime-jwt-secret';
+    setupMocks({ dataEnv: 'JWT_SECRET=from-data' });
+    const envMap = await generateSystemEnvFile();
+    expect(envMap.get('JWT_SECRET')).toBe('runtime-jwt-secret');
+  });
+
+  it('MUST complete bootstrap when state/.env.resolved cannot be written (EACCES)', async () => {
+    setupMocks({});
+    const target = '/tmp/ci-hub-env-test/state/.env.resolved';
+    (mockedFs.promises.writeFile as any).mockImplementation(async (filePath: string) => {
+      if (String(filePath).endsWith('.env.resolved')) {
+        const error = new Error('EACCES') as NodeJS.ErrnoException;
+        error.code = 'EACCES';
+        throw error;
+      }
+    });
+
+    const envMap = await generateSystemEnvFile();
+    expect(envMap.get('ROOT_FOLDER_HOST')).toBe('/home/user/ci-os-hub');
+    expect(process.env.ROOT_FOLDER_HOST).toBe('/home/user/ci-os-hub');
+    expect(mockedFs.promises.writeFile).toHaveBeenCalled();
+    void target;
+  });
+});
+
+describe('writeResolvedEnvFile', () => {
+  it('returns false when the target path is not writable', async () => {
+    (mockedFs.promises.writeFile as any).mockImplementation(async () => {
+      const error = new Error('EACCES') as NodeJS.ErrnoException;
+      error.code = 'EACCES';
+      throw error;
+    });
+
+    const wrote = await writeResolvedEnvFile('/data/state/.env.resolved', 'KEY=value\n');
+    expect(wrote).toBe(false);
   });
 });

@@ -15,6 +15,11 @@ const INCOMPLETE_GPU_PROFILE_REFRESH_COOLDOWN_MS = 5 * 60 * 1000;
 // Any reading below this threshold is treated as unreliable for a discrete GPU.
 const MIN_PLAUSIBLE_DISCRETE_VRAM_MB = 512;
 
+type IntegratedGpuInference = {
+  vendor: 'amd' | 'intel';
+  model: string;
+};
+
 /** Hardware data written by the Tauri desktop app on macOS hosts. */
 interface MacOsHostProbe {
   platform: 'darwin';
@@ -136,7 +141,7 @@ export class HardwareInspectorService implements OnModuleInit {
       macOsProbe?.isAppleSilicon === true ||
       (hostProbe?.platform === 'darwin' && hostProbe.cpuArch === 'arm64' && (hostProbe.host.cpuModel?.startsWith('Apple') ?? false));
 
-    const gpu: HardwareProfile['gpu'] = {
+    let gpu: HardwareProfile['gpu'] = {
       // Apple Silicon always has an integrated GPU; don't rely on container detection.
       available: isAppleSilicon ? true : effectiveGpuInfo.available,
       vendor: isAppleSilicon ? 'apple' : effectiveGpuInfo.vendor,
@@ -146,6 +151,20 @@ export class HardwareInspectorService implements OnModuleInit {
       driverVersion: effectiveGpuInfo.driverVersion,
       runtimeAvailable: isAppleSilicon || (effectiveGpuInfo.vendor === 'nvidia' ? nvidiaRuntime : rocmSupport),
     };
+
+    if (!isAppleSilicon) {
+      gpu = this.applyIntegratedGpuInference(gpu, cpuInfo.model, ramInfo.totalMb, rocmSupport);
+    }
+
+    if (gpu.vendor === 'amd') {
+      const hostRocmProbe = await this.readRocmHostProbe();
+      gpu = { ...gpu, hostRocmAvailable: hostRocmProbe?.available ?? false };
+      if (gpu.hostRocmAvailable) {
+        this.logger.info('[HardwareInspector] AMD GPU detected and host ROCm is available.');
+      } else if (gpu.available) {
+        this.logger.info('[HardwareInspector] AMD GPU detected; host ROCm not detected (install on host for Ollama GPU acceleration).');
+      }
+    }
 
     if (gpu.vendor === 'nvidia') {
       if (gpu.runtimeAvailable) {
@@ -195,6 +214,82 @@ export class HardwareInspectorService implements OnModuleInit {
     } catch {
       return { platform: String(platform), name: platform === 'darwin' ? 'macOS' : String(platform), version: '' };
     }
+  }
+
+  /**
+   * Infer an integrated GPU (APU / SoC) from the host CPU marketing name when container
+   * GPU passthrough is unavailable — e.g. AMD Ryzen AI MAX+ with Radeon 8060S.
+   */
+  inferIntegratedGpuFromCpu(cpuModel: string): IntegratedGpuInference | null {
+    const normalized = cpuModel.trim();
+    if (!normalized) {
+      return null;
+    }
+
+    const lower = normalized.toLowerCase();
+
+    const amdSuffixMatch = normalized.match(/\bw\/\s*(Radeon\s+.+)$/i) ?? normalized.match(/\bwith\s+(Radeon\s+.+)$/i);
+    const radeonInNameMatch = normalized.match(/\b(Radeon\s+[\w\s+]+)/i);
+
+    if (
+      lower.includes('ryzen ai') ||
+      lower.includes('radeon graphics') ||
+      amdSuffixMatch ||
+      (radeonInNameMatch && (lower.includes('ryzen') || lower.includes('amd')))
+    ) {
+      const model = amdSuffixMatch?.[1]?.trim() ?? radeonInNameMatch?.[1]?.trim() ?? 'AMD Radeon Graphics';
+      return { vendor: 'amd', model };
+    }
+
+    if (lower.includes('iris xe') || lower.includes('iris graphics') || lower.includes('uhd graphics') || lower.includes('intel arc graphics')) {
+      const model =
+        normalized.match(/\b(Iris(?:\s+Xe)?(?:\s+Graphics)?|UHD\s+Graphics\s+\d+|Intel\s+Arc\s+Graphics)/i)?.[1]?.trim() ??
+        'Intel Integrated Graphics';
+      return { vendor: 'intel', model };
+    }
+
+    return null;
+  }
+
+  private applyIntegratedGpuInference(
+    gpu: HardwareProfile['gpu'],
+    cpuModel: string,
+    totalRamMb: number,
+    rocmRuntimeAvailable: boolean,
+  ): HardwareProfile['gpu'] {
+    const integrated = this.inferIntegratedGpuFromCpu(cpuModel);
+    const looksLikeDiscreteAmd = gpu.available && gpu.vendor === 'amd' && !gpu.unifiedMemory && gpu.vramMb >= MIN_PLAUSIBLE_DISCRETE_VRAM_MB;
+
+    if (!integrated || looksLikeDiscreteAmd) {
+      return gpu;
+    }
+
+    const shouldTreatAsUnifiedApu =
+      !gpu.available ||
+      gpu.vendor === 'none' ||
+      (gpu.vendor === 'amd' && gpu.vramMb < MIN_PLAUSIBLE_DISCRETE_VRAM_MB) ||
+      gpu.vendor === integrated.vendor;
+
+    if (!shouldTreatAsUnifiedApu) {
+      return gpu;
+    }
+
+    const model = integrated.model || gpu.model || 'Integrated Graphics';
+    const runtimeAvailable = integrated.vendor === 'amd' ? rocmRuntimeAvailable : gpu.runtimeAvailable;
+
+    this.logger.info(
+      `[HardwareInspector] Inferred ${integrated.vendor.toUpperCase()} integrated GPU (${model}) from CPU "${cpuModel}" with ${totalRamMb} MB shared memory.`,
+    );
+
+    return {
+      available: true,
+      vendor: integrated.vendor,
+      model,
+      vramMb: totalRamMb,
+      unifiedMemory: true,
+      driverVersion: gpu.driverVersion,
+      runtimeAvailable,
+    };
   }
 
   computeTier(gpu: HardwareProfile['gpu'], ram: HardwareProfile['ram']): HardwareTier {
@@ -436,6 +531,18 @@ export class HardwareInspectorService implements OnModuleInit {
       vramMb: cached.vramMb,
       driverVersion: cached.driverVersion,
     };
+  }
+
+  private async readRocmHostProbe(): Promise<{ available: boolean } | null> {
+    try {
+      const raw = await this.filesystem.readTextFile('/data/state/hardware/rocm.json');
+      if (!raw) return null;
+
+      const parsed = JSON.parse(raw) as { available?: boolean };
+      return { available: parsed.available === true };
+    } catch {
+      return null;
+    }
   }
 
   private async readNvidiaHostProbe(): Promise<{ model: string; vramMb: number; driverVersion: string } | null> {

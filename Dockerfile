@@ -85,6 +85,7 @@ RUN cd /app && pnpm run bundle 2>&1 | tail -100 || true
 FROM runner_base AS runner
 
 ENV NODE_ENV="production"
+ENV NODE_OPTIONS="--disable-warning=ExperimentalWarning"
 
 WORKDIR /app
 
@@ -93,10 +94,7 @@ RUN --mount=type=cache,target=/root/.npm \
 
 COPY --from=builder_base /deps/docker-binary /usr/local/bin/docker-compose
 RUN chmod +x /usr/local/bin/docker-compose && \
-    ls -lh /usr/local/bin/docker-compose && \
-    mkdir -p /root/.docker/cli-plugins && \
-    echo '{}' > /root/.docker/config.json && \
-    ln -s /usr/local/bin/docker-compose /root/.docker/cli-plugins/docker-compose
+    ls -lh /usr/local/bin/docker-compose
 COPY --from=builder /app/package.json ./
 
     # Assets - copy built artifacts
@@ -112,4 +110,5 @@ EXPOSE 3000
     # Ensure Node treats .js as ESM (esbuild outputs ESM format)
     RUN node -e "const p = require('./package.json'); p.type = 'module'; require('fs').writeFileSync('./package.json', JSON.stringify(p, null, 2))"
 
-    CMD ["node", "./main.js"]
+    # Hub runs as host UID/GID. /data/cache and /data/.docker are host bind mounts (init-hub-data-dirs.ts).
+    CMD ["sh", "-c", "ln -sf /usr/local/bin/docker-compose /data/.docker/cli-plugins/docker-compose 2>/dev/null || true; rm -f /data/state/.env.resolved 2>/dev/null || true; exec node ./main.js"]

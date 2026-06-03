@@ -16,10 +16,11 @@ import {
   REGISTRATION_PAIRING_CODE_HINT,
   REGISTRATION_PROVISIONING_HINT,
 } from '@/components/hub-status/hub-status-tooltips';
+import { normalizePairingCode, resolvePendingPairingCode, stashPendingPairingCode } from '@/lib/deep-link-pair';
 
 const DEFAULT_PORTAL_URL = (
   (import.meta.env.CI_CLOUD_URL as string | undefined)?.trim() ||
-  (import.meta.env.DEV ? 'https://hub.companionintelligence.com' : 'https://hub.ci.computer')
+  (import.meta.env.CI_HUB_ENVIRONMENT === 'production' ? 'https://hub.ci.computer' : 'https://hub.companionintelligence.com')
 ).replace(/\/+$/, '');
 const STATUS_POLL_INTERVAL_MS = 3000;
 const HEADLESS_POLL_INTERVAL_MS = 5000; // slower poll when idle, waiting for external registration
@@ -91,7 +92,10 @@ export default function DeviceRegistrationPage() {
   const pairingInputRef = useRef<HTMLInputElement>(null);
   const pendingPairTargetRef = useRef<PairingTarget | null>(null);
   const completionStartedRef = useRef(false);
+  const deepLinkPairAttemptRef = useRef<string | null>(null);
+  const [pendingDeepLinkCode, setPendingDeepLinkCode] = useState<string | null>(null);
   const isTauri = '__TAURI_INTERNALS__' in window;
+  const canAutoPairFromDeepLink = isTauri && !isLoading && (!registrationStatus || requiresDeviceRegistration(registrationStatus));
 
   const loadDeviceInfo = useCallback(async () => {
     try {
@@ -332,8 +336,8 @@ export default function DeviceRegistrationPage() {
             return;
           }
 
-          setPairingCode(code);
-          void doPair(code);
+          stashPendingPairingCode(code);
+          setPendingDeepLinkCode(code);
         });
       } catch {
         // Tauri event bridge unavailable in non-desktop contexts.
@@ -343,7 +347,31 @@ export default function DeviceRegistrationPage() {
     return () => {
       void unlisten?.();
     };
-  }, [doPair, isTauri]);
+  }, [isTauri]);
+
+  useEffect(() => {
+    if (!canAutoPairFromDeepLink) {
+      return;
+    }
+
+    let cancelled = false;
+
+    void (async () => {
+      const pendingCode = (pendingDeepLinkCode && normalizePairingCode(pendingDeepLinkCode)) ?? (await resolvePendingPairingCode());
+      if (cancelled || !pendingCode || deepLinkPairAttemptRef.current === pendingCode) {
+        return;
+      }
+
+      deepLinkPairAttemptRef.current = pendingCode;
+      setPendingDeepLinkCode(null);
+      setPairingCode(pendingCode);
+      await doPair(pendingCode);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [canAutoPairFromDeepLink, doPair, pendingDeepLinkCode]);
 
   const handleRetryStatus = async () => {
     setStatusError(null);

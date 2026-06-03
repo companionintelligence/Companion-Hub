@@ -6,8 +6,13 @@ pub mod hub_manager;
 pub mod port_manager;
 mod tray;
 
+use std::sync::Mutex;
+
 use tauri::{Emitter, Listener, Manager};
+use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_store::StoreExt;
+
+struct PendingPairingCode(Mutex<Option<String>>);
 
 /// Check if the Hub backend is reachable at the given URL.
 #[tauri::command]
@@ -96,9 +101,16 @@ async fn is_user_stopped_command() -> bool {
     hub_manager::is_user_stopped(&hub_manager::get_hub_data_dir())
 }
 
+/// Returns a pairing code from a deep link that arrived before the UI was ready.
+#[tauri::command]
+fn consume_pending_pairing_code(state: tauri::State<'_, PendingPairingCode>) -> Option<String> {
+    state.0.lock().ok()?.take()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
+        .manage(PendingPairingCode(Mutex::new(None)))
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             focus_main_window(app);
@@ -122,6 +134,7 @@ pub fn run() {
             open_logs_dir_command,
             is_user_stopped_command,
             install_docker_command,
+            consume_pending_pairing_code,
         ])
         .setup(|app| {
             // Restore saved window geometry
@@ -327,9 +340,17 @@ pub fn run() {
             }
 
             let app_handle = app.handle().clone();
+            let app_handle_for_listener = app_handle.clone();
             app.listen("deep-link://new-url", move |event| {
-                handle_deep_link_payload(&app_handle, event.payload());
+                handle_deep_link_payload(&app_handle_for_listener, event.payload());
             });
+
+            // The deep-link plugin may emit before our listener is registered (cold start).
+            if let Ok(Some(urls)) = app.deep_link().get_current() {
+                for url in urls {
+                    handle_deep_link_url(&app_handle, url.as_ref());
+                }
+            }
 
             Ok(())
         });
@@ -352,14 +373,19 @@ fn focus_main_window(app: &tauri::AppHandle) {
     }
 }
 
-fn emit_pairing_code(app: &tauri::AppHandle, code: &str) {
+fn queue_pairing_code(app: &tauri::AppHandle, code: &str) {
+    if let Some(state) = app.try_state::<PendingPairingCode>() {
+        if let Ok(mut pending) = state.0.lock() {
+            *pending = Some(code.to_string());
+        }
+    }
     let _ = app.emit("deep-link-pair", code);
 }
 
 fn handle_deep_link_url(app: &tauri::AppHandle, url: &str) {
     if let Some(code) = extract_pairing_code(url) {
         focus_main_window(app);
-        emit_pairing_code(app, &code);
+        queue_pairing_code(app, &code);
     }
 }
 

@@ -253,7 +253,9 @@ export class SystemInspectorService {
       containerDiskUsedGb: displayLoad.containerDiskUsed,
       recommendedDockerRamMb: displayLoad.recommendedDockerRamMb,
       tuningNotes,
-      platformGuidance: getVmResourceGuidance(displayLoad.runtimeKind, hostProbe.platform),
+      platformGuidance: getVmResourceGuidance(displayLoad.runtimeKind, hostProbe.platform, {
+        hasVmWedge: displayLoad.hasVmWedge,
+      }),
     };
   }
 

@@ -21,6 +21,7 @@ import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppHelpers } from '@/modules/apps/app.helpers';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { AppsService } from '@/modules/apps/apps.service';
+import { InstallPipelineTracker } from '@/modules/apps/install-pipeline.tracker';
 import { PortAllocationRepository } from '@/modules/network/port-allocation.repository';
 import { DOCKERODE } from '@/modules/docker/docker.module';
 import { DockerService } from '@/modules/docker/docker.service';
@@ -131,6 +132,7 @@ describe('App lifecycle', () => {
         EnvUtils,
         AppHelpers,
         AppsService,
+        InstallPipelineTracker,
         SubnetManagerService,
         {
           provide: ReposHelpers,

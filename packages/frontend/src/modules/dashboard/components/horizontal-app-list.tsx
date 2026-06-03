@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 
 interface InstalledApp {
   info: Pick<AppInfo, 'urn' | 'name'>;
-  app: { id: number; status: AppStatus };
+  app: { id: number; status: AppStatus; config?: Record<string, unknown> };
 }
 
 interface HorizontalAppListProps {
@@ -41,7 +41,13 @@ export const HorizontalAppList = ({ apps }: HorizontalAppListProps) => {
           const [appName, storeId] = info.urn.split(':');
           return (
             <Link key={app.id} to={`/apps/${storeId}/${appName}`} className="no-underline text-inherit">
-              <SimpleAppTile name={info.name} urn={info.urn} status={app.status} isInstalling={app.status === 'installing'} />
+              <SimpleAppTile
+                name={info.name}
+                urn={info.urn}
+                status={app.status}
+                isInstalling={app.status === 'installing'}
+                installConfig={app.config}
+              />
             </Link>
           );
         })}

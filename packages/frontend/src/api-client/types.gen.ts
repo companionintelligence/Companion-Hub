@@ -219,7 +219,7 @@ export type MyAppsDto = {
             openPort: boolean;
             pendingRestart: boolean;
             port: number | null;
-            status: 'backing_up' | 'installing' | 'missing' | 'resetting' | 'restarting' | 'restoring' | 'running' | 'starting' | 'stopped' | 'stopping' | 'uninstalling' | 'updating';
+            status: 'backing_up' | 'install_failed' | 'installing' | 'missing' | 'resetting' | 'restarting' | 'restoring' | 'running' | 'starting' | 'stopped' | 'stopping' | 'uninstalling' | 'updating';
             version: number;
             config?: {
                 [key: string]: unknown;
@@ -300,7 +300,7 @@ export type GuestAppsDto = {
             openPort: boolean;
             pendingRestart: boolean;
             port: number | null;
-            status: 'backing_up' | 'installing' | 'missing' | 'resetting' | 'restarting' | 'restoring' | 'running' | 'starting' | 'stopped' | 'stopping' | 'uninstalling' | 'updating';
+            status: 'backing_up' | 'install_failed' | 'installing' | 'missing' | 'resetting' | 'restarting' | 'restoring' | 'running' | 'starting' | 'stopped' | 'stopping' | 'uninstalling' | 'updating';
             version: number;
             config?: {
                 [key: string]: unknown;
@@ -439,7 +439,7 @@ export type GetAppDto = {
         openPort: boolean;
         pendingRestart: boolean;
         port: number | null;
-        status: 'backing_up' | 'installing' | 'missing' | 'resetting' | 'restarting' | 'restoring' | 'running' | 'starting' | 'stopped' | 'stopping' | 'uninstalling' | 'updating';
+        status: 'backing_up' | 'install_failed' | 'installing' | 'missing' | 'resetting' | 'restarting' | 'restoring' | 'running' | 'starting' | 'stopped' | 'stopping' | 'uninstalling' | 'updating';
         version: number;
         config?: {
             [key: string]: unknown;

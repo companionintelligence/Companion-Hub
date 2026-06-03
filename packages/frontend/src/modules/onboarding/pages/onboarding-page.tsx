@@ -38,8 +38,19 @@ function Shell({ children }: { children: React.ReactNode }) {
   );
 }
 
+const SKIPPED_AI_CONFIG: AiSetupConfig = {
+  agentFrameworks: [],
+  selectedModels: [],
+  backend: 'ollama',
+  cloudProviders: [],
+  remoteAccess: [],
+  skipped: true,
+  installedCatalogIds: [],
+  installBlocked: false,
+};
+
 function OnboardingWizard() {
-  const { user, apps: storeApps, cloudflareAvailable, tailscaleAvailable } = useAppContext();
+  const { user, apps: storeApps, cloudflareAvailable, tailscaleAvailable, setAppContext, refreshAppContext } = useAppContext();
   const navigate = useNavigate();
 
   const [phase, setPhase] = useState<'form' | 'installing'>('form');
@@ -99,7 +110,11 @@ function OnboardingWizard() {
             } catch {
               // Non-fatal — navigate anyway.
             }
-            navigate('/store', { replace: true });
+            // Update the shared app-context cache (correct query key) so route guards
+            // on /home and /store do not send the user back to onboarding.
+            setAppContext({ user: { ...user, hasCompletedOnboarding: true } });
+            await refreshAppContext();
+            navigate('/home', { replace: true });
           }}
         />
       </Shell>
@@ -111,18 +126,19 @@ function OnboardingWizard() {
       <div className="space-y-5">
         {/* Steps 1–3 + step 5 (Advanced) rendered by AiSetupStep in embedded mode.
             Step 4 (Recommended Apps) is passed as children, inserted between step 3 and step 5. */}
-        <AiSetupStep embedded onConfigChange={setAiSetupConfig} cloudflareAvailable={cloudflareAvailable} tailscaleAvailable={tailscaleAvailable}>
+        <AiSetupStep
+          embedded
+          onConfigChange={setAiSetupConfig}
+          onSkip={() => setAiSetupConfig(SKIPPED_AI_CONFIG)}
+          cloudflareAvailable={cloudflareAvailable}
+          tailscaleAvailable={tailscaleAvailable}
+        >
           <StepSection
             number={4}
             title="Recommended Apps"
             description="Here are some popular open-source apps you can self-host. Select any you'd like installed."
           >
-            <RecommendationsStep
-              embedded
-              detectedServices={detectedServices}
-              pinnedSlugs={['steam-headless', 'comfyui']}
-              onChange={setSelectedApps}
-            />
+            <RecommendationsStep embedded detectedServices={detectedServices} onChange={setSelectedApps} />
           </StepSection>
         </AiSetupStep>
 

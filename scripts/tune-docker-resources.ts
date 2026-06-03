@@ -3,7 +3,8 @@
  * Raise Docker Desktop / WSL2 memory toward a safe host maximum on first Hub start.
  * Reads host_metrics.json and writes docker-tuning.json under the same state directory
  * as init-host-probe (CI_HUB_STATE_PATH/STATE_PATH, ROOT_FOLDER_HOST/state, or .internal/state).
- * Linux native Docker is a no-op. Never reduces existing limits.
+ * Linux: raises Docker Desktop VM memory when settings-store.json exists; native dockerd is a no-op.
+ * Never reduces existing limits.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
@@ -101,6 +102,75 @@ function readJsonFile(filePath: string): Record<string, unknown> | null {
   }
 }
 
+function linuxDockerDesktopSettingsPath(): string {
+  return path.join(os.homedir(), '.docker/desktop/settings-store.json');
+}
+
+function readDockerDesktopMemoryMib(settings: Record<string, unknown>): number {
+  const raw = settings.memoryMiB ?? settings.MemoryMiB;
+  return typeof raw === 'number' && raw > 0 ? raw : MIN_DOCKER_RAM_MB;
+}
+
+function tryRestartDockerDesktop(): void {
+  spawnSync('docker', ['desktop', 'restart'], { stdio: 'ignore' });
+}
+
+function tuneLinuxDockerDesktop(hostRamMb: number): DockerTuningRecord {
+  const settingsPath = linuxDockerDesktopSettingsPath();
+  const target = recommendedDockerRamMb(hostRamMb);
+  const settings = readJsonFile(settingsPath);
+  if (!settings) {
+    return {
+      attemptedAt: new Date().toISOString(),
+      platform: 'linux',
+      action: 'skipped',
+      reason: 'Docker Desktop settings-store.json not found (native Linux Docker uses host RAM directly)',
+      targetMemoryMb: target,
+    };
+  }
+
+  const current = readDockerDesktopMemoryMib(settings);
+  const threshold = Math.floor(target * 0.9);
+  if (current >= threshold) {
+    return {
+      attemptedAt: new Date().toISOString(),
+      platform: 'linux',
+      action: 'noop',
+      reason: 'Docker Desktop VM memory already at or above recommended value',
+      previousMemoryMb: current,
+      targetMemoryMb: target,
+      appliedMemoryMb: current,
+    };
+  }
+
+  settings.memoryMiB = target;
+  try {
+    writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, 'utf8');
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      attemptedAt: new Date().toISOString(),
+      platform: 'linux',
+      action: 'failed',
+      reason: `Could not write Docker Desktop settings: ${message}`,
+      previousMemoryMb: current,
+      targetMemoryMb: target,
+    };
+  }
+
+  tryRestartDockerDesktop();
+
+  return {
+    attemptedAt: new Date().toISOString(),
+    platform: 'linux',
+    action: 'updated',
+    reason: 'Increased Docker Desktop memoryMiB (restart Docker Desktop if memory still looks capped)',
+    previousMemoryMb: current,
+    targetMemoryMb: target,
+    appliedMemoryMb: target,
+  };
+}
+
 function tuneMacOsDocker(hostRamMb: number): DockerTuningRecord {
   const settingsPath = path.join(os.homedir(), 'Library', 'Group Containers', 'group.com.docker', 'settings-store.json');
   const target = recommendedDockerRamMb(hostRamMb);
@@ -130,6 +200,7 @@ function tuneMacOsDocker(hostRamMb: number): DockerTuningRecord {
 
   settings.MemoryMiB = target;
   writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, 'utf8');
+  tryRestartDockerDesktop();
   return {
     attemptedAt: new Date().toISOString(),
     platform: 'darwin',
@@ -261,21 +332,20 @@ function main() {
 
   const tuningPath = path.join(resolveStateDir(), 'hardware', 'docker-tuning.json');
   if (existsSync(tuningPath) && process.env.CI_HUB_FORCE_DOCKER_TUNING !== '1') {
-    console.log('tune-docker-resources: already tuned; set CI_HUB_FORCE_DOCKER_TUNING=1 to retry');
-    return;
+    const previous = readJsonFile(tuningPath) as DockerTuningRecord | null;
+    const applied = previous?.appliedMemoryMb ?? 0;
+    const target = previous?.targetMemoryMb ?? 0;
+    if (previous?.action === 'noop' || (previous?.action === 'updated' && applied >= target && target > 0)) {
+      console.log('tune-docker-resources: already tuned; set CI_HUB_FORCE_DOCKER_TUNING=1 to retry');
+      return;
+    }
   }
 
   const hostRamMb = readHostRamMb();
   let record: DockerTuningRecord;
 
   if (process.platform === 'linux') {
-    record = {
-      attemptedAt: new Date().toISOString(),
-      platform: 'linux',
-      action: 'noop',
-      reason: 'Native Linux Docker uses host resources directly',
-      targetMemoryMb: hostRamMb,
-    };
+    record = tuneLinuxDockerDesktop(hostRamMb);
   } else if (process.platform === 'darwin') {
     record = tuneMacOsDocker(hostRamMb);
   } else if (process.platform === 'win32') {

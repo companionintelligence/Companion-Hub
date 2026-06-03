@@ -8,7 +8,10 @@ export interface HardwareProfile {
     vramMb: number;
     unifiedMemory: boolean;
     driverVersion: string;
+    /** Container GPU runtime (e.g. ROCm/NVIDIA device passthrough). Optional on older profiles. */
     runtimeAvailable: boolean;
+    /** Host ROCm stack detected via init-gpu-runtime probe. Linux AMD only; optional on older profiles. */
+    hostRocmAvailable?: boolean;
   };
   npu: {
     available: boolean;

@@ -5,11 +5,35 @@ export function isConnectionRefused(err: unknown): boolean {
   return msg.includes('ECONNREFUSED') || msg.includes('connect ECONNREFUSED');
 }
 
-/** True when the Hub tried a host-gateway URL but could not reach host Ollama. */
-export function isBridgeConnectionRefused(error?: string, configuredUrl?: string): boolean {
-  if (!error || !isConnectionRefused(error)) return false;
+function isBridgeNetworkError(error: string): boolean {
+  return (
+    error.includes('ECONNREFUSED') ||
+    error.includes('ETIMEDOUT') ||
+    error.includes('EHOSTUNREACH') ||
+    error.includes('ENOTFOUND') ||
+    error.includes('socket hang up') ||
+    error.includes('network unreachable')
+  );
+}
 
-  if (configuredUrl?.includes('host.docker.internal')) return true;
+/**
+ * Returns true for network-layer failures that indicate the Hub container
+ * could not reach host-side Ollama over the Docker bridge.
+ *
+ * On Linux with Docker Desktop the host-gateway may resolve to IPv6; Node.js can
+ * return ETIMEDOUT or EHOSTUNREACH rather than ECONNREFUSED. When the configured
+ * URL targets host.docker.internal, any of those network errors count as a bridge failure.
+ */
+export function isBridgeConnectionRefused(error?: string, configuredUrl?: string): boolean {
+  if (!error) return false;
+
+  const isNetworkError = isBridgeNetworkError(error);
+
+  if (configuredUrl?.includes('host.docker.internal')) {
+    return isNetworkError;
+  }
+
+  if (!isNetworkError) return false;
 
   return error.includes('172.17.') || error.includes('172.18.') || error.includes('host.docker.internal');
 }

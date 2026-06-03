@@ -1,5 +1,6 @@
 import { TranslatableError } from '@/common/error/translatable-error';
 import { createAppUrn } from '@/common/helpers/app-helpers';
+import { InstallPipelineTracker } from './install-pipeline.tracker';
 import { resolveBrowserHost } from '@/common/helpers/browser-host';
 import { pLimit } from '@/common/helpers/file-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -26,6 +27,7 @@ export class AppsService {
     private readonly marketplaceService: MarketplaceService,
     private readonly configurationService: ConfigurationService,
     private readonly portAllocationRepository: PortAllocationRepository,
+    private readonly installPipelineTracker: InstallPipelineTracker,
     @Inject(forwardRef(() => RegistrationService)) private readonly registrationService: RegistrationService,
     private readonly moduleRef: ModuleRef,
   ) {}
@@ -37,14 +39,18 @@ export class AppsService {
       apps.map(async (app) => {
         return limit(async () => {
           const appUrn = createAppUrn(app.appName, app.appStoreSlug);
-          const appInfo = await this.appFilesManager.getInstalledAppInfo(appUrn);
+          let appInfo = await this.appFilesManager.getInstalledAppInfo(appUrn);
 
           const updateInfo = await this.marketplaceService.getAppUpdateInfo(appUrn).catch((_) => {
             return { latestVersion: 0, latestDockerVersion: '0.0.0' };
           });
 
           if (!appInfo) {
-            this.logger.debug(`App ${app.id} not found in app files`);
+            appInfo = (await this.marketplaceService.getAppInfoFromAppStore(appUrn)) ?? null;
+          }
+
+          if (!appInfo) {
+            this.logger.debug(`App ${app.id} not found in app files or marketplace`);
             return null;
           }
 
@@ -79,6 +85,36 @@ export class AppsService {
     const apps = await this.appsRepository.getApps();
 
     return this.populateAppInfo(apps);
+  }
+
+  /** Active install (Docker pipeline) and apps waiting in the install queue. */
+  public async getInstallQueueState() {
+    const installing = await this.appsRepository.getAppsByStatus('installing');
+    const activeUrn = this.installPipelineTracker.getActive();
+
+    const entries = await Promise.all(
+      installing.map(async (app) => {
+        const urn = createAppUrn(app.appName, app.appStoreSlug);
+        let name = app.appName;
+        const info = (await this.appFilesManager.getInstalledAppInfo(urn)) ?? (await this.marketplaceService.getAppInfoFromAppStore(urn));
+        if (info?.name) name = info.name;
+        return { urn, name, id: app.id };
+      }),
+    );
+
+    entries.sort((a, b) => a.id - b.id);
+
+    let active = activeUrn ? (entries.find((e) => e.urn === activeUrn) ?? null) : null;
+    if (!active && entries.length > 0) {
+      active = entries[0] ?? null;
+    }
+
+    const queued = entries.filter((e) => e.urn !== active?.urn).map(({ urn, name }) => ({ urn, name }));
+
+    return {
+      active: active ? { urn: active.urn, name: active.name } : null,
+      queued,
+    };
   }
 
   public async getGuestDashboardApps() {

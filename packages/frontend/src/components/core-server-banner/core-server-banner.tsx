@@ -1,12 +1,8 @@
 import { X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { CORE_SERVER_LOW_CPU_CORES, CORE_SERVER_LOW_DISK_GB, CORE_SERVER_LOW_RAM_GB } from './core-server-banner-visibility';
 
 const CORE_SERVER_URL = 'https://www.ci.computer/store/p/core';
-
-/** Thresholds for "low spec" detection */
-const LOW_RAM_GB = 8;
-const LOW_DISK_GB = 100;
-const LOW_CPU_CORES = 2;
 
 export interface SystemSnapshot {
   memoryTotal: number;
@@ -21,13 +17,13 @@ interface CoreServerBannerProps {
 
 function getMessageKeys(system?: SystemSnapshot): { titleKey: string; messageKey: string } {
   if (system) {
-    if (system.memoryTotal < LOW_RAM_GB) {
+    if (system.memoryTotal < CORE_SERVER_LOW_RAM_GB) {
       return { titleKey: 'CORE_SERVER_BANNER_LOW_RAM_TITLE', messageKey: 'CORE_SERVER_BANNER_LOW_RAM_MESSAGE' };
     }
-    if (system.diskSize < LOW_DISK_GB) {
+    if (system.diskSize < CORE_SERVER_LOW_DISK_GB) {
       return { titleKey: 'CORE_SERVER_BANNER_LOW_DISK_TITLE', messageKey: 'CORE_SERVER_BANNER_LOW_DISK_MESSAGE' };
     }
-    if (system.cpuCores <= LOW_CPU_CORES) {
+    if (system.cpuCores <= CORE_SERVER_LOW_CPU_CORES) {
       return { titleKey: 'CORE_SERVER_BANNER_LOW_CPU_TITLE', messageKey: 'CORE_SERVER_BANNER_LOW_CPU_MESSAGE' };
     }
   }

@@ -4,7 +4,7 @@ import path from 'node:path';
 import { Injectable, type OnApplicationBootstrap, type OnApplicationShutdown, Inject, forwardRef, Optional } from '@nestjs/common';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import { APP_DIR, TUNNEL_DIR } from '@/common/constants';
+import { DATA_DIR, TUNNEL_DIR } from '@/common/constants';
 import { CloudflareClientService } from '../cloudflare/cloudflare-client.service';
 import { TraefikConfigService } from '../docker/traefik-config.service';
 import { DeviceRegistrationRepository } from './device-registration.repository';
@@ -498,7 +498,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     }
 
     // Clear the resolved env file so it regenerates
-    const resolvedEnvPath = path.join(APP_DIR, '.env.resolved');
+    const resolvedEnvPath = path.join(DATA_DIR, 'state', '.env.resolved');
     try {
       await fs.promises.unlink(resolvedEnvPath);
     } catch {
@@ -546,7 +546,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       this.logger.warn('dmidecode failed, falling back to systeminformation', e);
     }
 
-    const uuid = await si.uuid();
+    const uuid = await si.uuid().catch(() => ({ hardware: '' }));
 
     const id = uuid.hardware;
     if (id && id !== '00000000-0000-0000-0000-000000000000') {

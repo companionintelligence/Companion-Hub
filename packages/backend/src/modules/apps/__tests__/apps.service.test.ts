@@ -16,6 +16,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import type { AppUrn } from '@ci-hub/common/types';
 import { AppsService } from '../apps.service';
+import { InstallPipelineTracker } from '../install-pipeline.tracker';
 import { AppFilesManager } from '../app-files-manager';
 import { AppsRepository } from '../apps.repository';
 import { MarketplaceService } from '../../marketplace/marketplace.service';
@@ -32,8 +33,10 @@ describe('AppsService', () => {
   let configService: MockProxy<ConfigurationService>;
   let registrationService: MockProxy<RegistrationService>;
   let moduleRef: MockProxy<ModuleRef>;
+  let installPipelineTracker: InstallPipelineTracker;
 
   beforeEach(async () => {
+    installPipelineTracker = new InstallPipelineTracker();
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         AppsService,
@@ -43,6 +46,7 @@ describe('AppsService', () => {
         { provide: MarketplaceService, useValue: mock<MarketplaceService>() },
         { provide: ConfigurationService, useValue: mock<ConfigurationService>() },
         { provide: PortAllocationRepository, useValue: mock<PortAllocationRepository>() },
+        { provide: InstallPipelineTracker, useValue: installPipelineTracker },
         { provide: RegistrationService, useValue: mock<RegistrationService>() },
         { provide: ModuleRef, useValue: mock<ModuleRef>() },
       ],
@@ -99,6 +103,50 @@ describe('AppsService', () => {
         latestVersion: '1.1.0',
         localSubdomain: 'test',
       });
+    });
+
+    it('falls back to marketplace info while app files are not on disk yet', async () => {
+      const mockApp = {
+        id: 2,
+        appName: 'plane',
+        appStoreSlug: 'ci-marketplace',
+        localSubdomain: 'plane',
+        port: 8080,
+        status: 'installing',
+      };
+
+      appsRepository.getApps.mockResolvedValue([mockApp] as any);
+      appFilesManager.getInstalledAppInfo.mockResolvedValue(null);
+      const storeInfo = { id: 'plane', name: 'Plane', version: '1.0.0' };
+      marketplaceService.getAppInfoFromAppStore.mockResolvedValue(storeInfo as any);
+      marketplaceService.getAppUpdateInfo.mockResolvedValue({ latestVersion: 0, latestDockerVersion: '0.0.0' } as any);
+      appFilesManager.getDockerComposeJson.mockResolvedValue({ content: '' } as any);
+
+      const result = await service.getInstalledApps();
+
+      expect(result).toHaveLength(1);
+      expect(result[0]?.info).toEqual(storeInfo);
+      expect(result[0]?.app.status).toBe('installing');
+    });
+  });
+
+  describe('getInstallQueueState', () => {
+    it('returns active pipeline app and queued installers', async () => {
+      appsRepository.getAppsByStatus.mockResolvedValue([
+        { id: 1, appName: 'plane', appStoreSlug: 'ci-marketplace', status: 'installing' },
+        { id: 2, appName: 'cloudreve', appStoreSlug: 'ci-marketplace', status: 'installing' },
+      ] as any);
+      installPipelineTracker.setActive('plane:ci-marketplace' as AppUrn);
+      appFilesManager.getInstalledAppInfo.mockResolvedValue(null);
+      marketplaceService.getAppInfoFromAppStore.mockImplementation(async (urn: AppUrn) => {
+        if (urn === 'plane:ci-marketplace') return { name: 'Plane' } as any;
+        return { name: 'Cloudreve' } as any;
+      });
+
+      const result = await service.getInstallQueueState();
+
+      expect(result.active).toEqual({ urn: 'plane:ci-marketplace', name: 'Plane' });
+      expect(result.queued).toEqual([{ urn: 'cloudreve:ci-marketplace', name: 'Cloudreve' }]);
     });
   });
 

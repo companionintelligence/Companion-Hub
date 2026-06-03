@@ -78,8 +78,11 @@ const TRAEFIK_TLS_DIR: &str = "state/traefik/tls";
 const TRAEFIK_CONFIG_FILE: &str = "state/traefik/config/traefik.yml";
 const TRAEFIK_DYNAMIC_FILE: &str = "state/traefik/dynamic/dynamic.yml";
 const TRAEFIK_ACME_FILE: &str = "state/traefik/acme_storage.json";
-const INTERNAL_DOCKER_CONFIG_FILE: &str = ".internal/docker-config.json";
-const HUB_DOCKER_CONFIG_FILE: &str = "docker-config.json";
+const HUB_DOCKER_CONFIG_FILE: &str = ".docker/config.json";
+const LEGACY_DOCKER_CONFIG_PATHS: &[&str] = &[
+    "docker-config.json",
+    ".internal/docker-config.json",
+];
 const HUB_START_HEALTHY_TIMEOUT_SECS: u64 = 180;
 const DB_START_HEALTHY_TIMEOUT_SECS: u64 = 180;
 
@@ -488,6 +491,7 @@ fn detect_macos_primary_disk_gb() -> (u64, u64, String) {
         .unwrap_or((0, 0, "/".to_string()))
 }
 
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 fn write_host_metrics_probe_file(data_dir: &Path, payload: serde_json::Value, log_tag: &str) {
     let probe_path = data_dir.join("state/hardware/host_metrics.json");
     if let Some(parent) = probe_path.parent() {
@@ -624,6 +628,7 @@ fn refresh_windows_host_metrics_probe_cache(data_dir: &Path) {
 fn refresh_windows_host_metrics_probe_cache(_data_dir: &Path) {}
 
 /// Parse a macOS memory string like "96 GB", "512 MB", or "2 TB" into megabytes.
+#[cfg(target_os = "macos")]
 fn parse_memory_str_to_mb(s: &str) -> u64 {
     let mut parts = s.trim().splitn(2, ' ');
     let amount: u64 = match parts.next().and_then(|p| p.parse().ok()) {
@@ -640,6 +645,7 @@ fn parse_memory_str_to_mb(s: &str) -> u64 {
 
 /// Parse a macOS processor count string.
 /// Handles "proc 24:16:8" (total:performance:efficiency) or plain "8".
+#[cfg(target_os = "macos")]
 fn parse_processor_count(s: &str) -> u32 {
     let s = s.trim();
     let numeric_part = s
@@ -899,7 +905,290 @@ fn refresh_macos_host_probe_cache(_data_dir: &Path) {
     // No-op on non-macOS platforms.
 }
 
-/// Find the Docker binary, checking common install locations if not in PATH.
+/// On Linux the Tauri binary runs directly on the host, so `/proc/meminfo` and
+/// `/proc/cpuinfo` reflect true host hardware (not Docker Desktop VM limits).
+/// Write `host_metrics.json` so the backend container uses host RAM and CPU values.
+#[cfg(target_os = "linux")]
+fn refresh_linux_host_metrics_probe_cache(data_dir: &Path) {
+    let total_ram_mb = read_proc_meminfo_kb("MemTotal").unwrap_or(0) / 1024;
+    let available_ram_mb = read_proc_meminfo_kb("MemAvailable").unwrap_or(0) / 1024;
+
+    if total_ram_mb == 0 {
+        let _ = append_desktop_log_for(data_dir, "hw.probe", "Linux host probe: could not read MemTotal from /proc/meminfo");
+        return;
+    }
+
+    let (cpu_model, cpu_cores) = read_linux_cpu_info();
+    let cpu_arch = if std::env::consts::ARCH == "aarch64" { "arm64" } else { "x86_64" };
+
+    let (disk_total_gb, disk_used_gb, disk_mount) = linux_primary_disk_gb(data_dir);
+
+    let probed_at = chrono::Utc::now().to_rfc3339();
+    let payload = serde_json::json!({
+        "schemaVersion": 1,
+        "platform": "linux",
+        "cpuArch": cpu_arch,
+        "source": "desktop-host-linux",
+        "probedAt": probed_at,
+        "host": {
+            "totalRamMb": total_ram_mb,
+            "availableRamMb": available_ram_mb,
+            "cpuCores": cpu_cores,
+            "cpuModel": cpu_model,
+            "diskTotalGb": disk_total_gb,
+            "diskUsedGb": disk_used_gb,
+            "diskMount": disk_mount
+        }
+    });
+
+    write_host_metrics_probe_file(data_dir, payload, "hw.probe");
+
+    let _ = append_desktop_log_for(
+        data_dir,
+        "hw.probe",
+        &format!(
+            "Updated Linux host probe: {} MB RAM, {} cores, {} ({})",
+            total_ram_mb, cpu_cores, cpu_model, cpu_arch
+        ),
+    );
+}
+
+#[cfg(not(target_os = "linux"))]
+fn refresh_linux_host_metrics_probe_cache(_data_dir: &Path) {}
+
+/// Parse a named field from `/proc/meminfo` and return its value in kB.
+/// e.g. `MemTotal:      131891648 kB` → `131891648`
+#[cfg(target_os = "linux")]
+fn read_proc_meminfo_kb(field: &str) -> Option<u64> {
+    let content = std::fs::read_to_string("/proc/meminfo").ok()?;
+    for line in content.lines() {
+        if line.starts_with(field) {
+            return line.split_whitespace().nth(1).and_then(|v| v.parse().ok());
+        }
+    }
+    None
+}
+
+/// Read CPU model name and logical core count from `/proc/cpuinfo`.
+#[cfg(target_os = "linux")]
+fn read_linux_cpu_info() -> (String, u32) {
+    let content = match std::fs::read_to_string("/proc/cpuinfo") {
+        Ok(c) => c,
+        Err(_) => return (String::new(), 0),
+    };
+    let mut model = String::new();
+    let mut core_count: u32 = 0;
+    for line in content.lines() {
+        if line.starts_with("model name") && model.is_empty() {
+            if let Some(val) = line.splitn(2, ':').nth(1) {
+                model = val.trim().to_string();
+            }
+        }
+        if line.starts_with("processor") {
+            core_count += 1;
+        }
+    }
+    (model, core_count)
+}
+
+/// Determine total and used disk space (in GB) for the data directory's filesystem.
+#[cfg(target_os = "linux")]
+fn linux_primary_disk_gb(data_dir: &Path) -> (u64, u64, String) {
+    use std::ffi::CString;
+    use std::mem::MaybeUninit;
+
+    let path = data_dir
+        .to_str()
+        .and_then(|s| CString::new(s).ok())
+        .unwrap_or_else(|| CString::new("/").unwrap());
+
+    let mut stat: MaybeUninit<libc::statvfs> = MaybeUninit::uninit();
+    // SAFETY: statvfs writes into the provided buffer; path is a valid NUL-terminated string.
+    let ret = unsafe { libc::statvfs(path.as_ptr(), stat.as_mut_ptr()) };
+    if ret != 0 {
+        return (0, 0, String::new());
+    }
+    let stat = unsafe { stat.assume_init() };
+
+    let block_size = stat.f_frsize as u64;
+    let total = stat.f_blocks * block_size / (1024 * 1024 * 1024);
+    let free = stat.f_bavail * block_size / (1024 * 1024 * 1024);
+    let used = total.saturating_sub(free);
+    let mount = data_dir.to_string_lossy().into_owned();
+
+    (total, used, mount)
+}
+
+const MIN_DOCKER_RAM_MB: u64 = 8192;
+const DOCKER_OS_RESERVE_MB: u64 = 4096;
+
+#[cfg(target_os = "linux")]
+fn recommended_docker_ram_mb_linux(host_total_mb: u64) -> u64 {
+    if host_total_mb == 0 {
+        return MIN_DOCKER_RAM_MB;
+    }
+    let capped = ((host_total_mb as f64) * 0.75) as u64;
+    let reserved = host_total_mb.saturating_sub(DOCKER_OS_RESERVE_MB);
+    let target = std::cmp::min(capped, reserved);
+    std::cmp::max(MIN_DOCKER_RAM_MB, std::cmp::min(target, host_total_mb))
+}
+
+#[cfg(target_os = "linux")]
+fn docker_desktop_settings_path_linux() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".docker/desktop/settings-store.json"))
+}
+
+#[cfg(target_os = "linux")]
+fn read_docker_desktop_memory_mib(settings: &serde_json::Value) -> u64 {
+    settings
+        .get("memoryMiB")
+        .or_else(|| settings.get("MemoryMiB"))
+        .and_then(|m| m.as_u64())
+        .unwrap_or(MIN_DOCKER_RAM_MB)
+}
+
+#[cfg(target_os = "linux")]
+fn write_docker_tuning_record(data_dir: &Path, record: serde_json::Value) {
+    let path = data_dir.join("state/hardware/docker-tuning.json");
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(serialized) = serde_json::to_string_pretty(&record) {
+        let _ = std::fs::write(path, format!("{serialized}\n"));
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn try_restart_docker_desktop_linux() {
+    let docker = find_docker_binary();
+    let _ = Command::new(&docker)
+        .args(["desktop", "restart"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
+/// On Linux with Docker Desktop, containers run in a linuxkit VM capped by `memoryMiB` in
+/// `~/.docker/desktop/settings-store.json`. Best-effort: raise toward ~75% of host RAM, restart
+/// Docker Desktop, and record outcome in `state/hardware/docker-tuning.json` (shown in Settings → System).
+#[cfg(target_os = "linux")]
+fn ensure_docker_desktop_memory_linux(data_dir: &Path) {
+    let settings_path = match docker_desktop_settings_path_linux() {
+        Some(path) if path.exists() => path,
+        _ => return,
+    };
+
+    let host_total_mb = match read_proc_meminfo_kb("MemTotal") {
+        Some(kb) => kb / 1024,
+        None => return,
+    };
+
+    let recommended_mb = recommended_docker_ram_mb_linux(host_total_mb);
+    let threshold_mb = (recommended_mb as f64 * 0.9) as u64;
+    let attempted_at = chrono::Utc::now().to_rfc3339();
+
+    let mut settings: serde_json::Value = match std::fs::read_to_string(&settings_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+    {
+        Some(value) if value.is_object() => value,
+        _ => serde_json::json!({}),
+    };
+
+    let current_mib = read_docker_desktop_memory_mib(&settings);
+
+    if current_mib >= threshold_mb {
+        write_docker_tuning_record(
+            data_dir,
+            serde_json::json!({
+                "attemptedAt": attempted_at,
+                "platform": "linux",
+                "action": "noop",
+                "reason": "Docker Desktop VM memory already at or above recommended value",
+                "previousMemoryMb": current_mib,
+                "targetMemoryMb": recommended_mb,
+                "appliedMemoryMb": current_mib,
+            }),
+        );
+        return;
+    }
+
+    let Some(obj) = settings.as_object_mut() else {
+        return;
+    };
+    obj.insert(
+        "memoryMiB".to_string(),
+        serde_json::Value::Number(serde_json::Number::from(recommended_mb)),
+    );
+
+    let serialized = match serde_json::to_string_pretty(&settings) {
+        Ok(value) => format!("{value}\n"),
+        Err(error) => {
+            write_docker_tuning_record(
+                data_dir,
+                serde_json::json!({
+                    "attemptedAt": attempted_at,
+                    "platform": "linux",
+                    "action": "failed",
+                    "reason": format!("Could not serialize Docker Desktop settings: {error}"),
+                    "previousMemoryMb": current_mib,
+                    "targetMemoryMb": recommended_mb,
+                }),
+            );
+            return;
+        }
+    };
+
+    match std::fs::write(&settings_path, serialized) {
+        Ok(_) => {
+            try_restart_docker_desktop_linux();
+            let _ = append_desktop_log_for(
+                data_dir,
+                "docker.mem",
+                &format!(
+                    "Raised Docker Desktop VM memory from {current_mib} MiB to {recommended_mb} MiB (host {host_total_mb} MB RAM); requested Docker Desktop restart.",
+                ),
+            );
+            write_docker_tuning_record(
+                data_dir,
+                serde_json::json!({
+                    "attemptedAt": attempted_at,
+                    "platform": "linux",
+                    "action": "updated",
+                    "reason": "Increased Docker Desktop memoryMiB (restart Docker Desktop if memory still looks capped)",
+                    "previousMemoryMb": current_mib,
+                    "targetMemoryMb": recommended_mb,
+                    "appliedMemoryMb": recommended_mb,
+                }),
+            );
+        }
+        Err(error) => {
+            let _ = append_desktop_log_for(
+                data_dir,
+                "docker.mem",
+                &format!(
+                    "Could not write Docker Desktop settings at {}: {error}. Raise memory manually under Docker Desktop → Settings → Resources.",
+                    settings_path.display()
+                ),
+            );
+            write_docker_tuning_record(
+                data_dir,
+                serde_json::json!({
+                    "attemptedAt": attempted_at,
+                    "platform": "linux",
+                    "action": "failed",
+                    "reason": format!("Could not write Docker Desktop settings: {error}"),
+                    "previousMemoryMb": current_mib,
+                    "targetMemoryMb": recommended_mb,
+                }),
+            );
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn ensure_docker_desktop_memory_linux(_data_dir: &Path) {}
+
 fn find_docker_binary() -> PathBuf {
     if let Some(path) = command_on_path("docker") {
         return path;
@@ -1953,6 +2242,168 @@ fn seeded_traefik_config_contents() -> String {
     TRAEFIK_CONFIG_SEED.replace("{{ACME_EMAIL}}", &acme_email)
 }
 
+/// Directories bind-mounted into the Hub container that must be writable on the host.
+const HUB_BIND_MOUNT_DIRS: &[&str] = &[
+    "cache", "state", "logs", "apps", "media", "repos", "app-data", "user-config", "backups",
+];
+
+/// Files prior root-owned Hub containers commonly leave on bind mounts (block EACCES on rewrite).
+const HUB_STALE_ROOT_OWNED_FILES: &[(&str, &str)] = &[
+    ("state", ".env.resolved"),
+    ("logs", "app.log"),
+    ("logs", "error.log"),
+];
+
+/// Persistent state files the backend must be able to write to at runtime.
+/// These are chmod 0o666 (not deleted) so the container can update them without
+/// losing existing data even when they were previously written by a root-owned container.
+const HUB_STATE_FILES_NEED_WRITE: &[(&str, &str)] = &[
+    ("state", "settings.json"),
+    ("state", "seed"),
+];
+
+/// UID/GID for the Hub container process — matches the desktop/CLI user that owns ROOT_FOLDER_HOST.
+#[cfg(unix)]
+pub(crate) fn host_container_uid_gid() -> (u32, u32) {
+    unsafe { (libc::getuid(), libc::getgid()) }
+}
+
+#[cfg(windows)]
+pub(crate) fn host_container_uid_gid() -> (u32, u32) {
+    // Docker Desktop file shares typically map the Linux VM user to 1000:1000.
+    (1000, 1000)
+}
+
+/// Host paths bind-mounted into `/data/*` in the Hub container. Create as the current host user
+/// so the Hub container (same UID/GID via compose) can read/write without world-writable dirs.
+#[cfg(unix)]
+fn ensure_host_bind_mounts_writable(data_dir: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    for subdir in HUB_BIND_MOUNT_DIRS {
+        let path = data_dir.join(subdir);
+        std::fs::create_dir_all(&path)
+            .map_err(|error| format!("Failed to create {}: {}", path.display(), error))?;
+        if let Err(error) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o775)) {
+            eprintln!(
+                "warning: could not chmod 775 {}: {}",
+                path.display(),
+                error
+            );
+        }
+    }
+
+    for (subdir, file) in HUB_STALE_ROOT_OWNED_FILES {
+        let stale = data_dir.join(subdir).join(file);
+        if stale.exists() && std::fs::remove_file(&stale).is_err() {
+            eprintln!(
+                "warning: could not remove stale {} (often root-owned). \
+                 If the Hub crashes with EACCES, run: sudo rm -f {}",
+                stale.display(),
+                stale.display()
+            );
+        }
+    }
+
+    // Make persistent state files world-writable so the backend container can always update them,
+    // regardless of whether a prior container wrote them as root.
+    for (subdir, file) in HUB_STATE_FILES_NEED_WRITE {
+        let path = data_dir.join(subdir).join(file);
+        if path.exists() {
+            if let Err(error) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666)) {
+                eprintln!(
+                    "warning: could not chmod 666 {}: {}",
+                    path.display(),
+                    error
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn ensure_host_bind_mounts_writable(data_dir: &Path) -> Result<(), String> {
+    for subdir in HUB_BIND_MOUNT_DIRS {
+        let path = data_dir.join(subdir);
+        std::fs::create_dir_all(&path)
+            .map_err(|error| format!("Failed to create {}: {}", path.display(), error))?;
+    }
+    Ok(())
+}
+
+/// Backward-compatible alias used at hub startup.
+fn ensure_host_state_tree_writable(data_dir: &Path) -> Result<(), String> {
+    ensure_host_bind_mounts_writable(data_dir)
+}
+
+/// Remove a project container that is not running but may still hold published host ports.
+fn ensure_container_released_if_not_running(
+    data_dir: &Path,
+    container_name: &str,
+    ports_hint: &str,
+) -> Result<(), String> {
+    let output = docker_command()
+        .args([
+            "inspect",
+            container_name,
+            "--format",
+            "{{.State.Status}}",
+        ])
+        .output()
+        .map_err(|error| {
+            format!("Failed to inspect {} container state: {}", container_name, error)
+        })?;
+
+    if !output.status.success() {
+        let combined = format_command_output(
+            &String::from_utf8_lossy(&output.stdout),
+            &String::from_utf8_lossy(&output.stderr),
+        );
+        let combined_lower = combined.to_lowercase();
+        if combined_lower.contains("no such object") || combined_lower.contains("no such container") {
+            return Ok(());
+        }
+        return Err(format!(
+            "Failed to inspect {} container state. {}",
+            container_name, combined
+        ));
+    }
+
+    let status = String::from_utf8_lossy(&output.stdout).trim().to_lowercase();
+    if status == "running" || status == "restarting" {
+        return Ok(());
+    }
+
+    let _ = append_desktop_log_for(
+        data_dir,
+        "hub.start",
+        &format!(
+            "Removing non-running {} container (state={}) to release host ports {}.",
+            container_name, status, ports_hint
+        ),
+    );
+
+    let output = docker_command()
+        .args(["rm", "-f", container_name])
+        .output()
+        .map_err(|error| format!("Failed to remove {} container: {}", container_name, error))?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let combined = format_command_output(
+        &String::from_utf8_lossy(&output.stdout),
+        &String::from_utf8_lossy(&output.stderr),
+    );
+    Err(format!(
+        "Failed to remove non-running {} container. {}",
+        container_name, combined
+    ))
+}
+
 fn ensure_runtime_directory(path: &Path) -> Result<TraefikRuntimePreflight, String> {
     let mut result = TraefikRuntimePreflight::default();
 
@@ -2098,11 +2549,10 @@ fn prepare_traefik_runtime_state(data_dir: &Path) -> Result<TraefikRuntimePrefli
     Ok(result)
 }
 
-fn ensure_internal_docker_config_state(data_dir: &Path) -> Result<TraefikRuntimePreflight, String> {
-    ensure_runtime_file(&data_dir.join(INTERNAL_DOCKER_CONFIG_FILE), "{}", None)
-}
-
 fn ensure_hub_docker_config_state(data_dir: &Path) -> Result<TraefikRuntimePreflight, String> {
+    let docker_dir = data_dir.join(".docker");
+    std::fs::create_dir_all(docker_dir.join("cli-plugins"))
+        .map_err(|e| format!("Cannot create {}: {}", docker_dir.display(), e))?;
     ensure_runtime_file(&data_dir.join(HUB_DOCKER_CONFIG_FILE), "{}", None)
 }
 
@@ -2156,6 +2606,44 @@ fn remove_existing_traefik_container(data_dir: &Path) -> Result<(), String> {
             combined_output
         ))
     }
+}
+
+/// Remove a Traefik container that is not running but still holds 80/443 via docker-proxy.
+///
+/// Docker can leave a `created` (or exited) Traefik container with published ports while
+/// `compose up` fails on the next start with "ports are not available".
+fn ensure_traefik_container_released(data_dir: &Path) -> Result<(), String> {
+    let output = docker_command()
+        .args(["inspect", "traefik", "--format", "{{.State.Status}}"])
+        .output()
+        .map_err(|error| format!("Failed to inspect Traefik container state: {}", error))?;
+
+    if !output.status.success() {
+        let combined = format_command_output(
+            &String::from_utf8_lossy(&output.stdout),
+            &String::from_utf8_lossy(&output.stderr),
+        );
+        let combined_lower = combined.to_lowercase();
+        if combined_lower.contains("no such object") || combined_lower.contains("no such container") {
+            return Ok(());
+        }
+        return Err(format!("Failed to inspect Traefik container state. {}", combined));
+    }
+
+    let status = String::from_utf8_lossy(&output.stdout).trim().to_lowercase();
+    if status == "running" || status == "restarting" {
+        return Ok(());
+    }
+
+    let _ = append_desktop_log_for(
+        data_dir,
+        "hub.start",
+        &format!(
+            "Removing non-running Traefik container (state={}) to release host ports 80/443.",
+            status
+        ),
+    );
+    remove_existing_traefik_container(data_dir)
 }
 
 /// Remove stale project containers left behind by a previous installation.
@@ -2237,6 +2725,162 @@ fn is_docker_config_mount_path_error(output: &str) -> bool {
         && (lower.contains("not a directory")
             || lower.contains("is a directory")
             || lower.contains("mount a directory onto a file"))
+}
+
+/// Returns `true` when Docker cannot publish Traefik's HTTP/HTTPS host ports.
+fn is_host_port_bind_conflict(output: &str) -> bool {
+    let lower = output.to_lowercase();
+    lower.contains("ports are not available")
+        || lower.contains("address already in use")
+        || lower.contains("bind: address already in use")
+}
+
+/// On Linux, find `docker-proxy` PIDs holding Traefik's target ports with no
+/// corresponding *running* container (i.e. orphaned after Docker cleanup).
+///
+/// `/proc/<pid>/cmdline` is world-readable even for root-owned processes, so
+/// this requires no elevated privileges.  Each returned tuple is `(pid, port)`.
+#[cfg(target_os = "linux")]
+fn find_orphaned_traefik_proxy_pids(target_ports: &[u16]) -> Vec<(u32, u16)> {
+    let mut proxy_pids: Vec<(u32, u16)> = Vec::new();
+
+    let proc_dir = match std::fs::read_dir("/proc") {
+        Ok(d) => d,
+        Err(_) => return proxy_pids,
+    };
+
+    for entry in proc_dir.flatten() {
+        let name = entry.file_name();
+        let pid = match name.to_string_lossy().parse::<u32>() {
+            Ok(n) => n,
+            Err(_) => continue,
+        };
+
+        let bytes = match std::fs::read(format!("/proc/{}/cmdline", pid)) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+
+        // argv is NUL-separated; last element may be empty
+        let args: Vec<&[u8]> = bytes.split(|&b| b == 0).collect();
+
+        let is_docker_proxy = args
+            .first()
+            .and_then(|a| std::str::from_utf8(a).ok())
+            .map(|s| s.ends_with("docker-proxy"))
+            .unwrap_or(false);
+
+        if !is_docker_proxy {
+            continue;
+        }
+
+        for window in args.windows(2) {
+            let key = std::str::from_utf8(window[0]).unwrap_or("");
+            let val = std::str::from_utf8(window[1]).unwrap_or("");
+            if key == "-host-port" {
+                if let Ok(port) = val.parse::<u16>() {
+                    if target_ports.contains(&port) {
+                        proxy_pids.push((pid, port));
+                    }
+                }
+            }
+        }
+    }
+
+    if proxy_pids.is_empty() {
+        return proxy_pids;
+    }
+
+    // Keep only proxies for ports not legitimately owned by a *running* container.
+    proxy_pids
+        .into_iter()
+        .filter(|(_, port)| {
+            let claimed = docker_command()
+                .args(["ps", "-q", "--filter", &format!("publish={}", port)])
+                .output()
+                .map(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty())
+                .unwrap_or(false);
+            !claimed
+        })
+        .collect()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn find_orphaned_traefik_proxy_pids(_target_ports: &[u16]) -> Vec<(u32, u16)> {
+    Vec::new()
+}
+
+/// Kill orphaned `docker-proxy` processes that may be preventing Traefik from
+/// binding its host ports. Uses `sudo -n kill` when available; otherwise logs
+/// remediation steps and continues startup (compose will surface a real bind error).
+fn release_orphaned_traefik_port_proxies(data_dir: &Path) -> Result<(), String> {
+    let target_ports: &[u16] = &[80, 443, 8080];
+    let orphaned = find_orphaned_traefik_proxy_pids(target_ports);
+
+    if orphaned.is_empty() {
+        return Ok(());
+    }
+
+    let pids: Vec<String> = orphaned.iter().map(|(pid, _)| pid.to_string()).collect();
+    let ports: Vec<String> = {
+        let mut seen = std::collections::HashSet::new();
+        orphaned
+            .iter()
+            .filter(|(_, p)| seen.insert(*p))
+            .map(|(_, p)| p.to_string())
+            .collect()
+    };
+
+    let _ = append_desktop_log_for(
+        data_dir,
+        "hub.start",
+        &format!(
+            "Orphaned docker-proxy processes detected on Traefik ports [{}] (PIDs: {}). Attempting cleanup.",
+            ports.join(", "),
+            pids.join(", ")
+        ),
+    );
+
+    // Attempt: sudo -n kill <pids>
+    let mut kill_args = vec!["kill"];
+    kill_args.extend(pids.iter().map(String::as_str));
+
+    let kill_ok = std::process::Command::new("sudo")
+        .arg("-n")
+        .args(&kill_args)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if kill_ok {
+        // Poll briefly for the processes to disappear (up to ~2 s).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            let still_alive = find_orphaned_traefik_proxy_pids(target_ports);
+            if still_alive.is_empty() {
+                let _ = append_desktop_log_for(
+                    data_dir,
+                    "hub.start",
+                    "Orphaned docker-proxy processes cleared; Traefik ports are now available.",
+                );
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+    }
+
+    // Best-effort cleanup; do not block hub startup when sudo is unavailable.
+    let _ = append_desktop_log_for(
+        data_dir,
+        "hub.start",
+        &format!(
+            "Could not clear orphaned docker-proxy on ports [{}] (PIDs: {}). \
+             If Traefik fails to start, run `sudo systemctl restart docker` or restart Docker Desktop.",
+            ports.join(", "),
+            pids.join(", ")
+        ),
+    );
+    Ok(())
 }
 
 fn inspect_container_state_health(container_name: &str) -> String {
@@ -2631,6 +3275,12 @@ fn start_hub_inner(
     // can report correct values instead of the Docker VM's constrained resources.
     refresh_macos_host_probe_cache(data_dir);
     refresh_windows_host_metrics_probe_cache(data_dir);
+    // Surface Linux host hardware so the backend reports true RAM/CPU instead of
+    // the Docker Desktop VM's capped resources (e.g. 8 GB instead of 128 GB).
+    refresh_linux_host_metrics_probe_cache(data_dir);
+
+    // On Linux + Docker Desktop, best-effort raise VM memory (~75% host RAM) before compose up.
+    ensure_docker_desktop_memory_linux(data_dir);
 
     // Resolve port conflicts and write to the runtime env file before starting.
     let resolution = crate::port_manager::refresh_ports_if_needed(env_path).map_err(|error| {
@@ -2656,6 +3306,21 @@ fn start_hub_inner(
     // completes before the rest of the stack starts.
     start_database_first(compose_path, env_path, data_dir)?;
     ensure_postgres_password_matches_env(env_path, data_dir)?;
+
+    ensure_traefik_container_released(data_dir).map_err(|error| {
+        let message = format!("Traefik port cleanup failed before startup: {}", error);
+        let _ = append_desktop_log_for(data_dir, "hub.start", &message);
+        with_view_logs_hint(message)
+    })?;
+
+    // Best-effort: release orphaned docker-proxy processes that may hold Traefik ports.
+    let _ = release_orphaned_traefik_port_proxies(data_dir);
+
+    ensure_host_state_tree_writable(data_dir).map_err(|error| {
+        let message = format!("Failed to prepare writable state directory before startup: {}", error);
+        let _ = append_desktop_log_for(data_dir, "hub.start", &message);
+        with_view_logs_hint(message)
+    })?;
 
     // Attempt compose up with automatic retry on transient container conflicts.
     let mut last_error = String::new();
@@ -2756,7 +3421,24 @@ fn start_hub_inner(
             continue;
         }
 
-        // The host path for /root/.docker/config.json can be poisoned as a directory.
+        if is_host_port_bind_conflict(&combined_output) && attempt < MAX_START_RETRIES {
+            let _ = append_desktop_log_for(
+                data_dir,
+                "hub.start",
+                "Detected host port bind conflict — removing stale Hub stack containers and running compose down.",
+            );
+            let _ = ensure_traefik_container_released(data_dir);
+            let _ =
+                ensure_container_released_if_not_running(data_dir, "ci-hub-db", "6543");
+            let _ =
+                ensure_container_released_if_not_running(data_dir, "ci-os-hub-queue", "5001");
+            let _ = cleanup_stale_project_containers(compose_path, env_path, data_dir);
+            let _ = release_orphaned_traefik_port_proxies(data_dir);
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            continue;
+        }
+
+        // The host path bind-mounted to /data/.docker/config.json can be poisoned as a directory.
         // Self-heal it and retry automatically.
         if is_docker_config_mount_path_error(&combined_output) && attempt < MAX_START_RETRIES {
             let _ = append_desktop_log_for(
@@ -2764,16 +3446,6 @@ fn start_hub_inner(
                 "hub.start",
                 "Detected docker-config mount path type mismatch — attempting self-heal and retry.",
             );
-            if let Err(error) = ensure_internal_docker_config_state(data_dir) {
-                let _ = append_desktop_log_for(
-                    data_dir,
-                    "hub.start",
-                    &format!(
-                        "Self-heal of internal docker-config path failed before retry: {}",
-                        error
-                    ),
-                );
-            }
             if let Err(error) = ensure_hub_docker_config_state(data_dir) {
                 let _ = append_desktop_log_for(
                     data_dir,
@@ -2960,12 +3632,18 @@ fn parse_env_file(path: &Path) -> std::collections::HashMap<String, String> {
     map
 }
 
-/// Matches backend `isPrivateVpnEnabled` (`packages/backend/src/common/helpers/private-vpn.ts`): enabled only
-/// when the value is exactly `"true"` (case-sensitive). Missing key ⇒ disabled (safe default for fresh installs).
+/// Returns `true` when the Tailscale sidecar (`hub-tailscale`) should run.
+///
+/// The sidecar is **on by default** for every stack (dev, prod, Tauri desktop, docker-only).
+/// Disable only when the hub `.env` contains an explicit opt-out:
+/// `PRIVATE_VPN_USER_DISABLED=true` (written by [`render_runtime_env_content`] when the user turns
+/// VPN off). Compose actually starts the container when `COMPOSE_PROFILES` includes `private-vpn`
+/// (merged in the same render path). Legacy `PRIVATE_VPN_ENABLED` in old `.env` files is ignored.
 fn private_vpn_enabled_from_map(env: &std::collections::HashMap<String, String>) -> bool {
-    env.get("PRIVATE_VPN_ENABLED")
-        .map(|v| v.as_str() == "true")
-        .unwrap_or(false)
+    !matches!(
+        env.get("PRIVATE_VPN_USER_DISABLED").map(|v| v.as_str()),
+        Some("true")
+    )
 }
 
 fn reset_vpn_sidecar_status_poll_phase() {
@@ -3019,7 +3697,17 @@ fn dedupe_compose_profile_tokens(tokens: Vec<String>) -> Vec<String> {
     out
 }
 
-/// Ensures the `private-vpn` Compose profile is active when VPN is enabled, without dropping other profiles (e.g. `cloudflare`).
+fn has_cloudflare_tunnel_token(existing: &std::collections::HashMap<String, String>) -> bool {
+    let Some(root) = get_non_empty_env_value(existing, "ROOT_FOLDER_HOST") else {
+        return false;
+    };
+    let token_path = PathBuf::from(root).join("..").join("tunnel").join("token");
+    std::fs::metadata(&token_path)
+        .map(|m| m.is_file() && m.len() > 0)
+        .unwrap_or(false)
+}
+
+/// Ensures `private-vpn` and `cloudflare` compose profiles when enabled, without dropping other profiles.
 fn merge_compose_profiles(
     existing: &std::collections::HashMap<String, String>,
     vpn_on: bool,
@@ -3043,6 +3731,15 @@ fn merge_compose_profiles(
     } else {
         parts.retain(|p| p != "private-vpn");
     }
+
+    if has_cloudflare_tunnel_token(existing) {
+        if !parts.iter().any(|p| p == "cloudflare") {
+            parts.push("cloudflare".into());
+        }
+    } else {
+        parts.retain(|p| p != "cloudflare");
+    }
+
     parts.join(",")
 }
 
@@ -3067,12 +3764,14 @@ fn render_runtime_env_content(
         get_non_empty_env_value(existing, "JWT_SECRET").unwrap_or_else(|| generate_hex(64));
     let postgres_password =
         get_non_empty_env_value(existing, "POSTGRES_PASSWORD").unwrap_or_else(|| generate_hex(32));
-    // Private VPN — Tailscale sidecar; enabled only when `PRIVATE_VPN_ENABLED` is exactly `true`.
+    // Tailscale sidecar: on by default (dev/prod/Tauri/docker-only). Opt-out only via
+    // PRIVATE_VPN_USER_DISABLED=true. Compose gates hub-tailscale with COMPOSE_PROFILES=private-vpn.
     let vpn_on = private_vpn_enabled_from_map(existing);
-    let private_vpn_enabled = if vpn_on {
-        "true".to_string()
+    // When opted out, persist the sentinel; when enabled, omit it so the default applies.
+    let private_vpn_user_disabled_line = if vpn_on {
+        String::new()
     } else {
-        "false".to_string()
+        "PRIVATE_VPN_USER_DISABLED=true\n".to_string()
     };
     let compose_profiles = merge_compose_profiles(existing, vpn_on);
     // Omit when empty: Compose treats unset COMPOSE_PROFILES like "", but a bare `COMPOSE_PROFILES=`
@@ -3081,6 +3780,21 @@ fn render_runtime_env_content(
         String::new()
     } else {
         format!("COMPOSE_PROFILES={compose_profiles}\n")
+    };
+
+    // Inject a stable device ID from the host's /etc/machine-id so the backend
+    // container always uses the same host-level identity regardless of container
+    // restarts or recreation (container machine-id differs from host machine-id).
+    let device_id_line = match std::fs::read_to_string("/etc/machine-id") {
+        Ok(id) => {
+            let id = id.trim();
+            if id.is_empty() {
+                String::new()
+            } else {
+                format!("DEVICE_ID={id}\n")
+            }
+        }
+        Err(_) => String::new(),
     };
 
     let domain = option_env!("CI_HUB_DOMAIN").unwrap_or(default_public_domain());
@@ -3093,7 +3807,7 @@ fn render_runtime_env_content(
     } else {
         "linux/amd64"
     };
-    let docker_config_path = data_dir.join(HUB_DOCKER_CONFIG_FILE);
+    let (container_uid, container_gid) = host_container_uid_gid();
 
     format!(
         "# Preserved (generated once, survive upgrades)\n\
@@ -3108,9 +3822,11 @@ fn render_runtime_env_content(
          CI_HUB_VERSION={hub_version}\n\
          CI_HUB_IMAGE={hub_image}\n\
          DOCKER_PLATFORM={docker_platform}\n\
-         DOCKER_CONFIG_PATH={docker_config_path}\n\
-         PRIVATE_VPN_ENABLED={private_vpn_enabled}\n\
-         {compose_profiles_line}",
+         CI_HUB_CONTAINER_UID={container_uid}\n\
+         CI_HUB_CONTAINER_GID={container_gid}\n\
+         {private_vpn_user_disabled_line}\
+         {compose_profiles_line}\
+         {device_id_line}",
         root_folder_host = root_folder_host,
         jwt_secret = jwt_secret,
         postgres_password = postgres_password,
@@ -3119,9 +3835,11 @@ fn render_runtime_env_content(
         hub_version = hub_version,
         hub_image = hub_image,
         docker_platform = docker_platform,
-        docker_config_path = docker_config_path.display(),
-        private_vpn_enabled = private_vpn_enabled,
+        container_uid = container_uid,
+        container_gid = container_gid,
+        private_vpn_user_disabled_line = private_vpn_user_disabled_line,
         compose_profiles_line = compose_profiles_line,
+        device_id_line = device_id_line,
     )
 }
 
@@ -3192,6 +3910,7 @@ fn compose_resource_candidates(resource_dir: &Path) -> Vec<PathBuf> {
             .unwrap_or(Path::new("."))
             .join("resources")
             .join(HUB_COMPOSE_FILENAME),
+        PathBuf::from("/usr/lib/companion-hub/resources").join(HUB_COMPOSE_FILENAME),
         PathBuf::from("/usr/lib/Companion Hub/resources").join(HUB_COMPOSE_FILENAME),
         PathBuf::from("/usr/share/companion-hub").join(HUB_COMPOSE_FILENAME),
     ]
@@ -3201,7 +3920,7 @@ fn compose_resource_candidates(resource_dir: &Path) -> Vec<PathBuf> {
 ///
 /// Uses a regenerate-and-preserve approach:
 /// - Preserved values (read from existing .env, generated if missing): ROOT_FOLDER_HOST, JWT_SECRET, POSTGRES_PASSWORD
-/// - Derived values (always recomputed from the current binary): INTERNAL_IP, DOMAIN, CI_CLOUD_URL, CI_HUB_VERSION, CI_HUB_IMAGE, DOCKER_PLATFORM, DOCKER_CONFIG_PATH
+/// - Derived values (always recomputed from the current binary): INTERNAL_IP, DOMAIN, CI_CLOUD_URL, CI_HUB_VERSION, CI_HUB_IMAGE, DOCKER_PLATFORM, DEVICE_ID
 ///
 /// Returns the initialized desktop data paths and Traefik preflight result.
 pub fn initialize_hub(resource_dir: &Path) -> Result<HubInitialization, String> {
@@ -3224,6 +3943,7 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<HubInitialization, String> 
         std::fs::create_dir_all(data_dir.join(sub))
             .map_err(|e| format!("Failed to create {}: {}", sub, e))?;
     }
+    ensure_host_state_tree_writable(&data_dir)?;
     let _ = append_desktop_log_for(
         &data_dir,
         "initialize",
@@ -3268,11 +3988,11 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<HubInitialization, String> 
 
     // --- Regenerate the runtime env file with preserve-and-derive approach ---
     if let Err(error) = generate_container_docker_config(&data_dir, None) {
-        let message = format!("Failed to generate .internal/docker-config.json: {}", error);
+        let message = format!("Failed to generate .docker/config.json: {}", error);
         let _ = append_desktop_log_for(&data_dir, "initialize", &message);
         return Err(with_view_logs_hint(message));
     }
-    log_lines.push("  docker-config: .internal/docker-config.json ready".to_string());
+    log_lines.push("  docker-config: .docker/config.json ready".to_string());
 
     let env_path = hub_env_path_for(&data_dir);
     let existing = load_runtime_env_values(&data_dir, &env_path);
@@ -3303,26 +4023,15 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<HubInitialization, String> 
         with_view_logs_hint(message)
     })?;
 
-    let internal_preflight = ensure_internal_docker_config_state(&data_dir).map_err(|error| {
+    let docker_config_preflight = ensure_hub_docker_config_state(&data_dir).map_err(|error| {
         let message = format!(
-            "Failed to prepare internal docker-config runtime state: {}",
+            "Failed to prepare hub docker-config runtime state: {}",
             error
         );
         let _ = append_desktop_log_for(&data_dir, "initialize", &message);
         with_view_logs_hint(message)
     })?;
-    traefik_preflight.merge(internal_preflight);
-
-    let hub_docker_config_preflight =
-        ensure_hub_docker_config_state(&data_dir).map_err(|error| {
-            let message = format!(
-                "Failed to prepare hub docker-config runtime state: {}",
-                error
-            );
-            let _ = append_desktop_log_for(&data_dir, "initialize", &message);
-            with_view_logs_hint(message)
-        })?;
-    traefik_preflight.merge(hub_docker_config_preflight);
+    traefik_preflight.merge(docker_config_preflight);
 
     if traefik_preflight.changed {
         mark_traefik_recreate_required(&data_dir).map_err(|error| {
@@ -3365,7 +4074,7 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<HubInitialization, String> 
     })
 }
 
-/// Generate a container-safe Docker config at `.internal/docker-config.json`.
+/// Generate a container-safe Docker config at `.docker/config.json` under the data dir.
 ///
 /// Reads the host's `~/.docker/config.json`, strips host-only fields that
 /// break the Docker CLI inside Linux containers (currentContext, credsStore
@@ -3382,8 +4091,22 @@ fn generate_container_docker_config(
     data_dir: &Path,
     host_docker_dir: Option<&Path>,
 ) -> Result<(), String> {
-    let internal_dir = data_dir.join(".internal");
-    let config_path = internal_dir.join("docker-config.json");
+    let docker_dir = data_dir.join(".docker");
+    let config_path = docker_dir.join("config.json");
+
+    for legacy in LEGACY_DOCKER_CONFIG_PATHS {
+        let legacy_path = data_dir.join(legacy);
+        if legacy_path.is_file() && !config_path.exists() {
+            if let Err(e) = std::fs::copy(&legacy_path, &config_path) {
+                eprintln!(
+                    "warning: could not migrate {} -> {}: {}",
+                    legacy_path.display(),
+                    config_path.display(),
+                    e
+                );
+            }
+        }
+    }
 
     // On Windows, Docker may have created a directory at this path when the
     // file was missing during a previous `docker compose up`.  Remove it so
@@ -3508,8 +4231,8 @@ fn generate_container_docker_config(
 
     let content = serde_json::to_string_pretty(&serde_json::Value::Object(sanitized))
         .map_err(|e| format!("Cannot serialise docker config: {}", e))?;
-    std::fs::create_dir_all(&internal_dir)
-        .map_err(|e| format!("Cannot create {}: {}", internal_dir.display(), e))?;
+    std::fs::create_dir_all(docker_dir.join("cli-plugins"))
+        .map_err(|e| format!("Cannot create {}: {}", docker_dir.display(), e))?;
 
     // On Unix, write to a temp file with mode 0600, flush+sync, then
     // atomically rename over the destination.  This ensures the old config
@@ -3518,7 +4241,7 @@ fn generate_container_docker_config(
     {
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
-        let tmp_path = internal_dir.join(".docker-config.json.tmp");
+        let tmp_path = docker_dir.join(".config.json.tmp");
         let mut file = std::fs::OpenOptions::new()
             .write(true)
             .create(true)
@@ -4063,10 +4786,13 @@ mod tests {
     use super::{
         append_desktop_log_for, classify_docker_access_result, clear_traefik_recreate_required,
         clear_tunnel_token, desktop_log_path_for, format_command_output,
-        generate_container_docker_config, is_container_name_conflict, is_oci_runtime_error,
+        generate_container_docker_config, is_container_name_conflict, is_host_port_bind_conflict,
+        is_oci_runtime_error,
         is_traefik_recreate_required, logs_open_target_for, managed_app_container_ps_args,
-        mark_traefik_recreate_required, parse_container_ids, prepare_traefik_runtime_state,
-        seeded_traefik_config_contents, startup_service_definitions, truncate_command_output,
+        host_container_uid_gid, mark_traefik_recreate_required, merge_compose_profiles,
+        parse_container_ids, prepare_traefik_runtime_state, private_vpn_enabled_from_map,
+        seeded_traefik_config_contents,
+        startup_service_definitions, truncate_command_output,
         tunnel_dir_for, tunnel_token_path_for, DockerAccessState, MAX_COMMAND_OUTPUT_CHARS,
         TRAEFIK_ACME_FILE, TRAEFIK_CONFIG_FILE, TRAEFIK_DYNAMIC_CONFIG_SEED, TRAEFIK_DYNAMIC_FILE,
         TRAEFIK_TLS_DIR,
@@ -4173,6 +4899,41 @@ mod tests {
                 "label=ci-os-hub.appurn",
             ]
         );
+    }
+
+    #[test]
+    fn host_container_uid_gid_matches_current_process_on_unix() {
+        let (uid, gid) = host_container_uid_gid();
+        #[cfg(unix)]
+        {
+            assert_eq!(uid, unsafe { libc::getuid() });
+            assert_eq!(gid, unsafe { libc::getgid() });
+        }
+        #[cfg(windows)]
+        {
+            assert_eq!(uid, 1000);
+            assert_eq!(gid, 1000);
+        }
+    }
+
+    #[test]
+    fn private_vpn_enabled_by_default_ignores_legacy_enabled_false() {
+        let mut env = std::collections::HashMap::new();
+        env.insert("PRIVATE_VPN_ENABLED".into(), "false".into());
+        assert!(private_vpn_enabled_from_map(&env));
+    }
+
+    #[test]
+    fn private_vpn_disabled_only_when_user_disabled_sentinel_set() {
+        let mut env = std::collections::HashMap::new();
+        env.insert("PRIVATE_VPN_USER_DISABLED".into(), "true".into());
+        assert!(!private_vpn_enabled_from_map(&env));
+    }
+
+    #[test]
+    fn merge_compose_profiles_adds_private_vpn_by_default() {
+        let env = std::collections::HashMap::new();
+        assert_eq!(merge_compose_profiles(&env, true), "private-vpn");
     }
 
     #[test]
@@ -4342,6 +5103,13 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
     }
 
     #[test]
+    fn detects_host_port_bind_conflict_from_traefik_publish_error() {
+        let output = r#"Error response from daemon: ports are not available: exposing port TCP 0.0.0.0:443 -> 127.0.0.1:0: listen tcp 0.0.0.0:443: bind: address already in use"#;
+        assert!(is_host_port_bind_conflict(output));
+        assert!(!is_container_name_conflict(output));
+    }
+
+    #[test]
     fn detects_oci_runtime_create_failed_message() {
         let output = r#"Error response from daemon: failed to create task for container: failed to create shim task: OCI runtime create failed: runc create failed: unable to start container process: exec: "/app/start.sh": stat /app/start.sh: no such file or directory: unknown"#;
         assert!(is_oci_runtime_error(output));
@@ -4480,11 +5248,9 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
         let (_tmp_home, docker_dir) = write_docker_config_fixture(fixture);
         let tmp = tempfile::tempdir().expect("create temp dir");
         let data_dir = tmp.path().to_path_buf();
-        std::fs::create_dir_all(data_dir.join(".internal")).unwrap();
-
         generate_container_docker_config(&data_dir, Some(&docker_dir)).expect("generate config");
 
-        let config_path = data_dir.join(".internal").join("docker-config.json");
+        let config_path = data_dir.join(".docker").join("config.json");
         assert!(config_path.is_file(), "config should be a file");
 
         let parsed: serde_json::Value =
@@ -4513,7 +5279,7 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             let mode = config_path.metadata().unwrap().permissions().mode() & 0o777;
-            assert_eq!(mode, 0o600, "docker-config.json should be 0600");
+            assert_eq!(mode, 0o600, "config.json should be 0600");
         }
     }
 
@@ -4524,7 +5290,7 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
         let (_tmp_home, docker_dir) = write_docker_config_fixture(fixture);
         let tmp = tempfile::tempdir().expect("create temp dir");
         let data_dir = tmp.path().to_path_buf();
-        let config_path = data_dir.join(".internal").join("docker-config.json");
+        let config_path = data_dir.join(".docker").join("config.json");
 
         // Simulate the stale directory Docker creates
         std::fs::create_dir_all(&config_path).unwrap();
@@ -4555,11 +5321,9 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
         let (_tmp_home, docker_dir) = write_docker_config_fixture(fixture);
         let tmp = tempfile::tempdir().expect("create temp dir");
         let data_dir = tmp.path().to_path_buf();
-        std::fs::create_dir_all(data_dir.join(".internal")).unwrap();
-
         generate_container_docker_config(&data_dir, Some(&docker_dir)).expect("generate config");
 
-        let config_path = data_dir.join(".internal").join("docker-config.json");
+        let config_path = data_dir.join(".docker").join("config.json");
         let parsed: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
 

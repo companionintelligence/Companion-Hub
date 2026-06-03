@@ -4,6 +4,8 @@ import { LabelWithHint } from '@/components/ui/field-hint/field-hint';
 import { ONBOARDING_HW_TIER_HINT, ONBOARDING_HW_UNIFIED_MEMORY_HINT } from '@/components/hub-status/hub-status-tooltips';
 import { AlertTriangle } from 'lucide-react';
 import type { HardwareProfile, HardwareTier } from '@ci-hub/common/types';
+import { resolveAmdHostRocmNotice } from '@/modules/onboarding/helpers/hardware-display';
+import { cn } from '@/lib/utils';
 
 interface HardwareProfileCardProps {
   hardware: HardwareProfile;
@@ -38,8 +40,7 @@ function getClientPlatform(): 'linux' | 'windows' | 'macos' | 'other' {
 export const HardwareProfileCard = ({ hardware, tier, onRescan, rescanning = false }: HardwareProfileCardProps) => {
   const badge = TIER_BADGES[tier];
   const noGpu = !hardware.gpu.available;
-  const amdRuntimeMissing = hardware.gpu.vendor === 'amd' && hardware.gpu.available && !hardware.gpu.runtimeAvailable;
-  const amdDriverGuidance = 'AMD ROCm';
+  const amdHostRocm = resolveAmdHostRocmNotice(hardware);
   const nvidiaRuntimeMissing = hardware.gpu.vendor === 'nvidia' && !hardware.gpu.runtimeAvailable;
   const nvidiaRuntimeReady = hardware.gpu.vendor === 'nvidia' && hardware.gpu.runtimeAvailable;
   const clientPlatform = getClientPlatform();
@@ -102,14 +103,18 @@ export const HardwareProfileCard = ({ hardware, tier, onRescan, rescanning = fal
           </div>
         )}
 
-        {amdRuntimeMissing && (
-          <div className="flex items-start gap-2 p-2.5 bg-yellow-50 dark:bg-yellow-950 border border-yellow-200 dark:border-yellow-800 rounded-md">
-            <AlertTriangle className="h-4 w-4 text-yellow-600 dark:text-yellow-400 flex-shrink-0 mt-0.5" />
-            <div className="text-xs text-yellow-800 dark:text-yellow-200">
-              <strong>Container GPU runtime not available.</strong> Your {hardware.gpu.vendor} GPU was detected, but containerized backends do not
-              have ROCm access yet. Host-side Ollama can still use the GPU once it is installed and reachable. Please install the appropriate drivers
-              ({amdDriverGuidance}) to enable container GPU acceleration too.
-            </div>
+        {amdHostRocm && (
+          <div
+            className={cn(
+              'mt-3 rounded-md border p-3 text-xs',
+              amdHostRocm.tone === 'ready'
+                ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-100'
+                : 'border-border/60 bg-muted/30 text-muted-foreground',
+            )}
+            data-testid={amdHostRocm.tone === 'ready' ? 'amd-host-rocm-ready' : 'amd-host-rocm-hint'}
+          >
+            <p className="font-semibold">{amdHostRocm.title}</p>
+            <p className="mt-1">{amdHostRocm.body}</p>
           </div>
         )}
 

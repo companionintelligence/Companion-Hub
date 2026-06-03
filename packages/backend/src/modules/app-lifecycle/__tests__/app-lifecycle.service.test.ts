@@ -14,6 +14,7 @@ import { CloudflareClientService } from '@/modules/cloudflare/cloudflare-client.
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { ReposHelpers } from '@/modules/app-stores/repos.helpers';
 import { AppStoreService } from '@/modules/app-stores/app-store.service';
+import { InstallPipelineTracker } from '@/modules/apps/install-pipeline.tracker';
 import { APP_ASYNC_MUTEX } from '@/utils/mutex/mutex.module';
 import { mock, MockProxy } from 'vitest-mock-extended';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -35,6 +36,7 @@ describe('AppLifecycleService', () => {
   let reposHelpers: MockProxy<ReposHelpers>;
   let appStoreService: MockProxy<AppStoreService>;
   let mutex: any;
+  let installPipelineTracker: InstallPipelineTracker;
 
   beforeEach(async () => {
     logger = mock<LoggerService>();
@@ -56,6 +58,8 @@ describe('AppLifecycleService', () => {
     mutex = {
       acquire: vi.fn().mockResolvedValue(release),
     };
+    installPipelineTracker = new InstallPipelineTracker();
+    appsService.getInstallQueueState.mockResolvedValue({ active: null, queued: [] });
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -75,6 +79,7 @@ describe('AppLifecycleService', () => {
         { provide: ReposHelpers, useValue: reposHelpers },
         { provide: AppStoreService, useValue: appStoreService },
         { provide: APP_ASYNC_MUTEX, useValue: mutex },
+        { provide: InstallPipelineTracker, useValue: installPipelineTracker },
       ],
     }).compile();
 
@@ -93,7 +98,12 @@ describe('AppLifecycleService', () => {
 
   describe('invokeCommand', () => {
     it('should execute command and sync cloudflare on success', async () => {
-      const data = { appUrn: 'test-app', action: 'install', form: {} } as any;
+      const data = {
+        appUrn: 'test-app',
+        command: 'install',
+        requestId: '00000000-0000-4000-8000-000000000001',
+        form: {},
+      } as any;
       const reply = vi.fn();
       const command = { execute: vi.fn().mockResolvedValue({ success: true, message: 'OK' }) };
 
@@ -110,6 +120,7 @@ describe('AppLifecycleService', () => {
 
       await service.invokeCommand(data, reply);
 
+      expect(mutex.acquire).toHaveBeenCalledWith('__install-pipeline__');
       expect(mutex.acquire).toHaveBeenCalledWith('test-app');
       expect(command.execute).toHaveBeenCalledWith('test-app', expect.anything());
       expect(cloudflareClientService.syncState).toHaveBeenCalled();
@@ -223,8 +234,28 @@ describe('AppLifecycleService', () => {
       expect(apps).toHaveLength(0);
     });
 
+    it('does not acquire install pipeline mutex for non-install commands', async () => {
+      const data = {
+        appUrn: 'test-app',
+        command: 'start',
+        requestId: '00000000-0000-4000-8000-000000000002',
+        form: {},
+      } as any;
+      const reply = vi.fn();
+      const command = { execute: vi.fn().mockResolvedValue({ success: true, message: 'OK' }) };
+      commandFactory.createCommand.mockReturnValue(command as any);
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue(null as any);
+      appsRepository.getApps.mockResolvedValue([]);
+      configService.getConfig.mockReturnValue({ userSettings: { localDomain: 'lan' } } as any);
+
+      await service.invokeCommand(data, reply);
+
+      expect(mutex.acquire).not.toHaveBeenCalledWith('__install-pipeline__');
+      expect(mutex.acquire).toHaveBeenCalledWith('test-app');
+    });
+
     it('should handle errors during execution', async () => {
-      const data = { appUrn: 'test-app', action: 'install' } as any;
+      const data = { appUrn: 'test-app', command: 'install', requestId: '00000000-0000-4000-8000-000000000003', form: {} } as any;
       const reply = vi.fn();
       commandFactory.createCommand.mockImplementation(() => {
         throw new Error('Exec failed');
@@ -254,6 +285,8 @@ describe('AppLifecycleService', () => {
         version: '1.0.0',
         userSettings: { localDomain: 'lan', guestDashboard: false },
       } as any);
+      appsRepository.getAppByUrn.mockResolvedValue(null as any);
+      appsRepository.getApps.mockResolvedValue([]);
       marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(baseAppInfo as any);
       appsRepository.getAppsByDomain.mockResolvedValue([]);
       appsRepository.getAppsByLocalSubdomain.mockResolvedValue([]);
@@ -585,6 +618,7 @@ describe('AppLifecycleService', () => {
         callOrder.push('db_create');
         return { id: 42, ...data } as any;
       });
+      appsRepository.getAppById.mockImplementation(async (id: number) => ({ id, status: 'installing' }) as any);
 
       sseService.emit.mockImplementation((_channel: any, payload: any) => {
         callOrder.push(`sse:${payload.event}`);
@@ -768,7 +802,7 @@ describe('AppLifecycleService', () => {
       expect(successIdx).toBeGreaterThan(updateIdx);
     });
 
-    it('installApp error: DB delete committed before SSE', async () => {
+    it('installApp error: keeps app record as install_failed before SSE', async () => {
       const baseAppInfo = { id: 'myapp', port: 8080, cihub_app_version: 1, exposable: true, supported_architectures: ['amd64'] };
       marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(baseAppInfo as any);
       appsRepository.getAppByUrn.mockResolvedValue(null as any);
@@ -780,10 +814,65 @@ describe('AppLifecycleService', () => {
       await service.installApp({ appUrn, form: {} });
       await flushMicrotasks();
 
-      const delIdx = callOrder.indexOf('db_delete');
+      expect(callOrder).not.toContain('db_delete');
+      const updateIdx = callOrder.indexOf('db_update');
       const sseIdx = callOrder.indexOf('sse:install_error');
-      expect(delIdx).toBeGreaterThanOrEqual(0);
-      expect(sseIdx).toBeGreaterThan(delIdx);
+      expect(updateIdx).toBeGreaterThanOrEqual(0);
+      expect(sseIdx).toBeGreaterThan(updateIdx);
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(42, expect.objectContaining({ status: 'install_failed' }));
+    });
+
+    it('installApp retry: re-queues install when status is install_failed', async () => {
+      const baseAppInfo = { id: 'myapp', port: 8080, cihub_app_version: 1, exposable: true, supported_architectures: ['amd64'] };
+      marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(baseAppInfo as any);
+      appsRepository.getAppByUrn.mockResolvedValue({ ...fakeApp, status: 'install_failed' } as any);
+      appsRepository.getAppsByDomain.mockResolvedValue([]);
+      appsRepository.getAppsByLocalSubdomain.mockResolvedValue([]);
+      appsRepository.getAppsByPort.mockResolvedValue([]);
+      appsRepository.getApps.mockResolvedValue([{ ...fakeApp, status: 'install_failed' }] as any);
+
+      await service.installApp({ appUrn, form: {} });
+      await flushMicrotasks();
+
+      expect(appsRepository.createApp).not.toHaveBeenCalled();
+      expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'install', appUrn }));
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(42, expect.objectContaining({ status: 'installing' }));
+    });
+
+    it('installApp retry: syncs exposure from submitted exposedLocal, not stale existing record', async () => {
+      const baseAppInfo = { id: 'myapp', port: 8080, cihub_app_version: 1, exposable: true, supported_architectures: ['amd64'] };
+      marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(baseAppInfo as any);
+      appsRepository.getAppByUrn.mockResolvedValue({
+        ...fakeApp,
+        status: 'install_failed',
+        exposedLocal: false,
+      } as any);
+      appsRepository.getAppsByDomain.mockResolvedValue([]);
+      appsRepository.getAppsByLocalSubdomain.mockResolvedValue([]);
+      appsRepository.getAppsByPort.mockResolvedValue([]);
+      appsRepository.getApps.mockResolvedValue([]);
+      const syncSpy = vi.spyOn(service as any, 'syncExposure').mockResolvedValue(undefined);
+
+      await service.installApp({ appUrn, form: { exposedLocal: true } });
+      await flushMicrotasks();
+
+      expect(syncSpy).toHaveBeenCalled();
+    });
+
+    it('installApp RPC timeout: keeps app record and does not emit install_error', async () => {
+      const baseAppInfo = { id: 'myapp', port: 8080, cihub_app_version: 1, exposable: true, supported_architectures: ['amd64'] };
+      marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(baseAppInfo as any);
+      appsRepository.getAppByUrn.mockResolvedValue(null as any);
+      appsRepository.getAppsByDomain.mockResolvedValue([]);
+      appsRepository.getAppsByLocalSubdomain.mockResolvedValue([]);
+      appsRepository.getAppsByPort.mockResolvedValue([]);
+      appEventsQueue.publish.mockResolvedValue({ success: false, message: 'RPC response timed out' } as any);
+
+      await service.installApp({ appUrn, form: {} });
+      await flushMicrotasks();
+
+      expect(callOrder).not.toContain('db_delete');
+      expect(callOrder).not.toContain('sse:install_error');
     });
 
     it('installApp: status_change emitted after DB create (not before)', async () => {

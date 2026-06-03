@@ -2,6 +2,7 @@ import { Button } from '@/components/ui/Button';
 import { useEffect, useState } from 'react';
 import { Package, X } from 'lucide-react';
 import type { OnboardingApp } from '../helpers/types';
+import { OnboardingAppIcon } from './onboarding-app-icon';
 import { WizardCard, WizardHeader, WizardNav } from './wizard-ui';
 
 interface SelectAppsStepProps {
@@ -39,14 +40,7 @@ export const SelectAppsStep = ({ selectedApps, onConfirm, onBack }: SelectAppsSt
             key={app.appSlug}
             className="flex items-center gap-3 rounded-xl border border-border bg-foreground/[0.015] p-3 transition-colors hover:border-primary/40"
           >
-            <img
-              src={app.icon}
-              alt=""
-              className="h-8 w-8 rounded"
-              onError={(e) => {
-                (e.target as HTMLImageElement).style.display = 'none';
-              }}
-            />
+            <OnboardingAppIcon app={app} size={36} />
             <div className="min-w-0 flex-1">
               <div className="text-sm font-medium">{app.name}</div>
               {app.replacesNames.length > 0 && <div className="text-xs text-muted-foreground">Replaces {app.replacesNames.join(', ')}</div>}

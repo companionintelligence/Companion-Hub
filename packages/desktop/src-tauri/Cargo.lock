@@ -521,6 +521,7 @@ dependencies = [
  "chrono",
  "dirs 5.0.1",
  "env_logger",
+ "libc",
  "log",
  "mdns-sd",
  "rand 0.8.5",

@@ -1,6 +1,7 @@
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { SSEService } from '@/core/sse/sse.service';
+import { AppsRepository } from '@/modules/apps/apps.repository';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppHelpers } from '@/modules/apps/app.helpers';
 import { CloudflareClientService } from '@/modules/cloudflare/cloudflare-client.service';
@@ -109,10 +110,17 @@ export class InstallAppCommand extends AppLifecycleCommand {
     const appHelpers = this.moduleRef.get(AppHelpers, { strict: false });
     const envUtils = this.moduleRef.get(EnvUtils, { strict: false });
     const sseService = this.moduleRef.get(SSEService, { strict: false });
+    const appsRepository = this.moduleRef.get(AppsRepository, { strict: false });
 
-    const emitProgress = (progress: number) => {
+    const emitProgress = async (progress: number) => {
       if (sseService) {
         sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'installing', progress }, appUrn);
+      }
+      if (appsRepository) {
+        const app = await appsRepository.getAppByUrn(appUrn);
+        if (app?.status === 'installing') {
+          await appsRepository.updateAppById(app.id, { updatedAt: new Date().toISOString() });
+        }
       }
     };
 
@@ -125,14 +133,14 @@ export class InstallAppCommand extends AppLifecycleCommand {
     }
 
     try {
-      emitProgress(5);
+      await emitProgress(5);
       if (process.getuid && process.getgid) {
         logger.info(`Installing app ${appUrn} as User ID: ${process.getuid()}, Group ID: ${process.getgid()}`);
       } else {
         logger.info(`Installing app ${appUrn}. No User ID or Group ID found.`);
       }
 
-      emitProgress(15);
+      await emitProgress(15);
       await marketplaceService.copyAppFromRepoToInstalled(appUrn);
 
       // Host-device preflight — run before any port/env mutation so a failed
@@ -142,12 +150,12 @@ export class InstallAppCommand extends AppLifecycleCommand {
       }
 
       // Create app.env file
-      emitProgress(25);
+      await emitProgress(25);
       logger.info(`Creating app.env file for app ${appUrn}`);
       await appHelpers.generateEnvFile(appUrn, form);
 
       // Allocate ports via the port manager
-      emitProgress(27);
+      await emitProgress(27);
       try {
         const portManager = this.moduleRef.get(PortManagerService, { strict: false });
         const appInfo = await appFilesManager.getInstalledAppInfo(appUrn);
@@ -222,11 +230,11 @@ export class InstallAppCommand extends AppLifecycleCommand {
       }
 
       // Ensure app directory exists before we try to use APP_DATA_DIR
-      emitProgress(30);
+      await emitProgress(30);
       await this.ensureAppDir(appUrn, form);
 
       // Copy data dir
-      emitProgress(35);
+      await emitProgress(35);
       const appEnv = await appFilesManager.getAppEnv(appUrn);
       const envMap = envUtils.envStringToMap(appEnv.content);
 
@@ -270,6 +278,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
       // Ensure both exist even if copyDataDir was skipped or the app payload was incomplete.
       if (appName === 'openclaw') {
         const { appInstalledDir } = appFilesManager.getAppPaths(appUrn);
+        const appRepoDir = path.join(directories.dataDir, 'repos', appStoreId, 'apps', appName);
         const targetDir = path.join(containerAppDataPath, 'data');
         await fs.promises.mkdir(targetDir, { recursive: true });
 
@@ -277,20 +286,23 @@ export class InstallAppCommand extends AppLifecycleCommand {
         // falling back to the provided content string if the source is absent.
         const ensureScript = async (filename: string, fallbackContent: string, fallbackWarning: string) => {
           const targetPath = path.join(targetDir, filename);
-          const sourcePath = path.join(appInstalledDir, 'data', filename);
+          const candidateSources = [path.join(appInstalledDir, 'data', filename), path.join(appRepoDir, 'data', filename)];
           let restoredFromSource = false;
-          try {
-            await fs.promises.access(sourcePath);
-            await fs.promises.copyFile(sourcePath, targetPath);
-            restoredFromSource = true;
-            logger.info(`[OpenClaw] Restored ${filename} from ${sourcePath}`);
-          } catch (err) {
-            if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-              logger.warn(
-                `[OpenClaw] Unexpected error restoring ${filename} from ${sourcePath}: ${
-                  err instanceof Error ? err.message : String(err)
-                }. Falling back to bundled script.`,
-              );
+          for (const sourcePath of candidateSources) {
+            try {
+              await fs.promises.access(sourcePath);
+              await fs.promises.copyFile(sourcePath, targetPath);
+              restoredFromSource = true;
+              logger.info(`[OpenClaw] Restored ${filename} from ${sourcePath}`);
+              break;
+            } catch (err) {
+              if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+                logger.warn(
+                  `[OpenClaw] Unexpected error restoring ${filename} from ${sourcePath}: ${
+                    err instanceof Error ? err.message : String(err)
+                  }. Trying next source.`,
+                );
+              }
             }
           }
           if (restoredFromSource) {
@@ -326,7 +338,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
         );
       }
 
-      emitProgress(45);
+      await emitProgress(45);
 
       // Pre-create volume mount directories and set permissions BEFORE compose up
       // so containers don't crash on first start due to root-owned mount dirs
@@ -375,24 +387,24 @@ export class InstallAppCommand extends AppLifecycleCommand {
 
       if (form.skipRun) {
         logger.info(`Skipping docker-compose up for app ${appUrn} as per request`);
-        emitProgress(99);
+        await emitProgress(99);
         return { success: true, message: `App ${appUrn} installed successfully (skipped run)` };
       }
 
-      emitProgress(55);
+      await emitProgress(55);
       try {
         await dockerService.composeApp(appUrn, 'down --rmi local --remove-orphans');
       } catch (_) {
         logger.warn(`No prior containers to remove for app ${appUrn}`);
       }
 
-      emitProgress(60);
+      await emitProgress(60);
       await dockerService.composeApp(appUrn, `up --detach --force-recreate --remove-orphans ${forcePull ? '--pull always' : ''}`);
-      emitProgress(80);
+      await emitProgress(80);
       await appFilesManager.setAppDataDirPermissions(appUrn);
 
       // Post-start health check: fire-and-forget — don't block install completion
-      emitProgress(85);
+      await emitProgress(85);
       setTimeout(async () => {
         try {
           const diagResults = await dockerService.diagnoseAppContainers(appUrn);
@@ -478,10 +490,33 @@ export class InstallAppCommand extends AppLifecycleCommand {
         }
       }
 
-      emitProgress(99);
+      await emitProgress(99);
+      await this.markInstallSucceeded(appUrn, sseService, appsRepository, logger);
       return { success: true, message: `App ${appUrn} installed successfully` };
     } catch (err) {
       return this.handleAppError(err, appUrn, 'install');
     }
+  }
+
+  private async markInstallSucceeded(
+    appUrn: AppUrn,
+    sseService: SSEService | undefined,
+    appsRepository: AppsRepository | undefined,
+    logger: LoggerService,
+  ): Promise<void> {
+    if (!appsRepository) return;
+
+    const app = await appsRepository.getAppByUrn(appUrn);
+    if (!app) {
+      logger.warn(`Install completed for ${appUrn} but no app record exists; skipping status update`);
+      return;
+    }
+
+    if (app.status !== 'installing') {
+      return;
+    }
+
+    await appsRepository.updateAppById(app.id, { status: 'running' });
+    sseService?.emit('app', { event: 'install_success', appUrn, appStatus: 'running' });
   }
 }

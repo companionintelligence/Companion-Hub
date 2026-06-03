@@ -14,7 +14,8 @@ export const AppStatus: React.FC<{ lite?: boolean; status: AppStatusType }> = ({
     'inline-block h-2 w-2 rounded-full',
     status === 'running' && 'bg-green-500 animate-pulse',
     status === 'stopped' && 'bg-red-500',
-    status !== 'running' && status !== 'stopped' && 'bg-gray-400',
+    status === 'install_failed' && 'bg-amber-500',
+    status !== 'running' && status !== 'stopped' && status !== 'install_failed' && 'bg-gray-400',
   );
 
   return (
