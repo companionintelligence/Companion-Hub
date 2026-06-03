@@ -1968,6 +1968,14 @@ const HUB_STALE_ROOT_OWNED_FILES: &[(&str, &str)] = &[
     ("logs", "error.log"),
 ];
 
+/// Persistent state files the backend must be able to write to at runtime.
+/// These are chmod 0o666 (not deleted) so the container can update them without
+/// losing existing data even when they were previously written by a root-owned container.
+const HUB_STATE_FILES_NEED_WRITE: &[(&str, &str)] = &[
+    ("state", "settings.json"),
+    ("state", "seed"),
+];
+
 /// Host paths bind-mounted into `/data/*` in the Hub container. Ensure they are world-writable
 /// so root/non-root container UID mappings can always create and rotate files.
 #[cfg(unix)]
@@ -1996,6 +2004,21 @@ fn ensure_host_bind_mounts_writable(data_dir: &Path) -> Result<(), String> {
                 stale.display(),
                 stale.display()
             );
+        }
+    }
+
+    // Make persistent state files world-writable so the backend container can always update them,
+    // regardless of whether a prior container wrote them as root.
+    for (subdir, file) in HUB_STATE_FILES_NEED_WRITE {
+        let path = data_dir.join(subdir).join(file);
+        if path.exists() {
+            if let Err(error) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666)) {
+                eprintln!(
+                    "warning: could not chmod 666 {}: {}",
+                    path.display(),
+                    error
+                );
+            }
         }
     }
 
@@ -3328,12 +3351,20 @@ fn parse_env_file(path: &Path) -> std::collections::HashMap<String, String> {
     map
 }
 
-/// Matches backend `isPrivateVpnEnabled` (`packages/backend/src/common/helpers/private-vpn.ts`): enabled only
-/// when the value is exactly `"true"` (case-sensitive). Missing key ⇒ disabled (safe default for fresh installs).
+/// Returns `true` when the Tailscale sidecar should be started.
+///
+/// Uses a dedicated `PRIVATE_VPN_USER_DISABLED` sentinel written only when the user explicitly
+/// turns the sidecar off (e.g. via a future Settings toggle). This decouples the "user said no"
+/// signal from the `PRIVATE_VPN_ENABLED` env var, which previously defaulted to `false` in older
+/// installations. Any existing `PRIVATE_VPN_ENABLED=false` written by the old default code (no UI
+/// toggle existed) is treated the same as absent — both migrate to the new enabled-by-default
+/// behaviour.
 fn private_vpn_enabled_from_map(env: &std::collections::HashMap<String, String>) -> bool {
-    env.get("PRIVATE_VPN_ENABLED")
-        .map(|v| v.as_str() == "true")
-        .unwrap_or(true)
+    // Explicit user opt-out wins. When absent (all existing installs) ⇒ enabled.
+    if env.get("PRIVATE_VPN_USER_DISABLED").map(|v| v.as_str()) == Some("true") {
+        return false;
+    }
+    true
 }
 
 fn reset_vpn_sidecar_status_poll_phase() {
@@ -3435,12 +3466,14 @@ fn render_runtime_env_content(
         get_non_empty_env_value(existing, "JWT_SECRET").unwrap_or_else(|| generate_hex(64));
     let postgres_password =
         get_non_empty_env_value(existing, "POSTGRES_PASSWORD").unwrap_or_else(|| generate_hex(32));
-    // Private VPN — Tailscale sidecar; enabled only when `PRIVATE_VPN_ENABLED` is exactly `true`.
+    // Private VPN — Tailscale sidecar. Enabled by default; only off when user explicitly opts out.
     let vpn_on = private_vpn_enabled_from_map(existing);
-    let private_vpn_enabled = if vpn_on {
-        "true".to_string()
+    let private_vpn_enabled = if vpn_on { "true" } else { "false" };
+    // Persist the explicit opt-out sentinel so subsequent launches respect it.
+    let private_vpn_user_disabled_line = if vpn_on {
+        String::new()
     } else {
-        "false".to_string()
+        "PRIVATE_VPN_USER_DISABLED=true\n".to_string()
     };
     let compose_profiles = merge_compose_profiles(existing, vpn_on);
     // Omit when empty: Compose treats unset COMPOSE_PROFILES like "", but a bare `COMPOSE_PROFILES=`
@@ -3478,6 +3511,7 @@ fn render_runtime_env_content(
          DOCKER_PLATFORM={docker_platform}\n\
          DOCKER_CONFIG_PATH={docker_config_path}\n\
          PRIVATE_VPN_ENABLED={private_vpn_enabled}\n\
+         {private_vpn_user_disabled_line}\
          {compose_profiles_line}",
         root_folder_host = root_folder_host,
         jwt_secret = jwt_secret,
@@ -3489,6 +3523,7 @@ fn render_runtime_env_content(
         docker_platform = docker_platform,
         docker_config_path = docker_config_path.display(),
         private_vpn_enabled = private_vpn_enabled,
+        private_vpn_user_disabled_line = private_vpn_user_disabled_line,
         compose_profiles_line = compose_profiles_line,
     )
 }
