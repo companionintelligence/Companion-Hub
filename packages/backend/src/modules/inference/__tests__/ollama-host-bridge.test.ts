@@ -27,9 +27,10 @@ describe('ollama-host-bridge', () => {
       expect(isBridgeConnectionRefused('connect EHOSTUNREACH 172.20.0.1:11434', 'http://host.docker.internal:11434')).toBe(true);
     });
 
-    it('treats any error as bridge failure when URL is host.docker.internal', () => {
-      expect(isBridgeConnectionRefused('timeout waiting for response', 'http://host.docker.internal:11434')).toBe(true);
+    it('treats network errors as bridge failures when URL is host.docker.internal', () => {
+      expect(isBridgeConnectionRefused('timeout waiting for response', 'http://host.docker.internal:11434')).toBe(false);
       expect(isBridgeConnectionRefused('socket hang up', 'http://host.docker.internal:11434')).toBe(true);
+      expect(isBridgeConnectionRefused('401 Unauthorized', 'http://host.docker.internal:11434')).toBe(false);
     });
 
     it('does not treat generic localhost failures as bridge failures', () => {
