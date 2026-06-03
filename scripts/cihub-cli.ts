@@ -12,7 +12,24 @@ export type StartMode = (typeof allowedModes)[number];
 export type HubEnv = (typeof allowedEnvs)[number];
 
 type Tone = 'green' | 'cyan' | 'yellow' | 'red' | 'dim' | 'magenta';
-type StepStatus = 'pending' | 'active' | 'done' | 'fail';
+export type StepStatus = 'pending' | 'active' | 'done' | 'fail';
+
+/** Step icons (Unicode). Exported for tests so assertions stay encoding-safe in CI. */
+export const STEP_ICONS: Record<StepStatus, string> = {
+  pending: '\u25CB',
+  active: '\u25CF',
+  done: '\u2713',
+  fail: '\u2717',
+};
+
+/** Box-drawing characters used by `box()`. Exported for tests. */
+export const BOX_CHARS = {
+  topLeft: '\u250C',
+  horizontal: '\u2500',
+  topRight: '\u2510',
+  bottomLeft: '\u2514',
+  bottomRight: '\u2518',
+} as const;
 
 type CommandEntry = {
   command: string;
@@ -138,8 +155,8 @@ export function box(title: string, lines: string[], tone: Tone = 'cyan') {
   const w = termWidth();
   const titleLen = stripAnsi(title).length;
   const fill = Math.max(w - titleLen - 5, 1);
-  const top = `┌─ ${title} ${'─'.repeat(fill)}┐`;
-  const bottom = `└${'─'.repeat(w - 2)}┘`;
+  const top = `${BOX_CHARS.topLeft}${BOX_CHARS.horizontal} ${title} ${BOX_CHARS.horizontal.repeat(fill)}${BOX_CHARS.topRight}`;
+  const bottom = `${BOX_CHARS.bottomLeft}${BOX_CHARS.horizontal.repeat(w - 2)}${BOX_CHARS.bottomRight}`;
   const body = (lines.length > 0 ? lines : ['']).map((l) => `  ${l}`);
   return [colorize(top, tone), ...body, colorize(bottom, tone)].join('\n');
 }
@@ -157,7 +174,7 @@ function printMessageBox(title: string, lines: string[], tone: Tone = 'cyan') {
 // ─── step indicator ──────────────────────────────────────────────────────────
 
 export function renderStep(n: number, total: number, label: string, status: StepStatus = 'active') {
-  const icons: Record<StepStatus, string> = { pending: '○', active: '●', done: '✓', fail: '✗' };
+  const icons = STEP_ICONS;
   const tones: Record<StepStatus, Tone> = { pending: 'dim', active: 'cyan', done: 'green', fail: 'red' };
   const icon = colorize(icons[status], tones[status]);
   const counter = dim(`[${n}/${total}]`);

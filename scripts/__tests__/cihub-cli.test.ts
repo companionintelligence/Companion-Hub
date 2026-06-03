@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   appStatusColor,
+  BOX_CHARS,
   box,
   buildEnvOverrides,
   getComposeFiles,
@@ -16,6 +17,7 @@ import {
   renderHelp,
   renderManPage,
   renderStep,
+  STEP_ICONS,
   renderVersion,
   renderWizardWelcome,
   resolveEnvFromArgs,
@@ -124,10 +126,10 @@ describe('renderStep', () => {
   });
 
   it('uses the right icon for each status', () => {
-    expect(stripAnsi(renderStep(1, 3, 'x', 'pending'))).toContain('?');
-    expect(stripAnsi(renderStep(1, 3, 'x', 'active'))).toContain('?');
-    expect(stripAnsi(renderStep(1, 3, 'x', 'done'))).toContain('?');
-    expect(stripAnsi(renderStep(1, 3, 'x', 'fail'))).toContain('?');
+    expect(stripAnsi(renderStep(1, 3, 'x', 'pending'))).toContain(STEP_ICONS.pending);
+    expect(stripAnsi(renderStep(1, 3, 'x', 'active'))).toContain(STEP_ICONS.active);
+    expect(stripAnsi(renderStep(1, 3, 'x', 'done'))).toContain(STEP_ICONS.done);
+    expect(stripAnsi(renderStep(1, 3, 'x', 'fail'))).toContain(STEP_ICONS.fail);
   });
 });
 
@@ -477,12 +479,12 @@ describe('appStatusColor', () => {
 describe('box', () => {
   it('renders a title header, indented body, and a closing rule', () => {
     const lines = stripAnsi(box('Title', ['line one', 'line two'])).split('\n');
-    expect(lines[0]).toContain('?? Title');
-    expect(lines[0]).toContain('?');
+    expect(lines[0]).toContain(`${BOX_CHARS.topLeft}${BOX_CHARS.horizontal} Title`);
+    expect(lines[0]).toContain(BOX_CHARS.horizontal);
     expect(lines[1]).toBe('  line one');
     expect(lines[2]).toBe('  line two');
-    expect(lines[lines.length - 1]).toContain('?');
-    expect(lines[lines.length - 1]).toContain('?');
+    expect(lines[lines.length - 1]).toContain(BOX_CHARS.bottomLeft);
+    expect(lines[lines.length - 1]).toContain(BOX_CHARS.horizontal);
   });
 
   it('handles an empty body without throwing', () => {
