@@ -2274,7 +2274,7 @@ fn host_docker_gid() -> u32 {
 
     std::fs::metadata("/var/run/docker.sock")
         .map(|metadata| metadata.gid())
-        .unwrap_or_else(|_| unsafe { libc::getgid() })
+    .unwrap_or(973)
 }
 
 #[cfg(windows)]
@@ -3818,7 +3818,7 @@ fn render_runtime_env_content(
     };
     let (container_uid, container_gid) = host_container_uid_gid();
     #[cfg(unix)]
-    let docker_gid_line = format!("DOCKER_GID={}\\n\\\n", host_docker_gid());
+    let docker_gid_line = format!("DOCKER_GID={}\n", host_docker_gid());
     #[cfg(not(unix))]
     let docker_gid_line = String::new();
 
