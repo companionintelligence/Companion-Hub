@@ -274,7 +274,8 @@ describe('AiSetupStep', () => {
     renderStep();
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
     expect((screen.getByTestId('model-checkbox-phi-4-mini') as HTMLInputElement).checked).toBe(false);
-    expect(screen.getByTestId('install-block-reason')).toBeInTheDocument();
+    // No install-block-reason: selecting no models is allowed (users can add AI later in Settings).
+    expect(screen.queryByTestId('install-block-reason')).not.toBeInTheDocument();
   });
 
   it('submits only Ollama-backed models with the agent framework and exposure', async () => {
