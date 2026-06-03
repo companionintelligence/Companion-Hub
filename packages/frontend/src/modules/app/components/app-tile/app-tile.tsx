@@ -2,6 +2,7 @@ import { AppLogo } from '@/components/app-logo/app-logo';
 import { Card, CardContent } from '@/components/ui/Card';
 import { limitText } from '@/lib/helpers/text-helpers';
 import type { AppInfo, AppStatus as AppStatusType } from '@/types/app.types';
+import { InstallRetryButton } from '../install-retry-button/install-retry-button';
 import { AlertCircle, CloudOff, Download, RotateCw } from 'lucide-react';
 import type React from 'react';
 import { useTranslation } from 'react-i18next';
@@ -17,7 +18,8 @@ export const AppTile: React.FC<{
   updateAvailable: boolean;
   pendingRestart?: boolean;
   available?: boolean;
-}> = ({ info, status, updateAvailable, pendingRestart, available = true }) => {
+  installConfig?: Record<string, unknown>;
+}> = ({ info, status, updateAvailable, pendingRestart, available = true, installConfig }) => {
   const { t } = useTranslation();
 
   let badge = null;
@@ -58,6 +60,22 @@ export const AppTile: React.FC<{
         </div>
       </>
     );
+  } else if (status === 'install_failed') {
+    const [slug] = info.urn.split(':');
+    if (slug) {
+      badge = (
+        <div className="absolute top-0 right-0 rounded-tr-lg rounded-bl-lg bg-amber-500/90 text-white p-1.5">
+          <InstallRetryButton
+            urn={info.urn}
+            name={info.name}
+            slug={slug}
+            config={installConfig}
+            size="md"
+            className="relative inset-auto flex items-center justify-center bg-transparent hover:bg-transparent"
+          />
+        </div>
+      );
+    }
   } else if (info.deprecated) {
     badge = (
       <>

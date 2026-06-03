@@ -12,6 +12,8 @@ import { useDisclosure } from '@/lib/hooks/use-disclosure';
 import { AddLinkDialog } from '../components/dialogs/add-link/add-link-dialog';
 import '@/styles/app-grid.css';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner/loading-spinner';
+import { QueuedInstallsIndicator } from '@/modules/dashboard/components/queued-installs-indicator';
+import { useInstallQueue } from '@/modules/app/helpers/use-install-queue';
 
 export default () => {
   const { data: apps, isLoading: appsLoading } = useQuery({
@@ -30,6 +32,8 @@ export default () => {
 
   const installed = apps?.installed ?? [];
   const customLinks = links?.links ?? [];
+  const installingCount = installed.filter((entry) => entry.app.status === 'installing').length;
+  const { data: installQueue, isLoading: installQueueLoading } = useInstallQueue(installingCount > 0);
 
   const renderApp = ({ info, app, metadata }: (typeof installed)[number]) => {
     const versionIsIgnored = app.ignoredVersion === metadata.latestVersion;
@@ -46,6 +50,7 @@ export default () => {
           updateAvailable={updateAvailable}
           pendingRestart={app.pendingRestart}
           available={info.available}
+          installConfig={app.config}
         />
       </Link>
     );
@@ -106,6 +111,7 @@ export default () => {
                     {t('MY_APPS_SECTION_APPS')}
                   </h3>
                 )}
+                <QueuedInstallsIndicator queue={installQueue} isLoading={installQueueLoading && installingCount > 0} />
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4" data-testid="apps-list">
                   {installed.map(renderApp)}
                   <ButtonTile
