@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/Button';
 import { useEffect, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { getInstalledAppsQueryKey } from '@/api-client/@tanstack/react-query.gen';
+import { addOptimisticInstalledApp } from '@/modules/app/helpers/optimistic-installed-apps';
 import { Download, Loader2 } from 'lucide-react';
 import { WizardCard } from './wizard-ui';
 import type { OnboardingApp, AppInstallStatus, InstallSummary, AiSetupConfig } from '../helpers/types';
@@ -275,29 +276,13 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
         finalStates[i] = { ...stateAt(i, app), status: 'installing' };
         setStates([...finalStates]);
 
-        // Add an optimistic entry to the installed apps cache so the dashboard
-        // and other pages show the app as "installing" while the server
-        // processes the request.
         try {
-          const installedKey = getInstalledAppsQueryKey();
-          const existing = (queryClient.getQueryData(installedKey) as Record<string, unknown>) || { installed: [] };
-          const installedList = (existing.installed ?? []) as Array<Record<string, Record<string, unknown>>>;
-          const filtered = installedList.filter((it) => it.info?.urn !== app.urn);
-          const tempId = `pending-${app.appSlug}-${Date.now()}`;
-          const optimistic = {
-            info: {
-              urn: app.urn,
-              id: app.appSlug,
-              name: app.name,
-              available: true,
-            },
-            app: {
-              id: tempId,
-              status: 'installing',
-            },
-            metadata: { latestVersion: 0, localSubdomain: app.localSubdomain || '' },
-          };
-          queryClient.setQueryData(installedKey, { installed: [optimistic, ...filtered] });
+          addOptimisticInstalledApp(queryClient, {
+            urn: app.urn,
+            name: app.name,
+            slug: app.appSlug,
+            localSubdomain: app.localSubdomain,
+          });
         } catch (_e) {
           // Non-fatal; proceed without optimistic cache
         }
@@ -329,7 +314,7 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
           const timeoutMs = 60_000;
           const start = Date.now();
 
-          const checkRunning = async (): Promise<'running' | 'installing' | false> => {
+          const checkRunning = async (): Promise<'running' | 'installing' | 'install_failed' | false> => {
             try {
               const installedRes = await apiFetch('/api/apps/installed', { credentials: 'include' });
               if (!installedRes.ok) return false;
@@ -339,6 +324,7 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
               if (!match) return false;
               const appStatus = (match.app?.status as string) ?? '';
               if (appStatus === 'running') return 'running';
+              if (appStatus === 'install_failed') return 'install_failed';
               // Present in list but not yet running
               return 'installing';
             } catch {
@@ -346,16 +332,28 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
             }
           };
 
-          let confirmedStatus: 'running' | 'installing' | false = false;
+          let confirmedStatus: 'running' | 'installing' | 'install_failed' | false = false;
 
           while (Date.now() - start < timeoutMs) {
             await minDelay(pollInterval);
             confirmedStatus = await checkRunning();
-            if (confirmedStatus === 'running') break;
+            if (confirmedStatus === 'running' || confirmedStatus === 'install_failed') break;
           }
 
           if (confirmedStatus === 'running') {
             finalStates[i] = { ...stateAt(i, app), status: 'running' };
+            setStates([...finalStates]);
+            try {
+              queryClient.invalidateQueries({ queryKey: getInstalledAppsQueryKey() });
+            } catch (_e) {
+              // ignore
+            }
+          } else if (confirmedStatus === 'install_failed') {
+            finalStates[i] = {
+              ...stateAt(i, app),
+              status: 'failed',
+              error: 'Install failed — retry from My Apps',
+            };
             setStates([...finalStates]);
             try {
               queryClient.invalidateQueries({ queryKey: getInstalledAppsQueryKey() });
@@ -378,11 +376,7 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
           finalStates[i] = { ...stateAt(i, app), status: 'failed', error: (e as Error).message };
           setStates([...finalStates]);
           try {
-            const installedKey = getInstalledAppsQueryKey();
-            const existing = (queryClient.getQueryData(installedKey) as Record<string, unknown>) || { installed: [] };
-            const installedList = (existing.installed ?? []) as Array<Record<string, Record<string, unknown>>>;
-            const filtered = installedList.filter((it) => it.info?.urn !== app.urn);
-            queryClient.setQueryData(installedKey, { installed: filtered });
+            await queryClient.invalidateQueries({ queryKey: getInstalledAppsQueryKey() });
           } catch (_e) {
             // ignore
           }

@@ -50,7 +50,7 @@ const SKIPPED_AI_CONFIG: AiSetupConfig = {
 };
 
 function OnboardingWizard() {
-  const { user, apps: storeApps, cloudflareAvailable, tailscaleAvailable, setAppContext } = useAppContext();
+  const { user, apps: storeApps, cloudflareAvailable, tailscaleAvailable, setAppContext, refreshAppContext } = useAppContext();
   const navigate = useNavigate();
 
   const [phase, setPhase] = useState<'form' | 'installing'>('form');
@@ -110,10 +110,11 @@ function OnboardingWizard() {
             } catch {
               // Non-fatal — navigate anyway.
             }
-            // Optimistically mark onboarding complete so the route guard
-            // doesn't redirect back before the 30s stale cache refreshes.
+            // Update the shared app-context cache (correct query key) so route guards
+            // on /home and /store do not send the user back to onboarding.
             setAppContext({ user: { ...user, hasCompletedOnboarding: true } });
-            navigate('/store', { replace: true });
+            await refreshAppContext();
+            navigate('/home', { replace: true });
           }}
         />
       </Shell>

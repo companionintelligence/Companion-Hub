@@ -12,6 +12,7 @@ vi.mock('@/context/app-context', () => ({
     cloudflareAvailable: false,
     tailscaleAvailable: true,
     setAppContext: vi.fn(),
+    refreshAppContext: vi.fn().mockResolvedValue(undefined),
     apps: [
       {
         id: 'openclaw',
