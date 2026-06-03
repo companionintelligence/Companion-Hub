@@ -117,12 +117,7 @@ function OnboardingWizard() {
             title="Recommended Apps"
             description="Here are some popular open-source apps you can self-host. Select any you'd like installed."
           >
-            <RecommendationsStep
-              embedded
-              detectedServices={detectedServices}
-              pinnedSlugs={['steam-headless', 'comfyui']}
-              onChange={setSelectedApps}
-            />
+            <RecommendationsStep embedded detectedServices={detectedServices} onChange={setSelectedApps} />
           </StepSection>
         </AiSetupStep>
 
