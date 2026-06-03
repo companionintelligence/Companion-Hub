@@ -98,7 +98,6 @@ services:
     environment:
       LOCAL: true
       NODE_ENV: development
-      TURBO_CACHE_DIR: /tmp/.turbo/cache
       ROOT_FOLDER_HOST: ${PWD}/.internal
       DOCKER_CONFIG: /data/.docker
       CI_HUB_CONTAINER_UID: ${CI_HUB_CONTAINER_UID:-1000}
