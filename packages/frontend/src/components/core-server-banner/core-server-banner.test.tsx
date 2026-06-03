@@ -38,7 +38,7 @@ describe('CoreServerBanner', () => {
     expect(screen.getByText(/CORE_SERVER_BANNER_LOW_CPU_MESSAGE/)).toBeInTheDocument();
   });
 
-  it('renders the default message when all system specs are adequate', () => {
+  it('renders the default message when system data is present but no threshold matched', () => {
     render(<CoreServerBanner onDismiss={vi.fn()} system={{ memoryTotal: 16, diskSize: 500, cpuCores: 8 }} />);
 
     expect(screen.getByText(/CORE_SERVER_BANNER_DEFAULT_TITLE/)).toBeInTheDocument();
