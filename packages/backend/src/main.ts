@@ -7,16 +7,6 @@ import { AppService } from './app.service';
 import { generateSystemEnvFile } from './common/helpers/env-helpers';
 import { buildSwaggerDocument, writeSwaggerJsonFile } from './swagger-setup';
 
-/** node:sqlite triggers ExperimentalWarning on Node 22+; it is expected and not actionable. */
-function suppressSqliteExperimentalWarning() {
-  process.on('warning', (warning) => {
-    if (warning.name === 'ExperimentalWarning' && warning.message.includes('SQLite')) {
-      return;
-    }
-    console.warn(warning);
-  });
-}
-
 async function setupSwagger(app: INestApplication) {
   const document = buildSwaggerDocument(app);
   SwaggerModule.setup('api/docs', app, document);
@@ -34,7 +24,6 @@ async function setupSwagger(app: INestApplication) {
 }
 
 async function bootstrap() {
-  suppressSqliteExperimentalWarning();
   await generateSystemEnvFile();
 
   const app = await NestFactory.create(AppModule, {
