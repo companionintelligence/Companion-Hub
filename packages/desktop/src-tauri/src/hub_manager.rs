@@ -2679,12 +2679,9 @@ fn find_orphaned_traefik_proxy_pids(_target_ports: &[u16]) -> Vec<(u32, u16)> {
     Vec::new()
 }
 
-/// Kill orphaned `docker-proxy` processes that are preventing Traefik from
-/// binding its host ports.  Uses `sudo -n kill` (non-interactive — only works
-/// when the user has NOPASSWD sudo or equivalent).
-///
-/// Returns `Ok(())` if all targeted processes have been terminated (or there
-/// were none), `Err(msg)` with a user-facing remediation hint otherwise.
+/// Kill orphaned `docker-proxy` processes that may be preventing Traefik from
+/// binding its host ports. Uses `sudo -n kill` when available; otherwise logs
+/// remediation steps and continues startup (compose will surface a real bind error).
 fn release_orphaned_traefik_port_proxies(data_dir: &Path) -> Result<(), String> {
     let target_ports: &[u16] = &[80, 443, 8080];
     let orphaned = find_orphaned_traefik_proxy_pids(target_ports);
@@ -2741,13 +2738,18 @@ fn release_orphaned_traefik_port_proxies(data_dir: &Path) -> Result<(), String> 
         }
     }
 
-    // sudo kill failed or processes persisted — return actionable error.
-    Err(format!(
-        "Traefik cannot start: ports [{}] are held by orphaned docker-proxy processes \
-         (PIDs: {}). Run `sudo systemctl restart docker` to clear them, then restart the app.",
-        ports.join(", "),
-        pids.join(", ")
-    ))
+    // Best-effort cleanup; do not block hub startup when sudo is unavailable.
+    let _ = append_desktop_log_for(
+        data_dir,
+        "hub.start",
+        &format!(
+            "Could not clear orphaned docker-proxy on ports [{}] (PIDs: {}). \
+             If Traefik fails to start, run `sudo systemctl restart docker` or restart Docker Desktop.",
+            ports.join(", "),
+            pids.join(", ")
+        ),
+    );
+    Ok(())
 }
 
 fn inspect_container_state_health(container_name: &str) -> String {
@@ -3181,13 +3183,8 @@ fn start_hub_inner(
         with_view_logs_hint(message)
     })?;
 
-    // Pre-emptively release any orphaned docker-proxy processes that may be holding
-    // Traefik's ports after external Docker cleanup operations.
-    if let Err(proxy_err) = release_orphaned_traefik_port_proxies(data_dir) {
-        let message = format!("Traefik port proxy cleanup failed before startup: {}", proxy_err);
-        let _ = append_desktop_log_for(data_dir, "hub.start", &message);
-        return Err(with_view_logs_hint(proxy_err));
-    }
+    // Best-effort: release orphaned docker-proxy processes that may hold Traefik ports.
+    let _ = release_orphaned_traefik_port_proxies(data_dir);
 
     ensure_host_state_tree_writable(data_dir).map_err(|error| {
         let message = format!("Failed to prepare writable state directory before startup: {}", error);
@@ -3306,16 +3303,7 @@ fn start_hub_inner(
             let _ =
                 ensure_container_released_if_not_running(data_dir, "ci-os-hub-queue", "5001");
             let _ = cleanup_stale_project_containers(compose_path, env_path, data_dir);
-            // Also attempt to kill any orphaned docker-proxy processes that may be
-            // holding Traefik's ports even after the containers were removed.
-            if let Err(proxy_err) = release_orphaned_traefik_port_proxies(data_dir) {
-                let message = format!(
-                    "Port bind conflict self-heal: orphaned proxy cleanup failed: {}",
-                    proxy_err
-                );
-                let _ = append_desktop_log_for(data_dir, "hub.start", &message);
-                return Err(with_view_logs_hint(proxy_err));
-            }
+            let _ = release_orphaned_traefik_port_proxies(data_dir);
             std::thread::sleep(std::time::Duration::from_secs(2));
             continue;
         }
