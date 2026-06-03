@@ -1016,6 +1016,138 @@ fn linux_primary_disk_gb(data_dir: &Path) -> (u64, u64, String) {
     (total, used, mount)
 }
 
+/// On Linux, Docker Desktop runs its containers inside a linuxkit VM whose memory
+/// is capped by `memoryMiB` in `~/.docker/desktop/settings-store.json`.
+/// The default is ~8 GB regardless of how much RAM the host has.
+///
+/// This function checks the current allocation and, if it is less than 75 % of
+/// host RAM (or the key is absent), rewrites the setting and restarts Docker
+/// Desktop so the new limit is in effect before we bring up the compose stack.
+///
+/// On non-Linux platforms (or when Docker Desktop is not installed) this is a
+/// no-op.
+#[cfg(target_os = "linux")]
+fn ensure_docker_desktop_memory_linux(data_dir: &Path) {
+    let settings_path = match dirs::home_dir() {
+        Some(h) => h.join(".docker/desktop/settings-store.json"),
+        None => return,
+    };
+
+    if !settings_path.exists() {
+        return; // Docker Desktop not present or running as a different user.
+    }
+
+    let host_total_mb = match read_proc_meminfo_kb("MemTotal") {
+        Some(kb) => kb / 1024,
+        None => return,
+    };
+
+    // Reserve 4 GB for the host OS; also cap at 75 % of total RAM.
+    let recommended_mb = std::cmp::min(
+        (host_total_mb as f64 * 0.75) as u64,
+        host_total_mb.saturating_sub(4096),
+    );
+
+    let current_mib: u64 = std::fs::read_to_string(&settings_path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get("memoryMiB").and_then(|m| m.as_u64()))
+        .unwrap_or(0); // 0 = key absent → treat as default 8192
+
+    // Only update when the current allocation is less than 90 % of recommended
+    // (avoids churn when the value is already close).
+    if current_mib >= (recommended_mb as f64 * 0.9) as u64 {
+        return;
+    }
+
+    let _ = append_desktop_log_for(
+        data_dir,
+        "docker.mem",
+        &format!(
+            "Docker Desktop VM memory is {} MiB; raising to {} MiB to match host RAM ({} MB)",
+            if current_mib == 0 { 8192 } else { current_mib },
+            recommended_mb,
+            host_total_mb
+        ),
+    );
+
+    // Read current settings, patch the key, write back.
+    let mut settings: serde_json::Value = std::fs::read_to_string(&settings_path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+
+    if let Some(obj) = settings.as_object_mut() {
+        obj.insert(
+            "memoryMiB".to_string(),
+            serde_json::json!(recommended_mb),
+        );
+    }
+
+    let updated = match serde_json::to_string_pretty(&settings) {
+        Ok(s) => s,
+        Err(e) => {
+            let _ = append_desktop_log_for(
+                data_dir,
+                "docker.mem",
+                &format!("Failed to serialize Docker Desktop settings: {}", e),
+            );
+            return;
+        }
+    };
+
+    if let Err(e) = std::fs::write(&settings_path, updated) {
+        let _ = append_desktop_log_for(
+            data_dir,
+            "docker.mem",
+            &format!("Failed to write Docker Desktop settings: {}", e),
+        );
+        return;
+    }
+
+    // Restart Docker Desktop so the new memory limit takes effect.
+    // `docker desktop restart` blocks until Docker is back up (≈ 20-30 s).
+    let _ = append_desktop_log_for(
+        data_dir,
+        "docker.mem",
+        "Restarting Docker Desktop to apply new memory limit…",
+    );
+
+    let output = Command::new("docker")
+        .args(["desktop", "restart"])
+        .output();
+
+    match output {
+        Ok(o) if o.status.success() => {
+            let _ = append_desktop_log_for(
+                data_dir,
+                "docker.mem",
+                &format!("Docker Desktop restarted. VM now has {} MiB RAM.", recommended_mb),
+            );
+        }
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            let _ = append_desktop_log_for(
+                data_dir,
+                "docker.mem",
+                &format!(
+                    "docker desktop restart returned non-zero ({}): {}",
+                    o.status, stderr
+                ),
+            );
+        }
+        Err(e) => {
+            let _ = append_desktop_log_for(
+                data_dir,
+                "docker.mem",
+                &format!("Failed to run docker desktop restart: {}", e),
+            );
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn ensure_docker_desktop_memory_linux(_data_dir: &Path) {}
 
 fn find_docker_binary() -> PathBuf {
     if let Some(path) = command_on_path("docker") {
@@ -3093,6 +3225,10 @@ fn start_hub_inner(
     // Surface Linux host hardware so the backend reports true RAM/CPU instead of
     // the Docker Desktop VM's capped resources (e.g. 8 GB instead of 128 GB).
     refresh_linux_host_metrics_probe_cache(data_dir);
+
+    // On Linux, auto-raise Docker Desktop's VM memory limit to ~75 % of host RAM
+    // so containers are not arbitrarily capped at the 8 GB default.
+    ensure_docker_desktop_memory_linux(data_dir);
 
     // Resolve port conflicts and write to the runtime env file before starting.
     let resolution = crate::port_manager::refresh_ports_if_needed(env_path).map_err(|error| {
