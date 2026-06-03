@@ -279,7 +279,7 @@ export function parseEnvFile(envFileName: string): Record<string, string> {
 }
 
 export function upsertEnvVar(envFileName: string, key: string, value: string) {
-  const abs = join(process.cwd(), envFileName);
+  const abs = envFileName.startsWith('/') ? envFileName : join(process.cwd(), envFileName);
   const line = `${key}=${value}`;
   const current = existsSync(abs) ? readFileSync(abs, 'utf-8') : '';
   const lines = current.length > 0 ? current.split(/\r?\n/) : [];
@@ -345,6 +345,20 @@ function resolveRootFolderHost(envFileName: string): string {
   return path.isAbsolute(configured) ? configured : path.resolve(process.cwd(), configured);
 }
 
+function tunnelTokenPath(envFileName: string): string {
+  const rootFolderHost = resolveRootFolderHost(envFileName);
+  return path.resolve(rootFolderHost, '..', 'tunnel', 'token');
+}
+
+function hasCloudflareTunnelToken(envFileName: string): boolean {
+  try {
+    const tokenPath = tunnelTokenPath(envFileName);
+    return existsSync(tokenPath) && statSync(tokenPath).isFile() && statSync(tokenPath).size > 0;
+  } catch {
+    return false;
+  }
+}
+
 export function mergeComposeProfilesFromEnvFile(envFileName: string): string {
   const vars = parseEnvFile(envFileName);
   const hasEnvFile = Object.keys(vars).length > 0;
@@ -356,6 +370,7 @@ export function mergeComposeProfilesFromEnvFile(envFileName: string): string {
         .filter(Boolean),
     );
     set.add('private-vpn');
+    if (hasCloudflareTunnelToken(envFileName)) set.add('cloudflare');
     return [...set].join(',');
   }
   const vpnOn = vars.PRIVATE_VPN_USER_DISABLED !== 'true';
@@ -371,6 +386,7 @@ export function mergeComposeProfilesFromEnvFile(envFileName: string): string {
   ]);
   if (vpnOn) set.add('private-vpn');
   else set.delete('private-vpn');
+  if (hasCloudflareTunnelToken(envFileName)) set.add('cloudflare');
   return [...set].join(',');
 }
 

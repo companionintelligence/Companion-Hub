@@ -44,6 +44,8 @@ services:
   ci-os-hub:
     privileged: true
     user: "${CI_HUB_CONTAINER_UID:-1000}:${CI_HUB_CONTAINER_GID:-1000}"
+    group_add:
+      - "${DOCKER_GID:-973}"
     build:
       context: .
       dockerfile: Dockerfile.dev
@@ -83,10 +85,10 @@ services:
       - .internal/backups:/data/backups
       # Static
       - ${ENV_FILE:-.env}:/data/.env
-      - ./.internal/cache:/cache
+      - ${ROOT_FOLDER_HOST:-.internal}/cache:/data/cache
       - ./docker-compose.local.yml:/data/docker-compose.yml
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ${DOCKER_CONFIG_PATH:-./.internal/docker-config.json}:/data/.docker/config.json:ro
+      - ${ROOT_FOLDER_HOST:-.internal}/.docker:/data/.docker
       - /proc/meminfo:/host/proc/meminfo:ro
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro

@@ -8,7 +8,7 @@
  *
  *   - "currentContext" values like "desktop-linux" (Docker Desktop on macOS)
  *     point at daemon sockets that don't exist inside the container.
- *   - "credsStore": "desktop" (macOS/Windows), "osxkeychain", "wincred",
+ *   - "credsStore": "desktop" (macOS/Windows), "osxkeychain", "wincred,
  *     "secretservice", or "pass" all require host-side binaries that the
  *     Linux container image does not ship.
  *   - "plugins", "features", and "hooks" reference host CLI plugins that
@@ -22,27 +22,41 @@
  *   directory
  *
  * This script reads the host config, strips anything that only works on the
- * host, and writes the result to .internal/docker-config.json. The prod
- * compose file mounts THAT file into the container at /data/.docker/config.json (DOCKER_CONFIG=/data/.docker)
- * by default, so the setup auto-configures across macOS, Linux, and Windows
- * without per-developer overrides.
+ * host, and writes the result to {ROOT}/.docker/config.json. Compose mounts
+ * {ROOT_FOLDER_HOST}/.docker at /data/.docker (DOCKER_CONFIG=/data/.docker).
  *
  * Registry auths that carry inline credentials (`auth` field) are preserved so
  * private image pulls keep working.
  */
 
 import { existsSync } from 'node:fs';
-import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { parseEnvFile } from './cihub-cli';
 
-const INTERNAL_DIR = process.env.CI_HUB_STATE_PATH || process.env.STATE_PATH || '.internal';
-const OUTPUT_PATH = path.join(INTERNAL_DIR, 'docker-config.json');
 const HOST_CONFIG_PATH = path.join(os.homedir(), '.docker', 'config.json');
 
 // Credential-store values that rely on host-only binaries and will fail inside
 // the Linux container if forwarded.
 const HOST_ONLY_CREDSTORES = new Set(['desktop', 'osxkeychain', 'wincred', 'secretservice', 'pass']);
+
+function resolveRootFolderHost(): string {
+  const envFile = process.env.ENV_FILE || '.env.dev';
+  if (existsSync(envFile)) {
+    const vars = parseEnvFile(envFile);
+    const configured = vars.ROOT_FOLDER_HOST;
+    if (configured) {
+      return path.isAbsolute(configured) ? configured : path.resolve(process.cwd(), configured);
+    }
+  }
+  const fromEnv = process.env.ROOT_FOLDER_HOST;
+  if (fromEnv) {
+    return path.isAbsolute(fromEnv) ? fromEnv : path.resolve(process.cwd(), fromEnv);
+  }
+  const internal = process.env.CI_HUB_STATE_PATH || process.env.STATE_PATH || '.internal';
+  return path.isAbsolute(internal) ? internal : path.resolve(process.cwd(), internal);
+}
 
 function isHostOnlyCredHelper(value: string): boolean {
   return HOST_ONLY_CREDSTORES.has(value);
@@ -65,9 +79,6 @@ function sanitizeAuths(auths: unknown): Record<string, { auth: string }> {
   for (const [registry, entry] of Object.entries(auths as Record<string, unknown>)) {
     if (!entry || typeof entry !== 'object') continue;
     const e = entry as Record<string, unknown>;
-    // Only entries with an inline `auth` token work without a cred helper.
-    // Entries that rely solely on the host's credsStore can't be satisfied
-    // inside the container, so we drop them to avoid confusing errors.
     if (typeof e.auth === 'string' && e.auth.length > 0) {
       result[registry] = { auth: e.auth };
     }
@@ -86,7 +97,27 @@ function sanitizeCredHelpers(helpers: unknown): Record<string, string> {
   return result;
 }
 
+async function migrateLegacyConfig(root: string, outputPath: string): Promise<void> {
+  const legacyPaths = [path.join(root, 'docker-config.json'), path.join(root, '.internal', 'docker-config.json')];
+  if (existsSync(outputPath)) return;
+  for (const legacy of legacyPaths) {
+    if (!existsSync(legacy)) continue;
+    try {
+      await copyFile(legacy, outputPath);
+      console.log(`init-docker-config: migrated ${legacy} -> ${outputPath}`);
+      return;
+    } catch (err) {
+      console.warn(`init-docker-config: could not migrate ${legacy}: ${(err as Error).message}`);
+    }
+  }
+}
+
 async function main(): Promise<void> {
+  const root = resolveRootFolderHost();
+  const dockerDir = path.join(root, '.docker');
+  const cliPluginsDir = path.join(dockerDir, 'cli-plugins');
+  const outputPath = path.join(dockerDir, 'config.json');
+
   const hostConfig = await readHostConfig();
   const sanitized: Record<string, unknown> = {};
 
@@ -100,18 +131,20 @@ async function main(): Promise<void> {
   const credHelpers = sanitizeCredHelpers(hostConfig.credHelpers);
   if (Object.keys(credHelpers).length > 0) sanitized.credHelpers = credHelpers;
 
-  // Deliberately dropped: currentContext, plugins, features, hooks, aliases,
-  // experimental. All host-specific and either unused or harmful in-container.
+  await mkdir(root, { recursive: true });
+  await mkdir(cliPluginsDir, { recursive: true });
+  await migrateLegacyConfig(root, outputPath);
 
-  await mkdir(INTERNAL_DIR, { recursive: true });
-  await writeFile(OUTPUT_PATH, `${JSON.stringify(sanitized, null, 2)}\n`);
-  await chmod(OUTPUT_PATH, 0o600);
+  if (!existsSync(outputPath) || Object.keys(sanitized).length > 0) {
+    await writeFile(outputPath, `${JSON.stringify(sanitized, null, 2)}\n`);
+  }
+  await chmod(outputPath, 0o600);
 
   const summary: string[] = [];
   if (sanitized.auths) summary.push(`${Object.keys(sanitized.auths as object).length} registry auth(s)`);
   if (sanitized.credsStore) summary.push(`credsStore=${sanitized.credsStore as string}`);
   if (sanitized.credHelpers) summary.push(`${Object.keys(sanitized.credHelpers as object).length} credHelper(s)`);
-  console.log(`init-docker-config: wrote ${OUTPUT_PATH}${summary.length > 0 ? ` (${summary.join(', ')})` : ' (empty)'}`);
+  console.log(`init-docker-config: ready ${outputPath}${summary.length > 0 ? ` (${summary.join(', ')})` : ''}`);
 }
 
 main().catch((err) => {

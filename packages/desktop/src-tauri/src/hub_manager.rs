@@ -78,8 +78,11 @@ const TRAEFIK_TLS_DIR: &str = "state/traefik/tls";
 const TRAEFIK_CONFIG_FILE: &str = "state/traefik/config/traefik.yml";
 const TRAEFIK_DYNAMIC_FILE: &str = "state/traefik/dynamic/dynamic.yml";
 const TRAEFIK_ACME_FILE: &str = "state/traefik/acme_storage.json";
-const INTERNAL_DOCKER_CONFIG_FILE: &str = ".internal/docker-config.json";
-const HUB_DOCKER_CONFIG_FILE: &str = "docker-config.json";
+const HUB_DOCKER_CONFIG_FILE: &str = ".docker/config.json";
+const LEGACY_DOCKER_CONFIG_PATHS: &[&str] = &[
+    "docker-config.json",
+    ".internal/docker-config.json",
+];
 const HUB_START_HEALTHY_TIMEOUT_SECS: u64 = 180;
 const DB_START_HEALTHY_TIMEOUT_SECS: u64 = 180;
 
@@ -2241,7 +2244,7 @@ fn seeded_traefik_config_contents() -> String {
 
 /// Directories bind-mounted into the Hub container that must be writable on the host.
 const HUB_BIND_MOUNT_DIRS: &[&str] = &[
-    "state", "logs", "apps", "media", "repos", "app-data", "user-config", "backups",
+    "cache", "state", "logs", "apps", "media", "repos", "app-data", "user-config", "backups",
 ];
 
 /// Files prior root-owned Hub containers commonly leave on bind mounts (block EACCES on rewrite).
@@ -2546,11 +2549,10 @@ fn prepare_traefik_runtime_state(data_dir: &Path) -> Result<TraefikRuntimePrefli
     Ok(result)
 }
 
-fn ensure_internal_docker_config_state(data_dir: &Path) -> Result<TraefikRuntimePreflight, String> {
-    ensure_runtime_file(&data_dir.join(INTERNAL_DOCKER_CONFIG_FILE), "{}", None)
-}
-
 fn ensure_hub_docker_config_state(data_dir: &Path) -> Result<TraefikRuntimePreflight, String> {
+    let docker_dir = data_dir.join(".docker");
+    std::fs::create_dir_all(docker_dir.join("cli-plugins"))
+        .map_err(|e| format!("Cannot create {}: {}", docker_dir.display(), e))?;
     ensure_runtime_file(&data_dir.join(HUB_DOCKER_CONFIG_FILE), "{}", None)
 }
 
@@ -3444,16 +3446,6 @@ fn start_hub_inner(
                 "hub.start",
                 "Detected docker-config mount path type mismatch — attempting self-heal and retry.",
             );
-            if let Err(error) = ensure_internal_docker_config_state(data_dir) {
-                let _ = append_desktop_log_for(
-                    data_dir,
-                    "hub.start",
-                    &format!(
-                        "Self-heal of internal docker-config path failed before retry: {}",
-                        error
-                    ),
-                );
-            }
             if let Err(error) = ensure_hub_docker_config_state(data_dir) {
                 let _ = append_desktop_log_for(
                     data_dir,
@@ -3705,7 +3697,17 @@ fn dedupe_compose_profile_tokens(tokens: Vec<String>) -> Vec<String> {
     out
 }
 
-/// Ensures the `private-vpn` Compose profile is active when VPN is enabled, without dropping other profiles (e.g. `cloudflare`).
+fn has_cloudflare_tunnel_token(existing: &std::collections::HashMap<String, String>) -> bool {
+    let Some(root) = get_non_empty_env_value(existing, "ROOT_FOLDER_HOST") else {
+        return false;
+    };
+    let token_path = PathBuf::from(root).join("..").join("tunnel").join("token");
+    std::fs::metadata(&token_path)
+        .map(|m| m.is_file() && m.len() > 0)
+        .unwrap_or(false)
+}
+
+/// Ensures `private-vpn` and `cloudflare` compose profiles when enabled, without dropping other profiles.
 fn merge_compose_profiles(
     existing: &std::collections::HashMap<String, String>,
     vpn_on: bool,
@@ -3729,6 +3731,15 @@ fn merge_compose_profiles(
     } else {
         parts.retain(|p| p != "private-vpn");
     }
+
+    if has_cloudflare_tunnel_token(existing) {
+        if !parts.iter().any(|p| p == "cloudflare") {
+            parts.push("cloudflare".into());
+        }
+    } else {
+        parts.retain(|p| p != "cloudflare");
+    }
+
     parts.join(",")
 }
 
@@ -3796,7 +3807,6 @@ fn render_runtime_env_content(
     } else {
         "linux/amd64"
     };
-    let docker_config_path = data_dir.join(HUB_DOCKER_CONFIG_FILE);
     let (container_uid, container_gid) = host_container_uid_gid();
 
     format!(
@@ -3812,7 +3822,6 @@ fn render_runtime_env_content(
          CI_HUB_VERSION={hub_version}\n\
          CI_HUB_IMAGE={hub_image}\n\
          DOCKER_PLATFORM={docker_platform}\n\
-         DOCKER_CONFIG_PATH={docker_config_path}\n\
          CI_HUB_CONTAINER_UID={container_uid}\n\
          CI_HUB_CONTAINER_GID={container_gid}\n\
          {private_vpn_user_disabled_line}\
@@ -3826,7 +3835,6 @@ fn render_runtime_env_content(
         hub_version = hub_version,
         hub_image = hub_image,
         docker_platform = docker_platform,
-        docker_config_path = docker_config_path.display(),
         container_uid = container_uid,
         container_gid = container_gid,
         private_vpn_user_disabled_line = private_vpn_user_disabled_line,
@@ -3912,7 +3920,7 @@ fn compose_resource_candidates(resource_dir: &Path) -> Vec<PathBuf> {
 ///
 /// Uses a regenerate-and-preserve approach:
 /// - Preserved values (read from existing .env, generated if missing): ROOT_FOLDER_HOST, JWT_SECRET, POSTGRES_PASSWORD
-/// - Derived values (always recomputed from the current binary): INTERNAL_IP, DOMAIN, CI_CLOUD_URL, CI_HUB_VERSION, CI_HUB_IMAGE, DOCKER_PLATFORM, DOCKER_CONFIG_PATH, DEVICE_ID
+/// - Derived values (always recomputed from the current binary): INTERNAL_IP, DOMAIN, CI_CLOUD_URL, CI_HUB_VERSION, CI_HUB_IMAGE, DOCKER_PLATFORM, DEVICE_ID
 ///
 /// Returns the initialized desktop data paths and Traefik preflight result.
 pub fn initialize_hub(resource_dir: &Path) -> Result<HubInitialization, String> {
@@ -3980,11 +3988,11 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<HubInitialization, String> 
 
     // --- Regenerate the runtime env file with preserve-and-derive approach ---
     if let Err(error) = generate_container_docker_config(&data_dir, None) {
-        let message = format!("Failed to generate .internal/docker-config.json: {}", error);
+        let message = format!("Failed to generate .docker/config.json: {}", error);
         let _ = append_desktop_log_for(&data_dir, "initialize", &message);
         return Err(with_view_logs_hint(message));
     }
-    log_lines.push("  docker-config: .internal/docker-config.json ready".to_string());
+    log_lines.push("  docker-config: .docker/config.json ready".to_string());
 
     let env_path = hub_env_path_for(&data_dir);
     let existing = load_runtime_env_values(&data_dir, &env_path);
@@ -4015,26 +4023,15 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<HubInitialization, String> 
         with_view_logs_hint(message)
     })?;
 
-    let internal_preflight = ensure_internal_docker_config_state(&data_dir).map_err(|error| {
+    let docker_config_preflight = ensure_hub_docker_config_state(&data_dir).map_err(|error| {
         let message = format!(
-            "Failed to prepare internal docker-config runtime state: {}",
+            "Failed to prepare hub docker-config runtime state: {}",
             error
         );
         let _ = append_desktop_log_for(&data_dir, "initialize", &message);
         with_view_logs_hint(message)
     })?;
-    traefik_preflight.merge(internal_preflight);
-
-    let hub_docker_config_preflight =
-        ensure_hub_docker_config_state(&data_dir).map_err(|error| {
-            let message = format!(
-                "Failed to prepare hub docker-config runtime state: {}",
-                error
-            );
-            let _ = append_desktop_log_for(&data_dir, "initialize", &message);
-            with_view_logs_hint(message)
-        })?;
-    traefik_preflight.merge(hub_docker_config_preflight);
+    traefik_preflight.merge(docker_config_preflight);
 
     if traefik_preflight.changed {
         mark_traefik_recreate_required(&data_dir).map_err(|error| {
@@ -4077,7 +4074,7 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<HubInitialization, String> 
     })
 }
 
-/// Generate a container-safe Docker config at `.internal/docker-config.json`.
+/// Generate a container-safe Docker config at `.docker/config.json` under the data dir.
 ///
 /// Reads the host's `~/.docker/config.json`, strips host-only fields that
 /// break the Docker CLI inside Linux containers (currentContext, credsStore
@@ -4094,8 +4091,22 @@ fn generate_container_docker_config(
     data_dir: &Path,
     host_docker_dir: Option<&Path>,
 ) -> Result<(), String> {
-    let internal_dir = data_dir.join(".internal");
-    let config_path = internal_dir.join("docker-config.json");
+    let docker_dir = data_dir.join(".docker");
+    let config_path = docker_dir.join("config.json");
+
+    for legacy in LEGACY_DOCKER_CONFIG_PATHS {
+        let legacy_path = data_dir.join(legacy);
+        if legacy_path.is_file() && !config_path.exists() {
+            if let Err(e) = std::fs::copy(&legacy_path, &config_path) {
+                eprintln!(
+                    "warning: could not migrate {} -> {}: {}",
+                    legacy_path.display(),
+                    config_path.display(),
+                    e
+                );
+            }
+        }
+    }
 
     // On Windows, Docker may have created a directory at this path when the
     // file was missing during a previous `docker compose up`.  Remove it so
@@ -4220,8 +4231,8 @@ fn generate_container_docker_config(
 
     let content = serde_json::to_string_pretty(&serde_json::Value::Object(sanitized))
         .map_err(|e| format!("Cannot serialise docker config: {}", e))?;
-    std::fs::create_dir_all(&internal_dir)
-        .map_err(|e| format!("Cannot create {}: {}", internal_dir.display(), e))?;
+    std::fs::create_dir_all(docker_dir.join("cli-plugins"))
+        .map_err(|e| format!("Cannot create {}: {}", docker_dir.display(), e))?;
 
     // On Unix, write to a temp file with mode 0600, flush+sync, then
     // atomically rename over the destination.  This ensures the old config
@@ -4230,7 +4241,7 @@ fn generate_container_docker_config(
     {
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
-        let tmp_path = internal_dir.join(".docker-config.json.tmp");
+        let tmp_path = docker_dir.join(".config.json.tmp");
         let mut file = std::fs::OpenOptions::new()
             .write(true)
             .create(true)
@@ -5237,11 +5248,9 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
         let (_tmp_home, docker_dir) = write_docker_config_fixture(fixture);
         let tmp = tempfile::tempdir().expect("create temp dir");
         let data_dir = tmp.path().to_path_buf();
-        std::fs::create_dir_all(data_dir.join(".internal")).unwrap();
-
         generate_container_docker_config(&data_dir, Some(&docker_dir)).expect("generate config");
 
-        let config_path = data_dir.join(".internal").join("docker-config.json");
+        let config_path = data_dir.join(".docker").join("config.json");
         assert!(config_path.is_file(), "config should be a file");
 
         let parsed: serde_json::Value =
@@ -5270,7 +5279,7 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             let mode = config_path.metadata().unwrap().permissions().mode() & 0o777;
-            assert_eq!(mode, 0o600, "docker-config.json should be 0600");
+            assert_eq!(mode, 0o600, "config.json should be 0600");
         }
     }
 
@@ -5281,7 +5290,7 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
         let (_tmp_home, docker_dir) = write_docker_config_fixture(fixture);
         let tmp = tempfile::tempdir().expect("create temp dir");
         let data_dir = tmp.path().to_path_buf();
-        let config_path = data_dir.join(".internal").join("docker-config.json");
+        let config_path = data_dir.join(".docker").join("config.json");
 
         // Simulate the stale directory Docker creates
         std::fs::create_dir_all(&config_path).unwrap();
@@ -5312,11 +5321,9 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
         let (_tmp_home, docker_dir) = write_docker_config_fixture(fixture);
         let tmp = tempfile::tempdir().expect("create temp dir");
         let data_dir = tmp.path().to_path_buf();
-        std::fs::create_dir_all(data_dir.join(".internal")).unwrap();
-
         generate_container_docker_config(&data_dir, Some(&docker_dir)).expect("generate config");
 
-        let config_path = data_dir.join(".internal").join("docker-config.json");
+        let config_path = data_dir.join(".docker").join("config.json");
         let parsed: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
 
