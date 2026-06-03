@@ -102,17 +102,17 @@ describe('OllamaInstallerService', () => {
     expect(status.hint).not.toContain('systemctl');
   });
 
-  it('handles an unexpected healthCheck throw gracefully', async () => {
+  it('handles an unexpected healthCheck throw gracefully and marks bridge unreachable for host.docker.internal URL', async () => {
     ollamaBackend.healthCheck.mockRejectedValue(new Error('socket hang up'));
 
-    await expect(service.checkInstallation()).resolves.toEqual({
-      ready: false,
-      running: false,
-      endpointUrl: 'http://host.docker.internal:11434',
-      bridgeUnreachable: false,
-      hint: undefined,
-      error: 'socket hang up',
-    });
+    const result = await service.checkInstallation();
+    expect(result.ready).toBe(false);
+    expect(result.running).toBe(false);
+    expect(result.endpointUrl).toBe('http://host.docker.internal:11434');
+    // Any failure against host.docker.internal → bridgeUnreachable (covers ETIMEDOUT, socket hang up, etc. on Linux)
+    expect(result.bridgeUnreachable).toBe(true);
+    expect(result.hint).toBeDefined();
+    expect(result.error).toBe('socket hang up');
     expect(loggerService.error).toHaveBeenCalledWith(expect.stringContaining('socket hang up'));
   });
 
