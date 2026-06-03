@@ -1956,6 +1956,133 @@ fn seeded_traefik_config_contents() -> String {
     TRAEFIK_CONFIG_SEED.replace("{{ACME_EMAIL}}", &acme_email)
 }
 
+/// Directories bind-mounted into the Hub container that must be writable on the host.
+const HUB_BIND_MOUNT_DIRS: &[&str] = &[
+    "state", "logs", "apps", "media", "repos", "app-data", "user-config", "backups",
+];
+
+/// Files prior root-owned Hub containers commonly leave on bind mounts (block EACCES on rewrite).
+const HUB_STALE_ROOT_OWNED_FILES: &[(&str, &str)] = &[
+    ("state", ".env.resolved"),
+    ("logs", "app.log"),
+    ("logs", "error.log"),
+];
+
+/// Host paths bind-mounted into `/data/*` in the Hub container. Ensure they are world-writable
+/// so root/non-root container UID mappings can always create and rotate files.
+#[cfg(unix)]
+fn ensure_host_bind_mounts_writable(data_dir: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    for subdir in HUB_BIND_MOUNT_DIRS {
+        let path = data_dir.join(subdir);
+        std::fs::create_dir_all(&path)
+            .map_err(|error| format!("Failed to create {}: {}", path.display(), error))?;
+        if let Err(error) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o777)) {
+            eprintln!(
+                "warning: could not chmod 777 {}: {}",
+                path.display(),
+                error
+            );
+        }
+    }
+
+    for (subdir, file) in HUB_STALE_ROOT_OWNED_FILES {
+        let stale = data_dir.join(subdir).join(file);
+        if stale.exists() && std::fs::remove_file(&stale).is_err() {
+            eprintln!(
+                "warning: could not remove stale {} (often root-owned). \
+                 If the Hub crashes with EACCES, run: sudo rm -f {}",
+                stale.display(),
+                stale.display()
+            );
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn ensure_host_bind_mounts_writable(data_dir: &Path) -> Result<(), String> {
+    for subdir in HUB_BIND_MOUNT_DIRS {
+        let path = data_dir.join(subdir);
+        std::fs::create_dir_all(&path)
+            .map_err(|error| format!("Failed to create {}: {}", path.display(), error))?;
+    }
+    Ok(())
+}
+
+/// Backward-compatible alias used at hub startup.
+fn ensure_host_state_tree_writable(data_dir: &Path) -> Result<(), String> {
+    ensure_host_bind_mounts_writable(data_dir)
+}
+
+/// Remove a project container that is not running but may still hold published host ports.
+fn ensure_container_released_if_not_running(
+    data_dir: &Path,
+    container_name: &str,
+    ports_hint: &str,
+) -> Result<(), String> {
+    let output = docker_command()
+        .args([
+            "inspect",
+            container_name,
+            "--format",
+            "{{.State.Status}}",
+        ])
+        .output()
+        .map_err(|error| {
+            format!("Failed to inspect {} container state: {}", container_name, error)
+        })?;
+
+    if !output.status.success() {
+        let combined = format_command_output(
+            &String::from_utf8_lossy(&output.stdout),
+            &String::from_utf8_lossy(&output.stderr),
+        );
+        let combined_lower = combined.to_lowercase();
+        if combined_lower.contains("no such object") || combined_lower.contains("no such container") {
+            return Ok(());
+        }
+        return Err(format!(
+            "Failed to inspect {} container state. {}",
+            container_name, combined
+        ));
+    }
+
+    let status = String::from_utf8_lossy(&output.stdout).trim().to_lowercase();
+    if status == "running" || status == "restarting" {
+        return Ok(());
+    }
+
+    let _ = append_desktop_log_for(
+        data_dir,
+        "hub.start",
+        &format!(
+            "Removing non-running {} container (state={}) to release host ports {}.",
+            container_name, status, ports_hint
+        ),
+    );
+
+    let output = docker_command()
+        .args(["rm", "-f", container_name])
+        .output()
+        .map_err(|error| format!("Failed to remove {} container: {}", container_name, error))?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let combined = format_command_output(
+        &String::from_utf8_lossy(&output.stdout),
+        &String::from_utf8_lossy(&output.stderr),
+    );
+    Err(format!(
+        "Failed to remove non-running {} container. {}",
+        container_name, combined
+    ))
+}
+
 fn ensure_runtime_directory(path: &Path) -> Result<TraefikRuntimePreflight, String> {
     let mut result = TraefikRuntimePreflight::default();
 
@@ -2161,6 +2288,44 @@ fn remove_existing_traefik_container(data_dir: &Path) -> Result<(), String> {
     }
 }
 
+/// Remove a Traefik container that is not running but still holds 80/443 via docker-proxy.
+///
+/// Docker can leave a `created` (or exited) Traefik container with published ports while
+/// `compose up` fails on the next start with "ports are not available".
+fn ensure_traefik_container_released(data_dir: &Path) -> Result<(), String> {
+    let output = docker_command()
+        .args(["inspect", "traefik", "--format", "{{.State.Status}}"])
+        .output()
+        .map_err(|error| format!("Failed to inspect Traefik container state: {}", error))?;
+
+    if !output.status.success() {
+        let combined = format_command_output(
+            &String::from_utf8_lossy(&output.stdout),
+            &String::from_utf8_lossy(&output.stderr),
+        );
+        let combined_lower = combined.to_lowercase();
+        if combined_lower.contains("no such object") || combined_lower.contains("no such container") {
+            return Ok(());
+        }
+        return Err(format!("Failed to inspect Traefik container state. {}", combined));
+    }
+
+    let status = String::from_utf8_lossy(&output.stdout).trim().to_lowercase();
+    if status == "running" || status == "restarting" {
+        return Ok(());
+    }
+
+    let _ = append_desktop_log_for(
+        data_dir,
+        "hub.start",
+        &format!(
+            "Removing non-running Traefik container (state={}) to release host ports 80/443.",
+            status
+        ),
+    );
+    remove_existing_traefik_container(data_dir)
+}
+
 /// Remove stale project containers left behind by a previous installation.
 /// Runs `docker compose down --remove-orphans` to clean up before a fresh start.
 pub fn cleanup_stale_project_containers(
@@ -2240,6 +2405,160 @@ fn is_docker_config_mount_path_error(output: &str) -> bool {
         && (lower.contains("not a directory")
             || lower.contains("is a directory")
             || lower.contains("mount a directory onto a file"))
+}
+
+/// Returns `true` when Docker cannot publish Traefik's HTTP/HTTPS host ports.
+fn is_host_port_bind_conflict(output: &str) -> bool {
+    let lower = output.to_lowercase();
+    lower.contains("ports are not available")
+        || lower.contains("address already in use")
+        || lower.contains("bind: address already in use")
+}
+
+/// On Linux, find `docker-proxy` PIDs holding Traefik's target ports with no
+/// corresponding *running* container (i.e. orphaned after Docker cleanup).
+///
+/// `/proc/<pid>/cmdline` is world-readable even for root-owned processes, so
+/// this requires no elevated privileges.  Each returned tuple is `(pid, port)`.
+#[cfg(target_os = "linux")]
+fn find_orphaned_traefik_proxy_pids(target_ports: &[u16]) -> Vec<(u32, u16)> {
+    let mut proxy_pids: Vec<(u32, u16)> = Vec::new();
+
+    let proc_dir = match std::fs::read_dir("/proc") {
+        Ok(d) => d,
+        Err(_) => return proxy_pids,
+    };
+
+    for entry in proc_dir.flatten() {
+        let name = entry.file_name();
+        let pid = match name.to_string_lossy().parse::<u32>() {
+            Ok(n) => n,
+            Err(_) => continue,
+        };
+
+        let bytes = match std::fs::read(format!("/proc/{}/cmdline", pid)) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+
+        // argv is NUL-separated; last element may be empty
+        let args: Vec<&[u8]> = bytes.split(|&b| b == 0).collect();
+
+        let is_docker_proxy = args
+            .first()
+            .and_then(|a| std::str::from_utf8(a).ok())
+            .map(|s| s.ends_with("docker-proxy"))
+            .unwrap_or(false);
+
+        if !is_docker_proxy {
+            continue;
+        }
+
+        for window in args.windows(2) {
+            let key = std::str::from_utf8(window[0]).unwrap_or("");
+            let val = std::str::from_utf8(window[1]).unwrap_or("");
+            if key == "-host-port" {
+                if let Ok(port) = val.parse::<u16>() {
+                    if target_ports.contains(&port) {
+                        proxy_pids.push((pid, port));
+                    }
+                }
+            }
+        }
+    }
+
+    if proxy_pids.is_empty() {
+        return proxy_pids;
+    }
+
+    // Keep only proxies for ports not legitimately owned by a *running* container.
+    proxy_pids
+        .into_iter()
+        .filter(|(_, port)| {
+            let claimed = docker_command()
+                .args(["ps", "-q", "--filter", &format!("publish={}", port)])
+                .output()
+                .map(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty())
+                .unwrap_or(false);
+            !claimed
+        })
+        .collect()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn find_orphaned_traefik_proxy_pids(_target_ports: &[u16]) -> Vec<(u32, u16)> {
+    Vec::new()
+}
+
+/// Kill orphaned `docker-proxy` processes that are preventing Traefik from
+/// binding its host ports.  Uses `sudo -n kill` (non-interactive — only works
+/// when the user has NOPASSWD sudo or equivalent).
+///
+/// Returns `Ok(())` if all targeted processes have been terminated (or there
+/// were none), `Err(msg)` with a user-facing remediation hint otherwise.
+fn release_orphaned_traefik_port_proxies(data_dir: &Path) -> Result<(), String> {
+    let target_ports: &[u16] = &[80, 443, 8080];
+    let orphaned = find_orphaned_traefik_proxy_pids(target_ports);
+
+    if orphaned.is_empty() {
+        return Ok(());
+    }
+
+    let pids: Vec<String> = orphaned.iter().map(|(pid, _)| pid.to_string()).collect();
+    let ports: Vec<String> = {
+        let mut seen = std::collections::HashSet::new();
+        orphaned
+            .iter()
+            .filter(|(_, p)| seen.insert(*p))
+            .map(|(_, p)| p.to_string())
+            .collect()
+    };
+
+    let _ = append_desktop_log_for(
+        data_dir,
+        "hub.start",
+        &format!(
+            "Orphaned docker-proxy processes detected on Traefik ports [{}] (PIDs: {}). Attempting cleanup.",
+            ports.join(", "),
+            pids.join(", ")
+        ),
+    );
+
+    // Attempt: sudo -n kill <pids>
+    let mut kill_args = vec!["kill"];
+    kill_args.extend(pids.iter().map(String::as_str));
+
+    let kill_ok = std::process::Command::new("sudo")
+        .arg("-n")
+        .args(&kill_args)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if kill_ok {
+        // Poll briefly for the processes to disappear (up to ~2 s).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            let still_alive = find_orphaned_traefik_proxy_pids(target_ports);
+            if still_alive.is_empty() {
+                let _ = append_desktop_log_for(
+                    data_dir,
+                    "hub.start",
+                    "Orphaned docker-proxy processes cleared; Traefik ports are now available.",
+                );
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+    }
+
+    // sudo kill failed or processes persisted — return actionable error.
+    Err(format!(
+        "Traefik cannot start: ports [{}] are held by orphaned docker-proxy processes \
+         (PIDs: {}). Run `sudo systemctl restart docker` to clear them, then restart the app.",
+        ports.join(", "),
+        pids.join(", ")
+    ))
 }
 
 fn inspect_container_state_health(container_name: &str) -> String {
@@ -2660,6 +2979,26 @@ fn start_hub_inner(
     start_database_first(compose_path, env_path, data_dir)?;
     ensure_postgres_password_matches_env(env_path, data_dir)?;
 
+    ensure_traefik_container_released(data_dir).map_err(|error| {
+        let message = format!("Traefik port cleanup failed before startup: {}", error);
+        let _ = append_desktop_log_for(data_dir, "hub.start", &message);
+        with_view_logs_hint(message)
+    })?;
+
+    // Pre-emptively release any orphaned docker-proxy processes that may be holding
+    // Traefik's ports after external Docker cleanup operations.
+    if let Err(proxy_err) = release_orphaned_traefik_port_proxies(data_dir) {
+        let message = format!("Traefik port proxy cleanup failed before startup: {}", proxy_err);
+        let _ = append_desktop_log_for(data_dir, "hub.start", &message);
+        return Err(with_view_logs_hint(proxy_err));
+    }
+
+    ensure_host_state_tree_writable(data_dir).map_err(|error| {
+        let message = format!("Failed to prepare writable state directory before startup: {}", error);
+        let _ = append_desktop_log_for(data_dir, "hub.start", &message);
+        with_view_logs_hint(message)
+    })?;
+
     // Attempt compose up with automatic retry on transient container conflicts.
     let mut last_error = String::new();
     for attempt in 1..=MAX_START_RETRIES {
@@ -2755,6 +3094,32 @@ fn start_hub_inner(
             );
             let _ = cleanup_stale_project_containers(compose_path, env_path, data_dir);
             // Brief pause to let Docker release resources.
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            continue;
+        }
+
+        if is_host_port_bind_conflict(&combined_output) && attempt < MAX_START_RETRIES {
+            let _ = append_desktop_log_for(
+                data_dir,
+                "hub.start",
+                "Detected host port bind conflict — removing stale Hub stack containers and running compose down.",
+            );
+            let _ = ensure_traefik_container_released(data_dir);
+            let _ =
+                ensure_container_released_if_not_running(data_dir, "ci-hub-db", "6543");
+            let _ =
+                ensure_container_released_if_not_running(data_dir, "ci-os-hub-queue", "5001");
+            let _ = cleanup_stale_project_containers(compose_path, env_path, data_dir);
+            // Also attempt to kill any orphaned docker-proxy processes that may be
+            // holding Traefik's ports even after the containers were removed.
+            if let Err(proxy_err) = release_orphaned_traefik_port_proxies(data_dir) {
+                let message = format!(
+                    "Port bind conflict self-heal: orphaned proxy cleanup failed: {}",
+                    proxy_err
+                );
+                let _ = append_desktop_log_for(data_dir, "hub.start", &message);
+                return Err(with_view_logs_hint(proxy_err));
+            }
             std::thread::sleep(std::time::Duration::from_secs(2));
             continue;
         }
@@ -2968,7 +3333,7 @@ fn parse_env_file(path: &Path) -> std::collections::HashMap<String, String> {
 fn private_vpn_enabled_from_map(env: &std::collections::HashMap<String, String>) -> bool {
     env.get("PRIVATE_VPN_ENABLED")
         .map(|v| v.as_str() == "true")
-        .unwrap_or(false)
+        .unwrap_or(true)
 }
 
 fn reset_vpn_sidecar_status_poll_phase() {
@@ -3195,6 +3560,7 @@ fn compose_resource_candidates(resource_dir: &Path) -> Vec<PathBuf> {
             .unwrap_or(Path::new("."))
             .join("resources")
             .join(HUB_COMPOSE_FILENAME),
+        PathBuf::from("/usr/lib/companion-hub/resources").join(HUB_COMPOSE_FILENAME),
         PathBuf::from("/usr/lib/Companion Hub/resources").join(HUB_COMPOSE_FILENAME),
         PathBuf::from("/usr/share/companion-hub").join(HUB_COMPOSE_FILENAME),
     ]
@@ -3227,6 +3593,7 @@ pub fn initialize_hub(resource_dir: &Path) -> Result<HubInitialization, String> 
         std::fs::create_dir_all(data_dir.join(sub))
             .map_err(|e| format!("Failed to create {}: {}", sub, e))?;
     }
+    ensure_host_state_tree_writable(&data_dir)?;
     let _ = append_desktop_log_for(
         &data_dir,
         "initialize",
@@ -4066,7 +4433,8 @@ mod tests {
     use super::{
         append_desktop_log_for, classify_docker_access_result, clear_traefik_recreate_required,
         clear_tunnel_token, desktop_log_path_for, format_command_output,
-        generate_container_docker_config, is_container_name_conflict, is_oci_runtime_error,
+        generate_container_docker_config, is_container_name_conflict, is_host_port_bind_conflict,
+        is_oci_runtime_error,
         is_traefik_recreate_required, logs_open_target_for, managed_app_container_ps_args,
         mark_traefik_recreate_required, parse_container_ids, prepare_traefik_runtime_state,
         seeded_traefik_config_contents, startup_service_definitions, truncate_command_output,
@@ -4341,6 +4709,13 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
     #[test]
     fn does_not_treat_port_allocation_failure_as_container_name_conflict() {
         let output = "Error response from daemon: driver failed programming external connectivity on endpoint ci-hub-app-1: Bind for 0.0.0.0:5432 failed: port is already allocated";
+        assert!(!is_container_name_conflict(output));
+    }
+
+    #[test]
+    fn detects_host_port_bind_conflict_from_traefik_publish_error() {
+        let output = r#"Error response from daemon: ports are not available: exposing port TCP 0.0.0.0:443 -> 127.0.0.1:0: listen tcp 0.0.0.0:443: bind: address already in use"#;
+        assert!(is_host_port_bind_conflict(output));
         assert!(!is_container_name_conflict(output));
     }
 
