@@ -11,6 +11,7 @@ vi.mock('@/context/app-context', () => ({
     user: { hasCompletedOnboarding: false },
     cloudflareAvailable: false,
     tailscaleAvailable: true,
+    setAppContext: vi.fn(),
     apps: [
       {
         id: 'openclaw',
