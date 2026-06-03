@@ -3720,8 +3720,9 @@ fn render_runtime_env_content(
     let postgres_password =
         get_non_empty_env_value(existing, "POSTGRES_PASSWORD").unwrap_or_else(|| generate_hex(32));
     // Private VPN — Tailscale sidecar. Enabled by default; only off when user explicitly opts out.
+    // PRIVATE_VPN_ENABLED is a legacy key not read by docker-compose; COMPOSE_PROFILES is what
+    // actually gates the hub-tailscale service. We still write it for human readability.
     let vpn_on = private_vpn_enabled_from_map(existing);
-    let private_vpn_enabled = if vpn_on { "true" } else { "false" };
     // Persist the explicit opt-out sentinel so subsequent launches respect it.
     let private_vpn_user_disabled_line = if vpn_on {
         String::new()
@@ -3778,7 +3779,6 @@ fn render_runtime_env_content(
          CI_HUB_IMAGE={hub_image}\n\
          DOCKER_PLATFORM={docker_platform}\n\
          DOCKER_CONFIG_PATH={docker_config_path}\n\
-         PRIVATE_VPN_ENABLED={private_vpn_enabled}\n\
          {private_vpn_user_disabled_line}\
          {compose_profiles_line}\
          {device_id_line}",
@@ -3791,7 +3791,6 @@ fn render_runtime_env_content(
         hub_image = hub_image,
         docker_platform = docker_platform,
         docker_config_path = docker_config_path.display(),
-        private_vpn_enabled = private_vpn_enabled,
         private_vpn_user_disabled_line = private_vpn_user_disabled_line,
         compose_profiles_line = compose_profiles_line,
         device_id_line = device_id_line,
