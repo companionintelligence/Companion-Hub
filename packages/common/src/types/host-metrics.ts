@@ -1,6 +1,6 @@
 export type HostPlatform = 'darwin' | 'win32' | 'linux';
 export type HostCpuArch = 'arm64' | 'x86_64';
-export type HostMetricsSource = 'init-host-probe' | 'desktop-host-macos' | 'desktop-host-windows';
+export type HostMetricsSource = 'init-host-probe' | 'desktop-host-macos' | 'desktop-host-windows' | 'desktop-host-linux';
 export type RuntimeKind = 'container-only' | 'docker-desktop-vm' | 'wsl2-vm' | 'linux-native' | 'host-native';
 
 export interface HostMetricsHostSection {

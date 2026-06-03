@@ -488,7 +488,7 @@ fn detect_macos_primary_disk_gb() -> (u64, u64, String) {
         .unwrap_or((0, 0, "/".to_string()))
 }
 
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 fn write_host_metrics_probe_file(data_dir: &Path, payload: serde_json::Value, log_tag: &str) {
     let probe_path = data_dir.join("state/hardware/host_metrics.json");
     if let Some(parent) = probe_path.parent() {
@@ -902,7 +902,121 @@ fn refresh_macos_host_probe_cache(_data_dir: &Path) {
     // No-op on non-macOS platforms.
 }
 
-/// Find the Docker binary, checking common install locations if not in PATH.
+/// On Linux the Tauri binary runs directly on the host, so `/proc/meminfo` and
+/// `/proc/cpuinfo` reflect true host hardware (not Docker Desktop VM limits).
+/// Write `host_metrics.json` so the backend container uses host RAM and CPU values.
+#[cfg(target_os = "linux")]
+fn refresh_linux_host_metrics_probe_cache(data_dir: &Path) {
+    let total_ram_mb = read_proc_meminfo_kb("MemTotal").unwrap_or(0) / 1024;
+    let available_ram_mb = read_proc_meminfo_kb("MemAvailable").unwrap_or(0) / 1024;
+
+    if total_ram_mb == 0 {
+        let _ = append_desktop_log_for(data_dir, "hw.probe", "Linux host probe: could not read MemTotal from /proc/meminfo");
+        return;
+    }
+
+    let (cpu_model, cpu_cores) = read_linux_cpu_info();
+    let cpu_arch = if std::env::consts::ARCH == "aarch64" { "arm64" } else { "x86_64" };
+
+    let (disk_total_gb, disk_used_gb, disk_mount) = linux_primary_disk_gb(data_dir);
+
+    let probed_at = chrono::Utc::now().to_rfc3339();
+    let payload = serde_json::json!({
+        "schemaVersion": 1,
+        "platform": "linux",
+        "cpuArch": cpu_arch,
+        "source": "desktop-host-linux",
+        "probedAt": probed_at,
+        "host": {
+            "totalRamMb": total_ram_mb,
+            "availableRamMb": available_ram_mb,
+            "cpuCores": cpu_cores,
+            "cpuModel": cpu_model,
+            "diskTotalGb": disk_total_gb,
+            "diskUsedGb": disk_used_gb,
+            "diskMount": disk_mount
+        }
+    });
+
+    write_host_metrics_probe_file(data_dir, payload, "hw.probe");
+
+    let _ = append_desktop_log_for(
+        data_dir,
+        "hw.probe",
+        &format!(
+            "Updated Linux host probe: {} MB RAM, {} cores, {} ({})",
+            total_ram_mb, cpu_cores, cpu_model, cpu_arch
+        ),
+    );
+}
+
+#[cfg(not(target_os = "linux"))]
+fn refresh_linux_host_metrics_probe_cache(_data_dir: &Path) {}
+
+/// Parse a named field from `/proc/meminfo` and return its value in kB.
+/// e.g. `MemTotal:      131891648 kB` → `131891648`
+#[cfg(target_os = "linux")]
+fn read_proc_meminfo_kb(field: &str) -> Option<u64> {
+    let content = std::fs::read_to_string("/proc/meminfo").ok()?;
+    for line in content.lines() {
+        if line.starts_with(field) {
+            return line.split_whitespace().nth(1).and_then(|v| v.parse().ok());
+        }
+    }
+    None
+}
+
+/// Read CPU model name and logical core count from `/proc/cpuinfo`.
+#[cfg(target_os = "linux")]
+fn read_linux_cpu_info() -> (String, u32) {
+    let content = match std::fs::read_to_string("/proc/cpuinfo") {
+        Ok(c) => c,
+        Err(_) => return (String::new(), 0),
+    };
+    let mut model = String::new();
+    let mut core_count: u32 = 0;
+    for line in content.lines() {
+        if line.starts_with("model name") && model.is_empty() {
+            if let Some(val) = line.splitn(2, ':').nth(1) {
+                model = val.trim().to_string();
+            }
+        }
+        if line.starts_with("processor") {
+            core_count += 1;
+        }
+    }
+    (model, core_count)
+}
+
+/// Determine total and used disk space (in GB) for the data directory's filesystem.
+#[cfg(target_os = "linux")]
+fn linux_primary_disk_gb(data_dir: &Path) -> (u64, u64, String) {
+    use std::ffi::CString;
+    use std::mem::MaybeUninit;
+
+    let path = data_dir
+        .to_str()
+        .and_then(|s| CString::new(s).ok())
+        .unwrap_or_else(|| CString::new("/").unwrap());
+
+    let mut stat: MaybeUninit<libc::statvfs> = MaybeUninit::uninit();
+    // SAFETY: statvfs writes into the provided buffer; path is a valid NUL-terminated string.
+    let ret = unsafe { libc::statvfs(path.as_ptr(), stat.as_mut_ptr()) };
+    if ret != 0 {
+        return (0, 0, String::new());
+    }
+    let stat = unsafe { stat.assume_init() };
+
+    let block_size = stat.f_frsize as u64;
+    let total = stat.f_blocks * block_size / (1024 * 1024 * 1024);
+    let free = stat.f_bavail * block_size / (1024 * 1024 * 1024);
+    let used = total.saturating_sub(free);
+    let mount = data_dir.to_string_lossy().into_owned();
+
+    (total, used, mount)
+}
+
+
 fn find_docker_binary() -> PathBuf {
     if let Some(path) = command_on_path("docker") {
         return path;
@@ -2976,6 +3090,9 @@ fn start_hub_inner(
     // can report correct values instead of the Docker VM's constrained resources.
     refresh_macos_host_probe_cache(data_dir);
     refresh_windows_host_metrics_probe_cache(data_dir);
+    // Surface Linux host hardware so the backend reports true RAM/CPU instead of
+    // the Docker Desktop VM's capped resources (e.g. 8 GB instead of 128 GB).
+    refresh_linux_host_metrics_probe_cache(data_dir);
 
     // Resolve port conflicts and write to the runtime env file before starting.
     let resolution = crate::port_manager::refresh_ports_if_needed(env_path).map_err(|error| {
