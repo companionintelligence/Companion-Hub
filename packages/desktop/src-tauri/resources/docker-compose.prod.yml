@@ -58,7 +58,7 @@ services:
         condition: service_healthy
     container_name: ci-os-hub
     restart: unless-stopped
-    user: "0:0"
+    user: "${CI_HUB_CONTAINER_UID:-1000}:${CI_HUB_CONTAINER_GID:-1000}"
     ports:
       - "${API_PORT:-5002}:5002"
     healthcheck:
@@ -89,7 +89,7 @@ services:
       # osxkeychain, wincred, secretservice, plugins, hooks) that exist in a
       # developer's ~/.docker/config.json but break the Docker CLI inside the
       # Linux container. Registry auths are preserved.
-      - ${DOCKER_CONFIG_PATH:-./.internal/docker-config.json}:/root/.docker/config.json:ro
+      - ${DOCKER_CONFIG_PATH:-./.internal/docker-config.json}:/data/.docker/config.json:ro
       - /proc/meminfo:/host/proc/meminfo:ro
       - ./docker-compose.prod.yml:/data/docker-compose.yml
       - /etc/localtime:/etc/localtime:ro
@@ -110,6 +110,9 @@ services:
       LOG_LEVEL: info
       API_PORT: 5002
       ROOT_FOLDER_HOST: ${ROOT_FOLDER_HOST:?ROOT_FOLDER_HOST must be set to an absolute host path}
+      DOCKER_CONFIG: /data/.docker
+      CI_HUB_CONTAINER_UID: ${CI_HUB_CONTAINER_UID:-1000}
+      CI_HUB_CONTAINER_GID: ${CI_HUB_CONTAINER_GID:-1000}
       POSTGRES_HOST: ci-hub-db
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_USERNAME: companion

@@ -94,10 +94,7 @@ RUN --mount=type=cache,target=/root/.npm \
 
 COPY --from=builder_base /deps/docker-binary /usr/local/bin/docker-compose
 RUN chmod +x /usr/local/bin/docker-compose && \
-    ls -lh /usr/local/bin/docker-compose && \
-    mkdir -p /root/.docker/cli-plugins && \
-    echo '{}' > /root/.docker/config.json && \
-    ln -s /usr/local/bin/docker-compose /root/.docker/cli-plugins/docker-compose
+    ls -lh /usr/local/bin/docker-compose
 COPY --from=builder /app/package.json ./
 
     # Assets - copy built artifacts
@@ -113,5 +110,5 @@ EXPOSE 3000
     # Ensure Node treats .js as ESM (esbuild outputs ESM format)
     RUN node -e "const p = require('./package.json'); p.type = 'module'; require('fs').writeFileSync('./package.json', JSON.stringify(p, null, 2))"
 
-    # Bind-mounted state/ may be root-owned from a prior container UID; normalize before bootstrap.
-    CMD ["sh", "-c", "mkdir -p /data/state && chmod 777 /data/state 2>/dev/null || true; rm -f /data/state/.env.resolved 2>/dev/null || true; exec node ./main.js"]
+    # Hub runs as host UID/GID (compose user:). DOCKER_CONFIG points at /data/.docker (config bind-mounted).
+    CMD ["sh", "-c", "mkdir -p /data/state /data/.docker/cli-plugins && ln -sf /usr/local/bin/docker-compose /data/.docker/cli-plugins/docker-compose 2>/dev/null || true; rm -f /data/state/.env.resolved 2>/dev/null || true; exec node ./main.js"]

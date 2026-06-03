@@ -195,7 +195,12 @@ const HostResourcesSection = ({ hostResources }: { hostResources: NonNullable<Sy
       )}
     </div>
 
-    {hostResources.tuningNotes && <div className="mt-4 text-xs text-muted-foreground border-t border-border pt-4">{hostResources.tuningNotes}</div>}
+    {hostResources.tuningNotes && (
+      <div className="mt-4 rounded-lg border border-border bg-muted/20 p-3 text-sm text-muted-foreground border-t-0">
+        <span className="font-medium text-foreground">Automatic Docker memory tuning: </span>
+        {hostResources.tuningNotes}
+      </div>
+    )}
   </section>
 );
 

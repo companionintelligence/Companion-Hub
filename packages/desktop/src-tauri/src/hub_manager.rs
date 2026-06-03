@@ -1016,54 +1016,171 @@ fn linux_primary_disk_gb(data_dir: &Path) -> (u64, u64, String) {
     (total, used, mount)
 }
 
-/// On Linux, Docker Desktop runs its containers inside a linuxkit VM whose memory
-/// is capped by `memoryMiB` in `~/.docker/desktop/settings-store.json`.
-/// Logs a recommendation when the allocation looks low — does not mutate settings
-/// or restart Docker (that blocked startup and surprised users).
+const MIN_DOCKER_RAM_MB: u64 = 8192;
+const DOCKER_OS_RESERVE_MB: u64 = 4096;
+
+#[cfg(target_os = "linux")]
+fn recommended_docker_ram_mb_linux(host_total_mb: u64) -> u64 {
+    if host_total_mb == 0 {
+        return MIN_DOCKER_RAM_MB;
+    }
+    let capped = ((host_total_mb as f64) * 0.75) as u64;
+    let reserved = host_total_mb.saturating_sub(DOCKER_OS_RESERVE_MB);
+    let target = std::cmp::min(capped, reserved);
+    std::cmp::max(MIN_DOCKER_RAM_MB, std::cmp::min(target, host_total_mb))
+}
+
+#[cfg(target_os = "linux")]
+fn docker_desktop_settings_path_linux() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".docker/desktop/settings-store.json"))
+}
+
+#[cfg(target_os = "linux")]
+fn read_docker_desktop_memory_mib(settings: &serde_json::Value) -> u64 {
+    settings
+        .get("memoryMiB")
+        .or_else(|| settings.get("MemoryMiB"))
+        .and_then(|m| m.as_u64())
+        .unwrap_or(MIN_DOCKER_RAM_MB)
+}
+
+#[cfg(target_os = "linux")]
+fn write_docker_tuning_record(data_dir: &Path, record: serde_json::Value) {
+    let path = data_dir.join("state/hardware/docker-tuning.json");
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(serialized) = serde_json::to_string_pretty(&record) {
+        let _ = std::fs::write(path, format!("{serialized}\n"));
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn try_restart_docker_desktop_linux() {
+    let docker = find_docker_binary();
+    let _ = Command::new(&docker)
+        .args(["desktop", "restart"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
+/// On Linux with Docker Desktop, containers run in a linuxkit VM capped by `memoryMiB` in
+/// `~/.docker/desktop/settings-store.json`. Best-effort: raise toward ~75% of host RAM, restart
+/// Docker Desktop, and record outcome in `state/hardware/docker-tuning.json` (shown in Settings → System).
 #[cfg(target_os = "linux")]
 fn ensure_docker_desktop_memory_linux(data_dir: &Path) {
-    let settings_path = match dirs::home_dir() {
-        Some(h) => h.join(".docker/desktop/settings-store.json"),
-        None => return,
+    let settings_path = match docker_desktop_settings_path_linux() {
+        Some(path) if path.exists() => path,
+        _ => return,
     };
-
-    if !settings_path.exists() {
-        return; // Docker Desktop not present or running as a different user.
-    }
 
     let host_total_mb = match read_proc_meminfo_kb("MemTotal") {
         Some(kb) => kb / 1024,
         None => return,
     };
 
-    // Reserve 4 GB for the host OS; also cap at 75 % of total RAM.
-    let recommended_mb = std::cmp::min(
-        (host_total_mb as f64 * 0.75) as u64,
-        host_total_mb.saturating_sub(4096),
-    );
+    let recommended_mb = recommended_docker_ram_mb_linux(host_total_mb);
+    let threshold_mb = (recommended_mb as f64 * 0.9) as u64;
+    let attempted_at = chrono::Utc::now().to_rfc3339();
 
-    let current_mib: u64 = std::fs::read_to_string(&settings_path)
+    let mut settings: serde_json::Value = match std::fs::read_to_string(&settings_path)
         .ok()
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-        .and_then(|v| v.get("memoryMiB").and_then(|m| m.as_u64()))
-        .unwrap_or(0); // 0 = key absent → treat as default 8192
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+    {
+        Some(value) if value.is_object() => value,
+        _ => serde_json::json!({}),
+    };
 
-    // Only update when the current allocation is less than 90 % of recommended
-    // (avoids churn when the value is already close).
-    if current_mib >= (recommended_mb as f64 * 0.9) as u64 {
+    let current_mib = read_docker_desktop_memory_mib(&settings);
+
+    if current_mib >= threshold_mb {
+        write_docker_tuning_record(
+            data_dir,
+            serde_json::json!({
+                "attemptedAt": attempted_at,
+                "platform": "linux",
+                "action": "noop",
+                "reason": "Docker Desktop VM memory already at or above recommended value",
+                "previousMemoryMb": current_mib,
+                "targetMemoryMb": recommended_mb,
+                "appliedMemoryMb": current_mib,
+            }),
+        );
         return;
     }
 
-    let _ = append_desktop_log_for(
-        data_dir,
-        "docker.mem",
-        &format!(
-            "Docker Desktop VM memory is {} MiB; consider raising to at least {} MiB in Docker Desktop → Settings → Resources (host has {} MB RAM).",
-            if current_mib == 0 { 8192 } else { current_mib },
-            recommended_mb,
-            host_total_mb
-        ),
+    let Some(obj) = settings.as_object_mut() else {
+        return;
+    };
+    obj.insert(
+        "memoryMiB".to_string(),
+        serde_json::Value::Number(serde_json::Number::from(recommended_mb)),
     );
+
+    let serialized = match serde_json::to_string_pretty(&settings) {
+        Ok(value) => format!("{value}\n"),
+        Err(error) => {
+            write_docker_tuning_record(
+                data_dir,
+                serde_json::json!({
+                    "attemptedAt": attempted_at,
+                    "platform": "linux",
+                    "action": "failed",
+                    "reason": format!("Could not serialize Docker Desktop settings: {error}"),
+                    "previousMemoryMb": current_mib,
+                    "targetMemoryMb": recommended_mb,
+                }),
+            );
+            return;
+        }
+    };
+
+    match std::fs::write(&settings_path, serialized) {
+        Ok(_) => {
+            try_restart_docker_desktop_linux();
+            let _ = append_desktop_log_for(
+                data_dir,
+                "docker.mem",
+                &format!(
+                    "Raised Docker Desktop VM memory from {current_mib} MiB to {recommended_mb} MiB (host {host_total_mb} MB RAM); requested Docker Desktop restart.",
+                ),
+            );
+            write_docker_tuning_record(
+                data_dir,
+                serde_json::json!({
+                    "attemptedAt": attempted_at,
+                    "platform": "linux",
+                    "action": "updated",
+                    "reason": "Increased Docker Desktop memoryMiB (restart Docker Desktop if memory still looks capped)",
+                    "previousMemoryMb": current_mib,
+                    "targetMemoryMb": recommended_mb,
+                    "appliedMemoryMb": recommended_mb,
+                }),
+            );
+        }
+        Err(error) => {
+            let _ = append_desktop_log_for(
+                data_dir,
+                "docker.mem",
+                &format!(
+                    "Could not write Docker Desktop settings at {}: {error}. Raise memory manually under Docker Desktop → Settings → Resources.",
+                    settings_path.display()
+                ),
+            );
+            write_docker_tuning_record(
+                data_dir,
+                serde_json::json!({
+                    "attemptedAt": attempted_at,
+                    "platform": "linux",
+                    "action": "failed",
+                    "reason": format!("Could not write Docker Desktop settings: {error}"),
+                    "previousMemoryMb": current_mib,
+                    "targetMemoryMb": recommended_mb,
+                }),
+            );
+        }
+    }
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -2142,8 +2259,20 @@ const HUB_STATE_FILES_NEED_WRITE: &[(&str, &str)] = &[
     ("state", "seed"),
 ];
 
-/// Host paths bind-mounted into `/data/*` in the Hub container. Ensure they are world-writable
-/// so root/non-root container UID mappings can always create and rotate files.
+/// UID/GID for the Hub container process — matches the desktop/CLI user that owns ROOT_FOLDER_HOST.
+#[cfg(unix)]
+pub(crate) fn host_container_uid_gid() -> (u32, u32) {
+    unsafe { (libc::getuid(), libc::getgid()) }
+}
+
+#[cfg(windows)]
+pub(crate) fn host_container_uid_gid() -> (u32, u32) {
+    // Docker Desktop file shares typically map the Linux VM user to 1000:1000.
+    (1000, 1000)
+}
+
+/// Host paths bind-mounted into `/data/*` in the Hub container. Create as the current host user
+/// so the Hub container (same UID/GID via compose) can read/write without world-writable dirs.
 #[cfg(unix)]
 fn ensure_host_bind_mounts_writable(data_dir: &Path) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
@@ -2152,9 +2281,9 @@ fn ensure_host_bind_mounts_writable(data_dir: &Path) -> Result<(), String> {
         let path = data_dir.join(subdir);
         std::fs::create_dir_all(&path)
             .map_err(|error| format!("Failed to create {}: {}", path.display(), error))?;
-        if let Err(error) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o777)) {
+        if let Err(error) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o775)) {
             eprintln!(
-                "warning: could not chmod 777 {}: {}",
+                "warning: could not chmod 775 {}: {}",
                 path.display(),
                 error
             );
@@ -3148,8 +3277,7 @@ fn start_hub_inner(
     // the Docker Desktop VM's capped resources (e.g. 8 GB instead of 128 GB).
     refresh_linux_host_metrics_probe_cache(data_dir);
 
-    // On Linux, auto-raise Docker Desktop's VM memory limit to ~75 % of host RAM
-    // so containers are not arbitrarily capped at the 8 GB default.
+    // On Linux + Docker Desktop, best-effort raise VM memory (~75% host RAM) before compose up.
     ensure_docker_desktop_memory_linux(data_dir);
 
     // Resolve port conflicts and write to the runtime env file before starting.
@@ -3308,7 +3436,7 @@ fn start_hub_inner(
             continue;
         }
 
-        // The host path for /root/.docker/config.json can be poisoned as a directory.
+        // The host path bind-mounted to /data/.docker/config.json can be poisoned as a directory.
         // Self-heal it and retry automatically.
         if is_docker_config_mount_path_error(&combined_output) && attempt < MAX_START_RETRIES {
             let _ = append_desktop_log_for(
@@ -3512,20 +3640,18 @@ fn parse_env_file(path: &Path) -> std::collections::HashMap<String, String> {
     map
 }
 
-/// Returns `true` when the Tailscale sidecar should be started.
+/// Returns `true` when the Tailscale sidecar (`hub-tailscale`) should run.
 ///
-/// Uses a dedicated `PRIVATE_VPN_USER_DISABLED` sentinel written only when the user explicitly
-/// turns the sidecar off (e.g. via a future Settings toggle). This decouples the "user said no"
-/// signal from the `PRIVATE_VPN_ENABLED` env var, which previously defaulted to `false` in older
-/// installations. Any existing `PRIVATE_VPN_ENABLED=false` written by the old default code (no UI
-/// toggle existed) is treated the same as absent — both migrate to the new enabled-by-default
-/// behaviour.
+/// The sidecar is **on by default** for every stack (dev, prod, Tauri desktop, docker-only).
+/// Disable only when the hub `.env` contains an explicit opt-out:
+/// `PRIVATE_VPN_USER_DISABLED=true` (written by [`render_runtime_env_content`] when the user turns
+/// VPN off). Compose actually starts the container when `COMPOSE_PROFILES` includes `private-vpn`
+/// (merged in the same render path). Legacy `PRIVATE_VPN_ENABLED` in old `.env` files is ignored.
 fn private_vpn_enabled_from_map(env: &std::collections::HashMap<String, String>) -> bool {
-    // Explicit user opt-out wins. When absent (all existing installs) ⇒ enabled.
-    if env.get("PRIVATE_VPN_USER_DISABLED").map(|v| v.as_str()) == Some("true") {
-        return false;
-    }
-    true
+    !matches!(
+        env.get("PRIVATE_VPN_USER_DISABLED").map(|v| v.as_str()),
+        Some("true")
+    )
 }
 
 fn reset_vpn_sidecar_status_poll_phase() {
@@ -3627,11 +3753,10 @@ fn render_runtime_env_content(
         get_non_empty_env_value(existing, "JWT_SECRET").unwrap_or_else(|| generate_hex(64));
     let postgres_password =
         get_non_empty_env_value(existing, "POSTGRES_PASSWORD").unwrap_or_else(|| generate_hex(32));
-    // Private VPN — Tailscale sidecar. Enabled by default; only off when user explicitly opts out.
-    // PRIVATE_VPN_ENABLED is a legacy key not read by docker-compose; COMPOSE_PROFILES is what
-    // actually gates the hub-tailscale service. We still write it for human readability.
+    // Tailscale sidecar: on by default (dev/prod/Tauri/docker-only). Opt-out only via
+    // PRIVATE_VPN_USER_DISABLED=true. Compose gates hub-tailscale with COMPOSE_PROFILES=private-vpn.
     let vpn_on = private_vpn_enabled_from_map(existing);
-    // Persist the explicit opt-out sentinel so subsequent launches respect it.
+    // When opted out, persist the sentinel; when enabled, omit it so the default applies.
     let private_vpn_user_disabled_line = if vpn_on {
         String::new()
     } else {
@@ -3672,6 +3797,7 @@ fn render_runtime_env_content(
         "linux/amd64"
     };
     let docker_config_path = data_dir.join(HUB_DOCKER_CONFIG_FILE);
+    let (container_uid, container_gid) = host_container_uid_gid();
 
     format!(
         "# Preserved (generated once, survive upgrades)\n\
@@ -3687,6 +3813,8 @@ fn render_runtime_env_content(
          CI_HUB_IMAGE={hub_image}\n\
          DOCKER_PLATFORM={docker_platform}\n\
          DOCKER_CONFIG_PATH={docker_config_path}\n\
+         CI_HUB_CONTAINER_UID={container_uid}\n\
+         CI_HUB_CONTAINER_GID={container_gid}\n\
          {private_vpn_user_disabled_line}\
          {compose_profiles_line}\
          {device_id_line}",
@@ -3699,6 +3827,8 @@ fn render_runtime_env_content(
         hub_image = hub_image,
         docker_platform = docker_platform,
         docker_config_path = docker_config_path.display(),
+        container_uid = container_uid,
+        container_gid = container_gid,
         private_vpn_user_disabled_line = private_vpn_user_disabled_line,
         compose_profiles_line = compose_profiles_line,
         device_id_line = device_id_line,
@@ -4648,8 +4778,10 @@ mod tests {
         generate_container_docker_config, is_container_name_conflict, is_host_port_bind_conflict,
         is_oci_runtime_error,
         is_traefik_recreate_required, logs_open_target_for, managed_app_container_ps_args,
-        mark_traefik_recreate_required, parse_container_ids, prepare_traefik_runtime_state,
-        seeded_traefik_config_contents, startup_service_definitions, truncate_command_output,
+        host_container_uid_gid, mark_traefik_recreate_required, merge_compose_profiles,
+        parse_container_ids, prepare_traefik_runtime_state, private_vpn_enabled_from_map,
+        seeded_traefik_config_contents,
+        startup_service_definitions, truncate_command_output,
         tunnel_dir_for, tunnel_token_path_for, DockerAccessState, MAX_COMMAND_OUTPUT_CHARS,
         TRAEFIK_ACME_FILE, TRAEFIK_CONFIG_FILE, TRAEFIK_DYNAMIC_CONFIG_SEED, TRAEFIK_DYNAMIC_FILE,
         TRAEFIK_TLS_DIR,
@@ -4756,6 +4888,41 @@ mod tests {
                 "label=ci-os-hub.appurn",
             ]
         );
+    }
+
+    #[test]
+    fn host_container_uid_gid_matches_current_process_on_unix() {
+        let (uid, gid) = host_container_uid_gid();
+        #[cfg(unix)]
+        {
+            assert_eq!(uid, unsafe { libc::getuid() });
+            assert_eq!(gid, unsafe { libc::getgid() });
+        }
+        #[cfg(windows)]
+        {
+            assert_eq!(uid, 1000);
+            assert_eq!(gid, 1000);
+        }
+    }
+
+    #[test]
+    fn private_vpn_enabled_by_default_ignores_legacy_enabled_false() {
+        let mut env = std::collections::HashMap::new();
+        env.insert("PRIVATE_VPN_ENABLED".into(), "false".into());
+        assert!(private_vpn_enabled_from_map(&env));
+    }
+
+    #[test]
+    fn private_vpn_disabled_only_when_user_disabled_sentinel_set() {
+        let mut env = std::collections::HashMap::new();
+        env.insert("PRIVATE_VPN_USER_DISABLED".into(), "true".into());
+        assert!(!private_vpn_enabled_from_map(&env));
+    }
+
+    #[test]
+    fn merge_compose_profiles_adds_private_vpn_by_default() {
+        let env = std::collections::HashMap::new();
+        assert_eq!(merge_compose_profiles(&env, true), "private-vpn");
     }
 
     #[test]

@@ -62,7 +62,7 @@ services:
       LOCAL_DOMAIN: ci.lan
       CI_HUB_VERSION: 9.9.9
       E2E_TEST: true
-      PRIVATE_VPN_ENABLED: "false"
+      PRIVATE_VPN_USER_DISABLED: "true"
       DEVICE_ID: test-device-e2e
     volumes:
       - /data

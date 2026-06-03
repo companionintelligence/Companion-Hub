@@ -23,7 +23,7 @@
  *
  * This script reads the host config, strips anything that only works on the
  * host, and writes the result to .internal/docker-config.json. The prod
- * compose file mounts THAT file into the container at /root/.docker/config.json
+ * compose file mounts THAT file into the container at /data/.docker/config.json (DOCKER_CONFIG=/data/.docker)
  * by default, so the setup auto-configures across macOS, Linux, and Windows
  * without per-developer overrides.
  *

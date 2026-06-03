@@ -2,7 +2,9 @@
 
 Tailscale gives CI-Hub a private, encrypted way to reach the Hub and installed apps from anywhere without opening inbound ports to the public internet. It is the recommended option when you want simple remote access for operators, support staff, or a small trusted team.
 
-When **`PRIVATE_VPN_ENABLED`** is not `false`, the Hub enables the Docker Compose profile `private-vpn`, which runs the **`hub-tailscale`** container. If the host already has Tailscale installed and the Hub can reach `tailscaled.sock`, CI-Hub can use the host client instead of the sidecar.
+The **`hub-tailscale`** sidecar is **on by default** on every stack (dev, prod, Tauri desktop, docker-only). Compose starts it when **`COMPOSE_PROFILES`** includes **`private-vpn`** (the desktop app and CLI add this automatically). Disable only with an explicit opt-out: **`PRIVATE_VPN_USER_DISABLED=true`** in the hub `.env`, then restart the stack. Legacy **`PRIVATE_VPN_ENABLED`** is not used for gating.
+
+If the host already has Tailscale installed and the Hub can reach `tailscaled.sock`, CI-Hub can use the host client instead of the sidecar.
 
 ## Why use Tailscale with CI-Hub
 
@@ -38,7 +40,7 @@ This is useful for pre-provisioned devices or admin-managed deployments.
 
 ## Required configuration
 
-- **Enable / disable:** set **`PRIVATE_VPN_ENABLED=false`** in `.env` to disable the sidecar entirely.
+- **Disable (explicit opt-out):** set **`PRIVATE_VPN_USER_DISABLED=true`** in the hub `.env` and restart. When enabled (default), omit that variable and ensure **`COMPOSE_PROFILES`** includes **`private-vpn`**.
 - **Auth:** set **`TAILSCALE_AUTHKEY`** for unattended setup, or use browser sign-in from the Hub UI.
 - **Routes:** by default **`HUB_TAILSCALE_EXTRA_ARGS`** targets the public Tailscale control plane and advertises `172.18.0.0/16` so tailnet clients can reach the Hub's Docker bridge. Change this if your Docker network uses a different CIDR.
 - **Sidecar name:** CI-Hub uses **`TAILSCALE_SIDECAR_CONTAINER`** when it needs to run `docker exec ... tailscale ...` against a non-default container name.
@@ -107,7 +109,7 @@ This workflow is ideal for remote maintenance, operator access, and private demo
 | **Remote device cannot reach the Hub or apps** | Confirm the remote device is logged in to the same tailnet and that the advertised route in `HUB_TAILSCALE_EXTRA_ARGS` matches the Docker network used by the Hub. |
 | **Logs still mention `headscale:8080` after upgrading** | Reconnect Tailscale once so the device state is rewritten against `controlplane.tailscale.com`. If you override `HUB_TAILSCALE_EXTRA_ARGS`, keep an explicit `--login-server=https://controlplane.tailscale.com` unless you intentionally run your own control plane. |
 | **App URL works locally but not via Tailscale** | Re-save the app with **Tailscale** exposure mode, then check that the Hub itself is connected to Tailscale before testing again. |
-| **Need to turn Tailscale off temporarily** | Set `PRIVATE_VPN_ENABLED=false` and restart the Hub. |
+| **Need to turn Tailscale off temporarily** | Set `PRIVATE_VPN_USER_DISABLED=true` in the hub `.env` and restart the stack. |
 
 ## Example operator checklist
 

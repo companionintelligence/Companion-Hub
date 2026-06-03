@@ -43,6 +43,7 @@ services:
 
   ci-os-hub:
     privileged: true
+    user: "${CI_HUB_CONTAINER_UID:-1000}:${CI_HUB_CONTAINER_GID:-1000}"
     build:
       context: .
       dockerfile: Dockerfile.dev
@@ -85,6 +86,7 @@ services:
       - ./.internal/cache:/cache
       - ./docker-compose.local.yml:/data/docker-compose.yml
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${DOCKER_CONFIG_PATH:-./.internal/docker-config.json}:/data/.docker/config.json:ro
       - /proc/meminfo:/host/proc/meminfo:ro
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
@@ -95,6 +97,9 @@ services:
       LOCAL: true
       NODE_ENV: development
       ROOT_FOLDER_HOST: ${PWD}/.internal
+      DOCKER_CONFIG: /data/.docker
+      CI_HUB_CONTAINER_UID: ${CI_HUB_CONTAINER_UID:-1000}
+      CI_HUB_CONTAINER_GID: ${CI_HUB_CONTAINER_GID:-1000}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_USERNAME: companion
       POSTGRES_DBNAME: companiondb

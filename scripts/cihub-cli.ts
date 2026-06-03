@@ -358,7 +358,7 @@ export function mergeComposeProfilesFromEnvFile(envFileName: string): string {
     set.add('private-vpn');
     return [...set].join(',');
   }
-  const vpnOn = vars.PRIVATE_VPN_ENABLED !== 'false';
+  const vpnOn = vars.PRIVATE_VPN_USER_DISABLED !== 'true';
   const set = new Set<string>([
     ...(vars.COMPOSE_PROFILES || '')
       .split(',')
@@ -374,9 +374,21 @@ export function mergeComposeProfilesFromEnvFile(envFileName: string): string {
   return [...set].join(',');
 }
 
+function hostContainerUidGid(): { uid: string; gid: string } {
+  if (typeof process.getuid === 'function' && typeof process.getgid === 'function') {
+    return { uid: String(process.getuid()), gid: String(process.getgid()) };
+  }
+  return { uid: '1000', gid: '1000' };
+}
+
 function buildEnvOverrides(envFileName: string) {
   const composeProfiles = mergeComposeProfilesFromEnvFile(envFileName);
-  const overrides: Record<string, string | undefined> = { ENV_FILE: envFileName };
+  const { uid, gid } = hostContainerUidGid();
+  const overrides: Record<string, string | undefined> = {
+    ENV_FILE: envFileName,
+    CI_HUB_CONTAINER_UID: uid,
+    CI_HUB_CONTAINER_GID: gid,
+  };
   if (composeProfiles) overrides.COMPOSE_PROFILES = composeProfiles;
   return overrides;
 }

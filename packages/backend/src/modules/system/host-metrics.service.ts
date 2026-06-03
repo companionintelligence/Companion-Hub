@@ -69,7 +69,9 @@ export class HostMetricsService {
     };
 
     if (hostProbe) {
-      display.platformGuidance = getVmResourceGuidance(runtimeKind, hostProbe.platform);
+      display.platformGuidance = getVmResourceGuidance(runtimeKind, hostProbe.platform, {
+        hasVmWedge,
+      });
     }
 
     if (hasVmWedge) {

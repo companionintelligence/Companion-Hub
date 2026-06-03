@@ -56,7 +56,7 @@ describe('env-helpers — resolve() priority chain', () => {
     vi.clearAllMocks();
 
     // Save and set required env vars
-    for (const key of ['ROOT_FOLDER_HOST', 'CI_CLOUD_URL', 'DOMAIN', 'GUEST_DASHBOARD', 'DEMO_MODE']) {
+    for (const key of ['ROOT_FOLDER_HOST', 'CI_CLOUD_URL', 'DOMAIN', 'GUEST_DASHBOARD', 'DEMO_MODE', 'JWT_SECRET', 'MCP_API_KEY']) {
       savedEnv[key] = process.env[key];
     }
     process.env.ROOT_FOLDER_HOST = '/home/user/ci-os-hub';
@@ -135,6 +135,27 @@ describe('env-helpers — resolve() priority chain', () => {
     setupMocks({ settingsJson: { guestDashboard: true } });
     const envMap = await generateSystemEnvFile();
     expect(envMap.get('GUEST_DASHBOARD')).toBe('true');
+  });
+
+  it('MUST keep process.env JWT_SECRET when set, even if data .env differs', async () => {
+    process.env.JWT_SECRET = 'runtime-jwt-secret';
+    setupMocks({ dataEnv: 'JWT_SECRET=from-data' });
+    await generateSystemEnvFile();
+    expect(process.env.JWT_SECRET).toBe('runtime-jwt-secret');
+  });
+
+  it('MUST keep process.env MCP_API_KEY when set, even if data .env differs', async () => {
+    process.env.MCP_API_KEY = 'runtime-mcp-key';
+    setupMocks({ dataEnv: 'MCP_API_KEY=from-data' });
+    await generateSystemEnvFile();
+    expect(process.env.MCP_API_KEY).toBe('runtime-mcp-key');
+  });
+
+  it('MUST put runtime JWT_SECRET in envMap via resolve()', async () => {
+    process.env.JWT_SECRET = 'runtime-jwt-secret';
+    setupMocks({ dataEnv: 'JWT_SECRET=from-data' });
+    const envMap = await generateSystemEnvFile();
+    expect(envMap.get('JWT_SECRET')).toBe('runtime-jwt-secret');
   });
 
   it('MUST complete bootstrap when state/.env.resolved cannot be written (EACCES)', async () => {

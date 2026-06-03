@@ -808,7 +808,7 @@ Vitest runs unit tests in backend and frontend packages. Tests are co-located wi
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PRIVATE_VPN_ENABLED` | `true` (unset) | When not `false`, enables Compose profile `private-vpn` (`hub-tailscale`) |
+| `PRIVATE_VPN_USER_DISABLED` | unset (sidecar on) | Set `true` to opt out of `hub-tailscale`; default includes `private-vpn` in `COMPOSE_PROFILES` |
 | `DEMO_MODE` | `false` | Read-only demo mode |
 | `GUEST_DASHBOARD` | `false` | Allow unauthenticated dashboard access |
 | `ADVANCED_SETTINGS` | `false` | Show advanced settings in UI |

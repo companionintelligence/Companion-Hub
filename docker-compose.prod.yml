@@ -65,7 +65,8 @@ services:
         condition: service_healthy
     container_name: ci-os-hub
     restart: unless-stopped
-    user: "0:0"
+    # Match the host user that owns ROOT_FOLDER_HOST (set CI_HUB_CONTAINER_UID/GID in .env).
+    user: "${CI_HUB_CONTAINER_UID:-1000}:${CI_HUB_CONTAINER_GID:-1000}"
     ports:
       - "5002:5002"
     healthcheck:
@@ -98,7 +99,7 @@ services:
       # that exist in a developer's ~/.docker/config.json but break the Docker
       # CLI inside the Linux container. Registry auths are preserved.
       # Override with DOCKER_CONFIG_PATH if you need to mount a specific file.
-      - ${DOCKER_CONFIG_PATH:-./.internal/docker-config.json}:/root/.docker/config.json:ro
+      - ${DOCKER_CONFIG_PATH:-./.internal/docker-config.json}:/data/.docker/config.json:ro
       - /proc/meminfo:/host/proc/meminfo:ro
       - ./docker-compose.prod.yml:/data/docker-compose.yml
       - /etc/localtime:/etc/localtime:ro
@@ -120,6 +121,9 @@ services:
       NODE_ENV: ${NODE_ENV:-production}
       NODE_OPTIONS: ${NODE_OPTIONS:---disable-warning=ExperimentalWarning}
       ROOT_FOLDER_HOST: ${ROOT_FOLDER_HOST:?ROOT_FOLDER_HOST must be set to an absolute host path}
+      DOCKER_CONFIG: /data/.docker
+      CI_HUB_CONTAINER_UID: ${CI_HUB_CONTAINER_UID:-1000}
+      CI_HUB_CONTAINER_GID: ${CI_HUB_CONTAINER_GID:-1000}
       POSTGRES_HOST: ci-hub-db
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_USERNAME: companion

@@ -124,7 +124,7 @@ describe('renderStep', () => {
 
   it('uses the right icon for each status', () => {
     expect(stripAnsi(renderStep(1, 3, 'x', 'pending'))).toContain('○');
-    expect(stripAnsi(renderStep(1, 3, 'x', 'active'))).toContain('●');
+    expect(stripAnsi(renderStep(1, 3, 'x', 'active'))).toContain('◝');
     expect(stripAnsi(renderStep(1, 3, 'x', 'done'))).toContain('✓');
     expect(stripAnsi(renderStep(1, 3, 'x', 'fail'))).toContain('✗');
   });
@@ -348,9 +348,14 @@ describe('mergeComposeProfilesFromEnvFile', () => {
     expect(mergeComposeProfilesFromEnvFile(TMP).split(',')).toContain('private-vpn');
   });
 
-  it('removes private-vpn when PRIVATE_VPN_ENABLED=false', () => {
-    upsertEnvVar(TMP, 'PRIVATE_VPN_ENABLED', 'false');
+  it('removes private-vpn when PRIVATE_VPN_USER_DISABLED=true', () => {
+    upsertEnvVar(TMP, 'PRIVATE_VPN_USER_DISABLED', 'true');
     expect(mergeComposeProfilesFromEnvFile(TMP).split(',')).not.toContain('private-vpn');
+  });
+
+  it('keeps private-vpn when legacy PRIVATE_VPN_ENABLED=false is present', () => {
+    upsertEnvVar(TMP, 'PRIVATE_VPN_ENABLED', 'false');
+    expect(mergeComposeProfilesFromEnvFile(TMP).split(',')).toContain('private-vpn');
   });
 
   it('preserves existing COMPOSE_PROFILES from the file', () => {
@@ -429,7 +434,7 @@ describe('box', () => {
   it('renders a title header, indented body, and a closing rule', () => {
     const lines = stripAnsi(box('Title', ['line one', 'line two'])).split('\n');
     expect(lines[0]).toContain('┌─ Title');
-    expect(lines[0]).toContain('┐');
+    expect(lines[0]).toContain('┝');
     expect(lines[1]).toBe('  line one');
     expect(lines[2]).toBe('  line two');
     expect(lines[lines.length - 1]).toContain('└');

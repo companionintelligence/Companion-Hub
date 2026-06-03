@@ -125,6 +125,15 @@ function resolve(
   return opts.fallback;
 }
 
+/** True when process.env already has a non-empty value (including legacy alias). */
+function processEnvHasValue(key: string): boolean {
+  if (process.env[key] !== undefined && process.env[key] !== '') {
+    return true;
+  }
+  const legacyKey = LEGACY_ENV_MAP[key];
+  return Boolean(legacyKey && process.env[legacyKey] !== undefined && process.env[legacyKey] !== '');
+}
+
 /** Coerce a settings boolean to string, or return undefined if not set */
 function boolStr(val: boolean | undefined): string | undefined {
   return typeof val === 'boolean' ? String(val) : undefined;
@@ -134,11 +143,11 @@ function isFsErrorWithCode(error: unknown, code: string): boolean {
   return Boolean(error && typeof error === 'object' && 'code' in error && (error as NodeJS.ErrnoException).code === code);
 }
 
-/** Ensure bind-mounted state/ is writable across host UID ↔ container UID mappings. */
+/** Ensure bind-mounted state/ exists; Hub container UID should match the host user (see CI_HUB_CONTAINER_UID). */
 export async function ensureHubStateDirWritable(stateDir: string): Promise<void> {
-  await fs.promises.mkdir(stateDir, { recursive: true, mode: 0o777 });
+  await fs.promises.mkdir(stateDir, { recursive: true, mode: 0o775 });
   try {
-    await fs.promises.chmod(stateDir, 0o777);
+    await fs.promises.chmod(stateDir, 0o775);
   } catch {
     // chmod may fail on some mounts; write retry logic still applies.
   }
@@ -183,9 +192,12 @@ export async function writeResolvedEnvFile(targetPath: string, content: string):
   }
 }
 
+/** Apply resolved env to process.env without clobbering runtime / .env.local values. */
 function applyEnvMapToProcess(envMap: Map<string, string>) {
   for (const [key, value] of envMap.entries()) {
-    process.env[key] = value;
+    if (!processEnvHasValue(key)) {
+      process.env[key] = value;
+    }
   }
 }
 
@@ -230,8 +242,8 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
 
   // --- Resolve all values using the standard priority chain ---
 
-  const jwtSecret = envMap.get('JWT_SECRET') || envUtils.deriveEntropy('jwt_secret');
-  const mcpApiKey = envMap.get('MCP_API_KEY') || envUtils.deriveEntropy('mcp_api_key');
+  const jwtSecret = resolve('JWT_SECRET', { envMap, fallback: '' }) || envUtils.deriveEntropy('jwt_secret');
+  const mcpApiKey = resolve('MCP_API_KEY', { envMap, fallback: '' }) || envUtils.deriveEntropy('mcp_api_key');
 
   const rootFolderHost = resolve('ROOT_FOLDER_HOST', { envMap, fallback: '' });
 
@@ -394,7 +406,7 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   const wroteResolved = await writeResolvedEnvFile(resolvedEnvFilePath, newEnvContent);
   if (wroteResolved) {
     logger.debug('Resolved environment written to state/.env.resolved');
-    // Load from disk as defaults only — values already set on process.env above win.
+    // Disk snapshot for other processes; override: false preserves runtime / .env.local on process.env.
     dotenv.config({ path: resolvedEnvFilePath, override: false, quiet: true });
   } else {
     logger.warn('Could not write state/.env.resolved (permission denied on bind mount). Using in-memory resolved environment for this process.');

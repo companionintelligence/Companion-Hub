@@ -91,7 +91,7 @@ services:
       E2E_TEST: "true"
       DEVICE_ID: e2e-cross-domain-device
       EXPERIMENTAL_INSECURE_COOKIE: "true"
-      PRIVATE_VPN_ENABLED: "false"
+      PRIVATE_VPN_USER_DISABLED: "true"
       CI_HUB_VERSION: e2e-cross-domain
       ROOT_FOLDER_HOST: ${PWD}/.internal-e2e
       # Must match base compose's Postgres config (port 6543, db companiondb)
