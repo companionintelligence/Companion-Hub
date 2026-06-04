@@ -15,9 +15,9 @@ vi.mock('@/context/app-context', () => ({
     refreshAppContext: vi.fn().mockResolvedValue(undefined),
     apps: [
       {
-        id: 'openclaw',
+        id: 'ci-openclaw',
         name: 'OpenClaw',
-        urn: 'urn:store:openclaw',
+        urn: 'urn:store:ci-openclaw',
         short_desc: 'Agent',
         available: true,
         deprecated: false,
@@ -156,7 +156,7 @@ describe('OnboardingPage (single vertical form)', () => {
     await user.click(finish);
     expect(screen.getByTestId('install-step')).toBeInTheDocument();
     // The chosen agent is auto-queued in the install list.
-    expect(screen.getByTestId('install-step')).toHaveAttribute('data-apps', 'openclaw');
+    expect(screen.getByTestId('install-step')).toHaveAttribute('data-apps', 'ci-openclaw');
 
     // Completing the install navigates to /store (no complete-step shown).
     await user.click(screen.getByRole('button', { name: 'install-complete' }));
@@ -183,7 +183,7 @@ describe('OnboardingPage (single vertical form)', () => {
     await user.click(screen.getByTestId('finish-setup-btn'));
 
     // The openclaw agent is in the list (apps emitted empty, so only agent remains).
-    expect(screen.getByTestId('install-step')).toHaveAttribute('data-apps', 'openclaw');
+    expect(screen.getByTestId('install-step')).toHaveAttribute('data-apps', 'ci-openclaw');
   });
 
   it('includes cloud provider config in the AI setup config', async () => {
