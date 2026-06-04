@@ -53,7 +53,12 @@ function resolveDockerGid(): string {
     const gid = line.split(':')[2]?.trim();
     if (gid) return gid;
   } catch {
-    // getent missing or docker group absent
+    // getent missing (macOS) or docker group absent
+  }
+  try {
+    return String(statSync('/var/run/docker.sock').gid);
+  } catch {
+    // Docker not running or socket missing
   }
   return '973';
 }

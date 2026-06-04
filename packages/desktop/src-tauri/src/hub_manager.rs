@@ -2274,7 +2274,94 @@ fn host_docker_gid() -> u32 {
 
     std::fs::metadata("/var/run/docker.sock")
         .map(|metadata| metadata.gid())
-    .unwrap_or(973)
+        .unwrap_or(973)
+}
+
+/// Parse `stat -c "%u:%g"` output from a container probing the mounted Docker socket.
+fn parse_docker_socket_uid_gid(raw: &str) -> Option<(u32, u32)> {
+    let trimmed = raw.trim();
+    let (uid_raw, gid_raw) = trimmed.split_once(':')?;
+    Some((uid_raw.parse().ok()?, gid_raw.parse().ok()?))
+}
+
+/// How the mounted Docker socket appears *inside* a throwaway container (authoritative for compose `user:`).
+fn docker_socket_uid_gid_inside_container() -> Option<(u32, u32)> {
+    let output = docker_command()
+        .args([
+            "run",
+            "--rm",
+            "-v",
+            "/var/run/docker.sock:/var/run/docker.sock:ro",
+            "alpine",
+            "stat",
+            "-c",
+            "%u:%g",
+            "/var/run/docker.sock",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_docker_socket_uid_gid(&String::from_utf8_lossy(&output.stdout))
+}
+
+#[cfg(unix)]
+fn docker_gid_from_getent() -> Option<u32> {
+    let output = std::process::Command::new("getent")
+        .args(["group", "docker"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let line = String::from_utf8_lossy(&output.stdout);
+    let gid = line.split(':').nth(2)?.trim();
+    gid.parse().ok()
+}
+
+fn default_docker_gid() -> u32 {
+    #[cfg(unix)]
+    {
+        return docker_gid_from_getent().unwrap_or_else(host_docker_gid);
+    }
+    #[cfg(not(unix))]
+    {
+        973
+    }
+}
+
+fn likely_docker_desktop() -> bool {
+    if std::env::var("DOCKER_HOST")
+        .map(|value| value.contains("docker-desktop"))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    if let Some(home) = dirs::home_dir() {
+        return home.join(".docker").join("desktop").exists();
+    }
+    false
+}
+
+/// UID/GID for the Hub container and the host docker group GID for `group_add`.
+/// Mirrors scripts/init-hub-data-dirs.ts so desktop launches stay compatible with Docker Desktop.
+pub(crate) fn resolve_hub_container_identity() -> (u32, u32, u32) {
+    if let Some((socket_uid, socket_gid)) = docker_socket_uid_gid_inside_container() {
+        // Docker Desktop exposes the socket as root:root inside containers; group_add is ineffective.
+        if socket_uid == 0 && socket_gid == 0 {
+            return (0, 0, default_docker_gid());
+        }
+        let (host_uid, host_gid) = host_container_uid_gid();
+        return (host_uid, host_gid, socket_gid);
+    }
+
+    if likely_docker_desktop() {
+        return (0, 0, default_docker_gid());
+    }
+
+    let (host_uid, host_gid) = host_container_uid_gid();
+    (host_uid, host_gid, default_docker_gid())
 }
 
 #[cfg(windows)]
@@ -3816,11 +3903,8 @@ fn render_runtime_env_content(
     } else {
         "linux/amd64"
     };
-    let (container_uid, container_gid) = host_container_uid_gid();
-    #[cfg(unix)]
-    let docker_gid_line = format!("DOCKER_GID={}\n", host_docker_gid());
-    #[cfg(not(unix))]
-    let docker_gid_line = String::new();
+    let (container_uid, container_gid, docker_gid) = resolve_hub_container_identity();
+    let docker_gid_line = format!("DOCKER_GID={docker_gid}\n");
 
     format!(
         "# Preserved (generated once, survive upgrades)\n\
@@ -4805,7 +4889,8 @@ mod tests {
         is_oci_runtime_error,
         is_traefik_recreate_required, logs_open_target_for, managed_app_container_ps_args,
         host_container_uid_gid, mark_traefik_recreate_required, merge_compose_profiles,
-        parse_container_ids, prepare_traefik_runtime_state, private_vpn_enabled_from_map,
+        parse_container_ids, parse_docker_socket_uid_gid, prepare_traefik_runtime_state,
+        private_vpn_enabled_from_map, resolve_hub_container_identity,
         seeded_traefik_config_contents,
         startup_service_definitions, truncate_command_output,
         tunnel_dir_for, tunnel_token_path_for, DockerAccessState, MAX_COMMAND_OUTPUT_CHARS,
@@ -4854,6 +4939,13 @@ mod tests {
         );
 
         assert!(matches!(result.state, DockerAccessState::PermissionDenied));
+    }
+
+    #[test]
+    fn parses_docker_socket_stat_output() {
+        assert_eq!(parse_docker_socket_uid_gid("0:0"), Some((0, 0)));
+        assert_eq!(parse_docker_socket_uid_gid("0:998\n"), Some((0, 998)));
+        assert_eq!(parse_docker_socket_uid_gid("bad"), None);
     }
 
     #[test]
