@@ -7,11 +7,16 @@ vi.mock('@/components/app-logo/app-logo', () => ({
 }));
 
 describe('OnboardingAppIcon', () => {
-  it('renders the OpenClaw agent mark for the openclaw slug', () => {
-    render(<OnboardingAppIcon app={{ appSlug: 'openclaw', name: 'OpenClaw', icon: '', urn: 'urn:store:openclaw' }} />);
+  it('uses AppLogo for ci-openclaw when a store urn is available', () => {
+    render(<OnboardingAppIcon app={{ appSlug: 'ci-openclaw', name: 'OpenClaw', icon: '', urn: 'urn:store:ci-openclaw' }} />);
 
-    expect(screen.getByAltText('OpenClaw')).toHaveAttribute('src', '/agents/openclaw.png');
-    expect(screen.queryByTestId('app-logo')).not.toBeInTheDocument();
+    expect(screen.getByTestId('app-logo')).toHaveTextContent('OpenClaw');
+  });
+
+  it('falls back to icon url when urn is missing', () => {
+    render(<OnboardingAppIcon app={{ appSlug: 'ci-openclaw', name: 'OpenClaw', icon: '/agents/openclaw.png', urn: undefined }} />);
+
+    expect(screen.getByAltText('')).toHaveAttribute('src', '/agents/openclaw.png');
   });
 
   it('uses AppLogo when a store urn is available for non-agent apps', () => {

@@ -1,14 +1,7 @@
 import { AppLogo } from '@/components/app-logo/app-logo';
 import { cn } from '@/lib/utils';
 import { useState } from 'react';
-import { AGENT_APP_SLUG, type AgentFramework } from '../helpers/ai-setup-types';
 import type { OnboardingApp } from '../helpers/types';
-import { HermesIcon, OpenClawIcon } from './ai-setup/icons';
-
-const AGENT_FRAMEWORK_BY_SLUG: Record<string, AgentFramework> = {
-  [AGENT_APP_SLUG.openclaw]: 'openclaw',
-  [AGENT_APP_SLUG.hermes]: 'hermes',
-};
 
 interface OnboardingAppIconProps {
   app: Pick<OnboardingApp, 'appSlug' | 'name' | 'icon' | 'urn'>;
@@ -46,26 +39,8 @@ function RemoteIcon({ src, name, size, className }: { src: string; name: string;
   );
 }
 
-/** Renders the best available icon for an onboarding app (agent mark, store URN, or remote URL). */
+/** Renders the best available icon for an onboarding app (store URN, remote URL, or initial fallback). */
 export function OnboardingAppIcon({ app, size = 36, className }: OnboardingAppIconProps) {
-  const agentFramework = AGENT_FRAMEWORK_BY_SLUG[app.appSlug];
-
-  if (agentFramework === 'openclaw') {
-    return (
-      <span className={cn('flex shrink-0 items-center justify-center', className)} style={{ width: size, height: size }}>
-        <OpenClawIcon className="h-full w-full" />
-      </span>
-    );
-  }
-
-  if (agentFramework === 'hermes') {
-    return (
-      <span className={cn('flex shrink-0 items-center justify-center', className)} style={{ width: size, height: size }}>
-        <HermesIcon className="h-full w-full" />
-      </span>
-    );
-  }
-
   if (app.urn) {
     return <AppLogo urn={app.urn} alt={app.name} size={size} className={cn('shrink-0', className)} />;
   }

@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { buildAgentApp, exposureModeLabel, resolveExposureMode, type StoreAppLite } from './agent-onboarding';
 
 const storeApps: StoreAppLite[] = [
-  { id: 'openclaw', name: 'OpenClaw', urn: 'urn:store:openclaw' },
-  { id: 'hermes-agent', name: 'Hermes Agent', urn: 'urn:store:hermes-agent' },
+  { id: 'ci-openclaw', name: 'OpenClaw', urn: 'urn:store:ci-openclaw' },
+  { id: 'ci-hermes', name: 'Hermes', urn: 'urn:store:ci-hermes' },
   { id: 'immich', name: 'Immich', urn: 'urn:store:immich' },
 ];
 
@@ -11,25 +11,25 @@ describe('buildAgentApp', () => {
   it('resolves openclaw to its store app (name + urn)', () => {
     const app = buildAgentApp('openclaw', storeApps);
     expect(app).toMatchObject({
-      appSlug: 'openclaw',
+      appSlug: 'ci-openclaw',
       name: 'OpenClaw',
-      urn: 'urn:store:openclaw',
+      urn: 'urn:store:ci-openclaw',
       icon: '/agents/openclaw.png',
-      localSubdomain: 'openclaw',
+      localSubdomain: 'ci-openclaw',
       category: 'ai',
     });
   });
 
-  it('maps hermes framework to the hermes-agent store slug', () => {
+  it('maps hermes framework to the ci-hermes store slug', () => {
     const app = buildAgentApp('hermes', storeApps);
-    expect(app).toMatchObject({ appSlug: 'hermes-agent', name: 'Hermes Agent', urn: 'urn:store:hermes-agent' });
+    expect(app).toMatchObject({ appSlug: 'ci-hermes', name: 'Hermes', urn: 'urn:store:ci-hermes' });
   });
 
   it('leaves urn undefined and uses a fallback name when the agent app is not in the store', () => {
     const app = buildAgentApp('openclaw', []);
     expect(app.urn).toBeUndefined();
     expect(app.name).toBe('OpenClaw');
-    expect(app.appSlug).toBe('openclaw');
+    expect(app.appSlug).toBe('ci-openclaw');
   });
 });
 

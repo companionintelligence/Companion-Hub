@@ -5,8 +5,8 @@ export type AgentFramework = 'openclaw' | 'hermes';
 
 /** Maps a chosen agent framework to the app store slug (id) that installs it. */
 export const AGENT_APP_SLUG: Record<AgentFramework, string> = {
-  openclaw: 'openclaw',
-  hermes: 'hermes-agent',
+  openclaw: 'ci-openclaw',
+  hermes: 'ci-hermes',
 };
 
 /** A remote-access transport the user can enable (maps to ExposureMode minus 'local'). */
