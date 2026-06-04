@@ -19,9 +19,10 @@ interface IProps {
   onSubmit: (values: FormValues) => void;
   loading: boolean;
   loginType: string;
+  portalSsoHref?: string;
 }
 
-export const LoginForm: React.FC<IProps> = ({ loading, onSubmit, loginType }) => {
+export const LoginForm: React.FC<IProps> = ({ loading, onSubmit, loginType, portalSsoHref }) => {
   const { t } = useTranslation();
   const {
     register,
@@ -40,6 +41,17 @@ export const LoginForm: React.FC<IProps> = ({ loading, onSubmit, loginType }) =>
   return (
     <>
       <h2 className="text-xl font-semibold text-center mb-4">{t('AUTH_LOGIN_TITLE', { type: loginType })}</h2>
+
+      {portalSsoHref ? (
+        <div className="mb-4">
+          <Button asChild intent="secondary" className="w-full">
+            <a href={portalSsoHref}>Sign in with Portal</a>
+          </Button>
+          <div className="text-xs text-muted-foreground text-center mt-2">Uses your Companion Account (CI Portal).</div>
+          <div className="my-4 h-px bg-border" />
+        </div>
+      ) : null}
+
       <form onSubmit={handleSubmit(onSubmit)}>
         <Input
           {...register('email')}
