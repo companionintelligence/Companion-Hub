@@ -33,12 +33,28 @@ cleanup() {
 }
 trap cleanup EXIT
 
-git fetch --force origin "refs/tags/${TAG}:refs/tags/${TAG}"
+TAG_REF="refs/tags/${TAG}"
 
-TARGET_COMMIT="$(git rev-parse --verify "${TAG}^{commit}")"
-if [[ -z "$TARGET_COMMIT" ]]; then
-  echo "Could not resolve target commit for $TAG" >&2
+# The release job creates the tag via softprops/action-gh-release; resolve the commit
+# from GitHub first so we do not depend on checkout ref or ambiguous short tag names.
+TARGET_COMMIT="$(gh release view "$TAG" -R "$REPO" --json targetCommitish --jq '.targetCommitish')"
+if [[ -z "$TARGET_COMMIT" || "$TARGET_COMMIT" == "null" ]]; then
+  echo "Could not read targetCommitish for release $TAG from $REPO" >&2
   exit 1
+fi
+
+git fetch --force origin "${TARGET_COMMIT}"
+git fetch --force origin "${TAG_REF}:${TAG_REF}"
+
+if ! git rev-parse --verify "${TAG_REF}^{commit}" >/dev/null 2>&1; then
+  echo "Tag $TAG is missing locally after fetch (expected commit $TARGET_COMMIT)" >&2
+  exit 1
+fi
+
+TAG_COMMIT="$(git rev-parse --verify "${TAG_REF}^{commit}")"
+if [[ "$TAG_COMMIT" != "$TARGET_COMMIT" ]]; then
+  echo "Tag $TAG points to $TAG_COMMIT but release targetCommitish is $TARGET_COMMIT" >&2
+  echo "Continuing with release targetCommitish." >&2
 fi
 
 RELEASE_NAME="$(gh release view "$TAG" -R "$REPO" --json name --jq '.name')"
@@ -49,10 +65,10 @@ git config user.email "$BOT_EMAIL"
 
 git tag -fa "$TAG" "$TARGET_COMMIT" -m "Release $TAG" -m "Refreshed by desktop release finalization to keep GitHub release ordering current." >/dev/null
 
-LOCAL_TAG_SHA="$(git rev-parse --verify -- "$TAG")"
-git push --force origin "refs/tags/${TAG}"
+LOCAL_TAG_SHA="$(git rev-parse --verify "${TAG_REF}")"
+git push --force origin "${TAG_REF}"
 
-REMOTE_TAG_SHA="$(git ls-remote origin "refs/tags/${TAG}" | awk 'NR==1 { print $1 }')"
+REMOTE_TAG_SHA="$(git ls-remote origin "${TAG_REF}" | awk 'NR==1 { print $1 }')"
 if [[ -z "$REMOTE_TAG_SHA" ]]; then
   echo "Could not verify $TAG on origin after push" >&2
   exit 1

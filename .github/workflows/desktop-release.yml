@@ -491,6 +491,8 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
+          # Ensure the tagged release commit is present (release job tags GITHUB_SHA).
+          ref: refs/tags/${{ inputs.tag }}
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
