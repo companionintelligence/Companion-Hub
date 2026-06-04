@@ -489,7 +489,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          ref: ${{ inputs.tag }}
           fetch-depth: 0
           fetch-tags: true
 

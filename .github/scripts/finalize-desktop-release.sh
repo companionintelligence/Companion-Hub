@@ -33,7 +33,17 @@ cleanup() {
 }
 trap cleanup EXIT
 
-git fetch --force origin "refs/tags/${TAG}:refs/tags/${TAG}"
+for i in 1 2 3 4 5; do
+  if git fetch --force origin "refs/tags/${TAG}:refs/tags/${TAG}"; then
+    break
+  fi
+  if [[ $i -eq 5 ]]; then
+    echo "Failed to fetch tag ${TAG} from origin after 5 attempts" >&2
+    exit 1
+  fi
+  echo "Attempt $i/5: tag ${TAG} not yet visible via git protocol, retrying in 15s..." >&2
+  sleep 15
+done
 
 TARGET_COMMIT="$(git rev-parse --verify "${TAG}^{commit}")"
 if [[ -z "$TARGET_COMMIT" ]]; then
