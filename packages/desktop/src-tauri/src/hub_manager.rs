@@ -2268,6 +2268,15 @@ pub(crate) fn host_container_uid_gid() -> (u32, u32) {
     unsafe { (libc::getuid(), libc::getgid()) }
 }
 
+#[cfg(unix)]
+fn host_docker_gid() -> u32 {
+    use std::os::unix::fs::MetadataExt;
+
+    std::fs::metadata("/var/run/docker.sock")
+        .map(|metadata| metadata.gid())
+    .unwrap_or(973)
+}
+
 #[cfg(windows)]
 pub(crate) fn host_container_uid_gid() -> (u32, u32) {
     // Docker Desktop file shares typically map the Linux VM user to 1000:1000.
@@ -3808,6 +3817,10 @@ fn render_runtime_env_content(
         "linux/amd64"
     };
     let (container_uid, container_gid) = host_container_uid_gid();
+    #[cfg(unix)]
+    let docker_gid_line = format!("DOCKER_GID={}\n", host_docker_gid());
+    #[cfg(not(unix))]
+    let docker_gid_line = String::new();
 
     format!(
         "# Preserved (generated once, survive upgrades)\n\
@@ -3822,6 +3835,7 @@ fn render_runtime_env_content(
          CI_HUB_VERSION={hub_version}\n\
          CI_HUB_IMAGE={hub_image}\n\
          DOCKER_PLATFORM={docker_platform}\n\
+         {docker_gid_line}\
          CI_HUB_CONTAINER_UID={container_uid}\n\
          CI_HUB_CONTAINER_GID={container_gid}\n\
          {private_vpn_user_disabled_line}\
@@ -3835,6 +3849,7 @@ fn render_runtime_env_content(
         hub_version = hub_version,
         hub_image = hub_image,
         docker_platform = docker_platform,
+        docker_gid_line = docker_gid_line,
         container_uid = container_uid,
         container_gid = container_gid,
         private_vpn_user_disabled_line = private_vpn_user_disabled_line,
