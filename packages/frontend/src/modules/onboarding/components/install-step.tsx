@@ -579,7 +579,7 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
           <Button
             intent="primary"
             onClick={() => {
-              const backgroundAppsPending = !done && apps.length > 0;
+              const backgroundAppsPending = (!done && apps.length > 0) || incompleteCount > 0;
               const continuedInBackground = backgroundAppsPending || aiInProgress;
               onCompleteRef.current(buildSummary(states, continuedInBackground));
             }}

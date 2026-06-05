@@ -28,8 +28,8 @@ export default () => {
       duration: 7000,
     });
 
-    navigate(location.pathname, { replace: true, state: null });
-  }, [location.pathname, location.state, navigate]);
+    navigate({ pathname: location.pathname, search: location.search, hash: location.hash }, { replace: true, state: null });
+  }, [location.hash, location.pathname, location.search, location.state, navigate]);
 
   const { data: systemData } = useQuery({
     ...systemLoadOptions(),

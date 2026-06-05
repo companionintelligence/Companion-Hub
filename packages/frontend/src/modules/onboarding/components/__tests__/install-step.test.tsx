@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { InstallStep } from '../install-step';
 import type { OnboardingApp } from '../../helpers/types';
@@ -103,6 +103,39 @@ describe('InstallStep', () => {
     fireEvent.click(screen.getByTestId('install-continue-btn'));
 
     expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({ continuedInBackground: true }));
+  });
+
+  it('flags continuedInBackground when installs end incomplete but are still converging', async () => {
+    mockApiFetch.mockImplementation(async (url: string) => {
+      if (url.includes('/api/app-lifecycle/') && url.includes('/install')) {
+        return { ok: true, json: async () => ({}) };
+      }
+      if (url === '/api/apps/installed') {
+        return {
+          ok: true,
+          json: async () => ({
+            installed: [{ info: { urn: 'app1:store1' }, app: { status: 'installing' } }],
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+
+    vi.useFakeTimers();
+
+    render(<InstallStep apps={[makeApp('app1', 'App One', 'app1:store1')]} onComplete={onComplete} />);
+
+    await act(async () => {
+      await vi.runAllTimersAsync();
+    });
+
+    vi.useRealTimers();
+
+    expect(await screen.findByTestId('status-incomplete', {}, { timeout: 5000 })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('install-continue-btn'));
+
+    expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({ continuedInBackground: true, incomplete: 1 }));
   });
 
   it('renders the app list container', () => {
