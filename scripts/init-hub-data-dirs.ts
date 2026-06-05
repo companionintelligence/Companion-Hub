@@ -6,12 +6,10 @@
  * /data/cache and /data/.docker must exist on the host before compose up.
  */
 import { execSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, rmSync, statSync } from 'node:fs';
-import os from 'node:os';
+import { existsSync, mkdirSync, rmSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { parseEnvFile, upsertEnvVar } from './cihub-cli';
-
-const BIND_MOUNT_DIRS = ['cache', 'state', 'logs', 'apps', 'media', 'repos', 'app-data', 'user-config', 'backups'] as const;
+import { ensureHubBindMountsWritable, likelyDockerDesktop, logBindMountHeal } from './heal-hub-bind-mounts';
 
 function resolveRootFolderHost(): string {
   const envFile = process.env.ENV_FILE || '.env.dev';
@@ -58,17 +56,10 @@ function resolveDockerGid(): string {
   try {
     return String(statSync('/var/run/docker.sock').gid);
   } catch {
-    // Docker not running or socket missing
+    return '973';
   }
-  return '973';
 }
 
-function likelyDockerDesktop(): boolean {
-  const home = os.homedir();
-  return existsSync(path.join(home, '.docker', 'desktop')) || (process.env.DOCKER_HOST || '').includes('docker-desktop');
-}
-
-/** Docker Desktop often exposes the socket as root:root inside containers (group_add is ineffective). */
 function dockerSocketIsRootOnlyInsideContainers(): boolean | null {
   try {
     const out = execSync('docker run --rm -v /var/run/docker.sock:/var/run/docker.sock:ro alpine stat -c "%u:%g" /var/run/docker.sock 2>/dev/null', {
@@ -116,28 +107,19 @@ function main(): void {
   healPoisonedEnvMount(cwd);
   ensureContainerIdentityInEnvFile(cwd);
 
+  const envFile = process.env.ENV_FILE || '.env.dev';
   const root = resolveRootFolderHost();
-  mkdirSync(root, { recursive: true });
+  const envFilePath = path.isAbsolute(envFile) ? envFile : path.join(cwd, envFile);
 
-  for (const dir of BIND_MOUNT_DIRS) {
-    const target = path.join(root, dir);
-    mkdirSync(target, { recursive: true });
-    try {
-      chmodSync(target, 0o775);
-    } catch {
-      // Best-effort on restrictive mounts.
-    }
-  }
+  const identity = ensureHubBindMountsWritable(root, { envFile: envFilePath });
+  logBindMountHeal(
+    root,
+    `init-hub-data-dirs: bind mounts ready under ${root} (container ${identity.uid}:${identity.gid}, source=${identity.source})`,
+  );
 
   const dockerDir = path.join(root, '.docker');
   const cliPlugins = path.join(dockerDir, 'cli-plugins');
   mkdirSync(cliPlugins, { recursive: true });
-  try {
-    chmodSync(dockerDir, 0o775);
-    chmodSync(cliPlugins, 0o775);
-  } catch {
-    // Best-effort.
-  }
 
   console.log(`init-hub-data-dirs: ensured bind-mount tree under ${root}`);
 }

@@ -1,9 +1,10 @@
 import { randomBytes } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import path, { join } from 'node:path';
 import { stdin as input, stdout as output } from 'node:process';
 import { createInterface } from 'node:readline/promises';
+import { ensureHubBindMountsWritable } from './heal-hub-bind-mounts';
 
 export const allowedModes = ['dev', 'start', 'start:detached'] as const;
 export const allowedEnvs = ['local', 'dev', 'staging', 'prod'] as const;
@@ -313,16 +314,6 @@ export function upsertEnvVar(envFileName: string, key: string, value: string) {
   writeFileSync(abs, finalContent, 'utf-8');
 }
 
-// ─── spawn helpers ────────────────────────────────────────────────────────────
-
-function formatSpawnOutput(result: ReturnType<typeof spawnSync>): string {
-  const out = (result.stdout || '').toString().trim();
-  const err = (result.stderr || '').toString().trim();
-  if (!out && !err) return '';
-  if (out && err) return `stdout: ${out} | stderr: ${err}`;
-  return out || err;
-}
-
 function run(cmd: string, args: string[], extraEnv: Record<string, string | undefined> = {}) {
   console.log(colorize(`▶ ${cmd} ${args.map((a) => (a.includes(' ') ? JSON.stringify(a) : a)).join(' ')}`, 'dim'));
   const result = spawnSync(cmd, args, {
@@ -484,47 +475,23 @@ export function isFirstRun(envFile = '.env.local'): boolean {
   return !existsSync(join(process.cwd(), envFile));
 }
 
-// ─── ownership repair ─────────────────────────────────────────────────────────
-
-function ensureRootFolderOwnership(envFileName: string) {
-  if (process.platform !== 'linux' && process.platform !== 'darwin') return;
-  const uid = typeof process.getuid === 'function' ? process.getuid() : undefined;
-  const gid = typeof process.getgid === 'function' ? process.getgid() : undefined;
-  if (uid === undefined || gid === undefined) return;
-
+function prepareHubDataDirectory(envFileName: string): void {
   const rootFolderHost = resolveRootFolderHost(envFileName);
-  if (!existsSync(rootFolderHost)) mkdirSync(rootFolderHost, { recursive: true });
-
-  let stat: ReturnType<typeof statSync>;
   try {
-    stat = statSync(rootFolderHost);
+    const identity = ensureHubBindMountsWritable(rootFolderHost, { envFile: join(process.cwd(), envFileName) });
+    printMessageBox(
+      'Data directory ready',
+      [
+        `Prepared ${rootFolderHost} for Hub container UID/GID ${identity.uid}:${identity.gid} (${identity.source}).`,
+        'Bind mounts verified writable before startup.',
+      ],
+      'green',
+    );
   } catch (error) {
-    throw new Error(`Failed to stat ${rootFolderHost}: ${String(error)}`);
+    const message = error instanceof Error ? error.message : String(error);
+    printMessageBox('Data directory permissions', [message], 'red');
+    throw error;
   }
-  if (stat.uid === uid && stat.gid === gid) return;
-
-  const desiredOwner = `${uid}:${gid}`;
-  printMessageBox('Ownership repair', [`Ownership mismatch for ${rootFolderHost}.`, `Repairing to ${desiredOwner}…`], 'yellow');
-  const direct = spawnSync('chown', ['-R', desiredOwner, rootFolderHost], { stdio: 'pipe', encoding: 'utf-8' });
-  if (direct.status === 0) return;
-
-  const via = spawnSync(
-    'docker',
-    ['run', '--rm', '--user', '0:0', '-v', `${rootFolderHost}:/target`, 'busybox:1.36', 'sh', '-c', `chown -R ${desiredOwner} /target`],
-    { stdio: 'pipe', encoding: 'utf-8' },
-  );
-  if (via.status === 0) return;
-
-  throw new Error(
-    [
-      `Failed to repair ownership for ${rootFolderHost}.`,
-      formatSpawnOutput(direct) ? `host chown: ${formatSpawnOutput(direct)}` : '',
-      formatSpawnOutput(via) ? `docker chown: ${formatSpawnOutput(via)}` : '',
-      `Fix manually: sudo chown -R $USER:$USER ${rootFolderHost}`,
-    ]
-      .filter(Boolean)
-      .join(' '),
-  );
 }
 
 // ─── hub lifecycle ────────────────────────────────────────────────────────────
@@ -532,7 +499,7 @@ function ensureRootFolderOwnership(envFileName: string) {
 function startHub(mode: StartMode, env: HubEnv) {
   requireRepoRoot(mode === 'dev' ? 'cihub dev / hot-reload' : 'cihub up');
   const envFileName = getEnvFileOrExit(env);
-  ensureRootFolderOwnership(envFileName);
+  prepareHubDataDirectory(envFileName);
   const envOverrides = buildEnvOverrides(envFileName);
   run('tsx', ['scripts/init-gpu-runtime.ts'], envOverrides);
 
@@ -585,7 +552,7 @@ function startHub(mode: StartMode, env: HubEnv) {
 function setupHub(env: HubEnv) {
   requireRepoRoot('cihub setup');
   const envFileName = getEnvFileOrExit(env);
-  ensureRootFolderOwnership(envFileName);
+  prepareHubDataDirectory(envFileName);
   const envOverrides = buildEnvOverrides(envFileName);
   run('tsx', ['scripts/init-traefik.ts'], envOverrides);
   run('tsx', ['scripts/init-docker-config.ts'], envOverrides);

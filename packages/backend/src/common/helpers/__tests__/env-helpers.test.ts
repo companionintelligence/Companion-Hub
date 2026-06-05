@@ -7,11 +7,14 @@ vi.mock('node:fs', () => {
     mkdir: vi.fn().mockResolvedValue(undefined),
     writeFile: vi.fn().mockResolvedValue(undefined),
     readFile: vi.fn(),
+    chmod: vi.fn().mockResolvedValue(undefined),
+    access: vi.fn().mockResolvedValue(undefined),
   };
   return {
-    default: { existsSync, promises },
+    default: { existsSync, promises, constants: { R_OK: 4, W_OK: 2 } },
     existsSync,
     promises,
+    constants: { R_OK: 4, W_OK: 2 },
   };
 });
 
@@ -46,7 +49,7 @@ vi.mock('@/modules/env/env.utils', () => {
 
 import fs from 'node:fs';
 import dotenv from 'dotenv';
-import { generateSystemEnvFile, writeResolvedEnvFile } from '../env-helpers';
+import { generateSystemEnvFile, writeResolvedEnvFile, ensureSettingsJsonReady } from '../env-helpers';
 
 const mockedFs = vi.mocked(fs);
 const savedEnv: Record<string, string | undefined> = {};
@@ -187,5 +190,31 @@ describe('writeResolvedEnvFile', () => {
 
     const wrote = await writeResolvedEnvFile('/data/state/.env.resolved', 'KEY=value\n');
     expect(wrote).toBe(false);
+  });
+});
+
+describe('ensureSettingsJsonReady', () => {
+  beforeEach(() => {
+    (mockedFs.promises.writeFile as any).mockResolvedValue(undefined);
+    (mockedFs.promises.access as any).mockResolvedValue(undefined);
+  });
+
+  it('creates settings.json when missing', async () => {
+    mockedFs.existsSync.mockImplementation((p) => !String(p).includes('settings.json'));
+    await ensureSettingsJsonReady('/data/state/settings.json');
+    expect(mockedFs.promises.writeFile).toHaveBeenCalledWith('/data/state/settings.json', '{}', {
+      encoding: 'utf8',
+      mode: 0o666,
+    });
+  });
+
+  it('retries chmod when settings.json is not writable', async () => {
+    mockedFs.existsSync.mockReturnValue(true);
+    (mockedFs.promises.access as any).mockRejectedValueOnce(Object.assign(new Error('EACCES'), { code: 'EACCES' })).mockResolvedValue(undefined);
+
+    await ensureSettingsJsonReady('/data/state/settings.json');
+
+    expect(mockedFs.promises.chmod).toHaveBeenCalledWith('/data/state', 0o777);
+    expect(mockedFs.promises.chmod).toHaveBeenCalledWith('/data/state/settings.json', 0o666);
   });
 });

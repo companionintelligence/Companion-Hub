@@ -3,6 +3,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { Injectable, OnApplicationBootstrap, type OnApplicationShutdown, Optional } from '@nestjs/common';
 import { DATA_DIR } from '@/common/constants';
+import { writeSettingsJsonFile } from '@/common/helpers/env-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { RegistryService } from '@/utils/registry/registry.service';
@@ -138,7 +139,7 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
       // ignore
     }
     settings.autoUpdates = enabled;
-    await fs.promises.writeFile(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
+    await writeSettingsJsonFile(settingsPath, JSON.stringify(settings, null, 2));
   }
 
   private async autoUpdateCheck() {

@@ -2372,14 +2372,15 @@ pub(crate) fn host_container_uid_gid() -> (u32, u32) {
 
 /// Host paths bind-mounted into `/data/*` in the Hub container. Create as the current host user
 /// so the Hub container (same UID/GID via compose) can read/write without world-writable dirs.
-#[cfg(unix)]
 fn ensure_host_bind_mounts_writable(data_dir: &Path) -> Result<(), String> {
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     for subdir in HUB_BIND_MOUNT_DIRS {
         let path = data_dir.join(subdir);
         std::fs::create_dir_all(&path)
             .map_err(|error| format!("Failed to create {}: {}", path.display(), error))?;
+        #[cfg(unix)]
         if let Err(error) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o775)) {
             eprintln!(
                 "warning: could not chmod 775 {}: {}",
@@ -2394,18 +2395,29 @@ fn ensure_host_bind_mounts_writable(data_dir: &Path) -> Result<(), String> {
         if stale.exists() && std::fs::remove_file(&stale).is_err() {
             eprintln!(
                 "warning: could not remove stale {} (often root-owned). \
-                 If the Hub crashes with EACCES, run: sudo rm -f {}",
-                stale.display(),
+                 Docker permission repair will run if needed.",
                 stale.display()
             );
         }
     }
 
-    // Make persistent state files world-writable so the backend container can always update them,
-    // regardless of whether a prior container wrote them as root.
+    let settings_path = data_dir.join("state").join("settings.json");
+    if !settings_path.exists() {
+        std::fs::write(&settings_path, b"{}").map_err(|error| {
+            format!(
+                "Failed to create {}: {}",
+                settings_path.display(),
+                error
+            )
+        })?;
+        #[cfg(unix)]
+        let _ = std::fs::set_permissions(&settings_path, std::fs::Permissions::from_mode(0o666));
+    }
+
     for (subdir, file) in HUB_STATE_FILES_NEED_WRITE {
         let path = data_dir.join(subdir).join(file);
         if path.exists() {
+            #[cfg(unix)]
             if let Err(error) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666)) {
                 eprintln!(
                     "warning: could not chmod 666 {}: {}",
@@ -2416,17 +2428,104 @@ fn ensure_host_bind_mounts_writable(data_dir: &Path) -> Result<(), String> {
         }
     }
 
+    let (container_uid, container_gid, _) = resolve_hub_container_identity();
+    let state_dir = data_dir.join("state");
+
+    if !verify_container_can_write_dir(&state_dir, container_uid, container_gid) {
+        let _ = append_desktop_log_for(
+            data_dir,
+            "hub.start",
+            &format!(
+                "state/ not writable as Hub container {container_uid}:{container_gid}; repairing bind-mount permissions via Docker..."
+            ),
+        );
+        heal_bind_mount_permissions_via_docker(data_dir, "state", container_uid, container_gid)?;
+    }
+
+    if !verify_container_can_write_dir(&state_dir, container_uid, container_gid) {
+        return Err(format!(
+            "Hub data directory is not writable by the Hub container (UID/GID {container_uid}:{container_gid}). \
+             This usually happens when an older Hub version wrote bind-mounted files as a different user. \
+             Fix manually: sudo chown -R {container_uid}:{container_gid} \"{}\" \
+             or remove \"{}\" and restart the Hub.",
+            state_dir.display(),
+            settings_path.display()
+        ));
+    }
+
     Ok(())
 }
 
-#[cfg(not(unix))]
-fn ensure_host_bind_mounts_writable(data_dir: &Path) -> Result<(), String> {
-    for subdir in HUB_BIND_MOUNT_DIRS {
-        let path = data_dir.join(subdir);
-        std::fs::create_dir_all(&path)
-            .map_err(|error| format!("Failed to create {}: {}", path.display(), error))?;
+fn verify_container_can_write_dir(host_dir: &Path, uid: u32, gid: u32) -> bool {
+    if !host_dir.exists() {
+        return false;
     }
-    Ok(())
+
+    let mount_spec = format!("{}:/mnt:rw", host_dir.display());
+    let user_spec = format!("{uid}:{gid}");
+    let output = docker_command()
+        .args([
+            "run",
+            "--rm",
+            "--user",
+            &user_spec,
+            "-v",
+            &mount_spec,
+            "alpine:3.20",
+            "sh",
+            "-c",
+            "touch /mnt/.ci-hub-write-probe && rm -f /mnt/.ci-hub-write-probe",
+        ])
+        .output();
+
+    match output {
+        Ok(out) => out.status.success(),
+        Err(_) => false,
+    }
+}
+
+fn heal_bind_mount_permissions_via_docker(
+    data_dir: &Path,
+    subdir: &str,
+    uid: u32,
+    gid: u32,
+) -> Result<(), String> {
+    let host_subdir = data_dir.join(subdir);
+    if !host_subdir.exists() {
+        return Ok(());
+    }
+
+    let mount_spec = format!("{}:/mnt:rw", host_subdir.display());
+    let script = format!(
+        "chown -R {uid}:{gid} /mnt 2>/dev/null || true; \
+         chmod -R u+rwX,g+rwX,o+rwX /mnt 2>/dev/null || chmod -R a+rwX /mnt 2>/dev/null || true"
+    );
+
+    let output = docker_command()
+        .args([
+            "run",
+            "--rm",
+            "--user",
+            "0:0",
+            "-v",
+            &mount_spec,
+            "alpine:3.20",
+            "sh",
+            "-c",
+            &script,
+        ])
+        .output()
+        .map_err(|error| format!("Failed to run Docker permission repair: {error}"))?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    Err(format!(
+        "Docker permission repair failed for {}: {}",
+        host_subdir.display(),
+        String::from_utf8_lossy(&output.stderr).trim()
+    ))
 }
 
 /// Backward-compatible alias used at hub startup.
