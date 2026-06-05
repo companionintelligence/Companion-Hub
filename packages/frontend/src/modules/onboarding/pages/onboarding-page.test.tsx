@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router';
 import { describe, expect, it, vi } from 'vitest';
+import type { InstallSummary } from '../helpers/types';
 import OnboardingPage from './onboarding-page';
 
 vi.mock('@/context/app-context', () => ({
@@ -111,9 +112,20 @@ vi.mock('../components/recommendations-step', () => ({
 }));
 
 vi.mock('../components/install-step', () => ({
-  InstallStep: ({ apps, onComplete }: { apps: Array<{ appSlug: string }>; onComplete: () => Promise<void> }) => (
+  InstallStep: ({ apps, onComplete }: { apps: Array<{ appSlug: string }>; onComplete: (summary: InstallSummary) => void | Promise<void> }) => (
     <div data-testid="install-step" data-apps={apps.map((a) => a.appSlug).join(',')}>
-      <button type="button" onClick={() => void onComplete()}>
+      <button
+        type="button"
+        onClick={() =>
+          void onComplete({
+            results: [],
+            running: 0,
+            incomplete: 0,
+            failed: 0,
+            total: 0,
+          })
+        }
+      >
         install-complete
       </button>
     </div>

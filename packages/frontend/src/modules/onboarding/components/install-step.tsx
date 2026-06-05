@@ -30,13 +30,14 @@ interface AppInstallState {
   error?: string;
 }
 
-function buildSummary(states: AppInstallState[]): InstallSummary {
+function buildSummary(states: AppInstallState[], continuedInBackground = false): InstallSummary {
   return {
     results: states.map((s) => ({ app: s.app, status: s.status, error: s.error })),
     running: states.filter((s) => s.status === 'running').length,
     incomplete: states.filter((s) => s.status === 'incomplete').length,
     failed: states.filter((s) => s.status === 'failed').length,
     total: states.length,
+    continuedInBackground,
   };
 }
 
@@ -575,7 +576,15 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
 
       {start && (
         <div className="mt-6 flex items-center justify-end border-t border-border pt-5">
-          <Button intent="primary" onClick={() => onCompleteRef.current(buildSummary(states))} data-testid="install-continue-btn">
+          <Button
+            intent="primary"
+            onClick={() => {
+              const backgroundAppsPending = (!done && apps.length > 0) || incompleteCount > 0;
+              const continuedInBackground = backgroundAppsPending || aiInProgress;
+              onCompleteRef.current(buildSummary(states, continuedInBackground));
+            }}
+            data-testid="install-continue-btn"
+          >
             {continueButtonLabel}
           </Button>
         </div>

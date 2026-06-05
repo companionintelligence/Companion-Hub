@@ -104,7 +104,7 @@ function OnboardingWizard() {
           start={true}
           defaultExposureMode={installExposureMode}
           aiSetupConfig={aiSetupConfig}
-          onComplete={async () => {
+          onComplete={async (summary) => {
             try {
               await apiFetch('/api/complete-onboarding', { method: 'PATCH', credentials: 'include' });
             } catch {
@@ -114,7 +114,10 @@ function OnboardingWizard() {
             // on /home and /store do not send the user back to onboarding.
             setAppContext({ user: { ...user, hasCompletedOnboarding: true } });
             await refreshAppContext();
-            navigate('/home', { replace: true });
+            navigate('/home', {
+              replace: true,
+              state: summary?.continuedInBackground ? { showBackgroundInstallToast: true } : undefined,
+            });
           }}
         />
       </Shell>

@@ -50,6 +50,8 @@ export interface InstallSummary {
   failed: number;
   /** Total number of apps that were submitted for install. */
   total: number;
+  /** User left onboarding before all app installs and AI setup finished. */
+  continuedInBackground?: boolean;
 }
 
 // Re-export AiSetupConfig from the dedicated AI setup types module
