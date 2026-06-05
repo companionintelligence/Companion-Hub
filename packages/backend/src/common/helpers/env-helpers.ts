@@ -165,7 +165,12 @@ async function retrySettingsJsonPermissions(settingsFilePath: string, stateDir: 
     try {
       await fs.promises.chmod(settingsFilePath, SETTINGS_JSON_MODE);
     } catch {
-      // Best-effort; desktop preflight may heal via Docker before the next start.
+      // Host-root-owned bind mounts cannot be chmod'd from the container; unlink and recreate.
+      try {
+        await fs.promises.unlink(settingsFilePath);
+      } catch {
+        // Best-effort; desktop/CLI preflight may heal before the next start.
+      }
     }
   }
 }
@@ -204,6 +209,10 @@ export async function ensureSettingsJsonReady(settingsFilePath: string): Promise
     await fs.promises.access(settingsFilePath, fs.constants.R_OK | fs.constants.W_OK);
   } catch (error) {
     await retrySettingsJsonPermissions(settingsFilePath, stateDir);
+    if (!fs.existsSync(settingsFilePath)) {
+      await createEmpty();
+      return;
+    }
     try {
       await fs.promises.access(settingsFilePath, fs.constants.R_OK | fs.constants.W_OK);
     } catch (retryError) {

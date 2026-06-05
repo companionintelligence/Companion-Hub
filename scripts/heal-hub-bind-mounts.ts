@@ -6,19 +6,48 @@
  * as the container user before compose up.
  */
 import { execSync, spawnSync } from 'node:child_process';
-import { appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, openSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  chmodSync,
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  renameSync,
+  rmSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { parseEnvFile } from './cihub-cli';
 
 export const BIND_MOUNT_DIRS = ['cache', 'state', 'logs', 'apps', 'media', 'repos', 'app-data', 'user-config', 'backups'] as const;
 
+/** Directories safe to quarantine and recreate when host-root-owned (no user app data expected). */
+export const RECREATABLE_BIND_MOUNT_DIRS = ['cache', 'logs', 'user-config'] as const;
+
 /** Log files a prior root-owned Hub container may leave behind. */
 export const STALE_ROOT_OWNED_FILES = [
   ['state', '.env.resolved'],
   ['logs', 'app.log'],
   ['logs', 'error.log'],
+  ['state', 'traefik', 'dynamic', 'hub.yml'],
 ] as const;
+
+/** Tunnel token lives beside ROOT_FOLDER_HOST (compose bind: ../tunnel). */
+export function resolveTunnelDir(rootFolderHost: string): string {
+  return path.resolve(rootFolderHost, '..', 'tunnel');
+}
+
+export function resolveTunnelTokenPath(rootFolderHost: string): string {
+  return path.join(resolveTunnelDir(rootFolderHost), 'token');
+}
+
+export function resolveTraefikHubRoutePath(rootFolderHost: string): string {
+  return path.join(rootFolderHost, 'state', 'traefik', 'dynamic', 'hub.yml');
+}
 
 export const STATE_FILES_NEED_WRITE = [
   ['state', 'settings.json'],
@@ -151,7 +180,28 @@ export function verifyContainerCanWriteDir(hostDir: string, uid: number, gid: nu
     { encoding: 'utf8', stdio: 'pipe' },
   );
 
-  return result.status === 0;
+  return result?.status === 0;
+}
+
+/** Verify the Hub container user can update an existing bind-mounted file (not just the directory). */
+export function verifyContainerCanWriteFile(hostFilePath: string, uid: number, gid: number): boolean {
+  if (!isDockerAvailable()) return false;
+
+  const hostDir = path.dirname(hostFilePath);
+  const fileName = path.basename(hostFilePath);
+  if (!existsSync(hostDir)) return false;
+
+  if (!existsSync(hostFilePath)) {
+    return verifyContainerCanWriteDir(hostDir, uid, gid);
+  }
+
+  const mount = `${path.resolve(hostDir)}:/mnt:rw`;
+  const result = spawnSync('docker', ['run', '--rm', '--user', `${uid}:${gid}`, '-v', mount, 'alpine:3.20', 'sh', '-c', `touch /mnt/${fileName}`], {
+    encoding: 'utf8',
+    stdio: 'pipe',
+  });
+
+  return result?.status === 0;
 }
 
 export function healBindMountViaDocker(hostSubdir: string, uid: number, gid: number): void {
@@ -174,6 +224,199 @@ export function healBindMountViaDocker(hostSubdir: string, uid: number, gid: num
     const detail = [result.stderr, result.stdout].filter(Boolean).join(' ').trim();
     throw new Error(`Docker permission repair failed for ${hostSubdir}${detail ? `: ${detail}` : ''}`);
   }
+}
+
+function isHostRootOwnedPath(targetPath: string): boolean {
+  try {
+    return statSync(targetPath).uid === 0;
+  } catch {
+    return false;
+  }
+}
+
+/** UID/GID bind-mounted files should use on the host (Docker Desktop maps container root to the host user). */
+export function effectiveBindMountIdentity(identity: HubContainerIdentity): { uid: number; gid: number } {
+  if (identity.uid === 0) {
+    const hostUid = typeof process.getuid === 'function' ? process.getuid() : 1000;
+    const hostGid = typeof process.getgid === 'function' ? process.getgid() : 1000;
+    return { uid: hostUid, gid: hostGid };
+  }
+  return { uid: identity.uid, gid: identity.gid };
+}
+
+function trySudoChown(targetPath: string, uid: number, gid: number, recursive = true): boolean {
+  const args = recursive ? ['-R'] : [];
+  const result = spawnSync('sudo', ['-n', 'chown', ...args, `${uid}:${gid}`, targetPath], { encoding: 'utf8', stdio: 'pipe' });
+  return result.status === 0;
+}
+
+function trySudoChownRecursive(targetPath: string, uid: number, gid: number): boolean {
+  return trySudoChown(targetPath, uid, gid, true);
+}
+
+/**
+ * Move an unwritable host-root-owned bind mount aside and recreate it.
+ * Works because ROOT_FOLDER_HOST is owned by the host user even when a child
+ * directory was created as host root by an older Hub container.
+ */
+export function quarantineAndRecreateBindMountDir(targetPath: string): boolean {
+  if (!existsSync(targetPath)) return false;
+
+  const stalePath = `${targetPath}.stale-root-${Date.now()}`;
+  try {
+    renameSync(targetPath, stalePath);
+  } catch {
+    return false;
+  }
+
+  mkdirSync(targetPath, { recursive: true });
+  try {
+    chmodSync(targetPath, 0o775);
+  } catch {
+    // ignore
+  }
+  return true;
+}
+
+/**
+ * Quarantine a host-root-owned tunnel directory and recreate it beside ROOT_FOLDER_HOST.
+ * Works without sudo when the parent ci-hub directory is owned by the host user — Docker
+ * bind-mount chown cannot fix true host-root files under rootless/user-namespaced Docker.
+ */
+export function quarantineAndRecreateTunnelDir(tunnelDir: string): boolean {
+  if (!existsSync(tunnelDir)) return false;
+
+  const tokenPath = path.join(tunnelDir, 'token');
+  const tunnelBlocked = (existsSync(tokenPath) && !hostPathWritable(tokenPath)) || (!hostPathWritable(tunnelDir) && isHostRootOwnedPath(tunnelDir));
+  if (!tunnelBlocked) return false;
+
+  return quarantineAndRecreateBindMountDir(tunnelDir);
+}
+
+function repairUnwritableCriticalFile(filePath: string, root: string, effective: { uid: number; gid: number }, repaired: string[]): void {
+  if (!existsSync(filePath)) return;
+  if (hostPathWritable(filePath)) return;
+
+  if (trySudoChown(filePath, effective.uid, effective.gid, false) && hostPathWritable(filePath)) {
+    repaired.push(`${path.relative(root, filePath)} (chown)`);
+    return;
+  }
+
+  try {
+    rmSync(filePath, { force: true });
+    repaired.push(`${path.relative(root, filePath)} (removed stale root-owned file)`);
+    return;
+  } catch {
+    // fall through
+  }
+
+  if (isDockerAvailable()) {
+    try {
+      healBindMountViaDocker(path.dirname(filePath), effective.uid, effective.gid);
+    } catch {
+      // Docker chown often cannot fix true host-root files; verify step surfaces remaining issues.
+    }
+    if (!existsSync(filePath) || hostPathWritable(filePath)) {
+      repaired.push(`${path.relative(root, filePath)} (docker heal)`);
+    }
+  }
+}
+
+/** Remove or chown single files that block tunnel/Traefik writes after root-owned Hub runs. */
+export function repairCriticalBindMountFiles(rootFolderHost: string, identity: HubContainerIdentity): string[] {
+  const root = path.resolve(rootFolderHost);
+  const effective = effectiveBindMountIdentity(identity);
+  const repaired: string[] = [];
+
+  const tunnelDir = resolveTunnelDir(root);
+  if (quarantineAndRecreateTunnelDir(tunnelDir)) {
+    repaired.push('../tunnel/ (recreated)');
+  } else {
+    mkdirSync(tunnelDir, { recursive: true });
+    try {
+      chmodSync(tunnelDir, 0o775);
+    } catch {
+      // ignore
+    }
+  }
+
+  const criticalFiles = [resolveTunnelTokenPath(root), resolveTraefikHubRoutePath(root)];
+  for (const filePath of criticalFiles) {
+    repairUnwritableCriticalFile(filePath, root, effective, repaired);
+  }
+
+  if (!hostPathWritable(tunnelDir)) {
+    if (trySudoChownRecursive(tunnelDir, effective.uid, effective.gid) && hostPathWritable(tunnelDir)) {
+      repaired.push('../tunnel/ (chown)');
+    } else if (quarantineAndRecreateTunnelDir(tunnelDir)) {
+      repaired.push('../tunnel/ (recreated)');
+    } else if (isDockerAvailable()) {
+      try {
+        healBindMountViaDocker(tunnelDir, effective.uid, effective.gid);
+      } catch {
+        // verify step surfaces remaining issues
+      }
+      if (hostPathWritable(tunnelDir)) {
+        repaired.push('../tunnel/ (docker heal)');
+      }
+    }
+  }
+
+  const traefikDynamicDir = path.join(root, 'state', 'traefik', 'dynamic');
+  mkdirSync(traefikDynamicDir, { recursive: true });
+  if (!hostPathWritable(traefikDynamicDir)) {
+    if (trySudoChownRecursive(traefikDynamicDir, effective.uid, effective.gid) && hostPathWritable(traefikDynamicDir)) {
+      repaired.push('state/traefik/dynamic/ (chown)');
+    } else if (isDockerAvailable()) {
+      healBindMountViaDocker(traefikDynamicDir, effective.uid, effective.gid);
+      if (hostPathWritable(traefikDynamicDir)) {
+        repaired.push('state/traefik/dynamic/ (docker heal)');
+      }
+    }
+  }
+
+  return repaired;
+}
+
+/** Repair bind-mount directories/files owned by host root that block container writes. */
+export function repairHostRootOwnedBindMounts(rootFolderHost: string, identity: HubContainerIdentity): string[] {
+  const root = path.resolve(rootFolderHost);
+  const effective = effectiveBindMountIdentity(identity);
+  const repaired: string[] = [];
+
+  for (const dir of RECREATABLE_BIND_MOUNT_DIRS) {
+    const target = path.join(root, dir);
+    if (!existsSync(target)) continue;
+    if (!isHostRootOwnedPath(target) && hostPathWritable(target)) continue;
+
+    if (trySudoChownRecursive(target, effective.uid, effective.gid) && hostPathWritable(target)) {
+      repaired.push(`${dir}/ (chown)`);
+      continue;
+    }
+
+    if (quarantineAndRecreateBindMountDir(target)) {
+      repaired.push(`${dir}/ (recreated)`);
+    }
+  }
+
+  for (const dir of BIND_MOUNT_DIRS) {
+    if ((RECREATABLE_BIND_MOUNT_DIRS as readonly string[]).includes(dir) || dir === 'state') continue;
+    const target = path.join(root, dir);
+    if (!existsSync(target)) continue;
+    if (!isHostRootOwnedPath(target) || hostPathWritable(target)) continue;
+
+    if (trySudoChownRecursive(target, effective.uid, effective.gid) && hostPathWritable(target)) {
+      repaired.push(`${dir}/ (chown)`);
+      continue;
+    }
+
+    if (quarantineAndRecreateBindMountDir(target)) {
+      repaired.push(`${dir}/ (recreated)`);
+    }
+  }
+
+  repaired.push(...removeHostRootOwnedStateFiles(root));
+  return repaired;
 }
 
 function seedSettingsJson(stateDir: string): void {
@@ -200,6 +443,43 @@ function removeStaleRootOwnedFiles(root: string): void {
       }
     }
   }
+}
+
+/**
+ * Remove state files owned by host root (uid 0) that the Hub container cannot write.
+ * Common after older Hub runs on native Linux Docker; Docker Desktop bind mounts
+ * cannot chown these files from inside a container.
+ */
+export function removeHostRootOwnedStateFiles(root: string): string[] {
+  const removed: string[] = [];
+  const stateDir = path.join(root, 'state');
+
+  for (const [subdir, file] of STATE_FILES_NEED_WRITE) {
+    const filePath = path.join(root, subdir, file);
+    if (!existsSync(filePath)) continue;
+
+    try {
+      const st = statSync(filePath);
+      if (!st.isFile() || st.uid !== 0) continue;
+      if (hostPathWritable(filePath)) continue;
+
+      rmSync(filePath, { force: true });
+      removed.push(path.join(subdir, file));
+    } catch {
+      // Best-effort; verify step will surface remaining issues.
+    }
+  }
+
+  // Host-root-owned files can block unlink when state/ itself is root-owned.
+  try {
+    if (existsSync(stateDir) && statSync(stateDir).uid === 0 && !hostPathWritable(stateDir)) {
+      console.warn(`heal-hub-bind-mounts: ${stateDir} is host-root-owned and not writable; attempting Docker repair.`);
+    }
+  } catch {
+    // ignore
+  }
+
+  return removed;
 }
 
 function permissionRepairHint(rootFolderHost: string, identity: HubContainerIdentity): string {
@@ -237,6 +517,13 @@ export function ensureHubBindMountsWritable(rootFolderHost: string, options: Ens
 
   removeStaleRootOwnedFiles(root);
 
+  const identity = resolveHubContainerIdentity(options.envFile);
+  const repaired = repairHostRootOwnedBindMounts(root, identity);
+  const criticalRepaired = repairCriticalBindMountFiles(root, identity);
+  if (repaired.length > 0 || criticalRepaired.length > 0) {
+    console.warn(`heal-hub-bind-mounts: repaired host-root-owned bind mount path(s): ${[...repaired, ...criticalRepaired].join(', ')}`);
+  }
+
   const stateDir = path.join(root, 'state');
   seedSettingsJson(stateDir);
 
@@ -251,29 +538,95 @@ export function ensureHubBindMountsWritable(rootFolderHost: string, options: Ens
     }
   }
 
-  const identity = resolveHubContainerIdentity(options.envFile);
-
   if (options.skipDockerHeal) {
     return identity;
   }
 
   const settingsPath = path.join(stateDir, 'settings.json');
-  let containerCanWrite = verifyContainerCanWriteDir(stateDir, identity.uid, identity.gid);
+  const cacheDir = path.join(root, 'cache');
+  const tunnelTokenPath = resolveTunnelTokenPath(root);
+  const hubRoutePath = resolveTraefikHubRoutePath(root);
+  mkdirSync(path.dirname(tunnelTokenPath), { recursive: true });
+  mkdirSync(path.dirname(hubRoutePath), { recursive: true });
 
-  if (!containerCanWrite) {
+  let containerCanWriteSettings = verifyContainerCanWriteFile(settingsPath, identity.uid, identity.gid);
+  let containerCanWriteCache = verifyContainerCanWriteDir(cacheDir, identity.uid, identity.gid);
+  let containerCanWriteTunnelToken = verifyContainerCanWriteFile(tunnelTokenPath, identity.uid, identity.gid);
+  let containerCanWriteHubRoute = verifyContainerCanWriteFile(hubRoutePath, identity.uid, identity.gid);
+
+  if (!containerCanWriteSettings || !containerCanWriteCache || !containerCanWriteTunnelToken || !containerCanWriteHubRoute) {
     console.warn(
-      `heal-hub-bind-mounts: state/ not writable as container ${identity.uid}:${identity.gid} (${identity.source}); repairing via Docker…`,
+      `heal-hub-bind-mounts: bind mounts not writable as container ${identity.uid}:${identity.gid} (${identity.source}); repairing via Docker…`,
     );
-    healBindMountViaDocker(stateDir, identity.uid, identity.gid);
-    containerCanWrite = verifyContainerCanWriteDir(stateDir, identity.uid, identity.gid);
+    const effective = effectiveBindMountIdentity(identity);
+    if (!containerCanWriteCache) {
+      healBindMountViaDocker(cacheDir, effective.uid, effective.gid);
+      containerCanWriteCache = verifyContainerCanWriteDir(cacheDir, identity.uid, identity.gid);
+    }
+    if (!containerCanWriteSettings) {
+      healBindMountViaDocker(stateDir, effective.uid, effective.gid);
+      containerCanWriteSettings = verifyContainerCanWriteFile(settingsPath, identity.uid, identity.gid);
+    }
+    if (!containerCanWriteTunnelToken) {
+      healBindMountViaDocker(path.dirname(tunnelTokenPath), effective.uid, effective.gid);
+      containerCanWriteTunnelToken = verifyContainerCanWriteFile(tunnelTokenPath, identity.uid, identity.gid);
+    }
+    if (!containerCanWriteHubRoute) {
+      healBindMountViaDocker(path.dirname(hubRoutePath), effective.uid, effective.gid);
+      containerCanWriteHubRoute = verifyContainerCanWriteFile(hubRoutePath, identity.uid, identity.gid);
+    }
   }
 
-  if (!containerCanWrite) {
+  if (!containerCanWriteSettings) {
+    const removedAfterHeal = removeHostRootOwnedStateFiles(root);
+    if (removedAfterHeal.length > 0) {
+      seedSettingsJson(stateDir);
+      containerCanWriteSettings = verifyContainerCanWriteFile(settingsPath, identity.uid, identity.gid);
+    }
+  }
+
+  if (!containerCanWriteCache) {
+    repairHostRootOwnedBindMounts(root, identity);
+    containerCanWriteCache = verifyContainerCanWriteDir(cacheDir, identity.uid, identity.gid);
+  }
+
+  if (!containerCanWriteSettings) {
     // Last resort: host user may still need settings for local dev without Docker verify
     if (hostPathWritable(settingsPath)) {
       return identity;
     }
     throw new Error(permissionRepairHint(root, identity));
+  }
+
+  if (!containerCanWriteCache) {
+    throw new Error(
+      `Hub cache directory is not writable by the Hub container (UID/GID ${identity.uid}:${identity.gid}). ` +
+        `Fix manually: sudo chown -R ${effectiveBindMountIdentity(identity).uid}:${effectiveBindMountIdentity(identity).gid} "${cacheDir}"`,
+    );
+  }
+
+  if (!containerCanWriteTunnelToken) {
+    repairCriticalBindMountFiles(root, identity);
+    containerCanWriteTunnelToken = verifyContainerCanWriteFile(tunnelTokenPath, identity.uid, identity.gid);
+  }
+
+  if (!containerCanWriteHubRoute) {
+    repairCriticalBindMountFiles(root, identity);
+    containerCanWriteHubRoute = verifyContainerCanWriteFile(hubRoutePath, identity.uid, identity.gid);
+  }
+
+  if (!containerCanWriteTunnelToken) {
+    throw new Error(
+      `Tunnel token at ${tunnelTokenPath} is not writable by the Hub container (UID/GID ${identity.uid}:${identity.gid}). ` +
+        `Fix manually: sudo chown ${effectiveBindMountIdentity(identity).uid}:${effectiveBindMountIdentity(identity).gid} "${tunnelTokenPath}"`,
+    );
+  }
+
+  if (!containerCanWriteHubRoute) {
+    throw new Error(
+      `Traefik hub route at ${hubRoutePath} is not writable by the Hub container (UID/GID ${identity.uid}:${identity.gid}). ` +
+        `Fix manually: sudo chown ${effectiveBindMountIdentity(identity).uid}:${effectiveBindMountIdentity(identity).gid} "${hubRoutePath}"`,
+    );
   }
 
   return identity;

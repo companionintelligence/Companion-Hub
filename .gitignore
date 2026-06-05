@@ -111,6 +111,10 @@ repo.zip
 # Tunnel Certs
 tunnel/*
 
+# Quarantined bind-mount / tunnel artifacts (heal scripts)
+*.stale-root-*
+tunnel.stale-*
+
 .env.local
 
 # Generated FTUE screenshot frames (the GIF is committed; PNG frames are intermediate)

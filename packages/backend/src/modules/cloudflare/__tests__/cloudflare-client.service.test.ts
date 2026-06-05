@@ -12,9 +12,21 @@ import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 
 vi.mock('axios');
 vi.mock('node:fs/promises');
-vi.mock('node:fs', () => ({
-  existsSync: vi.fn(),
+vi.mock('@/common/helpers/bind-mount-helpers', () => ({
+  writeHealableTextFile: vi.fn(async (filePath: string, content: string) => {
+    const fs = await import('node:fs/promises');
+    await fs.writeFile(filePath, content, { mode: 0o644 });
+  }),
+  ensureWritableFile: vi.fn(async () => undefined),
+  readTextFileIfExists: vi.fn(() => null),
 }));
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...actual,
+    existsSync: vi.fn(actual.existsSync),
+  };
+});
 
 describe('CloudflareClientService', () => {
   let service: CloudflareClientService;
