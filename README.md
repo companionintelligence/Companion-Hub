@@ -64,6 +64,7 @@ tunnel/         Cloudflare tunnel token and certificates
 
 > For a deep dive into how the Hub works internally, see **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
 > For how the Hub, Portal, and App Store work together as a platform, see **[docs/PLATFORM_ARCHITECTURE.md](docs/PLATFORM_ARCHITECTURE.md)**.
+> For how the Hub brings itself up and keeps itself running, see **[docs/AUTO_HEALING.md](docs/AUTO_HEALING.md)**.
 
 ---
 

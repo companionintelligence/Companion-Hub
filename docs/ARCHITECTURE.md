@@ -598,6 +598,10 @@ $ROOT_FOLDER_HOST/
 
 An app's journey through the system:
 
+> The Hub also reconciles and repairs this lifecycle automatically — desktop
+> hash-based reconciliation, `start_hub` self-heal/retry, the 5-minute backend
+> status sync, and compose restart policies. See **[AUTO_HEALING.md](AUTO_HEALING.md)**.
+
 ### Install
 
 ```
