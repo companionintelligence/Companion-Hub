@@ -32,6 +32,11 @@ export class SubnetManagerService {
       throw new TranslatableError('APP_ERROR_APP_NOT_FOUND');
     }
 
+    if (existingApp.subnet) {
+      this.logger.info(`App ${appUrn} already has subnet ${existingApp.subnet}`);
+      return existingApp.subnet;
+    }
+
     const allocatedSubnets = await this.getAllocatedSubnets();
     const nextSubnet = this.findNextAvailableSubnet(allocatedSubnets);
 
