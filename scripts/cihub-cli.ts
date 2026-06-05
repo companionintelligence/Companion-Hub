@@ -5,6 +5,7 @@ import path, { join } from 'node:path';
 import { stdin as input, stdout as output } from 'node:process';
 import { createInterface } from 'node:readline/promises';
 import { ensureHubBindMountsWritable } from './heal-hub-bind-mounts';
+import { healHubPortBindConflict, healHubPortsBeforeStartup } from './heal-hub-ports';
 import { runPublicWebRepair, runPublicWebStatus, resolveHubApiBase } from './public-web-cli';
 
 export const allowedModes = ['dev', 'start', 'start:detached'] as const;
@@ -504,6 +505,49 @@ function prepareHubDataDirectory(envFileName: string): void {
 
 // ─── hub lifecycle ────────────────────────────────────────────────────────────
 
+function isHostPortBindConflict(output: string): boolean {
+  const lower = output.toLowerCase();
+  return (
+    lower.includes('ports are not available') ||
+    lower.includes('address already in use') ||
+    lower.includes('bind: address already in use') ||
+    lower.includes('port is already allocated')
+  );
+}
+
+function runDockerComposeUp(envFileName: string, files: string[], detached: boolean, envOverrides: Record<string, string>): void {
+  const upArgs = ['compose', '--env-file', envFileName, '--project-name', 'ci-hub'];
+  for (const f of files) upArgs.push('-f', f);
+  upArgs.push('up');
+  if (detached) upArgs.push('-d');
+  upArgs.push('--build');
+
+  const maxAttempts = 3;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const result = spawnSync('docker', upArgs, {
+      encoding: 'utf-8',
+      env: { ...process.env, ...envOverrides },
+    });
+    if (result.status === 0) return;
+
+    const combined = `${result.stdout || ''}\n${result.stderr || ''}`.trim();
+    if (attempt < maxAttempts && isHostPortBindConflict(combined)) {
+      const healed = healHubPortBindConflict(envFileName, combined, (message) => {
+        printMessageBox('Port self-heal', [message], 'yellow');
+      });
+      if (healed.info.length > 0) {
+        printMessageBox('Port self-heal', healed.info, 'yellow');
+      }
+      continue;
+    }
+
+    if (combined) {
+      printMessageBox('Docker compose failed', combined.split('\n').slice(-8), 'red');
+    }
+    process.exit(result.status ?? 1);
+  }
+}
+
 function startHub(mode: StartMode, env: HubEnv) {
   requireRepoRoot(mode === 'dev' ? 'cihub dev / hot-reload' : 'cihub up');
   const envFileName = getEnvFileOrExit(env);
@@ -542,19 +586,28 @@ function startHub(mode: StartMode, env: HubEnv) {
 
   if (env !== 'local') run('tsx', ['scripts/init-traefik.ts'], envOverrides);
 
+  try {
+    const portHeal = healHubPortsBeforeStartup(envFileName, (message) => {
+      printMessageBox('Port preparation', [message], 'yellow');
+    });
+    if (portHeal.info.length > 0) {
+      printMessageBox('Port preparation', portHeal.info, 'yellow');
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    printMessageBox('Port preparation failed', [message], 'red');
+    throw error;
+  }
+
   const files = getComposeFiles(env);
-  const upArgs = ['compose', '--env-file', envFileName, '--project-name', 'ci-hub'];
-  for (const f of files) upArgs.push('-f', f);
-  upArgs.push('up');
-  if (mode === 'start:detached') upArgs.push('-d');
-  upArgs.push('--build');
+  const detached = mode === 'start:detached';
 
   printMessageBox(
     'Starting hub',
-    [`Environment: ${env}`, `Mode: ${mode === 'start:detached' ? 'detached' : 'attached'}`, `Compose files: ${files.join(', ')}`],
+    [`Environment: ${env}`, `Mode: ${detached ? 'detached' : 'attached'}`, `Compose files: ${files.join(', ')}`],
     'green',
   );
-  run('docker', upArgs, envOverrides);
+  runDockerComposeUp(envFileName, files, detached, envOverrides);
 }
 
 function setupHub(env: HubEnv) {

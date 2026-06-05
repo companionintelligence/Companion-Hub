@@ -2401,6 +2401,8 @@ fn ensure_host_bind_mounts_writable(data_dir: &Path) -> Result<(), String> {
         }
     }
 
+    remove_host_root_owned_state_files(data_dir);
+
     let settings_path = data_dir.join("state").join("settings.json");
     if !settings_path.exists() {
         std::fs::write(&settings_path, b"{}").map_err(|error| {
@@ -2431,18 +2433,33 @@ fn ensure_host_bind_mounts_writable(data_dir: &Path) -> Result<(), String> {
     let (container_uid, container_gid, _) = resolve_hub_container_identity();
     let state_dir = data_dir.join("state");
 
-    if !verify_container_can_write_dir(&state_dir, container_uid, container_gid) {
+    if !verify_container_can_write_file(&settings_path, container_uid, container_gid) {
         let _ = append_desktop_log_for(
             data_dir,
             "hub.start",
             &format!(
-                "state/ not writable as Hub container {container_uid}:{container_gid}; repairing bind-mount permissions via Docker..."
+                "state/settings.json not writable as Hub container {container_uid}:{container_gid}; repairing bind-mount permissions via Docker..."
             ),
         );
         heal_bind_mount_permissions_via_docker(data_dir, "state", container_uid, container_gid)?;
     }
 
-    if !verify_container_can_write_dir(&state_dir, container_uid, container_gid) {
+    if !verify_container_can_write_file(&settings_path, container_uid, container_gid) {
+        remove_host_root_owned_state_files(data_dir);
+        if !settings_path.exists() {
+            std::fs::write(&settings_path, b"{}").map_err(|error| {
+                format!(
+                    "Failed to recreate {}: {}",
+                    settings_path.display(),
+                    error
+                )
+            })?;
+            #[cfg(unix)]
+            let _ = std::fs::set_permissions(&settings_path, std::fs::Permissions::from_mode(0o666));
+        }
+    }
+
+    if !verify_container_can_write_file(&settings_path, container_uid, container_gid) {
         return Err(format!(
             "Hub data directory is not writable by the Hub container (UID/GID {container_uid}:{container_gid}). \
              This usually happens when an older Hub version wrote bind-mounted files as a different user. \
@@ -2454,6 +2471,94 @@ fn ensure_host_bind_mounts_writable(data_dir: &Path) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+#[cfg(unix)]
+fn is_host_root_owned_unwritable(path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(_) => return false,
+    };
+    if !metadata.is_file() || metadata.uid() != 0 {
+        return false;
+    }
+
+    let file = match std::fs::OpenOptions::new().append(true).open(path) {
+        Ok(file) => file,
+        Err(_) => return true,
+    };
+    drop(file);
+    false
+}
+
+#[cfg(not(unix))]
+fn is_host_root_owned_unwritable(_path: &Path) -> bool {
+    false
+}
+
+fn remove_host_root_owned_state_files(data_dir: &Path) {
+    for (subdir, file) in HUB_STATE_FILES_NEED_WRITE {
+        let path = data_dir.join(subdir).join(file);
+        if !path.exists() {
+            continue;
+        }
+        if !is_host_root_owned_unwritable(&path) {
+            continue;
+        }
+        if std::fs::remove_file(&path).is_ok() {
+            let _ = append_desktop_log_for(
+                data_dir,
+                "hub.start",
+                &format!(
+                    "Removed stale host-root-owned state file {}.",
+                    path.display()
+                ),
+            );
+        }
+    }
+}
+
+fn verify_container_can_write_file(host_file: &Path, uid: u32, gid: u32) -> bool {
+    let host_dir = match host_file.parent() {
+        Some(dir) => dir,
+        None => return false,
+    };
+    if !host_dir.exists() {
+        return false;
+    }
+    if !host_file.exists() {
+        return verify_container_can_write_dir(host_dir, uid, gid);
+    }
+
+    let file_name = match host_file.file_name().and_then(|name| name.to_str()) {
+        Some(name) => name,
+        None => return false,
+    };
+
+    let mount_spec = format!("{}:/mnt:rw", host_dir.display());
+    let user_spec = format!("{uid}:{gid}");
+    let script = format!("touch /mnt/{file_name}");
+    let output = docker_command()
+        .args([
+            "run",
+            "--rm",
+            "--user",
+            &user_spec,
+            "-v",
+            &mount_spec,
+            "alpine:3.20",
+            "sh",
+            "-c",
+            &script,
+        ])
+        .output();
+
+    match output {
+        Ok(out) => out.status.success(),
+        Err(_) => false,
+    }
 }
 
 fn verify_container_can_write_dir(host_dir: &Path, uid: u32, gid: u32) -> bool {
@@ -2928,6 +3033,178 @@ fn is_host_port_bind_conflict(output: &str) -> bool {
     lower.contains("ports are not available")
         || lower.contains("address already in use")
         || lower.contains("bind: address already in use")
+        || lower.contains("port is already allocated")
+}
+
+const HUB_STACK_CONTAINERS: &[&str] = &[
+    "ci-os-hub",
+    "ci-hub-db",
+    "ci-os-hub-queue",
+    "traefik",
+    "cloudflared",
+    "hub-tailscale",
+];
+
+/// Remove stopped Hub stack containers (and optionally Traefik) that still claim
+/// a host port publish mapping. Running non-Hub containers are left alone so we
+/// can reassign HTTP_PORT/HTTPS_PORT instead of killing unrelated services.
+fn release_stale_port_publishers(
+    port: u16,
+    data_dir: &Path,
+    force_traefik: bool,
+) -> Result<(), String> {
+    let filter = format!("publish={}", port);
+    let output = docker_command()
+        .args([
+            "ps",
+            "-a",
+            "--format",
+            "{{.ID}}\t{{.Names}}\t{{.Status}}",
+            "--filter",
+            &filter,
+        ])
+        .output()
+        .map_err(|error| {
+            format!(
+                "Failed to list containers publishing host port {}: {}",
+                port, error
+            )
+        })?;
+
+    if !output.status.success() {
+        return Ok(());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        let parts: Vec<&str> = line.splitn(3, '\t').collect();
+        if parts.len() < 3 {
+            continue;
+        }
+        let id = parts[0].trim();
+        let names = parts[1].trim();
+        let status = parts[2].trim();
+        if id.is_empty() {
+            continue;
+        }
+
+        let status_lower = status.to_lowercase();
+        let is_running = status_lower.starts_with("up");
+        let is_traefik = names
+            .split(',')
+            .any(|name| name.trim().eq_ignore_ascii_case("traefik"));
+        let is_ours = names.split(',').any(|name| {
+            HUB_STACK_CONTAINERS
+                .iter()
+                .any(|container| name.trim().eq_ignore_ascii_case(container))
+        });
+
+        let should_remove = if force_traefik && is_traefik {
+            true
+        } else if is_traefik && !is_running {
+            true
+        } else if is_ours && !is_running {
+            true
+        } else if !is_running {
+            true
+        } else {
+            false
+        };
+
+        if !should_remove {
+            continue;
+        }
+
+        let _ = append_desktop_log_for(
+            data_dir,
+            "hub.start",
+            &format!(
+                "Removing container {} ({}, {}) to release host port {}.",
+                id, names, status, port
+            ),
+        );
+
+        let rm_output = docker_command().args(["rm", "-f", id]).output();
+        match rm_output {
+            Ok(rm) if rm.status.success() => {}
+            Ok(rm) => {
+                let combined = format_command_output(
+                    &String::from_utf8_lossy(&rm.stdout),
+                    &String::from_utf8_lossy(&rm.stderr),
+                );
+                let _ = append_desktop_log_for(
+                    data_dir,
+                    "hub.start",
+                    &format!(
+                        "Failed to remove container {} publishing port {} (non-fatal). {}",
+                        id, port, combined
+                    ),
+                );
+            }
+            Err(error) => {
+                let _ = append_desktop_log_for(
+                    data_dir,
+                    "hub.start",
+                    &format!(
+                        "Failed to remove container {} publishing port {} (non-fatal): {}",
+                        id, port, error
+                    ),
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Targeted self-heal for Traefik host port bind failures.
+fn heal_host_port_bind_conflict(
+    compose_path: &Path,
+    env_path: &Path,
+    data_dir: &Path,
+    error_output: &str,
+) {
+    let ports: Vec<u16> = crate::port_manager::parse_bind_conflict_port(error_output)
+        .map(|port| vec![port])
+        .unwrap_or_else(|| vec![80, 443]);
+
+    for port in ports {
+        let _ = release_stale_port_publishers(port, data_dir, true);
+    }
+
+    let _ = ensure_traefik_container_released(data_dir);
+    let _ = ensure_container_released_if_not_running(data_dir, "ci-hub-db", "6543");
+    let _ = ensure_container_released_if_not_running(data_dir, "ci-os-hub-queue", "5001");
+    let _ = cleanup_stale_project_containers(compose_path, env_path, data_dir);
+    let _ = release_orphaned_traefik_port_proxies(data_dir);
+
+    match crate::port_manager::refresh_ports_if_needed(env_path) {
+        Ok(resolution) => {
+            let mut log_lines = vec!["Port re-resolution after bind conflict:".to_string()];
+            for message in &resolution.info {
+                log_lines.push(format!("  INFO: {}", message));
+            }
+            for message in &resolution.warnings {
+                log_lines.push(format!("  WARN: {}", message));
+            }
+            for (var, port) in &resolution.env_vars {
+                if var == "HTTP_PORT" || var == "HTTPS_PORT" {
+                    log_lines.push(format!("  {}={}", var, port));
+                }
+            }
+            let _ = append_desktop_log_for(data_dir, "hub.start", &log_lines.join("\n"));
+        }
+        Err(error) => {
+            let _ = append_desktop_log_for(
+                data_dir,
+                "hub.start",
+                &format!(
+                    "Port re-resolution after bind conflict failed (non-fatal): {}",
+                    error
+                ),
+            );
+        }
+    }
 }
 
 /// On Linux, find `docker-proxy` PIDs holding Traefik's target ports with no
@@ -3477,6 +3754,12 @@ fn start_hub_inner(
     // On Linux + Docker Desktop, best-effort raise VM memory (~75% host RAM) before compose up.
     ensure_docker_desktop_memory_linux(data_dir);
 
+    // Release stale Docker publish mappings before resolving host ports.
+    for port in [80u16, 443] {
+        let _ = release_stale_port_publishers(port, data_dir, false);
+    }
+    let _ = release_orphaned_traefik_port_proxies(data_dir);
+
     // Resolve port conflicts and write to the runtime env file before starting.
     let resolution = crate::port_manager::refresh_ports_if_needed(env_path).map_err(|error| {
         let message = format!("Port resolution failed before startup: {}", error);
@@ -3620,15 +3903,9 @@ fn start_hub_inner(
             let _ = append_desktop_log_for(
                 data_dir,
                 "hub.start",
-                "Detected host port bind conflict — removing stale Hub stack containers and running compose down.",
+                "Detected host port bind conflict — releasing stale publishers, re-resolving ports, and retrying.",
             );
-            let _ = ensure_traefik_container_released(data_dir);
-            let _ =
-                ensure_container_released_if_not_running(data_dir, "ci-hub-db", "6543");
-            let _ =
-                ensure_container_released_if_not_running(data_dir, "ci-os-hub-queue", "5001");
-            let _ = cleanup_stale_project_containers(compose_path, env_path, data_dir);
-            let _ = release_orphaned_traefik_port_proxies(data_dir);
+            heal_host_port_bind_conflict(compose_path, env_path, data_dir, &combined_output);
             std::thread::sleep(std::time::Duration::from_secs(2));
             continue;
         }
