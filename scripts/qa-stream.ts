@@ -41,21 +41,30 @@ const SKIP_SCREENSHOT = process.env.SKIP_SCREENSHOT === '1';
  */
 let _chromiumBin: string | null | undefined;
 function resolveChromiumBinary(): string | null {
-  if (_chromiumBin !== undefined) return _chromiumBin;
+  if (_chromiumBin === undefined) _chromiumBin = computeChromiumBinary();
+  return _chromiumBin;
+}
+function computeChromiumBinary(): string | null {
   const envBin = process.env.QA_CHROMIUM_PATH;
-  if (envBin && existsSync(envBin)) return (_chromiumBin = envBin);
+  if (envBin && existsSync(envBin)) return envBin;
   const base = join(home, '.cache', 'ms-playwright');
-  if (!existsSync(base)) return (_chromiumBin = null);
+  if (!existsSync(base)) return null;
   const all = readdirSync(base).filter((d) => d.startsWith('chromium'));
-  const full = all.filter((d) => /^chromium-\d/.test(d)).sort().reverse(); // prefer full chromium, newest first
-  const shell = all.filter((d) => !/^chromium-\d/.test(d)).sort().reverse(); // headless_shell fallback
+  const full = all
+    .filter((d) => /^chromium-\d/.test(d))
+    .sort()
+    .reverse(); // prefer full chromium, newest first
+  const shell = all
+    .filter((d) => !/^chromium-\d/.test(d))
+    .sort()
+    .reverse(); // headless_shell fallback
   for (const d of [...full, ...shell]) {
     for (const sub of ['chrome-linux64/chrome', 'chrome-linux/chrome', 'chrome-linux64/headless_shell', 'chrome-linux/headless_shell']) {
       const p = join(base, d, sub);
-      if (existsSync(p)) return (_chromiumBin = p);
+      if (existsSync(p)) return p;
     }
   }
-  return (_chromiumBin = null);
+  return null;
 }
 
 function emit(obj: Record<string, unknown>) {
@@ -334,6 +343,6 @@ void (async () => {
   const results = appIds.length;
   emit({ event: 'batch_done', total: results, ts: Date.now() });
 })().catch((err) => {
-  process.stderr.write(`qa-stream fatal: ${(err && err.stack) || err}\n`);
+  process.stderr.write(`qa-stream fatal: ${err?.stack || err}\n`);
   process.exit(1);
 });
