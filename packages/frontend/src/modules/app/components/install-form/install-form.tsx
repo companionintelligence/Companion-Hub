@@ -81,7 +81,7 @@ export const InstallForm: React.FC<IProps> = ({
   const isAdvancedMode = user.advancedMode;
 
   const orgSlug = ciHubOrganizationSlug ? ciHubOrganizationSlug.toLowerCase().replace(/\s+/g, '-') : undefined;
-  const defaultAppSubdomain = info.urn.split(':')[0];
+  const defaultAppSubdomain = info.urn.split(':')[0] ?? info.urn;
 
   const {
     register,
