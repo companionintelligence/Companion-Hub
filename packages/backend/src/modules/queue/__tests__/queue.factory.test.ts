@@ -141,6 +141,29 @@ describe('QueueFactory', () => {
     expect(logger.warn).toHaveBeenCalledWith('Queue connection not ready, creating queue in degraded mode.');
   });
 
+  it('rebinds queues even when the connection instance is unchanged', async () => {
+    const factory = new QueueFactory(logger, config);
+    const connection = connectionInstances[0];
+
+    await connection?.emit('connection');
+    expect(factory.isReady()).toBe(true);
+
+    const queue = await factory.createQueue({
+      queueName: 'app-events-queue',
+      eventSchema: z.object({ requestId: z.string() }),
+      timeout: 1000,
+    });
+
+    const initialCreateRpcCalls = connection?.createRPCClient.mock.calls.length ?? 0;
+
+    // Simulate the post-connect rebind that refreshes RPC clients on the same Connection
+    await connection?.emit('connection');
+
+    expect(connection?.createRPCClient.mock.calls.length).toBeGreaterThan(initialCreateRpcCalls);
+    expect(logger.info).toHaveBeenCalledWith('Rebound queue app-events-queue to new connection');
+    expect(queue).toBeDefined();
+  });
+
   it('rebinds queues to the new connection after reconnect', async () => {
     const factory = new QueueFactory(logger, config);
     const firstConnection = connectionInstances[0];

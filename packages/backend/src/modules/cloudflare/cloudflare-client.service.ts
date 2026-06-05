@@ -279,11 +279,14 @@ export class CloudflareClientService {
         message: 'Unable to verify DNS availability (unexpected CI-Cloud response)',
       };
     } catch (error) {
-      if (error instanceof Error) {
-        this.logger.error(`Failed to check DNS availability: ${error.message}`);
-      } else {
-        this.logger.error(`Failed to check DNS availability: ${String(error)}`);
-      }
+      const errorMessage =
+        error instanceof Error && error.message
+          ? error.message
+          : axios.isAxiosError(error)
+            ? [error.code, error.response?.status, error.response?.statusText].filter(Boolean).join(' ') || 'CI-Cloud request failed'
+            : String(error);
+
+      this.logger.error(`Failed to check DNS availability: ${errorMessage}`);
 
       if (axios.isAxiosError(error) && error.response) {
         this.logger.error(`DNS availability error response: ${JSON.stringify(error.response.data)}`);

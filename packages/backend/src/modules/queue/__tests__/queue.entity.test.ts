@@ -118,6 +118,39 @@ describe('Queue', () => {
     vi.useRealTimers();
   });
 
+  it('refreshes RPC client when rebound on the same connection instance', async () => {
+    const logger = mock<LoggerService>();
+    const rabbit = mock<Connection>();
+    const staleRpcClient = mock<RPCClient>();
+    const stalePublisher = mock<EventPublisher>();
+    staleRpcClient.close.mockResolvedValue(undefined);
+    stalePublisher.close.mockResolvedValue(undefined);
+
+    const queue = new Queue(
+      rabbit,
+      staleRpcClient,
+      stalePublisher,
+      'app-events-queue',
+      1,
+      z.object({ requestId: z.string() }),
+      z.object({ success: z.boolean(), message: z.string() }),
+      logger,
+    );
+
+    const freshRpcClient = mock<RPCClient>();
+    const freshPublisher = mock<EventPublisher>();
+    freshRpcClient.send.mockResolvedValue({ body: { success: true, message: 'fresh client' } } as never);
+
+    queue.rebindConnection(rabbit, freshRpcClient, freshPublisher);
+
+    const result = await queue.publish({ requestId: 'req-same-conn' });
+
+    expect(result).toEqual({ success: true, message: 'fresh client' });
+    expect(freshRpcClient.send).toHaveBeenCalledWith('app-events-queue', { requestId: 'req-same-conn' });
+    expect(staleRpcClient.send).not.toHaveBeenCalled();
+    expect(staleRpcClient.close).toHaveBeenCalled();
+  });
+
   it('uses new RPC client and publisher after rebindConnection', async () => {
     const logger = mock<LoggerService>();
     const rabbit = mock<Connection>();
