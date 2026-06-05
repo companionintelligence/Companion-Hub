@@ -18,7 +18,7 @@
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { readFileSync, existsSync, mkdirSync, createReadStream } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, createReadStream, appendFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -33,7 +33,8 @@ const DEFAULT_MODE = (process.argv.find((a) => a.startsWith('--mode='))?.split('
 const SSH_USER = process.env.FLEET_SSH_USER ?? 'ci';
 const HUB_ROOT_SH = (process.env.HUB_ROOT_REMOTE ?? '~/devel/CI-Hub').replace(/^~/, '$HOME');
 const STORE_ROOT = process.env.STORE_ROOT_REMOTE ?? '~/devel/CI-Marketplace';
-const SCREENSHOTS_DIR = join(homedir(), 'qa-results', 'fleet-screenshots');
+const RESULTS_DIR = join(homedir(), 'qa-results');
+const SCREENSHOTS_DIR = join(RESULTS_DIR, 'fleet-screenshots');
 const STREAM_SCRIPT = join(__dir, 'qa-stream.ts');
 const CATALOG_FILE = join(__dir, '..', 'e2e', 'generated', 'catalog.json');
 
@@ -167,6 +168,27 @@ const nodeStates = new Map<string, NodeState>(
 let runMode: 'quick' | 'full' = DEFAULT_MODE;
 let runStartTs: number | null = null;
 const sshProcesses = new Map<string, ChildProcess>();
+
+// ─── Durable run results ──────────────────────────────────────────────────────
+// Each app_result the fleet receives is appended to ~/qa-results/fleet-run-<ts>.ndjson (one JSON
+// object per line — survives a server restart / browser disconnect) and held in `currentResults`
+// (keyed by node+app, so a re-run of an app overwrites its earlier row) so GET /api/results.json
+// can return the consolidated current run at any time.
+let runNdjsonPath: string | null = null;
+const currentResults = new Map<string, Record<string, unknown>>();
+
+/** Append one app_result row to the current run's ndjson file and the in-memory consolidation. */
+function recordResult(nodeName: string, appId: string, result: Record<string, unknown>) {
+  const row = { node: nodeName, appId, ...result };
+  currentResults.set(`${nodeName}:${appId}`, row);
+  if (runNdjsonPath) {
+    try {
+      appendFileSync(runNdjsonPath, `${JSON.stringify(row)}\n`);
+    } catch (e) {
+      console.error(`[fleet] failed to persist result for ${appId}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+}
 
 // ─── SSE ────────────────────────────────────────────────────────────────────
 
@@ -495,6 +517,9 @@ function handleStreamEvent(node: FleetNode, raw: Record<string, unknown>) {
       s.message = String(res?.notes ?? '');
     }
     ns.done++;
+    // Persist the result durably (ndjson + in-memory) so the run survives a disconnect and
+    // GET /api/results.json reflects it.
+    recordResult(node.name, appId, res ?? {});
     logNode(node.name, `app_result ${appId}: ${String(res?.score ?? 'unknown')}${res?.notes ? ` (${summarizeError(String(res.notes))})` : ''}`);
     broadcast({ event: 'app_result', node: node.name, appId, result: res });
     broadcast({ event: 'node_status', node: node.name, ...ns });
@@ -529,6 +554,9 @@ function stopRun() {
 function resetState() {
   stopRun();
   runStartTs = null;
+  // Drop the consolidated view of the previous run; a new run opens a fresh ndjson file.
+  currentResults.clear();
+  runNdjsonPath = null;
   for (const s of appStates.values()) {
     s.status = 'idle';
     s.node = null;
@@ -554,7 +582,11 @@ async function startRun(mode: 'quick' | 'full', selectedNodes?: string[]) {
   resetState();
   runMode = mode;
   runStartTs = Date.now();
-  console.log(`[fleet] run_start mode=${mode}${selectedNodes?.length ? ` nodes=${selectedNodes.join(',')}` : ' nodes=all'}`);
+  // Start a fresh durable result log for this run. Results stream in via handleStreamEvent →
+  // recordResult and are exposed at GET /api/results.json.
+  runNdjsonPath = join(RESULTS_DIR, `fleet-run-${runStartTs}.ndjson`);
+  currentResults.clear();
+  console.log(`[fleet] run_start mode=${mode}${selectedNodes?.length ? ` nodes=${selectedNodes.join(',')}` : ' nodes=all'} results=${runNdjsonPath}`);
   broadcast({ event: 'run_start', mode, ts: runStartTs });
 
   const requestedNodes = selectedNodes ? FLEET.filter((n) => selectedNodes.includes(n.name)) : FLEET;
@@ -710,6 +742,30 @@ async function handler(req: IncomingMessage, res: ServerResponse) {
   if (path === '/api/status') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ apps: Object.fromEntries(appStates), nodes: Object.fromEntries(nodeStates), runStartTs }));
+    return;
+  }
+
+  // ── Consolidated current-run results (every app_result received so far this run)
+  if (path === '/api/results.json') {
+    const results = Array.from(currentResults.values());
+    const tally = (score: string) => results.filter((r) => r.score === score).length;
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(
+      JSON.stringify(
+        {
+          runStartTs,
+          runNdjson: runNdjsonPath,
+          total: results.length,
+          pass: tally('pass'),
+          warn: tally('warn'),
+          fail: tally('fail'),
+          skip: tally('skip'),
+          results,
+        },
+        null,
+        2,
+      ),
+    );
     return;
   }
 

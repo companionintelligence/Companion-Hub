@@ -29,6 +29,24 @@ const RESULTS_DIR = process.env.RESULTS_DIR ?? join(home, 'qa-results');
 const SCREENSHOTS_DIR = join(RESULTS_DIR, 'screenshots');
 const SKIP_SCREENSHOT = process.env.SKIP_SCREENSHOT === '1';
 
+// Durable results — qa-aggregate.ts SCPs results.json (an array of QAResult) and
+// batch-<N>-summary.json off each node. We append every app result here as it finishes
+// so a long run survives an SSH drop, and write the batch summary on batch_done.
+const RESULTS_JSON = join(RESULTS_DIR, 'results.json');
+const QA_BATCH = process.env.QA_BATCH ?? '0';
+const BATCH_SUMMARY_JSON = join(RESULTS_DIR, `batch-${QA_BATCH}-summary.json`);
+
+// Intra-node concurrency: how many apps run in parallel on ONE node. Default 2 — each app is
+// fully isolated (ephemeral `-p 0:`, `qa-<app>` compose project, per-app scratch dir) so they
+// don't collide. Multi-service apps are heavier (DB+redis+app), so they consume 2 pool slots.
+const QA_CONCURRENCY = Math.max(1, Number(process.env.QA_CONCURRENCY) || 2);
+
+// Optional per-container resource caps (off by default). When set, applied to the single-service
+// `docker run` (--memory/--cpus) and to every generated compose service (mem_limit/cpus). Keeps a
+// runaway app from starving its neighbours once apps run concurrently.
+const QA_MEM_LIMIT = process.env.QA_MEM_LIMIT?.trim() || ''; // e.g. "1g", "512m"
+const QA_CPU_LIMIT = process.env.QA_CPU_LIMIT?.trim() || ''; // e.g. "1.5", "2"
+
 [RESULTS_DIR, SCREENSHOTS_DIR].forEach((d) => {
   if (!existsSync(d)) mkdirSync(d, { recursive: true });
 });
@@ -89,6 +107,67 @@ function phase(appId: string, phase: string, message: string) {
   emit({ event: 'app_phase', appId, phase, message, ts: Date.now() });
 }
 
+/**
+ * Map qa-stream's internal `result` object onto the QAResult shape qa-aggregate.ts consumes
+ * (memoryMb/imageSizeMb/cpuPercent/timestamp/…). Field names differ between the two — this is
+ * the single place that bridges them so results.json stays loadable by the aggregator.
+ */
+function toQAResult(result: Record<string, unknown>): Record<string, unknown> {
+  const ts = typeof result.ts === 'number' ? result.ts : Date.now();
+  return {
+    appId: result.appId,
+    name: result.name ?? result.appId,
+    image: result.image ?? '',
+    port: result.port ?? 0,
+    imageSizeMb: result.imageMb ?? 0,
+    pullTimeMs: result.pullMs ?? 0,
+    startupMs: result.startupMs ?? 0,
+    responseTimeMs: 0, // not separately measured by the stream runner
+    memoryMb: result.memMb ?? 0,
+    memoryPeakMb: result.memPeakMb ?? 0,
+    cpuPercent: result.cpuPct ?? 0,
+    httpStatus: result.httpStatus ?? 0,
+    screenshotPath: result.hasScreenshot ? join(SCREENSHOTS_DIR, `${result.appId}.png`) : null,
+    score: result.score ?? 'fail',
+    notes: result.notes ?? '',
+    timestamp: new Date(ts).toISOString(),
+  };
+}
+
+/**
+ * Append one app's result to $RESULTS_DIR/results.json as an array element. Read-modify-write
+ * (the runner is the only writer and apps finish one event at a time, even under the worker pool —
+ * the JS event loop serializes these synchronous writes). Best-effort: a durable-store failure must
+ * never fail the run, since the authoritative result already went out over stdout.
+ */
+function appendDurableResult(result: Record<string, unknown>): void {
+  try {
+    let arr: unknown[] = [];
+    if (existsSync(RESULTS_JSON)) {
+      try {
+        const parsed = JSON.parse(readFileSync(RESULTS_JSON, 'utf-8'));
+        if (Array.isArray(parsed)) arr = parsed;
+      } catch {
+        /* corrupt/partial file — start fresh rather than lose this result */
+      }
+    }
+    arr.push(toQAResult(result));
+    writeFileSync(RESULTS_JSON, JSON.stringify(arr, null, 2));
+  } catch (e) {
+    process.stderr.write(`results.json append failed: ${e instanceof Error ? e.message : String(e)}\n`);
+  }
+}
+
+/**
+ * Emit an app_result over stdout (the live, authoritative channel the fleet server reads) AND
+ * append it to the durable results.json. Every per-app return path goes through this, so a run
+ * that loses its SSH pipe still leaves a complete results.json behind for qa-aggregate.ts.
+ */
+function emitResult(appId: string, result: Record<string, unknown>) {
+  emit({ event: 'app_result', appId, result });
+  appendDurableResult(result);
+}
+
 /** Single-quote a value for safe interpolation into a shell command. */
 function shQuote(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
@@ -130,10 +209,37 @@ interface DockerService {
     retries?: number;
     startPeriod?: string;
   };
+  // GPU reservation (compose `deploy.resources.reservations.devices`). Apps that reserve an
+  // nvidia/gpu device REQUIRE host GPU hardware the fleet nodes don't have — detected so they're
+  // classified as skip(gpu) rather than counted as a fail when they refuse to boot.
+  deploy?: {
+    resources?: {
+      reservations?: {
+        devices?: { driver?: string; capabilities?: string[]; count?: number | string }[];
+      };
+    };
+  };
 }
 
 interface ComposeJson {
   services?: DockerService[];
+}
+
+/**
+ * True if ANY service in the stack requires a GPU — either it reserves an nvidia/gpu device via
+ * compose `deploy.resources.reservations.devices`, or its image is a GPU-only build (rocm/cuda/
+ * amd-strix). Such apps can't run on the GPU-less fleet nodes, so they're a skip(gpu), not a fail.
+ */
+function requiresGpu(services: DockerService[]): boolean {
+  for (const s of services) {
+    if (s.image && /rocm|cuda|amd-strix/i.test(s.image)) return true;
+    const devices = s.deploy?.resources?.reservations?.devices ?? [];
+    for (const d of devices) {
+      if (d.driver === 'nvidia') return true;
+      if ((d.capabilities ?? []).some((c) => /gpu|nvidia|compute/i.test(c))) return true;
+    }
+  }
+  return false;
 }
 
 async function qaApp(appId: string) {
@@ -163,7 +269,7 @@ async function qaApp(appId: string) {
     if (!existsSync(configPath)) {
       result.score = 'fail';
       result.notes = `config.json not found at ${configPath}`;
-      emit({ event: 'app_result', appId, result });
+      emitResult(appId, result);
       return;
     }
 
@@ -177,7 +283,7 @@ async function qaApp(appId: string) {
     if (config.no_gui) {
       result.score = 'skip' as 'pass' | 'warn' | 'fail';
       result.notes = 'no_gui: stdio/CLI service, no HTTP to verify';
-      emit({ event: 'app_result', appId, result });
+      emitResult(appId, result);
       return;
     }
 
@@ -222,7 +328,7 @@ async function qaApp(appId: string) {
     } else {
       result.score = 'fail';
       result.notes = 'No docker-compose.json or docker-compose.yml';
-      emit({ event: 'app_result', appId, result });
+      emitResult(appId, result);
       return;
     }
 
@@ -231,21 +337,25 @@ async function qaApp(appId: string) {
     if (mainImg.startsWith('ghcr.io/companionintelligence/')) {
       result.score = 'skip' as 'pass' | 'warn' | 'fail';
       result.notes = 'private GHCR image — requires auth not available on fleet nodes';
-      emit({ event: 'app_result', appId, result });
+      emitResult(appId, result);
       return;
     }
     // Skip VM images (dockurr/macos, dockurr/windows) — require KVM/nested virt.
     if (mainImg.startsWith('dockurr/')) {
       result.score = 'skip' as 'pass' | 'warn' | 'fail';
       result.notes = 'VM image — requires KVM/nested virtualisation unavailable on fleet nodes';
-      emit({ event: 'app_result', appId, result });
+      emitResult(appId, result);
       return;
     }
-    // Skip images with explicit GPU/ROCm markers — require CUDA/ROCm hardware.
-    if (/rocm|amd-strix|:cuda|\.cuda/i.test(mainImg)) {
+    // Skip GPU-required apps — detected via compose `deploy.reservations.devices` (nvidia/gpu) on
+    // ANY service, or a GPU-only image build (rocm/cuda/amd-strix). These need GPU hardware the
+    // fleet nodes lack, so they're skip(gpu) — NOT a fail. (This stops hunyuan3d and similar image-
+    // /video-gen apps from showing as false fails.) `reason:"gpu"` lets the dashboard bucket them.
+    if (requiresGpu(services) || /rocm|amd-strix|:cuda|\.cuda/i.test(mainImg)) {
       result.score = 'skip' as 'pass' | 'warn' | 'fail';
-      result.notes = 'GPU image — requires CUDA/ROCm hardware unavailable on fleet nodes';
-      emit({ event: 'app_result', appId, result });
+      result.reason = 'gpu';
+      result.notes = 'requires GPU (nvidia device reservation or rocm/cuda image) — no GPU on fleet nodes';
+      emitResult(appId, result);
       return;
     }
 
@@ -269,18 +379,18 @@ async function qaApp(appId: string) {
         if (/failed to authorize|unauthorized|denied|authentication required/i.test(up.err)) {
           result.score = 'skip' as 'pass' | 'warn' | 'fail';
           result.notes = 'registry auth required for dependency image';
-          emit({ event: 'app_result', appId, result });
+          emitResult(appId, result);
           return;
         }
         if (/manifest unknown|not found|does not exist|404/i.test(up.err)) {
           result.score = 'skip' as 'pass' | 'warn' | 'fail';
           result.notes = 'dependency image not found in registry';
-          emit({ event: 'app_result', appId, result });
+          emitResult(appId, result);
           return;
         }
         result.score = 'fail';
         result.notes = `compose up failed: ${up.err}`;
-        emit({ event: 'app_result', appId, result });
+        emitResult(appId, result);
         return;
       }
       hostPort = up.hostPort;
@@ -297,32 +407,35 @@ async function qaApp(appId: string) {
         if (/manifest unknown|not found|does not exist|404|no such image/i.test(errText)) {
           result.score = 'skip' as 'pass' | 'warn' | 'fail';
           result.notes = 'image not found in registry — broken marketplace entry';
-          emit({ event: 'app_result', appId, result });
+          emitResult(appId, result);
           return;
         }
         // Auth failure on any registry (not just CI images caught above) → skip
         if (/failed to authorize|unauthorized|denied|authentication required/i.test(errText)) {
           result.score = 'skip' as 'pass' | 'warn' | 'fail';
           result.notes = 'registry auth required — no credentials on fleet nodes';
-          emit({ event: 'app_result', appId, result });
+          emitResult(appId, result);
           return;
         }
         result.score = 'fail';
         result.notes = `Pull failed: ${errText.slice(0, 200)}`;
-        emit({ event: 'app_result', appId, result });
+        emitResult(appId, result);
         return;
       }
       const sizeR = execQuiet(`docker image inspect ${result.image} --format "{{.Size}}"`);
       result.imageMb = sizeR.ok ? Math.round(Number(sizeR.out) / 1024 / 1024) : 0;
 
       phase(appId, 'starting', `Starting container (internal port ${result.port})`);
+      // Optional resource caps (off unless QA_MEM_LIMIT/QA_CPU_LIMIT set) — keep one runaway app
+      // from starving its neighbours now that apps run concurrently on a node.
+      const capFlags = (QA_MEM_LIMIT ? ` --memory ${QA_MEM_LIMIT}` : '') + (QA_CPU_LIMIT ? ` --cpus ${QA_CPU_LIMIT}` : '');
       // Bind a Docker-assigned host port (host side :0) so we never collide with the
       // Hub/Traefik (commonly on :80) or another app under test on the same node.
-      const run = execQuiet(`docker run -d --name ${containerName} -p 0:${result.port}${runFlags} ${result.image}`, 60_000);
+      const run = execQuiet(`docker run -d --name ${containerName} -p 0:${result.port}${capFlags}${runFlags} ${result.image}`, 60_000);
       if (!run.ok) {
         result.score = 'fail';
         result.notes = `Container start failed: ${run.err.slice(0, 200)}`;
-        emit({ event: 'app_result', appId, result });
+        emitResult(appId, result);
         return;
       }
       // Resolve the host port Docker assigned (output like "0.0.0.0:49154\n[::]:49154").
@@ -332,7 +445,7 @@ async function qaApp(appId: string) {
         execQuiet(`docker rm -f ${containerName}`, 30_000);
         result.score = 'fail';
         result.notes = `Could not resolve host port mapping for container :${result.port}`;
-        emit({ event: 'app_result', appId, result });
+        emitResult(appId, result);
         return;
       }
     }
@@ -344,9 +457,14 @@ async function qaApp(appId: string) {
     //   (2) HTTP on / returns < 500                                   -> ready
     //   (3) the backend container has exited or is restart-looping    -> FAIL FAST (don't wait)
     // Generous ceiling: heavy apps run DB migrations on first boot that take minutes.
-    // Override with QA_READY_TIMEOUT_MS.
+    // Override with QA_READY_TIMEOUT_MS (authoritative — bypasses the scaling below).
     phase(appId, 'http', `Waiting for ${appId} to become ready on :${hostPort}`);
-    const maxWaitMs = Number(process.env.QA_READY_TIMEOUT_MS) || (isMulti ? 600_000 : 300_000);
+    // Concurrency slows first-boot (shared CPU/disk while peers also pull+migrate), so scale the
+    // ceiling up modestly when QA_CONCURRENCY>1: +50% per extra slot, capped at 2x. This only
+    // affects the success ceiling — the fail-fast exit/restart-loop signals below are unchanged,
+    // so a genuinely dead app still bails immediately rather than burning the longer ceiling.
+    const readyScale = QA_CONCURRENCY > 1 ? Math.min(2, 1 + (QA_CONCURRENCY - 1) * 0.5) : 1;
+    const maxWaitMs = Number(process.env.QA_READY_TIMEOUT_MS) || Math.round((isMulti ? 600_000 : 300_000) * readyScale);
     const readyStart = Date.now();
     let httpStatus = 0;
     let ready = false;
@@ -403,7 +521,7 @@ async function qaApp(appId: string) {
         (deadReason ? `backend ${deadReason} after ${waited}s` : `not ready within ${Math.round(maxWaitMs / 1000)}s`) +
         (bh.down.length ? ` — down: ${bh.down.join(', ')}` : '') +
         (bh.errors ? ` | ${bh.errors.replace(/\s+/g, ' ').slice(0, 200)}` : '');
-      emit({ event: 'app_result', appId, result });
+      emitResult(appId, result);
       return;
     }
 
@@ -498,7 +616,7 @@ async function qaApp(appId: string) {
     }
   }
 
-  emit({ event: 'app_result', appId, result });
+  emitResult(appId, result);
 }
 
 /** Resolve an app's main image from its marketplace compose (json preferred, else yml). */
@@ -519,6 +637,65 @@ function resolveMainImage(appId: string): string | null {
     return null;
   }
   return null;
+}
+
+/**
+ * Pool slots an app consumes in the intra-node worker pool. Multi-service apps (DB+redis+app)
+ * are heavier and run a real `compose up`, so they take 2 slots; single-service apps take 1.
+ * Cheap pre-scan of the compose json's service count — mirrors how qaApp computes `isMulti`.
+ * (.yml apps and unreadable manifests are single-service for weighting purposes.)
+ */
+function slotWeightFor(appId: string): number {
+  try {
+    const cj = join(APP_STORE_DIR, appId, 'docker-compose.json');
+    if (existsSync(cj)) {
+      const compose: ComposeJson = JSON.parse(readFileSync(cj, 'utf-8'));
+      return (compose.services?.length ?? 1) > 1 ? 2 : 1;
+    }
+  } catch {
+    /* unreadable manifest — treat as single-service for weighting */
+  }
+  return 1;
+}
+
+/**
+ * Run qaApp over every appId with bounded intra-node concurrency (QA_CONCURRENCY total slots).
+ * Each app consumes slotWeightFor(app) slots (multi-service=2, single=1) — a weighted semaphore —
+ * so a couple of heavy compose stacks don't oversubscribe the node. Per-app isolation (ephemeral
+ * `-p 0:`, `qa-<app>` compose project, per-app scratch dir) is what makes this parallelism safe.
+ * An app whose weight exceeds the total budget still runs (clamped) rather than deadlocking.
+ */
+async function runWithConcurrency(appIds: string[]): Promise<void> {
+  const total = QA_CONCURRENCY;
+  let available = total;
+  let idx = 0;
+  const inflight = new Set<Promise<void>>();
+
+  // Wait until at least one in-flight app finishes (frees slots).
+  const drainOne = () => Promise.race(inflight);
+
+  while (idx < appIds.length || inflight.size > 0) {
+    // Launch as many apps as currently fit in the remaining budget.
+    while (idx < appIds.length) {
+      const appId = appIds[idx];
+      if (appId === undefined) break; // unreachable given the loop bound; satisfies strict indexing
+      const weight = Math.min(slotWeightFor(appId), total); // clamp so an over-budget app can't deadlock
+      if (weight > available && inflight.size > 0) break; // no room right now — wait for a finisher
+      idx++;
+      available -= weight;
+      const p: Promise<void> = qaApp(appId)
+        .catch((err) => {
+          // qaApp emits its own failure result; this guards the pool against an unexpected throw.
+          process.stderr.write(`qaApp(${appId}) threw: ${err instanceof Error ? err.stack || err.message : String(err)}\n`);
+        })
+        .finally(() => {
+          available += weight;
+          inflight.delete(p);
+        });
+      inflight.add(p);
+    }
+    if (inflight.size > 0) await drainOne();
+  }
 }
 
 function pullAsync(image: string, timeoutMs: number): Promise<boolean> {
@@ -649,6 +826,11 @@ function composeUp(
   for (const s of services) {
     if (!s.name || !s.image) continue;
     y += `  ${s.name}:\n    image: ${yamlStr(subst(s.image))}\n    restart: "no"\n`;
+    // Optional resource caps (off unless QA_MEM_LIMIT/QA_CPU_LIMIT set). Applied per service so a
+    // multi-service stack stays bounded when several apps run concurrently on one node. These are
+    // Compose v2 top-level keys (`mem_limit`/`cpus`) — honored by `docker compose up` without swarm.
+    if (QA_MEM_LIMIT) y += `    mem_limit: ${yamlStr(QA_MEM_LIMIT)}\n`;
+    if (QA_CPU_LIMIT) y += `    cpus: ${QA_CPU_LIMIT}\n`;
     // Run-as user — mirror the real Hub builder (service.builder.ts emits `user:`). Dropping it
     // diverges from production: an app that sets `user` (or expects the image default once a
     // manifest stops forcing `user: root`) otherwise runs under the wrong uid and fails spuriously.
@@ -799,17 +981,58 @@ if (appIds.length === 0) {
   process.exit(1);
 }
 
+/**
+ * On batch_done, write batch-<N>-summary.json (the BatchSummary shape qa-aggregate.ts reads) from
+ * the durable results.json this run just produced — passed/warned/failed counts, pass rate, and
+ * elapsed minutes. Skips (gpu/auth/no_gui/VM) are excluded from the pass-rate denominator so they
+ * don't depress it. Best-effort: a summary-write failure must not fail the run.
+ */
+function writeBatchSummary(startTs: number): void {
+  try {
+    let arr: { score?: string }[] = [];
+    if (existsSync(RESULTS_JSON)) {
+      const parsed = JSON.parse(readFileSync(RESULTS_JSON, 'utf-8'));
+      if (Array.isArray(parsed)) arr = parsed;
+    }
+    const passed = arr.filter((r) => r.score === 'pass').length;
+    const warned = arr.filter((r) => r.score === 'warn').length;
+    const failed = arr.filter((r) => r.score === 'fail').length;
+    const scored = passed + warned + failed; // exclude skips from the pass-rate denominator
+    const summary = {
+      batch: Number(QA_BATCH),
+      total: arr.length,
+      passed,
+      warned,
+      failed,
+      passRate: scored > 0 ? (passed / scored) * 100 : 0,
+      elapsedMinutes: (Date.now() - startTs) / 60_000,
+    };
+    writeFileSync(BATCH_SUMMARY_JSON, JSON.stringify(summary, null, 2));
+  } catch (e) {
+    process.stderr.write(`batch summary write failed: ${e instanceof Error ? e.message : String(e)}\n`);
+  }
+}
+
 // Wrapped in an async IIFE: tsx transforms this file as CommonJS (package.json
 // has no "type":"module"), and CJS does not support top-level await.
 void (async () => {
-  emit({ event: 'batch_start', apps: appIds, storeDir: APP_STORE_DIR, ts: Date.now() });
+  const batchStart = Date.now();
+  emit({ event: 'batch_start', apps: appIds, storeDir: APP_STORE_DIR, ts: batchStart });
+
+  // Start results.json fresh so it holds exactly THIS run's results (qa-aggregate.ts expects a
+  // per-run array). Each qaApp appends to it as it finishes, so a dropped SSH pipe still leaves a
+  // complete file behind for the aggregator.
+  writeFileSync(RESULTS_JSON, '[]');
 
   // Warm the image cache first so per-app pulls hit cache instead of timing out cold.
   await prepull(appIds);
 
-  for (const appId of appIds) {
-    await qaApp(appId);
-  }
+  // Bounded intra-node concurrency (QA_CONCURRENCY slots; multi-service apps take 2). Per-app
+  // isolation keeps this safe — see runWithConcurrency. Was a serial for-of over appIds.
+  await runWithConcurrency(appIds);
+
+  // Persist the batch summary alongside results.json for qa-aggregate.ts to SCP.
+  writeBatchSummary(batchStart);
 
   const results = appIds.length;
   emit({ event: 'batch_done', total: results, ts: Date.now() });
