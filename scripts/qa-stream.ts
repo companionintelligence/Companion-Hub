@@ -163,6 +163,15 @@ async function qaApp(appId: string) {
     result.port = config.port ?? 80;
     result.categories = config.categories ?? [];
 
+    // Skip non-HTTP apps immediately — they're CLI/MCP/stdio services, not web apps.
+    // Pulling + running them just to fail the HTTP check produces misleading fail counts.
+    if (config.no_gui) {
+      result.score = 'skip' as 'pass' | 'warn' | 'fail';
+      result.notes = 'no_gui: stdio/CLI service, no HTTP to verify';
+      emit({ event: 'app_result', appId, result });
+      return;
+    }
+
     // Image from docker-compose.json (Hub V2 format) or .yml
     const composeJsonPath = join(APP_STORE_DIR, appId, 'docker-compose.json');
     const composeYmlPath = join(APP_STORE_DIR, appId, 'docker-compose.yml');
@@ -199,6 +208,16 @@ async function qaApp(appId: string) {
     } else {
       result.score = 'fail';
       result.notes = 'No docker-compose.json or docker-compose.yml';
+      emit({ event: 'app_result', appId, result });
+      return;
+    }
+
+    // Skip private ghcr.io/companionintelligence images — nodes have no GHCR auth
+    // and these are internal CI apps not intended for the smoke-test fleet.
+    const mainImg = String(result.image ?? '');
+    if (mainImg.startsWith('ghcr.io/companionintelligence/')) {
+      result.score = 'skip' as 'pass' | 'warn' | 'fail';
+      result.notes = 'private GHCR image — requires auth not available on fleet nodes';
       emit({ event: 'app_result', appId, result });
       return;
     }
@@ -493,9 +512,14 @@ function composeUp(
     if (s === main) y += `    ports:\n      - "0:${mainPort}"\n`;
   }
   writeFileSync(ymlPath, y);
-  const up = execQuiet(`docker compose -p ${project} -f ${ymlPath} up -d`, 600_000);
+  const up = execQuiet(`docker compose -p ${project} -f ${ymlPath} up -d --quiet-pull`, 900_000);
   if (!up.ok) return { ok: false, hostPort: 0, statsName: '', project, err: up.err.slice(-200) };
-  const portMap = execQuiet(`docker compose -p ${project} -f ${ymlPath} port ${main?.name} ${mainPort}`);
+  // docker compose port may fail if service exited before port was bound — retry briefly
+  let portMap = execQuiet(`docker compose -p ${project} -f ${ymlPath} port ${main?.name} ${mainPort}`);
+  if (!portMap.ok) {
+    execQuiet('sleep 3');
+    portMap = execQuiet(`docker compose -p ${project} -f ${ymlPath} port ${main?.name} ${mainPort}`);
+  }
   const hostPort = portMap.ok ? Number(portMap.out.split('\n')[0]?.trim().split(':').pop()) : 0;
   return { ok: hostPort > 0, hostPort, statsName: `${project}-${main?.name}-1`, project, err: hostPort > 0 ? '' : 'no host port mapping' };
 }

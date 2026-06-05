@@ -47,18 +47,19 @@ interface FleetNode {
 }
 
 const BUILTIN_FLEET: FleetNode[] = [
-  // Roster from the 2026-06-05 LAN/Tailscale audit: 9 READY core+beta workers.
-  // Excluded: core-3 (100.126.23.45, first-boot pairing), core-5 (100.73.255.24, SSH blocked),
-  // beta-red/100.86.79.25 (repurposed as beta-3-glass hub-node, key expired), core-4 (stale dup — prune).
+  // Roster from 2026-06-05 Tailscale audit + re-probe.  8 live-ready workers.
+  // Excluded: core-3 (sshd refused), core-5/core-14/beta-nas (Tailscale SSH ACL denies ci user),
+  // core-10/core-17 (docker ok but no sudo for Node install yet), core-13 (SSH timeout),
+  // core-4 (stale duplicate — prune), fzzy (docker ok but no sudo).
+  // ACL fix in Tailscale admin (grant liambook→tag:tagged-devices as ci) would unlock 4+ more nodes.
   { name: 'core-1', ip: '100.108.17.53', batch: 0 },
   { name: 'core-2', ip: '100.101.156.33', batch: 1 },
   { name: 'core-6', ip: '100.95.23.128', batch: 2 },
-  { name: 'core-8', ip: '100.98.33.44', batch: 3 },
+  { name: 'core-8', ip: '100.98.33.44', batch: 3 }, // provisioned 2026-06-05: nvm Node 22
   { name: 'core-9', ip: '100.113.188.103', batch: 4 },
-  { name: 'core-10', ip: '100.87.68.116', batch: 5 },
-  { name: 'core-13', ip: '100.76.114.122', batch: 6 },
-  { name: 'beta-1', ip: '100.124.211.75', batch: 7 },
-  { name: 'beta-5', ip: '100.118.195.108', batch: 8 },
+  { name: 'beta-1', ip: '100.124.211.75', batch: 5 },
+  { name: 'beta-5', ip: '100.118.195.108', batch: 6 },
+  { name: 'beta-red', ip: '100.86.79.25', batch: 7 }, // provisioned 2026-06-05: Node 22 + repos
 ];
 
 const FLEET: FleetNode[] = process.env.FLEET_CONFIG_JSON ? JSON.parse(process.env.FLEET_CONFIG_JSON) : BUILTIN_FLEET;
