@@ -47,28 +47,23 @@ interface FleetNode {
 }
 
 const BUILTIN_FLEET: FleetNode[] = [
-  // Last full Tailscale survey: 2026-06-05.  9 active workers after provisioning.
-  // Excluded:
-  //   core-3  (100.126.23.45)  — sshd connection refused
-  //   core-4  (100.121.17.113) — stale duplicate, prune from tailnet
-  //   core-5  (100.73.255.24)  — Tailscale SSH ACL denies ci user ("operation not permitted")
-  //   core-10 (100.87.68.116)  — no passwordless sudo; can't self-provision
-  //   core-13 (100.76.114.122) — SSH timeout (offline)
-  //   beta-5  (100.118.195.108)— SSH timeout (went offline mid-run)
-  //   beta-ms-a2 (100.119.230.14) — NEW; docker=NO, sudo=np; not yet usable
-  //   fzzy    (100.114.164.27) — no passwordless sudo
-  //   core-14/core-17: pending repo sync (added below once confirmed)
-  // ACL fix: grant liambook→tag:tagged-devices SSH as ci in Tailscale admin to unlock
-  //   core-5, core-14, core-17, beta-nas, beta-ms-a2 (once docker+sudo ready).
+  // Fleet expanded 2026-06-05 to the 10 Ollama-0.24.0 core+beta workers (per liam's roster).
+  // All provisioned: Node 22 + CI-Hub + CI-Marketplace(169 apps) + tsx.
+  //   core-10:    nvm Node 22 (no passwordless sudo) + repos synced from core-14
+  //   core-14/17: Node 22 + repos synced from core-1
+  //   beta-ms-a2: NEW node, apt Node 22 (sudo) + repos synced from core-14
+  // Dropped: beta-red/beta-5 (offline), core-13 (SSH timeout), core-3 (no sshd),
+  //   core-4 (stale dup), core-5 (Tailscale SSH ACL denies ci), fzzy (no sudo).
   { name: 'core-1', ip: '100.108.17.53', batch: 0 },
   { name: 'core-2', ip: '100.101.156.33', batch: 1 },
   { name: 'core-6', ip: '100.95.23.128', batch: 2 },
-  { name: 'core-8', ip: '100.98.33.44', batch: 3 }, // Node 22 via nvm (apt only had 18)
+  { name: 'core-8', ip: '100.98.33.44', batch: 3 },
   { name: 'core-9', ip: '100.113.188.103', batch: 4 },
-  { name: 'core-14', ip: '100.101.186.74', batch: 5 }, // Node 22 via apt + repos synced from core-1
-  { name: 'core-17', ip: '100.67.181.7', batch: 6 }, // Node 22 via apt + repos synced from core-1
-  { name: 'beta-1', ip: '100.124.211.75', batch: 7 },
-  { name: 'beta-red', ip: '100.86.79.25', batch: 8 }, // Node 22 via nvm + repos cloned
+  { name: 'core-10', ip: '100.87.68.116', batch: 5 },
+  { name: 'core-14', ip: '100.101.186.74', batch: 6 },
+  { name: 'core-17', ip: '100.67.181.7', batch: 7 },
+  { name: 'beta-1', ip: '100.124.211.75', batch: 8 },
+  { name: 'beta-ms-a2', ip: '100.119.230.14', batch: 9 },
 ];
 
 const FLEET: FleetNode[] = process.env.FLEET_CONFIG_JSON ? JSON.parse(process.env.FLEET_CONFIG_JSON) : BUILTIN_FLEET;
