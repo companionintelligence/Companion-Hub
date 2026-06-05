@@ -8,6 +8,60 @@ interface CachedSize {
   fetchedAt: number;
 }
 
+const DEFAULT_REGISTRY = 'registry.hub.docker.com';
+
+/**
+ * Parse a Docker/OCI image reference into registry host, repository path, and
+ * manifest tag or digest for registry v2 API URLs.
+ *
+ * Handles registry hosts with ports (my.registry:5000/ns/repo:tag) and digest
+ * refs (repo@sha256:...) without splitting on the wrong ':' character.
+ */
+export function parseDockerImageRef(image: string): { registry: string; repository: string; tag: string } {
+  let name = image.trim();
+
+  if (!name) {
+    return { registry: DEFAULT_REGISTRY, repository: 'library/unknown', tag: 'latest' };
+  }
+
+  let tag = 'latest';
+  const atIndex = name.indexOf('@');
+
+  if (atIndex === -1) {
+    // Tag delimiter is the last ':' after the last '/' so host ports are preserved.
+    const lastSlash = name.lastIndexOf('/');
+    const lastColon = name.lastIndexOf(':');
+
+    if (lastColon !== -1 && lastColon > lastSlash) {
+      tag = name.slice(lastColon + 1);
+      name = name.slice(0, lastColon);
+    }
+  } else {
+    tag = name.slice(atIndex + 1);
+    name = name.slice(0, atIndex);
+  }
+
+  if (!name) {
+    return { registry: DEFAULT_REGISTRY, repository: image, tag };
+  }
+
+  const firstSlash = name.indexOf('/');
+
+  if (firstSlash === -1) {
+    return { registry: DEFAULT_REGISTRY, repository: `library/${name}`, tag };
+  }
+
+  const head = name.slice(0, firstSlash);
+  const tail = name.slice(firstSlash + 1);
+  const headIsRegistry = head.includes('.') || head.includes(':') || head === 'localhost';
+
+  if (headIsRegistry) {
+    return { registry: head, repository: tail, tag };
+  }
+
+  return { registry: DEFAULT_REGISTRY, repository: name, tag };
+}
+
 @Injectable()
 export class ImageSizeService {
   private cache = new Map<string, CachedSize>();
@@ -190,45 +244,8 @@ export class ImageSizeService {
     }
   }
 
-  /**
-   * Parse a Docker image reference into registry, repository, and tag
-   */
   private parseImageRef(image: string): { registry: string; repository: string; tag: string } {
-    let registry = 'registry.hub.docker.com';
-    let repository: string;
-    let tag = 'latest';
-
-    // Split off tag
-    const [imagePath, imageTag] = image.split(':');
-    if (imageTag) tag = imageTag;
-
-    if (!imagePath) {
-      return { registry, repository: image, tag };
-    }
-
-    const parts = imagePath.split('/');
-
-    // Detect if first part is a registry (contains . or :)
-    const firstPart = parts[0] ?? '';
-    if (parts.length >= 3 || (parts.length >= 2 && (firstPart.includes('.') || firstPart.includes(':')))) {
-      if (firstPart.includes('.') || firstPart.includes(':')) {
-        registry = firstPart;
-        repository = parts.slice(1).join('/');
-      } else {
-        // Docker Hub with org/repo
-        repository = imagePath;
-      }
-    } else if (parts.length === 2) {
-      // org/repo on Docker Hub
-      repository = imagePath;
-    } else {
-      // library image
-      repository = `library/${imagePath}`;
-    }
-
-    repository ??= imagePath;
-
-    return { registry, repository, tag };
+    return parseDockerImageRef(image);
   }
 
   /**
