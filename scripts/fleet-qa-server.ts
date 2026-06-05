@@ -58,8 +58,8 @@ const BUILTIN_FLEET: FleetNode[] = [
   { name: 'core-8', ip: '100.98.33.44', batch: 3 }, // provisioned 2026-06-05: nvm Node 22
   { name: 'core-9', ip: '100.113.188.103', batch: 4 },
   { name: 'beta-1', ip: '100.124.211.75', batch: 5 },
-  { name: 'beta-5', ip: '100.118.195.108', batch: 6 },
-  { name: 'beta-red', ip: '100.86.79.25', batch: 7 }, // provisioned 2026-06-05: Node 22 + repos
+  { name: 'beta-red', ip: '100.86.79.25', batch: 6 }, // provisioned 2026-06-05: Node 22 + repos
+  // beta-5 (100.118.195.108): went offline mid-run 2026-06-05; re-add when stable
 ];
 
 const FLEET: FleetNode[] = process.env.FLEET_CONFIG_JSON ? JSON.parse(process.env.FLEET_CONFIG_JSON) : BUILTIN_FLEET;

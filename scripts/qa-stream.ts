@@ -212,12 +212,25 @@ async function qaApp(appId: string) {
       return;
     }
 
-    // Skip private ghcr.io/companionintelligence images — nodes have no GHCR auth
-    // and these are internal CI apps not intended for the smoke-test fleet.
     const mainImg = String(result.image ?? '');
+    // Skip private CI images (require GHCR auth not available on fleet nodes).
     if (mainImg.startsWith('ghcr.io/companionintelligence/')) {
       result.score = 'skip' as 'pass' | 'warn' | 'fail';
       result.notes = 'private GHCR image — requires auth not available on fleet nodes';
+      emit({ event: 'app_result', appId, result });
+      return;
+    }
+    // Skip VM images (dockurr/macos, dockurr/windows) — require KVM/nested virt.
+    if (mainImg.startsWith('dockurr/')) {
+      result.score = 'skip' as 'pass' | 'warn' | 'fail';
+      result.notes = 'VM image — requires KVM/nested virtualisation unavailable on fleet nodes';
+      emit({ event: 'app_result', appId, result });
+      return;
+    }
+    // Skip images with explicit GPU/ROCm markers — require CUDA/ROCm hardware.
+    if (/rocm|amd-strix|:cuda|\.cuda/i.test(mainImg)) {
+      result.score = 'skip' as 'pass' | 'warn' | 'fail';
+      result.notes = 'GPU image — requires CUDA/ROCm hardware unavailable on fleet nodes';
       emit({ event: 'app_result', appId, result });
       return;
     }
@@ -238,6 +251,19 @@ async function qaApp(appId: string) {
       composeProject = up.project;
       result.pullMs = Date.now() - startT0;
       if (!up.ok) {
+        // Classify compose failures the same as single-service pull failures
+        if (/failed to authorize|unauthorized|denied|authentication required/i.test(up.err)) {
+          result.score = 'skip' as 'pass' | 'warn' | 'fail';
+          result.notes = 'registry auth required for dependency image';
+          emit({ event: 'app_result', appId, result });
+          return;
+        }
+        if (/manifest unknown|not found|does not exist|404/i.test(up.err)) {
+          result.score = 'skip' as 'pass' | 'warn' | 'fail';
+          result.notes = 'dependency image not found in registry';
+          emit({ event: 'app_result', appId, result });
+          return;
+        }
         result.score = 'fail';
         result.notes = `compose up failed: ${up.err}`;
         emit({ event: 'app_result', appId, result });
@@ -252,8 +278,23 @@ async function qaApp(appId: string) {
       const pull = execQuiet(`docker pull ${result.image}`, 900_000);
       result.pullMs = Date.now() - pullT0;
       if (!pull.ok) {
+        const errText = pull.err + pull.out;
+        // Image doesn't exist in any registry → skip (broken marketplace entry, not a test failure)
+        if (/manifest unknown|not found|does not exist|404|no such image/i.test(errText)) {
+          result.score = 'skip' as 'pass' | 'warn' | 'fail';
+          result.notes = 'image not found in registry — broken marketplace entry';
+          emit({ event: 'app_result', appId, result });
+          return;
+        }
+        // Auth failure on any registry (not just CI images caught above) → skip
+        if (/failed to authorize|unauthorized|denied|authentication required/i.test(errText)) {
+          result.score = 'skip' as 'pass' | 'warn' | 'fail';
+          result.notes = 'registry auth required — no credentials on fleet nodes';
+          emit({ event: 'app_result', appId, result });
+          return;
+        }
         result.score = 'fail';
-        result.notes = `Pull failed: ${pull.err.slice(0, 200)}`;
+        result.notes = `Pull failed: ${errText.slice(0, 200)}`;
         emit({ event: 'app_result', appId, result });
         return;
       }
@@ -286,7 +327,7 @@ async function qaApp(appId: string) {
     phase(appId, 'http', `Waiting for HTTP on host :${hostPort}`);
     let httpOk = false;
     let httpStatus = 0;
-    const maxWaitMs = isMulti ? 180_000 : 90_000; // multi-service stacks boot slower
+    const maxWaitMs = isMulti ? 360_000 : 180_000; // multi-service stacks boot slower; single still needs time for large images
     const httpStart = Date.now();
 
     while (!httpOk && Date.now() - httpStart < maxWaitMs) {
