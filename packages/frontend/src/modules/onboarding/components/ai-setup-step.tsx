@@ -301,7 +301,6 @@ export const AiSetupStep = ({
   const diskTotalMb = profile.resourceEstimate.diskTotalMb;
   const availableMemoryMb = profile.resourceEstimate.availableMemoryMb;
   const needsOllama = ollamaStatus === null || !ollamaStatus.ready;
-  const liveConfig = buildConfig();
 
   return (
     <div className={embedded ? 'space-y-5' : 'space-y-5 max-h-[66vh] overflow-y-auto pr-2'} data-testid="ai-setup-step">
