@@ -5,6 +5,7 @@ import { apiFetch } from '@/lib/api-fetch';
 import { getLogo } from '@/lib/theme/theme';
 import { Suspense, useEffect, useMemo, useState } from 'react';
 import { Navigate, useNavigate } from 'react-router';
+import { AGENT_APP_SLUG } from '../helpers/ai-setup-types';
 import { AiSetupStep } from '../components/ai-setup-step';
 import { StepSection } from '../components/ai-setup/primitives';
 import { InstallStep } from '../components/install-step';
@@ -12,6 +13,41 @@ import { RecommendationsStep } from '../components/recommendations-step';
 import { buildAgentApp, resolveExposureMode } from '../helpers/agent-onboarding';
 import { identifyServices, type DetectedService } from '../helpers/service-detection';
 import type { AiSetupConfig, OnboardingApp } from '../helpers/types';
+
+const AGENT_APP_ALIAS_CANONICAL: Record<string, string> = Object.fromEntries(
+  Object.entries(AGENT_APP_SLUG).flatMap(([framework, slug]) => [
+    [framework, slug],
+    [slug, slug],
+  ]),
+);
+
+function appIdentityKeys(app: OnboardingApp): string[] {
+  const keys: string[] = [];
+  if (app.urn) keys.push(`urn:${app.urn.toLowerCase()}`);
+
+  const slug = app.appSlug?.trim().toLowerCase();
+  if (slug) {
+    keys.push(`slug:${slug}`);
+    const canonical = AGENT_APP_ALIAS_CANONICAL[slug];
+    if (canonical && canonical !== slug) keys.push(`slug:${canonical}`);
+  }
+
+  return keys;
+}
+
+function dedupeOnboardingApps(apps: OnboardingApp[]): OnboardingApp[] {
+  const seen = new Set<string>();
+  const deduped: OnboardingApp[] = [];
+
+  for (const app of apps) {
+    const keys = appIdentityKeys(app);
+    if (keys.some((k) => seen.has(k))) continue;
+    for (const k of keys) seen.add(k);
+    deduped.push(app);
+  }
+
+  return deduped;
+}
 
 /** Page chrome shared by every onboarding phase: brand header + centered container. */
 function Shell({ children }: { children: React.ReactNode }) {
@@ -85,11 +121,7 @@ function OnboardingWizard() {
   );
   const includedAgentApps = useMemo(() => agentApps.filter(({ app }) => !!app.urn), [agentApps]);
   const installApps = useMemo(() => {
-    const merged: OnboardingApp[] = includedAgentApps.map(({ app }) => app);
-    for (const a of selectedApps) {
-      if (!merged.some((m) => m.appSlug === a.appSlug)) merged.push(a);
-    }
-    return merged;
+    return dedupeOnboardingApps([...includedAgentApps.map(({ app }) => app), ...selectedApps]);
   }, [includedAgentApps, selectedApps]);
 
   if (user.hasCompletedOnboarding) {

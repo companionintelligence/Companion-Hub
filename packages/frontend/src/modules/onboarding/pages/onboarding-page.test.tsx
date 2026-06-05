@@ -26,6 +26,17 @@ vi.mock('@/context/app-context', () => ({
         created_at: 0,
         supported_architectures: [],
       },
+      {
+        id: 'ci-hermes',
+        name: 'Hermes',
+        urn: 'urn:store:ci-hermes',
+        short_desc: 'Agent',
+        available: true,
+        deprecated: false,
+        categories: [],
+        created_at: 0,
+        supported_architectures: [],
+      },
     ],
   }),
 }));
@@ -97,6 +108,23 @@ vi.mock('../components/ai-setup-step', () => ({
       >
         emit-ai-config-cloud
       </button>
+      <button
+        type="button"
+        onClick={() =>
+          onConfigChange?.({
+            agentFrameworks: ['openclaw', 'hermes'],
+            selectedModels: ['phi-4-mini'],
+            installedCatalogIds: ['phi-4-mini'],
+            backend: 'ollama',
+            cloudProviders: [],
+            remoteAccess: [],
+            skipped: false,
+            installBlocked: false,
+          })
+        }
+      >
+        emit-ai-config-both-agents
+      </button>
     </div>
   ),
 }));
@@ -106,6 +134,24 @@ vi.mock('../components/recommendations-step', () => ({
     <div data-testid="recommendations-step">
       <button type="button" onClick={() => onChange?.([])}>
         emit-apps
+      </button>
+      <button
+        type="button"
+        onClick={() =>
+          onChange?.([
+            {
+              appSlug: 'hermes',
+              name: 'Hermes',
+              icon: '/agents/hermes.png',
+              category: 'featured',
+              replacesNames: [],
+              urn: undefined,
+              localSubdomain: 'hermes',
+            },
+          ])
+        }
+      >
+        emit-apps-hermes-legacy
       </button>
     </div>
   ),
@@ -205,5 +251,16 @@ describe('OnboardingPage (single vertical form)', () => {
     // emit-ai-config-cloud provides a cloud provider; verify the form accepts it.
     await user.click(screen.getByRole('button', { name: 'emit-ai-config-cloud' }));
     expect(screen.getByTestId('finish-setup-btn')).toBeEnabled();
+  });
+
+  it('deduplicates Hermes when selected via agent framework and legacy app slug', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(screen.getByRole('button', { name: 'emit-ai-config-both-agents' }));
+    await user.click(screen.getByRole('button', { name: 'emit-apps-hermes-legacy' }));
+    await user.click(screen.getByTestId('finish-setup-btn'));
+
+    expect(screen.getByTestId('install-step')).toHaveAttribute('data-apps', 'ci-openclaw,ci-hermes');
   });
 });

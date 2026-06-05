@@ -1,2 +1,14 @@
 packages:
-  - "packages/*"
+  - 'packages/*'
+
+allowBuilds:
+  '@nestjs/core': true
+  '@scarf/scarf': true
+  '@sentry/cli': true
+  '@swc/core': true
+  argon2: true
+  cpu-features: true
+  esbuild: true
+  msw: true
+  protobufjs: true
+  ssh2: true
