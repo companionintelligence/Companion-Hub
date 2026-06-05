@@ -860,6 +860,33 @@ describe('AppLifecycleService', () => {
       expect(appsRepository.updateAppById).toHaveBeenCalledWith(42, expect.objectContaining({ status: 'install_failed' }));
     });
 
+    it('installApp error: still emits install_error when install_failed status write fails', async () => {
+      const baseAppInfo = { id: 'myapp', port: 8080, cihub_app_version: 1, exposable: true, supported_architectures: ['amd64'] };
+      marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(baseAppInfo as any);
+      appsRepository.getAppByUrn.mockResolvedValue(null as any);
+      appsRepository.getAppsByDomain.mockResolvedValue([]);
+      appsRepository.getAppsByLocalSubdomain.mockResolvedValue([]);
+      appsRepository.getAppsByPort.mockResolvedValue([]);
+      appEventsQueue.publish.mockResolvedValue({ success: false, message: 'fail' } as any);
+      appsRepository.updateAppById.mockImplementation(async (_id, patch) => {
+        if (patch?.status === 'install_failed') {
+          throw new Error('invalid input value for enum app_status: "install_failed"');
+        }
+        callOrder.push('db_update');
+        return fakeApp as any;
+      });
+
+      await service.installApp({ appUrn, form: {} });
+      await flushMicrotasks();
+
+      expect(callOrder).toContain('sse:install_error');
+      expect(sseService.emit).toHaveBeenCalledWith(
+        'app',
+        expect.objectContaining({ event: 'install_error', appUrn, appStatus: 'install_failed', error: 'fail' }),
+      );
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("Failed to persist 'install_failed' status"));
+    });
+
     it('installApp retry: re-queues install when status is install_failed', async () => {
       const baseAppInfo = { id: 'myapp', port: 8080, cihub_app_version: 1, exposable: true, supported_architectures: ['amd64'] };
       marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(baseAppInfo as any);
