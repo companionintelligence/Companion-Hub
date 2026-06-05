@@ -1,15 +1,35 @@
 import { systemLoadOptions, getInstalledAppsOptions } from '@/api-client/@tanstack/react-query.gen';
 import { Cpu, Database, MemoryStick } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
+import { useEffect } from 'react';
+import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
+import { useLocation, useNavigate } from 'react-router';
 import { CompactSystemStat } from '../components/compact-system-stat';
 import { HorizontalAppList } from '../components/horizontal-app-list';
 import { QueuedInstallsIndicator } from '../components/queued-installs-indicator';
 import { useInstallQueue } from '@/modules/app/helpers/use-install-queue';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner/loading-spinner';
 
+type DashboardLocationState = {
+  showBackgroundInstallToast?: boolean;
+};
+
 export default () => {
   const { t } = useTranslation();
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    const state = location.state as DashboardLocationState | null;
+    if (!state?.showBackgroundInstallToast) return;
+
+    toast('Setup is still running in the background. App installs and downloads will continue — progress will show up here shortly.', {
+      duration: 7000,
+    });
+
+    navigate(location.pathname, { replace: true, state: null });
+  }, [location.pathname, location.state, navigate]);
 
   const { data: systemData } = useQuery({
     ...systemLoadOptions(),

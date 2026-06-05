@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { InstallStep } from '../install-step';
 import type { OnboardingApp } from '../../helpers/types';
@@ -93,6 +93,16 @@ describe('InstallStep', () => {
     const btn = screen.getByTestId('install-continue-btn');
     expect(btn).toBeInTheDocument();
     expect(btn.textContent).toContain('Continue');
+  });
+
+  it('flags continuedInBackground when Continue is clicked before installs finish', async () => {
+    mockApiFetch.mockImplementation(() => new Promise(() => {}));
+
+    render(<InstallStep apps={[makeApp('app1', 'App One', 'app1:store1')]} onComplete={onComplete} />);
+
+    fireEvent.click(screen.getByTestId('install-continue-btn'));
+
+    expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({ continuedInBackground: true }));
   });
 
   it('renders the app list container', () => {
