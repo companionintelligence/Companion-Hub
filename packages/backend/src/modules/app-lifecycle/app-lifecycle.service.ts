@@ -119,6 +119,11 @@ export class AppLifecycleService implements OnApplicationBootstrap {
     );
   }
 
+  /** Fire-and-forget follow-up lifecycle action with a local rejection handler. */
+  private fireAndForgetLifecycle(command: string, appUrn: AppUrn, action: () => Promise<unknown>) {
+    void action().catch((err) => this.logLifecycleHandlerError(command, appUrn, err));
+  }
+
   async invokeCommand(data: z.infer<typeof appEventSchema>, reply: (response: z.output<typeof appEventResultSchema>) => Promise<void>) {
     // Serialize installs so a second "Install" cannot compete with an in-progress image pull.
     let releasePipeline: (() => void) | undefined;
@@ -581,7 +586,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
           this.sseService.emit('app', { event: 'reset_success', appUrn, appStatus: 'stopped' });
 
           if (appStatusBeforeReset === 'running') {
-            void this.startApp({ appUrn });
+            this.fireAndForgetLifecycle('start-after-reset', appUrn, () => this.startApp({ appUrn }));
           }
         } else {
           this.logger.error(`Failed to reset app ${appUrn}: ${message}`);
@@ -740,7 +745,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
     const runningStatuses = ['running', 'starting', 'restarting'] as const;
     if (runningStatuses.includes(app.status as (typeof runningStatuses)[number])) {
       this.logger.info(`App ${appUrn} is running — triggering automatic restart after config update`);
-      void this.restartApp({ appUrn, skipPull: true });
+      this.fireAndForgetLifecycle('restart-after-config-update', appUrn, () => this.restartApp({ appUrn, skipPull: true }));
     }
 
     return { requestId };
@@ -933,7 +938,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
           this.agentNotifyService?.notify('update_success', { appUrn }, 'info');
 
           if (appStatusBeforeUpdate === 'running') {
-            void this.startApp({ appUrn });
+            this.fireAndForgetLifecycle('start-after-update', appUrn, () => this.startApp({ appUrn }));
           }
         } else {
           this.logger.error(`Failed to update app ${appUrn}: ${message}`);
