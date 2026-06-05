@@ -183,7 +183,22 @@ export class CloudflareClientService {
       this.logger.log(`Sync Response: ${JSON.stringify(response.data)}`);
 
       if (response.data.success) {
-        this.logger.log('State sync successful');
+        // CI-Cloud returns `failed` (app names whose public DNS record could not
+        // be created) and `synced` (count of DNS records created). Surface a
+        // clear warning instead of silently reporting success — a partially
+        // applied sync means those apps will not load at their public domain.
+        const failed: string[] = Array.isArray(response.data.failed) ? response.data.failed : [];
+        const synced: number | undefined = typeof response.data.synced === 'number' ? response.data.synced : undefined;
+
+        if (failed.length > 0) {
+          this.logger.warn(
+            `[Cloudflare] State sync only partially applied: ${failed.length} app(s) did NOT get a public DNS record and will not load at their public domain: ${failed.join(', ')}. ` +
+              `Verify the selected domain's zone is reachable in this environment (see CI-Cloud DNS logs for the underlying Cloudflare error).`,
+          );
+        } else {
+          this.logger.log(`State sync successful${synced === undefined ? '' : ` (${synced} DNS record(s) synced)`}`);
+        }
+
         return true;
       }
       return false;

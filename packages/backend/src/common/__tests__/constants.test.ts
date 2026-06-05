@@ -26,7 +26,10 @@ describe('constants environment defaults', () => {
     const constants = await loadConstants();
 
     expect(constants.DEFAULT_CI_CLOUD_URL).toBe('https://hub.ci.computer');
-    expect(constants.DEFAULT_PUBLIC_DOMAIN).toBe('companionintelligence.org');
+    // Dev and prod share the same canonical public-domain default; per-env
+    // working domain comes from CI-Cloud registration / sync validation.
+    expect(constants.DEFAULT_PUBLIC_DOMAIN).toBe('companionintelligence.com');
+    expect(constants.DEFAULT_DEV_PUBLIC_DOMAIN).toBe(constants.DEFAULT_PROD_PUBLIC_DOMAIN);
   });
 
   it('does not switch to production defaults when only NODE_ENV is production', async () => {

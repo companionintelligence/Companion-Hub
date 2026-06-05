@@ -511,7 +511,25 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     this.pollRegistration();
   }
 
+  // Memoized device-id resolution. The detection chain (dmidecode →
+  // systeminformation → /sys → /etc/machine-id) is invoked on every app
+  // lifecycle command, bootstrap restart, and hourly validation; resolving it
+  // once per process avoids re-running (and re-logging) the same probes.
+  // Failures are not cached so a later call can retry.
+  private deviceIdPromise?: Promise<string>;
+
   public async getDeviceId(): Promise<string> {
+    if (!this.deviceIdPromise) {
+      this.deviceIdPromise = this.resolveDeviceId().catch((err) => {
+        this.deviceIdPromise = undefined;
+        throw err;
+      });
+    }
+
+    return this.deviceIdPromise;
+  }
+
+  private async resolveDeviceId(): Promise<string> {
     const envDeviceId = process.env.DEVICE_ID?.trim();
     if (envDeviceId) {
       this.logger.debug(`Device ID from DEVICE_ID env var: ${envDeviceId}`);
@@ -541,9 +559,10 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         return serial;
       }
 
-      this.logger.warn(`dmidecode returned unusable value: "${serial}", falling back to systeminformation`);
+      this.logger.debug(`dmidecode returned unusable value: "${serial}", falling back to systeminformation`);
     } catch (e) {
-      this.logger.warn('dmidecode failed, falling back to systeminformation', e);
+      // Expected on platforms without dmidecode (e.g. macOS) — not a real error.
+      this.logger.debug('dmidecode unavailable, falling back to systeminformation', e);
     }
 
     const uuid = await si.uuid().catch(() => ({ hardware: '' }));
@@ -558,14 +577,15 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     try {
       return fs.readFileSync('/sys/class/dmi/id/product_uuid', 'utf-8').trim();
     } catch (e) {
-      console.error('Could not read /sys/class/dmi/id/product_uuid', e);
+      // Linux-only path; absent on macOS — expected, keep at debug.
+      this.logger.debug('Could not read /sys/class/dmi/id/product_uuid', e);
     }
 
     // Last resort: /etc/machine-id
     try {
       return fs.readFileSync('/etc/machine-id', 'utf-8').trim();
     } catch (e) {
-      console.error('Could not read /etc/machine-id', e);
+      this.logger.debug('Could not read /etc/machine-id', e);
     }
 
     throw new Error('Unable to determine device ID from any source');

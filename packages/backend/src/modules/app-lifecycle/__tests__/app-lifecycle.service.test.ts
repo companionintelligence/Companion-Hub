@@ -6,6 +6,7 @@ import { AppLifecycleCommandFactory } from '../app-lifecycle-command.factory';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
+import { ImageSizeService } from '@/modules/marketplace/image-size.service';
 import { AppsService } from '@/modules/apps/apps.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { SSEService } from '@/core/sse/sse.service';
@@ -27,6 +28,7 @@ describe('AppLifecycleService', () => {
   let appsRepository: MockProxy<AppsRepository>;
   let configService: MockProxy<ConfigurationService>;
   let marketplaceService: MockProxy<MarketplaceService>;
+  let imageSizeService: MockProxy<ImageSizeService>;
   let appsService: MockProxy<AppsService>;
   let appFilesManager: MockProxy<AppFilesManager>;
   let sseService: MockProxy<SSEService>;
@@ -45,6 +47,7 @@ describe('AppLifecycleService', () => {
     appsRepository = mock<AppsRepository>();
     configService = mock<ConfigurationService>();
     marketplaceService = mock<MarketplaceService>();
+    imageSizeService = mock<ImageSizeService>();
     appsService = mock<AppsService>();
     appFilesManager = mock<AppFilesManager>();
     sseService = mock<SSEService>();
@@ -70,6 +73,7 @@ describe('AppLifecycleService', () => {
         { provide: AppsRepository, useValue: appsRepository },
         { provide: ConfigurationService, useValue: configService },
         { provide: MarketplaceService, useValue: marketplaceService },
+        { provide: ImageSizeService, useValue: imageSizeService },
         { provide: AppsService, useValue: appsService },
         { provide: AppFilesManager, useValue: appFilesManager },
         { provide: SSEService, useValue: sseService },
@@ -295,6 +299,40 @@ describe('AppLifecycleService', () => {
       appEventsQueue.publish.mockResolvedValue({ success: true, message: 'OK' } as any);
       appFilesManager.getAppEnvMap.mockReturnValue(new Map());
       reposHelpers.downloadAppFiles.mockResolvedValue({ files: {} } as any);
+      // Default: registry inspection unavailable — install proceeds (best-effort).
+      imageSizeService.verifyAppArchitecture.mockResolvedValue(null);
+    });
+
+    it('throws when image manifest does not include host architecture', async () => {
+      configService.getConfig.mockReturnValue({
+        isProduction: false,
+        architecture: 'arm64',
+        version: '1.0.0',
+        userSettings: { localDomain: 'lan', guestDashboard: false },
+      } as any);
+      marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue({
+        ...baseAppInfo,
+        supported_architectures: ['arm64', 'amd64'],
+      } as any);
+      imageSizeService.verifyAppArchitecture.mockResolvedValue({
+        ok: false,
+        image: 'ghcr.io/companionintelligence/ci-openclaw:2026.6.1',
+        available: ['amd64'],
+      });
+
+      await expect(service.installApp({ appUrn, form: {} })).rejects.toThrow('APP_ERROR_ARCHITECTURE_NOT_SUPPORTED');
+
+      expect(imageSizeService.verifyAppArchitecture).toHaveBeenCalledWith(appUrn, 'arm64');
+      expect(appsRepository.createApp).not.toHaveBeenCalled();
+    });
+
+    it('does not block install when manifest architecture inspection is unavailable', async () => {
+      imageSizeService.verifyAppArchitecture.mockResolvedValue(null);
+
+      await service.installApp({ appUrn, form: {} });
+
+      expect(imageSizeService.verifyAppArchitecture).toHaveBeenCalledWith(appUrn, 'amd64');
+      expect(appsRepository.createApp).toHaveBeenCalled();
     });
 
     it('MUST persist exposureMode=cloudflare when provided in form', async () => {
@@ -820,6 +858,33 @@ describe('AppLifecycleService', () => {
       expect(updateIdx).toBeGreaterThanOrEqual(0);
       expect(sseIdx).toBeGreaterThan(updateIdx);
       expect(appsRepository.updateAppById).toHaveBeenCalledWith(42, expect.objectContaining({ status: 'install_failed' }));
+    });
+
+    it('installApp error: still emits install_error when install_failed status write fails', async () => {
+      const baseAppInfo = { id: 'myapp', port: 8080, cihub_app_version: 1, exposable: true, supported_architectures: ['amd64'] };
+      marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(baseAppInfo as any);
+      appsRepository.getAppByUrn.mockResolvedValue(null as any);
+      appsRepository.getAppsByDomain.mockResolvedValue([]);
+      appsRepository.getAppsByLocalSubdomain.mockResolvedValue([]);
+      appsRepository.getAppsByPort.mockResolvedValue([]);
+      appEventsQueue.publish.mockResolvedValue({ success: false, message: 'fail' } as any);
+      appsRepository.updateAppById.mockImplementation(async (_id, patch) => {
+        if (patch?.status === 'install_failed') {
+          throw new Error('invalid input value for enum app_status: "install_failed"');
+        }
+        callOrder.push('db_update');
+        return fakeApp as any;
+      });
+
+      await service.installApp({ appUrn, form: {} });
+      await flushMicrotasks();
+
+      expect(callOrder).toContain('sse:install_error');
+      expect(sseService.emit).toHaveBeenCalledWith(
+        'app',
+        expect.objectContaining({ event: 'install_error', appUrn, appStatus: 'install_failed', error: 'fail' }),
+      );
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("Failed to persist 'install_failed' status"));
     });
 
     it('installApp retry: re-queues install when status is install_failed', async () => {

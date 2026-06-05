@@ -28,6 +28,7 @@ import { DockerService } from '@/modules/docker/docker.service';
 import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
+import { ImageSizeService } from '@/modules/marketplace/image-size.service';
 import { SubnetManagerService } from '@/modules/network/subnet-manager.service';
 import { AppEventsQueue, appEventSchema } from '@/modules/queue/entities/app-events';
 import { RepoEventsQueue } from '@/modules/queue/entities/repo-events';
@@ -86,6 +87,7 @@ describe('App lifecycle', () => {
   const cloudflareClientService = mock<CloudflareClientService>();
   const traefikConfigService = mock<TraefikConfigService>();
   const registrationService = mock<RegistrationService>();
+  const imageSizeService = mock<ImageSizeService>();
 
   // Create AppStoreRepository manually to ensure we use the real implementation with the correct databaseService reference
   const appStoreRepository = new AppStoreRepository(databaseService, reposHelpers);
@@ -113,11 +115,17 @@ describe('App lifecycle', () => {
 
   beforeEach(async () => {
     await cleanTestData(db);
+    // Best-effort arch check: null = registry unreachable, do not block install in tests.
+    imageSizeService.verifyAppArchitecture.mockResolvedValue(null);
 
     const moduleRef = await Test.createTestingModule({
       providers: [
         AppLifecycleService,
         MarketplaceService,
+        {
+          provide: ImageSizeService,
+          useValue: imageSizeService,
+        },
         AppStoreService,
         {
           provide: AppStoreRepository,
@@ -215,6 +223,7 @@ describe('App lifecycle', () => {
     configurationService.getConfig.mockReturnValue(
       fromPartial({
         demoMode: false,
+        architecture: 'amd64',
         directories: { dataDir: DATA_DIR, appDir: APP_DIR, appDataDir: APP_DATA_DIR },
         internalIp: '127.0.0.1',
         envFilePath: '/data/.env',

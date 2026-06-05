@@ -74,9 +74,12 @@ export const DEFAULT_DEV_CI_CLOUD_URL = 'https://hub.companionintelligence.com';
 export const DEFAULT_PROD_CI_CLOUD_URL = 'https://hub.ci.computer';
 export const DEFAULT_CI_CLOUD_URL = isProductionEnvironmentDefault() ? DEFAULT_PROD_CI_CLOUD_URL : DEFAULT_DEV_CI_CLOUD_URL;
 
-// Public app host domain
+// Public app host domain. Dev and prod default to the SAME canonical domain so
+// the offered domain subset is consistent across environments; the actual
+// per-environment working domain is set from CI-Cloud at device registration
+// (PairDevice returns CLOUDFLARE_DOMAIN) and validated server-side on sync.
 export const DEFAULT_DEV_PUBLIC_DOMAIN = 'companionintelligence.com';
-export const DEFAULT_PROD_PUBLIC_DOMAIN = 'companionintelligence.org';
+export const DEFAULT_PROD_PUBLIC_DOMAIN = 'companionintelligence.com';
 export const DEFAULT_PUBLIC_DOMAIN = isProductionEnvironmentDefault() ? DEFAULT_PROD_PUBLIC_DOMAIN : DEFAULT_DEV_PUBLIC_DOMAIN;
 
 // Version

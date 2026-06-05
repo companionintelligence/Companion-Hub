@@ -8,6 +8,60 @@ interface CachedSize {
   fetchedAt: number;
 }
 
+const DEFAULT_REGISTRY = 'registry.hub.docker.com';
+
+/**
+ * Parse a Docker/OCI image reference into registry host, repository path, and
+ * manifest tag or digest for registry v2 API URLs.
+ *
+ * Handles registry hosts with ports (my.registry:5000/ns/repo:tag) and digest
+ * refs (repo@sha256:...) without splitting on the wrong ':' character.
+ */
+export function parseDockerImageRef(image: string): { registry: string; repository: string; tag: string } {
+  let name = image.trim();
+
+  if (!name) {
+    return { registry: DEFAULT_REGISTRY, repository: 'library/unknown', tag: 'latest' };
+  }
+
+  let tag = 'latest';
+  const atIndex = name.indexOf('@');
+
+  if (atIndex === -1) {
+    // Tag delimiter is the last ':' after the last '/' so host ports are preserved.
+    const lastSlash = name.lastIndexOf('/');
+    const lastColon = name.lastIndexOf(':');
+
+    if (lastColon !== -1 && lastColon > lastSlash) {
+      tag = name.slice(lastColon + 1);
+      name = name.slice(0, lastColon);
+    }
+  } else {
+    tag = name.slice(atIndex + 1);
+    name = name.slice(0, atIndex);
+  }
+
+  if (!name) {
+    return { registry: DEFAULT_REGISTRY, repository: image, tag };
+  }
+
+  const firstSlash = name.indexOf('/');
+
+  if (firstSlash === -1) {
+    return { registry: DEFAULT_REGISTRY, repository: `library/${name}`, tag };
+  }
+
+  const head = name.slice(0, firstSlash);
+  const tail = name.slice(firstSlash + 1);
+  const headIsRegistry = head.includes('.') || head.includes(':') || head === 'localhost';
+
+  if (headIsRegistry) {
+    return { registry: head, repository: tail, tag };
+  }
+
+  return { registry: DEFAULT_REGISTRY, repository: name, tag };
+}
+
 @Injectable()
 export class ImageSizeService {
   private cache = new Map<string, CachedSize>();
@@ -69,44 +123,129 @@ export class ImageSizeService {
   }
 
   /**
-   * Parse a Docker image reference into registry, repository, and tag
+   * Best-effort pre-install check that every image in an app actually
+   * publishes a manifest for the given host architecture.
+   *
+   * Returns:
+   *   - { ok: true }                          all inspectable images support `arch`
+   *   - { ok: false, image, available }       an image definitively lacks `arch`
+   *   - null                                  could not inspect (network/registry/auth)
+   *                                           — caller should NOT hard-block on this
    */
-  private parseImageRef(image: string): { registry: string; repository: string; tag: string } {
-    let registry = 'registry.hub.docker.com';
-    let repository: string;
-    let tag = 'latest';
+  async verifyAppArchitecture(appUrn: AppUrn, arch: string): Promise<{ ok: true } | { ok: false; image: string; available: string[] } | null> {
+    let images: string[];
 
-    // Split off tag
-    const [imagePath, imageTag] = image.split(':');
-    if (imageTag) tag = imageTag;
-
-    if (!imagePath) {
-      return { registry, repository: image, tag };
+    try {
+      const { content } = await this.marketplaceService.getDockerComposeJson(appUrn);
+      const parsed = content as { services?: Array<{ image?: string }> | Record<string, { image?: string }> };
+      const services = Array.isArray(parsed?.services) ? parsed.services : Object.values(parsed?.services ?? {});
+      images = [...new Set(services.map((s) => s?.image).filter((img): img is string => Boolean(img)))];
+    } catch (error) {
+      this.logger.warn(`Could not read compose for ${appUrn} to verify architecture: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
     }
 
-    const parts = imagePath.split('/');
+    if (images.length === 0) {
+      return null;
+    }
 
-    // Detect if first part is a registry (contains . or :)
-    const firstPart = parts[0] ?? '';
-    if (parts.length >= 3 || (parts.length >= 2 && (firstPart.includes('.') || firstPart.includes(':')))) {
-      if (firstPart.includes('.') || firstPart.includes(':')) {
-        registry = firstPart;
-        repository = parts.slice(1).join('/');
-      } else {
-        // Docker Hub with org/repo
-        repository = imagePath;
+    let inspectedAny = false;
+
+    for (const image of images) {
+      const archs = await this.getImageArchitectures(image);
+
+      if (archs === null) {
+        // Couldn't inspect this image — skip it rather than false-blocking.
+        continue;
       }
-    } else if (parts.length === 2) {
-      // org/repo on Docker Hub
-      repository = imagePath;
-    } else {
-      // library image
-      repository = `library/${imagePath}`;
+
+      inspectedAny = true;
+
+      if (!archs.includes(arch)) {
+        return { ok: false, image, available: archs };
+      }
     }
 
-    repository ??= imagePath;
+    return inspectedAny ? { ok: true } : null;
+  }
 
-    return { registry, repository, tag };
+  /**
+   * Resolve the CPU architectures an image's manifest publishes. For a
+   * multi-arch manifest list / OCI index this is every platform entry; for a
+   * single-arch image we resolve the architecture from its config blob.
+   * Returns null when the manifest can't be inspected.
+   */
+  async getImageArchitectures(image: string): Promise<string[] | null> {
+    const { registry, repository, tag } = this.parseImageRef(image);
+
+    try {
+      const headers: Record<string, string> = {
+        Accept: [
+          'application/vnd.docker.distribution.manifest.list.v2+json',
+          'application/vnd.oci.image.index.v1+json',
+          'application/vnd.docker.distribution.manifest.v2+json',
+          'application/vnd.oci.image.manifest.v1+json',
+        ].join(', '),
+      };
+
+      const token = await this.getAuthToken(registry, repository);
+      if (token) {
+        headers.Authorization = `Bearer ${token}`;
+      }
+
+      const registryUrl = registry === 'registry.hub.docker.com' ? 'https://registry-1.docker.io' : `https://${registry}`;
+
+      const manifestUrl = `${registryUrl}/v2/${repository}/manifests/${tag}`;
+      const response = await fetch(manifestUrl, { headers, signal: AbortSignal.timeout(10000) });
+
+      if (!response.ok) {
+        this.logger.warn(`Failed to fetch manifest for ${image}: ${response.status}`);
+        return null;
+      }
+
+      const manifest = (await response.json()) as {
+        manifests?: Array<{ platform?: { architecture?: string; os?: string } }>;
+        architecture?: string;
+        config?: { digest?: string };
+      };
+
+      // Multi-arch manifest list / OCI index: read platform architectures.
+      if (Array.isArray(manifest.manifests)) {
+        const archs = manifest.manifests.map((m) => m.platform?.architecture).filter((a): a is string => Boolean(a) && a !== 'unknown');
+
+        return [...new Set(archs)];
+      }
+
+      // Schema v1 fallback: architecture is on the manifest itself.
+      if (manifest.architecture) {
+        return [manifest.architecture];
+      }
+
+      // Single image manifest (v2/OCI): architecture lives in the config blob.
+      if (manifest.config?.digest) {
+        const configUrl = `${registryUrl}/v2/${repository}/blobs/${manifest.config.digest}`;
+        const configResp = await fetch(configUrl, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+          signal: AbortSignal.timeout(10000),
+        });
+
+        if (configResp.ok) {
+          const cfg = (await configResp.json()) as { architecture?: string };
+          if (cfg.architecture) {
+            return [cfg.architecture];
+          }
+        }
+      }
+
+      return null;
+    } catch (error) {
+      this.logger.warn(`Error inspecting architectures for ${image}: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    }
+  }
+
+  private parseImageRef(image: string): { registry: string; repository: string; tag: string } {
+    return parseDockerImageRef(image);
   }
 
   /**
