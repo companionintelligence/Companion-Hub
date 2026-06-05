@@ -506,7 +506,7 @@ function prepareHubDataDirectory(envFileName: string): void {
 
 // ─── hub lifecycle ────────────────────────────────────────────────────────────
 
-function runDockerComposeUp(envFileName: string, files: string[], detached: boolean, envOverrides: Record<string, string>): void {
+async function runDockerComposeUp(envFileName: string, files: string[], detached: boolean, envOverrides: Record<string, string>): Promise<void> {
   const upArgs = ['compose', '--env-file', envFileName, '--project-name', 'ci-hub'];
   for (const f of files) upArgs.push('-f', f);
   upArgs.push('up');
@@ -515,7 +515,7 @@ function runDockerComposeUp(envFileName: string, files: string[], detached: bool
 
   const maxAttempts = 3;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const result = runDockerComposeUpOnce(upArgs, { detached, envOverrides });
+    const result = await runDockerComposeUpOnce(upArgs, { detached, envOverrides });
     if (result.status === 0) return;
 
     const combined = `${result.stdout || ''}\n${result.stderr || ''}`.trim();
@@ -536,7 +536,7 @@ function runDockerComposeUp(envFileName: string, files: string[], detached: bool
   }
 }
 
-function startHub(mode: StartMode, env: HubEnv) {
+async function startHub(mode: StartMode, env: HubEnv) {
   requireRepoRoot(mode === 'dev' ? 'cihub dev / hot-reload' : 'cihub up');
   const envFileName = getEnvFileOrExit(env);
   prepareHubDataDirectory(envFileName);
@@ -595,7 +595,7 @@ function startHub(mode: StartMode, env: HubEnv) {
     [`Environment: ${env}`, `Mode: ${detached ? 'detached' : 'attached'}`, `Compose files: ${files.join(', ')}`],
     'green',
   );
-  runDockerComposeUp(envFileName, files, detached, envOverrides);
+  await runDockerComposeUp(envFileName, files, detached, envOverrides);
 }
 
 function setupHub(env: HubEnv) {
@@ -657,13 +657,13 @@ function shutdownHub(env: HubEnv) {
   run('docker', args, envOverrides);
 }
 
-function hotReloadHub(env: HubEnv) {
+async function hotReloadHub(env: HubEnv) {
   printMessageBox(
     'Starting hot reload',
     [`Environment: ${env}`, 'Infra + backend/frontend from source — changes reload without a full Docker rebuild.'],
     'green',
   );
-  startHub('dev', env);
+  await startHub('dev', env);
 }
 
 function findComposeName(keyword: string): string {
@@ -1174,7 +1174,7 @@ async function runWizard(defaultEnv: HubEnv = 'local') {
       console.log();
       console.log(renderStep(5, FTUE_STEPS, 'Starting the Hub…', 'active'));
       const detached = (await rl.question('  Run detached (background)? [y/N]: ')).trim().toLowerCase();
-      startHub(detached === 'y' || detached === 'yes' ? 'start:detached' : 'start', env);
+      await startHub(detached === 'y' || detached === 'yes' ? 'start:detached' : 'start', env);
       console.log(renderStep(5, FTUE_STEPS, 'Hub launched', 'done'));
 
       // ── Step 6: optional model ────────────────────────────────────────
@@ -1237,7 +1237,7 @@ async function runWizard(defaultEnv: HubEnv = 'local') {
     if (action === 'setup') return setupHub(env);
     if (action === 'up') {
       const detached = (await rl.question('  Detached mode? [y/N]: ')).trim().toLowerCase();
-      return startHub(detached === 'y' || detached === 'yes' ? 'start:detached' : 'start', env);
+      return await startHub(detached === 'y' || detached === 'yes' ? 'start:detached' : 'start', env);
     }
     if (action === 'register') return registerHub(env);
     if (action === 'config') return printConfig(env);
@@ -1253,7 +1253,7 @@ async function runWizard(defaultEnv: HubEnv = 'local') {
       }
       return purgeHub(['--yes']);
     }
-    if (action === 'hot-reload') return hotReloadHub(env);
+    if (action === 'hot-reload') return await hotReloadHub(env);
   } finally {
     rl.close();
   }
@@ -1285,7 +1285,7 @@ export async function runCli(rawArgs: string[]) {
   const first = args[0];
 
   if (!first) {
-    startHub('dev', 'local');
+    await startHub('dev', 'local');
     return;
   }
 
@@ -1308,7 +1308,7 @@ export async function runCli(rawArgs: string[]) {
     const mode = first as StartMode;
     const env = (args[1] || 'local') as HubEnv;
     if (!allowedEnvs.includes(env)) usageAndExit(`Unknown env: ${env}`);
-    startHub(mode, env);
+    await startHub(mode, env);
     return;
   }
 
@@ -1330,7 +1330,7 @@ export async function runCli(rawArgs: string[]) {
   if (first === 'up') {
     const detached = args.includes('--detached');
     const envArgs = args.slice(1).filter((a) => a !== '--detached');
-    startHub(detached ? 'start:detached' : 'start', resolveEnvFromArgs(envArgs));
+    await startHub(detached ? 'start:detached' : 'start', resolveEnvFromArgs(envArgs));
     return;
   }
 
@@ -1350,7 +1350,7 @@ export async function runCli(rawArgs: string[]) {
   }
 
   if (first === 'hot-reload') {
-    hotReloadHub(resolveEnvFromArgs(args.slice(1)));
+    await hotReloadHub(resolveEnvFromArgs(args.slice(1)));
     return;
   }
 

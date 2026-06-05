@@ -151,6 +151,17 @@ describe('AppsService.checkAppAvailability', () => {
     expect(result.appUrl).toBe('https://myapp-device1-myorg.example.com');
   });
 
+  it('cloudflare mode falls back to appName-storeSlug when localSubdomain is missing', async () => {
+    ctx.mockApp.exposureMode = 'cloudflare';
+    ctx.mockApp.localSubdomain = null;
+    mockedAxiosGet.mockResolvedValue({ status: 200, data: 'OK' });
+
+    const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+    expect(result.available).toBe(true);
+    expect(result.appUrl).toBe('https://test-app-test-store-device1-myorg.example.com');
+  });
+
   // Test 4: cloudflare mode without hubSubdomain → returns NO_DEVICE_REGISTRATION error
   it('cloudflare mode without hubSubdomain → returns NO_DEVICE_REGISTRATION', async () => {
     ctx.mockApp.exposureMode = 'cloudflare';

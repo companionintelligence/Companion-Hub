@@ -232,7 +232,7 @@ export class AppsService {
     }
 
     const identity = buildPublicWebIdentity({
-      appSubdomain: baseSubdomain || '',
+      appSubdomain: baseSubdomain || `${app.appName}-${app.appStoreSlug}`,
       hubSubdomain: org.hubSubdomain,
       orgSlug: organizationSlug,
       publicDomainRoot: resolvedDomain,
