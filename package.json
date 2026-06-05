@@ -5,7 +5,7 @@
   "packageManager": "pnpm@11.5.1",
   "engines": {
     "node": ">=22",
-    "pnpm": ">=10"
+    "pnpm": ">=11"
   },
   "scripts": {
     "dev": "pnpm exec tsx scripts/start.ts dev",
