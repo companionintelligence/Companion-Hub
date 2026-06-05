@@ -159,28 +159,39 @@ pub fn run() {
             // window.open_devtools();
 
             if let Ok(store) = app.store("settings.json") {
-                if let Some(x) = store
-                    .get("window_x")
-                    .and_then(|v: serde_json::Value| v.as_f64())
-                {
-                    if let Some(y) = store
-                        .get("window_y")
+                // Geometry is persisted on window close (see tray.rs). Its absence
+                // means this is the first launch on this machine — open maximized so
+                // the onboarding wizard has the full screen to work with. Every later
+                // launch restores the saved size and position instead.
+                let has_saved_geometry = store.get("window_width").is_some();
+
+                if has_saved_geometry {
+                    if let Some(x) = store
+                        .get("window_x")
                         .and_then(|v: serde_json::Value| v.as_f64())
                     {
-                        let _ =
-                            window.set_position(tauri::PhysicalPosition::new(x as i32, y as i32));
+                        if let Some(y) = store
+                            .get("window_y")
+                            .and_then(|v: serde_json::Value| v.as_f64())
+                        {
+                            let _ = window
+                                .set_position(tauri::PhysicalPosition::new(x as i32, y as i32));
+                        }
                     }
-                }
-                if let Some(w) = store
-                    .get("window_width")
-                    .and_then(|v: serde_json::Value| v.as_f64())
-                {
-                    if let Some(h) = store
-                        .get("window_height")
+                    if let Some(w) = store
+                        .get("window_width")
                         .and_then(|v: serde_json::Value| v.as_f64())
                     {
-                        let _ = window.set_size(tauri::PhysicalSize::new(w as u32, h as u32));
+                        if let Some(h) = store
+                            .get("window_height")
+                            .and_then(|v: serde_json::Value| v.as_f64())
+                        {
+                            let _ = window.set_size(tauri::PhysicalSize::new(w as u32, h as u32));
+                        }
                     }
+                } else {
+                    // First-time startup — maximize to fill the screen.
+                    let _ = window.maximize();
                 }
             }
 
