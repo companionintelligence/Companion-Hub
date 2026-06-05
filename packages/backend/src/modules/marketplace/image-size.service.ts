@@ -69,6 +69,128 @@ export class ImageSizeService {
   }
 
   /**
+   * Best-effort pre-install check that every image in an app actually
+   * publishes a manifest for the given host architecture.
+   *
+   * Returns:
+   *   - { ok: true }                          all inspectable images support `arch`
+   *   - { ok: false, image, available }       an image definitively lacks `arch`
+   *   - null                                  could not inspect (network/registry/auth)
+   *                                           — caller should NOT hard-block on this
+   */
+  async verifyAppArchitecture(appUrn: AppUrn, arch: string): Promise<{ ok: true } | { ok: false; image: string; available: string[] } | null> {
+    let images: string[];
+
+    try {
+      const { content } = await this.marketplaceService.getDockerComposeJson(appUrn);
+      const parsed = content as { services?: Array<{ image?: string }> | Record<string, { image?: string }> };
+      const services = Array.isArray(parsed?.services) ? parsed.services : Object.values(parsed?.services ?? {});
+      images = [...new Set(services.map((s) => s?.image).filter((img): img is string => Boolean(img)))];
+    } catch (error) {
+      this.logger.warn(`Could not read compose for ${appUrn} to verify architecture: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    }
+
+    if (images.length === 0) {
+      return null;
+    }
+
+    let inspectedAny = false;
+
+    for (const image of images) {
+      const archs = await this.getImageArchitectures(image);
+
+      if (archs === null) {
+        // Couldn't inspect this image — skip it rather than false-blocking.
+        continue;
+      }
+
+      inspectedAny = true;
+
+      if (!archs.includes(arch)) {
+        return { ok: false, image, available: archs };
+      }
+    }
+
+    return inspectedAny ? { ok: true } : null;
+  }
+
+  /**
+   * Resolve the CPU architectures an image's manifest publishes. For a
+   * multi-arch manifest list / OCI index this is every platform entry; for a
+   * single-arch image we resolve the architecture from its config blob.
+   * Returns null when the manifest can't be inspected.
+   */
+  async getImageArchitectures(image: string): Promise<string[] | null> {
+    const { registry, repository, tag } = this.parseImageRef(image);
+
+    try {
+      const headers: Record<string, string> = {
+        Accept: [
+          'application/vnd.docker.distribution.manifest.list.v2+json',
+          'application/vnd.oci.image.index.v1+json',
+          'application/vnd.docker.distribution.manifest.v2+json',
+          'application/vnd.oci.image.manifest.v1+json',
+        ].join(', '),
+      };
+
+      const token = await this.getAuthToken(registry, repository);
+      if (token) {
+        headers.Authorization = `Bearer ${token}`;
+      }
+
+      const registryUrl = registry === 'registry.hub.docker.com' ? 'https://registry-1.docker.io' : `https://${registry}`;
+
+      const manifestUrl = `${registryUrl}/v2/${repository}/manifests/${tag}`;
+      const response = await fetch(manifestUrl, { headers, signal: AbortSignal.timeout(10000) });
+
+      if (!response.ok) {
+        this.logger.warn(`Failed to fetch manifest for ${image}: ${response.status}`);
+        return null;
+      }
+
+      const manifest = (await response.json()) as {
+        manifests?: Array<{ platform?: { architecture?: string; os?: string } }>;
+        architecture?: string;
+        config?: { digest?: string };
+      };
+
+      // Multi-arch manifest list / OCI index: read platform architectures.
+      if (Array.isArray(manifest.manifests)) {
+        const archs = manifest.manifests.map((m) => m.platform?.architecture).filter((a): a is string => Boolean(a) && a !== 'unknown');
+
+        return [...new Set(archs)];
+      }
+
+      // Schema v1 fallback: architecture is on the manifest itself.
+      if (manifest.architecture) {
+        return [manifest.architecture];
+      }
+
+      // Single image manifest (v2/OCI): architecture lives in the config blob.
+      if (manifest.config?.digest) {
+        const configUrl = `${registryUrl}/v2/${repository}/blobs/${manifest.config.digest}`;
+        const configResp = await fetch(configUrl, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+          signal: AbortSignal.timeout(10000),
+        });
+
+        if (configResp.ok) {
+          const cfg = (await configResp.json()) as { architecture?: string };
+          if (cfg.architecture) {
+            return [cfg.architecture];
+          }
+        }
+      }
+
+      return null;
+    } catch (error) {
+      this.logger.warn(`Error inspecting architectures for ${image}: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    }
+  }
+
+  /**
    * Parse a Docker image reference into registry, repository, and tag
    */
   private parseImageRef(image: string): { registry: string; repository: string; tag: string } {

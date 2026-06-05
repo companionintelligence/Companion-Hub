@@ -9,6 +9,6 @@ import { MarketplaceService } from './marketplace.service';
   imports: [AppStoreModule, forwardRef(() => RegistrationModule)],
   controllers: [MarketplaceController],
   providers: [MarketplaceService, ImageSizeService],
-  exports: [MarketplaceService],
+  exports: [MarketplaceService, ImageSizeService],
 })
 export class MarketplaceModule {}

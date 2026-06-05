@@ -6,6 +6,7 @@ import { AppLifecycleCommandFactory } from '../app-lifecycle-command.factory';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
+import { ImageSizeService } from '@/modules/marketplace/image-size.service';
 import { AppsService } from '@/modules/apps/apps.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { SSEService } from '@/core/sse/sse.service';
@@ -27,6 +28,7 @@ describe('AppLifecycleService', () => {
   let appsRepository: MockProxy<AppsRepository>;
   let configService: MockProxy<ConfigurationService>;
   let marketplaceService: MockProxy<MarketplaceService>;
+  let imageSizeService: MockProxy<ImageSizeService>;
   let appsService: MockProxy<AppsService>;
   let appFilesManager: MockProxy<AppFilesManager>;
   let sseService: MockProxy<SSEService>;
@@ -45,6 +47,7 @@ describe('AppLifecycleService', () => {
     appsRepository = mock<AppsRepository>();
     configService = mock<ConfigurationService>();
     marketplaceService = mock<MarketplaceService>();
+    imageSizeService = mock<ImageSizeService>();
     appsService = mock<AppsService>();
     appFilesManager = mock<AppFilesManager>();
     sseService = mock<SSEService>();
@@ -70,6 +73,7 @@ describe('AppLifecycleService', () => {
         { provide: AppsRepository, useValue: appsRepository },
         { provide: ConfigurationService, useValue: configService },
         { provide: MarketplaceService, useValue: marketplaceService },
+        { provide: ImageSizeService, useValue: imageSizeService },
         { provide: AppsService, useValue: appsService },
         { provide: AppFilesManager, useValue: appFilesManager },
         { provide: SSEService, useValue: sseService },

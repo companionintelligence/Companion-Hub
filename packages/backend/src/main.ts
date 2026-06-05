@@ -1,4 +1,4 @@
-import { type INestApplication, ValidationPipe } from '@nestjs/common';
+import { type INestApplication, Logger, ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { SwaggerModule } from '@nestjs/swagger';
 import cookieParser from 'cookie-parser';
@@ -6,6 +6,21 @@ import { AppModule } from './app.module';
 import { AppService } from './app.service';
 import { generateSystemEnvFile } from './common/helpers/env-helpers';
 import { buildSwaggerDocument, writeSwaggerJsonFile } from './swagger-setup';
+
+// Process-level safety nets. A detached async failure (e.g. a bad DB write in a
+// fire-and-forget app lifecycle callback) must NOT terminate the Hub. Log it
+// and keep running so the desktop app degrades gracefully instead of crashing.
+const processLogger = new Logger('Process');
+
+process.on('unhandledRejection', (reason: unknown) => {
+  processLogger.error(
+    `Unhandled promise rejection (process kept alive): ${reason instanceof Error ? (reason.stack ?? reason.message) : String(reason)}`,
+  );
+});
+
+process.on('uncaughtException', (error: Error) => {
+  processLogger.error(`Uncaught exception (process kept alive): ${error.stack ?? error.message}`);
+});
 
 async function setupSwagger(app: INestApplication) {
   const document = buildSwaggerDocument(app);
