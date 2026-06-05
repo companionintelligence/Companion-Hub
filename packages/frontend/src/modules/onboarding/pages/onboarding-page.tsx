@@ -5,6 +5,7 @@ import { apiFetch } from '@/lib/api-fetch';
 import { getLogo } from '@/lib/theme/theme';
 import { Suspense, useEffect, useMemo, useState } from 'react';
 import { Navigate, useNavigate } from 'react-router';
+import { AGENT_APP_SLUG } from '../helpers/ai-setup-types';
 import { AiSetupStep } from '../components/ai-setup-step';
 import { StepSection } from '../components/ai-setup/primitives';
 import { InstallStep } from '../components/install-step';
@@ -13,12 +14,12 @@ import { buildAgentApp, resolveExposureMode } from '../helpers/agent-onboarding'
 import { identifyServices, type DetectedService } from '../helpers/service-detection';
 import type { AiSetupConfig, OnboardingApp } from '../helpers/types';
 
-const AGENT_APP_ALIAS_CANONICAL: Record<string, string> = {
-  openclaw: 'ci-openclaw',
-  'ci-openclaw': 'ci-openclaw',
-  hermes: 'ci-hermes',
-  'ci-hermes': 'ci-hermes',
-};
+const AGENT_APP_ALIAS_CANONICAL: Record<string, string> = Object.fromEntries(
+  Object.entries(AGENT_APP_SLUG).flatMap(([framework, slug]) => [
+    [framework, slug],
+    [slug, slug],
+  ]),
+);
 
 function appIdentityKeys(app: OnboardingApp): string[] {
   const keys: string[] = [];
