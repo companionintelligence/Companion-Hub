@@ -2243,6 +2243,9 @@ fn seeded_traefik_config_contents() -> String {
 }
 
 /// Directories bind-mounted into the Hub container that must be writable on the host.
+/// Keep policy aligned with `scripts/heal-hub-bind-mounts.ts`:
+/// only `cache`, `logs`, and `user-config` are safe to auto-quarantine; data dirs
+/// (`apps`, `app-data`, `media`, `repos`, `backups`) require manual ownership repair.
 const HUB_BIND_MOUNT_DIRS: &[&str] = &[
     "cache", "state", "logs", "apps", "media", "repos", "app-data", "user-config", "backups",
 ];

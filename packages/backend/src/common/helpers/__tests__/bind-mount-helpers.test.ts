@@ -1,22 +1,13 @@
-import { execSync } from 'node:child_process';
+import fs from 'node:fs';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { readTextFileIfExists, writeHealableTextFile } from '../bind-mount-helpers';
-
-function resetTmpRoot(tmpRoot: string): void {
-  execSync(`rm -rf ${JSON.stringify(tmpRoot)}`);
-  execSync(`mkdir -p ${JSON.stringify(tmpRoot)}`);
-}
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { quarantineStalePath, readTextFileIfExists, writeHealableTextFile } from '../bind-mount-helpers';
 
 describe('bind-mount-helpers', () => {
   const tmpRoot = join(process.cwd(), '.tmp-bind-mount-helpers-test');
 
   beforeEach(() => {
-    resetTmpRoot(tmpRoot);
-  });
-
-  afterEach(() => {
-    execSync(`rm -rf ${JSON.stringify(tmpRoot)}`);
+    fs.mkdirSync(tmpRoot, { recursive: true });
   });
 
   it('writes a new file in a writable directory', async () => {
@@ -25,16 +16,29 @@ describe('bind-mount-helpers', () => {
     expect(readTextFileIfExists(filePath)).toBe('test-token');
   });
 
-  it('replaces a read-only stale file by unlinking and rewriting', async () => {
-    if (process.getuid?.() === 0) {
-      return;
-    }
-
+  it('quarantines a read-only stale file and preserves content for recovery', async () => {
     const filePath = join(tmpRoot, 'hub.yml');
-    execSync(`printf 'stale: true\\n' > ${JSON.stringify(filePath)}`);
-    execSync(`chmod 400 ${JSON.stringify(filePath)}`);
+    fs.writeFileSync(filePath, 'stale: true\n', 'utf-8');
+    fs.chmodSync(filePath, 0o400);
+    vi.spyOn(fs.promises, 'chmod').mockImplementation(async (targetPath) => {
+      if (String(targetPath) === filePath) {
+        throw Object.assign(new Error('EPERM'), { code: 'EPERM' });
+      }
+    });
 
     await writeHealableTextFile(filePath, 'http:\n  routers: {}\n');
+    const names = fs.readdirSync(tmpRoot);
+    expect(names.some((name) => /^hub\.yml\.stale-root-/.test(name))).toBe(true);
     expect(readTextFileIfExists(filePath)).toContain('routers');
+  });
+
+  it('quarantineStalePath preserves original file contents', () => {
+    const filePath = join(tmpRoot, 'token');
+    fs.writeFileSync(filePath, 'secret-token', 'utf-8');
+    const quarantinePath = quarantineStalePath(filePath);
+    expect(quarantinePath).toBeTruthy();
+    if (!quarantinePath) return;
+    expect(fs.readFileSync(quarantinePath, 'utf-8')).toBe('secret-token');
+    expect(readTextFileIfExists(filePath)).toBeNull();
   });
 });

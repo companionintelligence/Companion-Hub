@@ -11,10 +11,13 @@ vi.mock('node:child_process', () => ({
 }));
 
 import {
+  DATA_BEARING_BIND_MOUNT_DIRS,
   ensureHubBindMountsWritable,
   hostPathWritable,
   quarantineAndRecreateTunnelDir,
+  RECREATABLE_BIND_MOUNT_DIRS,
   repairCriticalBindMountFiles,
+  repairHostRootOwnedBindMounts,
   resolveHubContainerIdentity,
   resolveTraefikHubRoutePath,
   resolveTunnelTokenPath,
@@ -175,5 +178,24 @@ describe('repairCriticalBindMountFiles', () => {
         source: 'env',
       }).some((entry) => entry.includes('tunnel')),
     ).toBe(false);
+  });
+});
+
+describe('repairHostRootOwnedBindMounts policy', () => {
+  it('keeps data-bearing directories out of the auto-quarantine list', () => {
+    expect(RECREATABLE_BIND_MOUNT_DIRS).toEqual(['cache', 'logs', 'user-config']);
+    expect(DATA_BEARING_BIND_MOUNT_DIRS).toEqual(['apps', 'app-data', 'media', 'repos', 'backups']);
+    expect(RECREATABLE_BIND_MOUNT_DIRS.some((dir) => (DATA_BEARING_BIND_MOUNT_DIRS as readonly string[]).includes(dir))).toBe(false);
+  });
+
+  it('returns blocked data dirs separately from repaired paths', () => {
+    const result = repairHostRootOwnedBindMounts(join(process.cwd(), '.tmp-nonexistent-heal-root'), {
+      uid: 1000,
+      gid: 1000,
+      dockerGid: 999,
+      source: 'env',
+    });
+    expect(Array.isArray(result.blockedDataDirs)).toBe(true);
+    expect(Array.isArray(result.repaired)).toBe(true);
   });
 });

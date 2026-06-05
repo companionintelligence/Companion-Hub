@@ -5,6 +5,19 @@ function isFsErrorWithCode(error: unknown, code: string): boolean {
   return Boolean(error && typeof error === 'object' && 'code' in error && (error as NodeJS.ErrnoException).code === code);
 }
 
+/** Rename a stale bind-mounted path aside for manual recovery instead of deleting it. */
+export function quarantineStalePath(targetPath: string, reason = 'stale-root'): string | null {
+  if (!fs.existsSync(targetPath)) return null;
+
+  const quarantinePath = `${targetPath}.${reason}-${Date.now()}`;
+  try {
+    fs.renameSync(targetPath, quarantinePath);
+    return quarantinePath;
+  } catch {
+    return null;
+  }
+}
+
 /** Ensure a bind-mounted directory exists and is writable by the Hub process. */
 export async function ensureWritableDirectory(dirPath: string, mode = 0o775): Promise<void> {
   await fs.promises.mkdir(dirPath, { recursive: true, mode });
@@ -25,18 +38,16 @@ async function retryWritableFile(filePath: string, fileMode: number): Promise<vo
     // Host user may not own a root-created directory.
   }
 
-  if (fs.existsSync(filePath)) {
-    try {
-      await fs.promises.chmod(filePath, fileMode);
-      await fs.promises.access(filePath, fs.constants.W_OK);
-      return;
-    } catch {
-      try {
-        await fs.promises.unlink(filePath);
-      } catch {
-        // Best-effort; write retry will surface remaining issues.
-      }
-    }
+  if (!fs.existsSync(filePath)) {
+    return;
+  }
+
+  try {
+    await fs.promises.chmod(filePath, fileMode);
+    await fs.promises.access(filePath, fs.constants.W_OK);
+    return;
+  } catch {
+    quarantineStalePath(filePath);
   }
 }
 

@@ -34,6 +34,7 @@ import {
   DEFAULT_THEME_COLOR,
   DEFAULT_LOCAL_DOMAIN,
 } from '../constants';
+import { quarantineStalePath } from './bind-mount-helpers';
 
 export const DEFAULT_REPO_URL = '';
 
@@ -164,12 +165,14 @@ async function retrySettingsJsonPermissions(settingsFilePath: string, stateDir: 
   if (fs.existsSync(settingsFilePath)) {
     try {
       await fs.promises.chmod(settingsFilePath, SETTINGS_JSON_MODE);
+      return;
     } catch {
-      // Host-root-owned bind mounts cannot be chmod'd from the container; unlink and recreate.
       try {
-        await fs.promises.unlink(settingsFilePath);
+        await fs.promises.access(settingsFilePath, fs.constants.R_OK);
+        // Readable but not writable — preserve in place for manual ownership repair.
+        return;
       } catch {
-        // Best-effort; desktop/CLI preflight may heal before the next start.
+        quarantineStalePath(settingsFilePath);
       }
     }
   }
@@ -177,7 +180,7 @@ async function retrySettingsJsonPermissions(settingsFilePath: string, stateDir: 
 
 function settingsJsonPermissionError(settingsFilePath: string, cause: unknown): Error {
   return new Error(
-    `Cannot read or write ${settingsFilePath}. This usually means bind-mounted Hub data was written by a prior container running as a different user (common after Hub upgrades or Docker Desktop UID changes). Stop the Hub, fix ownership on the host data directory (for example: chown -R "$(id -u):$(id -g)" "$ROOT_FOLDER_HOST/state"), or remove state/settings.json and restart.`,
+    `Cannot read or write ${settingsFilePath}. This usually means bind-mounted Hub data was written by a prior container running as a different user (common after Hub upgrades or Docker Desktop UID changes). Stop the Hub, fix ownership on the host data directory (for example: chown -R "$(id -u):$(id -g)" "$ROOT_FOLDER_HOST/state"), or quarantine state/settings.json and restart.`,
     { cause },
   );
 }

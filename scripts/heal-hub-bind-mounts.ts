@@ -28,6 +28,9 @@ export const BIND_MOUNT_DIRS = ['cache', 'state', 'logs', 'apps', 'media', 'repo
 /** Directories safe to quarantine and recreate when host-root-owned (no user app data expected). */
 export const RECREATABLE_BIND_MOUNT_DIRS = ['cache', 'logs', 'user-config'] as const;
 
+/** User data directories — chown only; never auto-quarantine. */
+export const DATA_BEARING_BIND_MOUNT_DIRS = ['apps', 'app-data', 'media', 'repos', 'backups'] as const;
+
 /** Log files a prior root-owned Hub container may leave behind. */
 export const STALE_ROOT_OWNED_FILES = [
   ['state', '.env.resolved'],
@@ -255,6 +258,21 @@ function trySudoChownRecursive(targetPath: string, uid: number, gid: number): bo
 }
 
 /**
+ * Rename a stale bind-mounted path aside for manual recovery instead of deleting it.
+ */
+export function quarantineStalePath(targetPath: string, reason = 'stale-root'): string | null {
+  if (!existsSync(targetPath)) return null;
+
+  const quarantinePath = `${targetPath}.${reason}-${Date.now()}`;
+  try {
+    renameSync(targetPath, quarantinePath);
+    return quarantinePath;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Move an unwritable host-root-owned bind mount aside and recreate it.
  * Works because ROOT_FOLDER_HOST is owned by the host user even when a child
  * directory was created as host root by an older Hub container.
@@ -379,10 +397,14 @@ export function repairCriticalBindMountFiles(rootFolderHost: string, identity: H
 }
 
 /** Repair bind-mount directories/files owned by host root that block container writes. */
-export function repairHostRootOwnedBindMounts(rootFolderHost: string, identity: HubContainerIdentity): string[] {
+export function repairHostRootOwnedBindMounts(
+  rootFolderHost: string,
+  identity: HubContainerIdentity,
+): { repaired: string[]; blockedDataDirs: string[] } {
   const root = path.resolve(rootFolderHost);
   const effective = effectiveBindMountIdentity(identity);
   const repaired: string[] = [];
+  const blockedDataDirs: string[] = [];
 
   for (const dir of RECREATABLE_BIND_MOUNT_DIRS) {
     const target = path.join(root, dir);
@@ -399,8 +421,7 @@ export function repairHostRootOwnedBindMounts(rootFolderHost: string, identity: 
     }
   }
 
-  for (const dir of BIND_MOUNT_DIRS) {
-    if ((RECREATABLE_BIND_MOUNT_DIRS as readonly string[]).includes(dir) || dir === 'state') continue;
+  for (const dir of DATA_BEARING_BIND_MOUNT_DIRS) {
     const target = path.join(root, dir);
     if (!existsSync(target)) continue;
     if (!isHostRootOwnedPath(target) || hostPathWritable(target)) continue;
@@ -410,13 +431,11 @@ export function repairHostRootOwnedBindMounts(rootFolderHost: string, identity: 
       continue;
     }
 
-    if (quarantineAndRecreateBindMountDir(target)) {
-      repaired.push(`${dir}/ (recreated)`);
-    }
+    blockedDataDirs.push(dir);
   }
 
   repaired.push(...removeHostRootOwnedStateFiles(root));
-  return repaired;
+  return { repaired, blockedDataDirs };
 }
 
 function seedSettingsJson(stateDir: string): void {
@@ -451,7 +470,7 @@ function removeStaleRootOwnedFiles(root: string): void {
  * cannot chown these files from inside a container.
  */
 export function removeHostRootOwnedStateFiles(root: string): string[] {
-  const removed: string[] = [];
+  const quarantined: string[] = [];
   const stateDir = path.join(root, 'state');
 
   for (const [subdir, file] of STATE_FILES_NEED_WRITE) {
@@ -463,8 +482,10 @@ export function removeHostRootOwnedStateFiles(root: string): string[] {
       if (!st.isFile() || st.uid !== 0) continue;
       if (hostPathWritable(filePath)) continue;
 
-      rmSync(filePath, { force: true });
-      removed.push(path.join(subdir, file));
+      const quarantinePath = quarantineStalePath(filePath);
+      if (quarantinePath) {
+        quarantined.push(`${path.join(subdir, file)} → ${quarantinePath}`);
+      }
     } catch {
       // Best-effort; verify step will surface remaining issues.
     }
@@ -479,16 +500,22 @@ export function removeHostRootOwnedStateFiles(root: string): string[] {
     // ignore
   }
 
-  return removed;
+  return quarantined;
 }
 
-function permissionRepairHint(rootFolderHost: string, identity: HubContainerIdentity): string {
-  return [
+function permissionRepairHint(rootFolderHost: string, identity: HubContainerIdentity, blockedDataDirs: string[] = []): string {
+  const lines = [
     `Hub data at ${rootFolderHost} is not writable by the Hub container (UID/GID ${identity.uid}:${identity.gid}).`,
     'This usually happens after a Hub upgrade when old bind-mount files were owned by a different user.',
     `Fix manually: sudo chown -R ${identity.uid}:${identity.gid} "${path.join(rootFolderHost, 'state')}"`,
-    `Or remove ${path.join(rootFolderHost, 'state', 'settings.json')} and restart the Hub.`,
-  ].join(' ');
+  ];
+
+  for (const dir of blockedDataDirs) {
+    lines.push(`Data directory ${dir}/ is host-root-owned; run: sudo chown -R ${identity.uid}:${identity.gid} "${path.join(rootFolderHost, dir)}"`);
+  }
+
+  lines.push(`Or quarantine ${path.join(rootFolderHost, 'state', 'settings.json')} manually and restart the Hub.`);
+  return lines.join(' ');
 }
 
 export interface EnsureHubBindMountsOptions {
@@ -518,7 +545,10 @@ export function ensureHubBindMountsWritable(rootFolderHost: string, options: Ens
   removeStaleRootOwnedFiles(root);
 
   const identity = resolveHubContainerIdentity(options.envFile);
-  const repaired = repairHostRootOwnedBindMounts(root, identity);
+  const { repaired, blockedDataDirs } = repairHostRootOwnedBindMounts(root, identity);
+  if (blockedDataDirs.length > 0) {
+    throw new Error(permissionRepairHint(root, identity, blockedDataDirs));
+  }
   const criticalRepaired = repairCriticalBindMountFiles(root, identity);
   if (repaired.length > 0 || criticalRepaired.length > 0) {
     console.warn(`heal-hub-bind-mounts: repaired host-root-owned bind mount path(s): ${[...repaired, ...criticalRepaired].join(', ')}`);
@@ -586,7 +616,10 @@ export function ensureHubBindMountsWritable(rootFolderHost: string, options: Ens
   }
 
   if (!containerCanWriteCache) {
-    repairHostRootOwnedBindMounts(root, identity);
+    const { blockedDataDirs: cacheBlocked } = repairHostRootOwnedBindMounts(root, identity);
+    if (cacheBlocked.length > 0) {
+      throw new Error(permissionRepairHint(root, identity, cacheBlocked));
+    }
     containerCanWriteCache = verifyContainerCanWriteDir(cacheDir, identity.uid, identity.gid);
   }
 
