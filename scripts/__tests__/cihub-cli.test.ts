@@ -74,6 +74,12 @@ describe('renderHelp', () => {
     expect(plain).toContain('Developer workflow');
   });
 
+  it('mentions public-web commands', () => {
+    const plain = stripAnsi(renderHelp());
+    expect(plain).toContain('public-web status');
+    expect(plain).toContain('public-web repair');
+  });
+
   it('mentions the new app subcommands', () => {
     const plain = stripAnsi(renderHelp());
     expect(plain).toContain('app status');

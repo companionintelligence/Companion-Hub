@@ -6,6 +6,7 @@ import { SSEService } from '@/core/sse/sse.service';
 import { HttpStatus, Inject, Injectable, OnApplicationBootstrap, Optional } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type { AppUrn } from '@ci-hub/common/types';
+import { buildPublicWebIdentity } from '@ci-hub/common/types';
 import validator from 'validator';
 import { AppFilesManager } from '../apps/app-files-manager';
 import { AppsRepository } from '../apps/apps.repository';
@@ -820,7 +821,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
   /**
    * Triggers a full sync of all exposed apps to Cloudflare via CI-Cloud
    */
-  private async triggerCloudflareSync() {
+  public async triggerCloudflareSync() {
     try {
       const orgInfo = await this.registrationService.getDeviceRegistrationInfo();
 
@@ -850,13 +851,12 @@ export class AppLifecycleService implements OnApplicationBootstrap {
           .map(async (app: AppFromDb) => {
             const subdomain = app.localSubdomain || `${app.appName}-${app.appStoreSlug}`;
             const appPublicDomain = app.publicDomain || defaultPublicDomain;
-            const orgSlug = orgInfo.slug;
-            const hubSub = orgInfo.hubSubdomain;
-            const deviceSlug = hubSub ? hubSub.replace(/^hub-/, '').replace(new RegExp(`-${orgSlug}$`), '') : null;
-            const publicHostname =
-              deviceSlug && deviceSlug !== orgSlug
-                ? `${subdomain}-${deviceSlug}-${orgSlug}.${appPublicDomain}`
-                : `${subdomain}-${orgSlug}.${appPublicDomain}`;
+            const identity = buildPublicWebIdentity({
+              appSubdomain: subdomain,
+              hubSubdomain: orgInfo.hubSubdomain,
+              orgSlug: orgInfo.slug,
+              publicDomainRoot: appPublicDomain,
+            });
 
             return {
               name: app.appName,
@@ -865,7 +865,7 @@ export class AppLifecycleService implements OnApplicationBootstrap {
               localPort: 80,
               protocol: 'http' as const,
               hostname: 'traefik',
-              originServerName: publicHostname,
+              originServerName: identity.originServerName,
             };
           }),
       );

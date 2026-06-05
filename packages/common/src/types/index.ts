@@ -13,6 +13,15 @@ export type {
   AvailableDomain,
   AvailableDomainsResponse,
 } from './domains.js';
+export type { PublicWebIdentity, BuildPublicWebIdentityInput } from '../public-web/identity.js';
+// biome-ignore lint/performance/noBarrelFile: Re-export public-web helpers through @ci-hub/common/types
+export {
+  buildPublicWebIdentity,
+  buildFqdnSubdomain,
+  extractDeviceSlug,
+  resolvePublicDomainRoot,
+  sanitizeAppSubdomain,
+} from '../public-web/identity.js';
 export type {
   HardwareProfile,
   HardwareTier,

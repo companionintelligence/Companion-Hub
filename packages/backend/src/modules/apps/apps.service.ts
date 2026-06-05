@@ -9,6 +9,7 @@ import { Inject, Injectable, forwardRef } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import { CURRENT_SCHEMA_VERSION, parseComposeJson } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
+import { buildPublicWebIdentity } from '@ci-hub/common/types';
 import axios from 'axios';
 import { MarketplaceService } from '../marketplace/marketplace.service';
 import { PortAllocationRepository } from '../network/port-allocation.repository';
@@ -229,9 +230,14 @@ export class AppsService {
         resolvable: false,
       };
     }
-    const deviceSlug = org.hubSubdomain.replace(/^hub-/, '').replace(new RegExp(`-${organizationSlug}$`), '');
-    const subdomain = `${baseSubdomain}-${deviceSlug}-${organizationSlug}`;
-    appUrl = `https://${subdomain}.${resolvedDomain}${urlSuffix}`;
+
+    const identity = buildPublicWebIdentity({
+      appSubdomain: baseSubdomain || '',
+      hubSubdomain: org.hubSubdomain,
+      orgSlug: organizationSlug,
+      publicDomainRoot: resolvedDomain,
+    });
+    appUrl = `${identity.publicUrl}${urlSuffix}`;
 
     // Helper to determine stage from error code
     const propagatingCodes = new Set(['DNS_NOT_FOUND', 'CF_TUNNEL_NOT_FOUND', 'CF_UPSTREAM_ERROR', 'CF_ORIGIN_DOWN']);

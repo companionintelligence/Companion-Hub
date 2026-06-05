@@ -1,15 +1,18 @@
 import { mergeArchitectureOverrides } from '@/common/helpers/compose-helpers';
+import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { DockerComposeBuilder } from '@/modules/docker/builders/compose.builder';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
+import { RegistrationService } from '@/modules/registration/registration.service';
 import { SubnetManagerService } from '@/modules/network/subnet-manager.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import type { ModuleRef } from '@nestjs/core';
 import { parseComposeJson } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
+import { buildPublicWebIdentity, resolvePublicDomainRoot } from '@ci-hub/common/types';
 import Dockerode from 'dockerode';
 import { ZodError } from 'zod';
 import { fromError } from 'zod-validation-error';
@@ -57,10 +60,39 @@ export class AppLifecycleCommand {
       const domain = envMap.get('DOMAIN') || configService.get('userSettings').domain || configService.get('domain');
       const localDomain = envMap.get('LOCAL_DOMAIN') || configService.get('userSettings').localDomain || configService.get('localDomain');
 
+      const effectiveExposureMode = form.exposureMode || (form.exposedLocal ? 'cloudflare' : 'local');
+      let publicWebHostname: string | undefined;
+      if (effectiveExposureMode === 'cloudflare' && !form.openPort) {
+        const registrationService = this.moduleRef.get(RegistrationService, { strict: false });
+        const org = await registrationService.getDeviceRegistrationInfo();
+        const { appName, appStoreId } = extractAppUrn(appUrn);
+        const publicDomainRoot = resolvePublicDomainRoot({
+          selectedPublicDomain: typeof form.publicDomain === 'string' ? form.publicDomain : undefined,
+          envDomain: envMap.get('DOMAIN'),
+          configDomain: configService.get('domain'),
+        });
+        const identity = buildPublicWebIdentity({
+          appSubdomain: form.localSubdomain || `${appName}-${appStoreId}`,
+          hubSubdomain: org?.hubSubdomain,
+          orgSlug: org?.slug,
+          publicDomainRoot,
+        });
+        publicWebHostname = identity.hostname;
+      }
+
       const dockerComposeBuilder = new DockerComposeBuilder(domain, localDomain);
       const subnet = await subnetManager.allocateSubnet(appUrn);
 
-      const composeFile = await dockerComposeBuilder.getDockerCompose(mergedServices, form, appUrn, subnet, domain, localDomain, appEnv.path);
+      const composeFile = await dockerComposeBuilder.getDockerCompose(
+        mergedServices,
+        form,
+        appUrn,
+        subnet,
+        domain,
+        localDomain,
+        appEnv.path,
+        publicWebHostname,
+      );
 
       await appFilesManager.writeDockerComposeYml(appUrn, composeFile);
     } catch (err) {

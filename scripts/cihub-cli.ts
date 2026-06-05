@@ -5,6 +5,7 @@ import path, { join } from 'node:path';
 import { stdin as input, stdout as output } from 'node:process';
 import { createInterface } from 'node:readline/promises';
 import { ensureHubBindMountsWritable } from './heal-hub-bind-mounts';
+import { runPublicWebRepair, runPublicWebStatus, resolveHubApiBase } from './public-web-cli';
 
 export const allowedModes = ['dev', 'start', 'start:detached'] as const;
 export const allowedEnvs = ['local', 'dev', 'staging', 'prod'] as const;
@@ -86,6 +87,13 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
       { command: `${BASE_COMMAND} app edit <name> <image>`, description: 'Recreate a Docker container app' },
       { command: `${BASE_COMMAND} app start|stop|restart|delete <name>`, description: 'Container lifecycle controls' },
       { command: `${BASE_COMMAND} app inspect <name>`, description: 'Show container ports, env, and mounts' },
+    ],
+  },
+  {
+    title: 'Public Web',
+    entries: [
+      { command: `${BASE_COMMAND} public-web status [env]`, description: 'Public Web hostname diagnostics for cloudflare apps' },
+      { command: `${BASE_COMMAND} public-web repair [env] [--app <name>]`, description: 'Repair env, Traefik labels, and tunnel sync' },
     ],
   },
   {
@@ -347,7 +355,7 @@ export function getComposeFiles(env: HubEnv): string[] {
   return ['docker-compose.prod.yml'];
 }
 
-function resolveRootFolderHost(envFileName: string): string {
+export function resolveRootFolderHost(envFileName: string): string {
   const vars = parseEnvFile(envFileName);
   const configured = process.env.ROOT_FOLDER_HOST || vars.ROOT_FOLDER_HOST || '.internal';
   return path.isAbsolute(configured) ? configured : path.resolve(process.cwd(), configured);
@@ -786,6 +794,41 @@ function setMcpState(env: HubEnv, enabled: boolean) {
     if (!vars.MCP_API_KEY) upsertEnvVar(envFileName, 'MCP_API_KEY', randomBytes(24).toString('hex'));
   }
   printMessageBox(enabled ? 'MCP enabled' : 'MCP disabled', renderConfigLines(env), enabled ? 'green' : 'yellow');
+}
+
+// ─── public web ──────────────────────────────────────────────────────────────
+
+async function runPublicWebCommand(args: string[]) {
+  requireRepoRoot('cihub public-web');
+  const appFlagIndex = args.indexOf('--app');
+  const appName = appFlagIndex >= 0 ? args[appFlagIndex + 1] : undefined;
+  const positional = args.filter((_, index) => index !== appFlagIndex && (appFlagIndex < 0 || index !== appFlagIndex + 1));
+  const subcommand = positional[0] || 'status';
+  const env = resolveEnvFromArgs(positional.slice(1));
+  const envFileName = getEnvFileOrExit(env);
+
+  try {
+    if (subcommand === 'status') {
+      const lines = await runPublicWebStatus(envFileName);
+      printMessageBox(`Public Web status  [${env}]`, lines, 'cyan');
+      return;
+    }
+
+    if (subcommand === 'repair') {
+      const lines = await runPublicWebRepair(envFileName, appName);
+      printMessageBox(`Public Web repair  [${env}]`, lines, lines.some((line) => line.startsWith('✗')) ? 'yellow' : 'green');
+      return;
+    }
+
+    usageAndExit(`Usage: ${BASE_COMMAND} public-web <status|repair> [env] [--app <name>]`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes('fetch failed') || message.includes('ECONNREFUSED')) {
+      printMessageBox('Hub unavailable', [`Could not reach Hub at ${resolveHubApiBase(envFileName)}.`, 'Start the Hub first: cihub up'], 'red');
+      process.exit(1);
+    }
+    throw error;
+  }
 }
 
 // ─── app lifecycle ────────────────────────────────────────────────────────────
@@ -1291,6 +1334,11 @@ export async function runCli(rawArgs: string[]) {
 
   if (first === 'models') {
     runModelsCommand(args.slice(1));
+    return;
+  }
+
+  if (first === 'public-web') {
+    await runPublicWebCommand(args.slice(1));
     return;
   }
 

@@ -6,8 +6,7 @@ interface TraefikLabelsArgs {
   exposureMode: ExposureMode;
   storeId: string;
   enableAuth?: boolean;
-  localSubdomain?: string;
-  publicDomain?: string;
+  publicWebHostname?: string;
   localDomain?: string;
   tailscaleHostname?: string;
   httpsBackend?: boolean;
@@ -20,7 +19,6 @@ export class TraefikLabelsBuilder {
   constructor(private params: TraefikLabelsArgs) {
     const mainNetworkName = `${process.env.HUB_CONTAINER_NAME || 'ci-os-hub'}_network`;
 
-    // Resolve effective mode
     this.effectiveMode = params.exposureMode || 'local';
 
     this.labels = {
@@ -34,61 +32,35 @@ export class TraefikLabelsBuilder {
     };
   }
 
-  addExposedLabels() {
-    if (this.effectiveMode === 'cloudflare') {
-      Object.assign(this.labels, {
-        'traefik.enable': true,
-        // biome-ignore lint/suspicious/noTemplateCurlyInString: Traefik label requires literal ${APP_PUBLIC_HOSTNAME}
-        [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-insecure.rule`]: 'Host(`${APP_PUBLIC_HOSTNAME}`)',
-        [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-insecure.entrypoints`]: 'web',
-        [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-insecure.service`]: `${this.params.appId}-${this.params.storeId}`,
-        // biome-ignore lint/suspicious/noTemplateCurlyInString: Traefik label requires literal ${APP_PUBLIC_HOSTNAME}
-        [`traefik.http.routers.${this.params.appId}-${this.params.storeId}.rule`]: 'Host(`${APP_PUBLIC_HOSTNAME}`)',
-        [`traefik.http.routers.${this.params.appId}-${this.params.storeId}.entrypoints`]: 'websecure',
-        [`traefik.http.routers.${this.params.appId}-${this.params.storeId}.service`]: `${this.params.appId}-${this.params.storeId}`,
-        [`traefik.http.routers.${this.params.appId}-${this.params.storeId}.tls.certresolver`]: 'myresolver',
-      });
-
-      if (this.params.enableAuth) {
-        Object.assign(this.labels, {
-          [`traefik.http.routers.${this.params.appId}-${this.params.storeId}.middlewares`]: 'ci-hub@docker',
-        });
-      }
+  addCloudflareLabels() {
+    if (this.effectiveMode !== 'cloudflare' || !this.params.publicWebHostname) {
+      return this;
     }
-    return this;
-  }
 
-  addExposedLocalLabels() {
-    if (this.effectiveMode === 'cloudflare') {
-      const subdomain = this.params.localSubdomain || `${this.params.appId}-${this.params.storeId}`;
-      const domainToUse = this.params.publicDomain || 'example.com';
-      const publicHost = `${subdomain}.${domainToUse}`;
-      const hostRule = `Host(\`${publicHost}\`)`;
+    const hostRule = `Host(\`${this.params.publicWebHostname}\`)`;
 
+    Object.assign(this.labels, {
+      'traefik.enable': true,
+      [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-insecure.rule`]: hostRule,
+      [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-insecure.entrypoints`]: 'web',
+      [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-insecure.service`]: `${this.params.appId}-${this.params.storeId}`,
+      [`traefik.http.routers.${this.params.appId}-${this.params.storeId}.rule`]: hostRule,
+      [`traefik.http.routers.${this.params.appId}-${this.params.storeId}.entrypoints`]: 'websecure',
+      [`traefik.http.routers.${this.params.appId}-${this.params.storeId}.service`]: `${this.params.appId}-${this.params.storeId}`,
+      [`traefik.http.routers.${this.params.appId}-${this.params.storeId}.tls.certresolver`]: 'myresolver',
+    });
+
+    if (this.params.enableAuth) {
       Object.assign(this.labels, {
-        'traefik.enable': true,
-        [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-local-insecure.rule`]: hostRule,
-        [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-local-insecure.entrypoints`]: 'web',
-        [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-local-insecure.service`]: `${this.params.appId}-${this.params.storeId}`,
-        [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-local.rule`]: hostRule,
-        [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-local.entrypoints`]: 'websecure',
-        [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-local.service`]: `${this.params.appId}-${this.params.storeId}`,
-        [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-local.tls`]: true,
+        [`traefik.http.routers.${this.params.appId}-${this.params.storeId}.middlewares`]: 'ci-hub@docker',
       });
-
-      if (this.params.enableAuth) {
-        Object.assign(this.labels, {
-          [`traefik.http.routers.${this.params.appId}-${this.params.storeId}-local.middlewares`]: 'ci-hub@docker',
-        });
-      }
     }
+
     return this;
   }
 
   addTailscaleLabels() {
     if (this.effectiveMode === 'tailscale') {
-      // Tailscale Serve routes traffic via the host's Tailscale daemon
-      // Traefik just needs to accept traffic on the local port — Tailscale handles routing
       const hostname = this.params.tailscaleHostname || `${this.params.appId}.${this.params.storeId}`;
 
       Object.assign(this.labels, {

@@ -6,6 +6,7 @@ import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
+import { buildFqdnSubdomain, buildPublicWebIdentity, resolvePublicDomainRoot, sanitizeAppSubdomain } from '@ci-hub/common/types';
 import { EnvUtils } from '../env/env.utils';
 import type { AppEventFormInput } from '../queue/entities/app-events';
 import { AppFilesManager } from './app-files-manager';
@@ -253,37 +254,35 @@ export class AppHelpers {
     let publicUrl = '';
     // Handle Local Exposure (Cloudflare Tunnel via Traefik)
     if (form.exposedLocal) {
-      let subdomain = form.localSubdomain ? form.localSubdomain : `${appName}-${appStoreId}`;
+      const appSubdomain = form.localSubdomain ? form.localSubdomain : `${appName}-${appStoreId}`;
       const configDomain = this.config.getConfig().domain;
-      // User-selected domain from install form; falls back to current device domain.
       const selectedPublicDomain = typeof form.publicDomain === 'string' && form.publicDomain.trim().length > 0 ? form.publicDomain : undefined;
-      const hasUserSelectedPublicDomain = Boolean(selectedPublicDomain);
-      let selectedDomain = selectedPublicDomain ?? envMap.get('DOMAIN') ?? configDomain;
+      const publicDomainRoot = resolvePublicDomainRoot({
+        selectedPublicDomain,
+        envDomain: envMap.get('DOMAIN'),
+        configDomain,
+      });
 
-      // Keep existing env-derived collapse behavior, but never rewrite
-      // an explicit user selection from the install form.
-      if (!hasUserSelectedPublicDomain && selectedDomain.endsWith(`.${configDomain}`)) {
-        selectedDomain = configDomain;
-      }
-
-      if (org?.slug) {
-        // Include device slug from hubSubdomain (format: hub-{deviceSlug}-{orgSlug})
-        // to construct full subdomain: {appSubdomain}-{deviceSlug}-{orgSlug}
-        const deviceSlug = org.hubSubdomain?.replace(/^hub-/, '').replace(new RegExp(`-${org.slug}$`), '');
-        if (deviceSlug && deviceSlug !== org.slug) {
-          subdomain = `${subdomain}-${deviceSlug}-${org.slug}`;
-        } else {
-          subdomain = `${subdomain}-${org.slug}`;
-        }
-      }
+      const localSubdomainBase = org?.slug ? buildFqdnSubdomain(appSubdomain, org.hubSubdomain, org.slug) : sanitizeAppSubdomain(appSubdomain);
 
       // APP_LOCAL_DOMAIN is distinct - used for local network access
-      envMap.set('APP_LOCAL_DOMAIN', `${subdomain}.${envMap.get('LOCAL_DOMAIN') || this.config.getConfig().localDomain}`);
+      envMap.set('APP_LOCAL_DOMAIN', `${localSubdomainBase}.${envMap.get('LOCAL_DOMAIN') || this.config.getConfig().localDomain}`);
 
-      if (!form.openPort) {
+      if (!form.openPort && org?.slug) {
         isExposed = true;
         scheme = 'https';
-        publicHostname = `${subdomain}.${selectedDomain}`;
+        const identity = buildPublicWebIdentity({
+          appSubdomain,
+          hubSubdomain: org.hubSubdomain,
+          orgSlug: org.slug,
+          publicDomainRoot,
+        });
+        publicHostname = identity.hostname;
+        publicUrl = identity.publicUrl;
+      } else if (!form.openPort) {
+        isExposed = true;
+        scheme = 'https';
+        publicHostname = `${appSubdomain}.${publicDomainRoot}`;
         publicUrl = `https://${publicHostname}`;
       }
     }
@@ -303,13 +302,7 @@ export class AppHelpers {
     if (isExposed) {
       envMap.set('APP_PUBLIC_HOSTNAME', publicHostname);
       envMap.set('APP_PUBLIC_URL', publicUrl);
-      // Store the public domain separately so compose.builder.ts can read it
-      // directly without needing to parse APP_PUBLIC_HOSTNAME (which is fragile
-      // for domains with more than two parts, e.g. my.lifescope.io).
-      if (publicHostname.includes('.')) {
-        const hostnamePublicDomain = publicHostname.substring(publicHostname.indexOf('.') + 1);
-        envMap.set('APP_PUBLIC_DOMAIN', hostnamePublicDomain);
-      }
+      envMap.delete('APP_PUBLIC_DOMAIN');
     }
 
     // --- Derived Variables ---
@@ -384,6 +377,8 @@ export class AppHelpers {
     // bridge (host.docker.internal) — not loopback, which would be the app's own
     // container. OLLAMA_URL, when set by compose, already points there.
     envMap.set('OLLAMA_HOST', process.env.OLLAMA_URL || 'http://host.docker.internal:11434');
+
+    envMap.delete('APP_PUBLIC_DOMAIN');
 
     await this.appFilesManager.writeAppEnv(appUrn, this.envUtils.envMapToString(envMap));
   };

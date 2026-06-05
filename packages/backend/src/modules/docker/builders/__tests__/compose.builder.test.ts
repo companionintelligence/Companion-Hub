@@ -1,10 +1,7 @@
 /** biome-ignore-all lint/suspicious/noTemplateCurlyInString: intended */
 import { createAppUrn } from '@/common/helpers/app-helpers';
 import type { ServiceInput } from '@ci-hub/common/schemas';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { writeFile, unlink } from 'node:fs/promises';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import yaml from 'yaml';
 import { DockerComposeBuilder } from '../compose.builder';
 import { ServiceBuilder } from '../service.builder';
@@ -315,13 +312,6 @@ describe('DockerComposeBuilder', () => {
   });
 });
 
-// Helper: write a temp env file and return its path
-async function writeTempEnvFile(content: string): Promise<string> {
-  const path = join(tmpdir(), `compose-test-${Date.now()}.env`);
-  await writeFile(path, content, 'utf-8');
-  return path;
-}
-
 const mainService: ServiceInput = {
   name: 'nginx',
   image: 'nginx:latest',
@@ -329,76 +319,32 @@ const mainService: ServiceInput = {
   isMain: true,
 };
 
-describe('DockerComposeBuilder — public domain resolution from env file', () => {
+describe('DockerComposeBuilder — public web hostname in Traefik labels', () => {
   let builder: DockerComposeBuilder;
-  let envFilePath: string;
 
   beforeEach(() => {
     builder = new DockerComposeBuilder('example.com', 'ci.lan');
   });
 
-  afterEach(async () => {
-    if (envFilePath) {
-      await unlink(envFilePath).catch(() => {});
-    }
-  });
-
-  it('(1) new install: APP_PUBLIC_DOMAIN present — uses it as domain, derives correct subdomain', async () => {
-    envFilePath = await writeTempEnvFile('APP_PUBLIC_HOSTNAME=myapp-dev1-org.example.com\nAPP_PUBLIC_DOMAIN=example.com\n');
-
-    const result = await builder.getDockerCompose([mainService], { exposureMode: 'cloudflare' }, urn, subnet, 'example.com', 'ci.lan', envFilePath);
-    const parsed = yaml.parse(result);
-    const labels: Record<string, string> = parsed.services.nginx.labels;
-    const hostRule = labels['traefik.http.routers.nginx-store-id-local.rule'];
-
-    expect(hostRule).toBe('Host(`myapp-dev1-org.example.com`)');
-  });
-
-  it('(2) old install: APP_PUBLIC_DOMAIN absent — form.publicDomain used as fallback', async () => {
-    envFilePath = await writeTempEnvFile('APP_PUBLIC_HOSTNAME=myapp-dev1-org.example.com\n');
-
+  it('uses computed hostname passed to getDockerCompose (not env-file parsing)', async () => {
     const result = await builder.getDockerCompose(
       [mainService],
-      { exposureMode: 'cloudflare', publicDomain: 'example.com' },
+      { exposureMode: 'cloudflare' },
       urn,
       subnet,
       'example.com',
       'ci.lan',
-      envFilePath,
+      undefined,
+      'myapp-dev1-org.example.com',
     );
     const parsed = yaml.parse(result);
     const labels: Record<string, string> = parsed.services.nginx.labels;
-    const hostRule = labels['traefik.http.routers.nginx-store-id-local.rule'];
+    const hostRule = labels['traefik.http.routers.nginx-store-id.rule'];
 
     expect(hostRule).toBe('Host(`myapp-dev1-org.example.com`)');
   });
 
-  it('(3) multi-label domain: slice(-2) heuristic would truncate — form.publicDomain preserves full domain', async () => {
-    // Without APP_PUBLIC_DOMAIN, slice(-2) of 'myapp-dev1-org.my.lifescope.io'
-    // would give 'lifescope.io' — wrong. form.publicDomain corrects this.
-    envFilePath = await writeTempEnvFile('APP_PUBLIC_HOSTNAME=myapp-dev1-org.my.lifescope.io\n');
-
-    const result = await builder.getDockerCompose(
-      [mainService],
-      { exposureMode: 'cloudflare', publicDomain: 'my.lifescope.io' },
-      urn,
-      subnet,
-      'my.lifescope.io',
-      'ci.lan',
-      envFilePath,
-    );
-    const parsed = yaml.parse(result);
-    const labels: Record<string, string> = parsed.services.nginx.labels;
-    const hostRule = labels['traefik.http.routers.nginx-store-id-local.rule'];
-
-    // Subdomain should be just 'myapp-dev1-org', domain 'my.lifescope.io'
-    expect(hostRule).toBe('Host(`myapp-dev1-org.my.lifescope.io`)');
-    expect(hostRule).not.toContain('lifescope.io.my.lifescope.io');
-  });
-
-  it('(4) multi-label domain: APP_PUBLIC_DOMAIN present — used directly, no heuristic needed', async () => {
-    envFilePath = await writeTempEnvFile('APP_PUBLIC_HOSTNAME=myapp-dev1-org.my.lifescope.io\nAPP_PUBLIC_DOMAIN=my.lifescope.io\n');
-
+  it('uses multi-label domain hostname when provided', async () => {
     const result = await builder.getDockerCompose(
       [mainService],
       { exposureMode: 'cloudflare' },
@@ -406,11 +352,12 @@ describe('DockerComposeBuilder — public domain resolution from env file', () =
       subnet,
       'my.lifescope.io',
       'ci.lan',
-      envFilePath,
+      undefined,
+      'myapp-dev1-org.my.lifescope.io',
     );
     const parsed = yaml.parse(result);
     const labels: Record<string, string> = parsed.services.nginx.labels;
-    const hostRule = labels['traefik.http.routers.nginx-store-id-local.rule'];
+    const hostRule = labels['traefik.http.routers.nginx-store-id.rule'];
 
     expect(hostRule).toBe('Host(`myapp-dev1-org.my.lifescope.io`)');
   });
