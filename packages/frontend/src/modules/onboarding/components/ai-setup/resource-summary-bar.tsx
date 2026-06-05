@@ -61,15 +61,21 @@ export const ResourceSummaryBar = ({ selectedModels, installedCatalogIds, availa
         </div>
       </div>
 
-      {budget.memoryNote && !budget.overMemory && (
+      {budget.memoryNote && (
         <p className="text-xs text-muted-foreground" data-testid="resource-memory-note">
           {budget.memoryNote}
         </p>
       )}
 
-      {(budget.overDisk || budget.overMemory) && budget.reason && (
+      {budget.memoryWarning && (
+        <p className="text-xs text-yellow-700 dark:text-yellow-500" data-testid="resource-memory-warning">
+          {budget.memoryWarning}
+        </p>
+      )}
+
+      {budget.overDisk && budget.diskReason && (
         <p className="text-xs text-destructive" data-testid="resource-warning">
-          {budget.reason}
+          {budget.diskReason}
         </p>
       )}
     </div>

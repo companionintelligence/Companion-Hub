@@ -220,9 +220,9 @@ export const AiSetupStep = ({
       profile.resourceEstimate.availableDiskMb,
       profile.resourceEstimate.availableMemoryMb,
     );
-    if (budget.overDisk || budget.overMemory) {
+    if (budget.overDisk) {
       installBlocked = true;
-      installBlockReason = budget.reason;
+      installBlockReason = budget.diskReason;
     }
 
     const effectivePreferredModelId =

@@ -9,10 +9,14 @@ export interface SelectionBudgetResult {
   /** Total footprint of all selected models (informational). */
   totalMemoryMb: number;
   overDisk: boolean;
+  /** Advisory only — does not block onboarding. */
   overMemory: boolean;
   /** Non-blocking note when installed models are selected. */
   memoryNote?: string;
-  reason?: string;
+  /** Blocks onboarding when disk for new downloads is insufficient. */
+  diskReason?: string;
+  /** Advisory when new downloads exceed free inference memory. */
+  memoryWarning?: string;
 }
 
 function formatSizeMb(mb: number): string {
@@ -48,13 +52,14 @@ export function computeSelectionBudget(
     memoryNote = `${formatSizeMb(installedMemoryMb)} of selected inference memory is already on disk and will not be downloaded again.`;
   }
 
-  let reason: string | undefined;
-  if (overDisk && overMemory) {
-    reason = `Selected downloads need ${formatSizeMb(downloadDiskMb)} disk and ${formatSizeMb(newMemoryMb)} inference memory, but only ${formatSizeMb(availableDiskMb)} disk and ${formatSizeMb(availableMemoryMb)} inference memory are available. Choose smaller models, deselect new downloads, or add a cloud provider.`;
-  } else if (overDisk) {
-    reason = `Selected downloads need ${formatSizeMb(downloadDiskMb)} disk space, but only ${formatSizeMb(availableDiskMb)} is available. Deselect models or free disk space before continuing.`;
-  } else if (overMemory) {
-    reason = `New model selections need ${formatSizeMb(newMemoryMb)} inference memory, but only ${formatSizeMb(availableMemoryMb)} is available. Choose smaller models, deselect a new download, or add a cloud provider.`;
+  let diskReason: string | undefined;
+  if (overDisk) {
+    diskReason = `Selected downloads need ${formatSizeMb(downloadDiskMb)} disk space, but only ${formatSizeMb(availableDiskMb)} is available. Deselect models or free disk space before continuing.`;
+  }
+
+  let memoryWarning: string | undefined;
+  if (overMemory) {
+    memoryWarning = `New downloads may need ${formatSizeMb(newMemoryMb)} inference memory, but only ${formatSizeMb(availableMemoryMb)} is currently free. You can continue — Hub will attempt best-effort downloads, but some models may not load until memory is freed.`;
   }
 
   return {
@@ -65,16 +70,18 @@ export function computeSelectionBudget(
     overDisk,
     overMemory,
     memoryNote,
-    reason,
+    diskReason,
+    memoryWarning,
   };
 }
 
+/** True when new downloads fit on disk. Inference memory overages are advisory only. */
 export function isSelectionWithinBudget(
   selectedModels: CuratedModel[],
   installedCatalogIds: string[],
   availableDiskMb: number,
-  availableMemoryMb: number,
+  _availableMemoryMb: number,
 ): boolean {
-  const result = computeSelectionBudget(selectedModels, installedCatalogIds, availableDiskMb, availableMemoryMb);
-  return !result.overDisk && !result.overMemory;
+  const result = computeSelectionBudget(selectedModels, installedCatalogIds, availableDiskMb, _availableMemoryMb);
+  return !result.overDisk;
 }

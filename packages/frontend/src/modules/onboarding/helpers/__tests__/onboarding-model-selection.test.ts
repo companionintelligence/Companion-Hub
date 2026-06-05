@@ -30,7 +30,7 @@ describe('computeSelectionBudget', () => {
     expect(isSelectionWithinBudget(selected, ['phi-4-mini', 'qwen-coder'], 1024, 4096)).toBe(true);
   });
 
-  it('blocks only on memory required by new downloads', () => {
+  it('warns on memory for new downloads without blocking install', () => {
     const selected = [makeModel('phi-4-mini', 2048, 6000), makeModel('qwen-coder', 4096, 7000)];
     const result = computeSelectionBudget(selected, ['phi-4-mini'], 50000, 5000);
 
@@ -39,7 +39,8 @@ describe('computeSelectionBudget', () => {
     expect(result.installedMemoryMb).toBe(6000);
     expect(result.overDisk).toBe(false);
     expect(result.overMemory).toBe(true);
-    expect(result.reason).toContain('New model selections need');
+    expect(result.memoryWarning).toContain('You can continue');
+    expect(isSelectionWithinBudget(selected, ['phi-4-mini'], 50000, 5000)).toBe(true);
   });
 
   it('excludes installed models from disk download budget', () => {
