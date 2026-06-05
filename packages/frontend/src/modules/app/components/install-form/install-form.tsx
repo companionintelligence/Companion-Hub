@@ -125,7 +125,7 @@ export const InstallForm: React.FC<IProps> = ({
   const prevUrnRef = useRef<string | undefined>(undefined);
   const [isCheckingDns, setIsCheckingDns] = useState(false);
   const [dnsAvailabilityError, setDnsAvailabilityError] = useState<string | null>(null);
-  const [publicWebMismatchUrl, setPublicWebMismatchUrl] = useState<string | null>(null);
+  const [publicWebExpectedUrl, setPublicWebExpectedUrl] = useState<string | null>(null);
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
 
   // Track form validity for parent components
@@ -237,7 +237,7 @@ export const InstallForm: React.FC<IProps> = ({
 
   useEffect(() => {
     if (appStatus !== 'running' || watchExposureMode !== 'cloudflare') {
-      setPublicWebMismatchUrl(null);
+      setPublicWebExpectedUrl(null);
       return;
     }
 
@@ -251,12 +251,12 @@ export const InstallForm: React.FC<IProps> = ({
         };
         const entry = data.apps.find((app) => app.appUrn === info.urn);
         if (!cancelled && entry?.envMismatch) {
-          setPublicWebMismatchUrl(entry.computedPublicUrl);
+          setPublicWebExpectedUrl(entry.computedPublicUrl);
         } else if (!cancelled) {
-          setPublicWebMismatchUrl(null);
+          setPublicWebExpectedUrl(null);
         }
       } catch {
-        if (!cancelled) setPublicWebMismatchUrl(null);
+        if (!cancelled) setPublicWebExpectedUrl(null);
       }
     })();
 
@@ -447,8 +447,10 @@ export const InstallForm: React.FC<IProps> = ({
 
     return (
       <>
-        {publicWebMismatchUrl && (
-          <p className="mb-3 text-sm text-amber-700 dark:text-amber-400">Public Web routing was repaired — URL is {publicWebMismatchUrl}</p>
+        {publicWebExpectedUrl && (
+          <p className="mb-3 text-sm text-amber-700 dark:text-amber-400">
+            Public Web routing is out of sync. Expected URL: {publicWebExpectedUrl}. Save settings or run repair to update routing.
+          </p>
         )}
         {/* Subdomain input — shown for cloudflare and tailscale modes */}
         {watchExposureMode !== 'local' && (

@@ -60,7 +60,6 @@ export class PublicWebService {
 
   public async getDiagnostics(): Promise<PublicWebDiagnosticsResponse> {
     const org = await this.registrationService.getDeviceRegistrationInfo();
-    const defaultDomain = this.config.getConfig().userSettings.domain || this.config.getConfig().domain;
     const apps = await this.appsRepository.getApps();
     const entries: PublicWebDiagnosticEntry[] = [];
 
@@ -71,23 +70,23 @@ export class PublicWebService {
       }
 
       const appUrn = createAppUrn(app.appName, app.appStoreSlug);
-      const publicDomainRoot = app.publicDomain || defaultDomain;
-      const appSubdomain = app.localSubdomain || `${app.appName}-${app.appStoreSlug}`;
-      const identity = buildPublicWebIdentity({
-        appSubdomain,
-        hubSubdomain: org?.hubSubdomain,
-        orgSlug: org?.slug,
-        publicDomainRoot,
-      });
-
       let envHostname: string | null = null;
+      let envMap = new Map<string, string>();
       try {
         const appEnv = await this.appFilesManager.getAppEnv(appUrn);
-        const envMap = this.envUtils.envStringToMap(appEnv.content || '');
+        envMap = this.envUtils.envStringToMap(appEnv.content || '');
         envHostname = envMap.get('APP_PUBLIC_HOSTNAME') || null;
       } catch {
         envHostname = null;
       }
+
+      const identity = this.buildIdentityForApp({
+        appSubdomain: app.localSubdomain || `${app.appName}-${app.appStoreSlug}`,
+        publicDomain: app.publicDomain,
+        hubSubdomain: org?.hubSubdomain,
+        orgSlug: org?.slug,
+        envDomain: envMap.get('APP_PUBLIC_DOMAIN') || envMap.get('DOMAIN'),
+      });
 
       const envMismatch = envHostname !== identity.hostname;
 

@@ -22,8 +22,8 @@ export class PublicWebController {
 
   @Post('repair')
   @ApiResponse({ type: Object })
-  async repair(@Body() body: PublicWebRepairRequest) {
-    const parsed = repairBodySchema.parse(body);
+  async repair(@Body() body?: PublicWebRepairRequest) {
+    const parsed = repairBodySchema.parse(body ?? {});
     return this.publicWebService.repair(parsed);
   }
 }

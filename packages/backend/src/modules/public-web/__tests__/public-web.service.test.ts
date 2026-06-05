@@ -93,6 +93,42 @@ describe('PublicWebService', () => {
     });
   });
 
+  it('does not report mismatch when env domain collapses to config root', async () => {
+    appsRepository.getApps.mockResolvedValue([
+      {
+        appName: 'nextcloud',
+        appStoreSlug: 'store',
+        status: 'running',
+        exposureMode: 'cloudflare',
+        exposedLocal: true,
+        openPort: false,
+        localSubdomain: 'nextcloud',
+        publicDomain: null,
+      },
+    ] as any);
+
+    appFilesManager.getAppEnv.mockResolvedValue({
+      path: '/tmp/env',
+      content: 'APP_PUBLIC_HOSTNAME=nextcloud-dev1-myorg.example.com\nAPP_PUBLIC_DOMAIN=dev-acme.example.com\n',
+    });
+    envUtils.envStringToMap.mockReturnValue(
+      new Map([
+        ['APP_PUBLIC_HOSTNAME', 'nextcloud-dev1-myorg.example.com'],
+        ['APP_PUBLIC_DOMAIN', 'dev-acme.example.com'],
+      ]),
+    );
+
+    const result = await service.getDiagnostics();
+
+    expect(result.mismatchCount).toBe(0);
+    expect(result.apps[0]).toMatchObject({
+      computedHostname: 'nextcloud-dev1-myorg.example.com',
+      envHostname: 'nextcloud-dev1-myorg.example.com',
+      envMismatch: false,
+      action: 'ok',
+    });
+  });
+
   it('repairs mismatched apps and triggers cloudflare sync', async () => {
     appsRepository.getApps.mockResolvedValue([
       {
