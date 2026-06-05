@@ -2,9 +2,9 @@ import type { CuratedModel } from '@ci-hub/common/types';
 
 export interface SelectionBudgetResult {
   downloadDiskMb: number;
-  /** Memory required only for models that still need to be downloaded. */
+  /** Sum of runtime.memoryFootprintMb for selected models not yet in Ollama — inference RAM/VRAM at load time, not download size. */
   newMemoryMb: number;
-  /** Memory footprint of selected models already present in Ollama. */
+  /** Sum of runtime.memoryFootprintMb for selected models already present in Ollama. */
   installedMemoryMb: number;
   /** Total footprint of all selected models (informational). */
   totalMemoryMb: number;
@@ -15,7 +15,7 @@ export interface SelectionBudgetResult {
   memoryNote?: string;
   /** Blocks onboarding when disk for new downloads is insufficient. */
   diskReason?: string;
-  /** Advisory when new downloads exceed free inference memory. */
+  /** Advisory when new selections exceed free inference memory (runtime footprint, not download size). */
   memoryWarning?: string;
 }
 
@@ -46,10 +46,14 @@ export function computeSelectionBudget(
   if (modelsAlreadyInstalled.length > 0 && modelsNeedingDownload.length === 0) {
     memoryNote =
       modelsAlreadyInstalled.length === 1
-        ? 'This model is already downloaded in Ollama — no additional disk or download memory is required.'
-        : `${modelsAlreadyInstalled.length} selected models are already downloaded in Ollama — no additional disk or download memory is required.`;
+        ? 'This model is already in Ollama — nothing new to download.'
+        : `${modelsAlreadyInstalled.length} selected models are already in Ollama — nothing new to download.`;
   } else if (installedMemoryMb > 0) {
-    memoryNote = `${formatSizeMb(installedMemoryMb)} of selected inference memory is already on disk and will not be downloaded again.`;
+    const installedCount = modelsAlreadyInstalled.length;
+    memoryNote =
+      installedCount === 1
+        ? `One selected model (${formatSizeMb(installedMemoryMb)} runtime footprint) is already in Ollama and will not be downloaded again.`
+        : `${installedCount} selected models (${formatSizeMb(installedMemoryMb)} combined runtime footprint) are already in Ollama and will not be downloaded again.`;
   }
 
   let diskReason: string | undefined;
@@ -59,7 +63,7 @@ export function computeSelectionBudget(
 
   let memoryWarning: string | undefined;
   if (overMemory) {
-    memoryWarning = `New downloads may need ${formatSizeMb(newMemoryMb)} inference memory, but only ${formatSizeMb(availableMemoryMb)} is currently free. You can continue — Hub will attempt best-effort downloads, but some models may not load until memory is freed.`;
+    memoryWarning = `New model selections may need ${formatSizeMb(newMemoryMb)} inference memory at runtime, but only ${formatSizeMb(availableMemoryMb)} is currently free. You can continue — Hub will attempt best-effort downloads, but some models may not load until memory is freed.`;
   }
 
   return {

@@ -540,7 +540,7 @@ describe('AiSetupStep', () => {
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
 
     expect(screen.queryByTestId('resource-warning')).not.toBeInTheDocument();
-    expect(screen.getByTestId('resource-memory-note')).toHaveTextContent(/already downloaded/i);
+    expect(screen.getByTestId('resource-memory-note')).toHaveTextContent(/already in Ollama/i);
   });
 
   it('shows resource warning when selected models exceed available disk', async () => {

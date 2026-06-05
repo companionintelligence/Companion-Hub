@@ -26,7 +26,7 @@ describe('computeSelectionBudget', () => {
     expect(result.installedMemoryMb).toBe(20192);
     expect(result.overDisk).toBe(false);
     expect(result.overMemory).toBe(false);
-    expect(result.memoryNote).toContain('already downloaded');
+    expect(result.memoryNote).toContain('already in Ollama');
     expect(isSelectionWithinBudget(selected, ['phi-4-mini', 'qwen-coder'], 1024, 4096)).toBe(true);
   });
 

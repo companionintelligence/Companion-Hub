@@ -24,9 +24,9 @@ export const ResourceSummaryBar = ({ selectedModels, installedCatalogIds, availa
 
   const memorySummary =
     budget.newMemoryMb > 0
-      ? `${formatSize(budget.newMemoryMb)} new downloads / ${formatSize(availableMemoryMb)} inference memory free`
+      ? `${formatSize(budget.newMemoryMb)} new selections / ${formatSize(availableMemoryMb)} inference memory free`
       : budget.installedMemoryMb > 0
-        ? `${formatSize(budget.installedMemoryMb)} already downloaded`
+        ? `${formatSize(budget.installedMemoryMb)} already installed in Ollama`
         : `${formatSize(budget.totalMemoryMb)} / ${formatSize(availableMemoryMb)} available`;
 
   return (
