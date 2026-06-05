@@ -5,10 +5,9 @@ This document describes the QA testing infrastructure for the CI App Store.
 ## Overview
 
 We use a fleet of servers to parallelize App Store QA testing:
-- **8 core servers** (core-1, core-2, core-5, core-6, core-8, core-9, core-10, core-13) - Primary testing fleet
-- **2 beta servers** (beta-1, beta-red) - Extended fleet
-- **core-4** (100.121.17.113) — offline, excluded from test runs
-- **core-4-kvm** (100.79.195.54) — excluded from test runs
+- **7 core servers** (core-1, core-2, core-6, core-8, core-9, core-10, core-13) - Primary testing fleet
+- **2 beta servers** (beta-1, beta-5) - Extended fleet
+- **Excluded:** core-3 (100.126.23.45, first-boot pairing), core-5 (100.73.255.24, SSH blocked), beta-red/100.86.79.25 (repurposed as beta-3-glass hub-node, key expired), core-4 / core-4-kvm (offline/stale — prune)
 
 ## Quick Start
 
@@ -48,14 +47,13 @@ BATCH=0 TOTAL_BATCHES=11 pnpm exec tsx scripts/qa-batch.ts
 export FLEET_CONFIG_JSON='[
   {"name":"core-1",  "ip":"100.108.17.53",  "batch":0},
   {"name":"core-2",  "ip":"100.101.156.33", "batch":1},
-  {"name":"core-5",  "ip":"100.73.255.24",  "batch":2},
-  {"name":"core-6",  "ip":"100.95.23.128",  "batch":3},
-  {"name":"core-8",  "ip":"100.98.33.44",   "batch":4},
-  {"name":"core-9",  "ip":"100.113.188.103","batch":5},
-  {"name":"core-10", "ip":"100.87.68.116",  "batch":6},
-  {"name":"core-13", "ip":"100.76.114.122", "batch":7},
-  {"name":"beta-1",  "ip":"100.124.211.75", "batch":8},
-  {"name":"beta-red","ip":"100.86.79.25",   "batch":9}
+  {"name":"core-6",  "ip":"100.95.23.128",  "batch":2},
+  {"name":"core-8",  "ip":"100.98.33.44",   "batch":3},
+  {"name":"core-9",  "ip":"100.113.188.103","batch":4},
+  {"name":"core-10", "ip":"100.87.68.116",  "batch":5},
+  {"name":"core-13", "ip":"100.76.114.122", "batch":6},
+  {"name":"beta-1",  "ip":"100.124.211.75", "batch":7},
+  {"name":"beta-5",  "ip":"100.118.195.108","batch":8}
 ]'
 pnpm exec tsx scripts/run-fleet-tests.ts --execute
 ```
@@ -167,16 +165,17 @@ This creates 10 batch files (`catalog-batch-0.spec.ts` ... `catalog-batch-9.spec
 |--------|-------------|-------|--------|
 | core-1   | 100.108.17.53  | 0 | Ready (registry cache host) |
 | core-2   | 100.101.156.33 | 1 | Ready |
-| core-5   | 100.73.255.24  | 2 | Ready |
-| core-6   | 100.95.23.128  | 3 | Ready |
-| core-8   | 100.98.33.44   | 4 | Ready |
-| core-9   | 100.113.188.103| 5 | Ready |
-| core-10  | 100.87.68.116  | 6 | Ready |
-| core-13  | 100.76.114.122 | 7 | Ready |
-| beta-1   | 100.124.211.75 | 8 | Ready |
-| beta-red | 100.86.79.25   | 9 | Ready |
-| core-4   | 100.121.17.113 | — | Offline |
-| core-4-kvm | 100.79.195.54| — | Excluded |
+| core-6   | 100.95.23.128  | 2 | Ready |
+| core-8   | 100.98.33.44   | 3 | Ready |
+| core-9   | 100.113.188.103| 4 | Ready |
+| core-10  | 100.87.68.116  | 5 | Ready |
+| core-13  | 100.76.114.122 | 6 | Ready |
+| beta-1   | 100.124.211.75 | 7 | Ready |
+| beta-5   | 100.118.195.108| 8 | Ready |
+| core-3   | 100.126.23.45  | — | Excluded (first-boot pairing) |
+| core-5   | 100.73.255.24  | — | Excluded (SSH blocked) |
+| beta-red | 100.86.79.25   | — | Repurposed as beta-3-glass (hub-node, key expired) |
+| core-4 / core-4-kvm | 100.121.17.113 / 100.79.195.54 | — | Offline / stale — prune |
 
 ## GitHub Actions Secrets Required
 

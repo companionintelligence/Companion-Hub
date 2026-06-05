@@ -47,22 +47,35 @@ function resolveChromiumBinary(): string | null {
 function computeChromiumBinary(): string | null {
   const envBin = process.env.QA_CHROMIUM_PATH;
   if (envBin && existsSync(envBin)) return envBin;
+  // 1) Playwright browser cache — chrome-linux64 (newer) or chrome-linux (older).
   const base = join(home, '.cache', 'ms-playwright');
-  if (!existsSync(base)) return null;
-  const all = readdirSync(base).filter((d) => d.startsWith('chromium'));
-  const full = all
-    .filter((d) => /^chromium-\d/.test(d))
-    .sort()
-    .reverse(); // prefer full chromium, newest first
-  const shell = all
-    .filter((d) => !/^chromium-\d/.test(d))
-    .sort()
-    .reverse(); // headless_shell fallback
-  for (const d of [...full, ...shell]) {
-    for (const sub of ['chrome-linux64/chrome', 'chrome-linux/chrome', 'chrome-linux64/headless_shell', 'chrome-linux/headless_shell']) {
-      const p = join(base, d, sub);
-      if (existsSync(p)) return p;
+  if (existsSync(base)) {
+    const all = readdirSync(base).filter((d) => d.startsWith('chromium'));
+    const full = all
+      .filter((d) => /^chromium-\d/.test(d))
+      .sort()
+      .reverse(); // prefer full chromium, newest first
+    const shell = all
+      .filter((d) => !/^chromium-\d/.test(d))
+      .sort()
+      .reverse(); // headless_shell fallback
+    for (const d of [...full, ...shell]) {
+      for (const sub of ['chrome-linux64/chrome', 'chrome-linux/chrome', 'chrome-linux64/headless_shell', 'chrome-linux/headless_shell']) {
+        const p = join(base, d, sub);
+        if (existsSync(p)) return p;
+      }
     }
+  }
+  // 2) System-installed Chromium/Chrome — Playwright can't install browsers on Ubuntu 26.04
+  //    (support lands in PW v1.61; repo pins ^1.52), so fall back to a distro/snap browser.
+  for (const p of [
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    '/snap/bin/chromium',
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+  ]) {
+    if (existsSync(p)) return p;
   }
   return null;
 }
