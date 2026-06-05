@@ -392,10 +392,15 @@ async function runNodeTests(node: FleetNode, apps: AppSpec[]) {
   const appList = apps.map((a) => a.id).join(' ');
   // Use the storeDir resolved at preflight (CI-Marketplace or CI-App-Store)
   const resolvedStore = ns.storeDir ?? STORE_ROOT;
+  const hubRoot = (process.env.HUB_ROOT_REMOTE ?? '~/devel/CI-Hub').replace(/^~/, '$HOME');
+  const envPrefix = `APP_STORE_DIR=${resolvedStore}/apps RESULTS_DIR=${remoteResultsDir}`;
   const cmd = [
     `mkdir -p ${remoteResultsDir}/screenshots`,
-    `(command -v tsx >/dev/null 2>&1 && APP_STORE_DIR=${resolvedStore}/apps RESULTS_DIR=${remoteResultsDir} tsx /tmp/qa-stream.ts ${appList}` +
-      ` || APP_STORE_DIR=${resolvedStore}/apps RESULTS_DIR=${remoteResultsDir} pnpm exec tsx /tmp/qa-stream.ts ${appList})`,
+    // Resolve tsx: prefer a global tsx, else the repo-local binary that provisioning installs.
+    // qa-stream.ts only imports Node built-ins, so the repo's tsx runs it standalone.
+    // (The old `pnpm exec tsx` fallback ran from $HOME and failed: no package.json there.)
+    `TSX_BIN="$(command -v tsx || echo ${hubRoot}/node_modules/.bin/tsx)"`,
+    `${envPrefix} "$TSX_BIN" /tmp/qa-stream.ts ${appList}`,
   ].join(' && ');
 
   await new Promise<void>((resolve) => {
