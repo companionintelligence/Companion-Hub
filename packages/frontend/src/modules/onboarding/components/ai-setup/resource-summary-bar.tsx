@@ -17,9 +17,17 @@ function formatSize(mb: number): string {
 export const ResourceSummaryBar = ({ selectedModels, installedCatalogIds, availableStorageMb, availableMemoryMb }: ResourceSummaryBarProps) => {
   const budget = computeSelectionBudget(selectedModels, installedCatalogIds, availableStorageMb, availableMemoryMb);
   const diskPercent = availableStorageMb > 0 ? Math.min(100, Math.round((budget.downloadDiskMb / availableStorageMb) * 100)) : 0;
-  const memoryPercent = availableMemoryMb > 0 ? Math.min(100, Math.round((budget.totalMemoryMb / availableMemoryMb) * 100)) : 0;
+  const memoryPercent =
+    availableMemoryMb > 0 ? Math.min(100, Math.round((budget.newMemoryMb / availableMemoryMb) * 100)) : budget.newMemoryMb > 0 ? 100 : 0;
 
   if (selectedModels.length === 0) return null;
+
+  const memorySummary =
+    budget.newMemoryMb > 0
+      ? `${formatSize(budget.newMemoryMb)} new downloads / ${formatSize(availableMemoryMb)} inference memory free`
+      : budget.installedMemoryMb > 0
+        ? `${formatSize(budget.installedMemoryMb)} already downloaded`
+        : `${formatSize(budget.totalMemoryMb)} / ${formatSize(availableMemoryMb)} available`;
 
   return (
     <div className="rounded-lg border p-3 space-y-3" data-testid="resource-summary">
@@ -43,9 +51,7 @@ export const ResourceSummaryBar = ({ selectedModels, installedCatalogIds, availa
       <div>
         <div className="flex items-center justify-between text-xs mb-1.5">
           <span className="font-medium">Inference memory</span>
-          <span className={budget.overMemory ? 'text-destructive font-medium' : 'text-muted-foreground'}>
-            {formatSize(budget.totalMemoryMb)} / {formatSize(availableMemoryMb)} available
-          </span>
+          <span className={budget.overMemory ? 'text-destructive font-medium' : 'text-muted-foreground'}>{memorySummary}</span>
         </div>
         <div className="w-full bg-muted rounded-full h-1.5 overflow-hidden">
           <div
@@ -55,7 +61,13 @@ export const ResourceSummaryBar = ({ selectedModels, installedCatalogIds, availa
         </div>
       </div>
 
-      {(budget.overDisk || budget.overMemory) && (
+      {budget.memoryNote && !budget.overMemory && (
+        <p className="text-xs text-muted-foreground" data-testid="resource-memory-note">
+          {budget.memoryNote}
+        </p>
+      )}
+
+      {(budget.overDisk || budget.overMemory) && budget.reason && (
         <p className="text-xs text-destructive" data-testid="resource-warning">
           {budget.reason}
         </p>

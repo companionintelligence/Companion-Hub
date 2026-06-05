@@ -488,6 +488,26 @@ describe('AiSetupStep', () => {
     expect(screen.getByText(/1 model selected/)).toBeInTheDocument();
   });
 
+  it('does not block when selected models are already installed in Ollama', async () => {
+    api.profile = {
+      ...highTierProfile,
+      installedCatalogIds: ['phi-4-mini', 'qwen-coder'],
+      resourceEstimate: {
+        totalDiskMb: 6144,
+        totalMemoryMb: 6144,
+        availableMemoryMb: 2048,
+        availableDiskMb: 1024,
+        diskTotalMb: 1000000,
+      },
+    };
+
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+    expect(screen.queryByTestId('resource-warning')).not.toBeInTheDocument();
+    expect(screen.getByTestId('resource-memory-note')).toHaveTextContent(/already downloaded/i);
+  });
+
   it('shows resource warning when selected models exceed available disk', async () => {
     // The summary bar tracks download size (disk), not RAM: a recommended model larger than the
     // free disk must trip the warning even when there is plenty of memory.

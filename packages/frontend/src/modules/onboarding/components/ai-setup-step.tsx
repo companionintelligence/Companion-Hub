@@ -338,15 +338,6 @@ export const AiSetupStep = ({
             availableMemoryMb={availableMemoryMb}
           />
 
-          {liveConfig?.installBlocked && liveConfig.installBlockReason && (
-            <p
-              className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
-              data-testid="install-block-reason"
-            >
-              {liveConfig.installBlockReason}
-            </p>
-          )}
-
           <RecommendedModels
             tier={profile.tier}
             recommendedModels={backendRecommendedModels}
