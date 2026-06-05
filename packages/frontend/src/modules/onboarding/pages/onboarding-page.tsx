@@ -116,7 +116,7 @@ function OnboardingWizard() {
             await refreshAppContext();
             navigate('/home', {
               replace: true,
-              state: summary.continuedInBackground ? { showBackgroundInstallToast: true } : undefined,
+              state: summary?.continuedInBackground ? { showBackgroundInstallToast: true } : undefined,
             });
           }}
         />
