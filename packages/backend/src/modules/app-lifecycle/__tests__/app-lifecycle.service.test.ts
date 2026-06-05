@@ -299,6 +299,40 @@ describe('AppLifecycleService', () => {
       appEventsQueue.publish.mockResolvedValue({ success: true, message: 'OK' } as any);
       appFilesManager.getAppEnvMap.mockReturnValue(new Map());
       reposHelpers.downloadAppFiles.mockResolvedValue({ files: {} } as any);
+      // Default: registry inspection unavailable — install proceeds (best-effort).
+      imageSizeService.verifyAppArchitecture.mockResolvedValue(null);
+    });
+
+    it('throws when image manifest does not include host architecture', async () => {
+      configService.getConfig.mockReturnValue({
+        isProduction: false,
+        architecture: 'arm64',
+        version: '1.0.0',
+        userSettings: { localDomain: 'lan', guestDashboard: false },
+      } as any);
+      marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue({
+        ...baseAppInfo,
+        supported_architectures: ['arm64', 'amd64'],
+      } as any);
+      imageSizeService.verifyAppArchitecture.mockResolvedValue({
+        ok: false,
+        image: 'ghcr.io/companionintelligence/ci-openclaw:2026.6.1',
+        available: ['amd64'],
+      });
+
+      await expect(service.installApp({ appUrn, form: {} })).rejects.toThrow('APP_ERROR_ARCHITECTURE_NOT_SUPPORTED');
+
+      expect(imageSizeService.verifyAppArchitecture).toHaveBeenCalledWith(appUrn, 'arm64');
+      expect(appsRepository.createApp).not.toHaveBeenCalled();
+    });
+
+    it('does not block install when manifest architecture inspection is unavailable', async () => {
+      imageSizeService.verifyAppArchitecture.mockResolvedValue(null);
+
+      await service.installApp({ appUrn, form: {} });
+
+      expect(imageSizeService.verifyAppArchitecture).toHaveBeenCalledWith(appUrn, 'amd64');
+      expect(appsRepository.createApp).toHaveBeenCalled();
     });
 
     it('MUST persist exposureMode=cloudflare when provided in form', async () => {
