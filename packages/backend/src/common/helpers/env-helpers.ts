@@ -143,6 +143,8 @@ function isFsErrorWithCode(error: unknown, code: string): boolean {
   return Boolean(error && typeof error === 'object' && 'code' in error && (error as NodeJS.ErrnoException).code === code);
 }
 
+const SETTINGS_JSON_MODE = 0o666;
+
 /** Ensure bind-mounted state/ exists; Hub container UID should match the host user (see CI_HUB_CONTAINER_UID). */
 export async function ensureHubStateDirWritable(stateDir: string): Promise<void> {
   await fs.promises.mkdir(stateDir, { recursive: true, mode: 0o775 });
@@ -150,6 +152,82 @@ export async function ensureHubStateDirWritable(stateDir: string): Promise<void>
     await fs.promises.chmod(stateDir, 0o775);
   } catch {
     // chmod may fail on some mounts; write retry logic still applies.
+  }
+}
+
+async function retrySettingsJsonPermissions(settingsFilePath: string, stateDir: string): Promise<void> {
+  try {
+    await fs.promises.chmod(stateDir, 0o777);
+  } catch {
+    // Host user may not own the directory (e.g. prior root-owned Hub container).
+  }
+  if (fs.existsSync(settingsFilePath)) {
+    try {
+      await fs.promises.chmod(settingsFilePath, SETTINGS_JSON_MODE);
+    } catch {
+      // Best-effort; desktop preflight may heal via Docker before the next start.
+    }
+  }
+}
+
+function settingsJsonPermissionError(settingsFilePath: string, cause: unknown): Error {
+  return new Error(
+    `Cannot read or write ${settingsFilePath}. This usually means bind-mounted Hub data was written by a prior container running as a different user (common after Hub upgrades or Docker Desktop UID changes). Stop the Hub, fix ownership on the host data directory (for example: chown -R "$(id -u):$(id -g)" "$ROOT_FOLDER_HOST/state"), or remove state/settings.json and restart.`,
+    { cause },
+  );
+}
+
+/** Ensure settings.json exists and is readable/writable by the Hub process. */
+export async function ensureSettingsJsonReady(settingsFilePath: string): Promise<void> {
+  const stateDir = path.dirname(settingsFilePath);
+  await ensureHubStateDirWritable(stateDir);
+
+  const createEmpty = async () => {
+    await fs.promises.writeFile(settingsFilePath, '{}', { encoding: 'utf8', mode: SETTINGS_JSON_MODE });
+  };
+
+  if (!fs.existsSync(settingsFilePath)) {
+    try {
+      await createEmpty();
+      return;
+    } catch (error) {
+      if (!isFsErrorWithCode(error, 'EACCES')) {
+        throw error;
+      }
+      await retrySettingsJsonPermissions(settingsFilePath, stateDir);
+      await createEmpty();
+      return;
+    }
+  }
+
+  try {
+    await fs.promises.access(settingsFilePath, fs.constants.R_OK | fs.constants.W_OK);
+  } catch (error) {
+    await retrySettingsJsonPermissions(settingsFilePath, stateDir);
+    try {
+      await fs.promises.access(settingsFilePath, fs.constants.R_OK | fs.constants.W_OK);
+    } catch (retryError) {
+      throw settingsJsonPermissionError(settingsFilePath, retryError ?? error);
+    }
+  }
+}
+
+/** Write settings.json with permission recovery for stale root-owned bind mounts. */
+export async function writeSettingsJsonFile(settingsFilePath: string, content: string): Promise<void> {
+  await ensureSettingsJsonReady(settingsFilePath);
+
+  try {
+    await fs.promises.writeFile(settingsFilePath, content, { encoding: 'utf8', mode: SETTINGS_JSON_MODE });
+  } catch (error) {
+    if (!isFsErrorWithCode(error, 'EACCES')) {
+      throw error;
+    }
+    await retrySettingsJsonPermissions(settingsFilePath, path.dirname(settingsFilePath));
+    try {
+      await fs.promises.writeFile(settingsFilePath, content, { encoding: 'utf8', mode: SETTINGS_JSON_MODE });
+    } catch (retryError) {
+      throw settingsJsonPermissionError(settingsFilePath, retryError);
+    }
   }
 }
 
@@ -225,9 +303,7 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   const { NODE_ENV } = process.env;
   envMap.set('NODE_ENV', NODE_ENV || 'production');
 
-  if (!fs.existsSync(settingsFilePath)) {
-    await fs.promises.writeFile(settingsFilePath, JSON.stringify({}));
-  }
+  await ensureSettingsJsonReady(settingsFilePath);
 
   const settingsFile = await fs.promises.readFile(settingsFilePath, 'utf-8');
 

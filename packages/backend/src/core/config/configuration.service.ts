@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { type UserSettingsBody, settingsSchema } from '@/app.dto';
 import { APP_DATA_DIR, APP_DIR, ARCHITECTURES, DATA_DIR, DEFAULT_LOCAL_DOMAIN } from '@/common/constants';
+import { writeSettingsJsonFile } from '@/common/helpers/env-helpers';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
@@ -215,7 +216,7 @@ export class ConfigurationService {
       }
       const currentSettings = currentSettingsResult.data;
 
-      await fs.promises.writeFile(settingsPath, `${JSON.stringify({ ...currentSettings, ...settings }, null, 2)}`, 'utf8');
+      await writeSettingsJsonFile(settingsPath, `${JSON.stringify({ ...currentSettings, ...settings }, null, 2)}`);
 
       this.config.userSettings = { ...this.config.userSettings, ...settings };
 
