@@ -4,7 +4,10 @@ import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import path, { join } from 'node:path';
 import { stdin as input, stdout as output } from 'node:process';
 import { createInterface } from 'node:readline/promises';
+import { isHostPortBindConflict, runDockerComposeUpOnce } from './compose-up';
 import { ensureHubBindMountsWritable } from './heal-hub-bind-mounts';
+import { healHubPortBindConflict, healHubPortsBeforeStartup } from './heal-hub-ports';
+import { runPublicWebRepair, runPublicWebStatus, resolveHubApiBase } from './public-web-cli';
 
 export const allowedModes = ['dev', 'start', 'start:detached'] as const;
 export const allowedEnvs = ['local', 'dev', 'staging', 'prod'] as const;
@@ -86,6 +89,13 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
       { command: `${BASE_COMMAND} app edit <name> <image>`, description: 'Recreate a Docker container app' },
       { command: `${BASE_COMMAND} app start|stop|restart|delete <name>`, description: 'Container lifecycle controls' },
       { command: `${BASE_COMMAND} app inspect <name>`, description: 'Show container ports, env, and mounts' },
+    ],
+  },
+  {
+    title: 'Public Web',
+    entries: [
+      { command: `${BASE_COMMAND} public-web status [env]`, description: 'Public Web hostname diagnostics for cloudflare apps' },
+      { command: `${BASE_COMMAND} public-web repair [env] [--app <name>]`, description: 'Repair env, Traefik labels, and tunnel sync' },
     ],
   },
   {
@@ -347,7 +357,7 @@ export function getComposeFiles(env: HubEnv): string[] {
   return ['docker-compose.prod.yml'];
 }
 
-function resolveRootFolderHost(envFileName: string): string {
+export function resolveRootFolderHost(envFileName: string): string {
   const vars = parseEnvFile(envFileName);
   const configured = process.env.ROOT_FOLDER_HOST || vars.ROOT_FOLDER_HOST || '.internal';
   return path.isAbsolute(configured) ? configured : path.resolve(process.cwd(), configured);
@@ -496,7 +506,37 @@ function prepareHubDataDirectory(envFileName: string): void {
 
 // ─── hub lifecycle ────────────────────────────────────────────────────────────
 
-function startHub(mode: StartMode, env: HubEnv) {
+async function runDockerComposeUp(envFileName: string, files: string[], detached: boolean, envOverrides: Record<string, string>): Promise<void> {
+  const upArgs = ['compose', '--env-file', envFileName, '--project-name', 'ci-hub'];
+  for (const f of files) upArgs.push('-f', f);
+  upArgs.push('up');
+  if (detached) upArgs.push('-d');
+  upArgs.push('--build');
+
+  const maxAttempts = 3;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const result = await runDockerComposeUpOnce(upArgs, { detached, envOverrides });
+    if (result.status === 0) return;
+
+    const combined = `${result.stdout || ''}\n${result.stderr || ''}`.trim();
+    if (attempt < maxAttempts && isHostPortBindConflict(combined)) {
+      const healed = healHubPortBindConflict(envFileName, combined, (message) => {
+        printMessageBox('Port self-heal', [message], 'yellow');
+      });
+      if (healed.info.length > 0) {
+        printMessageBox('Port self-heal', healed.info, 'yellow');
+      }
+      continue;
+    }
+
+    if (combined) {
+      printMessageBox('Docker compose failed', combined.split('\n').slice(-8), 'red');
+    }
+    process.exit(result.status ?? 1);
+  }
+}
+
+async function startHub(mode: StartMode, env: HubEnv) {
   requireRepoRoot(mode === 'dev' ? 'cihub dev / hot-reload' : 'cihub up');
   const envFileName = getEnvFileOrExit(env);
   prepareHubDataDirectory(envFileName);
@@ -534,19 +574,28 @@ function startHub(mode: StartMode, env: HubEnv) {
 
   if (env !== 'local') run('tsx', ['scripts/init-traefik.ts'], envOverrides);
 
+  try {
+    const portHeal = healHubPortsBeforeStartup(envFileName, (message) => {
+      printMessageBox('Port preparation', [message], 'yellow');
+    });
+    if (portHeal.info.length > 0) {
+      printMessageBox('Port preparation', portHeal.info, 'yellow');
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    printMessageBox('Port preparation failed', [message], 'red');
+    throw error;
+  }
+
   const files = getComposeFiles(env);
-  const upArgs = ['compose', '--env-file', envFileName, '--project-name', 'ci-hub'];
-  for (const f of files) upArgs.push('-f', f);
-  upArgs.push('up');
-  if (mode === 'start:detached') upArgs.push('-d');
-  upArgs.push('--build');
+  const detached = mode === 'start:detached';
 
   printMessageBox(
     'Starting hub',
-    [`Environment: ${env}`, `Mode: ${mode === 'start:detached' ? 'detached' : 'attached'}`, `Compose files: ${files.join(', ')}`],
+    [`Environment: ${env}`, `Mode: ${detached ? 'detached' : 'attached'}`, `Compose files: ${files.join(', ')}`],
     'green',
   );
-  run('docker', upArgs, envOverrides);
+  await runDockerComposeUp(envFileName, files, detached, envOverrides);
 }
 
 function setupHub(env: HubEnv) {
@@ -608,13 +657,13 @@ function shutdownHub(env: HubEnv) {
   run('docker', args, envOverrides);
 }
 
-function hotReloadHub(env: HubEnv) {
+async function hotReloadHub(env: HubEnv) {
   printMessageBox(
     'Starting hot reload',
     [`Environment: ${env}`, 'Infra + backend/frontend from source — changes reload without a full Docker rebuild.'],
     'green',
   );
-  startHub('dev', env);
+  await startHub('dev', env);
 }
 
 function findComposeName(keyword: string): string {
@@ -786,6 +835,41 @@ function setMcpState(env: HubEnv, enabled: boolean) {
     if (!vars.MCP_API_KEY) upsertEnvVar(envFileName, 'MCP_API_KEY', randomBytes(24).toString('hex'));
   }
   printMessageBox(enabled ? 'MCP enabled' : 'MCP disabled', renderConfigLines(env), enabled ? 'green' : 'yellow');
+}
+
+// ─── public web ──────────────────────────────────────────────────────────────
+
+async function runPublicWebCommand(args: string[]) {
+  requireRepoRoot('cihub public-web');
+  const appFlagIndex = args.indexOf('--app');
+  const appName = appFlagIndex >= 0 ? args[appFlagIndex + 1] : undefined;
+  const positional = args.filter((_, index) => index !== appFlagIndex && (appFlagIndex < 0 || index !== appFlagIndex + 1));
+  const subcommand = positional[0] || 'status';
+  const env = resolveEnvFromArgs(positional.slice(1));
+  const envFileName = getEnvFileOrExit(env);
+
+  try {
+    if (subcommand === 'status') {
+      const lines = await runPublicWebStatus(envFileName);
+      printMessageBox(`Public Web status  [${env}]`, lines, 'cyan');
+      return;
+    }
+
+    if (subcommand === 'repair') {
+      const lines = await runPublicWebRepair(envFileName, appName);
+      printMessageBox(`Public Web repair  [${env}]`, lines, lines.some((line) => line.startsWith('✗')) ? 'yellow' : 'green');
+      return;
+    }
+
+    usageAndExit(`Usage: ${BASE_COMMAND} public-web <status|repair> [env] [--app <name>]`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes('fetch failed') || message.includes('ECONNREFUSED')) {
+      printMessageBox('Hub unavailable', [`Could not reach Hub at ${resolveHubApiBase(envFileName)}.`, 'Start the Hub first: cihub up'], 'red');
+      process.exit(1);
+    }
+    throw error;
+  }
 }
 
 // ─── app lifecycle ────────────────────────────────────────────────────────────
@@ -1090,7 +1174,7 @@ async function runWizard(defaultEnv: HubEnv = 'local') {
       console.log();
       console.log(renderStep(5, FTUE_STEPS, 'Starting the Hub…', 'active'));
       const detached = (await rl.question('  Run detached (background)? [y/N]: ')).trim().toLowerCase();
-      startHub(detached === 'y' || detached === 'yes' ? 'start:detached' : 'start', env);
+      await startHub(detached === 'y' || detached === 'yes' ? 'start:detached' : 'start', env);
       console.log(renderStep(5, FTUE_STEPS, 'Hub launched', 'done'));
 
       // ── Step 6: optional model ────────────────────────────────────────
@@ -1153,7 +1237,7 @@ async function runWizard(defaultEnv: HubEnv = 'local') {
     if (action === 'setup') return setupHub(env);
     if (action === 'up') {
       const detached = (await rl.question('  Detached mode? [y/N]: ')).trim().toLowerCase();
-      return startHub(detached === 'y' || detached === 'yes' ? 'start:detached' : 'start', env);
+      return await startHub(detached === 'y' || detached === 'yes' ? 'start:detached' : 'start', env);
     }
     if (action === 'register') return registerHub(env);
     if (action === 'config') return printConfig(env);
@@ -1169,7 +1253,7 @@ async function runWizard(defaultEnv: HubEnv = 'local') {
       }
       return purgeHub(['--yes']);
     }
-    if (action === 'hot-reload') return hotReloadHub(env);
+    if (action === 'hot-reload') return await hotReloadHub(env);
   } finally {
     rl.close();
   }
@@ -1201,7 +1285,7 @@ export async function runCli(rawArgs: string[]) {
   const first = args[0];
 
   if (!first) {
-    startHub('dev', 'local');
+    await startHub('dev', 'local');
     return;
   }
 
@@ -1224,7 +1308,7 @@ export async function runCli(rawArgs: string[]) {
     const mode = first as StartMode;
     const env = (args[1] || 'local') as HubEnv;
     if (!allowedEnvs.includes(env)) usageAndExit(`Unknown env: ${env}`);
-    startHub(mode, env);
+    await startHub(mode, env);
     return;
   }
 
@@ -1246,7 +1330,7 @@ export async function runCli(rawArgs: string[]) {
   if (first === 'up') {
     const detached = args.includes('--detached');
     const envArgs = args.slice(1).filter((a) => a !== '--detached');
-    startHub(detached ? 'start:detached' : 'start', resolveEnvFromArgs(envArgs));
+    await startHub(detached ? 'start:detached' : 'start', resolveEnvFromArgs(envArgs));
     return;
   }
 
@@ -1266,7 +1350,7 @@ export async function runCli(rawArgs: string[]) {
   }
 
   if (first === 'hot-reload') {
-    hotReloadHub(resolveEnvFromArgs(args.slice(1)));
+    await hotReloadHub(resolveEnvFromArgs(args.slice(1)));
     return;
   }
 
@@ -1291,6 +1375,11 @@ export async function runCli(rawArgs: string[]) {
 
   if (first === 'models') {
     runModelsCommand(args.slice(1));
+    return;
+  }
+
+  if (first === 'public-web') {
+    await runPublicWebCommand(args.slice(1));
     return;
   }
 

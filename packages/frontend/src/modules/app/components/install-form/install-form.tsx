@@ -19,6 +19,7 @@ import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
 import { Tooltip } from 'react-tooltip';
 import type { AvailableDomain } from '@ci-hub/common/types';
+import { buildPublicWebIdentity, sanitizeAppSubdomain } from '@ci-hub/common/types';
 import { hiddenTypes, validateAppConfig } from './form-validators';
 import { InstallFormField } from './install-form-field';
 
@@ -80,6 +81,7 @@ export const InstallForm: React.FC<IProps> = ({
   const isAdvancedMode = user.advancedMode;
 
   const orgSlug = ciHubOrganizationSlug ? ciHubOrganizationSlug.toLowerCase().replace(/\s+/g, '-') : undefined;
+  const defaultAppSubdomain = info.urn.split(':')[0] ?? info.urn;
 
   const {
     register,
@@ -100,6 +102,17 @@ export const InstallForm: React.FC<IProps> = ({
   const watchPublicDomainRaw = watch('publicDomain');
   const watchPublicDomain = watchPublicDomainRaw || domain;
 
+  const publicWebPreview = useMemo(() => {
+    if (watchExposureMode !== 'cloudflare' || !orgSlug) return null;
+    const hubSubdomain = ciHubDeviceSlug ? `hub-${ciHubDeviceSlug}-${orgSlug}` : undefined;
+    return buildPublicWebIdentity({
+      appSubdomain: watchLocalSubdomain || defaultAppSubdomain,
+      hubSubdomain,
+      orgSlug,
+      publicDomainRoot: watchPublicDomain || domain || 'example.com',
+    });
+  }, [watchExposureMode, orgSlug, watchLocalSubdomain, defaultAppSubdomain, ciHubDeviceSlug, watchPublicDomain, domain]);
+
   const { data: availableDomainsData } = useQuery(getAvailableDomainsQueryOptions());
   const availableDomains = useMemo(() => availableDomainsData?.domains ?? EMPTY_AVAILABLE_DOMAINS, [availableDomainsData?.domains]);
 
@@ -112,6 +125,7 @@ export const InstallForm: React.FC<IProps> = ({
   const prevUrnRef = useRef<string | undefined>(undefined);
   const [isCheckingDns, setIsCheckingDns] = useState(false);
   const [dnsAvailabilityError, setDnsAvailabilityError] = useState<string | null>(null);
+  const [publicWebExpectedUrl, setPublicWebExpectedUrl] = useState<string | null>(null);
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
 
   // Track form validity for parent components
@@ -220,6 +234,36 @@ export const InstallForm: React.FC<IProps> = ({
 
     setValue('publicDomain', fallbackDomain);
   }, [availableDomains, dirtyFields.publicDomain, domain, getValues, setValue, watchExposureMode]);
+
+  useEffect(() => {
+    if (appStatus !== 'running' || watchExposureMode !== 'cloudflare') {
+      setPublicWebExpectedUrl(null);
+      return;
+    }
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await apiFetch('/api/public-web/diagnostics');
+        if (!response.ok) return;
+        const data = (await response.json()) as {
+          apps: { appUrn: string; envMismatch: boolean; computedPublicUrl: string }[];
+        };
+        const entry = data.apps.find((app) => app.appUrn === info.urn);
+        if (!cancelled && entry?.envMismatch) {
+          setPublicWebExpectedUrl(entry.computedPublicUrl);
+        } else if (!cancelled) {
+          setPublicWebExpectedUrl(null);
+        }
+      } catch {
+        if (!cancelled) setPublicWebExpectedUrl(null);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [appStatus, watchExposureMode, info.urn]);
 
   const _randomPortMutation = useMutation({
     ...getRandomPortMutation(),
@@ -395,10 +439,19 @@ export const InstallForm: React.FC<IProps> = ({
   const renderAdvancedExposureOptions = () => {
     if (!info.exposable || (!isAdvancedMode && !showAdvancedSettings)) return null;
 
-    const cloudflareSuffix = orgSlug ? `${ciHubDeviceSlug ? `${ciHubDeviceSlug}-` : ''}${orgSlug}` : localDomain;
+    const cloudflareSuffix = publicWebPreview
+      ? publicWebPreview.hostname
+          .slice(0, publicWebPreview.hostname.indexOf('.'))
+          .slice(sanitizeAppSubdomain(watchLocalSubdomain || defaultAppSubdomain).length + 1)
+      : localDomain;
 
     return (
       <>
+        {publicWebExpectedUrl && (
+          <p className="mb-3 text-sm text-amber-700 dark:text-amber-400">
+            Public Web routing is out of sync. Expected URL: {publicWebExpectedUrl}. Save settings or run repair to update routing.
+          </p>
+        )}
         {/* Subdomain input — shown for cloudflare and tailscale modes */}
         {watchExposureMode !== 'local' && (
           <div className="mb-3">

@@ -28,7 +28,7 @@ services:
     pull_policy: if_not_present
     restart: unless-stopped
     ports:
-      - "5001:5672"
+      - "${RABBITMQ_PORT:-5001}:5672"
     environment:
       RABBITMQ_DEFAULT_USER: companion
       RABBITMQ_DEFAULT_PASS: admin
@@ -132,6 +132,7 @@ services:
       RABBITMQ_USERNAME: companion
       RABBITMQ_PASSWORD: admin
       RABBITMQ_HOST: ci-os-hub-queue
+      RABBITMQ_PORT: 5672
       INTERNAL_IP: ${INTERNAL_IP:-127.0.0.1}
       CI_HUB_VERSION: ${CI_HUB_VERSION:-4.5.0}
       LOG_LEVEL: ${LOG_LEVEL:-info}

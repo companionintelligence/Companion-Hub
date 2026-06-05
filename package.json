@@ -43,9 +43,9 @@
     "start:detached": "pnpm exec tsx scripts/start.ts start:detached",
     "fresh": "pnpm run cleanup && pnpm start dev",
     "fresh:local": "pnpm run cleanup && pnpm start local",
-    "dev:desktop": "cd packages/desktop && cargo tauri dev",
+    "dev:desktop": "pnpm exec tsx scripts/launch-tauri-desktop.ts",
     "wait:hub": "pnpm exec tsx scripts/wait-hub-health.ts",
-    "start:dev:desktop": "pnpm run start:dev:detached && pnpm run wait:hub && cd packages/desktop && cargo tauri dev --config src-tauri/tauri.stack-dev.json --no-dev-server-wait",
+    "start:dev:desktop": "pnpm run start:dev:detached && pnpm run wait:hub && pnpm exec tsx scripts/launch-tauri-desktop.ts --stack-dev",
     "build:desktop": "cd packages/desktop && cargo tauri build",
     "test:cli": "pnpm exec vitest run --config scripts/vitest.config.ts"
   },

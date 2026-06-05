@@ -3,8 +3,14 @@ use std::collections::HashSet;
 use std::net::TcpListener;
 use std::path::Path;
 
-/// Ports that MUST stay fixed (Cloudflare tunnels require 80/443).
+/// Default host bindings for Traefik HTTP/HTTPS. Cloudflare Public Web routes to
+/// `traefik:80` / `traefik:443` on the Docker network, so host ports can be
+/// reassigned when 80/443 are occupied by another process.
 const FIXED_PORTS: &[(u16, &str)] = &[(80, "HTTP_PORT"), (443, "HTTPS_PORT")];
+
+/// Fallback host ports when 80/443 cannot be freed (avoid TRAEFIK_DASHBOARD_PORT 8080).
+const HTTP_PORT_FALLBACK_START: u16 = 8880;
+const HTTPS_PORT_FALLBACK_START: u16 = 8443;
 
 /// Ports that can be dynamically reassigned if occupied.
 const DYNAMIC_PORTS: &[(u16, &str)] = &[
@@ -135,17 +141,26 @@ pub struct PortResolution {
 pub fn resolve_ports() -> Result<PortResolution, String> {
     let our_ports = get_our_container_ports();
     let mut env_vars: HashMap<String, u16> = HashMap::new();
-    let mut warnings = Vec::new();
+    let warnings = Vec::new();
     let mut info = Vec::new();
 
-    // Fixed ports — warn but don't change
+    // Fixed ports — reassign to a free host port when blocked by a non-Hub process.
     for &(port, var) in FIXED_PORTS {
-        env_vars.insert(var.to_string(), port);
-        if !is_port_available_or_ours(port, &our_ports) {
-            warnings.push(format!(
-                "Port {} ({}) is in use. Cloudflare tunnel / public access won't work until freed.",
-                port, var
+        if is_port_available_or_ours(port, &our_ports) {
+            env_vars.insert(var.to_string(), port);
+        } else {
+            let fallback_start = fixed_port_fallback_start(port);
+            let new_port = find_available_port(fallback_start, &our_ports).ok_or_else(|| {
+                format!(
+                    "Cannot find available host port near {} for {} (default {} is occupied)",
+                    fallback_start, var, port
+                )
+            })?;
+            info.push(format!(
+                "Port {} ({}) occupied by another process — using host port {} (Public Web via Cloudflare is unaffected)",
+                port, var, new_port
             ));
+            env_vars.insert(var.to_string(), new_port);
         }
     }
 
@@ -231,17 +246,49 @@ pub fn refresh_ports_if_needed(env_path: &Path) -> Result<PortResolution, String
     // real conflicts.
     let our_ports = get_our_container_ports();
     let mut env_vars: HashMap<String, u16> = HashMap::new();
-    let mut warnings = Vec::new();
+    let warnings = Vec::new();
     let mut info = Vec::new();
     let mut changed = false;
 
     for &(default_port, var) in FIXED_PORTS {
-        env_vars.insert(var.to_string(), default_port);
-        if !is_port_available_or_ours(default_port, &our_ports) {
-            warnings.push(format!(
-                "Port {} ({}) is in use. Cloudflare tunnel / public access won't work until freed.",
-                default_port, var
+        let current: u16 = existing
+            .lines()
+            .find(|l| l.starts_with(&format!("{}=", var)))
+            .and_then(|l| l.split('=').nth(1))
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(default_port);
+
+        if is_port_available_or_ours(current, &our_ports) {
+            env_vars.insert(var.to_string(), current);
+        } else if is_port_available_or_ours(default_port, &our_ports) {
+            if current != default_port {
+                info.push(format!(
+                    "Port {} ({}) now free — restored default host port {}",
+                    current, var, default_port
+                ));
+                changed = true;
+            }
+            env_vars.insert(var.to_string(), default_port);
+        } else {
+            let fallback_start = fixed_port_fallback_start(default_port);
+            let new_port = find_available_port(fallback_start, &our_ports).ok_or_else(|| {
+                format!(
+                    "Cannot find available host port near {} for {} ({} is occupied)",
+                    fallback_start, var, default_port
+                )
+            })?;
+            info.push(format!(
+                "Port {} ({}) occupied — using host port {} instead",
+                if current == default_port {
+                    default_port
+                } else {
+                    current
+                },
+                var,
+                new_port
             ));
+            env_vars.insert(var.to_string(), new_port);
+            changed = true;
         }
     }
 
@@ -275,11 +322,68 @@ pub fn refresh_ports_if_needed(env_path: &Path) -> Result<PortResolution, String
         info,
     };
 
-    // Only write when a dynamic port assignment changed, so existing .env
-    // values remain authoritative until a conflict requires reassignment.
+    // Write when any port assignment changed so compose sees the updated bindings.
     if changed {
         write_ports_to_env(env_path, &resolution)?;
     }
 
     Ok(resolution)
+}
+
+fn fixed_port_fallback_start(default_port: u16) -> u16 {
+    match default_port {
+        80 => HTTP_PORT_FALLBACK_START,
+        443 => HTTPS_PORT_FALLBACK_START,
+        other => other.saturating_add(1000),
+    }
+}
+
+/// Parse the host port from a Docker "ports are not available" / bind error.
+pub fn parse_bind_conflict_port(output: &str) -> Option<u16> {
+    // "exposing port TCP 0.0.0.0:80 -> ..." or "Bind for 0.0.0.0:443 failed"
+    for token in output.split_whitespace() {
+        if let Some(host_part) = token.strip_prefix("0.0.0.0:") {
+            if let Ok(port) = host_part.trim_end_matches(|c: char| !c.is_ascii_digit()).parse() {
+                return Some(port);
+            }
+        }
+        if let Some(host_part) = token.strip_prefix("[::]:") {
+            if let Ok(port) = host_part.trim_end_matches(|c: char| !c.is_ascii_digit()).parse() {
+                return Some(port);
+            }
+        }
+    }
+
+    let lower = output.to_lowercase();
+    if lower.contains(":80") || lower.contains("port 80") {
+        return Some(80);
+    }
+    if lower.contains(":443") || lower.contains("port 443") {
+        return Some(443);
+    }
+
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_traefik_port_eighty_bind_error() {
+        let output = r#"Error response from daemon: ports are not available: exposing port TCP 0.0.0.0:80 -> 127.0.0.1:0: listen tcp 0.0.0.0:80: bind: address already in use"#;
+        assert_eq!(parse_bind_conflict_port(output), Some(80));
+    }
+
+    #[test]
+    fn parses_https_bind_error() {
+        let output = r#"Error response from daemon: ports are not available: exposing port TCP 0.0.0.0:443 -> 127.0.0.1:0: listen tcp 0.0.0.0:443: bind: address already in use"#;
+        assert_eq!(parse_bind_conflict_port(output), Some(443));
+    }
+
+    #[test]
+    fn fixed_port_fallback_avoids_dashboard_port() {
+        assert_eq!(fixed_port_fallback_start(80), 8880);
+        assert_eq!(fixed_port_fallback_start(443), 8443);
+    }
 }

@@ -288,7 +288,7 @@ describe('AppHelpers', () => {
       expect(envMap.get('APP_PUBLIC_URL')).toBe(`https://${domain}`);
     });
 
-    it('should write APP_PUBLIC_DOMAIN derived from APP_PUBLIC_HOSTNAME', async () => {
+    it('does not write APP_PUBLIC_DOMAIN (consolidated to APP_PUBLIC_HOSTNAME)', async () => {
       const envMap = new Map<string, string>();
       envUtils.envStringToMap.mockReturnValue(envMap);
 
@@ -297,21 +297,8 @@ describe('AppHelpers', () => {
         domain: 'myapp-device1-myorg.example.com',
       });
 
-      // APP_PUBLIC_DOMAIN is everything after the first dot in the hostname
-      expect(envMap.get('APP_PUBLIC_DOMAIN')).toBe('example.com');
-    });
-
-    it('should write APP_PUBLIC_DOMAIN correctly for multi-label domains', async () => {
-      const envMap = new Map<string, string>();
-      envUtils.envStringToMap.mockReturnValue(envMap);
-
-      await appHelpers.generateEnvFile(testAppUrn, {
-        exposed: true,
-        domain: 'myapp-device1-myorg.my.lifescope.io',
-      });
-
-      // Must preserve all labels after the first dot — slice(-2) heuristic would give 'lifescope.io'
-      expect(envMap.get('APP_PUBLIC_DOMAIN')).toBe('my.lifescope.io');
+      expect(envMap.has('APP_PUBLIC_DOMAIN')).toBe(false);
+      expect(envMap.get('APP_PUBLIC_HOSTNAME')).toBe('myapp-device1-myorg.example.com');
     });
 
     it('should set correct domain settings for local exposure', async () => {

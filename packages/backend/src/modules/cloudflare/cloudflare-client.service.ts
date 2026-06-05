@@ -8,6 +8,7 @@ import axios, { AxiosInstance, type AxiosResponse } from 'axios';
 import * as fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
 import * as path from 'node:path';
+import { writeHealableTextFile } from '@/common/helpers/bind-mount-helpers';
 
 export interface AppInfo {
   name: string;
@@ -98,7 +99,7 @@ export class CloudflareClientService {
       await fs.mkdir(certsDir, { recursive: true });
 
       // Write the token to a file that cloudflared will read (configured in docker-compose)
-      await fs.writeFile(path.join(tunnelDir, 'token'), token, { mode: 0o644 });
+      await writeHealableTextFile(path.join(tunnelDir, 'token'), token, 0o644);
       this.logger.log('Wrote tunnel token to file');
     } catch (e) {
       this.logger.error(`Failed to write tunnel files: ${e}`);
@@ -345,7 +346,7 @@ export class CloudflareClientService {
    * of a previously-registered Hub would otherwise leave the tunnel down.
    * Skipped in local/E2E mode (domain === ci.localhost).
    */
-  async ensureCloudflaredRunning(): Promise<boolean> {
+  async ensureCloudflaredRunning(options: { forceRestart?: boolean } = {}): Promise<boolean> {
     if (!this.tunnelToken) {
       this.logger.warn('ensureCloudflaredRunning: skipped — no tunnel token in memory');
       return false;
@@ -358,12 +359,16 @@ export class CloudflareClientService {
     try {
       const dockerService = this.moduleRef.get(DockerService, { strict: false });
 
-      // Skip restart if cloudflared is already running — prevents the double-restart
-      // boot scenario where the container is running with the current token but would
-      // be unnecessarily stopped and re-started, causing a 40-second connection storm.
       const alreadyRunning = await dockerService.isContainerRunning('cloudflared');
-      if (alreadyRunning) {
+      if (alreadyRunning && !options.forceRestart) {
         this.logger.debug('ensureCloudflaredRunning: cloudflared is already running, skipping restart');
+        return true;
+      }
+
+      if (alreadyRunning && options.forceRestart) {
+        this.logger.warn('ensureCloudflaredRunning: restarting cloudflared after tunnel credential recovery...');
+        await dockerService.restartContainer('cloudflared');
+        this.logger.warn('Cloudflared container restarted with recovered credentials.');
         return true;
       }
 

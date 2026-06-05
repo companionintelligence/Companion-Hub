@@ -264,7 +264,7 @@ describe('AppsService', () => {
       expect(result.appUrl).toBe('https://myapp-test1-myorg.example.com');
     });
 
-    it('MUST always include device slug even when it equals org slug', async () => {
+    it('MUST omit duplicate device slug when it equals org slug', async () => {
       setupApp({ exposureMode: 'cloudflare' });
       registrationService.getDeviceRegistrationInfo.mockResolvedValue({
         slug: 'myorg',
@@ -272,7 +272,7 @@ describe('AppsService', () => {
       } as any);
       mockAxiosGet.mockResolvedValue({ status: 200, data: 'OK' });
       const result = await service.checkAppAvailability(appUrn);
-      expect(result.appUrl).toBe('https://myapp-myorg-myorg.example.com');
+      expect(result.appUrl).toBe('https://myapp-myorg.example.com');
     });
 
     it('MUST return appUrl in response when available', async () => {
