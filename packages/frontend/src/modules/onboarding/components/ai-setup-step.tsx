@@ -220,9 +220,9 @@ export const AiSetupStep = ({
       profile.resourceEstimate.availableDiskMb,
       profile.resourceEstimate.availableMemoryMb,
     );
-    if (budget.overDisk || budget.overMemory) {
+    if (budget.overDisk) {
       installBlocked = true;
-      installBlockReason = budget.reason;
+      installBlockReason = budget.diskReason;
     }
 
     const effectivePreferredModelId =
@@ -301,7 +301,6 @@ export const AiSetupStep = ({
   const diskTotalMb = profile.resourceEstimate.diskTotalMb;
   const availableMemoryMb = profile.resourceEstimate.availableMemoryMb;
   const needsOllama = ollamaStatus === null || !ollamaStatus.ready;
-  const liveConfig = buildConfig();
 
   return (
     <div className={embedded ? 'space-y-5' : 'space-y-5 max-h-[66vh] overflow-y-auto pr-2'} data-testid="ai-setup-step">
@@ -337,15 +336,6 @@ export const AiSetupStep = ({
             availableStorageMb={availableDiskMb}
             availableMemoryMb={availableMemoryMb}
           />
-
-          {liveConfig?.installBlocked && liveConfig.installBlockReason && (
-            <p
-              className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
-              data-testid="install-block-reason"
-            >
-              {liveConfig.installBlockReason}
-            </p>
-          )}
 
           <RecommendedModels
             tier={profile.tier}

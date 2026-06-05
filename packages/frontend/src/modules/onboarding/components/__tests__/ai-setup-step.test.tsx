@@ -488,6 +488,61 @@ describe('AiSetupStep', () => {
     expect(screen.getByText(/1 model selected/)).toBeInTheDocument();
   });
 
+  it('warns but does not block when new downloads exceed inference memory', async () => {
+    const bigModel = {
+      id: 'qwen-coder',
+      displayName: 'Qwen 2.5 Coder',
+      description: 'Coding model',
+      modality: 'llm',
+      purpose: 'coding',
+      backend: 'ollama',
+      requirements: { diskMb: 4096 },
+      runtime: { backendModelId: 'qwen2.5-coder', input: ['text'], pinnedByDefault: false, memoryFootprintMb: 24000 },
+      tiers: { high: 'available', medium: 'available', low: 'unavailable', cpuOnly: 'unavailable' },
+    };
+    api.profile = {
+      ...highTierProfile,
+      installedCatalogIds: [],
+      recommendedModels: [bigModel] as any,
+      availableModels: [bigModel] as any,
+      resourceEstimate: {
+        totalDiskMb: 4096,
+        totalMemoryMb: 24000,
+        availableMemoryMb: 4096,
+        availableDiskMb: 500000,
+        diskTotalMb: 1000000,
+      },
+    };
+
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId('model-checkbox-qwen-coder'));
+
+    expect(screen.getByTestId('resource-memory-warning')).toHaveTextContent(/You can continue/i);
+    expect(screen.queryByTestId('resource-warning')).not.toBeInTheDocument();
+  });
+
+  it('does not block when selected models are already installed in Ollama', async () => {
+    api.profile = {
+      ...highTierProfile,
+      installedCatalogIds: ['phi-4-mini', 'qwen-coder'],
+      resourceEstimate: {
+        totalDiskMb: 6144,
+        totalMemoryMb: 6144,
+        availableMemoryMb: 2048,
+        availableDiskMb: 1024,
+        diskTotalMb: 1000000,
+      },
+    };
+
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+    expect(screen.queryByTestId('resource-warning')).not.toBeInTheDocument();
+    expect(screen.getByTestId('resource-memory-note')).toHaveTextContent(/already in Ollama/i);
+  });
+
   it('shows resource warning when selected models exceed available disk', async () => {
     // The summary bar tracks download size (disk), not RAM: a recommended model larger than the
     // free disk must trip the warning even when there is plenty of memory.
