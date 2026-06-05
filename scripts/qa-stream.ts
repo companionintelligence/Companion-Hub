@@ -328,37 +328,72 @@ async function qaApp(appId: string) {
       }
     }
 
-    // ── HTTP ──────────────────────────────────────────────────
-    phase(appId, 'http', `Waiting for HTTP on host :${hostPort}`);
-    let httpOk = false;
+    // ── Readiness ─────────────────────────────────────────────
+    // Wait for the app to become ready using THREE signals — a bare HTTP-on-/ poll tests the
+    // wrong thing (too short for slow boots, and it burns the whole ceiling on already-dead apps):
+    //   (1) the container's own Docker healthcheck reports "healthy"  -> ready (authoritative)
+    //   (2) HTTP on / returns < 500                                   -> ready
+    //   (3) the backend container has exited or is restart-looping    -> FAIL FAST (don't wait)
+    // Generous ceiling: heavy apps run DB migrations on first boot that take minutes.
+    // Override with QA_READY_TIMEOUT_MS.
+    phase(appId, 'http', `Waiting for ${appId} to become ready on :${hostPort}`);
+    const maxWaitMs = Number(process.env.QA_READY_TIMEOUT_MS) || (isMulti ? 600_000 : 300_000);
+    const readyStart = Date.now();
     let httpStatus = 0;
-    const maxWaitMs = isMulti ? 360_000 : 180_000; // multi-service stacks boot slower; single still needs time for large images
-    const httpStart = Date.now();
+    let ready = false;
+    let readyVia = '';
+    let deadReason = '';
 
-    while (!httpOk && Date.now() - httpStart < maxWaitMs) {
-      await new Promise((r) => setTimeout(r, 2000));
+    while (!ready && Date.now() - readyStart < maxWaitMs) {
+      await new Promise((r) => setTimeout(r, 3000));
+      // (3) + (1): inspect the main container — fail fast if dead/looping, succeed if healthcheck passes.
+      const ins = execQuiet(
+        `docker inspect ${statsName} --format '{{.State.Status}}|{{.RestartCount}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}'`,
+        8_000,
+      );
+      if (ins.ok) {
+        const [st, rc, health] = (ins.out || '').split('|');
+        const restarts = Number(rc || 0);
+        if (st === 'exited' || st === 'dead') {
+          deadReason = `container ${st}`;
+          break;
+        }
+        if (restarts >= 4) {
+          deadReason = `restart loop (${restarts} restarts)`;
+          break;
+        }
+        if (health === 'healthy') {
+          ready = true;
+          readyVia = 'healthcheck';
+        }
+      }
+      if (ready) break;
+      // (2) HTTP probe
       try {
-        const res = await fetch(`http://localhost:${hostPort}/`, {
-          signal: AbortSignal.timeout(4000),
-        });
+        const res = await fetch(`http://localhost:${hostPort}/`, { signal: AbortSignal.timeout(4000) });
         httpStatus = res.status;
-        httpOk = httpStatus < 500;
+        if (httpStatus < 500) {
+          ready = true;
+          readyVia = `http ${httpStatus}`;
+        }
       } catch {
-        // still waiting
+        // not serving yet
       }
     }
 
     result.httpStatus = httpStatus;
-    result.startupMs = Date.now() - startT0;
+    result.startupMs = Date.now() - readyStart;
+    result.readyVia = readyVia;
 
-    if (!httpOk) {
+    if (!ready) {
       const bh = captureBackendHealth({ composeProject, composeYml, containerName });
       result.backendErrors = bh.errors;
       result.score = 'fail';
+      const waited = Math.round((Date.now() - readyStart) / 1000);
       result.notes =
-        `No HTTP response within ${Math.round(maxWaitMs / 1000)}s` +
+        (deadReason ? `backend ${deadReason} after ${waited}s` : `not ready within ${Math.round(maxWaitMs / 1000)}s`) +
         (bh.down.length ? ` — down: ${bh.down.join(', ')}` : '') +
-        (bh.errors ? ` | ${bh.errors.replace(/\s+/g, ' ').slice(0, 220)}` : '');
+        (bh.errors ? ` | ${bh.errors.replace(/\s+/g, ' ').slice(0, 200)}` : '');
       emit({ event: 'app_result', appId, result });
       return;
     }
