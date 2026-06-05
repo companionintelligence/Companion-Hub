@@ -1,24 +1,24 @@
 {
-  "generated": "2026-06-05T09:42:26.378Z",
-  "totalApps": 165,
+  "generated": "2026-06-05T14:56:11.321Z",
+  "totalApps": 167,
   "batches": 10,
   "appsPerBatch": 17,
   "byPriority": {
     "high": 9,
-    "medium": 35,
-    "low": 121
+    "medium": 36,
+    "low": 122
   },
   "byCategory": {
-    "development": 23,
+    "development": 24,
     "automation": 6,
     "featured": 16,
     "data": 39,
     "media": 16,
     "photography": 1,
-    "ai": 20,
+    "ai": 21,
     "utilities": 73,
     "network": 12,
-    "security": 3,
+    "security": 4,
     "companion-intelligence": 12,
     "mcp": 25,
     "finance": 5,

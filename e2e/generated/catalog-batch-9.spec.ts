@@ -1,13 +1,39 @@
 
 /**
  * Auto-generated app catalog tests for server batch 9
- * Generated: 2026-06-05T09:42:26.378Z
- * Apps: 12
+ * Generated: 2026-06-05T14:56:11.321Z
+ * Apps: 14
  */
 
 import { expect, loginUser, test } from '../fixtures/fixtures';
 
 const APPS = [
+  {
+    "id": "sqlite-mcp",
+    "storeSlug": "ci-apps",
+    "name": "SQLite MCP",
+    "expectedPort": 80,
+    "healthEndpoint": "/",
+    "hasGui": false,
+    "categories": [
+      "mcp",
+      "data"
+    ],
+    "priority": "low"
+  },
+  {
+    "id": "stalwart-mail",
+    "storeSlug": "ci-apps",
+    "name": "Stalwart Mail",
+    "expectedPort": 8677,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "network",
+      "utilities"
+    ],
+    "priority": "low"
+  },
   {
     "id": "standard-notes",
     "storeSlug": "ci-apps",

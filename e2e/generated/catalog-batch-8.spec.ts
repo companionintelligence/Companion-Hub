@@ -1,7 +1,7 @@
 
 /**
  * Auto-generated app catalog tests for server batch 8
- * Generated: 2026-06-05T09:42:26.378Z
+ * Generated: 2026-06-05T14:56:11.320Z
  * Apps: 17
  */
 
@@ -9,10 +9,23 @@ import { expect, loginUser, test } from '../fixtures/fixtures';
 
 const APPS = [
   {
+    "id": "postgres-mcp",
+    "storeSlug": "ci-apps",
+    "name": "Postgres MCP",
+    "expectedPort": 80,
+    "healthEndpoint": "/",
+    "hasGui": false,
+    "categories": [
+      "mcp",
+      "data"
+    ],
+    "priority": "low"
+  },
+  {
     "id": "postiz",
     "storeSlug": "ci-apps",
     "name": "Postiz",
-    "expectedPort": 8921,
+    "expectedPort": 4007,
     "healthEndpoint": "/",
     "hasGui": true,
     "categories": [
@@ -108,6 +121,19 @@ const APPS = [
     "priority": "low"
   },
   {
+    "id": "safeos",
+    "storeSlug": "ci-apps",
+    "name": "SafeOS Guardian",
+    "expectedPort": 18900,
+    "healthEndpoint": "/",
+    "hasGui": false,
+    "categories": [
+      "security",
+      "ai"
+    ],
+    "priority": "low"
+  },
+  {
     "id": "seafile",
     "storeSlug": "ci-apps",
     "name": "Seafile",
@@ -188,32 +214,6 @@ const APPS = [
     "healthEndpoint": "/",
     "hasGui": true,
     "categories": [
-      "utilities"
-    ],
-    "priority": "low"
-  },
-  {
-    "id": "sqlite-mcp",
-    "storeSlug": "ci-apps",
-    "name": "SQLite MCP",
-    "expectedPort": 80,
-    "healthEndpoint": "/",
-    "hasGui": false,
-    "categories": [
-      "mcp",
-      "data"
-    ],
-    "priority": "low"
-  },
-  {
-    "id": "stalwart-mail",
-    "storeSlug": "ci-apps",
-    "name": "Stalwart Mail",
-    "expectedPort": 8677,
-    "healthEndpoint": "/",
-    "hasGui": true,
-    "categories": [
-      "network",
       "utilities"
     ],
     "priority": "low"

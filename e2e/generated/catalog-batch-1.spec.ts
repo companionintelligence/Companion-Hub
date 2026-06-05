@@ -1,7 +1,7 @@
 
 /**
  * Auto-generated app catalog tests for server batch 1
- * Generated: 2026-06-05T09:42:26.377Z
+ * Generated: 2026-06-05T14:56:11.319Z
  * Apps: 17
  */
 
@@ -120,6 +120,18 @@ const APPS = [
     "priority": "medium"
   },
   {
+    "id": "medusa",
+    "storeSlug": "ci-apps",
+    "name": "Medusa",
+    "expectedPort": 18900,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "development"
+    ],
+    "priority": "medium"
+  },
+  {
     "id": "music-assistant",
     "storeSlug": "ci-apps",
     "name": "Music Assistant",
@@ -205,19 +217,6 @@ const APPS = [
     "hasGui": true,
     "categories": [
       "development"
-    ],
-    "priority": "medium"
-  },
-  {
-    "id": "quarkdown",
-    "storeSlug": "ci-apps",
-    "name": "Quarkdown",
-    "expectedPort": 8328,
-    "healthEndpoint": "/",
-    "hasGui": true,
-    "categories": [
-      "development",
-      "utilities"
     ],
     "priority": "medium"
   }

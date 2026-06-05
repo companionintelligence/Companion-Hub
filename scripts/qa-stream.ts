@@ -15,8 +15,9 @@
  *   SKIP_SCREENSHOT set to "1" to skip Playwright screenshot
  */
 
-import { execSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { exec, execSync, spawnSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -113,11 +114,13 @@ interface AppConfig {
 }
 
 interface DockerService {
+  name?: string;
   image?: string;
   isMain?: boolean;
   internalPort?: number;
   volumes?: { hostPath?: string; containerPath?: string }[];
   environment?: { key?: string; value?: string }[];
+  dependsOn?: unknown; // map {svc:{condition}} (Hub) or string[] — handled in composeUp
 }
 
 interface ComposeJson {
@@ -130,6 +133,11 @@ async function qaApp(appId: string) {
   const containerName = `qa-stream-${appId}`;
   const scratchDirs: string[] = [];
   let runFlags = '';
+  let services: DockerService[] = [];
+  let isMulti = false;
+  let statsName = containerName; // container to `docker stats` (overridden for compose path)
+  let composeProject = '';
+  let composeYml = '';
   const result: Record<string, unknown> = {
     appId,
     score: 'fail' as 'pass' | 'warn' | 'fail',
@@ -161,22 +169,28 @@ async function qaApp(appId: string) {
 
     if (existsSync(composeJsonPath)) {
       const compose: ComposeJson = JSON.parse(readFileSync(composeJsonPath, 'utf-8'));
+      services = compose.services ?? [];
+      isMulti = services.length > 1;
       const main = compose.services?.find((s) => s.isMain) ?? compose.services?.[0];
       result.image = main?.image ?? `${appId}:latest`;
       if (main?.internalPort) result.port = main.internalPort;
-      // Mount an ephemeral scratch dir per declared volume so stateful apps can
-      // boot for the smoke test (e.g. vaultwarden refuses to start without /data).
-      for (const v of main?.volumes ?? []) {
-        if (!v.containerPath) continue;
-        const scratch = join(RESULTS_DIR, 'scratch', appId, String(scratchDirs.length));
-        mkdirSync(scratch, { recursive: true });
-        scratchDirs.push(scratch);
-        runFlags += ` -v ${scratch}:${v.containerPath}`;
-      }
-      // Pass literal compose env (skip unresolved ${...} placeholders we can't fill).
-      for (const e of main?.environment ?? []) {
-        if (!e.key || e.value == null || String(e.value).includes('${')) continue;
-        runFlags += ` -e ${e.key}=${shQuote(String(e.value))}`;
+      // Single-service path only: build `docker run` flags. Multi-service apps go through
+      // the compose path (composeUp) which handles volumes + ${VAR}-substituted env itself.
+      if (!isMulti) {
+        // Mount an ephemeral scratch dir per declared volume so stateful apps can
+        // boot for the smoke test (e.g. vaultwarden refuses to start without /data).
+        for (const v of main?.volumes ?? []) {
+          if (!v.containerPath) continue;
+          const scratch = join(RESULTS_DIR, 'scratch', appId, String(scratchDirs.length));
+          mkdirSync(scratch, { recursive: true });
+          scratchDirs.push(scratch);
+          runFlags += ` -v ${scratch}:${v.containerPath}`;
+        }
+        // Pass literal compose env (skip unresolved ${...} placeholders we can't fill).
+        for (const e of main?.environment ?? []) {
+          if (!e.key || e.value == null || String(e.value).includes('${')) continue;
+          runFlags += ` -e ${e.key}=${shQuote(String(e.value))}`;
+        }
       }
     } else if (existsSync(composeYmlPath)) {
       const yml = readFileSync(composeYmlPath, 'utf-8');
@@ -189,52 +203,71 @@ async function qaApp(appId: string) {
       return;
     }
 
-    // ── Pull ──────────────────────────────────────────────────
-    phase(appId, 'pulling', `Pulling ${result.image}`);
-    const pullT0 = Date.now();
-    const pull = execQuiet(`docker pull ${result.image}`, 300_000);
-    result.pullMs = Date.now() - pullT0;
-
-    if (!pull.ok) {
-      result.score = 'fail';
-      result.notes = `Pull failed: ${pull.err.slice(0, 200)}`;
-      emit({ event: 'app_result', appId, result });
-      return;
-    }
-
-    // Image size
-    const sizeR = execQuiet(`docker image inspect ${result.image} --format "{{.Size}}"`);
-    result.imageMb = sizeR.ok ? Math.round(Number(sizeR.out) / 1024 / 1024) : 0;
-
-    // ── Start ─────────────────────────────────────────────────
-    phase(appId, 'starting', `Starting container (internal port ${result.port})`);
+    // ── Pull + Start ──────────────────────────────────────────
     const startT0 = Date.now();
-    // Bind a Docker-assigned host port (host side :0) so we never collide with the
-    // Hub/Traefik (commonly on :80) or another app under test on the same node.
-    const run = execQuiet(`docker run -d --name ${containerName} -p 0:${result.port}${runFlags} ${result.image}`, 60_000);
-    if (!run.ok) {
-      result.score = 'fail';
-      result.notes = `Container start failed: ${run.err.slice(0, 200)}`;
-      emit({ event: 'app_result', appId, result });
-      return;
-    }
+    let hostPort = 0;
 
-    // Resolve the host port Docker assigned (output like "0.0.0.0:49154\n[::]:49154").
-    const portMap = execQuiet(`docker port ${containerName} ${result.port}/tcp`);
-    const hostPort = portMap.ok ? Number(portMap.out.split('\n')[0]?.trim().split(':').pop()) : 0;
-    if (!hostPort) {
-      execQuiet(`docker rm -f ${containerName}`, 30_000);
-      result.score = 'fail';
-      result.notes = `Could not resolve host port mapping for container :${result.port}`;
-      emit({ event: 'app_result', appId, result });
-      return;
+    if (isMulti) {
+      // Multi-service: bring up the full compose stack so DB/redis/etc. are available and
+      // shared secrets line up via consistent ${VAR} substitution.
+      phase(appId, 'starting', `Composing ${services.length} services`);
+      const scratchBase = join(RESULTS_DIR, 'scratch', appId);
+      mkdirSync(scratchBase, { recursive: true });
+      scratchDirs.push(scratchBase);
+      composeYml = join(scratchBase, 'docker-compose.gen.yml');
+      const up = composeUp(appId, services, scratchBase, composeYml);
+      composeProject = up.project;
+      result.pullMs = Date.now() - startT0;
+      if (!up.ok) {
+        result.score = 'fail';
+        result.notes = `compose up failed: ${up.err}`;
+        emit({ event: 'app_result', appId, result });
+        return;
+      }
+      hostPort = up.hostPort;
+      statsName = up.statsName;
+    } else {
+      // Single-service: plain `docker pull` + `docker run`.
+      phase(appId, 'pulling', `Pulling ${result.image}`);
+      const pullT0 = Date.now();
+      const pull = execQuiet(`docker pull ${result.image}`, 900_000);
+      result.pullMs = Date.now() - pullT0;
+      if (!pull.ok) {
+        result.score = 'fail';
+        result.notes = `Pull failed: ${pull.err.slice(0, 200)}`;
+        emit({ event: 'app_result', appId, result });
+        return;
+      }
+      const sizeR = execQuiet(`docker image inspect ${result.image} --format "{{.Size}}"`);
+      result.imageMb = sizeR.ok ? Math.round(Number(sizeR.out) / 1024 / 1024) : 0;
+
+      phase(appId, 'starting', `Starting container (internal port ${result.port})`);
+      // Bind a Docker-assigned host port (host side :0) so we never collide with the
+      // Hub/Traefik (commonly on :80) or another app under test on the same node.
+      const run = execQuiet(`docker run -d --name ${containerName} -p 0:${result.port}${runFlags} ${result.image}`, 60_000);
+      if (!run.ok) {
+        result.score = 'fail';
+        result.notes = `Container start failed: ${run.err.slice(0, 200)}`;
+        emit({ event: 'app_result', appId, result });
+        return;
+      }
+      // Resolve the host port Docker assigned (output like "0.0.0.0:49154\n[::]:49154").
+      const portMap = execQuiet(`docker port ${containerName} ${result.port}/tcp`);
+      hostPort = portMap.ok ? Number(portMap.out.split('\n')[0]?.trim().split(':').pop()) : 0;
+      if (!hostPort) {
+        execQuiet(`docker rm -f ${containerName}`, 30_000);
+        result.score = 'fail';
+        result.notes = `Could not resolve host port mapping for container :${result.port}`;
+        emit({ event: 'app_result', appId, result });
+        return;
+      }
     }
 
     // ── HTTP ──────────────────────────────────────────────────
     phase(appId, 'http', `Waiting for HTTP on host :${hostPort}`);
     let httpOk = false;
     let httpStatus = 0;
-    const maxWaitMs = 90_000;
+    const maxWaitMs = isMulti ? 180_000 : 90_000; // multi-service stacks boot slower
     const httpStart = Date.now();
 
     while (!httpOk && Date.now() - httpStart < maxWaitMs) {
@@ -298,7 +331,7 @@ async function qaApp(appId: string) {
     let samples = 0;
 
     for (let i = 0; i < 3; i++) {
-      const s = execQuiet(`docker stats ${containerName} --no-stream --format "{{.MemUsage}}|||{{.CPUPerc}}"`, 10_000);
+      const s = execQuiet(`docker stats ${statsName} --no-stream --format "{{.MemUsage}}|||{{.CPUPerc}}"`, 10_000);
       if (s.ok) {
         const [memStr, cpuStr] = s.out.split('|||');
         const memM = memStr?.match(/(\d+(?:\.\d+)?)\s*(MiB|GiB|MB|GB)/i);
@@ -324,7 +357,11 @@ async function qaApp(appId: string) {
     result.score = 'fail';
     result.notes = err instanceof Error ? err.message.slice(0, 300) : String(err).slice(0, 300);
   } finally {
-    execQuiet(`docker stop ${containerName} 2>/dev/null; docker rm ${containerName} 2>/dev/null`);
+    if (composeProject && composeYml) {
+      execQuiet(`docker compose -p ${composeProject} -f ${composeYml} down -v --remove-orphans 2>/dev/null`, 180_000);
+    } else {
+      execQuiet(`docker stop ${containerName} 2>/dev/null; docker rm ${containerName} 2>/dev/null`);
+    }
     for (const d of scratchDirs) {
       try {
         rmSync(d, { recursive: true, force: true });
@@ -335,6 +372,132 @@ async function qaApp(appId: string) {
   }
 
   emit({ event: 'app_result', appId, result });
+}
+
+/** Resolve an app's main image from its marketplace compose (json preferred, else yml). */
+function resolveMainImage(appId: string): string | null {
+  const cj = join(APP_STORE_DIR, appId, 'docker-compose.json');
+  const cy = join(APP_STORE_DIR, appId, 'docker-compose.yml');
+  try {
+    if (existsSync(cj)) {
+      const compose: ComposeJson = JSON.parse(readFileSync(cj, 'utf-8'));
+      const main = compose.services?.find((s) => s.isMain) ?? compose.services?.[0];
+      return main?.image ?? null;
+    }
+    if (existsSync(cy)) {
+      const m = readFileSync(cy, 'utf-8').match(/^\s*image:\s*(.+)/m);
+      return m ? m[1].trim() : null;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function pullAsync(image: string, timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    exec(`docker pull ${image}`, { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 }, (err) => resolve(!err));
+  });
+}
+
+/**
+ * Warm the image cache before the per-app loop so heavy images don't time out on a cold pull
+ * mid-test — the dominant flakiness source (gitlab/onlyoffice/openproject flip fail->pass once
+ * cached). Bounded concurrency; failures are non-fatal (the per-app pull re-reports real ones).
+ */
+async function prepull(appIds: string[]): Promise<void> {
+  const images = [...new Set(appIds.map(resolveMainImage).filter((x): x is string => !!x && !x.includes('${')))];
+  if (!images.length) return;
+  emit({ event: 'prepull_start', count: images.length, ts: Date.now() });
+  const CONCURRENCY = 3;
+  let idx = 0;
+  let done = 0;
+  async function worker() {
+    while (idx < images.length) {
+      const img = images[idx++];
+      const ok = await pullAsync(img, 900_000);
+      done++;
+      process.stderr.write(`prepull [${done}/${images.length}] ${ok ? 'ok' : 'FAIL'} ${img}\n`);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, images.length) }, () => worker()));
+  emit({ event: 'prepull_done', count: images.length, ts: Date.now() });
+}
+
+/**
+ * A consistent value for a ${VAR} placeholder, cached so a shared secret (e.g. a DB
+ * password referenced by both the app and its db service) gets the SAME value everywhere —
+ * that's what lets multi-service apps actually connect under a standalone smoke test.
+ */
+function valueForVar(name: string, cache: Map<string, string>, scratchBase: string): string {
+  const hit = cache.get(name);
+  if (hit !== undefined) return hit;
+  let v: string;
+  if (/PASSWORD|SECRET|KEY|TOKEN|SALT|HASH/.test(name)) v = randomBytes(16).toString('hex');
+  else if (/USER(NAME)?$/.test(name)) v = 'ciadmin';
+  else if (/EMAIL/.test(name)) v = 'ci@ci.localhost';
+  else if (/DATA_DIR$|_DIR$/.test(name)) {
+    v = join(scratchBase, `var_${name.toLowerCase()}`);
+    mkdirSync(v, { recursive: true });
+  } else if (/DOMAIN|HOST(NAME)?$/.test(name)) v = 'ci.localhost';
+  else if (/URL/.test(name)) v = 'http://localhost';
+  else if (/PORT/.test(name)) v = '8080';
+  else v = randomBytes(8).toString('hex');
+  cache.set(name, v);
+  return v;
+}
+
+const yamlStr = (s: string): string => `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+
+/**
+ * Bring up a multi-service app's FULL compose stack (deps included) with consistent
+ * ${VAR} substitution, publishing the main service on a Docker-assigned host port.
+ * Returns the host port for the HTTP check and the main container name for `docker stats`.
+ */
+function composeUp(
+  appId: string,
+  services: DockerService[],
+  scratchBase: string,
+  ymlPath: string,
+): { ok: boolean; hostPort: number; statsName: string; project: string; err: string } {
+  const project = `qa-${appId}`.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+  const cache = new Map<string, string>();
+  const subst = (s: string) => s.replace(/\$\{([A-Z0-9_]+)\}/g, (_, k) => valueForVar(k, cache, scratchBase));
+  const main = services.find((s) => s.isMain) ?? services[0];
+  const mainPort = main?.internalPort ?? 80;
+  let y = 'services:\n';
+  for (const s of services) {
+    if (!s.name || !s.image) continue;
+    y += `  ${s.name}:\n    image: ${yamlStr(subst(s.image))}\n    restart: "no"\n`;
+    const env = (s.environment ?? []).filter((e) => e.key);
+    if (env.length) {
+      y += '    environment:\n';
+      for (const e of env) y += `      ${e.key}: ${yamlStr(subst(String(e.value ?? '')))}\n`;
+    }
+    const vols = (s.volumes ?? []).filter((v) => v.containerPath);
+    if (vols.length) {
+      y += '    volumes:\n';
+      for (const v of vols) {
+        const cp = v.containerPath as string;
+        const sc = join(scratchBase, s.name, cp.replace(/[^a-zA-Z0-9]/g, '_'));
+        mkdirSync(sc, { recursive: true });
+        y += `      - ${yamlStr(`${sc}:${cp}`)}\n`;
+      }
+    }
+    const dep = s.dependsOn;
+    const deps = Array.isArray(dep) ? dep.map(String) : dep && typeof dep === 'object' ? Object.keys(dep) : [];
+    if (deps.length) {
+      y += '    depends_on:\n';
+      for (const d of deps) y += `      - ${yamlStr(String(d))}\n`; // list form drops healthcheck conditions — we poll HTTP ourselves
+    }
+    if (s === main) y += `    ports:\n      - "0:${mainPort}"\n`;
+  }
+  writeFileSync(ymlPath, y);
+  const up = execQuiet(`docker compose -p ${project} -f ${ymlPath} up -d`, 600_000);
+  if (!up.ok) return { ok: false, hostPort: 0, statsName: '', project, err: up.err.slice(-200) };
+  const portMap = execQuiet(`docker compose -p ${project} -f ${ymlPath} port ${main?.name} ${mainPort}`);
+  const hostPort = portMap.ok ? Number(portMap.out.split('\n')[0]?.trim().split(':').pop()) : 0;
+  return { ok: hostPort > 0, hostPort, statsName: `${project}-${main?.name}-1`, project, err: hostPort > 0 ? '' : 'no host port mapping' };
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -348,6 +511,9 @@ if (appIds.length === 0) {
 // has no "type":"module"), and CJS does not support top-level await.
 void (async () => {
   emit({ event: 'batch_start', apps: appIds, storeDir: APP_STORE_DIR, ts: Date.now() });
+
+  // Warm the image cache first so per-app pulls hit cache instead of timing out cold.
+  await prepull(appIds);
 
   for (const appId of appIds) {
     await qaApp(appId);

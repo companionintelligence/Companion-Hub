@@ -330,6 +330,18 @@
     "priority": "medium"
   },
   {
+    "id": "medusa",
+    "storeSlug": "ci-apps",
+    "name": "Medusa",
+    "expectedPort": 18900,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "development"
+    ],
+    "priority": "medium"
+  },
+  {
     "id": "music-assistant",
     "storeSlug": "ci-apps",
     "name": "Music Assistant",
@@ -1725,7 +1737,7 @@
     "id": "postiz",
     "storeSlug": "ci-apps",
     "name": "Postiz",
-    "expectedPort": 8921,
+    "expectedPort": 4007,
     "healthEndpoint": "/",
     "hasGui": true,
     "categories": [
@@ -1817,6 +1829,19 @@
     "categories": [
       "utilities",
       "data"
+    ],
+    "priority": "low"
+  },
+  {
+    "id": "safeos",
+    "storeSlug": "ci-apps",
+    "name": "SafeOS Guardian",
+    "expectedPort": 18900,
+    "healthEndpoint": "/",
+    "hasGui": false,
+    "categories": [
+      "security",
+      "ai"
     ],
     "priority": "low"
   },

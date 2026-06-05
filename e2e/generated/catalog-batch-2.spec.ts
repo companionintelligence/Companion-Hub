@@ -1,13 +1,26 @@
 
 /**
  * Auto-generated app catalog tests for server batch 2
- * Generated: 2026-06-05T09:42:26.377Z
+ * Generated: 2026-06-05T14:56:11.319Z
  * Apps: 17
  */
 
 import { expect, loginUser, test } from '../fixtures/fixtures';
 
 const APPS = [
+  {
+    "id": "quarkdown",
+    "storeSlug": "ci-apps",
+    "name": "Quarkdown",
+    "expectedPort": 8328,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "development",
+      "utilities"
+    ],
+    "priority": "medium"
+  },
   {
     "id": "steam-headless",
     "storeSlug": "ci-apps",
@@ -206,19 +219,6 @@ const APPS = [
     "hasGui": true,
     "categories": [
       "data"
-    ],
-    "priority": "low"
-  },
-  {
-    "id": "archivebox",
-    "storeSlug": "ci-apps",
-    "name": "ArchiveBox",
-    "expectedPort": 8428,
-    "healthEndpoint": "/",
-    "hasGui": true,
-    "categories": [
-      "data",
-      "utilities"
     ],
     "priority": "low"
   }

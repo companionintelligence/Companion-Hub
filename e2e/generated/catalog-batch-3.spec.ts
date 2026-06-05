@@ -1,13 +1,26 @@
 
 /**
  * Auto-generated app catalog tests for server batch 3
- * Generated: 2026-06-05T09:42:26.377Z
+ * Generated: 2026-06-05T14:56:11.320Z
  * Apps: 17
  */
 
 import { expect, loginUser, test } from '../fixtures/fixtures';
 
 const APPS = [
+  {
+    "id": "archivebox",
+    "storeSlug": "ci-apps",
+    "name": "ArchiveBox",
+    "expectedPort": 8428,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "data",
+      "utilities"
+    ],
+    "priority": "low"
+  },
   {
     "id": "baserow",
     "storeSlug": "ci-apps",
@@ -215,19 +228,6 @@ const APPS = [
     "categories": [
       "featured",
       "utilities"
-    ],
-    "priority": "low"
-  },
-  {
-    "id": "comfyui",
-    "storeSlug": "ci-apps",
-    "name": "ComfyUI",
-    "expectedPort": 8188,
-    "healthEndpoint": "/",
-    "hasGui": true,
-    "categories": [
-      "ai",
-      "featured"
     ],
     "priority": "low"
   }

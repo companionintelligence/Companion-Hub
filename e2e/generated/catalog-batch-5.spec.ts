@@ -1,13 +1,25 @@
 
 /**
  * Auto-generated app catalog tests for server batch 5
- * Generated: 2026-06-05T09:42:26.378Z
+ * Generated: 2026-06-05T14:56:11.320Z
  * Apps: 17
  */
 
 import { expect, loginUser, test } from '../fixtures/fixtures';
 
 const APPS = [
+  {
+    "id": "frigate",
+    "storeSlug": "ci-apps",
+    "name": "Frigate",
+    "expectedPort": 5004,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "automation"
+    ],
+    "priority": "low"
+  },
   {
     "id": "galette",
     "storeSlug": "ci-apps",
@@ -205,18 +217,6 @@ const APPS = [
     "hasGui": true,
     "categories": [
       "network",
-      "utilities"
-    ],
-    "priority": "low"
-  },
-  {
-    "id": "listmonk",
-    "storeSlug": "ci-apps",
-    "name": "Listmonk",
-    "expectedPort": 18818,
-    "healthEndpoint": "/",
-    "hasGui": true,
-    "categories": [
       "utilities"
     ],
     "priority": "low"
