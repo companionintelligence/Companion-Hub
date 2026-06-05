@@ -100,7 +100,7 @@ function distributeApps(nodes: FleetNode[], mode: 'quick' | 'full'): Map<string,
 
 // ─── State ──────────────────────────────────────────────────────────────────
 
-type AppStatus = 'idle' | 'queued' | 'pulling' | 'starting' | 'http' | 'screenshot' | 'benchmark' | 'pass' | 'warn' | 'fail' | 'error';
+type AppStatus = 'idle' | 'queued' | 'pulling' | 'starting' | 'http' | 'screenshot' | 'benchmark' | 'pass' | 'warn' | 'fail' | 'error' | 'skip';
 
 interface AppState {
   id: string;
@@ -195,6 +195,7 @@ function broadcastFleetStatus() {
     warn: states.filter((s) => s.status === 'warn').length,
     fail: states.filter((s) => s.status === 'fail').length,
     error: states.filter((s) => s.status === 'error').length,
+    skip: states.filter((s) => s.status === 'skip').length,
     runStartTs,
   });
 }
@@ -594,6 +595,7 @@ async function startRun(mode: 'quick' | 'full', selectedNodes?: string[]) {
       pass: states.filter((s) => s.status === 'pass').length,
       warn: states.filter((s) => s.status === 'warn').length,
       fail: states.filter((s) => s.status === 'fail').length,
+      skip: states.filter((s) => s.status === 'skip').length,
       durationMs,
     });
     runStartTs = null;
@@ -1085,12 +1087,13 @@ function updateCard(appId) {
 
 function updateSummary(fleet) {
   var apps = Object.values(state.apps);
-  var done = apps.filter(function(a) { return ['pass','warn','fail','error'].includes(a.status); }).length;
+  var done = apps.filter(function(a) { return ['pass','warn','fail','error','skip'].includes(a.status); }).length;
   var total = apps.length;
   var running = apps.filter(function(a) { return ['pulling','starting','http','screenshot','benchmark','queued'].includes(a.status); }).length;
   var pass = apps.filter(function(a) { return a.status === 'pass'; }).length;
   var warn = apps.filter(function(a) { return a.status === 'warn'; }).length;
   var fail = apps.filter(function(a) { return ['fail','error'].includes(a.status); }).length;
+  var skip = apps.filter(function(a) { return a.status === 'skip'; }).length;
   document.getElementById('s-total').textContent = total;
   document.getElementById('s-running').textContent = running;
   document.getElementById('s-pass').textContent = pass;
@@ -1098,7 +1101,7 @@ function updateSummary(fleet) {
   document.getElementById('s-fail').textContent = fail;
   var pct = total > 0 ? (done / total * 100).toFixed(1) : 0;
   document.getElementById('progress-fill').style.width = pct + '%';
-  document.getElementById('progress-label').textContent = done + ' / ' + total + ' apps tested';
+  document.getElementById('progress-label').textContent = done + ' / ' + total + ' tested' + (skip ? ' (' + skip + ' skipped)' : '');
 }
 
 function applyFilters() {

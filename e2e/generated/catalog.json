@@ -6,9 +6,7 @@
     "expectedPort": 8138,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "development"
-    ],
+    "categories": ["development"],
     "priority": "high"
   },
   {
@@ -18,10 +16,7 @@
     "expectedPort": 7659,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "automation",
-      "featured"
-    ],
+    "categories": ["automation", "featured"],
     "priority": "high"
   },
   {
@@ -31,12 +26,7 @@
     "expectedPort": 9008,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "data",
-      "featured",
-      "media",
-      "photography"
-    ],
+    "categories": ["data", "featured", "media", "photography"],
     "priority": "high"
   },
   {
@@ -46,10 +36,7 @@
     "expectedPort": 8096,
     "healthEndpoint": "/web/index.html",
     "hasGui": true,
-    "categories": [
-      "featured",
-      "media"
-    ],
+    "categories": ["featured", "media"],
     "priority": "high"
   },
   {
@@ -59,10 +46,7 @@
     "expectedPort": 8301,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "data",
-      "featured"
-    ],
+    "categories": ["data", "featured"],
     "priority": "high"
   },
   {
@@ -72,10 +56,7 @@
     "expectedPort": 2876,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "ai",
-      "featured"
-    ],
+    "categories": ["ai", "featured"],
     "priority": "high"
   },
   {
@@ -85,9 +66,7 @@
     "expectedPort": 32400,
     "healthEndpoint": "/web/index.html",
     "hasGui": true,
-    "categories": [
-      "media"
-    ],
+    "categories": ["media"],
     "priority": "high"
   },
   {
@@ -97,10 +76,7 @@
     "expectedPort": 8125,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "utilities",
-      "network"
-    ],
+    "categories": ["utilities", "network"],
     "priority": "high"
   },
   {
@@ -110,11 +86,7 @@
     "expectedPort": 9010,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "data",
-      "featured",
-      "security"
-    ],
+    "categories": ["data", "featured", "security"],
     "priority": "high"
   },
   {
@@ -124,9 +96,7 @@
     "expectedPort": 8924,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "development"
-    ],
+    "categories": ["development"],
     "priority": "medium"
   },
   {
@@ -136,9 +106,7 @@
     "expectedPort": 18814,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "development"
-    ],
+    "categories": ["development"],
     "priority": "medium"
   },
   {
@@ -148,10 +116,7 @@
     "expectedPort": 18813,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "companion-intelligence",
-      "media"
-    ],
+    "categories": ["companion-intelligence", "media"],
     "priority": "medium"
   },
   {
@@ -161,10 +126,7 @@
     "expectedPort": 18812,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "companion-intelligence",
-      "media"
-    ],
+    "categories": ["companion-intelligence", "media"],
     "priority": "medium"
   },
   {
@@ -174,10 +136,7 @@
     "expectedPort": 18810,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "companion-intelligence",
-      "media"
-    ],
+    "categories": ["companion-intelligence", "media"],
     "priority": "medium"
   },
   {
@@ -187,10 +146,7 @@
     "expectedPort": 18801,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "companion-intelligence",
-      "development"
-    ],
+    "categories": ["companion-intelligence", "development"],
     "priority": "medium"
   },
   {
@@ -200,10 +156,7 @@
     "expectedPort": 18811,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "companion-intelligence",
-      "media"
-    ],
+    "categories": ["companion-intelligence", "media"],
     "priority": "medium"
   },
   {
@@ -213,9 +166,7 @@
     "expectedPort": 8000,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "development"
-    ],
+    "categories": ["development"],
     "priority": "medium"
   },
   {
@@ -225,9 +176,7 @@
     "expectedPort": 8164,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "media"
-    ],
+    "categories": ["media"],
     "priority": "medium"
   },
   {
@@ -237,9 +186,7 @@
     "expectedPort": 8101,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "development"
-    ],
+    "categories": ["development"],
     "priority": "medium"
   },
   {
@@ -249,10 +196,7 @@
     "expectedPort": 80,
     "healthEndpoint": "/",
     "hasGui": false,
-    "categories": [
-      "mcp",
-      "development"
-    ],
+    "categories": ["mcp", "development"],
     "priority": "medium"
   },
   {
@@ -262,10 +206,7 @@
     "expectedPort": 8283,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "development",
-      "featured"
-    ],
+    "categories": ["development", "featured"],
     "priority": "medium"
   },
   {
@@ -275,10 +216,7 @@
     "expectedPort": 80,
     "healthEndpoint": "/",
     "hasGui": false,
-    "categories": [
-      "mcp",
-      "development"
-    ],
+    "categories": ["mcp", "development"],
     "priority": "medium"
   },
   {
@@ -288,9 +226,7 @@
     "expectedPort": 8929,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "development"
-    ],
+    "categories": ["development"],
     "priority": "medium"
   },
   {
@@ -300,9 +236,7 @@
     "expectedPort": 18821,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "media"
-    ],
+    "categories": ["media"],
     "priority": "medium"
   },
   {
@@ -312,9 +246,7 @@
     "expectedPort": 18815,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "media"
-    ],
+    "categories": ["media"],
     "priority": "medium"
   },
   {
@@ -324,9 +256,7 @@
     "expectedPort": 18824,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "media"
-    ],
+    "categories": ["media"],
     "priority": "medium"
   },
   {
@@ -336,9 +266,7 @@
     "expectedPort": 18900,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "development"
-    ],
+    "categories": ["development"],
     "priority": "medium"
   },
   {
@@ -348,9 +276,7 @@
     "expectedPort": 8095,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "media"
-    ],
+    "categories": ["media"],
     "priority": "medium"
   },
   {
@@ -360,11 +286,7 @@
     "expectedPort": 80,
     "healthEndpoint": "/",
     "hasGui": false,
-    "categories": [
-      "mcp",
-      "development",
-      "utilities"
-    ],
+    "categories": ["mcp", "development", "utilities"],
     "priority": "medium"
   },
   {
@@ -374,10 +296,7 @@
     "expectedPort": 4019,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "ai",
-      "development"
-    ],
+    "categories": ["ai", "development"],
     "priority": "medium"
   },
   {
@@ -387,9 +306,7 @@
     "expectedPort": 9001,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "development"
-    ],
+    "categories": ["development"],
     "priority": "medium"
   },
   {
@@ -399,9 +316,7 @@
     "expectedPort": 9092,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "development"
-    ],
+    "categories": ["development"],
     "priority": "medium"
   },
   {
@@ -411,11 +326,7 @@
     "expectedPort": 80,
     "healthEndpoint": "/",
     "hasGui": false,
-    "categories": [
-      "mcp",
-      "network",
-      "development"
-    ],
+    "categories": ["mcp", "network", "development"],
     "priority": "medium"
   },
   {
@@ -425,9 +336,7 @@
     "expectedPort": 5400,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "development"
-    ],
+    "categories": ["development"],
     "priority": "medium"
   },
   {
@@ -437,10 +346,7 @@
     "expectedPort": 8328,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "development",
-      "utilities"
-    ],
+    "categories": ["development", "utilities"],
     "priority": "medium"
   },
   {
@@ -450,10 +356,7 @@
     "expectedPort": 8184,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "media",
-      "featured"
-    ],
+    "categories": ["media", "featured"],
     "priority": "medium"
   },
   {
@@ -463,9 +366,7 @@
     "expectedPort": 18816,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "media"
-    ],
+    "categories": ["media"],
     "priority": "medium"
   },
   {
@@ -475,9 +376,7 @@
     "expectedPort": 8290,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "development"
-    ],
+    "categories": ["development"],
     "priority": "medium"
   },
   {
@@ -487,10 +386,7 @@
     "expectedPort": 8322,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "utilities",
-      "development"
-    ],
+    "categories": ["utilities", "development"],
     "priority": "medium"
   },
   {
@@ -500,9 +396,7 @@
     "expectedPort": 25727,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "development"
-    ],
+    "categories": ["development"],
     "priority": "medium"
   },
   {
@@ -512,11 +406,7 @@
     "expectedPort": 80,
     "healthEndpoint": "/",
     "hasGui": false,
-    "categories": [
-      "mcp",
-      "utilities",
-      "development"
-    ],
+    "categories": ["mcp", "utilities", "development"],
     "priority": "medium"
   },
   {
@@ -526,11 +416,7 @@
     "expectedPort": 80,
     "healthEndpoint": "/",
     "hasGui": false,
-    "categories": [
-      "mcp",
-      "utilities",
-      "development"
-    ],
+    "categories": ["mcp", "utilities", "development"],
     "priority": "medium"
   },
   {
@@ -540,9 +426,7 @@
     "expectedPort": 9013,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "media"
-    ],
+    "categories": ["media"],
     "priority": "medium"
   },
   {
@@ -552,9 +436,7 @@
     "expectedPort": 18817,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "development"
-    ],
+    "categories": ["development"],
     "priority": "medium"
   },
   {
@@ -564,10 +446,7 @@
     "expectedPort": 80,
     "healthEndpoint": "/",
     "hasGui": false,
-    "categories": [
-      "mcp",
-      "media"
-    ],
+    "categories": ["mcp", "media"],
     "priority": "medium"
   },
   {
@@ -577,9 +456,7 @@
     "expectedPort": 8146,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "automation"
-    ],
+    "categories": ["automation"],
     "priority": "low"
   },
   {
@@ -589,10 +466,7 @@
     "expectedPort": 8436,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "network",
-      "utilities"
-    ],
+    "categories": ["network", "utilities"],
     "priority": "low"
   },
   {
@@ -602,9 +476,7 @@
     "expectedPort": 8015,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "data"
-    ],
+    "categories": ["data"],
     "priority": "low"
   },
   {
@@ -614,9 +486,7 @@
     "expectedPort": 3013,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "data"
-    ],
+    "categories": ["data"],
     "priority": "low"
   },
   {
@@ -626,10 +496,7 @@
     "expectedPort": 3001,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "ai",
-      "utilities"
-    ],
+    "categories": ["ai", "utilities"],
     "priority": "low"
   },
   {
@@ -639,9 +506,7 @@
     "expectedPort": 9036,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "data"
-    ],
+    "categories": ["data"],
     "priority": "low"
   },
   {
@@ -651,10 +516,7 @@
     "expectedPort": 8428,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "data",
-      "utilities"
-    ],
+    "categories": ["data", "utilities"],
     "priority": "low"
   },
   {
@@ -664,10 +526,7 @@
     "expectedPort": 8317,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "data",
-      "utilities"
-    ],
+    "categories": ["data", "utilities"],
     "priority": "low"
   },
   {
@@ -677,9 +536,7 @@
     "expectedPort": 8333,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "finance"
-    ],
+    "categories": ["finance"],
     "priority": "low"
   },
   {
@@ -689,10 +546,7 @@
     "expectedPort": 80,
     "healthEndpoint": "/",
     "hasGui": false,
-    "categories": [
-      "mcp",
-      "utilities"
-    ],
+    "categories": ["mcp", "utilities"],
     "priority": "low"
   },
   {
@@ -702,11 +556,7 @@
     "expectedPort": 80,
     "healthEndpoint": "/",
     "hasGui": false,
-    "categories": [
-      "mcp",
-      "data",
-      "utilities"
-    ],
+    "categories": ["mcp", "data", "utilities"],
     "priority": "low"
   },
   {
@@ -716,10 +566,7 @@
     "expectedPort": 8326,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "data",
-      "utilities"
-    ],
+    "categories": ["data", "utilities"],
     "priority": "low"
   },
   {
@@ -729,11 +576,7 @@
     "expectedPort": 80,
     "healthEndpoint": "/",
     "hasGui": false,
-    "categories": [
-      "mcp",
-      "ai",
-      "utilities"
-    ],
+    "categories": ["mcp", "ai", "utilities"],
     "priority": "low"
   },
   {
@@ -743,11 +586,7 @@
     "expectedPort": 18790,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "companion-intelligence",
-      "ai",
-      "utilities"
-    ],
+    "categories": ["companion-intelligence", "ai", "utilities"],
     "priority": "low"
   },
   {
@@ -757,10 +596,7 @@
     "expectedPort": 18802,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "companion-intelligence",
-      "utilities"
-    ],
+    "categories": ["companion-intelligence", "utilities"],
     "priority": "low"
   },
   {
@@ -770,10 +606,7 @@
     "expectedPort": 18806,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "companion-intelligence",
-      "utilities"
-    ],
+    "categories": ["companion-intelligence", "utilities"],
     "priority": "low"
   },
   {
@@ -783,10 +616,7 @@
     "expectedPort": 18807,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "companion-intelligence",
-      "utilities"
-    ],
+    "categories": ["companion-intelligence", "utilities"],
     "priority": "low"
   },
   {
@@ -796,11 +626,7 @@
     "expectedPort": 18789,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "companion-intelligence",
-      "ai",
-      "utilities"
-    ],
+    "categories": ["companion-intelligence", "ai", "utilities"],
     "priority": "low"
   },
   {
@@ -810,10 +636,7 @@
     "expectedPort": 18805,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "companion-intelligence",
-      "utilities"
-    ],
+    "categories": ["companion-intelligence", "utilities"],
     "priority": "low"
   },
   {
@@ -823,10 +646,7 @@
     "expectedPort": 18808,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "companion-intelligence",
-      "utilities"
-    ],
+    "categories": ["companion-intelligence", "utilities"],
     "priority": "low"
   },
   {
@@ -836,9 +656,7 @@
     "expectedPort": 5212,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "utilities"
-    ],
+    "categories": ["utilities"],
     "priority": "low"
   },
   {
@@ -848,10 +666,7 @@
     "expectedPort": 4011,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "social",
-      "data"
-    ],
+    "categories": ["social", "data"],
     "priority": "low"
   },
   {
@@ -861,10 +676,7 @@
     "expectedPort": 9980,
     "healthEndpoint": "/browser/dist/admin/admin.html",
     "hasGui": true,
-    "categories": [
-      "featured",
-      "utilities"
-    ],
+    "categories": ["featured", "utilities"],
     "priority": "low"
   },
   {
@@ -874,10 +686,7 @@
     "expectedPort": 8188,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "ai",
-      "featured"
-    ],
+    "categories": ["ai", "featured"],
     "priority": "low"
   },
   {
@@ -887,9 +696,7 @@
     "expectedPort": 8077,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "social"
-    ],
+    "categories": ["social"],
     "priority": "low"
   },
   {
@@ -899,9 +706,7 @@
     "expectedPort": 8001,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "ai"
-    ],
+    "categories": ["ai"],
     "priority": "low"
   },
   {
@@ -911,10 +716,7 @@
     "expectedPort": 3040,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "data",
-      "utilities"
-    ],
+    "categories": ["data", "utilities"],
     "priority": "low"
   },
   {
@@ -924,9 +726,7 @@
     "expectedPort": 8319,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "utilities"
-    ],
+    "categories": ["utilities"],
     "priority": "low"
   },
   {
@@ -936,9 +736,7 @@
     "expectedPort": 5341,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "utilities"
-    ],
+    "categories": ["utilities"],
     "priority": "low"
   },
   {
@@ -948,11 +746,7 @@
     "expectedPort": 80,
     "healthEndpoint": "/",
     "hasGui": false,
-    "categories": [
-      "mcp",
-      "network",
-      "utilities"
-    ],
+    "categories": ["mcp", "network", "utilities"],
     "priority": "low"
   },
   {
@@ -962,9 +756,7 @@
     "expectedPort": 8395,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "utilities"
-    ],
+    "categories": ["utilities"],
     "priority": "low"
   },
   {
@@ -974,9 +766,7 @@
     "expectedPort": 8088,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "social"
-    ],
+    "categories": ["social"],
     "priority": "low"
   },
   {
@@ -986,9 +776,7 @@
     "expectedPort": 8922,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "data"
-    ],
+    "categories": ["data"],
     "priority": "low"
   },
   {
@@ -998,10 +786,7 @@
     "expectedPort": 4422,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "data",
-      "featured"
-    ],
+    "categories": ["data", "featured"],
     "priority": "low"
   },
   {
@@ -1011,10 +796,7 @@
     "expectedPort": 80,
     "healthEndpoint": "/",
     "hasGui": false,
-    "categories": [
-      "mcp",
-      "utilities"
-    ],
+    "categories": ["mcp", "utilities"],
     "priority": "low"
   },
   {
@@ -1024,10 +806,7 @@
     "expectedPort": 80,
     "healthEndpoint": "/",
     "hasGui": false,
-    "categories": [
-      "mcp",
-      "network"
-    ],
+    "categories": ["mcp", "network"],
     "priority": "low"
   },
   {
@@ -1037,9 +816,7 @@
     "expectedPort": 7421,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "data"
-    ],
+    "categories": ["data"],
     "priority": "low"
   },
   {
@@ -1049,10 +826,7 @@
     "expectedPort": 80,
     "healthEndpoint": "/",
     "hasGui": false,
-    "categories": [
-      "mcp",
-      "utilities"
-    ],
+    "categories": ["mcp", "utilities"],
     "priority": "low"
   },
   {
@@ -1062,9 +836,7 @@
     "expectedPort": 3002,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "ai"
-    ],
+    "categories": ["ai"],
     "priority": "low"
   },
   {
@@ -1074,9 +846,7 @@
     "expectedPort": 8989,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "utilities"
-    ],
+    "categories": ["utilities"],
     "priority": "low"
   },
   {
@@ -1086,9 +856,7 @@
     "expectedPort": 5004,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "automation"
-    ],
+    "categories": ["automation"],
     "priority": "low"
   },
   {
@@ -1098,9 +866,7 @@
     "expectedPort": 8081,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "finance"
-    ],
+    "categories": ["finance"],
     "priority": "low"
   },
   {
@@ -1110,10 +876,7 @@
     "expectedPort": 3368,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "data",
-      "featured"
-    ],
+    "categories": ["data", "featured"],
     "priority": "low"
   },
   {
@@ -1123,10 +886,7 @@
     "expectedPort": 9000,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "security",
-      "data"
-    ],
+    "categories": ["security", "data"],
     "priority": "low"
   },
   {
@@ -1136,9 +896,7 @@
     "expectedPort": 9283,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "utilities"
-    ],
+    "categories": ["utilities"],
     "priority": "low"
   },
   {
@@ -1148,11 +906,7 @@
     "expectedPort": 9119,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "ai",
-      "utilities",
-      "featured"
-    ],
+    "categories": ["ai", "utilities", "featured"],
     "priority": "low"
   },
   {
@@ -1162,9 +916,7 @@
     "expectedPort": 18820,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "utilities"
-    ],
+    "categories": ["utilities"],
     "priority": "low"
   },
   {
@@ -1174,9 +926,7 @@
     "expectedPort": 8443,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "utilities"
-    ],
+    "categories": ["utilities"],
     "priority": "low"
   },
   {
@@ -1186,9 +936,7 @@
     "expectedPort": 9015,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "data"
-    ],
+    "categories": ["data"],
     "priority": "low"
   },
   {
@@ -1198,10 +946,7 @@
     "expectedPort": 18825,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "utilities",
-      "network"
-    ],
+    "categories": ["utilities", "network"],
     "priority": "low"
   },
   {
@@ -1211,10 +956,7 @@
     "expectedPort": 8169,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "books",
-      "utilities"
-    ],
+    "categories": ["books", "utilities"],
     "priority": "low"
   },
   {
@@ -1224,9 +966,7 @@
     "expectedPort": 7860,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "ai"
-    ],
+    "categories": ["ai"],
     "priority": "low"
   },
   {
@@ -1236,9 +976,7 @@
     "expectedPort": 8247,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "utilities"
-    ],
+    "categories": ["utilities"],
     "priority": "low"
   },
   {
@@ -1248,11 +986,7 @@
     "expectedPort": 80,
     "healthEndpoint": "/",
     "hasGui": false,
-    "categories": [
-      "mcp",
-      "data",
-      "utilities"
-    ],
+    "categories": ["mcp", "data", "utilities"],
     "priority": "low"
   },
   {
@@ -1262,9 +996,7 @@
     "expectedPort": 3080,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "ai"
-    ],
+    "categories": ["ai"],
     "priority": "low"
   },
   {
@@ -1274,9 +1006,7 @@
     "expectedPort": 5001,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "data"
-    ],
+    "categories": ["data"],
     "priority": "low"
   },
   {
@@ -1286,10 +1016,7 @@
     "expectedPort": 8383,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "network",
-      "utilities"
-    ],
+    "categories": ["network", "utilities"],
     "priority": "low"
   },
   {
@@ -1299,9 +1026,7 @@
     "expectedPort": 18818,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "utilities"
-    ],
+    "categories": ["utilities"],
     "priority": "low"
   },
   {
@@ -1311,9 +1036,7 @@
     "expectedPort": 7455,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "ai"
-    ],
+    "categories": ["ai"],
     "priority": "low"
   },
   {
@@ -1323,10 +1046,7 @@
     "expectedPort": 8323,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "utilities",
-      "data"
-    ],
+    "categories": ["utilities", "data"],
     "priority": "low"
   },
   {
@@ -1336,9 +1056,7 @@
     "expectedPort": 18826,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "utilities"
-    ],
+    "categories": ["utilities"],
     "priority": "low"
   },
   {
@@ -1348,10 +1066,7 @@
     "expectedPort": 8090,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "network",
-      "utilities"
-    ],
+    "categories": ["network", "utilities"],
     "priority": "low"
   },
   {
@@ -1361,9 +1076,7 @@
     "expectedPort": 8274,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "social"
-    ],
+    "categories": ["social"],
     "priority": "low"
   },
   {
@@ -1373,9 +1086,7 @@
     "expectedPort": 8420,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "utilities"
-    ],
+    "categories": ["utilities"],
     "priority": "low"
   },
   {
@@ -1385,9 +1096,7 @@
     "expectedPort": 8265,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "social"
-    ],
+    "categories": ["social"],
     "priority": "low"
   },
   {
@@ -1397,11 +1106,7 @@
     "expectedPort": 80,
     "healthEndpoint": "/",
     "hasGui": false,
-    "categories": [
-      "mcp",
-      "ai",
-      "data"
-    ],
+    "categories": ["mcp", "ai", "data"],
     "priority": "low"
   },
   {
@@ -1411,9 +1116,7 @@
     "expectedPort": 5230,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "data"
-    ],
+    "categories": ["data"],
     "priority": "low"
   },
   {
@@ -1423,10 +1126,7 @@
     "expectedPort": 80,
     "healthEndpoint": "/",
     "hasGui": false,
-    "categories": [
-      "mcp",
-      "utilities"
-    ],
+    "categories": ["mcp", "utilities"],
     "priority": "low"
   },
   {
@@ -1436,10 +1136,7 @@
     "expectedPort": 18819,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "social",
-      "automation"
-    ],
+    "categories": ["social", "automation"],
     "priority": "low"
   },
   {
@@ -1449,10 +1146,7 @@
     "expectedPort": 8365,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "automation",
-      "ai"
-    ],
+    "categories": ["automation", "ai"],
     "priority": "low"
   },
   {
@@ -1462,10 +1156,7 @@
     "expectedPort": 8579,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "automation",
-      "featured"
-    ],
+    "categories": ["automation", "featured"],
     "priority": "low"
   },
   {
@@ -1475,9 +1166,7 @@
     "expectedPort": 19999,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "utilities"
-    ],
+    "categories": ["utilities"],
     "priority": "low"
   },
   {
@@ -1487,9 +1176,7 @@
     "expectedPort": 9020,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "data"
-    ],
+    "categories": ["data"],
     "priority": "low"
   },
   {
@@ -1499,9 +1186,7 @@
     "expectedPort": 4848,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "social"
-    ],
+    "categories": ["social"],
     "priority": "low"
   },
   {
@@ -1511,9 +1196,7 @@
     "expectedPort": 9037,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "utilities"
-    ],
+    "categories": ["utilities"],
     "priority": "low"
   },
   {
@@ -1523,11 +1206,7 @@
     "expectedPort": 80,
     "healthEndpoint": "/",
     "hasGui": false,
-    "categories": [
-      "mcp",
-      "utilities",
-      "data"
-    ],
+    "categories": ["mcp", "utilities", "data"],
     "priority": "low"
   },
   {
@@ -1537,10 +1216,7 @@
     "expectedPort": 3579,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "utilities",
-      "ai"
-    ],
+    "categories": ["utilities", "ai"],
     "priority": "low"
   },
   {
@@ -1550,11 +1226,7 @@
     "expectedPort": 80,
     "healthEndpoint": "/",
     "hasGui": false,
-    "categories": [
-      "mcp",
-      "utilities",
-      "data"
-    ],
+    "categories": ["mcp", "utilities", "data"],
     "priority": "low"
   },
   {
@@ -1564,9 +1236,7 @@
     "expectedPort": 8069,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "utilities"
-    ],
+    "categories": ["utilities"],
     "priority": "low"
   },
   {
@@ -1576,9 +1246,7 @@
     "expectedPort": 6829,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "utilities"
-    ],
+    "categories": ["utilities"],
     "priority": "low"
   },
   {
@@ -1588,11 +1256,7 @@
     "expectedPort": 80,
     "healthEndpoint": "/",
     "hasGui": false,
-    "categories": [
-      "mcp",
-      "utilities",
-      "data"
-    ],
+    "categories": ["mcp", "utilities", "data"],
     "priority": "low"
   },
   {
@@ -1602,11 +1266,7 @@
     "expectedPort": 30189,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "ai",
-      "utilities",
-      "featured"
-    ],
+    "categories": ["ai", "utilities", "featured"],
     "priority": "low"
   },
   {
@@ -1616,10 +1276,7 @@
     "expectedPort": 8080,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "data",
-      "utilities"
-    ],
+    "categories": ["data", "utilities"],
     "priority": "low"
   },
   {
@@ -1629,9 +1286,7 @@
     "expectedPort": 8888,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "ai"
-    ],
+    "categories": ["ai"],
     "priority": "low"
   },
   {
@@ -1641,10 +1296,7 @@
     "expectedPort": 8321,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "utilities",
-      "network"
-    ],
+    "categories": ["utilities", "network"],
     "priority": "low"
   },
   {
@@ -1654,9 +1306,7 @@
     "expectedPort": 4000,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "social"
-    ],
+    "categories": ["social"],
     "priority": "low"
   },
   {
@@ -1666,9 +1316,7 @@
     "expectedPort": 8085,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "security"
-    ],
+    "categories": ["security"],
     "priority": "low"
   },
   {
@@ -1678,9 +1326,7 @@
     "expectedPort": 8087,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "data"
-    ],
+    "categories": ["data"],
     "priority": "low"
   },
   {
@@ -1690,10 +1336,7 @@
     "expectedPort": 8082,
     "healthEndpoint": "/admin",
     "hasGui": true,
-    "categories": [
-      "network",
-      "featured"
-    ],
+    "categories": ["network", "featured"],
     "priority": "low"
   },
   {
@@ -1703,9 +1346,7 @@
     "expectedPort": 18822,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "utilities"
-    ],
+    "categories": ["utilities"],
     "priority": "low"
   },
   {
@@ -1715,9 +1356,7 @@
     "expectedPort": 18827,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "social"
-    ],
+    "categories": ["social"],
     "priority": "low"
   },
   {
@@ -1727,10 +1366,7 @@
     "expectedPort": 80,
     "healthEndpoint": "/",
     "hasGui": false,
-    "categories": [
-      "mcp",
-      "data"
-    ],
+    "categories": ["mcp", "data"],
     "priority": "low"
   },
   {
@@ -1740,9 +1376,7 @@
     "expectedPort": 4007,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "social"
-    ],
+    "categories": ["social"],
     "priority": "low"
   },
   {
@@ -1752,9 +1386,7 @@
     "expectedPort": 8923,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "finance"
-    ],
+    "categories": ["finance"],
     "priority": "low"
   },
   {
@@ -1764,9 +1396,7 @@
     "expectedPort": 9090,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "utilities"
-    ],
+    "categories": ["utilities"],
     "priority": "low"
   },
   {
@@ -1776,10 +1406,7 @@
     "expectedPort": 8327,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "network",
-      "utilities"
-    ],
+    "categories": ["network", "utilities"],
     "priority": "low"
   },
   {
@@ -1789,10 +1416,7 @@
     "expectedPort": 8592,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "utilities",
-      "books"
-    ],
+    "categories": ["utilities", "books"],
     "priority": "low"
   },
   {
@@ -1802,9 +1426,7 @@
     "expectedPort": 8330,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "social"
-    ],
+    "categories": ["social"],
     "priority": "low"
   },
   {
@@ -1814,9 +1436,7 @@
     "expectedPort": 3000,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "social"
-    ],
+    "categories": ["social"],
     "priority": "low"
   },
   {
@@ -1826,10 +1446,7 @@
     "expectedPort": 8329,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "utilities",
-      "data"
-    ],
+    "categories": ["utilities", "data"],
     "priority": "low"
   },
   {
@@ -1839,10 +1456,7 @@
     "expectedPort": 18900,
     "healthEndpoint": "/",
     "hasGui": false,
-    "categories": [
-      "security",
-      "ai"
-    ],
+    "categories": ["security", "ai"],
     "priority": "low"
   },
   {
@@ -1852,9 +1466,7 @@
     "expectedPort": 8920,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "data"
-    ],
+    "categories": ["data"],
     "priority": "low"
   },
   {
@@ -1864,9 +1476,7 @@
     "expectedPort": 8325,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "utilities"
-    ],
+    "categories": ["utilities"],
     "priority": "low"
   },
   {
@@ -1876,9 +1486,7 @@
     "expectedPort": 8331,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "finance"
-    ],
+    "categories": ["finance"],
     "priority": "low"
   },
   {
@@ -1888,9 +1496,7 @@
     "expectedPort": 18828,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "ai"
-    ],
+    "categories": ["ai"],
     "priority": "low"
   },
   {
@@ -1900,10 +1506,7 @@
     "expectedPort": 80,
     "healthEndpoint": "/",
     "hasGui": false,
-    "categories": [
-      "mcp",
-      "utilities"
-    ],
+    "categories": ["mcp", "utilities"],
     "priority": "low"
   },
   {
@@ -1913,9 +1516,7 @@
     "expectedPort": 52027,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "social"
-    ],
+    "categories": ["social"],
     "priority": "low"
   },
   {
@@ -1925,9 +1526,7 @@
     "expectedPort": 8050,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "utilities"
-    ],
+    "categories": ["utilities"],
     "priority": "low"
   },
   {
@@ -1937,10 +1536,7 @@
     "expectedPort": 80,
     "healthEndpoint": "/",
     "hasGui": false,
-    "categories": [
-      "mcp",
-      "data"
-    ],
+    "categories": ["mcp", "data"],
     "priority": "low"
   },
   {
@@ -1950,10 +1546,7 @@
     "expectedPort": 8677,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "network",
-      "utilities"
-    ],
+    "categories": ["network", "utilities"],
     "priority": "low"
   },
   {
@@ -1963,9 +1556,7 @@
     "expectedPort": 9032,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "data"
-    ],
+    "categories": ["data"],
     "priority": "low"
   },
   {
@@ -1975,11 +1566,7 @@
     "expectedPort": 80,
     "healthEndpoint": "/",
     "hasGui": false,
-    "categories": [
-      "mcp",
-      "data",
-      "utilities"
-    ],
+    "categories": ["mcp", "data", "utilities"],
     "priority": "low"
   },
   {
@@ -1989,10 +1576,7 @@
     "expectedPort": 8234,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "utilities",
-      "data"
-    ],
+    "categories": ["utilities", "data"],
     "priority": "low"
   },
   {
@@ -2002,10 +1586,7 @@
     "expectedPort": 18823,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "utilities",
-      "data"
-    ],
+    "categories": ["utilities", "data"],
     "priority": "low"
   },
   {
@@ -2015,9 +1596,7 @@
     "expectedPort": 8925,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "data"
-    ],
+    "categories": ["data"],
     "priority": "low"
   },
   {
@@ -2027,9 +1606,7 @@
     "expectedPort": 2020,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "data"
-    ],
+    "categories": ["data"],
     "priority": "low"
   },
   {
@@ -2039,10 +1616,7 @@
     "expectedPort": 80,
     "healthEndpoint": "/",
     "hasGui": false,
-    "categories": [
-      "mcp",
-      "utilities"
-    ],
+    "categories": ["mcp", "utilities"],
     "priority": "low"
   },
   {
@@ -2052,9 +1626,7 @@
     "expectedPort": 7458,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "ai"
-    ],
+    "categories": ["ai"],
     "priority": "low"
   },
   {
@@ -2064,9 +1636,7 @@
     "expectedPort": 8390,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "utilities"
-    ],
+    "categories": ["utilities"],
     "priority": "low"
   },
   {
@@ -2076,10 +1646,7 @@
     "expectedPort": 8222,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "finance",
-      "utilities"
-    ],
+    "categories": ["finance", "utilities"],
     "priority": "low"
   },
   {
@@ -2089,9 +1656,7 @@
     "expectedPort": 8006,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "utilities"
-    ],
+    "categories": ["utilities"],
     "priority": "low"
   },
   {
@@ -2101,9 +1666,7 @@
     "expectedPort": 8213,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": [
-      "social"
-    ],
+    "categories": ["social"],
     "priority": "low"
   }
 ]
