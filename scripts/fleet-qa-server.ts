@@ -47,18 +47,23 @@ interface FleetNode {
 }
 
 const BUILTIN_FLEET: FleetNode[] = [
-  // Roster from the 2026-06-05 LAN/Tailscale audit: 9 READY core+beta workers.
-  // Excluded: core-3 (100.126.23.45, first-boot pairing), core-5 (100.73.255.24, SSH blocked),
-  // beta-red/100.86.79.25 (repurposed as beta-3-glass hub-node, key expired), core-4 (stale dup — prune).
+  // Fleet expanded 2026-06-05 to the 10 Ollama-0.24.0 core+beta workers (per liam's roster).
+  // All provisioned: Node 22 + CI-Hub + CI-Marketplace(169 apps) + tsx.
+  //   core-10:    nvm Node 22 (no passwordless sudo) + repos synced from core-14
+  //   core-14/17: Node 22 + repos synced from core-1
+  //   beta-ms-a2: NEW node, apt Node 22 (sudo) + repos synced from core-14
+  // Dropped: beta-red/beta-5 (offline), core-13 (SSH timeout), core-3 (no sshd),
+  //   core-4 (stale dup), core-5 (Tailscale SSH ACL denies ci), fzzy (no sudo).
   { name: 'core-1', ip: '100.108.17.53', batch: 0 },
   { name: 'core-2', ip: '100.101.156.33', batch: 1 },
   { name: 'core-6', ip: '100.95.23.128', batch: 2 },
   { name: 'core-8', ip: '100.98.33.44', batch: 3 },
   { name: 'core-9', ip: '100.113.188.103', batch: 4 },
   { name: 'core-10', ip: '100.87.68.116', batch: 5 },
-  { name: 'core-13', ip: '100.76.114.122', batch: 6 },
-  { name: 'beta-1', ip: '100.124.211.75', batch: 7 },
-  { name: 'beta-5', ip: '100.118.195.108', batch: 8 },
+  { name: 'core-14', ip: '100.101.186.74', batch: 6 },
+  { name: 'core-17', ip: '100.67.181.7', batch: 7 },
+  { name: 'beta-1', ip: '100.124.211.75', batch: 8 },
+  { name: 'beta-ms-a2', ip: '100.119.230.14', batch: 9 },
 ];
 
 const FLEET: FleetNode[] = process.env.FLEET_CONFIG_JSON ? JSON.parse(process.env.FLEET_CONFIG_JSON) : BUILTIN_FLEET;
@@ -95,7 +100,7 @@ function distributeApps(nodes: FleetNode[], mode: 'quick' | 'full'): Map<string,
 
 // ─── State ──────────────────────────────────────────────────────────────────
 
-type AppStatus = 'idle' | 'queued' | 'pulling' | 'starting' | 'http' | 'screenshot' | 'benchmark' | 'pass' | 'warn' | 'fail' | 'error';
+type AppStatus = 'idle' | 'queued' | 'pulling' | 'starting' | 'http' | 'screenshot' | 'benchmark' | 'pass' | 'warn' | 'fail' | 'error' | 'skip';
 
 interface AppState {
   id: string;
@@ -190,6 +195,7 @@ function broadcastFleetStatus() {
     warn: states.filter((s) => s.status === 'warn').length,
     fail: states.filter((s) => s.status === 'fail').length,
     error: states.filter((s) => s.status === 'error').length,
+    skip: states.filter((s) => s.status === 'skip').length,
     runStartTs,
   });
 }
@@ -589,6 +595,7 @@ async function startRun(mode: 'quick' | 'full', selectedNodes?: string[]) {
       pass: states.filter((s) => s.status === 'pass').length,
       warn: states.filter((s) => s.status === 'warn').length,
       fail: states.filter((s) => s.status === 'fail').length,
+      skip: states.filter((s) => s.status === 'skip').length,
       durationMs,
     });
     runStartTs = null;
@@ -1080,12 +1087,13 @@ function updateCard(appId) {
 
 function updateSummary(fleet) {
   var apps = Object.values(state.apps);
-  var done = apps.filter(function(a) { return ['pass','warn','fail','error'].includes(a.status); }).length;
+  var done = apps.filter(function(a) { return ['pass','warn','fail','error','skip'].includes(a.status); }).length;
   var total = apps.length;
   var running = apps.filter(function(a) { return ['pulling','starting','http','screenshot','benchmark','queued'].includes(a.status); }).length;
   var pass = apps.filter(function(a) { return a.status === 'pass'; }).length;
   var warn = apps.filter(function(a) { return a.status === 'warn'; }).length;
   var fail = apps.filter(function(a) { return ['fail','error'].includes(a.status); }).length;
+  var skip = apps.filter(function(a) { return a.status === 'skip'; }).length;
   document.getElementById('s-total').textContent = total;
   document.getElementById('s-running').textContent = running;
   document.getElementById('s-pass').textContent = pass;
@@ -1093,7 +1101,7 @@ function updateSummary(fleet) {
   document.getElementById('s-fail').textContent = fail;
   var pct = total > 0 ? (done / total * 100).toFixed(1) : 0;
   document.getElementById('progress-fill').style.width = pct + '%';
-  document.getElementById('progress-label').textContent = done + ' / ' + total + ' apps tested';
+  document.getElementById('progress-label').textContent = done + ' / ' + total + ' tested' + (skip ? ' (' + skip + ' skipped)' : '');
 }
 
 function applyFilters() {

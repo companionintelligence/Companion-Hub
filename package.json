@@ -47,7 +47,7 @@
     "wait:hub": "pnpm exec tsx scripts/wait-hub-health.ts",
     "start:dev:desktop": "pnpm run start:dev:detached && pnpm run wait:hub && cd packages/desktop && cargo tauri dev --config src-tauri/tauri.stack-dev.json --no-dev-server-wait",
     "build:desktop": "cd packages/desktop && cargo tauri build",
-    "test:cli": "pnpm exec vitest run scripts/__tests__/"
+    "test:cli": "pnpm exec vitest run --config scripts/vitest.config.ts"
   },
   "lint-staged": {
     "*": [

@@ -103,10 +103,60 @@
     "id": "arkanum",
     "storeSlug": "ci-apps",
     "name": "Arkanum",
-    "expectedPort": 8443,
+    "expectedPort": 18814,
     "healthEndpoint": "/",
     "hasGui": true,
     "categories": ["development"],
+    "priority": "medium"
+  },
+  {
+    "id": "ci-earth",
+    "storeSlug": "ci-apps",
+    "name": "Companion Earth",
+    "expectedPort": 18813,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": ["companion-intelligence", "media"],
+    "priority": "medium"
+  },
+  {
+    "id": "ci-photo-time-machine",
+    "storeSlug": "ci-apps",
+    "name": "Photo Time Machine",
+    "expectedPort": 18812,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": ["companion-intelligence", "media"],
+    "priority": "medium"
+  },
+  {
+    "id": "ci-spatial-companion-webxr",
+    "storeSlug": "ci-apps",
+    "name": "Spatial Companion",
+    "expectedPort": 18810,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": ["companion-intelligence", "media"],
+    "priority": "medium"
+  },
+  {
+    "id": "ci-static-containter-builder",
+    "storeSlug": "ci-apps",
+    "name": "Static Container Builder",
+    "expectedPort": 18801,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": ["companion-intelligence", "development"],
+    "priority": "medium"
+  },
+  {
+    "id": "ci-webxr-time-machine",
+    "storeSlug": "ci-apps",
+    "name": "Spatial Time Machine",
+    "expectedPort": 18811,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": ["companion-intelligence", "media"],
     "priority": "medium"
   },
   {
@@ -183,7 +233,7 @@
     "id": "hunyuan3d",
     "storeSlug": "ci-apps",
     "name": "Hunyuan3D",
-    "expectedPort": 8080,
+    "expectedPort": 18821,
     "healthEndpoint": "/",
     "hasGui": true,
     "categories": ["media"],
@@ -193,7 +243,7 @@
     "id": "hunyuan3d-rocm",
     "storeSlug": "ci-apps",
     "name": "Hunyuan3D ROCm",
-    "expectedPort": 8188,
+    "expectedPort": 18815,
     "healthEndpoint": "/",
     "hasGui": true,
     "categories": ["media"],
@@ -203,7 +253,27 @@
     "id": "inkscape",
     "storeSlug": "ci-apps",
     "name": "Inkscape",
-    "expectedPort": 8920,
+    "expectedPort": 18824,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": ["media"],
+    "priority": "medium"
+  },
+  {
+    "id": "medusa",
+    "storeSlug": "ci-apps",
+    "name": "Medusa",
+    "expectedPort": 18900,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": ["development"],
+    "priority": "medium"
+  },
+  {
+    "id": "music-assistant",
+    "storeSlug": "ci-apps",
+    "name": "Music Assistant",
+    "expectedPort": 8095,
     "healthEndpoint": "/",
     "hasGui": true,
     "categories": ["media"],
@@ -270,6 +340,16 @@
     "priority": "medium"
   },
   {
+    "id": "quarkdown",
+    "storeSlug": "ci-apps",
+    "name": "Quarkdown",
+    "expectedPort": 8328,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": ["development", "utilities"],
+    "priority": "medium"
+  },
+  {
     "id": "steam-headless",
     "storeSlug": "ci-apps",
     "name": "Steam Headless",
@@ -277,6 +357,16 @@
     "healthEndpoint": "/",
     "hasGui": true,
     "categories": ["media", "featured"],
+    "priority": "medium"
+  },
+  {
+    "id": "suroi",
+    "storeSlug": "ci-apps",
+    "name": "Suroi",
+    "expectedPort": 18816,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": ["media"],
     "priority": "medium"
   },
   {
@@ -330,13 +420,33 @@
     "priority": "medium"
   },
   {
+    "id": "vui",
+    "storeSlug": "ci-apps",
+    "name": "VUI",
+    "expectedPort": 9013,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": ["media"],
+    "priority": "medium"
+  },
+  {
     "id": "woodpecker-ci",
     "storeSlug": "ci-apps",
     "name": "Woodpecker CI",
-    "expectedPort": 8000,
+    "expectedPort": 18817,
     "healthEndpoint": "/",
     "hasGui": true,
     "categories": ["development"],
+    "priority": "medium"
+  },
+  {
+    "id": "youtube-transcript-mcp",
+    "storeSlug": "ci-apps",
+    "name": "YouTube Transcript MCP",
+    "expectedPort": 80,
+    "healthEndpoint": "/",
+    "hasGui": false,
+    "categories": ["mcp", "media"],
     "priority": "medium"
   },
   {
@@ -357,6 +467,16 @@
     "healthEndpoint": "/",
     "hasGui": true,
     "categories": ["network", "utilities"],
+    "priority": "low"
+  },
+  {
+    "id": "adventurelog",
+    "storeSlug": "ci-apps",
+    "name": "AdventureLog",
+    "expectedPort": 8015,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": ["data"],
     "priority": "low"
   },
   {
@@ -440,6 +560,16 @@
     "priority": "low"
   },
   {
+    "id": "bytebase",
+    "storeSlug": "ci-apps",
+    "name": "Bytebase",
+    "expectedPort": 8326,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": ["data", "utilities"],
+    "priority": "low"
+  },
+  {
     "id": "chess-mcp",
     "storeSlug": "ci-apps",
     "name": "MCP Chess",
@@ -456,7 +586,37 @@
     "expectedPort": 18790,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["ai", "utilities"],
+    "categories": ["companion-intelligence", "ai", "utilities"],
+    "priority": "low"
+  },
+  {
+    "id": "ci-import-tools",
+    "storeSlug": "ci-apps",
+    "name": "Import Tools",
+    "expectedPort": 18802,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": ["companion-intelligence", "utilities"],
+    "priority": "low"
+  },
+  {
+    "id": "ci-just-in-case",
+    "storeSlug": "ci-apps",
+    "name": "Just In Case",
+    "expectedPort": 18806,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": ["companion-intelligence", "utilities"],
+    "priority": "low"
+  },
+  {
+    "id": "ci-local-bench",
+    "storeSlug": "ci-apps",
+    "name": "Local Bench",
+    "expectedPort": 18807,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": ["companion-intelligence", "utilities"],
     "priority": "low"
   },
   {
@@ -466,7 +626,47 @@
     "expectedPort": 18789,
     "healthEndpoint": "/",
     "hasGui": true,
-    "categories": ["ai", "utilities"],
+    "categories": ["companion-intelligence", "ai", "utilities"],
+    "priority": "low"
+  },
+  {
+    "id": "ci-spellbook",
+    "storeSlug": "ci-apps",
+    "name": "Spellbook",
+    "expectedPort": 18805,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": ["companion-intelligence", "utilities"],
+    "priority": "low"
+  },
+  {
+    "id": "ci-tools-cache-mounts",
+    "storeSlug": "ci-apps",
+    "name": "Tools Cache Mount",
+    "expectedPort": 18808,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": ["companion-intelligence", "utilities"],
+    "priority": "low"
+  },
+  {
+    "id": "cloudreve",
+    "storeSlug": "ci-apps",
+    "name": "Cloudreve",
+    "expectedPort": 5212,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": ["utilities"],
+    "priority": "low"
+  },
+  {
+    "id": "colanode",
+    "storeSlug": "ci-apps",
+    "name": "Colanode",
+    "expectedPort": 4011,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": ["social", "data"],
     "priority": "low"
   },
   {
@@ -487,6 +687,16 @@
     "healthEndpoint": "/",
     "hasGui": true,
     "categories": ["ai", "featured"],
+    "priority": "low"
+  },
+  {
+    "id": "cypht",
+    "storeSlug": "ci-apps",
+    "name": "Cypht",
+    "expectedPort": 8077,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": ["social"],
     "priority": "low"
   },
   {
@@ -630,6 +840,16 @@
     "priority": "low"
   },
   {
+    "id": "freeter",
+    "storeSlug": "ci-apps",
+    "name": "Freeter",
+    "expectedPort": 8989,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": ["utilities"],
+    "priority": "low"
+  },
+  {
     "id": "frigate",
     "storeSlug": "ci-apps",
     "name": "Frigate",
@@ -670,6 +890,16 @@
     "priority": "low"
   },
   {
+    "id": "grocy",
+    "storeSlug": "ci-apps",
+    "name": "Grocy",
+    "expectedPort": 9283,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": ["utilities"],
+    "priority": "low"
+  },
+  {
     "id": "hermes-agent",
     "storeSlug": "ci-apps",
     "name": "Hermes Agent",
@@ -683,7 +913,7 @@
     "id": "hoppscotch",
     "storeSlug": "ci-apps",
     "name": "Hoppscotch",
-    "expectedPort": 3000,
+    "expectedPort": 18820,
     "healthEndpoint": "/",
     "hasGui": true,
     "categories": ["utilities"],
@@ -713,7 +943,7 @@
     "id": "keila",
     "storeSlug": "ci-apps",
     "name": "Keila",
-    "expectedPort": 4000,
+    "expectedPort": 18825,
     "healthEndpoint": "/",
     "hasGui": true,
     "categories": ["utilities", "network"],
@@ -727,6 +957,16 @@
     "healthEndpoint": "/",
     "hasGui": true,
     "categories": ["books", "utilities"],
+    "priority": "low"
+  },
+  {
+    "id": "langflow",
+    "storeSlug": "ci-apps",
+    "name": "Langflow",
+    "expectedPort": 7860,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": ["ai"],
     "priority": "low"
   },
   {
@@ -770,10 +1010,20 @@
     "priority": "low"
   },
   {
+    "id": "librespeed",
+    "storeSlug": "ci-apps",
+    "name": "LibreSpeed",
+    "expectedPort": 8383,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": ["network", "utilities"],
+    "priority": "low"
+  },
+  {
     "id": "listmonk",
     "storeSlug": "ci-apps",
     "name": "Listmonk",
-    "expectedPort": 9000,
+    "expectedPort": 18818,
     "healthEndpoint": "/",
     "hasGui": true,
     "categories": ["utilities"],
@@ -803,10 +1053,30 @@
     "id": "macos",
     "storeSlug": "ci-apps",
     "name": "macOS",
-    "expectedPort": 8006,
+    "expectedPort": 18826,
     "healthEndpoint": "/",
     "hasGui": true,
     "categories": ["utilities"],
+    "priority": "low"
+  },
+  {
+    "id": "mailu",
+    "storeSlug": "ci-apps",
+    "name": "Mailu",
+    "expectedPort": 8090,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": ["network", "utilities"],
+    "priority": "low"
+  },
+  {
+    "id": "mastodon",
+    "storeSlug": "ci-apps",
+    "name": "Mastodon",
+    "expectedPort": 8274,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": ["social"],
     "priority": "low"
   },
   {
@@ -840,6 +1110,16 @@
     "priority": "low"
   },
   {
+    "id": "memos",
+    "storeSlug": "ci-apps",
+    "name": "Memos",
+    "expectedPort": 5230,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": ["data"],
+    "priority": "low"
+  },
+  {
     "id": "miro-mcp",
     "storeSlug": "ci-apps",
     "name": "Miro MCP",
@@ -853,10 +1133,20 @@
     "id": "mixpost",
     "storeSlug": "ci-apps",
     "name": "Mixpost",
-    "expectedPort": 9000,
+    "expectedPort": 18819,
     "healthEndpoint": "/",
     "hasGui": true,
     "categories": ["social", "automation"],
+    "priority": "low"
+  },
+  {
+    "id": "mobilerun",
+    "storeSlug": "ci-apps",
+    "name": "Mobilerun",
+    "expectedPort": 8365,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": ["automation", "ai"],
     "priority": "low"
   },
   {
@@ -887,6 +1177,26 @@
     "healthEndpoint": "/",
     "hasGui": true,
     "categories": ["data"],
+    "priority": "low"
+  },
+  {
+    "id": "nostr-relay",
+    "storeSlug": "ci-apps",
+    "name": "Nostr Relay",
+    "expectedPort": 4848,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": ["social"],
+    "priority": "low"
+  },
+  {
+    "id": "notediscovery",
+    "storeSlug": "ci-apps",
+    "name": "NoteDiscovery",
+    "expectedPort": 9037,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": ["utilities"],
     "priority": "low"
   },
   {
@@ -1033,10 +1343,20 @@
     "id": "plane",
     "storeSlug": "ci-apps",
     "name": "Plane",
-    "expectedPort": 8080,
+    "expectedPort": 18822,
     "healthEndpoint": "/",
     "hasGui": true,
     "categories": ["utilities"],
+    "priority": "low"
+  },
+  {
+    "id": "plugnmeet",
+    "storeSlug": "ci-apps",
+    "name": "plugNmeet",
+    "expectedPort": 18827,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": ["social"],
     "priority": "low"
   },
   {
@@ -1053,7 +1373,7 @@
     "id": "postiz",
     "storeSlug": "ci-apps",
     "name": "Postiz",
-    "expectedPort": 8921,
+    "expectedPort": 4007,
     "healthEndpoint": "/",
     "hasGui": true,
     "categories": ["social"],
@@ -1080,6 +1400,36 @@
     "priority": "low"
   },
   {
+    "id": "qbittorrent",
+    "storeSlug": "ci-apps",
+    "name": "qBittorrent",
+    "expectedPort": 8327,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": ["network", "utilities"],
+    "priority": "low"
+  },
+  {
+    "id": "readeck",
+    "storeSlug": "ci-apps",
+    "name": "Readeck",
+    "expectedPort": 8592,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": ["utilities", "books"],
+    "priority": "low"
+  },
+  {
+    "id": "rms-mail",
+    "storeSlug": "ci-apps",
+    "name": "RMS Mail",
+    "expectedPort": 8330,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": ["social"],
+    "priority": "low"
+  },
+  {
     "id": "rocketchat",
     "storeSlug": "ci-apps",
     "name": "Rocket.Chat",
@@ -1087,6 +1437,26 @@
     "healthEndpoint": "/",
     "hasGui": true,
     "categories": ["social"],
+    "priority": "low"
+  },
+  {
+    "id": "rolltop",
+    "storeSlug": "ci-apps",
+    "name": "Rolltop",
+    "expectedPort": 8329,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": ["utilities", "data"],
+    "priority": "low"
+  },
+  {
+    "id": "safeos",
+    "storeSlug": "ci-apps",
+    "name": "SafeOS Guardian",
+    "expectedPort": 18900,
+    "healthEndpoint": "/",
+    "hasGui": false,
+    "categories": ["security", "ai"],
     "priority": "low"
   },
   {
@@ -1110,10 +1480,20 @@
     "priority": "low"
   },
   {
+    "id": "securo",
+    "storeSlug": "ci-apps",
+    "name": "Securo",
+    "expectedPort": 8331,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": ["finance"],
+    "priority": "low"
+  },
+  {
     "id": "sillytavern",
     "storeSlug": "ci-apps",
     "name": "SillyTavern",
-    "expectedPort": 8925,
+    "expectedPort": 18828,
     "healthEndpoint": "/",
     "hasGui": true,
     "categories": ["ai"],
@@ -1127,6 +1507,16 @@
     "healthEndpoint": "/",
     "hasGui": false,
     "categories": ["mcp", "utilities"],
+    "priority": "low"
+  },
+  {
+    "id": "snort",
+    "storeSlug": "ci-apps",
+    "name": "Snort",
+    "expectedPort": 52027,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": ["social"],
     "priority": "low"
   },
   {
@@ -1190,6 +1580,16 @@
     "priority": "low"
   },
   {
+    "id": "tandoor",
+    "storeSlug": "ci-apps",
+    "name": "Tandoor Recipes",
+    "expectedPort": 18823,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": ["utilities", "data"],
+    "priority": "low"
+  },
+  {
     "id": "teable",
     "storeSlug": "ci-apps",
     "name": "Teable",
@@ -1227,6 +1627,16 @@
     "healthEndpoint": "/",
     "hasGui": true,
     "categories": ["ai"],
+    "priority": "low"
+  },
+  {
+    "id": "vitriol",
+    "storeSlug": "ci-apps",
+    "name": "Vitriol",
+    "expectedPort": 8390,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": ["utilities"],
     "priority": "low"
   },
   {

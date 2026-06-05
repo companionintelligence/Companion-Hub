@@ -1,7 +1,7 @@
 /**
  * Auto-generated app catalog tests for server batch 0
- * Generated: 2026-05-31T18:47:03.856Z
- * Apps: 13
+ * Generated: 2026-06-05T21:00:37.812Z
+ * Apps: 17
  */
 
 import { expect, loginUser, test } from '../fixtures/fixtures';
@@ -111,10 +111,60 @@ const APPS = [
     id: 'arkanum',
     storeSlug: 'ci-apps',
     name: 'Arkanum',
-    expectedPort: 8443,
+    expectedPort: 18814,
     healthEndpoint: '/',
     hasGui: true,
     categories: ['development'],
+    priority: 'medium',
+  },
+  {
+    id: 'ci-earth',
+    storeSlug: 'ci-apps',
+    name: 'Companion Earth',
+    expectedPort: 18813,
+    healthEndpoint: '/',
+    hasGui: true,
+    categories: ['companion-intelligence', 'media'],
+    priority: 'medium',
+  },
+  {
+    id: 'ci-photo-time-machine',
+    storeSlug: 'ci-apps',
+    name: 'Photo Time Machine',
+    expectedPort: 18812,
+    healthEndpoint: '/',
+    hasGui: true,
+    categories: ['companion-intelligence', 'media'],
+    priority: 'medium',
+  },
+  {
+    id: 'ci-spatial-companion-webxr',
+    storeSlug: 'ci-apps',
+    name: 'Spatial Companion',
+    expectedPort: 18810,
+    healthEndpoint: '/',
+    hasGui: true,
+    categories: ['companion-intelligence', 'media'],
+    priority: 'medium',
+  },
+  {
+    id: 'ci-static-containter-builder',
+    storeSlug: 'ci-apps',
+    name: 'Static Container Builder',
+    expectedPort: 18801,
+    healthEndpoint: '/',
+    hasGui: true,
+    categories: ['companion-intelligence', 'development'],
+    priority: 'medium',
+  },
+  {
+    id: 'ci-webxr-time-machine',
+    storeSlug: 'ci-apps',
+    name: 'Spatial Time Machine',
+    expectedPort: 18811,
+    healthEndpoint: '/',
+    hasGui: true,
+    categories: ['companion-intelligence', 'media'],
     priority: 'medium',
   },
   {
@@ -127,63 +177,38 @@ const APPS = [
     categories: ['development'],
     priority: 'medium',
   },
-  {
-    id: 'emulatorjs',
-    storeSlug: 'ci-apps',
-    name: 'EmulatorJS',
-    expectedPort: 8164,
-    healthEndpoint: '/',
-    hasGui: true,
-    categories: ['media'],
-    priority: 'medium',
-  },
 ];
 
 test.describe('App Catalog Batch 0', () => {
-  test.beforeEach(async ({ context }) => {
-    await loginUser(page, context);
-  });
-
   for (const app of APPS) {
-    test.describe(`App: ${app.name}`, () => {
-      test(`install ${app.id}`, async ({ page }) => {
-        await page.goto(`/app-store/${app.storeSlug}/${app.id}`);
-        await page.getByRole('button', { name: 'Install' }).click();
-        await expect(page.getByText(/running|installed/i)).toBeVisible({
-          timeout: 180000,
-        });
-      });
+    // One test per app so install -> access -> cleanup share a single Hub/DB state.
+    // The custom `page` fixture resets the backend DB the first time it is used, so
+    // splitting these into separate tests wiped the install record (and left the Docker
+    // deployment behind) before access/cleanup ran.
+    test(`App: ${app.name}`, async ({ page, context }) => {
+      await loginUser(page, context);
 
+      // Install
+      await page.goto(`/app-store/${app.storeSlug}/${app.id}`);
+      await page.getByRole('button', { name: 'Install' }).click();
+      await expect(page.getByText(/running|installed/i)).toBeVisible({ timeout: 180000 });
+
+      // Access via subdomain (GUI apps only) + screenshot for evidence
       if (app.hasGui) {
-        test(`access ${app.id} via subdomain`, async ({ context }) => {
-          const subdomain = `test-${app.id}`;
-          const url = `https://${subdomain}.${process.env.TEST_DOMAIN || 'test.ci.computer'}${app.healthEndpoint}`;
-
-          const appPage = await context.newPage();
-          const response = await appPage.goto(url, {
-            waitUntil: 'domcontentloaded',
-            timeout: 60000,
-          });
-
-          expect(response?.status()).toBeLessThan(500);
-
-          await appPage.screenshot({
-            path: `./e2e/screenshots/catalog/${app.id}.png`,
-            fullPage: true,
-          });
-
-          await appPage.close();
-        });
+        const subdomain = `test-${app.id}`;
+        const url = `https://${subdomain}.${process.env.TEST_DOMAIN || 'test.ci.computer'}${app.healthEndpoint}`;
+        const appPage = await context.newPage();
+        const response = await appPage.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+        expect(response?.status()).toBeLessThan(500);
+        await appPage.screenshot({ path: `./e2e/screenshots/catalog/${app.id}.png`, fullPage: true });
+        await appPage.close();
       }
 
-      test(`cleanup ${app.id}`, async ({ page }) => {
-        await page.goto(`/apps/${app.id}`);
-        await page.getByRole('button', { name: /delete|uninstall/i }).click();
-        await page.getByRole('button', { name: /confirm/i }).click();
-        await expect(page.getByText(/deleted|removed/i)).toBeVisible({
-          timeout: 60000,
-        });
-      });
+      // Cleanup (uninstall) — the same state that performed the install
+      await page.goto(`/apps/${app.id}`);
+      await page.getByRole('button', { name: /delete|uninstall/i }).click();
+      await page.getByRole('button', { name: /confirm/i }).click();
+      await expect(page.getByText(/deleted|removed/i)).toBeVisible({ timeout: 60000 });
     });
   }
 });
