@@ -47,19 +47,28 @@ interface FleetNode {
 }
 
 const BUILTIN_FLEET: FleetNode[] = [
-  // Roster from 2026-06-05 Tailscale audit + re-probe.  8 live-ready workers.
-  // Excluded: core-3 (sshd refused), core-5/core-14/beta-nas (Tailscale SSH ACL denies ci user),
-  // core-10/core-17 (docker ok but no sudo for Node install yet), core-13 (SSH timeout),
-  // core-4 (stale duplicate — prune), fzzy (docker ok but no sudo).
-  // ACL fix in Tailscale admin (grant liambook→tag:tagged-devices as ci) would unlock 4+ more nodes.
+  // Last full Tailscale survey: 2026-06-05.  9 active workers after provisioning.
+  // Excluded:
+  //   core-3  (100.126.23.45)  — sshd connection refused
+  //   core-4  (100.121.17.113) — stale duplicate, prune from tailnet
+  //   core-5  (100.73.255.24)  — Tailscale SSH ACL denies ci user ("operation not permitted")
+  //   core-10 (100.87.68.116)  — no passwordless sudo; can't self-provision
+  //   core-13 (100.76.114.122) — SSH timeout (offline)
+  //   beta-5  (100.118.195.108)— SSH timeout (went offline mid-run)
+  //   beta-ms-a2 (100.119.230.14) — NEW; docker=NO, sudo=np; not yet usable
+  //   fzzy    (100.114.164.27) — no passwordless sudo
+  //   core-14/core-17: pending repo sync (added below once confirmed)
+  // ACL fix: grant liambook→tag:tagged-devices SSH as ci in Tailscale admin to unlock
+  //   core-5, core-14, core-17, beta-nas, beta-ms-a2 (once docker+sudo ready).
   { name: 'core-1', ip: '100.108.17.53', batch: 0 },
   { name: 'core-2', ip: '100.101.156.33', batch: 1 },
   { name: 'core-6', ip: '100.95.23.128', batch: 2 },
-  { name: 'core-8', ip: '100.98.33.44', batch: 3 }, // provisioned 2026-06-05: nvm Node 22
+  { name: 'core-8', ip: '100.98.33.44', batch: 3 }, // Node 22 via nvm (apt only had 18)
   { name: 'core-9', ip: '100.113.188.103', batch: 4 },
-  { name: 'beta-1', ip: '100.124.211.75', batch: 5 },
-  { name: 'beta-red', ip: '100.86.79.25', batch: 6 }, // provisioned 2026-06-05: Node 22 + repos
-  // beta-5 (100.118.195.108): went offline mid-run 2026-06-05; re-add when stable
+  { name: 'core-14', ip: '100.101.186.74', batch: 5 }, // Node 22 via apt + repos synced from core-1
+  { name: 'core-17', ip: '100.67.181.7', batch: 6 }, // Node 22 via apt + repos synced from core-1
+  { name: 'beta-1', ip: '100.124.211.75', batch: 7 },
+  { name: 'beta-red', ip: '100.86.79.25', batch: 8 }, // Node 22 via nvm + repos cloned
 ];
 
 const FLEET: FleetNode[] = process.env.FLEET_CONFIG_JSON ? JSON.parse(process.env.FLEET_CONFIG_JSON) : BUILTIN_FLEET;
