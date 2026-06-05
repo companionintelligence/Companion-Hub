@@ -31,7 +31,7 @@ const __dir = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.QA_PORT ?? process.argv.find((a) => a.startsWith('--port='))?.split('=')[1] ?? 4242);
 const DEFAULT_MODE = (process.argv.find((a) => a.startsWith('--mode='))?.split('=')[1] ?? 'quick') as 'quick' | 'full';
 const SSH_USER = process.env.FLEET_SSH_USER ?? 'ci';
-const _HUB_ROOT = process.env.HUB_ROOT_REMOTE ?? '~/devel/CI-Hub';
+const HUB_ROOT_SH = (process.env.HUB_ROOT_REMOTE ?? '~/devel/CI-Hub').replace(/^~/, '$HOME');
 const STORE_ROOT = process.env.STORE_ROOT_REMOTE ?? '~/devel/CI-Marketplace';
 const SCREENSHOTS_DIR = join(homedir(), 'qa-results', 'fleet-screenshots');
 const STREAM_SCRIPT = join(__dir, 'qa-stream.ts');
@@ -47,16 +47,18 @@ interface FleetNode {
 }
 
 const BUILTIN_FLEET: FleetNode[] = [
-  // core-5: ci user has permission error — skip until fixed
-  // core-8/9: Docker not in PATH — skip until provisioned
+  // Roster from the 2026-06-05 LAN/Tailscale audit: 9 READY core+beta workers.
+  // Excluded: core-3 (100.126.23.45, first-boot pairing), core-5 (100.73.255.24, SSH blocked),
+  // beta-red/100.86.79.25 (repurposed as beta-3-glass hub-node, key expired), core-4 (stale dup — prune).
   { name: 'core-1', ip: '100.108.17.53', batch: 0 },
   { name: 'core-2', ip: '100.101.156.33', batch: 1 },
   { name: 'core-6', ip: '100.95.23.128', batch: 2 },
-  // core-10: no Node.js installed — skip until provisioned
-  // { name: 'core-10',  ip: '100.87.68.116',  batch: 3 },
-  { name: 'core-13', ip: '100.76.114.122', batch: 4 },
-  { name: 'beta-1', ip: '100.124.211.75', batch: 5 },
-  { name: 'beta-red', ip: '100.86.79.25', batch: 6 },
+  { name: 'core-8', ip: '100.98.33.44', batch: 3 },
+  { name: 'core-9', ip: '100.113.188.103', batch: 4 },
+  { name: 'core-10', ip: '100.87.68.116', batch: 5 },
+  { name: 'core-13', ip: '100.76.114.122', batch: 6 },
+  { name: 'beta-1', ip: '100.124.211.75', batch: 7 },
+  { name: 'beta-5', ip: '100.118.195.108', batch: 8 },
 ];
 
 const FLEET: FleetNode[] = process.env.FLEET_CONFIG_JSON ? JSON.parse(process.env.FLEET_CONFIG_JSON) : BUILTIN_FLEET;
@@ -300,7 +302,9 @@ async function preflightNode(node: FleetNode): Promise<boolean> {
     'echo user=$(whoami)',
     'command -v docker >/dev/null 2>&1',
     'docker info >/dev/null 2>&1',
-    '(command -v tsx >/dev/null 2>&1 || command -v pnpm >/dev/null 2>&1)',
+    // Require a tsx the runner can actually use: a global tsx, or the repo-local
+    // binary the per-app command falls back to. (pnpm presence alone is not enough.)
+    `(command -v tsx >/dev/null 2>&1 || test -x ${HUB_ROOT_SH}/node_modules/.bin/tsx)`,
     // Try CI-Marketplace, CI-App-Store (legacy), and /tmp fallback
     `(test -d ${STORE_ROOT}/apps || test -d ~/devel/CI-App-Store/apps || test -d /tmp/CI-Marketplace/apps)`,
     `(test -f ${STORE_ROOT}/apps/code-server/config.json || test -f ~/devel/CI-App-Store/apps/code-server/config.json || test -f /tmp/CI-Marketplace/apps/code-server/config.json)`,
@@ -392,10 +396,14 @@ async function runNodeTests(node: FleetNode, apps: AppSpec[]) {
   const appList = apps.map((a) => a.id).join(' ');
   // Use the storeDir resolved at preflight (CI-Marketplace or CI-App-Store)
   const resolvedStore = ns.storeDir ?? STORE_ROOT;
+  const envPrefix = `APP_STORE_DIR=${resolvedStore}/apps RESULTS_DIR=${remoteResultsDir}`;
   const cmd = [
     `mkdir -p ${remoteResultsDir}/screenshots`,
-    `(command -v tsx >/dev/null 2>&1 && APP_STORE_DIR=${resolvedStore}/apps RESULTS_DIR=${remoteResultsDir} tsx /tmp/qa-stream.ts ${appList}` +
-      ` || APP_STORE_DIR=${resolvedStore}/apps RESULTS_DIR=${remoteResultsDir} pnpm exec tsx /tmp/qa-stream.ts ${appList})`,
+    // Resolve tsx: prefer a global tsx, else the repo-local binary that provisioning installs
+    // (preflight verifies one of these exists). qa-stream.ts only imports Node built-ins, so
+    // the repo's tsx runs it standalone. (`pnpm exec tsx` from $HOME failed: no package.json.)
+    `TSX_BIN="$(command -v tsx || echo ${HUB_ROOT_SH}/node_modules/.bin/tsx)"`,
+    `${envPrefix} "$TSX_BIN" /tmp/qa-stream.ts ${appList}`,
   ].join(' && ');
 
   await new Promise<void>((resolve) => {
