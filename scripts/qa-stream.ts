@@ -195,10 +195,15 @@ async function qaApp(appId: string) {
           scratchDirs.push(scratch);
           runFlags += ` -v ${scratch}:${v.containerPath}`;
         }
-        // Pass literal compose env (skip unresolved ${...} placeholders we can't fill).
+        // Substitute ${VAR} placeholders with consistent values (admin passwords, secret keys,
+        // etc.) instead of dropping them — dropping them is why single-service apps booted with
+        // no credentials set and had broken logins. Same substitution the compose path uses.
+        const cache = new Map<string, string>();
+        const scratchBase = join(RESULTS_DIR, 'scratch', appId);
+        const subst = (s: string) => s.replace(/\$\{([A-Z0-9_]+)\}/g, (_, k) => valueForVar(k, cache, scratchBase));
         for (const e of main?.environment ?? []) {
-          if (!e.key || e.value == null || String(e.value).includes('${')) continue;
-          runFlags += ` -e ${e.key}=${shQuote(String(e.value))}`;
+          if (!e.key || e.value == null) continue;
+          runFlags += ` -e ${e.key}=${shQuote(subst(String(e.value)))}`;
         }
       }
     } else if (existsSync(composeYmlPath)) {
@@ -347,10 +352,24 @@ async function qaApp(appId: string) {
     result.startupMs = Date.now() - startT0;
 
     if (!httpOk) {
+      const bh = captureBackendHealth({ composeProject, composeYml, containerName });
+      result.backendErrors = bh.errors;
       result.score = 'fail';
-      result.notes = 'No HTTP response within 90s';
+      result.notes =
+        `No HTTP response within ${Math.round(maxWaitMs / 1000)}s` +
+        (bh.down.length ? ` — down: ${bh.down.join(', ')}` : '') +
+        (bh.errors ? ` | ${bh.errors.replace(/\s+/g, ' ').slice(0, 220)}` : '');
       emit({ event: 'app_result', appId, result });
       return;
+    }
+
+    // Backend health: the frontend served, but a backend service may be crashed/restarting
+    // (the "page loads, login broken" case). Capture it so it isn't a false pass.
+    const backend = captureBackendHealth({ composeProject, composeYml, containerName });
+    result.backendHealthy = backend.healthy;
+    if (!backend.healthy) {
+      result.backendDown = backend.down;
+      result.backendErrors = backend.errors;
     }
 
     // ── Screenshot ────────────────────────────────────────────
@@ -413,6 +432,14 @@ async function qaApp(appId: string) {
     // ── Score ─────────────────────────────────────────────────
     // httpOk is guaranteed true here (the !httpOk early-return is above)
     result.score = result.hasScreenshot ? 'pass' : 'warn';
+    // A served frontend with a crashed/restarting backend is NOT a pass — flag it as a
+    // degraded warn with the failing service + error excerpt so it's fixable, not hidden.
+    if (result.backendHealthy === false) {
+      result.score = 'warn';
+      result.notes =
+        `frontend serves but backend degraded — down: ${(result.backendDown as string[]).join(', ')}` +
+        (result.backendErrors ? ` | ${String(result.backendErrors).replace(/\s+/g, ' ').slice(0, 200)}` : '');
+    }
   } catch (err) {
     result.score = 'fail';
     result.notes = err instanceof Error ? err.message.slice(0, 300) : String(err).slice(0, 300);
@@ -563,6 +590,44 @@ function composeUp(
   }
   const hostPort = portMap.ok ? Number(portMap.out.split('\n')[0]?.trim().split(':').pop()) : 0;
   return { ok: hostPort > 0, hostPort, statsName: `${project}-${main?.name}-1`, project, err: hostPort > 0 ? '' : 'no host port mapping' };
+}
+
+/**
+ * Inspect whether the app's BACKEND is actually healthy — a frontend can serve HTTP 200
+ * while a backend service (db, api, worker) is crashed/restarting, which is exactly the
+ * "page loads but login is broken" failure. Returns down services + a scan of their error
+ * logs. Cheap when healthy (no log fetch).
+ */
+function captureBackendHealth(o: { composeProject: string; composeYml: string; containerName: string }): {
+  healthy: boolean;
+  down: string[];
+  errors: string;
+} {
+  const ERR = `grep -iE 'error|fatal|fail|refused|denied|panic|cannot|unable|exception|no such host' | tail -8`;
+  if (o.composeProject && o.composeYml) {
+    const ps = execQuiet(`docker compose -p ${o.composeProject} -f ${o.composeYml} ps -a --format '{{.Service}}|{{.State}}'`, 20_000);
+    const down: string[] = [];
+    for (const line of ps.out.split('\n')) {
+      const [svc, state] = line.split('|');
+      if (svc && state && !/running|^up/i.test(state.trim())) down.push(`${svc}(${state.trim()})`);
+    }
+    let errors = '';
+    if (down.length) {
+      const logs = execQuiet(`docker compose -p ${o.composeProject} -f ${o.composeYml} logs --tail 25 2>&1 | ${ERR}`, 25_000);
+      errors = logs.out.slice(-700);
+    }
+    return { healthy: down.length === 0, down, errors };
+  }
+  const st = execQuiet(`docker inspect ${o.containerName} --format '{{.State.Status}}|{{.RestartCount}}'`);
+  const [status, restarts] = (st.out || '|').split('|');
+  const restartCount = Number(restarts || 0);
+  const healthy = status === 'running' && restartCount < 3;
+  let errors = '';
+  if (!healthy) {
+    const logs = execQuiet(`docker logs --tail 25 ${o.containerName} 2>&1 | ${ERR}`, 20_000);
+    errors = logs.out.slice(-700);
+  }
+  return { healthy, down: healthy ? [] : [`main(${status},restarts=${restartCount})`], errors };
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
