@@ -13,6 +13,41 @@ import { buildAgentApp, resolveExposureMode } from '../helpers/agent-onboarding'
 import { identifyServices, type DetectedService } from '../helpers/service-detection';
 import type { AiSetupConfig, OnboardingApp } from '../helpers/types';
 
+const AGENT_APP_ALIAS_CANONICAL: Record<string, string> = {
+  openclaw: 'ci-openclaw',
+  'ci-openclaw': 'ci-openclaw',
+  hermes: 'ci-hermes',
+  'ci-hermes': 'ci-hermes',
+};
+
+function appIdentityKeys(app: OnboardingApp): string[] {
+  const keys: string[] = [];
+  if (app.urn) keys.push(`urn:${app.urn.toLowerCase()}`);
+
+  const slug = app.appSlug?.trim().toLowerCase();
+  if (slug) {
+    keys.push(`slug:${slug}`);
+    const canonical = AGENT_APP_ALIAS_CANONICAL[slug];
+    if (canonical && canonical !== slug) keys.push(`slug:${canonical}`);
+  }
+
+  return keys;
+}
+
+function dedupeOnboardingApps(apps: OnboardingApp[]): OnboardingApp[] {
+  const seen = new Set<string>();
+  const deduped: OnboardingApp[] = [];
+
+  for (const app of apps) {
+    const keys = appIdentityKeys(app);
+    if (keys.some((k) => seen.has(k))) continue;
+    for (const k of keys) seen.add(k);
+    deduped.push(app);
+  }
+
+  return deduped;
+}
+
 /** Page chrome shared by every onboarding phase: brand header + centered container. */
 function Shell({ children }: { children: React.ReactNode }) {
   return (
@@ -85,11 +120,7 @@ function OnboardingWizard() {
   );
   const includedAgentApps = useMemo(() => agentApps.filter(({ app }) => !!app.urn), [agentApps]);
   const installApps = useMemo(() => {
-    const merged: OnboardingApp[] = includedAgentApps.map(({ app }) => app);
-    for (const a of selectedApps) {
-      if (!merged.some((m) => m.appSlug === a.appSlug)) merged.push(a);
-    }
-    return merged;
+    return dedupeOnboardingApps([...includedAgentApps.map(({ app }) => app), ...selectedApps]);
   }, [includedAgentApps, selectedApps]);
 
   if (user.hasCompletedOnboarding) {

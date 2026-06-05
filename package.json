@@ -2,7 +2,7 @@
   "name": "ci-hub",
   "version": "0.1.0",
   "description": "Companion Intelligence Hub CLI and self-hosted app platform runtime.",
-  "packageManager": "pnpm@10.34.1",
+  "packageManager": "pnpm@11.5.1",
   "engines": {
     "node": ">=22",
     "pnpm": ">=10"
@@ -78,18 +78,6 @@
   "private": false,
   "peerDependencies": {
     "typescript": "^5"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "argon2",
-      "esbuild",
-      "@swc/core",
-      "@sentry/cli",
-      "protobufjs",
-      "ssh2",
-      "cpu-features",
-      "@nestjs/core"
-    ]
   },
   "preferGlobal": true,
   "bin": {
