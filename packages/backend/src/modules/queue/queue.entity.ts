@@ -74,8 +74,13 @@ export class Queue<T extends z.ZodType, R extends z.ZodType<{ success: boolean; 
    * Replaces the stale RPC client, publisher, and consumer with fresh instances.
    */
   public rebindConnection(rabbit: Connection, rpcClient: RPCClient, publisher: EventPublisher) {
-    // Only rebind if the connection instance actually changed
-    if (this.rabbit === rabbit) return;
+    // Always replace RPC client and publisher. Queues are often created while the
+    // connection is still opening; those clients are bound to a half-open socket
+    // even when the factory passes the same Connection instance after the
+    // 'connection' event fires.
+    if (this.rabbit === rabbit && this.rpcClient === rpcClient && this.publisher === publisher) {
+      return;
+    }
 
     // Close old resources (best-effort, old connection may be dead)
     if (this.activeConsumer) {
