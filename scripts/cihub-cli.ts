@@ -4,6 +4,7 @@ import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import path, { join } from 'node:path';
 import { stdin as input, stdout as output } from 'node:process';
 import { createInterface } from 'node:readline/promises';
+import { isHostPortBindConflict, runDockerComposeUpOnce } from './compose-up';
 import { ensureHubBindMountsWritable } from './heal-hub-bind-mounts';
 import { healHubPortBindConflict, healHubPortsBeforeStartup } from './heal-hub-ports';
 import { runPublicWebRepair, runPublicWebStatus, resolveHubApiBase } from './public-web-cli';
@@ -505,16 +506,6 @@ function prepareHubDataDirectory(envFileName: string): void {
 
 // ─── hub lifecycle ────────────────────────────────────────────────────────────
 
-function isHostPortBindConflict(output: string): boolean {
-  const lower = output.toLowerCase();
-  return (
-    lower.includes('ports are not available') ||
-    lower.includes('address already in use') ||
-    lower.includes('bind: address already in use') ||
-    lower.includes('port is already allocated')
-  );
-}
-
 function runDockerComposeUp(envFileName: string, files: string[], detached: boolean, envOverrides: Record<string, string>): void {
   const upArgs = ['compose', '--env-file', envFileName, '--project-name', 'ci-hub'];
   for (const f of files) upArgs.push('-f', f);
@@ -524,10 +515,7 @@ function runDockerComposeUp(envFileName: string, files: string[], detached: bool
 
   const maxAttempts = 3;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const result = spawnSync('docker', upArgs, {
-      encoding: 'utf-8',
-      env: { ...process.env, ...envOverrides },
-    });
+    const result = runDockerComposeUpOnce(upArgs, { detached, envOverrides });
     if (result.status === 0) return;
 
     const combined = `${result.stdout || ''}\n${result.stderr || ''}`.trim();

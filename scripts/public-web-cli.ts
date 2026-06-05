@@ -27,7 +27,7 @@ export interface PublicWebRepairResponse {
 
 export function resolveHubApiBase(envFileName: string): string {
   const vars = parseEnvFile(envFileName);
-  const port = process.env.API_PORT || vars.API_PORT || '5002';
+  const port = vars.API_PORT || '5002';
   return `http://127.0.0.1:${port}`;
 }
 

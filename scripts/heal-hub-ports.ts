@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { parseEnvFile, upsertEnvVar } from './cihub-cli';
+import { isPortAvailable } from './port-availability';
 
 const HUB_STACK_CONTAINERS = new Set(['ci-os-hub', 'ci-hub-db', 'ci-os-hub-queue', 'traefik', 'cloudflared', 'hub-tailscale']);
 
@@ -27,23 +28,6 @@ function docker(args: string[]): { ok: boolean; out: string; err: string } {
     out: (result.stdout || '').trim(),
     err: (result.stderr || '').trim(),
   };
-}
-
-function isPortAvailable(port: number): boolean {
-  const ss = spawnSync('ss', ['-ltn', `sport = :${port}`], { encoding: 'utf-8' });
-  if (ss.status === 0) {
-    const listenNeedle = `:${port}`;
-    if ((ss.stdout || '').split('\n').some((line) => line.includes('LISTEN') && line.includes(listenNeedle))) {
-      return false;
-    }
-  }
-
-  const lsof = spawnSync('lsof', ['-i', `:${port}`, '-sTCP:LISTEN', '-t'], { encoding: 'utf-8' });
-  if (lsof.status === 0 && (lsof.stdout || '').trim()) {
-    return false;
-  }
-
-  return true;
 }
 
 function getOurRunningContainerPorts(): Set<number> {
