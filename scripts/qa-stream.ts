@@ -17,9 +17,9 @@
 
 import { exec, execSync, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 const home = homedir();
 const APP_STORE_DIR =
@@ -118,9 +118,18 @@ interface DockerService {
   image?: string;
   isMain?: boolean;
   internalPort?: number;
+  user?: string; // run-as user (uid[:gid] or name) — honored by the real Hub builder (service.builder.ts setUser); mirrored here
+  command?: string[] | string; // entrypoint override; carries DB migration/predeploy steps for some apps
   volumes?: { hostPath?: string; containerPath?: string }[];
   environment?: { key?: string; value?: string }[];
   dependsOn?: unknown; // map {svc:{condition}} (Hub) or string[] — handled in composeUp
+  healthCheck?: {
+    test?: string[] | string;
+    interval?: string;
+    timeout?: string;
+    retries?: number;
+    startPeriod?: string;
+  };
 }
 
 interface ComposeJson {
@@ -485,11 +494,7 @@ async function qaApp(appId: string) {
       execQuiet(`docker stop ${containerName} 2>/dev/null; docker rm ${containerName} 2>/dev/null`);
     }
     for (const d of scratchDirs) {
-      try {
-        rmSync(d, { recursive: true, force: true });
-      } catch {
-        /* best-effort scratch cleanup */
-      }
+      wipeScratchTree(d);
     }
   }
 
@@ -572,6 +577,48 @@ function valueForVar(name: string, cache: Map<string, string>, scratchBase: stri
 const yamlStr = (s: string): string => `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 
 /**
+ * Remove a scratch tree completely, including stateful-service data dirs that Postgres/redis
+ * write as uid 999/root — a plain rmSync run as the non-root fleet user can't delete those, so
+ * fall back to a throwaway root container. Best-effort: an empty mountpoint may linger, but the
+ * run-poisoning contents (a stale pgdata that pins the previous run's POSTGRES_PASSWORD) are gone.
+ */
+function wipeScratchTree(dir: string): void {
+  try {
+    rmSync(dir, { recursive: true, force: true });
+  } catch {
+    /* root-owned data below blocks rmSync — wiped via a root container next */
+  }
+  if (existsSync(dir)) {
+    execQuiet(`docker run --rm -v ${shQuote(dir)}:/scratch alpine find /scratch -mindepth 1 -delete`, 60_000);
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      /* best-effort: contents are root-removed; an empty mountpoint may linger */
+    }
+  }
+}
+
+/**
+ * If a volume's hostPath points under the app's source `data/` subtree AND a seed file/dir exists
+ * there, return its absolute source path so composeUp can copy it into the scratch mount. This
+ * mirrors the real Hub, whose marketplaceService.copyDataDir seeds ${APP_DATA_DIR}/data/... from
+ * the app source BEFORE `compose up` — without it a config FILE target (e.g. nginx default.conf)
+ * gets an empty DIR bind-mounted over it and compose aborts ("mount a directory onto a file"), and
+ * dir seeds like data/initdb/*.sql silently never run. Returns null for runtime-only volumes
+ * (pgdata, redis, storage, minio) that have no source seed and must start empty.
+ */
+function seedSourceFor(appId: string, hostPath?: string): string | null {
+  if (!hostPath) return null;
+  // hostPath is like "${APP_DATA_DIR}/data/nginx/nginx.conf" — strip the leading ${VAR}/ so the
+  // remainder is the app-relative path, which equals the path under the app's source directory.
+  const rel = hostPath.replace(/^\$\{[A-Z0-9_]+\}\/+/, '');
+  // Only ever seed from the data/ subtree; refuse traversal/absolute paths.
+  if (rel.includes('..') || rel.startsWith('/') || !(rel === 'data' || rel.startsWith('data/'))) return null;
+  const src = join(APP_STORE_DIR, appId, rel);
+  return existsSync(src) ? src : null;
+}
+
+/**
  * Bring up a multi-service app's FULL compose stack (deps included) with consistent
  * ${VAR} substitution, publishing the main service on a Docker-assigned host port.
  * Returns the host port for the HTTP check and the main container name for `docker stats`.
@@ -583,14 +630,42 @@ function composeUp(
   ymlPath: string,
 ): { ok: boolean; hostPort: number; statsName: string; project: string; err: string } {
   const project = `qa-${appId}`.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+  // Start from a clean scratch tree (scoped to THIS app's scratchBase). Postgres only applies
+  // POSTGRES_PASSWORD on first init of an EMPTY data dir, but valueForVar mints a fresh
+  // ${...DB_PASSWORD} every run — a pgdata left behind by a prior run (e.g. one killed before the
+  // finally cleanup ran) keeps the OLD password while cloud/gotrue connect with the NEW one, so
+  // they fail "password authentication failed for user postgres" and the backend reports unhealthy.
+  // Wiping here also lets data/initdb/*.sql re-run each time. Robust against root/uid-999 pgdata.
+  wipeScratchTree(scratchBase);
+  mkdirSync(scratchBase, { recursive: true });
   const cache = new Map<string, string>();
   const subst = (s: string) => s.replace(/\$\{([A-Z0-9_]+)\}/g, (_, k) => valueForVar(k, cache, scratchBase));
   const main = services.find((s) => s.isMain) ?? services[0];
   const mainPort = main?.internalPort ?? 80;
+  // Services that declare a healthcheck: a depends_on may only request `service_healthy`
+  // against these — asking it of a service without one makes `compose up` error out.
+  const hasHealthcheck = new Set(services.filter((s) => s.name && s.healthCheck?.test).map((s) => s.name as string));
   let y = 'services:\n';
   for (const s of services) {
     if (!s.name || !s.image) continue;
     y += `  ${s.name}:\n    image: ${yamlStr(subst(s.image))}\n    restart: "no"\n`;
+    // Run-as user — mirror the real Hub builder (service.builder.ts emits `user:`). Dropping it
+    // diverges from production: an app that sets `user` (or expects the image default once a
+    // manifest stops forcing `user: root`) otherwise runs under the wrong uid and fails spuriously.
+    if (s.user != null && String(s.user).length) {
+      y += `    user: ${yamlStr(subst(String(s.user)))}\n`;
+    }
+    // Command override — for some apps (e.g. affine) this is the ONLY thing that runs the
+    // DB migration/predeploy step; dropping it boots the app against an empty schema and
+    // crashes with `relation "..." does not exist`.
+    if (s.command !== undefined) {
+      if (Array.isArray(s.command)) {
+        y += '    command:\n';
+        for (const c of s.command) y += `      - ${yamlStr(subst(String(c)))}\n`;
+      } else {
+        y += `    command: ${yamlStr(subst(String(s.command)))}\n`;
+      }
+    }
     const env = (s.environment ?? []).filter((e) => e.key);
     if (env.length) {
       y += '    environment:\n';
@@ -602,15 +677,67 @@ function composeUp(
       for (const v of vols) {
         const cp = v.containerPath as string;
         const sc = join(scratchBase, s.name, cp.replace(/[^a-zA-Z0-9]/g, '_'));
-        mkdirSync(sc, { recursive: true });
+        // Seed the mount from the app's source data/ subtree (mirrors Hub copyDataDir) so config
+        // FILE targets and initdb scripts exist before compose up; otherwise an empty dir is mounted.
+        const seed = seedSourceFor(appId, v.hostPath);
+        if (seed && statSync(seed).isFile()) {
+          // File target (e.g. nginx default.conf): the scratch mount must itself be a FILE so the
+          // bind is file:file — mounting a dir onto a file is what aborts `compose up`.
+          mkdirSync(dirname(sc), { recursive: true });
+          rmSync(sc, { recursive: true, force: true });
+          cpSync(seed, sc);
+        } else if (seed) {
+          // Directory seed (e.g. data/initdb → /docker-entrypoint-initdb.d): copy its contents in.
+          mkdirSync(sc, { recursive: true });
+          cpSync(seed, sc, { recursive: true });
+        } else {
+          // No source seed: ephemeral runtime dir (pgdata/redis/storage/minio), fresh + empty.
+          mkdirSync(sc, { recursive: true });
+        }
+        // The scratch dir is created owned by the harness user (uid 1001 `ci`). Images that run
+        // as a different uid (n8n's `node`=1000, mattermost=2000, …) can't write a 1001-owned bind
+        // mount → spurious EACCES and a false fail. Make the dir writable by any runtime uid;
+        // teardown wipes non-owned content via a throwaway root container. (File mounts — read-only
+        // config — are left untouched so we don't trip apps that reject world-writable config.)
+        if (statSync(sc).isDirectory()) chmodSync(sc, 0o777);
         y += `      - ${yamlStr(`${sc}:${cp}`)}\n`;
       }
     }
+    // Healthcheck — emitted so dependents can wait on `service_healthy` (below). A scalar
+    // `test` string is interpreted by compose as CMD-SHELL; an array form carries its own
+    // CMD / CMD-SHELL prefix. ${VAR}s (e.g. DB passwords) are substituted like everywhere else.
+    const hc = s.healthCheck;
+    if (hc?.test) {
+      y += '    healthcheck:\n';
+      if (Array.isArray(hc.test)) {
+        y += '      test:\n';
+        for (const t of hc.test) y += `        - ${yamlStr(subst(String(t)))}\n`;
+      } else {
+        y += `      test: ${yamlStr(subst(String(hc.test)))}\n`;
+      }
+      if (hc.interval) y += `      interval: ${yamlStr(String(hc.interval))}\n`;
+      if (hc.timeout) y += `      timeout: ${yamlStr(String(hc.timeout))}\n`;
+      if (hc.retries != null) y += `      retries: ${hc.retries}\n`;
+      if (hc.startPeriod) y += `      start_period: ${yamlStr(String(hc.startPeriod))}\n`;
+    }
     const dep = s.dependsOn;
-    const deps = Array.isArray(dep) ? dep.map(String) : dep && typeof dep === 'object' ? Object.keys(dep) : [];
-    if (deps.length) {
+    if (Array.isArray(dep) && dep.length) {
       y += '    depends_on:\n';
-      for (const d of deps) y += `      - ${yamlStr(String(d))}\n`; // list form drops healthcheck conditions — we poll HTTP ourselves
+      for (const d of dep) y += `      - ${yamlStr(String(d))}\n`;
+    } else if (dep && typeof dep === 'object') {
+      // Map form {svc:{condition}} — render conditions so the main service waits for
+      // postgres/redis to be healthy before its migration command runs. Downgrade
+      // `service_healthy` to `service_started` when the target declares no healthcheck,
+      // since compose rejects `service_healthy` against a service without one.
+      const entries = Object.entries(dep as Record<string, unknown>);
+      if (entries.length) {
+        y += '    depends_on:\n';
+        for (const [name, spec] of entries) {
+          const want = spec && typeof spec === 'object' ? String((spec as { condition?: string }).condition ?? '') : '';
+          const cond = want === 'service_healthy' && !hasHealthcheck.has(name) ? 'service_started' : want || 'service_started';
+          y += `      ${name}:\n        condition: ${cond}\n`;
+        }
+      }
     }
     if (s === main) y += `    ports:\n      - "0:${mainPort}"\n`;
   }
