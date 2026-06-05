@@ -14,11 +14,19 @@ that**, at the scale of the whole marketplace (≈170 apps), on real hardware.
 | Layer | Code | What it proves | Scale |
 |-------|------|----------------|-------|
 | **1. Fleet Docker QA** (primary) | `scripts/qa-stream.ts` + `scripts/fleet-qa-server.ts` | Each app's full `docker-compose` stack comes up, the **backend is healthy**, and the UI renders | All ≈170 apps across the Tailscale node fleet |
-| **2. Hub-install regression** | `e2e/app-regression.spec.ts` + `e2e/generated/catalog-batch-*.spec.ts` | An app installs **through the real Hub** under one account (install → access → uninstall, login), i.e. the product path | Playwright, per-batch |
+| **2. Hub-install regression** | `e2e/app-regression.spec.ts` + `e2e/generated/catalog-batch-*.spec.ts` | An app installs **through the real Hub** under one account (install → access → uninstall) and **serves** (HTTP `< 500`, no gateway/error page) | Playwright, per-batch |
 
 Layer 1 is the fast, broad signal run continuously across the fleet. Layer 2 is the
-high-fidelity, product-accurate path (it exercises the Hub's own compose builder, Traefik
-routing and auth) and is the source of truth when Layer 1 and reality disagree.
+high-fidelity, product-accurate path — it exercises the Hub's own compose builder and
+Traefik routing — and is the source of truth when Layer 1 and reality disagree.
+
+> **In-app login is recorded, not yet asserted.** `app-regression.spec.ts` *asserts* the
+> app installs and serves (HTTP `< 500`, no gateway error), then calls `attemptAppAuth()` and
+> records the result as `verdict: pass | warn` — a **failed in-app login is flagged `warn`,
+> it does not fail the run**. The generated `catalog-batch-*` specs do Hub login + install/
+> access/cleanup only and do **not** attempt in-app auth. So today neither layer hard-fails
+> on a broken app login; treat the auth signal as advisory until it is promoted to an
+> assertion (see Roadmap).
 
 ## What "working" means — scoring (Layer 1)
 
@@ -104,5 +112,7 @@ fleet-wide without a push. Results + screenshots land on each node under `~/qa-r
   `fix/adventurelog-anythingllm-images` (fixes `anythingllm:v1.11.2`→`1.11.2` and gives
   adventurelog a backend + postgis), `codex/add-postiz`, `codex/add-safeos`, and
   `feat/e2e-app-definitions` (#311 — per-app e2e metadata that should feed catalog generation).
-- **Promote Layer 2:** drive the Hub-install regression for the apps Layer 1 marks healthy,
-  to confirm real login/usability under one account.
+- **Make in-app login a hard assertion.** Today `app-regression.spec.ts` records
+  `attemptAppAuth()` as `warn`-only and the generated catalog specs don't attempt it, so a
+  broken app login leaves the run green. Promote it to an `expect()` (at least for apps
+  Layer 1 marks healthy) so a broken login fails the run.
