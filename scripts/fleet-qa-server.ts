@@ -88,20 +88,28 @@ if (existsSync(CATALOG_FILE)) {
   console.warn(`⚠  Catalog not found at ${CATALOG_FILE} — run generate-catalog-tests.ts first`);
 }
 
-function distributeApps(nodes: FleetNode[], mode: 'quick' | 'full'): Map<string, AppSpec[]> {
-  const dist = new Map<string, AppSpec[]>(nodes.map((n) => [n.name, []]));
-  const apps = mode === 'quick' ? CATALOG.filter((a) => a.priority === 'high').slice(0, 2 * nodes.length) : CATALOG;
-
-  apps.forEach((app, i) => {
-    const node = nodes[i % nodes.length];
-    dist.get(node.name)?.push(app);
-  });
-  return dist;
+/** Build the shared work-stealing queue for a run: the full catalog, or the high-priority slice for
+ *  a quick run. Nodes drain this on demand (see feedNode) instead of receiving fixed up-front slices. */
+function buildQueue(mode: 'quick' | 'full', nodeCount: number): AppSpec[] {
+  return mode === 'quick' ? CATALOG.filter((a) => a.priority === 'high').slice(0, 2 * nodeCount) : [...CATALOG];
 }
 
 // ─── State ──────────────────────────────────────────────────────────────────
 
-type AppStatus = 'idle' | 'queued' | 'pulling' | 'starting' | 'http' | 'screenshot' | 'benchmark' | 'pass' | 'warn' | 'fail' | 'error' | 'skip';
+type AppStatus =
+  | 'idle'
+  | 'queued'
+  | 'pulling'
+  | 'starting'
+  | 'http'
+  | 'screenshot'
+  | 'benchmark'
+  | 'pass'
+  | 'warn'
+  | 'fail'
+  | 'error'
+  | 'timeout'
+  | 'skip';
 
 interface AppState {
   id: string;
@@ -230,7 +238,7 @@ const REMOTE_TOOL_INIT =
   'source ~/.bun/env 2>/dev/null; ' +
   'export PATH="$HOME/.nvm/versions/node/$(ls $HOME/.nvm/versions/node/ 2>/dev/null | sort -V | tail -1)/bin:$HOME/.bun/bin:$HOME/.local/bin:$HOME/.cargo/bin:/usr/local/bin:$PATH"';
 
-function sshSpawn(node: FleetNode, cmd: string): ChildProcess {
+function sshSpawn(node: FleetNode, cmd: string, opts?: { stdin?: boolean }): ChildProcess {
   const user = node.user ?? SSH_USER;
   return spawn(
     'ssh',
@@ -244,7 +252,8 @@ function sshSpawn(node: FleetNode, cmd: string): ChildProcess {
       `${user}@${node.ip}`,
       `${REMOTE_TOOL_INIT}; ${cmd}`,
     ],
-    { stdio: ['ignore', 'pipe', 'pipe'] },
+    // stdin is a pipe only for the work-stealing runner (we feed it app ids); other callers ignore it.
+    { stdio: [opts?.stdin ? 'pipe' : 'ignore', 'pipe', 'pipe'] },
   );
 }
 
@@ -379,24 +388,14 @@ async function preflightNodes(nodes: FleetNode[]): Promise<FleetNode[]> {
   return ready;
 }
 
-async function runNodeTests(node: FleetNode, apps: AppSpec[]) {
+async function runNodeTests(node: FleetNode) {
   const ns = nodeStates.get(node.name);
   if (!ns) return;
-  ns.total = apps.length;
+  ns.total = 0; // grows as the work-stealing dispatcher assigns apps to this node (see feedNode)
   ns.done = 0;
   ns.status = 'syncing';
-  logNode(node.name, `assigned ${apps.length} app(s)`);
+  logNode(node.name, 'joining work-stealing pool');
   broadcast({ event: 'node_status', node: node.name, ...ns });
-
-  // Mark apps as queued
-  for (const app of apps) {
-    const s = appStates.get(app.id);
-    if (s) {
-      s.status = 'queued';
-      s.node = node.name;
-    }
-  }
-  broadcast({ event: 'apps_queued', node: node.name, appIds: apps.map((a) => a.id) });
 
   // SCP the streaming script to the node
   const scpResult = await scpScript(node);
@@ -405,13 +404,6 @@ async function runNodeTests(node: FleetNode, apps: AppSpec[]) {
     ns.error = scpResult.error ?? 'Could not SCP qa-stream.ts';
     logNode(node.name, `SCP failed: ${ns.error}`);
     broadcast({ event: 'node_status', node: node.name, ...ns });
-    for (const app of apps) {
-      const s = appStates.get(app.id);
-      if (s) {
-        s.status = 'error';
-        s.message = 'Node offline';
-      }
-    }
     broadcastFleetStatus();
     return;
   }
@@ -421,22 +413,27 @@ async function runNodeTests(node: FleetNode, apps: AppSpec[]) {
   broadcast({ event: 'node_status', node: node.name, ...ns });
 
   const remoteResultsDir = '~/qa-results-fleet';
-  const appList = apps.map((a) => a.id).join(' ');
   // Use the storeDir resolved at preflight (CI-Marketplace or CI-App-Store)
   const resolvedStore = ns.storeDir ?? STORE_ROOT;
-  const envPrefix = `APP_STORE_DIR=${resolvedStore}/apps RESULTS_DIR=${remoteResultsDir}`;
+  // Work-stealing: run qa-stream in stdin mode (no fixed app list) and feed it ids on demand.
+  // QA_CONCURRENCY matches the server's FEED_DEPTH so the node's pool size tracks how many apps we
+  // keep in flight per node.
+  const envPrefix = `QA_STDIN=1 QA_CONCURRENCY=${FEED_DEPTH} APP_STORE_DIR=${resolvedStore}/apps RESULTS_DIR=${remoteResultsDir}`;
   const cmd = [
     `mkdir -p ${remoteResultsDir}/screenshots`,
     // Resolve tsx: prefer a global tsx, else the repo-local binary that provisioning installs
     // (preflight verifies one of these exists). qa-stream.ts only imports Node built-ins, so
     // the repo's tsx runs it standalone. (`pnpm exec tsx` from $HOME failed: no package.json.)
     `TSX_BIN="$(command -v tsx || echo ${HUB_ROOT_SH}/node_modules/.bin/tsx)"`,
-    `${envPrefix} "$TSX_BIN" /tmp/qa-stream.ts ${appList}`,
+    `${envPrefix} "$TSX_BIN" /tmp/qa-stream.ts --stdin`,
   ].join(' && ');
 
   await new Promise<void>((resolve) => {
-    const proc = sshSpawn(node, cmd);
+    const proc = sshSpawn(node, cmd, { stdin: true });
     sshProcesses.set(node.name, proc);
+    // Prime the node with FEED_DEPTH apps from the shared queue; handleStreamEvent feeds one more
+    // per app_result the node returns.
+    for (let i = 0; i < FEED_DEPTH; i++) feedNode(node);
     let buf = '';
 
     proc.stdout?.on('data', (chunk: Buffer) => {
@@ -482,6 +479,42 @@ async function runNodeTests(node: FleetNode, apps: AppSpec[]) {
   });
 }
 
+// ─── Work-stealing dispatch ───────────────────────────────────────────────────
+// One shared queue drained on-demand over each node's SSH stdin pipe. A node is primed with
+// FEED_DEPTH ids and fed one more on each app_result it returns, so faster nodes consume more of
+// the queue and none sit idle at the tail. FEED_DEPTH matches the node's QA_CONCURRENCY (set in env).
+const FEED_DEPTH = Math.max(1, Number(process.env.QA_CONCURRENCY) || 2);
+let pendingQueue: AppSpec[] = [];
+
+/**
+ * Dispatch the next queued app to a node by writing its id to the remote qa-stream's stdin. When
+ * the queue is empty, close the node's stdin so its qa-stream drains its in-flight apps and exits.
+ * Increments the node's `total` as work is assigned so per-node done/total stays meaningful under
+ * dynamic dispatch (it ends equal to what the node actually ran). Returns true if an app was sent.
+ */
+function feedNode(node: FleetNode): boolean {
+  const stdin = sshProcesses.get(node.name)?.stdin;
+  if (!stdin || stdin.destroyed) return false;
+  const app = pendingQueue.shift();
+  if (!app) {
+    try {
+      stdin.end(); // queue drained — let this node finish its in-flight apps and exit
+    } catch {
+      /* already closed */
+    }
+    return false;
+  }
+  const ns = nodeStates.get(node.name);
+  if (ns) ns.total += 1;
+  const s = appStates.get(app.id);
+  if (s) {
+    s.status = 'queued';
+    s.node = node.name;
+  }
+  stdin.write(`${app.id}\n`);
+  return true;
+}
+
 function handleStreamEvent(node: FleetNode, raw: Record<string, unknown>) {
   const ns = nodeStates.get(node.name);
   if (!ns) return;
@@ -520,6 +553,9 @@ function handleStreamEvent(node: FleetNode, raw: Record<string, unknown>) {
     // Persist the result durably (ndjson + in-memory) so the run survives a disconnect and
     // GET /api/results.json reflects it.
     recordResult(node.name, appId, res ?? {});
+    // Work-stealing: this node just freed a slot — hand it the next app off the shared queue
+    // (or close its stdin if the queue is drained). Fast nodes naturally pull more.
+    feedNode(node);
     logNode(node.name, `app_result ${appId}: ${String(res?.score ?? 'unknown')}${res?.notes ? ` (${summarizeError(String(res.notes))})` : ''}`);
     broadcast({ event: 'app_result', node: node.name, appId, result: res });
     broadcast({ event: 'node_status', node: node.name, ...ns });
@@ -606,13 +642,12 @@ async function startRun(mode: 'quick' | 'full', selectedNodes?: string[]) {
     return;
   }
 
-  const dist = distributeApps(nodes, mode);
+  pendingQueue = buildQueue(mode, nodes.length);
+  console.log(`[fleet] dispatch=work-stealing queue=${pendingQueue.length} apps across ${nodes.length} node(s) feed-depth=${FEED_DEPTH}`);
   const nodePromises: Promise<void>[] = [];
 
   for (const node of nodes) {
-    const apps = dist.get(node.name) ?? [];
-    if (apps.length === 0) continue;
-    nodePromises.push(runNodeTests(node, apps));
+    nodePromises.push(runNodeTests(node));
   }
 
   Promise.all(nodePromises).then(() => {
@@ -627,6 +662,8 @@ async function startRun(mode: 'quick' | 'full', selectedNodes?: string[]) {
       pass: states.filter((s) => s.status === 'pass').length,
       warn: states.filter((s) => s.status === 'warn').length,
       fail: states.filter((s) => s.status === 'fail').length,
+      error: states.filter((s) => s.status === 'error').length,
+      timeout: states.filter((s) => s.status === 'timeout').length,
       skip: states.filter((s) => s.status === 'skip').length,
       durationMs,
     });
@@ -759,6 +796,8 @@ async function handler(req: IncomingMessage, res: ServerResponse) {
           pass: tally('pass'),
           warn: tally('warn'),
           fail: tally('fail'),
+          error: tally('error'),
+          timeout: tally('timeout'),
           skip: tally('skip'),
           results,
         },
@@ -789,22 +828,40 @@ function getDashboardHtml(): string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>CI-Hub · Fleet QA</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
+/* CI brand palette — dark (the Companion Intelligence appliance look): deep-navy canvas,
+   teal/cyan accents, Portal's semantic status colors. Mirrors CI-Hub + CI-Portal globals.css. */
 :root {
-  --bg: #0c0c0f;
-  --surface: #16161d;
-  --surface2: #1e1e28;
-  --border: #2a2a38;
-  --accent: #6366f1;
-  --accent-dim: #6366f130;
-  --pass: #22c55e; --pass-dim: #22c55e20;
-  --warn: #f59e0b; --warn-dim: #f59e0b20;
-  --fail: #ef4444; --fail-dim: #ef444420;
-  --muted: #64748b; --text: #e2e8f0; --text2: #94a3b8;
-  --radius: 8px;
+  --bg: #041620;            /* CI deep navy */
+  --surface: #08212c;       /* CI surface */
+  --surface2: #0b2c39;      /* raised surface */
+  --border: #14424c;        /* teal-tinted border */
+  --border2: #1c5660;
+  --accent: #19c6c8;        /* CI accent (teal) */
+  --accent-bright: #82fcfc; /* CI bright cyan */
+  --accent-dim: #19c6c826;
+  --grad-a: #129fa4; --grad-b: #0b6e74;  /* CI primary-button gradient */
+  --pass: #20e887; --pass-dim: #20e8871f;
+  --warn: #ffb020; --warn-dim: #ffb0201f;
+  --fail: #ff5263; --fail-dim: #ff52631f;
+  --error: #ff8a3d; --error-dim: #ff8a3d1f;     /* infra/harness fault */
+  --timeout: #b98cff; --timeout-dim: #b98cff1f; /* never became ready */
+  --skip: #6f808a; --skip-dim: #6f808a1f;        /* non-web / not applicable */
+  --muted: #6f808a; --text: #eefcff; --text2: #7fa0a8;
+  --radius: 10px;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
-body { background: var(--bg); color: var(--text); font: 13px/1.5 system-ui,sans-serif; min-height: 100vh; }
+body {
+  background: var(--bg); color: var(--text);
+  font: 13px/1.5 'Montserrat', system-ui, -apple-system, sans-serif; min-height: 100vh;
+  background-image:
+    radial-gradient(900px 520px at 88% -12%, #0e3a3f66, transparent 70%),
+    radial-gradient(720px 420px at -6% -4%, #0b6e7433, transparent 70%);
+  background-attachment: fixed; -webkit-font-smoothing: antialiased;
+}
 
 /* ── Header ── */
 header {
@@ -812,8 +869,20 @@ header {
   background: var(--surface); border-bottom: 1px solid var(--border);
   display: flex; align-items: center; gap: 16px; padding: 10px 20px;
 }
-.logo { font-weight: 700; font-size: 15px; letter-spacing: -.3px; }
-.logo span { color: var(--accent); }
+.logo { display: flex; align-items: center; gap: 9px; }
+.logo .mark {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; border-radius: 8px;
+  background: linear-gradient(135deg, var(--grad-a), var(--grad-b));
+  color: #eafdfd; font-weight: 700; font-size: 12px; letter-spacing: .5px;
+  box-shadow: 0 0 0 1px var(--border2), 0 6px 16px -6px #19c6c855;
+}
+.logo .name { font-weight: 700; font-size: 15px; letter-spacing: -.2px; color: var(--text); }
+.logo .sub {
+  font-weight: 600; font-size: 11px; color: var(--accent-bright);
+  text-transform: uppercase; letter-spacing: 1px;
+  padding-left: 9px; margin-left: 2px; border-left: 1px solid var(--border);
+}
 .conn { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
 .conn.live { background: var(--pass); box-shadow: 0 0 6px var(--pass); animation: pulse 2s infinite; }
 .elapsed { color: var(--text2); font-size: 12px; margin-left: auto; }
@@ -830,10 +899,13 @@ header {
 .stat.pass .stat-n { color: var(--pass); }
 .stat.warn .stat-n { color: var(--warn); }
 .stat.fail .stat-n { color: var(--fail); }
+.stat.error .stat-n { color: var(--error); }
+.stat.timeout .stat-n { color: var(--timeout); }
+.stat.skip .stat-n { color: var(--skip); }
 .stat.running .stat-n { color: var(--accent); }
 .progress-outer { flex: 1; min-width: 200px; display: flex; flex-direction: column; justify-content: center; gap: 4px; }
 .progress-bar { height: 8px; background: var(--surface2); border-radius: 4px; overflow: hidden; }
-.progress-fill { height: 100%; background: var(--accent); border-radius: 4px; transition: width .4s; }
+.progress-fill { height: 100%; background: linear-gradient(90deg, var(--grad-a), var(--accent-bright)); border-radius: 4px; transition: width .4s; }
 .progress-label { font-size: 11px; color: var(--text2); }
 
 /* ── Controls ── */
@@ -847,8 +919,8 @@ header {
   font-weight: 500; transition: all .15s;
 }
 .btn:hover { border-color: var(--accent); color: var(--accent); }
-.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-.btn.primary:hover { opacity: .85; }
+.btn.primary { background: linear-gradient(135deg, var(--grad-a), var(--grad-b)); border-color: var(--grad-b); color: #eafdfd; box-shadow: 0 2px 12px -4px #19c6c877; }
+.btn.primary:hover { filter: brightness(1.08); color: #eafdfd; }
 .btn.danger { border-color: var(--fail); color: var(--fail); }
 .btn.active { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
 .btn:disabled { opacity: .4; cursor: not-allowed; }
@@ -892,7 +964,9 @@ header {
 .card.pass { border-left: 3px solid var(--pass); }
 .card.warn { border-left: 3px solid var(--warn); }
 .card.fail { border-left: 3px solid var(--fail); }
-.card.error { border-left: 3px solid var(--fail); opacity: .8; }
+.card.error { border-left: 3px solid var(--error); }
+.card.timeout { border-left: 3px solid var(--timeout); }
+.card.skip { border-left: 3px solid var(--skip); opacity: .7; }
 .card.running, .card.pulling, .card.starting, .card.http, .card.screenshot, .card.benchmark {
   border-left: 3px solid var(--accent);
 }
@@ -900,7 +974,10 @@ header {
 .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: var(--muted); }
 .dot.pass { background: var(--pass); }
 .dot.warn { background: var(--warn); }
-.dot.fail, .dot.error { background: var(--fail); }
+.dot.fail { background: var(--fail); }
+.dot.error { background: var(--error); }
+.dot.timeout { background: var(--timeout); }
+.dot.skip { background: var(--skip); }
 .dot.running, .dot.pulling, .dot.starting, .dot.http, .dot.screenshot, .dot.benchmark {
   background: var(--accent); animation: spin-dot .8s linear infinite;
 }
@@ -915,6 +992,9 @@ header {
 .card-score.pass { color: var(--pass); }
 .card-score.warn { color: var(--warn); }
 .card-score.fail { color: var(--fail); }
+.card-score.error { color: var(--error); }
+.card-score.timeout { color: var(--timeout); }
+.card-score.skip { color: var(--skip); }
 
 /* ── Detail Drawer ── */
 .drawer {
@@ -948,7 +1028,7 @@ header {
 </head>
 <body>
 <header>
-  <div class="logo">CI&#8209;Hub &nbsp;<span>Fleet QA</span></div>
+  <div class="logo"><span class="mark">CI</span><span class="name">Hub</span><span class="sub">Fleet&nbsp;QA</span></div>
   <div class="conn" id="conn"></div>
   <div id="elapsed" class="elapsed">Not running</div>
 </header>
@@ -959,6 +1039,9 @@ header {
   <div class="stat pass"><span class="stat-n" id="s-pass">0</span><span class="stat-l">Pass</span></div>
   <div class="stat warn"><span class="stat-n" id="s-warn">0</span><span class="stat-l">Warn</span></div>
   <div class="stat fail"><span class="stat-n" id="s-fail">0</span><span class="stat-l">Fail</span></div>
+  <div class="stat error"><span class="stat-n" id="s-error">0</span><span class="stat-l">Error</span></div>
+  <div class="stat timeout"><span class="stat-n" id="s-timeout">0</span><span class="stat-l">Timeout</span></div>
+  <div class="stat skip"><span class="stat-n" id="s-skip">0</span><span class="stat-l">Skip</span></div>
   <div class="progress-outer">
     <div class="progress-bar"><div class="progress-fill" id="progress-fill" style="width:0%"></div></div>
     <div class="progress-label" id="progress-label">0 / 0 apps tested</div>
@@ -986,6 +1069,8 @@ header {
     <option value="warn">Warn</option>
     <option value="fail">Fail</option>
     <option value="error">Error</option>
+    <option value="timeout">Timeout</option>
+    <option value="skip">Skip</option>
     <option value="queued">Queued</option>
     <option value="idle">Idle</option>
   </select>
@@ -1113,9 +1198,8 @@ function cardHtml(app, s) {
     meta = parts.join(' &middot; ');
   }
   var scoreHtml = '';
-  if (status === 'pass') scoreHtml = '<span class="card-score pass">PASS</span>';
-  else if (status === 'warn') scoreHtml = '<span class="card-score warn">WARN</span>';
-  else if (status === 'fail') scoreHtml = '<span class="card-score fail">FAIL</span>';
+  var SCORE_LABELS = { pass:'PASS', warn:'WARN', fail:'FAIL', error:'ERROR', timeout:'TIMEOUT', skip:'SKIP' };
+  if (SCORE_LABELS[status]) scoreHtml = '<span class="card-score ' + status + '">' + SCORE_LABELS[status] + '</span>';
   return '<div class="card-status">'
     + '<div class="dot ' + status + '"></div>'
     + '<div class="card-name">' + (s ? s.name : app.name) + '</div>'
@@ -1141,20 +1225,21 @@ function updateCard(appId) {
   applyFilters();
 }
 
+function setStat(id, v) { var e = document.getElementById(id); if (e) e.textContent = v; }
 function updateSummary(fleet) {
   var apps = Object.values(state.apps);
-  var done = apps.filter(function(a) { return ['pass','warn','fail','error','skip'].includes(a.status); }).length;
+  var done = apps.filter(function(a) { return ['pass','warn','fail','error','timeout','skip'].includes(a.status); }).length;
   var total = apps.length;
   var running = apps.filter(function(a) { return ['pulling','starting','http','screenshot','benchmark','queued'].includes(a.status); }).length;
   var pass = apps.filter(function(a) { return a.status === 'pass'; }).length;
   var warn = apps.filter(function(a) { return a.status === 'warn'; }).length;
-  var fail = apps.filter(function(a) { return ['fail','error'].includes(a.status); }).length;
+  var fail = apps.filter(function(a) { return a.status === 'fail'; }).length;
+  var error = apps.filter(function(a) { return a.status === 'error'; }).length;
+  var timeout = apps.filter(function(a) { return a.status === 'timeout'; }).length;
   var skip = apps.filter(function(a) { return a.status === 'skip'; }).length;
-  document.getElementById('s-total').textContent = total;
-  document.getElementById('s-running').textContent = running;
-  document.getElementById('s-pass').textContent = pass;
-  document.getElementById('s-warn').textContent = warn;
-  document.getElementById('s-fail').textContent = fail;
+  setStat('s-total', total); setStat('s-running', running); setStat('s-pass', pass);
+  setStat('s-warn', warn); setStat('s-fail', fail); setStat('s-error', error);
+  setStat('s-timeout', timeout); setStat('s-skip', skip);
   var pct = total > 0 ? (done / total * 100).toFixed(1) : 0;
   document.getElementById('progress-fill').style.width = pct + '%';
   document.getElementById('progress-label').textContent = done + ' / ' + total + ' tested' + (skip ? ' (' + skip + ' skipped)' : '');
