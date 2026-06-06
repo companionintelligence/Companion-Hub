@@ -71,6 +71,8 @@ function norm(r, i) {
     score,
     httpStatus: r.httpStatus ?? r.http ?? null,
     backendHealthy,
+    failKind: r.failKind ?? null,
+    retried: r.retried ?? false,
     notes: `${r.notes ?? ''}`.slice(0, 160),
     node: r.node ?? null,
     i,
@@ -80,6 +82,9 @@ function norm(r, i) {
 const norms = rows.map(norm);
 const actionable = norms.filter((r) => r.score === 'fail' || (r.score === 'warn' && r.backendHealthy === false));
 const falseWarn = norms.filter((r) => r.score === 'warn' && r.backendHealthy !== false);
+// error (harness/infra: pull/port-map/compose/start) and timeout (never-ready after a retry) are
+// flagged for a human, NOT auto-assigned to fix agents — they're usually not a marketplace bug.
+const flagged = norms.filter((r) => r.score === 'error' || r.score === 'timeout');
 const skipped = norms.filter((r) => r.score === 'skip').length;
 const passed = norms.filter((r) => r.score === 'pass').length;
 
@@ -103,7 +108,7 @@ const worklist = actionable.map((r, k) => {
 });
 
 console.error(
-  `\n  results: ${norms.length} apps — ${passed} pass, ${falseWarn.length} false-warn, ${actionable.length} ACTIONABLE, ${skipped} skip\n`,
+  `\n  results: ${norms.length} apps — ${passed} pass, ${falseWarn.length} false-warn, ${actionable.length} ACTIONABLE, ${flagged.length} flagged(error/timeout), ${skipped} skip\n`,
 );
 console.error('  ── actionable (one diagnose+fix+PR agent each) ──');
 for (const w of worklist) {
@@ -114,6 +119,14 @@ for (const w of worklist) {
 if (falseWarn.length) {
   console.error('\n  ── false-warn (missing screenshot only — NOT bugs; sync chromium to the node) ──');
   console.error(`  ${falseWarn.map((r) => r.appId).join(', ')}`);
+}
+if (flagged.length) {
+  console.error('\n  ── flagged: error/timeout (infra/harness — re-run or inspect; not auto-assigned) ──');
+  for (const r of flagged) {
+    console.error(
+      `  ${String(r.score).toUpperCase().padEnd(7)} ${r.appId.padEnd(20)} ${String(r.failKind ?? '-').padEnd(9)}${r.retried ? '(retried) ' : ''}${r.notes}`,
+    );
+  }
 }
 
 if (wantJson) {

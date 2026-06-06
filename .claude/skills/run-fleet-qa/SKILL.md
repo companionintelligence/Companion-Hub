@@ -172,6 +172,30 @@ Env: `APP_STORE_DIR` · `RESULTS_DIR` · `SKIP_SCREENSHOT=1` · `QA_CHROMIUM_PAT
 `batch_done`; the verdict is the `app_result` event's `result` (`score`,
 `backendHealthy`, `httpStatus`, `readyVia`, `notes`).
 
+## Architecture coverage (arm / x64) — `audit-arch.py`
+
+The fleet runs each app on whatever node it lands on, and **all current nodes are
+`x86_64`** — so a normal run never exercises arm64 at all. To *see* which apps even
+publish an arm64 build (so they could install on an ARM CI-Hub appliance —
+Apple-Silicon / Pi-class / ARM mini-PC), run the static manifest audit:
+
+```bash
+python3 .claude/skills/run-fleet-qa/audit-arch.py        # → arch-audit.json + arch-coverage.md
+```
+
+It reads every app's `docker-compose.json`, resolves each image's published platforms
+and rolls up per app (`both` | `amd64-only` | `partial-arm` | `private` | `unknown`).
+It spends **zero Docker Hub pull-limit budget**: Docker Hub images go through the
+`hub.docker.com` REST API (throttled serially with 429 backoff), ghcr/lscr/codeberg/
+quay through the registry v2 manifest-list API (anon bearer token + config-blob
+fallback). `--cache arch-audit.json` reuses prior results and only re-resolves misses;
+`export GHCR_TOKEN=$(gh auth token)` resolves the private `ghcr.io/companionintelligence/*`
+images. A `partial-arm` verdict = the app image is multi-arch but a **dependency** image
+(db/mailer) is amd64-only, so the stack still breaks on ARM — these are the fixable ones
+(swap the dep for a multi-arch equivalent). To actually *run* arm64 on the x64 fleet you'd
+need qemu binfmt + `--platform linux/arm64` (slow, emulated) or real ARM nodes — neither is
+wired in yet.
+
 ## Gotchas
 
 - **The fleet is auth-split.** Only 6/10 nodes can `git pull` (HTTPS creds or the
