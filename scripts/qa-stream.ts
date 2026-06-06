@@ -940,7 +940,8 @@ function valueForVar(name: string, cache: Map<string, string>, scratchBase: stri
     v = join(scratchBase, `var_${name.toLowerCase()}`);
     mkdirSync(v, { recursive: true });
   } else if (/DOMAIN|HOST(NAME)?$/.test(name)) v = 'ci.localhost';
-  else if (/PROTOCOL$|SCHEME$/.test(name)) v = 'http'; // APP_PROTOCOL etc. — else a random hex makes `${APP_PROTOCOL}://host` a malformed URL
+  else if (/PROTOCOL$|SCHEME$/.test(name))
+    v = 'http'; // APP_PROTOCOL etc. — else a random hex makes `${APP_PROTOCOL}://host` a malformed URL
   else if (/URL/.test(name)) v = 'http://localhost';
   else if (/PORT/.test(name)) v = '8080';
   else v = randomBytes(8).toString('hex');
@@ -1165,7 +1166,10 @@ async function captureBackendHealth(o: { composeProject: string; composeYml: str
 }> {
   const ERR = `grep -iE 'error|fatal|fail|refused|denied|panic|cannot|unable|exception|no such host' | tail -8`;
   if (o.composeProject && o.composeYml) {
-    const ps = await execAsync(`docker compose -p ${o.composeProject} -f ${o.composeYml} ps -a --format '{{.Service}}|{{.State}}|{{.ExitCode}}'`, 20_000);
+    const ps = await execAsync(
+      `docker compose -p ${o.composeProject} -f ${o.composeYml} ps -a --format '{{.Service}}|{{.State}}|{{.ExitCode}}'`,
+      20_000,
+    );
     const down: string[] = [];
     for (const line of ps.out.split('\n')) {
       const [svc, state, exitCode] = line.split('|');
