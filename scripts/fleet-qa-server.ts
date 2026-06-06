@@ -1398,7 +1398,10 @@ function cardHtml(app, s) {
   var SCORE_LABELS = { pass:'PASS', warn:'WARN', fail:'FAIL', error:'ERROR', timeout:'TIMEOUT', skip:'SKIP' };
   if (SCORE_LABELS[status]) scoreHtml = '<span class="card-score ' + status + '">' + SCORE_LABELS[status] + '</span>';
   var ssFile = (node ? node + '_' : '') + app.id + '.png';
-  var thumb = '<img class="card-thumb" loading="lazy" src="/screenshots/' + ssFile + '" onerror="this.remove()">';
+  // Cache-bust by the app's end time so a re-run's fresh capture replaces the cached thumbnail
+  // (same filename otherwise pins the browser to the stale image — the "screenshots not updating" bug).
+  var ssBust = (s && s.endTs) ? ('?t=' + s.endTs) : '';
+  var thumb = '<img class="card-thumb" loading="lazy" src="/screenshots/' + ssFile + ssBust + '" onerror="this.remove()">';
   return thumb
     + '<div class="card-status">'
     + '<div class="dot ' + status + '"></div>'
@@ -1484,7 +1487,8 @@ function renderDrawer(appId) {
   var html = '';
   // Screenshot
   var ssFile = (s && s.node ? s.node + '_' : '') + appId + '.png';
-  html += '<img class="screenshot-img" src="/screenshots/' + ssFile + '" onerror="this.hidden=true">';
+  var ssBust = (s && s.endTs) ? ('?t=' + s.endTs) : '';
+  html += '<img class="screenshot-img" src="/screenshots/' + ssFile + ssBust + '" onerror="this.hidden=true">';
   // Meta grid
   var r = s && s.result ? s.result : {};
   html += '<div class="section-label">Metrics</div>';
