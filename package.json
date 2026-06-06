@@ -71,8 +71,8 @@
     "dotenv-cli": "^10.0.0",
     "husky": "^9.1.7",
     "lint-staged": "^16.2.7",
-    "systeminformation": "^5.25.11",
-    "turbo": "^2.8.17",
+    "systeminformation": "^5.31.6",
+    "turbo": "^2.9.14",
     "vitest": "^4.1.4"
   },
   "private": false,
