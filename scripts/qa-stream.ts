@@ -263,6 +263,15 @@ interface AppConfig {
   categories?: string[];
 }
 
+interface HealthCheck {
+  test?: string[] | string;
+  interval?: string;
+  timeout?: string;
+  retries?: number;
+  startPeriod?: string;
+  start_period?: string; // lowercase manifests use snake_case
+}
+
 interface DockerService {
   name?: string;
   image?: string;
@@ -281,13 +290,8 @@ interface DockerService {
   volumes?: { hostPath?: string; containerPath?: string }[];
   environment?: { key?: string; value?: string }[];
   dependsOn?: unknown; // map {svc:{condition}} (Hub) or string[] — handled in composeUp
-  healthCheck?: {
-    test?: string[] | string;
-    interval?: string;
-    timeout?: string;
-    retries?: number;
-    startPeriod?: string;
-  };
+  healthCheck?: HealthCheck;
+  healthcheck?: HealthCheck; // lowercase variant — some manifests (documenso/matomo/nextcloud/nocodb/passbolt) use it; honor both
   // GPU reservation (compose `deploy.resources.reservations.devices`). Apps that reserve an
   // nvidia/gpu device REQUIRE host GPU hardware the fleet nodes don't have — detected so they're
   // classified as skip(gpu) rather than counted as a fail when they refuse to boot.
@@ -936,6 +940,7 @@ function valueForVar(name: string, cache: Map<string, string>, scratchBase: stri
     v = join(scratchBase, `var_${name.toLowerCase()}`);
     mkdirSync(v, { recursive: true });
   } else if (/DOMAIN|HOST(NAME)?$/.test(name)) v = 'ci.localhost';
+  else if (/PROTOCOL$|SCHEME$/.test(name)) v = 'http'; // APP_PROTOCOL etc. — else a random hex makes `${APP_PROTOCOL}://host` a malformed URL
   else if (/URL/.test(name)) v = 'http://localhost';
   else if (/PORT/.test(name)) v = '8080';
   else v = randomBytes(8).toString('hex');
@@ -1013,7 +1018,7 @@ function composeUp(
   const mainPort = main?.internalPort ?? 80;
   // Services that declare a healthcheck: a depends_on may only request `service_healthy`
   // against these — asking it of a service without one makes `compose up` error out.
-  const hasHealthcheck = new Set(services.filter((s) => s.name && s.healthCheck?.test).map((s) => s.name as string));
+  const hasHealthcheck = new Set(services.filter((s) => s.name && (s.healthCheck ?? s.healthcheck)?.test).map((s) => s.name as string));
   let y = 'services:\n';
   for (const s of services) {
     if (!s.name || !s.image) continue;
@@ -1098,7 +1103,7 @@ function composeUp(
     // Healthcheck — emitted so dependents can wait on `service_healthy` (below). A scalar
     // `test` string is interpreted by compose as CMD-SHELL; an array form carries its own
     // CMD / CMD-SHELL prefix. ${VAR}s (e.g. DB passwords) are substituted like everywhere else.
-    const hc = s.healthCheck;
+    const hc = s.healthCheck ?? s.healthcheck;
     if (hc?.test) {
       y += '    healthcheck:\n';
       if (Array.isArray(hc.test)) {
@@ -1110,7 +1115,8 @@ function composeUp(
       if (hc.interval) y += `      interval: ${yamlStr(String(hc.interval))}\n`;
       if (hc.timeout) y += `      timeout: ${yamlStr(String(hc.timeout))}\n`;
       if (hc.retries != null) y += `      retries: ${hc.retries}\n`;
-      if (hc.startPeriod) y += `      start_period: ${yamlStr(String(hc.startPeriod))}\n`;
+      const sp = hc.startPeriod ?? hc.start_period;
+      if (sp) y += `      start_period: ${yamlStr(String(sp))}\n`;
     }
     const dep = s.dependsOn;
     if (Array.isArray(dep) && dep.length) {
@@ -1159,11 +1165,18 @@ async function captureBackendHealth(o: { composeProject: string; composeYml: str
 }> {
   const ERR = `grep -iE 'error|fatal|fail|refused|denied|panic|cannot|unable|exception|no such host' | tail -8`;
   if (o.composeProject && o.composeYml) {
-    const ps = await execAsync(`docker compose -p ${o.composeProject} -f ${o.composeYml} ps -a --format '{{.Service}}|{{.State}}'`, 20_000);
+    const ps = await execAsync(`docker compose -p ${o.composeProject} -f ${o.composeYml} ps -a --format '{{.Service}}|{{.State}}|{{.ExitCode}}'`, 20_000);
     const down: string[] = [];
     for (const line of ps.out.split('\n')) {
-      const [svc, state] = line.split('|');
-      if (svc && state && !/running|^up/i.test(state.trim())) down.push(`${svc}(${state.trim()})`);
+      const [svc, state, exitCode] = line.split('|');
+      if (!svc || !state) continue;
+      const st = state.trim();
+      if (/running|^up/i.test(st)) continue;
+      // A one-shot init/migrator/seeder that EXITED 0 has COMPLETED — not down. Only count it
+      // as down if it exited non-zero, is restarting/dead, or never started (created). This is the
+      // single biggest source of false "backend degraded" warns (plane/matomo/hoppscotch/openproject).
+      if (/^exited/i.test(st) && (exitCode ?? '').trim() === '0') continue;
+      down.push(`${svc}(${st})`);
     }
     let errors = '';
     if (down.length) {
