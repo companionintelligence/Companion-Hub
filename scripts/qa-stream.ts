@@ -270,6 +270,14 @@ interface DockerService {
   internalPort?: number;
   user?: string; // run-as user (uid[:gid] or name) — honored by the real Hub builder (service.builder.ts setUser); mirrored here
   command?: string[] | string; // entrypoint override; carries DB migration/predeploy steps for some apps
+  // Host-privilege fields — mirror the real Hub builder (service.builder.ts). Dropping them is a
+  // spurious fail: steam-headless declares `privileged: true` and dies on `mount: /proc: permission
+  // denied` without it; pi-hole/netdata/home-assistant/searxng/collabora etc. need caps/devices.
+  privileged?: boolean;
+  capAdd?: string[];
+  devices?: string[];
+  securityOpt?: string[];
+  sysctls?: Record<string, number | string>;
   volumes?: { hostPath?: string; containerPath?: string }[];
   environment?: { key?: string; value?: string }[];
   dependsOn?: unknown; // map {svc:{condition}} (Hub) or string[] — handled in composeUp
@@ -390,6 +398,14 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
           if (!e.key || e.value == null) continue;
           runFlags += ` -e ${e.key}=${shQuote(subst(String(e.value)))}`;
         }
+        // Host-privilege flags — mirror the Hub builder (service.builder.ts). steam-headless
+        // declares `privileged: true` and dies on `mount: /proc: permission denied` without it;
+        // pi-hole/searxng/anything-llm/collabora need cap_add; home-assistant needs devices.
+        if (main?.privileged === true) runFlags += ' --privileged';
+        for (const c of main?.capAdd ?? []) runFlags += ` --cap-add ${shQuote(String(c))}`;
+        for (const d of main?.devices ?? []) runFlags += ` --device ${shQuote(subst(String(d)))}`;
+        for (const so of main?.securityOpt ?? []) runFlags += ` --security-opt ${shQuote(String(so))}`;
+        for (const [k, val] of Object.entries(main?.sysctls ?? {})) runFlags += ` --sysctl ${shQuote(`${k}=${val}`)}`;
       }
     } else if (existsSync(composeYmlPath)) {
       const yml = readFileSync(composeYmlPath, 'utf-8');
@@ -522,6 +538,10 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
     // Generous ceiling: heavy apps run DB migrations on first boot that take minutes.
     // Override with QA_READY_TIMEOUT_MS (authoritative — bypasses the scaling below).
     phase(appId, 'http', `Waiting for ${appId} to become ready on :${hostPort}`);
+    // Probe + screenshot the app's real UI path (config.url_suffix, e.g. plex's /web/index.html).
+    // Apps like plex serve their API/XML at `/`, so a bare `/` probe screenshots the wrong page and
+    // makes a working app look broken. Falls back to `/` when no suffix is declared.
+    const uiPath = config.url_suffix && String(config.url_suffix).startsWith('/') ? String(config.url_suffix) : '/';
     // Concurrency slows first-boot (shared CPU/disk while peers also pull+migrate), so scale the
     // ceiling up modestly when QA_CONCURRENCY>1: +50% per extra slot, capped at 2x. This only
     // affects the success ceiling — the fail-fast exit/restart-loop signals below are unchanged,
@@ -562,7 +582,7 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
       if (ready) break;
       // (2) HTTP probe
       try {
-        const res = await fetch(`http://localhost:${hostPort}/`, { signal: AbortSignal.timeout(4000) });
+        const res = await fetch(`http://localhost:${hostPort}${uiPath}`, { signal: AbortSignal.timeout(4000) });
         httpStatus = res.status;
         if (httpStatus < 500) {
           ready = true;
@@ -619,7 +639,7 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
             `--screenshot=${screenshotPath}`,
             '--window-size=1280,800',
             '--virtual-time-budget=4000',
-            `http://localhost:${hostPort}/`,
+            `http://localhost:${hostPort}${uiPath}`,
           ],
           { timeout: 30_000, killSignal: 'SIGKILL', stdio: 'pipe' },
         );
@@ -1008,6 +1028,24 @@ function composeUp(
     // manifest stops forcing `user: root`) otherwise runs under the wrong uid and fails spuriously.
     if (s.user != null && String(s.user).length) {
       y += `    user: ${yamlStr(subst(String(s.user)))}\n`;
+    }
+    // Host-privilege fields — mirror the Hub builder so apps that declare them don't false-fail.
+    if (s.privileged === true) y += '    privileged: true\n';
+    if (Array.isArray(s.capAdd) && s.capAdd.length) {
+      y += '    cap_add:\n';
+      for (const c of s.capAdd) y += `      - ${yamlStr(String(c))}\n`;
+    }
+    if (Array.isArray(s.devices) && s.devices.length) {
+      y += '    devices:\n';
+      for (const d of s.devices) y += `      - ${yamlStr(subst(String(d)))}\n`;
+    }
+    if (Array.isArray(s.securityOpt) && s.securityOpt.length) {
+      y += '    security_opt:\n';
+      for (const so of s.securityOpt) y += `      - ${yamlStr(String(so))}\n`;
+    }
+    if (s.sysctls && typeof s.sysctls === 'object' && Object.keys(s.sysctls).length) {
+      y += '    sysctls:\n';
+      for (const [k, v] of Object.entries(s.sysctls)) y += `      ${k}: ${yamlStr(String(v))}\n`;
     }
     // Command override — for some apps (e.g. affine) this is the ONLY thing that runs the
     // DB migration/predeploy step; dropping it boots the app against an empty schema and
