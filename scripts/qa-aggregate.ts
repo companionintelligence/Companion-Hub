@@ -123,9 +123,12 @@ async function main() {
   const totalPassed = allResults.filter((r) => r.score === 'pass').length;
   const totalWarned = allResults.filter((r) => r.score === 'warn').length;
   const totalFailed = allResults.filter((r) => r.score === 'fail').length;
+  const totalErrored = allResults.filter((r) => r.score === 'error').length;
+  const totalTimedOut = allResults.filter((r) => r.score === 'timeout').length;
   const totalSkipped = allResults.filter((r) => r.score === 'skip').length;
   const totalApps = allResults.length;
-  const scored = totalPassed + totalWarned + totalFailed || 1; // % denominator excludes skips
+  // % denominator excludes skips AND error/timeout (infra/harness faults, not the app's verdict).
+  const scored = totalPassed + totalWarned + totalFailed || 1;
   const _passRate = (totalPassed / scored) * 100;
 
   console.log(`\n${'═'.repeat(60)}`);
@@ -135,6 +138,7 @@ async function main() {
   console.log(`✅ Pass: ${totalPassed} (${((totalPassed / scored) * 100).toFixed(1)}%)`);
   console.log(`⚠️ Warn: ${totalWarned} (${((totalWarned / scored) * 100).toFixed(1)}%)`);
   console.log(`❌ Fail: ${totalFailed} (${((totalFailed / scored) * 100).toFixed(1)}%)`);
+  console.log(`🧯 Error: ${totalErrored}  ⏱️ Timeout: ${totalTimedOut}  (infra/harness — excluded from pass rate)`);
   console.log(`⏭️ Skip: ${totalSkipped}`);
 
   // Save merged results

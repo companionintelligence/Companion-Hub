@@ -112,6 +112,8 @@ function phase(appId: string, phase: string, message: string) {
  * (memoryMb/imageSizeMb/cpuPercent/timestamp/…). Field names differ between the two — this is
  * the single place that bridges them so results.json stays loadable by the aggregator.
  */
+type Score = 'pass' | 'warn' | 'fail' | 'skip' | 'error' | 'timeout';
+
 function toQAResult(result: Record<string, unknown>): Record<string, unknown> {
   const ts = typeof result.ts === 'number' ? result.ts : Date.now();
   return {
@@ -130,6 +132,8 @@ function toQAResult(result: Record<string, unknown>): Record<string, unknown> {
     screenshotPath: result.hasScreenshot ? join(SCREENSHOTS_DIR, `${result.appId}.png`) : null,
     score: result.score ?? 'fail',
     notes: result.notes ?? '',
+    retried: result.retried ?? false,
+    attempts: result.attempts ?? 1,
     timestamp: new Date(ts).toISOString(),
   };
 }
@@ -242,7 +246,7 @@ function requiresGpu(services: DockerService[]): boolean {
   return false;
 }
 
-async function qaApp(appId: string) {
+async function attemptApp(appId: string): Promise<Record<string, unknown>> {
   emit({ event: 'app_start', appId, ts: Date.now() });
 
   const containerName = `qa-stream-${appId}`;
@@ -255,7 +259,7 @@ async function qaApp(appId: string) {
   let composeYml = '';
   const result: Record<string, unknown> = {
     appId,
-    score: 'fail' as 'pass' | 'warn' | 'fail',
+    score: 'fail' as Score,
     notes: '',
     ts: Date.now(),
   };
@@ -267,10 +271,10 @@ async function qaApp(appId: string) {
     // ── Config ────────────────────────────────────────────────
     const configPath = join(APP_STORE_DIR, appId, 'config.json');
     if (!existsSync(configPath)) {
-      result.score = 'fail';
+      result.score = 'error';
+      result.failKind = 'config';
       result.notes = `config.json not found at ${configPath}`;
-      emitResult(appId, result);
-      return;
+      return result;
     }
 
     const config: AppConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
@@ -281,10 +285,9 @@ async function qaApp(appId: string) {
     // Skip non-HTTP apps immediately — they're CLI/MCP/stdio services, not web apps.
     // Pulling + running them just to fail the HTTP check produces misleading fail counts.
     if (config.no_gui) {
-      result.score = 'skip' as 'pass' | 'warn' | 'fail';
+      result.score = 'skip' as Score;
       result.notes = 'no_gui: stdio/CLI service, no HTTP to verify';
-      emitResult(appId, result);
-      return;
+      return result;
     }
 
     // Image from docker-compose.json (Hub V2 format) or .yml
@@ -326,37 +329,34 @@ async function qaApp(appId: string) {
       const m = yml.match(/^\s*image:\s*(.+)/m);
       result.image = m ? m[1].trim() : `${appId}:latest`;
     } else {
-      result.score = 'fail';
+      result.score = 'error';
+      result.failKind = 'config';
       result.notes = 'No docker-compose.json or docker-compose.yml';
-      emitResult(appId, result);
-      return;
+      return result;
     }
 
     const mainImg = String(result.image ?? '');
     // Skip private CI images (require GHCR auth not available on fleet nodes).
     if (mainImg.startsWith('ghcr.io/companionintelligence/')) {
-      result.score = 'skip' as 'pass' | 'warn' | 'fail';
+      result.score = 'skip' as Score;
       result.notes = 'private GHCR image — requires auth not available on fleet nodes';
-      emitResult(appId, result);
-      return;
+      return result;
     }
     // Skip VM images (dockurr/macos, dockurr/windows) — require KVM/nested virt.
     if (mainImg.startsWith('dockurr/')) {
-      result.score = 'skip' as 'pass' | 'warn' | 'fail';
+      result.score = 'skip' as Score;
       result.notes = 'VM image — requires KVM/nested virtualisation unavailable on fleet nodes';
-      emitResult(appId, result);
-      return;
+      return result;
     }
     // Skip GPU-required apps — detected via compose `deploy.reservations.devices` (nvidia/gpu) on
     // ANY service, or a GPU-only image build (rocm/cuda/amd-strix). These need GPU hardware the
     // fleet nodes lack, so they're skip(gpu) — NOT a fail. (This stops hunyuan3d and similar image-
     // /video-gen apps from showing as false fails.) `reason:"gpu"` lets the dashboard bucket them.
     if (requiresGpu(services) || /rocm|amd-strix|:cuda|\.cuda/i.test(mainImg)) {
-      result.score = 'skip' as 'pass' | 'warn' | 'fail';
+      result.score = 'skip' as Score;
       result.reason = 'gpu';
       result.notes = 'requires GPU (nvidia device reservation or rocm/cuda image) — no GPU on fleet nodes';
-      emitResult(appId, result);
-      return;
+      return result;
     }
 
     // ── Pull + Start ──────────────────────────────────────────
@@ -377,21 +377,19 @@ async function qaApp(appId: string) {
       if (!up.ok) {
         // Classify compose failures the same as single-service pull failures
         if (/failed to authorize|unauthorized|denied|authentication required/i.test(up.err)) {
-          result.score = 'skip' as 'pass' | 'warn' | 'fail';
+          result.score = 'skip' as Score;
           result.notes = 'registry auth required for dependency image';
-          emitResult(appId, result);
-          return;
+          return result;
         }
         if (/manifest unknown|not found|does not exist|404/i.test(up.err)) {
-          result.score = 'skip' as 'pass' | 'warn' | 'fail';
+          result.score = 'skip' as Score;
           result.notes = 'dependency image not found in registry';
-          emitResult(appId, result);
-          return;
+          return result;
         }
-        result.score = 'fail';
+        result.score = 'error';
+        result.failKind = 'compose';
         result.notes = `compose up failed: ${up.err}`;
-        emitResult(appId, result);
-        return;
+        return result;
       }
       hostPort = up.hostPort;
       statsName = up.statsName;
@@ -405,22 +403,20 @@ async function qaApp(appId: string) {
         const errText = pull.err + pull.out;
         // Image doesn't exist in any registry → skip (broken marketplace entry, not a test failure)
         if (/manifest unknown|not found|does not exist|404|no such image/i.test(errText)) {
-          result.score = 'skip' as 'pass' | 'warn' | 'fail';
+          result.score = 'skip' as Score;
           result.notes = 'image not found in registry — broken marketplace entry';
-          emitResult(appId, result);
-          return;
+          return result;
         }
         // Auth failure on any registry (not just CI images caught above) → skip
         if (/failed to authorize|unauthorized|denied|authentication required/i.test(errText)) {
-          result.score = 'skip' as 'pass' | 'warn' | 'fail';
+          result.score = 'skip' as Score;
           result.notes = 'registry auth required — no credentials on fleet nodes';
-          emitResult(appId, result);
-          return;
+          return result;
         }
-        result.score = 'fail';
+        result.score = 'error';
+        result.failKind = 'pull';
         result.notes = `Pull failed: ${errText.slice(0, 200)}`;
-        emitResult(appId, result);
-        return;
+        return result;
       }
       const sizeR = execQuiet(`docker image inspect ${result.image} --format "{{.Size}}"`);
       result.imageMb = sizeR.ok ? Math.round(Number(sizeR.out) / 1024 / 1024) : 0;
@@ -433,20 +429,20 @@ async function qaApp(appId: string) {
       // Hub/Traefik (commonly on :80) or another app under test on the same node.
       const run = execQuiet(`docker run -d --name ${containerName} -p 0:${result.port}${capFlags}${runFlags} ${result.image}`, 60_000);
       if (!run.ok) {
-        result.score = 'fail';
+        result.score = 'error';
+        result.failKind = 'start';
         result.notes = `Container start failed: ${run.err.slice(0, 200)}`;
-        emitResult(appId, result);
-        return;
+        return result;
       }
       // Resolve the host port Docker assigned (output like "0.0.0.0:49154\n[::]:49154").
       const portMap = execQuiet(`docker port ${containerName} ${result.port}/tcp`);
       hostPort = portMap.ok ? Number(portMap.out.split('\n')[0]?.trim().split(':').pop()) : 0;
       if (!hostPort) {
         execQuiet(`docker rm -f ${containerName}`, 30_000);
-        result.score = 'fail';
+        result.score = 'error';
+        result.failKind = 'portmap';
         result.notes = `Could not resolve host port mapping for container :${result.port}`;
-        emitResult(appId, result);
-        return;
+        return result;
       }
     }
 
@@ -515,14 +511,16 @@ async function qaApp(appId: string) {
     if (!ready) {
       const bh = captureBackendHealth({ composeProject, composeYml, containerName });
       result.backendErrors = bh.errors;
-      result.score = 'fail';
       const waited = Math.round((Date.now() - readyStart) / 1000);
+      // Container exited / restart-looped after a clean start = a real app FAIL; never becoming
+      // ready with no death signal = an infra TIMEOUT (retryable on a warm second attempt).
+      result.score = deadReason ? 'fail' : 'timeout';
+      result.failKind = deadReason ? 'exit' : 'timeout';
       result.notes =
         (deadReason ? `backend ${deadReason} after ${waited}s` : `not ready within ${Math.round(maxWaitMs / 1000)}s`) +
         (bh.down.length ? ` — down: ${bh.down.join(', ')}` : '') +
         (bh.errors ? ` | ${bh.errors.replace(/\s+/g, ' ').slice(0, 200)}` : '');
-      emitResult(appId, result);
-      return;
+      return result;
     }
 
     // Backend health: the frontend served, but a backend service may be crashed/restarting
@@ -603,7 +601,8 @@ async function qaApp(appId: string) {
         (result.backendErrors ? ` | ${String(result.backendErrors).replace(/\s+/g, ' ').slice(0, 200)}` : '');
     }
   } catch (err) {
-    result.score = 'fail';
+    result.score = 'error';
+    result.failKind = 'exception';
     result.notes = err instanceof Error ? err.message.slice(0, 300) : String(err).slice(0, 300);
   } finally {
     if (composeProject && composeYml) {
@@ -616,6 +615,35 @@ async function qaApp(appId: string) {
     }
   }
 
+  return result;
+}
+
+/**
+ * Per-app entry point used by the worker pool. Runs attemptApp, and on a transient failure
+ * (cold-pull `error` from a `pull` failKind, or a readiness `timeout`) retries ONCE — attemptApp
+ * tears down its own containers in `finally`, so the retry starts clean and hits the now-warm
+ * image cache. Emits exactly one app_result (the pool/server count `done` off it), so a retry
+ * never double-counts. Real app crashes (`fail`), missing/404 images (`skip`), and structural
+ * harness errors (port-map, dir-vs-file mount) are NOT retried.
+ */
+function isRetryableTransient(result: Record<string, unknown>): boolean {
+  return result.failKind === 'pull' || result.failKind === 'timeout';
+}
+
+async function qaApp(appId: string): Promise<void> {
+  let result = await attemptApp(appId);
+  if (isRetryableTransient(result)) {
+    const firstScore = String(result.score);
+    const firstNotes = String(result.notes ?? '');
+    const retry = await attemptApp(appId);
+    retry.retried = true;
+    retry.attempts = 2;
+    retry.firstAttemptScore = firstScore;
+    retry.firstAttemptNotes = firstNotes;
+    result = retry;
+  } else {
+    result.attempts = 1;
+  }
   emitResult(appId, result);
 }
 
@@ -665,27 +693,42 @@ function slotWeightFor(appId: string): number {
  * `-p 0:`, `qa-<app>` compose project, per-app scratch dir) is what makes this parallelism safe.
  * An app whose weight exceeds the total budget still runs (clamped) rather than deadlocking.
  */
-async function runWithConcurrency(appIds: string[]): Promise<void> {
+async function runWithConcurrency(next: () => Promise<string | null>): Promise<void> {
   const total = QA_CONCURRENCY;
   let available = total;
-  let idx = 0;
   const inflight = new Set<Promise<void>>();
+  let lookahead: string | null = null; // a fetched-but-not-yet-launched app (over-weight wait)
+  let ended = false;
 
-  // Wait until at least one in-flight app finishes (frees slots).
-  const drainOne = () => Promise.race(inflight);
+  // Pull the next app id, preferring a stashed lookahead. Returns null once the source is drained.
+  // `next` may BLOCK (stdin work-stealing mode waits for the server to feed the next id), which is
+  // fine — awaiting it yields to in-flight apps' finalizers.
+  const fetchNext = async (): Promise<string | null> => {
+    if (lookahead !== null) {
+      const v = lookahead;
+      lookahead = null;
+      return v;
+    }
+    if (ended) return null;
+    const v = await next();
+    if (v === null) ended = true;
+    return v;
+  };
 
-  while (idx < appIds.length || inflight.size > 0) {
-    // Launch as many apps as currently fit in the remaining budget.
-    while (idx < appIds.length) {
-      const appId = appIds[idx];
-      if (appId === undefined) break; // unreachable given the loop bound; satisfies strict indexing
+  while (!ended || inflight.size > 0) {
+    // Launch as many apps as currently fit in the remaining weighted budget.
+    while (available > 0) {
+      const appId = await fetchNext();
+      if (appId === null) break; // source drained — let in-flight finish
       const weight = Math.min(slotWeightFor(appId), total); // clamp so an over-budget app can't deadlock
-      if (weight > available && inflight.size > 0) break; // no room right now — wait for a finisher
-      idx++;
+      if (weight > available && inflight.size > 0) {
+        lookahead = appId; // no room right now — stash and wait for a finisher
+        break;
+      }
       available -= weight;
       const p: Promise<void> = qaApp(appId)
         .catch((err) => {
-          // qaApp emits its own failure result; this guards the pool against an unexpected throw.
+          // qaApp emits its own result; this guards the pool against an unexpected throw.
           process.stderr.write(`qaApp(${appId}) threw: ${err instanceof Error ? err.stack || err.message : String(err)}\n`);
         })
         .finally(() => {
@@ -694,7 +737,8 @@ async function runWithConcurrency(appIds: string[]): Promise<void> {
         });
       inflight.add(p);
     }
-    if (inflight.size > 0) await drainOne();
+    if (inflight.size > 0) await Promise.race(inflight);
+    else if (ended) break;
   }
 }
 
@@ -975,10 +1019,72 @@ function captureBackendHealth(o: { composeProject: string; composeYml: string; c
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
-const appIds = process.argv.slice(2);
-if (appIds.length === 0) {
-  process.stderr.write('Usage: qa-stream.ts <app-id> [app-id...]\n');
+// Two dispatch modes:
+//   • argv mode (default): app ids are CLI args; the node tests exactly that fixed list, warming
+//     the cache for the whole list up-front. Used by drive-qa.mjs and any direct invocation.
+//   • stdin mode (QA_STDIN=1 or --stdin): app ids are fed one-per-line over stdin by the fleet
+//     server's work-stealing dispatcher — the node pulls the next app as a slot frees, so fast
+//     nodes drain more of the shared queue and none sit idle at the tail.
+const STDIN_MODE = process.env.QA_STDIN === '1' || process.argv.includes('--stdin');
+const appIds = process.argv.slice(2).filter((a) => a !== '--stdin');
+if (!STDIN_MODE && appIds.length === 0) {
+  process.stderr.write('Usage: qa-stream.ts <app-id> [app-id...]   (or QA_STDIN=1 to read ids from stdin)\n');
   process.exit(1);
+}
+
+/**
+ * Stdin line reader for work-stealing mode. Buffers partial chunks, hands out one whole app id per
+ * call, and returns null once the server closes the pipe (end of queue). The returned function
+ * BLOCKS until an id is available or the pipe closes — that backpressure is exactly what makes the
+ * server's "feed one more on each app_result" dispatch a work-stealing queue.
+ */
+function makeStdinReader(): () => Promise<string | null> {
+  const queue: string[] = [];
+  let closed = false;
+  let wake: (() => void) | null = null;
+  let buf = '';
+  const pump = () => {
+    const w = wake;
+    wake = null;
+    if (w) w();
+  };
+  process.stdin.setEncoding('utf-8');
+  process.stdin.on('data', (chunk: string) => {
+    buf += chunk;
+    const lines = buf.split('\n');
+    buf = lines.pop() ?? '';
+    for (const line of lines) {
+      const id = line.trim();
+      if (id) queue.push(id);
+    }
+    pump();
+  });
+  process.stdin.on('end', () => {
+    const id = buf.trim();
+    if (id) queue.push(id);
+    closed = true;
+    pump();
+  });
+  return async function nextFromStdin(): Promise<string | null> {
+    for (;;) {
+      const id = queue.shift();
+      if (id !== undefined) return id;
+      if (closed) return null;
+      await new Promise<void>((res) => {
+        wake = res;
+      });
+    }
+  };
+}
+
+/** Count of results recorded this run (from the durable results.json) — used for batch_done. */
+function countResults(): number {
+  try {
+    const parsed = JSON.parse(readFileSync(RESULTS_JSON, 'utf-8'));
+    return Array.isArray(parsed) ? parsed.length : 0;
+  } catch {
+    return 0;
+  }
 }
 
 /**
@@ -997,13 +1103,19 @@ function writeBatchSummary(startTs: number): void {
     const passed = arr.filter((r) => r.score === 'pass').length;
     const warned = arr.filter((r) => r.score === 'warn').length;
     const failed = arr.filter((r) => r.score === 'fail').length;
-    const scored = passed + warned + failed; // exclude skips from the pass-rate denominator
+    const errored = arr.filter((r) => r.score === 'error').length;
+    const timedOut = arr.filter((r) => r.score === 'timeout').length;
+    // Pass-rate denominator = real app verdicts only. skip (non-web) AND error/timeout (infra/harness,
+    // not the app's fault) are excluded so flaky infra doesn't depress the marketplace pass rate.
+    const scored = passed + warned + failed;
     const summary = {
       batch: Number(QA_BATCH),
       total: arr.length,
       passed,
       warned,
       failed,
+      errored,
+      timedOut,
       passRate: scored > 0 ? (passed / scored) * 100 : 0,
       elapsedMinutes: (Date.now() - startTs) / 60_000,
     };
@@ -1017,25 +1129,41 @@ function writeBatchSummary(startTs: number): void {
 // has no "type":"module"), and CJS does not support top-level await.
 void (async () => {
   const batchStart = Date.now();
-  emit({ event: 'batch_start', apps: appIds, storeDir: APP_STORE_DIR, ts: batchStart });
+  emit({
+    event: 'batch_start',
+    apps: STDIN_MODE ? [] : appIds,
+    mode: STDIN_MODE ? 'stdin' : 'argv',
+    storeDir: APP_STORE_DIR,
+    ts: batchStart,
+  });
 
   // Start results.json fresh so it holds exactly THIS run's results (qa-aggregate.ts expects a
   // per-run array). Each qaApp appends to it as it finishes, so a dropped SSH pipe still leaves a
   // complete file behind for the aggregator.
   writeFileSync(RESULTS_JSON, '[]');
 
-  // Warm the image cache first so per-app pulls hit cache instead of timing out cold.
-  await prepull(appIds);
+  // Build the app source for the worker pool: a blocking stdin queue (work-stealing) or a cursor
+  // over the fixed argv list.
+  let next: () => Promise<string | null>;
+  if (STDIN_MODE) {
+    // Apps arrive one-at-a-time from the server; the per-app pull (+ retry, + registry mirror) warms
+    // the cache, so the batch-wide prepull — which needs the full list up-front — is skipped here.
+    next = makeStdinReader();
+  } else {
+    // Warm the image cache for the whole fixed batch first so heavy images don't cold-pull mid-test.
+    await prepull(appIds);
+    let i = 0;
+    next = async () => (i < appIds.length ? (appIds[i++] ?? null) : null);
+  }
 
   // Bounded intra-node concurrency (QA_CONCURRENCY slots; multi-service apps take 2). Per-app
-  // isolation keeps this safe — see runWithConcurrency. Was a serial for-of over appIds.
-  await runWithConcurrency(appIds);
+  // isolation keeps this safe — see runWithConcurrency.
+  await runWithConcurrency(next);
 
   // Persist the batch summary alongside results.json for qa-aggregate.ts to SCP.
   writeBatchSummary(batchStart);
 
-  const results = appIds.length;
-  emit({ event: 'batch_done', total: results, ts: Date.now() });
+  emit({ event: 'batch_done', total: countResults(), ts: Date.now() });
 })().catch((err) => {
   process.stderr.write(`qa-stream fatal: ${err?.stack || err}\n`);
   process.exit(1);
