@@ -845,12 +845,12 @@ function getDashboardHtml(): string {
   --accent-bright: #5fead0; /* CI bright mint (brand --ring / --chart-1) */
   --accent-dim: #2bd4a026;
   --grad-a: #22b87e; --grad-b: #0c6f56;  /* CI green → deep teal gradient */
-  --pass: #4ade80; --pass-dim: #4ade801f;        /* fresh grass green */
-  --warn: #e0a13a; --warn-dim: #e0a13a1f;        /* earth amber */
-  --fail: #ef5a63; --fail-dim: #ef5a631f;
-  --error: #ec7f3a; --error-dim: #ec7f3a1f;      /* earth orange — infra/harness fault */
-  --timeout: #b08cff; --timeout-dim: #b08cff1f;  /* never became ready */
-  --skip: #7e8a76; --skip-dim: #7e8a761f;         /* sage — non-web / not applicable */
+  --pass: #3b9eff; --pass-dim: #3b9eff2b;        /* distinct azure BLUE — passed */
+  --warn: #e8a33a; --warn-dim: #e8a33a2b;        /* earth amber */
+  --fail: #ef4d5e; --fail-dim: #ef4d5e2b;        /* red */
+  --error: #f07a2a; --error-dim: #f07a2a2b;      /* earth orange — infra/harness fault */
+  --timeout: #b08cff; --timeout-dim: #b08cff2b;  /* violet — never became ready */
+  --skip: #7e8a76; --skip-dim: #7e8a7624;         /* sage — non-web / not applicable */
   --muted: #6f8076; --text: #eafef4; --text2: #8ba898;  /* sage-tinted text */
   --radius: 10px;
 }
@@ -962,15 +962,27 @@ header {
   overflow: hidden;
 }
 .card:hover { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-dim); }
-.card.pass { border-left: 3px solid var(--pass); }
-.card.warn { border-left: 3px solid var(--warn); }
-.card.fail { border-left: 3px solid var(--fail); }
-.card.error { border-left: 3px solid var(--error); }
-.card.timeout { border-left: 3px solid var(--timeout); }
-.card.skip { border-left: 3px solid var(--skip); opacity: .7; }
-.card.running, .card.pulling, .card.starting, .card.http, .card.screenshot, .card.benchmark {
-  border-left: 3px solid var(--accent);
+/* Per-app screenshot thumbnail (hidden until a screenshot exists for that node+app). */
+.card-thumb {
+  width: 100%; height: 84px; object-fit: cover; object-position: top center;
+  border-radius: 7px; border: 1px solid var(--border); background: var(--surface2);
+  margin-bottom: 9px; display: block;
 }
+/* Whole-cell status coloring: tinted background + status border + a bold left bar,
+   so the grid reads as an at-a-glance status map. */
+.card.pass    { background: var(--pass-dim);    border-color: var(--pass);    border-left: 5px solid var(--pass);    }
+.card.warn    { background: var(--warn-dim);    border-color: var(--warn);    border-left: 5px solid var(--warn);    }
+.card.fail    { background: var(--fail-dim);    border-color: var(--fail);    border-left: 5px solid var(--fail);    }
+.card.error   { background: var(--error-dim);   border-color: var(--error);   border-left: 5px solid var(--error);   }
+.card.timeout { background: var(--timeout-dim); border-color: var(--timeout); border-left: 5px solid var(--timeout); }
+.card.skip    { background: var(--skip-dim);    border-color: var(--border);  border-left: 5px solid var(--skip); opacity: .72; }
+.card.running, .card.pulling, .card.starting, .card.http, .card.screenshot, .card.benchmark {
+  background: var(--accent-dim); border-color: var(--accent); border-left: 5px solid var(--accent);
+  box-shadow: 0 0 0 1px var(--accent-dim), 0 4px 18px -8px var(--accent);
+}
+/* Pass/fail cells get a slightly stronger glow so done states pop against in-flight. */
+.card.pass  { box-shadow: 0 4px 18px -10px var(--pass); }
+.card.fail  { box-shadow: 0 4px 18px -10px var(--fail); }
 .card-status { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
 .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: var(--muted); }
 .dot.pass { background: var(--pass); }
@@ -1201,7 +1213,10 @@ function cardHtml(app, s) {
   var scoreHtml = '';
   var SCORE_LABELS = { pass:'PASS', warn:'WARN', fail:'FAIL', error:'ERROR', timeout:'TIMEOUT', skip:'SKIP' };
   if (SCORE_LABELS[status]) scoreHtml = '<span class="card-score ' + status + '">' + SCORE_LABELS[status] + '</span>';
-  return '<div class="card-status">'
+  var ssFile = (node ? node + '_' : '') + app.id + '.png';
+  var thumb = '<img class="card-thumb" loading="lazy" src="/screenshots/' + ssFile + '" onerror="this.remove()">';
+  return thumb
+    + '<div class="card-status">'
     + '<div class="dot ' + status + '"></div>'
     + '<div class="card-name">' + (s ? s.name : app.name) + '</div>'
     + (node ? '<div class="card-node">' + node + '</div>' : '')
