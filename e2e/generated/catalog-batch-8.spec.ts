@@ -1,22 +1,12 @@
 /**
  * Auto-generated app catalog tests for server batch 8
- * Generated: 2026-06-05T21:00:37.815Z
+ * Generated: 2026-06-06T04:28:32.811Z
  * Apps: 17
  */
 
 import { expect, loginUser, test } from '../fixtures/fixtures';
 
 const APPS = [
-  {
-    id: 'postgres-mcp',
-    storeSlug: 'ci-apps',
-    name: 'Postgres MCP',
-    expectedPort: 80,
-    healthEndpoint: '/',
-    hasGui: false,
-    categories: ['mcp', 'data'],
-    priority: 'low',
-  },
   {
     id: 'postiz',
     storeSlug: 'ci-apps',
@@ -175,6 +165,16 @@ const APPS = [
     healthEndpoint: '/',
     hasGui: true,
     categories: ['utilities'],
+    priority: 'low',
+  },
+  {
+    id: 'sqlite-mcp',
+    storeSlug: 'ci-apps',
+    name: 'SQLite MCP',
+    expectedPort: 80,
+    healthEndpoint: '/',
+    hasGui: false,
+    categories: ['mcp', 'data'],
     priority: 'low',
   },
 ];

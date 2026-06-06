@@ -1100,16 +1100,6 @@
     "priority": "low"
   },
   {
-    "id": "memory-mcp",
-    "storeSlug": "ci-apps",
-    "name": "Memory MCP",
-    "expectedPort": 80,
-    "healthEndpoint": "/",
-    "hasGui": false,
-    "categories": ["mcp", "ai", "data"],
-    "priority": "low"
-  },
-  {
     "id": "memos",
     "storeSlug": "ci-apps",
     "name": "Memos",
