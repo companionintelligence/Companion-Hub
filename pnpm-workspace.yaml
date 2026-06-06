@@ -1,6 +1,30 @@
 packages:
   - 'packages/*'
 
+# Security overrides — pin vulnerable transitive deps to patched versions
+# (Dependabot alerts on CI-Hub@dev). Direct deps are also bumped in their package.json.
+overrides:
+  '@protobufjs/utf8': 1.1.1
+  axios: 1.16.0
+  brace-expansion: 5.0.6
+  dompurify: 3.4.0
+  drizzle-orm: 0.45.2
+  esbuild: 0.25.0
+  fast-uri: 3.1.2
+  file-type: 21.3.2
+  follow-redirects: 1.16.0
+  handlebars: 4.7.9
+  i18next-fs-backend: 2.6.4
+  i18next-http-backend: 3.0.5
+  postcss: 8.5.10
+  protobufjs: 7.5.8
+  qs: 6.15.2
+  react-router: 7.15.0
+  systeminformation: 5.31.6
+  turbo: 2.9.14
+  uuid: 11.1.1
+  ws: 8.20.1
+
 allowBuilds:
   '@nestjs/core': true
   '@scarf/scarf': true
