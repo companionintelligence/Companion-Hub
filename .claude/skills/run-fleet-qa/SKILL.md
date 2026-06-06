@@ -17,6 +17,7 @@ this skill dir (`.claude/skills/run-fleet-qa/`):
 | Phase | What | Helper |
 |-------|------|--------|
 | 0 | Distribute the updated Hub to every fleet computer | `distribute-hub.mjs` |
+| 0b | Provision the Docker Hub pull-through cache (mirror + authed upstream) | `provision-docker-cache.mjs` |
 | 1 | Boot the e2e web UI, run the catalog across the fleet | `fleet-qa-server.ts` (dashboard) + `fleet.json` |
 | 2 | Triage results → fan out diagnose+fix+PR subagents | `triage.mjs` + the Agent tool |
 
@@ -73,6 +74,37 @@ node .claude/skills/run-fleet-qa/distribute-hub.mjs --execute --tar-from core-1
 `--execute` runs `git checkout dev && git pull --ff-only` on the authed nodes (this
 re-attaches them from detached HEAD), then pipes `tar c … CI-Hub` from `core-1` into
 the no-auth nodes. `--only core-1,core-2` scopes it.
+
+## Phase 0b — Provision the Docker Hub pull-through cache
+
+Full runs used to score ~30 `error` verdicts from Docker Hub's **unauthenticated** pull-rate limit
+(all 10 nodes share one public IP → one anon bucket) — NOT app bugs. The fix is two-sided and is now
+**codified** so it survives node re-provisioning: every node's `/etc/docker/daemon.json` mirrors
+through the cache on **core-1** (`http://<core-1-ip>:5050` + `insecure-registries`), and the
+`registry:2` pull-through cache on core-1 authenticates **upstream** (`REGISTRY_PROXY_USERNAME/PASSWORD`)
+so cache-miss pulls use Hub's far higher authenticated limit.
+
+**Check first — read-only, asserts the whole fleet and exits non-zero if anything drifted:**
+
+```bash
+node .claude/skills/run-fleet-qa/provision-docker-cache.mjs
+#   ✓ core-1   mirror=set insecure=set | cache running=true authed=yes upstream=https://registry-1.docker.io
+#   ✓ core-2   mirror=set insecure=set
+#   …  10/10 fully wired, 0 mis-configured, 0 down.  ✓ cache is fully provisioned.
+```
+
+Re-provisioned a node (or CHECK flagged drift)? Re-wire it (needs Hub creds + sudo on the nodes):
+
+```bash
+# ▶ TRIGGER — mutates daemon.json + restarts docker on the nodes; recreates the authed cache on core-1
+REGISTRY_PROXY_USERNAME=drhegemon REGISTRY_PROXY_PASSWORD=… \
+  node .claude/skills/run-fleet-qa/provision-docker-cache.mjs --execute
+#   --only core-10,beta-1   scope to specific nodes ·   --no-cache   wire mirrors only, don't touch the cache
+```
+
+The cache recreate **preserves the existing ~49 GB data volume** (it inspects the running container to
+reuse its volume + port). The server's **preflight also asserts the mirror** per node (non-blocking) —
+a node pulling direct from Hub shows `⚠ docker registry-mirror NOT wired` in the run log.
 
 ## Phase 1 — Boot the e2e web UI and run the distributed tests
 
@@ -157,7 +189,15 @@ real screenshot), `gitea` multi-service composeUp (`http 200`), `blender-mcp` SK
 | `pass` | Ready (healthcheck or HTTP <500) **and** a screenshot was captured. |
 | `warn` | Ready but **no screenshot** (no chromium on that node — false-warn), **or** frontend serves while a backend service is down/restarting (`backendHealthy:false`, failing svc + log excerpt in `notes` — the real warn). |
 | `fail` | Never ready: never started, or exited / restart-looped before the ceiling. **The bug.** |
+| `timeout` | Never became ready within the readiness ceiling (no death signal) — usually a slow cold-pull/migration, occasionally a wedged node. Retried once; excluded from pass-rate (infra, not the app). |
+| `error` | Harness/infra failure — bad config, pull failure, registry rate-limit. Excluded from pass-rate. |
 | `skip` | Not a web app — `no_gui` (MCP/CLI), private `ghcr.io/companionintelligence/*`, GPU (`rocm`/`cuda`), VM (`dockurr/*`). Excluded from pass-rate. |
+
+**The run never hangs.** Every app is force-failed to `timeout` past the readiness ceiling, every
+docker op is SIGKILL-bounded, and a per-app watchdog (node side) plus a deadline watchdog +
+state-based completion (server side) guarantee a verdict for every app even if a node's daemon wedges
+or its SSH drops mid-app — the run completes the instant the queue is drained and nothing is in flight,
+instead of hanging at N/total with in-flight apps that never resolve.
 
 ## Direct invocation
 
@@ -166,11 +206,16 @@ APP_STORE_DIR=../CI-Marketplace/apps RESULTS_DIR=/tmp/qa SKIP_SCREENSHOT=1 \
   ./node_modules/.bin/tsx scripts/qa-stream.ts uptime-kuma gitea
 ```
 
-Env: `APP_STORE_DIR` · `RESULTS_DIR` · `SKIP_SCREENSHOT=1` · `QA_CHROMIUM_PATH` ·
-`QA_READY_TIMEOUT_MS` (default 300s single / 600s multi) · `QA_CONCURRENCY` (default
-2). stdout is NDJSON: `batch_start` → per-app `app_start`/`app_phase`/`app_result` →
-`batch_done`; the verdict is the `app_result` event's `result` (`score`,
-`backendHealthy`, `httpStatus`, `readyVia`, `notes`).
+Env (qa-stream, per node): `APP_STORE_DIR` · `RESULTS_DIR` · `SKIP_SCREENSHOT=1` · `QA_CHROMIUM_PATH` ·
+`QA_READY_TIMEOUT_MS` (readiness ceiling, default 300s single / 600s multi) · `QA_CONCURRENCY` (default
+2) · `QA_APP_WATCHDOG_MS` (hard per-app backstop; default derived from the ceiling — only fires on a
+wedged daemon). stdout is NDJSON: `batch_start` → per-app `app_start`/`app_phase`/`app_result` →
+`batch_done`; the verdict is the `app_result` event's `result` (`score`, `backendHealthy`,
+`httpStatus`, `readyVia`, `notes`; a watchdog/deadline force-fail carries `failKind:"watchdog"`).
+
+Env (dashboard server): `QA_APP_DEADLINE_MS` (server force-fails an in-flight app with no verdict by
+this, default 40 min — catches a fully-silent node) · `QA_RUN_MAX_MS` (absolute run backstop, default
+6 h) · `QA_CACHE_NODE`/`QA_CACHE_PORT` (which node/port hosts the registry mirror preflight asserts).
 
 ## Architecture coverage (arm / x64) — `audit-arch.py`
 
@@ -248,3 +293,5 @@ wired in yet.
 | `CI-Marketplace apps dir not found` | Clone CI-Marketplace beside CI-Hub or set `APP_STORE_DIR`. |
 | Healthy app scores `warn` | Expected without chromium — not a bug; `triage.mjs` filters it. Add `--screenshot`/`QA_CHROMIUM_PATH` locally for `pass`. |
 | App `fail` after a long `[http] Waiting…` | Cold image pull on a heavy app — raise `QA_READY_TIMEOUT_MS` or pre-pull (`scripts/prepull-images.ts`); stable once cached. |
+| Many `error` verdicts: "unauthenticated pull rate limit" | The Docker Hub cache isn't wired on some nodes — run `provision-docker-cache.mjs` (Phase 0b) to assert/fix the mirror + authed cache. |
+| Run stuck at N/total with apps "in flight" forever | Should no longer happen — the node + server watchdogs force-fail stuck apps to `timeout` and complete the run. If you see it, check the run log for `watchdog force-fail` lines; tune `QA_APP_DEADLINE_MS`. |

@@ -69,6 +69,17 @@ const BUILTIN_FLEET: FleetNode[] = [
 
 const FLEET: FleetNode[] = process.env.FLEET_CONFIG_JSON ? JSON.parse(process.env.FLEET_CONFIG_JSON) : BUILTIN_FLEET;
 
+// Docker Hub pull-through cache (see .claude/skills/run-fleet-qa/provision-docker-cache.mjs). Preflight
+// asserts each node's daemon.json registry-mirror points here — a missing mirror means that node pulls
+// direct from Hub and risks the unauthenticated rate-limit `error` verdicts. Non-blocking: surfaced as
+// a warning so a not-yet-provisioned node doesn't abort the whole run.
+const CACHE_NODE = process.env.QA_CACHE_NODE ?? 'core-1';
+const CACHE_PORT = process.env.QA_CACHE_PORT ?? '5050';
+const CACHE_MIRROR_HOSTPORT = (() => {
+  const c = (process.env.FLEET_CONFIG_JSON ? JSON.parse(process.env.FLEET_CONFIG_JSON) : BUILTIN_FLEET).find((n: FleetNode) => n.name === CACHE_NODE);
+  return c ? `${c.ip}:${CACHE_PORT}` : '';
+})();
+
 // ─── App Catalog ────────────────────────────────────────────────────────────
 
 interface AppSpec {
@@ -121,6 +132,7 @@ interface AppState {
   message: string;
   result: Record<string, unknown> | null;
   logs: string[];
+  dispatchTs: number | null; // when the work-stealing dispatcher wrote this app's id to a node (deadline clock)
   startTs: number | null;
   endTs: number | null;
 }
@@ -150,6 +162,7 @@ const appStates = new Map<string, AppState>(
       message: '',
       result: null,
       logs: [],
+      dispatchTs: null,
       startTs: null,
       endTs: null,
     },
@@ -347,6 +360,9 @@ async function preflightNode(node: FleetNode): Promise<boolean> {
     `(test -f ${STORE_ROOT}/apps/code-server/config.json || test -f ~/devel/CI-App-Store/apps/code-server/config.json || test -f /tmp/CI-Marketplace/apps/code-server/config.json)`,
     // Emit which store dir was found so the run command can use it
     `echo storeDir=$(test -d ${STORE_ROOT}/apps && echo ${STORE_ROOT} || test -d ~/devel/CI-App-Store/apps && echo ~/devel/CI-App-Store || echo /tmp/CI-Marketplace)`,
+    // Non-blocking: report this node's Docker registry mirror(s) so we can assert the pull-through
+    // cache is wired (||true keeps it from tripping `set -e` when no mirror is configured).
+    `echo "mirror=$(docker info 2>/dev/null | awk '/Registry Mirrors:/{f=1;next} f&&/^  /{print $1;next} {f=0}' | tr '\\n' ' ' || true)"`,
     'echo ok',
   ].join(' && ');
 
@@ -355,6 +371,11 @@ async function preflightNode(node: FleetNode): Promise<boolean> {
   // Parse storeDir from preflight output: "storeDir=~/devel/CI-App-Store" or similar
   const storeDirMatch = result.out.match(/storeDir=(\S+)/);
   ns.storeDir = storeDirMatch?.[1] ?? null;
+  // Assert the Docker Hub pull-through cache mirror is wired (NON-BLOCKING — a missing mirror only
+  // risks rate-limit `error`s, it doesn't break the node, so it must not fail preflight).
+  const mirrorMatch = result.out.match(/mirror=([^\n]*)/);
+  const mirrors = mirrorMatch?.[1]?.trim() ?? '';
+  const mirrorOk = !CACHE_MIRROR_HOSTPORT || mirrors.includes(CACHE_MIRROR_HOSTPORT);
   ns.status = ok ? 'idle' : 'offline';
   ns.error = ok ? null : summarizeError(result.err || result.out) || 'Preflight failed';
   ns.preflight = {
@@ -363,10 +384,18 @@ async function preflightNode(node: FleetNode): Promise<boolean> {
     error: summarizeError(result.err),
     checkedAt: Date.now(),
     storeDir: ns.storeDir,
+    mirrors,
+    mirrorOk,
   };
 
   if (ok) {
     logNode(node.name, `preflight OK (storeDir=${ns.storeDir ?? 'unknown'})`);
+    if (!mirrorOk) {
+      logNode(
+        node.name,
+        `⚠ docker registry-mirror NOT wired to ${CACHE_MIRROR_HOSTPORT} (pulls go direct to Hub → rate-limit risk). Fix: node .claude/skills/run-fleet-qa/provision-docker-cache.mjs --execute`,
+      );
+    }
   } else {
     logNode(node.name, `preflight FAILED: ${ns.error ?? 'unknown error'}`);
     if (result.out) logNode(node.name, `  stdout: ${summarizeError(result.out)}`);
@@ -457,24 +486,33 @@ async function runNodeTests(node: FleetNode) {
     });
 
     proc.on('exit', (code) => {
+      sshProcesses.delete(node.name);
+      resolve();
+      // finalizeRun killed us as part of completing the run — leave the node's terminal state alone.
+      if (runComplete) return;
       ns.status = code === 0 ? 'done' : 'error';
       if (code !== 0) ns.error = `SSH exited with code ${code}`;
       logNode(node.name, code === 0 ? 'completed successfully' : `failed (${ns.error})`);
       ns.currentApp = null;
       broadcast({ event: 'node_status', node: node.name, ...ns });
-      sshProcesses.delete(node.name);
+      // The node's qa-stream is gone — any app still assigned to it will never report. Force-fail
+      // them now (don't wait out the deadline) so dispatch/completion isn't blocked by a dead node.
+      failNodeInflight(node.name, `node SSH exited (code ${code}) with app still in flight`);
       broadcastFleetStatus();
-      resolve();
+      maybeCompleteRun();
     });
 
     proc.on('error', (err) => {
+      sshProcesses.delete(node.name);
+      resolve();
+      if (runComplete) return;
       ns.status = 'error';
       ns.error = err.message;
       logNode(node.name, `runner process error: ${err.message}`);
       broadcast({ event: 'node_status', node: node.name, ...ns });
-      sshProcesses.delete(node.name);
+      failNodeInflight(node.name, `node SSH errored (${err.message}) with app still in flight`);
       broadcastFleetStatus();
-      resolve();
+      maybeCompleteRun();
     });
   });
 }
@@ -510,6 +548,7 @@ function feedNode(node: FleetNode): boolean {
   if (s) {
     s.status = 'queued';
     s.node = node.name;
+    s.dispatchTs = Date.now(); // start the per-app deadline clock the moment work is assigned
   }
   stdin.write(`${app.id}\n`);
   return true;
@@ -542,6 +581,13 @@ function handleStreamEvent(node: FleetNode, raw: Record<string, unknown>) {
     broadcast({ event: 'app_phase', node: node.name, appId, phase: raw.phase, message: raw.message });
   } else if (event === 'app_result' && appId) {
     const res = raw.result as Record<string, unknown>;
+    // A result that arrives after the watchdog already force-failed this app is a duplicate — count
+    // it once. Ignore it AND don't feed the node (the force-fail already fed it), or we over-feed.
+    if (finalizedApps.has(appId)) {
+      logNode(node.name, `late app_result ${appId} (already force-failed) — ignored`);
+      return;
+    }
+    finalizedApps.add(appId);
     const s = appStates.get(appId);
     if (s) {
       s.status = (res?.score as AppStatus) ?? 'fail';
@@ -561,14 +607,151 @@ function handleStreamEvent(node: FleetNode, raw: Record<string, unknown>) {
     broadcast({ event: 'node_status', node: node.name, ...ns });
     if (res?.hasScreenshot) scpScreenshot(node, appId);
     broadcastFleetStatus();
+    // Run may now be done — the last verdict landing completes the run without waiting on SSH exit.
+    maybeCompleteRun();
   } else if (event === 'batch_done') {
     broadcast({ event: 'node_batch_done', node: node.name, ...raw });
   }
 }
 
+// ─── Per-app deadline watchdog + state-based completion ───────────────────────
+// The run used to end ONLY when every node's SSH process exited (Promise.all). A node whose
+// qa-stream wedged on a single app never exited, so the whole run hung at N/total with apps still
+// "in flight" that never resolved (had to be killed by hand). These guards make completion driven by
+// APP STATE: any in-flight app that outlives its deadline — or whose node's SSH dies mid-app — is
+// force-failed as `timeout`, and the run completes the instant the queue is drained and nothing is
+// in flight, regardless of whether a node's SSH ever exits.
+
+const IN_FLIGHT_STATUSES = new Set<AppStatus>(['queued', 'pulling', 'starting', 'http', 'screenshot', 'benchmark']);
+
+// Apps we've already produced a verdict for. A real app_result that lands AFTER a force-fail is
+// ignored (otherwise it double-counts ns.done and over-feeds the node).
+const finalizedApps = new Set<string>();
+
+// Hard ceiling for one app's start→verdict. Generous on purpose: the node self-reports a verdict
+// (pass/fail/its own readiness-timeout/its own per-app watchdog) well inside this, so the server
+// deadline only ever fires for a node that has gone fully silent (SSH dropped, daemon dead) and will
+// never report. The faster, common signal is the SSH-exit force-fail below; this is the backstop.
+const APP_DEADLINE_MS = Math.max(60_000, Number(process.env.QA_APP_DEADLINE_MS) || 40 * 60_000);
+const WATCHDOG_INTERVAL_MS = Math.max(5_000, Number(process.env.QA_WATCHDOG_INTERVAL_MS) || 15_000);
+// Absolute backstop for an entire run — force-completes no matter what.
+const RUN_MAX_MS = Math.max(60_000, Number(process.env.QA_RUN_MAX_MS) || 6 * 60 * 60_000);
+
+let watchdogTimer: ReturnType<typeof setInterval> | null = null;
+let runMaxTimer: ReturnType<typeof setTimeout> | null = null;
+let runComplete = false;
+
+function clearWatchdogs() {
+  if (watchdogTimer) {
+    clearInterval(watchdogTimer);
+    watchdogTimer = null;
+  }
+  if (runMaxTimer) {
+    clearTimeout(runMaxTimer);
+    runMaxTimer = null;
+  }
+}
+
+/**
+ * Force a verdict on an in-flight app that will never report on its own (deadline exceeded, or its
+ * node's SSH died mid-app). Synthesises a `timeout` result, advances the owning node's done count,
+ * frees the slot by feeding that node its next app (no-op if the node is dead), and re-checks run
+ * completion. Idempotent via finalizedApps — a later real result for the same app is ignored.
+ */
+function forceFailApp(appId: string, reason: string): void {
+  if (!runStartTs || runComplete || finalizedApps.has(appId)) return;
+  const s = appStates.get(appId);
+  if (!s || !IN_FLIGHT_STATUSES.has(s.status)) return;
+  finalizedApps.add(appId);
+  const result: Record<string, unknown> = { appId, score: 'timeout', failKind: 'watchdog', notes: reason, watchdog: true, ts: Date.now() };
+  s.status = 'timeout';
+  s.result = result;
+  s.endTs = Date.now();
+  s.message = reason;
+  const nodeName = s.node;
+  const ns = nodeName ? nodeStates.get(nodeName) : null;
+  if (ns) ns.done++;
+  recordResult(nodeName ?? 'unknown', appId, result);
+  logNode(nodeName ?? 'server', `watchdog force-fail ${appId}: ${reason}`);
+  broadcast({ event: 'app_result', node: nodeName, appId, result });
+  if (ns) broadcast({ event: 'node_status', node: ns.name, ...ns });
+  // Keep the freed slot working if the node is alive; a no-op (stdin destroyed) if it's dead.
+  const node = nodeName ? FLEET.find((n) => n.name === nodeName) : undefined;
+  if (node) feedNode(node);
+  broadcastFleetStatus();
+  maybeCompleteRun();
+}
+
+/** Force-fail every still-in-flight app owned by a node — used when its SSH process exits mid-run. */
+function failNodeInflight(nodeName: string, reason: string): void {
+  for (const s of appStates.values()) {
+    if (s.node === nodeName && IN_FLIGHT_STATUSES.has(s.status) && !finalizedApps.has(s.id)) {
+      forceFailApp(s.id, reason);
+    }
+  }
+}
+
+/** Periodic sweep: force-fail any in-flight app whose dispatch→now exceeds APP_DEADLINE_MS. */
+function sweepWatchdog(): void {
+  if (!runStartTs || runComplete) return;
+  const now = Date.now();
+  for (const s of appStates.values()) {
+    if (!IN_FLIGHT_STATUSES.has(s.status) || finalizedApps.has(s.id)) continue;
+    const since = s.startTs ?? s.dispatchTs;
+    if (since && now - since > APP_DEADLINE_MS) {
+      forceFailApp(s.id, `no verdict within ${Math.round(APP_DEADLINE_MS / 1000)}s — server watchdog force-failed (node silent/wedged)`);
+    }
+  }
+}
+
+/** Complete the run the instant the queue is drained and nothing is in flight (state-driven). */
+function maybeCompleteRun(): void {
+  if (!runStartTs || runComplete || pendingQueue.length > 0) return;
+  for (const s of appStates.values()) {
+    if (IN_FLIGHT_STATUSES.has(s.status)) return;
+  }
+  finalizeRun();
+}
+
+/** Single idempotent run-completion path (used by state-completion, Promise.all, and the run watchdog). */
+function finalizeRun(): void {
+  if (runComplete) return;
+  runComplete = true;
+  clearWatchdogs();
+  // Tear down any SSH process still attached — a wedged node's qa-stream may never exit on its own.
+  for (const [name, proc] of sshProcesses) {
+    try {
+      proc.kill('SIGTERM');
+    } catch {
+      /* ignore */
+    }
+    sshProcesses.delete(name);
+  }
+  const states = Array.from(appStates.values());
+  const durationMs = runStartTs ? Date.now() - runStartTs : 0;
+  const tally = (st: AppStatus) => states.filter((s) => s.status === st).length;
+  console.log(
+    `[fleet] run_complete total=${states.length} pass=${tally('pass')} warn=${tally('warn')} fail=${tally('fail')} timeout=${tally('timeout')} error=${tally('error')} skip=${tally('skip')} duration=${Math.round(durationMs / 1000)}s`,
+  );
+  broadcast({
+    event: 'run_complete',
+    total: states.length,
+    pass: tally('pass'),
+    warn: tally('warn'),
+    fail: tally('fail'),
+    error: tally('error'),
+    timeout: tally('timeout'),
+    skip: tally('skip'),
+    durationMs,
+  });
+  runStartTs = null;
+}
+
 // ─── Run Control ────────────────────────────────────────────────────────────
 
 function stopRun() {
+  clearWatchdogs();
+  runComplete = true; // suppress watchdog/state-completion after a manual stop (reset re-arms it)
   for (const [name, proc] of sshProcesses) {
     try {
       proc.kill('SIGTERM');
@@ -590,6 +773,8 @@ function stopRun() {
 function resetState() {
   stopRun();
   runStartTs = null;
+  runComplete = false; // re-arm watchdog + state-completion for the next run (stopRun set it true)
+  finalizedApps.clear();
   // Drop the consolidated view of the previous run; a new run opens a fresh ndjson file.
   currentResults.clear();
   runNdjsonPath = null;
@@ -598,6 +783,7 @@ function resetState() {
     s.node = null;
     s.result = null;
     s.logs = [];
+    s.dispatchTs = null;
     s.startTs = null;
     s.endTs = null;
     s.message = '';
@@ -644,30 +830,28 @@ async function startRun(mode: 'quick' | 'full', selectedNodes?: string[]) {
 
   pendingQueue = buildQueue(mode, nodes.length);
   console.log(`[fleet] dispatch=work-stealing queue=${pendingQueue.length} apps across ${nodes.length} node(s) feed-depth=${FEED_DEPTH}`);
-  const nodePromises: Promise<void>[] = [];
 
+  // Arm the deadline watchdog (force-fail silent in-flight apps) and the absolute run backstop.
+  clearWatchdogs();
+  watchdogTimer = setInterval(sweepWatchdog, WATCHDOG_INTERVAL_MS);
+  runMaxTimer = setTimeout(() => {
+    console.warn(`[fleet] run watchdog: hit QA_RUN_MAX_MS (${Math.round(RUN_MAX_MS / 1000)}s) — force-completing`);
+    for (const s of appStates.values()) {
+      if (IN_FLIGHT_STATUSES.has(s.status)) forceFailApp(s.id, `run exceeded ${Math.round(RUN_MAX_MS / 1000)}s — run watchdog force-failed`);
+    }
+    finalizeRun();
+  }, RUN_MAX_MS);
+
+  const nodePromises: Promise<void>[] = [];
   for (const node of nodes) {
     nodePromises.push(runNodeTests(node));
   }
 
+  // Completion is normally state-driven (the last verdict landing calls maybeCompleteRun). This is
+  // the belt-and-suspenders path: once every node's SSH has exited, finalize if not already done.
   Promise.all(nodePromises).then(() => {
-    const states = Array.from(appStates.values());
-    const durationMs = runStartTs ? Date.now() - runStartTs : 0;
-    console.log(
-      `[fleet] run_complete total=${states.length} pass=${states.filter((s) => s.status === 'pass').length} warn=${states.filter((s) => s.status === 'warn').length} fail=${states.filter((s) => s.status === 'fail').length} duration=${Math.round(durationMs / 1000)}s`,
-    );
-    broadcast({
-      event: 'run_complete',
-      total: states.length,
-      pass: states.filter((s) => s.status === 'pass').length,
-      warn: states.filter((s) => s.status === 'warn').length,
-      fail: states.filter((s) => s.status === 'fail').length,
-      error: states.filter((s) => s.status === 'error').length,
-      timeout: states.filter((s) => s.status === 'timeout').length,
-      skip: states.filter((s) => s.status === 'skip').length,
-      durationMs,
-    });
-    runStartTs = null;
+    maybeCompleteRun();
+    finalizeRun();
   });
 }
 
