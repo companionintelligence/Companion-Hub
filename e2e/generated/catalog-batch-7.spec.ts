@@ -1,22 +1,12 @@
 /**
  * Auto-generated app catalog tests for server batch 7
- * Generated: 2026-06-05T21:00:37.815Z
+ * Generated: 2026-06-06T04:28:32.811Z
  * Apps: 17
  */
 
 import { expect, loginUser, test } from '../fixtures/fixtures';
 
 const APPS = [
-  {
-    id: 'notediscovery',
-    storeSlug: 'ci-apps',
-    name: 'NoteDiscovery',
-    expectedPort: 9037,
-    healthEndpoint: '/',
-    hasGui: true,
-    categories: ['utilities'],
-    priority: 'low',
-  },
   {
     id: 'notion-mcp',
     storeSlug: 'ci-apps',
@@ -175,6 +165,16 @@ const APPS = [
     healthEndpoint: '/',
     hasGui: true,
     categories: ['social'],
+    priority: 'low',
+  },
+  {
+    id: 'postgres-mcp',
+    storeSlug: 'ci-apps',
+    name: 'Postgres MCP',
+    expectedPort: 80,
+    healthEndpoint: '/',
+    hasGui: false,
+    categories: ['mcp', 'data'],
     priority: 'low',
   },
 ];

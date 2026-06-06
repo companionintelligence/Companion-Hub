@@ -1,6 +1,6 @@
 /**
  * Auto-generated app catalog tests for server batch 6
- * Generated: 2026-06-05T21:00:37.815Z
+ * Generated: 2026-06-06T04:28:32.811Z
  * Apps: 17
  */
 
@@ -88,16 +88,6 @@ const APPS = [
     priority: 'low',
   },
   {
-    id: 'memory-mcp',
-    storeSlug: 'ci-apps',
-    name: 'Memory MCP',
-    expectedPort: 80,
-    healthEndpoint: '/',
-    hasGui: false,
-    categories: ['mcp', 'ai', 'data'],
-    priority: 'low',
-  },
-  {
     id: 'memos',
     storeSlug: 'ci-apps',
     name: 'Memos',
@@ -175,6 +165,16 @@ const APPS = [
     healthEndpoint: '/',
     hasGui: true,
     categories: ['social'],
+    priority: 'low',
+  },
+  {
+    id: 'notediscovery',
+    storeSlug: 'ci-apps',
+    name: 'NoteDiscovery',
+    expectedPort: 9037,
+    healthEndpoint: '/',
+    hasGui: true,
+    categories: ['utilities'],
     priority: 'low',
   },
 ];

@@ -1,22 +1,12 @@
 /**
  * Auto-generated app catalog tests for server batch 9
- * Generated: 2026-06-05T21:00:37.815Z
- * Apps: 14
+ * Generated: 2026-06-06T04:28:32.811Z
+ * Apps: 13
  */
 
 import { expect, loginUser, test } from '../fixtures/fixtures';
 
 const APPS = [
-  {
-    id: 'sqlite-mcp',
-    storeSlug: 'ci-apps',
-    name: 'SQLite MCP',
-    expectedPort: 80,
-    healthEndpoint: '/',
-    hasGui: false,
-    categories: ['mcp', 'data'],
-    priority: 'low',
-  },
   {
     id: 'stalwart-mail',
     storeSlug: 'ci-apps',
