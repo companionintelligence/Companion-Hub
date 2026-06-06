@@ -391,7 +391,21 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
         for (const v of main?.volumes ?? []) {
           if (!v.containerPath) continue;
           const scratch = join(RESULTS_DIR, 'scratch', appId, String(scratchDirs.length));
-          mkdirSync(scratch, { recursive: true });
+          // Seed the mount from the app's source data/ subtree (mirrors Hub copyDataDir + the
+          // composeUp path) so config FILE targets and seeded dirs (e.g. quarkdown's docs/main.qd)
+          // exist before boot — previously this path mounted an empty dir and seed-reliant apps failed.
+          const seed = seedSourceFor(appId, v.hostPath);
+          if (seed && statSync(seed).isFile()) {
+            mkdirSync(dirname(scratch), { recursive: true });
+            rmSync(scratch, { recursive: true, force: true });
+            cpSync(seed, scratch); // file:file bind
+          } else if (seed) {
+            mkdirSync(scratch, { recursive: true });
+            cpSync(seed, scratch, { recursive: true });
+          } else {
+            mkdirSync(scratch, { recursive: true });
+          }
+          if (statSync(scratch).isDirectory()) chmodSync(scratch, 0o777); // any runtime uid can write
           scratchDirs.push(scratch);
           runFlags += ` -v ${scratch}:${v.containerPath}`;
         }
