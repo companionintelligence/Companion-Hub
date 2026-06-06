@@ -33,23 +33,60 @@ cleanup() {
 }
 trap cleanup EXIT
 
+resolve_target_commit_from_git() {
+  local commit=""
+  commit="$(git rev-parse --verify "${TAG}^{commit}" 2>/dev/null || true)"
+  if [[ -n "$commit" ]]; then
+    echo "$commit"
+    return 0
+  fi
+  return 1
+}
+
+resolve_target_commit_from_release_api() {
+  if ! gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then
+    return 1
+  fi
+
+  local target_commitish=""
+  target_commitish="$(gh api "repos/${REPO}/releases/tags/${TAG}" --jq '.target_commitish' 2>/dev/null || true)"
+  if [[ -z "$target_commitish" || "$target_commitish" == "null" ]]; then
+    return 1
+  fi
+
+  local commit=""
+  commit="$(git rev-parse --verify "${target_commitish}^{commit}" 2>/dev/null || true)"
+  if [[ -n "$commit" ]]; then
+    echo "$commit"
+    return 0
+  fi
+
+  if [[ "$target_commitish" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "$target_commitish"
+    return 0
+  fi
+
+  return 1
+}
+
+TARGET_COMMIT=""
 for i in 1 2 3 4 5; do
-  if git fetch --force origin "refs/tags/${TAG}:refs/tags/${TAG}"; then
+  git fetch --force origin "refs/tags/${TAG}:refs/tags/${TAG}" >/dev/null 2>&1 || true
+  if TARGET_COMMIT="$(resolve_target_commit_from_git)"; then
     break
   fi
   if [[ $i -eq 5 ]]; then
-    echo "Failed to fetch tag ${TAG} from origin after 5 attempts" >&2
-    exit 1
+    TARGET_COMMIT="$(resolve_target_commit_from_release_api || true)"
+    if [[ -z "$TARGET_COMMIT" ]]; then
+      echo "Could not resolve target commit for $TAG after 5 fetch attempts and release API fallback" >&2
+      exit 1
+    fi
+    echo "Resolved $TAG via GitHub Releases API fallback: $TARGET_COMMIT" >&2
+    break
   fi
-  echo "Attempt $i/5: tag ${TAG} not yet visible via git protocol, retrying in 15s..." >&2
+  echo "Attempt $i/5: tag ${TAG} not yet resolvable via git, retrying in 15s..." >&2
   sleep 15
 done
-
-TARGET_COMMIT="$(git rev-parse --verify "${TAG}^{commit}")"
-if [[ -z "$TARGET_COMMIT" ]]; then
-  echo "Could not resolve target commit for $TAG" >&2
-  exit 1
-fi
 
 RELEASE_NAME="$(gh release view "$TAG" -R "$REPO" --json name --jq '.name')"
 gh release view "$TAG" -R "$REPO" --json body --jq '.body' > "$BODY_FILE"
