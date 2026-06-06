@@ -279,6 +279,7 @@ interface DockerService {
   internalPort?: number;
   user?: string; // run-as user (uid[:gid] or name) — honored by the real Hub builder (service.builder.ts setUser); mirrored here
   command?: string[] | string; // entrypoint override; carries DB migration/predeploy steps for some apps
+  entrypoint?: string[] | string; // ENTRYPOINT override (e.g. opencode-web's chown wrapper) — honored on both paths
   // Host-privilege fields — mirror the real Hub builder (service.builder.ts). Dropping them is a
   // spurious fail: steam-headless declares `privileged: true` and dies on `mount: /proc: permission
   // denied` without it; pi-hole/netdata/home-assistant/searxng/collabora etc. need caps/devices.
@@ -438,6 +439,19 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
           cmdSuffix = Array.isArray(main.command)
             ? ` ${main.command.map((c) => shQuote(subst(String(c)))).join(' ')}`
             : ` sh -c ${shQuote(subst(String(main.command)))}`;
+        }
+        // ENTRYPOINT override (e.g. opencode-web's chown wrapper). `docker run --entrypoint` takes ONE
+        // executable; remaining array elements become leading command args (before any `command`).
+        if (main?.entrypoint !== undefined) {
+          const ep = Array.isArray(main.entrypoint) ? main.entrypoint : [String(main.entrypoint)];
+          if (ep.length) {
+            runFlags += ` --entrypoint ${shQuote(subst(String(ep[0])))}`;
+            cmdSuffix =
+              ep
+                .slice(1)
+                .map((e) => ` ${shQuote(subst(String(e)))}`)
+                .join('') + cmdSuffix;
+          }
         }
       }
     } else if (existsSync(composeYmlPath)) {
@@ -1091,6 +1105,14 @@ function composeUp(
         for (const c of s.command) y += `      - ${yamlStr(subst(String(c)))}\n`;
       } else {
         y += `    command: ${yamlStr(subst(String(s.command)))}\n`;
+      }
+    }
+    if (s.entrypoint !== undefined) {
+      if (Array.isArray(s.entrypoint)) {
+        y += '    entrypoint:\n';
+        for (const e of s.entrypoint) y += `      - ${yamlStr(subst(String(e)))}\n`;
+      } else {
+        y += `    entrypoint: ${yamlStr(subst(String(s.entrypoint)))}\n`;
       }
     }
     const env = (s.environment ?? []).filter((e) => e.key);
