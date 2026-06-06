@@ -16,6 +16,14 @@
     "targets": "all",
     "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
     "resources": ["resources/*"],
+    "linux": {
+      "deb": {
+        "desktopTemplate": "deep-link.desktop"
+      },
+      "rpm": {
+        "desktopTemplate": "deep-link.desktop"
+      }
+    },
     "macOS": {
       "minimumSystemVersion": "11.0",
       "dmg": {
