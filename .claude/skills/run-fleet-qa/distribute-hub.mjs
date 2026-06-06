@@ -120,6 +120,10 @@ for (const { n, r } of pulled) {
 }
 
 // Phase 2: tar-sync the git-pull failures from an authed source node.
+// `unresolved` = nodes still on a stale Hub checkout at exit (failed git pull AND
+// no successful tar-sync). The exit code MUST reflect it so a caller doesn't run
+// fleet QA against a node that was never updated.
+let unresolved = failed.length;
 if (failed.length && tarFrom) {
   const src = FLEET.find((n) => n.name === tarFrom);
   if (!src) {
@@ -129,11 +133,16 @@ if (failed.length && tarFrom) {
   console.error(`\n  tar-syncing ${failed.length} node(s) from ${src.name}…`);
   for (const dst of failed) {
     const r = await tarSync(src.ip, dst.ip);
-    const msg = r.code === 0 ? `tar-synced from ${src.name}` : (r.err.split('\n').pop() || 'tar failed').slice(0, 80);
-    console.error(`  ${r.code === 0 ? '✓' : '✗'} ${dst.name.padEnd(11)} ${msg}`);
+    const ok = r.code === 0;
+    if (ok) unresolved--;
+    const msg = ok ? `tar-synced from ${src.name}` : (r.err.split('\n').pop() || `tar failed (exit ${r.code})`).slice(0, 80);
+    console.error(`  ${ok ? '✓' : '✗'} ${dst.name.padEnd(11)} ${msg}`);
   }
 } else if (failed.length) {
   console.error(`\n  ${failed.length} node(s) need a tar-sync (no git auth): ${failed.map((n) => n.name).join(', ')}`);
   console.error('  Re-run with --tar-from <authed-node>, e.g.  node distribute-hub.mjs --execute --tar-from core-1');
 }
-process.exit(failed.length && !tarFrom ? 1 : 0);
+if (unresolved > 0) {
+  console.error(`\n  ✗ ${unresolved} node(s) NOT updated — still on a stale Hub checkout. Fix before running fleet QA.`);
+}
+process.exit(unresolved > 0 ? 1 : 0);
