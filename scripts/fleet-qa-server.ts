@@ -832,25 +832,26 @@ function getDashboardHtml(): string {
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
-/* CI brand palette — dark (the Companion Intelligence appliance look): deep-navy canvas,
-   teal/cyan accents, Portal's semantic status colors. Mirrors CI-Hub + CI-Portal globals.css. */
+/* CI brand palette — "earth & green" dark appliance look, aligned to ci.computer + the
+   CI-Hub/CI-Portal globals.css design tokens: deep earth-forest canvas, emerald/mint-green
+   accents, Montserrat, Portal's semantic status colors warmed toward earth tones. */
 :root {
-  --bg: #041620;            /* CI deep navy */
-  --surface: #08212c;       /* CI surface */
-  --surface2: #0b2c39;      /* raised surface */
-  --border: #14424c;        /* teal-tinted border */
-  --border2: #1c5660;
-  --accent: #19c6c8;        /* CI accent (teal) */
-  --accent-bright: #82fcfc; /* CI bright cyan */
-  --accent-dim: #19c6c826;
-  --grad-a: #129fa4; --grad-b: #0b6e74;  /* CI primary-button gradient */
-  --pass: #20e887; --pass-dim: #20e8871f;
-  --warn: #ffb020; --warn-dim: #ffb0201f;
-  --fail: #ff5263; --fail-dim: #ff52631f;
-  --error: #ff8a3d; --error-dim: #ff8a3d1f;     /* infra/harness fault */
-  --timeout: #b98cff; --timeout-dim: #b98cff1f; /* never became ready */
-  --skip: #6f808a; --skip-dim: #6f808a1f;        /* non-web / not applicable */
-  --muted: #6f808a; --text: #eefcff; --text2: #7fa0a8;
+  --bg: #051710;            /* deep earth-forest (CI navy, green-shifted) */
+  --surface: #0a2118;       /* earthy surface */
+  --surface2: #0e2c21;      /* raised surface */
+  --border: #1e4a3a;        /* moss-green border */
+  --border2: #2a604c;
+  --accent: #2bd4a0;        /* CI emerald-mint (interactive) */
+  --accent-bright: #5fead0; /* CI bright mint (brand --ring / --chart-1) */
+  --accent-dim: #2bd4a026;
+  --grad-a: #22b87e; --grad-b: #0c6f56;  /* CI green → deep teal gradient */
+  --pass: #4ade80; --pass-dim: #4ade801f;        /* fresh grass green */
+  --warn: #e0a13a; --warn-dim: #e0a13a1f;        /* earth amber */
+  --fail: #ef5a63; --fail-dim: #ef5a631f;
+  --error: #ec7f3a; --error-dim: #ec7f3a1f;      /* earth orange — infra/harness fault */
+  --timeout: #b08cff; --timeout-dim: #b08cff1f;  /* never became ready */
+  --skip: #7e8a76; --skip-dim: #7e8a761f;         /* sage — non-web / not applicable */
+  --muted: #6f8076; --text: #eafef4; --text2: #8ba898;  /* sage-tinted text */
   --radius: 10px;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -858,8 +859,8 @@ body {
   background: var(--bg); color: var(--text);
   font: 13px/1.5 'Montserrat', system-ui, -apple-system, sans-serif; min-height: 100vh;
   background-image:
-    radial-gradient(900px 520px at 88% -12%, #0e3a3f66, transparent 70%),
-    radial-gradient(720px 420px at -6% -4%, #0b6e7433, transparent 70%);
+    radial-gradient(900px 520px at 88% -12%, #114a3366, transparent 70%),
+    radial-gradient(720px 420px at -6% -4%, #0b6e5a33, transparent 70%);
   background-attachment: fixed; -webkit-font-smoothing: antialiased;
 }
 
@@ -875,7 +876,7 @@ header {
   width: 28px; height: 28px; border-radius: 8px;
   background: linear-gradient(135deg, var(--grad-a), var(--grad-b));
   color: #eafdfd; font-weight: 700; font-size: 12px; letter-spacing: .5px;
-  box-shadow: 0 0 0 1px var(--border2), 0 6px 16px -6px #19c6c855;
+  box-shadow: 0 0 0 1px var(--border2), 0 6px 16px -6px #2bd4a055;
 }
 .logo .name { font-weight: 700; font-size: 15px; letter-spacing: -.2px; color: var(--text); }
 .logo .sub {
@@ -919,7 +920,7 @@ header {
   font-weight: 500; transition: all .15s;
 }
 .btn:hover { border-color: var(--accent); color: var(--accent); }
-.btn.primary { background: linear-gradient(135deg, var(--grad-a), var(--grad-b)); border-color: var(--grad-b); color: #eafdfd; box-shadow: 0 2px 12px -4px #19c6c877; }
+.btn.primary { background: linear-gradient(135deg, var(--grad-a), var(--grad-b)); border-color: var(--grad-b); color: #eafdfd; box-shadow: 0 2px 12px -4px #22b87e77; }
 .btn.primary:hover { filter: brightness(1.08); color: #eafdfd; }
 .btn.danger { border-color: var(--fail); color: var(--fail); }
 .btn.active { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
