@@ -538,6 +538,10 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
     // Generous ceiling: heavy apps run DB migrations on first boot that take minutes.
     // Override with QA_READY_TIMEOUT_MS (authoritative — bypasses the scaling below).
     phase(appId, 'http', `Waiting for ${appId} to become ready on :${hostPort}`);
+    // Probe + screenshot the app's real UI path (config.url_suffix, e.g. plex's /web/index.html).
+    // Apps like plex serve their API/XML at `/`, so a bare `/` probe screenshots the wrong page and
+    // makes a working app look broken. Falls back to `/` when no suffix is declared.
+    const uiPath = config.url_suffix && String(config.url_suffix).startsWith('/') ? String(config.url_suffix) : '/';
     // Concurrency slows first-boot (shared CPU/disk while peers also pull+migrate), so scale the
     // ceiling up modestly when QA_CONCURRENCY>1: +50% per extra slot, capped at 2x. This only
     // affects the success ceiling — the fail-fast exit/restart-loop signals below are unchanged,
@@ -578,7 +582,7 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
       if (ready) break;
       // (2) HTTP probe
       try {
-        const res = await fetch(`http://localhost:${hostPort}/`, { signal: AbortSignal.timeout(4000) });
+        const res = await fetch(`http://localhost:${hostPort}${uiPath}`, { signal: AbortSignal.timeout(4000) });
         httpStatus = res.status;
         if (httpStatus < 500) {
           ready = true;
@@ -635,7 +639,7 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
             `--screenshot=${screenshotPath}`,
             '--window-size=1280,800',
             '--virtual-time-budget=4000',
-            `http://localhost:${hostPort}/`,
+            `http://localhost:${hostPort}${uiPath}`,
           ],
           { timeout: 30_000, killSignal: 'SIGKILL', stdio: 'pipe' },
         );
