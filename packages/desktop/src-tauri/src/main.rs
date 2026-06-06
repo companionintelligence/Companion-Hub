@@ -111,13 +111,13 @@ fn consume_pending_pairing_code(state: tauri::State<'_, PendingPairingCode>) -> 
 pub fn run() {
     let builder = tauri::Builder::default()
         .manage(PendingPairingCode(Mutex::new(None)))
-        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             focus_main_window(app);
             for arg in &args {
                 handle_deep_link_url(app, arg);
             }
         }))
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_notification::init())
@@ -351,6 +351,20 @@ pub fn run() {
             }
 
             let app_handle = app.handle().clone();
+
+            // Linux .desktop handlers pass the URL as a CLI arg (%u). Parse cold-start
+            // argv before the UI mounts so pairing codes are not lost.
+            for arg in std::env::args().skip(1) {
+                handle_deep_link_url(&app_handle, &arg);
+            }
+
+            #[cfg(target_os = "linux")]
+            {
+                if let Err(err) = app.deep_link().register("cihub") {
+                    log::warn!("Failed to register cihub:// deep-link handler: {err}");
+                }
+            }
+
             let app_handle_for_listener = app_handle.clone();
             app.listen("deep-link://new-url", move |event| {
                 handle_deep_link_payload(&app_handle_for_listener, event.payload());
