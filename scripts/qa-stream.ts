@@ -429,7 +429,9 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
         for (const so of main?.securityOpt ?? []) runFlags += ` --security-opt ${shQuote(String(so))}`;
         for (const [k, val] of Object.entries(main?.sysctls ?? {})) runFlags += ` --sysctl ${shQuote(`${k}=${val}`)}`;
         // dns / extra_hosts — mirror the Hub builder. vui needs a fixed resolver; some apps need host.docker.internal.
-        for (const d of Array.isArray(main?.dns) ? main!.dns : main?.dns ? [String(main.dns)] : []) runFlags += ` --dns ${shQuote(String(d))}`;
+        const dnsRaw = main?.dns;
+        const dnsList = Array.isArray(dnsRaw) ? dnsRaw : dnsRaw ? [String(dnsRaw)] : [];
+        for (const d of dnsList) runFlags += ` --dns ${shQuote(String(d))}`;
         for (const eh of main?.extraHosts ?? []) runFlags += ` --add-host ${shQuote(subst(String(eh)))}`;
         // Manifest `command` override — the single-service path used to run the image's DEFAULT cmd,
         // so apps that declare `command` (e.g. quarkdown's preview server) ran the wrong process and
