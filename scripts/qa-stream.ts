@@ -180,11 +180,78 @@ function shQuote(s: string): string {
 function execQuiet(cmd: string, timeoutMs = 120_000): { ok: boolean; out: string; err: string; ms: number } {
   const t = Date.now();
   try {
-    const out = execSync(cmd, { encoding: 'utf-8', stdio: 'pipe', timeout: timeoutMs }).trim();
+    // killSignal SIGKILL (not the default SIGTERM): a `docker` CLI blocked on a wedged daemon
+    // socket ignores SIGTERM, which would let the call hang past `timeoutMs` and freeze the whole
+    // node's pool. SIGKILL force-reaps it so the timeout is a real wall.
+    const out = execSync(cmd, { encoding: 'utf-8', stdio: 'pipe', timeout: timeoutMs, killSignal: 'SIGKILL' }).trim();
     return { ok: true, out, err: '', ms: Date.now() - t };
   } catch (e: unknown) {
     const err = e instanceof Error ? e.message : String(e);
     return { ok: false, out: '', err, ms: Date.now() - t };
+  }
+}
+
+/**
+ * Async, non-blocking variant of execQuiet — and the reason the per-app watchdog can actually fire.
+ * execSync (execQuiet) blocks the single Node thread for the whole call, so a JS timer set in qaApp
+ * can't preempt a stalled docker op. Every post-pull docker op inside attemptApp (readiness inspect,
+ * backend health, stats, teardown) runs through this instead, keeping the event loop free so the
+ * watchdog timer and the readiness deadline check stay live. SIGKILL on timeout (see execQuiet).
+ */
+function execAsync(cmd: string, timeoutMs = 120_000): Promise<{ ok: boolean; out: string; err: string; ms: number }> {
+  const t = Date.now();
+  return new Promise((resolve) => {
+    exec(cmd, { encoding: 'utf-8', timeout: timeoutMs, killSignal: 'SIGKILL', maxBuffer: 16 * 1024 * 1024 }, (e, stdout, stderr) => {
+      const out = (stdout ?? '').toString().trim();
+      if (e) resolve({ ok: false, out, err: `${(stderr ?? '').toString()}${e.message ?? ''}`, ms: Date.now() - t });
+      else resolve({ ok: true, out, err: '', ms: Date.now() - t });
+    });
+  });
+}
+
+// Teardowns the watchdog kicks off in the background (it must NOT block dispatch). Tracked so the
+// process can give them a bounded grace to finish before it force-exits — otherwise process.exit(0)
+// races the `docker rm -f` and leaks the container.
+const pendingTeardowns = new Set<Promise<void>>();
+function trackTeardown(p: Promise<void>): void {
+  const tracked = p.catch(() => {
+    /* best-effort */
+  });
+  pendingTeardowns.add(tracked);
+  void tracked.finally(() => pendingTeardowns.delete(tracked));
+}
+/** Give in-flight background teardowns up to graceMs to finish, then return regardless (never hang). */
+async function drainTeardowns(graceMs: number): Promise<void> {
+  if (!pendingTeardowns.size) return;
+  await Promise.race([Promise.allSettled([...pendingTeardowns]), new Promise((r) => setTimeout(r, graceMs))]);
+}
+
+/**
+ * Tear an app's containers down without ever blocking — called from attemptApp's `finally` AND from
+ * the per-app watchdog (which only knows the appId/containerName, not the live compose handles).
+ * Best-effort and SIGKILL-bounded: a wedged daemon can't stall it. Idempotent — `docker rm -f` and
+ * `compose down` on a nonexistent container/project are fast no-ops — so it's safe to call from both
+ * paths (and twice for one app: watchdog + the abandoned attempt's finally).
+ */
+async function forceTeardown(o: {
+  appId: string;
+  containerName: string;
+  composeProject?: string;
+  composeYml?: string;
+  scratchDirs?: string[];
+}): Promise<void> {
+  const project = (o.composeProject || `qa-${o.appId}`).toLowerCase().replace(/[^a-z0-9-]/g, '-');
+  const ymlRef = o.composeYml ? `-f ${o.composeYml}` : '';
+  // Compose teardown (operates on the project by name when we have no yml — compose v2 matches the
+  // project label), then a single-container force-remove. One of the two is a no-op per app shape.
+  await execAsync(`docker compose -p ${project} ${ymlRef} down -v --remove-orphans 2>/dev/null`, 150_000);
+  await execAsync(`docker rm -f ${o.containerName} 2>/dev/null`, 30_000);
+  for (const d of o.scratchDirs ?? []) {
+    try {
+      wipeScratchTree(d);
+    } catch {
+      /* best-effort — a wipe failure must never block dispatch */
+    }
   }
 }
 
@@ -470,7 +537,9 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
     while (!ready && Date.now() - readyStart < maxWaitMs) {
       await new Promise((r) => setTimeout(r, 3000));
       // (3) + (1): inspect the main container — fail fast if dead/looping, succeed if healthcheck passes.
-      const ins = execQuiet(
+      // execAsync (not execQuiet) so a stalled inspect on a wedged daemon can't block the loop past
+      // its own deadline check — the readiness ceiling must stay a hard wall.
+      const ins = await execAsync(
         `docker inspect ${statsName} --format '{{.State.Status}}|{{.RestartCount}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}'`,
         8_000,
       );
@@ -509,7 +578,7 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
     result.readyVia = readyVia;
 
     if (!ready) {
-      const bh = captureBackendHealth({ composeProject, composeYml, containerName });
+      const bh = await captureBackendHealth({ composeProject, composeYml, containerName });
       result.backendErrors = bh.errors;
       const waited = Math.round((Date.now() - readyStart) / 1000);
       // Container exited / restart-looped after a clean start = a real app FAIL; never becoming
@@ -525,7 +594,7 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
 
     // Backend health: the frontend served, but a backend service may be crashed/restarting
     // (the "page loads, login broken" case). Capture it so it isn't a false pass.
-    const backend = captureBackendHealth({ composeProject, composeYml, containerName });
+    const backend = await captureBackendHealth({ composeProject, composeYml, containerName });
     result.backendHealthy = backend.healthy;
     if (!backend.healthy) {
       result.backendDown = backend.down;
@@ -552,7 +621,7 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
             '--virtual-time-budget=4000',
             `http://localhost:${hostPort}/`,
           ],
-          { timeout: 30_000, stdio: 'pipe' },
+          { timeout: 30_000, killSignal: 'SIGKILL', stdio: 'pipe' },
         );
         result.hasScreenshot = ss.status === 0 && existsSync(screenshotPath);
       } else {
@@ -570,7 +639,7 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
     let samples = 0;
 
     for (let i = 0; i < 3; i++) {
-      const s = execQuiet(`docker stats ${statsName} --no-stream --format "{{.MemUsage}}|||{{.CPUPerc}}"`, 10_000);
+      const s = await execAsync(`docker stats ${statsName} --no-stream --format "{{.MemUsage}}|||{{.CPUPerc}}"`, 10_000);
       if (s.ok) {
         const [memStr, cpuStr] = s.out.split('|||');
         const memM = memStr?.match(/(\d+(?:\.\d+)?)\s*(MiB|GiB|MB|GB)/i);
@@ -605,14 +674,9 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
     result.failKind = 'exception';
     result.notes = err instanceof Error ? err.message.slice(0, 300) : String(err).slice(0, 300);
   } finally {
-    if (composeProject && composeYml) {
-      execQuiet(`docker compose -p ${composeProject} -f ${composeYml} down -v --remove-orphans 2>/dev/null`, 180_000);
-    } else {
-      execQuiet(`docker stop ${containerName} 2>/dev/null; docker rm ${containerName} 2>/dev/null`);
-    }
-    for (const d of scratchDirs) {
-      wipeScratchTree(d);
-    }
+    // Non-blocking, SIGKILL-bounded teardown (see forceTeardown) — a wedged daemon here used to
+    // hang the app's promise forever, which wedged the node's pool and the whole fleet run.
+    await forceTeardown({ appId, containerName, composeProject, composeYml, scratchDirs });
   }
 
   return result;
@@ -630,7 +694,8 @@ function isRetryableTransient(result: Record<string, unknown>): boolean {
   return result.failKind === 'pull' || result.failKind === 'timeout';
 }
 
-async function qaApp(appId: string): Promise<void> {
+/** attemptApp + the single transient-failure retry, split out so qaApp can race it against the watchdog. */
+async function attemptWithRetry(appId: string): Promise<Record<string, unknown>> {
   let result = await attemptApp(appId);
   if (isRetryableTransient(result)) {
     const firstScore = String(result.score);
@@ -643,6 +708,69 @@ async function qaApp(appId: string): Promise<void> {
     result = retry;
   } else {
     result.attempts = 1;
+  }
+  return result;
+}
+
+/**
+ * Absolute per-app watchdog budget (ms) — the hard backstop that guarantees one app can never wedge
+ * the node's worker pool (and therefore the whole fleet run, which only ends when each node's SSH
+ * process exits). The readiness ceiling already force-fails slow/dead apps and every docker op is now
+ * SIGKILL-bounded + non-blocking, so this fires only when a truly wedged daemon stalls an await. Budget
+ * = cold-pull (~15m) + the readiness ceiling, doubled for the one transient retry, + teardown margin.
+ * Override with QA_APP_WATCHDOG_MS.
+ */
+function appWatchdogMs(appId: string): number {
+  const override = Number(process.env.QA_APP_WATCHDOG_MS);
+  if (override > 0) return Math.max(10_000, override);
+  const multi = slotWeightFor(appId) > 1;
+  const readyScale = QA_CONCURRENCY > 1 ? Math.min(2, 1 + (QA_CONCURRENCY - 1) * 0.5) : 1;
+  const readyCeil = Number(process.env.QA_READY_TIMEOUT_MS) || Math.round((multi ? 600_000 : 300_000) * readyScale);
+  return (900_000 + readyCeil) * 2 + 120_000;
+}
+
+/**
+ * Per-app entry point used by the worker pool. Races attemptApp(+retry) against a hard watchdog timer
+ * so a wedged app force-fails as `timeout` instead of hanging the pool. Emits EXACTLY one app_result
+ * (the pool/server count `done` off it) — attemptApp never emits its own, so an abandoned (watchdog-
+ * lost) attempt can't double-report. Real crashes (`fail`), missing images (`skip`), and structural
+ * harness errors are returned by attemptApp and pass straight through (only pull/timeout retry once).
+ */
+async function qaApp(appId: string): Promise<void> {
+  const containerName = `qa-stream-${appId}`;
+  const budgetMs = appWatchdogMs(appId);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const watchdog = new Promise<Record<string, unknown>>((resolve) => {
+    timer = setTimeout(() => {
+      // The attempt is wedged (a stalled daemon held an await past every inner timeout). Kick off a
+      // background teardown (tracked so the final drain can let it finish) and resolve a timeout
+      // verdict so the slot frees and dispatch continues — we do NOT await the teardown here.
+      trackTeardown(forceTeardown({ appId, containerName }));
+      resolve({
+        appId,
+        score: 'timeout' as Score,
+        failKind: 'watchdog',
+        notes: `per-app watchdog fired after ${Math.round(budgetMs / 1000)}s — attempt did not settle (wedged docker daemon); force-failed so dispatch continues`,
+        ts: Date.now(),
+        watchdog: true,
+        attempts: 1,
+      });
+    }, budgetMs);
+  });
+  let result: Record<string, unknown>;
+  try {
+    result = await Promise.race([attemptWithRetry(appId), watchdog]);
+  } catch (err) {
+    // attemptApp catches its own exceptions, but guard the pool against an unexpected throw.
+    result = {
+      appId,
+      score: 'error' as Score,
+      failKind: 'exception',
+      notes: err instanceof Error ? err.message.slice(0, 300) : String(err).slice(0, 300),
+      ts: Date.now(),
+    };
+  } finally {
+    if (timer) clearTimeout(timer);
   }
   emitResult(appId, result);
 }
@@ -986,14 +1114,14 @@ function composeUp(
  * "page loads but login is broken" failure. Returns down services + a scan of their error
  * logs. Cheap when healthy (no log fetch).
  */
-function captureBackendHealth(o: { composeProject: string; composeYml: string; containerName: string }): {
+async function captureBackendHealth(o: { composeProject: string; composeYml: string; containerName: string }): Promise<{
   healthy: boolean;
   down: string[];
   errors: string;
-} {
+}> {
   const ERR = `grep -iE 'error|fatal|fail|refused|denied|panic|cannot|unable|exception|no such host' | tail -8`;
   if (o.composeProject && o.composeYml) {
-    const ps = execQuiet(`docker compose -p ${o.composeProject} -f ${o.composeYml} ps -a --format '{{.Service}}|{{.State}}'`, 20_000);
+    const ps = await execAsync(`docker compose -p ${o.composeProject} -f ${o.composeYml} ps -a --format '{{.Service}}|{{.State}}'`, 20_000);
     const down: string[] = [];
     for (const line of ps.out.split('\n')) {
       const [svc, state] = line.split('|');
@@ -1001,18 +1129,18 @@ function captureBackendHealth(o: { composeProject: string; composeYml: string; c
     }
     let errors = '';
     if (down.length) {
-      const logs = execQuiet(`docker compose -p ${o.composeProject} -f ${o.composeYml} logs --tail 25 2>&1 | ${ERR}`, 25_000);
+      const logs = await execAsync(`docker compose -p ${o.composeProject} -f ${o.composeYml} logs --tail 25 2>&1 | ${ERR}`, 25_000);
       errors = logs.out.slice(-700);
     }
     return { healthy: down.length === 0, down, errors };
   }
-  const st = execQuiet(`docker inspect ${o.containerName} --format '{{.State.Status}}|{{.RestartCount}}'`);
+  const st = await execAsync(`docker inspect ${o.containerName} --format '{{.State.Status}}|{{.RestartCount}}'`);
   const [status, restarts] = (st.out || '|').split('|');
   const restartCount = Number(restarts || 0);
   const healthy = status === 'running' && restartCount < 3;
   let errors = '';
   if (!healthy) {
-    const logs = execQuiet(`docker logs --tail 25 ${o.containerName} 2>&1 | ${ERR}`, 20_000);
+    const logs = await execAsync(`docker logs --tail 25 ${o.containerName} 2>&1 | ${ERR}`, 20_000);
     errors = logs.out.slice(-700);
   }
   return { healthy, down: healthy ? [] : [`main(${status},restarts=${restartCount})`], errors };
@@ -1164,6 +1292,15 @@ void (async () => {
   writeBatchSummary(batchStart);
 
   emit({ event: 'batch_done', total: countResults(), ts: Date.now() });
+  // Let any background watchdog teardowns finish (bounded grace) so we don't leak their containers.
+  await drainTeardowns(15_000);
+  // runWithConcurrency has awaited every TRACKED qaApp, so in the normal case the event loop now
+  // drains and the process exits on its own — flushing stdout (important: the SSH pipe may have
+  // buffered the final NDJSON results). The ONLY thing that can pin the loop open is a watchdog-
+  // abandoned attemptApp lingering as a dangling coroutine (its readiness-loop setTimeout). Arm an
+  // UNREF'd fallback: it never keeps the process alive itself, but if something else is pinning the
+  // loop it fires shortly after (stdout long since flushed) and force-exits — the node never hangs.
+  setTimeout(() => process.exit(0), 2000).unref();
 })().catch((err) => {
   process.stderr.write(`qa-stream fatal: ${err?.stack || err}\n`);
   process.exit(1);
