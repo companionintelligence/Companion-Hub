@@ -287,6 +287,8 @@ interface DockerService {
   devices?: string[];
   securityOpt?: string[];
   sysctls?: Record<string, number | string>;
+  dns?: string | string[];
+  extraHosts?: string[];
   volumes?: { hostPath?: string; containerPath?: string }[];
   environment?: { key?: string; value?: string }[];
   dependsOn?: unknown; // map {svc:{condition}} (Hub) or string[] — handled in composeUp
@@ -331,6 +333,7 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
   const containerName = `qa-stream-${appId}`;
   const scratchDirs: string[] = [];
   let runFlags = '';
+  let cmdSuffix = ''; // single-service manifest `command`, appended after the image in `docker run`
   let services: DockerService[] = [];
   let isMulti = false;
   let statsName = containerName; // container to `docker stats` (overridden for compose path)
@@ -410,6 +413,18 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
         for (const d of main?.devices ?? []) runFlags += ` --device ${shQuote(subst(String(d)))}`;
         for (const so of main?.securityOpt ?? []) runFlags += ` --security-opt ${shQuote(String(so))}`;
         for (const [k, val] of Object.entries(main?.sysctls ?? {})) runFlags += ` --sysctl ${shQuote(`${k}=${val}`)}`;
+        // dns / extra_hosts — mirror the Hub builder. vui needs a fixed resolver; some apps need host.docker.internal.
+        for (const d of Array.isArray(main?.dns) ? main!.dns : main?.dns ? [String(main.dns)] : []) runFlags += ` --dns ${shQuote(String(d))}`;
+        for (const eh of main?.extraHosts ?? []) runFlags += ` --add-host ${shQuote(subst(String(eh)))}`;
+        // Manifest `command` override — the single-service path used to run the image's DEFAULT cmd,
+        // so apps that declare `command` (e.g. quarkdown's preview server) ran the wrong process and
+        // false-failed. docker run takes command+args AFTER the image: array = exec form (args as-is);
+        // a plain string is a shell command (match compose's `sh -c`).
+        if (main?.command !== undefined) {
+          cmdSuffix = Array.isArray(main.command)
+            ? ` ${main.command.map((c) => shQuote(subst(String(c)))).join(' ')}`
+            : ` sh -c ${shQuote(subst(String(main.command)))}`;
+        }
       }
     } else if (existsSync(composeYmlPath)) {
       const yml = readFileSync(composeYmlPath, 'utf-8');
@@ -514,7 +529,7 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
       const capFlags = (QA_MEM_LIMIT ? ` --memory ${QA_MEM_LIMIT}` : '') + (QA_CPU_LIMIT ? ` --cpus ${QA_CPU_LIMIT}` : '');
       // Bind a Docker-assigned host port (host side :0) so we never collide with the
       // Hub/Traefik (commonly on :80) or another app under test on the same node.
-      const run = execQuiet(`docker run -d --name ${containerName} -p 0:${result.port}${capFlags}${runFlags} ${result.image}`, 60_000);
+      const run = execQuiet(`docker run -d --name ${containerName} -p 0:${result.port}${capFlags}${runFlags} ${result.image}${cmdSuffix}`, 60_000);
       if (!run.ok) {
         result.score = 'error';
         result.failKind = 'start';
