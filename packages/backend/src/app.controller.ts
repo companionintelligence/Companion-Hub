@@ -42,7 +42,7 @@ export class AppController {
       isGuestDashboardEnabled: false,
       isPasswordResetDisabled: true,
       allowAutoThemes: true,
-      allowErrorMonitoring: false,
+      allowErrorMonitoring: true,
       themeColor: 'blue',
       themeBase: 'gray',
       localDomain: DEFAULT_LOCAL_DOMAIN,

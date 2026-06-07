@@ -12,6 +12,7 @@ import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import type { ModuleRef } from '@nestjs/core';
 import { parseComposeJson } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
+import { ErrorReportingService, type AppFailurePhase } from '@/core/error-reporting/error-reporting.service';
 import { buildPublicWebIdentity, resolvePublicDomainRoot } from '@ci-hub/common/types';
 import Dockerode from 'dockerode';
 import { ZodError } from 'zod';
@@ -114,14 +115,56 @@ export class AppLifecycleCommand {
     await appFilesManager.setAppDataDirPermissions(appUrn);
   }
 
-  protected handleAppError = async (err: unknown, _appId: string, _event: string): Promise<{ success: false; message: string }> => {
+  protected handleAppError = async (err: unknown, appId: string, event: string): Promise<{ success: false; message: string }> => {
     if (err instanceof Error) {
       const translatedMessage = this.translateKnownInstallError(err.message);
+      this.reportCommandFailure(appId, event, translatedMessage);
       return { success: false, message: translatedMessage };
     }
 
-    return { success: false, message: `An error occurred: ${String(err)}` };
+    const message = `An error occurred: ${String(err)}`;
+    this.reportCommandFailure(appId, event, message);
+    return { success: false, message };
   };
+
+  private reportCommandFailure(appId: string, event: string, message: string): void {
+    const errorReportingService = this.moduleRef.get(ErrorReportingService, { strict: false });
+    const phase = this.mapEventToFailurePhase(event);
+    if (!phase) {
+      return;
+    }
+
+    errorReportingService?.reportAppFailure({
+      appUrn: appId,
+      phase,
+      message,
+    });
+  }
+
+  private mapEventToFailurePhase(event: string): AppFailurePhase | null {
+    switch (event) {
+      case 'install':
+        return 'install';
+      case 'start':
+        return 'start';
+      case 'stop':
+        return 'stop';
+      case 'restart':
+        return 'restart';
+      case 'uninstall':
+        return 'uninstall';
+      case 'reset':
+        return 'reset';
+      case 'backup':
+        return 'backup';
+      case 'restore':
+        return 'restore';
+      case 'update_error':
+        return 'update';
+      default:
+        return null;
+    }
+  }
 
   private translateKnownInstallError(message: string): string {
     const normalizedMessage = message.toLowerCase();

@@ -17,6 +17,7 @@ import { mergeArchitectureOverrides } from '@/common/helpers/compose-helpers';
 import { AppLifecycleCommand, ROCM_KFD_MISSING_MESSAGE } from './command';
 import { parseComposeJson } from '@ci-hub/common/schemas';
 import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
+import { ErrorReportingService } from '@/core/error-reporting/error-reporting.service';
 import fs from 'node:fs';
 import path from 'node:path';
 import * as yaml from 'yaml';
@@ -411,6 +412,14 @@ export class InstallAppCommand extends AppLifecycleCommand {
           if (diagResults.unhealthy.length > 0) {
             const errorSummary = diagResults.unhealthy.map((c) => `${c.name} (${c.state}): ${c.logs}`).join('\n');
             logger.warn(`[AppDiag] App ${appUrn} has unhealthy containers:\n${errorSummary}`);
+
+            const errorReportingService = this.moduleRef.get(ErrorReportingService, { strict: false });
+            errorReportingService?.reportAppFailure({
+              appUrn,
+              phase: 'post_start',
+              message: errorSummary,
+              containers: diagResults.unhealthy,
+            });
           } else {
             logger.info(`[AppDiag] All containers healthy for ${appUrn}`);
           }

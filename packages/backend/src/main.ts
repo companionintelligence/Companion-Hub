@@ -1,4 +1,7 @@
+import './instrument';
+
 import { type INestApplication, Logger, ValidationPipe } from '@nestjs/common';
+import * as Sentry from '@sentry/nestjs';
 import { NestFactory } from '@nestjs/core';
 import { SwaggerModule } from '@nestjs/swagger';
 import cookieParser from 'cookie-parser';
@@ -18,10 +21,12 @@ process.on('unhandledRejection', (reason: unknown) => {
   processLogger.error(
     `Unhandled promise rejection (process kept alive): ${reason instanceof Error ? (reason.stack ?? reason.message) : String(reason)}`,
   );
+  Sentry.captureException(reason);
 });
 
 process.on('uncaughtException', (error: Error) => {
   processLogger.error(`Uncaught exception — exiting for clean restart: ${error.stack ?? error.message}`);
+  Sentry.captureException(error);
   process.exit(1);
 });
 

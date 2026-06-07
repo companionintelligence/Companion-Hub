@@ -7,6 +7,7 @@ import { I18nProvider } from './i18n/i18n-provider';
 import { AutoThemeProvider } from './theme/auto-theme-provider';
 import { DebugPanel } from '../debug-panel/debug-panel';
 import { openExternal } from '@/lib/helpers/open-external';
+import { captureHubException, initHubSentry } from '@/lib/sentry';
 
 const queryClient = new QueryClient({
   mutationCache: new MutationCache({
@@ -28,6 +29,10 @@ const PageSuspense = ({ children }: PropsWithChildren) => {
 };
 
 export const Providers = ({ children }: PropsWithChildren) => {
+  useEffect(() => {
+    initHubSentry();
+  }, []);
+
   useEffect(() => {
     if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) return;
 
@@ -56,6 +61,7 @@ export const Providers = ({ children }: PropsWithChildren) => {
             )}
             onError={(error, info) => {
               console.error('Global React error boundary caught error:', error, info);
+              captureHubException(error, { componentStack: info.componentStack ?? undefined });
             }}
             onReset={reset}
           >

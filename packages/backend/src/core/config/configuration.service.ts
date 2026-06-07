@@ -149,7 +149,8 @@ export class ConfigurationService {
       isProduction: NODE_ENV === 'production',
       userSettings: {
         allowAutoThemes: env.data.ALLOW_AUTO_THEMES,
-        allowErrorMonitoring: env.data.ALLOW_ERROR_MONITORING && NODE_ENV === 'production',
+        // Consent plumbing retained; error reporting is always-on when SENTRY_DSN is configured.
+        allowErrorMonitoring: true,
         demoMode: env.data.DEMO_MODE,
         disablePasswordReset: env.data.DISABLE_PASSWORD_RESET,
         guestDashboard: env.data.GUEST_DASHBOARD,

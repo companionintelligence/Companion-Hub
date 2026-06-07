@@ -17,6 +17,7 @@ import { getTauriSessionId } from './lib/api-fetch';
 import type { RegistrationStatus } from './lib/registration-status';
 import { isRegistrationOperational, requiresDeviceRegistration } from './lib/registration-status';
 import { resolveRegistrationStatus } from './lib/registration-cache';
+import { captureHubException } from './lib/sentry';
 
 // Add session header for Tauri release mode (cookies don't work cross-origin over HTTP)
 client.interceptors.request.use((request) => {
@@ -272,6 +273,10 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
 
   if (import.meta.env.DEV) {
     console.error('Route ErrorBoundary captured error:', error);
+  } else if (error instanceof Error) {
+    captureHubException(error);
+  } else {
+    captureHubException(new Error(String(error)));
   }
 
   if (isRouteErrorResponse(error)) {
