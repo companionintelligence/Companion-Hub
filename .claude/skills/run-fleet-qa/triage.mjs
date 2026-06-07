@@ -11,6 +11,7 @@
  * "Actionable" = a real bug, not a provisioning artifact:
  *   • score === 'fail'                                   → never became ready (the bug)
  *   • score === 'warn' AND backend is down/degraded      → frontend serves, a dep crashed
+ *   • score === 'warn' AND it's an MCP drift             → catalog .mcp.manifest.tools is stale
  * NOT actionable (reported separately, never assigned):
  *   • warn with a healthy backend = missing-screenshot false-warn (no chromium on that node)
  *   • skip (no_gui / ghcr / gpu / vm) · pass
@@ -43,9 +44,16 @@ if (!rows.length) {
   process.exit(1);
 }
 
+// MCP protocol-smoke signatures (qa-mcp.ts notes). Drift = catalog manifest stale; fail = the
+// server never completed the MCP handshake. Both are real, fixable catalog/app bugs.
+const MCP_DRIFT_RE = /tool drift|tools\/list is empty|advertises no tools|probe failed/i;
+const MCP_FAIL_RE = /before initialize|initialize error|tools\/list error|mcp smoke/i;
+
 // Bug-class guess from notes/status — drawn from the known fix patterns (DB race, perms, secrets, mongo, port, pull).
 function bugClass(r) {
   const n = `${r.notes ?? ''}`.toLowerCase();
+  if (MCP_DRIFT_RE.test(n)) return 'mcp-drift: catalog .mcp.manifest.tools stale (refresh the declared tool list)';
+  if (r.mcp && MCP_FAIL_RE.test(n)) return 'mcp-fail: server never completed the MCP handshake (bad pin / crash on launch)';
   if (/password authentication failed/.test(n)) return 'db-auth: stale pgdata / wrong password';
   if (/econnrefused|connection refused|:5432|:3306|:27017/.test(n)) return 'db-race: app outran its DB → needs dependsOn service_healthy';
   if (/permission denied|eacces|mkdir|open .*denied/.test(n)) return 'perms: non-root UID vs bind-mount ownership';
@@ -66,6 +74,8 @@ function norm(r, i) {
       : score === 'warn' && /backend|down|restart|crash|unhealthy|refused|denied|failed/i.test(`${r.notes ?? ''}`)
         ? false
         : undefined;
+  const noteStr = `${r.notes ?? ''}`;
+  const mcp = r.mcp === true || MCP_DRIFT_RE.test(noteStr) || MCP_FAIL_RE.test(noteStr);
   return {
     appId: r.appId,
     score,
@@ -73,15 +83,18 @@ function norm(r, i) {
     backendHealthy,
     failKind: r.failKind ?? null,
     retried: r.retried ?? false,
-    notes: `${r.notes ?? ''}`.slice(0, 160),
+    notes: noteStr.slice(0, 160),
     node: r.node ?? null,
+    mcp,
+    mcpDrift: score === 'warn' && MCP_DRIFT_RE.test(noteStr), // a warn that's real drift, not a missing screenshot
     i,
   };
 }
 
 const norms = rows.map(norm);
-const actionable = norms.filter((r) => r.score === 'fail' || (r.score === 'warn' && r.backendHealthy === false));
-const falseWarn = norms.filter((r) => r.score === 'warn' && r.backendHealthy !== false);
+// MCP drift is an actionable warn (catalog manifest stale), NOT a missing-screenshot false-warn.
+const actionable = norms.filter((r) => r.score === 'fail' || (r.score === 'warn' && (r.backendHealthy === false || r.mcpDrift)));
+const falseWarn = norms.filter((r) => r.score === 'warn' && r.backendHealthy !== false && !r.mcpDrift);
 // error (harness/infra: pull/port-map/compose/start) and timeout (never-ready after a retry) are
 // flagged for a human, NOT auto-assigned to fix agents — they're usually not a marketplace bug.
 const flagged = norms.filter((r) => r.score === 'error' || r.score === 'timeout');

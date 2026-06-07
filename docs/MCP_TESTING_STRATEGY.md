@@ -13,7 +13,7 @@ checking **HTTP** readiness. MCP servers have no HTTP surface — they speak JSO
 if (config.no_gui) { result.score = 'skip'; result.notes = 'no_gui: stdio/CLI service…'; }
 ```
 
-Result: **~25 MCP apps are scored `skip` and get zero verification.** A marketplace MCP
+Result (before this work): **24 MCP apps were scored `skip` and got zero verification.** A marketplace MCP
 entry can be completely broken — wrong package version, server crashes on launch, advertises
 no tools, or advertises tools that don't match its catalog manifest — and nothing catches it.
 
@@ -29,9 +29,9 @@ Every marketplace MCP app declares its contract in `config.json`:
 "mcp": {
   "transport": "stdio",
   "command": "npx",
-  "args": ["-y", "@modelcontextprotocol/server-memory@2025.10.0"],
-  "env": [{ "key": "MEMORY_FILE_PATH", "required": false, "secret": false }],
-  "manifest": { "tools": [ { "name": "create_entities", … }, { "name": "read_graph", … } ] }
+  "args": ["-y", "@modelcontextprotocol/server-filesystem"],
+  "env": [{ "key": "ALLOWED_PATH", "required": true, "secret": false }],
+  "manifest": { "tools": [ { "name": "list_directory", … }, { "name": "read_file", … } ] }
 }
 ```
 
@@ -58,11 +58,35 @@ Layer 1 is the broad, fast signal. Layer 2 is the source of truth — it exercis
 own bridge and the exact path a user/agent reaches the tools through, and is authoritative
 when Layer 1 and reality disagree.
 
+### ⚠ The marketplace↔bridge gap (measured 2026-06)
+
+**Today, installing a catalog MCP app does NOT expose it through the Hub bridge.** The two
+layers test different runtime models:
+
+- **Layer 1 / the catalog model:** an app's MCP server *is* the container's main process. The
+  `config.json` **top-level `.mcp`** block (`{ transport, command, args, env, manifest.tools }`)
+  describes how to *run* that server; its stdio is the container's stdio.
+- **Layer 2 / the bridge model:** `agents/mcp-bridge.service.ts` reads an app's **`agents.mcp`**
+  block (a *different* field, via `agents/agent-config.service.ts`) and connects stdio by
+  `docker exec -i <container> <command>` into an **already-running** container, re-exposing tools
+  as `<appUrn>__<tool>`.
+
+A grep of all 168 marketplace apps finds **zero** `agents.mcp` blocks. So the bridge has nothing
+to attach to, and even if an app declared one, the `docker exec` model doesn't fit a container
+whose main process is the MCP server. **`scripts/qa-mcp-bridge.ts` therefore regression-tests the
+bridge's protocol surface** (SSE endpoint → `initialize` → `tools/list` → namespacing) against the
+Hub's *own* tools; bridged-app namespacing is only asserted when such an app is present.
+
+**Recommended fix (deferred):** give MCP apps an `agents.mcp` block and teach the
+installer/bridge to launch a top-level-`.mcp` server (not only `docker exec`), so installing a
+catalog MCP app wires its tools through `/api/mcp/sse`. Until then Layer 1 is the coverage signal
+for the catalog and Layer 2 guards the bridge itself.
+
 ## Transport handling (Layer 1)
 
 | Transport | Count | How qa-mcp tests it |
 |-----------|------:|---------------------|
-| **stdio** | 24 | `docker run -i --rm [--env …] <image> <command + args>`; write newline-delimited JSON-RPC to **stdin**, read responses from **stdout**. (`config.json .mcp.command === "docker"` apps like `github-mcp` already encode their own `docker run` invocation — use it verbatim.) |
+| **stdio** | 23 | `docker run -i --rm [--env …] <image> <command + args>`; write newline-delimited JSON-RPC to **stdin**, read responses from **stdout**. (`config.json .mcp.command === "docker"` apps like `github-mcp` already encode their own `docker run` invocation — use it verbatim.) |
 | **SSE / streamable-HTTP** | (future) | start the container, `POST` the JSON-RPC to the `/sse` (or message) endpoint, read the event stream. None of today's local apps use it; the Hub bridge handles SSE for remote servers. |
 | **remote http** | 1 (`miro-mcp`) | hosted/remote endpoint — `skip(remote)` in Layer 1; covered only in Layer 2 with a real token. |
 
@@ -86,13 +110,17 @@ message per line, UTF-8, no `Content-Length` headers). Send `initialize\n`, then
 // ← expect: result.tools = [ {name, description, inputSchema}, … ]
 ```
 
-An optional **read-only `tools/call`** (a no-arg or trivially-arg'd tool that doesn't mutate
-or need creds — e.g. memory's `read_graph`) can be added later to prove tools actually
-execute; it's not part of the v1 smoke because tool-call safety varies per app.
+**Implemented:** after a successful handshake, qa-mcp optionally calls **one curated read-only
+tool** (`SAFE_PROBES` in `qa-mcp.ts` — e.g. `filesystem-mcp → list_directory {path:'/qa'}`,
+`chess-mcp → new_game`) to prove tools actually *execute*, not just advertise. The probe
+**self-guards** against the live tool's real `inputSchema.required`, so a wrong-args entry is
+skipped, never failed — and only an advertised-yet-broken tool (`method not found` / internal
+error) downgrades `pass→warn`. Disable with `QA_MCP_PROBE=0`; allow network probes with
+`QA_MCP_PROBE_NET=1`.
 
 ## Credentials — the coverage unlock
 
-8 of 25 apps declare a `required: true, secret: true` env (github, notion, obsidian,
+8 of 24 apps declare a `required: true, secret: true` env (github, notion, obsidian,
 doordash, steam, postgres, miro, onlyoffice). **You do not need real credentials to test
 most of them**, because MCP servers enforce auth at **`tools/call`** time, not at
 `initialize`/`tools/list`. So the handshake + tool advertisement still validate the build.
@@ -124,30 +152,53 @@ so MCP results flow through the **same** NDJSON events, dashboard tallies, and `
 buckets — no parallel reporting path. The `warn` = manifest-drift case is the MCP equivalent
 of the backend-degraded `warn`: the thing technically runs but isn't what the catalog promises.
 
-## Integration into the harness
+## Integration into the harness (implemented)
 
-Minimal, additive change to `qa-stream.ts`'s skip path:
+`qa-stream.ts`'s `no_gui` branch routes MCP apps to the protocol smoke via a **guarded dynamic
+import** (so a node missing the sibling file degrades only MCP apps, never the whole run):
 
 ```ts
-// before: every no_gui app → skip
-// after:  an app that declares `.mcp` is MCP-testable; only non-MCP no_gui stays skip
 if (config.no_gui) {
-  if (config.mcp) return await qaMcpApp(appId, config.mcp, services, result);  // route to MCP smoke
-  result.score = 'skip'; result.notes = 'no_gui: non-MCP CLI service'; return result;
+  if (config.mcp) {
+    try {
+      const { qaMcpApp } = await import('./qa-mcp.ts');
+      return await qaMcpApp(appId, { emit, containerName, result }); // qa-stream-${appId} → watchdog covers it
+    } catch (e) {
+      result.score = 'skip'; result.failKind = 'mcp-module';
+      result.notes = `MCP app but qa-mcp module unavailable: ${e}`; return result;
+    }
+  }
+  result.score = 'skip'; result.notes = 'no_gui: non-MCP CLI service, no HTTP to verify'; return result;
 }
 ```
 
-`qaMcpApp` lives in `scripts/qa-mcp.ts` (the prototype below), shares the readiness/teardown
-discipline of `qaApp`, and emits the same `app_result`. The dashboard already renders `skip`
-and the new scores; add an `mcp` category chip to the filter so MCP apps are reviewable as a
-group. Work-stealing dispatch and the fleet runner need **no** changes — an MCP app is just
-another id off the shared queue whose verdict comes from the protocol smoke instead of HTTP.
+`qaMcpApp` (in `scripts/qa-mcp.ts`) returns the `result` record — it does **not** emit its own
+`app_result`, so the existing `qaApp` retry/watchdog/teardown wrap it for free. Because it reuses
+the `qa-stream-${appId}` container name, the per-app watchdog and `forceTeardown` already cover the
+MCP container. **Shipping:** `fleet-qa-server.ts` `scpScript()` copies *both* `qa-stream.ts` and
+`qa-mcp.ts` to each node's `/tmp/` (both import only Node built-ins). Work-stealing dispatch and the
+fleet runner need **no** changes — an MCP app is just another id off the shared queue.
 
-## Inventory (25 apps)
+**Surfacing:** the catalog (`generate-catalog-tests.ts` → `catalog.json`) carries an `mcp` flag;
+the dashboard renders an **MCP** badge per card and every MCP app already has an `mcp` category, so
+the existing filter groups them; `triage.mjs` buckets an MCP **drift** `warn` as *actionable*
+(`mcp-drift`, stale manifest) rather than a missing-screenshot false-warn, and an MCP handshake
+`fail` as `mcp-fail`.
+
+## Layer 2 in practice (`scripts/qa-mcp-bridge.ts`)
+
+Env-gated regression of the real bridge: `HUB_URL` (default `http://localhost:3000`) + `MCP_API_KEY`
+(the Hub's Bearer key). It opens `GET /api/mcp/sse` for the `event: endpoint` line, then
+`POST /api/mcp/messages` `initialize` and `tools/list`, asserting `protocolVersion`+`serverInfo`, a
+non-empty tool set, and `<appUrn>__<tool>` namespacing on any bridged tool. A down Hub or a missing
+key is a clean **`skip`**, so it never breaks a fleet run. See the gap note above for why catalog
+apps don't yet appear here.
+
+## Inventory (24 apps)
 
 | App | Transport | Needs real secret to *boot*? |
 |-----|-----------|------------------------------|
-| memory-mcp, fetch-mcp, playwright-mcp, chess-mcp, blender-mcp, excalidraw-mcp, lego-oracle-mcp, smartest-tv-mcp, unity-mcp, unity-mcp-ivanmurzak, unreal-engine-mcp, youtube-transcript-mcp, brewers-almanack-mcp, n8n-mcp | stdio | No → full smoke |
+| fetch-mcp, playwright-mcp, chess-mcp, blender-mcp, excalidraw-mcp, lego-oracle-mcp, smartest-tv-mcp, unity-mcp, unity-mcp-ivanmurzak, unreal-engine-mcp, youtube-transcript-mcp, brewers-almanack-mcp, n8n-mcp | stdio | No → full smoke |
 | filesystem-mcp, git-mcp, sqlite-mcp | stdio | No, but need a synthesized path arg |
 | github-mcp, notion-mcp, obsidian-mcp, doordash-mcp, steam-mcp, postgres-mcp, onlyoffice-docspace-mcp | stdio | Maybe — placeholder first, `skip(needs-secret)` only if it refuses to boot |
 | miro-mcp | remote http | `skip(remote)` (Layer 2 only, with token) |
@@ -157,13 +208,16 @@ remaining secret-gated ones get at least a boot+advertise attempt before any `sk
 
 ## Roadmap
 
-- **v1 (this doc + `scripts/qa-mcp.ts`):** stdio handshake + manifest-drift assertion, scored
-  into the existing harness.
-- **Read-only `tools/call` probe** for a curated safe tool per app (proves execution, not just
-  advertisement).
-- **Layer 2 automation:** install via the Hub, drive `/api/mcp/sse` `tools/list`, assert the
-  bridge re-exposes `<appUrn>__<tool>` — promote to the source of truth.
-- **SSE / streamable-HTTP transport** support in qa-mcp (for future local SSE servers + miro
+- **✅ v1 — stdio handshake + manifest-drift assertion**, wired into `qa-stream.ts` so all 24 MCP
+  apps get a verdict in fleet/e2e runs (`scripts/qa-mcp.ts`).
+- **✅ Read-only `tools/call` exec probe** for a curated, self-guarded safe tool per app.
+- **✅ Layer-2 bridge regression** (`scripts/qa-mcp-bridge.ts`) against the live `/api/mcp` surface.
+- **⏳ Wire catalog apps through the bridge (the gap above):** add an `agents.mcp` block to MCP apps
+  and teach the installer/bridge to run a top-level-`.mcp` server — only then does Layer 2 reach the
+  catalog and become the true source of truth.
+- **⏳ Seeded-state + network probes:** extend `SAFE_PROBES` to git/sqlite (seed a scratch repo/db)
+  and network tools (`fetch`, gated by `QA_MCP_PROBE_NET`).
+- **⏳ SSE / streamable-HTTP transport** support in qa-mcp (for future local SSE servers + miro
   with a token).
-- **Catalog-manifest sync:** when Layer 1 finds drift, open a marketplace PR updating
+- **⏳ Catalog-manifest sync:** when Layer 1 finds drift, open a marketplace PR updating
   `.mcp.manifest.tools` (the same diagnose→fix→PR fan-out the web-app triage uses).

@@ -4,74 +4,126 @@
  *
  * The HTTP harness (qa-stream.ts) skips MCP servers because they have no web surface — they
  * speak JSON-RPC over stdio. This boots an MCP app's container, performs the MCP handshake
- * (initialize → notifications/initialized → tools/list), and asserts the live tool set matches
- * the tools the app declares in `config.json .mcp.manifest.tools`. See docs/MCP_TESTING_STRATEGY.md.
+ * (initialize → notifications/initialized → tools/list), asserts the live tool set matches the
+ * tools the app declares in `config.json .mcp.manifest.tools`, and OPTIONALLY calls one curated
+ * read-only tool to prove tools actually execute (not just advertise). See
+ * docs/MCP_TESTING_STRATEGY.md.
+ *
+ * Used two ways:
+ *   • Imported by qa-stream.ts — `qaMcpApp(appId, { emit, phase, containerName, result })` runs the
+ *     smoke for one `no_gui` + `.mcp` app and RETURNS the result record (the caller emits app_result).
+ *   • Standalone CLI — `APP_STORE_DIR=../CI-Marketplace/apps tsx scripts/qa-mcp.ts <app-id...>`.
  *
  * Scores with the SAME vocabulary as qa-stream so results flow through the same dashboard/triage:
  *   pass    initialize OK + tools/list non-empty + ⊇ declared manifest tools
- *   warn    handshake OK but tool DRIFT (missing declared tools / empty / renamed)
+ *   warn    handshake OK but tool DRIFT (missing declared tools / empty / renamed), or a curated
+ *           read-only probe found the tool broken (method-not-found / internal error)
  *   fail    launched but never completed initialize / JSON-RPC error / crashed mid-handshake
  *   error   infra — image pull/run failed, command not found            (failKind: pull|run)
  *   timeout no handshake response within the deadline                   (failKind: timeout)
  *   skip    needs a real secret to boot · remote http · not an MCP app
  *
- * Usage:  APP_STORE_DIR=../CI-Marketplace/apps tsx scripts/qa-mcp.ts <app-id> [app-id...]
- * Env:    QA_MCP_TIMEOUT_MS (default 90000) · QA_MCP_SECRETS_JSON ({"KEY":"value"})
+ * Env: QA_MCP_TIMEOUT_MS (default 90000) · QA_MCP_SECRETS_JSON ({"KEY":"value"}) ·
+ *      QA_MCP_PROBE (default 1; set 0 to disable the exec probe) · QA_MCP_PROBE_NET (default 0;
+ *      set 1 to allow network-touching probes).
  */
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const APP_STORE_DIR = process.env.APP_STORE_DIR ?? '../CI-Marketplace/apps';
 const TIMEOUT_MS = Number(process.env.QA_MCP_TIMEOUT_MS) || 90_000;
-const SECRETS: Record<string, string> = (() => {
+const PROBE_TIMEOUT_MS = Number(process.env.QA_MCP_PROBE_TIMEOUT_MS) || 15_000;
+const PROBE_NET = process.env.QA_MCP_PROBE_NET === '1';
+const PLACEHOLDER = 'ci-qa-placeholder';
+
+function parseSecrets(): Record<string, string> {
   try {
     return process.env.QA_MCP_SECRETS_JSON ? JSON.parse(process.env.QA_MCP_SECRETS_JSON) : {};
   } catch {
     return {};
   }
-})();
-const PLACEHOLDER = 'ci-qa-placeholder';
+}
 
-type Score = 'pass' | 'warn' | 'fail' | 'error' | 'timeout' | 'skip';
-interface McpEnv {
+export type Score = 'pass' | 'warn' | 'fail' | 'error' | 'timeout' | 'skip';
+export interface McpEnv {
   key?: string;
   required?: boolean;
   secret?: boolean;
 }
-interface McpConfig {
+export interface McpConfig {
   transport?: string;
   command?: string;
   args?: string[];
   env?: McpEnv[];
   manifest?: { tools?: { name?: string }[] };
 }
+export interface ComposeService {
+  image?: string;
+  command?: string[] | string;
+  isMain?: boolean;
+}
+/** A tool as advertised by the LIVE server (tools/list) — carries inputSchema so the probe can
+ *  self-guard against required args the manifest's stripped schema doesn't record. */
+interface LiveTool {
+  name: string;
+  inputSchema?: { required?: string[] };
+}
 
-function emit(o: Record<string, unknown>) {
+function defaultEmit(o: Record<string, unknown>) {
   process.stdout.write(`${JSON.stringify(o)}\n`);
 }
 
-/** Resolve a declared env var: real secret (env/QA_MCP_SECRETS_JSON) → that; non-secret path → a
- *  scratch dir/file; required secret with no value → placeholder; otherwise unset. Returns the
- *  value plus whether a scratch dir needs mounting into the container at that path. */
-function resolveEnv(e: McpEnv, scratch: string): { value?: string; mount?: string } {
+/**
+ * Curated read-only `tools/call` probes — one safe tool per app that proves execution without
+ * mutating state, needing creds, or (unless QA_MCP_PROBE_NET) touching the network. The probe
+ * self-guards at call time against the LIVE tool's `inputSchema.required`, so an entry whose args
+ * don't satisfy the real schema is skipped, never failed. Extend conservatively: offline,
+ * read-only, no-credential tools only.
+ */
+export const SAFE_PROBES: Record<string, { tool: string; args: Record<string, unknown>; net?: boolean }> = {
+  'filesystem-mcp': { tool: 'list_directory', args: { path: '/qa' } }, // scratch mounted at /qa via ALLOWED_PATH
+  'chess-mcp': { tool: 'new_game', args: {} }, // pure in-memory, returns a board
+  'brewers-almanack-mcp': { tool: 'lookup_style', args: {} }, // bundled reference data
+  'smartest-tv-mcp': { tool: 'list_devices', args: {} }, // local discovery, returns an (empty) list
+};
+
+/** A syntactically-valid dummy connection URL keyed by the env name's scheme, so a server that
+ *  parses its `*_URL` at startup (e.g. server-postgres does `new URL(POSTGRES_URL)`) gets past the
+ *  parse rather than crashing on the bare placeholder. The host is unreachable on purpose — auth/
+ *  connection is still only attempted at tools/call, so the handshake validates the build. */
+export function dummyUrl(key: string): string {
+  if (/POSTGRES|PG_|PGURL/i.test(key)) return 'postgres://qa:qa@127.0.0.1:5432/qa';
+  if (/MYSQL|MARIA/i.test(key)) return 'mysql://qa:qa@127.0.0.1:3306/qa';
+  if (/MONGO/i.test(key)) return 'mongodb://127.0.0.1:27017/qa';
+  if (/REDIS/i.test(key)) return 'redis://127.0.0.1:6379';
+  return 'http://qa.invalid';
+}
+
+/** Resolve a declared env var: real secret (secrets/env) → that; non-secret path-like → a scratch
+ *  dir/file mounted into the container; required URL-like → a valid dummy URL; required secret with
+ *  no value → placeholder; else unset. Returns the value plus whether a scratch dir needs mounting. */
+export function resolveEnv(e: McpEnv, scratch: string, secrets: Record<string, string>): { value?: string; mount?: string } {
   const k = e.key ?? '';
-  const provided = SECRETS[k] ?? process.env[k];
+  const provided = secrets[k] ?? process.env[k];
   if (provided) return { value: provided };
   if (!e.secret && /PATH|DIR|ROOT/i.test(k)) return { value: '/qa', mount: scratch }; // path-like arg
+  if (e.required && /URL|URI|DSN|CONNECTION/i.test(k)) return { value: dummyUrl(k) }; // parseable connection string
   if (e.required) return { value: PLACEHOLDER }; // boot it anyway; auth is enforced at tools/call
   return {};
 }
 
 /** Build the `docker run -i …` argv for a stdio MCP app from its config + compose. */
-function buildDockerArgs(
+export function buildDockerArgs(
   appId: string,
   mcp: McpConfig,
-  compose: { services?: { image?: string; command?: string[] | string; isMain?: boolean }[] },
+  compose: { services?: ComposeService[] },
   scratch: string,
+  secrets: Record<string, string>,
+  containerName = `qa-mcp-${appId}`,
 ): { dockerArgs: string[]; env: Record<string, string>; needsSecret: string | null } {
-  const name = `qa-mcp-${appId}`;
   const env: Record<string, string> = {};
   const envFlags: string[] = [];
   const mounts: string[] = [];
@@ -79,7 +131,7 @@ function buildDockerArgs(
 
   for (const e of mcp.env ?? []) {
     if (!e.key) continue;
-    const r = resolveEnv(e, scratch);
+    const r = resolveEnv(e, scratch, secrets);
     if (r.value === undefined) continue;
     if (e.required && e.secret && r.value === PLACEHOLDER) needsSecret = e.key; // flag — may still boot
     env[e.key] = r.value;
@@ -99,22 +151,54 @@ function buildDockerArgs(
     const ensure: string[] = [];
     if (!tail.includes('-i')) ensure.push('-i');
     if (!tail.includes('--rm')) ensure.push('--rm');
-    return { dockerArgs: [...head, ...ensure, '--name', name, ...tail], env, needsSecret };
+    return { dockerArgs: [...head, ...ensure, '--name', containerName, ...tail], env, needsSecret };
   }
   // Otherwise wrap the compose main service's image + command in our own `docker run -i`.
   const main = compose.services?.find((s) => s.isMain) ?? compose.services?.[0];
   const image = main?.image ?? 'alpine:3.20';
   const cmd = (Array.isArray(main?.command) ? main?.command : mcp.args ? [mcp.command ?? '', ...mcp.args] : []) ?? [];
-  const dockerArgs = ['run', '-i', '--rm', '--name', name, ...envFlags, ...mounts, image, ...cmd.map(subst)];
+  const dockerArgs = ['run', '-i', '--rm', '--name', containerName, ...envFlags, ...mounts, image, ...cmd.map(subst)];
   return { dockerArgs, env, needsSecret };
 }
 
-/** Perform the MCP handshake over a child's stdio. Resolves with the live tool names, or rejects
- *  via the returned status. Sequential per spec: initialize → (on ack) initialized + tools/list. */
-function handshake(
+/** Pure scoring of a SUCCESSFUL handshake: assert the live tool set against the declared manifest.
+ *  pass = live ⊇ declared (and non-empty); warn = empty or drift (declared tools missing). */
+export function scoreHandshake(declared: string[], live: string[]): { score: 'pass' | 'warn'; notes: string } {
+  const missing = declared.filter((d) => !live.includes(d));
+  if (live.length === 0) {
+    return { score: 'warn', notes: 'handshake OK but tools/list is EMPTY (server advertises no tools)' };
+  }
+  if (declared.length > 0 && missing.length > 0) {
+    return {
+      score: 'warn',
+      notes: `tool drift: ${missing.length}/${declared.length} declared tools missing from live list (${missing.slice(0, 6).join(', ')}${missing.length > 6 ? '…' : ''})`,
+    };
+  }
+  return { score: 'pass', notes: `${live.length} tools advertised${declared.length ? `, ⊇ ${declared.length} declared` : ''}` };
+}
+
+interface ProbeResult {
+  status: 'ok' | 'invalid-params' | 'tool-error' | 'method-error' | 'internal-error' | 'timeout' | 'skipped';
+  detail: string;
+}
+interface SmokeResult {
+  ok: boolean;
+  tools: LiveTool[];
+  reason: string;
+  stderr: string;
+  exited: boolean;
+  probe?: ProbeResult;
+}
+
+/** Drive the MCP smoke over a child's stdio: initialize → notifications/initialized → tools/list →
+ *  (optional) one read-only tools/call probe. Newline-delimited JSON-RPC per the stdio transport.
+ *  The probe runs in the SAME process after tools/list, under its own short timer, so a hung probe
+ *  never costs the (already-captured) handshake verdict. */
+function runSmoke(
   dockerArgs: string[],
   env: Record<string, string>,
-): Promise<{ ok: boolean; tools: string[]; reason: string; serverInfo?: unknown; stderr: string; exited: boolean }> {
+  probeSpec: { tool: string; args: Record<string, unknown> } | null,
+): Promise<SmokeResult> {
   return new Promise((resolve) => {
     const proc = spawn('docker', dockerArgs, { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...env } });
     let buf = '';
@@ -122,10 +206,15 @@ function handshake(
     let done = false;
     let sawInit = false;
     let exited = false;
-    const finish = (r: { ok: boolean; tools: string[]; reason: string; serverInfo?: unknown }) => {
+    let liveTools: LiveTool[] = [];
+    let mainTimer: ReturnType<typeof setTimeout>;
+    let probeTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const finish = (r: Omit<SmokeResult, 'stderr' | 'exited'>) => {
       if (done) return;
       done = true;
-      clearTimeout(timer);
+      clearTimeout(mainTimer);
+      if (probeTimer) clearTimeout(probeTimer);
       try {
         proc.kill('SIGKILL');
       } catch {
@@ -141,10 +230,50 @@ function handshake(
       }
     };
 
-    const timer = setTimeout(
+    mainTimer = setTimeout(
       () => finish({ ok: false, tools: [], reason: sawInit ? 'no tools/list before deadline' : 'no initialize response before deadline' }),
       TIMEOUT_MS,
     );
+
+    // Decide whether to probe once tools are known; returns true if a probe was dispatched.
+    const maybeProbe = (): boolean => {
+      if (!probeSpec) return false;
+      const live = liveTools.find((t) => t.name === probeSpec.tool);
+      if (!live) return false; // tool not advertised → no probe (drift already scored elsewhere)
+      const required = live.inputSchema?.required ?? [];
+      const haveArgs = Object.keys(probeSpec.args);
+      if (required.some((req) => !haveArgs.includes(req))) return false; // can't satisfy real schema → skip
+      clearTimeout(mainTimer);
+      probeTimer = setTimeout(
+        () =>
+          finish({
+            ok: true,
+            tools: liveTools,
+            reason: 'handshake complete',
+            probe: { status: 'timeout', detail: `${probeSpec.tool} did not return in ${PROBE_TIMEOUT_MS}ms` },
+          }),
+        PROBE_TIMEOUT_MS,
+      );
+      send({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: probeSpec.tool, arguments: probeSpec.args } });
+      return true;
+    };
+
+    const classifyProbe = (msg: Record<string, unknown>): ProbeResult => {
+      const err = msg.error as { code?: number; message?: string } | undefined;
+      if (err) {
+        const detail = `${err.code ?? ''} ${err.message ?? ''}`.trim().slice(0, 160);
+        if (err.code === -32602) return { status: 'invalid-params', detail }; // our args wrong, not a tool bug
+        if (err.code === -32601) return { status: 'method-error', detail }; // advertised but not found → bug
+        if (err.code === -32603) return { status: 'internal-error', detail }; // server threw → bug
+        return { status: 'tool-error', detail }; // other protocol error — informational
+      }
+      const result = (msg.result ?? {}) as { isError?: boolean; content?: unknown };
+      if (result.isError === true) {
+        const txt = JSON.stringify(result.content ?? '').slice(0, 160);
+        return { status: 'tool-error', detail: txt }; // tool-level error (often auth/validation) — informational
+      }
+      return { status: 'ok', detail: `${probeSpec?.tool} returned a result` };
+    };
 
     proc.stdout.on('data', (d: Buffer) => {
       buf += d.toString();
@@ -165,10 +294,19 @@ function handshake(
           send({ jsonrpc: '2.0', method: 'notifications/initialized' });
           send({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
         } else if (msg.id === 2) {
-          const result = (msg.result ?? {}) as { tools?: { name?: string }[] };
           if (msg.error) return finish({ ok: false, tools: [], reason: `tools/list error: ${JSON.stringify(msg.error).slice(0, 160)}` });
-          const tools = (result.tools ?? []).map((x) => x.name ?? '').filter(Boolean);
-          return finish({ ok: true, tools, reason: 'handshake complete' });
+          const result = (msg.result ?? {}) as { tools?: LiveTool[] };
+          liveTools = (result.tools ?? []).filter((x): x is LiveTool => Boolean(x?.name));
+          if (!maybeProbe()) {
+            return finish({
+              ok: true,
+              tools: liveTools,
+              reason: 'handshake complete',
+              probe: probeSpec ? { status: 'skipped', detail: 'curated tool absent or args unsatisfiable' } : undefined,
+            });
+          }
+        } else if (msg.id === 3) {
+          return finish({ ok: true, tools: liveTools, reason: 'handshake complete', probe: classifyProbe(msg) });
         }
       }
     });
@@ -194,10 +332,34 @@ function handshake(
   });
 }
 
-async function qaMcp(appId: string) {
-  const result: Record<string, unknown> = { appId, score: 'fail' as Score, notes: '', ts: Date.now() };
-  emit({ event: 'app_start', appId, ts: Date.now() });
+export interface QaMcpOptions {
+  /** Event sink (app_phase progress). Defaults to NDJSON on stdout. */
+  emit?: (o: Record<string, unknown>) => void;
+  /** Container name — pass qa-stream's `qa-stream-${appId}` so its watchdog/teardown cover us. */
+  containerName?: string;
+  /** Seed result (name/port/categories already filled by the caller). Mutated + returned. */
+  result?: Record<string, unknown>;
+  /** Extra secrets (merged over QA_MCP_SECRETS_JSON). */
+  secrets?: Record<string, string>;
+  /** Run the read-only tools/call exec probe (default true; QA_MCP_PROBE=0 disables globally). */
+  probe?: boolean;
+}
+
+/**
+ * Run the Layer-1 MCP smoke for one app and RETURN its result record (does NOT emit app_result —
+ * the caller owns that channel, so a retry never double-counts). Reads config.json +
+ * docker-compose.json itself; tears its container down idempotently in `finally`.
+ */
+export async function qaMcpApp(appId: string, options: QaMcpOptions = {}): Promise<Record<string, unknown>> {
+  const emit = options.emit ?? defaultEmit;
+  const containerName = options.containerName ?? `qa-mcp-${appId}`;
+  const secrets = { ...parseSecrets(), ...(options.secrets ?? {}) };
+  const probeEnabled = (options.probe ?? true) && process.env.QA_MCP_PROBE !== '0';
+  const result: Record<string, unknown> = options.result ?? { appId, score: 'fail' as Score, notes: '', ts: Date.now() };
+  result.appId = appId;
+  result.mcp = true;
   const scratch = join(tmpdir(), `qa-mcp-${appId}`);
+
   try {
     const cfgPath = join(APP_STORE_DIR, appId, 'config.json');
     if (!existsSync(cfgPath)) {
@@ -207,7 +369,7 @@ async function qaMcp(appId: string) {
       return result;
     }
     const config = JSON.parse(readFileSync(cfgPath, 'utf-8')) as { mcp?: McpConfig; name?: string };
-    result.name = config.name ?? appId;
+    result.name = result.name ?? config.name ?? appId;
     const mcp = config.mcp;
     if (!mcp) {
       result.score = 'skip';
@@ -220,26 +382,29 @@ async function qaMcp(appId: string) {
       return result;
     }
     const composePath = join(APP_STORE_DIR, appId, 'docker-compose.json');
-    const compose = existsSync(composePath) ? JSON.parse(readFileSync(composePath, 'utf-8')) : {};
+    const compose = existsSync(composePath) ? (JSON.parse(readFileSync(composePath, 'utf-8')) as { services?: ComposeService[] }) : {};
 
     mkdirSync(scratch, { recursive: true });
-    const { dockerArgs, env, needsSecret } = buildDockerArgs(appId, mcp, compose, scratch);
+    const { dockerArgs, env, needsSecret } = buildDockerArgs(appId, mcp, compose, scratch, secrets, containerName);
     const declared = (mcp.manifest?.tools ?? []).map((t) => t.name ?? '').filter(Boolean);
 
+    const probeSpec = pickProbe(appId);
     emit({
       event: 'app_phase',
       appId,
       phase: 'starting',
-      message: `docker ${dockerArgs.slice(0, 4).join(' ')} … (${declared.length} tools declared)`,
+      message: `mcp smoke: docker ${dockerArgs.slice(0, 4).join(' ')} … (${declared.length} tools declared${probeEnabled && probeSpec ? `, probe ${probeSpec.tool}` : ''})`,
       ts: Date.now(),
     });
-    const hs = await handshake(dockerArgs, env);
-    result.tools = hs.tools;
+
+    const hs = await runSmoke(dockerArgs, env, probeEnabled ? probeSpec : null);
+    const liveNames = hs.tools.map((t) => t.name);
+    result.tools = liveNames;
     result.declaredTools = declared.length;
+    if (hs.probe) result.probe = hs.probe.status;
 
     if (!hs.ok) {
       const err = `${hs.reason} ${hs.stderr}`.toLowerCase();
-      // Server refused to boot citing the required secret → skip(needs-secret), not a fail.
       if (needsSecret && new RegExp(`${needsSecret.toLowerCase()}|token|unauthorized|api[_ ]?key|credential|required`).test(err)) {
         result.score = 'skip';
         result.notes = `needs-secret: ${needsSecret} required to boot — ${hs.reason}`;
@@ -247,6 +412,12 @@ async function qaMcp(appId: string) {
         result.score = 'error';
         result.failKind = 'pull';
         result.notes = `image pull/run failed: ${hs.reason}`;
+      } else if (/econnrefused|connection refused|could not connect|connection terminated|getaddrinfo|enotfound|:5432|:3306|:27017|:6379/.test(err)) {
+        // The server boots only with a live backing service (DB/cache) the no-deps smoke can't
+        // provide — not an app bug. Skip, like needs-secret. (Reached once a valid dummy URL gets
+        // it past startup parsing into an actual connection attempt.)
+        result.score = 'skip';
+        result.notes = `needs-connection: requires a live backing service to boot — ${hs.reason}`;
       } else if (/before deadline/.test(hs.reason)) {
         result.score = 'timeout';
         result.failKind = 'timeout';
@@ -259,18 +430,11 @@ async function qaMcp(appId: string) {
       return result;
     }
 
-    // Handshake succeeded — assert the live tool set against the declared manifest.
-    const missing = declared.filter((d) => !hs.tools.includes(d));
-    if (hs.tools.length === 0) {
-      result.score = 'warn';
-      result.notes = 'handshake OK but tools/list is EMPTY (server advertises no tools)';
-    } else if (declared.length > 0 && missing.length > 0) {
-      result.score = 'warn';
-      result.notes = `tool drift: ${missing.length}/${declared.length} declared tools missing from live list (${missing.slice(0, 6).join(', ')}${missing.length > 6 ? '…' : ''})`;
-    } else {
-      result.score = 'pass';
-      result.notes = `${hs.tools.length} tools advertised${declared.length ? `, ⊇ ${declared.length} declared` : ''}`;
-    }
+    // Handshake succeeded — score the manifest assertion, then fold in the probe verdict.
+    const base = scoreHandshake(declared, liveNames);
+    result.score = base.score;
+    result.notes = base.notes;
+    applyProbeVerdict(result, hs.probe, probeSpec);
     return result;
   } catch (err) {
     result.score = 'error';
@@ -280,7 +444,7 @@ async function qaMcp(appId: string) {
   } finally {
     // Synchronous teardown so the container is gone before we return (an async rm races process.exit).
     try {
-      spawnSync('docker', ['rm', '-f', `qa-mcp-${appId}`], { stdio: 'ignore', timeout: 30_000 });
+      spawnSync('docker', ['rm', '-f', containerName], { stdio: 'ignore', timeout: 30_000 });
     } catch {
       /* best effort */
     }
@@ -292,24 +456,60 @@ async function qaMcp(appId: string) {
   }
 }
 
-void (async () => {
-  const appIds = process.argv.slice(2);
-  if (appIds.length === 0) {
-    process.stderr.write('Usage: qa-mcp.ts <app-id> [app-id...]\n');
+/** The curated probe for an app, honoring the network gate. */
+function pickProbe(appId: string): { tool: string; args: Record<string, unknown> } | null {
+  const p = SAFE_PROBES[appId];
+  if (!p) return null;
+  if (p.net && !PROBE_NET) return null;
+  return { tool: p.tool, args: p.args };
+}
+
+/** Fold the exec-probe outcome into the result. Conservative: only a tool that's advertised yet
+ *  broken (method-not-found / internal error) downgrades pass→warn. Wrong-args, auth/tool-level
+ *  errors, timeouts, and skips are informational and never downgrade. */
+function applyProbeVerdict(result: Record<string, unknown>, probe: ProbeResult | undefined, probeSpec: { tool: string } | null): void {
+  if (!probe || !probeSpec) return;
+  if (probe.status === 'ok') {
+    result.notes = `${result.notes}; probe ${probeSpec.tool}→ok`;
+  } else if ((probe.status === 'method-error' || probe.status === 'internal-error') && result.score === 'pass') {
+    result.score = 'warn';
+    result.notes = `${result.notes}; probe FAILED ${probeSpec.tool}: ${probe.detail}`;
+  } else if (probe.status !== 'skipped') {
+    result.notes = `${result.notes}; probe ${probeSpec.tool}→${probe.status}`;
+  }
+}
+
+// ── CLI ──────────────────────────────────────────────────────────────────────
+// Guard so importing this module (qa-stream's dynamic import) does NOT run argv parsing.
+const isMain = (() => {
+  try {
+    return Boolean(process.argv[1]) && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+})();
+
+if (isMain) {
+  void (async () => {
+    const appIds = process.argv.slice(2);
+    if (appIds.length === 0) {
+      process.stderr.write('Usage: qa-mcp.ts <app-id> [app-id...]\n');
+      process.exit(1);
+    }
+    defaultEmit({ event: 'batch_start', apps: appIds, kind: 'mcp', ts: Date.now() });
+    let worst = 0;
+    const rank: Record<string, number> = { pass: 0, skip: 0, warn: 1, timeout: 2, error: 2, fail: 3 };
+    for (const id of appIds) {
+      defaultEmit({ event: 'app_start', appId: id, ts: Date.now() });
+      const r = await qaMcpApp(id);
+      defaultEmit({ event: 'app_result', appId: id, result: r });
+      process.stderr.write(`  ${String(r.score).toUpperCase().padEnd(7)} ${id.padEnd(24)} ${r.notes}\n`);
+      worst = Math.max(worst, rank[String(r.score)] ?? 0);
+    }
+    defaultEmit({ event: 'batch_done', total: appIds.length, ts: Date.now() });
+    process.exit(worst >= 3 ? 1 : 0);
+  })().catch((err) => {
+    process.stderr.write(`qa-mcp fatal: ${err?.stack || err}\n`);
     process.exit(1);
-  }
-  emit({ event: 'batch_start', apps: appIds, kind: 'mcp', ts: Date.now() });
-  let worst = 0;
-  const rank: Record<string, number> = { pass: 0, skip: 0, warn: 1, timeout: 2, error: 2, fail: 3 };
-  for (const id of appIds) {
-    const r = await qaMcp(id);
-    emit({ event: 'app_result', appId: id, result: r });
-    process.stderr.write(`  ${String(r.score).toUpperCase().padEnd(7)} ${id.padEnd(24)} ${r.notes}\n`);
-    worst = Math.max(worst, rank[String(r.score)] ?? 0);
-  }
-  emit({ event: 'batch_done', total: appIds.length, ts: Date.now() });
-  process.exit(worst >= 3 ? 1 : 0);
-})().catch((err) => {
-  process.stderr.write(`qa-mcp fatal: ${err?.stack || err}\n`);
-  process.exit(1);
-});
+  });
+}

@@ -36,6 +36,9 @@ const STORE_ROOT = process.env.STORE_ROOT_REMOTE ?? '~/devel/CI-Marketplace';
 const RESULTS_DIR = join(homedir(), 'qa-results');
 const SCREENSHOTS_DIR = join(RESULTS_DIR, 'fleet-screenshots');
 const STREAM_SCRIPT = join(__dir, 'qa-stream.ts');
+// qa-stream dynamically imports ./qa-mcp.ts for MCP (no_gui + .mcp) apps, so it must ride along to
+// each node. Both import only Node built-ins, so tsx runs the pair standalone in /tmp.
+const MCP_SCRIPT = join(__dir, 'qa-mcp.ts');
 const CATALOG_FILE = join(__dir, '..', 'e2e', 'generated', 'catalog.json');
 
 if (!existsSync(SCREENSHOTS_DIR)) mkdirSync(SCREENSHOTS_DIR, { recursive: true });
@@ -90,6 +93,7 @@ interface AppSpec {
   expectedPort: number;
   storeSlug: string;
   hasGui: boolean;
+  mcp?: boolean; // MCP-server app — verified via the protocol smoke, not the HTTP path
 }
 
 let CATALOG: AppSpec[] = [];
@@ -323,9 +327,11 @@ function scpScreenshot(node: FleetNode, appId: string) {
 
 async function scpScript(node: FleetNode): Promise<{ ok: boolean; error: string | null }> {
   return new Promise((resolve) => {
+    // Ship both qa-stream.ts AND its qa-mcp.ts sibling (dynamic-imported for MCP apps) in one
+    // transfer to the /tmp directory, preserving basenames → /tmp/qa-stream.ts + /tmp/qa-mcp.ts.
     const proc = spawn(
       'scp',
-      ['-o', 'StrictHostKeyChecking=accept-new', '-o', 'ConnectTimeout=10', STREAM_SCRIPT, `${node.user ?? SSH_USER}@${node.ip}:/tmp/qa-stream.ts`],
+      ['-o', 'StrictHostKeyChecking=accept-new', '-o', 'ConnectTimeout=10', STREAM_SCRIPT, MCP_SCRIPT, `${node.user ?? SSH_USER}@${node.ip}:/tmp/`],
       { stdio: ['ignore', 'ignore', 'pipe'] },
     );
     let err = '';
@@ -1183,6 +1189,7 @@ header {
 .card-node { font-size: 10px; color: var(--accent); font-weight: 600; padding: 1px 5px; background: var(--accent-dim); border-radius: 3px; flex-shrink: 0; }
 .card-cats { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 6px; }
 .cat-tag { font-size: 10px; color: var(--text2); background: var(--surface2); padding: 1px 5px; border-radius: 3px; }
+.mcp-badge { font-size: 9px; font-weight: 700; letter-spacing: .04em; color: var(--accent-bright, var(--accent)); border: 1px solid var(--accent); padding: 0 4px; border-radius: 3px; flex-shrink: 0; }
 .card-phase { font-size: 11px; color: var(--text2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .card-meta { display: flex; gap: 8px; font-size: 11px; color: var(--text2); margin-top: 4px; }
 .card-score { font-size: 11px; font-weight: 600; }
@@ -1406,6 +1413,7 @@ function cardHtml(app, s) {
     + '<div class="card-status">'
     + '<div class="dot ' + status + '"></div>'
     + '<div class="card-name">' + (s ? s.name : app.name) + '</div>'
+    + (app.mcp ? '<span class="mcp-badge" title="MCP server — verified via protocol smoke">MCP</span>' : '')
     + (node ? '<div class="card-node">' + node + '</div>' : '')
     + '</div>'
     + '<div class="card-cats">' + cats + '</div>'
