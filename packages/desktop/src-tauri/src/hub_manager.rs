@@ -1963,8 +1963,6 @@ pub(crate) fn append_desktop_log_for(
             }
         }
         Err(err) => {
-            // Last-resort fallback: write to stderr so the message is not
-            // silently lost when the log file cannot be opened.
             stderr_fallback(&format!(
                 "[desktop-log-fallback] failed to write {}: {}",
                 log_path.display(),
@@ -1974,6 +1972,8 @@ pub(crate) fn append_desktop_log_for(
             return Err(err);
         }
     }
+
+    crate::error_reporting::record_log_event(operation, message);
     Ok(log_path)
 }
 
@@ -4284,6 +4284,9 @@ fn render_runtime_env_content(
     };
     let (container_uid, container_gid, docker_gid) = resolve_hub_container_identity();
     let docker_gid_line = format!("DOCKER_GID={docker_gid}\n");
+    let sentry_dsn_line = get_non_empty_env_value(existing, "SENTRY_DSN")
+        .map(|dsn| format!("SENTRY_DSN={dsn}\n"))
+        .unwrap_or_default();
 
     format!(
         "# Preserved (generated once, survive upgrades)\n\
@@ -4303,7 +4306,8 @@ fn render_runtime_env_content(
          CI_HUB_CONTAINER_GID={container_gid}\n\
          {private_vpn_user_disabled_line}\
          {compose_profiles_line}\
-         {device_id_line}",
+         {device_id_line}\
+         {sentry_dsn_line}",
         root_folder_host = root_folder_host,
         jwt_secret = jwt_secret,
         postgres_password = postgres_password,
@@ -4318,6 +4322,7 @@ fn render_runtime_env_content(
         private_vpn_user_disabled_line = private_vpn_user_disabled_line,
         compose_profiles_line = compose_profiles_line,
         device_id_line = device_id_line,
+        sentry_dsn_line = sentry_dsn_line,
     )
 }
 

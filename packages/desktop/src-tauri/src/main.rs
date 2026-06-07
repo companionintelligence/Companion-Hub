@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod discovery;
+mod error_reporting;
 pub mod hub_manager;
 pub mod port_manager;
 mod tray;
@@ -140,7 +141,11 @@ pub fn run() {
             // Restore saved window geometry
             let window = app
                 .get_webview_window("main")
-                .ok_or("main window not found")?;
+                .ok_or_else(|| {
+                    let message = "main window not found".to_string();
+                    error_reporting::capture_setup_failure(&message);
+                    message
+                })?;
 
             // macOS: config has decorations:true + titleBarStyle:Overlay which gives
             // native traffic lights over the WebView content. Perfect.
@@ -200,10 +205,17 @@ pub fn run() {
 
             // Initialize Hub data directory and compose file
             let resource_dir = app.path().resource_dir().map_err(|e| format!("{}", e))?;
-            let initialization = hub_manager::initialize_hub(&resource_dir)?;
+            let initialization = hub_manager::initialize_hub(&resource_dir).map_err(|error| {
+                error_reporting::capture_setup_failure(&error);
+                error
+            })?;
             let data_dir = initialization.data_dir.clone();
             let compose_path = initialization.compose_path.clone();
             let env_path = initialization.env_path.clone();
+            error_reporting::init_from_env(
+                &env_path,
+                option_env!("CI_HUB_BUILD_VERSION").unwrap_or("0.0.0"),
+            );
             let traefik_preflight = initialization.traefik_preflight;
             let _ = hub_manager::append_desktop_log_for(
                 &data_dir,
