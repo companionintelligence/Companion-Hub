@@ -141,6 +141,8 @@ jobs:
         env:
           NODE_ENV: production
           CI_CLOUD_URL: ${{ env.CI_CLOUD_URL }}
+          VITE_SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          VITE_SENTRY_RELEASE: ci-hub-desktop-web@${{ inputs.tag }}
         run: |
           pnpm run --filter=@ci-hub/common build
           pnpm run --filter=frontend build
