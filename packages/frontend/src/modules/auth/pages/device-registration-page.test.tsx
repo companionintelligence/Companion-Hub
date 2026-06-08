@@ -72,7 +72,7 @@ describe('DeviceRegistrationPage', () => {
 
     expect(await screen.findByRole('heading', { name: 'Step 2: Connect this device' })).toBeInTheDocument();
     expect(
-      screen.getByText('In Companion Account, click Add Device, name this Companion Hub, then paste the pairing code here to finish registration.'),
+      screen.getByText('In your Companion Account, click Add Device, name your Hub, then paste the pairing code here to finish registration.'),
     ).toBeInTheDocument();
     expect(screen.getByText('device-123')).toBeInTheDocument();
     expect(screen.getByLabelText('Enter Pairing Code:')).toBeInTheDocument();
