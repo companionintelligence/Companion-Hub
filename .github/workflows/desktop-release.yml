@@ -71,6 +71,11 @@ jobs:
     timeout-minutes: 45
     env:
       APPLE_SIGNING_CONFIGURED: ${{ secrets.APPLE_CERTIFICATE != '' && 'true' || '' }}
+      # Sentry symbol/sourcemap upload runs only when SENTRY_AUTH_TOKEN is set, and
+      # also needs repo/org variables SENTRY_ORG, SENTRY_FRONTEND_PROJECT and
+      # SENTRY_DESKTOP_PROJECT. Uploads are best-effort (continue-on-error) and
+      # never fail a release.
+      SENTRY_SYMBOLS_ENABLED: ${{ secrets.SENTRY_AUTH_TOKEN != '' && 'true' || '' }}
       # Windows signing uses GitHub OIDC + Azure login + Azure Artifact Signing.
       # Required environment secrets: AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_SUBSCRIPTION_ID,
       # AZURE_SIGNING_ENDPOINT, AZURE_SIGNING_ACCOUNT, AZURE_CERTIFICATE_PROFILE.
@@ -146,9 +151,28 @@ jobs:
           CI_CLOUD_URL: ${{ env.CI_CLOUD_URL }}
           VITE_SENTRY_DSN: ${{ secrets.SENTRY_FRONTEND_DSN }}
           VITE_SENTRY_RELEASE: ci-hub-frontend@${{ inputs.tag }}
+          # Emit production source maps only when we will upload them to Sentry.
+          VITE_BUILD_SOURCEMAPS: ${{ secrets.SENTRY_AUTH_TOKEN != '' && '1' || '' }}
         run: |
           pnpm run --filter=@ci-hub/common build
           pnpm run --filter=frontend build
+      - name: Upload frontend source maps to Sentry
+        if: env.BUILD_ENABLED && env.SENTRY_SYMBOLS_ENABLED
+        continue-on-error: true
+        shell: bash
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ vars.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ vars.SENTRY_FRONTEND_PROJECT }}
+        run: |
+          # Inject debug IDs and upload maps tied to the frontend release, then
+          # delete the raw .map files so they are never shipped inside the bundle.
+          # Debug-id based resolution makes this work regardless of build host.
+          DIST="packages/frontend/dist/client"
+          npx --yes @sentry/cli@2 sourcemaps inject "$DIST"
+          npx --yes @sentry/cli@2 sourcemaps upload \
+            --release "ci-hub-frontend@${{ inputs.tag }}" "$DIST"
+          find "$DIST" -name '*.map' -delete
       - name: Bump Tauri version to match release tag
         if: env.BUILD_ENABLED
         shell: bash
@@ -301,6 +325,21 @@ jobs:
           exclude-azure-powershell-credential: true
           exclude-azure-developer-cli-credential: true
           exclude-interactive-browser-credential: true
+      - name: Upload desktop debug symbols to Sentry
+        if: env.BUILD_ENABLED && env.SENTRY_SYMBOLS_ENABLED
+        continue-on-error: true
+        shell: bash
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ vars.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ vars.SENTRY_DESKTOP_PROJECT }}
+        run: |
+          # Upload native debug info so Rust panics/crashes symbolicate in Sentry.
+          # Captures Windows PDBs plus any dSYM/DWARF present. NOTE: the release
+          # profile sets strip=true, so macOS/Linux symbol coverage is limited;
+          # set split-debuginfo or relax strip for full native symbolication.
+          npx --yes @sentry/cli@2 debug-files upload --include-sources \
+            "packages/desktop/src-tauri/target/${{ matrix.target }}/release" || true
       - name: Collect release artifacts
         if: env.BUILD_ENABLED
         id: artifacts
