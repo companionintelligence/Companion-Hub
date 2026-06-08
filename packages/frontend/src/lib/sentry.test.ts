@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+type MutableImportMetaEnv = {
+  -readonly [K in keyof ImportMetaEnv]: ImportMetaEnv[K];
+};
+
+const testEnv = import.meta.env as MutableImportMetaEnv;
+
 const { captureException, init, setTag, setExtra, withScope } = vi.hoisted(() => ({
   captureException: vi.fn(),
   init: vi.fn(),
@@ -28,16 +34,16 @@ describe('frontend sentry', () => {
     withScope.mockImplementation((callback: (scope: { setTag: typeof setTag; setExtra: typeof setExtra }) => void) => {
       callback({ setTag, setExtra });
     });
-    import.meta.env.CI_HUB_ENVIRONMENT = 'development';
-    import.meta.env.VITE_SENTRY_DSN = 'https://frontend@example.ingest.sentry.io/123456';
-    import.meta.env.VITE_SENTRY_RELEASE = 'ci-hub-frontend@test';
+    testEnv.CI_HUB_ENVIRONMENT = 'development';
+    testEnv.VITE_SENTRY_DSN = 'https://frontend@example.ingest.sentry.io/123456';
+    testEnv.VITE_SENTRY_RELEASE = 'ci-hub-frontend@test';
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   });
 
   afterEach(() => {
-    import.meta.env.CI_HUB_ENVIRONMENT = originalEnv.CI_HUB_ENVIRONMENT;
-    import.meta.env.VITE_SENTRY_DSN = originalEnv.VITE_SENTRY_DSN;
-    import.meta.env.VITE_SENTRY_RELEASE = originalEnv.VITE_SENTRY_RELEASE;
+    testEnv.CI_HUB_ENVIRONMENT = originalEnv.CI_HUB_ENVIRONMENT;
+    testEnv.VITE_SENTRY_DSN = originalEnv.VITE_SENTRY_DSN;
+    testEnv.VITE_SENTRY_RELEASE = originalEnv.VITE_SENTRY_RELEASE;
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   });
 
