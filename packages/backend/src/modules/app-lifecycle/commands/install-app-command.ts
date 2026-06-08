@@ -4,7 +4,6 @@ import { SSEService } from '@/core/sse/sse.service';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppHelpers } from '@/modules/apps/app.helpers';
-import { CloudflareClientService } from '@/modules/cloudflare/cloudflare-client.service';
 import { DockerService } from '@/modules/docker/docker.service';
 import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
 import { EnvUtils } from '@/modules/env/env.utils';
@@ -428,24 +427,8 @@ export class InstallAppCommand extends AppLifecycleCommand {
         }
       }, 30000);
 
-      // Create Cloudflare Tunnel route if exposedLocal is enabled (app is published to internet)
-      // This part now uses CloudflareClientService to SYNC state with CI-Cloud
-      // CI-Cloud will handle the actual DNS and Tunnel updates via the trigger in AppLifecycleService
-      logger.info(`[Cloudflare] Syncing state for ${appUrn}, exposureMode: ${form.exposureMode || (form.exposedLocal ? 'cloudflare' : 'local')}`);
-      try {
-        const cloudflareService = this.moduleRef.get(CloudflareClientService, { strict: false });
-        if (cloudflareService) {
-          logger.info('[Cloudflare] CloudflareClientService available. State sync will be triggered by AppLifecycleService.');
-        } else {
-          logger.warn(`[Cloudflare] CloudflareClientService not available for ${appUrn}`);
-        }
-      } catch (error) {
-        logger.error(`[Cloudflare] Exception syncing state for ${appUrn}: ${error}`);
-        if (error instanceof Error) {
-          logger.error(`[Cloudflare] Error stack: ${error.stack}`);
-        }
-        // Don't fail the installation if Cloudflare sync fails
-      }
+      // Cloudflare public DNS/tunnel sync runs in AppLifecycleService.syncExposure()
+      // once the install completes and the app is marked running — not here.
 
       // Regenerate Traefik file-based config after app is installed and started
       const effectiveExposure = form.exposureMode || (form.exposedLocal ? 'cloudflare' : 'local');

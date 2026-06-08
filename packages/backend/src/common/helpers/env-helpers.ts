@@ -36,8 +36,6 @@ import {
 } from '../constants';
 import { quarantineStalePath } from './bind-mount-helpers';
 
-export const DEFAULT_REPO_URL = '';
-
 /**
  * Generates a random seed if it does not exist yet
  */

@@ -100,6 +100,32 @@ describe('OllamaBackend', () => {
       expect(loggerService.error).toHaveBeenCalledWith(expect.stringContaining('Failed to unload model phi4-mini'));
     });
 
+    it('should load embedding models via /api/embed (not /api/generate)', async () => {
+      (axios.post as any) = vi.fn().mockResolvedValue({ data: {} });
+
+      await backend.loadModel('nomic-embed-text', { embedding: true });
+
+      expect(axios.post).toHaveBeenCalledWith(
+        expect.stringContaining('/api/embed'),
+        expect.objectContaining({ model: 'nomic-embed-text', keep_alive: -1 }),
+        expect.any(Object),
+      );
+      const url = (axios.post as any).mock.calls[0][0] as string;
+      expect(url).not.toContain('/api/generate');
+    });
+
+    it('should unload embedding models via /api/embed with keep_alive=0', async () => {
+      (axios.post as any) = vi.fn().mockResolvedValue({ data: {} });
+
+      await backend.unloadModel('nomic-embed-text', { embedding: true });
+
+      expect(axios.post).toHaveBeenCalledWith(
+        expect.stringContaining('/api/embed'),
+        expect.objectContaining({ model: 'nomic-embed-text', keep_alive: 0 }),
+        expect.any(Object),
+      );
+    });
+
     it('should check if model is loaded via /api/ps', async () => {
       (axios.get as any) = vi.fn().mockResolvedValue({
         data: { models: [{ name: 'phi4-mini' }] },

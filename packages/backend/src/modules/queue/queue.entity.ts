@@ -4,6 +4,7 @@ import * as cron from 'node-cron';
 import type { ScheduledTask } from 'node-cron';
 import { AMQPConnectionError, AMQPError, type Connection, type Consumer, type RPCClient } from 'rabbitmq-client';
 import { z } from 'zod';
+import { HUB_QUEUE_ARGUMENTS } from './queue.constants';
 import type { EventPublisher } from './event.publisher';
 import type { QueueConnectionState } from './queue.factory';
 
@@ -34,7 +35,7 @@ export class Queue<T extends z.ZodType, R extends z.ZodType<{ success: boolean; 
   private registerConsumer(callback: (data: z.output<T> & { eventId: string }, reply: (response: z.input<R>) => Promise<void>) => Promise<void>) {
     try {
       this.activeConsumer = this.rabbit.createConsumer(
-        { queue: this.queueName, concurrency: this.workers, queueOptions: { durable: true } },
+        { queue: this.queueName, concurrency: this.workers, queueOptions: { durable: true, arguments: HUB_QUEUE_ARGUMENTS } },
         async (req, reply) => {
           let rpcSuccess = false;
           let rpcResultMessage = '';

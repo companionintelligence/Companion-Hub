@@ -56,7 +56,6 @@ const getConfigDiffSchema = z.object({
   new: z.string().nullable(),
 });
 
-export class AppDto extends createZodDto(appSchema) {}
 export class MyAppsDto extends createZodDto(myAppsSchema) {}
 export class GuestAppsDto extends createZodDto(myAppsSchema) {}
 export class GetAppDto extends createZodDto(getAppSchema) {}

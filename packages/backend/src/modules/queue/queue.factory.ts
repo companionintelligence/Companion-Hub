@@ -4,6 +4,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable, type OnApplicationShutdown } from '@nestjs/common';
 import { Connection } from 'rabbitmq-client';
 import { z } from 'zod';
+import { HUB_QUEUE_ARGUMENTS } from './queue.constants';
 import { EventPublisher } from './event.publisher';
 import { Queue } from './queue.entity';
 
@@ -145,7 +146,7 @@ export class QueueFactory implements OnApplicationShutdown {
           timeout,
           confirm: true,
           maxAttempts: 3,
-          queues: [{ autoDelete: false, durable: true, queue: queueName }],
+          queues: [{ autoDelete: false, durable: true, queue: queueName, arguments: HUB_QUEUE_ARGUMENTS }],
         });
         const publisher = new EventPublisher(this.rabbit, this.logger, queueName);
         publisher.initialize();
@@ -259,7 +260,7 @@ export class QueueFactory implements OnApplicationShutdown {
       timeout,
       confirm: true,
       maxAttempts: 3,
-      queues: [{ autoDelete: false, durable: true, queue: queueName }],
+      queues: [{ autoDelete: false, durable: true, queue: queueName, arguments: HUB_QUEUE_ARGUMENTS }],
     });
 
     const queue = new Queue(

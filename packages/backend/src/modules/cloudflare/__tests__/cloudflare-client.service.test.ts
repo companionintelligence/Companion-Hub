@@ -148,7 +148,7 @@ describe('CloudflareClientService', () => {
 
       const result = await service.syncState('org-id', [], 'tun-id');
 
-      expect(result).toBe(true);
+      expect(result).toEqual({ ok: true, failed: [], synced: 0 });
       expect(mockAxiosInstance.post).toHaveBeenCalledWith(
         'tunnels/state',
         expect.objectContaining({ organizationId: 'org-id', tunnelId: 'tun-id' }),
@@ -156,15 +156,23 @@ describe('CloudflareClientService', () => {
       );
     });
 
+    it('should surface apps CI-Cloud could not create a DNS record for', async () => {
+      mockAxiosInstance.post.mockResolvedValue({ data: { success: true, failed: ['anything-llm'], synced: 1 } });
+
+      const result = await service.syncState('org-id', [], 'tun-id');
+
+      expect(result).toEqual({ ok: true, failed: ['anything-llm'], synced: 1 });
+    });
+
     it('should fail if no tunnelId', async () => {
       const result = await service.syncState('org-id', []);
-      expect(result).toBe(false);
+      expect(result).toEqual({ ok: false, failed: [], synced: 0 });
     });
 
     it('should handle axios error', async () => {
       mockAxiosInstance.post.mockRejectedValue(new Error('Network Error'));
       const result = await service.syncState('org-id', [], 'tun-id');
-      expect(result).toBe(false);
+      expect(result).toEqual({ ok: false, failed: [], synced: 0 });
     });
   });
 
