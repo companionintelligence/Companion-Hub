@@ -18,11 +18,13 @@ export interface InferenceBackend {
   /** Pull/download a model */
   pullModel(modelId: string, onProgress?: (progress: PullProgress) => void): Promise<void>;
 
-  /** Load a model into memory */
-  loadModel(modelId: string): Promise<void>;
+  /** Load a model into memory. Embedding models must be loaded via the
+   * embeddings endpoint, so pass `{ embedding: true }` for them. */
+  loadModel(modelId: string, options?: { embedding?: boolean }): Promise<void>;
 
-  /** Unload a model from memory */
-  unloadModel(modelId: string): Promise<void>;
+  /** Unload a model from memory. Pass `{ embedding: true }` for embedding
+   * models (they reject the text-generation endpoint). */
+  unloadModel(modelId: string, options?: { embedding?: boolean }): Promise<void>;
 
   /** Check if a specific model is loaded */
   isModelLoaded(modelId: string): Promise<boolean>;

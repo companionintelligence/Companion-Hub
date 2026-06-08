@@ -199,7 +199,7 @@ export class ModelPullerService {
     this.logger.info(`[ModelPuller] Loading ${catalogId} into memory`);
 
     try {
-      await backend.loadModel(curated.backendModelId);
+      await backend.loadModel(curated.backendModelId, { embedding: curated.modality === 'embedding' });
       this.modelRegistry.updateModelState(catalogId, 'loaded');
       this.logger.info(`[ModelPuller] Loaded ${catalogId}`);
     } catch (err) {
@@ -222,7 +222,7 @@ export class ModelPullerService {
     this.logger.info(`[ModelPuller] Unloading ${catalogId} from memory`);
 
     try {
-      await backend.unloadModel(curated.backendModelId);
+      await backend.unloadModel(curated.backendModelId, { embedding: curated.modality === 'embedding' });
       this.modelRegistry.updateModelState(catalogId, 'pulled');
       this.logger.info(`[ModelPuller] Unloaded ${catalogId}`);
     } catch (err) {
