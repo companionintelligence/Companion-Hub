@@ -20,8 +20,10 @@ import { ModelCard } from '@/modules/onboarding/components/ai-setup/primitives';
 import { ModelIcon } from '@/modules/onboarding/components/ai-setup/icons';
 import { modelTags, modelMeta, modelScores } from '@/modules/onboarding/components/ai-setup/model-selection-card';
 import { OtherModelsSection } from '@/modules/onboarding/components/ai-setup/model-selection-card';
+import { useTranslation } from 'react-i18next';
 
 export const AiSettingsContainer = () => {
+  const { t } = useTranslation();
   const [loading, setLoading] = useState(true);
   const [rescanning, setRescanning] = useState(false);
   const [saving, setSaving] = useState(false);
