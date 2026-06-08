@@ -103,10 +103,16 @@ export class OllamaBackend implements InferenceBackend {
     }
   }
 
-  async loadModel(modelId: string): Promise<void> {
+  async loadModel(modelId: string, options?: { embedding?: boolean }): Promise<void> {
     this.logger.info(`[Ollama] Loading model: ${modelId}`);
     try {
-      await axios.post(`${this.configuredUrl}/api/generate`, { model: modelId, prompt: '', keep_alive: -1 }, { timeout: 120000 });
+      if (options?.embedding) {
+        // Embedding models reject /api/generate with HTTP 400 — preload them via
+        // the embeddings endpoint instead. keep_alive=-1 keeps them resident.
+        await axios.post(`${this.configuredUrl}/api/embed`, { model: modelId, input: '', keep_alive: -1 }, { timeout: 120000 });
+      } else {
+        await axios.post(`${this.configuredUrl}/api/generate`, { model: modelId, prompt: '', keep_alive: -1 }, { timeout: 120000 });
+      }
       this.logger.info(`[Ollama] Model loaded and pinned: ${modelId}`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -115,10 +121,14 @@ export class OllamaBackend implements InferenceBackend {
     }
   }
 
-  async unloadModel(modelId: string): Promise<void> {
+  async unloadModel(modelId: string, options?: { embedding?: boolean }): Promise<void> {
     this.logger.info(`[Ollama] Unloading model: ${modelId}`);
     try {
-      await axios.post(`${this.configuredUrl}/api/generate`, { model: modelId, prompt: '', keep_alive: 0 }, { timeout: 30000 });
+      if (options?.embedding) {
+        await axios.post(`${this.configuredUrl}/api/embed`, { model: modelId, input: '', keep_alive: 0 }, { timeout: 30000 });
+      } else {
+        await axios.post(`${this.configuredUrl}/api/generate`, { model: modelId, prompt: '', keep_alive: 0 }, { timeout: 30000 });
+      }
       this.logger.info(`[Ollama] Model unloaded: ${modelId}`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

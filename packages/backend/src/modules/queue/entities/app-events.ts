@@ -74,7 +74,6 @@ const uninstallAppCommandSchema = z.object({
 });
 
 export const appEventSchema = commonAppCommandSchema.or(restoreAppCommandSchema).or(updateAppCommandSchema).or(uninstallAppCommandSchema);
-export type AppEvent = z.infer<typeof appEventSchema>;
 
 export const appEventResultSchema = z.object({
   success: z.boolean(),
@@ -82,7 +81,6 @@ export const appEventResultSchema = z.object({
 });
 
 export type AppEventFormInput = z.input<typeof commonAppCommandSchema>['form'];
-export type AppEventForm = z.output<typeof commonAppCommandSchema>['form'];
 
 @Injectable()
 export class AppEventsQueue extends Queue<typeof appEventSchema, typeof appEventResultSchema> {}

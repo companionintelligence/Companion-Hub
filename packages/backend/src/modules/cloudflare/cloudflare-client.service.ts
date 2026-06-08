@@ -40,6 +40,18 @@ export interface AppInfo {
   privilegedKind?: 'hub' | 'vpn';
 }
 
+/**
+ * Outcome of a CI-Cloud state sync. `ok` reflects whether the request itself
+ * succeeded; `failed` lists app names CI-Cloud could not create a public DNS
+ * record for (a partially-applied sync). Callers must treat a non-empty
+ * `failed` list as a user-visible failure — those apps will not resolve.
+ */
+export interface CloudflareSyncResult {
+  ok: boolean;
+  failed: string[];
+  synced: number;
+}
+
 @Injectable()
 export class CloudflareClientService {
   private readonly logger = new Logger(CloudflareClientService.name);
@@ -158,14 +170,14 @@ export class CloudflareClientService {
    * Sync local state (running apps) to CI-Cloud
    * CI-Cloud will then update Cloudflare Tunnel Config & DNS
    */
-  async syncState(organizationId: string, apps: AppInfo[], tunnelId?: string): Promise<boolean> {
+  async syncState(organizationId: string, apps: AppInfo[], tunnelId?: string): Promise<CloudflareSyncResult> {
     if (tunnelId) {
       this.tunnelId = tunnelId;
     }
 
     if (!this.tunnelId) {
       this.logger.warn('Cannot sync state: Tunnel not initialized and no tunnelId provided');
-      return false;
+      return { ok: false, failed: [], synced: 0 };
     }
 
     try {
@@ -200,9 +212,9 @@ export class CloudflareClientService {
           this.logger.log(`State sync successful${synced === undefined ? '' : ` (${synced} DNS record(s) synced)`}`);
         }
 
-        return true;
+        return { ok: true, failed, synced: synced ?? 0 };
       }
-      return false;
+      return { ok: false, failed: [], synced: 0 };
     } catch (error) {
       if (error instanceof Error) {
         this.logger.error(`Failed to sync state: ${error.message}`);
@@ -212,7 +224,7 @@ export class CloudflareClientService {
       if (axios.isAxiosError(error) && error.response) {
         this.logger.error(`Error Response: ${JSON.stringify(error.response.data)}`);
       }
-      return false;
+      return { ok: false, failed: [], synced: 0 };
     }
   }
 

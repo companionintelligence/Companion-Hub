@@ -99,6 +99,9 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
         case 'restore_error':
           toast.error(t('APP_RESTORE_ERROR', { id: appName }));
           break;
+        case 'public_dns_error':
+          toast.error(t('APP_ERROR_PUBLIC_DNS_FAILED', { id: appName }));
+          break;
         default:
           break;
       }

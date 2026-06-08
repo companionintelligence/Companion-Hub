@@ -78,8 +78,14 @@ jobs:
             CI_HUB_ENVIRONMENT=production
             SENTRY_DSN=${{ secrets.SENTRY_DSN }}
             SENTRY_RELEASE=ci-hub-backend@${{ needs.determine-release-type.outputs.tagname }}
+            SENTRY_ORG=${{ vars.SENTRY_ORG }}
+            SENTRY_BACKEND_PROJECT=${{ vars.SENTRY_BACKEND_PROJECT }}
+            SENTRY_FRONTEND_PROJECT=${{ vars.SENTRY_FRONTEND_PROJECT }}
+            VITE_BUILD_SOURCEMAPS=${{ secrets.SENTRY_AUTH_TOKEN != '' && '1' || '' }}
             VITE_SENTRY_DSN=${{ secrets.SENTRY_FRONTEND_DSN }}
             VITE_SENTRY_RELEASE=ci-hub-frontend@${{ needs.determine-release-type.outputs.tagname }}
+          secrets: |
+            sentry_auth_token=${{ secrets.SENTRY_AUTH_TOKEN }}
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}

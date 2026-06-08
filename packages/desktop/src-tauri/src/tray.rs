@@ -101,12 +101,20 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
 
     let show_hide_for_menu = Arc::clone(&show_hide_item);
 
-    let _tray = TrayIconBuilder::new()
-        .icon(Image::from_path("icons/icon.png").unwrap_or_else(|_| {
-            Image::from_bytes(include_bytes!("../icons/icon.png"))
-                .expect("failed to load tray icon")
-        }))
-        .icon_as_template(true)
+    // Load the tray icon defensively: prefer the packaged file, fall back to the
+    // embedded bytes, and if both fail (corrupt asset / unusual packaging) build
+    // the tray without an icon instead of panicking. A missing tray icon must
+    // never abort startup.
+    let tray_icon = Image::from_path("icons/icon.png")
+        .or_else(|_| Image::from_bytes(include_bytes!("../icons/icon.png")))
+        .map_err(|error| log::warn!("Tray icon unavailable, continuing without one: {error}"))
+        .ok();
+
+    let mut tray_builder = TrayIconBuilder::new();
+    if let Some(icon) = tray_icon {
+        tray_builder = tray_builder.icon(icon).icon_as_template(true);
+    }
+    let _tray = tray_builder
         .menu(&menu)
         .tooltip("Companion Hub")
         .on_menu_event(move |app, event| match event.id.as_ref() {

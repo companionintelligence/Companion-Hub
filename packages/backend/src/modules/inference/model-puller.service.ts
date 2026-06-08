@@ -162,6 +162,8 @@ export class ModelPullerService {
       throw new Error(`Model ${catalogId} not found in catalog`);
     }
     const backend = this.getBackend(curated.backend);
+    let lastLoggedPercent = -1;
+    let lastLoggedStatus = '';
 
     this.modelRegistry.trackModel(catalogId, 'pulling');
     this.logger.info(`[ModelPuller] Pulling ${catalogId} via ${curated.backend} (backendId: ${curated.backendModelId})`);
@@ -169,6 +171,20 @@ export class ModelPullerService {
     try {
       await backend.pullModel(curated.backendModelId, (progress) => {
         this.modelRegistry.updatePullProgress(catalogId, progress.percent);
+        const rawPercent = Number.isFinite(progress.percent) ? Math.max(0, Math.min(100, Math.round(progress.percent))) : null;
+        const percentBucket = rawPercent === null ? null : Math.floor(rawPercent / 10) * 10;
+        const status = progress.status?.trim() || 'pulling';
+        const shouldLogProgress = status !== lastLoggedStatus || (percentBucket !== null && percentBucket > lastLoggedPercent) || rawPercent === 100;
+
+        if (shouldLogProgress) {
+          const progressLabel = rawPercent === null ? status : `${rawPercent}% ${status}`;
+          this.logger.info(`[ModelPuller] Pull progress ${catalogId}: ${progressLabel}`);
+          lastLoggedStatus = status;
+          if (percentBucket !== null) {
+            lastLoggedPercent = percentBucket;
+          }
+        }
+
         onProgress?.(progress);
       });
 
@@ -199,7 +215,7 @@ export class ModelPullerService {
     this.logger.info(`[ModelPuller] Loading ${catalogId} into memory`);
 
     try {
-      await backend.loadModel(curated.backendModelId);
+      await backend.loadModel(curated.backendModelId, { embedding: curated.modality === 'embedding' });
       this.modelRegistry.updateModelState(catalogId, 'loaded');
       this.logger.info(`[ModelPuller] Loaded ${catalogId}`);
     } catch (err) {
@@ -222,7 +238,7 @@ export class ModelPullerService {
     this.logger.info(`[ModelPuller] Unloading ${catalogId} from memory`);
 
     try {
-      await backend.unloadModel(curated.backendModelId);
+      await backend.unloadModel(curated.backendModelId, { embedding: curated.modality === 'embedding' });
       this.modelRegistry.updateModelState(catalogId, 'pulled');
       this.logger.info(`[ModelPuller] Unloaded ${catalogId}`);
     } catch (err) {

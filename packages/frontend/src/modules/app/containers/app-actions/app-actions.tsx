@@ -423,10 +423,18 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
               openExternalUrl(appUrl);
             } else {
               // Fetch URL on-demand for local
-              client.get({ url: `/api/apps/${info.urn}/check-availability` }).then(({ data }) => {
-                const result = (data || {}) as { appUrl?: string };
-                if (result.appUrl) openExternalUrl(result.appUrl);
-              });
+              client
+                .get({ url: `/api/apps/${info.urn}/check-availability` })
+                .then(({ data }) => {
+                  const result = (data || {}) as { appUrl?: string };
+                  if (result.appUrl) openExternalUrl(result.appUrl);
+                })
+                .catch(() => {
+                  // A transient backend/tunnel failure (e.g. a Cloudflare 530
+                  // while the tunnel reconnects) must not become an unhandled
+                  // rejection surfaced as a generic error. Tell the user instead.
+                  toast.error("Couldn't reach the Hub — please try again in a moment.");
+                });
             }
           }}
           title={t('APP_ACTION_OPEN')}

@@ -35,15 +35,6 @@ export const createTestDatabase = async (testsuite: string) => {
   return drizzleClient;
 };
 
-export const dropTestDatabase = async (testsuite: string) => {
-  const client = getClient();
-  await client.connect();
-
-  await client.query(`DROP DATABASE IF EXISTS ${testsuite}`);
-
-  await client.end();
-};
-
 export const cleanTestData = async (db: TestDatabase) => {
   await db.delete(schema.link);
   await db.delete(schema.app);
