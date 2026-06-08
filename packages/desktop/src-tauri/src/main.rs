@@ -430,10 +430,19 @@ fn current_executable_dir() -> Result<PathBuf, String> {
 
 fn run_detached_mode() -> Result<String, String> {
     let resource_dir = current_executable_dir()?;
-    let initialization = hub_manager::initialize_hub(&resource_dir)?;
+    let initialization = hub_manager::initialize_hub(&resource_dir).map_err(|error| {
+        error_reporting::capture_setup_failure(&error);
+        error
+    })?;
     let data_dir = initialization.data_dir.clone();
     let compose_path = initialization.compose_path.clone();
     let env_path = initialization.env_path.clone();
+    // Headless mode skips run(), so initialize crash reporting here too —
+    // otherwise Linux/SSH deployments would report nothing.
+    error_reporting::init_from_env(
+        &env_path,
+        option_env!("CI_HUB_BUILD_VERSION").unwrap_or("0.0.0"),
+    );
     let hash_path = data_dir.join(".config-hash");
     let config_hash = compute_config_hash(&compose_path, &env_path);
 
@@ -458,7 +467,10 @@ fn run_detached_mode() -> Result<String, String> {
         );
     }
 
-    let message = hub_manager::start_hub(&compose_path, &env_path, &data_dir)?;
+    let message = hub_manager::start_hub(&compose_path, &env_path, &data_dir).map_err(|error| {
+        error_reporting::capture_setup_failure(&error);
+        error
+    })?;
     if let Err(error) = std::fs::write(&hash_path, &config_hash) {
         let _ = hub_manager::append_desktop_log_for(
             &data_dir,
