@@ -35,6 +35,8 @@ jobs:
           build-args: |
             CI_HUB_VERSION=nightly
             CI_HUB_ENVIRONMENT=nightly
+            SENTRY_DSN=${{ secrets.SENTRY_DSN }}
+            SENTRY_RELEASE=ci-hub-backend@nightly
             VITE_SENTRY_DSN=${{ secrets.SENTRY_FRONTEND_DSN }}
             VITE_SENTRY_RELEASE=ci-hub-frontend@nightly
           platforms: linux/amd64,linux/arm64

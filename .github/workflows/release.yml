@@ -76,6 +76,8 @@ jobs:
           build-args: |
             CI_HUB_VERSION=${{ needs.determine-release-type.outputs.tagname }}
             CI_HUB_ENVIRONMENT=production
+            SENTRY_DSN=${{ secrets.SENTRY_DSN }}
+            SENTRY_RELEASE=ci-hub-backend@${{ needs.determine-release-type.outputs.tagname }}
             VITE_SENTRY_DSN=${{ secrets.SENTRY_FRONTEND_DSN }}
             VITE_SENTRY_RELEASE=ci-hub-frontend@${{ needs.determine-release-type.outputs.tagname }}
           platforms: linux/amd64,linux/arm64
