@@ -6,11 +6,20 @@ const SECRET_PATTERNS = [
   /tskey-[A-Za-z0-9-]+/gi,
 ];
 
-const HOME_PATH_PATTERN = /\/Users\/[^/\s]+/g;
+const HOME_PATH_PATTERNS = [
+  /\/Users\/[^/\s]+/g, // macOS
+  /\/home\/[^/\s]+/g, // Linux
+  /[A-Za-z]:\\Users\\[^\\/\s]+/g, // Windows (backslash)
+  /[A-Za-z]:\/Users\/[^/\s]+/g, // Windows (forward-slash)
+];
 const APPLICATION_SUPPORT_PATTERN = /Library\/Application Support\/[^\s]+/g;
 
 export function scrubString(value: string): string {
-  let scrubbed = value.replace(HOME_PATH_PATTERN, '~/…').replace(APPLICATION_SUPPORT_PATTERN, '…/Application Support/…');
+  let scrubbed = value;
+  for (const pattern of HOME_PATH_PATTERNS) {
+    scrubbed = scrubbed.replace(pattern, '~');
+  }
+  scrubbed = scrubbed.replace(APPLICATION_SUPPORT_PATTERN, '…/Application Support/…');
 
   for (const pattern of SECRET_PATTERNS) {
     scrubbed = scrubbed.replace(pattern, '[Filtered]');
