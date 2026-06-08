@@ -71,8 +71,6 @@ const appContextSchema = z.object({
   tailscaleAvailable: z.boolean(),
 });
 
-export class UserSettingsDto extends createZodDto(settingsSchema) {}
-
 export class UserSettingsBody extends createZodDto(settingsSchema.partial()) {}
 
 export type { z as ZodType } from 'zod';
