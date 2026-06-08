@@ -207,11 +207,30 @@ jobs:
         shell: bash
         run: |
           cd packages/desktop
-          args=(--target "${{ matrix.target }}" -c '{"bundle":{"createUpdaterArtifacts":false}}')
+          base_args=(--target "${{ matrix.target }}" -c '{"bundle":{"createUpdaterArtifacts":false}}')
           if [[ "${{ runner.os }}" == "Linux" ]]; then
-            args+=(-b deb,rpm,appimage)
+            # Build deb/rpm first — these bundle entirely offline.
+            npx --yes @tauri-apps/cli@2 build "${base_args[@]}" -b deb,rpm
+            # AppImage bundling downloads linuxdeploy + AppRun from GitHub and
+            # regularly hits transient HTTP 5xx (e.g. 504), which previously
+            # failed the whole release. The Rust compile is already cached, so
+            # retry only re-attempts the download/bundle, not the build.
+            appimage_attempts=5
+            for attempt in $(seq 1 "$appimage_attempts"); do
+              if npx --yes @tauri-apps/cli@2 build "${base_args[@]}" -b appimage; then
+                break
+              fi
+              if [[ "$attempt" -eq "$appimage_attempts" ]]; then
+                echo "::error::AppImage bundling failed after ${appimage_attempts} attempts" >&2
+                exit 1
+              fi
+              backoff=$((attempt * 20))
+              echo "::warning::AppImage bundling failed (attempt ${attempt}/${appimage_attempts}); retrying in ${backoff}s" >&2
+              sleep "$backoff"
+            done
+          else
+            npx --yes @tauri-apps/cli@2 build "${base_args[@]}"
           fi
-          npx --yes @tauri-apps/cli@2 build "${args[@]}"
       # ── macOS Notarization ──────────────────────────────────────────
       - name: Notarize macOS DMG
         if: env.BUILD_ENABLED && runner.os == 'macOS' && env.APPLE_SIGNING_CONFIGURED
