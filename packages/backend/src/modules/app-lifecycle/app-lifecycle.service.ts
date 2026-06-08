@@ -935,11 +935,6 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       const result = await this.cloudflareClientService.syncState(orgInfo.id, exposedApps, orgInfo.tunnelId || undefined);
 
       const appEntries = exposedApps.filter((entry) => entry.privilegedKind !== 'hub');
-      if (appEntries.length > 0) {
-        this.logger.info(
-          `[Cloudflare] Public hostnames synced: ${appEntries.map((entry) => `${entry.name} -> ${entry.originServerName}`).join(', ')}`,
-        );
-      }
 
       if (!result.ok) {
         this.surfacePublicDnsFailure(
@@ -968,6 +963,12 @@ export class AppLifecycleService implements OnApplicationBootstrap {
             `These apps will not resolve at their public domain — verify the selected domain's zone is provisioned in CI-Cloud for this device.`,
           result.failed,
           toastTargets,
+        );
+      } else if (appEntries.length > 0) {
+        // Only log success once the sync fully completed (ok and no per-app
+        // failures); otherwise the failure branches above own the messaging.
+        this.logger.info(
+          `[Cloudflare] Public hostnames synced: ${appEntries.map((entry) => `${entry.name} -> ${entry.originServerName}`).join(', ')}`,
         );
       }
     } catch (error) {
