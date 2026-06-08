@@ -121,6 +121,19 @@ pub fn capture_setup_failure(message: &str) {
         &format!("desktop setup failed: {message}"),
         sentry::Level::Fatal,
     );
+
+    // The client guard lives in a `static OnceLock` and is never dropped, so a
+    // fatal setup failure that precedes process exit would otherwise lose its
+    // event. Flush the background transport explicitly before we return.
+    flush(std::time::Duration::from_secs(2));
+}
+
+/// Best-effort flush of the Sentry background transport. No-op when Sentry is
+/// not configured. Safe to call before an imminent process exit.
+pub fn flush(timeout: std::time::Duration) {
+    if let Some(client) = sentry::Hub::current().client() {
+        client.flush(Some(timeout));
+    }
 }
 
 fn truncate(value: &str, max_len: usize) -> String {
