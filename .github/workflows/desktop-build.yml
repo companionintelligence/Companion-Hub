@@ -39,6 +39,9 @@ jobs:
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
             label: Windows (x64)
+          - platform: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            label: Windows (ARM64)
 
     name: Build — ${{ matrix.label }}
     runs-on: ${{ matrix.platform }}

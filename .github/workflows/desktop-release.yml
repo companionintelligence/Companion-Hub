@@ -62,6 +62,9 @@ jobs:
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
             label: Windows (x64)
+          - platform: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            label: Windows (ARM64)
     name: Build — ${{ matrix.label }}
     runs-on: ${{ matrix.platform }}
     environment: ${{ inputs.environment }}
@@ -372,6 +375,7 @@ jobs:
             | Platform | Installer | Notes |
             |---|---|---|
             | **Windows (x64)** | `.msi` or `-setup.exe` | Recommended for most Windows users |
+            | **Windows (ARM64)** | `.msi` or `-setup.exe` | Windows on ARM (Snapdragon and other ARM64 PCs) |
             | **macOS (Apple Silicon)** | `.dmg` | M1/M2/M3/M4 Macs |
             | **macOS (Intel)** | `.dmg` | Older Intel-based Macs |
             | **Linux (x64)** | `.deb`, `.rpm`, or `.AppImage` | Ubuntu/Debian, Fedora/RHEL, or universal |
@@ -416,12 +420,20 @@ jobs:
             [ -f "$f" ] && upload "$VERSION/macos/intel/$(basename "$f")" "$f"
           done
 
-          # Windows
+          # Windows x64
           for f in artifacts/release-x86_64-pc-windows-msvc/*.msi; do
             [ -f "$f" ] && upload "$VERSION/windows/x64/$(basename "$f")" "$f"
           done
           for f in artifacts/release-x86_64-pc-windows-msvc/*-setup.exe; do
             [ -f "$f" ] && upload "$VERSION/windows/x64/$(basename "$f")" "$f"
+          done
+
+          # Windows ARM64
+          for f in artifacts/release-aarch64-pc-windows-msvc/*.msi; do
+            [ -f "$f" ] && upload "$VERSION/windows/arm64/$(basename "$f")" "$f"
+          done
+          for f in artifacts/release-aarch64-pc-windows-msvc/*-setup.exe; do
+            [ -f "$f" ] && upload "$VERSION/windows/arm64/$(basename "$f")" "$f"
           done
 
           # Linux x64
@@ -467,6 +479,7 @@ jobs:
 
           const mappings = [
             ['windows-x86_64', 'release-x86_64-pc-windows-msvc', { msi: '.msi', exe: '-setup.exe' }],
+            ['windows-aarch64', 'release-aarch64-pc-windows-msvc', { msi: '.msi', exe: '-setup.exe' }],
             ['darwin-aarch64', 'release-aarch64-apple-darwin', { dmg: '.dmg' }],
             ['darwin-x86_64', 'release-x86_64-apple-darwin', { dmg: '.dmg' }],
             ['linux-x86_64', 'release-x86_64-unknown-linux-gnu', { deb: '.deb', rpm: '.rpm', appimage: '.AppImage' }],
@@ -484,7 +497,8 @@ jobs:
                 const stat = fs.statSync(path.join(dir, file));
                 const encodedFile = encodeURIComponent(file);
                 let r2Path;
-                if (platform.startsWith('windows')) r2Path = 'windows/x64';
+                if (platform === 'windows-aarch64') r2Path = 'windows/arm64';
+                else if (platform.startsWith('windows')) r2Path = 'windows/x64';
                 else if (platform === 'darwin-aarch64') r2Path = 'macos/arm';
                 else if (platform === 'darwin-x86_64') r2Path = 'macos/intel';
                 else if (platform === 'linux-x86_64') r2Path = fmt === 'appimage' ? 'linux/appimage/x64' : 'linux/' + fmt + '/x64';
