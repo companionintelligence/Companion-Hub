@@ -141,8 +141,8 @@ jobs:
         env:
           NODE_ENV: production
           CI_CLOUD_URL: ${{ env.CI_CLOUD_URL }}
-          VITE_SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
-          VITE_SENTRY_RELEASE: ci-hub-desktop-web@${{ inputs.tag }}
+          VITE_SENTRY_DSN: ${{ secrets.SENTRY_FRONTEND_DSN }}
+          VITE_SENTRY_RELEASE: ci-hub-frontend@${{ inputs.tag }}
         run: |
           pnpm run --filter=@ci-hub/common build
           pnpm run --filter=frontend build
@@ -192,6 +192,7 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          SENTRY_DESKTOP_DSN: ${{ secrets.SENTRY_DESKTOP_DSN }}
         run: |
           cd packages/desktop
           npx --yes @tauri-apps/cli@2 build --target ${{ matrix.target }} -c '{"bundle":{"createUpdaterArtifacts":false}}'
@@ -202,6 +203,7 @@ jobs:
           TAURI_BUNDLER_DMG_IGNORE_CI: ${{ runner.os == 'macOS' && 'true' || '' }}
           # Ad-hoc sign on macOS when no Apple certificate is configured
           APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && '-' || '' }}
+          SENTRY_DESKTOP_DSN: ${{ secrets.SENTRY_DESKTOP_DSN }}
         shell: bash
         run: |
           cd packages/desktop

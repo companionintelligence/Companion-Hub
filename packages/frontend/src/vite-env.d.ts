@@ -9,4 +9,6 @@ interface ImportMetaEnv {
    * Mirrors the Rust binary's compile-time `option_env!("CI_HUB_ENVIRONMENT")` check.
    */
   readonly CI_HUB_ENVIRONMENT: string;
+  readonly VITE_SENTRY_DSN?: string;
+  readonly VITE_SENTRY_RELEASE?: string;
 }

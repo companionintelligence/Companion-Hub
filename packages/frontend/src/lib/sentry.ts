@@ -1,10 +1,15 @@
 import * as Sentry from '@sentry/react';
 
+let sentryInitialized = false;
+
 function isTauri(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 }
 
 export function initHubSentry(): void {
+  if (sentryInitialized) {
+    return;
+  }
   if (!isTauri()) {
     return;
   }
@@ -16,15 +21,18 @@ export function initHubSentry(): void {
 
   Sentry.init({
     dsn,
-    environment: import.meta.env.MODE,
+    environment: import.meta.env.CI_HUB_ENVIRONMENT || import.meta.env.MODE,
     release: import.meta.env.VITE_SENTRY_RELEASE,
     enabled: true,
     tracesSampleRate: 0,
-    sendDefaultPii: false,
+    sendDefaultPii: true,
   });
 
+  sentryInitialized = true;
   Sentry.setTag('component', 'desktop-web');
 }
+
+initHubSentry();
 
 export function captureHubException(error: unknown, context?: Record<string, unknown>): void {
   if (!isTauri()) {

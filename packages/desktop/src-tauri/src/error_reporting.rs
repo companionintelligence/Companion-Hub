@@ -21,22 +21,46 @@ fn read_env_value(env_path: &Path, key: &str) -> Option<String> {
     None
 }
 
+fn read_first_env_value(env_path: &Path, keys: &[&str]) -> Option<String> {
+    for key in keys {
+        if let Some(value) = read_env_value(env_path, key) {
+            return Some(value);
+        }
+    }
+
+    for key in keys {
+        if let Ok(value) = std::env::var(key) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+
+    None
+}
+
 pub fn init_from_env(env_path: &Path, release: &str) {
     if SENTRY_GUARD.get().is_some() {
         return;
     }
 
-    let dsn = read_env_value(env_path, "SENTRY_DSN")
-        .or_else(|| std::env::var("SENTRY_DSN").ok())
-        .filter(|value| !value.trim().is_empty());
+    let dsn = read_first_env_value(env_path, &["SENTRY_DESKTOP_DSN", "SENTRY_DSN"]).or_else(|| {
+        option_env!("SENTRY_DESKTOP_DSN")
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| value.to_string())
+    });
 
     let Some(dsn) = dsn else {
         return;
     };
 
-    let environment = std::env::var("SENTRY_ENV")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
+    let environment = read_first_env_value(env_path, &["SENTRY_ENV", "CI_HUB_ENVIRONMENT"])
+        .or_else(|| {
+            option_env!("CI_HUB_ENVIRONMENT")
+                .filter(|value| !value.trim().is_empty())
+                .map(|value| value.to_string())
+        })
         .unwrap_or_else(|| "production".to_string());
 
     let guard = sentry::init((
@@ -44,7 +68,7 @@ pub fn init_from_env(env_path: &Path, release: &str) {
         sentry::ClientOptions {
             release: Some(format!("ci-hub-desktop-rust@{release}").into()),
             environment: Some(environment.into()),
-            send_default_pii: false,
+            send_default_pii: true,
             ..Default::default()
         },
     ));
@@ -107,4 +131,23 @@ fn truncate(value: &str, max_len: usize) -> String {
         "{}… [truncated]",
         value.chars().take(max_len).collect::<String>()
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_first_env_value;
+
+    #[test]
+    fn prefers_desktop_specific_env_key() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let env_path = tempdir.path().join("hub.env");
+        std::fs::write(
+            &env_path,
+            "SENTRY_DSN=https://backend@example.invalid/1\nSENTRY_DESKTOP_DSN=https://desktop@example.invalid/2\n",
+        )
+        .expect("write env");
+
+        let value = read_first_env_value(&env_path, &["SENTRY_DESKTOP_DSN", "SENTRY_DSN"]);
+        assert_eq!(value.as_deref(), Some("https://desktop@example.invalid/2"));
+    }
 }

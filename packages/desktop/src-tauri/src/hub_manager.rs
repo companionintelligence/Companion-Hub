@@ -4377,6 +4377,11 @@ fn render_runtime_env_content(
     let sentry_dsn_line = get_non_empty_env_value(existing, "SENTRY_DSN")
         .map(|dsn| format!("SENTRY_DSN={dsn}\n"))
         .unwrap_or_default();
+    let sentry_desktop_dsn_line = get_non_empty_env_value(existing, "SENTRY_DESKTOP_DSN")
+        .or_else(|| option_env!("SENTRY_DESKTOP_DSN").map(|dsn| dsn.to_string()))
+        .filter(|dsn| !dsn.trim().is_empty())
+        .map(|dsn| format!("SENTRY_DESKTOP_DSN={dsn}\n"))
+        .unwrap_or_default();
     let docker_socket_path = host_docker_socket_path();
     let docker_socket_path_line = format!(
         "DOCKER_SOCKET_PATH={}\n",
@@ -4403,6 +4408,7 @@ fn render_runtime_env_content(
          {private_vpn_user_disabled_line}\
          {compose_profiles_line}\
          {device_id_line}\
+         {sentry_desktop_dsn_line}\
          {sentry_dsn_line}",
         root_folder_host = root_folder_host,
         jwt_secret = jwt_secret,
@@ -4419,6 +4425,7 @@ fn render_runtime_env_content(
         private_vpn_user_disabled_line = private_vpn_user_disabled_line,
         compose_profiles_line = compose_profiles_line,
         device_id_line = device_id_line,
+        sentry_desktop_dsn_line = sentry_desktop_dsn_line,
         sentry_dsn_line = sentry_dsn_line,
     )
 }
