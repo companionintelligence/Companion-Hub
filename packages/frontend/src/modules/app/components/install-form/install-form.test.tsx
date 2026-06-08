@@ -25,8 +25,7 @@ vi.mock('react-i18next', () => ({
 
 vi.mock('@ci-hub/common/types', () => {
   const sanitizeAppSubdomain = (subdomain: string) =>
-    subdomain
-      .split('.')[0]
+    (subdomain.split('.')[0] ?? '')
       .toLowerCase()
       .replace(/[^a-z0-9-]/g, '-')
       .replace(/-+/g, '-')
