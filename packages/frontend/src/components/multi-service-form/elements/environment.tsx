@@ -53,7 +53,7 @@ export const EnvironmentConfig = ({ errors, serviceIndex, control, register }: P
                   <Input
                     {...register(`services.${serviceIndex}.environment.${index}.key`, { setValueAs: (v) => v.trim() || undefined })}
                     error={t(errors?.services?.[serviceIndex]?.environment?.[index]?.key?.message as string)}
-                    placeholder="KEY"
+                    placeholder={t('MULTI_SERVICE_ENVIRONMENT_KEY_PLACEHOLDER')}
                     className="table-row-input"
                   />
                 </TableCell>
@@ -61,7 +61,7 @@ export const EnvironmentConfig = ({ errors, serviceIndex, control, register }: P
                   <Input
                     {...register(`services.${serviceIndex}.environment.${index}.value`, { setValueAs: (v) => v.trim() || undefined })}
                     error={t(errors?.services?.[serviceIndex]?.environment?.[index]?.value?.message as string)}
-                    placeholder="value"
+                    placeholder={t('MULTI_SERVICE_ENVIRONMENT_VALUE_PLACEHOLDER')}
                     className="table-row-input"
                   />
                 </TableCell>

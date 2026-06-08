@@ -1,6 +1,7 @@
 import clsx from 'clsx';
 import { Check } from 'lucide-react';
 import type React from 'react';
+import i18next from 'i18next';
 
 export const THEME_COLOR_ENUM = {
   blue: 'blue',
@@ -41,7 +42,13 @@ interface ColorSelectorProps {
   onChange?: (value: ThemeColor) => void;
 }
 
-export const ColorSelector: React.FC<ColorSelectorProps> = ({ name = 'color', label = 'Primary color', className, value, onChange }) => {
+export const ColorSelector: React.FC<ColorSelectorProps> = ({
+  name = 'color',
+  label = i18next.t('SETTINGS_THEME_PRIMARY_COLOR'),
+  className,
+  value,
+  onChange,
+}) => {
   const handleChange = (color: ThemeColor) => {
     document.body.dataset.bsThemePrimary = color;
     onChange?.(color);

@@ -64,7 +64,7 @@ export const EditAppStoreDialog = ({ appStore }: Props) => {
           <DialogDescription className="flex flex-col">
             <form onSubmit={handleSubmit(validate)} id={formId}>
               <Input
-                label="Name"
+                label={t('APP_STORE_EDIT_DIALOG_NAME')}
                 className="mb-3"
                 error={formState.errors.name?.message}
                 disabled={editAppStore.isPending}

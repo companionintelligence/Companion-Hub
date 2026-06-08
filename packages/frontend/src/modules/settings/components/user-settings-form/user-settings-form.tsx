@@ -392,7 +392,7 @@ export const UserSettingsForm = (props: IProps) => {
                       id="settings-local-domain"
                       {...register('localDomain')}
                       error={errors.localDomain?.message}
-                      placeholder="ci.lan"
+                      placeholder={t('SETTINGS_GENERAL_LOCAL_DOMAIN_PLACEHOLDER')}
                       readOnly={initialValues?.advancedSettings === false}
                       className={initialValues?.advancedSettings === false ? '[&_input]:cursor-default [&_input]:bg-muted/50' : undefined}
                     />
@@ -514,7 +514,7 @@ export const UserSettingsForm = (props: IProps) => {
                       </>
                     }
                     error={errors.domain?.message}
-                    placeholder="example.com"
+                    placeholder={t('SETTINGS_GENERAL_DOMAIN_PLACEHOLDER')}
                   />
                 </div>
                 <div className="mb-3">
@@ -708,7 +708,7 @@ export const UserSettingsForm = (props: IProps) => {
                       </>
                     }
                     error={errors.forwardAuthUrl?.message}
-                    placeholder="https://auth.example.com"
+                    placeholder={t('SETTINGS_GENERAL_FORWARD_AUTH_URL_PLACEHOLDER')}
                   />
                 </div>
                 <div className="mb-3">
@@ -719,7 +719,7 @@ export const UserSettingsForm = (props: IProps) => {
                     render={({ field: { onChange, value } }) => (
                       <Select value={value} defaultValue="info" onValueChange={onChange}>
                         <SelectTrigger className="mb-3" name="logLevel" label={t('SETTINGS_GENERAL_LOG_LEVEL')}>
-                          <SelectValue placeholder="Log level" />
+                          <SelectValue placeholder={t('SETTINGS_GENERAL_LOG_LEVEL')} />
                         </SelectTrigger>
                         <SelectContent>
                           {Object.values(LOG_LEVEL_ENUM).map((level) => (

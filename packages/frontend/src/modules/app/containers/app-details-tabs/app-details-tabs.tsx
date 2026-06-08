@@ -183,7 +183,7 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, 
                 <span className="text-sm text-muted-foreground">{t('APP_DETAILS_DOWNLOAD_SIZE')}</span>
                 <span className="text-sm font-medium flex items-center gap-1">
                   <HardDrive size={13} />
-                  {imageSizeLoading ? 'Calculating...' : imageSizeFormatted ? `~${imageSizeFormatted}` : 'Unknown'}
+                  {imageSizeLoading ? t('APP_DETAILS_CALCULATING') : imageSizeFormatted ? `~${imageSizeFormatted}` : t('COMMON_UNKNOWN')}
                 </span>
               </div>
               {info.supported_architectures && info.supported_architectures.length > 0 && (

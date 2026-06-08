@@ -48,7 +48,7 @@ export const AddAppStoreDialog = () => {
   return (
     <div className="mt-3 align-self-end">
       <Button onClick={() => addAppStoreDisclosure.open()} intent="primary">
-        Add App Store
+        {t('APP_STORE_ADD_BUTTON')}
       </Button>
       <Dialog open={addAppStoreDisclosure.isOpen} onOpenChange={addAppStoreDisclosure.toggle}>
         <DialogContent>
@@ -62,7 +62,7 @@ export const AddAppStoreDialog = () => {
                 error={formState.errors.name?.message}
                 disabled={createAppStore.isPending}
                 type="text"
-                placeholder="my-awesome-repo"
+                placeholder={t('APP_STORE_ADD_FORM_NAME_PLACEHOLDER')}
                 {...register('name')}
               />
               <Input
@@ -71,7 +71,7 @@ export const AddAppStoreDialog = () => {
                 error={formState.errors.url?.message}
                 disabled={createAppStore.isPending}
                 type="text"
-                placeholder="https://github.com/myusername/my-awesome-repo"
+                placeholder={t('APP_STORE_ADD_FORM_URL_PLACEHOLDER')}
                 {...register('url')}
               />
             </form>

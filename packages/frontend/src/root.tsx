@@ -18,6 +18,7 @@ import type { RegistrationStatus } from './lib/registration-status';
 import { isRegistrationOperational, requiresDeviceRegistration } from './lib/registration-status';
 import { resolveRegistrationStatus } from './lib/registration-cache';
 import { captureHubException } from './lib/sentry';
+import i18next from 'i18next';
 
 /** Serialize a non-Error thrown value for a readable Sentry message (avoids "[object Object]"). */
 function describeUnknownError(error: unknown): string {
@@ -52,7 +53,7 @@ client.interceptors.response.use(async (res) => {
       }
     } catch (_e) {
       // If JSON parsing fails, use a default error message
-      data = { message: res.statusText || 'An error occurred' };
+      data = { message: res.statusText || i18next.t('COMMON_AN_ERROR_OCCURRED') };
     }
 
     const error = new TranslatableError(data.message || `HTTP ${res.status}: ${res.statusText}`);
@@ -191,6 +192,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
         const shouldShow = text.length === 0 && location.pathname !== '/login';
         if (shouldShow) {
           if (!document.getElementById('ci-hub-dev-fallback')) {
+            const fallbackLabel = i18next.t('ROOT_DEV_UI_MODULES_NOT_LOADED');
+            const reloadLabel = i18next.t('COMMON_RELOAD');
             const el = document.createElement('div');
             el.id = 'ci-hub-dev-fallback';
             el.style.position = 'fixed';
@@ -202,8 +205,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
             el.style.padding = '8px 12px';
             el.style.borderRadius = '8px';
             el.style.fontSize = '13px';
-            el.innerHTML =
-              '<div style="display:flex; gap:8px; align-items:center;"><span>Dev: UI modules not loaded</span><button id="ci-hub-dev-reload" style="background:#fff;color:#000;border:none;padding:6px 8px;border-radius:6px;cursor:pointer">Reload</button></div>';
+            el.innerHTML = `<div style="display:flex; gap:8px; align-items:center;"><span>${fallbackLabel}</span><button id="ci-hub-dev-reload" style="background:#fff;color:#000;border:none;padding:6px 8px;border-radius:6px;cursor:pointer">${reloadLabel}</button></div>`;
             document.body.appendChild(el);
             const btn = document.getElementById('ci-hub-dev-reload');
             btn?.addEventListener('click', () => location.reload());
@@ -229,7 +231,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
       <head>
-        <title>Companion Hub</title>
+        <title>{i18next.t('APP_NAME')}</title>
         <meta charSet="UTF-8" />
         <script src="/js/tabler.min.js" async />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -279,8 +281,8 @@ export default function App({ loaderData }: Route.ComponentProps) {
 }
 
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
-  let message = 'Oops!';
-  let details = 'An unexpected error occurred.';
+  let message = i18next.t('ROOT_ERROR_BOUNDARY_OOPS');
+  let details = i18next.t('ROOT_ERROR_BOUNDARY_UNEXPECTED_ERROR');
   let stack: string | undefined;
 
   if (import.meta.env.DEV) {
@@ -302,8 +304,8 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
   }
 
   if (isRouteErrorResponse(error)) {
-    message = error.status === 404 ? '404' : 'Error';
-    details = error.status === 404 ? 'The requested page could not be found.' : error.statusText || details;
+    message = error.status === 404 ? '404' : i18next.t('ROOT_ERROR_BOUNDARY_ERROR');
+    details = error.status === 404 ? i18next.t('ROOT_ERROR_BOUNDARY_PAGE_NOT_FOUND') : error.statusText || details;
   } else if (import.meta.env.DEV && error && error instanceof Error) {
     details = error.message;
     stack = error.stack;

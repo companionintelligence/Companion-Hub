@@ -55,10 +55,10 @@ export default () => {
                 {t('SETTINGS_NETWORK_TAB_TITLE')}
               </TabsTrigger>
               <TabsTrigger value="ai" className="hidden md:inline-flex">
-                AI
+                {t('SETTINGS_TAB_AI')}
               </TabsTrigger>
               <TabsTrigger value="system" className="hidden md:inline-flex">
-                System
+                {t('SETTINGS_TAB_SYSTEM')}
               </TabsTrigger>
               <TabsTrigger value="logs" className="hidden md:inline-flex">
                 {t('SETTINGS_LOGS_TAB_TITLE')}
@@ -70,8 +70,8 @@ export default () => {
                 <DropdownMenuContent>
                   <DropdownMenuItem onClick={() => handleTabChange('appstores')}>{t('SETTINGS_APPSTORES_TAB_TITLE')}</DropdownMenuItem>
                   <DropdownMenuItem onClick={() => handleTabChange('network')}>{t('SETTINGS_NETWORK_TAB_TITLE')}</DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => handleTabChange('ai')}>AI</DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => handleTabChange('system')}>System</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handleTabChange('ai')}>{t('SETTINGS_TAB_AI')}</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handleTabChange('system')}>{t('SETTINGS_TAB_SYSTEM')}</DropdownMenuItem>
                   <DropdownMenuItem onClick={() => handleTabChange('logs')}>{t('SETTINGS_LOGS_TAB_TITLE')}</DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
@@ -80,32 +80,32 @@ export default () => {
           <div className={cn('p-3 flex-1 min-h-0', isLogsTab ? 'overflow-hidden' : 'overflow-y-auto')} data-testid="settings-scroll-container">
             <div className={cn('mx-auto w-full', isLogsTab ? 'h-full max-w-none' : 'max-w-5xl')}>
               <TabsContent value="settings">
-                <Suspense fallback={<div>Loading...</div>}>
+                <Suspense fallback={<div>{t('SETTINGS_NETWORK_LOADING')}</div>}>
                   <UserSettingsContainer initialValues={userSettings} publicHubHostname={publicHubHostname} />
                 </Suspense>
               </TabsContent>
               <TabsContent value="security">
-                <Suspense fallback={<div>Loading...</div>}>
+                <Suspense fallback={<div>{t('SETTINGS_NETWORK_LOADING')}</div>}>
                   <SecurityContainer totpEnabled={Boolean(user.totpEnabled)} username={user.username} />
                 </Suspense>
               </TabsContent>
               <TabsContent value="appstores">
-                <Suspense fallback={<div>Loading...</div>}>
+                <Suspense fallback={<div>{t('SETTINGS_NETWORK_LOADING')}</div>}>
                   <AppStoresContainer />
                 </Suspense>
               </TabsContent>
               <TabsContent value="network">
-                <Suspense fallback={<div>Loading...</div>}>
+                <Suspense fallback={<div>{t('SETTINGS_NETWORK_LOADING')}</div>}>
                   <NetworkSettingsContainer />
                 </Suspense>
               </TabsContent>
               <TabsContent value="ai">
-                <Suspense fallback={<div>Loading...</div>}>
+                <Suspense fallback={<div>{t('SETTINGS_NETWORK_LOADING')}</div>}>
                   <AiSettingsContainer />
                 </Suspense>
               </TabsContent>
               <TabsContent value="system">
-                <Suspense fallback={<div>Loading...</div>}>
+                <Suspense fallback={<div>{t('SETTINGS_NETWORK_LOADING')}</div>}>
                   <GeneralActionsContainer />
                   <div className="mt-6">
                     <SystemInspectorContainer />
@@ -113,7 +113,7 @@ export default () => {
                 </Suspense>
               </TabsContent>
               <TabsContent value="logs" className="mt-0 h-full">
-                <Suspense fallback={<div>Loading...</div>}>
+                <Suspense fallback={<div>{t('SETTINGS_NETWORK_LOADING')}</div>}>
                   <LogsContainer />
                 </Suspense>
               </TabsContent>

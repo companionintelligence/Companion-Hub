@@ -1,5 +1,6 @@
 import { getLogo } from '@/lib/theme/theme';
 import { cn } from '@/lib/utils';
+import i18next from 'i18next';
 import type { ReactNode } from 'react';
 
 interface SetupPageShellProps {
@@ -12,7 +13,9 @@ interface SetupPageShellProps {
   contentClassName?: string;
 }
 
-export function SetupPageShell({ children, steps, title = 'Set Up Your Hub', showLogo = true, className, contentClassName }: SetupPageShellProps) {
+export function SetupPageShell({ children, steps, title, showLogo = true, className, contentClassName }: SetupPageShellProps) {
+  const resolvedTitle = title ?? i18next.t('HUB_STATUS_SETUP_YOUR_HUB');
+
   return (
     <div
       className={cn('flex flex-col items-center overflow-y-auto bg-background px-4 py-8', className)}
@@ -31,11 +34,11 @@ export function SetupPageShell({ children, steps, title = 'Set Up Your Hub', sho
                 style={{ maxWidth: '100%', height: 'auto' }}
               />
             )}
-            {title && <h1 className="text-2xl font-bold text-foreground">{title}</h1>}
+            {resolvedTitle && <h1 className="text-2xl font-bold text-foreground">{resolvedTitle}</h1>}
           </div>
         )}
 
-        {steps && <nav aria-label="Setup progress">{steps}</nav>}
+        {steps && <nav aria-label={i18next.t('SETUP_PROGRESS')}>{steps}</nav>}
 
         {children}
       </div>

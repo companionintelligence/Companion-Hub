@@ -6,6 +6,7 @@ import { AlertTriangle } from 'lucide-react';
 import type { HardwareProfile, HardwareTier } from '@ci-hub/common/types';
 import { resolveAmdHostRocmNotice } from '@/modules/onboarding/helpers/hardware-display';
 import { cn } from '@/lib/utils';
+import { useTranslation } from 'react-i18next';
 
 interface HardwareProfileCardProps {
   hardware: HardwareProfile;
@@ -13,14 +14,6 @@ interface HardwareProfileCardProps {
   onRescan: () => Promise<void>;
   rescanning?: boolean;
 }
-
-const TIER_BADGES: Record<HardwareTier, { label: string; color: string; emoji: string }> = {
-  high: { label: 'High', color: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200', emoji: '🚀' },
-  medium: { label: 'Medium', color: 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200', emoji: '⚡' },
-  low: { label: 'Low', color: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200', emoji: '💡' },
-  'cpu-only': { label: 'CPU Only', color: 'bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200', emoji: '🔧' },
-  insufficient: { label: 'Insufficient', color: 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200', emoji: '☁️' },
-};
 
 function formatMemory(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
@@ -38,7 +31,19 @@ function getClientPlatform(): 'linux' | 'windows' | 'macos' | 'other' {
 }
 
 export const HardwareProfileCard = ({ hardware, tier, onRescan, rescanning = false }: HardwareProfileCardProps) => {
-  const badge = TIER_BADGES[tier];
+  const { t } = useTranslation();
+  const tierBadges: Record<HardwareTier, { label: string; color: string; emoji: string }> = {
+    high: { label: t('ONBOARDING_TIER_HIGH'), color: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200', emoji: '🚀' },
+    medium: { label: t('ONBOARDING_TIER_MEDIUM'), color: 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200', emoji: '⚡' },
+    low: { label: t('ONBOARDING_TIER_LOW'), color: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200', emoji: '💡' },
+    'cpu-only': { label: t('ONBOARDING_TIER_CPU_ONLY'), color: 'bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200', emoji: '🔧' },
+    insufficient: {
+      label: t('ONBOARDING_TIER_INSUFFICIENT'),
+      color: 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200',
+      emoji: '☁️',
+    },
+  };
+  const badge = tierBadges[tier];
   const noGpu = !hardware.gpu.available;
   const amdHostRocm = resolveAmdHostRocmNotice(hardware);
   const nvidiaRuntimeMissing = hardware.gpu.vendor === 'nvidia' && !hardware.gpu.runtimeAvailable;
@@ -51,44 +56,46 @@ export const HardwareProfileCard = ({ hardware, tier, onRescan, rescanning = fal
       <CardContent className="p-4">
         <div className="flex items-center justify-between mb-3">
           <h3 className="text-sm font-semibold" data-testid="hw-card-title">
-            Hardware Detected
+            {t('ONBOARDING_HARDWARE_DETECTED')}
           </h3>
           <div className="flex items-center gap-2">
             <span className={`text-xs px-2 py-0.5 rounded-full font-medium inline-flex items-center ${badge.color}`} data-testid="tier-badge">
               {badge.emoji} <LabelWithHint label={badge.label} hint={ONBOARDING_HW_TIER_HINT} hintId="hw-tier" />
             </span>
             <Button variant="ghost" size="sm" onClick={onRescan} loading={rescanning} data-testid="rescan-btn">
-              Rescan
+              {t('ONBOARDING_RESCAN')}
             </Button>
           </div>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm mb-3">
           <div data-testid="hw-gpu">
-            <div className="text-muted-foreground text-xs">GPU</div>
-            <div className="font-medium">{hardware.gpu.available ? `${hardware.gpu.model}` : 'No GPU detected'}</div>
+            <div className="text-muted-foreground text-xs">{t('ONBOARDING_GPU')}</div>
+            <div className="font-medium">{hardware.gpu.available ? `${hardware.gpu.model}` : t('ONBOARDING_NO_GPU_DETECTED')}</div>
             {hardware.gpu.available && (
               <div className="text-xs text-muted-foreground">
                 {hardware.gpu.unifiedMemory ? (
-                  <LabelWithHint label="Unified Memory" hint={ONBOARDING_HW_UNIFIED_MEMORY_HINT} hintId="hw-unified-memory" />
+                  <LabelWithHint label={t('ONBOARDING_UNIFIED_MEMORY')} hint={ONBOARDING_HW_UNIFIED_MEMORY_HINT} hintId="hw-unified-memory" />
                 ) : (
-                  `${formatMemory(hardware.gpu.vramMb)} VRAM`
+                  `${formatMemory(hardware.gpu.vramMb)} ${t('ONBOARDING_VRAM')}`
                 )}
               </div>
             )}
           </div>
 
           <div data-testid="hw-ram">
-            <div className="text-muted-foreground text-xs">RAM</div>
+            <div className="text-muted-foreground text-xs">{t('ONBOARDING_RAM')}</div>
             <div className="font-medium">{formatMemory(hardware.ram.totalMb)}</div>
-            <div className="text-xs text-muted-foreground">{formatMemory(hardware.ram.availableMb)} available</div>
+            <div className="text-xs text-muted-foreground">
+              {formatMemory(hardware.ram.availableMb)} {t('ONBOARDING_AVAILABLE')}
+            </div>
           </div>
 
           <div data-testid="hw-cpu">
-            <div className="text-muted-foreground text-xs">CPU</div>
+            <div className="text-muted-foreground text-xs">{t('ONBOARDING_CPU')}</div>
             <div className="font-medium">{hardware.cpu.model}</div>
             <div className="text-xs text-muted-foreground">
-              {hardware.cpu.cores} cores · {hardware.cpu.arch}
+              {hardware.cpu.cores} {t('ONBOARDING_CORES')} · {hardware.cpu.arch}
             </div>
           </div>
         </div>
@@ -97,8 +104,7 @@ export const HardwareProfileCard = ({ hardware, tier, onRescan, rescanning = fal
           <div className="flex items-start gap-2 p-2.5 bg-yellow-50 dark:bg-yellow-950 border border-yellow-200 dark:border-yellow-800 rounded-md">
             <AlertTriangle className="h-4 w-4 text-yellow-600 dark:text-yellow-400 flex-shrink-0 mt-0.5" />
             <div className="text-xs text-yellow-800 dark:text-yellow-200">
-              <strong>No GPU detected.</strong> AI services will run on CPU only. Performance may be slower. Consider installing a graphics card for
-              better performance.
+              <strong>{t('ONBOARDING_NO_GPU_DETECTED_STRONG')}</strong> {t('ONBOARDING_NO_GPU_DETECTED_DESC')}
             </div>
           </div>
         )}
@@ -120,28 +126,22 @@ export const HardwareProfileCard = ({ hardware, tier, onRescan, rescanning = fal
 
         {nvidiaRuntimeMissing && (
           <div className="mt-3 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-100" data-testid="nvidia-runtime-warning">
-            <p className="mb-2">
-              NVIDIA GPU detected, but the container GPU runtime is not ready yet. Host-side Ollama can still use this GPU, but containerized backends
-              like vLLM need the NVIDIA container runtime before they can accelerate.
-            </p>
-            <p className="mb-2">
-              Automatic setup runs during startup in non-interactive mode. If your system requires a sudo password prompt, the automatic install is
-              skipped.
-            </p>
-            <p className="font-semibold">Action items:</p>
+            <p className="mb-2">{t('ONBOARDING_NVIDIA_RUNTIME_MISSING_DESC_1')}</p>
+            <p className="mb-2">{t('ONBOARDING_NVIDIA_RUNTIME_MISSING_DESC_2')}</p>
+            <p className="font-semibold">{t('ONBOARDING_ACTION_ITEMS')}</p>
             <div className="mt-2 space-y-3 leading-relaxed">
               <div>
-                <p className="font-semibold">1. Retry automatic setup</p>
-                <p>Close and reopen CI Hub to retry automatic GPU setup.</p>
+                <p className="font-semibold">1. {t('ONBOARDING_RETRY_AUTOMATIC_SETUP')}</p>
+                <p>{t('ONBOARDING_RETRY_AUTOMATIC_SETUP_DESC')}</p>
               </div>
 
               <div>
                 {showLinuxRuntimeSteps ? (
                   <>
-                    <p className="font-semibold">2. Manual install (distribution-specific)</p>
+                    <p className="font-semibold">2. {t('ONBOARDING_MANUAL_INSTALL_DISTRO_SPECIFIC')}</p>
                     <div className="mt-1.5 space-y-2">
                       <div className="rounded bg-black/30 p-2.5 font-mono text-[11px] leading-6 text-amber-100/90">
-                        <p className="font-semibold text-amber-100">Debian/Ubuntu</p>
+                        <p className="font-semibold text-amber-100">{t('ONBOARDING_DISTRO_DEBIAN_UBUNTU')}</p>
                         <p>sudo mkdir -p /etc/apt/keyrings</p>
                         <p>
                           curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o
@@ -156,7 +156,7 @@ export const HardwareProfileCard = ({ hardware, tier, onRescan, rescanning = fal
                       </div>
 
                       <div className="rounded bg-black/30 p-2.5 font-mono text-[11px] leading-6 text-amber-100/90">
-                        <p className="font-semibold text-amber-100">RHEL/Fedora</p>
+                        <p className="font-semibold text-amber-100">{t('ONBOARDING_DISTRO_RHEL_FEDORA')}</p>
                         <p>
                           curl -fsSL https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo | sudo tee
                           /etc/yum.repos.d/nvidia-container-toolkit.repo
@@ -165,17 +165,16 @@ export const HardwareProfileCard = ({ hardware, tier, onRescan, rescanning = fal
                       </div>
 
                       <div className="rounded bg-black/30 p-2.5 font-mono text-[11px] leading-6 text-amber-100/90">
-                        <p className="font-semibold text-amber-100">Arch/Manjaro</p>
+                        <p className="font-semibold text-amber-100">{t('ONBOARDING_DISTRO_ARCH_MANJARO')}</p>
                         <p>sudo pacman -Sy --noconfirm nvidia-container-toolkit</p>
                       </div>
                     </div>
                   </>
                 ) : (
                   <>
-                    <p className="font-semibold">2. Complete GPU support in your host environment</p>
+                    <p className="font-semibold">2. {t('ONBOARDING_COMPLETE_GPU_SUPPORT_HOST')}</p>
                     <div className="mt-1.5 rounded bg-black/30 p-2.5 text-[11px] leading-6 text-amber-100/90">
-                      On Windows, open Docker Desktop and confirm WSL2 GPU support is enabled. On other non-Linux hosts, verify your Docker setup and
-                      NVIDIA drivers support GPU passthrough for containers before rescanning.
+                      {t('ONBOARDING_COMPLETE_GPU_SUPPORT_HOST_DESC')}
                     </div>
                   </>
                 )}
@@ -183,7 +182,7 @@ export const HardwareProfileCard = ({ hardware, tier, onRescan, rescanning = fal
 
               {showLinuxRuntimeSteps && (
                 <div>
-                  <p className="font-semibold">3. Then run (same on all distributions)</p>
+                  <p className="font-semibold">3. {t('ONBOARDING_THEN_RUN')}</p>
                   <div className="mt-1.5 rounded bg-black/30 p-2.5 font-mono text-[11px] leading-6 text-amber-100/90">
                     <p>sudo nvidia-ctk runtime configure --runtime=docker</p>
                     <p>sudo systemctl restart docker</p>
@@ -194,7 +193,8 @@ export const HardwareProfileCard = ({ hardware, tier, onRescan, rescanning = fal
 
               <div>
                 <p>
-                  {showLinuxRuntimeSteps ? '4.' : '3.'} Return here and click <span className="font-semibold">Rescan</span>.
+                  {showLinuxRuntimeSteps ? '4.' : '3.'} {t('ONBOARDING_RETURN_AND_CLICK')}{' '}
+                  <span className="font-semibold">{t('ONBOARDING_RESCAN')}</span>.
                 </p>
               </div>
             </div>
@@ -206,7 +206,7 @@ export const HardwareProfileCard = ({ hardware, tier, onRescan, rescanning = fal
             className="mt-3 rounded-md border border-emerald-500/40 bg-emerald-500/10 p-3 text-xs text-emerald-100"
             data-testid="nvidia-runtime-ready"
           >
-            NVIDIA GPU detected and NVIDIA container runtime is configured. AI inference can use GPU acceleration.
+            {t('ONBOARDING_NVIDIA_RUNTIME_READY')}
           </div>
         )}
       </CardContent>

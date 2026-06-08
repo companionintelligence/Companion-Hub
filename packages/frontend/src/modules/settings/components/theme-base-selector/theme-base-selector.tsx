@@ -24,7 +24,7 @@ export const ThemeBaseSelector = ({ value, onChange }: { value?: ThemeBase; onCh
   return (
     <Select value={value} defaultValue="gray" onValueChange={handleChange}>
       <SelectTrigger className="mb-3" name="base-theme" label={t('SETTINGS_GENERAL_BASE_THEME')}>
-        <SelectValue placeholder="Base Theme" />
+        <SelectValue placeholder={t('SETTINGS_GENERAL_BASE_THEME')} />
       </SelectTrigger>
       <SelectContent>
         {Object.keys(THEME_BASE_ENUM).map((key) => (

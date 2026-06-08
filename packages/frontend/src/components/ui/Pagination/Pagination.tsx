@@ -2,11 +2,12 @@ import type * as React from 'react';
 
 import { ChevronLeft, ChevronRight, MoreHorizontal } from 'lucide-react';
 import clsx from 'clsx';
+import i18next from 'i18next';
 import { Button, type ButtonProps } from '../Button/Button';
 import './Pagination.css';
 
 const Pagination = ({ className, ...props }: React.ComponentProps<'nav'>) => (
-  <nav aria-label="pagination" className={clsx('m-0 ms-auto', className)} {...props} />
+  <nav aria-label={i18next.t('PAGINATION_LABEL')} className={clsx('m-0 ms-auto', className)} {...props} />
 );
 Pagination.displayName = 'Pagination';
 
@@ -33,14 +34,14 @@ const PaginationLink = ({ className, small = true, disabled, ...props }: Paginat
 PaginationLink.displayName = 'PaginationLink';
 
 const PaginationPrevious = ({ className, ...props }: React.ComponentProps<typeof PaginationLink>) => (
-  <PaginationLink aria-label="Go to previous page" small={false} className={clsx('', className)} {...props}>
+  <PaginationLink aria-label={i18next.t('PAGINATION_GO_TO_PREVIOUS_PAGE')} small={false} className={clsx('', className)} {...props}>
     <ChevronLeft className="" />
   </PaginationLink>
 );
 PaginationPrevious.displayName = 'PaginationPrevious';
 
 const PaginationNext = ({ className, ...props }: React.ComponentProps<typeof PaginationLink>) => (
-  <PaginationLink aria-label="Go to next page" small={false} className={clsx('', className)} {...props}>
+  <PaginationLink aria-label={i18next.t('PAGINATION_GO_TO_NEXT_PAGE')} small={false} className={clsx('', className)} {...props}>
     <ChevronRight className="" />
   </PaginationLink>
 );

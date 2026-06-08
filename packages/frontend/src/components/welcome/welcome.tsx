@@ -5,6 +5,7 @@ import { Switch } from '@/components/ui/Switch';
 import { getLogo } from '@/lib/theme/theme';
 import { useMutation } from '@tanstack/react-query';
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 
 type Props = {
   allowErrorMonitoring: boolean;
@@ -12,6 +13,7 @@ type Props = {
 
 export const Welcome = ({ allowErrorMonitoring }: Props) => {
   const [errorMonitoring, setErrorMonitoring] = useState(allowErrorMonitoring);
+  const { t } = useTranslation();
 
   const acknowledge = useMutation({
     ...acknowledgeWelcomeMutation(),
@@ -22,7 +24,7 @@ export const Welcome = ({ allowErrorMonitoring }: Props) => {
       <div className="w-full max-w-md">
         <div className="text-center mb-6">
           <img
-            alt="Companion Hub logo"
+            alt={t('APP_NAME')}
             src={getLogo(true)}
             height={80}
             width={80}
@@ -35,10 +37,10 @@ export const Welcome = ({ allowErrorMonitoring }: Props) => {
         </div>
         <Card className="w-full">
           <CardContent className="p-6">
-            <h2 className="text-xl font-semibold text-center mb-2">Thanks for using Companion Hub</h2>
-            <p className="text-sm text-muted-foreground text-center mb-6">Configure your preferences before getting started.</p>
+            <h2 className="text-xl font-semibold text-center mb-2">{t('WELCOME_TITLE')}</h2>
+            <p className="text-sm text-muted-foreground text-center mb-6">{t('WELCOME_SUBTITLE')}</p>
             <div className="flex flex-col items-center gap-4">
-              <Switch checked={errorMonitoring} onCheckedChange={setErrorMonitoring} label="Enable error reporting" />
+              <Switch checked={errorMonitoring} onCheckedChange={setErrorMonitoring} label={t('WELCOME_ENABLE_ERROR_REPORTING')} />
               <Button
                 intent="primary"
                 className="w-full"
@@ -46,7 +48,7 @@ export const Welcome = ({ allowErrorMonitoring }: Props) => {
                 loading={acknowledge.isPending}
                 disabled={acknowledge.isPending}
               >
-                Save and enter
+                {t('WELCOME_SAVE_AND_ENTER')}
               </Button>
             </div>
           </CardContent>

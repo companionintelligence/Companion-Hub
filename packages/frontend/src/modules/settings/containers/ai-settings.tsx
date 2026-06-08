@@ -145,7 +145,7 @@ export const AiSettingsContainer = () => {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       await fetchProfile(true);
     } catch (e) {
-      toast.error(`Rescan failed: ${(e as Error).message}`);
+      toast.error(t('AI_SETTINGS_RESCAN_FAILED', { error: (e as Error).message }));
       setRescanning(false);
     }
   };
@@ -183,7 +183,7 @@ export const AiSettingsContainer = () => {
     setSaving(true);
     try {
       if (!profile) {
-        toast.error('AI profile is not loaded yet. Please retry in a moment.');
+        toast.error(t('AI_SETTINGS_PROFILE_NOT_READY'));
         return;
       }
 
@@ -277,14 +277,14 @@ export const AiSettingsContainer = () => {
       }
 
       if (modelOperationErrors.length > 0) {
-        toast.success(`AI settings saved with ${modelOperationErrors.length} model issue(s).`);
+        toast.success(t('AI_SETTINGS_SAVED_WITH_ISSUES', { count: modelOperationErrors.length.toString() }));
       } else {
-        toast.success('AI settings saved');
+        toast.success(t('AI_SETTINGS_SAVED'));
       }
       // Refresh to show updated state
       await fetchProfile(true);
     } catch (e) {
-      toast.error(`Failed to save: ${(e as Error).message}`);
+      toast.error(t('AI_SETTINGS_SAVE_FAILED', { message: (e as Error).message }));
     } finally {
       setSaving(false);
     }
@@ -295,8 +295,8 @@ export const AiSettingsContainer = () => {
       <div className="space-y-5">
         <div className="rounded-3xl border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
           <div className="flex flex-col items-center gap-4 py-4 text-center">
-            <Loader2 role="img" aria-label="loading" className="h-8 w-8 animate-spin text-primary" />
-            <p className="text-sm text-muted-foreground">Detecting your hardware…</p>
+            <Loader2 role="img" aria-label={t('COMMON_LOADING')} className="h-8 w-8 animate-spin text-primary" />
+            <p className="text-sm text-muted-foreground">{t('AI_SETTINGS_DETECTING_HARDWARE')}</p>
           </div>
           <div className="space-y-4 mt-2">
             <Skeleton className="h-40 w-full rounded-2xl" />
@@ -316,10 +316,10 @@ export const AiSettingsContainer = () => {
     return (
       <div className="space-y-5">
         <div className="rounded-3xl border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6 text-center py-8">
-          <p className="text-destructive mb-4">Failed to load AI settings: {error}</p>
+          <p className="text-destructive mb-4">{t('AI_SETTINGS_LOAD_FAILED', { error: String(error) })}</p>
           <Button variant="outline" onClick={() => fetchProfile()}>
             <RefreshCw className="mr-2" size={16} />
-            Retry
+            {t('ERROR_PAGE_RETRY')}
           </Button>
         </div>
       </div>
@@ -350,13 +350,11 @@ export const AiSettingsContainer = () => {
         <>
           {/* Recommended Models — FTUE ModelCard grid */}
           <section className="rounded-3xl border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
-            <h2 className="text-base font-bold uppercase tracking-wide">Recommended Models</h2>
-            <p className="text-xs sm:text-sm text-muted-foreground mt-0.5 mb-5">
-              Your agents use the best fit for your hardware (pre-selected). Saving will pull and pin selected models.
-            </p>
+            <h2 className="text-base font-bold uppercase tracking-wide">{t('AI_SETTINGS_RECOMMENDED_MODELS')}</h2>
+            <p className="text-xs sm:text-sm text-muted-foreground mt-0.5 mb-5">{t('AI_SETTINGS_RECOMMENDED_MODELS_SUBTITLE')}</p>
 
             {backendCompatibleRecommendedModels.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No models recommended for your hardware tier.</p>
+              <p className="text-sm text-muted-foreground">{t('AI_SETTINGS_NO_RECOMMENDED_MODELS')}</p>
             ) : (
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                 {backendCompatibleRecommendedModels.map((model) => {
@@ -365,10 +363,14 @@ export const AiSettingsContainer = () => {
                   const statusBadge = (() => {
                     if (!tracked) return null;
                     if (tracked.state === 'pulling' && typeof tracked.pullProgress === 'number')
-                      return { text: `Downloading ${tracked.pullProgress}%`, cls: 'border-amber-500/30 bg-amber-500/10 text-amber-400' };
-                    if (tracked.state === 'pinned') return { text: 'Pinned', cls: 'border-primary/30 bg-primary/10 text-primary' };
+                      return {
+                        text: t('AI_SETTINGS_DOWNLOADING_PROGRESS', { progress: tracked.pullProgress }),
+                        cls: 'border-amber-500/30 bg-amber-500/10 text-amber-400',
+                      };
+                    if (tracked.state === 'pinned')
+                      return { text: t('AI_SETTINGS_PINNED_BADGE'), cls: 'border-primary/30 bg-primary/10 text-primary' };
                     if (tracked.state === 'pulled' || tracked.state === 'loaded')
-                      return { text: 'Downloaded', cls: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400' };
+                      return { text: t('AI_SETTINGS_DOWNLOADED_BADGE'), cls: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400' };
                     return {
                       text: tracked.state.charAt(0).toUpperCase() + tracked.state.slice(1),
                       cls: 'border-border bg-foreground/5 text-muted-foreground',
@@ -381,7 +383,7 @@ export const AiSettingsContainer = () => {
                         checkboxTestId={`recommended-model-checkbox-${model.id}`}
                         title={model.displayName}
                         icon={<ModelIcon model={model} />}
-                        tags={modelTags(model)}
+                        tags={modelTags(model, t)}
                         selected={isSelected}
                         onToggle={() => handleToggleModel(model.id)}
                         meta={modelMeta(model)}
@@ -416,19 +418,19 @@ export const AiSettingsContainer = () => {
 
           {/* Downloaded Models */}
           <section className="rounded-3xl border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
-            <h2 className="text-base font-bold uppercase tracking-wide mb-0.5">Downloaded Models</h2>
-            <p className="text-xs text-muted-foreground mb-4">Models currently active in the inference backend.</p>
+            <h2 className="text-base font-bold uppercase tracking-wide mb-0.5">{t('AI_SETTINGS_DOWNLOADED_MODELS')}</h2>
+            <p className="text-xs text-muted-foreground mb-4">{t('AI_SETTINGS_DOWNLOADED_MODELS_SUBTITLE')}</p>
 
-            {runtimeModelsLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
+            {runtimeModelsLoading && <p className="text-sm text-muted-foreground">{t('SETTINGS_NETWORK_LOADING')}</p>}
 
             {!runtimeModelsLoading && runtimeDiscoveryUnavailable && (
               <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-xs text-amber-400">
-                Runtime model discovery unavailable for the selected inference backend.
+                {t('AI_SETTINGS_RUNTIME_DISCOVERY_UNAVAILABLE')}
               </div>
             )}
 
             {!runtimeModelsLoading && !runtimeDiscoveryUnavailable && runtimeModels.length === 0 && (
-              <p className="text-sm text-muted-foreground">No models active in the inference backend.</p>
+              <p className="text-sm text-muted-foreground">{t('AI_SETTINGS_NO_ACTIVE_MODELS')}</p>
             )}
 
             {!runtimeModelsLoading && runtimeModels.length > 0 && (
@@ -443,7 +445,7 @@ export const AiSettingsContainer = () => {
                       <div className="text-[11px] text-muted-foreground uppercase tracking-wide truncate">{model.id}</div>
                     </div>
                     <span className="flex-shrink-0 text-[10px] px-1.5 py-0.5 rounded-md border border-emerald-500/30 bg-emerald-500/10 text-emerald-400 font-medium">
-                      Downloaded
+                      {t('AI_SETTINGS_DOWNLOADED_BADGE')}
                     </span>
                   </div>
                 ))}

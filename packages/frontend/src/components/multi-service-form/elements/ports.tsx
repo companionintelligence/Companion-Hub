@@ -93,7 +93,7 @@ export const PortsConfig = ({ errors, serviceIndex, control, register }: Props) 
                   <Input
                     {...register(`services.${serviceIndex}.addPorts.${index}.interface`, { setValueAs: (v) => v.trim() || undefined })}
                     error={errors?.services?.[serviceIndex]?.addPorts?.[index]?.interface?.message}
-                    placeholder="eth0"
+                    placeholder={t('MULTI_SERVICE_PORTS_INTERFACE_PLACEHOLDER')}
                   />
                 </TableCell>
                 <TableCell className="w-1">

@@ -105,7 +105,7 @@ export const AddLinkDialog: React.FC<AddLinkDialogProps> = ({ isOpen, onClose, l
               {...register('title')}
               maxLength={20}
               label={t('LINKS_FORM_LINK_TITLE')}
-              placeholder="Companion Hub demo"
+              placeholder={t('LINKS_FORM_TITLE_PLACEHOLDER')}
               error={errors.title?.message}
             />
             <Input
@@ -115,7 +115,7 @@ export const AddLinkDialog: React.FC<AddLinkDialogProps> = ({ isOpen, onClose, l
               maxLength={50}
               className="mt-3"
               label={t('LINKS_FROM_LINK_DESCRIPTION')}
-              placeholder="My super app"
+              placeholder={t('LINKS_FORM_DESCRIPTION_PLACEHOLDER')}
               error={errors.description?.message}
             />
             <Input
@@ -123,7 +123,7 @@ export const AddLinkDialog: React.FC<AddLinkDialogProps> = ({ isOpen, onClose, l
               {...register('url')}
               className="mt-3"
               label={t('LINKS_FORM_LINK_URL')}
-              placeholder="https://demo.companionintelligence.com"
+              placeholder={t('LINKS_FORM_URL_PLACEHOLDER')}
               error={errors.url?.message}
             />
 

@@ -27,6 +27,7 @@ const LanguageSelectorLabel = () => {
 export const LanguageSelector = (props: IProps) => {
   const { locale: initialLocale } = props;
   const [locale, setLocale] = React.useState<Locale>(initialLocale);
+  const { t } = useTranslation();
   const { showLabel = false } = props;
 
   const onChange = (newLocale: Locale) => {
@@ -37,7 +38,7 @@ export const LanguageSelector = (props: IProps) => {
   return (
     <Select value={locale} defaultValue="en-US" onValueChange={onChange}>
       <SelectTrigger className="mb-3 pe-3" name="language" label={showLabel && <LanguageSelectorLabel />}>
-        <SelectValue placeholder="Language" />
+        <SelectValue placeholder={t('SETTINGS_GENERAL_LANGUAGE')} />
       </SelectTrigger>
       <SelectContent>
         {Object.keys(locales).map((key) => (

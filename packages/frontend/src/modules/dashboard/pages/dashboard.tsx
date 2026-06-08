@@ -24,7 +24,7 @@ export default () => {
     const state = location.state as DashboardLocationState | null;
     if (!state?.showBackgroundInstallToast) return;
 
-    toast('Setup is still running in the background. App installs and downloads will continue — progress will show up here shortly.', {
+    toast(t('DASHBOARD_SETUP_RUNNING_BACKGROUND'), {
       duration: 7000,
     });
 

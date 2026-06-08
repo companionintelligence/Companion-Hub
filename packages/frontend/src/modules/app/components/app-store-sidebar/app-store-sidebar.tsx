@@ -5,12 +5,14 @@ import { useAppStoreState } from '@/stores/app-store';
 import clsx from 'clsx';
 import { ArrowLeftRight, LayoutGrid, Search } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router';
 
 const ALTERNATIVES_VIEW = '__alternatives__' as const;
 const STORE_INDEX_PATTERN = /^\/app-store\/?$/;
 
 export const AppStoreSidebar = () => {
+  const { t } = useTranslation();
   const { setCategory, category, setSearch, search, storeId } = useAppStoreState();
   const [localSearch, setLocalSearch] = useState(search);
   const navigate = useNavigate();
@@ -51,7 +53,7 @@ export const AppStoreSidebar = () => {
       <div className="p-4 border-b">
         <div className="relative">
           <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground z-10" />
-          <Input placeholder="Search apps..." className="pl-9 bg-muted/50" value={localSearch} onChange={onSearch} />
+          <Input placeholder={t('APP_STORE_SEARCH_APPS')} className="pl-9 bg-muted/50" value={localSearch} onChange={onSearch} />
         </div>
       </div>
       <div className="flex-1 overflow-y-auto py-4 px-2 no-scrollbar">
@@ -66,7 +68,7 @@ export const AppStoreSidebar = () => {
             onClick={() => handleCategoryClick(undefined)}
           >
             <LayoutGrid className="h-4 w-4" />
-            <span className="truncate">All</span>
+            <span className="truncate">{t('APP_STORE_ALL')}</span>
           </Button>
 
           {/* Alternatives - special item */}
@@ -80,7 +82,7 @@ export const AppStoreSidebar = () => {
             onClick={() => handleCategoryClick(ALTERNATIVES_VIEW)}
           >
             <ArrowLeftRight className="h-4 w-4" />
-            <span className="truncate">Alternatives</span>
+            <span className="truncate">{t('APP_STORE_ALTERNATIVES')}</span>
           </Button>
           <div className="my-2 mx-3 border-t border-border/50" />
 

@@ -3,6 +3,7 @@ import type { CloudProviderType } from '@ci-hub/common/types';
 import { useState } from 'react';
 import { type CloudProviderInput, CLOUD_KEY_PATTERNS, validateCloudKey } from '../../helpers/ai-setup-types';
 import { BrandLogo } from './icons';
+import { useTranslation } from 'react-i18next';
 
 interface CloudProviderCardProps {
   providers: CloudProviderInput[];
@@ -30,6 +31,7 @@ const PROVIDER_BRAND: Record<CloudProviderType, string> = {
  * When the hardware can't run local models, shows guidance to configure a provider.
  */
 export const CloudProviderCard = ({ providers, insufficientHardware, onUpdate }: CloudProviderCardProps) => {
+  const { t } = useTranslation();
   const [errors, setErrors] = useState<Record<string, string | null>>({});
 
   const getProvider = (type: CloudProviderType): CloudProviderInput =>
@@ -52,9 +54,7 @@ export const CloudProviderCard = ({ providers, insufficientHardware, onUpdate }:
 
   return (
     <div className="space-y-3" data-testid="cloud-inputs">
-      {insufficientHardware && (
-        <p className="text-xs text-muted-foreground">Your hardware can't run local AI models. Configure a cloud provider to use AI features.</p>
-      )}
+      {insufficientHardware && <p className="text-xs text-muted-foreground">{t('ONBOARDING_CLOUD_PROVIDER_REQUIRED_HINT')}</p>}
 
       {PROVIDER_ORDER.map((type) => {
         const pattern = CLOUD_KEY_PATTERNS[type];
@@ -68,12 +68,14 @@ export const CloudProviderCard = ({ providers, insufficientHardware, onUpdate }:
                 <BrandLogo name={PROVIDER_BRAND[type]} className="h-4 w-4 text-foreground/80" />
                 {PROVIDER_TITLE[type]}
               </label>
-              <span className="rounded-full bg-primary/15 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-primary">Optional</span>
+              <span className="rounded-full bg-primary/15 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-primary">
+                {t('ONBOARDING_OPTIONAL')}
+              </span>
             </div>
             <Input
               id={`cloud-key-input-${type}`}
               type="password"
-              placeholder={pattern.prefix ? `${pattern.prefix}...` : 'API key'}
+              placeholder={pattern.prefix ? `${pattern.prefix}...` : t('ONBOARDING_API_KEY')}
               value={current.apiKey}
               onChange={(e) => handleKeyChange(type, e.target.value)}
               className="mt-1"

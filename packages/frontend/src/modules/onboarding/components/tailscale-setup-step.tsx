@@ -222,7 +222,7 @@ export const TailscaleSetupStep = ({ onComplete, onSkip, onBack, embedded = fals
           </li>
         </ul>
         <div className="space-y-2">
-          <p className="text-xs text-muted-foreground">Install the Tailscale app on your devices:</p>
+          <p className="text-xs text-muted-foreground">{t('ONBOARDING_TAILSCALE_INSTALL_APP_DEVICES')}</p>
           <div className="flex flex-wrap gap-2">
             {TAILSCALE_DOWNLOADS.map((p) => (
               <a

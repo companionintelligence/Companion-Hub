@@ -1,5 +1,6 @@
 import { SetupStepIndicator, type SetupStepIndicatorState } from '@/components/setup/setup-step-indicator';
 import { createContext, useContext, type ReactNode } from 'react';
+import i18next from 'i18next';
 
 const StepperContext = createContext<number>(0);
 
@@ -35,7 +36,15 @@ export const StepTrigger: React.FC<StepTriggerProps> = ({ step, title, disabled,
   else if (isCompleted) state = 'completed';
 
   const defaultIcon = isCompleted ? (
-    <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3} role="img" aria-label="Completed">
+    <svg
+      className="h-3.5 w-3.5"
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke="currentColor"
+      strokeWidth={3}
+      role="img"
+      aria-label={i18next.t('COMMON_COMPLETED')}
+    >
       <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
     </svg>
   ) : (

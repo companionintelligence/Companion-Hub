@@ -5,6 +5,7 @@ import { portalAlternativesQueryOptions } from '@/lib/portal-alternatives';
 import { useQuery } from '@tanstack/react-query';
 import { LayoutGrid } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { getRecommendedApps } from '../helpers/alternatives';
 import type { DetectedService } from '../helpers/service-detection';
 import type { OnboardingApp } from '../helpers/types';
@@ -33,6 +34,7 @@ export const RecommendationsStep = ({
   onChange,
   pinnedSlugs = [],
 }: RecommendationsStepProps) => {
+  const { t } = useTranslation();
   const { apps: storeApps } = useAppContext();
   // Memoized so the `recommendations` memo below keeps a stable identity across re-renders
   // (an unstable detectedNames array would invalidate it every render and re-fire the emit effect).
@@ -172,10 +174,10 @@ export const RecommendationsStep = ({
     <>
       {isAltsError && (
         <div className="mb-3 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          Could not load app recommendations
+          {t('APP_STORE_COULD_NOT_LOAD_RECOMMENDATIONS')}
           {altsError instanceof Error ? `: ${altsError.message}` : ''}.{' '}
           <button type="button" className="font-medium underline" onClick={() => refetch()}>
-            Retry
+            {t('COMMON_RETRY')}
           </button>
         </div>
       )}
@@ -200,21 +202,19 @@ export const RecommendationsStep = ({
           </div>
         )}
         {!isAltsLoading && !isAltsError && flatApps.length === 0 && altsData && Object.keys(altsData).length > 0 && (
-          <p className="py-4 text-sm text-muted-foreground">
-            No matching apps are available in your store yet. You can skip this step or sync the app store.
-          </p>
+          <p className="py-4 text-sm text-muted-foreground">{t('ONBOARDING_NO_MATCHING_STORE_APPS')}</p>
         )}
         {flatApps.length > 0 && (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             {flatApps.map((app) => {
               const isSelected = selected.has(app.slug);
-              const description = app.shortDesc || (app.replaces ? `Open-source alternative to ${app.replaces}.` : '');
+              const description = app.shortDesc || (app.replaces ? t('ONBOARDING_OPEN_SOURCE_ALTERNATIVE_TO', { replaces: app.replaces }) : '');
               return (
                 <button
                   type="button"
                   key={app.slug}
                   data-testid="recommended-app"
-                  title={app.replaces ? `${app.name} — replaces ${app.replaces}` : app.name}
+                  title={app.replaces ? t('ONBOARDING_RECOMMENDED_APP_REPLACES_TITLE', { name: app.name, replaces: app.replaces }) : app.name}
                   onClick={() => toggleApp(app.slug)}
                   className={cn(
                     'group relative flex items-start gap-3 rounded-xl border p-3 text-left transition-colors',
@@ -241,14 +241,14 @@ export const RecommendationsStep = ({
       {!embedded && (
         <WizardNav>
           <Button variant="ghost" onClick={onBack}>
-            Back
+            {t('COMMON_BACK')}
           </Button>
           <div className="flex gap-2">
             <Button variant="ghost" onClick={onSkip}>
-              Skip to Install
+              {t('ONBOARDING_SKIP_TO_INSTALL')}
             </Button>
             <Button intent="primary" onClick={handleContinue} disabled={selected.size === 0}>
-              Continue with {selected.size} app{selected.size === 1 ? '' : 's'}
+              {t('ONBOARDING_CONTINUE_WITH_APPS', { count: selected.size, suffix: selected.size === 1 ? '' : 's' })}
             </Button>
           </div>
         </WizardNav>
@@ -262,11 +262,14 @@ export const RecommendationsStep = ({
     <WizardCard>
       <WizardHeader
         icon={<LayoutGrid />}
-        title="Recommended Apps"
+        title={t('ONBOARDING_RECOMMENDED_APPS')}
         description={
           detectedServices.length > 0
-            ? `We found ${detectedServices.length} Docker service${detectedServices.length > 1 ? 's' : ''} on this device. Here are some open-source alternatives you might like.`
-            : 'Here are some popular open-source apps you can self-host.'
+            ? t('ONBOARDING_RECOMMENDED_APPS_FOUND_SERVICES_DESC', {
+                count: detectedServices.length,
+                suffix: detectedServices.length > 1 ? 's' : '',
+              })
+            : t('ONBOARDING_RECOMMENDED_APPS_DESC')
         }
       />
       {content}

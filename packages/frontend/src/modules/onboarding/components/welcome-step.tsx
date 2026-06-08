@@ -4,19 +4,21 @@ import { useState } from 'react';
 import { Sparkles } from 'lucide-react';
 import { identifyServices, type DetectedService } from '../helpers/service-detection';
 import { IconBadge, WizardCard } from './wizard-ui';
+import { useTranslation } from 'react-i18next';
 
 interface WelcomeStepProps {
   onDetected: (services: DetectedService[]) => void;
 }
 
 export const WelcomeStep = ({ onDetected }: WelcomeStepProps) => {
+  const { t } = useTranslation();
   const [loading, setLoading] = useState(false);
 
   const handleDetect = async () => {
     setLoading(true);
     try {
       const res = await apiFetch('/api/system/detect-services', { credentials: 'include' });
-      if (!res.ok) throw new Error('Failed to detect services');
+      if (!res.ok) throw new Error(t('ONBOARDING_WELCOME_FAILED_DETECT_SERVICES'));
       const data = await res.json();
       const detected = identifyServices(data.services || []);
       onDetected(detected);
@@ -34,13 +36,10 @@ export const WelcomeStep = ({ onDetected }: WelcomeStepProps) => {
         <IconBadge>
           <Sparkles />
         </IconBadge>
-        <h2 className="mt-5 text-2xl font-bold tracking-tight">Welcome to Companion Hub</h2>
-        <p className="mt-2 max-w-md text-muted-foreground">
-          Let's get your private, local-first ecosystem set up. We'll inspect the Docker services running on this device and recommend open-source
-          alternatives you can install with one click.
-        </p>
+        <h2 className="mt-5 text-2xl font-bold tracking-tight">{t('ONBOARDING_WELCOME_TITLE')}</h2>
+        <p className="mt-2 max-w-md text-muted-foreground">{t('ONBOARDING_WELCOME_DESC')}</p>
         <Button intent="primary" onClick={handleDetect} loading={loading} disabled={loading} className="mt-6 w-64">
-          Continue to AI Setup
+          {t('ONBOARDING_CONTINUE_TO_AI_SETUP')}
         </Button>
       </div>
     </WizardCard>

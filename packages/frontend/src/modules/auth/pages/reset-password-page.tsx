@@ -74,19 +74,19 @@ export default () => {
             <div className="mb-3">
               <Info className="mx-auto h-10 w-10 text-muted-foreground" />
             </div>
-            <h2 className="text-xl font-semibold text-center mb-3">Demo Account Credentials</h2>
-            <p className="text-sm text-muted-foreground mb-4">For demo purposes, please use the following credentials to access the application.</p>
+            <h2 className="text-xl font-semibold text-center mb-3">{t('AUTH_DEMO_CREDENTIALS_TITLE')}</h2>
+            <p className="text-sm text-muted-foreground mb-4">{t('AUTH_DEMO_CREDENTIALS_SUBTITLE')}</p>
           </div>
 
           <Card className="bg-muted/50 mb-4">
             <CardContent className="p-4">
               <div className="flex flex-col gap-3">
                 <div className="flex items-center justify-between">
-                  <span className="text-sm text-muted-foreground font-medium">Email:</span>
+                  <span className="text-sm text-muted-foreground font-medium">{t('AUTH_DEMO_EMAIL_LABEL')}</span>
                   <code className="text-sm font-semibold text-primary">me@{domain}</code>
                 </div>
                 <div className="flex items-center justify-between">
-                  <span className="text-sm text-muted-foreground font-medium">Password:</span>
+                  <span className="text-sm text-muted-foreground font-medium">{t('AUTH_FORM_PASSWORD')}:</span>
                   <code className="text-sm font-semibold text-primary">{domain}</code>
                 </div>
               </div>
@@ -98,15 +98,14 @@ export default () => {
               <div className="flex items-start gap-2">
                 <Info className="h-4 w-4 mt-0.5 flex-shrink-0" />
                 <div>
-                  <strong>Need help?</strong> If you still can't log in with these credentials, please contact your system administrator for
-                  assistance.
+                  <strong>{t('AUTH_DEMO_NEED_HELP_LABEL')}</strong> {t('AUTH_DEMO_NEED_HELP_TEXT')}
                 </div>
               </div>
             </AlertDescription>
           </Alert>
 
           <Button asChild intent="primary" className="w-full">
-            <Link to="/login">Back to Login</Link>
+            <Link to="/login">{t('AUTH_RESET_PASSWORD_BACK_TO_LOGIN')}</Link>
           </Button>
         </div>
       );

@@ -23,6 +23,7 @@ import { TailscaleSetupStep } from './tailscale-setup-step';
 import { computeSelectionBudget } from '../helpers/onboarding-model-selection';
 import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
 import { Loader2 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 // Models a chat agent (Hermes, OpenClaw) can use as its default. LLMs are modality 'llm' in the real
 // catalog; the purpose check keeps this robust across catalog shapes.
@@ -82,6 +83,7 @@ export const AiSetupStep = ({
   onConfigChange,
   children,
 }: AiSetupStepProps) => {
+  const { t } = useTranslation();
   const [loading, setLoading] = useState(true);
   const [rescanning, setRescanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -246,7 +248,7 @@ export const AiSetupStep = ({
 
   const handleContinue = () => {
     const config = buildConfig();
-    if (!config) throw new Error('AI profile unavailable');
+    if (!config) throw new Error(t('ONBOARDING_AI_PROFILE_UNAVAILABLE'));
     onComplete?.(config);
   };
 
@@ -266,8 +268,8 @@ export const AiSetupStep = ({
     return (
       <div className="space-y-4 max-h-[66vh] overflow-y-auto pr-2" data-testid="ai-setup-loading">
         <div className="flex flex-col items-center gap-4 py-4 text-center">
-          <Loader2 role="img" aria-label="loading" className="h-8 w-8 animate-spin text-primary" />
-          <p className="text-sm text-muted-foreground">Detecting your hardware…</p>
+          <Loader2 role="img" aria-label={t('COMMON_LOADING')} className="h-8 w-8 animate-spin text-primary" />
+          <p className="text-sm text-muted-foreground">{t('ONBOARDING_DETECTING_HARDWARE')}</p>
         </div>
         <Skeleton className="h-24 w-full rounded-3xl" />
         <Skeleton className="h-48 w-full rounded-3xl" />
@@ -279,13 +281,15 @@ export const AiSetupStep = ({
   if (error || !profile) {
     return (
       <div className="text-center py-8" data-testid="ai-setup-error">
-        <p className="text-destructive mb-4">Failed to detect hardware: {error}</p>
+        <p className="text-destructive mb-4">
+          {t('ONBOARDING_FAILED_DETECT_HARDWARE')}: {error}
+        </p>
         <div className="flex gap-2 justify-center">
           <Button variant="outline" onClick={() => fetchProfile()}>
-            Retry
+            {t('COMMON_RETRY')}
           </Button>
           <Button variant="ghost" onClick={handleSkip}>
-            Skip AI Setup
+            {t('ONBOARDING_SKIP_AI_SETUP')}
           </Button>
         </div>
       </div>
@@ -370,11 +374,11 @@ export const AiSetupStep = ({
       {!embedded && (
         <div className="flex items-center justify-between pt-1">
           <Button variant="ghost" onClick={onBack} data-testid="ai-back-btn">
-            Back
+            {t('COMMON_BACK')}
           </Button>
           <div className="flex gap-2">
             <Button variant="outline" onClick={handleSkip} data-testid="ai-skip-btn">
-              Skip to Private VPN
+              {t('ONBOARDING_SKIP_TO_PRIVATE_VPN')}
             </Button>
             <Button
               intent="primary"
@@ -383,8 +387,8 @@ export const AiSetupStep = ({
               disabled={needsOllama && !isInsufficient && (checkingOllama || !ollamaStatus?.ready)}
             >
               {isInsufficient && cloudProviders.filter((p) => p.apiKey.trim()).length === 0
-                ? 'Continue to Private VPN without AI'
-                : 'Continue to Private VPN'}
+                ? t('ONBOARDING_CONTINUE_PRIVATE_VPN_WITHOUT_AI')
+                : t('ONBOARDING_CONTINUE_PRIVATE_VPN')}
             </Button>
           </div>
         </div>

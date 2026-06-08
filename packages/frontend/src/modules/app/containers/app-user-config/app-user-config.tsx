@@ -113,8 +113,8 @@ export const AppUserConfigEditors = ({ info, initialAppEnv, initialDockerCompose
         <div>
           <Tabs value={activeTab} onValueChange={setActiveTab}>
             <TabsList>
-              <TabsTrigger value="docker-compose">docker-compose.yml</TabsTrigger>
-              <TabsTrigger value="app-env">app.env</TabsTrigger>
+              <TabsTrigger value="docker-compose">{t('USER_CONFIG_DOCKER_COMPOSE_FILE_LABEL')}</TabsTrigger>
+              <TabsTrigger value="app-env">{t('USER_CONFIG_APP_ENV_FILE_LABEL')}</TabsTrigger>
             </TabsList>
             <TabsContent value="docker-compose">
               <CodeMirror

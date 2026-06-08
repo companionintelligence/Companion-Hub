@@ -12,10 +12,10 @@ export const useDateFormat = () => {
   const locale = i18next.language;
 
   const formatDate = (date?: Date | string) => {
-    if (!date) return 'Invalid date';
+    if (!date) return i18next.t('DATE_FORMAT_INVALID_DATE');
 
     const parsedDate = new Date(date);
-    if (Number.isNaN(parsedDate.getTime())) return 'Invalid date';
+    if (Number.isNaN(parsedDate.getTime())) return i18next.t('DATE_FORMAT_INVALID_DATE');
 
     return new Date(date).toLocaleString(locale, { timeZone });
   };
