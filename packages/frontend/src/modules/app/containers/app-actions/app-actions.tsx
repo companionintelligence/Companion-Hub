@@ -400,7 +400,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
       clearTimeout(initialTimeout);
       if (pollTimeout) clearTimeout(pollTimeout);
     };
-  }, [app?.status, info.no_gui, info.urn, isLocal]);
+  }, [app?.status, info.no_gui, info.urn, isLocal, t]);
 
   // Determine UI state for the Open button area
   const elapsed = pollStartRef.current ? Date.now() - pollStartRef.current : 0;

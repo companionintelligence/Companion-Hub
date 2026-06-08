@@ -576,7 +576,7 @@ export function HubStatus({ children }: HubStatusProps) {
     } finally {
       checkStatusInFlightRef.current = false;
     }
-  }, [isTauri, isTauriRelease, isWindows, checkHealthFallback, startHub]);
+  }, [isTauri, isTauriRelease, isWindows, checkHealthFallback, startHub, t]);
 
   // Track elapsed seconds while in Starting state
   useEffect(() => {
@@ -610,12 +610,12 @@ export function HubStatus({ children }: HubStatusProps) {
   const handleStartHub = useCallback(async () => {
     shouldAutoStartWindowsHubRef.current = false;
     await startHub(t('HUB_STATUS_FAILED_START'));
-  }, [startHub]);
+  }, [startHub, t]);
 
   const handleRestartHub = useCallback(async () => {
     shouldAutoStartWindowsHubRef.current = false;
     await startHub(t('HUB_STATUS_FAILED_RESTART'));
-  }, [startHub]);
+  }, [startHub, t]);
 
   // When the Hub transitions from a non-running state to Running, route loaders
   // that failed during startup (backend wasn't ready) would stay stale in React

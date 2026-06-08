@@ -38,7 +38,7 @@ export const JsonComposeEditor = ({ onChange }: Props) => {
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload);
     };
-  }, [isDirty]);
+  }, [isDirty, t]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: only run on mount
   useEffect(() => {

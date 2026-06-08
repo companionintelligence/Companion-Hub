@@ -29,7 +29,7 @@ export default () => {
     });
 
     navigate({ pathname: location.pathname, search: location.search, hash: location.hash }, { replace: true, state: null });
-  }, [location.hash, location.pathname, location.search, location.state, navigate]);
+  }, [location.hash, location.pathname, location.search, location.state, navigate, t]);
 
   const { data: systemData } = useQuery({
     ...systemLoadOptions(),
