@@ -24,6 +24,7 @@ interface AppConfig {
   supported_architectures?: string[];
   cihubAppVersion?: number;
   categories?: string[];
+  mcp?: { transport?: string };
 }
 
 interface AppTestSpec {
@@ -35,6 +36,9 @@ interface AppTestSpec {
   hasGui: boolean;
   categories: string[];
   priority: 'high' | 'medium' | 'low';
+  // MCP-server apps: verified via the JSON-RPC protocol smoke (qa-mcp.ts), not the HTTP path.
+  mcp: boolean;
+  mcpTransport?: string;
 }
 
 // High priority apps - commonly used, should always work
@@ -104,6 +108,8 @@ async function generateTestCatalog(): Promise<AppTestSpec[]> {
       hasGui: !config.no_gui,
       categories: config.categories || [],
       priority,
+      mcp: !!config.mcp,
+      mcpTransport: config.mcp?.transport,
     });
   }
 

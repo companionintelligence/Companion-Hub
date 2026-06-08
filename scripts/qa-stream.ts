@@ -134,6 +134,8 @@ function toQAResult(result: Record<string, unknown>): Record<string, unknown> {
     notes: result.notes ?? '',
     retried: result.retried ?? false,
     attempts: result.attempts ?? 1,
+    failKind: result.failKind ?? null,
+    mcp: result.mcp ?? false, // true for MCP protocol-smoke verdicts (lets triage bucket drift correctly)
     timestamp: new Date(ts).toISOString(),
   };
 }
@@ -261,6 +263,10 @@ interface AppConfig {
   url_suffix?: string;
   no_gui?: boolean;
   categories?: string[];
+  // Present on MCP-server apps (all also `no_gui`). Its presence routes the app to the MCP protocol
+  // smoke (scripts/qa-mcp.ts) instead of the HTTP path. Only `transport` is read here; qa-mcp reads
+  // the full block (command/args/env/manifest) itself.
+  mcp?: { transport?: string };
 }
 
 interface HealthCheck {
@@ -365,11 +371,26 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
     result.port = config.port ?? 80;
     result.categories = config.categories ?? [];
 
-    // Skip non-HTTP apps immediately — they're CLI/MCP/stdio services, not web apps.
-    // Pulling + running them just to fail the HTTP check produces misleading fail counts.
+    // Non-HTTP apps have no web surface to check. MCP-server apps (a `.mcp` block) speak JSON-RPC
+    // over stdio — route them to the protocol smoke (boot → initialize → tools/list → manifest
+    // assertion + read-only exec probe) so they get a real verdict instead of a blind skip. The
+    // dynamic import is GUARDED: if qa-mcp.ts isn't shipped alongside this file (manual partial scp),
+    // only MCP apps degrade to skip — every web app still runs. Reusing `containerName`
+    // (`qa-stream-${appId}`) means the per-app watchdog + forceTeardown already cover the MCP container.
     if (config.no_gui) {
+      if (config.mcp) {
+        try {
+          const { qaMcpApp } = await import('./qa-mcp.ts');
+          return await qaMcpApp(appId, { emit, containerName, result });
+        } catch (e) {
+          result.score = 'skip' as Score;
+          result.failKind = 'mcp-module';
+          result.notes = `MCP app but qa-mcp module unavailable: ${e instanceof Error ? e.message : String(e)}`;
+          return result;
+        }
+      }
       result.score = 'skip' as Score;
-      result.notes = 'no_gui: stdio/CLI service, no HTTP to verify';
+      result.notes = 'no_gui: non-MCP CLI service, no HTTP to verify';
       return result;
     }
 
