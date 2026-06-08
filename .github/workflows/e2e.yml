@@ -54,7 +54,7 @@ jobs:
         with:
           node-version: '22'
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
 
       - run: pnpm install --frozen-lockfile
 
@@ -113,7 +113,7 @@ jobs:
           CI: true
           DEVICE_ID: test-device-e2e
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: playwright-report

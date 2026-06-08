@@ -142,7 +142,7 @@ jobs:
           SERVER_IP: ${{ steps.server-ip.outputs.ip }}
 
       - name: Upload test report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: playwright-report-${{ steps.server-ip.outputs.server }}
@@ -150,7 +150,7 @@ jobs:
           retention-days: 14
 
       - name: Upload screenshots
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: e2e-screenshots-${{ steps.server-ip.outputs.server }}

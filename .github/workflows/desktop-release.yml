@@ -111,7 +111,7 @@ jobs:
             xdg-utils
       - name: Install pnpm
         if: env.BUILD_ENABLED
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
 
       - name: Install Node.js
         if: env.BUILD_ENABLED
@@ -207,11 +207,37 @@ jobs:
         shell: bash
         run: |
           cd packages/desktop
-          args=(--target "${{ matrix.target }}" -c '{"bundle":{"createUpdaterArtifacts":false}}')
+          base_args=(--target "${{ matrix.target }}" -c '{"bundle":{"createUpdaterArtifacts":false}}')
+
+          # Tauri downloads external bundling tools from GitHub at bundle time
+          # (linuxdeploy/AppRun for the Linux AppImage, the WiX toolset for the
+          # Windows MSI) and routinely hits transient HTTP 5xx (e.g. 504), which
+          # previously failed the whole release. Retry the bundle step; the Rust
+          # compile is already cached, so each retry only re-attempts the
+          # download/bundle, and a genuine outage still fails after retries.
+          retry_build() {
+            local attempts=5 attempt backoff
+            for attempt in $(seq 1 "$attempts"); do
+              if npx --yes @tauri-apps/cli@2 build "$@"; then
+                return 0
+              fi
+              if [[ "$attempt" -eq "$attempts" ]]; then
+                echo "::error::tauri build failed after ${attempts} attempts: $*" >&2
+                return 1
+              fi
+              backoff=$((attempt * 20))
+              echo "::warning::tauri build failed (attempt ${attempt}/${attempts}); retrying in ${backoff}s" >&2
+              sleep "$backoff"
+            done
+          }
+
           if [[ "${{ runner.os }}" == "Linux" ]]; then
-            args+=(-b deb,rpm,appimage)
+            # deb/rpm bundle offline; build them once, then retry the flaky AppImage.
+            npx --yes @tauri-apps/cli@2 build "${base_args[@]}" -b deb,rpm
+            retry_build "${base_args[@]}" -b appimage
+          else
+            retry_build "${base_args[@]}"
           fi
-          npx --yes @tauri-apps/cli@2 build "${args[@]}"
       # ── macOS Notarization ──────────────────────────────────────────
       - name: Notarize macOS DMG
         if: env.BUILD_ENABLED && runner.os == 'macOS' && env.APPLE_SIGNING_CONFIGURED
@@ -304,7 +330,7 @@ jobs:
           ls -lh release-artifacts/
       - name: Upload release artifacts
         if: env.BUILD_ENABLED
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-${{ matrix.target }}
           path: release-artifacts/*
@@ -320,7 +346,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: release-*
           path: artifacts
@@ -363,7 +389,7 @@ jobs:
     environment: production
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: release-*
           path: artifacts
@@ -502,7 +528,7 @@ jobs:
           fetch-tags: true
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: release-*
           path: artifacts
