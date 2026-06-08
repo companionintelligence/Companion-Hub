@@ -63,18 +63,41 @@ pub fn init_from_env(env_path: &Path, release: &str) {
         })
         .unwrap_or_else(|| "production".to_string());
 
-    let guard = sentry::init((
-        dsn,
-        sentry::ClientOptions {
-            release: Some(format!("ci-hub-desktop-rust@{release}").into()),
-            environment: Some(environment.into()),
-            send_default_pii: true,
-            ..Default::default()
-        },
-    ));
+    // Parse the DSN ourselves instead of handing the raw string to
+    // `sentry::init`. The `(dsn, options)` tuple form parses internally with
+    // `.expect("invalid value for DSN")`, so a malformed or placeholder DSN
+    // makes `sentry::init` PANIC. That panic runs inside the Tauri setup
+    // closure (and the headless bootstrap), aborting startup *before* the Hub
+    // is launched — a bad DSN baked into a release would silently stop the Hub
+    // from ever starting. Degrade gracefully: skip error reporting and let the
+    // app continue. Error reporting must never take down the app it observes.
+    let Some(parsed_dsn) = parse_dsn(&dsn) else {
+        return;
+    };
+
+    let guard = sentry::init(sentry::ClientOptions {
+        dsn: Some(parsed_dsn),
+        release: Some(format!("ci-hub-desktop-rust@{release}").into()),
+        environment: Some(environment.into()),
+        send_default_pii: true,
+        ..Default::default()
+    });
 
     if guard.is_enabled() {
         let _ = SENTRY_GUARD.set(guard);
+    }
+}
+
+/// Parse a Sentry DSN string into a [`sentry::types::Dsn`], returning `None`
+/// (instead of panicking like `sentry::init`'s tuple form) when the value is
+/// empty or malformed.
+fn parse_dsn(raw: &str) -> Option<sentry::types::Dsn> {
+    match raw.trim().parse::<sentry::types::Dsn>() {
+        Ok(dsn) => Some(dsn),
+        Err(error) => {
+            eprintln!("warning: ignoring malformed Sentry DSN: {error}");
+            None
+        }
     }
 }
 
@@ -148,7 +171,23 @@ fn truncate(value: &str, max_len: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::read_first_env_value;
+    use super::{parse_dsn, read_first_env_value};
+
+    #[test]
+    fn rejects_malformed_dsn_without_panicking() {
+        assert!(parse_dsn("not-a-dsn").is_none());
+        assert!(parse_dsn("").is_none());
+        assert!(parse_dsn("   ").is_none());
+        // Looks URL-ish but is missing the public key / project id.
+        assert!(parse_dsn("https://example.ingest.sentry.io").is_none());
+    }
+
+    #[test]
+    fn accepts_well_formed_dsn() {
+        assert!(parse_dsn("https://public@o123.ingest.sentry.io/456").is_some());
+        // Surrounding whitespace is tolerated.
+        assert!(parse_dsn("  https://public@o123.ingest.sentry.io/456\n").is_some());
+    }
 
     #[test]
     fn prefers_desktop_specific_env_key() {
