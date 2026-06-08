@@ -107,12 +107,11 @@ RUN cd /app && pnpm run bundle 2>&1 | tail -100 || true
 RUN --mount=type=secret,id=sentry_auth_token \
     if [ -s /run/secrets/sentry_auth_token ] && [ -n "$SENTRY_ORG" ] && [ -n "$SENTRY_BACKEND_PROJECT" ]; then \
       export SENTRY_AUTH_TOKEN="$(cat /run/secrets/sentry_auth_token)"; \
-      ( npx --yes @sentry/cli@2 sourcemaps inject packages/backend/dist \
-        && npx --yes @sentry/cli@2 sourcemaps upload \
-             --org "$SENTRY_ORG" --project "$SENTRY_BACKEND_PROJECT" \
-             --release "$SENTRY_RELEASE" packages/backend/dist \
-        && find packages/backend/dist -name '*.map' -delete \
-      ) || echo "::warning::backend sourcemap upload failed (non-fatal)"; \
+      npx --yes @sentry/cli@2 sourcemaps inject packages/backend/dist || echo "::warning::backend sourcemaps inject failed"; \
+      npx --yes @sentry/cli@2 sourcemaps upload \
+        --org "$SENTRY_ORG" --project "$SENTRY_BACKEND_PROJECT" \
+        --release "$SENTRY_RELEASE" packages/backend/dist || echo "::warning::backend sourcemap upload failed"; \
+      find packages/backend/dist -name '*.map' -delete || true; \
     else \
       echo "Skipping backend sourcemap upload (token/org/project not provided)"; \
     fi

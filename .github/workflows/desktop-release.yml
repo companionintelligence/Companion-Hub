@@ -165,13 +165,14 @@ jobs:
           SENTRY_ORG: ${{ vars.SENTRY_ORG }}
           SENTRY_PROJECT: ${{ vars.SENTRY_FRONTEND_PROJECT }}
         run: |
-          # Inject debug IDs and upload maps tied to the frontend release, then
-          # delete the raw .map files so they are never shipped inside the bundle.
-          # Debug-id based resolution makes this work regardless of build host.
+          # Best-effort per command: under `bash -eo pipefail` a sentry-cli
+          # failure would otherwise abort the step before the deletion below,
+          # leaving raw .map files to be embedded in the shipped desktop bundle.
+          # Always strip the maps regardless of the upload result.
           DIST="packages/frontend/dist/client"
-          npx --yes @sentry/cli@2 sourcemaps inject "$DIST"
+          npx --yes @sentry/cli@2 sourcemaps inject "$DIST" || echo "::warning::sentry sourcemaps inject failed"
           npx --yes @sentry/cli@2 sourcemaps upload \
-            --release "ci-hub-frontend@${{ inputs.tag }}" "$DIST"
+            --release "ci-hub-frontend@${{ inputs.tag }}" "$DIST" || echo "::warning::sentry sourcemaps upload failed"
           find "$DIST" -name '*.map' -delete
       - name: Bump Tauri version to match release tag
         if: env.BUILD_ENABLED
