@@ -530,7 +530,7 @@ export default function DeviceRegistrationPage() {
         <section className="flex flex-col rounded-xl border border-border/60 bg-muted/20 p-5">
           <h2 className="text-sm font-semibold uppercase tracking-wide text-foreground">Step 2: Connect this device</h2>
           <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
-            In Companion Account, click Add Device, name this Companion Hub, then paste the pairing code here to finish registration.
+            In your Companion Account, click Add Device, name your Hub, then paste the pairing code here to finish registration.
           </p>
 
           <div className="mt-5 space-y-4">

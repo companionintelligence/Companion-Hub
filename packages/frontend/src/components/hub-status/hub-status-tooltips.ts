@@ -17,7 +17,7 @@ export const DOCKER_MAC_ARCH_HINT = 'Pick the version that matches your Mac chip
 export const DOCKER_DAEMON_HINT = 'Docker is installed but not running yet. Start Docker and wait for it to finish starting.';
 
 export const REGISTRATION_DEVICE_ID_HINT =
-  'This identifies the Companion Hub you are registering. You can copy it for reference, but you do not need to paste it into Companion Account.';
+  'This identifies the device you are registering. You can copy it for reference, it helps us find your Hub if you need help.';
 export const REGISTRATION_PAIRING_CODE_HINT = 'Six-character code shown in Companion Account after you click Add Device.';
 export const REGISTRATION_ACCOUNT_HINT =
   'Sign in to Companion Account, click Add Device, name this Companion Hub, and copy the pairing code shown there.';
