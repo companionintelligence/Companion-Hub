@@ -22,17 +22,17 @@ RUN apk add --no-cache curl python3 make g++ git
 
 RUN echo "Building for ${TARGETARCH:-amd64}"
 RUN if [ "${TARGETARCH}" = "arm64" ]; then \
-      curl -L -o docker-binary "https://github.com/docker/compose/releases/download/$DOCKER_COMPOSE_VERSION/docker-compose-linux-aarch64"; \
+      curl -fL --retry 3 --retry-delay 5 -o docker-binary "https://github.com/docker/compose/releases/download/$DOCKER_COMPOSE_VERSION/docker-compose-linux-aarch64"; \
     elif [ "${TARGETARCH}" = "amd64" ] || [ -z "${TARGETARCH}" ]; then \
-      curl -L -o docker-binary "https://github.com/docker/compose/releases/download/$DOCKER_COMPOSE_VERSION/docker-compose-linux-x86_64"; \
+      curl -fL --retry 3 --retry-delay 5 -o docker-binary "https://github.com/docker/compose/releases/download/$DOCKER_COMPOSE_VERSION/docker-compose-linux-x86_64"; \
     else \
       echo "ERROR: Unsupported TARGETARCH: ${TARGETARCH}" && exit 1; \
     fi
 
 RUN chmod +x docker-binary && \
     ls -lh docker-binary && \
-    echo "Binary downloaded successfully for ${TARGETARCH:-amd64}" && \
-    (./docker-binary version > /dev/null 2>&1 && echo "Binary verification passed" || echo "Warning: Binary verification failed, but continuing...")
+    ./docker-binary version && \
+    echo "docker-compose binary verified for ${TARGETARCH:-amd64}"
 
 # ---- RUNNER BASE ----
 FROM node_base AS runner_base

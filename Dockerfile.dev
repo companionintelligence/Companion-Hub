@@ -16,13 +16,16 @@ WORKDIR /app
 
 RUN echo "Building for ${TARGETARCH}"
 RUN if [ "${TARGETARCH}" = "arm64" ]; then \
-  curl -L -o docker-binary "https://github.com/docker/compose/releases/download/$DOCKER_COMPOSE_VERSION/docker-compose-linux-aarch64"; \
-  elif [ "${TARGETARCH}" = "amd64" ]; then \
-  curl -L -o docker-binary "https://github.com/docker/compose/releases/download/$DOCKER_COMPOSE_VERSION/docker-compose-linux-x86_64"; \
-  fi
+      curl -fL --retry 3 --retry-delay 5 -o docker-binary "https://github.com/docker/compose/releases/download/$DOCKER_COMPOSE_VERSION/docker-compose-linux-aarch64"; \
+    elif [ "${TARGETARCH}" = "amd64" ]; then \
+      curl -fL --retry 3 --retry-delay 5 -o docker-binary "https://github.com/docker/compose/releases/download/$DOCKER_COMPOSE_VERSION/docker-compose-linux-x86_64"; \
+    else \
+      echo "ERROR: Unsupported TARGETARCH: ${TARGETARCH}" && exit 1; \
+    fi
 
-RUN chmod +x docker-binary
-RUN mv docker-binary /usr/local/bin/docker-compose
+RUN chmod +x docker-binary && \
+    ./docker-binary version && \
+    mv docker-binary /usr/local/bin/docker-compose
 
 COPY ./package.json ./package.json
 COPY ./pnpm-lock.yaml ./
