@@ -68,7 +68,7 @@ export const AppStoreSidebar = () => {
             onClick={() => handleCategoryClick(undefined)}
           >
             <LayoutGrid className="h-4 w-4" />
-            <span className="truncate">{t('APP_STORE_ALL')}</span>
+            <span className="truncate">{t('COMMON_ALL')}</span>
           </Button>
 
           {/* Alternatives - special item */}

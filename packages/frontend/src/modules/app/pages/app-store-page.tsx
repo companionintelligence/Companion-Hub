@@ -275,7 +275,7 @@ export default () => {
             onClick={() => setCategory(undefined)}
           >
             <LayoutGrid className="h-3.5 w-3.5 mr-1.5" />
-            {t('APP_STORE_ALL')}
+            {t('COMMON_ALL')}
           </Button>
           <Button
             variant="outline"

@@ -41,7 +41,7 @@ type TranslateFn = (key: string, options?: Record<string, unknown>) => string;
 export function modelTags(model: CuratedModel, t?: TranslateFn): string[] {
   if (model.modality && model.modality !== 'llm') {
     const key = MODALITY_TAG[model.modality];
-    return [t ? t(key ?? 'ONBOARDING_MODEL_TAG_MODEL') : (key ?? 'Model')];
+    return [t ? t(key ?? 'COMMON_MODEL') : (key ?? 'Model')];
   }
   const caps = model.metadata?.capabilities;
   const tags: string[] = [];
@@ -271,7 +271,7 @@ function ModelGroup({
             <thead>
               <tr className="text-[10px] uppercase tracking-wide text-muted-foreground">
                 <th className="w-8" aria-label={t('ONBOARDING_SELECT')} />
-                <th className="py-1.5 pr-3 font-medium">{t('ONBOARDING_MODEL')}</th>
+                <th className="py-1.5 pr-3 font-medium">{t('COMMON_MODEL')}</th>
                 <th className="py-1.5 pr-3 font-medium">{t('ONBOARDING_TIER')}</th>
                 <th className="py-1.5 pr-3 font-medium">{t('ONBOARDING_CAPABILITIES')}</th>
                 <th className="py-1.5 pr-3 text-right font-medium">{t('ONBOARDING_INTELLIGENCE')}</th>
