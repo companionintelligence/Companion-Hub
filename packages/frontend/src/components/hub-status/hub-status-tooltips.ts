@@ -16,9 +16,11 @@ export const DOCKER_REQUIRED_HINT = 'Hub runs your apps in Docker. Install and o
 export const DOCKER_MAC_ARCH_HINT = 'Pick the version that matches your Mac chip.';
 export const DOCKER_DAEMON_HINT = 'Docker is installed but not running yet. Start Docker and wait for it to finish starting.';
 
-export const REGISTRATION_DEVICE_ID_HINT = 'Copy this ID into the Companion Account portal to link this computer.';
-export const REGISTRATION_PAIRING_CODE_HINT = 'Six-character code from the portal after you sign in.';
-export const REGISTRATION_ACCOUNT_HINT = 'Your cloud account for linking devices; not the same as your local Hub password.';
+export const REGISTRATION_DEVICE_ID_HINT =
+  'This identifies the Companion Hub you are registering. You can copy it for reference, but you do not need to paste it into Companion Account.';
+export const REGISTRATION_PAIRING_CODE_HINT = 'Six-character code shown in Companion Account after you click Add Device.';
+export const REGISTRATION_ACCOUNT_HINT =
+  'Sign in to Companion Account, click Add Device, name this Companion Hub, and copy the pairing code shown there.';
 export const REGISTRATION_PROVISIONING_HINT = 'Setting up your web address and secure connection. Usually a few minutes.';
 export const REGISTRATION_DNS_HINT = 'Web address changes can take a few minutes to work everywhere.';
 
