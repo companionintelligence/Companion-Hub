@@ -83,7 +83,7 @@ jobs:
 
       - name: Install pnpm
         if: runner.os == 'Linux' || true
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
 
       - name: Install Node.js
         uses: actions/setup-node@v6
@@ -129,7 +129,7 @@ jobs:
 
       - name: Upload macOS DMG
         if: runner.os == 'macOS'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: companion-hub-${{ matrix.target }}-dmg
           path: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
@@ -137,7 +137,7 @@ jobs:
 
       - name: Upload macOS app
         if: runner.os == 'macOS'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: companion-hub-${{ matrix.target }}-app
           path: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app
@@ -145,7 +145,7 @@ jobs:
 
       - name: Upload Linux deb
         if: runner.os == 'Linux'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: companion-hub-${{ matrix.target }}-deb
           path: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
@@ -153,7 +153,7 @@ jobs:
 
       - name: Upload Linux rpm
         if: runner.os == 'Linux'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: companion-hub-${{ matrix.target }}-rpm
           path: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/rpm/*.rpm
@@ -161,7 +161,7 @@ jobs:
 
       - name: Upload Linux AppImage
         if: runner.os == 'Linux'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: companion-hub-${{ matrix.target }}-appimage
           path: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
@@ -170,7 +170,7 @@ jobs:
       # --- Windows artifacts ---
       - name: Upload Windows MSI
         if: runner.os == 'Windows'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: companion-hub-windows-x64-msi
           path: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi
@@ -178,7 +178,7 @@ jobs:
 
       - name: Upload Windows NSIS installer
         if: runner.os == 'Windows'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: companion-hub-windows-x64-setup
           path: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe
