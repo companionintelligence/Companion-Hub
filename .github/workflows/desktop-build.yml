@@ -96,6 +96,8 @@ jobs:
       - name: Build frontend
         env:
           NODE_ENV: production
+          VITE_SENTRY_DSN: ${{ secrets.SENTRY_FRONTEND_DSN }}
+          VITE_SENTRY_RELEASE: ci-hub-frontend@${{ github.sha }}
         run: |
           pnpm run --filter=@ci-hub/common build
           pnpm run --filter=frontend build

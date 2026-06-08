@@ -6,11 +6,15 @@ function isTauri(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 }
 
+function getComponentTag(): 'browser-web' | 'desktop-web' {
+  return isTauri() ? 'desktop-web' : 'browser-web';
+}
+
 export function initHubSentry(): void {
   if (sentryInitialized) {
     return;
   }
-  if (!isTauri()) {
+  if (typeof window === 'undefined') {
     return;
   }
 
@@ -29,18 +33,22 @@ export function initHubSentry(): void {
   });
 
   sentryInitialized = true;
-  Sentry.setTag('component', 'desktop-web');
+  Sentry.setTag('component', getComponentTag());
 }
 
 initHubSentry();
 
 export function captureHubException(error: unknown, context?: Record<string, unknown>): void {
-  if (!isTauri()) {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  initHubSentry();
+  if (!sentryInitialized) {
     return;
   }
 
   Sentry.withScope((scope) => {
-    scope.setTag('component', 'desktop-web');
+    scope.setTag('component', getComponentTag());
     if (context) {
       for (const [key, value] of Object.entries(context)) {
         if (value !== undefined) {

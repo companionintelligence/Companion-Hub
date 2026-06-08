@@ -160,6 +160,7 @@ export class AppLifecycleCommand {
       case 'restore':
         return 'restore';
       case 'update_error':
+      case 'generate_env_error':
         return 'update';
       default:
         return null;

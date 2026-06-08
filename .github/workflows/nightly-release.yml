@@ -34,6 +34,9 @@ jobs:
           context: .
           build-args: |
             CI_HUB_VERSION=nightly
+            CI_HUB_ENVIRONMENT=nightly
+            VITE_SENTRY_DSN=${{ secrets.SENTRY_FRONTEND_DSN }}
+            VITE_SENTRY_RELEASE=ci-hub-frontend@nightly
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ghcr.io/companionintelligence/ci-os-hub:nightly
