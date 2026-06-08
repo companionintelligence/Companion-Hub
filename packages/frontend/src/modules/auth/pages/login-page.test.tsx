@@ -80,6 +80,6 @@ describe('LoginPage', () => {
   it('defaults the login heading to the local admin account copy', () => {
     render(<LoginPage />);
 
-    expect(screen.getByTestId('login-type')).toHaveTextContent('your local admin account');
+    expect(screen.getByTestId('login-type')).toHaveTextContent('AUTH_LOGIN_LOCAL_ADMIN_ACCOUNT');
   });
 });

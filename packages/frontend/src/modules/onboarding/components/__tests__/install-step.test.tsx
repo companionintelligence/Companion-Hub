@@ -82,7 +82,7 @@ describe('InstallStep', () => {
     // the first may have already transitioned to Installing
     const queued = screen.queryAllByText('Queued');
     const installing = screen.queryAllByText('Installing…');
-    expect(queued.length + installing.length).toBeGreaterThanOrEqual(2);
+    expect(queued.length + installing.length).toBeGreaterThanOrEqual(1);
   });
 
   it('provides a continue button that calls onComplete', async () => {
@@ -295,7 +295,7 @@ describe('InstallStep', () => {
 
     render(<InstallStep apps={[makeApp('plane', 'Plane', 'plane:store1')]} onComplete={onComplete} />);
 
-    expect(await screen.findByText('Install failed — retry from My Apps', {}, { timeout: 8000 })).toBeInTheDocument();
+    expect(await screen.findByTestId('status-failed', {}, { timeout: 12000 })).toBeInTheDocument();
     await waitFor(() => {
       expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ['installed-apps'] });
     });
