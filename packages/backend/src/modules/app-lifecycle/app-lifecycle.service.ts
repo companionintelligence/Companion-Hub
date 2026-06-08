@@ -831,20 +831,32 @@ export class AppLifecycleService implements OnApplicationBootstrap {
    * Triggers a full sync of all exposed apps to Cloudflare via CI-Cloud
    */
   private lastPublicDnsFailureReportAt = 0;
+  private readonly lastPublicDnsToastAt = new Map<string, number>();
+  private static readonly PUBLIC_DNS_FAILURE_COOLDOWN_MS = 5 * 60_000;
 
   /**
    * Surface a public-DNS sync failure so it is never silent: always logs an
-   * error, and reports to Sentry at most once per 5 minutes to avoid flooding
-   * when availability remediation re-triggers the sync for a still-broken app.
+   * error, reports to Sentry, and emits a per-app SSE event the frontend turns
+   * into a toast. Sentry and toasts are cooldown-guarded to avoid flooding when
+   * availability remediation re-triggers the sync for a still-broken app.
    */
-  private surfacePublicDnsFailure(message: string, failedApps: string[]): void {
+  private surfacePublicDnsFailure(message: string, failedAppNames: string[], toastTargets: Array<{ appUrn: AppUrn; hostname: string }> = []): void {
     this.logger.error(message);
+
     const now = Date.now();
-    if (now - this.lastPublicDnsFailureReportAt < 5 * 60_000) {
-      return;
+    if (now - this.lastPublicDnsFailureReportAt >= AppLifecycleService.PUBLIC_DNS_FAILURE_COOLDOWN_MS) {
+      this.lastPublicDnsFailureReportAt = now;
+      this.errorReportingService?.captureMessage(message, 'error', { failedApps: failedAppNames });
     }
-    this.lastPublicDnsFailureReportAt = now;
-    this.errorReportingService?.captureMessage(message, 'error', { failedApps });
+
+    for (const target of toastTargets) {
+      const lastToast = this.lastPublicDnsToastAt.get(target.appUrn) ?? 0;
+      if (now - lastToast < AppLifecycleService.PUBLIC_DNS_FAILURE_COOLDOWN_MS) {
+        continue;
+      }
+      this.lastPublicDnsToastAt.set(target.appUrn, now);
+      this.sseService.emit('app', { event: 'public_dns_error', appUrn: target.appUrn, error: target.hostname }, target.appUrn);
+    }
   }
 
   public async triggerCloudflareSync() {
@@ -935,13 +947,27 @@ export class AppLifecycleService implements OnApplicationBootstrap {
           appEntries.map((entry) => entry.name),
         );
       } else if (result.failed.length > 0) {
-        const failedHostnames = exposedApps
-          .filter((entry) => result.failed.includes(entry.name))
-          .map((entry) => entry.originServerName ?? entry.subdomain);
+        // Map CI-Cloud's failed app names back to their URN + hostname so the
+        // frontend can raise a per-app toast (privileged Hub entry excluded).
+        const toastTargets = result.failed
+          .map((name) => {
+            const dbApp = apps.find((candidate: AppFromDb) => candidate.appName === name);
+            const entry = exposedApps.find((candidate) => candidate.name === name && candidate.privilegedKind !== 'hub');
+            if (!dbApp || !entry) {
+              return null;
+            }
+            return {
+              appUrn: `${dbApp.appName}:${dbApp.appStoreSlug}` as AppUrn,
+              hostname: entry.originServerName ?? entry.subdomain,
+            };
+          })
+          .filter((target): target is { appUrn: AppUrn; hostname: string } => target !== null);
+        const failedHostnames = toastTargets.map((target) => target.hostname);
         this.surfacePublicDnsFailure(
-          `[Cloudflare] Public DNS records were NOT created for ${result.failed.length} app(s): ${failedHostnames.join(', ')}. ` +
+          `[Cloudflare] Public DNS records were NOT created for ${result.failed.length} app(s): ${(failedHostnames.length > 0 ? failedHostnames : result.failed).join(', ')}. ` +
             `These apps will not resolve at their public domain — verify the selected domain's zone is provisioned in CI-Cloud for this device.`,
           result.failed,
+          toastTargets,
         );
       }
     } catch (error) {

@@ -65,6 +65,7 @@
   "APP_NOTES_SAVE_SUCCESS": "App notes saved successfully",
   "APP_ERROR_SAVE_NOTES": "Failed to save app notes",
   "APP_ERROR_APP_FAILED_TO_INSTALL": "Failed to install app {{id}}, see logs for more details",
+  "APP_ERROR_PUBLIC_DNS_FAILED": "Couldn't create a public address for {{id}}. Verify the selected domain is available for this device.",
   "APP_ERROR_APP_FAILED_TO_RESET": "Failed to reset app {{id}}, see logs for more details",
   "APP_ERROR_APP_FAILED_TO_START": "Failed to start app {{id}}, see logs for more details",
   "APP_ERROR_APP_FAILED_TO_STOP": "Failed to stop app {{id}}, see logs for more details",

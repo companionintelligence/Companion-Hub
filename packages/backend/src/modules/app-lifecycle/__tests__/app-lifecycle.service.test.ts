@@ -270,6 +270,13 @@ describe('AppLifecycleService', () => {
 
       // The partial failure is surfaced, not swallowed.
       expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('anything-llm-laptop-cid.companionintel.com'));
+
+      // And a per-app event is emitted so the frontend can raise a toast.
+      expect(sseService.emit).toHaveBeenCalledWith(
+        'app',
+        expect.objectContaining({ event: 'public_dns_error', appUrn: 'anything-llm:ci-marketplace' }),
+        'anything-llm:ci-marketplace',
+      );
     });
 
     it('does not acquire install pipeline mutex for non-install commands', async () => {

@@ -55,6 +55,7 @@ const appScopedEventSchema = z.object({
     'backup_error',
     'restore_success',
     'restore_error',
+    'public_dns_error',
   ]),
   appUrn: appUrnSchema,
   appStatus: appStatusSchema.optional(),
