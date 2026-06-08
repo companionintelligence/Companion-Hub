@@ -53,6 +53,17 @@ ENV CI_HUB_ENVIRONMENT=${CI_HUB_ENVIRONMENT}
 ENV VITE_SENTRY_DSN=${VITE_SENTRY_DSN}
 ENV VITE_SENTRY_RELEASE=${VITE_SENTRY_RELEASE}
 
+# Sentry source-map upload inputs (best-effort; see the RUN steps after the
+# builds). The auth token is passed as a BuildKit secret, never as a build-arg,
+# so it is not baked into image history. VITE_BUILD_SOURCEMAPS=1 makes the
+# frontend build emit maps; they are uploaded and then stripped before shipping.
+ARG SENTRY_ORG=""
+ARG SENTRY_BACKEND_PROJECT=""
+ARG SENTRY_FRONTEND_PROJECT=""
+ARG SENTRY_RELEASE=""
+ARG VITE_BUILD_SOURCEMAPS=""
+ENV VITE_BUILD_SOURCEMAPS=${VITE_BUILD_SOURCEMAPS}
+
 WORKDIR /app
 
 COPY ./pnpm-lock.yaml ./
@@ -86,6 +97,40 @@ RUN echo "CI_HUB_VERSION: ${CI_HUB_VERSION}"
 RUN echo "LOCAL: ${LOCAL}"
 
 RUN cd /app && pnpm run bundle 2>&1 | tail -100 || true
+
+# Inject Sentry debug IDs into the backend bundle and upload its source maps so
+# production backend stack traces are readable instead of minified/bundled.
+# Best-effort: only runs when SENTRY_AUTH_TOKEN (BuildKit secret) plus SENTRY_ORG
+# and SENTRY_BACKEND_PROJECT are provided, and never fails the build. The raw
+# .map files are stripped after a successful upload so source is not shipped in
+# the image (Sentry resolves frames via the injected debug IDs).
+RUN --mount=type=secret,id=sentry_auth_token \
+    if [ -s /run/secrets/sentry_auth_token ] && [ -n "$SENTRY_ORG" ] && [ -n "$SENTRY_BACKEND_PROJECT" ]; then \
+      export SENTRY_AUTH_TOKEN="$(cat /run/secrets/sentry_auth_token)"; \
+      ( npx --yes @sentry/cli@2 sourcemaps inject packages/backend/dist \
+        && npx --yes @sentry/cli@2 sourcemaps upload \
+             --org "$SENTRY_ORG" --project "$SENTRY_BACKEND_PROJECT" \
+             --release "$SENTRY_RELEASE" packages/backend/dist \
+        && find packages/backend/dist -name '*.map' -delete \
+      ) || echo "::warning::backend sourcemap upload failed (non-fatal)"; \
+    else \
+      echo "Skipping backend sourcemap upload (token/org/project not provided)"; \
+    fi
+
+# Inject debug IDs into the browser frontend bundle and upload its source maps so
+# browser stack traces are readable. Same best-effort gating as the backend step.
+# The .map files are always stripped from dist/client afterward so they are never
+# served to browsers (Sentry resolves frames via the injected debug IDs).
+RUN --mount=type=secret,id=sentry_auth_token \
+    if [ -s /run/secrets/sentry_auth_token ] && [ -n "$SENTRY_ORG" ] && [ -n "$SENTRY_FRONTEND_PROJECT" ]; then \
+      export SENTRY_AUTH_TOKEN="$(cat /run/secrets/sentry_auth_token)"; \
+      ( npx --yes @sentry/cli@2 sourcemaps inject packages/frontend/dist/client \
+        && npx --yes @sentry/cli@2 sourcemaps upload \
+             --org "$SENTRY_ORG" --project "$SENTRY_FRONTEND_PROJECT" \
+             --release "$VITE_SENTRY_RELEASE" packages/frontend/dist/client \
+      ) || echo "::warning::frontend sourcemap upload failed (non-fatal)"; \
+    fi; \
+    find packages/frontend/dist/client -name '*.map' -delete || true
 
 # ---- RUNNER ----
 FROM runner_base AS runner
