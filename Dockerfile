@@ -43,9 +43,15 @@ RUN apk add --no-cache curl openssl git docker-cli dmidecode pciutils
 FROM builder_base AS builder
 
 ARG CI_HUB_VERSION
+ARG CI_HUB_ENVIRONMENT
 ARG LOCAL
+ARG VITE_SENTRY_DSN=""
+ARG VITE_SENTRY_RELEASE=""
 
 ENV CI_HUB_VERSION=${CI_HUB_VERSION}
+ENV CI_HUB_ENVIRONMENT=${CI_HUB_ENVIRONMENT}
+ENV VITE_SENTRY_DSN=${VITE_SENTRY_DSN}
+ENV VITE_SENTRY_RELEASE=${VITE_SENTRY_RELEASE}
 
 WORKDIR /app
 
@@ -86,6 +92,15 @@ FROM runner_base AS runner
 
 ENV NODE_ENV="production"
 ENV NODE_OPTIONS="--disable-warning=ExperimentalWarning"
+
+# Backend Sentry DSN/release baked into the runtime image so error reporting
+# works on every deployment target — including the desktop appliance, which
+# runs this prebuilt image and never injects SENTRY_DSN via a runtime env file.
+# Runtime env_file/environment values still override these when present.
+ARG SENTRY_DSN=""
+ARG SENTRY_RELEASE=""
+ENV SENTRY_DSN=${SENTRY_DSN}
+ENV SENTRY_RELEASE=${SENTRY_RELEASE}
 
 WORKDIR /app
 

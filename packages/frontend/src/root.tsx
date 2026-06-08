@@ -17,6 +17,19 @@ import { getTauriSessionId } from './lib/api-fetch';
 import type { RegistrationStatus } from './lib/registration-status';
 import { isRegistrationOperational, requiresDeviceRegistration } from './lib/registration-status';
 import { resolveRegistrationStatus } from './lib/registration-cache';
+import { captureHubException } from './lib/sentry';
+
+/** Serialize a non-Error thrown value for a readable Sentry message (avoids "[object Object]"). */
+function describeUnknownError(error: unknown): string {
+  if (typeof error === 'string') {
+    return error;
+  }
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return Object.prototype.toString.call(error);
+  }
+}
 
 // Add session header for Tauri release mode (cookies don't work cross-origin over HTTP)
 client.interceptors.request.use((request) => {
@@ -272,6 +285,20 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
 
   if (import.meta.env.DEV) {
     console.error('Route ErrorBoundary captured error:', error);
+  } else if (isRouteErrorResponse(error)) {
+    // Route error responses are plain objects, not Error instances. Preserve
+    // the actionable HTTP fields instead of stringifying to "[object Object]".
+    captureHubException(new Error(`Route error ${error.status}: ${error.statusText || 'Unknown'}`), {
+      status: error.status,
+      statusText: error.statusText,
+      data: error.data,
+    });
+  } else if (error instanceof Error) {
+    captureHubException(error);
+  } else {
+    captureHubException(new Error(`Non-error thrown in route boundary: ${describeUnknownError(error)}`), {
+      rawError: error,
+    });
   }
 
   if (isRouteErrorResponse(error)) {

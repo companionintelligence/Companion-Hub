@@ -113,6 +113,10 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             CI_CLOUD_URL=https://${{ steps.tags.outputs.portal_registry }}
+            SENTRY_DSN=${{ secrets.SENTRY_DSN }}
+            SENTRY_RELEASE=ci-hub-backend@${{ github.sha }}
+            VITE_SENTRY_DSN=${{ secrets.SENTRY_FRONTEND_DSN }}
+            VITE_SENTRY_RELEASE=ci-hub-frontend@${{ github.sha }}
 
       - name: Install crane
         uses: imjasonh/setup-crane@v0.4

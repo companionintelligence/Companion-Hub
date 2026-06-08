@@ -14,7 +14,7 @@ export const STARTUP_IMAGE_PULL_HINT = 'App images downloading on first launch; 
 
 export const DOCKER_REQUIRED_HINT = 'Hub runs your apps in Docker. Install and open Docker before the Hub can start.';
 export const DOCKER_MAC_ARCH_HINT = 'Pick the version that matches your Mac chip.';
-export const DOCKER_DAEMON_HINT = 'Docker is installed but not running yet. Open Docker Desktop and wait for it to finish starting.';
+export const DOCKER_DAEMON_HINT = 'Docker is installed but not running yet. Start Docker and wait for it to finish starting.';
 
 export const REGISTRATION_DEVICE_ID_HINT = 'Copy this ID into the Companion Account portal to link this computer.';
 export const REGISTRATION_PAIRING_CODE_HINT = 'Six-character code from the portal after you sign in.';

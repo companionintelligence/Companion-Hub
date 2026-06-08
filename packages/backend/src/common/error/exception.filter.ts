@@ -1,5 +1,6 @@
 import type { LoggerService } from '@/core/logger/logger.service';
 import { type ArgumentsHost, Catch, type ExceptionFilter, HttpException, HttpStatus } from '@nestjs/common';
+import { SentryExceptionCaptured } from '@sentry/nestjs';
 import type { Request, Response } from 'express';
 import { ZodError } from 'zod';
 import { TranslatableError } from './translatable-error';
@@ -8,6 +9,7 @@ import { TranslatableError } from './translatable-error';
 export class MainExceptionFilter implements ExceptionFilter {
   constructor(private readonly logger: LoggerService) {}
 
+  @SentryExceptionCaptured()
   catch(exception: unknown, host: ArgumentsHost) {
     const ctx = host.switchToHttp();
     const response = ctx.getResponse<Response>();

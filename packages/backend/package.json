@@ -32,6 +32,8 @@
     "@otplib/core": "^12.0.1",
     "@otplib/plugin-crypto": "^12.0.1",
     "@otplib/plugin-thirty-two": "^12.0.1",
+    "@sentry/nestjs": "^10.56.0",
+    "@sentry/node": "^10.56.0",
     "ansi-to-html": "^0.7.2",
     "argon2": "^0.44.0",
     "axios": "^1.16.0",

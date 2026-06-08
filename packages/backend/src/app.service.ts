@@ -20,6 +20,20 @@ import { AppsRepository } from './modules/apps/apps.repository';
 
 @Injectable()
 export class AppService implements OnApplicationShutdown {
+  private isDockerBootstrapPermissionIssue(error: unknown): boolean {
+    if (!(error instanceof Error)) return false;
+
+    const err = error as NodeJS.ErrnoException;
+    const message = error.message.toLowerCase();
+    return (
+      err.code === 'EACCES' ||
+      err.code === 'EPERM' ||
+      message.includes('connect eacces') ||
+      message.includes('permission denied') ||
+      message.includes('docker.sock')
+    );
+  }
+
   constructor(
     private readonly cache: CacheService,
     private readonly configuration: ConfigurationService,
@@ -50,8 +64,19 @@ export class AppService implements OnApplicationShutdown {
       // Validate data directory integrity
       await this.validateDataDirectories();
 
-      await this.docker.pruneNetworks();
-      this.logger.info('Docker networks pruned');
+      try {
+        await this.docker.pruneNetworks();
+        this.logger.info('Docker networks pruned');
+      } catch (error) {
+        if (!this.isDockerBootstrapPermissionIssue(error)) {
+          throw error;
+        }
+        this.logger.warn(
+          `Skipping Docker network prune during bootstrap because the Docker socket is not accessible yet: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
 
       const { version, __prod__ } = this.configuration.getConfig();
       const config = this.configuration.getConfig();

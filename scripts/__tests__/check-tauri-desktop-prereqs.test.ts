@@ -26,12 +26,19 @@ vi.mock('node:fs', async (importOriginal) => {
 import { checkTauriDesktopPrereqs, isHeadlessOnlyFailure, resolveLinuxGuiEnvironment } from '../check-tauri-desktop-prereqs';
 
 describe('resolveLinuxGuiEnvironment', () => {
+  const originalPlatform = process.platform;
+
   beforeEach(() => {
     delete process.env.DISPLAY;
     delete process.env.WAYLAND_DISPLAY;
     delete process.env.DBUS_SESSION_BUS_ADDRESS;
     execSyncMock.mockReset();
     existsSyncMock.mockReturnValue(false);
+    Object.defineProperty(process, 'platform', { value: 'linux' });
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: originalPlatform });
   });
 
   it('returns existing DISPLAY unchanged', () => {

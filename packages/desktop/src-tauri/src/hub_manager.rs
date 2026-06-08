@@ -79,10 +79,7 @@ const TRAEFIK_CONFIG_FILE: &str = "state/traefik/config/traefik.yml";
 const TRAEFIK_DYNAMIC_FILE: &str = "state/traefik/dynamic/dynamic.yml";
 const TRAEFIK_ACME_FILE: &str = "state/traefik/acme_storage.json";
 const HUB_DOCKER_CONFIG_FILE: &str = ".docker/config.json";
-const LEGACY_DOCKER_CONFIG_PATHS: &[&str] = &[
-    "docker-config.json",
-    ".internal/docker-config.json",
-];
+const LEGACY_DOCKER_CONFIG_PATHS: &[&str] = &["docker-config.json", ".internal/docker-config.json"];
 const HUB_START_HEALTHY_TIMEOUT_SECS: u64 = 180;
 const DB_START_HEALTHY_TIMEOUT_SECS: u64 = 180;
 
@@ -469,7 +466,10 @@ fn detect_macos_primary_disk_from_df(mount: &str) -> Option<(u64, u64, String)> 
     if !output.status.success() {
         return None;
     }
-    let line = String::from_utf8_lossy(&output.stdout).lines().nth(1)?.to_string();
+    let line = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .nth(1)?
+        .to_string();
     let fields: Vec<&str> = line.split_whitespace().collect();
     if fields.len() < 6 {
         return None;
@@ -547,7 +547,10 @@ fn refresh_windows_host_metrics_probe_cache(data_dir: &Path) {
             let _ = append_desktop_log_for(
                 data_dir,
                 "hw.probe",
-                &format!("Windows host metrics probe failed to start PowerShell: {}", error),
+                &format!(
+                    "Windows host metrics probe failed to start PowerShell: {}",
+                    error
+                ),
             );
             return;
         }
@@ -563,36 +566,49 @@ fn refresh_windows_host_metrics_probe_cache(data_dir: &Path) {
         return;
     }
 
-    let parsed: serde_json::Value = match serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()) {
-        Ok(value) => value,
-        Err(error) => {
-            let _ = append_desktop_log_for(
-                data_dir,
-                "hw.probe",
-                &format!("Failed to parse Windows host metrics probe output: {}", error),
-            );
-            return;
-        }
-    };
+    let parsed: serde_json::Value =
+        match serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()) {
+            Ok(value) => value,
+            Err(error) => {
+                let _ = append_desktop_log_for(
+                    data_dir,
+                    "hw.probe",
+                    &format!(
+                        "Failed to parse Windows host metrics probe output: {}",
+                        error
+                    ),
+                );
+                return;
+            }
+        };
 
-    let total_ram_mb = parsed.get("TotalRamMb").and_then(|v| v.as_u64()).unwrap_or(0);
+    let total_ram_mb = parsed
+        .get("TotalRamMb")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
     if total_ram_mb == 0 {
         return;
     }
 
-    let available_ram_mb = parsed.get("AvailableRamMb").and_then(|v| v.as_u64()).unwrap_or(0);
-    let cpu_cores = parsed
-        .get("CpuCores")
+    let available_ram_mb = parsed
+        .get("AvailableRamMb")
         .and_then(|v| v.as_u64())
-        .unwrap_or(0) as u32;
+        .unwrap_or(0);
+    let cpu_cores = parsed.get("CpuCores").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
     let cpu_model = parsed
         .get("CpuModel")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .trim()
         .to_string();
-    let disk_total_gb = parsed.get("DiskTotalGb").and_then(|v| v.as_u64()).unwrap_or(0);
-    let disk_free_gb = parsed.get("DiskFreeGb").and_then(|v| v.as_u64()).unwrap_or(0);
+    let disk_total_gb = parsed
+        .get("DiskTotalGb")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let disk_free_gb = parsed
+        .get("DiskFreeGb")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
     let disk_mount = parsed
         .get("DiskMount")
         .and_then(|v| v.as_str())
@@ -914,12 +930,20 @@ fn refresh_linux_host_metrics_probe_cache(data_dir: &Path) {
     let available_ram_mb = read_proc_meminfo_kb("MemAvailable").unwrap_or(0) / 1024;
 
     if total_ram_mb == 0 {
-        let _ = append_desktop_log_for(data_dir, "hw.probe", "Linux host probe: could not read MemTotal from /proc/meminfo");
+        let _ = append_desktop_log_for(
+            data_dir,
+            "hw.probe",
+            "Linux host probe: could not read MemTotal from /proc/meminfo",
+        );
         return;
     }
 
     let (cpu_model, cpu_cores) = read_linux_cpu_info();
-    let cpu_arch = if std::env::consts::ARCH == "aarch64" { "arm64" } else { "x86_64" };
+    let cpu_arch = if std::env::consts::ARCH == "aarch64" {
+        "arm64"
+    } else {
+        "x86_64"
+    };
 
     let (disk_total_gb, disk_used_gb, disk_mount) = linux_primary_disk_gb(data_dir);
 
@@ -1963,8 +1987,6 @@ pub(crate) fn append_desktop_log_for(
             }
         }
         Err(err) => {
-            // Last-resort fallback: write to stderr so the message is not
-            // silently lost when the log file cannot be opened.
             stderr_fallback(&format!(
                 "[desktop-log-fallback] failed to write {}: {}",
                 log_path.display(),
@@ -1974,6 +1996,8 @@ pub(crate) fn append_desktop_log_for(
             return Err(err);
         }
     }
+
+    crate::error_reporting::record_log_event(operation, message);
     Ok(log_path)
 }
 
@@ -2087,6 +2111,10 @@ fn with_view_logs_hint(message: impl Into<String>) -> String {
 /// Check if Docker is available
 pub fn is_docker_available() -> bool {
     matches!(check_docker_access().state, DockerAccessState::Available)
+}
+
+fn should_defer_docker_bind_mount_probe(state: &DockerAccessState) -> bool {
+    !matches!(state, DockerAccessState::Available)
 }
 
 pub fn check_docker_access() -> DockerAccessCheck {
@@ -2247,7 +2275,15 @@ fn seeded_traefik_config_contents() -> String {
 /// only `cache`, `logs`, and `user-config` are safe to auto-quarantine; data dirs
 /// (`apps`, `app-data`, `media`, `repos`, `backups`) require manual ownership repair.
 const HUB_BIND_MOUNT_DIRS: &[&str] = &[
-    "cache", "state", "logs", "apps", "media", "repos", "app-data", "user-config", "backups",
+    "cache",
+    "state",
+    "logs",
+    "apps",
+    "media",
+    "repos",
+    "app-data",
+    "user-config",
+    "backups",
 ];
 
 /// Files prior root-owned Hub containers commonly leave on bind mounts (block EACCES on rewrite).
@@ -2260,10 +2296,8 @@ const HUB_STALE_ROOT_OWNED_FILES: &[(&str, &str)] = &[
 /// Persistent state files the backend must be able to write to at runtime.
 /// These are chmod 0o666 (not deleted) so the container can update them without
 /// losing existing data even when they were previously written by a root-owned container.
-const HUB_STATE_FILES_NEED_WRITE: &[(&str, &str)] = &[
-    ("state", "settings.json"),
-    ("state", "seed"),
-];
+const HUB_STATE_FILES_NEED_WRITE: &[(&str, &str)] =
+    &[("state", "settings.json"), ("state", "seed")];
 
 /// UID/GID for the Hub container process — matches the desktop/CLI user that owns ROOT_FOLDER_HOST.
 #[cfg(unix)]
@@ -2275,9 +2309,50 @@ pub(crate) fn host_container_uid_gid() -> (u32, u32) {
 fn host_docker_gid() -> u32 {
     use std::os::unix::fs::MetadataExt;
 
-    std::fs::metadata("/var/run/docker.sock")
+    std::fs::metadata(host_docker_socket_path())
         .map(|metadata| metadata.gid())
         .unwrap_or(973)
+}
+
+fn docker_socket_path_from_docker_host() -> Option<PathBuf> {
+    let docker_host = std::env::var("DOCKER_HOST").ok()?;
+    let socket_path = docker_host.strip_prefix("unix://")?.trim();
+    if socket_path.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(socket_path))
+}
+
+fn host_docker_socket_path() -> PathBuf {
+    if let Some(socket_path) = docker_socket_path_from_docker_host() {
+        return socket_path;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let mut candidates = Vec::new();
+        if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
+            candidates.push(PathBuf::from(runtime_dir).join("docker.sock"));
+        }
+        let uid = unsafe { libc::getuid() };
+        candidates.push(PathBuf::from(format!("/run/user/{uid}/docker.sock")));
+        if let Some(home) = dirs::home_dir() {
+            candidates.push(home.join(".docker").join("run").join("docker.sock"));
+        }
+
+        if let Some(existing) = candidates.into_iter().find(|candidate| candidate.exists()) {
+            return existing;
+        }
+    }
+
+    PathBuf::from("/var/run/docker.sock")
+}
+
+fn docker_socket_mount_arg() -> String {
+    format!(
+        "{}:/var/run/docker.sock:ro",
+        host_docker_socket_path().display()
+    )
 }
 
 /// Parse `stat -c "%u:%g"` output from a container probing the mounted Docker socket.
@@ -2289,12 +2364,13 @@ fn parse_docker_socket_uid_gid(raw: &str) -> Option<(u32, u32)> {
 
 /// How the mounted Docker socket appears *inside* a throwaway container (authoritative for compose `user:`).
 fn docker_socket_uid_gid_inside_container() -> Option<(u32, u32)> {
+    let socket_mount = docker_socket_mount_arg();
     let output = docker_command()
         .args([
             "run",
             "--rm",
             "-v",
-            "/var/run/docker.sock:/var/run/docker.sock:ro",
+            &socket_mount,
             "alpine",
             "stat",
             "-c",
@@ -2384,12 +2460,9 @@ fn ensure_host_bind_mounts_writable(data_dir: &Path) -> Result<(), String> {
         std::fs::create_dir_all(&path)
             .map_err(|error| format!("Failed to create {}: {}", path.display(), error))?;
         #[cfg(unix)]
-        if let Err(error) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o775)) {
-            eprintln!(
-                "warning: could not chmod 775 {}: {}",
-                path.display(),
-                error
-            );
+        if let Err(error) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o775))
+        {
+            eprintln!("warning: could not chmod 775 {}: {}", path.display(), error);
         }
     }
 
@@ -2408,13 +2481,8 @@ fn ensure_host_bind_mounts_writable(data_dir: &Path) -> Result<(), String> {
 
     let settings_path = data_dir.join("state").join("settings.json");
     if !settings_path.exists() {
-        std::fs::write(&settings_path, b"{}").map_err(|error| {
-            format!(
-                "Failed to create {}: {}",
-                settings_path.display(),
-                error
-            )
-        })?;
+        std::fs::write(&settings_path, b"{}")
+            .map_err(|error| format!("Failed to create {}: {}", settings_path.display(), error))?;
         #[cfg(unix)]
         let _ = std::fs::set_permissions(&settings_path, std::fs::Permissions::from_mode(0o666));
     }
@@ -2423,14 +2491,29 @@ fn ensure_host_bind_mounts_writable(data_dir: &Path) -> Result<(), String> {
         let path = data_dir.join(subdir).join(file);
         if path.exists() {
             #[cfg(unix)]
-            if let Err(error) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666)) {
-                eprintln!(
-                    "warning: could not chmod 666 {}: {}",
-                    path.display(),
-                    error
-                );
+            if let Err(error) =
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666))
+            {
+                eprintln!("warning: could not chmod 666 {}: {}", path.display(), error);
             }
         }
+    }
+
+    let docker_access = check_docker_access();
+    if should_defer_docker_bind_mount_probe(&docker_access.state) {
+        let detail = docker_access
+            .detail
+            .as_deref()
+            .unwrap_or("no additional detail");
+        let _ = append_desktop_log_for(
+            data_dir,
+            "initialize",
+            &format!(
+                "Skipping Docker-based bind-mount writability probes until Docker is ready. {}",
+                detail
+            ),
+        );
+        return Ok(());
     }
 
     let (container_uid, container_gid, _) = resolve_hub_container_identity();
@@ -2451,14 +2534,11 @@ fn ensure_host_bind_mounts_writable(data_dir: &Path) -> Result<(), String> {
         remove_host_root_owned_state_files(data_dir);
         if !settings_path.exists() {
             std::fs::write(&settings_path, b"{}").map_err(|error| {
-                format!(
-                    "Failed to recreate {}: {}",
-                    settings_path.display(),
-                    error
-                )
+                format!("Failed to recreate {}: {}", settings_path.display(), error)
             })?;
             #[cfg(unix)]
-            let _ = std::fs::set_permissions(&settings_path, std::fs::Permissions::from_mode(0o666));
+            let _ =
+                std::fs::set_permissions(&settings_path, std::fs::Permissions::from_mode(0o666));
         }
     }
 
@@ -2648,15 +2728,13 @@ fn ensure_container_released_if_not_running(
     ports_hint: &str,
 ) -> Result<(), String> {
     let output = docker_command()
-        .args([
-            "inspect",
-            container_name,
-            "--format",
-            "{{.State.Status}}",
-        ])
+        .args(["inspect", container_name, "--format", "{{.State.Status}}"])
         .output()
         .map_err(|error| {
-            format!("Failed to inspect {} container state: {}", container_name, error)
+            format!(
+                "Failed to inspect {} container state: {}",
+                container_name, error
+            )
         })?;
 
     if !output.status.success() {
@@ -2665,7 +2743,8 @@ fn ensure_container_released_if_not_running(
             &String::from_utf8_lossy(&output.stderr),
         );
         let combined_lower = combined.to_lowercase();
-        if combined_lower.contains("no such object") || combined_lower.contains("no such container") {
+        if combined_lower.contains("no such object") || combined_lower.contains("no such container")
+        {
             return Ok(());
         }
         return Err(format!(
@@ -2674,7 +2753,9 @@ fn ensure_container_released_if_not_running(
         ));
     }
 
-    let status = String::from_utf8_lossy(&output.stdout).trim().to_lowercase();
+    let status = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .to_lowercase();
     if status == "running" || status == "restarting" {
         return Ok(());
     }
@@ -2927,13 +3008,19 @@ fn ensure_traefik_container_released(data_dir: &Path) -> Result<(), String> {
             &String::from_utf8_lossy(&output.stderr),
         );
         let combined_lower = combined.to_lowercase();
-        if combined_lower.contains("no such object") || combined_lower.contains("no such container") {
+        if combined_lower.contains("no such object") || combined_lower.contains("no such container")
+        {
             return Ok(());
         }
-        return Err(format!("Failed to inspect Traefik container state. {}", combined));
+        return Err(format!(
+            "Failed to inspect Traefik container state. {}",
+            combined
+        ));
     }
 
-    let status = String::from_utf8_lossy(&output.stdout).trim().to_lowercase();
+    let status = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .to_lowercase();
     if status == "running" || status == "restarting" {
         return Ok(());
     }
@@ -3798,7 +3885,10 @@ fn start_hub_inner(
     let _ = release_orphaned_traefik_port_proxies(data_dir);
 
     ensure_host_state_tree_writable(data_dir).map_err(|error| {
-        let message = format!("Failed to prepare writable state directory before startup: {}", error);
+        let message = format!(
+            "Failed to prepare writable state directory before startup: {}",
+            error
+        );
         let _ = append_desktop_log_for(data_dir, "hub.start", &message);
         with_view_logs_hint(message)
     })?;
@@ -4284,6 +4374,19 @@ fn render_runtime_env_content(
     };
     let (container_uid, container_gid, docker_gid) = resolve_hub_container_identity();
     let docker_gid_line = format!("DOCKER_GID={docker_gid}\n");
+    let sentry_dsn_line = get_non_empty_env_value(existing, "SENTRY_DSN")
+        .map(|dsn| format!("SENTRY_DSN={dsn}\n"))
+        .unwrap_or_default();
+    let sentry_desktop_dsn_line = get_non_empty_env_value(existing, "SENTRY_DESKTOP_DSN")
+        .or_else(|| option_env!("SENTRY_DESKTOP_DSN").map(|dsn| dsn.to_string()))
+        .filter(|dsn| !dsn.trim().is_empty())
+        .map(|dsn| format!("SENTRY_DESKTOP_DSN={dsn}\n"))
+        .unwrap_or_default();
+    let docker_socket_path = host_docker_socket_path();
+    let docker_socket_path_line = format!(
+        "DOCKER_SOCKET_PATH={}\n",
+        docker_socket_path.to_string_lossy()
+    );
 
     format!(
         "# Preserved (generated once, survive upgrades)\n\
@@ -4298,12 +4401,15 @@ fn render_runtime_env_content(
          CI_HUB_VERSION={hub_version}\n\
          CI_HUB_IMAGE={hub_image}\n\
          DOCKER_PLATFORM={docker_platform}\n\
+         {docker_socket_path_line}\
          {docker_gid_line}\
          CI_HUB_CONTAINER_UID={container_uid}\n\
          CI_HUB_CONTAINER_GID={container_gid}\n\
          {private_vpn_user_disabled_line}\
          {compose_profiles_line}\
-         {device_id_line}",
+         {device_id_line}\
+         {sentry_desktop_dsn_line}\
+         {sentry_dsn_line}",
         root_folder_host = root_folder_host,
         jwt_secret = jwt_secret,
         postgres_password = postgres_password,
@@ -4311,6 +4417,7 @@ fn render_runtime_env_content(
         cloud_url = cloud_url,
         hub_version = hub_version,
         hub_image = hub_image,
+        docker_socket_path_line = docker_socket_path_line,
         docker_platform = docker_platform,
         docker_gid_line = docker_gid_line,
         container_uid = container_uid,
@@ -4318,6 +4425,8 @@ fn render_runtime_env_content(
         private_vpn_user_disabled_line = private_vpn_user_disabled_line,
         compose_profiles_line = compose_profiles_line,
         device_id_line = device_id_line,
+        sentry_desktop_dsn_line = sentry_desktop_dsn_line,
+        sentry_dsn_line = sentry_dsn_line,
     )
 }
 
@@ -5264,17 +5373,15 @@ mod tests {
     use super::{
         append_desktop_log_for, classify_docker_access_result, clear_traefik_recreate_required,
         clear_tunnel_token, desktop_log_path_for, format_command_output,
-        generate_container_docker_config, is_container_name_conflict, is_host_port_bind_conflict,
-        is_oci_runtime_error,
+        generate_container_docker_config, host_container_uid_gid, host_docker_socket_path,
+        is_container_name_conflict, is_host_port_bind_conflict, is_oci_runtime_error,
         is_traefik_recreate_required, logs_open_target_for, managed_app_container_ps_args,
-        host_container_uid_gid, mark_traefik_recreate_required, merge_compose_profiles,
-        parse_container_ids, parse_docker_socket_uid_gid, prepare_traefik_runtime_state,
-        private_vpn_enabled_from_map, resolve_hub_container_identity,
-        seeded_traefik_config_contents,
-        startup_service_definitions, truncate_command_output,
-        tunnel_dir_for, tunnel_token_path_for, DockerAccessState, MAX_COMMAND_OUTPUT_CHARS,
-        TRAEFIK_ACME_FILE, TRAEFIK_CONFIG_FILE, TRAEFIK_DYNAMIC_CONFIG_SEED, TRAEFIK_DYNAMIC_FILE,
-        TRAEFIK_TLS_DIR,
+        mark_traefik_recreate_required, merge_compose_profiles, parse_container_ids,
+        parse_docker_socket_uid_gid, prepare_traefik_runtime_state, private_vpn_enabled_from_map,
+        seeded_traefik_config_contents, should_defer_docker_bind_mount_probe,
+        startup_service_definitions, truncate_command_output, tunnel_dir_for,
+        tunnel_token_path_for, DockerAccessState, MAX_COMMAND_OUTPUT_CHARS, TRAEFIK_ACME_FILE,
+        TRAEFIK_CONFIG_FILE, TRAEFIK_DYNAMIC_CONFIG_SEED, TRAEFIK_DYNAMIC_FILE, TRAEFIK_TLS_DIR,
     };
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     use std::os::unix::fs::PermissionsExt;
@@ -5318,6 +5425,48 @@ mod tests {
         );
 
         assert!(matches!(result.state, DockerAccessState::PermissionDenied));
+    }
+
+    #[test]
+    fn defers_bind_mount_probe_until_docker_is_ready() {
+        assert!(!should_defer_docker_bind_mount_probe(
+            &DockerAccessState::Available
+        ));
+        assert!(should_defer_docker_bind_mount_probe(
+            &DockerAccessState::DaemonUnavailable
+        ));
+        assert!(should_defer_docker_bind_mount_probe(
+            &DockerAccessState::NotInstalled
+        ));
+        assert!(should_defer_docker_bind_mount_probe(
+            &DockerAccessState::PermissionDenied
+        ));
+        assert!(should_defer_docker_bind_mount_probe(
+            &DockerAccessState::Error
+        ));
+    }
+
+    #[test]
+    fn prefers_docker_host_unix_socket_path() {
+        let original = std::env::var_os("DOCKER_HOST");
+        unsafe {
+            std::env::set_var("DOCKER_HOST", "unix:///tmp/ci-hub-docker.sock");
+        }
+
+        assert_eq!(
+            host_docker_socket_path(),
+            PathBuf::from("/tmp/ci-hub-docker.sock")
+        );
+
+        if let Some(value) = original {
+            unsafe {
+                std::env::set_var("DOCKER_HOST", value);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var("DOCKER_HOST");
+            }
+        }
     }
 
     #[test]
