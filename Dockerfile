@@ -100,10 +100,11 @@ RUN cd /app && pnpm run bundle 2>&1 | tail -100 || true
 
 # Inject Sentry debug IDs into the backend bundle and upload its source maps so
 # production backend stack traces are readable instead of minified/bundled.
-# Best-effort: only runs when SENTRY_AUTH_TOKEN (BuildKit secret) plus SENTRY_ORG
-# and SENTRY_BACKEND_PROJECT are provided, and never fails the build. The raw
-# .map files are stripped after a successful upload so source is not shipped in
-# the image (Sentry resolves frames via the injected debug IDs).
+# Best-effort: only uploads when SENTRY_AUTH_TOKEN (BuildKit secret) plus
+# SENTRY_ORG and SENTRY_BACKEND_PROJECT are provided, and never fails the build.
+# The .map files are ALWAYS stripped afterward (whether or not the upload ran) so
+# source is never shipped in the image — the appliance image is distributed to
+# end users. Sentry resolves frames via the injected debug IDs.
 RUN --mount=type=secret,id=sentry_auth_token \
     if [ -s /run/secrets/sentry_auth_token ] && [ -n "$SENTRY_ORG" ] && [ -n "$SENTRY_BACKEND_PROJECT" ]; then \
       export SENTRY_AUTH_TOKEN="$(cat /run/secrets/sentry_auth_token)"; \
@@ -111,10 +112,10 @@ RUN --mount=type=secret,id=sentry_auth_token \
       npx --yes @sentry/cli@2 sourcemaps upload \
         --org "$SENTRY_ORG" --project "$SENTRY_BACKEND_PROJECT" \
         --release "$SENTRY_RELEASE" packages/backend/dist || echo "::warning::backend sourcemap upload failed"; \
-      find packages/backend/dist -name '*.map' -delete || true; \
     else \
       echo "Skipping backend sourcemap upload (token/org/project not provided)"; \
-    fi
+    fi; \
+    find packages/backend/dist -name '*.map' -delete || true
 
 # Inject debug IDs into the browser frontend bundle and upload its source maps so
 # browser stack traces are readable. Same best-effort gating as the backend step.
