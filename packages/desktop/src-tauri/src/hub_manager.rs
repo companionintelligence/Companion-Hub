@@ -44,6 +44,19 @@ static VPN_SIDECAR_STATUS_POLL_PHASE: Mutex<VpnSidecarPollPhase> =
 /// renames and writes to `desktop.log`.
 static LOG_WRITE_LOCK: Mutex<()> = Mutex::new(());
 
+/// Acquire a mutex guard, recovering the inner value if the lock was poisoned by
+/// a panic in another thread. These mutexes guard short-lived cache/status/log
+/// state where continuing with the existing value is safe and strictly better
+/// than propagating a poison panic. This matters now that the release profile
+/// unwinds panics (rather than aborting): a panic while a lock was held would
+/// otherwise turn every later `.lock().unwrap()` on the hot status-polling path
+/// into a fresh panic.
+fn lock_recovering<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 const MAX_COMMAND_OUTPUT_CHARS: usize = 50_000;
 const DESKTOP_LOG_FILENAME: &str = "desktop.log";
 const DEFAULT_DEV_PUBLIC_DOMAIN: &str = "companionintelligence.com";
@@ -1631,7 +1644,7 @@ pub fn get_hub_status() -> HubStatus {
                 HubStatus::Running
             } else {
                 let skip_sidecar_inspect = {
-                    let phase = VPN_SIDECAR_STATUS_POLL_PHASE.lock().unwrap();
+                    let phase = lock_recovering(&VPN_SIDECAR_STATUS_POLL_PHASE);
                     matches!(
                         *phase,
                         VpnSidecarPollPhase::VerifiedSince(since)
@@ -1642,7 +1655,7 @@ pub fn get_hub_status() -> HubStatus {
                     HubStatus::Running
                 } else {
                     let ready = vpn_sidecars_ready();
-                    let mut phase = VPN_SIDECAR_STATUS_POLL_PHASE.lock().unwrap();
+                    let mut phase = lock_recovering(&VPN_SIDECAR_STATUS_POLL_PHASE);
                     match *phase {
                         VpnSidecarPollPhase::PendingReady => {
                             if ready {
@@ -1966,9 +1979,7 @@ pub(crate) fn append_desktop_log_for(
 
     // Hold the lock across rotation + write so concurrent callers cannot
     // interleave renames and appends.
-    let _lock = LOG_WRITE_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _lock = lock_recovering(&LOG_WRITE_LOCK);
 
     rotate_log_if_needed(&log_path, &logs_dir, MAX_LOG_SIZE_BYTES);
     match std::fs::OpenOptions::new()
@@ -4214,7 +4225,7 @@ fn private_vpn_enabled_from_map(env: &std::collections::HashMap<String, String>)
 }
 
 fn reset_vpn_sidecar_status_poll_phase() {
-    *VPN_SIDECAR_STATUS_POLL_PHASE.lock().unwrap() = VpnSidecarPollPhase::PendingReady;
+    *lock_recovering(&VPN_SIDECAR_STATUS_POLL_PHASE) = VpnSidecarPollPhase::PendingReady;
 }
 
 /// `hub-tailscale` must be [`ServiceState::Ready`]: running (no healthcheck → `none` counts as ready).
@@ -4241,7 +4252,7 @@ fn is_private_vpn_enabled() -> bool {
     let mtime = std::fs::metadata(&path)
         .ok()
         .and_then(|m| m.modified().ok());
-    let mut guard = PRIVATE_VPN_ENV_CACHE.lock().unwrap();
+    let mut guard = lock_recovering(&PRIVATE_VPN_ENV_CACHE);
     if let Some((cached_mtime, cached_val)) = guard.as_ref() {
         if *cached_mtime == mtime {
             return *cached_val;
