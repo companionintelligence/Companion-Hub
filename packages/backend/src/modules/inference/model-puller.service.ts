@@ -162,6 +162,8 @@ export class ModelPullerService {
       throw new Error(`Model ${catalogId} not found in catalog`);
     }
     const backend = this.getBackend(curated.backend);
+    let lastLoggedPercent = -1;
+    let lastLoggedStatus = '';
 
     this.modelRegistry.trackModel(catalogId, 'pulling');
     this.logger.info(`[ModelPuller] Pulling ${catalogId} via ${curated.backend} (backendId: ${curated.backendModelId})`);
@@ -169,6 +171,20 @@ export class ModelPullerService {
     try {
       await backend.pullModel(curated.backendModelId, (progress) => {
         this.modelRegistry.updatePullProgress(catalogId, progress.percent);
+        const rawPercent = Number.isFinite(progress.percent) ? Math.max(0, Math.min(100, Math.round(progress.percent))) : null;
+        const percentBucket = rawPercent === null ? null : Math.floor(rawPercent / 10) * 10;
+        const status = progress.status?.trim() || 'pulling';
+        const shouldLogProgress = status !== lastLoggedStatus || (percentBucket !== null && percentBucket > lastLoggedPercent) || rawPercent === 100;
+
+        if (shouldLogProgress) {
+          const progressLabel = rawPercent === null ? status : `${rawPercent}% ${status}`;
+          this.logger.info(`[ModelPuller] Pull progress ${catalogId}: ${progressLabel}`);
+          lastLoggedStatus = status;
+          if (percentBucket !== null) {
+            lastLoggedPercent = percentBucket;
+          }
+        }
+
         onProgress?.(progress);
       });
 

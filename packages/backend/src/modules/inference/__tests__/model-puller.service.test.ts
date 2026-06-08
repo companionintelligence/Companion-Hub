@@ -36,6 +36,7 @@ const curated: CuratedModel = {
 
 describe('ModelPullerService.evaluatePull', () => {
   let service: ModelPullerService;
+  let logger: MockProxy<LoggerService>;
   let memoryManager: MockProxy<MemoryManagerService>;
   let hostMetrics: MockProxy<HostMetricsService>;
   let modelRegistry: MockProxy<ModelRegistryService>;
@@ -43,6 +44,7 @@ describe('ModelPullerService.evaluatePull', () => {
 
   beforeEach(async () => {
     const hardwareInspector = mock<HardwareInspectorService>();
+    logger = mock<LoggerService>();
     memoryManager = mock<MemoryManagerService>();
     hostMetrics = mock<HostMetricsService>();
     modelRegistry = mock<ModelRegistryService>();
@@ -84,7 +86,7 @@ describe('ModelPullerService.evaluatePull', () => {
     const moduleRef = await Test.createTestingModule({
       providers: [
         ModelPullerService,
-        { provide: LoggerService, useValue: mock<LoggerService>() },
+        { provide: LoggerService, useValue: logger },
         { provide: ModelRegistryService, useValue: modelRegistry },
         { provide: HardwareInspectorService, useValue: hardwareInspector },
         { provide: MemoryManagerService, useValue: memoryManager },
@@ -134,5 +136,23 @@ describe('ModelPullerService.evaluatePull', () => {
     const result = await service.evaluatePull('phi-4-mini');
     expect(result.canPull).toBe(false);
     expect(result.reason).toMatch(/memory/i);
+  });
+
+  it('logs pull progress so model downloads appear in hub logs', async () => {
+    ollamaBackend.pullModel.mockImplementation(async (_modelId, onProgress) => {
+      onProgress?.({ status: 'pulling manifest', total: 100, completed: 1, percent: 1 });
+      onProgress?.({ status: 'pulling manifest', total: 100, completed: 5, percent: 5 });
+      onProgress?.({ status: 'pulling layers', total: 100, completed: 27, percent: 27 });
+      onProgress?.({ status: 'pulling layers', total: 100, completed: 29, percent: 29 });
+      onProgress?.({ status: 'verifying sha256 digest', total: 100, completed: 100, percent: 100 });
+    });
+
+    await service.pullModel('phi-4-mini');
+
+    expect(logger.info).toHaveBeenCalledWith('[ModelPuller] Pulling phi-4-mini via ollama (backendId: phi4-mini)');
+    expect(logger.info).toHaveBeenCalledWith('[ModelPuller] Pull progress phi-4-mini: 1% pulling manifest');
+    expect(logger.info).toHaveBeenCalledWith('[ModelPuller] Pull progress phi-4-mini: 27% pulling layers');
+    expect(logger.info).toHaveBeenCalledWith('[ModelPuller] Pull progress phi-4-mini: 100% verifying sha256 digest');
+    expect(logger.info).toHaveBeenCalledWith('[ModelPuller] Successfully pulled phi-4-mini');
   });
 });
