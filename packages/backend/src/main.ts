@@ -27,7 +27,13 @@ process.on('unhandledRejection', (reason: unknown) => {
 process.on('uncaughtException', (error: Error) => {
   processLogger.error(`Uncaught exception — exiting for clean restart: ${error.stack ?? error.message}`);
   Sentry.captureException(error);
-  process.exit(1);
+  // Flush buffered events before exiting; process.exit otherwise truncates the
+  // async Sentry transport and the crash report is lost. close() resolves even
+  // when Sentry is disabled (no DSN), so the supervisor still restarts promptly.
+  void Sentry.close(2000).then(
+    () => process.exit(1),
+    () => process.exit(1),
+  );
 });
 
 async function setupSwagger(app: INestApplication) {

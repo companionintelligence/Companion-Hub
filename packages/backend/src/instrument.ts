@@ -3,6 +3,12 @@ import { scrubEvent } from './core/error-reporting/sentry-scrubber';
 
 const dsn = process.env.SENTRY_DSN?.trim();
 
+// The backend owns its own process-level uncaughtException/unhandledRejection
+// handlers (see main.ts) which log, capture, flush, and control exit. Drop
+// Sentry's default OnUncaughtException/OnUnhandledRejection integrations so
+// crashes are captured exactly once and our handlers govern the exit/flush.
+const MANUALLY_HANDLED_INTEGRATIONS = new Set(['OnUncaughtException', 'OnUnhandledRejection']);
+
 if (dsn) {
   Sentry.init({
     dsn,
@@ -12,6 +18,7 @@ if (dsn) {
     tracesSampleRate: 0,
     profilesSampleRate: 0,
     sendDefaultPii: false,
+    integrations: (defaults) => defaults.filter((integration) => !MANUALLY_HANDLED_INTEGRATIONS.has(integration.name)),
     beforeSend: scrubEvent,
   });
 }
