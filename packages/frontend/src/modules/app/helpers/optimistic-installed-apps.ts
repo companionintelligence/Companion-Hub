@@ -33,11 +33,3 @@ export function addOptimisticInstalledApp(queryClient: QueryClient, params: { ur
   };
   queryClient.setQueryData(installedKey, { installed: [optimistic, ...filtered] });
 }
-
-export function removeOptimisticInstalledApp(queryClient: QueryClient, urn: string) {
-  const installedKey = getInstalledAppsQueryKey();
-  const existing = queryClient.getQueryData(installedKey) as GetInstalledAppsResponse | undefined;
-  const installedList = existing?.installed ?? [];
-  const filtered = installedList.filter((it) => it.info?.urn !== urn);
-  queryClient.setQueryData(installedKey, { installed: filtered });
-}

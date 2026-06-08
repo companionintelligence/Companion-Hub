@@ -45,11 +45,6 @@ export const DEFAULT_RABBITMQ_PASSWORD = 'admin';
 export const DEFAULT_HUB_CONTAINER_NAME = 'ci-os-hub';
 export const DEFAULT_NETWORK_NAME = 'ci-os-hub_network';
 
-// Ports
-export const DEFAULT_API_PORT = '5002';
-export const DEFAULT_HTTP_PORT = '80';
-export const DEFAULT_HTTPS_PORT = '443';
-
 // Traefik
 export const DEFAULT_FORWARD_AUTH_URL = 'http://ci-os-hub:3000/api/auth/traefik';
 
@@ -75,9 +70,6 @@ export const DEFAULT_CI_CLOUD_URL = isProductionEnvironmentDefault() ? DEFAULT_P
 export const DEFAULT_DEV_PUBLIC_DOMAIN = 'companionintelligence.com';
 export const DEFAULT_PROD_PUBLIC_DOMAIN = 'companionintelligence.com';
 export const DEFAULT_PUBLIC_DOMAIN = isProductionEnvironmentDefault() ? DEFAULT_PROD_PUBLIC_DOMAIN : DEFAULT_DEV_PUBLIC_DOMAIN;
-
-// Version
-export const DEFAULT_CI_HUB_VERSION = '4.5.0';
 
 // Feature flag defaults
 export const DEFAULT_DEMO_MODE = 'false';

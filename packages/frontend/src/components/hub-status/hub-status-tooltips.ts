@@ -27,5 +27,3 @@ export const ONBOARDING_REMOTE_WEB_HINT = 'A public web link to your Hub. Requir
 export const ONBOARDING_BACKEND_OLLAMA_HINT = 'Runs AI models on your computer. Works on most hardware.';
 export const ONBOARDING_BACKEND_VLLM_HINT = 'High-speed AI for powerful NVIDIA GPUs.';
 export const ONBOARDING_BACKEND_LEMONADE_HINT = 'AI tuned for laptops with a built-in NPU chip.';
-export const ONBOARDING_HW_TIER_HINT = 'A rough guide to which AI models fit your computer.';
-export const ONBOARDING_HW_UNIFIED_MEMORY_HINT = 'GPU and RAM share the same memory; common on Apple Silicon Macs.';
