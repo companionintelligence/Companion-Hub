@@ -107,6 +107,23 @@ describe('buildPublicWebIdentity', () => {
 
     expect(identity.hostname).toBe('nextcloud-myorg.companionintelligence.com');
   });
+
+  it('keeps dashes in the app name and honors a non-default selected domain', () => {
+    const identity = buildPublicWebIdentity({
+      appSubdomain: 'anything-llm',
+      hubSubdomain: 'hub-laptop-cid',
+      orgSlug: 'cid',
+      publicDomainRoot: 'companionintel.com',
+    });
+
+    expect(identity).toEqual({
+      appSubdomain: 'anything-llm',
+      publicDomainRoot: 'companionintel.com',
+      hostname: 'anything-llm-laptop-cid.companionintel.com',
+      publicUrl: 'https://anything-llm-laptop-cid.companionintel.com',
+      originServerName: 'anything-llm-laptop-cid.companionintel.com',
+    });
+  });
 });
 
 describe('buildFqdnSubdomain', () => {

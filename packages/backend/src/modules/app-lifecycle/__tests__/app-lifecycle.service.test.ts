@@ -238,6 +238,40 @@ describe('AppLifecycleService', () => {
       expect(apps).toHaveLength(0);
     });
 
+    it('uses the selected non-default domain and surfaces a public DNS sync failure', async () => {
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue({
+        id: 'org-id',
+        tunnelId: 'tunnel-id',
+        slug: 'cid',
+        name: 'CID',
+        hubSubdomain: 'hub-laptop-cid',
+      } as any);
+      appsRepository.getApps.mockResolvedValue([
+        {
+          appName: 'anything-llm',
+          exposedLocal: true,
+          status: 'running',
+          localSubdomain: 'anything-llm',
+          publicDomain: 'companionintel.com',
+          appStoreSlug: 'ci-marketplace',
+        },
+      ] as any);
+      configService.getConfig.mockReturnValue({
+        userSettings: { domain: 'companionintelligence.com', localDomain: 'lan' },
+        domain: 'companionintelligence.com',
+      } as any);
+      cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: ['anything-llm'], synced: 0 });
+
+      await service.triggerCloudflareSync();
+
+      // The selected (non-default) domain wins over the hub's default domain.
+      const syncedApps = cloudflareClientService.syncState.mock.calls[0]?.[1] as any[];
+      expect(syncedApps.some((app) => app.originServerName === 'anything-llm-laptop-cid.companionintel.com')).toBe(true);
+
+      // The partial failure is surfaced, not swallowed.
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('anything-llm-laptop-cid.companionintel.com'));
+    });
+
     it('does not acquire install pipeline mutex for non-install commands', async () => {
       const data = {
         appUrn: 'test-app',

@@ -830,6 +830,23 @@ export class AppLifecycleService implements OnApplicationBootstrap {
   /**
    * Triggers a full sync of all exposed apps to Cloudflare via CI-Cloud
    */
+  private lastPublicDnsFailureReportAt = 0;
+
+  /**
+   * Surface a public-DNS sync failure so it is never silent: always logs an
+   * error, and reports to Sentry at most once per 5 minutes to avoid flooding
+   * when availability remediation re-triggers the sync for a still-broken app.
+   */
+  private surfacePublicDnsFailure(message: string, failedApps: string[]): void {
+    this.logger.error(message);
+    const now = Date.now();
+    if (now - this.lastPublicDnsFailureReportAt < 5 * 60_000) {
+      return;
+    }
+    this.lastPublicDnsFailureReportAt = now;
+    this.errorReportingService?.captureMessage(message, 'error', { failedApps });
+  }
+
   public async triggerCloudflareSync() {
     try {
       const orgInfo = await this.registrationService.getDeviceRegistrationInfo();
@@ -903,7 +920,30 @@ export class AppLifecycleService implements OnApplicationBootstrap {
         });
       }
 
-      await this.cloudflareClientService.syncState(orgInfo.id, exposedApps, orgInfo.tunnelId || undefined);
+      const result = await this.cloudflareClientService.syncState(orgInfo.id, exposedApps, orgInfo.tunnelId || undefined);
+
+      const appEntries = exposedApps.filter((entry) => entry.privilegedKind !== 'hub');
+      if (appEntries.length > 0) {
+        this.logger.info(
+          `[Cloudflare] Public hostnames synced: ${appEntries.map((entry) => `${entry.name} -> ${entry.originServerName}`).join(', ')}`,
+        );
+      }
+
+      if (!result.ok) {
+        this.surfacePublicDnsFailure(
+          `[Cloudflare] State sync did not complete — public DNS was not updated for ${appEntries.length} exposed app(s).`,
+          appEntries.map((entry) => entry.name),
+        );
+      } else if (result.failed.length > 0) {
+        const failedHostnames = exposedApps
+          .filter((entry) => result.failed.includes(entry.name))
+          .map((entry) => entry.originServerName ?? entry.subdomain);
+        this.surfacePublicDnsFailure(
+          `[Cloudflare] Public DNS records were NOT created for ${result.failed.length} app(s): ${failedHostnames.join(', ')}. ` +
+            `These apps will not resolve at their public domain — verify the selected domain's zone is provisioned in CI-Cloud for this device.`,
+          result.failed,
+        );
+      }
     } catch (error) {
       if (error instanceof Error) {
         this.logger.error(`[Cloudflare] Sync failed: ${error.message}`);
