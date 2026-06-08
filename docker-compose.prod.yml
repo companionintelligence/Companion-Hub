@@ -1,6 +1,15 @@
+# Cap every container's stdout/stderr logs so they cannot fill the device disk.
+# json-file is Docker's default driver and grows unbounded without these limits.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 services:
   ci-hub-db:
     container_name: ci-hub-db
+    logging: *default-logging
     image: postgres:14
     pull_policy: if_not_present
     restart: unless-stopped
@@ -24,6 +33,7 @@ services:
 
   ci-os-hub-queue:
     container_name: ci-os-hub-queue
+    logging: *default-logging
     image: rabbitmq:4-alpine
     pull_policy: if_not_present
     restart: unless-stopped
@@ -69,6 +79,7 @@ services:
       ci-os-hub-queue:
         condition: service_healthy
     container_name: ci-os-hub
+    logging: *default-logging
     restart: unless-stopped
     # Match the host user that owns ROOT_FOLDER_HOST (set CI_HUB_CONTAINER_UID/GID in .env).
     user: "${CI_HUB_CONTAINER_UID:-1000}:${CI_HUB_CONTAINER_GID:-1000}"
@@ -159,6 +170,7 @@ services:
     image: traefik:v3.6.7
     pull_policy: if_not_present
     container_name: traefik
+    logging: *default-logging
     restart: unless-stopped
     command:
       - --configfile=/etc/traefik/traefik.yml
@@ -186,6 +198,7 @@ services:
     image: cloudflare/cloudflared:2026.2.0
     pull_policy: if_not_present
     container_name: cloudflared
+    logging: *default-logging
     restart: unless-stopped
     command: tunnel run --token-file /home/nonroot/.cloudflared/token
     volumes:
@@ -208,6 +221,7 @@ services:
     image: tailscale/tailscale:v1.98.3
     pull_policy: if_not_present
     container_name: hub-tailscale
+    logging: *default-logging
     restart: unless-stopped
     hostname: hub-tailscale
     cap_add:
