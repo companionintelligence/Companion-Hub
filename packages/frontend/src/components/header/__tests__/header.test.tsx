@@ -50,8 +50,8 @@ describe('Header', () => {
   it('renders Home and Store links when logged in', () => {
     renderHeader(true);
 
-    expect(screen.getAllByRole('link', { name: /HEADER_DASHBOARD|Dashboard/i }).length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByRole('link', { name: /HEADER_APP_STORE|App Store|Store/i }).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByRole('link', { name: /COMMON_DASHBOARD|Dashboard/i }).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByRole('link', { name: /COMMON_APP_STORE|App Store|Store/i }).length).toBeGreaterThanOrEqual(1);
   });
 
   it('does not render My Apps link', () => {
@@ -63,6 +63,6 @@ describe('Header', () => {
   it('does not render navigation links when logged out', () => {
     renderHeader(false);
 
-    expect(screen.queryByRole('link', { name: /HEADER_APP_STORE|App Store|Store/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /COMMON_APP_STORE|App Store|Store/i })).not.toBeInTheDocument();
   });
 });

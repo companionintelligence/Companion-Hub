@@ -23,6 +23,46 @@ vi.mock('react-i18next', () => ({
   }),
 }));
 
+vi.mock('@ci-hub/common/types', () => {
+  const sanitizeAppSubdomain = (subdomain: string) =>
+    subdomain
+      .split('.')[0]
+      .toLowerCase()
+      .replace(/[^a-z0-9-]/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '');
+
+  const buildPublicWebIdentity = ({
+    appSubdomain,
+    hubSubdomain,
+    orgSlug,
+    publicDomainRoot,
+  }: {
+    appSubdomain: string;
+    hubSubdomain?: string | null;
+    orgSlug?: string | null;
+    publicDomainRoot: string;
+  }) => {
+    const cleanAppSubdomain = sanitizeAppSubdomain(appSubdomain);
+    if (!orgSlug) {
+      const hostname = `${cleanAppSubdomain}.${publicDomainRoot}`;
+      return { hostname, publicUrl: `https://${hostname}`, originServerName: hostname, appSubdomain: cleanAppSubdomain, publicDomainRoot };
+    }
+
+    const withoutPrefix = (hubSubdomain ?? '').replace(/^hub-/, '');
+    const orgSuffix = `-${orgSlug}`;
+    const deviceSlug = withoutPrefix.endsWith(orgSuffix) ? withoutPrefix.slice(0, -orgSuffix.length) : withoutPrefix;
+    const fqdnSubdomain = deviceSlug && deviceSlug !== orgSlug ? `${cleanAppSubdomain}-${deviceSlug}-${orgSlug}` : `${cleanAppSubdomain}-${orgSlug}`;
+    const hostname = `${fqdnSubdomain}.${publicDomainRoot}`;
+    return { hostname, publicUrl: `https://${hostname}`, originServerName: hostname, appSubdomain: cleanAppSubdomain, publicDomainRoot };
+  };
+
+  return {
+    buildPublicWebIdentity,
+    sanitizeAppSubdomain,
+  };
+});
+
 const MOCK_AVAILABLE_DOMAINS = { domains: [] as Array<{ id: string; domain: string; isDefault: boolean; scope?: string }> };
 const MOCK_USE_QUERY_RESULT = {
   data: MOCK_AVAILABLE_DOMAINS,
@@ -306,8 +346,8 @@ describe('InstallForm', () => {
       </MemoryRouter>,
     );
 
-    expect(screen.getByLabelText('APP_INSTALL_FORM_PUBLIC_DOMAIN')).toBeInTheDocument();
-    expect(screen.queryByText('APP_INSTALL_FORM_PUBLIC_DOMAIN')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('COMMON_PUBLIC_DOMAIN')).toBeInTheDocument();
+    expect(screen.queryByText('COMMON_PUBLIC_DOMAIN')).not.toBeInTheDocument();
 
     MOCK_AVAILABLE_DOMAINS.domains = [];
   });

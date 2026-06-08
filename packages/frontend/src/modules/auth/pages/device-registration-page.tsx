@@ -462,7 +462,7 @@ export default function DeviceRegistrationPage() {
         )}
 
         <Button variant="outline" onClick={() => void handleRetryStatus()} disabled={isPairing}>
-          {t('DEVICE_REGISTRATION_CHECK_AGAIN')}
+          {t('COMMON_CHECK_AGAIN')}
         </Button>
       </div>
     );

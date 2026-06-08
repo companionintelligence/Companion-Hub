@@ -182,7 +182,7 @@ const HostResourcesSection = ({ hostResources }: { hostResources: NonNullable<Sy
             {t('COMMON_MEMORY')}: {hostResources.hostMemoryUsedGb} / {hostResources.hostMemoryTotalGb} GB
           </div>
           <div className="text-sm">
-            {t('SYSTEM_INSPECTOR_DISK')}: {hostResources.hostDiskUsedGb} / {hostResources.hostDiskTotalGb} GB
+            {t('COMMON_DISK')}: {hostResources.hostDiskUsedGb} / {hostResources.hostDiskTotalGb} GB
           </div>
         </div>
         {hostResources.hasVmWedge && (
@@ -194,7 +194,7 @@ const HostResourcesSection = ({ hostResources }: { hostResources: NonNullable<Sy
               {t('COMMON_MEMORY')}: {hostResources.containerMemoryUsedGb ?? '—'} / {hostResources.containerMemoryTotalGb ?? '—'} GB
             </div>
             <div className="text-sm">
-              {t('SYSTEM_INSPECTOR_DISK')}: {hostResources.containerDiskUsedGb ?? '—'} / {hostResources.containerDiskTotalGb ?? '—'} GB
+              {t('COMMON_DISK')}: {hostResources.containerDiskUsedGb ?? '—'} / {hostResources.containerDiskTotalGb ?? '—'} GB
             </div>
             {hostResources.recommendedDockerRamMb && (
               <div className="text-xs text-muted-foreground mt-2">
@@ -230,9 +230,9 @@ const SystemHealthSection = ({ health }: { health: SystemHealth }) => {
       <div className="grid grid-cols-2 gap-x-4 gap-y-5 border-t border-border pt-5 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard
           icon={Cpu}
-          title={t('SYSTEM_INSPECTOR_CPU')}
+          title={t('COMMON_CPU')}
           value={`${health.cpu.load}%`}
-          subtitle={`${health.cpu.cores} ${t('SYSTEM_INSPECTOR_CORES')}`}
+          subtitle={`${health.cpu.cores} ${t('COMMON_CORES')}`}
           percent={health.cpu.load}
         />
         <StatCard
@@ -244,7 +244,7 @@ const SystemHealthSection = ({ health }: { health: SystemHealth }) => {
         />
         <StatCard
           icon={HardDrive}
-          title={t('SYSTEM_INSPECTOR_DISK')}
+          title={t('COMMON_DISK')}
           value={`${health.disk.percent}%`}
           subtitle={`${formatBytes(health.disk.used * 1024 * 1024 * 1024)} / ${formatBytes(health.disk.total * 1024 * 1024 * 1024)}`}
           percent={health.disk.percent}
@@ -254,7 +254,7 @@ const SystemHealthSection = ({ health }: { health: SystemHealth }) => {
 
       <div className="mt-5 grid grid-cols-2 gap-x-4 gap-y-3 border-t border-border pt-5 sm:grid-cols-4 text-sm">
         <div>
-          <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-0.5">{t('SYSTEM_INSPECTOR_HOSTNAME')}</div>
+          <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-0.5">{t('COMMON_HOSTNAME')}</div>
           <div className="text-xs truncate font-medium" title={health.hostname}>
             {health.hostname}
           </div>
@@ -313,10 +313,10 @@ const ContainersSection = ({ containers }: { containers: ContainerInfo[] }) => {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b bg-muted/50">
-                  <th className="text-left p-2 pl-3 font-medium text-muted-foreground">{t('SYSTEM_INSPECTOR_STATUS')}</th>
+                  <th className="text-left p-2 pl-3 font-medium text-muted-foreground">{t('COMMON_STATUS')}</th>
                   <th className="text-left p-2 font-medium text-muted-foreground">{t('SYSTEM_INSPECTOR_CONTAINER')}</th>
-                  <th className="text-left p-2 font-medium text-muted-foreground hidden md:table-cell">{t('SYSTEM_INSPECTOR_IMAGE')}</th>
-                  <th className="text-left p-2 font-medium text-muted-foreground hidden sm:table-cell">{t('SYSTEM_INSPECTOR_PORTS')}</th>
+                  <th className="text-left p-2 font-medium text-muted-foreground hidden md:table-cell">{t('COMMON_IMAGE')}</th>
+                  <th className="text-left p-2 font-medium text-muted-foreground hidden sm:table-cell">{t('COMMON_PORTS')}</th>
                   <th className="text-left p-2 font-medium text-muted-foreground hidden sm:table-cell">{t('SYSTEM_INSPECTOR_UPTIME')}</th>
                   <th className="text-left p-2 pr-3 font-medium text-muted-foreground hidden lg:table-cell">{t('SYSTEM_INSPECTOR_APP')}</th>
                 </tr>
@@ -404,8 +404,8 @@ const PortManagementSection = ({ ports }: { ports: { allocations: PortStatus[]; 
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b bg-muted/50">
-                    <th className="text-left p-2 pl-3 font-medium text-muted-foreground">{t('SYSTEM_INSPECTOR_STATUS')}</th>
-                    <th className="text-left p-2 font-medium text-muted-foreground">{t('SYSTEM_INSPECTOR_HOST_PORT')}</th>
+                    <th className="text-left p-2 pl-3 font-medium text-muted-foreground">{t('COMMON_STATUS')}</th>
+                    <th className="text-left p-2 font-medium text-muted-foreground">{t('COMMON_HOST_PORT')}</th>
                     <th className="text-left p-2 font-medium text-muted-foreground">{t('SYSTEM_INSPECTOR_TO_CONTAINER')}</th>
                     <th className="text-left p-2 font-medium text-muted-foreground">{t('SYSTEM_INSPECTOR_PROTOCOL')}</th>
                     <th className="text-left p-2 font-medium text-muted-foreground">{t('SYSTEM_INSPECTOR_LABEL')}</th>
@@ -550,7 +550,7 @@ export const SystemInspectorContainer = () => {
         <p className="text-xs text-muted-foreground">{t('SYSTEM_INSPECTOR_REALTIME_OVERVIEW')}</p>
         <div className="flex items-center gap-2 shrink-0">
           <span className="text-xs text-muted-foreground">
-            {t('SYSTEM_INSPECTOR_UPDATED')} {lastUpdated}
+            {t('COMMON_UPDATED')} {lastUpdated}
           </span>
           <button
             type="button"

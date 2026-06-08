@@ -304,7 +304,7 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
   }
 
   if (isRouteErrorResponse(error)) {
-    message = error.status === 404 ? '404' : i18next.t('ROOT_ERROR_BOUNDARY_ERROR');
+    message = error.status === 404 ? '404' : i18next.t('COMMON_ERROR');
     details = error.status === 404 ? i18next.t('ROOT_ERROR_BOUNDARY_PAGE_NOT_FOUND') : error.statusText || details;
   } else if (import.meta.env.DEV && error && error instanceof Error) {
     details = error.message;

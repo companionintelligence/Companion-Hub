@@ -34,7 +34,7 @@ const FRAMEWORKS: Array<{ key: AgentFramework; nameKey: string; Icon: typeof Ope
 ];
 
 const ACCESS_OPTIONS: Array<{ mode: RemoteAccessMode; labelKey: string; transportKey: string; Icon: typeof Shield }> = [
-  { mode: 'tailscale', labelKey: 'ONBOARDING_REMOTE_PRIVATE_VPN', transportKey: 'ONBOARDING_REMOTE_TRANSPORT_TAILSCALE', Icon: Shield },
+  { mode: 'tailscale', labelKey: 'COMMON_PRIVATE_VPN', transportKey: 'ONBOARDING_REMOTE_TRANSPORT_TAILSCALE', Icon: Shield },
   { mode: 'cloudflare', labelKey: 'ONBOARDING_REMOTE_WEB', transportKey: 'ONBOARDING_REMOTE_TRANSPORT_CLOUDFLARE', Icon: Globe },
 ];
 

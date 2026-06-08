@@ -46,33 +46,33 @@ export default () => {
         <Tabs value={currentTab} onValueChange={handleTabChange} className="flex-1 flex flex-col h-full overflow-hidden">
           <div className="max-w-5xl mx-auto w-full">
             <TabsList className="bg-card/50 border border-border/50">
-              <TabsTrigger value="settings">{t('SETTINGS_GENERAL_TAB_TITLE')}</TabsTrigger>
-              <TabsTrigger value="security">{t('SETTINGS_SECURITY_TAB_TITLE')}</TabsTrigger>
+              <TabsTrigger value="settings">{t('COMMON_SETTINGS')}</TabsTrigger>
+              <TabsTrigger value="security">{t('COMMON_SECURITY')}</TabsTrigger>
               <TabsTrigger value="appstores" className="hidden md:inline-flex">
-                {t('SETTINGS_APPSTORES_TAB_TITLE')}
+                {t('COMMON_APP_STORES')}
               </TabsTrigger>
               <TabsTrigger value="network" className="hidden md:inline-flex">
-                {t('SETTINGS_NETWORK_TAB_TITLE')}
+                {t('COMMON_NETWORK')}
               </TabsTrigger>
               <TabsTrigger value="ai" className="hidden md:inline-flex">
-                {t('SETTINGS_TAB_AI')}
+                {t('COMMON_AI')}
               </TabsTrigger>
               <TabsTrigger value="system" className="hidden md:inline-flex">
-                {t('SETTINGS_TAB_SYSTEM')}
+                {t('COMMON_SYSTEM')}
               </TabsTrigger>
               <TabsTrigger value="logs" className="hidden md:inline-flex">
-                {t('SETTINGS_LOGS_TAB_TITLE')}
+                {t('COMMON_LOGS')}
               </TabsTrigger>
               <DropdownMenu>
                 <DropdownMenuTrigger className="inline-flex md:hidden items-center justify-center whitespace-nowrap rounded-sm px-3 py-1.5 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">
                   {t('MORE')}
                 </DropdownMenuTrigger>
                 <DropdownMenuContent>
-                  <DropdownMenuItem onClick={() => handleTabChange('appstores')}>{t('SETTINGS_APPSTORES_TAB_TITLE')}</DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => handleTabChange('network')}>{t('SETTINGS_NETWORK_TAB_TITLE')}</DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => handleTabChange('ai')}>{t('SETTINGS_TAB_AI')}</DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => handleTabChange('system')}>{t('SETTINGS_TAB_SYSTEM')}</DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => handleTabChange('logs')}>{t('SETTINGS_LOGS_TAB_TITLE')}</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handleTabChange('appstores')}>{t('COMMON_APP_STORES')}</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handleTabChange('network')}>{t('COMMON_NETWORK')}</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handleTabChange('ai')}>{t('COMMON_AI')}</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handleTabChange('system')}>{t('COMMON_SYSTEM')}</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handleTabChange('logs')}>{t('COMMON_LOGS')}</DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
             </TabsList>

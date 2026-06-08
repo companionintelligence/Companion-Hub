@@ -14,7 +14,7 @@ interface SetupPageShellProps {
 }
 
 export function SetupPageShell({ children, steps, title, showLogo = true, className, contentClassName }: SetupPageShellProps) {
-  const resolvedTitle = title ?? i18next.t('HUB_STATUS_SETUP_YOUR_HUB');
+  const resolvedTitle = title ?? i18next.t('COMMON_SET_UP_YOUR_HUB');
 
   return (
     <div

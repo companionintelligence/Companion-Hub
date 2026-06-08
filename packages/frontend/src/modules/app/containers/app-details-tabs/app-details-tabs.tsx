@@ -59,7 +59,7 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, 
             <AlertCircle strokeWidth={2} />
           </AlertIcon>
           <div>
-            <AlertHeading>{t('APP_DETAILS_DEPRECATED_ALERT_TITLE')}</AlertHeading>
+            <AlertHeading>{t('COMMON_THIS_APP_IS_DEPRECATED')}</AlertHeading>
             <AlertDescription>{t('APP_DETAILS_DEPRECATED_ALERT_SUBTITLE')}</AlertDescription>
           </div>
         </Alert>
@@ -88,7 +88,7 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, 
                 <h2 className="text-lg font-semibold">{t('APP_DETAILS_NOTES')}</h2>
                 {!isEditing && (
                   <Button variant="outline" size="sm" onClick={() => setIsEditing(!isEditing)}>
-                    {t('EDIT')}
+                    {t('COMMON_EDIT')}
                   </Button>
                 )}
                 {isEditing && (
@@ -102,7 +102,7 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, 
                         setMeta(info.description);
                       }}
                     >
-                      {t('ACTIONS_CANCEL')}
+                      {t('COMMON_CANCEL')}
                     </Button>
                     <Button
                       variant="outline"
@@ -115,7 +115,7 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, 
                       }
                       loading={saveMetaMutation.isPending}
                     >
-                      {t('SAVE')}
+                      {t('COMMON_SAVE')}
                     </Button>
                   </div>
                 )}
@@ -133,7 +133,7 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, 
         {/* Right column - Information */}
         <div className="space-y-6">
           <div>
-            <h2 className="text-lg font-semibold mb-4">{t('APP_DETAILS_INFORMATION')}</h2>
+            <h2 className="text-lg font-semibold mb-4">{t('COMMON_INFORMATION')}</h2>
             <div className="space-y-4">
               <div className="flex justify-between items-start">
                 <span className="text-sm text-muted-foreground">{t('APP_DETAILS_PROVIDER')}</span>
@@ -148,19 +148,19 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, 
               {updatedDate && (
                 <>
                   <div className="flex justify-between items-start">
-                    <span className="text-sm text-muted-foreground">{t('APP_DETAILS_UPDATED')}</span>
+                    <span className="text-sm text-muted-foreground">{t('COMMON_UPDATED')}</span>
                     <span className="text-sm font-medium">{updatedDate}</span>
                   </div>
                   <div className="border-t border-border/40" />
                 </>
               )}
               <div className="flex justify-between items-start">
-                <span className="text-sm text-muted-foreground">{t('APP_DETAILS_VERSION')}</span>
+                <span className="text-sm text-muted-foreground">{t('COMMON_VERSION')}</span>
                 <span className="text-sm font-medium">{info.version}</span>
               </div>
               <div className="border-t border-border/40" />
               <div className="flex justify-between items-start">
-                <span className="text-sm text-muted-foreground">{t('APP_DETAILS_SOURCE_CODE')}</span>
+                <span className="text-sm text-muted-foreground">{t('COMMON_SOURCE_CODE')}</span>
                 <a target="_blank" rel="noreferrer" className="text-sm text-blue-500 hover:underline" href={info.source}>
                   {t('APP_DETAILS_LINK')}
                   <ExternalLink size={12} className="ml-1 mb-0.5 inline" />
@@ -190,7 +190,7 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, 
                 <>
                   <div className="border-t border-border/40" />
                   <div className="flex justify-between items-start" data-testid="app-architectures">
-                    <span className="text-sm text-muted-foreground">{t('APP_DETAILS_ARCHITECTURES')}</span>
+                    <span className="text-sm text-muted-foreground">{t('COMMON_ARCHITECTURES')}</span>
                     <span className="text-sm font-medium flex items-center gap-1">
                       <Cpu size={13} />
                       {info.supported_architectures.join(', ')}
@@ -202,7 +202,7 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, 
                 <>
                   <div className="border-t border-border/40" />
                   <div className="flex justify-between items-start" data-testid="app-min-hub-version">
-                    <span className="text-sm text-muted-foreground">{t('APP_DETAILS_MIN_HUB_VERSION')}</span>
+                    <span className="text-sm text-muted-foreground">{t('COMMON_MIN_HUB_VERSION')}</span>
                     <span className="text-sm font-medium">{metadata.minHubVersion}</span>
                   </div>
                 </>

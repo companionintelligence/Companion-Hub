@@ -20,7 +20,7 @@ export const AdvancedDrawers = ({ providers, onUpdateProviders, insufficientHard
   return (
     <StepSection
       number={5}
-      title={t('ONBOARDING_ADVANCED')}
+      title={t('COMMON_ADVANCED')}
       action={<span className="rounded-full bg-muted px-2.5 py-0.5 text-xs font-medium text-muted-foreground">{t('ONBOARDING_OPTIONAL')}</span>}
     >
       <div className="mb-3 flex items-center gap-2">

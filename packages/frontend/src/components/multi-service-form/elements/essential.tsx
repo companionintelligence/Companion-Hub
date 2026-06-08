@@ -39,7 +39,7 @@ export const EssentialConfig = ({ register, errors, serviceIndex }: Props) => {
               <Tooltip className="tooltip" anchorSelect=".my-image">
                 {t('MULTI_SERVICE_ESSENTIALS_IMAGE_TOOLTIP')}
               </Tooltip>
-              {t('MULTI_SERVICE_ESSENTIALS_IMAGE')} <span className="ms-1 form-help my-image">?</span>
+              {t('COMMON_IMAGE')} <span className="ms-1 form-help my-image">?</span>
             </>
           }
           placeholder={t('MULTI_SERVICE_ESSENTIALS_IMAGE_PLACEHOLDER')}

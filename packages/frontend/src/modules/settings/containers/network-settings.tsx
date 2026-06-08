@@ -127,11 +127,11 @@ const TailscaleSidecarSection = () => {
 
       {data?.ip && (
         <div className="grid grid-cols-2 gap-2 text-sm">
-          <div className="text-muted-foreground">{t('SETTINGS_NETWORK_TAILSCALE_IP')}</div>
+          <div className="text-muted-foreground">{t('COMMON_TAILSCALE_IP')}</div>
           <div className="font-mono">{data.ip}</div>
           {data.hostname && (
             <>
-              <div className="text-muted-foreground">{t('SETTINGS_NETWORK_HOSTNAME')}</div>
+              <div className="text-muted-foreground">{t('COMMON_HOSTNAME')}</div>
               <div className="font-mono">{data.hostname}</div>
             </>
           )}
@@ -142,7 +142,7 @@ const TailscaleSidecarSection = () => {
         <div className="space-y-3">
           <p className="text-xs text-muted-foreground">{t('SETTINGS_NETWORK_TAILSCALE_NOT_INSTALLED_DESC')}</p>
           <p className="text-xs text-muted-foreground">
-            <strong>{t('SETTINGS_NETWORK_NOTE_LABEL')}:</strong> {t('SETTINGS_NETWORK_TAILSCALE_HOST_NOTE')}
+            <strong>{t('COMMON_NOTE')}:</strong> {t('SETTINGS_NETWORK_TAILSCALE_HOST_NOTE')}
           </p>
         </div>
       )}

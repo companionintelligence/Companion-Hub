@@ -28,7 +28,7 @@ const MODALITY_TAG: Record<string, string> = {
   tts: 'ONBOARDING_MODEL_TAG_SPEECH',
   stt: 'ONBOARDING_MODEL_TAG_TRANSCRIPTION',
   embedding: 'ONBOARDING_MODEL_TAG_EMBEDDING',
-  'image-gen': 'ONBOARDING_MODEL_TAG_IMAGE',
+  'image-gen': 'COMMON_IMAGE',
 };
 
 /**
@@ -99,7 +99,7 @@ export const RecommendedModels = ({
     .sort((a, b) => Number(b.id === preferredModelId) - Number(a.id === preferredModelId));
 
   return (
-    <StepSection number={2} title={t('ONBOARDING_RECOMMENDED_MODELS')} description={t('ONBOARDING_RECOMMENDED_MODELS_DESC')}>
+    <StepSection number={2} title={t('COMMON_RECOMMENDED_MODELS')} description={t('ONBOARDING_RECOMMENDED_MODELS_DESC')}>
       {models.length > 0 ? (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3" data-testid="model-card-title">
           {models.map((model) => (
@@ -277,7 +277,7 @@ function ModelGroup({
                 <th className="py-1.5 pr-3 text-right font-medium">{t('ONBOARDING_INTELLIGENCE')}</th>
                 <th className="py-1.5 pr-3 text-right font-medium">{t('ONBOARDING_TOOL_USE')}</th>
                 <th className="py-1.5 pr-3 text-right font-medium">{t('ONBOARDING_RAM')}</th>
-                <th className="py-1.5 pr-3 text-right font-medium">{t('ONBOARDING_DISK')}</th>
+                <th className="py-1.5 pr-3 text-right font-medium">{t('COMMON_DISK')}</th>
               </tr>
             </thead>
             <tbody>

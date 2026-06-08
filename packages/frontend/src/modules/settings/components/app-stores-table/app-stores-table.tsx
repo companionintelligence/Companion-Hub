@@ -28,10 +28,10 @@ export const AppStoresTable = ({ appStores }: Props) => {
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead>{t('APP_STORE_TABLE_NAME')}</TableHead>
-            <TableHead>{t('APP_STORE_TABLE_STATUS')}</TableHead>
+            <TableHead>{t('COMMON_NAME')}</TableHead>
+            <TableHead>{t('COMMON_STATUS')}</TableHead>
             <TableHead>{t('APP_STORE_TABLE_URL')}</TableHead>
-            <TableHead>{t('APP_STORE_TABLE_ACTIONS')}</TableHead>
+            <TableHead>{t('COMMON_ACTIONS')}</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>

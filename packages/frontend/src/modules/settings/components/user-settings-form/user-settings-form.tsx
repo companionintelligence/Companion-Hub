@@ -413,7 +413,7 @@ export const UserSettingsForm = (props: IProps) => {
               <div className="space-y-2">
                 <div className="text-sm font-medium leading-none">
                   <label htmlFor="public-hub-hostname" className="inline">
-                    {t('SETTINGS_GENERAL_PUBLIC_DOMAIN')}
+                    {t('COMMON_PUBLIC_DOMAIN')}
                     <Tooltip className="tooltip" anchorSelect=".public-domain-hint">
                       {t('SETTINGS_GENERAL_PUBLIC_DOMAIN_HINT')}
                     </Tooltip>
@@ -500,7 +500,7 @@ export const UserSettingsForm = (props: IProps) => {
                     {...register('domain')}
                     label={
                       <>
-                        {t('SETTINGS_GENERAL_DOMAIN')}
+                        {t('COMMON_DOMAIN_NAME')}
                         <Tooltip className="tooltip" anchorSelect=".domain-hint">
                           {t('SETTINGS_GENERAL_DOMAIN_HINT')}
                         </Tooltip>
@@ -568,7 +568,7 @@ export const UserSettingsForm = (props: IProps) => {
                     })}
                     label={
                       <>
-                        {t('SETTINGS_GENERAL_PORT')}
+                        {t('COMMON_PORT')}
                         <Tooltip className="tooltip" anchorSelect=".port-hint">
                           {t('SETTINGS_GENERAL_PORT_HINT')}
                         </Tooltip>

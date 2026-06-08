@@ -42,7 +42,7 @@ export const PortsConfig = ({ errors, serviceIndex, control, register }: Props) 
         <Table className={clsx('border p-1', { 'd-none': fields.length === 0 })}>
           <TableHeader>
             <TableRow>
-              <TableHead>{t('MULTI_SERVICE_PORTS_HOST_PORT')}</TableHead>
+              <TableHead>{t('COMMON_HOST_PORT')}</TableHead>
               <TableHead>{t('MULTI_SERVICE_PORTS_CONTAINER_PORT')}</TableHead>
               <TableHead>{t('MULTI_SERVICE_PORTS_TCP')}</TableHead>
               <TableHead>{t('MULTI_SERVICE_PORTS_UDP')}</TableHead>

@@ -18,7 +18,7 @@ export const ErrorPage = ({ error, onReset }: ErrorPageProps) => {
         <div className="mb-4">
           <Button intent="primary" onClick={onReset}>
             <RotateCw className="mr-2 h-4 w-4" />
-            {t('ERROR_PAGE_RETRY')}
+            {t('COMMON_RETRY')}
           </Button>
         </div>
         <pre className="text-xs text-muted-foreground bg-muted/50 rounded-lg p-3 text-left overflow-auto" style={{ whiteSpace: 'normal' }}>

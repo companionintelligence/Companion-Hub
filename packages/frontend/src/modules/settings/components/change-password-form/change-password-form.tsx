@@ -15,14 +15,14 @@ export const ChangePasswordForm = () => {
   const schema = z
     .object({
       currentPassword: z.string().min(1),
-      newPassword: z.string().min(8, t('SETTINGS_SECURITY_FORM_PASSWORD_LENGTH')),
-      newPasswordConfirm: z.string().min(8, t('SETTINGS_SECURITY_FORM_PASSWORD_LENGTH')),
+      newPassword: z.string().min(8, t('COMMON_PASSWORD_MIN_LENGTH')),
+      newPasswordConfirm: z.string().min(8, t('COMMON_PASSWORD_MIN_LENGTH')),
     })
     .superRefine((data, ctx) => {
       if (data.newPassword !== data.newPasswordConfirm) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          message: t('SETTINGS_SECURITY_FORM_PASSWORD_MATCH'),
+          message: t('COMMON_PASSWORDS_DO_NOT_MATCH'),
           path: ['newPasswordConfirm'],
         });
       }
@@ -78,7 +78,7 @@ export const ChangePasswordForm = () => {
         placeholder={t('SETTINGS_SECURITY_FORM_CONFIRM_PASSWORD')}
       />
       <Button disabled={changePassword.isPending} className="mt-3" type="submit">
-        {t('SETTINGS_SECURITY_FORM_CHANGE_PASSWORD_SUBMIT')}
+        {t('COMMON_CHANGE_PASSWORD')}
       </Button>
     </form>
   );

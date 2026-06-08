@@ -298,7 +298,7 @@ export const AiSettingsContainer = () => {
         <div className="rounded-3xl border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
           <div className="flex flex-col items-center gap-4 py-4 text-center">
             <Loader2 role="img" aria-label={t('COMMON_LOADING')} className="h-8 w-8 animate-spin text-primary" />
-            <p className="text-sm text-muted-foreground">{t('AI_SETTINGS_DETECTING_HARDWARE')}</p>
+            <p className="text-sm text-muted-foreground">{t('COMMON_DETECTING_HARDWARE')}</p>
           </div>
           <div className="space-y-4 mt-2">
             <Skeleton className="h-40 w-full rounded-2xl" />
@@ -321,7 +321,7 @@ export const AiSettingsContainer = () => {
           <p className="text-destructive mb-4">{t('AI_SETTINGS_LOAD_FAILED', { error: String(error) })}</p>
           <Button variant="outline" onClick={() => fetchProfile()}>
             <RefreshCw className="mr-2" size={16} />
-            {t('ERROR_PAGE_RETRY')}
+            {t('COMMON_RETRY')}
           </Button>
         </div>
       </div>
@@ -352,7 +352,7 @@ export const AiSettingsContainer = () => {
         <>
           {/* Recommended Models — FTUE ModelCard grid */}
           <section className="rounded-3xl border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
-            <h2 className="text-base font-bold uppercase tracking-wide">{t('AI_SETTINGS_RECOMMENDED_MODELS')}</h2>
+            <h2 className="text-base font-bold uppercase tracking-wide">{t('COMMON_RECOMMENDED_MODELS')}</h2>
             <p className="text-xs sm:text-sm text-muted-foreground mt-0.5 mb-5">{t('AI_SETTINGS_RECOMMENDED_MODELS_SUBTITLE')}</p>
 
             {backendCompatibleRecommendedModels.length === 0 ? (

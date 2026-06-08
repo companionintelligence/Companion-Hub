@@ -434,11 +434,11 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
       case 'installing':
         return t('ONBOARDING_INSTALL_STATUS_INSTALLING');
       case 'running':
-        return t('ONBOARDING_INSTALL_STATUS_RUNNING');
+        return t('COMMON_RUNNING');
       case 'incomplete':
         return t('ONBOARDING_INSTALL_STATUS_NOT_CONFIRMED');
       case 'failed':
-        return t('ONBOARDING_INSTALL_STATUS_FAILED');
+        return t('COMMON_FAILED');
     }
   };
 

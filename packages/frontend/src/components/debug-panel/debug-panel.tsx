@@ -151,7 +151,7 @@ export const DebugPanel = () => {
           </CardHeader>
           <CardContent className="flex flex-col gap-2 p-4 pt-0">
             <Button onClick={() => seedMutation.mutate({})}>{seedMutation.isPending ? t('DEBUG_SEEDING') : t('DEBUG_SEED_DATABASE')}</Button>
-            <Button onClick={() => startAllApps.mutate({})}>{startAllApps.isPending ? t('DEBUG_STARTING_ALL') : t('DEBUG_START_ALL')}</Button>
+            <Button onClick={() => startAllApps.mutate({})}>{startAllApps.isPending ? t('DEBUG_STARTING_ALL') : t('COMMON_START_ALL_APPS')}</Button>
             <Button onClick={() => subnetsMutation.mutate({})}>
               {subnetsMutation.isPending ? t('DEBUG_SETTING_SUBNETS') : t('DEBUG_SET_SUBNETS')}
             </Button>

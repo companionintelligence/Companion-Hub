@@ -67,7 +67,7 @@ function Shell({ children }: { children: React.ReactNode }) {
             style={{ maxWidth: '100%', height: 'auto' }}
           />
           <div className="min-w-0">
-            <h1 className="text-2xl font-bold tracking-tight text-foreground sm:text-3xl">{t('ONBOARDING_SET_UP_YOUR_HUB')}</h1>
+            <h1 className="text-2xl font-bold tracking-tight text-foreground sm:text-3xl">{t('COMMON_SET_UP_YOUR_HUB')}</h1>
             <p className="text-sm text-muted-foreground">{t('ONBOARDING_CONFIGURE_PRIVATE_COMPANION')}</p>
           </div>
         </div>
@@ -181,7 +181,7 @@ function OnboardingWizard() {
 
         <div className="sticky bottom-4 z-10 flex flex-col gap-3 rounded-2xl border border-border bg-card/90 p-4 shadow-lg backdrop-blur sm:flex-row sm:items-center sm:justify-between">
           <p className="text-sm text-muted-foreground">
-            {aiSetupConfig?.installBlockReason ?? (canFinish ? t('ONBOARDING_CHANGE_LATER_SETTINGS') : t('ONBOARDING_DETECTING_HARDWARE'))}
+            {aiSetupConfig?.installBlockReason ?? (canFinish ? t('ONBOARDING_CHANGE_LATER_SETTINGS') : t('COMMON_DETECTING_HARDWARE'))}
           </p>
           <Button intent="primary" size="lg" disabled={!canFinish} onClick={() => setPhase('installing')} data-testid="finish-setup-btn">
             {t('ONBOARDING_INSTALL_AND_FINISH')}

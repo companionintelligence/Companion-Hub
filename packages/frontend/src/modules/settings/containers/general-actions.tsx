@@ -136,7 +136,7 @@ export const GeneralActionsContainer = () => {
         <CardHeader>
           <div className="flex items-center gap-2">
             <ArrowUpCircle className="h-5 w-5 text-muted-foreground" />
-            <CardTitle className="text-xl">{t('SETTINGS_ACTIONS_TITLE')}</CardTitle>
+            <CardTitle className="text-xl">{t('COMMON_ACTIONS')}</CardTitle>
           </div>
           <CardDescription>{t('SETTINGS_ACTIONS_CURRENT_VERSION', { version: version.current })}</CardDescription>
         </CardHeader>

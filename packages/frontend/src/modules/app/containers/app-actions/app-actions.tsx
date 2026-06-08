@@ -77,11 +77,11 @@ const ERROR_MESSAGE_KEYS: Record<string, string> = {
   CF_TUNNEL_NOT_FOUND: 'APP_ACTION_ERROR_CF_TUNNEL_NOT_FOUND',
   CF_UPSTREAM_ERROR: 'APP_ACTION_ERROR_CF_UPSTREAM_ERROR',
   CF_ORIGIN_DOWN: 'APP_ACTION_ERROR_CF_ORIGIN_DOWN',
-  CF_TIMEOUT: 'APP_ACTION_ERROR_CF_TIMEOUT',
+  CF_TIMEOUT: 'COMMON_CONNECTION_TIMED_OUT',
   CF_UNKNOWN: 'APP_ACTION_ERROR_CF_UNKNOWN',
   DNS_NOT_FOUND: 'APP_ACTION_ERROR_DNS_NOT_FOUND',
   CONNECTION_REFUSED: 'APP_ACTION_ERROR_CONNECTION_REFUSED',
-  CONNECTION_TIMEOUT: 'APP_ACTION_ERROR_CONNECTION_TIMEOUT',
+  CONNECTION_TIMEOUT: 'COMMON_CONNECTION_TIMED_OUT',
   PROXY_UPSTREAM_ERROR: 'APP_ACTION_ERROR_PROXY_UPSTREAM_ERROR',
   APP_HTTP_ERROR: 'APP_ACTION_ERROR_APP_HTTP_ERROR',
   NO_DEVICE_REGISTRATION: 'APP_ACTION_ERROR_NO_DEVICE_REGISTRATION',
@@ -158,13 +158,13 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
       if (progress < 20) stageText = t('APP_ACTION_PREPARING');
       else if (progress < 40) stageText = t('APP_ACTION_DOWNLOADING');
       else if (progress < 70) stageText = t('APP_ACTION_SETTING_UP');
-      else if (progress < 90) stageText = t('APP_ACTION_STARTING');
+      else if (progress < 90) stageText = t('COMMON_STARTING');
       else stageText = t('APP_ACTION_ALMOST_READY');
     }
 
     return (
       <div key="loading" className="flex flex-col items-start gap-1">
-        <ActionButton disabled intent="success" title={`${t('APP_ACTION_INSTALLING')}${progressText}`} className="installation-progress-button" />
+        <ActionButton disabled intent="success" title={`${t('COMMON_INSTALLING')}${progressText}`} className="installation-progress-button" />
         {stageText && <p className="text-xs text-muted-foreground">{stageText}</p>}
       </div>
     );
@@ -173,26 +173,26 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
   const RemoveListItem = (
     <DropdownMenuItem onClick={uninstallDisclosure.open} key="remove" className="text-destructive focus:text-destructive">
       <Trash className="mr-2" size={16} />
-      {t('APP_ACTION_REMOVE')}
+      {t('COMMON_REMOVE')}
     </DropdownMenuItem>
   );
   const SettingsListItem = (
     <DropdownMenuItem onClick={updateSettingsDisclosure.open} key="settings">
       <Settings className="mr-2" size={16} />
-      {t('APP_ACTION_SETTINGS')}
+      {t('COMMON_SETTINGS')}
     </DropdownMenuItem>
   );
   const RestartListItem = (
     <DropdownMenuItem onClick={restartDisclosure.open} key="restart">
       <RotateCw className="mr-2" size={16} />
-      {t('APP_ACTION_RESTART')}
+      {t('COMMON_RESTART')}
       {app?.pendingRestart && <span className="ml-2 h-2 w-2 rounded-full bg-red-500" />}
     </DropdownMenuItem>
   );
   const UpdateListItem = (
     <DropdownMenuItem onClick={() => navigate(`${location.pathname}/update`, { state: { from: location.pathname } })} key="update">
       <Download className="mr-2" size={16} />
-      {t('APP_ACTION_UPDATE')}
+      {t('COMMON_UPDATE')}
       <span className="ml-2 h-2 w-2 rounded-full bg-red-500" />
     </DropdownMenuItem>
   );
@@ -219,7 +219,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
   const CancelListItem = (
     <DropdownMenuItem onClick={uninstallDisclosure.open} key="cancel">
       <Pause className="mr-2" size={16} />
-      {t('APP_ACTION_CANCEL')}
+      {t('COMMON_CANCEL')}
     </DropdownMenuItem>
   );
   const ResetListItem = (
@@ -240,8 +240,8 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
     </DropdownMenuItem>
   );
 
-  const StopButton = <ActionButton key="stop" IconComponent={Pause} onClick={stopDisclosure.open} title={t('APP_ACTION_STOP')} intent="default" />;
-  const InstallButton = <ActionButton key="install" onClick={installDisclosure.open} title={t('APP_ACTION_INSTALL')} intent="success" />;
+  const StopButton = <ActionButton key="stop" IconComponent={Pause} onClick={stopDisclosure.open} title={t('COMMON_STOP')} intent="default" />;
+  const InstallButton = <ActionButton key="install" onClick={installDisclosure.open} title={t('COMMON_INSTALL')} intent="success" />;
   const RetryInstallButton = (
     <ActionButton
       key="retry-install"
@@ -468,7 +468,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
     if (!urlAvailable && withinGracePeriod && stage === 'propagating') {
       return (
         <div key="open-propagating" className="flex flex-col items-start gap-1">
-          <ActionButton title={t('APP_ACTION_STARTING')} disabled loading />
+          <ActionButton title={t('COMMON_STARTING')} disabled loading />
           {statusMessage && <span className="text-xs text-muted-foreground">{statusMessage}</span>}
           {appUrl && (
             <button type="button" className="text-xs text-muted-foreground underline hover:text-foreground" onClick={() => openExternalUrl(appUrl)}>

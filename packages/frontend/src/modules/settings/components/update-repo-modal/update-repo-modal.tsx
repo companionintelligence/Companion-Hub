@@ -24,7 +24,7 @@ export const UpdateRepoModal = () => {
 
   return (
     <div>
-      <Button onClick={() => UpdateRepoModalDisclosure.open()}>{t('SETTINGS_ACTIONS_UPDATE_REPO_MODAL_BUTTON')}</Button>
+      <Button onClick={() => UpdateRepoModalDisclosure.open()}>{t('COMMON_UPDATE')}</Button>
       <Dialog open={UpdateRepoModalDisclosure.isOpen} onOpenChange={UpdateRepoModalDisclosure.toggle}>
         <DialogContent size="sm">
           <DialogHeader>
@@ -35,7 +35,7 @@ export const UpdateRepoModal = () => {
           </DialogDescription>
           <DialogFooter>
             <Button intent="success" loading={updateRepo.isPending} onClick={() => updateRepo.mutate({})}>
-              {t('SETTINGS_ACTIONS_UPDATE_REPO_MODAL_BUTTON')}
+              {t('COMMON_UPDATE')}
             </Button>
           </DialogFooter>
         </DialogContent>

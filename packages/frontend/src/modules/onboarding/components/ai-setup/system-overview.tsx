@@ -104,9 +104,9 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
         />
         <OverviewItem
           icon={<Cpu />}
-          label={t('ONBOARDING_CPU')}
+          label={t('COMMON_CPU')}
           value={hardware.cpu.model}
-          sub={`${hardware.cpu.cores} ${t('ONBOARDING_CORES')} · ${hardware.cpu.arch}`}
+          sub={`${hardware.cpu.cores} ${t('COMMON_CORES')} · ${hardware.cpu.arch}`}
           testId="hw-cpu"
         />
         <OverviewItem

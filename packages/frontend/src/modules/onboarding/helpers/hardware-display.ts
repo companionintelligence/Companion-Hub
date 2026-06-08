@@ -36,7 +36,7 @@ export function resolveTierBadge(tier: HardwareTier, hardware: HardwareProfile) 
   }
   if (isAppleSiliconGpu(hardware)) {
     return {
-      label: i18next.t('ONBOARDING_TIER_APPLE_SILICON'),
+      label: i18next.t('COMMON_APPLE_SILICON'),
       color: 'bg-slate-100 text-slate-900 dark:bg-slate-900 dark:text-slate-200',
       emoji: '✨',
     };

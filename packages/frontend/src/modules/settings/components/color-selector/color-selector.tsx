@@ -44,7 +44,7 @@ interface ColorSelectorProps {
 
 export const ColorSelector: React.FC<ColorSelectorProps> = ({
   name = 'color',
-  label = i18next.t('SETTINGS_THEME_PRIMARY_COLOR'),
+  label = i18next.t('COMMON_PRIMARY_COLOR'),
   className,
   value,
   onChange,

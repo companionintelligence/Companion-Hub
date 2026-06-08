@@ -36,11 +36,11 @@ export const RestartDialog: React.FC<IProps> = ({ info, isOpen, onClose }) => {
           <DialogTitle>{t('APP_RESTART_FORM_TITLE', { name: info.name })}</DialogTitle>
         </DialogHeader>
         <DialogDescription>
-          <span className="text-muted">{t('APP_RESTART_FORM_SUBTITLE')}</span>
+          <span className="text-muted">{t('COMMON_ALL_DATA_RETAINED')}</span>
         </DialogDescription>
         <DialogFooter>
           <Button onClick={() => restartMutation.mutate({ path: { urn: info.urn } })} intent="danger">
-            {t('APP_RESTART_FORM_SUBMIT')}
+            {t('COMMON_RESTART')}
           </Button>
         </DialogFooter>
       </DialogContent>

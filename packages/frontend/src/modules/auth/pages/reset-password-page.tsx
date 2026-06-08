@@ -86,7 +86,7 @@ export default () => {
                   <code className="text-sm font-semibold text-primary">me@{domain}</code>
                 </div>
                 <div className="flex items-center justify-between">
-                  <span className="text-sm text-muted-foreground font-medium">{t('AUTH_FORM_PASSWORD')}:</span>
+                  <span className="text-sm text-muted-foreground font-medium">{t('COMMON_PASSWORD')}:</span>
                   <code className="text-sm font-semibold text-primary">{domain}</code>
                 </div>
               </div>

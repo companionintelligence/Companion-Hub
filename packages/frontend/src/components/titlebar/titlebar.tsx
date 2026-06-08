@@ -87,7 +87,7 @@ export function Titlebar() {
         >
           {isMaximized ? (
             <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true" focusable="false">
-              <title>{t('TITLEBAR_RESTORE')}</title>
+              <title>{t('COMMON_RESTORE')}</title>
               <rect x="2.5" y="0.5" width="7" height="7" stroke="currentColor" fill="none" strokeWidth="1" />
               <rect x="0.5" y="2.5" width="7" height="7" stroke="currentColor" fill="none" strokeWidth="1" />
             </svg>

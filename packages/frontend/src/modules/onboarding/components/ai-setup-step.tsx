@@ -269,7 +269,7 @@ export const AiSetupStep = ({
       <div className="space-y-4 max-h-[66vh] overflow-y-auto pr-2" data-testid="ai-setup-loading">
         <div className="flex flex-col items-center gap-4 py-4 text-center">
           <Loader2 role="img" aria-label={t('COMMON_LOADING')} className="h-8 w-8 animate-spin text-primary" />
-          <p className="text-sm text-muted-foreground">{t('ONBOARDING_DETECTING_HARDWARE')}</p>
+          <p className="text-sm text-muted-foreground">{t('COMMON_DETECTING_HARDWARE')}</p>
         </div>
         <Skeleton className="h-24 w-full rounded-3xl" />
         <Skeleton className="h-48 w-full rounded-3xl" />

@@ -21,7 +21,7 @@ export function ModeToggle() {
       <DropdownMenuContent align="end">
         <DropdownMenuItem onClick={() => setTheme('light')}>{t('THEME_LIGHT')}</DropdownMenuItem>
         <DropdownMenuItem onClick={() => setTheme('dark')}>{t('THEME_DARK')}</DropdownMenuItem>
-        <DropdownMenuItem onClick={() => setTheme('system')}>{t('THEME_SYSTEM')}</DropdownMenuItem>
+        <DropdownMenuItem onClick={() => setTheme('system')}>{t('COMMON_SYSTEM')}</DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
   );

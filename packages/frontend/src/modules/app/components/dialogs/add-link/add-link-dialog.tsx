@@ -154,7 +154,7 @@ export const AddLinkDialog: React.FC<AddLinkDialogProps> = ({ isOpen, onClose, l
         </DialogDescription>
         <DialogFooter>
           <Button type="submit" intent="success" disabled={mutationExecuting} form={formId}>
-            {link ? t('LINKS_EDIT_SUBMIT') : t('LINKS_ADD_SUBMIT')}
+            {link ? t('COMMON_SAVE') : t('LINKS_ADD_SUBMIT')}
           </Button>
         </DialogFooter>
       </DialogContent>

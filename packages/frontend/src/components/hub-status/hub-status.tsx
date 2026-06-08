@@ -233,7 +233,7 @@ function DockerDesktopGuide({
                     onClick={() => setMacArch('arm')}
                     className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${macArch === 'arm' ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:text-foreground'}`}
                   >
-                    {t('HUB_STATUS_APPLE_SILICON')}
+                    {t('COMMON_APPLE_SILICON')}
                   </button>
                   <button
                     type="button"
@@ -343,10 +343,10 @@ function ServiceRow({ service }: { service: ServiceStatus }) {
     service.state === 'pending'
       ? t('HUB_STATUS_SERVICE_WAITING')
       : service.state === 'starting'
-        ? t('HUB_STATUS_SERVICE_STARTING')
+        ? t('COMMON_STARTING')
         : service.state === 'ready'
           ? t('HUB_STATUS_SERVICE_READY')
-          : t('HUB_STATUS_SERVICE_FAILED');
+          : t('COMMON_FAILED');
 
   return (
     <div className="flex items-center justify-between gap-4 py-1.5">
@@ -435,9 +435,9 @@ function StartupScreen({ elapsedSeconds }: { elapsedSeconds: number }) {
           {progress && (
             <div className="space-y-0.5">
               <div className="text-xs text-muted-foreground/70">
-                {serviceCounts.ready} {t('HUB_STATUS_SERVICE_READY')}, {serviceCounts.starting} {t('HUB_STATUS_SERVICE_STARTING')},{' '}
-                {serviceCounts.pending} {t('HUB_STATUS_SERVICE_PENDING')}
-                {serviceCounts.failed > 0 ? `, ${serviceCounts.failed} ${t('HUB_STATUS_SERVICE_FAILED')}` : ''}
+                {serviceCounts.ready} {t('HUB_STATUS_SERVICE_READY')}, {serviceCounts.starting} {t('COMMON_STARTING')}, {serviceCounts.pending}{' '}
+                {t('HUB_STATUS_SERVICE_PENDING')}
+                {serviceCounts.failed > 0 ? `, ${serviceCounts.failed} ${t('COMMON_FAILED')}` : ''}
               </div>
               <div className="text-xs text-muted-foreground/70">
                 <HintText id="startup-image-pull" hint={STARTUP_IMAGE_PULL_HINT}>
@@ -691,7 +691,7 @@ export function HubStatus({ children }: HubStatusProps) {
   // Error message extraction
   const errorMessage = typeof status === 'object' && 'Error' in status ? status.Error.message : null;
 
-  const gateTitle = status === 'DockerNotAvailable' ? t('HUB_STATUS_SETUP_YOUR_HUB') : t('APP_NAME');
+  const gateTitle = status === 'DockerNotAvailable' ? t('COMMON_SET_UP_YOUR_HUB') : t('APP_NAME');
 
   return (
     <SetupPageShell title={gateTitle} contentClassName="items-center">
@@ -746,7 +746,7 @@ export function HubStatus({ children }: HubStatusProps) {
 
         {status !== 'Starting' && status !== 'DockerNotAvailable' && !errorMessage && (
           <button type="button" onClick={() => checkStatus()} className="text-sm text-muted-foreground underline hover:text-foreground">
-            {t('HUB_STATUS_CHECK_AGAIN')}
+            {t('COMMON_CHECK_AGAIN')}
           </button>
         )}
 

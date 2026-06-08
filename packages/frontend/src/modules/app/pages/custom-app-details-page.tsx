@@ -71,7 +71,7 @@ export const CustomAppDetailsPage = () => {
           />
           <div className="w-full flex flex-col md:ml-3 items-center md:items-start">
             <div>
-              <span className="mt-1 me-1">{t('APP_DETAILS_VERSION')}: </span>
+              <span className="mt-1 me-1">{t('COMMON_VERSION')}: </span>
               <span className="badge bg-muted mt-2 text-white">{info?.version}</span>
             </div>
             <span className="mt-1 text-muted-foreground text-center md:text-start mb-2">{info?.short_desc}</span>

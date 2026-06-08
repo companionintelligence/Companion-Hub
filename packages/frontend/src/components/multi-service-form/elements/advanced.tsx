@@ -74,7 +74,7 @@ export const AdvancedConfig = ({ register, errors, control, serviceIndex }: Prop
               <Tooltip className="tooltip" anchorSelect=".my-hostname">
                 {t('MULTI_SERVICE_ADVANCED_HOSTNAME_TOOLTIP')}
               </Tooltip>
-              {t('MULTI_SERVICE_ADVANCED_HOSTNAME')} <span className="ms-1 form-help my-hostname">?</span>
+              {t('COMMON_HOSTNAME')} <span className="ms-1 form-help my-hostname">?</span>
             </>
           }
           placeholder={t('MULTI_SERVICE_ADVANCED_HOSTNAME_PLACEHOLDER')}

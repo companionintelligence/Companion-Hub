@@ -60,12 +60,12 @@ export const MultiServiceForm = ({ onSubmit }: Props) => {
     { id: 'volumes', label: t('MULTI_SERVICE_TAB_VOLUMES'), icon: Network },
     {
       id: 'ports',
-      label: t('MULTI_SERVICE_TAB_PORTS'),
+      label: t('COMMON_PORTS'),
       icon: ArrowUpDown,
     },
     {
       id: 'advanced',
-      label: t('MULTI_SERVICE_TAB_ADVANCED'),
+      label: t('COMMON_ADVANCED'),
       icon: Settings,
     },
   ];
