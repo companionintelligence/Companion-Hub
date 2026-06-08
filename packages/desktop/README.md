@@ -85,6 +85,16 @@ call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliar
 ```
 Or open the **"x64 Native Tools Command Prompt for VS 2022"** from the Start menu which does this automatically.
 
+## Headless launch
+
+When the packaged desktop binary is installed on a Linux machine without an attached GUI session, start the Hub runtime without opening Tauri:
+
+```bash
+companion-hub --detached
+```
+
+This runs the packaged Hub stack startup in detached mode, using the bundled compose resources and runtime env files, so it works over SSH without requiring `DISPLAY` or GTK initialization.
+
 ## Development
 
 ### 1. Install dependencies (from repo root)

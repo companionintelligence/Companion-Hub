@@ -7,11 +7,14 @@ pub mod hub_manager;
 pub mod port_manager;
 mod tray;
 
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use tauri::{Emitter, Listener, Manager};
 use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_store::StoreExt;
+
+const DETACHED_FLAG: &str = "--detached";
 
 struct PendingPairingCode(Mutex<Option<String>>);
 
@@ -402,6 +405,75 @@ pub fn run() {
 
 use sha2::{Digest, Sha256};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LaunchMode {
+    Desktop,
+    Detached,
+}
+
+fn launch_mode_from_args(args: &[String]) -> LaunchMode {
+    if args.iter().any(|arg| arg == DETACHED_FLAG) {
+        LaunchMode::Detached
+    } else {
+        LaunchMode::Desktop
+    }
+}
+
+fn current_executable_dir() -> Result<PathBuf, String> {
+    let exe = std::env::current_exe()
+        .map_err(|error| format!("Failed to resolve the companion-hub executable path: {error}"))?;
+    Ok(exe
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from(".")))
+}
+
+fn run_detached_mode() -> Result<String, String> {
+    let resource_dir = current_executable_dir()?;
+    let initialization = hub_manager::initialize_hub(&resource_dir)?;
+    let data_dir = initialization.data_dir.clone();
+    let compose_path = initialization.compose_path.clone();
+    let env_path = initialization.env_path.clone();
+    let hash_path = data_dir.join(".config-hash");
+    let config_hash = compute_config_hash(&compose_path, &env_path);
+
+    let _ = hub_manager::append_desktop_log_for(
+        &data_dir,
+        "headless.start",
+        &format!(
+            "Starting detached headless mode from {}\ncompose={}\nenv={}",
+            resource_dir.display(),
+            compose_path.display(),
+            env_path.display()
+        ),
+    );
+
+    if let Err(error) =
+        hub_manager::cleanup_stale_project_containers(&compose_path, &env_path, &data_dir)
+    {
+        let _ = hub_manager::append_desktop_log_for(
+            &data_dir,
+            "headless.start",
+            &format!("Pre-start cleanup failed (non-fatal): {}", error),
+        );
+    }
+
+    let message = hub_manager::start_hub(&compose_path, &env_path, &data_dir)?;
+    if let Err(error) = std::fs::write(&hash_path, &config_hash) {
+        let _ = hub_manager::append_desktop_log_for(
+            &data_dir,
+            "headless.start",
+            &format!(
+                "Hub started, but failed to persist configuration hash at {}: {}",
+                hash_path.display(),
+                error
+            ),
+        );
+    }
+
+    Ok(format!("{message} (detached headless mode)"))
+}
+
 fn focus_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
@@ -477,7 +549,9 @@ fn extract_pairing_code(url: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{deep_link_urls_from_payload, extract_pairing_code};
+    use super::{
+        deep_link_urls_from_payload, extract_pairing_code, launch_mode_from_args, LaunchMode,
+    };
 
     #[test]
     fn extract_pairing_code_from_query_param() {
@@ -510,6 +584,19 @@ mod tests {
             vec!["cihub://pair?code=abc123".to_string()]
         );
     }
+
+    #[test]
+    fn launch_mode_defaults_to_desktop() {
+        assert_eq!(launch_mode_from_args(&[]), LaunchMode::Desktop);
+    }
+
+    #[test]
+    fn launch_mode_switches_to_detached_with_flag() {
+        assert_eq!(
+            launch_mode_from_args(&["--detached".to_string()]),
+            LaunchMode::Detached
+        );
+    }
 }
 
 /// Compute a SHA256 hash of the .env and compose file contents.
@@ -526,5 +613,19 @@ fn compute_config_hash(compose_path: &std::path::Path, env_path: &std::path::Pat
 }
 
 fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if launch_mode_from_args(&args) == LaunchMode::Detached {
+        match run_detached_mode() {
+            Ok(message) => {
+                println!("{}", message);
+                return;
+            }
+            Err(error) => {
+                eprintln!("{}", error);
+                std::process::exit(1);
+            }
+        }
+    }
+
     run();
 }

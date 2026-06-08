@@ -79,10 +79,7 @@ const TRAEFIK_CONFIG_FILE: &str = "state/traefik/config/traefik.yml";
 const TRAEFIK_DYNAMIC_FILE: &str = "state/traefik/dynamic/dynamic.yml";
 const TRAEFIK_ACME_FILE: &str = "state/traefik/acme_storage.json";
 const HUB_DOCKER_CONFIG_FILE: &str = ".docker/config.json";
-const LEGACY_DOCKER_CONFIG_PATHS: &[&str] = &[
-    "docker-config.json",
-    ".internal/docker-config.json",
-];
+const LEGACY_DOCKER_CONFIG_PATHS: &[&str] = &["docker-config.json", ".internal/docker-config.json"];
 const HUB_START_HEALTHY_TIMEOUT_SECS: u64 = 180;
 const DB_START_HEALTHY_TIMEOUT_SECS: u64 = 180;
 
@@ -469,7 +466,10 @@ fn detect_macos_primary_disk_from_df(mount: &str) -> Option<(u64, u64, String)> 
     if !output.status.success() {
         return None;
     }
-    let line = String::from_utf8_lossy(&output.stdout).lines().nth(1)?.to_string();
+    let line = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .nth(1)?
+        .to_string();
     let fields: Vec<&str> = line.split_whitespace().collect();
     if fields.len() < 6 {
         return None;
@@ -547,7 +547,10 @@ fn refresh_windows_host_metrics_probe_cache(data_dir: &Path) {
             let _ = append_desktop_log_for(
                 data_dir,
                 "hw.probe",
-                &format!("Windows host metrics probe failed to start PowerShell: {}", error),
+                &format!(
+                    "Windows host metrics probe failed to start PowerShell: {}",
+                    error
+                ),
             );
             return;
         }
@@ -563,36 +566,49 @@ fn refresh_windows_host_metrics_probe_cache(data_dir: &Path) {
         return;
     }
 
-    let parsed: serde_json::Value = match serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()) {
-        Ok(value) => value,
-        Err(error) => {
-            let _ = append_desktop_log_for(
-                data_dir,
-                "hw.probe",
-                &format!("Failed to parse Windows host metrics probe output: {}", error),
-            );
-            return;
-        }
-    };
+    let parsed: serde_json::Value =
+        match serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()) {
+            Ok(value) => value,
+            Err(error) => {
+                let _ = append_desktop_log_for(
+                    data_dir,
+                    "hw.probe",
+                    &format!(
+                        "Failed to parse Windows host metrics probe output: {}",
+                        error
+                    ),
+                );
+                return;
+            }
+        };
 
-    let total_ram_mb = parsed.get("TotalRamMb").and_then(|v| v.as_u64()).unwrap_or(0);
+    let total_ram_mb = parsed
+        .get("TotalRamMb")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
     if total_ram_mb == 0 {
         return;
     }
 
-    let available_ram_mb = parsed.get("AvailableRamMb").and_then(|v| v.as_u64()).unwrap_or(0);
-    let cpu_cores = parsed
-        .get("CpuCores")
+    let available_ram_mb = parsed
+        .get("AvailableRamMb")
         .and_then(|v| v.as_u64())
-        .unwrap_or(0) as u32;
+        .unwrap_or(0);
+    let cpu_cores = parsed.get("CpuCores").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
     let cpu_model = parsed
         .get("CpuModel")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .trim()
         .to_string();
-    let disk_total_gb = parsed.get("DiskTotalGb").and_then(|v| v.as_u64()).unwrap_or(0);
-    let disk_free_gb = parsed.get("DiskFreeGb").and_then(|v| v.as_u64()).unwrap_or(0);
+    let disk_total_gb = parsed
+        .get("DiskTotalGb")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let disk_free_gb = parsed
+        .get("DiskFreeGb")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
     let disk_mount = parsed
         .get("DiskMount")
         .and_then(|v| v.as_str())
@@ -914,12 +930,20 @@ fn refresh_linux_host_metrics_probe_cache(data_dir: &Path) {
     let available_ram_mb = read_proc_meminfo_kb("MemAvailable").unwrap_or(0) / 1024;
 
     if total_ram_mb == 0 {
-        let _ = append_desktop_log_for(data_dir, "hw.probe", "Linux host probe: could not read MemTotal from /proc/meminfo");
+        let _ = append_desktop_log_for(
+            data_dir,
+            "hw.probe",
+            "Linux host probe: could not read MemTotal from /proc/meminfo",
+        );
         return;
     }
 
     let (cpu_model, cpu_cores) = read_linux_cpu_info();
-    let cpu_arch = if std::env::consts::ARCH == "aarch64" { "arm64" } else { "x86_64" };
+    let cpu_arch = if std::env::consts::ARCH == "aarch64" {
+        "arm64"
+    } else {
+        "x86_64"
+    };
 
     let (disk_total_gb, disk_used_gb, disk_mount) = linux_primary_disk_gb(data_dir);
 
@@ -2247,7 +2271,15 @@ fn seeded_traefik_config_contents() -> String {
 /// only `cache`, `logs`, and `user-config` are safe to auto-quarantine; data dirs
 /// (`apps`, `app-data`, `media`, `repos`, `backups`) require manual ownership repair.
 const HUB_BIND_MOUNT_DIRS: &[&str] = &[
-    "cache", "state", "logs", "apps", "media", "repos", "app-data", "user-config", "backups",
+    "cache",
+    "state",
+    "logs",
+    "apps",
+    "media",
+    "repos",
+    "app-data",
+    "user-config",
+    "backups",
 ];
 
 /// Files prior root-owned Hub containers commonly leave on bind mounts (block EACCES on rewrite).
@@ -2260,10 +2292,8 @@ const HUB_STALE_ROOT_OWNED_FILES: &[(&str, &str)] = &[
 /// Persistent state files the backend must be able to write to at runtime.
 /// These are chmod 0o666 (not deleted) so the container can update them without
 /// losing existing data even when they were previously written by a root-owned container.
-const HUB_STATE_FILES_NEED_WRITE: &[(&str, &str)] = &[
-    ("state", "settings.json"),
-    ("state", "seed"),
-];
+const HUB_STATE_FILES_NEED_WRITE: &[(&str, &str)] =
+    &[("state", "settings.json"), ("state", "seed")];
 
 /// UID/GID for the Hub container process — matches the desktop/CLI user that owns ROOT_FOLDER_HOST.
 #[cfg(unix)]
@@ -2384,12 +2414,9 @@ fn ensure_host_bind_mounts_writable(data_dir: &Path) -> Result<(), String> {
         std::fs::create_dir_all(&path)
             .map_err(|error| format!("Failed to create {}: {}", path.display(), error))?;
         #[cfg(unix)]
-        if let Err(error) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o775)) {
-            eprintln!(
-                "warning: could not chmod 775 {}: {}",
-                path.display(),
-                error
-            );
+        if let Err(error) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o775))
+        {
+            eprintln!("warning: could not chmod 775 {}: {}", path.display(), error);
         }
     }
 
@@ -2408,13 +2435,8 @@ fn ensure_host_bind_mounts_writable(data_dir: &Path) -> Result<(), String> {
 
     let settings_path = data_dir.join("state").join("settings.json");
     if !settings_path.exists() {
-        std::fs::write(&settings_path, b"{}").map_err(|error| {
-            format!(
-                "Failed to create {}: {}",
-                settings_path.display(),
-                error
-            )
-        })?;
+        std::fs::write(&settings_path, b"{}")
+            .map_err(|error| format!("Failed to create {}: {}", settings_path.display(), error))?;
         #[cfg(unix)]
         let _ = std::fs::set_permissions(&settings_path, std::fs::Permissions::from_mode(0o666));
     }
@@ -2423,12 +2445,10 @@ fn ensure_host_bind_mounts_writable(data_dir: &Path) -> Result<(), String> {
         let path = data_dir.join(subdir).join(file);
         if path.exists() {
             #[cfg(unix)]
-            if let Err(error) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666)) {
-                eprintln!(
-                    "warning: could not chmod 666 {}: {}",
-                    path.display(),
-                    error
-                );
+            if let Err(error) =
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666))
+            {
+                eprintln!("warning: could not chmod 666 {}: {}", path.display(), error);
             }
         }
     }
@@ -2451,14 +2471,11 @@ fn ensure_host_bind_mounts_writable(data_dir: &Path) -> Result<(), String> {
         remove_host_root_owned_state_files(data_dir);
         if !settings_path.exists() {
             std::fs::write(&settings_path, b"{}").map_err(|error| {
-                format!(
-                    "Failed to recreate {}: {}",
-                    settings_path.display(),
-                    error
-                )
+                format!("Failed to recreate {}: {}", settings_path.display(), error)
             })?;
             #[cfg(unix)]
-            let _ = std::fs::set_permissions(&settings_path, std::fs::Permissions::from_mode(0o666));
+            let _ =
+                std::fs::set_permissions(&settings_path, std::fs::Permissions::from_mode(0o666));
         }
     }
 
@@ -2648,15 +2665,13 @@ fn ensure_container_released_if_not_running(
     ports_hint: &str,
 ) -> Result<(), String> {
     let output = docker_command()
-        .args([
-            "inspect",
-            container_name,
-            "--format",
-            "{{.State.Status}}",
-        ])
+        .args(["inspect", container_name, "--format", "{{.State.Status}}"])
         .output()
         .map_err(|error| {
-            format!("Failed to inspect {} container state: {}", container_name, error)
+            format!(
+                "Failed to inspect {} container state: {}",
+                container_name, error
+            )
         })?;
 
     if !output.status.success() {
@@ -2665,7 +2680,8 @@ fn ensure_container_released_if_not_running(
             &String::from_utf8_lossy(&output.stderr),
         );
         let combined_lower = combined.to_lowercase();
-        if combined_lower.contains("no such object") || combined_lower.contains("no such container") {
+        if combined_lower.contains("no such object") || combined_lower.contains("no such container")
+        {
             return Ok(());
         }
         return Err(format!(
@@ -2674,7 +2690,9 @@ fn ensure_container_released_if_not_running(
         ));
     }
 
-    let status = String::from_utf8_lossy(&output.stdout).trim().to_lowercase();
+    let status = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .to_lowercase();
     if status == "running" || status == "restarting" {
         return Ok(());
     }
@@ -2927,13 +2945,19 @@ fn ensure_traefik_container_released(data_dir: &Path) -> Result<(), String> {
             &String::from_utf8_lossy(&output.stderr),
         );
         let combined_lower = combined.to_lowercase();
-        if combined_lower.contains("no such object") || combined_lower.contains("no such container") {
+        if combined_lower.contains("no such object") || combined_lower.contains("no such container")
+        {
             return Ok(());
         }
-        return Err(format!("Failed to inspect Traefik container state. {}", combined));
+        return Err(format!(
+            "Failed to inspect Traefik container state. {}",
+            combined
+        ));
     }
 
-    let status = String::from_utf8_lossy(&output.stdout).trim().to_lowercase();
+    let status = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .to_lowercase();
     if status == "running" || status == "restarting" {
         return Ok(());
     }
@@ -3798,7 +3822,10 @@ fn start_hub_inner(
     let _ = release_orphaned_traefik_port_proxies(data_dir);
 
     ensure_host_state_tree_writable(data_dir).map_err(|error| {
-        let message = format!("Failed to prepare writable state directory before startup: {}", error);
+        let message = format!(
+            "Failed to prepare writable state directory before startup: {}",
+            error
+        );
         let _ = append_desktop_log_for(data_dir, "hub.start", &message);
         with_view_logs_hint(message)
     })?;
@@ -5269,17 +5296,15 @@ mod tests {
     use super::{
         append_desktop_log_for, classify_docker_access_result, clear_traefik_recreate_required,
         clear_tunnel_token, desktop_log_path_for, format_command_output,
-        generate_container_docker_config, is_container_name_conflict, is_host_port_bind_conflict,
-        is_oci_runtime_error,
-        is_traefik_recreate_required, logs_open_target_for, managed_app_container_ps_args,
-        host_container_uid_gid, mark_traefik_recreate_required, merge_compose_profiles,
-        parse_container_ids, parse_docker_socket_uid_gid, prepare_traefik_runtime_state,
-        private_vpn_enabled_from_map, resolve_hub_container_identity,
-        seeded_traefik_config_contents,
-        startup_service_definitions, truncate_command_output,
-        tunnel_dir_for, tunnel_token_path_for, DockerAccessState, MAX_COMMAND_OUTPUT_CHARS,
-        TRAEFIK_ACME_FILE, TRAEFIK_CONFIG_FILE, TRAEFIK_DYNAMIC_CONFIG_SEED, TRAEFIK_DYNAMIC_FILE,
-        TRAEFIK_TLS_DIR,
+        generate_container_docker_config, host_container_uid_gid, is_container_name_conflict,
+        is_host_port_bind_conflict, is_oci_runtime_error, is_traefik_recreate_required,
+        logs_open_target_for, managed_app_container_ps_args, mark_traefik_recreate_required,
+        merge_compose_profiles, parse_container_ids, parse_docker_socket_uid_gid,
+        prepare_traefik_runtime_state, private_vpn_enabled_from_map,
+        resolve_hub_container_identity, seeded_traefik_config_contents,
+        startup_service_definitions, truncate_command_output, tunnel_dir_for,
+        tunnel_token_path_for, DockerAccessState, MAX_COMMAND_OUTPUT_CHARS, TRAEFIK_ACME_FILE,
+        TRAEFIK_CONFIG_FILE, TRAEFIK_DYNAMIC_CONFIG_SEED, TRAEFIK_DYNAMIC_FILE, TRAEFIK_TLS_DIR,
     };
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     use std::os::unix::fs::PermissionsExt;

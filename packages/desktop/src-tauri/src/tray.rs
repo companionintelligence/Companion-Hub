@@ -25,7 +25,8 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
     let start_hub = MenuItem::with_id(app, "start_hub", "Start Hub", true, None::<&str>)?;
     let stop_hub = MenuItem::with_id(app, "stop_hub", "Stop Hub", false, None::<&str>)?;
     let sep2 = PredefinedMenuItem::separator(app)?;
-    let open_portal = MenuItem::with_id(app, "open_portal", "Account Management", true, None::<&str>)?;
+    let open_portal =
+        MenuItem::with_id(app, "open_portal", "Account Management", true, None::<&str>)?;
     let view_logs = MenuItem::with_id(app, "view_logs", "View Logs", true, None::<&str>)?;
     let sep3 = PredefinedMenuItem::separator(app)?;
     let reset_hub = MenuItem::with_id(

@@ -74,9 +74,7 @@ fn get_our_container_ports() -> HashSet<u16> {
         args.push(f);
     }
 
-    let output = crate::hub_manager::docker_command()
-        .args(&args)
-        .output();
+    let output = crate::hub_manager::docker_command().args(&args).output();
 
     match output {
         Ok(out) => {
@@ -169,8 +167,12 @@ pub fn resolve_ports() -> Result<PortResolution, String> {
         if is_port_available_or_ours(default_port, &our_ports) {
             env_vars.insert(var.to_string(), default_port);
         } else {
-            let new_port = find_available_port(default_port + 1, &our_ports)
-                .ok_or_else(|| format!("Cannot find available port near {} for {}", default_port, var))?;
+            let new_port = find_available_port(default_port + 1, &our_ports).ok_or_else(|| {
+                format!(
+                    "Cannot find available port near {} for {}",
+                    default_port, var
+                )
+            })?;
             info.push(format!(
                 "Port {} ({}) occupied — using {} instead",
                 default_port, var, new_port
@@ -194,7 +196,10 @@ pub fn write_ports_to_env(env_path: &Path, resolution: &PortResolution) -> Resul
 
     for (var, port) in &resolution.env_vars {
         let entry = format!("{}={}", var, port);
-        if let Some(idx) = lines.iter().position(|l| l.starts_with(&format!("{}=", var))) {
+        if let Some(idx) = lines
+            .iter()
+            .position(|l| l.starts_with(&format!("{}=", var)))
+        {
             lines[idx] = entry;
         } else {
             lines.push(entry);
@@ -229,9 +234,11 @@ pub fn refresh_ports_if_needed(env_path: &Path) -> Result<PortResolution, String
     let existing = std::fs::read_to_string(env_path).unwrap_or_default();
 
     // Check if any dynamic port vars already exist in .env
-    let has_port_vars = DYNAMIC_PORTS
-        .iter()
-        .any(|(_, var)| existing.lines().any(|l| l.starts_with(&format!("{}=", var))));
+    let has_port_vars = DYNAMIC_PORTS.iter().any(|(_, var)| {
+        existing
+            .lines()
+            .any(|l| l.starts_with(&format!("{}=", var)))
+    });
 
     if !has_port_vars {
         // First run — full resolution
@@ -305,8 +312,12 @@ pub fn refresh_ports_if_needed(env_path: &Path) -> Result<PortResolution, String
             env_vars.insert(var.to_string(), current);
         } else {
             // Need to find a new port
-            let new_port = find_available_port(default_port, &our_ports)
-                .ok_or_else(|| format!("Cannot find available port near {} for {}", default_port, var))?;
+            let new_port = find_available_port(default_port, &our_ports).ok_or_else(|| {
+                format!(
+                    "Cannot find available port near {} for {}",
+                    default_port, var
+                )
+            })?;
             info.push(format!(
                 "Port {} ({}) now occupied — reassigned to {}",
                 current, var, new_port
@@ -343,12 +354,18 @@ pub fn parse_bind_conflict_port(output: &str) -> Option<u16> {
     // "exposing port TCP 0.0.0.0:80 -> ..." or "Bind for 0.0.0.0:443 failed"
     for token in output.split_whitespace() {
         if let Some(host_part) = token.strip_prefix("0.0.0.0:") {
-            if let Ok(port) = host_part.trim_end_matches(|c: char| !c.is_ascii_digit()).parse() {
+            if let Ok(port) = host_part
+                .trim_end_matches(|c: char| !c.is_ascii_digit())
+                .parse()
+            {
                 return Some(port);
             }
         }
         if let Some(host_part) = token.strip_prefix("[::]:") {
-            if let Ok(port) = host_part.trim_end_matches(|c: char| !c.is_ascii_digit()).parse() {
+            if let Ok(port) = host_part
+                .trim_end_matches(|c: char| !c.is_ascii_digit())
+                .parse()
+            {
                 return Some(port);
             }
         }
