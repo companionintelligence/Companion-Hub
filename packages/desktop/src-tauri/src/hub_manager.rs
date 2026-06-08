@@ -1043,7 +1043,9 @@ fn linux_primary_disk_gb(data_dir: &Path) -> (u64, u64, String) {
     (total, used, mount)
 }
 
+#[cfg(target_os = "linux")]
 const MIN_DOCKER_RAM_MB: u64 = 8192;
+#[cfg(target_os = "linux")]
 const DOCKER_OS_RESERVE_MB: u64 = 4096;
 
 #[cfg(target_os = "linux")]
