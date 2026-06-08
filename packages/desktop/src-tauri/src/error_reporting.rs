@@ -93,12 +93,18 @@ pub fn capture_setup_failure(message: &str) {
         return;
     }
 
-    sentry::capture_message(&format!("desktop setup failed: {message}"), sentry::Level::Fatal);
+    sentry::capture_message(
+        &format!("desktop setup failed: {message}"),
+        sentry::Level::Fatal,
+    );
 }
 
 fn truncate(value: &str, max_len: usize) -> String {
     if value.chars().count() <= max_len {
         return value.to_string();
     }
-    format!("{}… [truncated]", value.chars().take(max_len).collect::<String>())
+    format!(
+        "{}… [truncated]",
+        value.chars().take(max_len).collect::<String>()
+    )
 }

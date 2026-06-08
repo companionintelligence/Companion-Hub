@@ -9,7 +9,7 @@ import { execSync } from 'node:child_process';
 import { existsSync, mkdirSync, rmSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { parseEnvFile, upsertEnvVar } from './cihub-cli';
-import { ensureHubBindMountsWritable, likelyDockerDesktop, logBindMountHeal } from './heal-hub-bind-mounts';
+import { ensureHubBindMountsWritable, likelyDockerDesktop, logBindMountHeal, resolveHostDockerSocketPath } from './heal-hub-bind-mounts';
 
 function resolveRootFolderHost(): string {
   const envFile = process.env.ENV_FILE || '.env.dev';
@@ -54,7 +54,7 @@ function resolveDockerGid(): string {
     // getent missing (macOS) or docker group absent
   }
   try {
-    return String(statSync('/var/run/docker.sock').gid);
+    return String(statSync(resolveHostDockerSocketPath()).gid);
   } catch {
     return '973';
   }
@@ -62,7 +62,8 @@ function resolveDockerGid(): string {
 
 function dockerSocketIsRootOnlyInsideContainers(): boolean | null {
   try {
-    const out = execSync('docker run --rm -v /var/run/docker.sock:/var/run/docker.sock:ro alpine stat -c "%u:%g" /var/run/docker.sock 2>/dev/null', {
+    const socketPath = resolveHostDockerSocketPath();
+    const out = execSync(`docker run --rm -v "${socketPath}:/var/run/docker.sock:ro" alpine stat -c "%u:%g" /var/run/docker.sock 2>/dev/null`, {
       encoding: 'utf8',
     }).trim();
     return out === '0:0';

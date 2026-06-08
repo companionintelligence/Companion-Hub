@@ -96,7 +96,7 @@ services:
       - ${ENV_FILE:-.env}:/data/.env
       # Backend uses DATA_DIR/cache (/data/cache). Created by scripts/init-hub-data-dirs.ts.
       - ${ROOT_FOLDER_HOST:-.internal}/cache:/data/cache
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock:ro
       # Container-safe Docker config — scripts/init-docker-config.ts writes
       # ${ROOT_FOLDER_HOST}/.docker/config.json (whole dir mounted for non-root Hub).
       - ${ROOT_FOLDER_HOST:-.internal}/.docker:/data/.docker
@@ -162,7 +162,7 @@ services:
       - "${HTTPS_PORT:-443}:443"
       - "8080:8080"  # Dashboard
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock:ro
       # Mount Traefik config files individually to avoid mount conflicts
       - ${ROOT_FOLDER_HOST:-.internal}/state/traefik/config/traefik.yml:/etc/traefik/traefik.yml:ro
       - ${ROOT_FOLDER_HOST:-.internal}/state/traefik/dynamic:/etc/traefik/dynamic:ro

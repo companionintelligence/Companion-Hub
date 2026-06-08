@@ -2113,6 +2113,10 @@ pub fn is_docker_available() -> bool {
     matches!(check_docker_access().state, DockerAccessState::Available)
 }
 
+fn should_defer_docker_bind_mount_probe(state: &DockerAccessState) -> bool {
+    !matches!(state, DockerAccessState::Available)
+}
+
 pub fn check_docker_access() -> DockerAccessCheck {
     let output = match docker_command().arg("info").output() {
         Ok(output) => output,
@@ -2305,9 +2309,50 @@ pub(crate) fn host_container_uid_gid() -> (u32, u32) {
 fn host_docker_gid() -> u32 {
     use std::os::unix::fs::MetadataExt;
 
-    std::fs::metadata("/var/run/docker.sock")
+    std::fs::metadata(host_docker_socket_path())
         .map(|metadata| metadata.gid())
         .unwrap_or(973)
+}
+
+fn docker_socket_path_from_docker_host() -> Option<PathBuf> {
+    let docker_host = std::env::var("DOCKER_HOST").ok()?;
+    let socket_path = docker_host.strip_prefix("unix://")?.trim();
+    if socket_path.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(socket_path))
+}
+
+fn host_docker_socket_path() -> PathBuf {
+    if let Some(socket_path) = docker_socket_path_from_docker_host() {
+        return socket_path;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let mut candidates = Vec::new();
+        if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
+            candidates.push(PathBuf::from(runtime_dir).join("docker.sock"));
+        }
+        let uid = unsafe { libc::getuid() };
+        candidates.push(PathBuf::from(format!("/run/user/{uid}/docker.sock")));
+        if let Some(home) = dirs::home_dir() {
+            candidates.push(home.join(".docker").join("run").join("docker.sock"));
+        }
+
+        if let Some(existing) = candidates.into_iter().find(|candidate| candidate.exists()) {
+            return existing;
+        }
+    }
+
+    PathBuf::from("/var/run/docker.sock")
+}
+
+fn docker_socket_mount_arg() -> String {
+    format!(
+        "{}:/var/run/docker.sock:ro",
+        host_docker_socket_path().display()
+    )
 }
 
 /// Parse `stat -c "%u:%g"` output from a container probing the mounted Docker socket.
@@ -2319,12 +2364,13 @@ fn parse_docker_socket_uid_gid(raw: &str) -> Option<(u32, u32)> {
 
 /// How the mounted Docker socket appears *inside* a throwaway container (authoritative for compose `user:`).
 fn docker_socket_uid_gid_inside_container() -> Option<(u32, u32)> {
+    let socket_mount = docker_socket_mount_arg();
     let output = docker_command()
         .args([
             "run",
             "--rm",
             "-v",
-            "/var/run/docker.sock:/var/run/docker.sock:ro",
+            &socket_mount,
             "alpine",
             "stat",
             "-c",
@@ -2451,6 +2497,23 @@ fn ensure_host_bind_mounts_writable(data_dir: &Path) -> Result<(), String> {
                 eprintln!("warning: could not chmod 666 {}: {}", path.display(), error);
             }
         }
+    }
+
+    let docker_access = check_docker_access();
+    if should_defer_docker_bind_mount_probe(&docker_access.state) {
+        let detail = docker_access
+            .detail
+            .as_deref()
+            .unwrap_or("no additional detail");
+        let _ = append_desktop_log_for(
+            data_dir,
+            "initialize",
+            &format!(
+                "Skipping Docker-based bind-mount writability probes until Docker is ready. {}",
+                detail
+            ),
+        );
+        return Ok(());
     }
 
     let (container_uid, container_gid, _) = resolve_hub_container_identity();
@@ -4314,6 +4377,11 @@ fn render_runtime_env_content(
     let sentry_dsn_line = get_non_empty_env_value(existing, "SENTRY_DSN")
         .map(|dsn| format!("SENTRY_DSN={dsn}\n"))
         .unwrap_or_default();
+    let docker_socket_path = host_docker_socket_path();
+    let docker_socket_path_line = format!(
+        "DOCKER_SOCKET_PATH={}\n",
+        docker_socket_path.to_string_lossy()
+    );
 
     format!(
         "# Preserved (generated once, survive upgrades)\n\
@@ -4328,6 +4396,7 @@ fn render_runtime_env_content(
          CI_HUB_VERSION={hub_version}\n\
          CI_HUB_IMAGE={hub_image}\n\
          DOCKER_PLATFORM={docker_platform}\n\
+         {docker_socket_path_line}\
          {docker_gid_line}\
          CI_HUB_CONTAINER_UID={container_uid}\n\
          CI_HUB_CONTAINER_GID={container_gid}\n\
@@ -4342,6 +4411,7 @@ fn render_runtime_env_content(
         cloud_url = cloud_url,
         hub_version = hub_version,
         hub_image = hub_image,
+        docker_socket_path_line = docker_socket_path_line,
         docker_platform = docker_platform,
         docker_gid_line = docker_gid_line,
         container_uid = container_uid,
@@ -5296,12 +5366,12 @@ mod tests {
     use super::{
         append_desktop_log_for, classify_docker_access_result, clear_traefik_recreate_required,
         clear_tunnel_token, desktop_log_path_for, format_command_output,
-        generate_container_docker_config, host_container_uid_gid, is_container_name_conflict,
-        is_host_port_bind_conflict, is_oci_runtime_error, is_traefik_recreate_required,
-        logs_open_target_for, managed_app_container_ps_args, mark_traefik_recreate_required,
-        merge_compose_profiles, parse_container_ids, parse_docker_socket_uid_gid,
-        prepare_traefik_runtime_state, private_vpn_enabled_from_map,
-        resolve_hub_container_identity, seeded_traefik_config_contents,
+        generate_container_docker_config, host_container_uid_gid, host_docker_socket_path,
+        is_container_name_conflict, is_host_port_bind_conflict, is_oci_runtime_error,
+        is_traefik_recreate_required, logs_open_target_for, managed_app_container_ps_args,
+        mark_traefik_recreate_required, merge_compose_profiles, parse_container_ids,
+        parse_docker_socket_uid_gid, prepare_traefik_runtime_state, private_vpn_enabled_from_map,
+        seeded_traefik_config_contents, should_defer_docker_bind_mount_probe,
         startup_service_definitions, truncate_command_output, tunnel_dir_for,
         tunnel_token_path_for, DockerAccessState, MAX_COMMAND_OUTPUT_CHARS, TRAEFIK_ACME_FILE,
         TRAEFIK_CONFIG_FILE, TRAEFIK_DYNAMIC_CONFIG_SEED, TRAEFIK_DYNAMIC_FILE, TRAEFIK_TLS_DIR,
@@ -5348,6 +5418,48 @@ mod tests {
         );
 
         assert!(matches!(result.state, DockerAccessState::PermissionDenied));
+    }
+
+    #[test]
+    fn defers_bind_mount_probe_until_docker_is_ready() {
+        assert!(!should_defer_docker_bind_mount_probe(
+            &DockerAccessState::Available
+        ));
+        assert!(should_defer_docker_bind_mount_probe(
+            &DockerAccessState::DaemonUnavailable
+        ));
+        assert!(should_defer_docker_bind_mount_probe(
+            &DockerAccessState::NotInstalled
+        ));
+        assert!(should_defer_docker_bind_mount_probe(
+            &DockerAccessState::PermissionDenied
+        ));
+        assert!(should_defer_docker_bind_mount_probe(
+            &DockerAccessState::Error
+        ));
+    }
+
+    #[test]
+    fn prefers_docker_host_unix_socket_path() {
+        let original = std::env::var_os("DOCKER_HOST");
+        unsafe {
+            std::env::set_var("DOCKER_HOST", "unix:///tmp/ci-hub-docker.sock");
+        }
+
+        assert_eq!(
+            host_docker_socket_path(),
+            PathBuf::from("/tmp/ci-hub-docker.sock")
+        );
+
+        if let Some(value) = original {
+            unsafe {
+                std::env::set_var("DOCKER_HOST", value);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var("DOCKER_HOST");
+            }
+        }
     }
 
     #[test]

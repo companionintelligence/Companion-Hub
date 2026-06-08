@@ -69,6 +69,31 @@ export function likelyDockerDesktop(): boolean {
   return existsSync(path.join(home, '.docker', 'desktop')) || (process.env.DOCKER_HOST || '').includes('docker-desktop');
 }
 
+function dockerSocketPathFromDockerHost(): string | null {
+  const dockerHost = process.env.DOCKER_HOST?.trim();
+  if (!dockerHost?.startsWith('unix://')) return null;
+  const socketPath = dockerHost.slice('unix://'.length).trim();
+  return socketPath || null;
+}
+
+export function resolveHostDockerSocketPath(): string {
+  const envSocketPath = dockerSocketPathFromDockerHost();
+  if (envSocketPath) return envSocketPath;
+
+  if (process.platform === 'linux') {
+    const candidates = [
+      process.env.XDG_RUNTIME_DIR ? path.join(process.env.XDG_RUNTIME_DIR, 'docker.sock') : null,
+      typeof process.getuid === 'function' ? `/run/user/${process.getuid()}/docker.sock` : null,
+      path.join(os.homedir(), '.docker', 'run', 'docker.sock'),
+    ].filter((candidate): candidate is string => Boolean(candidate));
+
+    const existing = candidates.find((candidate) => existsSync(candidate));
+    if (existing) return existing;
+  }
+
+  return '/var/run/docker.sock';
+}
+
 function resolveDockerGid(): number {
   try {
     const line = execSync('getent group docker', { encoding: 'utf8' }).trim();
@@ -78,7 +103,7 @@ function resolveDockerGid(): number {
     // macOS / missing group
   }
   try {
-    return statSync('/var/run/docker.sock').gid;
+    return statSync(resolveHostDockerSocketPath()).gid;
   } catch {
     return 973;
   }
@@ -86,7 +111,8 @@ function resolveDockerGid(): number {
 
 function dockerSocketIsRootOnlyInsideContainers(): boolean | null {
   try {
-    const out = execSync('docker run --rm -v /var/run/docker.sock:/var/run/docker.sock:ro alpine stat -c "%u:%g" /var/run/docker.sock 2>/dev/null', {
+    const socketPath = resolveHostDockerSocketPath();
+    const out = execSync(`docker run --rm -v "${socketPath}:/var/run/docker.sock:ro" alpine stat -c "%u:%g" /var/run/docker.sock 2>/dev/null`, {
       encoding: 'utf8',
     }).trim();
     return out === '0:0';

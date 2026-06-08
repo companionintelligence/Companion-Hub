@@ -12,22 +12,39 @@ import { fromPartial } from '@total-typescript/shoehorn';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock } from 'vitest-mock-extended';
 import { DOCKERODE } from '@/modules/docker/docker.module';
+import Dockerode from 'dockerode';
+import { DatabaseService } from '@/core/database/database.service';
+import { LoggerService } from '@/core/logger/logger.service';
+import { CacheService } from '@/core/cache/cache.service';
+import { AppStoreService } from '@/modules/app-stores/app-store.service';
+import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
+import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
+import { AppsRepository } from '@/modules/apps/apps.repository';
+import { PortManagerService } from '@/modules/network/port-manager.service';
 
 describe('AppService', () => {
   let appService: AppService;
   let configurationService = mock<ConfigurationService>();
   let registryService = mock<RegistryService>();
+  let dockerode = mock<Dockerode>();
+  let databaseService = mock<DatabaseService>();
+  let loggerService = mock<LoggerService>();
+  let cacheService = mock<CacheService>();
+  let appStoreService = mock<AppStoreService>();
+  let marketplaceService = mock<MarketplaceService>();
+  let appLifecycleService = mock<AppLifecycleService>();
+  let appsRepository = mock<AppsRepository>();
+  let portManagerService = mock<PortManagerService>();
 
   beforeEach(async () => {
-    const Dockerode = vi.fn();
+    dockerode = mock<Dockerode>();
     const moduleRef = await Test.createTestingModule({
       providers: [
         AppService,
         FilesystemService,
         {
           provide: DOCKERODE,
-          useFactory: () => Dockerode,
-          inject: [],
+          useValue: dockerode,
         },
       ],
     })
@@ -37,6 +54,32 @@ describe('AppService', () => {
     appService = moduleRef.get(AppService);
     configurationService = moduleRef.get(ConfigurationService);
     registryService = moduleRef.get(RegistryService);
+    databaseService = moduleRef.get(DatabaseService);
+    loggerService = moduleRef.get(LoggerService);
+    cacheService = moduleRef.get(CacheService);
+    appStoreService = moduleRef.get(AppStoreService);
+    marketplaceService = moduleRef.get(MarketplaceService);
+    appLifecycleService = moduleRef.get(AppLifecycleService);
+    appsRepository = moduleRef.get(AppsRepository);
+    portManagerService = moduleRef.get(PortManagerService);
+
+    databaseService.migrate.mockResolvedValue(undefined);
+    cacheService.get.mockReturnValue(undefined);
+    cacheService.clear.mockReturnValue(undefined);
+    cacheService.set.mockReturnValue(undefined);
+    appStoreService.registerCloudAppStore.mockResolvedValue(undefined);
+    marketplaceService.initialize.mockResolvedValue(undefined);
+    appsRepository.getApps.mockResolvedValue([]);
+    portManagerService.migrateExistingApp.mockResolvedValue(undefined as never);
+    appLifecycleService.restartRunningApps.mockResolvedValue(undefined);
+    configurationService.getConfig.mockReturnValue(
+      fromPartial({
+        version: '1.0.0',
+        __prod__: false,
+        directories: { appDir: APP_DIR, dataDir: DATA_DIR, appDataDir: APP_DATA_DIR },
+        userSettings: { logLevel: 'info', persistTraefikConfig: false },
+      }),
+    );
   });
 
   describe('getVersion', () => {
@@ -107,6 +150,16 @@ describe('AppService', () => {
       expect((await fs.promises.readFile(traefikConfigPath, 'utf8')).trim()).toContain('admin@example.com');
       expect((await fs.promises.stat(dynamicConfigPath)).isFile()).toBe(true);
       expect((await fs.promises.readFile(dynamicConfigPath, 'utf8')).trim()).toBe('http:\n  middlewares: {}');
+    });
+  });
+
+  describe('bootstrap', () => {
+    it('continues bootstrap when docker socket access is denied during network prune', async () => {
+      const error = Object.assign(new Error('connect EACCES /var/run/docker.sock'), { code: 'EACCES' });
+      dockerode.pruneNetworks.mockRejectedValue(error);
+
+      await expect(appService.bootstrap()).resolves.toBeUndefined();
+      expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining('Skipping Docker network prune during bootstrap'));
     });
   });
 });

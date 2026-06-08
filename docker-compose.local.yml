@@ -87,7 +87,7 @@ services:
       - ${ENV_FILE:-.env}:/data/.env
       - ${ROOT_FOLDER_HOST:-.internal}/cache:/data/cache
       - ./docker-compose.local.yml:/data/docker-compose.yml
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock:ro
       - ${ROOT_FOLDER_HOST:-.internal}/.docker:/data/.docker
       - /proc/meminfo:/host/proc/meminfo:ro
       - /etc/localtime:/etc/localtime:ro
