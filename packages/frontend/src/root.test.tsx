@@ -133,7 +133,10 @@ describe('root ErrorBoundary Sentry capture', () => {
     ErrorBoundary({ error: routeError } as never);
 
     expect(captureHubException).toHaveBeenCalledTimes(1);
-    const [capturedError, context] = captureHubException.mock.calls[0];
+    const firstCall = captureHubException.mock.calls[0];
+    expect(firstCall).toBeDefined();
+    if (!firstCall) throw new Error('Expected captureHubException to be called');
+    const [capturedError, context] = firstCall;
     expect(capturedError).toBeInstanceOf(Error);
     expect((capturedError as Error).message).toBe('Route error 503: Service Unavailable');
     expect(context).toEqual({ status: 503, statusText: 'Service Unavailable', data: { reason: 'hub down' } });
@@ -152,7 +155,10 @@ describe('root ErrorBoundary Sentry capture', () => {
 
     ErrorBoundary({ error: thrown } as never);
 
-    const [capturedError, context] = captureHubException.mock.calls[0];
+    const firstCall = captureHubException.mock.calls[0];
+    expect(firstCall).toBeDefined();
+    if (!firstCall) throw new Error('Expected captureHubException to be called');
+    const [capturedError, context] = firstCall;
     expect((capturedError as Error).message).toBe('Non-error thrown in route boundary: {"code":"WEIRD"}');
     expect(context).toEqual({ rawError: thrown });
   });
