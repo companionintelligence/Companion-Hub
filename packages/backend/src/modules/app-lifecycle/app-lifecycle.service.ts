@@ -937,9 +937,28 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       const appEntries = exposedApps.filter((entry) => entry.privilegedKind !== 'hub');
 
       if (!result.ok) {
+        // A full sync failure means none of the exposed apps were updated, so
+        // raise a per-app toast for every exposed app — not only the partial
+        // per-app failures handled below. Without this, full failures (e.g.
+        // CI-Cloud unreachable / non-success response) would be silent in the
+        // UI. Cooldowns in surfacePublicDnsFailure prevent flooding on repeated
+        // syncs.
+        const toastTargets = appEntries
+          .map((entry) => {
+            const dbApp = apps.find((candidate: AppFromDb) => candidate.appName === entry.name);
+            if (!dbApp) {
+              return null;
+            }
+            return {
+              appUrn: `${dbApp.appName}:${dbApp.appStoreSlug}` as AppUrn,
+              hostname: entry.originServerName ?? entry.subdomain,
+            };
+          })
+          .filter((target): target is { appUrn: AppUrn; hostname: string } => target !== null);
         this.surfacePublicDnsFailure(
           `[Cloudflare] State sync did not complete — public DNS was not updated for ${appEntries.length} exposed app(s).`,
           appEntries.map((entry) => entry.name),
+          toastTargets,
         );
       } else if (result.failed.length > 0) {
         // Map CI-Cloud's failed app names back to their URN + hostname so the

@@ -279,6 +279,46 @@ describe('AppLifecycleService', () => {
       );
     });
 
+    it('emits per-app public DNS error events when the entire sync fails', async () => {
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue({
+        id: 'org-id',
+        tunnelId: 'tunnel-id',
+        slug: 'cid',
+        name: 'CID',
+        hubSubdomain: 'hub-laptop-cid',
+      } as any);
+      appsRepository.getApps.mockResolvedValue([
+        {
+          appName: 'anything-llm',
+          exposedLocal: true,
+          status: 'running',
+          localSubdomain: 'anything-llm',
+          publicDomain: 'companionintel.com',
+          appStoreSlug: 'ci-marketplace',
+        },
+      ] as any);
+      configService.getConfig.mockReturnValue({
+        userSettings: { domain: 'companionintelligence.com', localDomain: 'lan' },
+        domain: 'companionintelligence.com',
+      } as any);
+      // A full sync failure (e.g. CI-Cloud unreachable / non-success response),
+      // distinct from a partial per-app failure.
+      cloudflareClientService.syncState.mockResolvedValue({ ok: false, failed: [], synced: 0 });
+
+      await service.triggerCloudflareSync();
+
+      // The failure is logged, not swallowed.
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('did not complete'));
+
+      // Every exposed app still gets a per-app toast event so a full failure is
+      // not silent in the UI.
+      expect(sseService.emit).toHaveBeenCalledWith(
+        'app',
+        expect.objectContaining({ event: 'public_dns_error', appUrn: 'anything-llm:ci-marketplace' }),
+        'anything-llm:ci-marketplace',
+      );
+    });
+
     it('does not acquire install pipeline mutex for non-install commands', async () => {
       const data = {
         appUrn: 'test-app',
