@@ -1,31 +1,29 @@
 import { apiFetch } from '@/lib/api-fetch';
-import { Markdown } from '@/components/markdown/markdown';
 import { Button } from '@/components/ui/Button';
 import { useAppContext } from '@/context/app-context';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/Card';
-import { Star, ArrowUpCircle, Loader2, Wand2 } from 'lucide-react';
+import { ArrowUpCircle, Loader2, Wand2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import semver from 'semver';
 import { UpdateRepoModal } from '../components/update-repo-modal/update-repo-modal';
 import { useState, useEffect, useCallback } from 'react';
 import toast from 'react-hot-toast';
+import { checkForUpdates, isTauri, performStackUpdate, performUpdate, type UpdateInfo } from '@/lib/update-service';
 
 export const GeneralActionsContainer = () => {
   const { t } = useTranslation();
   const { version } = useAppContext();
 
   const [updating, setUpdating] = useState(false);
+  const [checking, setChecking] = useState(false);
   const [updateMessage, setUpdateMessage] = useState<string | null>(null);
   const [autoUpdates, setAutoUpdates] = useState(true);
   const [autoUpdatesLoading, setAutoUpdatesLoading] = useState(false);
   const [restartingWizard, setRestartingWizard] = useState(false);
+  const [desktopUpdate, setDesktopUpdate] = useState<UpdateInfo | null>(null);
 
-  // Re-arm the first-time setup wizard, then send the user back into it. A full navigation reloads the
-  // app context so the (now false) onboarding flag is picked up and the onboarding route renders.
   const handleRestartWizard = useCallback(async () => {
     setRestartingWizard(true);
     try {
-      // apiFetch doesn't throw on non-2xx, so only navigate once the flag is actually reset.
       const res = await apiFetch('/api/restart-onboarding', { method: 'PATCH', credentials: 'include' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       window.location.href = '/onboarding';
@@ -35,40 +33,73 @@ export const GeneralActionsContainer = () => {
     }
   }, []);
 
-  const isLatest = semver.valid(version.current) && semver.valid(version.latest) && semver.gte(version.current, version.latest);
+  const refreshUpdateState = useCallback(async () => {
+    const info = await checkForUpdates(version.current);
+    setDesktopUpdate(info?.updateAvailable ? info : null);
+    return info;
+  }, [version.current]);
 
-  // Fetch auto-update setting on mount
+  useEffect(() => {
+    void refreshUpdateState();
+  }, [refreshUpdateState]);
+
   useEffect(() => {
     apiFetch('/api/system/update/auto-updates', { credentials: 'include' })
       .then((res) => res.json())
       .then((data) => setAutoUpdates(data.enabled))
       .catch(() => {
-        // Silently ignore — auto-update toggle defaults to off if fetch fails
+        // Best-effort load; keep the default toggle state if unavailable.
       });
   }, []);
+
+  const handleCheckForUpdates = useCallback(async () => {
+    setChecking(true);
+    setUpdateMessage(null);
+    try {
+      const info = await refreshUpdateState();
+      if (info?.updateAvailable) {
+        toast.success(`Update available: ${info.latestVersion}`);
+      } else {
+        toast.success('You are on the latest version.');
+      }
+    } catch {
+      toast.error('Could not check for updates.');
+    } finally {
+      setChecking(false);
+    }
+  }, [refreshUpdateState]);
 
   const handleUpdate = useCallback(async () => {
     setUpdating(true);
     setUpdateMessage(null);
     try {
-      const res = await apiFetch('/api/system/update', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({}),
-      });
-      if (res.ok) {
-        setUpdateMessage('Hub is restarting with the new version. This page will reload shortly.');
+      const info = desktopUpdate ?? (await refreshUpdateState());
+      if (info?.updateAvailable) {
+        const result = await performUpdate(info);
+        if (result.ok) {
+          setUpdateMessage(result.message);
+          toast.success(result.message);
+        } else {
+          setUpdateMessage(result.message);
+          toast.error(result.message);
+          setUpdating(false);
+        }
+        return;
+      }
+
+      const stackResult = await performStackUpdate(version.latest);
+      if (stackResult.ok) {
+        setUpdateMessage(stackResult.message);
         setTimeout(() => window.location.reload(), 15000);
       } else {
-        setUpdateMessage('Update failed. Check logs for details.');
+        setUpdateMessage(stackResult.message);
         setUpdating(false);
       }
     } catch {
-      setUpdateMessage('Update request failed. The hub may already be restarting.');
-      setTimeout(() => window.location.reload(), 15000);
+      setUpdateMessage('Update request failed.');
+      setUpdating(false);
     }
-  }, []);
+  }, [desktopUpdate, refreshUpdateState, version.latest]);
 
   const handleAutoUpdatesToggle = useCallback(async () => {
     setAutoUpdatesLoading(true);
@@ -87,7 +118,11 @@ export const GeneralActionsContainer = () => {
     setAutoUpdatesLoading(false);
   }, [autoUpdates]);
 
-  const renderUpdate = () => {
+  const updateAvailable = !!desktopUpdate?.updateAvailable;
+  const displayVersion = desktopUpdate?.currentVersion ?? version.current;
+  const latestVersion = desktopUpdate?.latestVersion ?? version.latest;
+
+  const renderUpdateButton = () => {
     if (updateMessage) {
       return (
         <div className="flex items-center gap-2 p-3 rounded-md bg-muted text-sm">
@@ -97,36 +132,32 @@ export const GeneralActionsContainer = () => {
       );
     }
 
-    if (isLatest) {
-      return <Button disabled>{t('SETTINGS_ACTIONS_ALREADY_LATEST')}</Button>;
-    }
-
-    return (
-      <div>
-        <Button onClick={handleUpdate} disabled={updating} className="mb-4">
+    if (updateAvailable) {
+      return (
+        <Button onClick={handleUpdate} disabled={updating} className="mb-4" data-testid="hub-update-btn">
           {updating ? (
             <>
               <Loader2 className="h-4 w-4 animate-spin mr-2" />
-              Updating...
+              Updating…
             </>
           ) : (
-            `Update to ${version.latest}`
+            `Update to ${latestVersion}`
           )}
         </Button>
-        {version.releases?.map((release) => (
-          <Card key={release.version} className="mt-3 relative overflow-hidden w-full md:w-2/3">
-            <div className="absolute -right-6 -top-6 text-yellow-500 opacity-20 rotate-12 pointer-events-none">
-              <Star size={80} fill="currentColor" />
-            </div>
-            <CardHeader>
-              <CardTitle>Version {release.version}</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <Markdown className="" content={release.body} />
-            </CardContent>
-          </Card>
-        ))}
-      </div>
+      );
+    }
+
+    return (
+      <Button onClick={handleCheckForUpdates} disabled={checking} variant="outline" data-testid="hub-check-updates-btn">
+        {checking ? (
+          <>
+            <Loader2 className="h-4 w-4 animate-spin mr-2" />
+            Checking…
+          </>
+        ) : (
+          'Check for updates'
+        )}
+      </Button>
     );
   };
 
@@ -138,19 +169,22 @@ export const GeneralActionsContainer = () => {
             <ArrowUpCircle className="h-5 w-5 text-muted-foreground" />
             <CardTitle className="text-xl">{t('SETTINGS_ACTIONS_TITLE')}</CardTitle>
           </div>
-          <CardDescription>{t('SETTINGS_ACTIONS_CURRENT_VERSION', { version: version.current })}</CardDescription>
+          <CardDescription>
+            {t('SETTINGS_ACTIONS_CURRENT_VERSION', { version: displayVersion })}
+            {isTauri() ? '' : ' (stack)'}
+          </CardDescription>
         </CardHeader>
         <CardContent>
           <p className="text-sm text-muted-foreground mb-4">
-            {isLatest ? t('SETTINGS_ACTIONS_STAY_UP_TO_DATE') : t('SETTINGS_ACTIONS_NEW_VERSION', { version: version.latest })}
+            {updateAvailable ? t('SETTINGS_ACTIONS_NEW_VERSION', { version: latestVersion }) : t('SETTINGS_ACTIONS_STAY_UP_TO_DATE')}
           </p>
-          {renderUpdate()}
+          {renderUpdateButton()}
 
           <div className="mt-6 pt-6 border-t">
             <div className="flex items-center justify-between">
               <div>
-                <h3 className="text-sm font-medium">Auto-update</h3>
-                <p className="text-sm text-muted-foreground">Automatically update when new versions are available</p>
+                <h3 className="text-sm font-medium">Auto-update stack</h3>
+                <p className="text-sm text-muted-foreground">Automatically pull and restart Docker stack images when updates are available</p>
               </div>
               <button
                 type="button"

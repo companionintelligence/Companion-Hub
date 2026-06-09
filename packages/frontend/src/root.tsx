@@ -1,6 +1,5 @@
 import { Titlebar } from './components/titlebar/titlebar';
 import { HubStatus } from './components/hub-status/hub-status';
-import { UpdateBanner } from './components/update-banner/update-banner';
 import { useUpdateChecker } from './hooks/use-update-checker';
 import { useEffect, useRef } from 'react';
 import { Toaster } from 'react-hot-toast';
@@ -166,7 +165,7 @@ export async function clientLoader({ request }: Route.ActionArgs) {
 }
 
 export function Layout({ children }: { children: React.ReactNode }) {
-  const { update, dismiss } = useUpdateChecker();
+  useUpdateChecker();
   useEffect(() => {
     const handlePreloadError = () => {
       window.location.reload();
@@ -239,7 +238,6 @@ export function Layout({ children }: { children: React.ReactNode }) {
       <body>
         <ThemeProvider defaultTheme="dark">
           <Titlebar />
-          {update && <UpdateBanner update={update} onDismiss={dismiss} />}
           <HubStatus>
             <main id="root">
               {children}

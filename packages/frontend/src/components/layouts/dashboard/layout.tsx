@@ -1,6 +1,5 @@
 import { Header } from '@/components/header/header';
 import { type PropsWithChildren, useEffect, useRef } from 'react';
-import semver from 'semver';
 import { useAppContext } from '@/context/app-context';
 import { useUserContext } from '@/context/user-context';
 import { AnimatePresence, motion } from 'framer-motion';
@@ -15,7 +14,7 @@ import { apiFetch } from '@/lib/api-fetch';
 export const DashboardLayoutSuspense = ({ children }: PropsWithChildren) => {
   return (
     <div className="flex bg-background overflow-hidden w-screen flex-col" style={{ height: 'calc(100vh - var(--titlebar-height, 0px))' }}>
-      <Header isLoggedIn={false} isUpdateAvailable={false} allowAutoThemes={false} />
+      <Header isLoggedIn={false} allowAutoThemes={false} />
       <div className="flex flex-1 flex-col pt-16 px-4 container mx-auto h-full overflow-y-auto no-scrollbar">
         <div className="rounded-xl border bg-card text-card-foreground shadow p-6">{children}</div>
       </div>
@@ -24,7 +23,7 @@ export const DashboardLayoutSuspense = ({ children }: PropsWithChildren) => {
 };
 
 export const DashboardLayout = ({ children }: PropsWithChildren) => {
-  const { user, userSettings, version } = useAppContext();
+  const { user, userSettings } = useAppContext();
   const location = useLocation();
   const prevPathRef = useRef(location.pathname);
   const { isLoggedIn } = useUserContext();
@@ -62,18 +61,6 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
   useEffect(() => {
     prevPathRef.current = location.pathname;
   }, [location.pathname]);
-
-  // Version check logic
-  let isLatest = false;
-  try {
-    isLatest = (semver.valid(version?.current) && semver.valid(version?.latest) && semver.gte(version.current, version.latest)) || false;
-  } catch (_e) {
-    // ignore semver errors
-  }
-
-  if (version?.current === 'nightly') {
-    isLatest = true;
-  }
 
   // Redirect to onboarding if not completed
   if (!user.hasCompletedOnboarding && !location.pathname.startsWith('/onboarding')) {
@@ -125,7 +112,7 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
 
   return (
     <div className="flex bg-background overflow-hidden w-screen flex-col" style={{ height: 'calc(100vh - var(--titlebar-height, 0px))' }}>
-      <Header isLoggedIn={isLoggedIn} isUpdateAvailable={!isLatest} allowAutoThemes={userSettings.allowAutoThemes} />
+      <Header isLoggedIn={isLoggedIn} allowAutoThemes={userSettings.allowAutoThemes} />
       <main className="relative flex flex-1 flex-col gap-4 pt-16 px-4 container mx-auto h-full overflow-y-auto overflow-x-hidden no-scrollbar">
         {showCoreServerBanner && <CoreServerBanner onDismiss={dismiss} system={systemSnapshot} />}
         <AnimatePresence mode="popLayout" custom={direction}>

@@ -21,7 +21,6 @@ import { useMutation } from '@tanstack/react-query';
 import { logoutMutation } from '@/api-client/@tanstack/react-query.gen';
 
 type HeaderProps = {
-  isUpdateAvailable?: boolean;
   isLoggedIn?: boolean;
   allowAutoThemes?: boolean;
 };
