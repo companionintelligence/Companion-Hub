@@ -296,7 +296,7 @@ interface DockerService {
   sysctls?: Record<string, number | string>;
   dns?: string | string[];
   extraHosts?: string[];
-  volumes?: { hostPath?: string; containerPath?: string }[];
+  volumes?: { hostPath?: string; containerPath?: string; readOnly?: boolean }[];
   environment?: { key?: string; value?: string }[];
   dependsOn?: unknown; // map {svc:{condition}} (Hub) or string[] — handled in composeUp
   healthCheck?: HealthCheck;
@@ -408,10 +408,23 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
       // Single-service path only: build `docker run` flags. Multi-service apps go through
       // the compose path (composeUp) which handles volumes + ${VAR}-substituted env itself.
       if (!isMulti) {
+        // Wipe stale per-app scratch up front (mirrors composeUp): a prior run that was
+        // killed or timed-out before teardown can leave root-owned dirs behind (e.g. gitlab
+        // writes /etc/gitlab as root), and a later chmodSync on them throws EPERM. wipeScratchTree
+        // clears root-owned content via a root alpine container when the `ci` uid can't rmSync it.
+        wipeScratchTree(join(RESULTS_DIR, 'scratch', appId));
         // Mount an ephemeral scratch dir per declared volume so stateful apps can
         // boot for the smoke test (e.g. vaultwarden refuses to start without /data).
         for (const v of main?.volumes ?? []) {
           if (!v.containerPath) continue;
+          // Absolute host paths that exist (e.g. /etc/localtime) bind DIRECTLY, mirroring the Hub
+          // builder — mounting an ephemeral scratch *dir* onto a host *file* makes `docker run` fail
+          // ("mount a directory onto a file"; frigate's /etc/localtime). Templated ${APP_DATA_DIR}/...
+          // paths still get a seeded ephemeral scratch mount below.
+          if (v.hostPath && !v.hostPath.includes('${') && v.hostPath.startsWith('/') && existsSync(v.hostPath)) {
+            runFlags += ` -v ${shQuote(v.hostPath)}:${v.containerPath}${v.readOnly ? ':ro' : ''}`;
+            continue;
+          }
           const scratch = join(RESULTS_DIR, 'scratch', appId, String(scratchDirs.length));
           // Seed the mount from the app's source data/ subtree (mirrors Hub copyDataDir + the
           // composeUp path) so config FILE targets and seeded dirs (e.g. quarkdown's docs/main.qd)
