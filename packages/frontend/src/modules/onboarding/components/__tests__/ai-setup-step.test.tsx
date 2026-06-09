@@ -395,6 +395,116 @@ describe('AiSetupStep', () => {
     });
   });
 
+  it('derives embedding and vision defaults from installed onboarding models', async () => {
+    api.profile = {
+      ...highTierProfile,
+      recommendedModels: [
+        ...highTierProfile.recommendedModels,
+        {
+          id: 'nomic-embed-text',
+          displayName: 'Nomic Embed',
+          description: 'Embedding model',
+          modality: 'embedding',
+          purpose: 'general',
+          backend: 'ollama',
+          runtime: { backendModelId: 'nomic-embed-text', input: ['text'], pinnedByDefault: true, memoryFootprintMb: 512 },
+          tiers: { high: 'recommended', medium: 'recommended', low: 'available', cpuOnly: 'available' },
+        },
+        {
+          id: 'gemma-vision',
+          displayName: 'Gemma Vision',
+          description: 'Vision model',
+          modality: 'llm',
+          purpose: 'general',
+          backend: 'ollama',
+          metadata: { capabilities: { vision: true } },
+          runtime: { backendModelId: 'gemma-vision', input: ['text', 'image'], pinnedByDefault: true, memoryFootprintMb: 2048 },
+          tiers: { high: 'recommended', medium: 'recommended', low: 'available', cpuOnly: 'available' },
+        },
+      ] as any,
+      availableModels: [
+        ...highTierProfile.availableModels,
+        {
+          id: 'nomic-embed-text',
+          displayName: 'Nomic Embed',
+          description: 'Embedding model',
+          modality: 'embedding',
+          purpose: 'general',
+          backend: 'ollama',
+          runtime: { backendModelId: 'nomic-embed-text', input: ['text'], pinnedByDefault: true, memoryFootprintMb: 512 },
+          tiers: { high: 'recommended', medium: 'recommended', low: 'available', cpuOnly: 'available' },
+        },
+        {
+          id: 'gemma-vision',
+          displayName: 'Gemma Vision',
+          description: 'Vision model',
+          modality: 'llm',
+          purpose: 'general',
+          backend: 'ollama',
+          metadata: { capabilities: { vision: true } },
+          runtime: { backendModelId: 'gemma-vision', input: ['text', 'image'], pinnedByDefault: true, memoryFootprintMb: 2048 },
+          tiers: { high: 'recommended', medium: 'recommended', low: 'available', cpuOnly: 'available' },
+        },
+      ] as any,
+      installedCatalogIds: ['phi-4-mini', 'nomic-embed-text', 'gemma-vision'],
+    };
+
+    const user = userEvent.setup();
+    const { onComplete } = renderStep();
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+    await user.click(screen.getByTestId('ai-continue-btn'));
+
+    expect(onComplete).toHaveBeenCalledWith(
+      expect.objectContaining({
+        preferredModelId: 'phi-4-mini',
+        preferredEmbeddingModelId: 'nomic-embed-text',
+        preferredVisionModelId: 'gemma-vision',
+      }),
+    );
+  });
+
+  it('does not treat non-LLM models with generic purposes as the default chat model', async () => {
+    api.profile = {
+      ...highTierProfile,
+      recommendedModels: [
+        {
+          id: 'embed-first',
+          displayName: 'Embed First',
+          description: 'Embedding model',
+          modality: 'embedding',
+          purpose: 'general',
+          backend: 'ollama',
+          runtime: { backendModelId: 'embed-first', input: ['text'], pinnedByDefault: true, memoryFootprintMb: 512 },
+          tiers: { high: 'recommended', medium: 'recommended', low: 'available', cpuOnly: 'available' },
+        },
+        ...highTierProfile.recommendedModels,
+      ] as any,
+      availableModels: [
+        {
+          id: 'embed-first',
+          displayName: 'Embed First',
+          description: 'Embedding model',
+          modality: 'embedding',
+          purpose: 'general',
+          backend: 'ollama',
+          runtime: { backendModelId: 'embed-first', input: ['text'], pinnedByDefault: true, memoryFootprintMb: 512 },
+          tiers: { high: 'recommended', medium: 'recommended', low: 'available', cpuOnly: 'available' },
+        },
+        ...highTierProfile.availableModels,
+      ] as any,
+      installedCatalogIds: ['embed-first', 'phi-4-mini'],
+    };
+
+    const user = userEvent.setup();
+    const { onComplete } = renderStep();
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+    await user.click(screen.getByTestId('ai-continue-btn'));
+
+    expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({ preferredModelId: 'phi-4-mini' }));
+  });
+
   it('features OpenClaw and Hermes and defaults to the first selected recommended model', async () => {
     const user = userEvent.setup();
     const { onComplete } = renderStep();

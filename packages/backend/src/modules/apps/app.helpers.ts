@@ -12,6 +12,7 @@ import type { AppEventFormInput } from '../queue/entities/app-events';
 import { AppFilesManager } from './app-files-manager';
 import { DeviceRegistrationRepository } from '../registration/device-registration.repository';
 import { RegistrationService } from '../registration/registration.service';
+import { InferenceEnvResolver } from '../inference/inference-env-resolver';
 
 @Injectable()
 export class AppHelpers {
@@ -23,6 +24,7 @@ export class AppHelpers {
     private readonly logger: LoggerService,
     private readonly deviceRegistrationRepository: DeviceRegistrationRepository,
     private readonly registrationService: RegistrationService,
+    private readonly inferenceEnv: InferenceEnvResolver,
   ) {}
 
   /**
@@ -368,15 +370,33 @@ export class AppHelpers {
       }
     }
 
-    // --- Inference Integration for all Hub apps ---
-    // The Hub no longer proxies inference. Point apps directly at Ollama (native
-    // protocol); apps that want the OpenAI-compatible surface append /v1
-    // themselves, and may fetch richer connection info (incl. cloud overrides)
-    // from GET /api/inference/apps/:slug/credentials. Installed apps run as Docker
-    // containers, so the fallback targets the host's Ollama over the host-gateway
-    // bridge (host.docker.internal) — not loopback, which would be the app's own
-    // container. OLLAMA_URL, when set by compose, already points there.
-    envMap.set('OLLAMA_HOST', process.env.OLLAMA_URL || 'http://host.docker.internal:11434');
+    // --- Standardized AI Environment Variables (opt-in) ---
+    // Apps declare which inference variables they need in config.json via
+    // hub_integration.inference. The Hub resolves the values and maps them
+    // to the app's expected env variable names. Apps without this field
+    // receive no inference variables — zero overhead for non-AI apps.
+    const inferenceMapping = config.hub_integration?.inference;
+    if (inferenceMapping && Object.keys(inferenceMapping).length > 0) {
+      try {
+        const aiEnv = await this.inferenceEnv.resolve();
+        const HUB_TO_RESOLVED: Record<string, string | undefined> = {
+          llm_base_url: aiEnv.CI_LLM_BASE_URL,
+          llm_api_key: aiEnv.CI_LLM_API_KEY,
+          chat_model: aiEnv.CI_CHAT_MODEL,
+          embedding_model: aiEnv.CI_EMBEDDING_MODEL,
+          vision_model: aiEnv.CI_VISION_MODEL,
+          ollama_host: aiEnv.OLLAMA_HOST,
+        };
+        for (const [hubKey, appEnvVar] of Object.entries(inferenceMapping)) {
+          const resolved = HUB_TO_RESOLVED[hubKey];
+          if (resolved !== undefined && appEnvVar) {
+            envMap.set(appEnvVar, resolved);
+          }
+        }
+      } catch (err) {
+        this.logger.warn(`[AppHelpers] Failed to resolve inference env for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
 
     envMap.delete('APP_PUBLIC_DOMAIN');
 

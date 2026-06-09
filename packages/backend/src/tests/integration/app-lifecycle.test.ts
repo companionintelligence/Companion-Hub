@@ -23,7 +23,7 @@ import { AppsRepository } from '@/modules/apps/apps.repository';
 import { AppsService } from '@/modules/apps/apps.service';
 import { InstallPipelineTracker } from '@/modules/apps/install-pipeline.tracker';
 import { PortAllocationRepository } from '@/modules/network/port-allocation.repository';
-import { DOCKERODE } from '@/modules/docker/docker.module';
+import { DOCKERODE } from '@/modules/docker/constants';
 import { DockerService } from '@/modules/docker/docker.service';
 import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
 import { EnvUtils } from '@/modules/env/env.utils';
@@ -46,6 +46,7 @@ import { createAppInStore } from '../utils/create-app-in-store';
 import { type TestDatabase, cleanTestData, createTestDatabase } from '../utils/create-test-database';
 import { APP_ASYNC_MUTEX } from '@/utils/mutex/mutex.module';
 import { AsyncMutex } from '@/utils/mutex/async-mutex';
+import { InferenceEnvResolver } from '@/modules/inference/inference-env-resolver';
 
 let db: TestDatabase;
 const DB_NAME = 'applifecycletest';
@@ -141,7 +142,12 @@ describe('App lifecycle', () => {
         AppHelpers,
         AppsService,
         InstallPipelineTracker,
-        SubnetManagerService,
+        {
+          provide: SubnetManagerService,
+          useFactory: (appsRepository: AppsRepository, loggerService: LoggerService, docker: typeof DOCKERODE) =>
+            new SubnetManagerService(appsRepository, loggerService, docker as never),
+          inject: [AppsRepository, LoggerService, DOCKERODE],
+        },
         {
           provide: ReposHelpers,
           useValue: reposHelpers,
@@ -209,6 +215,10 @@ describe('App lifecycle', () => {
         {
           provide: LoggerService,
           useValue: loggerService,
+        },
+        {
+          provide: InferenceEnvResolver,
+          useValue: mock<InferenceEnvResolver>(),
         },
       ],
     }).compile();

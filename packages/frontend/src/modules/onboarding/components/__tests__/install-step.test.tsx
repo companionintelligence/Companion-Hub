@@ -189,7 +189,7 @@ describe('InstallStep', () => {
         '/api/inference/preferences',
         expect.objectContaining({
           method: 'PATCH',
-          body: JSON.stringify({ backend: 'vllm', model: null }),
+          body: JSON.stringify({ backend: 'vllm', model: null, embeddingModel: null, visionModel: null }),
         }),
       );
     });
@@ -254,6 +254,84 @@ describe('InstallStep', () => {
         expect(mockApiFetch).toHaveBeenCalledWith(expect.stringContaining('/api/app-lifecycle/'), expect.anything());
       },
       { timeout: 10000 },
+    );
+
+    await waitFor(() => {
+      expect(mockApiFetch).toHaveBeenCalledWith(
+        '/api/inference/preferences',
+        expect.objectContaining({
+          method: 'PATCH',
+          body: JSON.stringify({
+            backend: 'ollama',
+            model: 'llama3-3-70b',
+            embeddingModel: null,
+            visionModel: null,
+          }),
+        }),
+      );
+    });
+  });
+
+  it('persists embedding and vision defaults only when those models are installed or pulled successfully', async () => {
+    mockApiFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes('/api/inference/models/pull-preflight')) {
+        return { ok: true, json: async () => ({ canPull: true, alreadyInstalled: false }) };
+      }
+      if (url.includes('/api/inference/models/pull')) {
+        const body = JSON.parse(String(init?.body ?? '{}')) as { modelId?: string };
+        if (body.modelId === 'vision-model') {
+          return { ok: true, json: async () => ({ success: false, skipped: true, message: 'download failed' }) };
+        }
+        return { ok: true, json: async () => ({ success: true }) };
+      }
+      if (url.includes('/api/inference/models/tracked')) {
+        return {
+          ok: true,
+          json: async () => [
+            { catalogId: 'chat-model', state: 'pulled' },
+            { catalogId: 'embedding-model', state: 'pulled' },
+            { catalogId: 'vision-model', state: 'error', error: 'download failed' },
+          ],
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+
+    render(
+      <InstallStep
+        apps={[]}
+        onComplete={onComplete}
+        aiSetupConfig={{
+          agentFrameworks: ['openclaw'],
+          remoteAccess: [],
+          selectedModels: ['chat-model', 'embedding-model', 'vision-model'],
+          installedCatalogIds: [],
+          backend: 'ollama',
+          cloudProviders: [],
+          preferredModelId: 'chat-model',
+          preferredEmbeddingModelId: 'embedding-model',
+          preferredVisionModelId: 'vision-model',
+          skipped: false,
+        }}
+      />,
+    );
+
+    await waitFor(
+      () => {
+        expect(mockApiFetch).toHaveBeenCalledWith(
+          '/api/inference/preferences',
+          expect.objectContaining({
+            method: 'PATCH',
+            body: JSON.stringify({
+              backend: 'ollama',
+              model: 'chat-model',
+              embeddingModel: 'embedding-model',
+              visionModel: null,
+            }),
+          }),
+        );
+      },
+      { timeout: 5000 },
     );
   });
 

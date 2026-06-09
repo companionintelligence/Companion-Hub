@@ -9,27 +9,6 @@ on:
 jobs:
   integration-tests:
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:14
-        env:
-          POSTGRES_PASSWORD: postgres
-        ports:
-          - 5433:5432
-        options: >-
-          --health-cmd "pg_isready"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-      rabbitmq:
-        image: rabbitmq:4-alpine
-        ports:
-          - 5672:5672
-        options: >-
-          --health-cmd "rabbitmq-diagnostics -q ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -38,4 +17,7 @@ jobs:
         uses: "./.github/actions/install-dependencies"
 
       - name: Run integration tests
+        env:
+          POSTGRES_TEST_IMAGE: public.ecr.aws/docker/library/postgres:14
+          RABBITMQ_TEST_IMAGE: public.ecr.aws/docker/library/rabbitmq:4-alpine
         run: pnpm run test:integration
