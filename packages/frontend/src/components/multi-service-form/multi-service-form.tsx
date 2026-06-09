@@ -16,6 +16,7 @@ import { EnvironmentConfig } from './elements/environment';
 import { EssentialConfig } from './elements/essential';
 import { useTranslation } from 'react-i18next';
 import toast from 'react-hot-toast';
+import i18next from 'i18next';
 import { deepClean } from '@/utils/objects';
 
 type Props = {
@@ -162,7 +163,7 @@ export const MultiServiceForm = ({ onSubmit }: Props) => {
     if (valid) {
       onSubmit?.(data);
     } else {
-      toast.error(t(error));
+      toast.error(i18next.exists(error) ? t(error) : error);
     }
   };
 

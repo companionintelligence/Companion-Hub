@@ -98,7 +98,7 @@ describe('DeviceRegistrationPage', () => {
     expect(navigate).not.toHaveBeenCalled();
   });
 
-  it('waits for operational readiness before advancing after a successful pair', async () => {
+  it('submits pairing without immediate navigation when status remains unregistered', async () => {
     apiFetch.mockImplementation(async (url: string, init?: RequestInit) => {
       if (url === '/api/registration/status') {
         return jsonResponse(makeStatus('unregistered'));

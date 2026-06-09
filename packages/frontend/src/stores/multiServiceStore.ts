@@ -64,14 +64,14 @@ export const useMultiServiceStore = create<MultiServiceState>()((set, get) => ({
     const res = dynamicComposeSchema.omit({ schemaVersion: true }).safeParse(values);
 
     if (!res.success) {
-      set({ error: i18next.t('MULTI_SERVICE_ERROR_INVALID_CONFIGURATION') });
+      set({ error: 'MULTI_SERVICE_ERROR_INVALID_CONFIGURATION' });
       return false;
     }
 
     // Ensure only one main service
     const mainServices = values.services.filter((service) => service.isMain);
     if (mainServices.length !== 1) {
-      set({ error: i18next.t('MULTI_SERVICE_ERROR_SINGLE_MAIN_SERVICE') });
+      set({ error: 'MULTI_SERVICE_ERROR_SINGLE_MAIN_SERVICE' });
       return false;
     }
 
@@ -79,7 +79,7 @@ export const useMultiServiceStore = create<MultiServiceState>()((set, get) => ({
     const names = values.services.map((service) => service.name);
     const uniqueNames = new Set(names);
     if (names.length !== uniqueNames.size) {
-      set({ error: i18next.t('MULTI_SERVICE_ERROR_UNIQUE_SERVICE_NAMES') });
+      set({ error: 'MULTI_SERVICE_ERROR_UNIQUE_SERVICE_NAMES' });
       return false;
     }
 
@@ -171,7 +171,7 @@ export const useMultiServiceStore = create<MultiServiceState>()((set, get) => ({
 
     const error = get().error;
     if (error) {
-      toast.error(error);
+      toast.error(i18next.exists(error) ? i18next.t(error) : error);
       return;
     }
 
