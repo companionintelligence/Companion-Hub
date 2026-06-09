@@ -171,10 +171,12 @@ export async function clientLoader({ request }: Route.ActionArgs) {
 export function Layout({ children }: { children: React.ReactNode }) {
   const { update, dismiss } = useUpdateChecker();
   const [documentTitle, setDocumentTitle] = useState(() => (i18next.isInitialized ? i18next.t('APP_NAME') : 'Companion Hub'));
+  const [documentLang, setDocumentLang] = useState(() => i18next.resolvedLanguage || i18next.language || 'en');
 
   useEffect(() => {
     const syncDocumentTitle = () => {
       setDocumentTitle(i18next.isInitialized ? i18next.t('APP_NAME') : 'Companion Hub');
+      setDocumentLang(i18next.resolvedLanguage || i18next.language || 'en');
     };
 
     syncDocumentTitle();
@@ -270,7 +272,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <html lang="en">
+    <html lang={documentLang}>
       <head>
         <title>{documentTitle}</title>
         <meta charSet="UTF-8" />
