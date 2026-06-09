@@ -268,7 +268,7 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
             }),
           });
           if (!preferenceRes.ok) {
-            setAiPhase((prev) => ({ ...prev, error: `Failed to save AI defaults: HTTP ${preferenceRes.status}` }));
+            setAiPhase((prev) => ({ ...prev, error: t('ONBOARDING_INSTALL_FAILED_SAVE_PREFERRED_BACKEND', { status: preferenceRes.status }) }));
           }
         } catch {
           // Non-fatal — do not block onboarding install progress
