@@ -449,7 +449,8 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
         // no credentials set and had broken logins. Same substitution the compose path uses.
         const cache = new Map<string, string>();
         const scratchBase = join(RESULTS_DIR, 'scratch', appId);
-        const subst = (s: string) => s.replace(/\$\{([A-Z0-9_]+)\}/g, (_, k) => valueForVar(k, cache, scratchBase));
+        const subst = (s: string) =>
+          s.replace(/\$\{([A-Z0-9_]+)(?::-([^}]*))?\}/g, (_, k, def) => (def === undefined ? valueForVar(k, cache, scratchBase) : def));
         for (const e of main?.environment ?? []) {
           if (!e.key || e.value == null) continue;
           runFlags += ` -e ${e.key}=${shQuote(subst(String(e.value)))}`;
@@ -1093,7 +1094,8 @@ function composeUp(
   wipeScratchTree(scratchBase);
   mkdirSync(scratchBase, { recursive: true });
   const cache = new Map<string, string>();
-  const subst = (s: string) => s.replace(/\$\{([A-Z0-9_]+)\}/g, (_, k) => valueForVar(k, cache, scratchBase));
+  const subst = (s: string) =>
+    s.replace(/\$\{([A-Z0-9_]+)(?::-([^}]*))?\}/g, (_, k, def) => (def === undefined ? valueForVar(k, cache, scratchBase) : def));
   const main = services.find((s) => s.isMain) ?? services[0];
   const mainPort = main?.internalPort ?? 80;
   // Services that declare a healthcheck: a depends_on may only request `service_healthy`
