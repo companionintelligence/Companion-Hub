@@ -326,8 +326,9 @@ export default function App({ loaderData }: Route.ComponentProps) {
 }
 
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
-  let message = i18next.t('ROOT_ERROR_BOUNDARY_OOPS');
-  let details = i18next.t('ROOT_ERROR_BOUNDARY_UNEXPECTED_ERROR');
+  const safeT = (key: string, fallback: string) => (i18next.isInitialized ? i18next.t(key) : fallback);
+  let message = safeT('ROOT_ERROR_BOUNDARY_OOPS', 'Oops!');
+  let details = safeT('ROOT_ERROR_BOUNDARY_UNEXPECTED_ERROR', 'An unexpected error occurred.');
   let stack: string | undefined;
 
   if (import.meta.env.DEV) {
@@ -349,8 +350,9 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
   }
 
   if (isRouteErrorResponse(error)) {
-    message = error.status === 404 ? '404' : i18next.t('COMMON_ERROR');
-    details = error.status === 404 ? i18next.t('ROOT_ERROR_BOUNDARY_PAGE_NOT_FOUND') : error.statusText || details;
+    message = error.status === 404 ? '404' : safeT('COMMON_ERROR', 'Error');
+    details =
+      error.status === 404 ? safeT('ROOT_ERROR_BOUNDARY_PAGE_NOT_FOUND', 'The requested page could not be found.') : error.statusText || details;
   } else if (import.meta.env.DEV && error && error instanceof Error) {
     details = error.message;
     stack = error.stack;
