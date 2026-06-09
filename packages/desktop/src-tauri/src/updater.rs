@@ -98,10 +98,79 @@ pub struct DesktopUpdateInfo {
 }
 
 pub fn is_trusted_download_url(url: &str) -> bool {
-    if url.contains("..") {
+    if path_has_parent_traversal(url) {
         return false;
     }
     https_hostname(url).as_deref() == Some(ALLOWED_DOWNLOAD_HOST)
+}
+
+fn path_has_parent_traversal(url: &str) -> bool {
+    raw_path_segments(url)
+        .map(|segments| segments.iter().any(|segment| segment_decodes_to_parent_dir(segment)))
+        .unwrap_or(false)
+}
+
+fn raw_path_segments(url: &str) -> Option<Vec<&str>> {
+    let rest = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://"))?;
+    let path_start = rest.find('/')?;
+    let path = rest[path_start..].split(['?', '#']).next()?;
+    Some(path.split('/').filter(|segment| !segment.is_empty()).collect())
+}
+
+fn segment_decodes_to_parent_dir(segment: &str) -> bool {
+    match decode_path_segment(segment) {
+        Ok(decoded) => decoded.split('/').any(|part| part == ".."),
+        Err(()) => true,
+    }
+}
+
+fn decode_path_segment(segment: &str) -> Result<String, ()> {
+    let mut decoded = segment.to_string();
+    for _ in 0..3 {
+        let next = percent_decode_once(&decoded)?;
+        if next == decoded {
+            break;
+        }
+        decoded = next;
+    }
+    Ok(decoded)
+}
+
+fn percent_decode_once(input: &str) -> Result<String, ()> {
+    let mut out = String::with_capacity(input.len());
+    let bytes = input.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' => {
+                if i + 2 >= bytes.len() {
+                    return Err(());
+                }
+                let hi = hex_digit(bytes[i + 1])?;
+                let lo = hex_digit(bytes[i + 2])?;
+                out.push(char::from((hi << 4) | lo));
+                i += 3;
+            }
+            b'+' => {
+                out.push(' ');
+                i += 1;
+            }
+            b => {
+                out.push(char::from(b));
+                i += 1;
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn hex_digit(byte: u8) -> Result<u8, ()> {
+    match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'a'..=b'f' => Ok(byte - b'a' + 10),
+        b'A'..=b'F' => Ok(byte - b'A' + 10),
+        _ => Err(()),
+    }
 }
 
 /// Parse the hostname from an `https://` URL (case-insensitive). Returns None for non-HTTPS or malformed URLs.
@@ -896,6 +965,19 @@ mod tests {
     fn trusted_url_rejects_path_traversal() {
         assert!(!is_trusted_download_url(
             "https://dl.ci.computer/v0.2.18/../evil.exe"
+        ));
+    }
+
+    #[test]
+    fn trusted_url_rejects_percent_encoded_path_traversal() {
+        assert!(!is_trusted_download_url(
+            "https://dl.ci.computer/v0.2.18/%2e%2e/evil.exe"
+        ));
+        assert!(!is_trusted_download_url(
+            "https://dl.ci.computer/v0.2.18/%2E%2E/evil.exe"
+        ));
+        assert!(!is_trusted_download_url(
+            "https://dl.ci.computer/v0.2.18/%252e%252e/evil.exe"
         ));
     }
 

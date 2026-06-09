@@ -26,6 +26,12 @@ describe('update-service', () => {
     expect(isTrustedDownloadUrl('https://dl.ci.computer/v0.2.18/../evil.dmg')).toBe(false);
   });
 
+  it('rejects percent-encoded path traversal segments', () => {
+    expect(isTrustedDownloadUrl('https://dl.ci.computer/v0.2.18/%2e%2e/evil.dmg')).toBe(false);
+    expect(isTrustedDownloadUrl('https://dl.ci.computer/v0.2.18/%2E%2E/evil.dmg')).toBe(false);
+    expect(isTrustedDownloadUrl('https://dl.ci.computer/v0.2.18/%252e%252e/evil.dmg')).toBe(false);
+  });
+
   describe('isStackUpdateAvailable', () => {
     it('returns true when latest semver is greater than current', () => {
       expect(isStackUpdateAvailable('1.0.0', '1.1.0')).toBe(true);

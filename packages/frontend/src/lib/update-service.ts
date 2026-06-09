@@ -8,9 +8,38 @@ const TOAST_SHOWN_KEY = 'ci-hub-update-toast-shown';
 const ALLOWED_DOWNLOAD_HOST = 'dl.ci.computer';
 const HOST_UPDATE_URL = 'http://127.0.0.1:17400/update';
 
+function decodePathSegment(segment: string): string | null {
+  try {
+    let decoded = segment;
+    for (let i = 0; i < 3; i++) {
+      const next = decodeURIComponent(decoded.replace(/\+/g, ' '));
+      if (next === decoded) break;
+      decoded = next;
+    }
+    return decoded;
+  } catch {
+    return null;
+  }
+}
+
+/** Inspect raw path segments before URL normalization (which resolves %2e%2e → ..). */
+function pathHasParentTraversal(url: string): boolean {
+  const match = url.match(/^https?:\/\/[^/?#]+(\/[^?#]*)?/i);
+  if (!match?.[1]) return false;
+
+  return match[1]
+    .split('/')
+    .filter(Boolean)
+    .some((segment) => {
+      const decoded = decodePathSegment(segment);
+      if (decoded === null) return true;
+      return decoded.split('/').some((part) => part === '..');
+    });
+}
+
 export function isTrustedDownloadUrl(url: string): boolean {
   try {
-    if (url.includes('..')) return false;
+    if (pathHasParentTraversal(url)) return false;
     const parsed = new URL(url);
     return parsed.protocol === 'https:' && parsed.hostname === ALLOWED_DOWNLOAD_HOST;
   } catch {
