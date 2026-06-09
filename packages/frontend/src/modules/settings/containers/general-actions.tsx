@@ -8,10 +8,15 @@ import { UpdateRepoModal } from '../components/update-repo-modal/update-repo-mod
 import { useState, useEffect, useCallback } from 'react';
 import toast from 'react-hot-toast';
 import { checkForUpdates, isTauri, performStackUpdate, performUpdate, type UpdateInfo } from '@/lib/update-service';
+import semver from 'semver';
+
+function isStackUpdateAvailable(current: string, latest: string): boolean {
+  return semver.valid(current) && semver.valid(latest) && semver.gt(latest, current);
+}
 
 export const GeneralActionsContainer = () => {
   const { t } = useTranslation();
-  const { version } = useAppContext();
+  const { version, refreshAppContext } = useAppContext();
 
   const [updating, setUpdating] = useState(false);
   const [checking, setChecking] = useState(false);
@@ -34,12 +39,17 @@ export const GeneralActionsContainer = () => {
   }, []);
 
   const refreshUpdateState = useCallback(async () => {
+    if (!isTauri()) {
+      setDesktopUpdate(null);
+      return null;
+    }
     const info = await checkForUpdates(version.current);
     setDesktopUpdate(info?.updateAvailable ? info : null);
     return info;
   }, [version.current]);
 
   useEffect(() => {
+    if (!isTauri()) return;
     void refreshUpdateState();
   }, [refreshUpdateState]);
 
@@ -56,9 +66,22 @@ export const GeneralActionsContainer = () => {
     setChecking(true);
     setUpdateMessage(null);
     try {
-      const info = await refreshUpdateState();
-      if (info?.updateAvailable) {
-        toast.success(`Update available: ${info.latestVersion}`);
+      if (isTauri()) {
+        const info = await refreshUpdateState();
+        if (info?.updateAvailable) {
+          toast.success(`Update available: ${info.latestVersion}`);
+        } else {
+          toast.success('You are on the latest version.');
+        }
+        return;
+      }
+
+      const res = await apiFetch('/api/system/update/check', { credentials: 'include' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = (await res.json()) as { updateAvailable?: boolean; latest?: string };
+      await refreshAppContext();
+      if (data.updateAvailable) {
+        toast.success(`Update available: ${data.latest ?? version.latest}`);
       } else {
         toast.success('You are on the latest version.');
       }
@@ -67,24 +90,26 @@ export const GeneralActionsContainer = () => {
     } finally {
       setChecking(false);
     }
-  }, [refreshUpdateState]);
+  }, [refreshAppContext, refreshUpdateState, version.latest]);
 
   const handleUpdate = useCallback(async () => {
     setUpdating(true);
     setUpdateMessage(null);
     try {
-      const info = desktopUpdate ?? (await refreshUpdateState());
-      if (info?.updateAvailable) {
-        const result = await performUpdate(info);
-        if (result.ok) {
-          setUpdateMessage(result.message);
-          toast.success(result.message);
-        } else {
-          setUpdateMessage(result.message);
-          toast.error(result.message);
-          setUpdating(false);
+      if (isTauri()) {
+        const info = desktopUpdate ?? (await refreshUpdateState());
+        if (info?.updateAvailable) {
+          const result = await performUpdate(info);
+          if (result.ok) {
+            setUpdateMessage(result.message);
+            toast.success(result.message);
+          } else {
+            setUpdateMessage(result.message);
+            toast.error(result.message);
+            setUpdating(false);
+          }
+          return;
         }
-        return;
       }
 
       const stackResult = await performStackUpdate(version.latest);
@@ -118,7 +143,8 @@ export const GeneralActionsContainer = () => {
     setAutoUpdatesLoading(false);
   }, [autoUpdates]);
 
-  const updateAvailable = !!desktopUpdate?.updateAvailable;
+  const stackUpdateAvailable = !isTauri() && isStackUpdateAvailable(version.current, version.latest);
+  const updateAvailable = isTauri() ? !!desktopUpdate?.updateAvailable : stackUpdateAvailable;
   const displayVersion = desktopUpdate?.currentVersion ?? version.current;
   const latestVersion = desktopUpdate?.latestVersion ?? version.latest;
 
