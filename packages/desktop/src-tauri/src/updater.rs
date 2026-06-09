@@ -8,6 +8,8 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
+use sha2::{Digest, Sha256};
+
 use crate::hub_manager::{self, PersistedLaunchMode};
 
 const UPDATE_CHECK_URL: &str = "https://dl.ci.computer/latest.json";
@@ -70,15 +72,16 @@ struct LatestJson {
 }
 
 #[derive(Deserialize)]
-struct PlatformArtifact {
-    url: String,
-    size: u64,
-}
-
-#[derive(Deserialize)]
 struct ManifestJson {
     version: String,
     platforms: std::collections::HashMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedArtifact {
+    url: String,
+    size: Option<u64>,
+    sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -88,6 +91,10 @@ pub struct DesktopUpdateInfo {
     pub latest_version: String,
     pub download_url: String,
     pub update_available: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expected_size: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expected_sha256: Option<String>,
 }
 
 pub fn is_trusted_download_url(url: &str) -> bool {
@@ -167,40 +174,149 @@ fn linux_package_preference() -> &'static str {
     "appimage"
 }
 
-fn artifact_url(platform_data: &serde_json::Value) -> Option<String> {
-    let read_url = |key: &str| -> Option<String> {
+fn parse_artifact(value: &serde_json::Value) -> Option<ResolvedArtifact> {
+    let url = value.get("url")?.as_str()?.to_string();
+    if !is_trusted_download_url(&url) {
+        return None;
+    }
+    let size = value.get("size").and_then(|v| v.as_u64());
+    let sha256 = value
+        .get("sha256")
+        .and_then(|v| v.as_str())
+        .map(normalize_sha256);
+    Some(ResolvedArtifact {
+        url,
+        size,
+        sha256,
+    })
+}
+
+fn artifact_for_platform(platform_data: &serde_json::Value) -> Option<ResolvedArtifact> {
+    let read = |key: &str| -> Option<ResolvedArtifact> {
         platform_data
             .get(key)
-            .and_then(|v| v.get("url"))
-            .and_then(|u| u.as_str())
-            .map(str::to_string)
+            .and_then(parse_artifact)
     };
 
     if cfg!(target_os = "macos") {
-        return read_url("dmg");
+        return read("dmg");
     }
     if cfg!(target_os = "windows") {
-        return read_url("exe").or_else(|| read_url("msi"));
+        return read("exe").or_else(|| read("msi"));
     }
     if cfg!(target_os = "linux") {
-        match linux_package_preference() {
-            "deb" => return read_url("deb").or_else(|| read_url("appimage")),
-            "rpm" => return read_url("rpm").or_else(|| read_url("appimage")),
-            _ => return read_url("appimage").or_else(|| read_url("deb")).or_else(|| read_url("rpm")),
-        }
+        return match linux_package_preference() {
+            "deb" => read("deb").or_else(|| read("appimage")),
+            "rpm" => read("rpm").or_else(|| read("appimage")),
+            _ => read("appimage").or_else(|| read("deb")).or_else(|| read("rpm")),
+        };
     }
     None
 }
 
 pub fn resolve_download_url(manifest: &ManifestJson) -> Option<String> {
+    resolve_download_artifact(manifest).map(|artifact| artifact.url)
+}
+
+fn resolve_download_artifact(manifest: &ManifestJson) -> Option<ResolvedArtifact> {
     let key = platform_key()?;
     let platform_data = manifest.platforms.get(&key)?;
-    let url = artifact_url(platform_data)?;
-    if is_trusted_download_url(&url) {
-        Some(url)
-    } else {
-        None
+    artifact_for_platform(platform_data)
+}
+
+fn lookup_artifact_in_manifest(manifest: &ManifestJson, download_url: &str) -> Option<ResolvedArtifact> {
+    for platform_data in manifest.platforms.values() {
+        for key in ["dmg", "exe", "msi", "deb", "rpm", "appimage"] {
+            if let Some(artifact) = platform_data.get(key).and_then(parse_artifact) {
+                if artifact.url == download_url {
+                    return Some(artifact);
+                }
+            }
+        }
     }
+    None
+}
+
+pub(crate) fn artifact_expectations_for_url(
+    client: &reqwest::blocking::Client,
+    latest_version: &str,
+    info: &DesktopUpdateInfo,
+    download_url: &str,
+) -> Result<(Option<u64>, Option<String>), String> {
+    if download_url == info.download_url {
+        return Ok((info.expected_size, info.expected_sha256.clone()));
+    }
+    let manifest = fetch_manifest(client, latest_version)?;
+    let artifact = lookup_artifact_in_manifest(&manifest, download_url).ok_or_else(|| {
+        "Download URL not found in release manifest for this version".to_string()
+    })?;
+    Ok((artifact.size, artifact.sha256))
+}
+
+fn normalize_sha256(value: &str) -> String {
+    value
+        .trim()
+        .trim_start_matches("sha256:")
+        .to_ascii_lowercase()
+}
+
+fn sha256_hex_file(path: &Path) -> Result<String, String> {
+    use std::io::Read;
+    let mut file =
+        std::fs::File::open(path).map_err(|e| format!("Failed to open download for hashing: {}", e))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 8192];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|e| format!("Failed to read download for hashing: {}", e))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// Verify a downloaded installer against manifest expectations before execution.
+fn verify_downloaded_artifact(
+    path: &Path,
+    expected_size: Option<u64>,
+    expected_sha256: Option<&str>,
+) -> Result<(), String> {
+    let actual_size = std::fs::metadata(path)
+        .map_err(|e| format!("Failed to stat download: {}", e))?
+        .len();
+
+    if let Some(expected) = expected_size {
+        if actual_size != expected {
+            return Err(format!(
+                "Download size mismatch (expected {expected} bytes, got {actual_size})"
+            ));
+        }
+    }
+
+    if let Some(expected_sha) = expected_sha256 {
+        let expected = normalize_sha256(expected_sha);
+        if expected.len() != 64 || !expected.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err("Manifest SHA-256 checksum is invalid".to_string());
+        }
+        let actual = sha256_hex_file(path)?;
+        if actual != expected {
+            return Err("Download SHA-256 checksum mismatch — refusing to install".to_string());
+        }
+        return Ok(());
+    }
+
+    if expected_size.is_some() {
+        // Legacy manifests (pre-sha256) — hostname pinning + size check only.
+        return Ok(());
+    }
+
+    Err(
+        "Manifest missing SHA-256 checksum and size — refusing to install untrusted artifact"
+            .to_string(),
+    )
 }
 
 fn fetch_latest_version(client: &reqwest::blocking::Client) -> Result<String, String> {
@@ -219,6 +335,9 @@ fn fetch_latest_version(client: &reqwest::blocking::Client) -> Result<String, St
 
 fn fetch_manifest(client: &reqwest::blocking::Client, version: &str) -> Result<ManifestJson, String> {
     let url = manifest_url(version);
+    if !is_trusted_download_url(&url) {
+        return Err("Untrusted manifest URL".to_string());
+    }
     let response = client
         .get(&url)
         .send()
@@ -242,16 +361,18 @@ pub fn check_desktop_update(current_version: &str) -> Result<DesktopUpdateInfo, 
 
     let download_url = if update_available {
         let manifest = fetch_manifest(&client, &latest_version)?;
-        resolve_download_url(&manifest).unwrap_or_default()
+        resolve_download_artifact(&manifest)
     } else {
-        String::new()
+        None
     };
 
     Ok(DesktopUpdateInfo {
         current_version: current_version.to_string(),
         latest_version,
-        download_url,
+        download_url: download_url.as_ref().map(|a| a.url.clone()).unwrap_or_default(),
         update_available,
+        expected_size: download_url.as_ref().and_then(|a| a.size),
+        expected_sha256: download_url.and_then(|a| a.sha256),
     })
 }
 
@@ -550,12 +671,20 @@ fn relaunch_hub(mode: PersistedLaunchMode) -> Result<(), String> {
     Ok(())
 }
 
-pub fn perform_host_update(download_url: &str) -> Result<(), String> {
+pub fn perform_host_update(
+    download_url: &str,
+    expected_size: Option<u64>,
+    expected_sha256: Option<&str>,
+) -> Result<(), String> {
     let _guard = HostUpdateGuard::acquire()?;
-    perform_host_update_inner(download_url)
+    perform_host_update_inner(download_url, expected_size, expected_sha256)
 }
 
-fn perform_host_update_inner(download_url: &str) -> Result<(), String> {
+fn perform_host_update_inner(
+    download_url: &str,
+    expected_size: Option<u64>,
+    expected_sha256: Option<&str>,
+) -> Result<(), String> {
     if !is_trusted_download_url(download_url) {
         return Err("Untrusted download URL".to_string());
     }
@@ -583,6 +712,8 @@ fn perform_host_update_inner(download_url: &str) -> Result<(), String> {
     let dest = temp_dir.join(suffix);
 
     download_file(download_url, &dest)?;
+    set_progress("verify", "Verifying download integrity…");
+    verify_downloaded_artifact(&dest, expected_size, expected_sha256)?;
     install_artifact(&dest)?;
 
     set_progress("done", "Update installed — relaunching…");
@@ -607,7 +738,11 @@ pub fn run_update_cli(check_only: bool) -> Result<i32, String> {
         return Err("Update available but no download URL for this platform".to_string());
     }
     println!("Updating from {} to {}…", current, info.latest_version);
-    perform_host_update(&info.download_url)?;
+    perform_host_update(
+        &info.download_url,
+        info.expected_size,
+        info.expected_sha256.as_deref(),
+    )?;
     Ok(0)
 }
 
@@ -652,10 +787,16 @@ fn check_and_trigger_update_from_listener() -> Result<String, String> {
         return Err("no download url".to_string());
     }
     let download_url = info.download_url.clone();
+    let expected_size = info.expected_size;
+    let expected_sha256 = info.expected_sha256.clone();
     let guard = HostUpdateGuard::acquire()?;
     std::thread::spawn(move || {
         let _guard = guard;
-        if let Err(err) = perform_host_update_inner(&download_url) {
+        if let Err(err) = perform_host_update_inner(
+            &download_url,
+            expected_size,
+            expected_sha256.as_deref(),
+        ) {
             set_progress("error", &err);
         }
     });
@@ -764,6 +905,37 @@ mod tests {
         assert!(HostUpdateGuard::acquire().is_err());
         drop(first);
         assert!(HostUpdateGuard::acquire().is_ok());
+    }
+
+    #[test]
+    fn verify_download_accepts_matching_sha256() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let path = tempdir.path().join("installer.bin");
+        std::fs::write(&path, b"hello-update").expect("write");
+        let digest = sha256_hex_file(&path).expect("hash");
+        verify_downloaded_artifact(&path, Some(12), Some(&digest)).expect("verify");
+    }
+
+    #[test]
+    fn verify_download_rejects_sha256_mismatch() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let path = tempdir.path().join("installer.bin");
+        std::fs::write(&path, b"hello-update").expect("write");
+        let err = verify_downloaded_artifact(
+            &path,
+            Some(12),
+            Some("0000000000000000000000000000000000000000000000000000000000000000"),
+        )
+        .expect_err("mismatch");
+        assert!(err.contains("SHA-256"));
+    }
+
+    #[test]
+    fn verify_download_allows_legacy_size_only_manifests() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let path = tempdir.path().join("installer.bin");
+        std::fs::write(&path, b"legacy").expect("write");
+        verify_downloaded_artifact(&path, Some(6), None).expect("legacy verify");
     }
 
     #[test]

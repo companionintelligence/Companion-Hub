@@ -125,9 +125,33 @@ async fn check_desktop_update_command() -> Result<updater::DesktopUpdateInfo, St
 
 #[tauri::command]
 async fn perform_desktop_update_command(download_url: String) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || updater::perform_host_update(&download_url))
-        .await
-        .map_err(|e| format!("Update task failed: {}", e))?
+    tokio::task::spawn_blocking(move || {
+        let current = option_env!("CI_HUB_BUILD_VERSION")
+            .unwrap_or(env!("CARGO_PKG_VERSION"))
+            .trim_start_matches('v')
+            .to_string();
+        let info = updater::check_desktop_update(&current)?;
+        let url = if download_url.trim().is_empty() {
+            info.download_url.clone()
+        } else {
+            download_url
+        };
+        if url.is_empty() {
+            return Err("No download URL available for this platform".to_string());
+        }
+        if !updater::is_trusted_download_url(&url) {
+            return Err("Untrusted download URL".to_string());
+        }
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(|e| format!("HTTP client error: {}", e))?;
+        let (expected_size, expected_sha256) =
+            updater::artifact_expectations_for_url(&client, &info.latest_version, &info, &url)?;
+        updater::perform_host_update(&url, expected_size, expected_sha256.as_deref())
+    })
+    .await
+    .map_err(|e| format!("Update task failed: {}", e))?
 }
 
 #[tauri::command]
