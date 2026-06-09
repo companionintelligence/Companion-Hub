@@ -39,7 +39,7 @@ export const GeneralActionsContainer = () => {
       return null;
     }
     const info = await checkForUpdates(version.current);
-    setDesktopUpdate(info?.updateAvailable ? info : null);
+    setDesktopUpdate(info);
     return info;
   }, [version.current]);
 
