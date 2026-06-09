@@ -7,12 +7,7 @@ import { useTranslation } from 'react-i18next';
 import { UpdateRepoModal } from '../components/update-repo-modal/update-repo-modal';
 import { useState, useEffect, useCallback } from 'react';
 import toast from 'react-hot-toast';
-import { checkForUpdates, isTauri, performStackUpdate, performUpdate, type UpdateInfo } from '@/lib/update-service';
-import semver from 'semver';
-
-function isStackUpdateAvailable(current: string, latest: string): boolean {
-  return semver.valid(current) && semver.valid(latest) && semver.gt(latest, current);
-}
+import { checkForUpdates, isHubUpdateAvailable, isTauri, performStackUpdate, performUpdate, type UpdateInfo } from '@/lib/update-service';
 
 export const GeneralActionsContainer = () => {
   const { t } = useTranslation();
@@ -143,8 +138,7 @@ export const GeneralActionsContainer = () => {
     setAutoUpdatesLoading(false);
   }, [autoUpdates]);
 
-  const stackUpdateAvailable = !isTauri() && isStackUpdateAvailable(version.current, version.latest);
-  const updateAvailable = isTauri() ? !!desktopUpdate?.updateAvailable : stackUpdateAvailable;
+  const updateAvailable = isHubUpdateAvailable(isTauri(), desktopUpdate, version.current, version.latest);
   const displayVersion = desktopUpdate?.currentVersion ?? version.current;
   const latestVersion = desktopUpdate?.latestVersion ?? version.latest;
 

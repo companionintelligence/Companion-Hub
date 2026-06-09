@@ -136,6 +136,19 @@ export async function checkForUpdates(fallbackCurrentVersion?: string): Promise<
   }
 }
 
+export function isStackUpdateAvailable(current: string, latest: string): boolean {
+  if (!semver.valid(current) || !semver.valid(latest)) return false;
+  return semver.gt(latest, current);
+}
+
+/** Whether Settings should show an Update button (desktop manifest vs stack registry). */
+export function isHubUpdateAvailable(desktop: boolean, desktopUpdate: UpdateInfo | null, currentVersion: string, latestVersion: string): boolean {
+  if (desktop) {
+    return !!desktopUpdate?.updateAvailable;
+  }
+  return isStackUpdateAvailable(currentVersion, latestVersion);
+}
+
 export function dismissVersion(version: string): void {
   localStorage.setItem(DISMISSED_KEY, version);
 }
