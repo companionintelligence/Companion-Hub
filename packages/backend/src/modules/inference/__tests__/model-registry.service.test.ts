@@ -38,6 +38,18 @@ describe('ModelRegistryService', () => {
       expect(service.getRecommendedEmbeddingModel('insufficient')).toBeNull();
     });
 
+    it('returns null for vision recommendations on an insufficient tier', () => {
+      expect(service.getRecommendedVisionModel('insufficient')).toBeNull();
+    });
+
+    it('returns a vision-capable LLM for runnable tiers that have one', () => {
+      const vision = service.getRecommendedVisionModel('high');
+      expect(vision).not.toBeNull();
+      expect(vision?.modality).toBe('llm');
+      expect(vision?.metadata?.capabilities?.vision).toBe(true);
+      expect(service.getModelsForTier('high').some((model) => model.id === vision?.id)).toBe(true);
+    });
+
     it('S-MM-1.2: each model SHALL include minimum hardware requirements', () => {
       const catalog = service.getCatalog();
       for (const model of catalog) {
