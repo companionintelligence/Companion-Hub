@@ -120,8 +120,18 @@ fn path_has_parent_traversal(url: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn strip_ascii_case_prefix<'a>(input: &'a str, prefix: &str) -> Option<&'a str> {
+    let (candidate, rest) = input.split_at_checked(prefix.len())?;
+    if candidate.eq_ignore_ascii_case(prefix) {
+        Some(rest)
+    } else {
+        None
+    }
+}
+
 fn raw_path_segments(url: &str) -> Option<Vec<&str>> {
-    let rest = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://"))?;
+    let rest = strip_ascii_case_prefix(url, "https://")
+        .or_else(|| strip_ascii_case_prefix(url, "http://"))?;
     let path_start = rest.find('/')?;
     let path = rest[path_start..].split(['?', '#']).next()?;
     Some(path.split('/').filter(|segment| !segment.is_empty()).collect())
@@ -183,9 +193,10 @@ fn hex_digit(byte: u8) -> Result<u8, ()> {
     }
 }
 
-/// Parse the hostname from an `https://` URL (case-insensitive). Returns None for non-HTTPS or malformed URLs.
+/// Parse the hostname from an `https://` URL with an ASCII case-insensitive scheme match.
+/// Returns None for non-HTTPS or malformed URLs.
 fn https_hostname(url: &str) -> Option<String> {
-    let rest = url.strip_prefix("https://")?;
+    let rest = strip_ascii_case_prefix(url, "https://")?;
     let authority = rest.split(['/', '?', '#']).next()?;
     // Strip optional userinfo (`user:pass@`) — host is the segment after the last `@`.
     let host_port = authority.rsplit('@').next()?;
@@ -1082,6 +1093,13 @@ mod tests {
     }
 
     #[test]
+    fn trusted_url_accepts_uppercase_https_scheme() {
+        assert!(is_trusted_download_url(
+            "HTTPS://dl.ci.computer/v0.2.18/windows/x64/setup.exe"
+        ));
+    }
+
+    #[test]
     fn trusted_url_rejects_other_hosts() {
         assert!(!is_trusted_download_url("https://example.com/file.exe"));
     }
@@ -1109,6 +1127,9 @@ mod tests {
     fn trusted_url_rejects_path_traversal() {
         assert!(!is_trusted_download_url(
             "https://dl.ci.computer/v0.2.18/../evil.exe"
+        ));
+        assert!(!is_trusted_download_url(
+            "HTTPS://dl.ci.computer/v0.2.18/../evil.exe"
         ));
     }
 
