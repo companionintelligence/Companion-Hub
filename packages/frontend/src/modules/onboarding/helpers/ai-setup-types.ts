@@ -25,6 +25,10 @@ export interface AiSetupConfig {
    * the hardware can't run a local model.
    */
   preferredModelId?: string;
+  /** Catalog id of the default embedding model to use when one is selected/installed. */
+  preferredEmbeddingModelId?: string;
+  /** Catalog id of the default vision-capable model to use when one is selected/installed. */
+  preferredVisionModelId?: string;
   /**
    * Remote-access transports the user enabled for their Companion agents (Hermes, OpenClaw) and Hub
    * services — any of 'tailscale' (private VPN) and/or 'cloudflare' (public web URL). Empty means
@@ -56,6 +60,8 @@ export interface CloudProviderInput {
 export interface InferencePreferencesResponse {
   preferredBackend: InferenceBackendType | null;
   preferredModel: string | null;
+  preferredEmbeddingModel: string | null;
+  preferredVisionModel: string | null;
 }
 
 export interface RuntimeModelInfo {

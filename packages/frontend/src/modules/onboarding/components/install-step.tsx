@@ -85,21 +85,6 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
 
       // ─── AI Setup Phase ───────────────────────────────────────────────
       if (aiSetupConfig && !aiSetupConfig.skipped) {
-        // Persist selected backend preference for future settings loads.
-        try {
-          const preferenceRes = await apiFetch('/api/inference/preferences', {
-            method: 'PATCH',
-            credentials: 'include',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ backend: aiSetupConfig.backend, model: aiSetupConfig.preferredModelId ?? null }),
-          });
-          if (!preferenceRes.ok) {
-            setAiPhase((prev) => ({ ...prev, error: `Failed to save preferred backend: HTTP ${preferenceRes.status}` }));
-          }
-        } catch {
-          // Non-fatal — do not block onboarding install progress
-        }
-
         // Configure cloud providers
         if (aiSetupConfig.cloudProviders.length > 0) {
           setAiPhase((prev) => ({ ...prev, status: 'configuring-cloud' }));
@@ -122,6 +107,7 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
         }
 
         const installedSet = new Set(aiSetupConfig.installedCatalogIds ?? []);
+        const availablePreferenceModelIds = new Set(aiSetupConfig.installedCatalogIds ?? []);
         const modelsToPull = aiSetupConfig.selectedModels.filter((id) => !installedSet.has(id));
 
         if (aiSetupConfig.selectedModels.length > 0) {
@@ -161,6 +147,8 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
                 if (!res.ok || data.skipped || data.success === false) {
                   modelErrors[modelId] = data.message ?? `Failed to pull model ${modelId}: HTTP ${res.status}`;
                   setAiPhase((prev) => ({ ...prev, modelErrors: { ...modelErrors } }));
+                } else {
+                  availablePreferenceModelIds.add(modelId);
                 }
               } catch {
                 modelErrors[modelId] = `Failed to pull model ${modelId}.`;
@@ -255,6 +243,30 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
               // Non-fatal
             }
           }
+        }
+
+        const resolvedModelPreference = aiSetupConfig.preferredModelId;
+        const resolvedEmbeddingPreference = aiSetupConfig.preferredEmbeddingModelId;
+        const resolvedVisionPreference = aiSetupConfig.preferredVisionModelId;
+
+        try {
+          const preferenceRes = await apiFetch('/api/inference/preferences', {
+            method: 'PATCH',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              backend: aiSetupConfig.backend,
+              model: resolvedModelPreference && availablePreferenceModelIds.has(resolvedModelPreference) ? resolvedModelPreference : null,
+              embeddingModel:
+                resolvedEmbeddingPreference && availablePreferenceModelIds.has(resolvedEmbeddingPreference) ? resolvedEmbeddingPreference : null,
+              visionModel: resolvedVisionPreference && availablePreferenceModelIds.has(resolvedVisionPreference) ? resolvedVisionPreference : null,
+            }),
+          });
+          if (!preferenceRes.ok) {
+            setAiPhase((prev) => ({ ...prev, error: `Failed to save AI defaults: HTTP ${preferenceRes.status}` }));
+          }
+        } catch {
+          // Non-fatal — do not block onboarding install progress
         }
 
         setAiPhase((prev) => ({ ...prev, status: 'done', modelsDone: true }));
