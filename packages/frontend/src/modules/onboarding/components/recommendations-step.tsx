@@ -248,7 +248,7 @@ export const RecommendationsStep = ({
               {t('ONBOARDING_SKIP_TO_INSTALL')}
             </Button>
             <Button intent="primary" onClick={handleContinue} disabled={selected.size === 0}>
-              {t('ONBOARDING_CONTINUE_WITH_APPS', { count: selected.size, suffix: selected.size === 1 ? '' : 's' })}
+              {t('ONBOARDING_CONTINUE_WITH_APPS', { count: selected.size })}
             </Button>
           </div>
         </WizardNav>
@@ -265,10 +265,7 @@ export const RecommendationsStep = ({
         title={t('ONBOARDING_RECOMMENDED_APPS')}
         description={
           detectedServices.length > 0
-            ? t('ONBOARDING_RECOMMENDED_APPS_FOUND_SERVICES_DESC', {
-                count: detectedServices.length,
-                suffix: detectedServices.length > 1 ? 's' : '',
-              })
+            ? t('ONBOARDING_RECOMMENDED_APPS_FOUND_SERVICES_DESC', { count: detectedServices.length })
             : t('ONBOARDING_RECOMMENDED_APPS_DESC')
         }
       />

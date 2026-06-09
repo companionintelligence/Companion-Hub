@@ -1,7 +1,7 @@
 import clsx from 'clsx';
 import { Check } from 'lucide-react';
 import type React from 'react';
-import i18next from 'i18next';
+import { useTranslation } from 'react-i18next';
 
 export const THEME_COLOR_ENUM = {
   blue: 'blue',
@@ -42,13 +42,10 @@ interface ColorSelectorProps {
   onChange?: (value: ThemeColor) => void;
 }
 
-export const ColorSelector: React.FC<ColorSelectorProps> = ({
-  name = 'color',
-  label = i18next.t('COMMON_PRIMARY_COLOR'),
-  className,
-  value,
-  onChange,
-}) => {
+export const ColorSelector: React.FC<ColorSelectorProps> = ({ name = 'color', label, className, value, onChange }) => {
+  const { t } = useTranslation();
+  const resolvedLabel = label ?? t('COMMON_PRIMARY_COLOR');
+
   const handleChange = (color: ThemeColor) => {
     document.body.dataset.bsThemePrimary = color;
     onChange?.(color);
@@ -57,7 +54,7 @@ export const ColorSelector: React.FC<ColorSelectorProps> = ({
   return (
     <div className={clsx(className)} id={`${name}-group`}>
       <label className="block text-sm font-medium text-foreground mb-2" htmlFor={`${name}-group`}>
-        {label}
+        {resolvedLabel}
       </label>
       <div className="flex flex-wrap gap-2">
         {Object.values(THEME_COLOR_ENUM).map((color) => (

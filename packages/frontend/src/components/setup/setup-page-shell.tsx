@@ -1,7 +1,7 @@
 import { getLogo } from '@/lib/theme/theme';
 import { cn } from '@/lib/utils';
-import i18next from 'i18next';
 import type { ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
 
 interface SetupPageShellProps {
   children: ReactNode;
@@ -14,7 +14,8 @@ interface SetupPageShellProps {
 }
 
 export function SetupPageShell({ children, steps, title, showLogo = true, className, contentClassName }: SetupPageShellProps) {
-  const resolvedTitle = title ?? i18next.t('COMMON_SET_UP_YOUR_HUB');
+  const { t } = useTranslation();
+  const resolvedTitle = title ?? t('COMMON_SET_UP_YOUR_HUB');
 
   return (
     <div
@@ -38,7 +39,7 @@ export function SetupPageShell({ children, steps, title, showLogo = true, classN
           </div>
         )}
 
-        {steps && <nav aria-label={i18next.t('SETUP_PROGRESS')}>{steps}</nav>}
+        {steps && <nav aria-label={t('SETUP_PROGRESS')}>{steps}</nav>}
 
         {children}
       </div>
