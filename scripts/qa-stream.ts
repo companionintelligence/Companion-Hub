@@ -538,7 +538,7 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
       mkdirSync(scratchBase, { recursive: true });
       scratchDirs.push(scratchBase);
       composeYml = join(scratchBase, 'docker-compose.gen.yml');
-      const up = composeUp(appId, services, scratchBase, composeYml);
+      const up = await composeUp(appId, services, scratchBase, composeYml);
       composeProject = up.project;
       result.pullMs = Date.now() - startT0;
       if (!up.ok) {
@@ -1078,12 +1078,12 @@ function seedSourceFor(appId: string, hostPath?: string): string | null {
  * ${VAR} substitution, publishing the main service on a Docker-assigned host port.
  * Returns the host port for the HTTP check and the main container name for `docker stats`.
  */
-function composeUp(
+async function composeUp(
   appId: string,
   services: DockerService[],
   scratchBase: string,
   ymlPath: string,
-): { ok: boolean; hostPort: number; statsName: string; project: string; err: string } {
+): Promise<{ ok: boolean; hostPort: number; statsName: string; project: string; err: string }> {
   const project = `qa-${appId}`.toLowerCase().replace(/[^a-z0-9-]/g, '-');
   // Start from a clean scratch tree (scoped to THIS app's scratchBase). Postgres only applies
   // POSTGRES_PASSWORD on first init of an EMPTY data dir, but valueForVar mints a fresh
@@ -1230,13 +1230,18 @@ function composeUp(
     if (s === main) y += `    ports:\n      - "0:${mainPort}"\n`;
   }
   writeFileSync(ymlPath, y);
-  const up = execQuiet(`docker compose -p ${project} -f ${ymlPath} up -d --quiet-pull`, 900_000);
+  // NON-BLOCKING `compose up` (execAsync, not execSync): the pull+create can take many minutes for a
+  // heavy multi-service stack, and a blocking execSync freezes the single Node thread — under concurrency
+  // that serializes co-scheduled apps AND stalls the readiness/watchdog timers, surfacing as a spurious
+  // `spawnSync /bin/sh ETIMEDOUT` (notesnook's 7-service stack, hermes-agent, n8n). The per-app watchdog
+  // stays the real backstop for a genuinely-stuck stack (force-fails to `timeout`, not `error`).
+  const up = await execAsync(`docker compose -p ${project} -f ${ymlPath} up -d --quiet-pull`, 1_200_000);
   if (!up.ok) return { ok: false, hostPort: 0, statsName: '', project, err: up.err.slice(-200) };
   // docker compose port may fail if service exited before port was bound — retry briefly
-  let portMap = execQuiet(`docker compose -p ${project} -f ${ymlPath} port ${main?.name} ${mainPort}`);
+  let portMap = await execAsync(`docker compose -p ${project} -f ${ymlPath} port ${main?.name} ${mainPort}`);
   if (!portMap.ok) {
-    execQuiet('sleep 3');
-    portMap = execQuiet(`docker compose -p ${project} -f ${ymlPath} port ${main?.name} ${mainPort}`);
+    await new Promise((r) => setTimeout(r, 3000));
+    portMap = await execAsync(`docker compose -p ${project} -f ${ymlPath} port ${main?.name} ${mainPort}`);
   }
   const hostPort = portMap.ok ? Number(portMap.out.split('\n')[0]?.trim().split(':').pop()) : 0;
   return { ok: hostPort > 0, hostPort, statsName: `${project}-${main?.name}-1`, project, err: hostPort > 0 ? '' : 'no host port mapping' };
