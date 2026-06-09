@@ -666,10 +666,8 @@ fn main() {
     }
 
     if args.iter().any(|a| a == "--update-listener") {
-        updater::spawn_update_listener();
-        loop {
-            std::thread::sleep(std::time::Duration::from_secs(3600));
-        }
+        updater::run_update_listener();
+        return;
     }
 
     if launch_mode_from_args(&args) == LaunchMode::Detached {

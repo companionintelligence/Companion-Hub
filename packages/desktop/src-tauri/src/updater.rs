@@ -1,7 +1,7 @@
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
@@ -967,41 +967,51 @@ fn check_and_trigger_update_from_listener() -> Result<String, String> {
     Ok("update started".to_string())
 }
 
-pub fn spawn_update_listener() {
-    std::thread::spawn(|| {
-        if ensure_update_listener_token().is_err() {
-            return;
-        }
-        let listener = match TcpListener::bind(UPDATE_LISTENER_ADDR) {
-            Ok(l) => l,
-            Err(_) => return,
-        };
-        for stream in listener.incoming().flatten() {
-            handle_update_http_request(stream);
-        }
-    });
-}
-
-#[cfg(unix)]
-pub fn spawn_update_listener_daemon() {
-    unsafe {
-        let pid = libc::fork();
-        if pid == -1 {
-            return;
-        }
-        if pid == 0 {
-            libc::setsid();
-            spawn_update_listener();
-            loop {
-                std::thread::sleep(Duration::from_secs(3600));
-            }
-        }
+pub fn run_update_listener() {
+    if ensure_update_listener_token().is_err() {
+        return;
+    }
+    let listener = match TcpListener::bind(UPDATE_LISTENER_ADDR) {
+        Ok(l) => l,
+        Err(_) => return,
+    };
+    for stream in listener.incoming().flatten() {
+        handle_update_http_request(stream);
     }
 }
 
-#[cfg(not(unix))]
 pub fn spawn_update_listener_daemon() {
-    spawn_update_listener();
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(_) => return,
+    };
+
+    let mut cmd = Command::new(exe);
+    cmd.arg("--update-listener")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
+        const DETACHED_PROCESS: u32 = 0x00000008;
+        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
+    }
+
+    let _ = cmd.spawn();
 }
 
 pub fn trigger_host_update_via_listener() -> Result<String, String> {
