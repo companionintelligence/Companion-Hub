@@ -1,0 +1,125 @@
+import { Injectable } from '@nestjs/common';
+import { LoggerService } from '@/core/logger/logger.service';
+import { ConfigurationService } from '@/core/config/configuration.service';
+import { ModelRegistryService } from './model-registry.service';
+import { HardwareInspectorService } from './hardware-inspector.service';
+import { OllamaBackend } from './backends/ollama.backend';
+import { CloudFallbackService } from './cloud-fallback.service';
+
+/**
+ * Standardized AI environment variables injected into every app's `app.env`.
+ *
+ * These follow a `CI_` prefix convention so apps can discover inference
+ * capabilities uniformly — regardless of whether the Hub is using a local
+ * Ollama instance or a cloud provider.
+ *
+ * Apps that don't need AI simply ignore these variables.
+ */
+export interface StandardizedAiEnv {
+  /** OpenAI-compatible base URL (Ollama `/v1` or cloud provider). */
+  CI_LLM_BASE_URL: string;
+  /** API key for the base URL. `"ollama"` for local Ollama. */
+  CI_LLM_API_KEY: string;
+  /** Default chat/general LLM backend model ID, if available. */
+  CI_CHAT_MODEL?: string;
+  /** Default embedding model backend ID, if available. */
+  CI_EMBEDDING_MODEL?: string;
+  /** Default vision-capable LLM backend model ID, if available. */
+  CI_VISION_MODEL?: string;
+  /** Native Ollama URL (not OpenAI-compatible — for direct Ollama API calls). */
+  OLLAMA_HOST: string;
+}
+
+/**
+ * Resolves the standardized `CI_*` AI environment variables that the Hub
+ * injects into every installed app's `app.env` via `generateEnvFile`.
+ *
+ * Resolution order per variable:
+ *   1. Hub-wide user preference (settings.json)
+ *   2. Hardware-aware recommendation from the model registry
+ *   3. Omitted (app must handle the variable being absent gracefully)
+ */
+@Injectable()
+export class InferenceEnvResolver {
+  constructor(
+    private readonly logger: LoggerService,
+    private readonly config: ConfigurationService,
+    private readonly modelRegistry: ModelRegistryService,
+    private readonly hardwareInspector: HardwareInspectorService,
+    private readonly ollamaBackend: OllamaBackend,
+    private readonly cloudFallback: CloudFallbackService,
+  ) {}
+
+  async resolve(): Promise<StandardizedAiEnv> {
+    const ollamaBaseUrl = this.ollamaBackend.getBaseUrl();
+    const preferences = this.config.getInferencePreferences();
+    const profile = await this.hardwareInspector.getProfile();
+
+    // ── Base URL + API key ────────────────────────────────────────────────
+    const cloudProvider = this.cloudFallback.getEnabledProviders()[0];
+    let baseUrl = `${ollamaBaseUrl}/v1`;
+    let apiKey = 'ollama';
+
+    if (cloudProvider) {
+      baseUrl = cloudProvider.baseUrl || baseUrl;
+      apiKey = cloudProvider.apiKey || apiKey;
+    }
+
+    // ── Chat model ────────────────────────────────────────────────────────
+    let chatModel: string | undefined;
+    if (cloudProvider?.defaultModel) {
+      chatModel = cloudProvider.defaultModel;
+    } else {
+      const preferredId = preferences.preferredModel;
+      if (preferredId) {
+        const curated = this.modelRegistry.getCuratedModel(preferredId);
+        chatModel = curated?.backendModelId;
+      }
+      if (!chatModel) {
+        const recommended = this.modelRegistry.getRecommendedModelsForHardware(profile.tier, profile);
+        const llm = recommended.find((m) => m.modality === 'llm');
+        chatModel = llm?.backendModelId;
+      }
+    }
+
+    // ── Embedding model ───────────────────────────────────────────────────
+    let embeddingModel: string | undefined;
+    if (preferences.preferredEmbeddingModel) {
+      const curated = this.modelRegistry.getCuratedModel(preferences.preferredEmbeddingModel);
+      embeddingModel = curated?.backendModelId;
+    }
+    if (!embeddingModel) {
+      const recommended = this.modelRegistry.getRecommendedEmbeddingModel(profile.tier);
+      embeddingModel = recommended?.backendModelId;
+    }
+
+    // ── Vision model ──────────────────────────────────────────────────────
+    let visionModel: string | undefined;
+    if (preferences.preferredVisionModel) {
+      const curated = this.modelRegistry.getCuratedModel(preferences.preferredVisionModel);
+      if (curated?.metadata?.capabilities?.vision) {
+        visionModel = curated.backendModelId;
+      }
+    }
+    if (!visionModel) {
+      const recommended = this.modelRegistry.getRecommendedVisionModel(profile.tier);
+      visionModel = recommended?.backendModelId;
+    }
+
+    const env: StandardizedAiEnv = {
+      CI_LLM_BASE_URL: baseUrl,
+      CI_LLM_API_KEY: apiKey,
+      OLLAMA_HOST: ollamaBaseUrl,
+    };
+    if (chatModel) env.CI_CHAT_MODEL = chatModel;
+    if (embeddingModel) env.CI_EMBEDDING_MODEL = embeddingModel;
+    if (visionModel) env.CI_VISION_MODEL = visionModel;
+
+    this.logger.info(
+      `[InferenceEnvResolver] chat=${chatModel ?? 'none'} embedding=${embeddingModel ?? 'none'} ` +
+        `vision=${visionModel ?? 'none'} baseUrl=${baseUrl}`,
+    );
+
+    return env;
+  }
+}
