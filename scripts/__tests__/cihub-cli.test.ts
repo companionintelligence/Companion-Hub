@@ -20,6 +20,7 @@ import {
   STEP_ICONS,
   renderVersion,
   renderWizardWelcome,
+  firstPathFromLookupOutput,
   resolveEnvFromArgs,
   resolveWizardActionInput,
   resolveWizardEnvInput,
@@ -100,6 +101,12 @@ describe('renderHelp', () => {
     expect(plain).toContain('cihub status');
   });
 
+  it('documents cihub update as the host update command', () => {
+    const plain = stripAnsi(renderHelp());
+    expect(plain).toContain('cihub update [--check]');
+    expect(plain).not.toContain('companion-hub update');
+  });
+
   it('shows packaged install instructions', () => {
     const plain = stripAnsi(renderHelp());
     expect(plain).toContain('npm install -g ci-hub');
@@ -140,6 +147,22 @@ describe('renderStep', () => {
 });
 
 // ??? version ?????????????????????????????????????????????????????????????????
+
+describe('firstPathFromLookupOutput', () => {
+  it('returns the first non-empty line from where/which output', () => {
+    expect(firstPathFromLookupOutput('C:\\Program Files\\Companion Hub\\companion-hub.exe\r\n')).toBe(
+      'C:\\Program Files\\Companion Hub\\companion-hub.exe',
+    );
+  });
+
+  it('ignores trailing blank lines', () => {
+    expect(firstPathFromLookupOutput('/usr/local/bin/companion-hub\n\n')).toBe('/usr/local/bin/companion-hub');
+  });
+
+  it('returns undefined for empty output', () => {
+    expect(firstPathFromLookupOutput('   \n')).toBeUndefined();
+  });
+});
 
 describe('renderVersion', () => {
   it('includes the cihub command name', () => {

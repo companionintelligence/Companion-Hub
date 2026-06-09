@@ -69,6 +69,7 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
       { command: `${BASE_COMMAND} shutdown [env]`, description: 'Stop the hub stack' },
       { command: `${BASE_COMMAND} status [env]`, description: 'Containers, Cloudflare tunnel, Tailscale VPN, and models' },
       { command: `${BASE_COMMAND} config [env]`, description: 'Show resolved configuration values' },
+      { command: `${BASE_COMMAND} update [--check]`, description: 'Check for or install desktop + stack update (requires Companion Hub)' },
     ],
   },
   {
@@ -1278,6 +1279,50 @@ function usageAndExit(message?: string, code = 2): never {
   process.exit(code);
 }
 
+// ─── Host update (delegates to companion-hub binary) ─────────────────────────
+
+/** First non-empty line from `where`/`which` stdout (Windows `where` may return multiple paths). */
+export function firstPathFromLookupOutput(output: string): string | undefined {
+  const line = output
+    .trim()
+    .split(/\r?\n/)
+    .map((entry) => entry.trim())
+    .find(Boolean);
+  return line || undefined;
+}
+
+function resolveExecutableOnPath(name: string): string | undefined {
+  const isWindows = process.platform === 'win32';
+  const result = isWindows ? spawnSync('where', [name], { encoding: 'utf8', shell: true }) : spawnSync('which', [name], { encoding: 'utf8' });
+  if (result.status !== 0) {
+    return undefined;
+  }
+  return firstPathFromLookupOutput(result.stdout);
+}
+
+export function resolveCompanionHubBinary(): string {
+  const candidates = ['companion-hub', 'Companion Hub'];
+  for (const name of candidates) {
+    const resolved = resolveExecutableOnPath(name);
+    if (resolved) {
+      return resolved;
+    }
+  }
+  return 'companion-hub';
+}
+
+export function runHostUpdate(args: string[]) {
+  const checkOnly = args.includes('--check');
+  const binary = resolveCompanionHubBinary();
+  const cliArgs = checkOnly ? ['update', '--check'] : ['update'];
+  const result = spawnSync(binary, cliArgs, { stdio: 'inherit' });
+  if (result.error) {
+    console.error(`${red('Error')}: Could not run ${binary}. Install Companion Hub desktop or run from the app Settings.`);
+    process.exit(1);
+  }
+  process.exit(result.status ?? 1);
+}
+
 // ─── CLI dispatcher ───────────────────────────────────────────────────────────
 
 export async function runCli(rawArgs: string[]) {
@@ -1380,6 +1425,11 @@ export async function runCli(rawArgs: string[]) {
 
   if (first === 'public-web') {
     await runPublicWebCommand(args.slice(1));
+    return;
+  }
+
+  if (first === 'update') {
+    runHostUpdate(args.slice(1));
     return;
   }
 

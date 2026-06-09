@@ -1,6 +1,5 @@
 import { Titlebar } from './components/titlebar/titlebar';
 import { HubStatus } from './components/hub-status/hub-status';
-import { UpdateBanner } from './components/update-banner/update-banner';
 import { useUpdateChecker } from './hooks/use-update-checker';
 import { useEffect, useRef, useState } from 'react';
 import { Toaster } from 'react-hot-toast';
@@ -171,7 +170,7 @@ export async function clientLoader({ request }: Route.ActionArgs) {
 }
 
 export function Layout({ children }: { children: React.ReactNode }) {
-  const { update, dismiss } = useUpdateChecker();
+  useUpdateChecker();
   const [apiReady, setApiReady] = useState(() => !isTauriRelease);
   const [documentTitle, setDocumentTitle] = useState(() => (i18next.isInitialized ? i18next.t('APP_NAME') : 'Companion Hub'));
   const [documentLang, setDocumentLang] = useState(() => i18next.resolvedLanguage || i18next.language || 'en');
@@ -304,7 +303,6 @@ export function Layout({ children }: { children: React.ReactNode }) {
           <ThemeProvider defaultTheme="dark">
             <I18nProvider>
               <Titlebar />
-              {update && <UpdateBanner update={update} onDismiss={dismiss} />}
               <HubStatus>
                 <main id="root">
                   {children}

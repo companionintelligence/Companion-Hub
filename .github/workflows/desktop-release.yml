@@ -535,6 +535,9 @@ jobs:
               const file = files.find(f => f.endsWith(ext));
               if (file) {
                 const stat = fs.statSync(path.join(dir, file));
+                const filePath = path.join(dir, file);
+                const fileBuffer = fs.readFileSync(filePath);
+                const sha256 = require('crypto').createHash('sha256').update(fileBuffer).digest('hex');
                 const encodedFile = encodeURIComponent(file);
                 let r2Path;
                 if (platform === 'windows-aarch64') r2Path = 'windows/arm64';
@@ -546,6 +549,7 @@ jobs:
                 platformData[fmt] = {
                   url: 'https://dl.ci.computer/$VERSION/' + r2Path + '/' + encodedFile,
                   size: stat.size,
+                  sha256,
                 };
               }
             }

@@ -59,17 +59,10 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost http: https: ws: wss:; img-src 'self' data: blob: http: https:; font-src 'self' data:"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:17400 http: https: ws: wss:; img-src 'self' data: blob: http: https:; font-src 'self' data:"
     }
   },
   "plugins": {
-    "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDA5RTdCMUMyN0IzNTI1QTUKUldTbEpUVjd3ckhuQ2JvTERXYXNBdWFpM0xZdHhCZ2NaM21xOXQ0QzgvRkZQQ3hsTmdLdWJsVVkK",
-      "endpoints": [
-        "https://github.com/companionintelligence/CI-Hub/releases/latest/download/latest.json",
-        "https://github.com/companionintelligence/CI-Hub/releases/download/nightly/latest.json"
-      ]
-    },
     "deep-link": {
       "mobile": [],
       "desktop": {

@@ -6,6 +6,7 @@ mod error_reporting;
 pub mod hub_manager;
 pub mod port_manager;
 mod tray;
+mod updater;
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -111,6 +112,60 @@ fn consume_pending_pairing_code(state: tauri::State<'_, PendingPairingCode>) -> 
     state.0.lock().ok()?.take()
 }
 
+#[tauri::command]
+async fn check_desktop_update_command() -> Result<updater::DesktopUpdateInfo, String> {
+    let current = option_env!("CI_HUB_BUILD_VERSION")
+        .unwrap_or(env!("CARGO_PKG_VERSION"))
+        .trim_start_matches('v')
+        .to_string();
+    tokio::task::spawn_blocking(move || updater::check_desktop_update(&current))
+        .await
+        .map_err(|e| format!("Update check task failed: {}", e))?
+}
+
+#[tauri::command]
+async fn perform_desktop_update_command(download_url: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let current = option_env!("CI_HUB_BUILD_VERSION")
+            .unwrap_or(env!("CARGO_PKG_VERSION"))
+            .trim_start_matches('v')
+            .to_string();
+        let info = updater::check_desktop_update(&current)?;
+        let url = if download_url.trim().is_empty() {
+            info.download_url.clone()
+        } else {
+            download_url
+        };
+        if url.is_empty() {
+            return Err("No download URL available for this platform".to_string());
+        }
+        if !updater::is_trusted_download_url(&url) {
+            return Err("Untrusted download URL".to_string());
+        }
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(|e| format!("HTTP client error: {}", e))?;
+        let (expected_size, expected_sha256) =
+            updater::artifact_expectations_for_url(&client, &info.latest_version, &info, &url)?;
+        updater::perform_host_update(&url, expected_size, expected_sha256.as_deref())
+    })
+    .await
+    .map_err(|e| format!("Update task failed: {}", e))?
+}
+
+#[tauri::command]
+async fn get_update_progress_command() -> Option<updater::UpdateProgress> {
+    updater::get_update_progress()
+}
+
+#[tauri::command]
+async fn trigger_host_update_command() -> Result<String, String> {
+    tokio::task::spawn_blocking(updater::trigger_host_update_via_listener)
+        .await
+        .map_err(|e| format!("Update trigger failed: {}", e))?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
@@ -139,6 +194,10 @@ pub fn run() {
             is_user_stopped_command,
             install_docker_command,
             consume_pending_pairing_code,
+            check_desktop_update_command,
+            perform_desktop_update_command,
+            get_update_progress_command,
+            trigger_host_update_command,
         ])
         .setup(|app| {
             // Restore saved window geometry
@@ -213,6 +272,10 @@ pub fn run() {
                 error
             })?;
             let data_dir = initialization.data_dir.clone();
+            hub_manager::persist_launch_mode(
+                &data_dir,
+                hub_manager::PersistedLaunchMode::Desktop,
+            );
             let compose_path = initialization.compose_path.clone();
             let env_path = initialization.env_path.clone();
             error_reporting::init_from_env(
@@ -244,7 +307,8 @@ pub fn run() {
             // state and needs a recreate. Respects user intent as much as possible
             // while still healing poisoned bind mounts on upgrade/relaunch.
             if hub_manager::is_docker_available() {
-                let config_hash = compute_config_hash(&compose_path, &env_path);
+                let config_hash =
+                    hub_manager::compute_config_hash(&compose_path, &env_path);
                 let hash_path = data_dir.join(".config-hash");
                 let saved_hash = std::fs::read_to_string(&hash_path).ok();
                 let containers_exist = hub_manager::hub_containers_exist();
@@ -309,8 +373,6 @@ pub fn run() {
                     let compose = compose_path;
                     let env = env_path;
                     let data = data_dir;
-                    let hash = config_hash;
-                    let hp = hash_path;
                     let data_for_log = data.clone();
                     tauri::async_runtime::spawn(async move {
                         let result = tokio::task::spawn_blocking(move || {
@@ -344,16 +406,6 @@ pub fn run() {
                                     &msg,
                                 );
                             }
-                        }
-                        // Save hash regardless of compose exit status — partial starts
-                        // (e.g. Traefik port conflict) are still a valid state. Without
-                        // this, every relaunch re-runs compose because the hash is never saved.
-                        if let Err(error) = std::fs::write(&hp, &hash) {
-                            let _ = hub_manager::append_desktop_log_for(
-                                &data_for_log,
-                                "setup",
-                                &format!("Failed to persist configuration hash: {}", error),
-                            );
                         }
                     });
                 }
@@ -395,15 +447,10 @@ pub fn run() {
             Ok(())
         });
 
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
-
     builder
         .run(tauri::generate_context!())
         .expect("error while running Companion Hub Desktop");
 }
-
-use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LaunchMode {
@@ -435,6 +482,10 @@ fn run_detached_mode() -> Result<String, String> {
         error
     })?;
     let data_dir = initialization.data_dir.clone();
+    hub_manager::persist_launch_mode(
+        &data_dir,
+        hub_manager::PersistedLaunchMode::Detached,
+    );
     let compose_path = initialization.compose_path.clone();
     let env_path = initialization.env_path.clone();
     // Headless mode skips run(), so initialize crash reporting here too —
@@ -443,8 +494,6 @@ fn run_detached_mode() -> Result<String, String> {
         &env_path,
         option_env!("CI_HUB_BUILD_VERSION").unwrap_or("0.0.0"),
     );
-    let hash_path = data_dir.join(".config-hash");
-    let config_hash = compute_config_hash(&compose_path, &env_path);
 
     let _ = hub_manager::append_desktop_log_for(
         &data_dir,
@@ -471,17 +520,8 @@ fn run_detached_mode() -> Result<String, String> {
         error_reporting::capture_setup_failure(&error);
         error
     })?;
-    if let Err(error) = std::fs::write(&hash_path, &config_hash) {
-        let _ = hub_manager::append_desktop_log_for(
-            &data_dir,
-            "headless.start",
-            &format!(
-                "Hub started, but failed to persist configuration hash at {}: {}",
-                hash_path.display(),
-                error
-            ),
-        );
-    }
+
+    updater::spawn_update_listener_daemon();
 
     Ok(format!("{message} (detached headless mode)"))
 }
@@ -611,21 +651,25 @@ mod tests {
     }
 }
 
-/// Compute a SHA256 hash of the .env and compose file contents.
-/// Used for hash-based reconciliation — only restart containers when config changes.
-fn compute_config_hash(compose_path: &std::path::Path, env_path: &std::path::Path) -> String {
-    let mut hasher = Sha256::new();
-    if let Ok(content) = std::fs::read(compose_path) {
-        hasher.update(&content);
-    }
-    if let Ok(content) = std::fs::read(env_path) {
-        hasher.update(&content);
-    }
-    format!("{:x}", hasher.finalize())
-}
-
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+
+    if args.iter().any(|a| a == "update") {
+        let check_only = args.iter().any(|a| a == "--check");
+        match updater::run_update_cli(check_only) {
+            Ok(code) => std::process::exit(code),
+            Err(error) => {
+                eprintln!("{}", error);
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if args.iter().any(|a| a == "--update-listener") {
+        updater::run_update_listener();
+        return;
+    }
+
     if launch_mode_from_args(&args) == LaunchMode::Detached {
         match run_detached_mode() {
             Ok(message) => {

@@ -71,7 +71,7 @@ const HUB_ENV_FILENAME: &str = ".env.dev";
 const COMPAT_HUB_ENV_FILENAME: &str = ".env.dev";
 #[cfg(not(target_os = "windows"))]
 const COMPAT_HUB_ENV_FILENAME: &str = ".env";
-const HUB_COMPOSE_FILENAME: &str = "docker-compose.prod.yml";
+pub const HUB_COMPOSE_FILENAME: &str = "docker-compose.prod.yml";
 /// Maximum size of desktop.log before rotation (5 MB).
 const MAX_LOG_SIZE_BYTES: u64 = 5 * 1024 * 1024;
 /// Number of rotated log files to keep (desktop.log.1, desktop.log.2, ...).
@@ -1788,6 +1788,44 @@ pub fn logs_open_target() -> PathBuf {
 // The marker is removed when the user explicitly starts the Hub again.
 
 const USER_STOPPED_MARKER_FILENAME: &str = ".user-stopped";
+const LAUNCH_MODE_FILENAME: &str = ".launch-mode";
+
+/// How the Hub was last launched — used to relaunch in the same mode after an update.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PersistedLaunchMode {
+    Desktop,
+    Detached,
+}
+
+impl PersistedLaunchMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            PersistedLaunchMode::Desktop => "desktop",
+            PersistedLaunchMode::Detached => "detached",
+        }
+    }
+
+    fn from_str(raw: &str) -> Self {
+        if raw.trim() == "detached" {
+            PersistedLaunchMode::Detached
+        } else {
+            PersistedLaunchMode::Desktop
+        }
+    }
+}
+
+pub fn persist_launch_mode(data_dir: &Path, mode: PersistedLaunchMode) {
+    let _ = std::fs::write(
+        data_dir.join(LAUNCH_MODE_FILENAME),
+        format!("{}\n", mode.as_str()),
+    );
+}
+
+pub fn read_launch_mode(data_dir: &Path) -> PersistedLaunchMode {
+    std::fs::read_to_string(data_dir.join(LAUNCH_MODE_FILENAME))
+        .map(|content| PersistedLaunchMode::from_str(content.trim()))
+        .unwrap_or(PersistedLaunchMode::Desktop)
+}
 
 fn user_stopped_marker_path(data_dir: &Path) -> PathBuf {
     data_dir.join(USER_STOPPED_MARKER_FILENAME)
@@ -3841,6 +3879,26 @@ fn start_hub_inner(
         );
     }
 
+    let config_hash = compute_config_hash(compose_path, env_path);
+    let hash_path = data_dir.join(".config-hash");
+    let saved_hash = std::fs::read_to_string(&hash_path).ok();
+    let should_refresh_stack =
+        env_changed || saved_hash.as_deref() != Some(config_hash.as_str());
+    if should_refresh_stack {
+        let _ = append_desktop_log_for(
+            data_dir,
+            "hub.start",
+            "Stack configuration changed — pulling images and recreating containers.",
+        );
+        if let Err(error) = pull_stack_images(compose_path, env_path, data_dir) {
+            let _ = append_desktop_log_for(
+                data_dir,
+                "hub.start",
+                &format!("Stack image pull failed (non-fatal, continuing): {}", error),
+            );
+        }
+    }
+
     // Surface host NVIDIA hardware to the backend even when the container lacks
     // direct GPU devices; this enables runtime-missing warnings instead of
     // misclassifying NVIDIA hosts as "no GPU detected".
@@ -3920,19 +3978,28 @@ fn start_hub_inner(
             );
         }
 
+        let mut compose_up_args = vec![
+            "compose".to_string(),
+            "--env-file".to_string(),
+            env_path.to_string_lossy().into_owned(),
+            "--project-name".to_string(),
+            "ci-hub".to_string(),
+            "-f".to_string(),
+            compose_path.to_string_lossy().into_owned(),
+            "up".to_string(),
+            "-d".to_string(),
+        ];
+        if should_refresh_stack {
+            compose_up_args.extend([
+                "--pull".to_string(),
+                "always".to_string(),
+                "--force-recreate".to_string(),
+                "--remove-orphans".to_string(),
+            ]);
+        }
         let output = match docker_command()
             .env("ENV_FILE", env_path)
-            .args([
-                "compose",
-                "--env-file",
-                &env_path.to_string_lossy(),
-                "--project-name",
-                "ci-hub",
-                "-f",
-                &compose_path.to_string_lossy(),
-                "up",
-                "-d",
-            ])
+            .args(&compose_up_args)
             .output()
         {
             Ok(output) => output,
@@ -3955,6 +4022,9 @@ fn start_hub_inner(
                 format!("docker compose up -d succeeded. {}", combined_output)
             };
             let _ = append_desktop_log_for(data_dir, "hub.start", &compose_message);
+            // Persist after compose up (even if health check fails later) so retries
+            // and subsequent launches do not repeatedly pull/recreate unchanged stacks.
+            persist_config_hash(data_dir, compose_path, env_path);
             let _ = append_desktop_log_for(
                 data_dir,
                 "hub.start",
@@ -4062,6 +4132,134 @@ fn start_hub_inner(
     };
     let _ = append_desktop_log_for(data_dir, "hub.start", &failure);
     Err(with_view_logs_hint(failure))
+}
+
+/// Best-effort write of the current compose/env fingerprint after startup.
+///
+/// Called from `start_hub_inner` so manual/tray starts persist the hash that
+/// `should_refresh_stack` compares on the next launch.
+pub(crate) fn persist_config_hash(data_dir: &Path, compose_path: &Path, env_path: &Path) {
+    let hash_path = data_dir.join(".config-hash");
+    let hash = compute_config_hash(compose_path, env_path);
+    if let Err(error) = std::fs::write(&hash_path, &hash) {
+        let _ = append_desktop_log_for(
+            data_dir,
+            "hub.start",
+            &format!(
+                "Failed to persist configuration hash at {}: {}",
+                hash_path.display(),
+                error
+            ),
+        );
+    }
+}
+
+/// Drop the saved configuration hash so the next startup treats the stack as stale.
+///
+/// Used before host updates so post-install startup always pulls fresh images and
+/// recreates containers instead of reusing ones from the previous binary version.
+pub fn invalidate_config_hash(data_dir: &Path) {
+    let hash_path = data_dir.join(".config-hash");
+    let _ = std::fs::remove_file(&hash_path);
+}
+
+/// Compute a SHA256 hash of the compose and env file contents.
+pub fn compute_config_hash(compose_path: &Path, env_path: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    if let Ok(content) = std::fs::read(compose_path) {
+        hasher.update(&content);
+    }
+    if let Ok(content) = std::fs::read(env_path) {
+        hasher.update(&content);
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+/// Pull all stack images before compose up when configuration changed.
+pub fn pull_stack_images(
+    compose_path: &Path,
+    env_path: &Path,
+    data_dir: &Path,
+) -> Result<(), String> {
+    let _ = append_desktop_log_for(data_dir, "hub.start", "Pulling stack images before startup…");
+    let output = docker_command()
+        .env("ENV_FILE", env_path)
+        .args([
+            "compose",
+            "--env-file",
+            &env_path.to_string_lossy(),
+            "--project-name",
+            "ci-hub",
+            "-f",
+            &compose_path.to_string_lossy(),
+            "pull",
+        ])
+        .output()
+        .map_err(|e| format!("Failed to run docker compose pull: {}", e))?;
+
+    let combined = format_command_output(
+        &String::from_utf8_lossy(&output.stdout),
+        &String::from_utf8_lossy(&output.stderr),
+    );
+
+    if output.status.success() {
+        let message = if combined.is_empty() {
+            "docker compose pull succeeded.".to_string()
+        } else {
+            format!("docker compose pull succeeded. {}", combined)
+        };
+        let _ = append_desktop_log_for(data_dir, "hub.start", &message);
+        Ok(())
+    } else {
+        Err(if combined.is_empty() {
+            format!(
+                "docker compose pull failed with exit code {:?}",
+                output.status.code()
+            )
+        } else {
+            format!("docker compose pull failed. {}", combined)
+        })
+    }
+}
+
+/// Stop Hub containers without marking user-stopped (for updates).
+pub fn stop_hub_for_update(compose_path: &Path, env_path: &Path) -> Result<String, String> {
+    let data_dir = get_hub_data_dir();
+    let _ = append_desktop_log_for(
+        &data_dir,
+        "hub.update",
+        &format!(
+            "Stopping stack for update\ncompose={}\nenv={}",
+            compose_path.display(),
+            env_path.display()
+        ),
+    );
+
+    let output = docker_command()
+        .env("ENV_FILE", env_path)
+        .args([
+            "compose",
+            "--env-file",
+            &env_path.to_string_lossy(),
+            "--project-name",
+            "ci-hub",
+            "-f",
+            &compose_path.to_string_lossy(),
+            "down",
+        ])
+        .output()
+        .map_err(|e| format!("Failed to run docker compose down: {}", e))?;
+
+    if output.status.success() {
+        Ok("Hub stack stopped for update".to_string())
+    } else {
+        let combined = format_command_output(
+            &String::from_utf8_lossy(&output.stdout),
+            &String::from_utf8_lossy(&output.stderr),
+        );
+        Err(format!("docker compose down failed. {}", combined))
+    }
 }
 
 /// Stop Hub containers
@@ -4378,8 +4576,8 @@ fn render_runtime_env_content(
     let domain = option_env!("CI_HUB_DOMAIN").unwrap_or(default_public_domain());
     let cloud_url = option_env!("CI_HUB_CLOUD_URL").unwrap_or(default_ci_cloud_url());
     let hub_version = option_env!("CI_HUB_BUILD_VERSION").unwrap_or("4.7.0");
-    let hub_image = get_non_empty_env_value(existing, "CI_HUB_IMAGE")
-        .unwrap_or_else(|| image_for_domain(domain).to_string());
+    // Always recompute from the current binary so upgrades pick up the new stack image tag.
+    let hub_image = image_for_domain(domain).to_string();
     let docker_platform = if cfg!(target_arch = "aarch64") {
         "linux/arm64"
     } else {
@@ -4475,7 +4673,7 @@ fn generate_hex(bytes: usize) -> String {
 }
 
 /// Determine the Hub container image tag from the domain.
-fn image_for_domain(domain: &str) -> &'static str {
+pub fn image_for_domain(domain: &str) -> &'static str {
     match domain {
         "ci.computer" | "companionintelligence.org" => {
             "ghcr.io/companionintelligence/ci-hub:latest"
@@ -6040,5 +6238,32 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
             tunnel_dir_for(tempdir.path()).exists(),
             "tunnel dir with sibling files should be preserved",
         );
+    }
+
+    #[test]
+    fn invalidate_config_hash_removes_saved_hash() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let hash_path = tempdir.path().join(".config-hash");
+        std::fs::write(&hash_path, b"abc123").expect("write hash");
+
+        super::invalidate_config_hash(tempdir.path());
+
+        assert!(!hash_path.exists(), ".config-hash should be removed");
+    }
+
+    #[test]
+    fn persist_config_hash_writes_compose_env_fingerprint() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let compose = tempdir.path().join("docker-compose.prod.yml");
+        let env = tempdir.path().join(".env");
+        std::fs::write(&compose, b"services: {}\n").expect("write compose");
+        std::fs::write(&env, b"ROOT_FOLDER_HOST=/data\n").expect("write env");
+
+        super::persist_config_hash(tempdir.path(), &compose, &env);
+
+        let hash_path = tempdir.path().join(".config-hash");
+        let saved = std::fs::read_to_string(&hash_path).expect("hash file");
+        let expected = super::compute_config_hash(&compose, &env);
+        assert_eq!(saved, expected);
     }
 }
