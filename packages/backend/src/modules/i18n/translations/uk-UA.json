@@ -464,7 +464,6 @@
   "SETTINGS_GENERAL_INVALID_IP": "Невірна IP-адреса",
   "SETTINGS_GENERAL_INVALID_URL": "Недійсне посилання",
   "SETTINGS_GENERAL_LANGUAGE": "Мова",
-  "SETTINGS_GENERAL_LANGUAGE_HELP_TRANSLATE": "Допоможіть з перекладом Companion Hub",
   "SETTINGS_GENERAL_LOCAL_DOMAIN": "Локальний домен",
   "SETTINGS_GENERAL_LOCAL_DOMAIN_HINT": "Доменне ім’я, що використовується для доступу до додатків у вашій локальній мережі. Ваші додатки будуть доступні у app-name.local-domain.",
   "SETTINGS_GENERAL_SETTINGS_UPDATED_RESTART": "Налаштування оновлено. Перезапустіть екземпляр, щоб застосувати нові налаштування.",

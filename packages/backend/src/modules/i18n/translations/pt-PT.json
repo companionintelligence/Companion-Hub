@@ -464,7 +464,6 @@
   "SETTINGS_GENERAL_INVALID_IP": "Endereço IP inválido",
   "SETTINGS_GENERAL_INVALID_URL": "URL inválido",
   "SETTINGS_GENERAL_LANGUAGE": "Idioma",
-  "SETTINGS_GENERAL_LANGUAGE_HELP_TRANSLATE": "Help translate Companion Hub",
   "SETTINGS_GENERAL_LOCAL_DOMAIN": "Domínio local",
   "SETTINGS_GENERAL_LOCAL_DOMAIN_HINT": "Nome de domínio usado para acessar aplicativos na sua rede local. Seus aplicativos estarão acessíveis em nome de app.local-domain.",
   "SETTINGS_GENERAL_SETTINGS_UPDATED_RESTART": "Settings updated. Restart your instance to apply new settings.",

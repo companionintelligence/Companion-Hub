@@ -464,7 +464,6 @@
   "SETTINGS_GENERAL_INVALID_IP": "Érvénytelen IP-cím",
   "SETTINGS_GENERAL_INVALID_URL": "Érvénytelen URL",
   "SETTINGS_GENERAL_LANGUAGE": "Nyelv",
-  "SETTINGS_GENERAL_LANGUAGE_HELP_TRANSLATE": "Segíts a Companion Hub fordításában",
   "SETTINGS_GENERAL_LOCAL_DOMAIN": "Helyi domain",
   "SETTINGS_GENERAL_LOCAL_DOMAIN_HINT": "A helyi hálózat alkalmazásaihoz való hozzáféréshez használt domain név. Az alkalmazások az app-name.local-domain oldalon érhetők el.",
   "SETTINGS_GENERAL_SETTINGS_UPDATED_RESTART": "A beállítások frissítve. Indítsa újra az példányát az új beállítások alkalmazásához.",

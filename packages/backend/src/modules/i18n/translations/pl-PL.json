@@ -464,7 +464,6 @@
   "SETTINGS_GENERAL_INVALID_IP": "Nieprawidłowy adres IP",
   "SETTINGS_GENERAL_INVALID_URL": "Nieprawidłowy adres URL",
   "SETTINGS_GENERAL_LANGUAGE": "Język",
-  "SETTINGS_GENERAL_LANGUAGE_HELP_TRANSLATE": "Pomóż tłumaczyć Companion Hub",
   "SETTINGS_GENERAL_LOCAL_DOMAIN": "Domena lokalna",
   "SETTINGS_GENERAL_LOCAL_DOMAIN_HINT": "Nazwa domeny jest używana do uzyskiwania dostępu do aplikacji w twojej sieci lokalnej. Twoje aplikacje będą dostępne na nazwa-aplikacji.domena-lokalna.",
   "SETTINGS_GENERAL_SETTINGS_UPDATED_RESTART": "Ustawienia zaktualizowane. Uruchom ponownie swoją instancję, aby zastosować nowe ustawienia.",

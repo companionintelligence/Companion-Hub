@@ -464,7 +464,6 @@
   "SETTINGS_GENERAL_INVALID_IP": "Ogiltig IP-adress",
   "SETTINGS_GENERAL_INVALID_URL": "Ogiltig URL",
   "SETTINGS_GENERAL_LANGUAGE": "Språk",
-  "SETTINGS_GENERAL_LANGUAGE_HELP_TRANSLATE": "Hjälp till att översätta Companion Hub",
   "SETTINGS_GENERAL_LOCAL_DOMAIN": "Lokal domän",
   "SETTINGS_GENERAL_LOCAL_DOMAIN_HINT": "Domännamn som används för att komma åt appar i ditt lokala nätverk. Apparna kommer att vara tillgängliga på app-name.local-domain.",
   "SETTINGS_GENERAL_SETTINGS_UPDATED_RESTART": "Settings updated. Restart your instance to apply new settings.",

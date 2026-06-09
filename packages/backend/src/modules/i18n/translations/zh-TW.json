@@ -462,7 +462,6 @@
   "SETTINGS_GENERAL_INVALID_IP": "無效的 IP 位址",
   "SETTINGS_GENERAL_INVALID_URL": "URL不正確",
   "SETTINGS_GENERAL_LANGUAGE": "語言設定",
-  "SETTINGS_GENERAL_LANGUAGE_HELP_TRANSLATE": "Help translate Companion Hub",
   "SETTINGS_GENERAL_LOCAL_DOMAIN": "網域",
   "SETTINGS_GENERAL_LOCAL_DOMAIN_HINT": "用於在本地網路存取應用程式的網域。你的應用程式將可以在 app-name.local-domain 存取。",
   "SETTINGS_GENERAL_SETTINGS_UPDATED_RESTART": "Settings updated. Restart your instance to apply new settings.",
