@@ -2,14 +2,13 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
 import { Injectable, OnApplicationBootstrap, type OnApplicationShutdown, Optional } from '@nestjs/common';
-import { DATA_DIR } from '@/common/constants';
+import { DATA_DIR, HUB_STACK_IMAGE_REPO, HUB_STACK_REGISTRY_REPO } from '@/common/constants';
 import { writeSettingsJsonFile } from '@/common/helpers/env-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { RegistryService } from '@/utils/registry/registry.service';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
 
-const HUB_IMAGE_REPO = 'ghcr.io/companionintelligence/ci-hub';
 const COMPOSE_FILENAMES = ['docker-compose.prod.yml', 'docker-compose.yml'] as const;
 
 @Injectable()
@@ -41,7 +40,7 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
 
   async checkForUpdates() {
     const { version: currentVersion } = this.config.getConfig();
-    const releasesSince = await this.registryService.getTagsSince('ci-hub', currentVersion);
+    const releasesSince = await this.registryService.getTagsSince(HUB_STACK_REGISTRY_REPO, currentVersion);
 
     const releases = releasesSince.map((tag) => ({
       version: tag,
@@ -78,7 +77,7 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
       return undefined;
     }
 
-    const imageLine = `CI_HUB_IMAGE=${HUB_IMAGE_REPO}:${targetVersion}`;
+    const imageLine = `CI_HUB_IMAGE=${HUB_STACK_IMAGE_REPO}:${targetVersion}`;
     const content = fs.readFileSync(envFile, 'utf8');
     const lines = content.split('\n');
     let replaced = false;

@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { AppService } from '@/app.service';
-import { APP_DATA_DIR, APP_DIR, DATA_DIR } from '@/common/constants';
+import { APP_DATA_DIR, APP_DIR, DATA_DIR, HUB_STACK_REGISTRY_REPO } from '@/common/constants';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import type { FsMock } from '@/tests/__mocks__/fs';
@@ -93,7 +93,7 @@ describe('AppService', () => {
       expect(result.current).toBe(version);
       expect(result.latest).toBe(version);
       expect(result.releases).toEqual([]);
-      expect(registryService.getTagsSince).toHaveBeenCalledWith('ci-os-hub', version);
+      expect(registryService.getTagsSince).toHaveBeenCalledWith(HUB_STACK_REGISTRY_REPO, version);
     });
 
     it('should return latest version when newer tags exist', async () => {

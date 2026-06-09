@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { Inject, Injectable, type OnApplicationShutdown } from '@nestjs/common';
-import { APP_DATA_DIR, DATA_DIR } from './common/constants';
+import { APP_DATA_DIR, DATA_DIR, HUB_STACK_REGISTRY_REPO } from './common/constants';
 import { CacheService, ONE_DAY_IN_SECONDS } from './core/cache/cache.service';
 import { ConfigurationService } from './core/config/configuration.service';
 import { DatabaseService } from './core/database/database.service';
@@ -140,7 +140,7 @@ export class AppService implements OnApplicationShutdown {
   public async getVersion() {
     const { version: currentVersion } = this.configuration.getConfig();
 
-    const [releasesSince] = await Promise.all([this.registryService.getTagsSince('ci-os-hub', currentVersion)]);
+    const [releasesSince] = await Promise.all([this.registryService.getTagsSince(HUB_STACK_REGISTRY_REPO, currentVersion)]);
 
     const releases = releasesSince.map((tag) => ({
       version: tag,

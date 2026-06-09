@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { HUB_STACK_IMAGE_REPO, HUB_STACK_REGISTRY_REPO } from '@/common/constants';
 import { SystemUpdateService } from '../system-update.service';
 import fs from 'node:fs';
 
@@ -47,7 +48,7 @@ describe('SystemUpdateService', () => {
       expect(result.updateAvailable).toBe(true);
       expect(result.current).toBe('1.0.0');
       expect(result.latest).toBe('1.1.0');
-      expect(mockRegistryService.getTagsSince).toHaveBeenCalledWith('ci-hub', '1.0.0');
+      expect(mockRegistryService.getTagsSince).toHaveBeenCalledWith(HUB_STACK_REGISTRY_REPO, '1.0.0');
     });
 
     it('should return no update when no newer versions', async () => {
@@ -62,7 +63,7 @@ describe('SystemUpdateService', () => {
     it('should pull the full stack and recreate containers on restart', async () => {
       vi.useFakeTimers();
       vi.mocked(fs.existsSync).mockReturnValue(true);
-      vi.mocked(fs.readFileSync).mockReturnValue('CI_HUB_IMAGE=ghcr.io/companionintelligence/ci-hub:old\n');
+      vi.mocked(fs.readFileSync).mockReturnValue(`CI_HUB_IMAGE=${HUB_STACK_IMAGE_REPO}:old\n`);
 
       const { spawn } = await import('node:child_process');
       const mockProcess = {

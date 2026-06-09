@@ -88,6 +88,10 @@ export const DEFAULT_ADVANCED_SETTINGS = 'false';
 export const DEFAULT_LOG_LEVEL = 'info';
 export const DEFAULT_EXPERIMENTAL_INSECURE_COOKIE = 'false';
 
+// Hub stack container — CI Cloud OCI repo for tag listing and GHCR image pulls (keep aligned).
+export const HUB_STACK_REGISTRY_REPO = 'ci-os-hub';
+export const HUB_STACK_IMAGE_REPO = 'ghcr.io/companionintelligence/ci-os-hub';
+
 // Theming
 export const DEFAULT_THEME_BASE = 'gray';
 export const DEFAULT_THEME_COLOR = 'blue';
