@@ -2,6 +2,7 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
@@ -20,6 +21,28 @@ pub struct UpdateProgress {
 }
 
 static UPDATE_PROGRESS: OnceLock<Mutex<Option<UpdateProgress>>> = OnceLock::new();
+static HOST_UPDATE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+/// Ensures only one host update runs at a time (listener retries, double-clicks, CLI + UI).
+struct HostUpdateGuard;
+
+impl HostUpdateGuard {
+    fn acquire() -> Result<Self, String> {
+        if HOST_UPDATE_IN_PROGRESS
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return Err("Host update already in progress".to_string());
+        }
+        Ok(Self)
+    }
+}
+
+impl Drop for HostUpdateGuard {
+    fn drop(&mut self) {
+        HOST_UPDATE_IN_PROGRESS.store(false, Ordering::SeqCst);
+    }
+}
 
 fn progress_store() -> &'static Mutex<Option<UpdateProgress>> {
     UPDATE_PROGRESS.get_or_init(|| Mutex::new(None))
@@ -528,6 +551,11 @@ fn relaunch_hub(mode: PersistedLaunchMode) -> Result<(), String> {
 }
 
 pub fn perform_host_update(download_url: &str) -> Result<(), String> {
+    let _guard = HostUpdateGuard::acquire()?;
+    perform_host_update_inner(download_url)
+}
+
+fn perform_host_update_inner(download_url: &str) -> Result<(), String> {
     if !is_trusted_download_url(download_url) {
         return Err("Untrusted download URL".to_string());
     }
@@ -623,8 +651,13 @@ fn check_and_trigger_update_from_listener() -> Result<String, String> {
     if info.download_url.is_empty() {
         return Err("no download url".to_string());
     }
+    let download_url = info.download_url.clone();
+    let guard = HostUpdateGuard::acquire()?;
     std::thread::spawn(move || {
-        let _ = perform_host_update(&info.download_url);
+        let _guard = guard;
+        if let Err(err) = perform_host_update_inner(&download_url) {
+            set_progress("error", &err);
+        }
     });
     Ok("update started".to_string())
 }
@@ -723,6 +756,14 @@ mod tests {
         assert!(!is_trusted_download_url(
             "https://dl.ci.computer/v0.2.18/../evil.exe"
         ));
+    }
+
+    #[test]
+    fn host_update_guard_rejects_concurrent_acquire() {
+        let first = HostUpdateGuard::acquire().expect("first acquire");
+        assert!(HostUpdateGuard::acquire().is_err());
+        drop(first);
+        assert!(HostUpdateGuard::acquire().is_ok());
     }
 
     #[test]
