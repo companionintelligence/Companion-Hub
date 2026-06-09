@@ -78,6 +78,15 @@ struct ManifestJson {
     platforms: std::collections::HashMap<String, serde_json::Value>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HostOs {
+    Macos,
+    Windows,
+    Linux,
+}
+
+const ARTIFACT_KEYS: [&str; 6] = ["dmg", "exe", "msi", "deb", "rpm", "appimage"];
+
 #[derive(Debug, Clone)]
 struct ResolvedArtifact {
     url: String,
@@ -191,57 +200,66 @@ fn manifest_url(version: &str) -> String {
     format!("https://dl.ci.computer/v{}/manifest.json", version.trim_start_matches('v'))
 }
 
+fn host_os() -> Option<HostOs> {
+    if cfg!(target_os = "macos") {
+        Some(HostOs::Macos)
+    } else if cfg!(target_os = "windows") {
+        Some(HostOs::Windows)
+    } else if cfg!(target_os = "linux") {
+        Some(HostOs::Linux)
+    } else {
+        None
+    }
+}
+
+/// Manifest platform key matching desktop-release.yml (`darwin-aarch64`, `windows-x86_64`, etc.).
+fn platform_manifest_key(os: HostOs, arch: &str) -> String {
+    let arch_suffix = if arch == "aarch64" {
+        "aarch64"
+    } else {
+        "x86_64"
+    };
+    match os {
+        HostOs::Macos => format!("darwin-{arch_suffix}"),
+        HostOs::Windows => format!("windows-{arch_suffix}"),
+        HostOs::Linux => format!("linux-{arch_suffix}"),
+    }
+}
+
 fn platform_key() -> Option<String> {
+    let os = host_os()?;
     let arch = if cfg!(target_arch = "aarch64") {
         "aarch64"
     } else {
         "x86_64"
     };
+    Some(platform_manifest_key(os, arch))
+}
 
-    if cfg!(target_os = "macos") {
-        return Some(if arch == "aarch64" {
-            "darwin-aarch64".to_string()
-        } else {
-            "darwin-x86_64".to_string()
-        });
+fn linux_package_preference_from_os_release(content: &str) -> &'static str {
+    let lower = content.to_lowercase();
+    if lower.contains("id=debian")
+        || lower.contains("id=ubuntu")
+        || lower.contains("id=linuxmint")
+        || lower.contains("id=pop")
+    {
+        return "deb";
     }
-    if cfg!(target_os = "windows") {
-        return Some(if arch == "aarch64" {
-            "windows-aarch64".to_string()
-        } else {
-            "windows-x86_64".to_string()
-        });
+    if lower.contains("id=fedora")
+        || lower.contains("id=rhel")
+        || lower.contains("id=centos")
+        || lower.contains("id=rocky")
+        || lower.contains("id=almalinux")
+    {
+        return "rpm";
     }
-    if cfg!(target_os = "linux") {
-        return Some(if arch == "aarch64" {
-            "linux-aarch64".to_string()
-        } else {
-            "linux-x86_64".to_string()
-        });
-    }
-    None
+    "appimage"
 }
 
 fn linux_package_preference() -> &'static str {
-    if let Ok(content) = std::fs::read_to_string("/etc/os-release") {
-        let lower = content.to_lowercase();
-        if lower.contains("id=debian")
-            || lower.contains("id=ubuntu")
-            || lower.contains("id=linuxmint")
-            || lower.contains("id=pop")
-        {
-            return "deb";
-        }
-        if lower.contains("id=fedora")
-            || lower.contains("id=rhel")
-            || lower.contains("id=centos")
-            || lower.contains("id=rocky")
-            || lower.contains("id=almalinux")
-        {
-            return "rpm";
-        }
-    }
-    "appimage"
+    linux_package_preference_from_os_release(
+        &std::fs::read_to_string("/etc/os-release").unwrap_or_default(),
+    )
 }
 
 fn parse_artifact(value: &serde_json::Value) -> Option<ResolvedArtifact> {
@@ -261,31 +279,34 @@ fn parse_artifact(value: &serde_json::Value) -> Option<ResolvedArtifact> {
     })
 }
 
-fn artifact_for_platform(platform_data: &serde_json::Value) -> Option<ResolvedArtifact> {
+fn artifact_for_platform_data(
+    platform_data: &serde_json::Value,
+    os: HostOs,
+    package_preference: &str,
+) -> Option<ResolvedArtifact> {
     let read = |key: &str| -> Option<ResolvedArtifact> {
-        platform_data
-            .get(key)
-            .and_then(parse_artifact)
+        platform_data.get(key).and_then(parse_artifact)
     };
 
-    if cfg!(target_os = "macos") {
-        return read("dmg");
-    }
-    if cfg!(target_os = "windows") {
-        return read("exe").or_else(|| read("msi"));
-    }
-    if cfg!(target_os = "linux") {
-        return match linux_package_preference() {
+    match os {
+        HostOs::Macos => read("dmg"),
+        HostOs::Windows => read("exe").or_else(|| read("msi")),
+        HostOs::Linux => match package_preference {
             "deb" => read("deb").or_else(|| read("appimage")),
             "rpm" => read("rpm").or_else(|| read("appimage")),
-            _ => read("appimage").or_else(|| read("deb")).or_else(|| read("rpm")),
-        };
+            _ => read("appimage")
+                .or_else(|| read("deb"))
+                .or_else(|| read("rpm")),
+        },
     }
-    None
 }
 
-pub fn resolve_download_url(manifest: &ManifestJson) -> Option<String> {
-    resolve_download_artifact(manifest).map(|artifact| artifact.url)
+fn artifact_for_platform(platform_data: &serde_json::Value) -> Option<ResolvedArtifact> {
+    artifact_for_platform_data(
+        platform_data,
+        host_os()?,
+        linux_package_preference(),
+    )
 }
 
 fn resolve_download_artifact(manifest: &ManifestJson) -> Option<ResolvedArtifact> {
@@ -296,7 +317,7 @@ fn resolve_download_artifact(manifest: &ManifestJson) -> Option<ResolvedArtifact
 
 fn lookup_artifact_in_manifest(manifest: &ManifestJson, download_url: &str) -> Option<ResolvedArtifact> {
     for platform_data in manifest.platforms.values() {
-        for key in ["dmg", "exe", "msi", "deb", "rpm", "appimage"] {
+        for key in ARTIFACT_KEYS {
             if let Some(artifact) = platform_data.get(key).and_then(parse_artifact) {
                 if artifact.url == download_url {
                     return Some(artifact);
@@ -418,6 +439,16 @@ fn fetch_manifest(client: &reqwest::blocking::Client, version: &str) -> Result<M
     response
         .json()
         .map_err(|e| format!("Failed to parse manifest: {}", e))
+        .and_then(|manifest: ManifestJson| {
+            let expected = version.trim_start_matches('v');
+            let actual = manifest.version.trim_start_matches('v');
+            if actual != expected {
+                return Err(format!(
+                    "Manifest version mismatch (expected {expected}, got {actual})"
+                ));
+            }
+            Ok(manifest)
+        })
 }
 
 pub fn check_desktop_update(current_version: &str) -> Result<DesktopUpdateInfo, String> {
@@ -805,7 +836,10 @@ pub fn run_update_cli(check_only: bool) -> Result<i32, String> {
         return Ok(0);
     }
     if info.download_url.is_empty() {
-        return Err("Update available but no download URL for this platform".to_string());
+        let platform = platform_key().unwrap_or_else(|| "unknown".to_string());
+        return Err(format!(
+            "Update available but no download URL for this platform ({platform})"
+        ));
     }
     println!("Updating from {} to {}…", current, info.latest_version);
     perform_host_update(
@@ -1190,5 +1224,126 @@ mod tests {
         assert!(semver_compare_gt("0.2.19", "0.2.18"));
         assert!(!semver_compare_gt("0.2.18", "0.2.19"));
         assert!(!semver_compare_gt("1.0.0", "1.0.0"));
+    }
+
+    #[test]
+    fn platform_manifest_keys_match_release_matrix() {
+        assert_eq!(
+            platform_manifest_key(HostOs::Macos, "aarch64"),
+            "darwin-aarch64"
+        );
+        assert_eq!(
+            platform_manifest_key(HostOs::Macos, "x86_64"),
+            "darwin-x86_64"
+        );
+        assert_eq!(
+            platform_manifest_key(HostOs::Windows, "aarch64"),
+            "windows-aarch64"
+        );
+        assert_eq!(
+            platform_manifest_key(HostOs::Windows, "x86_64"),
+            "windows-x86_64"
+        );
+        assert_eq!(
+            platform_manifest_key(HostOs::Linux, "aarch64"),
+            "linux-aarch64"
+        );
+        assert_eq!(
+            platform_manifest_key(HostOs::Linux, "x86_64"),
+            "linux-x86_64"
+        );
+    }
+
+    #[test]
+    fn linux_package_preference_detects_distro_families() {
+        assert_eq!(
+            linux_package_preference_from_os_release("ID=ubuntu\n"),
+            "deb"
+        );
+        assert_eq!(
+            linux_package_preference_from_os_release("ID=fedora\n"),
+            "rpm"
+        );
+        assert_eq!(
+            linux_package_preference_from_os_release("ID=arch\n"),
+            "appimage"
+        );
+    }
+
+    fn sample_artifact(url: &str) -> serde_json::Value {
+        serde_json::json!({
+            "url": url,
+            "size": 123,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        })
+    }
+
+    #[test]
+    fn artifact_for_platform_selects_expected_installers() {
+        let mac = serde_json::json!({ "dmg": sample_artifact("https://dl.ci.computer/v1/macos/arm/hub.dmg") });
+        assert_eq!(
+            artifact_for_platform_data(&mac, HostOs::Macos, "appimage")
+                .expect("dmg")
+                .url,
+            "https://dl.ci.computer/v1/macos/arm/hub.dmg"
+        );
+
+        let win = serde_json::json!({
+            "exe": sample_artifact("https://dl.ci.computer/v1/windows/x64/setup.exe"),
+            "msi": sample_artifact("https://dl.ci.computer/v1/windows/x64/setup.msi"),
+        });
+        assert_eq!(
+            artifact_for_platform_data(&win, HostOs::Windows, "appimage")
+                .expect("exe")
+                .url,
+            "https://dl.ci.computer/v1/windows/x64/setup.exe"
+        );
+
+        let linux = serde_json::json!({
+            "deb": sample_artifact("https://dl.ci.computer/v1/linux/deb/x64/hub.deb"),
+            "rpm": sample_artifact("https://dl.ci.computer/v1/linux/rpm/x64/hub.rpm"),
+            "appimage": sample_artifact("https://dl.ci.computer/v1/linux/appimage/x64/hub.AppImage"),
+        });
+        assert_eq!(
+            artifact_for_platform_data(&linux, HostOs::Linux, "deb")
+                .expect("deb")
+                .url,
+            "https://dl.ci.computer/v1/linux/deb/x64/hub.deb"
+        );
+        assert_eq!(
+            artifact_for_platform_data(&linux, HostOs::Linux, "rpm")
+                .expect("rpm")
+                .url,
+            "https://dl.ci.computer/v1/linux/rpm/x64/hub.rpm"
+        );
+        assert_eq!(
+            artifact_for_platform_data(&linux, HostOs::Linux, "appimage")
+                .expect("appimage")
+                .url,
+            "https://dl.ci.computer/v1/linux/appimage/x64/hub.AppImage"
+        );
+    }
+
+    #[test]
+    fn resolve_download_artifact_uses_current_platform_key() {
+        let Some(key) = platform_key() else {
+            return;
+        };
+        let mut platforms = std::collections::HashMap::new();
+        platforms.insert(
+            key.clone(),
+            serde_json::json!({
+                "dmg": sample_artifact("https://dl.ci.computer/v1/current/hub.dmg"),
+                "exe": sample_artifact("https://dl.ci.computer/v1/current/setup.exe"),
+                "deb": sample_artifact("https://dl.ci.computer/v1/current/hub.deb"),
+                "appimage": sample_artifact("https://dl.ci.computer/v1/current/hub.AppImage"),
+            }),
+        );
+        let manifest = ManifestJson {
+            version: "1.0.0".to_string(),
+            platforms,
+        };
+        let artifact = resolve_download_artifact(&manifest).expect("artifact for current platform");
+        assert!(artifact.url.starts_with("https://dl.ci.computer/"));
     }
 }

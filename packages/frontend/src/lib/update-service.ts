@@ -82,24 +82,32 @@ export function isTauri(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 }
 
-function getDownloadUrl(manifest: ManifestJson, platform: string, osArch: string): string | null {
-  const platformKey = (() => {
-    if (platform === 'macos') return osArch === 'aarch64' ? 'darwin-aarch64' : 'darwin-x86_64';
-    if (platform === 'windows') return osArch === 'aarch64' ? 'windows-aarch64' : 'windows-x86_64';
-    if (platform === 'linux') return osArch === 'aarch64' ? 'linux-aarch64' : 'linux-x86_64';
-    return null;
-  })();
+/** Manifest platform key — must stay aligned with desktop-release.yml and updater.rs. */
+export function platformManifestKey(platform: string, osArch: string): string | null {
+  const archSuffix = osArch === 'aarch64' ? 'aarch64' : 'x86_64';
+  if (platform === 'macos') return `darwin-${archSuffix}`;
+  if (platform === 'windows') return `windows-${archSuffix}`;
+  if (platform === 'linux') return `linux-${archSuffix}`;
+  return null;
+}
 
+function artifactUrlForPlatform(platform: string, artifacts: ManifestJson['platforms'][string]): string | null {
+  if (platform === 'macos') return artifacts.dmg?.url ?? null;
+  if (platform === 'windows') return artifacts.exe?.url ?? artifacts.msi?.url ?? null;
+  if (platform === 'linux') {
+    return artifacts.appimage?.url ?? artifacts.deb?.url ?? artifacts.rpm?.url ?? null;
+  }
+  return null;
+}
+
+function getDownloadUrl(manifest: ManifestJson, platform: string, osArch: string): string | null {
+  const platformKey = platformManifestKey(platform, osArch);
   if (!platformKey) return null;
 
   const p = manifest.platforms[platformKey];
   if (!p) return null;
 
-  if (platform === 'macos') return p.dmg?.url ?? null;
-  if (platform === 'windows') return p.exe?.url ?? p.msi?.url ?? null;
-  if (platform === 'linux') return p.deb?.url ?? p.rpm?.url ?? p.appimage?.url ?? null;
-
-  return null;
+  return artifactUrlForPlatform(platform, p);
 }
 
 async function getCurrentVersion(): Promise<string | null> {

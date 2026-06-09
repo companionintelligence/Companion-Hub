@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isHubUpdateAvailable, isStackUpdateAvailable, isTrustedDownloadUrl } from '@/lib/update-service';
+import { isHubUpdateAvailable, isStackUpdateAvailable, isTrustedDownloadUrl, platformManifestKey } from '@/lib/update-service';
 
 describe('update-service', () => {
   it('accepts dl.ci.computer HTTPS URLs', () => {
@@ -44,6 +44,21 @@ describe('update-service', () => {
 
     it('returns false for invalid semver', () => {
       expect(isStackUpdateAvailable('nightly', '1.1.0')).toBe(false);
+    });
+  });
+
+  describe('platformManifestKey', () => {
+    it('maps all release-matrix platform/arch pairs', () => {
+      expect(platformManifestKey('macos', 'aarch64')).toBe('darwin-aarch64');
+      expect(platformManifestKey('macos', 'x86_64')).toBe('darwin-x86_64');
+      expect(platformManifestKey('windows', 'aarch64')).toBe('windows-aarch64');
+      expect(platformManifestKey('windows', 'x86_64')).toBe('windows-x86_64');
+      expect(platformManifestKey('linux', 'aarch64')).toBe('linux-aarch64');
+      expect(platformManifestKey('linux', 'x86_64')).toBe('linux-x86_64');
+    });
+
+    it('returns null for unknown platforms', () => {
+      expect(platformManifestKey('freebsd', 'x86_64')).toBeNull();
     });
   });
 
