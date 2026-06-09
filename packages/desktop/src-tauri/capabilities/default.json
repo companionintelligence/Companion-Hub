@@ -19,7 +19,6 @@
     "opener:default",
     "notification:default",
     "store:default",
-    "os:default",
-    "updater:default"
+    "os:default"
   ]
 }
