@@ -219,23 +219,6 @@ describe('AppCredentialsService', () => {
       expect(modelPuller.pullModel).toHaveBeenCalledWith('nomic-embed-text');
     });
 
-    it('returns companion-memory env keyed with LLM_* (direct Ollama + native ids) including embeddings', async () => {
-      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['hermes4:70b', 'nomic-embed-text'] });
-      modelRegistry.getRecommendedEmbeddingModel.mockReturnValue(makeEmbedding('nomic-embed-text', 'nomic-embed-text'));
-      service.invalidateCache();
-
-      const config = await service.getCredentials('companion-memory');
-
-      expect(config.app).toBe('companion-memory');
-      expect(config.env).toEqual({
-        LLM_API_BASE: OLLAMA_OPENAI_URL,
-        LLM_API_KEY: 'ollama',
-        LLM_DEFAULT_CHAT_MODEL: 'hermes4:70b',
-        LLM_DEFAULT_EMBEDDING_MODEL: 'nomic-embed-text',
-        OLLAMA_HOST: OLLAMA_BASE_URL,
-      });
-    });
-
     it('picks the first (biggest) recommended model and uses its native id', async () => {
       ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['family:700b', 'family:70b', 'family:8b'] });
       modelRegistry.getRecommendedModelsForHardware.mockReturnValue([
@@ -342,7 +325,6 @@ describe('AppCredentialsService', () => {
     it('recognizes supported slugs', () => {
       expect(service.isSupported('hermes-agent')).toBe(true);
       expect(service.isSupported('openclaw')).toBe(true);
-      expect(service.isSupported('companion-memory')).toBe(true);
     });
 
     it('rejects unknown slugs', () => {
