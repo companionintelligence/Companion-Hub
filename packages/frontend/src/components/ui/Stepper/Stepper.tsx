@@ -43,7 +43,7 @@ export const StepTrigger: React.FC<StepTriggerProps> = ({ step, title, disabled,
       stroke="currentColor"
       strokeWidth={3}
       role="img"
-      aria-label={i18next.t('COMMON_COMPLETED')}
+      aria-label={i18next.isInitialized ? i18next.t('COMMON_COMPLETED') : 'Completed'}
     >
       <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
     </svg>

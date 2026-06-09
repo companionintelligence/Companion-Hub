@@ -21,6 +21,8 @@ import { resolveRegistrationStatus } from './lib/registration-cache';
 import { captureHubException } from './lib/sentry';
 import i18next from 'i18next';
 
+const safeI18nText = (key: string, fallback: string) => (i18next.isInitialized ? i18next.t(key) : fallback);
+
 /** Serialize a non-Error thrown value for a readable Sentry message (avoids "[object Object]"). */
 function describeUnknownError(error: unknown): string {
   if (typeof error === 'string') {
@@ -314,7 +316,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
         ) : (
           <ThemeProvider defaultTheme="dark">
             <main id="root" className="flex min-h-screen items-center justify-center px-6 text-sm text-muted-foreground">
-              Connecting to local API...
+              {safeI18nText('ROOT_CONNECTING_TO_LOCAL_API', 'Connecting to local API...')}
             </main>
           </ThemeProvider>
         )}
@@ -350,9 +352,8 @@ export default function App({ loaderData }: Route.ComponentProps) {
 }
 
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
-  const safeT = (key: string, fallback: string) => (i18next.isInitialized ? i18next.t(key) : fallback);
-  let message = safeT('ROOT_ERROR_BOUNDARY_OOPS', 'Oops!');
-  let details = safeT('ROOT_ERROR_BOUNDARY_UNEXPECTED_ERROR', 'An unexpected error occurred.');
+  let message = safeI18nText('ROOT_ERROR_BOUNDARY_OOPS', 'Oops!');
+  let details = safeI18nText('ROOT_ERROR_BOUNDARY_UNEXPECTED_ERROR', 'An unexpected error occurred.');
   let stack: string | undefined;
 
   if (import.meta.env.DEV) {
@@ -374,9 +375,11 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
   }
 
   if (isRouteErrorResponse(error)) {
-    message = error.status === 404 ? '404' : safeT('COMMON_ERROR', 'Error');
+    message = error.status === 404 ? '404' : safeI18nText('COMMON_ERROR', 'Error');
     details =
-      error.status === 404 ? safeT('ROOT_ERROR_BOUNDARY_PAGE_NOT_FOUND', 'The requested page could not be found.') : error.statusText || details;
+      error.status === 404
+        ? safeI18nText('ROOT_ERROR_BOUNDARY_PAGE_NOT_FOUND', 'The requested page could not be found.')
+        : error.statusText || details;
   } else if (import.meta.env.DEV && error && error instanceof Error) {
     details = error.message;
     stack = error.stack;

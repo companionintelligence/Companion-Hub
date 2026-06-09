@@ -1234,6 +1234,7 @@
   "UPDATE_BANNER_DOWNLOAD_UPDATE": "Download Update",
   "UPDATE_BANNER_DISMISS_NOTIFICATION": "Dismiss update notification",
   "ROOT_DEV_UI_MODULES_NOT_LOADED": "Dev: UI modules not loaded",
+  "ROOT_CONNECTING_TO_LOCAL_API": "Connecting to local API...",
   "ROOT_ERROR_BOUNDARY_OOPS": "Oops!",
   "ROOT_ERROR_BOUNDARY_UNEXPECTED_ERROR": "An unexpected error occurred.",
   "ROOT_ERROR_BOUNDARY_PAGE_NOT_FOUND": "The requested page could not be found.",
