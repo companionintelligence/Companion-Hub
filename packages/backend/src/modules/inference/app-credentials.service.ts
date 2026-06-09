@@ -9,6 +9,9 @@ import { OllamaBackend } from './backends/ollama.backend';
 import type { CuratedModel, HardwareTier } from '@ci-hub/common/types';
 import { isCatalogModelInstalled } from './model-availability.util';
 
+// Only Hub-managed sibling apps use the bootstrap credentials endpoints.
+// Standalone services (for example companion-memory / CI-Server) receive
+// inference config through their own app env wiring instead.
 export const SUPPORTED_APP_SLUGS = ['hermes-agent', 'openclaw'] as const;
 export type AppSlug = (typeof SUPPORTED_APP_SLUGS)[number];
 

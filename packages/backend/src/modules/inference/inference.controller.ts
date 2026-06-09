@@ -344,7 +344,7 @@ export class InferenceController {
   }
 
   // ─── App Credentials ──────────────────────────────────────────────────
-  // Sibling apps (hermes-agent, openclaw, companion-memory) query these endpoints
+  // Hub-managed sibling apps (currently hermes-agent and openclaw) query these endpoints
   // on container start to discover where to send inference DIRECTLY — the Ollama
   // container's OpenAI-compatible /v1 (or a cloud provider endpoint+key). The Hub
   // distributes connection info only; it never proxies the requests.

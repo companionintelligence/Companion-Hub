@@ -103,7 +103,12 @@ describe('AppCredentialsService', () => {
     ollamaBackend = mock<OllamaBackend>();
     configurationService = mock<ConfigurationService>();
 
-    configurationService.getInferencePreferences.mockReturnValue({ preferredBackend: null, preferredModel: null });
+    configurationService.getInferencePreferences.mockReturnValue({
+      preferredBackend: null,
+      preferredModel: null,
+      preferredEmbeddingModel: null,
+      preferredVisionModel: null,
+    });
     modelPuller.evaluatePull.mockResolvedValue({
       catalogId: 'hermes4-70b',
       alreadyInstalled: false,
@@ -149,6 +154,10 @@ describe('AppCredentialsService', () => {
   describe('getCredentials — local (direct Ollama) path', () => {
     it('throws NotFoundException for unknown slugs', async () => {
       await expect(service.getCredentials('unknown-app')).rejects.toThrow(NotFoundException);
+    });
+
+    it('treats companion-memory as unsupported because it is no longer a Hub-managed bootstrap client', async () => {
+      await expect(service.getCredentials('companion-memory')).rejects.toThrow(NotFoundException);
     });
 
     it('points hermes-agent at the DIRECT Ollama /v1 with the NATIVE chat model id', async () => {
