@@ -3,7 +3,7 @@ import type { Window } from '@tauri-apps/api/window';
 import { useTranslation } from 'react-i18next';
 
 export function Titlebar() {
-  const { t } = useTranslation();
+  const { t } = useTranslation(undefined, { useSuspense: false });
   const [isTauri, setIsTauri] = useState(false);
   const [isMaximized, setIsMaximized] = useState(false);
   const [appWindow, setAppWindow] = useState<Window | null>(null);

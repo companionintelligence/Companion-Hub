@@ -315,7 +315,7 @@ describe('AiSetupStep', () => {
 
     // qwen-coder is not recommended, so it lives in the Advanced "Other Models" drawer, not the grid.
     expect(screen.getByTestId('model-checkbox-phi-4-mini')).toBeInTheDocument();
-    expect(screen.getByText(/1 model\(s\) selected/)).toBeInTheDocument();
+    expect(screen.getByText('1 model selected')).toBeInTheDocument();
 
     await user.click(screen.getByTestId('ai-continue-btn'));
     expect(onComplete).toHaveBeenCalledWith({
@@ -595,7 +595,7 @@ describe('AiSetupStep', () => {
     renderStep();
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
     expect(screen.getByTestId('resource-summary')).toBeInTheDocument();
-    expect(screen.getByText(/1 model\(s\) selected/)).toBeInTheDocument();
+    expect(screen.getByText('1 model selected')).toBeInTheDocument();
   });
 
   it('warns but does not block when new downloads exceed inference memory', async () => {
