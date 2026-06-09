@@ -116,7 +116,24 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
 
     setTimeout(() => {
       this.logger.info('Restarting Hub stack with new images...');
-      const cmd = spawn('docker', ['compose', '--env-file', envFile, '--project-name', 'ci-hub', '-f', composeFile, 'up', '-d'], {
+      const cmd = spawn(
+        'docker',
+        [
+          'compose',
+          '--env-file',
+          envFile,
+          '--project-name',
+          'ci-hub',
+          '-f',
+          composeFile,
+          'up',
+          '-d',
+          '--pull',
+          'always',
+          '--force-recreate',
+          '--remove-orphans',
+        ],
+        {
         stdio: 'ignore',
         detached: true,
       });

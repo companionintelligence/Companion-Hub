@@ -525,6 +525,9 @@ pub fn perform_host_update(download_url: &str) -> Result<(), String> {
     let launch_mode = hub_manager::read_launch_mode(&data_dir);
 
     hub_manager::clear_user_stopped(&data_dir);
+    // Ensure the post-install startup pulls images and recreates containers even if
+    // compose/env filenames are unchanged (e.g. CI_HUB_IMAGE still uses :latest).
+    hub_manager::invalidate_config_hash(&data_dir);
 
     set_progress("stop", "Stopping Hub stack…");
     hub_manager::stop_hub_for_update(&compose_path, &env_path)?;

@@ -3882,8 +3882,14 @@ fn start_hub_inner(
     let config_hash = compute_config_hash(compose_path, env_path);
     let hash_path = data_dir.join(".config-hash");
     let saved_hash = std::fs::read_to_string(&hash_path).ok();
-    let should_pull = env_changed || saved_hash.as_deref() != Some(config_hash.as_str());
-    if should_pull {
+    let should_refresh_stack =
+        env_changed || saved_hash.as_deref() != Some(config_hash.as_str());
+    if should_refresh_stack {
+        let _ = append_desktop_log_for(
+            data_dir,
+            "hub.start",
+            "Stack configuration changed — pulling images and recreating containers.",
+        );
         if let Err(error) = pull_stack_images(compose_path, env_path, data_dir) {
             let _ = append_desktop_log_for(
                 data_dir,
@@ -3972,19 +3978,28 @@ fn start_hub_inner(
             );
         }
 
+        let mut compose_up_args = vec![
+            "compose".to_string(),
+            "--env-file".to_string(),
+            env_path.to_string_lossy().into_owned(),
+            "--project-name".to_string(),
+            "ci-hub".to_string(),
+            "-f".to_string(),
+            compose_path.to_string_lossy().into_owned(),
+            "up".to_string(),
+            "-d".to_string(),
+        ];
+        if should_refresh_stack {
+            compose_up_args.extend([
+                "--pull".to_string(),
+                "always".to_string(),
+                "--force-recreate".to_string(),
+                "--remove-orphans".to_string(),
+            ]);
+        }
         let output = match docker_command()
             .env("ENV_FILE", env_path)
-            .args([
-                "compose",
-                "--env-file",
-                &env_path.to_string_lossy(),
-                "--project-name",
-                "ci-hub",
-                "-f",
-                &compose_path.to_string_lossy(),
-                "up",
-                "-d",
-            ])
+            .args(&compose_up_args)
             .output()
         {
             Ok(output) => output,
@@ -4114,6 +4129,15 @@ fn start_hub_inner(
     };
     let _ = append_desktop_log_for(data_dir, "hub.start", &failure);
     Err(with_view_logs_hint(failure))
+}
+
+/// Drop the saved configuration hash so the next startup treats the stack as stale.
+///
+/// Used before host updates so post-install startup always pulls fresh images and
+/// recreates containers instead of reusing ones from the previous binary version.
+pub fn invalidate_config_hash(data_dir: &Path) {
+    let hash_path = data_dir.join(".config-hash");
+    let _ = std::fs::remove_file(&hash_path);
 }
 
 /// Compute a SHA256 hash of the compose and env file contents.
@@ -6191,5 +6215,16 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
             tunnel_dir_for(tempdir.path()).exists(),
             "tunnel dir with sibling files should be preserved",
         );
+    }
+
+    #[test]
+    fn invalidate_config_hash_removes_saved_hash() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let hash_path = tempdir.path().join(".config-hash");
+        std::fs::write(&hash_path, b"abc123").expect("write hash");
+
+        super::invalidate_config_hash(tempdir.path());
+
+        assert!(!hash_path.exists(), ".config-hash should be removed");
     }
 }
