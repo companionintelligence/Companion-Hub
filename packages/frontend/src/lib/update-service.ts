@@ -10,6 +10,7 @@ const HOST_UPDATE_URL = 'http://127.0.0.1:17400/update';
 
 export function isTrustedDownloadUrl(url: string): boolean {
   try {
+    if (url.includes('..')) return false;
     const parsed = new URL(url);
     return parsed.protocol === 'https:' && parsed.hostname === ALLOWED_DOWNLOAD_HOST;
   } catch {

@@ -68,9 +68,23 @@ pub struct DesktopUpdateInfo {
 }
 
 pub fn is_trusted_download_url(url: &str) -> bool {
-    url.starts_with("https://")
-        && url.contains(ALLOWED_DOWNLOAD_HOST)
-        && !url.contains("..")
+    if url.contains("..") {
+        return false;
+    }
+    https_hostname(url).as_deref() == Some(ALLOWED_DOWNLOAD_HOST)
+}
+
+/// Parse the hostname from an `https://` URL (case-insensitive). Returns None for non-HTTPS or malformed URLs.
+fn https_hostname(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("https://")?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    // Strip optional userinfo (`user:pass@`) — host is the segment after the last `@`.
+    let host_port = authority.rsplit('@').next()?;
+    let host = host_port.split(':').next()?.trim();
+    if host.is_empty() {
+        return None;
+    }
+    Some(host.to_ascii_lowercase())
 }
 
 fn manifest_url(version: &str) -> String {
@@ -683,6 +697,32 @@ mod tests {
     #[test]
     fn trusted_url_rejects_other_hosts() {
         assert!(!is_trusted_download_url("https://example.com/file.exe"));
+    }
+
+    #[test]
+    fn trusted_url_rejects_subdomain_suffix_attack() {
+        assert!(!is_trusted_download_url(
+            "https://dl.ci.computer.evil.com/file.exe"
+        ));
+    }
+
+    #[test]
+    fn trusted_url_rejects_host_in_query_string() {
+        assert!(!is_trusted_download_url(
+            "https://evil.com/?dl.ci.computer"
+        ));
+    }
+
+    #[test]
+    fn trusted_url_rejects_non_https() {
+        assert!(!is_trusted_download_url("http://dl.ci.computer/file.exe"));
+    }
+
+    #[test]
+    fn trusted_url_rejects_path_traversal() {
+        assert!(!is_trusted_download_url(
+            "https://dl.ci.computer/v0.2.18/../evil.exe"
+        ));
     }
 
     #[test]
