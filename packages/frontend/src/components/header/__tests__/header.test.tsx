@@ -50,7 +50,7 @@ describe('Header', () => {
   it('renders Home and Store links when logged in', () => {
     renderHeader(true);
 
-    expect(screen.getAllByRole('link', { name: /COMMON_DASHBOARD|Dashboard/i }).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByRole('link', { name: /COMMON_HOME|Home/i }).length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByRole('link', { name: /COMMON_APP_STORE|App Store|Store/i }).length).toBeGreaterThanOrEqual(1);
   });
 
