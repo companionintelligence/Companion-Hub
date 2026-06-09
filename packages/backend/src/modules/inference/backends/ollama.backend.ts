@@ -111,6 +111,7 @@ export class OllamaBackend implements InferenceBackend {
         loaded: true,
       }));
     } catch {
+      this.invalidateResolvedUrl();
       return [];
     }
   }
@@ -177,6 +178,7 @@ export class OllamaBackend implements InferenceBackend {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.error(`[Ollama] Failed to load model ${modelId}: ${msg}`);
+      this.invalidateResolvedUrl();
       throw err;
     }
   }
@@ -194,6 +196,7 @@ export class OllamaBackend implements InferenceBackend {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.error(`[Ollama] Failed to unload model ${modelId}: ${msg}`);
+      this.invalidateResolvedUrl();
       throw err;
     }
   }
@@ -205,6 +208,7 @@ export class OllamaBackend implements InferenceBackend {
       const models = response.data?.models ?? [];
       return models.some((m: { name: string }) => m.name === modelId || m.name.startsWith(modelId));
     } catch {
+      this.invalidateResolvedUrl();
       return false;
     }
   }

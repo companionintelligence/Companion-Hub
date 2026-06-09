@@ -10,6 +10,11 @@ vi.mock('axios');
 describe('OllamaBackend', () => {
   let backend: OllamaBackend;
   let loggerService: MockProxy<LoggerService>;
+  type InspectableOllamaBackend = OllamaBackend & {
+    configuredUrl: string;
+    resolvedUrl: string;
+    urlResolved: boolean;
+  };
 
   beforeEach(async () => {
     loggerService = mock<LoggerService>();
@@ -20,6 +25,8 @@ describe('OllamaBackend', () => {
 
     backend = module.get<OllamaBackend>(OllamaBackend);
   });
+
+  const inspectable = () => backend as unknown as InspectableOllamaBackend;
 
   // ─── S-BL-2.1: Health Check ─────────────────────────────────────
 
@@ -62,6 +69,19 @@ describe('OllamaBackend', () => {
       expect(models[0].id).toBe('phi4-mini');
     });
 
+    it('should invalidate the cached URL when listModels fails', async () => {
+      const state = inspectable();
+      state.resolvedUrl = 'http://cached:11434';
+      state.urlResolved = true;
+      (axios.get as any) = vi.fn().mockRejectedValue(new Error('timeout'));
+
+      const models = await backend.listModels();
+
+      expect(models).toEqual([]);
+      expect(state.urlResolved).toBe(false);
+      expect(state.resolvedUrl).toBe(state.configuredUrl);
+    });
+
     it('should load model with keep_alive=-1 (pin)', async () => {
       (axios.post as any) = vi.fn().mockResolvedValue({ data: {} });
 
@@ -75,10 +95,15 @@ describe('OllamaBackend', () => {
     });
 
     it('should log error and rethrow when loadModel fails', async () => {
+      const state = inspectable();
+      state.resolvedUrl = 'http://cached:11434';
+      state.urlResolved = true;
       (axios.post as any) = vi.fn().mockRejectedValue(new Error('connection refused'));
 
       await expect(backend.loadModel('phi4-mini')).rejects.toThrow('connection refused');
       expect(loggerService.error).toHaveBeenCalledWith(expect.stringContaining('Failed to load model phi4-mini'));
+      expect(state.urlResolved).toBe(false);
+      expect(state.resolvedUrl).toBe(state.configuredUrl);
     });
 
     it('should unload model with keep_alive=0', async () => {
@@ -94,10 +119,15 @@ describe('OllamaBackend', () => {
     });
 
     it('should log error and rethrow when unloadModel fails', async () => {
+      const state = inspectable();
+      state.resolvedUrl = 'http://cached:11434';
+      state.urlResolved = true;
       (axios.post as any) = vi.fn().mockRejectedValue(new Error('timeout'));
 
       await expect(backend.unloadModel('phi4-mini')).rejects.toThrow('timeout');
       expect(loggerService.error).toHaveBeenCalledWith(expect.stringContaining('Failed to unload model phi4-mini'));
+      expect(state.urlResolved).toBe(false);
+      expect(state.resolvedUrl).toBe(state.configuredUrl);
     });
 
     it('should load embedding models via /api/embed (not /api/generate)', async () => {
@@ -133,6 +163,19 @@ describe('OllamaBackend', () => {
 
       const loaded = await backend.isModelLoaded('phi4-mini');
       expect(loaded).toBe(true);
+    });
+
+    it('should invalidate the cached URL when isModelLoaded fails', async () => {
+      const state = inspectable();
+      state.resolvedUrl = 'http://cached:11434';
+      state.urlResolved = true;
+      (axios.get as any) = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+
+      const loaded = await backend.isModelLoaded('phi4-mini');
+
+      expect(loaded).toBe(false);
+      expect(state.urlResolved).toBe(false);
+      expect(state.resolvedUrl).toBe(state.configuredUrl);
     });
   });
 
