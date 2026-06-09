@@ -99,6 +99,16 @@ describe('ensureHubBindMountsWritable', () => {
     expect(existsSync(join(internalRoot, 'state', 'settings.json'))).toBe(true);
     expect(spawnSyncMock.mock.calls.some((call) => call[0] === 'docker')).toBe(true);
   });
+
+  it('skips docker-based heal when requested and still seeds host-writable bind mounts', () => {
+    const { internalRoot } = makeHubDataLayout(tmpRoot);
+
+    const identity = ensureHubBindMountsWritable(internalRoot, { skipDockerHeal: true });
+
+    expect(identity.uid).toBe(1000);
+    expect(existsSync(join(internalRoot, 'state', 'settings.json'))).toBe(true);
+    expect(spawnSyncMock).not.toHaveBeenCalled();
+  });
 });
 
 describe('hostPathWritable', () => {
