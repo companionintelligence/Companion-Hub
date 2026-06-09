@@ -134,9 +134,10 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
           '--remove-orphans',
         ],
         {
-        stdio: 'ignore',
-        detached: true,
-      });
+          stdio: 'ignore',
+          detached: true,
+        },
+      );
       cmd.unref();
     }, 3000);
 
