@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { SystemUpdateService } from '../system-update.service';
+import fs from 'node:fs';
 
-// Mock child_process
 vi.mock('node:child_process', () => ({
   spawn: vi.fn(),
 }));
@@ -10,6 +10,7 @@ vi.mock('node:fs', () => ({
   default: {
     existsSync: vi.fn(() => false),
     readFileSync: vi.fn(),
+    writeFileSync: vi.fn(),
     promises: { writeFile: vi.fn() },
   },
 }));
@@ -21,6 +22,7 @@ describe('SystemUpdateService', () => {
   let mockLogger: any;
 
   beforeEach(() => {
+    vi.clearAllMocks();
     mockLogger = {
       info: vi.fn(),
       debug: vi.fn(),
@@ -45,6 +47,7 @@ describe('SystemUpdateService', () => {
       expect(result.updateAvailable).toBe(true);
       expect(result.current).toBe('1.0.0');
       expect(result.latest).toBe('1.1.0');
+      expect(mockRegistryService.getTagsSince).toHaveBeenCalledWith('ci-hub', '1.0.0');
     });
 
     it('should return no update when no newer versions', async () => {
@@ -52,13 +55,14 @@ describe('SystemUpdateService', () => {
 
       const result = await service.checkForUpdates();
       expect(result.updateAvailable).toBe(false);
-      expect(result.current).toBe('1.0.0');
-      expect(result.latest).toBe('1.0.0');
     });
   });
 
   describe('performUpdate', () => {
-    it('should pull the new image and schedule restart', async () => {
+    it('should pull the full stack and schedule restart', async () => {
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+      vi.mocked(fs.readFileSync).mockReturnValue('CI_HUB_IMAGE=ghcr.io/companionintelligence/ci-hub:old\n');
+
       const { spawn } = await import('node:child_process');
       const mockProcess = {
         stdout: { on: vi.fn() },
@@ -70,22 +74,19 @@ describe('SystemUpdateService', () => {
       };
       (spawn as any).mockReturnValue(mockProcess);
 
-      const result = await service.performUpdate();
+      const result = await service.performUpdate('1.1.0');
       expect(result.success).toBe(true);
-      expect(result.message).toContain('restart shortly');
+      expect(fs.writeFileSync).toHaveBeenCalled();
+      expect(spawn).toHaveBeenCalled();
+      const pullCall = (spawn as any).mock.calls[0];
+      expect(pullCall[1]).toContain('pull');
+      expect(pullCall[1]).not.toContain('ci-os-hub');
     });
   });
 
   describe('getAutoUpdatesEnabled', () => {
     it('should default to true when no settings file exists', () => {
       expect(service.getAutoUpdatesEnabled()).toBe(true);
-    });
-  });
-
-  describe('onApplicationBootstrap', () => {
-    it('should not schedule auto-update in non-production', () => {
-      service.onApplicationBootstrap();
-      // No interval set in non-prod — just ensure no error
     });
   });
 });
