@@ -14,7 +14,7 @@ import { InstallPipelineTracker } from './install-pipeline.tracker';
 import { RegistrationModule } from '../registration/registration.module';
 
 @Module({
-  imports: [QueueModule, EnvModule, InferenceModule, MarketplaceModule, forwardRef(() => RegistrationModule)],
+  imports: [QueueModule, EnvModule, forwardRef(() => InferenceModule), MarketplaceModule, forwardRef(() => RegistrationModule)],
   controllers: [AppsController],
   providers: [AppFilesManager, AppsRepository, AppHelpers, AppsService, ConfigurationService, PortAllocationRepository, InstallPipelineTracker],
   exports: [AppsRepository, AppFilesManager, AppHelpers, AppsService, InstallPipelineTracker],

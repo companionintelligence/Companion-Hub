@@ -97,28 +97,34 @@ export class InferenceEnvResolver {
       }
     }
 
-    // ── Embedding model ───────────────────────────────────────────────────
     let embeddingModel: string | undefined;
-    if (preferences.preferredEmbeddingModel) {
-      const curated = this.modelRegistry.getCuratedModel(preferences.preferredEmbeddingModel);
-      embeddingModel = curated?.backendModelId;
-    }
-    if (!embeddingModel) {
-      const recommended = this.modelRegistry.getRecommendedEmbeddingModel(profile.tier);
-      embeddingModel = recommended?.backendModelId;
-    }
-
-    // ── Vision model ──────────────────────────────────────────────────────
     let visionModel: string | undefined;
-    if (preferences.preferredVisionModel) {
-      const curated = this.modelRegistry.getCuratedModel(preferences.preferredVisionModel);
-      if (curated?.metadata?.capabilities?.vision) {
-        visionModel = curated.backendModelId;
+
+    // Embedding + vision defaults are backend-specific Ollama model IDs.
+    // When a cloud provider overrides the OpenAI-compatible base URL, omit
+    // these so apps do not send Ollama-only model IDs to the cloud endpoint.
+    if (!cloudProvider && ollamaReady) {
+      // ── Embedding model ─────────────────────────────────────────────────
+      if (preferences.preferredEmbeddingModel) {
+        const curated = this.modelRegistry.getCuratedModel(preferences.preferredEmbeddingModel);
+        embeddingModel = curated?.backendModelId;
       }
-    }
-    if (!visionModel) {
-      const recommended = this.modelRegistry.getRecommendedVisionModel(profile.tier);
-      visionModel = recommended?.backendModelId;
+      if (!embeddingModel) {
+        const recommended = this.modelRegistry.getRecommendedEmbeddingModel(profile.tier);
+        embeddingModel = recommended?.backendModelId;
+      }
+
+      // ── Vision model ────────────────────────────────────────────────────
+      if (preferences.preferredVisionModel) {
+        const curated = this.modelRegistry.getCuratedModel(preferences.preferredVisionModel);
+        if (curated?.metadata?.capabilities?.vision) {
+          visionModel = curated.backendModelId;
+        }
+      }
+      if (!visionModel) {
+        const recommended = this.modelRegistry.getRecommendedVisionModel(profile.tier);
+        visionModel = recommended?.backendModelId;
+      }
     }
 
     const env: StandardizedAiEnv = {};
