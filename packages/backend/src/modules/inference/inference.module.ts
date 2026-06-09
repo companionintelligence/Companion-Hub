@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { LoggerModule } from '@/core/logger/logger.module';
 import { FilesystemModule } from '@/core/filesystem/filesystem.module';
 import { SystemModule } from '@/modules/system/system.module';
@@ -17,7 +17,7 @@ import { LemonadeBackend } from './backends/lemonade.backend';
 import { InferenceController } from './inference.controller';
 
 @Module({
-  imports: [LoggerModule, FilesystemModule, SystemModule],
+  imports: [LoggerModule, FilesystemModule, forwardRef(() => SystemModule)],
   controllers: [InferenceController],
   providers: [
     HardwareInspectorService,

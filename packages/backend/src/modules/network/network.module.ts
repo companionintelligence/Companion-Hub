@@ -7,7 +7,7 @@ import { PortAllocationRepository } from './port-allocation.repository';
 import { PortController } from './port.controller';
 
 @Module({
-  imports: [forwardRef(() => AppsModule), DockerModule],
+  imports: [forwardRef(() => AppsModule), forwardRef(() => DockerModule)],
   controllers: [PortController],
   providers: [SubnetManagerService, PortManagerService, PortAllocationRepository],
   exports: [SubnetManagerService, PortManagerService, PortAllocationRepository],
