@@ -52,6 +52,20 @@ export class InferenceEnvResolver {
 
   async resolve(): Promise<StandardizedAiEnv> {
     const cloudProvider = this.cloudFallback.getEnabledProviders()[0];
+    if (cloudProvider) {
+      const env: StandardizedAiEnv = {};
+      if (cloudProvider.baseUrl) env.CI_LLM_BASE_URL = cloudProvider.baseUrl;
+      if (cloudProvider.apiKey) env.CI_LLM_API_KEY = cloudProvider.apiKey;
+      if (cloudProvider.defaultModel) env.CI_CHAT_MODEL = cloudProvider.defaultModel;
+
+      this.logger.info(
+        `[InferenceEnvResolver] chat=${cloudProvider.defaultModel ?? 'none'} embedding=none vision=none ` +
+          `baseUrl=${cloudProvider.baseUrl ?? 'none'} ollamaReady=skipped`,
+      );
+
+      return env;
+    }
+
     const ollamaHealth = await this.ollamaBackend.healthCheck().catch((err) => {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.warn(`[InferenceEnvResolver] Ollama health check failed: ${message}`);
@@ -59,85 +73,68 @@ export class InferenceEnvResolver {
     });
     const ollamaReady = !!(ollamaHealth.running && ollamaHealth.healthy);
 
-    if (!cloudProvider && !ollamaReady) {
+    if (!ollamaReady) {
       this.logger.warn('[InferenceEnvResolver] Ollama unavailable and no cloud provider configured; omitting AI env.');
       return {};
     }
 
-    const ollamaBaseUrl = ollamaReady ? this.ollamaBackend.getBaseUrl() : undefined;
+    const ollamaBaseUrl = this.ollamaBackend.getBaseUrl();
     const preferences = this.config.getInferencePreferences();
     const profile = await this.hardwareInspector.getProfile();
 
     // ── Base URL + API key ────────────────────────────────────────────────
-    let baseUrl: string | undefined;
-    let apiKey: string | undefined;
-
-    if (cloudProvider) {
-      baseUrl = cloudProvider.baseUrl || undefined;
-      apiKey = cloudProvider.apiKey || undefined;
-    } else if (ollamaBaseUrl) {
-      baseUrl = `${ollamaBaseUrl}/v1`;
-      apiKey = 'ollama';
-    }
+    const baseUrl = `${ollamaBaseUrl}/v1`;
+    const apiKey = 'ollama';
 
     // ── Chat model ────────────────────────────────────────────────────────
     let chatModel: string | undefined;
-    if (cloudProvider?.defaultModel) {
-      chatModel = cloudProvider.defaultModel;
-    } else if (ollamaReady) {
-      const preferredId = preferences.preferredModel;
-      if (preferredId) {
-        const curated = this.modelRegistry.getCuratedModel(preferredId);
-        chatModel = curated?.backendModelId;
-      }
-      if (!chatModel) {
-        const recommended = this.modelRegistry.getRecommendedModelsForHardware(profile.tier, profile);
-        const llm = recommended.find((m) => m.modality === 'llm');
-        chatModel = llm?.backendModelId;
-      }
+    const preferredId = preferences.preferredModel;
+    if (preferredId) {
+      const curated = this.modelRegistry.getCuratedModel(preferredId);
+      chatModel = curated?.backendModelId;
+    }
+    if (!chatModel) {
+      const recommended = this.modelRegistry.getRecommendedModelsForHardware(profile.tier, profile);
+      const llm = recommended.find((m) => m.modality === 'llm');
+      chatModel = llm?.backendModelId;
     }
 
+    // ── Embedding model ───────────────────────────────────────────────────
     let embeddingModel: string | undefined;
-    let visionModel: string | undefined;
-
-    // Embedding + vision defaults are backend-specific Ollama model IDs.
-    // When a cloud provider overrides the OpenAI-compatible base URL, omit
-    // these so apps do not send Ollama-only model IDs to the cloud endpoint.
-    if (!cloudProvider && ollamaReady) {
-      // ── Embedding model ─────────────────────────────────────────────────
-      if (preferences.preferredEmbeddingModel) {
-        const curated = this.modelRegistry.getCuratedModel(preferences.preferredEmbeddingModel);
-        embeddingModel = curated?.backendModelId;
-      }
-      if (!embeddingModel) {
-        const recommended = this.modelRegistry.getRecommendedEmbeddingModel(profile.tier);
-        embeddingModel = recommended?.backendModelId;
-      }
-
-      // ── Vision model ────────────────────────────────────────────────────
-      if (preferences.preferredVisionModel) {
-        const curated = this.modelRegistry.getCuratedModel(preferences.preferredVisionModel);
-        if (curated?.metadata?.capabilities?.vision) {
-          visionModel = curated.backendModelId;
-        }
-      }
-      if (!visionModel) {
-        const recommended = this.modelRegistry.getRecommendedVisionModel(profile.tier);
-        visionModel = recommended?.backendModelId;
-      }
+    if (preferences.preferredEmbeddingModel) {
+      const curated = this.modelRegistry.getCuratedModel(preferences.preferredEmbeddingModel);
+      embeddingModel = curated?.backendModelId;
+    }
+    if (!embeddingModel) {
+      const recommended = this.modelRegistry.getRecommendedEmbeddingModel(profile.tier);
+      embeddingModel = recommended?.backendModelId;
     }
 
-    const env: StandardizedAiEnv = {};
-    if (baseUrl) env.CI_LLM_BASE_URL = baseUrl;
-    if (apiKey) env.CI_LLM_API_KEY = apiKey;
-    if (ollamaBaseUrl) env.OLLAMA_HOST = ollamaBaseUrl;
+    // ── Vision model ──────────────────────────────────────────────────────
+    let visionModel: string | undefined;
+    if (preferences.preferredVisionModel) {
+      const curated = this.modelRegistry.getCuratedModel(preferences.preferredVisionModel);
+      if (curated?.metadata?.capabilities?.vision) {
+        visionModel = curated.backendModelId;
+      }
+    }
+    if (!visionModel) {
+      const recommended = this.modelRegistry.getRecommendedVisionModel(profile.tier);
+      visionModel = recommended?.backendModelId;
+    }
+
+    const env: StandardizedAiEnv = {
+      CI_LLM_BASE_URL: baseUrl,
+      CI_LLM_API_KEY: apiKey,
+      OLLAMA_HOST: ollamaBaseUrl,
+    };
     if (chatModel) env.CI_CHAT_MODEL = chatModel;
     if (embeddingModel) env.CI_EMBEDDING_MODEL = embeddingModel;
     if (visionModel) env.CI_VISION_MODEL = visionModel;
 
     this.logger.info(
       `[InferenceEnvResolver] chat=${chatModel ?? 'none'} embedding=${embeddingModel ?? 'none'} ` +
-        `vision=${visionModel ?? 'none'} baseUrl=${baseUrl ?? 'none'} ollamaReady=${ollamaReady}`,
+        `vision=${visionModel ?? 'none'} baseUrl=${baseUrl} ollamaReady=${ollamaReady}`,
     );
 
     return env;

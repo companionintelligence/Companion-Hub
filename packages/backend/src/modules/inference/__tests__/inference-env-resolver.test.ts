@@ -172,8 +172,6 @@ describe('InferenceEnvResolver', () => {
       defaultModel: 'gpt-4o',
     };
     cloudFallback.getEnabledProviders.mockReturnValue([provider]);
-    ollamaBackend.healthCheck.mockResolvedValueOnce({ running: false, healthy: false, modelsLoaded: [] });
-
     const env = await service.resolve();
 
     expect(env).toMatchObject({
@@ -184,6 +182,8 @@ describe('InferenceEnvResolver', () => {
     expect(env.CI_EMBEDDING_MODEL).toBeUndefined();
     expect(env.CI_VISION_MODEL).toBeUndefined();
     expect(env.OLLAMA_HOST).toBeUndefined();
+    expect(ollamaBackend.healthCheck).not.toHaveBeenCalled();
+    expect(hardwareInspector.getProfile).not.toHaveBeenCalled();
   });
 
   it('omits Ollama-specific embedding and vision model IDs when a cloud provider overrides the base URL', async () => {
@@ -208,10 +208,12 @@ describe('InferenceEnvResolver', () => {
       CI_LLM_BASE_URL: 'https://api.openai.com/v1',
       CI_LLM_API_KEY: 'sk-test',
       CI_CHAT_MODEL: 'gpt-4o',
-      OLLAMA_HOST: OLLAMA_BASE_URL,
     });
     expect(modelRegistry.getRecommendedEmbeddingModel).not.toHaveBeenCalled();
     expect(modelRegistry.getRecommendedVisionModel).not.toHaveBeenCalled();
+    expect(ollamaBackend.healthCheck).not.toHaveBeenCalled();
+    expect(modelRegistry.getCuratedModel).not.toHaveBeenCalledWith('preferred-embed');
+    expect(modelRegistry.getCuratedModel).not.toHaveBeenCalledWith('vision-capable');
   });
 
   it('honors preferred chat and embedding models and falls back for non-vision preferences', async () => {
