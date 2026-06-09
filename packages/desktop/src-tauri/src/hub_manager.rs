@@ -4022,6 +4022,9 @@ fn start_hub_inner(
                 format!("docker compose up -d succeeded. {}", combined_output)
             };
             let _ = append_desktop_log_for(data_dir, "hub.start", &compose_message);
+            // Persist after compose up (even if health check fails later) so retries
+            // and subsequent launches do not repeatedly pull/recreate unchanged stacks.
+            persist_config_hash(data_dir, compose_path, env_path);
             let _ = append_desktop_log_for(
                 data_dir,
                 "hub.start",
@@ -4129,6 +4132,26 @@ fn start_hub_inner(
     };
     let _ = append_desktop_log_for(data_dir, "hub.start", &failure);
     Err(with_view_logs_hint(failure))
+}
+
+/// Best-effort write of the current compose/env fingerprint after startup.
+///
+/// Called from `start_hub_inner` so manual/tray starts persist the hash that
+/// `should_refresh_stack` compares on the next launch.
+pub(crate) fn persist_config_hash(data_dir: &Path, compose_path: &Path, env_path: &Path) {
+    let hash_path = data_dir.join(".config-hash");
+    let hash = compute_config_hash(compose_path, env_path);
+    if let Err(error) = std::fs::write(&hash_path, &hash) {
+        let _ = append_desktop_log_for(
+            data_dir,
+            "hub.start",
+            &format!(
+                "Failed to persist configuration hash at {}: {}",
+                hash_path.display(),
+                error
+            ),
+        );
+    }
 }
 
 /// Drop the saved configuration hash so the next startup treats the stack as stale.
@@ -6226,5 +6249,21 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
         super::invalidate_config_hash(tempdir.path());
 
         assert!(!hash_path.exists(), ".config-hash should be removed");
+    }
+
+    #[test]
+    fn persist_config_hash_writes_compose_env_fingerprint() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let compose = tempdir.path().join("docker-compose.prod.yml");
+        let env = tempdir.path().join(".env");
+        std::fs::write(&compose, b"services: {}\n").expect("write compose");
+        std::fs::write(&env, b"ROOT_FOLDER_HOST=/data\n").expect("write env");
+
+        super::persist_config_hash(tempdir.path(), &compose, &env);
+
+        let hash_path = tempdir.path().join(".config-hash");
+        let saved = std::fs::read_to_string(&hash_path).expect("hash file");
+        let expected = super::compute_config_hash(&compose, &env);
+        assert_eq!(saved, expected);
     }
 }

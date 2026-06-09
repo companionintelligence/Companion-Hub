@@ -349,8 +349,6 @@ pub fn run() {
                     let compose = compose_path;
                     let env = env_path;
                     let data = data_dir;
-                    let hash = config_hash;
-                    let hp = hash_path;
                     let data_for_log = data.clone();
                     tauri::async_runtime::spawn(async move {
                         let result = tokio::task::spawn_blocking(move || {
@@ -384,16 +382,6 @@ pub fn run() {
                                     &msg,
                                 );
                             }
-                        }
-                        // Save hash regardless of compose exit status — partial starts
-                        // (e.g. Traefik port conflict) are still a valid state. Without
-                        // this, every relaunch re-runs compose because the hash is never saved.
-                        if let Err(error) = std::fs::write(&hp, &hash) {
-                            let _ = hub_manager::append_desktop_log_for(
-                                &data_for_log,
-                                "setup",
-                                &format!("Failed to persist configuration hash: {}", error),
-                            );
                         }
                     });
                 }
@@ -482,8 +470,6 @@ fn run_detached_mode() -> Result<String, String> {
         &env_path,
         option_env!("CI_HUB_BUILD_VERSION").unwrap_or("0.0.0"),
     );
-    let hash_path = data_dir.join(".config-hash");
-    let config_hash = hub_manager::compute_config_hash(&compose_path, &env_path);
 
     let _ = hub_manager::append_desktop_log_for(
         &data_dir,
@@ -510,17 +496,6 @@ fn run_detached_mode() -> Result<String, String> {
         error_reporting::capture_setup_failure(&error);
         error
     })?;
-    if let Err(error) = std::fs::write(&hash_path, &config_hash) {
-        let _ = hub_manager::append_desktop_log_for(
-            &data_dir,
-            "headless.start",
-            &format!(
-                "Hub started, but failed to persist configuration hash at {}: {}",
-                hash_path.display(),
-                error
-            ),
-        );
-    }
 
     updater::spawn_update_listener_daemon();
 
