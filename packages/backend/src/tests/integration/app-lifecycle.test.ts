@@ -46,6 +46,7 @@ import { createAppInStore } from '../utils/create-app-in-store';
 import { type TestDatabase, cleanTestData, createTestDatabase } from '../utils/create-test-database';
 import { APP_ASYNC_MUTEX } from '@/utils/mutex/mutex.module';
 import { AsyncMutex } from '@/utils/mutex/async-mutex';
+import { InferenceEnvResolver } from '@/modules/inference/inference-env-resolver';
 
 let db: TestDatabase;
 const DB_NAME = 'applifecycletest';
@@ -209,6 +210,10 @@ describe('App lifecycle', () => {
         {
           provide: LoggerService,
           useValue: loggerService,
+        },
+        {
+          provide: InferenceEnvResolver,
+          useValue: mock<InferenceEnvResolver>(),
         },
       ],
     }).compile();
