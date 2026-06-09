@@ -10,7 +10,7 @@ import { BrandLogo, LemonadeIcon, VllmIcon } from './icons';
 import { OptionCard, StepSection } from './primitives';
 import { useTranslation } from 'react-i18next';
 
-const BACKEND_HINTS: Record<InferenceBackendType, string> = {
+const BACKEND_HINT_KEYS: Record<InferenceBackendType, string> = {
   ollama: ONBOARDING_BACKEND_OLLAMA_HINT,
   vllm: ONBOARDING_BACKEND_VLLM_HINT,
   lemonade: ONBOARDING_BACKEND_LEMONADE_HINT,
@@ -80,7 +80,12 @@ export const BackendSelectionCard = ({
                 />
                 <div className="flex-1">
                   <div className="flex items-center gap-2">
-                    <LabelWithHint label={info.label} hint={BACKEND_HINTS[type]} hintId={`backend-hint-${type}`} className="text-sm font-medium" />
+                    <LabelWithHint
+                      label={info.label}
+                      hint={t(BACKEND_HINT_KEYS[type])}
+                      hintId={`backend-hint-${type}`}
+                      className="text-sm font-medium"
+                    />
                     {isRecommended && !isUnavailable && (
                       <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary/10 text-primary font-medium">{t('ONBOARDING_RECOMMENDED')}</span>
                     )}
@@ -124,7 +129,7 @@ export const BackendCard = () => {
           icon={<BrandLogo name="ollama" />}
           selected
           badge={t('ONBOARDING_DEFAULT')}
-          hint={ONBOARDING_BACKEND_OLLAMA_HINT}
+          hint={t(ONBOARDING_BACKEND_OLLAMA_HINT)}
         />
         <OptionCard
           testId="backend-option-vllm"
@@ -133,7 +138,7 @@ export const BackendCard = () => {
           icon={<VllmIcon />}
           disabled
           badge={t('ONBOARDING_SOON')}
-          hint={ONBOARDING_BACKEND_VLLM_HINT}
+          hint={t(ONBOARDING_BACKEND_VLLM_HINT)}
         />
         <OptionCard
           testId="backend-option-lemonade"
@@ -142,7 +147,7 @@ export const BackendCard = () => {
           icon={<LemonadeIcon />}
           disabled
           badge={t('ONBOARDING_SOON')}
-          hint={ONBOARDING_BACKEND_LEMONADE_HINT}
+          hint={t(ONBOARDING_BACKEND_LEMONADE_HINT)}
         />
       </div>
     </StepSection>

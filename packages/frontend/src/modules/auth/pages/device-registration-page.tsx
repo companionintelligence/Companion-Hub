@@ -52,13 +52,13 @@ function getProgressCopy(status: RegistrationStatus | null, redirectStatus: stri
       return {
         title: i18next.t('DEVICE_REGISTRATION_PROVISIONING_YOUR_DOMAIN'),
         description: i18next.t('DEVICE_REGISTRATION_PROVISIONING_YOUR_DOMAIN_DESC'),
-        hint: REGISTRATION_PROVISIONING_HINT,
+        hint: i18next.t(REGISTRATION_PROVISIONING_HINT),
       };
     case 'provisioning':
       return {
         title: i18next.t('DEVICE_REGISTRATION_SETTING_UP_HUB'),
         description: i18next.t('DEVICE_REGISTRATION_SETTING_UP_HUB_DESC'),
-        hint: REGISTRATION_DNS_HINT,
+        hint: i18next.t(REGISTRATION_DNS_HINT),
       };
     case 'degraded':
       return {
@@ -76,7 +76,7 @@ function getProgressCopy(status: RegistrationStatus | null, redirectStatus: stri
 }
 
 export default function DeviceRegistrationPage() {
-  const t = i18next.t.bind(i18next);
+  const t = i18next.t;
   const navigate = useNavigate();
   const [deviceId, setDeviceId] = useState<string | null>(null);
   const [portalBaseUrl, setPortalBaseUrl] = useState<string>(DEFAULT_PORTAL_URL);
@@ -117,7 +117,7 @@ export default function DeviceRegistrationPage() {
       console.error(error);
       setDeviceInfoError(t('DEVICE_REGISTRATION_DEVICE_INFO_FAILED'));
     }
-  }, [t]);
+  }, []);
 
   const refreshRegistrationStatus = useCallback(async () => {
     try {
@@ -154,7 +154,7 @@ export default function DeviceRegistrationPage() {
     } finally {
       setIsLoading(false);
     }
-  }, [loadDeviceInfo, t]);
+  }, [loadDeviceInfo]);
 
   const finishRegistrationFlow = useCallback(
     async (status: RegistrationStatus) => {
@@ -226,7 +226,7 @@ export default function DeviceRegistrationPage() {
       await sleep(1000);
       navigate('/', { replace: true });
     },
-    [isTauri, navigate, t],
+    [isTauri, navigate],
   );
 
   useEffect(() => {
@@ -316,7 +316,7 @@ export default function DeviceRegistrationPage() {
         setIsPairing(false);
       }
     },
-    [refreshRegistrationStatus, t],
+    [refreshRegistrationStatus],
   );
 
   useEffect(() => {
@@ -424,7 +424,7 @@ export default function DeviceRegistrationPage() {
     return (
       <div className="mx-auto flex max-w-md flex-col items-center gap-4 py-4 text-center">
         {showSuccessIcon ? (
-          <CheckCircle2 role="img" aria-label={t('COMMON_SUCCESS')} className="h-12 w-12 text-green-500" />
+          <CheckCircle2 role="img" aria-label={t('COMMON_SUCCESS')} className="h-10 w-10 text-green-500" />
         ) : (
           <Loader2 role="img" aria-label={t('COMMON_LOADING')} className="h-10 w-10 animate-spin text-primary" />
         )}
@@ -500,7 +500,7 @@ export default function DeviceRegistrationPage() {
           <div className="flex items-start gap-1 flex-wrap">
             <HintText
               id="reg-account"
-              hint={REGISTRATION_ACCOUNT_HINT}
+              hint={t(REGISTRATION_ACCOUNT_HINT)}
               as="h2"
               className="text-lg font-semibold leading-snug text-foreground md:text-xl"
             >
@@ -533,7 +533,7 @@ export default function DeviceRegistrationPage() {
           <div className="mt-5 space-y-4">
             <div className="space-y-2">
               <div className="text-sm text-muted-foreground">
-                <LabelWithHint label={t('DEVICE_REGISTRATION_CURRENT_DEVICE_ID')} hint={REGISTRATION_DEVICE_ID_HINT} hintId="reg-device-id" />
+                <LabelWithHint label={t('DEVICE_REGISTRATION_CURRENT_DEVICE_ID')} hint={t(REGISTRATION_DEVICE_ID_HINT)} hintId="reg-device-id" />
               </div>
               <div className="flex items-center gap-2 rounded-lg border border-border/60 bg-background/60 px-3 py-2">
                 <p className="min-w-0 flex-1 break-all font-mono text-sm text-foreground">{deviceId ?? t('DEVICE_REGISTRATION_LOADING_DEVICE_ID')}</p>
@@ -554,7 +554,7 @@ export default function DeviceRegistrationPage() {
 
             <div className="space-y-2">
               <label htmlFor="pairing-code" className="block text-sm text-muted-foreground">
-                <HintText id="reg-pairing-code" hint={REGISTRATION_PAIRING_CODE_HINT}>
+                <HintText id="reg-pairing-code" hint={t(REGISTRATION_PAIRING_CODE_HINT)}>
                   {t('DEVICE_REGISTRATION_ENTER_PAIRING_CODE')}
                 </HintText>
               </label>

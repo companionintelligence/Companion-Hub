@@ -139,12 +139,14 @@ interface OtherModelsProps {
 /* ── Other Models table: color-coded levels (red → orange → gold → green → blue) live in ./levels ── */
 
 function ScoreCell({ value }: { value?: number }) {
-  if (value == null) return <span className="text-muted-foreground/50">-</span>;
+  const { t } = useTranslation();
+  if (value == null) return <span className="text-muted-foreground/50">{t('COMMON_DASH')}</span>;
   return <span className={cn('font-semibold tabular-nums', LEVEL_TEXT[scoreColor(value)])}>{Math.round(value)}</span>;
 }
 
 function ResourceCell({ mb }: { mb?: number }) {
-  if (mb == null) return <span className="text-muted-foreground/50">-</span>;
+  const { t } = useTranslation();
+  if (mb == null) return <span className="text-muted-foreground/50">{t('COMMON_DASH')}</span>;
   const gb = mb / 1024;
   return <span className={cn('tabular-nums', LEVEL_TEXT[resourceColor(gb)])}>{gb >= 1 ? `${gb.toFixed(1)} GB` : `${Math.round(mb)} MB`}</span>;
 }

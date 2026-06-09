@@ -102,9 +102,9 @@ export const AgentFrameworkCard = ({
                   <span className="min-w-0">
                     <span className="block text-sm font-medium">
                       {mode === 'tailscale' ? (
-                        <LabelWithHint label={t(labelKey)} hint={ONBOARDING_REMOTE_VPN_HINT} hintId="onboarding-remote-vpn" />
+                        <LabelWithHint label={t(labelKey)} hint={t(ONBOARDING_REMOTE_VPN_HINT)} hintId="onboarding-remote-vpn" />
                       ) : (
-                        <LabelWithHint label={t(labelKey)} hint={ONBOARDING_REMOTE_WEB_HINT} hintId="onboarding-remote-web" />
+                        <LabelWithHint label={t(labelKey)} hint={t(ONBOARDING_REMOTE_WEB_HINT)} hintId="onboarding-remote-web" />
                       )}
                     </span>
                     <span className="block text-xs text-muted-foreground">

@@ -279,7 +279,7 @@ export const AiSettingsContainer = () => {
       }
 
       if (modelOperationErrors.length > 0) {
-        toast.success(t('AI_SETTINGS_SAVED_WITH_ISSUES', { count: modelOperationErrors.length.toString() }));
+        toast.success(t('AI_SETTINGS_SAVED_WITH_ISSUES', { count: modelOperationErrors.length }));
       } else {
         toast.success(t('AI_SETTINGS_SAVED'));
       }

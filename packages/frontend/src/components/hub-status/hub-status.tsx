@@ -201,7 +201,7 @@ function DockerDesktopGuide({
           <div className="flex items-start justify-between gap-4">
             <div className="space-y-1">
               <div className="flex items-start gap-1 flex-wrap">
-                <HintText id="docker-required" hint={DOCKER_REQUIRED_HINT} as="h2" className="text-xl font-semibold text-foreground">
+                <HintText id="docker-required" hint={t(DOCKER_REQUIRED_HINT)} as="h2" className="text-xl font-semibold text-foreground">
                   {t('HUB_STATUS_DOCKER_DESKTOP_REQUIRED')}
                 </HintText>
               </div>
@@ -244,7 +244,7 @@ function DockerDesktopGuide({
                   </button>
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  <HintText id="docker-mac-arch" hint={DOCKER_MAC_ARCH_HINT}>
+                  <HintText id="docker-mac-arch" hint={t(DOCKER_MAC_ARCH_HINT)}>
                     {t('HUB_STATUS_WHICH_MAC')}
                   </HintText>
                 </p>
@@ -270,7 +270,7 @@ function LinuxDockerGuide() {
           <div className="flex items-start justify-between gap-4">
             <div className="space-y-1">
               <div className="flex items-start gap-1 flex-wrap">
-                <HintText id="docker-linux-required" hint={DOCKER_REQUIRED_HINT} as="h2" className="text-xl font-semibold text-foreground">
+                <HintText id="docker-linux-required" hint={t(DOCKER_REQUIRED_HINT)} as="h2" className="text-xl font-semibold text-foreground">
                   {t('HUB_STATUS_DOCKER_ENGINE_REQUIRED')}
                 </HintText>
               </div>
@@ -338,7 +338,8 @@ const SERVICE_COLOR: Record<ServiceState, string> = {
 function ServiceRow({ service }: { service: ServiceStatus }) {
   const { t } = useTranslation();
   const color = SERVICE_COLOR[service.state];
-  const hint = STARTUP_SERVICE_HINTS[service.container];
+  const hintKey = STARTUP_SERVICE_HINTS[service.container];
+  const hint = hintKey ? t(hintKey) : undefined;
   const label =
     service.state === 'pending'
       ? t('HUB_STATUS_SERVICE_WAITING')
@@ -440,7 +441,7 @@ function StartupScreen({ elapsedSeconds }: { elapsedSeconds: number }) {
                 {serviceCounts.failed > 0 ? `, ${serviceCounts.failed} ${t('COMMON_FAILED')}` : ''}
               </div>
               <div className="text-xs text-muted-foreground/70">
-                <HintText id="startup-image-pull" hint={STARTUP_IMAGE_PULL_HINT}>
+                <HintText id="startup-image-pull" hint={t(STARTUP_IMAGE_PULL_HINT)}>
                   {t('HUB_STATUS_IMAGE_PULLS')}: {progress.image_pulled}/{progress.image_total} ({progress.image_pull_pct}%)
                 </HintText>
               </div>

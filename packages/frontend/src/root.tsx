@@ -205,10 +205,30 @@ export function Layout({ children }: { children: React.ReactNode }) {
             el.style.padding = '8px 12px';
             el.style.borderRadius = '8px';
             el.style.fontSize = '13px';
-            el.innerHTML = `<div style="display:flex; gap:8px; align-items:center;"><span>${fallbackLabel}</span><button id="ci-hub-dev-reload" style="background:#fff;color:#000;border:none;padding:6px 8px;border-radius:6px;cursor:pointer">${reloadLabel}</button></div>`;
+            const wrapper = document.createElement('div');
+            wrapper.style.display = 'flex';
+            wrapper.style.gap = '8px';
+            wrapper.style.alignItems = 'center';
+
+            const label = document.createElement('span');
+            label.textContent = fallbackLabel;
+
+            const button = document.createElement('button');
+            button.id = 'ci-hub-dev-reload';
+            button.type = 'button';
+            button.style.background = '#fff';
+            button.style.color = '#000';
+            button.style.border = 'none';
+            button.style.padding = '6px 8px';
+            button.style.borderRadius = '6px';
+            button.style.cursor = 'pointer';
+            button.textContent = reloadLabel;
+            button.addEventListener('click', () => location.reload());
+
+            wrapper.appendChild(label);
+            wrapper.appendChild(button);
+            el.appendChild(wrapper);
             document.body.appendChild(el);
-            const btn = document.getElementById('ci-hub-dev-reload');
-            btn?.addEventListener('click', () => location.reload());
           }
         } else {
           const exist = document.getElementById('ci-hub-dev-fallback');

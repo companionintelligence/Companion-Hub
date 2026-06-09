@@ -14,16 +14,16 @@ export function isAppleSiliconGpu(hardware: HardwareProfile): boolean {
   return hardware.gpu.available && hardware.gpu.unifiedMemory && hardware.gpu.vendor === 'apple';
 }
 
-const TIER_BADGES: Record<HardwareTier, { label: string; color: string; emoji: string }> = {
-  high: { label: i18next.t('ONBOARDING_TIER_HIGH'), color: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200', emoji: '🚀' },
-  medium: { label: i18next.t('ONBOARDING_TIER_MEDIUM'), color: 'bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-300', emoji: '⚡' },
-  low: { label: i18next.t('ONBOARDING_TIER_LOW'), color: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200', emoji: '💡' },
+const TIER_BADGES: Record<HardwareTier, { labelKey: string; color: string; emoji: string }> = {
+  high: { labelKey: 'ONBOARDING_TIER_HIGH', color: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200', emoji: '🚀' },
+  medium: { labelKey: 'ONBOARDING_TIER_MEDIUM', color: 'bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-300', emoji: '⚡' },
+  low: { labelKey: 'ONBOARDING_TIER_LOW', color: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200', emoji: '💡' },
   'cpu-only': {
-    label: i18next.t('ONBOARDING_TIER_CPU_ONLY'),
+    labelKey: 'ONBOARDING_TIER_CPU_ONLY',
     color: 'bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200',
     emoji: '🔧',
   },
-  insufficient: { label: i18next.t('ONBOARDING_TIER_INSUFFICIENT'), color: 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200', emoji: '☁️' },
+  insufficient: { labelKey: 'ONBOARDING_TIER_INSUFFICIENT', color: 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200', emoji: '☁️' },
 };
 
 export function resolveTierBadge(tier: HardwareTier, hardware: HardwareProfile) {
@@ -41,7 +41,12 @@ export function resolveTierBadge(tier: HardwareTier, hardware: HardwareProfile) 
       emoji: '✨',
     };
   }
-  return TIER_BADGES[tier];
+  const tierBadge = TIER_BADGES[tier];
+  return {
+    label: i18next.t(tierBadge.labelKey),
+    color: tierBadge.color,
+    emoji: tierBadge.emoji,
+  };
 }
 
 export function resolveGpuSubLabel(hardware: HardwareProfile): string | undefined {
