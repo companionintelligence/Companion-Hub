@@ -20,6 +20,7 @@ import {
   STEP_ICONS,
   renderVersion,
   renderWizardWelcome,
+  firstPathFromLookupOutput,
   resolveEnvFromArgs,
   resolveWizardActionInput,
   resolveWizardEnvInput,
@@ -146,6 +147,22 @@ describe('renderStep', () => {
 });
 
 // ??? version ?????????????????????????????????????????????????????????????????
+
+describe('firstPathFromLookupOutput', () => {
+  it('returns the first non-empty line from where/which output', () => {
+    expect(firstPathFromLookupOutput('C:\\Program Files\\Companion Hub\\companion-hub.exe\r\n')).toBe(
+      'C:\\Program Files\\Companion Hub\\companion-hub.exe',
+    );
+  });
+
+  it('ignores trailing blank lines', () => {
+    expect(firstPathFromLookupOutput('/usr/local/bin/companion-hub\n\n')).toBe('/usr/local/bin/companion-hub');
+  });
+
+  it('returns undefined for empty output', () => {
+    expect(firstPathFromLookupOutput('   \n')).toBeUndefined();
+  });
+});
 
 describe('renderVersion', () => {
   it('includes the cihub command name', () => {

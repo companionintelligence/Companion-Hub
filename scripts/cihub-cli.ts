@@ -1281,12 +1281,31 @@ function usageAndExit(message?: string, code = 2): never {
 
 // ─── Host update (delegates to companion-hub binary) ─────────────────────────
 
-function resolveCompanionHubBinary(): string {
+/** First non-empty line from `where`/`which` stdout (Windows `where` may return multiple paths). */
+export function firstPathFromLookupOutput(output: string): string | undefined {
+  const line = output
+    .trim()
+    .split(/\r?\n/)
+    .map((entry) => entry.trim())
+    .find(Boolean);
+  return line || undefined;
+}
+
+function resolveExecutableOnPath(name: string): string | undefined {
+  const isWindows = process.platform === 'win32';
+  const result = isWindows ? spawnSync('where', [name], { encoding: 'utf8', shell: true }) : spawnSync('which', [name], { encoding: 'utf8' });
+  if (result.status !== 0) {
+    return undefined;
+  }
+  return firstPathFromLookupOutput(result.stdout);
+}
+
+export function resolveCompanionHubBinary(): string {
   const candidates = ['companion-hub', 'Companion Hub'];
   for (const name of candidates) {
-    const result = spawnSync('which', [name], { encoding: 'utf8' });
-    if (result.status === 0 && result.stdout.trim()) {
-      return result.stdout.trim();
+    const resolved = resolveExecutableOnPath(name);
+    if (resolved) {
+      return resolved;
     }
   }
   return 'companion-hub';
