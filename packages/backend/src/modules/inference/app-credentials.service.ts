@@ -9,7 +9,7 @@ import { OllamaBackend } from './backends/ollama.backend';
 import type { CuratedModel, HardwareTier } from '@ci-hub/common/types';
 import { isCatalogModelInstalled } from './model-availability.util';
 
-export const SUPPORTED_APP_SLUGS = ['hermes-agent', 'openclaw', 'companion-memory'] as const;
+export const SUPPORTED_APP_SLUGS = ['hermes-agent', 'openclaw'] as const;
 export type AppSlug = (typeof SUPPORTED_APP_SLUGS)[number];
 
 export const SUPPORTED_API_VERSIONS = [1] as const;
@@ -46,14 +46,6 @@ const APP_ENV_KEYS: Record<AppSlug, { baseUrl: string; model: string; embeddings
     model: 'DEFAULT_MODEL',
     embeddings: 'EMBEDDINGS_MODEL',
     apiKey: 'OPENAI_API_KEY',
-  },
-  // CI-Server (the "Companion Memory" memory brain). Uses its own LLM_* convention,
-  // which its summary-service already reads and its NestJS API is migrating onto.
-  'companion-memory': {
-    baseUrl: 'LLM_API_BASE',
-    model: 'LLM_DEFAULT_CHAT_MODEL',
-    embeddings: 'LLM_DEFAULT_EMBEDDING_MODEL',
-    apiKey: 'LLM_API_KEY',
   },
 };
 
