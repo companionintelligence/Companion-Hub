@@ -61,10 +61,7 @@ fn set_progress(phase: &str, message: &str) {
 }
 
 pub fn get_update_progress() -> Option<UpdateProgress> {
-    progress_store()
-        .lock()
-        .ok()
-        .and_then(|guard| guard.clone())
+    progress_store().lock().ok().and_then(|guard| guard.clone())
 }
 
 #[derive(Deserialize)]
@@ -116,7 +113,11 @@ pub fn is_trusted_download_url(url: &str) -> bool {
 
 fn path_has_parent_traversal(url: &str) -> bool {
     raw_path_segments(url)
-        .map(|segments| segments.iter().any(|segment| segment_decodes_to_parent_dir(segment)))
+        .map(|segments| {
+            segments
+                .iter()
+                .any(|segment| segment_decodes_to_parent_dir(segment))
+        })
         .unwrap_or(false)
 }
 
@@ -134,7 +135,11 @@ fn raw_path_segments(url: &str) -> Option<Vec<&str>> {
         .or_else(|| strip_ascii_case_prefix(url, "http://"))?;
     let path_start = rest.find('/')?;
     let path = rest[path_start..].split(['?', '#']).next()?;
-    Some(path.split('/').filter(|segment| !segment.is_empty()).collect())
+    Some(
+        path.split('/')
+            .filter(|segment| !segment.is_empty())
+            .collect(),
+    )
 }
 
 fn segment_decodes_to_parent_dir(segment: &str) -> bool {
@@ -208,7 +213,10 @@ fn https_hostname(url: &str) -> Option<String> {
 }
 
 fn manifest_url(version: &str) -> String {
-    format!("https://dl.ci.computer/v{}/manifest.json", version.trim_start_matches('v'))
+    format!(
+        "https://dl.ci.computer/v{}/manifest.json",
+        version.trim_start_matches('v')
+    )
 }
 
 fn host_os() -> Option<HostOs> {
@@ -283,11 +291,7 @@ fn parse_artifact(value: &serde_json::Value) -> Option<ResolvedArtifact> {
         .get("sha256")
         .and_then(|v| v.as_str())
         .map(normalize_sha256);
-    Some(ResolvedArtifact {
-        url,
-        size,
-        sha256,
-    })
+    Some(ResolvedArtifact { url, size, sha256 })
 }
 
 fn artifact_for_platform_data(
@@ -295,9 +299,8 @@ fn artifact_for_platform_data(
     os: HostOs,
     package_preference: &str,
 ) -> Option<ResolvedArtifact> {
-    let read = |key: &str| -> Option<ResolvedArtifact> {
-        platform_data.get(key).and_then(parse_artifact)
-    };
+    let read =
+        |key: &str| -> Option<ResolvedArtifact> { platform_data.get(key).and_then(parse_artifact) };
 
     match os {
         HostOs::Macos => read("dmg"),
@@ -313,11 +316,7 @@ fn artifact_for_platform_data(
 }
 
 fn artifact_for_platform(platform_data: &serde_json::Value) -> Option<ResolvedArtifact> {
-    artifact_for_platform_data(
-        platform_data,
-        host_os()?,
-        linux_package_preference(),
-    )
+    artifact_for_platform_data(platform_data, host_os()?, linux_package_preference())
 }
 
 fn resolve_download_artifact(manifest: &ManifestJson) -> Option<ResolvedArtifact> {
@@ -326,7 +325,10 @@ fn resolve_download_artifact(manifest: &ManifestJson) -> Option<ResolvedArtifact
     artifact_for_platform(platform_data)
 }
 
-fn lookup_artifact_in_manifest(manifest: &ManifestJson, download_url: &str) -> Option<ResolvedArtifact> {
+fn lookup_artifact_in_manifest(
+    manifest: &ManifestJson,
+    download_url: &str,
+) -> Option<ResolvedArtifact> {
     for platform_data in manifest.platforms.values() {
         for key in ARTIFACT_KEYS {
             if let Some(artifact) = platform_data.get(key).and_then(parse_artifact) {
@@ -349,9 +351,8 @@ pub(crate) fn artifact_expectations_for_url(
         return Ok((info.expected_size, info.expected_sha256.clone()));
     }
     let manifest = fetch_manifest(client, latest_version)?;
-    let artifact = lookup_artifact_in_manifest(&manifest, download_url).ok_or_else(|| {
-        "Download URL not found in release manifest for this version".to_string()
-    })?;
+    let artifact = lookup_artifact_in_manifest(&manifest, download_url)
+        .ok_or_else(|| "Download URL not found in release manifest for this version".to_string())?;
     Ok((artifact.size, artifact.sha256))
 }
 
@@ -364,8 +365,8 @@ fn normalize_sha256(value: &str) -> String {
 
 fn sha256_hex_file(path: &Path) -> Result<String, String> {
     use std::io::Read;
-    let mut file =
-        std::fs::File::open(path).map_err(|e| format!("Failed to open download for hashing: {}", e))?;
+    let mut file = std::fs::File::open(path)
+        .map_err(|e| format!("Failed to open download for hashing: {}", e))?;
     let mut hasher = Sha256::new();
     let mut buffer = [0u8; 8192];
     loop {
@@ -435,7 +436,10 @@ fn fetch_latest_version(client: &reqwest::blocking::Client) -> Result<String, St
     Ok(latest.version.trim_start_matches('v').to_string())
 }
 
-fn fetch_manifest(client: &reqwest::blocking::Client, version: &str) -> Result<ManifestJson, String> {
+fn fetch_manifest(
+    client: &reqwest::blocking::Client,
+    version: &str,
+) -> Result<ManifestJson, String> {
     let url = manifest_url(version);
     if !is_trusted_download_url(&url) {
         return Err("Untrusted manifest URL".to_string());
@@ -481,7 +485,10 @@ pub fn check_desktop_update(current_version: &str) -> Result<DesktopUpdateInfo, 
     Ok(DesktopUpdateInfo {
         current_version: current_version.to_string(),
         latest_version,
-        download_url: download_url.as_ref().map(|a| a.url.clone()).unwrap_or_default(),
+        download_url: download_url
+            .as_ref()
+            .map(|a| a.url.clone())
+            .unwrap_or_default(),
         update_available,
         expected_size: download_url.as_ref().and_then(|a| a.size),
         expected_sha256: download_url.and_then(|a| a.sha256),
@@ -542,7 +549,12 @@ fn download_file(url: &str, dest: &Path) -> Result<(), String> {
 fn install_macos_dmg(dmg_path: &Path) -> Result<(), String> {
     set_progress("install", "Installing update…");
     let attach = Command::new("hdiutil")
-        .args(["attach", "-nobrowse", "-plist", dmg_path.to_string_lossy().as_ref()])
+        .args([
+            "attach",
+            "-nobrowse",
+            "-plist",
+            dmg_path.to_string_lossy().as_ref(),
+        ])
         .output()
         .map_err(|e| format!("hdiutil attach failed: {}", e))?;
     if !attach.status.success() {
@@ -563,7 +575,8 @@ fn install_macos_dmg(dmg_path: &Path) -> Result<(), String> {
             .map_err(|e| format!("Failed to remove old app bundle: {}", e))?;
     }
     if let Some(parent) = install_target.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create parent dir: {}", e))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create parent dir: {}", e))?;
     }
 
     copy_dir_recursive(&app_bundle, &install_target)?;
@@ -621,6 +634,7 @@ fn resolve_macos_install_target(source_app: &Path) -> Result<PathBuf, String> {
     ))
 }
 
+#[cfg(target_os = "macos")]
 fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<(), String> {
     std::fs::create_dir_all(dest).map_err(|e| format!("mkdir failed: {}", e))?;
     for entry in std::fs::read_dir(src).map_err(|e| format!("read_dir failed: {}", e))? {
@@ -710,8 +724,7 @@ fn install_linux_package(package: &Path) -> Result<(), String> {
                 .map_err(|e| format!("metadata: {}", e))?
                 .permissions();
             perms.set_mode(0o755);
-            std::fs::set_permissions(&target, perms)
-                .map_err(|e| format!("chmod failed: {}", e))?;
+            std::fs::set_permissions(&target, perms).map_err(|e| format!("chmod failed: {}", e))?;
         }
         return Ok(());
     }
@@ -815,10 +828,7 @@ fn perform_host_update_inner(
     set_progress("stop", "Stopping Hub stack…");
     hub_manager::stop_hub_for_update(&compose_path, &env_path)?;
 
-    let suffix = download_url
-        .rsplit('/')
-        .next()
-        .unwrap_or("update.bin");
+    let suffix = download_url.rsplit('/').next().unwrap_or("update.bin");
     let temp_dir = std::env::temp_dir().join("companion-hub-update");
     std::fs::create_dir_all(&temp_dir).map_err(|e| format!("temp dir: {}", e))?;
     let dest = temp_dir.join(suffix);
@@ -916,8 +926,7 @@ fn ensure_update_listener_token() -> Result<String, String> {
         .collect();
 
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create data dir: {}", e))?;
+        std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create data dir: {}", e))?;
     }
     std::fs::write(&path, format!("{token}\n"))
         .map_err(|e| format!("Failed to write update listener token: {}", e))?;
@@ -1001,11 +1010,9 @@ fn check_and_trigger_update_from_listener() -> Result<String, String> {
     let guard = HostUpdateGuard::acquire()?;
     std::thread::spawn(move || {
         let _guard = guard;
-        if let Err(err) = perform_host_update_inner(
-            &download_url,
-            expected_size,
-            expected_sha256.as_deref(),
-        ) {
+        if let Err(err) =
+            perform_host_update_inner(&download_url, expected_size, expected_sha256.as_deref())
+        {
             set_progress("error", &err);
         }
     });
@@ -1113,9 +1120,7 @@ mod tests {
 
     #[test]
     fn trusted_url_rejects_host_in_query_string() {
-        assert!(!is_trusted_download_url(
-            "https://evil.com/?dl.ci.computer"
-        ));
+        assert!(!is_trusted_download_url("https://evil.com/?dl.ci.computer"));
     }
 
     #[test]

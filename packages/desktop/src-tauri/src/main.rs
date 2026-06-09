@@ -482,10 +482,7 @@ fn run_detached_mode() -> Result<String, String> {
         error
     })?;
     let data_dir = initialization.data_dir.clone();
-    hub_manager::persist_launch_mode(
-        &data_dir,
-        hub_manager::PersistedLaunchMode::Detached,
-    );
+    hub_manager::persist_launch_mode(&data_dir, hub_manager::PersistedLaunchMode::Detached);
     let compose_path = initialization.compose_path.clone();
     let env_path = initialization.env_path.clone();
     // Headless mode skips run(), so initialize crash reporting here too —

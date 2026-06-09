@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { PortManagerService } from '../port-manager.service';
 import type { PortAllocationRepository } from '../port-allocation.repository';
-import type { AppsRepository } from '@/modules/apps/apps.repository';
 import type { LoggerService } from '@/core/logger/logger.service';
 import type { AppUrn } from '@ci-hub/common/types';
 
@@ -47,15 +46,13 @@ const createMockRepo = () => {
   } as unknown as PortAllocationRepository & { _allocations: typeof allocations };
 };
 
-const mockAppsRepo = {} as unknown as AppsRepository;
-
 describe('PortManagerService', () => {
   let service: PortManagerService;
   let repo: ReturnType<typeof createMockRepo>;
 
   beforeEach(() => {
     repo = createMockRepo();
-    service = new PortManagerService(repo, mockAppsRepo, mockLogger);
+    service = new PortManagerService(repo, mockLogger);
   });
 
   it('should allocate a port with preferred host port when available', async () => {
