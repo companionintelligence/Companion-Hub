@@ -7,7 +7,20 @@ import { useTranslation } from 'react-i18next';
 
 type IProps = {
   showLabel?: boolean;
-  locale: Locale;
+  locale?: string;
+};
+
+const DEFAULT_LOCALE: Locale = 'en-US';
+
+const resolveSupportedLocale = (value?: string): Locale => {
+  if (!value) return DEFAULT_LOCALE;
+  if (value in locales) return value as Locale;
+
+  const base = value.split('-')[0]?.toLowerCase();
+  if (!base) return DEFAULT_LOCALE;
+
+  const matched = Object.keys(locales).find((key) => key.toLowerCase().startsWith(`${base}-`));
+  return (matched as Locale | undefined) ?? DEFAULT_LOCALE;
 };
 
 const LanguageSelectorLabel = () => {
@@ -26,9 +39,13 @@ const LanguageSelectorLabel = () => {
 
 export const LanguageSelector = (props: IProps) => {
   const { locale: initialLocale } = props;
-  const [locale, setLocale] = React.useState<Locale>(initialLocale);
+  const [locale, setLocale] = React.useState<Locale>(() => resolveSupportedLocale(initialLocale));
   const { t } = useTranslation();
   const { showLabel = false } = props;
+
+  React.useEffect(() => {
+    setLocale(resolveSupportedLocale(initialLocale));
+  }, [initialLocale]);
 
   const onChange = (newLocale: Locale) => {
     i18next.changeLanguage(newLocale);
@@ -36,7 +53,7 @@ export const LanguageSelector = (props: IProps) => {
   };
 
   return (
-    <Select value={locale} defaultValue="en-US" onValueChange={onChange}>
+    <Select value={locale} onValueChange={onChange}>
       <SelectTrigger className="mb-3 pe-3" name="language" label={showLabel && <LanguageSelectorLabel />}>
         <SelectValue placeholder={t('SETTINGS_GENERAL_LANGUAGE')} />
       </SelectTrigger>

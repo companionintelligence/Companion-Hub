@@ -76,7 +76,7 @@ export const Header = (props: HeaderProps) => {
         <nav className="absolute left-1/2 -translate-x-1/2 hidden lg:flex items-center justify-center gap-2">
           <NavLink to="/home" className={getNavLinkClass}>
             <Home className="mr-2 size-4" />
-            {t('COMMON_DASHBOARD')}
+            {t('COMMON_HOME')}
           </NavLink>
           <NavLink to="/store" className={getNavLinkClass}>
             <Store className="mr-2 size-4" />
@@ -133,7 +133,7 @@ export const Header = (props: HeaderProps) => {
                 <DropdownMenuItem asChild>
                   <Link to="/home" className="w-full cursor-pointer flex items-center">
                     <Home className="mr-2 size-4" />
-                    {t('COMMON_DASHBOARD')}
+                    {t('COMMON_HOME')}
                   </Link>
                 </DropdownMenuItem>
                 <DropdownMenuItem asChild>
