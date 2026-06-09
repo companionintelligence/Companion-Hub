@@ -464,7 +464,6 @@
   "SETTINGS_GENERAL_INVALID_IP": "無効なIPアドレス",
   "SETTINGS_GENERAL_INVALID_URL": "無効なURL",
   "SETTINGS_GENERAL_LANGUAGE": "言語設定",
-  "SETTINGS_GENERAL_LANGUAGE_HELP_TRANSLATE": "Help translate Companion Hub",
   "SETTINGS_GENERAL_LOCAL_DOMAIN": "ローカルドメイン",
   "SETTINGS_GENERAL_LOCAL_DOMAIN_HINT": "ローカルネットワーク内のアプリにアクセスするために使用されるドメイン名。あなたのアプリはapp-name.local-domainからアクセスできます。",
   "SETTINGS_GENERAL_SETTINGS_UPDATED_RESTART": "Settings updated. Restart your instance to apply new settings.",

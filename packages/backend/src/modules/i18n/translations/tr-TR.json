@@ -464,7 +464,6 @@
   "SETTINGS_GENERAL_INVALID_IP": "Geçersiz IP adresi",
   "SETTINGS_GENERAL_INVALID_URL": "Geçersiz URL",
   "SETTINGS_GENERAL_LANGUAGE": "Dil",
-  "SETTINGS_GENERAL_LANGUAGE_HELP_TRANSLATE": "Companion Hub'yi çevirmeye yardım et",
   "SETTINGS_GENERAL_LOCAL_DOMAIN": "Yerel alan adı",
   "SETTINGS_GENERAL_LOCAL_DOMAIN_HINT": "Yerel ağınızdaki uygulamalara erişmek için kullanılan alan adı. Uygulamalarınıza uygulama-adi.yerel-alan-adi adresinden erişilebilir.",
   "SETTINGS_GENERAL_SETTINGS_UPDATED_RESTART": "Ayarlar güncellendi. Yeni ayarları uygulamak için Companion Hub'yi yeniden başlatın.",

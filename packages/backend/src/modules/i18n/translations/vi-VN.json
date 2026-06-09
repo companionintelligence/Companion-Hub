@@ -464,7 +464,6 @@
   "SETTINGS_GENERAL_INVALID_IP": "Địa chỉ IP không hợp lệ",
   "SETTINGS_GENERAL_INVALID_URL": "Đường dẫn không hợp lệ",
   "SETTINGS_GENERAL_LANGUAGE": "Ngôn ngữ",
-  "SETTINGS_GENERAL_LANGUAGE_HELP_TRANSLATE": "Help translate Companion Hub",
   "SETTINGS_GENERAL_LOCAL_DOMAIN": "Tên miền nội bộ",
   "SETTINGS_GENERAL_LOCAL_DOMAIN_HINT": "Tên miền để truy cập ứng dụng từ mạng nội bộ của bạn. Ứng dụng có thể được truy cập tại app-name.local-domain.",
   "SETTINGS_GENERAL_SETTINGS_UPDATED_RESTART": "Settings updated. Restart your instance to apply new settings.",

@@ -551,7 +551,6 @@
   "SETTINGS_GENERAL_INVALID_IP": "Dirección IP inválida",
   "SETTINGS_GENERAL_INVALID_URL": "URL inválida",
   "SETTINGS_GENERAL_LANGUAGE": "Idioma",
-  "SETTINGS_GENERAL_LANGUAGE_HELP_TRANSLATE": "Ayuda a traducir Companion Hub",
   "SETTINGS_GENERAL_LOCAL_DOMAIN": "Dominio local",
   "SETTINGS_GENERAL_LOCAL_DOMAIN_PLACEHOLDER": "ci.lan",
   "SETTINGS_GENERAL_LOCAL_DOMAIN_HINT": "Nombre de dominio utilizado para acceder a aplicaciones en tu red local. Tus aplicaciones serán accesibles en nombre-aplicación.dominio-local.",

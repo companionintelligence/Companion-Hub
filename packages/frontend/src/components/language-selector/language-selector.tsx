@@ -1,6 +1,5 @@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/Select';
 import { type Locale, locales } from '@/lib/i18n/locales';
-import { ExternalLink } from 'lucide-react';
 import i18next from 'i18next';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
@@ -26,15 +25,7 @@ const resolveSupportedLocale = (value?: string): Locale => {
 const LanguageSelectorLabel = () => {
   const { t } = useTranslation();
 
-  return (
-    <span>
-      {t('SETTINGS_GENERAL_LANGUAGE')}&nbsp;
-      <a href="https://crowdin.com/project/ci-hub" target="_blank" rel="noreferrer">
-        {t('SETTINGS_GENERAL_LANGUAGE_HELP_TRANSLATE')}
-        <ExternalLink className="ms-1 mb-1" size={16} />
-      </a>
-    </span>
-  );
+  return <span>{t('SETTINGS_GENERAL_LANGUAGE')}</span>;
 };
 
 export const LanguageSelector = (props: IProps) => {
