@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
 import { Injectable, OnApplicationBootstrap, type OnApplicationShutdown, Optional } from '@nestjs/common';
-import { DATA_DIR, HUB_STACK_IMAGE_REPO, HUB_STACK_REGISTRY_REPO } from '@/common/constants';
+import { DATA_DIR, HUB_STACK_IMAGE_REPO, HUB_STACK_REGISTRY_REPO, UPDATE_LISTENER_TOKEN_FILENAME } from '@/common/constants';
 import { writeSettingsJsonFile } from '@/common/helpers/env-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -208,6 +208,20 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
       }
     } catch (error) {
       this.logger.error('Auto-update check failed', error);
+    }
+  }
+
+  /** Token for the desktop host update listener on 127.0.0.1:17400 (browser cannot reach it without auth). */
+  getHostUpdateListenerToken(): string | null {
+    const tokenPath = path.join(DATA_DIR, UPDATE_LISTENER_TOKEN_FILENAME);
+    if (!fs.existsSync(tokenPath)) {
+      return null;
+    }
+    try {
+      const token = fs.readFileSync(tokenPath, 'utf8').trim();
+      return token || null;
+    } catch {
+      return null;
     }
   }
 }

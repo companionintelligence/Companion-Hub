@@ -16,6 +16,8 @@ function resolveDataDir(): string {
 export const DATA_DIR = resolveDataDir();
 export const APP_DATA_DIR = process.env.CI_HUB_APP_DATA_DIR || '/app-data';
 export const TUNNEL_DIR = process.env.CI_HUB_TUNNEL_DIR || path.join(APP_DIR, 'tunnel');
+/** Shared secret for the desktop host update listener (written by companion-hub desktop). */
+export const UPDATE_LISTENER_TOKEN_FILENAME = 'update-listener.token';
 
 export const SESSION_COOKIE_NAME = 'ci-hub-sid';
 export const SESSION_COOKIE_MAX_AGE = 1000 * 60 * 60 * 24;

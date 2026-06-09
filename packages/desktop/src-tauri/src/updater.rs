@@ -15,6 +15,7 @@ use crate::hub_manager::{self, PersistedLaunchMode};
 const UPDATE_CHECK_URL: &str = "https://dl.ci.computer/latest.json";
 const ALLOWED_DOWNLOAD_HOST: &str = "dl.ci.computer";
 const UPDATE_LISTENER_ADDR: &str = "127.0.0.1:17400";
+const UPDATE_LISTENER_TOKEN_FILENAME: &str = "update-listener.token";
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct UpdateProgress {
@@ -824,9 +825,12 @@ fn handle_update_http_request(mut stream: TcpStream) {
     let request = String::from_utf8_lossy(&buffer[..read]);
     let is_post_update = request.starts_with("POST /update");
     let (status, body) = if is_post_update {
-        match check_and_trigger_update_from_listener() {
-            Ok(msg) => ("200 OK", msg),
-            Err(err) => ("500 Internal Server Error", err),
+        match authorize_update_listener_request(&request) {
+            Err(err) => ("401 Unauthorized", err),
+            Ok(()) => match check_and_trigger_update_from_listener() {
+                Ok(msg) => ("200 OK", msg),
+                Err(err) => ("500 Internal Server Error", err),
+            },
         }
     } else if request.starts_with("GET /health") {
         ("200 OK", "ok".to_string())
@@ -841,6 +845,97 @@ fn handle_update_http_request(mut stream: TcpStream) {
         body
     );
     let _ = stream.write_all(response.as_bytes());
+}
+
+fn update_listener_token_path() -> PathBuf {
+    hub_manager::get_hub_data_dir().join(UPDATE_LISTENER_TOKEN_FILENAME)
+}
+
+fn read_update_listener_token() -> Result<String, String> {
+    std::fs::read_to_string(update_listener_token_path())
+        .map(|token| token.trim().to_string())
+        .map_err(|e| format!("Failed to read update listener token: {}", e))
+}
+
+fn ensure_update_listener_token() -> Result<String, String> {
+    let path = update_listener_token_path();
+    if path.exists() {
+        return read_update_listener_token();
+    }
+
+    use rand::Rng;
+    let token: String = rand::thread_rng()
+        .sample_iter(rand::distributions::Alphanumeric)
+        .take(48)
+        .map(char::from)
+        .collect();
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create data dir: {}", e))?;
+    }
+    std::fs::write(&path, format!("{token}\n"))
+        .map_err(|e| format!("Failed to write update listener token: {}", e))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&path)
+            .map_err(|e| format!("Failed to stat token file: {}", e))?
+            .permissions();
+        perms.set_mode(0o600);
+        std::fs::set_permissions(&path, perms)
+            .map_err(|e| format!("Failed to chmod token file: {}", e))?;
+    }
+    Ok(token)
+}
+
+fn extract_update_listener_token_from_request(request: &str) -> Option<String> {
+    for line in request.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            break;
+        }
+        if let Some(value) = trimmed
+            .strip_prefix("Authorization:")
+            .or_else(|| trimmed.strip_prefix("authorization:"))
+        {
+            let value = value.trim();
+            if let Some(token) = value.strip_prefix("Bearer ") {
+                return Some(token.trim().to_string());
+            }
+            if let Some(token) = value.strip_prefix("bearer ") {
+                return Some(token.trim().to_string());
+            }
+        }
+        if let Some(token) = trimmed
+            .strip_prefix("X-Companion-Hub-Update-Token:")
+            .or_else(|| trimmed.strip_prefix("x-companion-hub-update-token:"))
+        {
+            return Some(token.trim().to_string());
+        }
+    }
+    None
+}
+
+fn tokens_match(provided: &str, expected: &str) -> bool {
+    provided.as_bytes().len() == expected.as_bytes().len()
+        && provided
+            .as_bytes()
+            .iter()
+            .zip(expected.as_bytes())
+            .fold(0u8, |acc, (left, right)| acc | (left ^ right))
+            == 0
+}
+
+fn authorize_update_listener_request(request: &str) -> Result<(), String> {
+    let expected = read_update_listener_token()?;
+    let provided = extract_update_listener_token_from_request(request)
+        .ok_or_else(|| "missing update listener token".to_string())?;
+    if tokens_match(&provided, &expected) {
+        Ok(())
+    } else {
+        Err("invalid update listener token".to_string())
+    }
 }
 
 fn check_and_trigger_update_from_listener() -> Result<String, String> {
@@ -874,6 +969,9 @@ fn check_and_trigger_update_from_listener() -> Result<String, String> {
 
 pub fn spawn_update_listener() {
     std::thread::spawn(|| {
+        if ensure_update_listener_token().is_err() {
+            return;
+        }
         let listener = match TcpListener::bind(UPDATE_LISTENER_ADDR) {
             Ok(l) => l,
             Err(_) => return,
@@ -907,12 +1005,14 @@ pub fn spawn_update_listener_daemon() {
 }
 
 pub fn trigger_host_update_via_listener() -> Result<String, String> {
+    let token = read_update_listener_token()?;
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
         .map_err(|e| format!("HTTP client: {}", e))?;
     let response = client
         .post(format!("http://{}/update", UPDATE_LISTENER_ADDR))
+        .header("Authorization", format!("Bearer {token}"))
         .send()
         .map_err(|e| format!("Host update listener unavailable: {}", e))?;
     let status = response.status();
@@ -979,6 +1079,61 @@ mod tests {
         assert!(!is_trusted_download_url(
             "https://dl.ci.computer/v0.2.18/%252e%252e/evil.exe"
         ));
+    }
+
+    #[test]
+    fn update_listener_extracts_bearer_token() {
+        let request = "POST /update HTTP/1.1\r\nAuthorization: Bearer secret-token\r\n\r\n";
+        assert_eq!(
+            extract_update_listener_token_from_request(request).as_deref(),
+            Some("secret-token")
+        );
+    }
+
+    #[test]
+    fn update_listener_authorizes_valid_token() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let token_path = tempdir.path().join(UPDATE_LISTENER_TOKEN_FILENAME);
+        std::fs::write(&token_path, "expected-token\n").expect("write token");
+
+        let request = "POST /update HTTP/1.1\r\nAuthorization: Bearer expected-token\r\n\r\n";
+        assert!(authorize_update_listener_request_with_path(&request, &token_path).is_ok());
+    }
+
+    #[test]
+    fn update_listener_rejects_missing_token() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let token_path = tempdir.path().join(UPDATE_LISTENER_TOKEN_FILENAME);
+        std::fs::write(&token_path, "expected-token\n").expect("write token");
+
+        let request = "POST /update HTTP/1.1\r\n\r\n";
+        assert!(authorize_update_listener_request_with_path(&request, &token_path).is_err());
+    }
+
+    #[test]
+    fn update_listener_rejects_invalid_token() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let token_path = tempdir.path().join(UPDATE_LISTENER_TOKEN_FILENAME);
+        std::fs::write(&token_path, "expected-token\n").expect("write token");
+
+        let request = "POST /update HTTP/1.1\r\nAuthorization: Bearer wrong-token\r\n\r\n";
+        assert!(authorize_update_listener_request_with_path(&request, &token_path).is_err());
+    }
+
+    fn authorize_update_listener_request_with_path(
+        request: &str,
+        token_path: &Path,
+    ) -> Result<(), String> {
+        let expected = std::fs::read_to_string(token_path)
+            .map(|token| token.trim().to_string())
+            .map_err(|e| format!("Failed to read update listener token: {}", e))?;
+        let provided = extract_update_listener_token_from_request(request)
+            .ok_or_else(|| "missing update listener token".to_string())?;
+        if tokens_match(&provided, &expected) {
+            Ok(())
+        } else {
+            Err("invalid update listener token".to_string())
+        }
     }
 
     #[test]

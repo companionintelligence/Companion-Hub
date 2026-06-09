@@ -104,4 +104,19 @@ describe('SystemUpdateService', () => {
       expect(service.getAutoUpdatesEnabled()).toBe(true);
     });
   });
+
+  describe('getHostUpdateListenerToken', () => {
+    it('should return token when token file exists', () => {
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+      vi.mocked(fs.readFileSync).mockReturnValue('secret-token\n');
+
+      expect(service.getHostUpdateListenerToken()).toBe('secret-token');
+    });
+
+    it('should return null when token file is missing', () => {
+      vi.mocked(fs.existsSync).mockReturnValue(false);
+
+      expect(service.getHostUpdateListenerToken()).toBeNull();
+    });
+  });
 });

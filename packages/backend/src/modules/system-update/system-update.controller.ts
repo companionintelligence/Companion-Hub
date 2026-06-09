@@ -1,4 +1,4 @@
-import { Controller, Get, Post, UseGuards, Body } from '@nestjs/common';
+import { Controller, Get, Post, UseGuards, Body, NotFoundException } from '@nestjs/common';
 import { AuthGuard } from '../auth/auth.guard';
 import { SystemUpdateService } from './system-update.service';
 
@@ -29,5 +29,15 @@ export class SystemUpdateController {
   async setAutoUpdates(@Body() body: { enabled: boolean }) {
     await this.systemUpdateService.setAutoUpdatesEnabled(body.enabled);
     return { enabled: body.enabled };
+  }
+
+  @Get('host-listener-token')
+  @UseGuards(AuthGuard)
+  getHostListenerToken() {
+    const token = this.systemUpdateService.getHostUpdateListenerToken();
+    if (!token) {
+      throw new NotFoundException('Host update listener not available');
+    }
+    return { token };
   }
 }

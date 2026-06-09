@@ -222,7 +222,26 @@ export async function performUpdate(info: UpdateInfo): Promise<{ ok: boolean; me
   }
 
   try {
-    const res = await fetch(HOST_UPDATE_URL, { method: 'POST' });
+    const { apiFetch } = await import('@/lib/api-fetch');
+    const tokenRes = await apiFetch('/api/system/update/host-listener-token', { credentials: 'include' });
+    if (!tokenRes.ok) {
+      return {
+        ok: false,
+        message: 'Host update listener unavailable. Run: companion-hub update',
+      };
+    }
+    const { token } = (await tokenRes.json()) as { token?: string };
+    if (!token) {
+      return {
+        ok: false,
+        message: 'Host update listener unavailable. Run: companion-hub update',
+      };
+    }
+
+    const res = await fetch(HOST_UPDATE_URL, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    });
     const body = await res.text();
     if (res.ok) {
       return { ok: true, message: 'Update started on the host. The Hub will restart shortly.' };
