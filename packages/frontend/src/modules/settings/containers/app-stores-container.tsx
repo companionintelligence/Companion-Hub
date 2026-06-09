@@ -40,11 +40,11 @@ export const AppStoresContainer = () => {
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <LayoutGrid className="h-5 w-5 text-muted-foreground" />
-              <CardTitle className="text-xl">{t('SETTINGS_APPSTORES_TITLE')}</CardTitle>
+              <CardTitle className="text-xl">{t('COMMON_APP_STORES')}</CardTitle>
             </div>
             <Button onClick={() => pullMutation.mutate({})} loading={pullMutation.isPending} variant="outline" size="sm">
               <RefreshCw className="mr-2" size={16} />
-              {t('REFRESH')}
+              {t('COMMON_REFRESH')}
             </Button>
           </div>
           <p className="text-sm text-muted-foreground">{t('SETTINGS_APPSTORES_SUBTITLE')}</p>

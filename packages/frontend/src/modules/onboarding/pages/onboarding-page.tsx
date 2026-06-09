@@ -5,6 +5,7 @@ import { apiFetch } from '@/lib/api-fetch';
 import { getLogo } from '@/lib/theme/theme';
 import { Suspense, useEffect, useMemo, useState } from 'react';
 import { Navigate, useNavigate } from 'react-router';
+import { useTranslation } from 'react-i18next';
 import { AGENT_APP_SLUG } from '../helpers/ai-setup-types';
 import { AiSetupStep } from '../components/ai-setup-step';
 import { StepSection } from '../components/ai-setup/primitives';
@@ -51,12 +52,14 @@ function dedupeOnboardingApps(apps: OnboardingApp[]): OnboardingApp[] {
 
 /** Page chrome shared by every onboarding phase: brand header + centered container. */
 function Shell({ children }: { children: React.ReactNode }) {
+  const { t } = useTranslation();
+
   return (
     <div className="flex flex-col items-center overflow-y-auto px-4 py-8" style={{ height: 'calc(100vh - var(--titlebar-height, 0px))' }}>
       <div className="w-full max-w-[82.94rem]">
         <div className="mb-6 flex items-center gap-3">
           <img
-            alt="Companion Hub logo"
+            alt={t('APP_NAME_LOGO_ALT')}
             src={getLogo(true)}
             height={48}
             width={48}
@@ -64,8 +67,8 @@ function Shell({ children }: { children: React.ReactNode }) {
             style={{ maxWidth: '100%', height: 'auto' }}
           />
           <div className="min-w-0">
-            <h1 className="text-2xl font-bold tracking-tight text-foreground sm:text-3xl">Set Up Your Hub</h1>
-            <p className="text-sm text-muted-foreground">Configure your private, local-first companion.</p>
+            <h1 className="text-2xl font-bold tracking-tight text-foreground sm:text-3xl">{t('COMMON_SET_UP_YOUR_HUB')}</h1>
+            <p className="text-sm text-muted-foreground">{t('ONBOARDING_CONFIGURE_PRIVATE_COMPANION')}</p>
           </div>
         </div>
         {children}
@@ -86,6 +89,7 @@ const SKIPPED_AI_CONFIG: AiSetupConfig = {
 };
 
 function OnboardingWizard() {
+  const { t } = useTranslation();
   const { user, apps: storeApps, cloudflareAvailable, tailscaleAvailable, setAppContext, refreshAppContext } = useAppContext();
   const navigate = useNavigate();
 
@@ -168,11 +172,7 @@ function OnboardingWizard() {
           cloudflareAvailable={cloudflareAvailable}
           tailscaleAvailable={tailscaleAvailable}
         >
-          <StepSection
-            number={4}
-            title="Recommended Apps"
-            description="Here are some popular open-source apps you can self-host. Select any you'd like installed."
-          >
+          <StepSection number={4} title={t('ONBOARDING_RECOMMENDED_APPS')} description={t('ONBOARDING_RECOMMENDED_APPS_DESC')}>
             <RecommendationsStep embedded detectedServices={detectedServices} onChange={setSelectedApps} />
           </StepSection>
         </AiSetupStep>
@@ -181,10 +181,10 @@ function OnboardingWizard() {
 
         <div className="sticky bottom-4 z-10 flex flex-col gap-3 rounded-2xl border border-border bg-card/90 p-4 shadow-lg backdrop-blur sm:flex-row sm:items-center sm:justify-between">
           <p className="text-sm text-muted-foreground">
-            {aiSetupConfig?.installBlockReason ?? (canFinish ? 'You can change everything later in Settings.' : 'Detecting your hardware…')}
+            {aiSetupConfig?.installBlockReason ?? (canFinish ? t('ONBOARDING_CHANGE_LATER_SETTINGS') : t('COMMON_DETECTING_HARDWARE'))}
           </p>
           <Button intent="primary" size="lg" disabled={!canFinish} onClick={() => setPhase('installing')} data-testid="finish-setup-btn">
-            Install & Finish
+            {t('ONBOARDING_INSTALL_AND_FINISH')}
           </Button>
         </div>
       </div>

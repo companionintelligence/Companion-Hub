@@ -32,7 +32,7 @@ export const AdvancedConfig = ({ register, errors, control, serviceIndex }: Prop
               {t('MULTI_SERVICE_ADVANCED_NETWORK_MODE')} <span className="ms-1 form-help my-network-mode">?</span>
             </>
           }
-          placeholder="bridge"
+          placeholder={t('MULTI_SERVICE_ADVANCED_NETWORK_MODE_PLACEHOLDER')}
         />
       </div>
       <div className="col-md-6">
@@ -47,7 +47,7 @@ export const AdvancedConfig = ({ register, errors, control, serviceIndex }: Prop
               {t('MULTI_SERVICE_ADVANCED_WORKING_DIR')} <span className="ms-1 form-help my-working-dir">?</span>
             </>
           }
-          placeholder="/app"
+          placeholder={t('MULTI_SERVICE_ADVANCED_WORKING_DIR_PLACEHOLDER')}
         />
       </div>
       <div className="col-md-6">
@@ -62,7 +62,7 @@ export const AdvancedConfig = ({ register, errors, control, serviceIndex }: Prop
               {t('MULTI_SERVICE_ADVANCED_USER')} <span className="ms-1 form-help my-user">?</span>
             </>
           }
-          placeholder="1000"
+          placeholder={t('MULTI_SERVICE_ADVANCED_USER_PLACEHOLDER')}
         />
       </div>
       <div className="col-md-6">
@@ -74,10 +74,10 @@ export const AdvancedConfig = ({ register, errors, control, serviceIndex }: Prop
               <Tooltip className="tooltip" anchorSelect=".my-hostname">
                 {t('MULTI_SERVICE_ADVANCED_HOSTNAME_TOOLTIP')}
               </Tooltip>
-              {t('MULTI_SERVICE_ADVANCED_HOSTNAME')} <span className="ms-1 form-help my-hostname">?</span>
+              {t('COMMON_HOSTNAME')} <span className="ms-1 form-help my-hostname">?</span>
             </>
           }
-          placeholder="my-container"
+          placeholder={t('MULTI_SERVICE_ADVANCED_HOSTNAME_PLACEHOLDER')}
         />
       </div>
       <div className="col-md-6">

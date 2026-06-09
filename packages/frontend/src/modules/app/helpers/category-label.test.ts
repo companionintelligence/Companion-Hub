@@ -9,7 +9,7 @@ function makeTranslator(map: Record<string, string> = {}): TFunction {
 
 describe('getCategoryLabel', () => {
   it('returns translated labels when key exists', () => {
-    const t = makeTranslator({ APP_CATEGORY_AI: 'AI' });
+    const t = makeTranslator({ COMMON_AI: 'AI' });
     expect(getCategoryLabel(t, 'ai')).toBe('AI');
   });
 

@@ -1,6 +1,7 @@
 import { getLogo } from '@/lib/theme/theme';
 import { cn } from '@/lib/utils';
 import type { ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
 
 interface SetupPageShellProps {
   children: ReactNode;
@@ -12,7 +13,10 @@ interface SetupPageShellProps {
   contentClassName?: string;
 }
 
-export function SetupPageShell({ children, steps, title = 'Set Up Your Hub', showLogo = true, className, contentClassName }: SetupPageShellProps) {
+export function SetupPageShell({ children, steps, title, showLogo = true, className, contentClassName }: SetupPageShellProps) {
+  const { t } = useTranslation();
+  const resolvedTitle = title ?? t('COMMON_SET_UP_YOUR_HUB');
+
   return (
     <div
       className={cn('flex flex-col items-center overflow-y-auto bg-background px-4 py-8', className)}
@@ -31,11 +35,11 @@ export function SetupPageShell({ children, steps, title = 'Set Up Your Hub', sho
                 style={{ maxWidth: '100%', height: 'auto' }}
               />
             )}
-            {title && <h1 className="text-2xl font-bold text-foreground">{title}</h1>}
+            {resolvedTitle && <h1 className="text-2xl font-bold text-foreground">{resolvedTitle}</h1>}
           </div>
         )}
 
-        {steps && <nav aria-label="Setup progress">{steps}</nav>}
+        {steps && <nav aria-label={t('SETUP_PROGRESS')}>{steps}</nav>}
 
         {children}
       </div>

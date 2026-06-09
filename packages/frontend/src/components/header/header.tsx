@@ -75,11 +75,11 @@ export const Header = (props: HeaderProps) => {
         <nav className="absolute left-1/2 -translate-x-1/2 hidden lg:flex items-center justify-center gap-2">
           <NavLink to="/home" className={getNavLinkClass}>
             <Home className="mr-2 size-4" />
-            Home
+            {t('COMMON_HOME')}
           </NavLink>
           <NavLink to="/store" className={getNavLinkClass}>
             <Store className="mr-2 size-4" />
-            Store
+            {t('COMMON_APP_STORE')}
           </NavLink>
         </nav>
       )}
@@ -100,13 +100,13 @@ export const Header = (props: HeaderProps) => {
             {/* Settings Link */}
             <NavLink
               to="/settings"
-              title={t('HEADER_SETTINGS', 'Settings')}
+              title={t('COMMON_SETTINGS', 'Settings')}
               className={({ isActive }) =>
                 clsx(buttonVariants({ variant: 'ghost', size: 'icon' }), isActive ? 'bg-accent text-accent-foreground btn-active' : '')
               }
             >
               <Settings className="size-4" />
-              <span className="sr-only">{t('HEADER_SETTINGS', 'Settings')}</span>
+              <span className="sr-only">{t('COMMON_SETTINGS', 'Settings')}</span>
             </NavLink>
 
             <Button variant="ghost" size="icon" title={t('HEADER_LOGOUT', 'Logout')} onClick={handleLogout}>
@@ -123,7 +123,7 @@ export const Header = (props: HeaderProps) => {
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" size="icon">
               <Menu className="size-5" />
-              <span className="sr-only">Open menu</span>
+              <span className="sr-only">{t('HEADER_OPEN_MENU')}</span>
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-56">
@@ -132,20 +132,20 @@ export const Header = (props: HeaderProps) => {
                 <DropdownMenuItem asChild>
                   <Link to="/home" className="w-full cursor-pointer flex items-center">
                     <Home className="mr-2 size-4" />
-                    Home
+                    {t('COMMON_HOME')}
                   </Link>
                 </DropdownMenuItem>
                 <DropdownMenuItem asChild>
                   <Link to="/store" className="w-full cursor-pointer flex items-center">
                     <Store className="mr-2 size-4" />
-                    Store
+                    {t('COMMON_APP_STORE')}
                   </Link>
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem asChild>
                   <Link to="/settings" className="w-full cursor-pointer flex items-center">
                     <Settings className="mr-2 size-4" />
-                    {t('HEADER_SETTINGS', 'Settings')}
+                    {t('COMMON_SETTINGS', 'Settings')}
                   </Link>
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
@@ -155,13 +155,13 @@ export const Header = (props: HeaderProps) => {
                       <Sun className="absolute size-4 rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0" />
                       <Moon className="absolute size-4 rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100" />
                     </div>
-                    <span>Theme</span>
+                    <span>{t('HEADER_THEME')}</span>
                   </DropdownMenuSubTrigger>
                   <DropdownMenuPortal>
                     <DropdownMenuSubContent>
-                      <DropdownMenuItem onClick={() => setTheme('light')}>Light</DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => setTheme('dark')}>Dark</DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => setTheme('system')}>System</DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => setTheme('light')}>{t('THEME_LIGHT')}</DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => setTheme('dark')}>{t('THEME_DARK')}</DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => setTheme('system')}>{t('COMMON_SYSTEM')}</DropdownMenuItem>
                     </DropdownMenuSubContent>
                   </DropdownMenuPortal>
                 </DropdownMenuSub>

@@ -15,7 +15,7 @@ export const SecurityContainer = (props: { totpEnabled: boolean; username?: stri
         <CardHeader>
           <div className="flex items-center gap-2">
             <User className="h-5 w-5 text-muted-foreground" />
-            <CardTitle className="text-xl">{t('SETTINGS_SECURITY_CHANGE_USERNAME_TITLE')}</CardTitle>
+            <CardTitle className="text-xl">{t('COMMON_CHANGE_USERNAME')}</CardTitle>
           </div>
           <CardDescription>{t('SETTINGS_SECURITY_CHANGE_USERNAME_SUBTITLE')}</CardDescription>
         </CardHeader>
@@ -28,7 +28,7 @@ export const SecurityContainer = (props: { totpEnabled: boolean; username?: stri
         <CardHeader>
           <div className="flex items-center gap-2">
             <Key className="h-5 w-5 text-muted-foreground" />
-            <CardTitle className="text-xl">{t('SETTINGS_SECURITY_CHANGE_PASSWORD_TITLE')}</CardTitle>
+            <CardTitle className="text-xl">{t('COMMON_CHANGE_PASSWORD')}</CardTitle>
           </div>
           <CardDescription>{t('SETTINGS_SECURITY_CHANGE_PASSWORD_SUBTITLE')}</CardDescription>
         </CardHeader>
@@ -41,7 +41,7 @@ export const SecurityContainer = (props: { totpEnabled: boolean; username?: stri
         <CardHeader>
           <div className="flex items-center gap-2">
             <Lock className="h-5 w-5 text-muted-foreground" />
-            <CardTitle className="text-xl">{t('SETTINGS_SECURITY_2FA_TITLE')}</CardTitle>
+            <CardTitle className="text-xl">{t('COMMON_TWO_FACTOR_AUTHENTICATION')}</CardTitle>
           </div>
           <CardDescription>
             {t('SETTINGS_SECURITY_2FA_SUBTITLE')}

@@ -199,13 +199,19 @@ export function getPollIntervalMs(): number {
   return POLL_INTERVAL_MS;
 }
 
-export async function performUpdate(info: UpdateInfo): Promise<{ ok: boolean; message: string }> {
+export interface UpdateActionResult {
+  ok: boolean;
+  messageKey: string;
+  messageParams?: Record<string, string>;
+}
+
+export async function performUpdate(info: UpdateInfo): Promise<UpdateActionResult> {
   if (isTauri()) {
     try {
       const { invoke } = await import('@tauri-apps/api/core');
       if (info.downloadUrl) {
         await invoke('perform_desktop_update_command', { downloadUrl: info.downloadUrl });
-        return { ok: true, message: 'Update started. Companion Hub will restart shortly.' };
+        return { ok: true, messageKey: 'SETTINGS_ACTIONS_UPDATE_DESKTOP_STARTED' };
       }
       const desktopInfo = (await invoke('check_desktop_update_command')) as UpdateInfo & {
         downloadUrl?: string;
@@ -213,11 +219,11 @@ export async function performUpdate(info: UpdateInfo): Promise<{ ok: boolean; me
       const url = desktopInfo.downloadUrl ?? info.downloadUrl;
       if (url) {
         await invoke('perform_desktop_update_command', { downloadUrl: url });
-        return { ok: true, message: 'Update started. Companion Hub will restart shortly.' };
+        return { ok: true, messageKey: 'SETTINGS_ACTIONS_UPDATE_DESKTOP_STARTED' };
       }
-      return { ok: false, message: 'No download URL available for this platform.' };
-    } catch (err) {
-      return { ok: false, message: err instanceof Error ? err.message : 'Update failed' };
+      return { ok: false, messageKey: 'SETTINGS_ACTIONS_UPDATE_NO_DOWNLOAD_URL' };
+    } catch {
+      return { ok: false, messageKey: 'SETTINGS_ACTIONS_UPDATE_FAILED' };
     }
   }
 
@@ -225,38 +231,28 @@ export async function performUpdate(info: UpdateInfo): Promise<{ ok: boolean; me
     const { apiFetch } = await import('@/lib/api-fetch');
     const tokenRes = await apiFetch('/api/system/update/host-listener-token', { credentials: 'include' });
     if (!tokenRes.ok) {
-      return {
-        ok: false,
-        message: 'Host update listener unavailable. Run: companion-hub update',
-      };
+      return { ok: false, messageKey: 'SETTINGS_ACTIONS_UPDATE_HOST_UNAVAILABLE' };
     }
     const { token } = (await tokenRes.json()) as { token?: string };
     if (!token) {
-      return {
-        ok: false,
-        message: 'Host update listener unavailable. Run: companion-hub update',
-      };
+      return { ok: false, messageKey: 'SETTINGS_ACTIONS_UPDATE_HOST_UNAVAILABLE' };
     }
 
     const res = await fetch(HOST_UPDATE_URL, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}` },
     });
-    const body = await res.text();
     if (res.ok) {
-      return { ok: true, message: 'Update started on the host. The Hub will restart shortly.' };
+      return { ok: true, messageKey: 'SETTINGS_ACTIONS_UPDATE_HOST_STARTED' };
     }
-    return { ok: false, message: body || 'Host update listener unavailable. Run: companion-hub update' };
+    return { ok: false, messageKey: 'SETTINGS_ACTIONS_UPDATE_HOST_UNAVAILABLE' };
   } catch {
-    return {
-      ok: false,
-      message: 'Could not reach the host updater. Run companion-hub update in a terminal on this machine.',
-    };
+    return { ok: false, messageKey: 'SETTINGS_ACTIONS_UPDATE_HOST_UNREACHABLE' };
   }
 }
 
 /** Stack-only update via backend API (browser / in-container fallback). */
-export async function performStackUpdate(targetVersion?: string): Promise<{ ok: boolean; message: string }> {
+export async function performStackUpdate(targetVersion?: string): Promise<UpdateActionResult> {
   try {
     const { apiFetch } = await import('@/lib/api-fetch');
     const res = await apiFetch('/api/system/update', {
@@ -266,10 +262,10 @@ export async function performStackUpdate(targetVersion?: string): Promise<{ ok: 
       body: JSON.stringify({ targetVersion }),
     });
     if (res.ok) {
-      return { ok: true, message: 'Stack update initiated. This page will reload shortly.' };
+      return { ok: true, messageKey: 'SETTINGS_ACTIONS_UPDATE_RESTARTING' };
     }
-    return { ok: false, message: 'Stack update failed. Check logs for details.' };
+    return { ok: false, messageKey: 'SETTINGS_ACTIONS_UPDATE_FAILED' };
   } catch {
-    return { ok: false, message: 'Stack update request failed.' };
+    return { ok: false, messageKey: 'SETTINGS_ACTIONS_UPDATE_REQUEST_FAILED' };
   }
 }

@@ -46,33 +46,33 @@ export default () => {
         <Tabs value={currentTab} onValueChange={handleTabChange} className="flex-1 flex flex-col h-full overflow-hidden">
           <div className="max-w-5xl mx-auto w-full">
             <TabsList className="bg-card/50 border border-border/50">
-              <TabsTrigger value="settings">{t('SETTINGS_GENERAL_TAB_TITLE')}</TabsTrigger>
-              <TabsTrigger value="security">{t('SETTINGS_SECURITY_TAB_TITLE')}</TabsTrigger>
+              <TabsTrigger value="settings">{t('COMMON_SETTINGS')}</TabsTrigger>
+              <TabsTrigger value="security">{t('COMMON_SECURITY')}</TabsTrigger>
               <TabsTrigger value="appstores" className="hidden md:inline-flex">
-                {t('SETTINGS_APPSTORES_TAB_TITLE')}
+                {t('COMMON_APP_STORES')}
               </TabsTrigger>
               <TabsTrigger value="network" className="hidden md:inline-flex">
-                {t('SETTINGS_NETWORK_TAB_TITLE')}
+                {t('COMMON_NETWORK')}
               </TabsTrigger>
               <TabsTrigger value="ai" className="hidden md:inline-flex">
-                AI
+                {t('COMMON_AI')}
               </TabsTrigger>
               <TabsTrigger value="system" className="hidden md:inline-flex">
-                System
+                {t('COMMON_SYSTEM')}
               </TabsTrigger>
               <TabsTrigger value="logs" className="hidden md:inline-flex">
-                {t('SETTINGS_LOGS_TAB_TITLE')}
+                {t('COMMON_LOGS')}
               </TabsTrigger>
               <DropdownMenu>
                 <DropdownMenuTrigger className="inline-flex md:hidden items-center justify-center whitespace-nowrap rounded-sm px-3 py-1.5 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">
                   {t('MORE')}
                 </DropdownMenuTrigger>
                 <DropdownMenuContent>
-                  <DropdownMenuItem onClick={() => handleTabChange('appstores')}>{t('SETTINGS_APPSTORES_TAB_TITLE')}</DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => handleTabChange('network')}>{t('SETTINGS_NETWORK_TAB_TITLE')}</DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => handleTabChange('ai')}>AI</DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => handleTabChange('system')}>System</DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => handleTabChange('logs')}>{t('SETTINGS_LOGS_TAB_TITLE')}</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handleTabChange('appstores')}>{t('COMMON_APP_STORES')}</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handleTabChange('network')}>{t('COMMON_NETWORK')}</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handleTabChange('ai')}>{t('COMMON_AI')}</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handleTabChange('system')}>{t('COMMON_SYSTEM')}</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handleTabChange('logs')}>{t('COMMON_LOGS')}</DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
             </TabsList>
@@ -80,32 +80,32 @@ export default () => {
           <div className={cn('p-3 flex-1 min-h-0', isLogsTab ? 'overflow-hidden' : 'overflow-y-auto')} data-testid="settings-scroll-container">
             <div className={cn('mx-auto w-full', isLogsTab ? 'h-full max-w-none' : 'max-w-5xl')}>
               <TabsContent value="settings">
-                <Suspense fallback={<div>Loading...</div>}>
+                <Suspense fallback={<div>{t('SETTINGS_NETWORK_LOADING')}</div>}>
                   <UserSettingsContainer initialValues={userSettings} publicHubHostname={publicHubHostname} />
                 </Suspense>
               </TabsContent>
               <TabsContent value="security">
-                <Suspense fallback={<div>Loading...</div>}>
+                <Suspense fallback={<div>{t('SETTINGS_NETWORK_LOADING')}</div>}>
                   <SecurityContainer totpEnabled={Boolean(user.totpEnabled)} username={user.username} />
                 </Suspense>
               </TabsContent>
               <TabsContent value="appstores">
-                <Suspense fallback={<div>Loading...</div>}>
+                <Suspense fallback={<div>{t('SETTINGS_NETWORK_LOADING')}</div>}>
                   <AppStoresContainer />
                 </Suspense>
               </TabsContent>
               <TabsContent value="network">
-                <Suspense fallback={<div>Loading...</div>}>
+                <Suspense fallback={<div>{t('SETTINGS_NETWORK_LOADING')}</div>}>
                   <NetworkSettingsContainer />
                 </Suspense>
               </TabsContent>
               <TabsContent value="ai">
-                <Suspense fallback={<div>Loading...</div>}>
+                <Suspense fallback={<div>{t('SETTINGS_NETWORK_LOADING')}</div>}>
                   <AiSettingsContainer />
                 </Suspense>
               </TabsContent>
               <TabsContent value="system">
-                <Suspense fallback={<div>Loading...</div>}>
+                <Suspense fallback={<div>{t('SETTINGS_NETWORK_LOADING')}</div>}>
                   <GeneralActionsContainer />
                   <div className="mt-6">
                     <SystemInspectorContainer />
@@ -113,7 +113,7 @@ export default () => {
                 </Suspense>
               </TabsContent>
               <TabsContent value="logs" className="mt-0 h-full">
-                <Suspense fallback={<div>Loading...</div>}>
+                <Suspense fallback={<div>{t('SETTINGS_NETWORK_LOADING')}</div>}>
                   <LogsContainer />
                 </Suspense>
               </TabsContent>

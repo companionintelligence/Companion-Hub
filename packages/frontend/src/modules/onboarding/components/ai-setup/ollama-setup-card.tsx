@@ -2,6 +2,7 @@ import { Button } from '@/components/ui/Button';
 import { Card, CardContent } from '@/components/ui/Card';
 import { openExternal } from '@/lib/helpers/open-external';
 import { CheckCircle2, Download, Loader2, RefreshCw } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 const OLLAMA_DOWNLOAD_URL = 'https://ollama.com';
 
@@ -26,6 +27,8 @@ function isBridgeRefused(status: OllamaStatus): boolean {
 }
 
 export const OllamaSetupCard = ({ status, checking, onRecheck }: OllamaSetupCardProps) => {
+  const { t } = useTranslation();
+
   if (!status) {
     return (
       <Card className="border-muted">
@@ -33,8 +36,8 @@ export const OllamaSetupCard = ({ status, checking, onRecheck }: OllamaSetupCard
           <div className="flex items-center gap-3">
             <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
             <div>
-              <div className="text-sm font-medium">Checking for Ollama…</div>
-              <div className="text-xs text-muted-foreground">Looking for Ollama on this machine</div>
+              <div className="text-sm font-medium">{t('ONBOARDING_OLLAMA_CHECKING')}</div>
+              <div className="text-xs text-muted-foreground">{t('ONBOARDING_OLLAMA_LOOKING_MACHINE')}</div>
             </div>
           </div>
         </CardContent>
@@ -52,12 +55,12 @@ export const OllamaSetupCard = ({ status, checking, onRecheck }: OllamaSetupCard
             <div className="flex items-center gap-3">
               <CheckCircle2 className="h-5 w-5 text-green-600 dark:text-green-400 shrink-0 mt-0.5" />
               <div>
-                <div className="text-sm font-medium text-green-900 dark:text-green-100">Ollama detected</div>
+                <div className="text-sm font-medium text-green-900 dark:text-green-100">{t('ONBOARDING_OLLAMA_DETECTED')}</div>
                 <div className="text-xs text-green-700 dark:text-green-300">{endpoint}</div>
                 {status.hint && <div className="mt-1 text-xs text-green-700/90 dark:text-green-300/90">{status.hint}</div>}
               </div>
             </div>
-            <Button variant="ghost" size="sm" onClick={onRecheck} loading={checking} aria-label="Re-check Ollama" className="shrink-0">
+            <Button variant="ghost" size="sm" onClick={onRecheck} loading={checking} aria-label={t('ONBOARDING_OLLAMA_RECHECK')} className="shrink-0">
               <RefreshCw className="h-3.5 w-3.5" />
             </Button>
           </div>
@@ -67,21 +70,21 @@ export const OllamaSetupCard = ({ status, checking, onRecheck }: OllamaSetupCard
   }
 
   const bridgeUnreachable = isBridgeRefused(status);
-  const title = bridgeUnreachable ? 'Ollama not reachable from Hub' : 'Ollama not detected';
+  const title = bridgeUnreachable ? t('ONBOARDING_OLLAMA_NOT_REACHABLE') : t('ONBOARDING_OLLAMA_NOT_DETECTED');
   const description = bridgeUnreachable ? (
-    (status.hint ?? 'Ollama may already be installed on this machine, but the Hub could not connect to it yet.')
+    (status.hint ?? t('ONBOARDING_OLLAMA_BRIDGE_UNREACHABLE_DESC'))
   ) : (
     <>
-      Ollama isn't installed or running on this machine. Install it from{' '}
+      {t('ONBOARDING_OLLAMA_NOT_INSTALLED_PREFIX')}{' '}
       <a
         href={OLLAMA_DOWNLOAD_URL}
         target="_blank"
         rel="noopener noreferrer"
         className="font-medium underline underline-offset-2 hover:text-yellow-900 dark:hover:text-yellow-100"
       >
-        ollama.com
+        {t('ONBOARDING_OLLAMA_SITE')}
       </a>
-      , start it, then re-check.
+      {t('ONBOARDING_OLLAMA_NOT_INSTALLED_SUFFIX')}
     </>
   );
 
@@ -99,12 +102,12 @@ export const OllamaSetupCard = ({ status, checking, onRecheck }: OllamaSetupCard
               {!bridgeUnreachable && (
                 <Button size="sm" onClick={() => openExternal(OLLAMA_DOWNLOAD_URL)} className="bg-yellow-600 hover:bg-yellow-700 text-white">
                   <Download className="h-3.5 w-3.5 mr-1.5" />
-                  Get Ollama
+                  {t('ONBOARDING_OLLAMA_GET')}
                 </Button>
               )}
               <Button variant="ghost" size="sm" onClick={onRecheck} loading={checking}>
                 <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
-                Re-check
+                {t('ONBOARDING_OLLAMA_RECHECK')}
               </Button>
             </div>
           </div>

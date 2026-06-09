@@ -11,6 +11,8 @@ import {
 import { AlertTriangle, Cpu, HardDrive, MemoryStick, Monitor } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { GpuIcon, VramIcon } from './icons';
+import i18next from 'i18next';
+import { useTranslation } from 'react-i18next';
 
 interface SystemOverviewProps {
   hardware: HardwareProfile;
@@ -22,12 +24,12 @@ interface SystemOverviewProps {
 }
 
 function getClientPlatform(): { label: string; arch: string } {
-  if (typeof navigator === 'undefined') return { label: 'Unknown', arch: '' };
+  if (typeof navigator === 'undefined') return { label: i18next.t('COMMON_UNKNOWN'), arch: '' };
   const platform = `${navigator.userAgent} ${navigator.platform}`.toLowerCase();
   if (platform.includes('win')) return { label: 'Windows', arch: '64-bit' };
   if (platform.includes('mac')) return { label: 'macOS', arch: '64-bit' };
   if (platform.includes('linux') || platform.includes('x11')) return { label: 'Linux', arch: '64-bit' };
-  return { label: 'Unknown', arch: '' };
+  return { label: i18next.t('COMMON_UNKNOWN'), arch: '' };
 }
 
 function isLinuxClient(): boolean {
@@ -59,6 +61,7 @@ function OverviewItem({ icon, label, value, sub, testId }: { icon: ReactNode; la
  * resource estimate.
  */
 export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, availableDiskMb, diskTotalMb }: SystemOverviewProps) => {
+  const { t } = useTranslation();
   const badge = resolveTierBadge(tier, hardware);
   const vramDisplay = resolveVramDisplay(hardware);
   const os = getClientPlatform();
@@ -75,10 +78,10 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
         <div className="flex items-center gap-3">
           <Monitor className="h-6 w-6 text-primary" />
           <h2 className="text-base font-bold uppercase tracking-wide sm:text-lg" data-testid="hw-card-title">
-            System Overview
+            {t('ONBOARDING_SYSTEM_OVERVIEW_TITLE')}
           </h2>
           <span className="hidden text-sm text-muted-foreground sm:inline">
-            {ready ? 'Your machine is ready to run local models.' : "Your hardware can't run local models — add a cloud provider below."}
+            {ready ? t('ONBOARDING_SYSTEM_OVERVIEW_READY') : t('ONBOARDING_SYSTEM_OVERVIEW_INSUFFICIENT')}
           </span>
         </div>
         <div className="flex items-center gap-2">
@@ -86,40 +89,46 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
             {badge.emoji} {badge.label}
           </span>
           <Button variant="ghost" size="sm" onClick={onRescan} loading={rescanning} data-testid="rescan-btn">
-            Rescan
+            {t('ONBOARDING_RESCAN')}
           </Button>
         </div>
       </div>
 
       <div className="mt-5 grid grid-cols-2 gap-x-4 gap-y-5 border-t border-border pt-5 sm:grid-cols-3 lg:grid-cols-6">
-        <OverviewItem icon={<Monitor />} label="OS" value={hardware.os?.name || os.label} sub={hardware.os?.version || os.arch} testId="hw-os" />
+        <OverviewItem
+          icon={<Monitor />}
+          label={t('ONBOARDING_OS')}
+          value={hardware.os?.name || os.label}
+          sub={hardware.os?.version || os.arch}
+          testId="hw-os"
+        />
         <OverviewItem
           icon={<Cpu />}
-          label="CPU"
+          label={t('COMMON_CPU')}
           value={hardware.cpu.model}
-          sub={`${hardware.cpu.cores} cores · ${hardware.cpu.arch}`}
+          sub={`${hardware.cpu.cores} ${t('COMMON_CORES')} · ${hardware.cpu.arch}`}
           testId="hw-cpu"
         />
         <OverviewItem
           icon={<MemoryStick />}
-          label="RAM"
+          label={t('ONBOARDING_RAM')}
           value={formatMemoryMb(hardware.ram.totalMb)}
-          sub={`${formatMemoryMb(hardware.ram.availableMb)} free`}
+          sub={`${formatMemoryMb(hardware.ram.availableMb)} ${t('ONBOARDING_FREE')}`}
           testId="hw-ram"
         />
         <OverviewItem
           icon={<GpuIcon />}
-          label="GPU"
-          value={hardware.gpu.available ? hardware.gpu.model : 'No GPU detected'}
+          label={t('ONBOARDING_GPU')}
+          value={hardware.gpu.available ? hardware.gpu.model : t('ONBOARDING_NO_GPU_DETECTED')}
           sub={resolveGpuSubLabel(hardware)}
           testId="hw-gpu"
         />
-        <OverviewItem icon={<VramIcon />} label="VRAM" value={vramDisplay.value} sub={vramDisplay.sub} />
+        <OverviewItem icon={<VramIcon />} label={t('ONBOARDING_VRAM')} value={vramDisplay.value} sub={vramDisplay.sub} />
         <OverviewItem
           icon={<HardDrive />}
-          label="Storage"
-          value={diskTotalMb ? formatMemoryMb(diskTotalMb) : '—'}
-          sub={availableDiskMb ? `${formatMemoryMb(availableDiskMb)} free` : undefined}
+          label={t('ONBOARDING_STORAGE')}
+          value={diskTotalMb ? formatMemoryMb(diskTotalMb) : t('COMMON_DASH')}
+          sub={availableDiskMb ? `${formatMemoryMb(availableDiskMb)} ${t('ONBOARDING_FREE')}` : undefined}
         />
       </div>
 
@@ -127,8 +136,7 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
         <div className="mt-4 flex items-start gap-2 rounded-md border border-yellow-200 bg-yellow-50 p-2.5 dark:border-yellow-800 dark:bg-yellow-950">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-yellow-600 dark:text-yellow-400" />
           <div className="text-xs text-yellow-800 dark:text-yellow-200">
-            <strong>No GPU detected.</strong> AI services will run on CPU only. Performance may be slower. Consider installing a graphics card for
-            better performance.
+            <strong>{t('ONBOARDING_NO_GPU_DETECTED_STRONG')}</strong> {t('ONBOARDING_NO_GPU_DETECTED_DESC')}
           </div>
         </div>
       )}
@@ -153,27 +161,21 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
           className="mt-4 rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-800/60 dark:bg-amber-950/40 dark:text-amber-100"
           data-testid="nvidia-runtime-warning"
         >
-          <p className="mb-2">
-            NVIDIA GPU detected, but the container GPU runtime is not ready yet. Host-side Ollama can still use this GPU, but containerized backends
-            like vLLM need the NVIDIA container runtime before they can accelerate.
-          </p>
-          <p className="mb-2">
-            Automatic setup runs during startup in non-interactive mode. If your system requires a sudo password prompt, the automatic install is
-            skipped.
-          </p>
-          <p className="font-semibold">Action items:</p>
+          <p className="mb-2">{t('ONBOARDING_NVIDIA_RUNTIME_MISSING_DESC_1')}</p>
+          <p className="mb-2">{t('ONBOARDING_NVIDIA_RUNTIME_MISSING_DESC_2')}</p>
+          <p className="font-semibold">{t('ONBOARDING_ACTION_ITEMS')}</p>
           <div className="mt-2 space-y-3 leading-relaxed">
             <div>
-              <p className="font-semibold">1. Retry automatic setup</p>
-              <p>Close and reopen CI Hub to retry automatic GPU setup.</p>
+              <p className="font-semibold">1. {t('ONBOARDING_RETRY_AUTOMATIC_SETUP')}</p>
+              <p>{t('ONBOARDING_RETRY_AUTOMATIC_SETUP_DESC')}</p>
             </div>
             <div>
               {showLinuxRuntimeSteps ? (
                 <>
-                  <p className="font-semibold">2. Manual install (distribution-specific)</p>
+                  <p className="font-semibold">2. {t('ONBOARDING_MANUAL_INSTALL_DISTRO_SPECIFIC')}</p>
                   <div className="mt-1.5 space-y-2">
                     <div className="rounded bg-amber-100/70 p-2.5 font-mono text-[11px] leading-6 text-amber-950 dark:bg-black/30 dark:text-amber-100/90">
-                      <p className="font-semibold text-amber-950 dark:text-amber-100">Debian/Ubuntu</p>
+                      <p className="font-semibold text-amber-950 dark:text-amber-100">{t('ONBOARDING_DISTRO_DEBIAN_UBUNTU')}</p>
                       <p>sudo mkdir -p /etc/apt/keyrings</p>
                       <p>
                         curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o
@@ -187,7 +189,7 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
                       <p>sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit</p>
                     </div>
                     <div className="rounded bg-amber-100/70 p-2.5 font-mono text-[11px] leading-6 text-amber-950 dark:bg-black/30 dark:text-amber-100/90">
-                      <p className="font-semibold text-amber-950 dark:text-amber-100">RHEL/Fedora</p>
+                      <p className="font-semibold text-amber-950 dark:text-amber-100">{t('ONBOARDING_DISTRO_RHEL_FEDORA')}</p>
                       <p>
                         curl -fsSL https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo | sudo tee
                         /etc/yum.repos.d/nvidia-container-toolkit.repo
@@ -195,24 +197,23 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
                       <p>sudo dnf install -y nvidia-container-toolkit</p>
                     </div>
                     <div className="rounded bg-amber-100/70 p-2.5 font-mono text-[11px] leading-6 text-amber-950 dark:bg-black/30 dark:text-amber-100/90">
-                      <p className="font-semibold text-amber-950 dark:text-amber-100">Arch/Manjaro</p>
+                      <p className="font-semibold text-amber-950 dark:text-amber-100">{t('ONBOARDING_DISTRO_ARCH_MANJARO')}</p>
                       <p>sudo pacman -Sy --noconfirm nvidia-container-toolkit</p>
                     </div>
                   </div>
                 </>
               ) : (
                 <>
-                  <p className="font-semibold">2. Complete GPU support in your host environment</p>
+                  <p className="font-semibold">2. {t('ONBOARDING_COMPLETE_GPU_SUPPORT_HOST')}</p>
                   <div className="mt-1.5 rounded bg-amber-100/70 p-2.5 text-[11px] leading-6 text-amber-950 dark:bg-black/30 dark:text-amber-100/90">
-                    On Windows, open Docker Desktop and confirm WSL2 GPU support is enabled. On other non-Linux hosts, verify your Docker setup and
-                    NVIDIA drivers support GPU passthrough for containers before rescanning.
+                    {t('ONBOARDING_COMPLETE_GPU_SUPPORT_HOST_DESC')}
                   </div>
                 </>
               )}
             </div>
             {showLinuxRuntimeSteps && (
               <div>
-                <p className="font-semibold">3. Then run (same on all distributions)</p>
+                <p className="font-semibold">3. {t('ONBOARDING_THEN_RUN')}</p>
                 <div className="mt-1.5 rounded bg-amber-100/70 p-2.5 font-mono text-[11px] leading-6 text-amber-950 dark:bg-black/30 dark:text-amber-100/90">
                   <p>sudo nvidia-ctk runtime configure --runtime=docker</p>
                   <p>sudo systemctl restart docker</p>
@@ -222,7 +223,8 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
             )}
             <div>
               <p>
-                {showLinuxRuntimeSteps ? '4.' : '3.'} Return here and click <span className="font-semibold">Rescan</span>.
+                {showLinuxRuntimeSteps ? '4.' : '3.'} {t('ONBOARDING_RETURN_AND_CLICK')}{' '}
+                <span className="font-semibold">{t('ONBOARDING_RESCAN')}</span>.
               </p>
             </div>
           </div>
@@ -234,7 +236,7 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
           className="mt-4 rounded-md border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-100"
           data-testid="nvidia-runtime-ready"
         >
-          NVIDIA GPU detected and NVIDIA container runtime is configured. AI inference can use GPU acceleration.
+          {t('ONBOARDING_NVIDIA_RUNTIME_READY')}
         </div>
       )}
     </section>

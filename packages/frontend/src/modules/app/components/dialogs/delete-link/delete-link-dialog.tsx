@@ -41,7 +41,7 @@ export const DeleteLinkDialog: React.FC<DeleteLinkDialogProps> = ({ isOpen, onCl
         </DialogDescription>
         <DialogFooter>
           <Button intent="danger" onClick={() => deleteLink.mutate({ path: { id: linkId } })}>
-            {t('LINKS_DELETE_SUBMIT')}
+            {t('COMMON_DELETE')}
           </Button>
         </DialogFooter>
       </DialogContent>

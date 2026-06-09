@@ -5,6 +5,7 @@ import { type ReactNode, useState } from 'react';
 import { CubeModelsIcon, ModelIcon } from './icons';
 import { ARTIFICIAL_ANALYSIS_URL, type LevelColor, LEVEL_TAG, LEVEL_TEXT, resourceColor, scoreColor, TIER_TAG_COLOR, TIER_TAG_LABEL } from './levels';
 import { ModelCard, StepSection } from './primitives';
+import { useTranslation } from 'react-i18next';
 
 interface RecommendedModelsProps {
   tier: HardwareTier;
@@ -24,6 +25,13 @@ export function formatSize(mb: number): string {
 }
 
 const MODALITY_TAG: Record<string, string> = {
+  tts: 'ONBOARDING_MODEL_TAG_SPEECH',
+  stt: 'ONBOARDING_MODEL_TAG_TRANSCRIPTION',
+  embedding: 'ONBOARDING_MODEL_TAG_EMBEDDING',
+  'image-gen': 'COMMON_IMAGE',
+};
+
+const MODALITY_FALLBACK_TAG: Record<string, string> = {
   tts: 'Speech',
   stt: 'Transcription',
   embedding: 'Embedding',
@@ -35,16 +43,20 @@ const MODALITY_TAG: Record<string, string> = {
  * Reasoning / Vision / Tools / Audio (from catalog capability metadata) for LLMs, and a single
  * descriptive tag for non-LLM modalities (Embedding / Speech / Transcription).
  */
-export function modelTags(model: CuratedModel): string[] {
+type TranslateFn = (key: string, options?: Record<string, unknown>) => string;
+
+export function modelTags(model: CuratedModel, t?: TranslateFn): string[] {
   if (model.modality && model.modality !== 'llm') {
-    return [MODALITY_TAG[model.modality] ?? 'Model'];
+    const key = MODALITY_TAG[model.modality];
+    const fallback = MODALITY_FALLBACK_TAG[model.modality] ?? 'Model';
+    return [t ? t(key ?? 'COMMON_MODEL') : fallback];
   }
   const caps = model.metadata?.capabilities;
   const tags: string[] = [];
-  if (caps?.reasoning) tags.push('Reasoning');
-  if (caps?.vision) tags.push('Vision');
-  if (caps?.tools) tags.push('Tools');
-  if (caps?.audio) tags.push('Audio');
+  if (caps?.reasoning) tags.push(t ? t('ONBOARDING_MODEL_CAP_REASONING') : 'Reasoning');
+  if (caps?.vision) tags.push(t ? t('ONBOARDING_MODEL_CAP_VISION') : 'Vision');
+  if (caps?.tools) tags.push(t ? t('ONBOARDING_MODEL_CAP_TOOLS') : 'Tools');
+  if (caps?.audio) tags.push(t ? t('ONBOARDING_MODEL_CAP_AUDIO') : 'Audio');
   if (tags.length > 0) return tags;
   // Fallback for entries without capability metadata.
   const purpose = model.purpose as string | undefined;
@@ -85,6 +97,7 @@ export const RecommendedModels = ({
   preferredModelId,
   children,
 }: RecommendedModelsProps) => {
+  const { t } = useTranslation();
   if (tier === 'insufficient') return null;
 
   const installed = new Set(installedCatalogIds);
@@ -94,11 +107,7 @@ export const RecommendedModels = ({
     .sort((a, b) => Number(b.id === preferredModelId) - Number(a.id === preferredModelId));
 
   return (
-    <StepSection
-      number={2}
-      title="Recommended Models"
-      description="Models already in Ollama are pre-selected. Check any additional models you want to download — unchecked models will not be installed."
-    >
+    <StepSection number={2} title={t('COMMON_RECOMMENDED_MODELS')} description={t('ONBOARDING_RECOMMENDED_MODELS_DESC')}>
       {models.length > 0 ? (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3" data-testid="model-card-title">
           {models.map((model) => (
@@ -108,7 +117,7 @@ export const RecommendedModels = ({
               checkboxTestId={`model-checkbox-${model.id}`}
               title={model.displayName}
               icon={<ModelIcon model={model} />}
-              tags={modelTags(model)}
+              tags={modelTags(model, t)}
               selected={selectedModelIds.includes(model.id)}
               onToggle={() => onToggleModel(model.id)}
               agentDefault={model.id === preferredModelId}
@@ -119,7 +128,7 @@ export const RecommendedModels = ({
           ))}
         </div>
       ) : (
-        <p className="text-sm text-muted-foreground">No recommended models for your hardware — browse all installable models below.</p>
+        <p className="text-sm text-muted-foreground">{t('ONBOARDING_NO_RECOMMENDED_MODELS')}</p>
       )}
       {children}
     </StepSection>
@@ -138,12 +147,14 @@ interface OtherModelsProps {
 /* ── Other Models table: color-coded levels (red → orange → gold → green → blue) live in ./levels ── */
 
 function ScoreCell({ value }: { value?: number }) {
-  if (value == null) return <span className="text-muted-foreground/50">—</span>;
+  const { t } = useTranslation();
+  if (value == null) return <span className="text-muted-foreground/50">{t('COMMON_DASH')}</span>;
   return <span className={cn('font-semibold tabular-nums', LEVEL_TEXT[scoreColor(value)])}>{Math.round(value)}</span>;
 }
 
 function ResourceCell({ mb }: { mb?: number }) {
-  if (mb == null) return <span className="text-muted-foreground/50">—</span>;
+  const { t } = useTranslation();
+  if (mb == null) return <span className="text-muted-foreground/50">{t('COMMON_DASH')}</span>;
   const gb = mb / 1024;
   return <span className={cn('tabular-nums', LEVEL_TEXT[resourceColor(gb)])}>{gb >= 1 ? `${gb.toFixed(1)} GB` : `${Math.round(mb)} MB`}</span>;
 }
@@ -162,6 +173,7 @@ function ModelTableRow({
   isInstalled: boolean;
   onToggle: () => void;
 }) {
+  const { t } = useTranslation();
   const tier = model.requirements.minTier;
   const inputId = `model-checkbox-${model.id}`;
   return (
@@ -185,8 +197,12 @@ function ModelTableRow({
             <ModelIcon model={model} />
           </span>
           <span className="whitespace-nowrap text-sm font-medium">{model.displayName}</span>
-          {isAgentDefault && <span className="rounded bg-primary px-1.5 py-0.5 text-[10px] font-medium text-primary-foreground">Default</span>}
-          {isInstalled && <span className="rounded bg-green-600/90 px-1.5 py-0.5 text-[10px] font-medium text-white">Installed</span>}
+          {isAgentDefault && (
+            <span className="rounded bg-primary px-1.5 py-0.5 text-[10px] font-medium text-primary-foreground">{t('ONBOARDING_DEFAULT')}</span>
+          )}
+          {isInstalled && (
+            <span className="rounded bg-green-600/90 px-1.5 py-0.5 text-[10px] font-medium text-white">{t('ONBOARDING_INSTALLED')}</span>
+          )}
         </label>
       </td>
       <td className="py-2 pr-3 align-middle">
@@ -198,7 +214,7 @@ function ModelTableRow({
       </td>
       <td className="py-2 pr-3 align-middle">
         <span className="flex flex-wrap gap-1">
-          {modelTags(model).map((tag) => (
+          {modelTags(model, t).map((tag) => (
             <span key={tag} className="rounded border border-primary/30 px-1.5 py-0.5 text-[10px] font-medium text-primary/90">
               {tag}
             </span>
@@ -243,6 +259,7 @@ function ModelGroup({
   onToggleModel: (id: string) => void;
   preferredModelId?: string;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const installed = new Set(installedCatalogIds);
   return (
@@ -263,14 +280,14 @@ function ModelGroup({
           <table className="w-full border-collapse text-left">
             <thead>
               <tr className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                <th className="w-8" aria-label="select" />
-                <th className="py-1.5 pr-3 font-medium">Model</th>
-                <th className="py-1.5 pr-3 font-medium">Tier</th>
-                <th className="py-1.5 pr-3 font-medium">Capabilities</th>
-                <th className="py-1.5 pr-3 text-right font-medium">Intelligence</th>
-                <th className="py-1.5 pr-3 text-right font-medium">Tool use</th>
-                <th className="py-1.5 pr-3 text-right font-medium">RAM</th>
-                <th className="py-1.5 pr-3 text-right font-medium">Disk</th>
+                <th className="w-8" aria-label={t('ONBOARDING_SELECT')} />
+                <th className="py-1.5 pr-3 font-medium">{t('COMMON_MODEL')}</th>
+                <th className="py-1.5 pr-3 font-medium">{t('ONBOARDING_TIER')}</th>
+                <th className="py-1.5 pr-3 font-medium">{t('ONBOARDING_CAPABILITIES')}</th>
+                <th className="py-1.5 pr-3 text-right font-medium">{t('ONBOARDING_INTELLIGENCE')}</th>
+                <th className="py-1.5 pr-3 text-right font-medium">{t('ONBOARDING_TOOL_USE')}</th>
+                <th className="py-1.5 pr-3 text-right font-medium">{t('ONBOARDING_RAM')}</th>
+                <th className="py-1.5 pr-3 text-right font-medium">{t('COMMON_DISK')}</th>
               </tr>
             </thead>
             <tbody>
@@ -339,6 +356,7 @@ export const OtherModels = ({
   onToggleModel,
   preferredModelId,
 }: OtherModelsProps) => {
+  const { t } = useTranslation();
   const recommendedIds = new Set(recommendedModels.map((m) => m.id));
   // Exclude the recommended models and de-duplicate by id (guards against repeated entries).
   const models: CuratedModel[] = [];
@@ -350,7 +368,7 @@ export const OtherModels = ({
   }
 
   if (models.length === 0) {
-    return <p className="text-xs text-muted-foreground">No additional models are available for your hardware.</p>;
+    return <p className="text-xs text-muted-foreground">{t('ONBOARDING_NO_ADDITIONAL_MODELS')}</p>;
   }
 
   // Assign each model to the first matching group so it never appears twice.
@@ -358,7 +376,14 @@ export const OtherModels = ({
   const groups: OtherModelGroup[] = OTHER_MODEL_GROUPS.map((group) => {
     const items = models.filter((m) => !assigned.has(m.id) && group.match(m));
     for (const m of items) assigned.add(m.id);
-    return { ...group, items };
+    const titleMap: Record<string, string> = {
+      large: t('ONBOARDING_GROUP_LARGE_MODELS'),
+      medium: t('ONBOARDING_GROUP_MEDIUM_MODELS'),
+      small: t('ONBOARDING_GROUP_SMALL_MODELS'),
+      embedding: t('ONBOARDING_GROUP_EMBEDDING_MODELS'),
+      other: t('ONBOARDING_GROUP_SPEECH_OTHER_MODELS'),
+    };
+    return { ...group, title: titleMap[group.key] ?? group.title, items };
   }).filter((group) => group.items.length > 0);
 
   return (
@@ -383,6 +408,8 @@ export const OtherModels = ({
  * {@link OtherModels} is itself collapsible.
  */
 export const OtherModelsSection = (props: OtherModelsProps) => {
+  const { t } = useTranslation();
+
   return (
     <div className="mt-4 rounded-2xl border border-border bg-foreground/[0.015] p-4">
       <div className="mb-3 flex items-center gap-3">
@@ -390,19 +417,19 @@ export const OtherModelsSection = (props: OtherModelsProps) => {
           <CubeModelsIcon />
         </span>
         <span className="min-w-0 flex-1">
-          <span className="block text-sm font-semibold">Other Models</span>
+          <span className="block text-sm font-semibold">{t('ONBOARDING_OTHER_MODELS')}</span>
         </span>
       </div>
       <OtherModels {...props} />
       <p className="mt-3 text-[11px] text-muted-foreground">
-        Intelligence &amp; tool-use scores from{' '}
+        {t('ONBOARDING_INTELLIGENCE_TOOLUSE_FROM')}{' '}
         <a
           href={ARTIFICIAL_ANALYSIS_URL}
           target="_blank"
           rel="noopener noreferrer"
           className="font-medium text-primary underline-offset-2 hover:underline"
         >
-          Artificial Analysis
+          {t('ONBOARDING_ARTIFICIAL_ANALYSIS')}
         </a>
         .
       </p>

@@ -21,7 +21,7 @@ describe('LoginForm', () => {
       </MemoryRouter>,
     );
 
-    const passwordInput = screen.getByLabelText('AUTH_FORM_PASSWORD') as HTMLInputElement;
+    const passwordInput = screen.getByLabelText('COMMON_PASSWORD') as HTMLInputElement;
     expect(passwordInput.type).toBe('password');
 
     await userEvent.click(screen.getByRole('button', { name: 'APP_INSTALL_FORM_SHOW_PASSWORD' }));

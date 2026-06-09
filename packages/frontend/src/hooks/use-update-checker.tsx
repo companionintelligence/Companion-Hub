@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import { Link } from 'react-router';
+import { useTranslation } from 'react-i18next';
 import {
   checkForUpdates,
   dismissVersion,
@@ -21,64 +22,71 @@ export interface UseUpdateCheckerResult {
   checking: boolean;
 }
 
-function showUpdateToast(info: UpdateInfo, onDismiss: () => void) {
-  toast(
-    (t) => (
-      <span className="flex flex-col gap-1 text-sm">
-        <strong>Companion Hub {info.latestVersion}</strong> is available.
-        <span className="flex gap-2 mt-1">
-          <Link to="/settings" className="underline font-medium" onClick={() => toast.dismiss(t.id)}>
-            Open Settings
-          </Link>
-          <button
-            type="button"
-            className="text-muted-foreground underline"
-            onClick={() => {
-              onDismiss();
-              toast.dismiss(t.id);
-            }}
-          >
-            Later
-          </button>
-        </span>
-      </span>
-    ),
-    { duration: 8000, id: `hub-update-${info.latestVersion}` },
-  );
-}
-
 export function useUpdateChecker(): UseUpdateCheckerResult {
+  const { t } = useTranslation();
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
   const [checking, setChecking] = useState(false);
   const intervalRef = useRef<number | null>(null);
 
-  const runCheck = useCallback(async (showToast = true) => {
-    if (!isTauri()) return null;
-    setChecking(true);
-    try {
-      const result = await checkForUpdates();
-      if (!result) {
-        setUpdate(null);
-        return null;
-      }
+  const showUpdateToast = useCallback(
+    (info: UpdateInfo, onDismiss: () => void) => {
+      toast(
+        (toastInstance) => (
+          <span className="flex flex-col gap-1 text-sm">
+            <strong>{t('UPDATE_TOAST_AVAILABLE', { version: info.latestVersion })}</strong>
+            <span className="flex gap-2 mt-1">
+              <Link to="/settings" className="underline font-medium" onClick={() => toast.dismiss(toastInstance.id)}>
+                {t('UPDATE_TOAST_OPEN_SETTINGS')}
+              </Link>
+              <button
+                type="button"
+                className="text-muted-foreground underline"
+                onClick={() => {
+                  onDismiss();
+                  toast.dismiss(toastInstance.id);
+                }}
+              >
+                {t('UPDATE_TOAST_LATER')}
+              </button>
+            </span>
+          </span>
+        ),
+        { duration: 8000, id: `hub-update-${info.latestVersion}` },
+      );
+    },
+    [t],
+  );
 
-      if (result.updateAvailable && isVersionDismissed(result.latestVersion)) {
-        setUpdate(null);
+  const runCheck = useCallback(
+    async (showToastNotification = true) => {
+      if (!isTauri()) return null;
+      setChecking(true);
+      try {
+        const result = await checkForUpdates();
+        if (!result) {
+          setUpdate(null);
+          return null;
+        }
+
+        if (result.updateAvailable && isVersionDismissed(result.latestVersion)) {
+          setUpdate(null);
+          return result;
+        }
+
+        setUpdate(result.updateAvailable ? result : null);
+
+        if (showToastNotification && result.updateAvailable && !wasToastShown(result.latestVersion)) {
+          markToastShown(result.latestVersion);
+          showUpdateToast(result, () => dismissVersion(result.latestVersion));
+        }
+
         return result;
+      } finally {
+        setChecking(false);
       }
-
-      setUpdate(result.updateAvailable ? result : null);
-
-      if (showToast && result.updateAvailable && !wasToastShown(result.latestVersion)) {
-        markToastShown(result.latestVersion);
-        showUpdateToast(result, () => dismissVersion(result.latestVersion));
-      }
-
-      return result;
-    } finally {
-      setChecking(false);
-    }
-  }, []);
+    },
+    [showUpdateToast],
+  );
 
   const dismiss = useCallback(() => {
     setUpdate((prev) => {

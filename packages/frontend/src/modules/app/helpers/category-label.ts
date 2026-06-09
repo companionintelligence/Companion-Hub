@@ -21,5 +21,12 @@ export function getCategoryLabel(t: TFunction, category: string) {
     return translated;
   }
 
+  // Some category labels were deduplicated to COMMON_* keys.
+  const commonKey = `COMMON_${keySuffix}`;
+  const commonTranslated = t(commonKey);
+  if (commonTranslated && commonTranslated !== commonKey) {
+    return commonTranslated;
+  }
+
   return toTitleCase(keySuffix.replace(/_/g, ' '));
 }

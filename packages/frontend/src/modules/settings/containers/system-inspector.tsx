@@ -16,6 +16,7 @@ import {
   Container,
 } from 'lucide-react';
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -151,118 +152,145 @@ const Badge = ({ children, variant = 'default' }: { children: React.ReactNode; v
   return <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${colors[variant]}`}>{children}</span>;
 };
 
-const HostResourcesSection = ({ hostResources }: { hostResources: NonNullable<SystemHealth['hostResources']> }) => (
-  <section className="rounded-3xl border border-border bg-linear-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
-    <div className="flex items-center gap-3 mb-5">
-      <Server className="h-6 w-6 text-primary" />
-      <h2 className="text-base font-bold uppercase tracking-wide sm:text-lg">Host vs Container Resources</h2>
-      {hostResources.hasVmWedge && <Badge variant="warning">VM wedge detected</Badge>}
-    </div>
+const HostResourcesSection = ({ hostResources }: { hostResources: NonNullable<SystemHealth['hostResources']> }) => {
+  const { t } = useTranslation();
 
-    <div className="rounded-xl border border-border bg-muted/30 p-4 mb-4">
-      <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-2">Docker resource limits</div>
-      <p className="text-sm text-muted-foreground leading-relaxed">{hostResources.platformGuidance}</p>
-      {hostResources.recommendedDockerRamMb && (
-        <p className="text-sm font-medium mt-2">Recommended Docker memory: {Math.round(hostResources.recommendedDockerRamMb / 1024)} GB</p>
-      )}
-    </div>
-
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 border-t border-border pt-5">
-      <div className="rounded-xl border border-border p-4">
-        <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-2">Physical host</div>
-        <div className="text-sm">
-          Memory: {hostResources.hostMemoryUsedGb} / {hostResources.hostMemoryTotalGb} GB
-        </div>
-        <div className="text-sm">
-          Disk: {hostResources.hostDiskUsedGb} / {hostResources.hostDiskTotalGb} GB
-        </div>
+  return (
+    <section className="rounded-3xl border border-border bg-linear-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
+      <div className="flex items-center gap-3 mb-5">
+        <Server className="h-6 w-6 text-primary" />
+        <h2 className="text-base font-bold uppercase tracking-wide sm:text-lg">{t('SYSTEM_INSPECTOR_HOST_CONTAINER_RESOURCES')}</h2>
+        {hostResources.hasVmWedge && <Badge variant="warning">{t('SYSTEM_INSPECTOR_VM_WEDGE_DETECTED')}</Badge>}
       </div>
-      {hostResources.hasVmWedge && (
+
+      <div className="rounded-xl border border-border bg-muted/30 p-4 mb-4">
+        <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-2">
+          {t('SYSTEM_INSPECTOR_DOCKER_RESOURCE_LIMITS')}
+        </div>
+        <p className="text-sm text-muted-foreground leading-relaxed">{hostResources.platformGuidance}</p>
+        {hostResources.recommendedDockerRamMb && (
+          <p className="text-sm font-medium mt-2">
+            {t('SYSTEM_INSPECTOR_RECOMMENDED_DOCKER_MEMORY')}: {Math.round(hostResources.recommendedDockerRamMb / 1024)} GB
+          </p>
+        )}
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 border-t border-border pt-5">
         <div className="rounded-xl border border-border p-4">
-          <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-2">Docker / VM allocated</div>
+          <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-2">{t('SYSTEM_INSPECTOR_PHYSICAL_HOST')}</div>
           <div className="text-sm">
-            Memory: {hostResources.containerMemoryUsedGb ?? '—'} / {hostResources.containerMemoryTotalGb ?? '—'} GB
+            {t('COMMON_MEMORY')}: {hostResources.hostMemoryUsedGb} / {hostResources.hostMemoryTotalGb} GB
           </div>
           <div className="text-sm">
-            Disk: {hostResources.containerDiskUsedGb ?? '—'} / {hostResources.containerDiskTotalGb ?? '—'} GB
+            {t('COMMON_DISK')}: {hostResources.hostDiskUsedGb} / {hostResources.hostDiskTotalGb} GB
           </div>
-          {hostResources.recommendedDockerRamMb && (
-            <div className="text-xs text-muted-foreground mt-2">
-              Recommended Docker memory: {Math.round(hostResources.recommendedDockerRamMb / 1024)} GB
+        </div>
+        {hostResources.hasVmWedge && (
+          <div className="rounded-xl border border-border p-4">
+            <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-2">
+              {t('SYSTEM_INSPECTOR_DOCKER_VM_ALLOCATED')}
             </div>
-          )}
+            <div className="text-sm">
+              {t('COMMON_MEMORY')}: {hostResources.containerMemoryUsedGb ?? '—'} / {hostResources.containerMemoryTotalGb ?? '—'} GB
+            </div>
+            <div className="text-sm">
+              {t('COMMON_DISK')}: {hostResources.containerDiskUsedGb ?? '—'} / {hostResources.containerDiskTotalGb ?? '—'} GB
+            </div>
+            {hostResources.recommendedDockerRamMb && (
+              <div className="text-xs text-muted-foreground mt-2">
+                {t('SYSTEM_INSPECTOR_RECOMMENDED_DOCKER_MEMORY')}: {Math.round(hostResources.recommendedDockerRamMb / 1024)} GB
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {hostResources.tuningNotes && (
+        <div className="mt-4 rounded-lg border border-border bg-muted/20 p-3 text-sm text-muted-foreground border-t-0">
+          <span className="font-medium text-foreground">{t('SYSTEM_INSPECTOR_AUTO_DOCKER_MEMORY_TUNING')}: </span>
+          {hostResources.tuningNotes}
         </div>
       )}
-    </div>
-
-    {hostResources.tuningNotes && (
-      <div className="mt-4 rounded-lg border border-border bg-muted/20 p-3 text-sm text-muted-foreground border-t-0">
-        <span className="font-medium text-foreground">Automatic Docker memory tuning: </span>
-        {hostResources.tuningNotes}
-      </div>
-    )}
-  </section>
-);
+    </section>
+  );
+};
 
 // ─── System Health Section ───────────────────────────────────────────────────
 
-const SystemHealthSection = ({ health }: { health: SystemHealth }) => (
-  <section className="rounded-3xl border border-border bg-linear-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
-    <div className="flex items-center gap-3 mb-5">
-      <Activity className="h-6 w-6 text-primary" />
-      <h2 className="text-base font-bold uppercase tracking-wide sm:text-lg">System Health</h2>
-    </div>
+const SystemHealthSection = ({ health }: { health: SystemHealth }) => {
+  const { t } = useTranslation();
 
-    <div className="grid grid-cols-2 gap-x-4 gap-y-5 border-t border-border pt-5 sm:grid-cols-2 lg:grid-cols-4">
-      <StatCard icon={Cpu} title="CPU" value={`${health.cpu.load}%`} subtitle={`${health.cpu.cores} cores`} percent={health.cpu.load} />
-      <StatCard
-        icon={MemoryStick}
-        title="Memory"
-        value={`${health.memory.percent}%`}
-        subtitle={`${formatBytes(health.memory.used)} / ${formatBytes(health.memory.total)}`}
-        percent={health.memory.percent}
-      />
-      <StatCard
-        icon={HardDrive}
-        title="Disk"
-        value={`${health.disk.percent}%`}
-        subtitle={`${formatBytes(health.disk.used * 1024 * 1024 * 1024)} / ${formatBytes(health.disk.total * 1024 * 1024 * 1024)}`}
-        percent={health.disk.percent}
-      />
-      <StatCard icon={Clock} title="Uptime" value={formatUptime(health.uptime)} subtitle={health.platform} />
-    </div>
+  return (
+    <section className="rounded-3xl border border-border bg-linear-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
+      <div className="flex items-center gap-3 mb-5">
+        <Activity className="h-6 w-6 text-primary" />
+        <h2 className="text-base font-bold uppercase tracking-wide sm:text-lg">{t('SYSTEM_INSPECTOR_SYSTEM_HEALTH')}</h2>
+      </div>
 
-    <div className="mt-5 grid grid-cols-2 gap-x-4 gap-y-3 border-t border-border pt-5 sm:grid-cols-4 text-sm">
-      <div>
-        <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-0.5">Hostname</div>
-        <div className="text-xs truncate font-medium" title={health.hostname}>
-          {health.hostname}
+      <div className="grid grid-cols-2 gap-x-4 gap-y-5 border-t border-border pt-5 sm:grid-cols-2 lg:grid-cols-4">
+        <StatCard
+          icon={Cpu}
+          title={t('COMMON_CPU')}
+          value={`${health.cpu.load}%`}
+          subtitle={`${health.cpu.cores} ${t('COMMON_CORES')}`}
+          percent={health.cpu.load}
+        />
+        <StatCard
+          icon={MemoryStick}
+          title={t('COMMON_MEMORY')}
+          value={`${health.memory.percent}%`}
+          subtitle={`${formatBytes(health.memory.used)} / ${formatBytes(health.memory.total)}`}
+          percent={health.memory.percent}
+        />
+        <StatCard
+          icon={HardDrive}
+          title={t('COMMON_DISK')}
+          value={`${health.disk.percent}%`}
+          subtitle={`${formatBytes(health.disk.used * 1024 * 1024 * 1024)} / ${formatBytes(health.disk.total * 1024 * 1024 * 1024)}`}
+          percent={health.disk.percent}
+        />
+        <StatCard icon={Clock} title={t('SYSTEM_INSPECTOR_UPTIME')} value={formatUptime(health.uptime)} subtitle={health.platform} />
+      </div>
+
+      <div className="mt-5 grid grid-cols-2 gap-x-4 gap-y-3 border-t border-border pt-5 sm:grid-cols-4 text-sm">
+        <div>
+          <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-0.5">{t('COMMON_HOSTNAME')}</div>
+          <div className="text-xs truncate font-medium" title={health.hostname}>
+            {health.hostname}
+          </div>
+        </div>
+        <div>
+          <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-0.5">{t('SYSTEM_INSPECTOR_DOCKER')}</div>
+          <div className="font-mono text-xs">{health.dockerVersion || t('COMMON_NOT_AVAILABLE_SHORT')}</div>
+        </div>
+        <div>
+          <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-0.5">{t('SYSTEM_INSPECTOR_CONTAINERS')}</div>
+          <div className="flex gap-1.5 items-center flex-wrap">
+            <Badge variant="success">
+              {health.containerCount.running} {t('SYSTEM_INSPECTOR_RUNNING')}
+            </Badge>
+            {health.containerCount.stopped > 0 && (
+              <Badge variant="danger">
+                {health.containerCount.stopped} {t('SYSTEM_INSPECTOR_STOPPED')}
+              </Badge>
+            )}
+          </div>
+        </div>
+        <div>
+          <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-0.5">{t('SYSTEM_INSPECTOR_CPU_MODEL')}</div>
+          <div className="text-xs truncate font-medium" title={health.cpu.model}>
+            {health.cpu.model}
+          </div>
         </div>
       </div>
-      <div>
-        <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-0.5">Docker</div>
-        <div className="font-mono text-xs">{health.dockerVersion || 'N/A'}</div>
-      </div>
-      <div>
-        <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-0.5">Containers</div>
-        <div className="flex gap-1.5 items-center flex-wrap">
-          <Badge variant="success">{health.containerCount.running} running</Badge>
-          {health.containerCount.stopped > 0 && <Badge variant="danger">{health.containerCount.stopped} stopped</Badge>}
-        </div>
-      </div>
-      <div>
-        <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-0.5">CPU Model</div>
-        <div className="text-xs truncate font-medium" title={health.cpu.model}>
-          {health.cpu.model}
-        </div>
-      </div>
-    </div>
-  </section>
-);
+    </section>
+  );
+};
 
 // ─── Containers Section ─────────────────────────────────────────────────────
 
 const ContainersSection = ({ containers }: { containers: ContainerInfo[] }) => {
+  const { t } = useTranslation();
   const running = containers.filter((c) => c.state === 'running');
   const stopped = containers.filter((c) => c.state !== 'running');
   const sorted = [...running, ...stopped];
@@ -271,24 +299,26 @@ const ContainersSection = ({ containers }: { containers: ContainerInfo[] }) => {
     <section className="rounded-3xl border border-border bg-linear-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
       <div className="flex items-center gap-3 mb-5">
         <Container className="h-6 w-6 text-primary shrink-0" />
-        <h2 className="text-base font-bold uppercase tracking-wide sm:text-lg">Docker Containers</h2>
-        <Badge>{containers.length} total</Badge>
+        <h2 className="text-base font-bold uppercase tracking-wide sm:text-lg">{t('SYSTEM_INSPECTOR_DOCKER_CONTAINERS')}</h2>
+        <Badge>
+          {containers.length} {t('SYSTEM_INSPECTOR_TOTAL')}
+        </Badge>
       </div>
 
       {sorted.length === 0 ? (
-        <div className="text-sm text-muted-foreground rounded-xl border border-dashed p-4 text-center">No containers found</div>
+        <div className="text-sm text-muted-foreground rounded-xl border border-dashed p-4 text-center">{t('SYSTEM_INSPECTOR_NO_CONTAINERS')}</div>
       ) : (
         <div className="rounded-lg border overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b bg-muted/50">
-                  <th className="text-left p-2 pl-3 font-medium text-muted-foreground">Status</th>
-                  <th className="text-left p-2 font-medium text-muted-foreground">Container</th>
-                  <th className="text-left p-2 font-medium text-muted-foreground hidden md:table-cell">Image</th>
-                  <th className="text-left p-2 font-medium text-muted-foreground hidden sm:table-cell">Ports</th>
-                  <th className="text-left p-2 font-medium text-muted-foreground hidden sm:table-cell">Uptime</th>
-                  <th className="text-left p-2 pr-3 font-medium text-muted-foreground hidden lg:table-cell">App</th>
+                  <th className="text-left p-2 pl-3 font-medium text-muted-foreground">{t('COMMON_STATUS')}</th>
+                  <th className="text-left p-2 font-medium text-muted-foreground">{t('SYSTEM_INSPECTOR_CONTAINER')}</th>
+                  <th className="text-left p-2 font-medium text-muted-foreground hidden md:table-cell">{t('COMMON_IMAGE')}</th>
+                  <th className="text-left p-2 font-medium text-muted-foreground hidden sm:table-cell">{t('COMMON_PORTS')}</th>
+                  <th className="text-left p-2 font-medium text-muted-foreground hidden sm:table-cell">{t('SYSTEM_INSPECTOR_UPTIME')}</th>
+                  <th className="text-left p-2 pr-3 font-medium text-muted-foreground hidden lg:table-cell">{t('SYSTEM_INSPECTOR_APP')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -315,7 +345,7 @@ const ContainersSection = ({ containers }: { containers: ContainerInfo[] }) => {
                               {p.hostPort}→{p.containerPort}
                             </Badge>
                           ))}
-                        {c.ports.filter((p) => p.hostPort).length === 0 && <span className="text-xs text-muted-foreground">—</span>}
+                        {c.ports.filter((p) => p.hostPort).length === 0 && <span className="text-xs text-muted-foreground">{t('COMMON_DASH')}</span>}
                       </div>
                     </td>
                     <td className="p-2 hidden sm:table-cell">
@@ -325,7 +355,7 @@ const ContainersSection = ({ containers }: { containers: ContainerInfo[] }) => {
                       {c.appUrn ? (
                         <Badge variant="default">{c.appUrn.split(':')[0]}</Badge>
                       ) : (
-                        <span className="text-xs text-muted-foreground">system</span>
+                        <span className="text-xs text-muted-foreground">{t('SYSTEM_INSPECTOR_SYSTEM')}</span>
                       )}
                     </td>
                   </tr>
@@ -342,24 +372,29 @@ const ContainersSection = ({ containers }: { containers: ContainerInfo[] }) => {
 // ─── Port Management Section ─────────────────────────────────────────────────
 
 const PortManagementSection = ({ ports }: { ports: { allocations: PortStatus[]; untracked: Array<{ port: number; process: string }> } }) => {
+  const { t } = useTranslation();
   const [showUntracked, setShowUntracked] = useState(true);
 
   return (
     <section className="rounded-3xl border border-border bg-linear-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
       <div className="flex items-center gap-3 mb-5 flex-wrap">
         <Network className="h-6 w-6 text-primary shrink-0" />
-        <h2 className="text-base font-bold uppercase tracking-wide sm:text-lg">Port Allocations</h2>
-        <Badge>{ports.allocations.length} managed</Badge>
+        <h2 className="text-base font-bold uppercase tracking-wide sm:text-lg">{t('SYSTEM_INSPECTOR_PORT_ALLOCATIONS')}</h2>
+        <Badge>
+          {ports.allocations.length} {t('SYSTEM_INSPECTOR_MANAGED')}
+        </Badge>
         {ports.untracked.length > 0 && (
           <button type="button" onClick={() => setShowUntracked(!showUntracked)} className="ml-auto">
-            <Badge variant="warning">{ports.untracked.length} untracked</Badge>
+            <Badge variant="warning">
+              {ports.untracked.length} {t('SYSTEM_INSPECTOR_UNTRACKED')}
+            </Badge>
           </button>
         )}
       </div>
 
       {ports.allocations.length === 0 && ports.untracked.length === 0 ? (
         <div className="text-sm text-muted-foreground rounded-xl border border-dashed p-4 text-center">
-          No port allocations yet. Install an app to see port assignments here.
+          {t('SYSTEM_INSPECTOR_NO_PORT_ALLOCATIONS')}
         </div>
       ) : (
         <>
@@ -369,13 +404,13 @@ const PortManagementSection = ({ ports }: { ports: { allocations: PortStatus[]; 
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b bg-muted/50">
-                    <th className="text-left p-2 pl-3 font-medium text-muted-foreground">Status</th>
-                    <th className="text-left p-2 font-medium text-muted-foreground">Host Port</th>
-                    <th className="text-left p-2 font-medium text-muted-foreground">→ Container</th>
-                    <th className="text-left p-2 font-medium text-muted-foreground">Protocol</th>
-                    <th className="text-left p-2 font-medium text-muted-foreground">Label</th>
-                    <th className="text-left p-2 font-medium text-muted-foreground">App</th>
-                    <th className="text-left p-2 pr-3 font-medium text-muted-foreground hidden md:table-cell">Container</th>
+                    <th className="text-left p-2 pl-3 font-medium text-muted-foreground">{t('COMMON_STATUS')}</th>
+                    <th className="text-left p-2 font-medium text-muted-foreground">{t('COMMON_HOST_PORT')}</th>
+                    <th className="text-left p-2 font-medium text-muted-foreground">{t('SYSTEM_INSPECTOR_TO_CONTAINER')}</th>
+                    <th className="text-left p-2 font-medium text-muted-foreground">{t('SYSTEM_INSPECTOR_PROTOCOL')}</th>
+                    <th className="text-left p-2 font-medium text-muted-foreground">{t('SYSTEM_INSPECTOR_LABEL')}</th>
+                    <th className="text-left p-2 font-medium text-muted-foreground">{t('SYSTEM_INSPECTOR_APP')}</th>
+                    <th className="text-left p-2 pr-3 font-medium text-muted-foreground hidden md:table-cell">{t('SYSTEM_INSPECTOR_CONTAINER')}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -383,11 +418,11 @@ const PortManagementSection = ({ ports }: { ports: { allocations: PortStatus[]; 
                     <tr key={`${p.hostPort}-${p.protocol}`} className="border-b last:border-0 hover:bg-muted/30 transition-colors">
                       <td className="p-2 pl-3">
                         {p.bound ? (
-                          <span title="Port is bound and active">
+                          <span title={t('SYSTEM_INSPECTOR_PORT_BOUND_ACTIVE')}>
                             <CheckCircle2 className="h-4 w-4 text-green-500" />
                           </span>
                         ) : (
-                          <span title="Port allocated but not bound">
+                          <span title={t('SYSTEM_INSPECTOR_PORT_ALLOCATED_NOT_BOUND')}>
                             <XCircle className="h-4 w-4 text-muted-foreground" />
                           </span>
                         )}
@@ -411,7 +446,7 @@ const PortManagementSection = ({ ports }: { ports: { allocations: PortStatus[]; 
                         className="border-b last:border-0 bg-yellow-50/50 dark:bg-yellow-900/10 hover:bg-yellow-50 dark:hover:bg-yellow-900/20 transition-colors"
                       >
                         <td className="p-2 pl-3">
-                          <span title="Untracked port">
+                          <span title={t('SYSTEM_INSPECTOR_UNTRACKED_PORT')}>
                             <AlertTriangle className="h-4 w-4 text-yellow-500" />
                           </span>
                         </td>
@@ -420,7 +455,7 @@ const PortManagementSection = ({ ports }: { ports: { allocations: PortStatus[]; 
                         <td className="p-2">
                           <Badge variant="warning">?</Badge>
                         </td>
-                        <td className="p-2 text-xs text-muted-foreground">untracked</td>
+                        <td className="p-2 text-xs text-muted-foreground">{t('SYSTEM_INSPECTOR_UNTRACKED')}</td>
                         <td className="p-2 text-xs text-muted-foreground">-</td>
                         <td className="p-2 pr-3 hidden md:table-cell font-mono text-xs">{u.process}</td>
                       </tr>
@@ -462,7 +497,7 @@ const PortManagementSection = ({ ports }: { ports: { allocations: PortStatus[]; 
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <span className="font-mono text-xs font-semibold">{u.port}</span>
-                      <Badge variant="warning">untracked</Badge>
+                      <Badge variant="warning">{t('SYSTEM_INSPECTOR_UNTRACKED')}</Badge>
                     </div>
                     <div className="text-xs text-muted-foreground truncate">{u.process}</div>
                   </div>
@@ -478,11 +513,12 @@ const PortManagementSection = ({ ports }: { ports: { allocations: PortStatus[]; 
 // ─── Main Container ──────────────────────────────────────────────────────────
 
 export const SystemInspectorContainer = () => {
+  const { t } = useTranslation();
   const { data, isLoading, refetch, isFetching, dataUpdatedAt } = useQuery<InspectionData>({
     queryKey: ['system-inspector'],
     queryFn: async () => {
       const res = await apiFetch('/api/system-inspector', { credentials: 'include' });
-      if (!res.ok) throw new Error('Failed to fetch system inspection');
+      if (!res.ok) throw new Error(t('SYSTEM_INSPECTOR_FETCH_FAILED'));
       return res.json();
     },
     refetchInterval: 5000,
@@ -492,7 +528,7 @@ export const SystemInspectorContainer = () => {
     return (
       <div className="flex items-center justify-center gap-2 py-12 text-muted-foreground">
         <Loader2 className="h-5 w-5 animate-spin" />
-        <span>Loading system inspection...</span>
+        <span>{t('SYSTEM_INSPECTOR_LOADING')}</span>
       </div>
     );
   }
@@ -501,7 +537,7 @@ export const SystemInspectorContainer = () => {
     return (
       <div className="text-center py-12 text-muted-foreground">
         <Server className="h-8 w-8 mx-auto mb-2 opacity-50" />
-        <p>Unable to load system information</p>
+        <p>{t('SYSTEM_INSPECTOR_UNABLE_TO_LOAD')}</p>
       </div>
     );
   }
@@ -511,9 +547,11 @@ export const SystemInspectorContainer = () => {
   return (
     <div className="flex flex-col gap-5">
       <div className="flex items-center justify-between gap-2">
-        <p className="text-xs text-muted-foreground">Real-time overview of containers, ports, and system resources</p>
+        <p className="text-xs text-muted-foreground">{t('SYSTEM_INSPECTOR_REALTIME_OVERVIEW')}</p>
         <div className="flex items-center gap-2 shrink-0">
-          <span className="text-xs text-muted-foreground">Updated {lastUpdated}</span>
+          <span className="text-xs text-muted-foreground">
+            {t('COMMON_UPDATED')} {lastUpdated}
+          </span>
           <button
             type="button"
             onClick={() => refetch()}
@@ -521,7 +559,7 @@ export const SystemInspectorContainer = () => {
             className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1 text-xs text-muted-foreground hover:bg-muted/50 hover:text-foreground transition-colors disabled:opacity-50"
           >
             <RefreshCw className={`h-3 w-3 ${isFetching ? 'animate-spin' : ''}`} />
-            Refresh
+            {t('COMMON_REFRESH')}
           </button>
         </div>
       </div>

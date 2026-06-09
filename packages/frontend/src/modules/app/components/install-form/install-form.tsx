@@ -392,7 +392,7 @@ export const InstallForm: React.FC<IProps> = ({
                   },
                   {
                     key: 'tailscale',
-                    label: t('APP_INSTALL_FORM_EXPOSURE_TAILSCALE'),
+                    label: t('COMMON_PRIVATE_VPN'),
                     available: tailscaleAvailable,
                     tooltip: t('APP_INSTALL_FORM_EXPOSURE_TAILSCALE_UNAVAILABLE'),
                   },
@@ -480,10 +480,10 @@ export const InstallForm: React.FC<IProps> = ({
                           <Select value={value || ''} onValueChange={onChange}>
                             <SelectTrigger
                               title={selectedDomain}
-                              aria-label={t('APP_INSTALL_FORM_PUBLIC_DOMAIN')}
+                              aria-label={t('COMMON_PUBLIC_DOMAIN')}
                               className="h-11 min-w-0 w-0 flex-1 basis-0 rounded-r-md rounded-l-none border-0 bg-muted px-3 text-sm text-foreground shadow-none focus:ring-0 overflow-hidden gap-2 [&>span]:min-w-0 [&>span]:flex-1 [&>span]:truncate [&>span]:text-left [&>svg]:shrink-0"
                             >
-                              <SelectValue placeholder={t('APP_INSTALL_FORM_PUBLIC_DOMAIN')} />
+                              <SelectValue placeholder={t('COMMON_PUBLIC_DOMAIN')} />
                             </SelectTrigger>
                             <SelectContent>
                               {availableDomains.map((entry) => (
@@ -557,7 +557,7 @@ export const InstallForm: React.FC<IProps> = ({
 
     // In production, require port when publishing to internet
     if (isProduction && formValues.exposedLocal && info.dynamic_config && !formValues.port) {
-      validationErrors.port = { messageKey: 'APP_INSTALL_FORM_ERROR_REQUIRED', params: { label: t('APP_INSTALL_FORM_PORT') } };
+      validationErrors.port = { messageKey: 'APP_INSTALL_FORM_ERROR_REQUIRED', params: { label: t('COMMON_PORT') } };
     }
 
     // Check DNS availability synchronously if in production and exposable
@@ -634,7 +634,7 @@ export const InstallForm: React.FC<IProps> = ({
       {/* Configuration section — scrollable when in a dialog */}
       {hasConfigSection && (
         <ConfigSection scrollable={scrollable}>
-          {visibleFields.length > 0 && <h3 className="text-base font-bold tracking-wide text-foreground mb-3">{t('APP_INSTALL_FORM_GENERAL')}</h3>}
+          {visibleFields.length > 0 && <h3 className="text-base font-bold tracking-wide text-foreground mb-3">{t('COMMON_SETTINGS')}</h3>}
           {shouldShowAdvancedSettingsToggle && (
             <Switch
               className="mb-3"

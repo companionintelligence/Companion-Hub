@@ -84,12 +84,12 @@ export default () => {
                 <span className="font-semibold">0.0</span>
                 <Star className="h-3.5 w-3.5 text-yellow-500 fill-yellow-500" />
               </div>
-              <span className="text-xs text-muted-foreground">0 Ratings</span>
+              <span className="text-xs text-muted-foreground">{t('APP_DETAILS_ZERO_RATINGS')}</span>
             </div>
             <div className="h-8 w-px bg-border" />
             <div className="flex flex-col items-center">
-              <span className="font-semibold text-emerald-400">Free</span>
-              <span className="text-xs text-muted-foreground">Price</span>
+              <span className="font-semibold text-emerald-400">{t('APP_PRICE_FREE')}</span>
+              <span className="text-xs text-muted-foreground">{t('APP_DETAILS_PRICE_LABEL')}</span>
             </div>
             {primaryCategory && (
               <>

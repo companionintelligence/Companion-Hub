@@ -46,11 +46,11 @@ export const LinkTile: React.FC<LinkTileProps> = ({ link }) => {
         <ContextMenuContent>
           <ContextMenuItem onClick={handleEdit}>
             <Edit size={15} className="me-1" />
-            {t('LINKS_EDIT_CONTEXT_MENU')}
+            {t('COMMON_EDIT')}
           </ContextMenuItem>
           <ContextMenuItem onClick={handleDelete}>
             <Trash size={15} className="me-1" />
-            {t('LINKS_DELETE_CONTEXT_MENU')}
+            {t('COMMON_DELETE')}
           </ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>

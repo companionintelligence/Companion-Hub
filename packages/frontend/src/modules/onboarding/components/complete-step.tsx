@@ -5,6 +5,7 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router';
 import type { InstallSummary, AiSetupConfig } from '../helpers/types';
 import { IconBadge, WizardCard } from './wizard-ui';
+import { useTranslation } from 'react-i18next';
 
 interface CompleteStepProps {
   /** undefined when no install step was executed (user skipped). */
@@ -13,9 +14,16 @@ interface CompleteStepProps {
   aiSetupConfig?: AiSetupConfig;
 }
 
-function completionCopy(summary?: InstallSummary) {
+type TranslateFn = (key: string, options?: Record<string, unknown>) => string;
+
+function completionCopy(t: TranslateFn, summary?: InstallSummary) {
   if (!summary || summary.total === 0) {
-    return { emoji: '🚀', heading: 'Your Hub Is Ready', body: 'You can install apps anytime from the App Store.', cta: 'Go to App Store' };
+    return {
+      emoji: '🚀',
+      heading: t('ONBOARDING_COMPLETE_HUB_READY'),
+      body: t('ONBOARDING_COMPLETE_INSTALL_ANYTIME'),
+      cta: t('ONBOARDING_GO_TO_APP_STORE'),
+    };
   }
 
   const { running, incomplete, failed, total } = summary;
@@ -23,39 +31,40 @@ function completionCopy(summary?: InstallSummary) {
   if (running === total) {
     return {
       emoji: '🎉',
-      heading: 'All Apps Running',
-      body: `All ${total} app${total === 1 ? ' is' : 's are'} confirmed running on your Hub.`,
-      cta: 'Go to App Store',
+      heading: t('ONBOARDING_COMPLETE_ALL_APPS_RUNNING'),
+      body: t('ONBOARDING_COMPLETE_ALL_APPS_RUNNING_BODY', { count: total }),
+      cta: t('ONBOARDING_GO_TO_APP_STORE'),
     };
   }
 
   if (failed === total) {
     return {
       emoji: '⚠️',
-      heading: 'Installation Issues',
-      body: `All ${total} install${total === 1 ? '' : 's'} failed. You can retry from the App Store.`,
-      cta: 'Go to App Store',
+      heading: t('ONBOARDING_COMPLETE_INSTALLATION_ISSUES'),
+      body: t('ONBOARDING_COMPLETE_ALL_INSTALLS_FAILED', { count: total }),
+      cta: t('ONBOARDING_GO_TO_APP_STORE'),
     };
   }
 
   const parts: string[] = [];
-  if (running > 0) parts.push(`${running} running`);
-  if (incomplete > 0) parts.push(`${incomplete} still starting`);
-  if (failed > 0) parts.push(`${failed} failed`);
+  if (running > 0) parts.push(t('ONBOARDING_COMPLETE_RUNNING_COUNT', { count: running }));
+  if (incomplete > 0) parts.push(t('ONBOARDING_COMPLETE_STARTING_COUNT', { count: incomplete }));
+  if (failed > 0) parts.push(t('ONBOARDING_COMPLETE_FAILED_COUNT', { count: failed }));
 
   return {
     emoji: incomplete > 0 || failed > 0 ? '🔧' : '✅',
-    heading: 'Your Hub Is Ready',
-    body: parts.join(', ') || 'Apps are starting up.',
-    cta: 'Go to App Store',
+    heading: t('ONBOARDING_COMPLETE_HUB_READY'),
+    body: parts.join(', ') || t('ONBOARDING_COMPLETE_APPS_STARTING_UP'),
+    cta: t('ONBOARDING_GO_TO_APP_STORE'),
   };
 }
 
 export const CompleteStep = ({ installSummary, aiSetupConfig }: CompleteStepProps) => {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const { refreshAppContext } = useAppContext();
   const [loading, setLoading] = useState(false);
-  const copy = completionCopy(installSummary);
+  const copy = completionCopy(t, installSummary);
 
   const handleFinish = async () => {
     setLoading(true);
@@ -90,7 +99,7 @@ export const CompleteStep = ({ installSummary, aiSetupConfig }: CompleteStepProp
             className="mt-5 w-full max-w-md rounded-2xl border border-border bg-foreground/[0.015] p-4 text-sm text-muted-foreground"
             data-testid="ai-summary"
           >
-            <p>AI not configured. You can set it up anytime in Settings → AI.</p>
+            <p>{t('ONBOARDING_COMPLETE_AI_NOT_CONFIGURED')}</p>
           </div>
         )}
 

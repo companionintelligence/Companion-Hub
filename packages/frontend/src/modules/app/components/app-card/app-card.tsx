@@ -7,6 +7,7 @@ import type { AppInfoSimple } from '@/types/app.types';
 import { Check, Download } from 'lucide-react';
 import type React from 'react';
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
 
 interface AppCardProps {
@@ -16,6 +17,7 @@ interface AppCardProps {
 }
 
 export const AppCard: React.FC<AppCardProps> = ({ app, isLoading, isInstalled }) => {
+  const { t } = useTranslation();
   const [appId, storeId] = app.urn.split(':');
   const logoUrl = getMarketplaceAppImageUrl(app.urn);
   const [imgSrc, setImgSrc] = useState(logoUrl);
@@ -72,7 +74,7 @@ export const AppCard: React.FC<AppCardProps> = ({ app, isLoading, isInstalled })
             />
           )}
 
-          <span className="px-2 py-1 rounded-full bg-emerald-500/20 text-emerald-400 text-xs font-semibold">Free</span>
+          <span className="px-2 py-1 rounded-full bg-emerald-500/20 text-emerald-400 text-xs font-semibold">{t('APP_PRICE_FREE')}</span>
         </div>
 
         <h3 className="font-bold text-base sm:text-lg mb-1 truncate text-foreground group-hover:text-primary transition-colors">{app.name}</h3>

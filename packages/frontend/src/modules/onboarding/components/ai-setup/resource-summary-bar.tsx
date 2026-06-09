@@ -1,5 +1,6 @@
 import type { CuratedModel } from '@ci-hub/common/types';
 import { computeSelectionBudget } from '../../helpers/onboarding-model-selection';
+import { useTranslation } from 'react-i18next';
 
 interface ResourceSummaryBarProps {
   selectedModels: CuratedModel[];
@@ -15,6 +16,7 @@ function formatSize(mb: number): string {
 }
 
 export const ResourceSummaryBar = ({ selectedModels, installedCatalogIds, availableStorageMb, availableMemoryMb }: ResourceSummaryBarProps) => {
+  const { t } = useTranslation();
   const budget = computeSelectionBudget(selectedModels, installedCatalogIds, availableStorageMb, availableMemoryMb);
   const diskPercent = availableStorageMb > 0 ? Math.min(100, Math.round((budget.downloadDiskMb / availableStorageMb) * 100)) : 0;
   const memoryPercent =
@@ -24,20 +26,27 @@ export const ResourceSummaryBar = ({ selectedModels, installedCatalogIds, availa
 
   const memorySummary =
     budget.newMemoryMb > 0
-      ? `${formatSize(budget.newMemoryMb)} new selections / ${formatSize(availableMemoryMb)} inference memory free`
+      ? t('ONBOARDING_RESOURCE_NEW_SELECTIONS_MEMORY', {
+          selected: formatSize(budget.newMemoryMb),
+          available: formatSize(availableMemoryMb),
+        })
       : budget.installedMemoryMb > 0
-        ? `${formatSize(budget.installedMemoryMb)} already installed in Ollama`
-        : `${formatSize(budget.totalMemoryMb)} / ${formatSize(availableMemoryMb)} available`;
+        ? t('ONBOARDING_RESOURCE_ALREADY_INSTALLED_MEMORY', { installed: formatSize(budget.installedMemoryMb) })
+        : t('ONBOARDING_RESOURCE_MEMORY_AVAILABLE', {
+            total: formatSize(budget.totalMemoryMb),
+            available: formatSize(availableMemoryMb),
+          });
 
   return (
     <div className="rounded-lg border p-3 space-y-3" data-testid="resource-summary">
       <div>
         <div className="flex items-center justify-between text-xs mb-1.5">
-          <span className="font-medium">
-            {selectedModels.length} model{selectedModels.length === 1 ? '' : 's'} selected
-          </span>
+          <span className="font-medium">{t('ONBOARDING_RESOURCE_MODELS_SELECTED', { count: selectedModels.length })}</span>
           <span className={budget.overDisk ? 'text-destructive font-medium' : 'text-muted-foreground'}>
-            {formatSize(budget.downloadDiskMb)} to download / {formatSize(availableStorageMb)} disk available
+            {t('ONBOARDING_RESOURCE_DISK_DOWNLOAD_AVAILABLE', {
+              download: formatSize(budget.downloadDiskMb),
+              available: formatSize(availableStorageMb),
+            })}
           </span>
         </div>
         <div className="w-full bg-muted rounded-full h-1.5 overflow-hidden">
@@ -50,7 +59,7 @@ export const ResourceSummaryBar = ({ selectedModels, installedCatalogIds, availa
 
       <div>
         <div className="flex items-center justify-between text-xs mb-1.5">
-          <span className="font-medium">Inference memory</span>
+          <span className="font-medium">{t('ONBOARDING_RESOURCE_INFERENCE_MEMORY')}</span>
           <span className={budget.overMemory ? 'text-destructive font-medium' : 'text-muted-foreground'}>{memorySummary}</span>
         </div>
         <div className="w-full bg-muted rounded-full h-1.5 overflow-hidden">

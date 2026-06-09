@@ -1,8 +1,9 @@
 import { apiFetch } from '@/lib/api-fetch';
+import { Markdown } from '@/components/markdown/markdown';
 import { Button } from '@/components/ui/Button';
 import { useAppContext } from '@/context/app-context';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/Card';
-import { ArrowUpCircle, Loader2, Wand2 } from 'lucide-react';
+import { ArrowUpCircle, Loader2, Star, Wand2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { UpdateRepoModal } from '../components/update-repo-modal/update-repo-modal';
 import { useState, useEffect, useCallback } from 'react';
@@ -29,7 +30,7 @@ export const GeneralActionsContainer = () => {
       window.location.href = '/onboarding';
     } catch {
       setRestartingWizard(false);
-      toast.error(t('SETTINGS_ACTIONS_RESTART_WIZARD_FAILED'));
+      toast.error(t('SETTINGS_WIZARD_RESTART_ERROR'));
     }
   }, [t]);
 
@@ -96,11 +97,13 @@ export const GeneralActionsContainer = () => {
         if (info?.updateAvailable) {
           const result = await performUpdate(info);
           if (result.ok) {
-            setUpdateMessage(result.message);
-            toast.success(result.message);
+            const message = t(result.messageKey, result.messageParams);
+            setUpdateMessage(message);
+            toast.success(message);
           } else {
-            setUpdateMessage(result.message);
-            toast.error(result.message);
+            const message = t(result.messageKey, result.messageParams);
+            setUpdateMessage(message);
+            toast.error(message);
             setUpdating(false);
           }
           return;
@@ -109,14 +112,15 @@ export const GeneralActionsContainer = () => {
 
       const stackResult = await performStackUpdate(version.latest);
       if (stackResult.ok) {
-        setUpdateMessage(stackResult.message);
+        const message = t(stackResult.messageKey, stackResult.messageParams);
+        setUpdateMessage(message);
         setTimeout(() => window.location.reload(), 15000);
       } else {
-        setUpdateMessage(stackResult.message);
+        setUpdateMessage(t(stackResult.messageKey, stackResult.messageParams));
         setUpdating(false);
       }
     } catch {
-      setUpdateMessage(t('SETTINGS_ACTIONS_UPDATE_FAILED'));
+      setUpdateMessage(t('SETTINGS_ACTIONS_UPDATE_REQUEST_FAILED'));
       setUpdating(false);
     }
   }, [desktopUpdate, refreshUpdateState, t, version.latest]);
@@ -154,16 +158,31 @@ export const GeneralActionsContainer = () => {
 
     if (updateAvailable) {
       return (
-        <Button onClick={handleUpdate} disabled={updating} className="mb-4" data-testid="hub-update-btn">
-          {updating ? (
-            <>
-              <Loader2 className="h-4 w-4 animate-spin mr-2" />
-              {t('SETTINGS_ACTIONS_UPDATING')}
-            </>
-          ) : (
-            t('SETTINGS_ACTIONS_UPDATE_TO', { version: latestVersion })
-          )}
-        </Button>
+        <div>
+          <Button onClick={handleUpdate} disabled={updating} className="mb-4" data-testid="hub-update-btn">
+            {updating ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                {t('SETTINGS_ACTIONS_UPDATING')}
+              </>
+            ) : (
+              t('SETTINGS_ACTIONS_UPDATE_TO_VERSION', { version: latestVersion })
+            )}
+          </Button>
+          {version.releases?.map((release) => (
+            <Card key={release.version} className="mt-3 relative overflow-hidden w-full md:w-2/3">
+              <div className="absolute -right-6 -top-6 text-yellow-500 opacity-20 rotate-12 pointer-events-none">
+                <Star size={80} fill="currentColor" />
+              </div>
+              <CardHeader>
+                <CardTitle>{t('SETTINGS_ACTIONS_VERSION_LABEL', { version: release.version })}</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <Markdown className="" content={release.body} />
+              </CardContent>
+            </Card>
+          ))}
+        </div>
       );
     }
 
@@ -187,7 +206,7 @@ export const GeneralActionsContainer = () => {
         <CardHeader>
           <div className="flex items-center gap-2">
             <ArrowUpCircle className="h-5 w-5 text-muted-foreground" />
-            <CardTitle className="text-xl">{t('SETTINGS_ACTIONS_TITLE')}</CardTitle>
+            <CardTitle className="text-xl">{t('COMMON_ACTIONS')}</CardTitle>
           </div>
           <CardDescription>
             {t('SETTINGS_ACTIONS_CURRENT_VERSION', { version: displayVersion })}
@@ -233,19 +252,19 @@ export const GeneralActionsContainer = () => {
         <CardHeader>
           <div className="flex items-center gap-2">
             <Wand2 className="h-5 w-5 text-muted-foreground" />
-            <CardTitle className="text-xl">{t('SETTINGS_ACTIONS_SETUP_WIZARD_TITLE')}</CardTitle>
+            <CardTitle className="text-xl">{t('SETTINGS_WIZARD_TITLE')}</CardTitle>
           </div>
-          <CardDescription>{t('SETTINGS_ACTIONS_SETUP_WIZARD_DESCRIPTION')}</CardDescription>
+          <CardDescription>{t('SETTINGS_WIZARD_SUBTITLE')}</CardDescription>
         </CardHeader>
         <CardContent>
           <Button onClick={handleRestartWizard} disabled={restartingWizard} data-testid="restart-wizard-btn">
             {restartingWizard ? (
               <>
                 <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                {t('SETTINGS_ACTIONS_RESTARTING')}
+                {t('SETTINGS_WIZARD_RESTARTING')}
               </>
             ) : (
-              t('SETTINGS_ACTIONS_RESTART_SETUP_WIZARD')
+              t('SETTINGS_WIZARD_RESTART_BUTTON')
             )}
           </Button>
         </CardContent>

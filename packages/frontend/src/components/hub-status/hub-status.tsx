@@ -13,6 +13,8 @@ import {
   STARTUP_SERVICE_HINTS,
 } from './hub-status-tooltips';
 import { Container, Download } from 'lucide-react';
+import i18next from 'i18next';
+import { useTranslation } from 'react-i18next';
 
 interface HubStatusProps {
   children: ReactNode;
@@ -117,41 +119,41 @@ export type DockerDesktopGuideContent = {
 export function getDockerDesktopGuideContent(platform: DockerDesktopGuidePlatform, appleSilicon: boolean): DockerDesktopGuideContent {
   if (platform === 'windows') {
     return {
-      platformLabel: 'Windows',
+      platformLabel: i18next.t('HUB_STATUS_WINDOWS'),
       downloadUrl: 'https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe',
-      alreadyInstalledTitle: 'If Docker Desktop is already installed:',
+      alreadyInstalledTitle: i18next.t('HUB_STATUS_DOCKER_DESKTOP_ALREADY_INSTALLED_TITLE'),
       alreadyInstalledSteps: [
-        'Open Docker Desktop from your Start Menu',
-        "Wait for Docker to start (you'll see the whale icon in your system tray)",
-        'Come back here — the Hub will continue automatically',
+        i18next.t('HUB_STATUS_DOCKER_DESKTOP_WINDOWS_STEP_OPEN_START_MENU'),
+        i18next.t('HUB_STATUS_DOCKER_DESKTOP_WINDOWS_STEP_WAIT_TRAY'),
+        i18next.t('HUB_STATUS_DOCKER_DESKTOP_STEP_COME_BACK_CONTINUE'),
       ],
-      notInstalledTitle: 'If Docker Desktop is NOT installed:',
+      notInstalledTitle: i18next.t('HUB_STATUS_DOCKER_DESKTOP_NOT_INSTALLED_TITLE'),
       notInstalledSteps: [
-        'Download Docker Desktop for Windows',
-        'Run the installer and follow the prompts',
-        'Restart your computer if prompted',
-        'Start Docker Desktop',
-        'Come back here — the Hub will start automatically',
+        i18next.t('HUB_STATUS_DOCKER_DESKTOP_WINDOWS_STEP_DOWNLOAD'),
+        i18next.t('HUB_STATUS_DOCKER_DESKTOP_STEP_RUN_INSTALLER'),
+        i18next.t('HUB_STATUS_DOCKER_DESKTOP_STEP_RESTART_IF_PROMPTED'),
+        i18next.t('HUB_STATUS_DOCKER_DESKTOP_STEP_START_DESKTOP'),
+        i18next.t('HUB_STATUS_DOCKER_DESKTOP_STEP_COME_BACK_START'),
       ],
-      hint: 'Docker Desktop requires Windows 10/11 with WSL2 enabled. If WSL is installed during setup, restart Windows before reopening Companion Hub.',
+      hint: i18next.t('HUB_STATUS_DOCKER_DESKTOP_WINDOWS_HINT'),
     };
   }
 
   return {
-    platformLabel: 'Mac',
+    platformLabel: i18next.t('HUB_STATUS_MAC'),
     downloadUrl: appleSilicon ? 'https://desktop.docker.com/mac/main/arm64/Docker.dmg' : 'https://desktop.docker.com/mac/main/amd64/Docker.dmg',
-    alreadyInstalledTitle: 'If Docker Desktop is already installed:',
+    alreadyInstalledTitle: i18next.t('HUB_STATUS_DOCKER_DESKTOP_ALREADY_INSTALLED_TITLE'),
     alreadyInstalledSteps: [
-      'Open Docker Desktop from your Applications folder',
-      "Wait for Docker to start (you'll see the whale icon in your menu bar)",
-      'Come back here — the Hub will continue automatically',
+      i18next.t('HUB_STATUS_DOCKER_DESKTOP_MAC_STEP_OPEN_APPLICATIONS'),
+      i18next.t('HUB_STATUS_DOCKER_DESKTOP_MAC_STEP_WAIT_MENU_BAR'),
+      i18next.t('HUB_STATUS_DOCKER_DESKTOP_STEP_COME_BACK_CONTINUE'),
     ],
-    notInstalledTitle: 'If Docker Desktop is NOT installed:',
+    notInstalledTitle: i18next.t('HUB_STATUS_DOCKER_DESKTOP_NOT_INSTALLED_TITLE'),
     notInstalledSteps: [
-      'Download Docker Desktop for Mac',
-      'Open the .dmg and drag Docker to Applications',
-      'Launch Docker Desktop and grant permissions',
-      'Come back here — the Hub will start automatically',
+      i18next.t('HUB_STATUS_DOCKER_DESKTOP_MAC_STEP_DOWNLOAD'),
+      i18next.t('HUB_STATUS_DOCKER_DESKTOP_MAC_STEP_OPEN_DMG'),
+      i18next.t('HUB_STATUS_DOCKER_DESKTOP_MAC_STEP_LAUNCH_GRANT'),
+      i18next.t('HUB_STATUS_DOCKER_DESKTOP_STEP_COME_BACK_START'),
     ],
   };
 }
@@ -185,6 +187,7 @@ function DockerDesktopGuide({
   notInstalledSteps,
   footer,
 }: DockerDesktopGuideProps) {
+  const { t } = useTranslation();
   const isMac = platformLabel === 'Mac';
   const [macArch, setMacArch] = useState<'arm' | 'intel'>(isAppleSilicon() ? 'arm' : 'intel');
   const macArmUrl = 'https://desktop.docker.com/mac/main/arm64/Docker.dmg';
@@ -198,13 +201,11 @@ function DockerDesktopGuide({
           <div className="flex items-start justify-between gap-4">
             <div className="space-y-1">
               <div className="flex items-start gap-1 flex-wrap">
-                <HintText id="docker-required" hint={DOCKER_REQUIRED_HINT} as="h2" className="text-xl font-semibold text-foreground">
-                  Docker Desktop Required
+                <HintText id="docker-required" hint={t(DOCKER_REQUIRED_HINT)} as="h2" className="text-xl font-semibold text-foreground">
+                  {t('HUB_STATUS_DOCKER_DESKTOP_REQUIRED')}
                 </HintText>
               </div>
-              <p className="text-sm text-muted-foreground max-w-lg">
-                Companion Hub needs Docker Desktop to run your apps and services. We&apos;ll automatically detect when Docker is ready.
-              </p>
+              <p className="text-sm text-muted-foreground max-w-lg">{t('HUB_STATUS_DOCKER_DESKTOP_REQUIRED_DESC')}</p>
             </div>
             <Container className="h-10 w-10 shrink-0 text-primary" aria-hidden />
           </div>
@@ -222,7 +223,7 @@ function DockerDesktopGuide({
               className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
             >
               <Download className="h-4 w-4" aria-hidden />
-              Download Docker Desktop for {platformLabel}
+              {t('HUB_STATUS_DOWNLOAD_DOCKER_DESKTOP_FOR')} {platformLabel}
             </a>
             {isMac && (
               <div className="flex flex-col items-center gap-2">
@@ -232,19 +233,19 @@ function DockerDesktopGuide({
                     onClick={() => setMacArch('arm')}
                     className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${macArch === 'arm' ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:text-foreground'}`}
                   >
-                    Apple Silicon
+                    {t('COMMON_APPLE_SILICON')}
                   </button>
                   <button
                     type="button"
                     onClick={() => setMacArch('intel')}
                     className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${macArch === 'intel' ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:text-foreground'}`}
                   >
-                    Intel Chip
+                    {t('HUB_STATUS_INTEL_CHIP')}
                   </button>
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  <HintText id="docker-mac-arch" hint={DOCKER_MAC_ARCH_HINT}>
-                    Which Mac do I have?
+                  <HintText id="docker-mac-arch" hint={t(DOCKER_MAC_ARCH_HINT)}>
+                    {t('HUB_STATUS_WHICH_MAC')}
                   </HintText>
                 </p>
               </div>
@@ -260,6 +261,8 @@ function DockerDesktopGuide({
 }
 
 function LinuxDockerGuide() {
+  const { t } = useTranslation();
+
   return (
     <div className="space-y-6 w-full max-w-2xl">
       <SetupCard>
@@ -267,19 +270,19 @@ function LinuxDockerGuide() {
           <div className="flex items-start justify-between gap-4">
             <div className="space-y-1">
               <div className="flex items-start gap-1 flex-wrap">
-                <HintText id="docker-linux-required" hint={DOCKER_REQUIRED_HINT} as="h2" className="text-xl font-semibold text-foreground">
-                  Docker Engine Required
+                <HintText id="docker-linux-required" hint={t(DOCKER_REQUIRED_HINT)} as="h2" className="text-xl font-semibold text-foreground">
+                  {t('HUB_STATUS_DOCKER_ENGINE_REQUIRED')}
                 </HintText>
               </div>
-              <p className="text-sm text-muted-foreground">Companion Hub requires Docker to run.</p>
+              <p className="text-sm text-muted-foreground">{t('HUB_STATUS_DOCKER_ENGINE_REQUIRED_DESC')}</p>
             </div>
             <Container className="h-10 w-10 shrink-0 text-primary" aria-hidden />
           </div>
           <ol className="text-left list-decimal list-inside space-y-1 text-sm text-muted-foreground">
-            <li>Install Docker Engine for your Linux distribution</li>
-            <li>Add your user to the docker group</li>
-            <li>Log out and back in, or restart your machine</li>
-            <li>Reopen Companion Hub</li>
+            <li>{t('HUB_STATUS_LINUX_STEP_INSTALL_ENGINE')}</li>
+            <li>{t('HUB_STATUS_LINUX_STEP_ADD_USER_GROUP')}</li>
+            <li>{t('HUB_STATUS_LINUX_STEP_LOG_OUT')}</li>
+            <li>{t('HUB_STATUS_LINUX_STEP_REOPEN_HUB')}</li>
           </ol>
           <div className="text-left bg-muted rounded-md p-3 text-sm font-mono space-y-1">
             <p>curl -fsSL https://get.docker.com | sh</p>
@@ -291,7 +294,7 @@ function LinuxDockerGuide() {
             rel="noopener noreferrer"
             className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
           >
-            View Docker Install Guide
+            {t('HUB_STATUS_VIEW_DOCKER_INSTALL_GUIDE')}
           </a>
         </div>
       </SetupCard>
@@ -332,16 +335,19 @@ const SERVICE_COLOR: Record<ServiceState, string> = {
   failed: 'text-destructive',
 };
 
-const SERVICE_LABEL: Record<ServiceState, string> = {
-  pending: 'Waiting…',
-  starting: 'Starting…',
-  ready: 'Ready',
-  failed: 'Failed',
-};
-
 function ServiceRow({ service }: { service: ServiceStatus }) {
+  const { t } = useTranslation();
   const color = SERVICE_COLOR[service.state];
-  const hint = STARTUP_SERVICE_HINTS[service.container];
+  const hintKey = STARTUP_SERVICE_HINTS[service.container];
+  const hint = hintKey ? t(hintKey) : undefined;
+  const label =
+    service.state === 'pending'
+      ? t('HUB_STATUS_SERVICE_WAITING')
+      : service.state === 'starting'
+        ? t('COMMON_STARTING')
+        : service.state === 'ready'
+          ? t('HUB_STATUS_SERVICE_READY')
+          : t('COMMON_FAILED');
 
   return (
     <div className="flex items-center justify-between gap-4 py-1.5">
@@ -359,12 +365,13 @@ function ServiceRow({ service }: { service: ServiceStatus }) {
           )}
         </span>
       </div>
-      <span className={`text-xs tabular-nums shrink-0 ${color}`}>{SERVICE_LABEL[service.state]}</span>
+      <span className={`text-xs tabular-nums shrink-0 ${color}`}>{label}</span>
     </div>
   );
 }
 
 function StartupScreen({ elapsedSeconds }: { elapsedSeconds: number }) {
+  const { t } = useTranslation();
   const invoke = getTauriInvoke();
   const [progress, setProgress] = useState<StartupProgress | null>(null);
 
@@ -401,15 +408,15 @@ function StartupScreen({ elapsedSeconds }: { elapsedSeconds: number }) {
     <SetupCard className="max-w-2xl w-full">
       <div className="flex flex-col items-center gap-6 w-full">
         <div className="text-center space-y-1 w-full">
-          <h2 className="text-xl font-semibold text-foreground">Starting Companion Hub</h2>
+          <h2 className="text-xl font-semibold text-foreground">{t('HUB_STATUS_STARTING_TITLE')}</h2>
           <p className="text-sm text-muted-foreground">
             {showVerySlowMessage
-              ? 'Still working — Docker images may be downloading for the first time.'
+              ? t('HUB_STATUS_STARTING_STILL_WORKING')
               : showSlowMessage
-                ? 'Almost there — some services are taking longer than usual.'
-                : 'Services are coming online…'}
+                ? t('HUB_STATUS_STARTING_ALMOST_THERE')
+                : t('HUB_STATUS_STARTING_SERVICES_ONLINE')}
           </p>
-          <p className="text-xs text-muted-foreground/80">This might take a minute on first startup while containers are pulled.</p>
+          <p className="text-xs text-muted-foreground/80">{t('HUB_STATUS_STARTING_FIRST_STARTUP_NOTE')}</p>
         </div>
 
         <div className="w-full space-y-1.5">
@@ -418,21 +425,24 @@ function StartupScreen({ elapsedSeconds }: { elapsedSeconds: number }) {
           </div>
           <div className="flex justify-between text-xs text-muted-foreground/60 tabular-nums">
             <span className="inline-flex items-center">
-              <HintText id="startup-progress" hint={STARTUP_PROGRESS_HINT}>
+              <HintText id="startup-progress" hint={t(STARTUP_PROGRESS_HINT)}>
                 {pct}%
               </HintText>
             </span>
-            <span>{elapsed} elapsed</span>
+            <span>
+              {elapsed} {t('HUB_STATUS_ELAPSED')}
+            </span>
           </div>
           {progress && (
             <div className="space-y-0.5">
               <div className="text-xs text-muted-foreground/70">
-                {serviceCounts.ready} ready, {serviceCounts.starting} starting, {serviceCounts.pending} pending
-                {serviceCounts.failed > 0 ? `, ${serviceCounts.failed} failed` : ''}
+                {serviceCounts.ready} {t('HUB_STATUS_SERVICE_READY')}, {serviceCounts.starting} {t('COMMON_STARTING')}, {serviceCounts.pending}{' '}
+                {t('HUB_STATUS_SERVICE_PENDING')}
+                {serviceCounts.failed > 0 ? `, ${serviceCounts.failed} ${t('COMMON_FAILED')}` : ''}
               </div>
               <div className="text-xs text-muted-foreground/70">
-                <HintText id="startup-image-pull" hint={STARTUP_IMAGE_PULL_HINT}>
-                  Image pulls: {progress.image_pulled}/{progress.image_total} ({progress.image_pull_pct}%)
+                <HintText id="startup-image-pull" hint={t(STARTUP_IMAGE_PULL_HINT)}>
+                  {t('HUB_STATUS_IMAGE_PULLS')}: {progress.image_pulled}/{progress.image_total} ({progress.image_pull_pct}%)
                 </HintText>
               </div>
             </div>
@@ -453,12 +463,12 @@ function StartupScreen({ elapsedSeconds }: { elapsedSeconds: number }) {
               fill="none"
               viewBox="0 0 24 24"
               role="img"
-              aria-label="Loading"
+              aria-label={t('COMMON_LOADING')}
             >
               <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
               <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
             </svg>
-            <span className="text-sm">Initialising…</span>
+            <span className="text-sm">{t('HUB_STATUS_INITIALISING')}</span>
           </div>
         )}
       </div>
@@ -469,6 +479,7 @@ function StartupScreen({ elapsedSeconds }: { elapsedSeconds: number }) {
 // ─── Main HubStatus gate ──────────────────────────────────────────────────────
 
 export function HubStatus({ children }: HubStatusProps) {
+  const { t } = useTranslation();
   useDeepLinkPairCapture();
   const [status, setStatus] = useState<HubStatusResponse | null>(null);
   const [startupElapsed, setStartupElapsed] = useState(0);
@@ -533,7 +544,7 @@ export function HubStatus({ children }: HubStatusProps) {
               shouldAutoStartWindowsHubRef.current = false;
             } else if (result === 'Stopped' && shouldAutoStartWindowsHubRef.current) {
               shouldAutoStartWindowsHubRef.current = false;
-              await startHub('Failed to auto-start hub:');
+              await startHub(t('HUB_STATUS_FAILED_AUTO_START'));
               return;
             }
           }
@@ -566,7 +577,7 @@ export function HubStatus({ children }: HubStatusProps) {
     } finally {
       checkStatusInFlightRef.current = false;
     }
-  }, [isTauri, isTauriRelease, isWindows, checkHealthFallback, startHub]);
+  }, [isTauri, isTauriRelease, isWindows, checkHealthFallback, startHub, t]);
 
   // Track elapsed seconds while in Starting state
   useEffect(() => {
@@ -599,13 +610,13 @@ export function HubStatus({ children }: HubStatusProps) {
 
   const handleStartHub = useCallback(async () => {
     shouldAutoStartWindowsHubRef.current = false;
-    await startHub('Failed to start hub:');
-  }, [startHub]);
+    await startHub(t('HUB_STATUS_FAILED_START'));
+  }, [startHub, t]);
 
   const handleRestartHub = useCallback(async () => {
     shouldAutoStartWindowsHubRef.current = false;
-    await startHub('Failed to restart hub:');
-  }, [startHub]);
+    await startHub(t('HUB_STATUS_FAILED_RESTART'));
+  }, [startHub, t]);
 
   // When the Hub transitions from a non-running state to Running, route loaders
   // that failed during startup (backend wasn't ready) would stay stale in React
@@ -654,15 +665,15 @@ export function HubStatus({ children }: HubStatusProps) {
   // Dark placeholder while the first hub status poll runs (avoids blank flash)
   if (status === null) {
     return (
-      <SetupPageShell title="Companion Hub" contentClassName="items-center">
-        <div className="flex justify-center py-16" role="status" aria-busy="true" aria-label="Checking hub status">
+      <SetupPageShell title={t('APP_NAME')} contentClassName="items-center">
+        <div className="flex justify-center py-16" role="status" aria-busy="true" aria-label={t('HUB_STATUS_CHECKING')}>
           <svg
             className="h-8 w-8 animate-spin text-primary"
             xmlns="http://www.w3.org/2000/svg"
             fill="none"
             viewBox="0 0 24 24"
             role="img"
-            aria-label="Loading"
+            aria-label={t('COMMON_LOADING')}
           >
             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
@@ -681,7 +692,7 @@ export function HubStatus({ children }: HubStatusProps) {
   // Error message extraction
   const errorMessage = typeof status === 'object' && 'Error' in status ? status.Error.message : null;
 
-  const gateTitle = status === 'DockerNotAvailable' ? 'Set Up Your Hub' : 'Companion Hub';
+  const gateTitle = status === 'DockerNotAvailable' ? t('COMMON_SET_UP_YOUR_HUB') : t('APP_NAME');
 
   return (
     <SetupPageShell title={gateTitle} contentClassName="items-center">
@@ -690,21 +701,21 @@ export function HubStatus({ children }: HubStatusProps) {
 
         {status === 'Stopped' && (
           <SetupCard className="max-w-md w-full text-center">
-            <h2 className="text-xl font-semibold text-foreground mb-2">Hub Not Running</h2>
-            <p className="text-muted-foreground mb-6">The Companion Hub backend is not running.</p>
+            <h2 className="text-xl font-semibold text-foreground mb-2">{t('HUB_STATUS_NOT_RUNNING')}</h2>
+            <p className="text-muted-foreground mb-6">{t('HUB_STATUS_BACKEND_NOT_RUNNING')}</p>
             <button
               type="button"
               onClick={handleStartHub}
               className="inline-flex items-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
             >
-              Start Hub
+              {t('HUB_STATUS_START_HUB')}
             </button>
             <div className="flex gap-4 justify-center mt-6">
               <button type="button" onClick={handleViewLogs} className="text-sm text-muted-foreground underline hover:text-foreground">
-                View Logs
+                {t('HUB_STATUS_VIEW_LOGS')}
               </button>
               <button type="button" onClick={handleOpenLogsDir} className="text-sm text-muted-foreground underline hover:text-foreground">
-                Open Logs Folder
+                {t('HUB_STATUS_OPEN_LOGS_FOLDER')}
               </button>
             </div>
           </SetupCard>
@@ -714,21 +725,21 @@ export function HubStatus({ children }: HubStatusProps) {
 
         {errorMessage && (
           <SetupCard className="max-w-md w-full text-center">
-            <h2 className="text-xl font-semibold text-foreground mb-2">Hub Error</h2>
+            <h2 className="text-xl font-semibold text-foreground mb-2">{t('HUB_STATUS_ERROR')}</h2>
             <p className="text-muted-foreground mb-6">{errorMessage}</p>
             <button
               type="button"
               onClick={handleRestartHub}
               className="inline-flex items-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
             >
-              Restart Hub
+              {t('HUB_STATUS_RESTART_HUB')}
             </button>
             <div className="flex gap-4 justify-center mt-6">
               <button type="button" onClick={handleViewLogs} className="text-sm text-muted-foreground underline hover:text-foreground">
-                View Logs
+                {t('HUB_STATUS_VIEW_LOGS')}
               </button>
               <button type="button" onClick={handleOpenLogsDir} className="text-sm text-muted-foreground underline hover:text-foreground">
-                Open Logs Folder
+                {t('HUB_STATUS_OPEN_LOGS_FOLDER')}
               </button>
             </div>
           </SetupCard>
@@ -736,20 +747,20 @@ export function HubStatus({ children }: HubStatusProps) {
 
         {status !== 'Starting' && status !== 'DockerNotAvailable' && !errorMessage && (
           <button type="button" onClick={() => checkStatus()} className="text-sm text-muted-foreground underline hover:text-foreground">
-            Check again
+            {t('COMMON_CHECK_AGAIN')}
           </button>
         )}
 
         {showLogs && logs !== null && (
           <div className="w-full max-w-2xl">
             <div className="flex items-center justify-between mb-2">
-              <span className="text-sm font-medium text-foreground">Recent Logs</span>
+              <span className="text-sm font-medium text-foreground">{t('HUB_STATUS_RECENT_LOGS')}</span>
               <button type="button" onClick={() => setShowLogs(false)} className="text-sm text-muted-foreground underline hover:text-foreground">
-                Hide
+                {t('HUB_STATUS_HIDE')}
               </button>
             </div>
             <pre className="bg-muted rounded-md p-3 text-xs font-mono text-muted-foreground max-h-64 overflow-auto whitespace-pre-wrap">
-              {logs || 'No logs available.'}
+              {logs || t('HUB_STATUS_NO_LOGS_AVAILABLE')}
             </pre>
           </div>
         )}
