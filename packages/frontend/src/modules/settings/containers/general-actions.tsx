@@ -29,9 +29,9 @@ export const GeneralActionsContainer = () => {
       window.location.href = '/onboarding';
     } catch {
       setRestartingWizard(false);
-      toast.error('Could not restart the setup wizard. Please try again.');
+      toast.error(t('SETTINGS_ACTIONS_RESTART_WIZARD_FAILED'));
     }
-  }, []);
+  }, [t]);
 
   const refreshUpdateState = useCallback(async () => {
     if (!isTauri()) {
@@ -64,9 +64,9 @@ export const GeneralActionsContainer = () => {
       if (isTauri()) {
         const info = await refreshUpdateState();
         if (info?.updateAvailable) {
-          toast.success(`Update available: ${info.latestVersion}`);
+          toast.success(t('SETTINGS_ACTIONS_UPDATE_AVAILABLE', { version: info.latestVersion }));
         } else {
-          toast.success('You are on the latest version.');
+          toast.success(t('SETTINGS_ACTIONS_ON_LATEST_VERSION'));
         }
         return;
       }
@@ -76,16 +76,16 @@ export const GeneralActionsContainer = () => {
       const data = (await res.json()) as { updateAvailable?: boolean; latest?: string };
       await refreshAppContext();
       if (data.updateAvailable) {
-        toast.success(`Update available: ${data.latest ?? version.latest}`);
+        toast.success(t('SETTINGS_ACTIONS_UPDATE_AVAILABLE', { version: data.latest ?? version.latest }));
       } else {
-        toast.success('You are on the latest version.');
+        toast.success(t('SETTINGS_ACTIONS_ON_LATEST_VERSION'));
       }
     } catch {
-      toast.error('Could not check for updates.');
+      toast.error(t('SETTINGS_ACTIONS_CHECK_UPDATE_FAILED'));
     } finally {
       setChecking(false);
     }
-  }, [refreshAppContext, refreshUpdateState, version.latest]);
+  }, [refreshAppContext, refreshUpdateState, t, version.latest]);
 
   const handleUpdate = useCallback(async () => {
     setUpdating(true);
@@ -116,10 +116,10 @@ export const GeneralActionsContainer = () => {
         setUpdating(false);
       }
     } catch {
-      setUpdateMessage('Update request failed.');
+      setUpdateMessage(t('SETTINGS_ACTIONS_UPDATE_FAILED'));
       setUpdating(false);
     }
-  }, [desktopUpdate, refreshUpdateState, version.latest]);
+  }, [desktopUpdate, refreshUpdateState, t, version.latest]);
 
   const handleAutoUpdatesToggle = useCallback(async () => {
     setAutoUpdatesLoading(true);
@@ -158,10 +158,10 @@ export const GeneralActionsContainer = () => {
           {updating ? (
             <>
               <Loader2 className="h-4 w-4 animate-spin mr-2" />
-              Updating…
+              {t('SETTINGS_ACTIONS_UPDATING')}
             </>
           ) : (
-            `Update to ${latestVersion}`
+            t('SETTINGS_ACTIONS_UPDATE_TO', { version: latestVersion })
           )}
         </Button>
       );
@@ -172,10 +172,10 @@ export const GeneralActionsContainer = () => {
         {checking ? (
           <>
             <Loader2 className="h-4 w-4 animate-spin mr-2" />
-            Checking…
+            {t('SETTINGS_ACTIONS_CHECKING')}
           </>
         ) : (
-          'Check for updates'
+          t('SETTINGS_ACTIONS_CHECK_FOR_UPDATES')
         )}
       </Button>
     );
@@ -191,7 +191,7 @@ export const GeneralActionsContainer = () => {
           </div>
           <CardDescription>
             {t('SETTINGS_ACTIONS_CURRENT_VERSION', { version: displayVersion })}
-            {isTauri() ? '' : ' (stack)'}
+            {isTauri() ? '' : t('SETTINGS_ACTIONS_STACK_SUFFIX')}
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -203,8 +203,8 @@ export const GeneralActionsContainer = () => {
           <div className="mt-6 pt-6 border-t">
             <div className="flex items-center justify-between">
               <div>
-                <h3 className="text-sm font-medium">Auto-update stack</h3>
-                <p className="text-sm text-muted-foreground">Automatically pull and restart Docker stack images when updates are available</p>
+                <h3 className="text-sm font-medium">{t('SETTINGS_ACTIONS_AUTO_UPDATE_STACK_TITLE')}</h3>
+                <p className="text-sm text-muted-foreground">{t('SETTINGS_ACTIONS_AUTO_UPDATE_STACK_DESCRIPTION')}</p>
               </div>
               <button
                 type="button"
@@ -233,19 +233,19 @@ export const GeneralActionsContainer = () => {
         <CardHeader>
           <div className="flex items-center gap-2">
             <Wand2 className="h-5 w-5 text-muted-foreground" />
-            <CardTitle className="text-xl">Setup Wizard</CardTitle>
+            <CardTitle className="text-xl">{t('SETTINGS_ACTIONS_SETUP_WIZARD_TITLE')}</CardTitle>
           </div>
-          <CardDescription>Re-run the first-time setup wizard to reconfigure your agents, models, and remote access.</CardDescription>
+          <CardDescription>{t('SETTINGS_ACTIONS_SETUP_WIZARD_DESCRIPTION')}</CardDescription>
         </CardHeader>
         <CardContent>
           <Button onClick={handleRestartWizard} disabled={restartingWizard} data-testid="restart-wizard-btn">
             {restartingWizard ? (
               <>
                 <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                Restarting…
+                {t('SETTINGS_ACTIONS_RESTARTING')}
               </>
             ) : (
-              'Restart Setup Wizard'
+              t('SETTINGS_ACTIONS_RESTART_SETUP_WIZARD')
             )}
           </Button>
         </CardContent>
