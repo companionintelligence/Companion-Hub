@@ -70,7 +70,7 @@ describe('InferenceController — preferences', () => {
 
     const result = await controller.updatePreferences({ backend: 'lemonade' });
 
-    expect(configService.setInferencePreferences).toHaveBeenCalledWith('lemonade', undefined);
+    expect(configService.setInferencePreferences).toHaveBeenCalledWith('lemonade', undefined, undefined, undefined);
     expect(result).toEqual({ preferredBackend: 'lemonade', preferredModel: null });
   });
 
@@ -79,7 +79,7 @@ describe('InferenceController — preferences', () => {
 
     const result = await controller.updatePreferences({ backend: 'ollama', model: 'hermes4-8b' });
 
-    expect(configService.setInferencePreferences).toHaveBeenCalledWith('ollama', 'hermes4-8b');
+    expect(configService.setInferencePreferences).toHaveBeenCalledWith('ollama', 'hermes4-8b', undefined, undefined);
     expect(result).toEqual({ preferredBackend: 'ollama', preferredModel: 'hermes4-8b' });
   });
 
