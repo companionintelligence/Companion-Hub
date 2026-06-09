@@ -27,19 +27,8 @@ const cleanSchema = dynamicComposeSchema.omit({ schemaVersion: true }).transform
 
 export const MultiServiceForm = ({ onSubmit }: Props) => {
   const { t } = useTranslation();
-  const {
-    services,
-    updateFromJson,
-    activeService,
-    setActiveService,
-    addService,
-    removeService,
-    updateService,
-    error,
-    validate,
-    isDirty,
-    setIsDirty,
-  } = useMultiServiceStore();
+  const { services, updateFromJson, activeService, setActiveService, addService, removeService, updateService, validate, isDirty, setIsDirty } =
+    useMultiServiceStore();
   const [jsonEditorOpen, setJsonEditorOpen] = useState(false);
   const [json, setJson] = useState<{ value: string; error?: string }>({
     value: '',
@@ -163,7 +152,8 @@ export const MultiServiceForm = ({ onSubmit }: Props) => {
     if (valid) {
       onSubmit?.(data);
     } else {
-      toast.error(i18next.exists(error) ? t(error) : error);
+      const latestError = useMultiServiceStore.getState().error;
+      toast.error(i18next.exists(latestError) ? t(latestError) : latestError);
     }
   };
 
