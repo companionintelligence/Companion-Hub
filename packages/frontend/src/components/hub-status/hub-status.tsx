@@ -425,7 +425,7 @@ function StartupScreen({ elapsedSeconds }: { elapsedSeconds: number }) {
           </div>
           <div className="flex justify-between text-xs text-muted-foreground/60 tabular-nums">
             <span className="inline-flex items-center">
-              <HintText id="startup-progress" hint={STARTUP_PROGRESS_HINT}>
+              <HintText id="startup-progress" hint={t(STARTUP_PROGRESS_HINT)}>
                 {pct}%
               </HintText>
             </span>

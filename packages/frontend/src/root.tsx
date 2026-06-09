@@ -11,6 +11,7 @@ import { client } from './api-client/client.gen';
 import stylesheet from './app.css?url';
 import globalsStylesheet from './styles/globals.css?url';
 import { Providers } from './components/providers/providers';
+import { I18nProvider } from './components/providers/i18n/i18n-provider';
 import { ThemeProvider } from './components/providers/theme/theme-provider';
 import { TranslatableError } from './types/error.types';
 import { getTauriSessionId } from './lib/api-fetch';
@@ -53,7 +54,8 @@ client.interceptors.response.use(async (res) => {
       }
     } catch (_e) {
       // If JSON parsing fails, use a default error message
-      data = { message: res.statusText || i18next.t('COMMON_AN_ERROR_OCCURRED') };
+      const fallbackMessage = i18next.isInitialized ? i18next.t('COMMON_AN_ERROR_OCCURRED') : 'An error occurred';
+      data = { message: res.statusText || fallbackMessage };
     }
 
     const error = new TranslatableError(data.message || `HTTP ${res.status}: ${res.statusText}`);
@@ -251,7 +253,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
       <head>
-        <title>{i18next.t('APP_NAME')}</title>
+        <title>{i18next.isInitialized ? i18next.t('APP_NAME') : 'Companion Hub'}</title>
         <meta charSet="UTF-8" />
         <script src="/js/tabler.min.js" async />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -260,14 +262,16 @@ export function Layout({ children }: { children: React.ReactNode }) {
       </head>
       <body>
         <ThemeProvider defaultTheme="dark">
-          <Titlebar />
-          {update && <UpdateBanner update={update} onDismiss={dismiss} />}
-          <HubStatus>
-            <main id="root">
-              {children}
-              <ScrollRestoration />
-            </main>
-          </HubStatus>
+          <I18nProvider>
+            <Titlebar />
+            {update && <UpdateBanner update={update} onDismiss={dismiss} />}
+            <HubStatus>
+              <main id="root">
+                {children}
+                <ScrollRestoration />
+              </main>
+            </HubStatus>
+          </I18nProvider>
         </ThemeProvider>
         <Scripts />
       </body>
