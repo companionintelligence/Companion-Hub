@@ -24,10 +24,12 @@ import { computeSelectionBudget } from '../helpers/onboarding-model-selection';
 import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
 import { Loader2 } from 'lucide-react';
 
-// Models a chat agent (Hermes, OpenClaw) can use as its default. LLMs are modality 'llm' in the real
-// catalog; the purpose check keeps this robust across catalog shapes.
-const AGENT_MODEL_PURPOSES = ['general', 'coding', 'reasoning', 'fast'];
-const isAgentModel = (model: CuratedModel) => model.modality === 'llm' || AGENT_MODEL_PURPOSES.includes(model.purpose);
+// Models a chat agent (Hermes, OpenClaw) can use as its default.
+// Only LLMs qualify here; embeddings / speech models may share a generic
+// purpose label but must never become the default chat model.
+const isAgentModel = (model: CuratedModel) => model.modality === 'llm';
+const isEmbeddingModel = (model: CuratedModel) => model.modality === 'embedding';
+const isVisionModel = (model: CuratedModel) => model.modality === 'llm' && model.metadata?.capabilities?.vision === true;
 
 // Onboarding currently runs everything on Ollama; vLLM/Lemonade are shown but disabled.
 const ONBOARDING_BACKEND: InferenceBackendType = 'ollama';
@@ -110,6 +112,20 @@ export const AiSetupStep = ({
     const installableAgentIds = new Set(data.availableModels.filter((m) => m.backend === backend && isAgentModel(m)).map((m) => m.id));
     const topRecommended = data.recommendedModels.find((m) => m.backend === backend && isAgentModel(m) && installableAgentIds.has(m.id));
     return topRecommended?.id ?? data.availableModels.find((m) => m.backend === backend && isAgentModel(m))?.id;
+  };
+
+  const getDefaultPreferredAuxModelId = (
+    data: HardwareProfileResponse,
+    backend: InferenceBackendType,
+    match: (model: CuratedModel) => boolean,
+    selectedIds?: string[],
+  ): string | undefined => {
+    const installed = new Set(data.installedCatalogIds ?? []);
+    const selected = selectedIds ?? data.availableModels.filter((m) => m.backend === backend && installed.has(m.id)).map((m) => m.id);
+    const selectedSet = new Set(selected);
+    const recommended = data.recommendedModels.find((m) => m.backend === backend && match(m) && selectedSet.has(m.id));
+    if (recommended) return recommended.id;
+    return data.availableModels.find((m) => m.backend === backend && match(m) && selectedSet.has(m.id))?.id;
   };
 
   // Pre-select only models already present in Ollama. New downloads require an explicit checkbox.
@@ -229,12 +245,17 @@ export const AiSetupStep = ({
       preferredModelId && selectedModels.includes(preferredModelId)
         ? preferredModelId
         : selectedModels.find((id) => profile.availableModels.some((m) => m.id === id && isAgentModel(m)));
+    const effectivePreferredEmbeddingModelId = getDefaultPreferredAuxModelId(profile, ONBOARDING_BACKEND, isEmbeddingModel, selectedModels);
+    const effectivePreferredVisionModelId = getDefaultPreferredAuxModelId(profile, ONBOARDING_BACKEND, isVisionModel, selectedModels);
+
     return {
       agentFrameworks,
       selectedModels,
       backend: ONBOARDING_BACKEND,
       cloudProviders: validProviders,
       preferredModelId: effectivePreferredModelId,
+      ...(effectivePreferredEmbeddingModelId ? { preferredEmbeddingModelId: effectivePreferredEmbeddingModelId } : {}),
+      ...(effectivePreferredVisionModelId ? { preferredVisionModelId: effectivePreferredVisionModelId } : {}),
       remoteAccess,
       exposureMode: primaryExposureMode(remoteAccess),
       skipped: false,

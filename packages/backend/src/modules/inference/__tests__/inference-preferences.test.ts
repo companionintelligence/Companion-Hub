@@ -50,37 +50,82 @@ describe('InferenceController — preferences', () => {
   });
 
   it('returns nulls when global preferences are unset', async () => {
-    configService.getInferencePreferences.mockReturnValue({ preferredBackend: null, preferredModel: null });
+    configService.getInferencePreferences.mockReturnValue({
+      preferredBackend: null,
+      preferredModel: null,
+      preferredEmbeddingModel: null,
+      preferredVisionModel: null,
+    });
 
     const result = await controller.getPreferences();
 
-    expect(result).toEqual({ preferredBackend: null, preferredModel: null });
+    expect(result).toEqual({
+      preferredBackend: null,
+      preferredModel: null,
+      preferredEmbeddingModel: null,
+      preferredVisionModel: null,
+    });
   });
 
   it('returns global preferred backend and model when persisted', async () => {
-    configService.getInferencePreferences.mockReturnValue({ preferredBackend: 'vllm', preferredModel: 'hermes4-70b' });
+    configService.getInferencePreferences.mockReturnValue({
+      preferredBackend: 'vllm',
+      preferredModel: 'hermes4-70b',
+      preferredEmbeddingModel: 'nomic-embed-text',
+      preferredVisionModel: 'gemma4-27b',
+    });
 
     const result = await controller.getPreferences();
 
-    expect(result).toEqual({ preferredBackend: 'vllm', preferredModel: 'hermes4-70b' });
+    expect(result).toEqual({
+      preferredBackend: 'vllm',
+      preferredModel: 'hermes4-70b',
+      preferredEmbeddingModel: 'nomic-embed-text',
+      preferredVisionModel: 'gemma4-27b',
+    });
   });
 
   it('updates the preferred backend and leaves the model unchanged when omitted', async () => {
-    configService.setInferencePreferences.mockResolvedValue({ preferredBackend: 'lemonade', preferredModel: null });
+    configService.setInferencePreferences.mockResolvedValue({
+      preferredBackend: 'lemonade',
+      preferredModel: null,
+      preferredEmbeddingModel: null,
+      preferredVisionModel: null,
+    });
 
     const result = await controller.updatePreferences({ backend: 'lemonade' });
 
-    expect(configService.setInferencePreferences).toHaveBeenCalledWith('lemonade', undefined);
-    expect(result).toEqual({ preferredBackend: 'lemonade', preferredModel: null });
+    expect(configService.setInferencePreferences).toHaveBeenCalledWith('lemonade', undefined, undefined, undefined);
+    expect(result).toEqual({
+      preferredBackend: 'lemonade',
+      preferredModel: null,
+      preferredEmbeddingModel: null,
+      preferredVisionModel: null,
+    });
   });
 
-  it('passes the preferred model through when provided', async () => {
-    configService.setInferencePreferences.mockResolvedValue({ preferredBackend: 'ollama', preferredModel: 'hermes4-8b' });
+  it('passes the preferred chat, embedding, and vision models through when provided', async () => {
+    configService.setInferencePreferences.mockResolvedValue({
+      preferredBackend: 'ollama',
+      preferredModel: 'hermes4-8b',
+      preferredEmbeddingModel: 'nomic-embed-text',
+      preferredVisionModel: 'gemma4-27b',
+    });
 
-    const result = await controller.updatePreferences({ backend: 'ollama', model: 'hermes4-8b' });
+    const result = await controller.updatePreferences({
+      backend: 'ollama',
+      model: 'hermes4-8b',
+      embeddingModel: 'nomic-embed-text',
+      visionModel: 'gemma4-27b',
+    });
 
-    expect(configService.setInferencePreferences).toHaveBeenCalledWith('ollama', 'hermes4-8b');
-    expect(result).toEqual({ preferredBackend: 'ollama', preferredModel: 'hermes4-8b' });
+    expect(configService.setInferencePreferences).toHaveBeenCalledWith('ollama', 'hermes4-8b', 'nomic-embed-text', 'gemma4-27b');
+    expect(result).toEqual({
+      preferredBackend: 'ollama',
+      preferredModel: 'hermes4-8b',
+      preferredEmbeddingModel: 'nomic-embed-text',
+      preferredVisionModel: 'gemma4-27b',
+    });
   });
 
   it('returns runtime models for a healthy selected backend', async () => {
@@ -118,5 +163,8 @@ describe('InferenceController — preferences', () => {
     expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', model: null }).success).toBe(true);
     expect(inferencePreferencesSchema.safeParse({ backend: 'ollama' }).success).toBe(true);
     expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', model: '' }).success).toBe(false);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', embeddingModel: 'nomic-embed-text', visionModel: 'gemma4-27b' }).success).toBe(
+      true,
+    );
   });
 });

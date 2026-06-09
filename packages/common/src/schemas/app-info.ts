@@ -2,12 +2,40 @@ import { z } from 'zod';
 import { zodAppUrn } from '../types/app-urn.js';
 import { agentConfigSchema } from './agent-config.js';
 
+/**
+ * Standardized inference variable names that apps can request from the Hub.
+ * When declared in `hub_integration.inference`, the Hub resolves the value at
+ * env-generation time and writes it into the app's `app.env` under the
+ * app-specified env variable name.
+ */
+export const INFERENCE_VARIABLES = ['llm_base_url', 'llm_api_key', 'chat_model', 'embedding_model', 'vision_model', 'ollama_host'] as const;
+export type InferenceVariable = (typeof INFERENCE_VARIABLES)[number];
+
+export const inferenceEnvMappingSchema = z.record(z.enum(INFERENCE_VARIABLES), z.string().min(1));
+
 export const hubIntegrationSchema = z
   .object({
     mcp_client: z.boolean().default(false),
     wake_endpoint: z.string().optional().default('/hooks/hub-wake'),
     wake_port: z.number().optional(),
     sse_events: z.boolean().default(false),
+    /**
+     * Opt-in inference variable mapping. Keys are standardized Hub variable
+     * names; values are the env variable names the app expects.
+     *
+     * Example in config.json:
+     * ```json
+     * "hub_integration": {
+     *   "inference": {
+     *     "llm_base_url": "LLM_API_BASE",
+     *     "llm_api_key": "LLM_API_KEY",
+     *     "chat_model": "LLM_DEFAULT_CHAT_MODEL",
+     *     "embedding_model": "LLM_DEFAULT_EMBEDDING_MODEL"
+     *   }
+     * }
+     * ```
+     */
+    inference: inferenceEnvMappingSchema.optional(),
   })
   .optional();
 

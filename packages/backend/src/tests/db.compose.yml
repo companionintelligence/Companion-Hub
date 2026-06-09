@@ -1,6 +1,6 @@
 services:
   db:
-    image: postgres:14
+    image: ${POSTGRES_TEST_IMAGE:-postgres:14}
     restart: no
     command: -p 6543
     ports:
@@ -11,7 +11,7 @@ services:
       POSTGRES_DB: postgres
 
   rabbitmq:
-    image: rabbitmq:4-alpine
+    image: ${RABBITMQ_TEST_IMAGE:-rabbitmq:4-alpine}
     restart: no
     ports:
       - 5672

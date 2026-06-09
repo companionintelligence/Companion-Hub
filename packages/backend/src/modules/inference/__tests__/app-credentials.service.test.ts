@@ -103,7 +103,12 @@ describe('AppCredentialsService', () => {
     ollamaBackend = mock<OllamaBackend>();
     configurationService = mock<ConfigurationService>();
 
-    configurationService.getInferencePreferences.mockReturnValue({ preferredBackend: null, preferredModel: null });
+    configurationService.getInferencePreferences.mockReturnValue({
+      preferredBackend: null,
+      preferredModel: null,
+      preferredEmbeddingModel: null,
+      preferredVisionModel: null,
+    });
     modelPuller.evaluatePull.mockResolvedValue({
       catalogId: 'hermes4-70b',
       alreadyInstalled: false,
@@ -149,6 +154,10 @@ describe('AppCredentialsService', () => {
   describe('getCredentials — local (direct Ollama) path', () => {
     it('throws NotFoundException for unknown slugs', async () => {
       await expect(service.getCredentials('unknown-app')).rejects.toThrow(NotFoundException);
+    });
+
+    it('treats companion-memory as unsupported because it is no longer a Hub-managed bootstrap client', async () => {
+      await expect(service.getCredentials('companion-memory')).rejects.toThrow(NotFoundException);
     });
 
     it('points hermes-agent at the DIRECT Ollama /v1 with the NATIVE chat model id', async () => {
@@ -217,23 +226,6 @@ describe('AppCredentialsService', () => {
       expect(config.embeddingsModelId).toBe('nomic-embed-text');
       expect(config.env.EMBEDDINGS_MODEL).toBe('nomic-embed-text');
       expect(modelPuller.pullModel).toHaveBeenCalledWith('nomic-embed-text');
-    });
-
-    it('returns companion-memory env keyed with LLM_* (direct Ollama + native ids) including embeddings', async () => {
-      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['hermes4:70b', 'nomic-embed-text'] });
-      modelRegistry.getRecommendedEmbeddingModel.mockReturnValue(makeEmbedding('nomic-embed-text', 'nomic-embed-text'));
-      service.invalidateCache();
-
-      const config = await service.getCredentials('companion-memory');
-
-      expect(config.app).toBe('companion-memory');
-      expect(config.env).toEqual({
-        LLM_API_BASE: OLLAMA_OPENAI_URL,
-        LLM_API_KEY: 'ollama',
-        LLM_DEFAULT_CHAT_MODEL: 'hermes4:70b',
-        LLM_DEFAULT_EMBEDDING_MODEL: 'nomic-embed-text',
-        OLLAMA_HOST: OLLAMA_BASE_URL,
-      });
     });
 
     it('picks the first (biggest) recommended model and uses its native id', async () => {
@@ -342,7 +334,6 @@ describe('AppCredentialsService', () => {
     it('recognizes supported slugs', () => {
       expect(service.isSupported('hermes-agent')).toBe(true);
       expect(service.isSupported('openclaw')).toBe(true);
-      expect(service.isSupported('companion-memory')).toBe(true);
     });
 
     it('rejects unknown slugs', () => {

@@ -103,11 +103,15 @@ export class ConfigurationService {
       ciHubOrganizationId: string | null;
       inferenceBackend: InferenceBackendType | undefined;
       inferenceModel: string | undefined;
+      inferenceEmbeddingModel: string | undefined;
+      inferenceVisionModel: string | undefined;
     } = {
       ciHubApiKey: null,
       ciHubOrganizationId: null,
       inferenceBackend: undefined,
       inferenceModel: undefined,
+      inferenceEmbeddingModel: undefined,
+      inferenceVisionModel: undefined,
     };
     try {
       const settingsPath = path.join(DATA_DIR, 'state', 'settings.json');
@@ -119,6 +123,8 @@ export class ConfigurationService {
           ciHubOrganizationId: settings.ciHubOrganizationId || null,
           inferenceBackend: settings.inferenceBackend,
           inferenceModel: settings.inferenceModel,
+          inferenceEmbeddingModel: settings.inferenceEmbeddingModel,
+          inferenceVisionModel: settings.inferenceVisionModel,
         };
       }
     } catch (_e) {
@@ -174,6 +180,8 @@ export class ConfigurationService {
         themeColor: env.data.THEME_COLOR,
         inferenceBackend: settingsValues.inferenceBackend,
         inferenceModel: settingsValues.inferenceModel,
+        inferenceEmbeddingModel: settingsValues.inferenceEmbeddingModel,
+        inferenceVisionModel: settingsValues.inferenceVisionModel,
         experimental: {
           insecureCookie: env.data.EXPERIMENTAL_INSECURE_COOKIE,
         },
@@ -238,18 +246,36 @@ export class ConfigurationService {
     return {
       preferredBackend: this.config.userSettings.inferenceBackend ?? null,
       preferredModel: this.config.userSettings.inferenceModel ?? null,
+      preferredEmbeddingModel: this.config.userSettings.inferenceEmbeddingModel ?? null,
+      preferredVisionModel: this.config.userSettings.inferenceVisionModel ?? null,
     };
   }
 
   /**
    * Persist inference preferences. `model` is the catalog id of the default model Companion agents
    * (Hermes, OpenClaw) and the Hub use by default. Pass `null` to clear it; omit it to leave it
-   * unchanged.
+   * unchanged. `embeddingModel` and `visionModel` follow the same convention.
    */
-  public async setInferencePreferences(backend: InferenceBackendType, model?: string | null) {
-    const settings: { inferenceBackend: InferenceBackendType; inferenceModel?: string } = { inferenceBackend: backend };
+  public async setInferencePreferences(
+    backend: InferenceBackendType,
+    model?: string | null,
+    embeddingModel?: string | null,
+    visionModel?: string | null,
+  ) {
+    const settings: {
+      inferenceBackend: InferenceBackendType;
+      inferenceModel?: string;
+      inferenceEmbeddingModel?: string;
+      inferenceVisionModel?: string;
+    } = { inferenceBackend: backend };
     if (model !== undefined) {
       settings.inferenceModel = model ?? undefined;
+    }
+    if (embeddingModel !== undefined) {
+      settings.inferenceEmbeddingModel = embeddingModel ?? undefined;
+    }
+    if (visionModel !== undefined) {
+      settings.inferenceVisionModel = visionModel ?? undefined;
     }
     await this.setUserSettings(settings);
     return this.getInferencePreferences();

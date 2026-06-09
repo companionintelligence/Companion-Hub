@@ -138,6 +138,20 @@ export class ModelRegistryService implements OnModuleInit {
     return this.getRecommendedModels(tier).find((m) => m.modality === 'embedding') ?? null;
   }
 
+  /**
+   * The default vision-capable LLM recommended for the tier. Vision models are
+   * standard LLMs with image input support — they're picked from the LLM catalog
+   * entries that have `metadata.capabilities.vision === true`. Returns null when no
+   * vision model is available for the tier.
+   */
+  getRecommendedVisionModel(tier: HardwareTier): CuratedModel | null {
+    if (tier === 'insufficient') return null;
+    const candidates = this.getModelsForTier(tier).filter((m) => m.modality === 'llm' && m.metadata?.capabilities?.vision === true);
+    if (candidates.length === 0) return null;
+    candidates.sort(compareLlmCandidates);
+    return candidates[0] ?? null;
+  }
+
   /** Get default models to pin for a tier */
   getDefaultPinnedModels(tier: HardwareTier): CuratedModel[] {
     return this.getRecommendedModels(tier).filter((m) => m.runtime.pinnedByDefault);

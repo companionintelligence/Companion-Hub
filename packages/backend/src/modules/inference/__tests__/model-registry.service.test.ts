@@ -38,6 +38,40 @@ describe('ModelRegistryService', () => {
       expect(service.getRecommendedEmbeddingModel('insufficient')).toBeNull();
     });
 
+    it('returns null for vision recommendations on an insufficient tier', () => {
+      expect(service.getRecommendedVisionModel('insufficient')).toBeNull();
+    });
+
+    it('returns a vision-capable LLM for runnable tiers that have one', () => {
+      const vision = service.getRecommendedVisionModel('high');
+      expect(vision).not.toBeNull();
+      expect(vision?.modality).toBe('llm');
+      expect(vision?.metadata?.capabilities?.vision).toBe(true);
+      expect(service.getModelsForTier('high').some((model) => model.id === vision?.id)).toBe(true);
+    });
+
+    it('ranks vision recommendations best-first instead of relying on catalog order', () => {
+      const visionCandidates = service
+        .getModelsForTier('high')
+        .filter((model) => model.modality === 'llm' && model.metadata?.capabilities?.vision === true);
+
+      expect(visionCandidates.length).toBeGreaterThan(0);
+
+      const expectedBest = [...visionCandidates].sort((a, b) => {
+        const intel = (b.metadata?.intelligenceIndex ?? 0) - (a.metadata?.intelligenceIndex ?? 0);
+        if (intel !== 0) return intel;
+        const aSubQ4 = (a.runtime.quantization ?? '') === 'q3_K_M' ? 1 : 0;
+        const bSubQ4 = (b.runtime.quantization ?? '') === 'q3_K_M' ? 1 : 0;
+        if (aSubQ4 !== bSubQ4) return aSubQ4 - bSubQ4;
+        const params = (b.parameterScale ?? 0) - (a.parameterScale ?? 0);
+        if (params !== 0) return params;
+        const rank = (q: string | undefined) => ({ q8_0: 6, q6_K: 5, q5_K_M: 4, q4_K_M: 3, fp16: 2, q3_K_M: 1 })[q ?? ''] ?? 0;
+        return rank(b.runtime.quantization) - rank(a.runtime.quantization);
+      })[0];
+
+      expect(service.getRecommendedVisionModel('high')?.id).toBe(expectedBest?.id);
+    });
+
     it('S-MM-1.2: each model SHALL include minimum hardware requirements', () => {
       const catalog = service.getCatalog();
       for (const model of catalog) {

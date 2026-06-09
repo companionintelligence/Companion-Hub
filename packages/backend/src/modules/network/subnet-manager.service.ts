@@ -66,7 +66,7 @@ export class SubnetManagerService {
     const appSubnets = (await this.appsRepository.getApps().then((apps) => apps.map((app) => app.subnet))).filter((subnet) => subnet !== null);
 
     const networks = await this.docker.listNetworks();
-    return networks
+    return (networks ?? [])
       .flatMap((network) => network.IPAM?.Config?.map((c) => c))
       .map((c) => c?.Subnet)
       .filter((c) => c !== undefined)
