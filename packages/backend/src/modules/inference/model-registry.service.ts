@@ -146,15 +146,10 @@ export class ModelRegistryService implements OnModuleInit {
    */
   getRecommendedVisionModel(tier: HardwareTier): CuratedModel | null {
     if (tier === 'insufficient') return null;
-    const tierKey = tier === 'cpu-only' ? 'cpuOnly' : tier;
-    return (
-      CURATED_MODELS.find(
-        (m) =>
-          m.modality === 'llm' &&
-          m.metadata?.capabilities?.vision === true &&
-          (m.tiers[tierKey as keyof typeof m.tiers] === 'recommended' || m.tiers[tierKey as keyof typeof m.tiers] === 'available'),
-      ) ?? null
-    );
+    const candidates = this.getModelsForTier(tier).filter((m) => m.modality === 'llm' && m.metadata?.capabilities?.vision === true);
+    if (candidates.length === 0) return null;
+    candidates.sort(compareLlmCandidates);
+    return candidates[0] ?? null;
   }
 
   /** Get default models to pin for a tier */

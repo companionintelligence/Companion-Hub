@@ -24,10 +24,10 @@ import { computeSelectionBudget } from '../helpers/onboarding-model-selection';
 import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
 import { Loader2 } from 'lucide-react';
 
-// Models a chat agent (Hermes, OpenClaw) can use as its default. LLMs are modality 'llm' in the real
-// catalog; the purpose check keeps this robust across catalog shapes.
-const AGENT_MODEL_PURPOSES = ['general', 'coding', 'reasoning', 'fast'];
-const isAgentModel = (model: CuratedModel) => model.modality === 'llm' || AGENT_MODEL_PURPOSES.includes(model.purpose);
+// Models a chat agent (Hermes, OpenClaw) can use as its default.
+// Only LLMs qualify here; embeddings / speech models may share a generic
+// purpose label but must never become the default chat model.
+const isAgentModel = (model: CuratedModel) => model.modality === 'llm';
 const isEmbeddingModel = (model: CuratedModel) => model.modality === 'embedding';
 const isVisionModel = (model: CuratedModel) => model.modality === 'llm' && model.metadata?.capabilities?.vision === true;
 
