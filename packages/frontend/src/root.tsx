@@ -2,7 +2,7 @@ import { Titlebar } from './components/titlebar/titlebar';
 import { HubStatus } from './components/hub-status/hub-status';
 import { UpdateBanner } from './components/update-banner/update-banner';
 import { useUpdateChecker } from './hooks/use-update-checker';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Toaster } from 'react-hot-toast';
 import { Links, Meta, Outlet, Scripts, ScrollRestoration, isRouteErrorResponse, redirect, useLocation, useRevalidator } from 'react-router';
 import type { Route } from './+types/root';
@@ -170,6 +170,25 @@ export async function clientLoader({ request }: Route.ActionArgs) {
 
 export function Layout({ children }: { children: React.ReactNode }) {
   const { update, dismiss } = useUpdateChecker();
+  const [documentTitle, setDocumentTitle] = useState(() => (i18next.isInitialized ? i18next.t('APP_NAME') : 'Companion Hub'));
+
+  useEffect(() => {
+    const syncDocumentTitle = () => {
+      setDocumentTitle(i18next.isInitialized ? i18next.t('APP_NAME') : 'Companion Hub');
+    };
+
+    syncDocumentTitle();
+    i18next.on('initialized', syncDocumentTitle);
+    i18next.on('languageChanged', syncDocumentTitle);
+    i18next.on('loaded', syncDocumentTitle);
+
+    return () => {
+      i18next.off('initialized', syncDocumentTitle);
+      i18next.off('languageChanged', syncDocumentTitle);
+      i18next.off('loaded', syncDocumentTitle);
+    };
+  }, []);
+
   useEffect(() => {
     const handlePreloadError = () => {
       window.location.reload();
@@ -253,7 +272,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
       <head>
-        <title>{i18next.isInitialized ? i18next.t('APP_NAME') : 'Companion Hub'}</title>
+        <title>{documentTitle}</title>
         <meta charSet="UTF-8" />
         <script src="/js/tabler.min.js" async />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
