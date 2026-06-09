@@ -100,6 +100,12 @@ describe('renderHelp', () => {
     expect(plain).toContain('cihub status');
   });
 
+  it('documents cihub update as the host update command', () => {
+    const plain = stripAnsi(renderHelp());
+    expect(plain).toContain('cihub update [--check]');
+    expect(plain).not.toContain('companion-hub update');
+  });
+
   it('shows packaged install instructions', () => {
     const plain = stripAnsi(renderHelp());
     expect(plain).toContain('npm install -g ci-hub');

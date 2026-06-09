@@ -69,7 +69,7 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
       { command: `${BASE_COMMAND} shutdown [env]`, description: 'Stop the hub stack' },
       { command: `${BASE_COMMAND} status [env]`, description: 'Containers, Cloudflare tunnel, Tailscale VPN, and models' },
       { command: `${BASE_COMMAND} config [env]`, description: 'Show resolved configuration values' },
-      { command: 'companion-hub update [--check]', description: 'Download and install desktop + stack update (host binary)' },
+      { command: `${BASE_COMMAND} update [--check]`, description: 'Check for or install desktop + stack update (requires Companion Hub)' },
     ],
   },
   {
