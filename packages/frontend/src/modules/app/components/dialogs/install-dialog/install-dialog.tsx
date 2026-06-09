@@ -71,7 +71,7 @@ export const InstallDialog: React.FC<IProps> = ({ info, isOpen, onClose }) => {
               <AlertCircle strokeWidth={2} />
             </AlertIcon>
             <div>
-              <AlertHeading>{t('WARNING')}</AlertHeading>
+              <AlertHeading>{t('COMMON_WARNING')}</AlertHeading>
               <AlertDescription>
                 <Trans i18nKey={'APP_INSTALL_FORM_FORCE_PULL_WARNING'} values={{ tag: info.version }} components={{ code: <code /> }} />
               </AlertDescription>

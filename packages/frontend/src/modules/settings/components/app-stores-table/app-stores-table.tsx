@@ -3,28 +3,35 @@ import type { AppStore } from '@/types/app.types';
 import { AddAppStoreDialog } from '../add-app-store-dialog/add-app-store-dialog';
 import { DeleteAppStoreDialog } from '../delete-app-store-dialog/delete-app-store-dialog';
 import { EditAppStoreDialog } from '../edit-app-store-dialog/edit-app-store-dialog';
+import { useTranslation } from 'react-i18next';
 
 type Props = {
   appStores: AppStore[];
 };
 
-const EnabledBadge = ({ enabled }: { enabled: boolean }) => (
-  <div className="flex items-center">
-    <span className={`inline-block size-2 rounded-full mr-2 ${enabled ? 'bg-green-500' : 'bg-red-500'}`} />
-    <span>{enabled ? 'Enabled' : 'Disabled'}</span>
-  </div>
-);
+const EnabledBadge = ({ enabled }: { enabled: boolean }) => {
+  const { t } = useTranslation();
+
+  return (
+    <div className="flex items-center">
+      <span className={`inline-block size-2 rounded-full mr-2 ${enabled ? 'bg-green-500' : 'bg-red-500'}`} />
+      <span>{enabled ? t('SETTINGS_NETWORK_ACTIVE') : t('SETTINGS_NETWORK_INACTIVE')}</span>
+    </div>
+  );
+};
 
 export const AppStoresTable = ({ appStores }: Props) => {
+  const { t } = useTranslation();
+
   return (
     <div className="flex flex-col">
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead>Name</TableHead>
-            <TableHead>Status</TableHead>
-            <TableHead>URL</TableHead>
-            <TableHead>Actions</TableHead>
+            <TableHead>{t('COMMON_NAME')}</TableHead>
+            <TableHead>{t('COMMON_STATUS')}</TableHead>
+            <TableHead>{t('APP_STORE_TABLE_URL')}</TableHead>
+            <TableHead>{t('COMMON_ACTIONS')}</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>

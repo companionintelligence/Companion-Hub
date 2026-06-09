@@ -73,18 +73,18 @@ const ActionButton: React.FC<BtnProps> = (props) => {
   );
 };
 
-const ERROR_MESSAGES: Record<string, string> = {
-  CF_TUNNEL_NOT_FOUND: 'Tunnel route not configured — syncing...',
-  CF_UPSTREAM_ERROR: 'Connecting through tunnel...',
-  CF_ORIGIN_DOWN: 'Origin server is down',
-  CF_TIMEOUT: 'Connection timed out',
-  CF_UNKNOWN: 'Cloudflare error',
-  DNS_NOT_FOUND: 'DNS propagating...',
-  CONNECTION_REFUSED: 'App not responding',
-  CONNECTION_TIMEOUT: 'Connection timed out',
-  PROXY_UPSTREAM_ERROR: 'Waiting for app to start...',
-  APP_HTTP_ERROR: 'App returned an error',
-  NO_DEVICE_REGISTRATION: 'Device not registered',
+const ERROR_MESSAGE_KEYS: Record<string, string> = {
+  CF_TUNNEL_NOT_FOUND: 'APP_ACTION_ERROR_CF_TUNNEL_NOT_FOUND',
+  CF_UPSTREAM_ERROR: 'APP_ACTION_ERROR_CF_UPSTREAM_ERROR',
+  CF_ORIGIN_DOWN: 'APP_ACTION_ERROR_CF_ORIGIN_DOWN',
+  CF_TIMEOUT: 'COMMON_CONNECTION_TIMED_OUT',
+  CF_UNKNOWN: 'APP_ACTION_ERROR_CF_UNKNOWN',
+  DNS_NOT_FOUND: 'APP_ACTION_ERROR_DNS_NOT_FOUND',
+  CONNECTION_REFUSED: 'APP_ACTION_ERROR_CONNECTION_REFUSED',
+  CONNECTION_TIMEOUT: 'COMMON_CONNECTION_TIMED_OUT',
+  PROXY_UPSTREAM_ERROR: 'APP_ACTION_ERROR_PROXY_UPSTREAM_ERROR',
+  APP_HTTP_ERROR: 'APP_ACTION_ERROR_APP_HTTP_ERROR',
+  NO_DEVICE_REGISTRATION: 'APP_ACTION_ERROR_NO_DEVICE_REGISTRATION',
 };
 
 // Polling phases
@@ -155,16 +155,16 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
 
     let stageText = '';
     if (progress !== null) {
-      if (progress < 20) stageText = 'Preparing...';
-      else if (progress < 40) stageText = 'Downloading...';
-      else if (progress < 70) stageText = 'Setting up...';
-      else if (progress < 90) stageText = 'Starting...';
-      else stageText = 'Almost ready...';
+      if (progress < 20) stageText = t('APP_ACTION_PREPARING');
+      else if (progress < 40) stageText = t('APP_ACTION_DOWNLOADING');
+      else if (progress < 70) stageText = t('APP_ACTION_SETTING_UP');
+      else if (progress < 90) stageText = t('COMMON_STARTING');
+      else stageText = t('APP_ACTION_ALMOST_READY');
     }
 
     return (
       <div key="loading" className="flex flex-col items-start gap-1">
-        <ActionButton disabled intent="success" title={`${t('APP_ACTION_INSTALLING')}${progressText}`} className="installation-progress-button" />
+        <ActionButton disabled intent="success" title={`${t('COMMON_INSTALLING')}${progressText}`} className="installation-progress-button" />
         {stageText && <p className="text-xs text-muted-foreground">{stageText}</p>}
       </div>
     );
@@ -173,26 +173,26 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
   const RemoveListItem = (
     <DropdownMenuItem onClick={uninstallDisclosure.open} key="remove" className="text-destructive focus:text-destructive">
       <Trash className="mr-2" size={16} />
-      {t('APP_ACTION_REMOVE')}
+      {t('COMMON_REMOVE')}
     </DropdownMenuItem>
   );
   const SettingsListItem = (
     <DropdownMenuItem onClick={updateSettingsDisclosure.open} key="settings">
       <Settings className="mr-2" size={16} />
-      {t('APP_ACTION_SETTINGS')}
+      {t('COMMON_SETTINGS')}
     </DropdownMenuItem>
   );
   const RestartListItem = (
     <DropdownMenuItem onClick={restartDisclosure.open} key="restart">
       <RotateCw className="mr-2" size={16} />
-      {t('APP_ACTION_RESTART')}
+      {t('COMMON_RESTART')}
       {app?.pendingRestart && <span className="ml-2 h-2 w-2 rounded-full bg-red-500" />}
     </DropdownMenuItem>
   );
   const UpdateListItem = (
     <DropdownMenuItem onClick={() => navigate(`${location.pathname}/update`, { state: { from: location.pathname } })} key="update">
       <Download className="mr-2" size={16} />
-      {t('APP_ACTION_UPDATE')}
+      {t('COMMON_UPDATE')}
       <span className="ml-2 h-2 w-2 rounded-full bg-red-500" />
     </DropdownMenuItem>
   );
@@ -219,7 +219,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
   const CancelListItem = (
     <DropdownMenuItem onClick={uninstallDisclosure.open} key="cancel">
       <Pause className="mr-2" size={16} />
-      {t('APP_ACTION_CANCEL')}
+      {t('COMMON_CANCEL')}
     </DropdownMenuItem>
   );
   const ResetListItem = (
@@ -240,8 +240,8 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
     </DropdownMenuItem>
   );
 
-  const StopButton = <ActionButton key="stop" IconComponent={Pause} onClick={stopDisclosure.open} title={t('APP_ACTION_STOP')} intent="default" />;
-  const InstallButton = <ActionButton key="install" onClick={installDisclosure.open} title={t('APP_ACTION_INSTALL')} intent="success" />;
+  const StopButton = <ActionButton key="stop" IconComponent={Pause} onClick={stopDisclosure.open} title={t('COMMON_STOP')} intent="default" />;
+  const InstallButton = <ActionButton key="install" onClick={installDisclosure.open} title={t('COMMON_INSTALL')} intent="success" />;
   const RetryInstallButton = (
     <ActionButton
       key="retry-install"
@@ -290,13 +290,13 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
       const { data } = await client.post({ url: `/api/apps/${info.urn}/resolve-availability` });
       const result = (data || {}) as { success: boolean; detail: string };
       if (result.success) {
-        toast.success(result.detail || 'Resolution attempted. Rechecking...');
+        toast.success(result.detail || t('APP_ACTION_RESOLUTION_ATTEMPTED_RECHECKING'));
         setTimeout(resetPolling, 3000);
       } else {
-        toast.error(result.detail || 'Resolution failed.');
+        toast.error(result.detail || t('APP_ACTION_RESOLUTION_FAILED'));
       }
     } catch (e) {
-      toast.error(`Failed to resolve: ${e instanceof Error ? e.message : 'Unknown error'}`);
+      toast.error(t('APP_ACTION_FAILED_TO_RESOLVE', { error: e instanceof Error ? e.message : t('COMMON_UNKNOWN_ERROR') }));
     } finally {
       setIsResolving(false);
     }
@@ -367,14 +367,14 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
         }
 
         setIsCheckingUrl(false);
-        setCheckError(detail || 'Application Error');
+        setCheckError(detail || t('APP_ACTION_APPLICATION_ERROR'));
         setCheckErrorCode(errorCode || null);
         setErrorResolvable(resolvable ?? false);
       } catch (error) {
         if (!isMounted) return;
         setUrlAvailable(null);
         setIsCheckingUrl(true);
-        setCheckError(error instanceof Error ? error.message : 'Unknown error');
+        setCheckError(error instanceof Error ? error.message : t('COMMON_UNKNOWN_ERROR'));
         setCheckErrorCode(null);
         setErrorResolvable(false);
       }
@@ -400,12 +400,16 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
       clearTimeout(initialTimeout);
       if (pollTimeout) clearTimeout(pollTimeout);
     };
-  }, [app?.status, info.no_gui, info.urn, isLocal]);
+  }, [app?.status, info.no_gui, info.urn, isLocal, t]);
 
   // Determine UI state for the Open button area
   const elapsed = pollStartRef.current ? Date.now() - pollStartRef.current : 0;
   const withinGracePeriod = elapsed < GRACE_PERIOD_MS && !pollingStopped;
-  const statusMessage = checkErrorCode ? ERROR_MESSAGES[checkErrorCode] || checkError : checkError;
+  const statusMessage = (() => {
+    if (!checkErrorCode) return checkError;
+    const translationKey = ERROR_MESSAGE_KEYS[checkErrorCode];
+    return translationKey ? t(translationKey) : checkError;
+  })();
 
   // Build the Open button area for running apps with GUI
   const renderOpenButtonArea = () => {
@@ -433,7 +437,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
                   // A transient backend/tunnel failure (e.g. a Cloudflare 530
                   // while the tunnel reconnects) must not become an unhandled
                   // rejection surfaced as a generic error. Tell the user instead.
-                  toast.error("Couldn't reach the Hub — please try again in a moment.");
+                  toast.error(t('APP_ACTION_COULD_NOT_REACH_HUB'));
                 });
             }
           }}
@@ -464,11 +468,11 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
     if (!urlAvailable && withinGracePeriod && stage === 'propagating') {
       return (
         <div key="open-propagating" className="flex flex-col items-start gap-1">
-          <ActionButton title="Starting..." disabled loading />
+          <ActionButton title={t('COMMON_STARTING')} disabled loading />
           {statusMessage && <span className="text-xs text-muted-foreground">{statusMessage}</span>}
           {appUrl && (
             <button type="button" className="text-xs text-muted-foreground underline hover:text-foreground" onClick={() => openExternalUrl(appUrl)}>
-              Open anyway ↗
+              {t('APP_ACTION_OPEN_ANYWAY')}
             </button>
           )}
         </div>
@@ -480,7 +484,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
       return (
         <div key="open-resolvable" className="flex flex-col items-start gap-1">
           {pollingStopped ? (
-            <ActionButton IconComponent={RotateCw} title="Retry" intent="warning" onClick={resetPolling} />
+            <ActionButton IconComponent={RotateCw} title={t('COMMON_RETRY')} intent="warning" onClick={resetPolling} />
           ) : (
             <ActionButton
               IconComponent={RotateCw}
@@ -494,7 +498,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
           {statusMessage && <span className="text-xs text-amber-600">{statusMessage}</span>}
           {appUrl && (
             <button type="button" className="text-xs text-muted-foreground underline hover:text-foreground" onClick={() => openExternalUrl(appUrl)}>
-              Open anyway ↗
+              {t('APP_ACTION_OPEN_ANYWAY')}
             </button>
           )}
         </div>
@@ -509,7 +513,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
           {statusMessage && <span className="text-xs text-destructive">{statusMessage}</span>}
           {appUrl && (
             <button type="button" className="text-xs text-muted-foreground underline hover:text-foreground" onClick={() => openExternalUrl(appUrl)}>
-              Open anyway ↗
+              {t('APP_ACTION_OPEN_ANYWAY')}
             </button>
           )}
         </div>

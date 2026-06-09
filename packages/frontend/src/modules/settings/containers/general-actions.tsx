@@ -31,9 +31,9 @@ export const GeneralActionsContainer = () => {
       window.location.href = '/onboarding';
     } catch {
       setRestartingWizard(false);
-      toast.error('Could not restart the setup wizard. Please try again.');
+      toast.error(t('SETTINGS_WIZARD_RESTART_ERROR'));
     }
-  }, []);
+  }, [t]);
 
   const isLatest = semver.valid(version.current) && semver.valid(version.latest) && semver.gte(version.current, version.latest);
 
@@ -58,17 +58,17 @@ export const GeneralActionsContainer = () => {
         body: JSON.stringify({}),
       });
       if (res.ok) {
-        setUpdateMessage('Hub is restarting with the new version. This page will reload shortly.');
+        setUpdateMessage(t('SETTINGS_ACTIONS_UPDATE_RESTARTING'));
         setTimeout(() => window.location.reload(), 15000);
       } else {
-        setUpdateMessage('Update failed. Check logs for details.');
+        setUpdateMessage(t('SETTINGS_ACTIONS_UPDATE_FAILED'));
         setUpdating(false);
       }
     } catch {
-      setUpdateMessage('Update request failed. The hub may already be restarting.');
+      setUpdateMessage(t('SETTINGS_ACTIONS_UPDATE_REQUEST_FAILED'));
       setTimeout(() => window.location.reload(), 15000);
     }
-  }, []);
+  }, [t]);
 
   const handleAutoUpdatesToggle = useCallback(async () => {
     setAutoUpdatesLoading(true);
@@ -107,10 +107,10 @@ export const GeneralActionsContainer = () => {
           {updating ? (
             <>
               <Loader2 className="h-4 w-4 animate-spin mr-2" />
-              Updating...
+              {t('SETTINGS_ACTIONS_UPDATING')}
             </>
           ) : (
-            `Update to ${version.latest}`
+            t('SETTINGS_ACTIONS_UPDATE_TO_VERSION', { version: version.latest })
           )}
         </Button>
         {version.releases?.map((release) => (
@@ -119,7 +119,7 @@ export const GeneralActionsContainer = () => {
               <Star size={80} fill="currentColor" />
             </div>
             <CardHeader>
-              <CardTitle>Version {release.version}</CardTitle>
+              <CardTitle>{t('SETTINGS_ACTIONS_VERSION_LABEL', { version: release.version })}</CardTitle>
             </CardHeader>
             <CardContent>
               <Markdown className="" content={release.body} />
@@ -136,7 +136,7 @@ export const GeneralActionsContainer = () => {
         <CardHeader>
           <div className="flex items-center gap-2">
             <ArrowUpCircle className="h-5 w-5 text-muted-foreground" />
-            <CardTitle className="text-xl">{t('SETTINGS_ACTIONS_TITLE')}</CardTitle>
+            <CardTitle className="text-xl">{t('COMMON_ACTIONS')}</CardTitle>
           </div>
           <CardDescription>{t('SETTINGS_ACTIONS_CURRENT_VERSION', { version: version.current })}</CardDescription>
         </CardHeader>
@@ -149,8 +149,8 @@ export const GeneralActionsContainer = () => {
           <div className="mt-6 pt-6 border-t">
             <div className="flex items-center justify-between">
               <div>
-                <h3 className="text-sm font-medium">Auto-update</h3>
-                <p className="text-sm text-muted-foreground">Automatically update when new versions are available</p>
+                <h3 className="text-sm font-medium">{t('SETTINGS_ACTIONS_AUTO_UPDATE_TITLE')}</h3>
+                <p className="text-sm text-muted-foreground">{t('SETTINGS_ACTIONS_AUTO_UPDATE_SUBTITLE')}</p>
               </div>
               <button
                 type="button"
@@ -179,19 +179,19 @@ export const GeneralActionsContainer = () => {
         <CardHeader>
           <div className="flex items-center gap-2">
             <Wand2 className="h-5 w-5 text-muted-foreground" />
-            <CardTitle className="text-xl">Setup Wizard</CardTitle>
+            <CardTitle className="text-xl">{t('SETTINGS_WIZARD_TITLE')}</CardTitle>
           </div>
-          <CardDescription>Re-run the first-time setup wizard to reconfigure your agents, models, and remote access.</CardDescription>
+          <CardDescription>{t('SETTINGS_WIZARD_SUBTITLE')}</CardDescription>
         </CardHeader>
         <CardContent>
           <Button onClick={handleRestartWizard} disabled={restartingWizard} data-testid="restart-wizard-btn">
             {restartingWizard ? (
               <>
                 <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                Restarting…
+                {t('SETTINGS_WIZARD_RESTARTING')}
               </>
             ) : (
-              'Restart Setup Wizard'
+              t('SETTINGS_WIZARD_RESTART_BUTTON')
             )}
           </Button>
         </CardContent>

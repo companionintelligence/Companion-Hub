@@ -2,6 +2,7 @@ import { cn } from '@/lib/utils';
 import { HintText } from '@/components/ui/field-hint/field-hint';
 import { Check } from 'lucide-react';
 import type { ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
 import { LEVEL_BG, LEVEL_TEXT, scoreColor } from './levels';
 
 /* Shared presentational building blocks for the redesigned AI setup wizard. */
@@ -170,6 +171,8 @@ export function ModelCard({
   testId,
   checkboxTestId,
 }: ModelCardProps) {
+  const { t } = useTranslation();
+
   return (
     <label
       data-testid={testId}
@@ -188,8 +191,14 @@ export function ModelCard({
         <span className="min-w-0">
           <span className="flex flex-wrap items-center gap-1.5">
             <span className="text-sm font-semibold leading-tight">{title}</span>
-            {agentDefault && <span className="rounded bg-primary px-1.5 py-0.5 text-[10px] font-medium text-primary-foreground">Agent default</span>}
-            {installed && <span className="rounded bg-green-600/90 px-1.5 py-0.5 text-[10px] font-medium text-white">Installed</span>}
+            {agentDefault && (
+              <span className="rounded bg-primary px-1.5 py-0.5 text-[10px] font-medium text-primary-foreground">
+                {t('ONBOARDING_AGENT_DEFAULT')}
+              </span>
+            )}
+            {installed && (
+              <span className="rounded bg-green-600/90 px-1.5 py-0.5 text-[10px] font-medium text-white">{t('ONBOARDING_INSTALLED')}</span>
+            )}
           </span>
           {description && <span className="mt-0.5 block text-xs text-muted-foreground">{description}</span>}
         </span>
@@ -208,8 +217,8 @@ export function ModelCard({
       )}
       {scores && (scores.intelligence != null || scores.toolCalling != null) && (
         <span className="flex flex-wrap gap-x-3 gap-y-1" data-testid="model-scores">
-          {scores.intelligence != null && <ScoreBar label="Intelligence" value={scores.intelligence} testId="score-intelligence" />}
-          {scores.toolCalling != null && <ScoreBar label="Tool use" value={scores.toolCalling} testId="score-tools" />}
+          {scores.intelligence != null && <ScoreBar label={t('ONBOARDING_INTELLIGENCE')} value={scores.intelligence} testId="score-intelligence" />}
+          {scores.toolCalling != null && <ScoreBar label={t('ONBOARDING_TOOL_USE')} value={scores.toolCalling} testId="score-tools" />}
         </span>
       )}
       {meta && <span className="block text-xs text-muted-foreground">{meta}</span>}

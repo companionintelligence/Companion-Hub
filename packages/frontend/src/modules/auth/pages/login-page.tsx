@@ -41,9 +41,8 @@ export default () => {
   const redirect_url = searchParams.get('redirect_url');
   const app = searchParams.get('app');
 
-  const loginType = capitalize(app ?? '') || 'your local admin account';
-
   const { t } = useTranslation();
+  const loginType = capitalize(app ?? '') || t('AUTH_LOGIN_LOCAL_ADMIN_ACCOUNT');
   const navigate = useNavigate();
 
   const login = useMutation({

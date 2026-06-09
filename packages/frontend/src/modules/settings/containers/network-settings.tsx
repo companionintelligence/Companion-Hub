@@ -85,7 +85,7 @@ const TailscaleSidecarSection = () => {
       const res = await apiFetch('/api/tailscale/disconnect', { method: 'POST', credentials: 'include' });
       const json = (await res.json()) as { success: boolean; error?: string };
       if (!json.success) {
-        throw new Error(json.error ?? 'Failed to disconnect');
+        throw new Error(json.error ?? t('SETTINGS_NETWORK_DISCONNECT_FAILED'));
       }
     },
     onSuccess: () => {
@@ -127,11 +127,11 @@ const TailscaleSidecarSection = () => {
 
       {data?.ip && (
         <div className="grid grid-cols-2 gap-2 text-sm">
-          <div className="text-muted-foreground">{t('SETTINGS_NETWORK_TAILSCALE_IP')}</div>
+          <div className="text-muted-foreground">{t('COMMON_TAILSCALE_IP')}</div>
           <div className="font-mono">{data.ip}</div>
           {data.hostname && (
             <>
-              <div className="text-muted-foreground">{t('SETTINGS_NETWORK_HOSTNAME')}</div>
+              <div className="text-muted-foreground">{t('COMMON_HOSTNAME')}</div>
               <div className="font-mono">{data.hostname}</div>
             </>
           )}
@@ -142,14 +142,14 @@ const TailscaleSidecarSection = () => {
         <div className="space-y-3">
           <p className="text-xs text-muted-foreground">{t('SETTINGS_NETWORK_TAILSCALE_NOT_INSTALLED_DESC')}</p>
           <p className="text-xs text-muted-foreground">
-            <strong>Note:</strong> You can also install Tailscale on the host and mount tailscaled.sock into the Hub container.
+            <strong>{t('COMMON_NOTE')}:</strong> {t('SETTINGS_NETWORK_TAILSCALE_HOST_NOTE')}
           </p>
         </div>
       )}
 
       {canConnectFlow && (
         <div className="space-y-3 pt-2 border-t">
-          <p className="text-sm text-muted-foreground">Click the button below to log in with your Tailscale account and connect your Hub.</p>
+          <p className="text-sm text-muted-foreground">{t('SETTINGS_NETWORK_TAILSCALE_CONNECT_HELP')}</p>
           <Button
             type="button"
             variant="default"
@@ -166,11 +166,11 @@ const TailscaleSidecarSection = () => {
             ) : (
               <>
                 <Shield className="h-4 w-4 mr-2" />
-                Log In with Tailscale
+                {t('ONBOARDING_TAILSCALE_LOGIN_BUTTON')}
               </>
             )}
           </Button>
-          <p className="text-xs text-muted-foreground text-center">Don't have a Tailscale account? You can create one for free during login.</p>
+          <p className="text-xs text-muted-foreground text-center">{t('SETTINGS_NETWORK_TAILSCALE_NO_ACCOUNT')}</p>
         </div>
       )}
 
@@ -206,27 +206,22 @@ const CloudflareSection = () => {
   });
 
   const handleResetRegistration = async () => {
-    if (
-      !window.confirm(
-        'This will disconnect your device from the Portal and Cloudflare tunnel. You will need to re-pair with a new pairing code. Continue?',
-      )
-    )
-      return;
+    if (!window.confirm(t('SETTINGS_NETWORK_RESET_REGISTRATION_CONFIRM'))) return;
     setIsResetting(true);
     try {
       const res = await apiFetch('/api/registration/reset', { method: 'POST' });
       if (res.ok) {
-        toast.success('Registration reset. Redirecting to device registration...');
+        toast.success(t('SETTINGS_NETWORK_RESET_REGISTRATION_SUCCESS'));
         sessionStorage.removeItem('device-registered');
         sessionStorage.removeItem('device-registered-at');
         setTimeout(() => {
           window.location.href = '/device-registration';
         }, 1500);
       } else {
-        toast.error('Failed to reset registration');
+        toast.error(t('SETTINGS_NETWORK_RESET_REGISTRATION_ERROR'));
       }
     } catch {
-      toast.error('Failed to reset registration');
+      toast.error(t('SETTINGS_NETWORK_RESET_REGISTRATION_ERROR'));
     } finally {
       setIsResetting(false);
     }
@@ -246,7 +241,7 @@ const CloudflareSection = () => {
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
           <Globe className="h-5 w-5 text-primary" />
-          <span className="font-medium">Cloudflare Tunnel</span>
+          <span className="font-medium">{t('SETTINGS_NETWORK_CLOUDFLARE_TUNNEL')}</span>
         </div>
         <StatusBadge
           connected={!!status?.tunnelEnabled}
@@ -267,9 +262,9 @@ const CloudflareSection = () => {
           disabled={isResetting}
           className="text-sm text-destructive hover:text-destructive/80 underline"
         >
-          {isResetting ? 'Resetting...' : 'Re-register Device'}
+          {isResetting ? t('SETTINGS_NETWORK_RESETTING') : t('SETTINGS_NETWORK_REREGISTER_DEVICE')}
         </button>
-        <p className="text-xs text-muted-foreground mt-1">Disconnect from the Portal and Cloudflare tunnel. You'll need a new pairing code.</p>
+        <p className="text-xs text-muted-foreground mt-1">{t('SETTINGS_NETWORK_REREGISTER_HINT')}</p>
       </div>
     </div>
   );

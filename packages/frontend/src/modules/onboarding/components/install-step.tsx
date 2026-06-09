@@ -8,6 +8,7 @@ import { Download, Loader2 } from 'lucide-react';
 import { OnboardingAppIcon } from './onboarding-app-icon';
 import { WizardCard } from './wizard-ui';
 import type { OnboardingApp, AppInstallStatus, InstallSummary, AiSetupConfig } from '../helpers/types';
+import { useTranslation } from 'react-i18next';
 
 interface InstallStepProps {
   apps: OnboardingApp[];
@@ -53,6 +54,7 @@ interface AiPhaseState {
 }
 
 export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupConfig, onComplete, start = true }: InstallStepProps) => {
+  const { t } = useTranslation();
   const [states, setStates] = useState<AppInstallState[]>(apps.map((app) => ({ app, status: 'queued' })));
   const [done, setDone] = useState(false);
   const [aiPhase, setAiPhase] = useState<AiPhaseState>({
@@ -97,7 +99,10 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
                 body: JSON.stringify({ provider: cp.provider, apiKey: cp.apiKey, enabled: cp.enabled }),
               });
               if (!res.ok) {
-                setAiPhase((prev) => ({ ...prev, error: `Failed to configure ${cp.provider}: HTTP ${res.status}` }));
+                setAiPhase((prev) => ({
+                  ...prev,
+                  error: t('ONBOARDING_INSTALL_FAILED_CONFIGURE_PROVIDER', { provider: cp.provider, status: res.status }),
+                }));
               }
             } catch {
               // Non-fatal — continue with other providers
@@ -169,7 +174,7 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
                     modelProgress[model.catalogId] =
                       model.pullProgress ?? (model.state === 'pulled' || model.state === 'loaded' || model.state === 'pinned' ? 100 : 0);
                     if (model.state === 'error') {
-                      modelErrors[model.catalogId] = model.error ?? modelErrors[model.catalogId] ?? 'Download failed';
+                      modelErrors[model.catalogId] = model.error ?? modelErrors[model.catalogId] ?? t('ONBOARDING_INSTALL_DOWNLOAD_FAILED');
                       modelProgress[model.catalogId] = modelProgress[model.catalogId] ?? 0;
                     }
                     if (model.state !== 'pulled' && model.state !== 'loaded' && model.state !== 'pinned' && model.state !== 'error') {
@@ -212,21 +217,21 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
                 modelErrors: { ...modelErrors },
                 error:
                   Object.keys(modelErrors).length > 0
-                    ? `${Object.keys(modelErrors).length} model download(s) did not finish. You can retry from Settings.`
-                    : 'Model downloads did not finish in time. Free disk space or choose smaller models, then try again.',
+                    ? t('ONBOARDING_INSTALL_MODEL_DOWNLOADS_DID_NOT_FINISH', { count: Object.keys(modelErrors).length })
+                    : t('ONBOARDING_INSTALL_MODEL_DOWNLOADS_TIMED_OUT'),
               }));
             } else if (Object.keys(modelErrors).length > 0) {
               setAiPhase((prev) => ({
                 ...prev,
                 modelErrors: { ...modelErrors },
-                error: `${Object.keys(modelErrors).length} model download(s) failed. App installs will continue; retry from Settings.`,
+                error: t('ONBOARDING_INSTALL_MODEL_DOWNLOADS_FAILED', { count: Object.keys(modelErrors).length }),
               }));
             }
           } else if (Object.keys(modelErrors).length > 0) {
             setAiPhase((prev) => ({
               ...prev,
               modelErrors,
-              error: `${Object.keys(modelErrors).length} model download(s) could not start. App installs will continue; retry from Settings.`,
+              error: t('ONBOARDING_INSTALL_MODEL_DOWNLOADS_COULD_NOT_START', { count: Object.keys(modelErrors).length }),
             }));
           }
 
@@ -263,7 +268,7 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
             }),
           });
           if (!preferenceRes.ok) {
-            setAiPhase((prev) => ({ ...prev, error: `Failed to save AI defaults: HTTP ${preferenceRes.status}` }));
+            setAiPhase((prev) => ({ ...prev, error: t('ONBOARDING_INSTALL_FAILED_SAVE_PREFERRED_BACKEND', { status: preferenceRes.status }) }));
           }
         } catch {
           // Non-fatal — do not block onboarding install progress
@@ -281,7 +286,7 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
         if (!app) continue;
 
         if (!app.urn) {
-          finalStates[i] = { ...stateAt(i, app), status: 'failed', error: 'Not available in store' };
+          finalStates[i] = { ...stateAt(i, app), status: 'failed', error: t('ONBOARDING_APP_NOT_AVAILABLE_IN_STORE') };
           setStates([...finalStates]);
           await minDelay(500);
           continue;
@@ -366,7 +371,7 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
             finalStates[i] = {
               ...stateAt(i, app),
               status: 'failed',
-              error: 'Install failed — retry from My Apps',
+              error: t('ONBOARDING_INSTALL_FAILED_RETRY_MY_APPS'),
             };
             setStates([...finalStates]);
             try {
@@ -380,7 +385,7 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
             finalStates[i] = {
               ...stateAt(i, app),
               status: 'incomplete',
-              error: 'Install started but not yet confirmed running',
+              error: t('ONBOARDING_INSTALL_STARTED_NOT_CONFIRMED'),
             };
             setStates([...finalStates]);
             // Keep optimistic cache entry — the app likely still exists on
@@ -437,15 +442,15 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
   const statusLabel = (status: AppInstallStatus) => {
     switch (status) {
       case 'queued':
-        return 'Queued';
+        return t('ONBOARDING_INSTALL_STATUS_QUEUED');
       case 'installing':
-        return 'Installing…';
+        return t('ONBOARDING_INSTALL_STATUS_INSTALLING');
       case 'running':
-        return 'Running';
+        return t('COMMON_RUNNING');
       case 'incomplete':
-        return 'Not yet confirmed';
+        return t('ONBOARDING_INSTALL_STATUS_NOT_CONFIRMED');
       case 'failed':
-        return 'Failed';
+        return t('COMMON_FAILED');
     }
   };
 
@@ -458,40 +463,40 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
   const aiInProgress = hasAiWork && aiPhase.status !== 'done';
 
   const summaryParts: string[] = [];
-  if (runningCount > 0) summaryParts.push(`${runningCount} running`);
-  if (incompleteCount > 0) summaryParts.push(`${incompleteCount} not yet confirmed`);
-  if (failedCount > 0) summaryParts.push(`${failedCount} failed`);
+  if (runningCount > 0) summaryParts.push(t('ONBOARDING_COMPLETE_RUNNING_COUNT', { count: runningCount }));
+  if (incompleteCount > 0) summaryParts.push(t('ONBOARDING_INSTALL_NOT_CONFIRMED_COUNT', { count: incompleteCount }));
+  if (failedCount > 0) summaryParts.push(t('ONBOARDING_COMPLETE_FAILED_COUNT', { count: failedCount }));
 
   const progressText = (() => {
     if (!start) {
-      if (apps.length === 0) return 'Choose the apps you want above, then finish setup.';
-      return `${apps.length} app${apps.length === 1 ? '' : 's'} ready to install.`;
+      if (apps.length === 0) return t('ONBOARDING_CHOOSE_APPS_THEN_FINISH');
+      return t('ONBOARDING_APPS_READY_TO_INSTALL', { count: apps.length });
     }
 
     if (done) {
       if (apps.length === 0) {
-        return hasAiWork ? 'AI setup complete. No apps selected for installation.' : 'No apps selected for installation.';
+        return hasAiWork ? t('ONBOARDING_AI_SETUP_COMPLETE_NO_APPS') : t('ONBOARDING_NO_APPS_SELECTED_FOR_INSTALL');
       }
-      return summaryParts.length > 0 ? `${summaryParts.join(', ')}.` : 'No app installs were needed.';
+      return summaryParts.length > 0 ? `${summaryParts.join(', ')}.` : t('ONBOARDING_NO_APP_INSTALLS_NEEDED');
     }
 
     if (apps.length === 0) {
-      return aiInProgress ? 'Configuring AI setup…' : 'No apps selected for installation.';
+      return aiInProgress ? t('ONBOARDING_CONFIGURING_AI_SETUP') : t('ONBOARDING_NO_APPS_SELECTED_FOR_INSTALL');
     }
 
-    return `Installing ${processedCount + 1} of ${apps.length}…`;
+    return t('ONBOARDING_INSTALLING_PROGRESS', { current: processedCount + 1, total: apps.length });
   })();
 
   const hasAppWork = apps.length > 0 && !done;
   const continueButtonLabel = done
-    ? 'Continue'
+    ? t('COMMON_CONTINUE')
     : hasAppWork && aiInProgress
-      ? 'Continue (apps and AI setup in background)'
+      ? t('ONBOARDING_CONTINUE_APPS_AI_BACKGROUND')
       : hasAppWork
-        ? 'Continue (apps installing in background)'
+        ? t('ONBOARDING_CONTINUE_APPS_BACKGROUND')
         : aiInProgress
-          ? 'Continue (AI setup in background)'
-          : 'Continue';
+          ? t('ONBOARDING_CONTINUE_AI_BACKGROUND')
+          : t('COMMON_CONTINUE');
 
   return (
     <WizardCard>
@@ -501,7 +506,13 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
         </span>
         <div>
           <h2 className="text-lg font-bold tracking-tight sm:text-xl">
-            {apps.length === 0 ? 'No Apps Selected' : start ? (done ? 'Installation Complete' : 'Installing Apps') : 'Review Apps'}
+            {apps.length === 0
+              ? t('ONBOARDING_NO_APPS_SELECTED_TITLE')
+              : start
+                ? done
+                  ? t('ONBOARDING_INSTALLATION_COMPLETE')
+                  : t('ONBOARDING_INSTALLING_APPS')
+                : t('ONBOARDING_REVIEW_APPS')}
           </h2>
           <p className="mt-0.5 text-sm text-muted-foreground" data-testid="install-progress-text">
             {progressText}
@@ -518,11 +529,11 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
       {/* AI Setup Phase */}
       {start && aiPhase.status !== 'skipped' && (
         <div className="mb-4 space-y-1" data-testid="ai-phase-section">
-          <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">AI Setup</div>
+          <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">{t('ONBOARDING_AI_SETUP')}</div>
           {aiSetupConfig?.cloudProviders && aiSetupConfig.cloudProviders.length > 0 && (
             <div className="flex items-center gap-2 px-3 py-1.5 text-sm">
               <span className="w-4 text-center">{aiPhase.cloudConfigured ? '✓' : aiPhase.status === 'configuring-cloud' ? '●' : '○'}</span>
-              <span>Cloud providers configured</span>
+              <span>{t('ONBOARDING_CLOUD_PROVIDERS_CONFIGURED')}</span>
             </div>
           )}
           {aiSetupConfig?.selectedModels.map((modelId) => (
@@ -538,11 +549,11 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
               </span>
               <span className="flex-1">
                 {modelId}
-                {modelId === aiSetupConfig.preferredModelId && <span className="ml-2 text-xs text-primary">agent default</span>}
+                {modelId === aiSetupConfig.preferredModelId && <span className="ml-2 text-xs text-primary">{t('ONBOARDING_AGENT_DEFAULT')}</span>}
               </span>
               {aiPhase.modelErrors[modelId] ? (
                 <span className="text-xs text-destructive max-w-[200px] truncate" title={aiPhase.modelErrors[modelId]}>
-                  Skipped
+                  {t('ONBOARDING_SKIPPED')}
                 </span>
               ) : (
                 aiPhase.status === 'pulling-models' &&
@@ -560,7 +571,7 @@ export const InstallStep = ({ apps, defaultExposureMode = 'cloudflare', aiSetupC
           {aiSetupConfig?.selectedModels && aiSetupConfig.selectedModels.length > 0 && (
             <div className="flex items-center gap-2 px-3 py-1.5 text-sm">
               <span className="w-4 text-center">{aiPhase.status === 'done' ? '✓' : aiPhase.status === 'pinning-models' ? '●' : '○'}</span>
-              <span>Pin models</span>
+              <span>{t('ONBOARDING_PIN_MODELS')}</span>
             </div>
           )}
           {aiPhase.status !== 'done' && aiPhase.status !== 'pending' && <div className="h-px bg-border my-2" />}

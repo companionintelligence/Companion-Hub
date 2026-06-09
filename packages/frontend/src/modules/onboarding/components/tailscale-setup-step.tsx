@@ -137,11 +137,11 @@ export const TailscaleSetupStep = ({ onComplete, onSkip, onBack, embedded = fals
 
               {status?.ip && (
                 <div className="grid grid-cols-2 gap-2 rounded-lg bg-muted/50 p-4 text-sm">
-                  <div className="font-medium text-muted-foreground">{t('ONBOARDING_TAILSCALE_IP_LABEL')}</div>
+                  <div className="font-medium text-muted-foreground">{t('COMMON_TAILSCALE_IP')}</div>
                   <div className="font-mono text-sm">{status.ip}</div>
                   {status.hostname && (
                     <>
-                      <div className="font-medium text-muted-foreground">{t('ONBOARDING_TAILSCALE_HOSTNAME_LABEL')}</div>
+                      <div className="font-medium text-muted-foreground">{t('COMMON_HOSTNAME')}</div>
                       <div className="font-mono text-sm">{status.hostname}</div>
                     </>
                   )}
@@ -222,7 +222,7 @@ export const TailscaleSetupStep = ({ onComplete, onSkip, onBack, embedded = fals
           </li>
         </ul>
         <div className="space-y-2">
-          <p className="text-xs text-muted-foreground">Install the Tailscale app on your devices:</p>
+          <p className="text-xs text-muted-foreground">{t('ONBOARDING_TAILSCALE_INSTALL_APP_DEVICES')}</p>
           <div className="flex flex-wrap gap-2">
             {TAILSCALE_DOWNLOADS.map((p) => (
               <a

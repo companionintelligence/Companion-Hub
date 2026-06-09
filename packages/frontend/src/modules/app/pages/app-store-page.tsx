@@ -21,6 +21,7 @@ import clsx from 'clsx';
 import { Search, ArrowRight, ArrowLeftRight, LayoutGrid, RefreshCw, Store } from 'lucide-react';
 import { useCallback, useEffect, useState, useMemo } from 'react';
 import { Navigate, useParams, Link, useSearchParams } from 'react-router';
+import { useTranslation } from 'react-i18next';
 
 interface AltEntry {
   name: string;
@@ -52,6 +53,7 @@ export const AppStorePageSuspense = () => {
 };
 
 export default () => {
+  const { t } = useTranslation();
   const params = useParams<{ storeId: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
   const { setCategory, category, storeId, setStoreId, search, setSearch } = useAppStoreState();
@@ -252,7 +254,7 @@ export default () => {
         </div>
         <Button onClick={() => pullApps()} disabled={isPulling} variant="outline" size="sm" className="gap-2">
           <RefreshCw className={clsx('h-4 w-4', isPulling && 'animate-spin')} />
-          {isPulling ? 'Syncing...' : 'Check for Updates'}
+          {isPulling ? t('APP_STORE_SYNCING') : t('APP_STORE_CHECK_FOR_UPDATES')}
         </Button>
       </div>
 
@@ -260,7 +262,7 @@ export default () => {
       <div className="md:hidden space-y-4 mb-6">
         <div className="relative">
           <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-          <Input placeholder="Search apps..." className="pl-9 bg-muted/50" value={localSearch} onChange={onSearch} />
+          <Input placeholder={t('APP_STORE_SEARCH_APPS')} className="pl-9 bg-muted/50" value={localSearch} onChange={onSearch} />
         </div>
         <div className="flex gap-2 overflow-x-auto pb-2 no-scrollbar -mx-6 px-6">
           <Button
@@ -273,7 +275,7 @@ export default () => {
             onClick={() => setCategory(undefined)}
           >
             <LayoutGrid className="h-3.5 w-3.5 mr-1.5" />
-            All
+            {t('COMMON_ALL')}
           </Button>
           <Button
             variant="outline"
@@ -285,7 +287,7 @@ export default () => {
             onClick={() => setCategory(ALTERNATIVES_VIEW)}
           >
             <ArrowLeftRight className="h-3.5 w-3.5 mr-1.5" />
-            Alternatives
+            {t('APP_STORE_ALTERNATIVES')}
           </Button>
           {iconForCategory.map((cat) => {
             const Icon = cat.icon;
@@ -319,10 +321,10 @@ export default () => {
           )}
           {isAlternativesDataError && (
             <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-              Could not load app recommendations
+              {t('APP_STORE_COULD_NOT_LOAD_RECOMMENDATIONS')}
               {alternativesDataError instanceof Error ? `: ${alternativesDataError.message}` : ''}.{' '}
               <button type="button" className="underline font-medium" onClick={() => refetchAlternatives()}>
-                Retry
+                {t('COMMON_RETRY')}
               </button>
             </div>
           )}
@@ -345,8 +347,8 @@ export default () => {
                   <Table>
                     <TableHeader>
                       <TableRow className="bg-muted/20 hover:bg-muted/20">
-                        <TableHead className="w-1/2 font-semibold">Proprietary</TableHead>
-                        <TableHead className="w-1/2 font-semibold">Open Source Alternatives</TableHead>
+                        <TableHead className="w-1/2 font-semibold">{t('APP_STORE_PROPRIETARY')}</TableHead>
+                        <TableHead className="w-1/2 font-semibold">{t('APP_STORE_OPEN_SOURCE_ALTERNATIVES')}</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -393,7 +395,7 @@ export default () => {
                                       <img src={alt.icon} alt={alt.name} className="h-5 w-5 rounded-full object-cover grayscale" loading="lazy" />
                                     )}
                                     {alt.name}
-                                    <span className="text-xs bg-muted/50 px-1.5 py-0.5 rounded-full">Soon</span>
+                                    <span className="text-xs bg-muted/50 px-1.5 py-0.5 rounded-full">{t('ONBOARDING_SOON')}</span>
                                   </div>
                                 );
                               })}

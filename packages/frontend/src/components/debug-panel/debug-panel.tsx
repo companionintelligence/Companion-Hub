@@ -14,8 +14,10 @@ import { Button } from '../ui/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import './debug-panel.css';
 import { X } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 export const DebugPanel = () => {
+  const { t } = useTranslation();
   const [isVisible, setIsVisible] = useState(false);
 
   const isDevelopment = import.meta.env.DEV;
@@ -65,70 +67,70 @@ export const DebugPanel = () => {
   const seedMutation = useMutation({
     ...seedDatabaseMutation(),
     onSuccess: () => {
-      toast.success('Database seeded successfully!');
+      toast.success(t('DEBUG_SEED_SUCCESS'));
     },
     onError: () => {
-      toast.error('Failed to seed database');
+      toast.error(t('DEBUG_SEED_FAILED'));
     },
   });
 
   const startAllApps = useMutation({
     ...startAllAppsMutation(),
     onSuccess: () => {
-      toast.success('All apps started successfully!');
+      toast.success(t('DEBUG_START_ALL_SUCCESS'));
     },
     onError: () => {
-      toast.error('Failed to start all apps');
+      toast.error(t('DEBUG_START_ALL_FAILED'));
     },
   });
 
   const subnetsMutation = useMutation({
     ...setAllAppSubnetToNullMutation(),
     onSuccess: () => {
-      toast.success('All app subnets set to null successfully!');
+      toast.success(t('DEBUG_SUBNETS_SUCCESS'));
     },
     onError: () => {
-      toast.error('Failed to set all app subnets to null');
+      toast.error(t('DEBUG_SUBNETS_FAILED'));
     },
   });
 
   const versionMutation = useMutation({
     ...setAllAppUpdateAvailableMutation(),
     onSuccess: () => {
-      toast.success('All apps set to version 0 successfully!');
+      toast.success(t('DEBUG_VERSION_SUCCESS'));
     },
     onError: () => {
-      toast.error('Failed to set all apps to version 0');
+      toast.error(t('DEBUG_VERSION_FAILED'));
     },
   });
 
   const backupAllApps = useMutation({
     ...backupAllAppsMutation(),
     onSuccess: () => {
-      toast.success('Backup of all apps started successfully!');
+      toast.success(t('DEBUG_BACKUP_SUCCESS'));
     },
     onError: () => {
-      toast.error('Failed to start backup of all apps');
+      toast.error(t('DEBUG_BACKUP_FAILED'));
     },
   });
 
   const incrementAllAppVersions = useMutation({
     ...incrementAllAppVersionsMutation(),
     onSuccess: () => {
-      toast.success('App versions incremented successfully!');
+      toast.success(t('DEBUG_INCREMENT_SUCCESS'));
     },
     onError: () => {
-      toast.error('Failed to increment app versions');
+      toast.error(t('DEBUG_INCREMENT_FAILED'));
     },
   });
 
   const uninstallAllApps = useMutation({
     ...uninstallAllAppsMutation(),
     onSuccess: () => {
-      toast.success('Uninstall of all apps started successfully!');
+      toast.success(t('DEBUG_UNINSTALL_SUCCESS'));
     },
     onError: () => {
-      toast.error('Failed to start uninstall of all apps');
+      toast.error(t('DEBUG_UNINSTALL_FAILED'));
     },
   });
 
@@ -142,26 +144,26 @@ export const DebugPanel = () => {
       {isVisible && (
         <Card className="debug-panel">
           <CardHeader className="flex flex-row justify-between items-center p-4">
-            <CardTitle>Developer Tools</CardTitle>
-            <Button variant="ghost" intent="danger" size="sm" aria-label="Close" onClick={() => setIsVisible(false)}>
+            <CardTitle>{t('DEBUG_TITLE')}</CardTitle>
+            <Button variant="ghost" intent="danger" size="sm" aria-label={t('COMMON_CLOSE')} onClick={() => setIsVisible(false)}>
               <X size={16} />
             </Button>
           </CardHeader>
           <CardContent className="flex flex-col gap-2 p-4 pt-0">
-            <Button onClick={() => seedMutation.mutate({})}>{seedMutation.isPending ? 'Seeding...' : 'Seed database'}</Button>
-            <Button onClick={() => startAllApps.mutate({})}>{startAllApps.isPending ? 'Starting all apps...' : 'Start all apps'}</Button>
+            <Button onClick={() => seedMutation.mutate({})}>{seedMutation.isPending ? t('DEBUG_SEEDING') : t('DEBUG_SEED_DATABASE')}</Button>
+            <Button onClick={() => startAllApps.mutate({})}>{startAllApps.isPending ? t('DEBUG_STARTING_ALL') : t('COMMON_START_ALL_APPS')}</Button>
             <Button onClick={() => subnetsMutation.mutate({})}>
-              {subnetsMutation.isPending ? 'Setting subnets to null...' : 'Set all app subnets to null'}
+              {subnetsMutation.isPending ? t('DEBUG_SETTING_SUBNETS') : t('DEBUG_SET_SUBNETS')}
             </Button>
             <Button onClick={() => versionMutation.mutate({})}>
-              {versionMutation.isPending ? 'Setting all apps to version 0...' : 'Set all apps to version 0'}
+              {versionMutation.isPending ? t('DEBUG_SETTING_VERSION') : t('DEBUG_SET_VERSION')}
             </Button>
-            <Button onClick={() => backupAllApps.mutate({})}>{backupAllApps.isPending ? 'Backing up all apps...' : 'Backup all apps'}</Button>
+            <Button onClick={() => backupAllApps.mutate({})}>{backupAllApps.isPending ? t('DEBUG_BACKING_UP_ALL') : t('DEBUG_BACKUP_ALL')}</Button>
             <Button onClick={() => incrementAllAppVersions.mutate({})}>
-              {incrementAllAppVersions.isPending ? 'Incrementing app versions...' : 'Increment all app versions'}
+              {incrementAllAppVersions.isPending ? t('DEBUG_INCREMENTING_VERSIONS') : t('DEBUG_INCREMENT_VERSIONS')}
             </Button>
             <Button onClick={() => uninstallAllApps.mutate({})} intent="danger">
-              {uninstallAllApps.isPending ? 'Uninstalling all apps...' : 'Uninstall all apps'}
+              {uninstallAllApps.isPending ? t('DEBUG_UNINSTALLING_ALL') : t('DEBUG_UNINSTALL_ALL')}
             </Button>
           </CardContent>
         </Card>

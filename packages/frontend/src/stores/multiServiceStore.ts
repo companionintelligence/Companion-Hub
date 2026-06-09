@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { z } from 'zod';
 import { dynamicComposeSchema, type ServiceInput } from '@ci-hub/common/schemas';
 import toast from 'react-hot-toast';
+import i18next from 'i18next';
 
 type MultiServiceFormData = z.infer<typeof dynamicComposeSchema>;
 type ServiceFormData = ServiceInput;
@@ -63,14 +64,14 @@ export const useMultiServiceStore = create<MultiServiceState>()((set, get) => ({
     const res = dynamicComposeSchema.omit({ schemaVersion: true }).safeParse(values);
 
     if (!res.success) {
-      set({ error: 'Invalid configuration.' });
+      set({ error: 'MULTI_SERVICE_ERROR_INVALID_CONFIGURATION' });
       return false;
     }
 
     // Ensure only one main service
     const mainServices = values.services.filter((service) => service.isMain);
     if (mainServices.length !== 1) {
-      set({ error: 'There must be exactly one main service.' });
+      set({ error: 'MULTI_SERVICE_ERROR_SINGLE_MAIN_SERVICE' });
       return false;
     }
 
@@ -78,7 +79,7 @@ export const useMultiServiceStore = create<MultiServiceState>()((set, get) => ({
     const names = values.services.map((service) => service.name);
     const uniqueNames = new Set(names);
     if (names.length !== uniqueNames.size) {
-      set({ error: 'Service names must be unique.' });
+      set({ error: 'MULTI_SERVICE_ERROR_UNIQUE_SERVICE_NAMES' });
       return false;
     }
 
@@ -89,7 +90,7 @@ export const useMultiServiceStore = create<MultiServiceState>()((set, get) => ({
     const { activeService, isDirty } = get();
 
     if (activeService === 'json' && isDirty && tab !== 'json') {
-      if (!window.confirm('You have made changes to the JSON. Do you want to confirm losing them?')) {
+      if (!window.confirm(i18next.t('MULTI_SERVICE_JSON_LOSE_CHANGES_CONFIRM'))) {
         return;
       }
     }
@@ -100,7 +101,7 @@ export const useMultiServiceStore = create<MultiServiceState>()((set, get) => ({
   addService: () => {
     const { services, activeService, isDirty } = get();
     if (activeService === 'json' && isDirty) {
-      if (!window.confirm('You have made changes to the JSON. Do you want to confirm losing them?')) {
+      if (!window.confirm(i18next.t('MULTI_SERVICE_JSON_LOSE_CHANGES_CONFIRM'))) {
         return;
       }
     }
@@ -124,7 +125,7 @@ export const useMultiServiceStore = create<MultiServiceState>()((set, get) => ({
   removeService: (index: number) => {
     const { activeService, isDirty, services } = get();
     if (activeService === 'json' && isDirty) {
-      if (!window.confirm('You have made changes to the JSON. Do you want to confirm losing them?')) {
+      if (!window.confirm(i18next.t('MULTI_SERVICE_JSON_LOSE_CHANGES_CONFIRM'))) {
         return;
       }
     }
@@ -170,12 +171,12 @@ export const useMultiServiceStore = create<MultiServiceState>()((set, get) => ({
 
     const error = get().error;
     if (error) {
-      toast.error(error);
+      toast.error(i18next.exists(error) ? i18next.t(error) : error);
       return;
     }
 
     set({ services: servicesWithIds, isDirty: false });
-    toast.success('Services updated from JSON');
+    toast.success(i18next.t('MULTI_SERVICE_JSON_UPDATE_SUCCESS'));
   },
   resetToDefaults: () =>
     set({

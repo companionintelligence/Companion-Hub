@@ -27,7 +27,7 @@ export const JsonComposeEditor = ({ onChange }: Props) => {
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
       if (isDirty) {
         e.preventDefault();
-        return 'You have made changes to the JSON. Do you want to confirm losing it?';
+        return t('MULTI_SERVICE_JSON_UNSAVED_CHANGES_WARNING');
       }
     };
 
@@ -38,7 +38,7 @@ export const JsonComposeEditor = ({ onChange }: Props) => {
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload);
     };
-  }, [isDirty]);
+  }, [isDirty, t]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: only run on mount
   useEffect(() => {

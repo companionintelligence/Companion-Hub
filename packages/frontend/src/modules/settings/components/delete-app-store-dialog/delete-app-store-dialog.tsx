@@ -31,7 +31,7 @@ export const DeleteAppStoreDialog = ({ appStore }: Props) => {
   return (
     <div>
       <Button size="sm" intent="danger" variant="ghost" disabled={deleteAppStore.isPending} onClick={() => deleteAppStoreDisclosure.open()}>
-        {t('APP_STORE_TABLE_DELETE')}
+        {t('COMMON_DELETE')}
       </Button>
       <Dialog open={deleteAppStoreDisclosure.isOpen} onOpenChange={deleteAppStoreDisclosure.toggle}>
         <DialogContent type="danger" size="sm">
@@ -45,7 +45,7 @@ export const DeleteAppStoreDialog = ({ appStore }: Props) => {
           </DialogDescription>
           <DialogFooter>
             <Button loading={deleteAppStore.isPending} intent="danger" onClick={() => deleteAppStore.mutate({ path: { id: appStore.slug } })}>
-              {t('APP_STORE_DELETE_DIALOG_SUBMIT')}
+              {t('COMMON_DELETE')}
             </Button>
           </DialogFooter>
         </DialogContent>

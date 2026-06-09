@@ -1,31 +1,29 @@
 /** Short, plain-language hints for Tauri startup service rows (keyed by Docker container name). */
 export const STARTUP_SERVICE_HINTS: Record<string, string> = {
-  'ci-hub-db': 'Stores your Hub settings and app data.',
-  'ci-os-hub-queue': 'Handles background tasks between Hub services.',
-  'ci-os-hub': 'The main Hub app your browser talks to.',
-  traefik: 'Routes web traffic to your installed apps.',
-  'hub-tailscale': 'Optional private access over your Tailscale network.',
-  cloudflared: 'Optional public web address for your Hub.',
-  'ci-hub-ollama': 'Optional local AI model server.',
+  'ci-hub-db': 'STARTUP_SERVICE_HINT_DB',
+  'ci-os-hub-queue': 'STARTUP_SERVICE_HINT_QUEUE',
+  'ci-os-hub': 'STARTUP_SERVICE_HINT_HUB',
+  traefik: 'STARTUP_SERVICE_HINT_TRAEFIK',
+  'hub-tailscale': 'STARTUP_SERVICE_HINT_TAILSCALE',
+  cloudflared: 'STARTUP_SERVICE_HINT_CLOUDFLARED',
+  'ci-hub-ollama': 'STARTUP_SERVICE_HINT_OLLAMA',
 };
 
-export const STARTUP_PROGRESS_HINT = 'How close the core Hub services are to being ready.';
-export const STARTUP_IMAGE_PULL_HINT = 'App images downloading on first launch; can take a few minutes.';
+export const STARTUP_PROGRESS_HINT = 'STARTUP_PROGRESS_HINT';
+export const STARTUP_IMAGE_PULL_HINT = 'STARTUP_IMAGE_PULL_HINT';
 
-export const DOCKER_REQUIRED_HINT = 'Hub runs your apps in Docker. Install and open Docker before the Hub can start.';
-export const DOCKER_MAC_ARCH_HINT = 'Pick the version that matches your Mac chip.';
-export const DOCKER_DAEMON_HINT = 'Docker is installed but not running yet. Start Docker and wait for it to finish starting.';
+export const DOCKER_REQUIRED_HINT = 'DOCKER_REQUIRED_HINT';
+export const DOCKER_MAC_ARCH_HINT = 'DOCKER_MAC_ARCH_HINT';
+export const DOCKER_DAEMON_HINT = 'DOCKER_DAEMON_HINT';
 
-export const REGISTRATION_DEVICE_ID_HINT =
-  'This identifies the device you are registering. You can copy it for reference, it helps us find your Hub if you need help.';
-export const REGISTRATION_PAIRING_CODE_HINT = 'Six-character code shown in Companion Account after you click Add Device.';
-export const REGISTRATION_ACCOUNT_HINT =
-  'Sign in to Companion Account, click Add Device, name this Companion Hub, and copy the pairing code shown there.';
-export const REGISTRATION_PROVISIONING_HINT = 'Setting up your web address and secure connection. Usually a few minutes.';
-export const REGISTRATION_DNS_HINT = 'Web address changes can take a few minutes to work everywhere.';
+export const REGISTRATION_DEVICE_ID_HINT = 'REGISTRATION_DEVICE_ID_HINT';
+export const REGISTRATION_PAIRING_CODE_HINT = 'REGISTRATION_PAIRING_CODE_HINT';
+export const REGISTRATION_ACCOUNT_HINT = 'REGISTRATION_ACCOUNT_HINT';
+export const REGISTRATION_PROVISIONING_HINT = 'REGISTRATION_PROVISIONING_HINT';
+export const REGISTRATION_DNS_HINT = 'REGISTRATION_DNS_HINT';
 
-export const ONBOARDING_REMOTE_VPN_HINT = 'Reach your Hub only from devices on your private Tailscale network.';
-export const ONBOARDING_REMOTE_WEB_HINT = 'A public web link to your Hub. Requires device registration.';
-export const ONBOARDING_BACKEND_OLLAMA_HINT = 'Runs AI models on your computer. Works on most hardware.';
-export const ONBOARDING_BACKEND_VLLM_HINT = 'High-speed AI for powerful NVIDIA GPUs.';
-export const ONBOARDING_BACKEND_LEMONADE_HINT = 'AI tuned for laptops with a built-in NPU chip.';
+export const ONBOARDING_REMOTE_VPN_HINT = 'ONBOARDING_REMOTE_VPN_HINT';
+export const ONBOARDING_REMOTE_WEB_HINT = 'ONBOARDING_REMOTE_WEB_HINT';
+export const ONBOARDING_BACKEND_OLLAMA_HINT = 'ONBOARDING_BACKEND_OLLAMA_HINT';
+export const ONBOARDING_BACKEND_VLLM_HINT = 'ONBOARDING_BACKEND_VLLM_HINT';
+export const ONBOARDING_BACKEND_LEMONADE_HINT = 'ONBOARDING_BACKEND_LEMONADE_HINT';

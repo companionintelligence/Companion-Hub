@@ -53,7 +53,7 @@ export const AppTile: React.FC<{
     badge = (
       <>
         <Tooltip className="tooltip" anchorSelect=".updateAvailable">
-          {t('MY_APPS_UPDATE_AVAILABLE')}
+          {t('COMMON_UPDATE_AVAILABLE')}
         </Tooltip>
         <div className="updateAvailable absolute top-0 right-0 rounded-tr-lg rounded-bl-lg bg-green-500 text-white p-1.5">
           <Download size={20} />
@@ -80,7 +80,7 @@ export const AppTile: React.FC<{
     badge = (
       <>
         <Tooltip className="tooltip" anchorSelect=".deprecated">
-          {t('MY_APPS_DEPRECATED')}
+          {t('COMMON_THIS_APP_IS_DEPRECATED')}
         </Tooltip>
         <div className="deprecated absolute top-0 right-0 rounded-tr-lg rounded-bl-lg bg-red-500 text-white p-1.5">
           <AlertCircle />

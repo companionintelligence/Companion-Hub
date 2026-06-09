@@ -117,30 +117,30 @@ export default function AppUpdatePage({ loaderData }: Route.ComponentProps) {
           <Stepper currentStep={currentStep}>
             <StepTriggerList>
               <StepTrigger step={0} title={t('APP_UPDATE_SUMMARY_TITLE')} onStepChange={setCurrentStep} />
-              <StepTrigger step={1} title={t('APP_UPDATE_INFORMATION_TITLE')} onStepChange={setCurrentStep} />
+              <StepTrigger step={1} title={t('COMMON_INFORMATION')} onStepChange={setCurrentStep} />
               <StepTrigger step={2} title={t('APP_UPDATE_CONFIGURATION_TITLE')} onStepChange={setCurrentStep} />
               <StepTrigger step={3} title={t('APP_UPDATE_COMPOSE_TITLE')} onStepChange={setCurrentStep} />
-              <StepTrigger step={4} title={t('APP_UPDATE_BACKUP_TITLE')} onStepChange={setCurrentStep} />
+              <StepTrigger step={4} title={t('COMMON_BACKUP')} onStepChange={setCurrentStep} />
             </StepTriggerList>
             <div className="mt-1">
               {/* Summary step */}
               <StepContent step={0}>
                 <div className="space-y-3" data-testid="update-summary">
                   <div className="flex justify-between items-center" data-testid="update-summary-version">
-                    <span className="text-sm text-muted-foreground">{t('APP_UPDATE_SUMMARY_VERSION_CHANGE')}</span>
+                    <span className="text-sm text-muted-foreground">{t('COMMON_VERSION')}</span>
                     <span className="text-sm font-medium">
                       {info.version} <ArrowRight size={12} className="inline mx-1" /> {metadata.latestDockerVersion}
                     </span>
                   </div>
                   {info.supported_architectures && info.supported_architectures.length > 0 && (
                     <div className="flex justify-between items-center">
-                      <span className="text-sm text-muted-foreground">{t('APP_UPDATE_SUMMARY_ARCHITECTURES')}</span>
+                      <span className="text-sm text-muted-foreground">{t('COMMON_ARCHITECTURES')}</span>
                       <span className="text-sm font-medium">{info.supported_architectures.join(', ')}</span>
                     </div>
                   )}
                   {metadata.minHubVersion && (
                     <div className="flex justify-between items-center">
-                      <span className="text-sm text-muted-foreground">{t('APP_UPDATE_SUMMARY_MIN_HUB_VERSION')}</span>
+                      <span className="text-sm text-muted-foreground">{t('COMMON_MIN_HUB_VERSION')}</span>
                       <span className="text-sm font-medium">{metadata.minHubVersion}</span>
                     </div>
                   )}
@@ -237,14 +237,14 @@ export default function AppUpdatePage({ loaderData }: Route.ComponentProps) {
                     <Info strokeWidth={2} />
                   </AlertIcon>
                   <div>
-                    <AlertHeading>{t('APP_UPDATE_COMPOSE_ALERT_TITLE')}</AlertHeading>
+                    <AlertHeading>{t('COMMON_NOTE')}</AlertHeading>
                     <AlertDescription>{t('APP_UPDATE_COMPOSE_ALERT_SUBTITLE')}</AlertDescription>
                   </div>
                 </Alert>
               </StepContent>
               <StepContent step={4}>
                 <div className="text-muted-foreground">{t('APP_UPDATE_BACKUP_SUBTITLE')}</div>
-                <Switch checked={backupApp} onCheckedChange={setBackupApp} label={t('APP_UPDATE_FORM_BACKUP')} className="mt-3" />
+                <Switch checked={backupApp} onCheckedChange={setBackupApp} label={t('COMMON_BACKUP')} className="mt-3" />
               </StepContent>
             </div>
           </Stepper>
@@ -253,12 +253,12 @@ export default function AppUpdatePage({ loaderData }: Route.ComponentProps) {
       <CardFooter className="border-0 flex items-center justify-between gap-3">
         <Button variant="ghost" onClick={() => navigate(location.state?.from || '/apps')}>
           <ChevronLeft className="me-1" size={16} />
-          {t('APP_ACTION_CANCEL')}
+          {t('COMMON_CANCEL')}
         </Button>
         <div className="flex items-center justify-end gap-2">
           {currentStep > 0 && (
             <Button variant="link" onClick={() => setCurrentStep((step) => step - 1)} className="mr-2">
-              {t('APP_UPDATE_FORM_BACK')}
+              {t('COMMON_BACK')}
             </Button>
           )}
           {currentStep < LAST_STEP && (
@@ -278,7 +278,7 @@ export default function AppUpdatePage({ loaderData }: Route.ComponentProps) {
               intent="success"
               loading={update.isPending}
             >
-              {t('APP_UPDATE_FORM_SUBMIT')}
+              {t('COMMON_UPDATE')}
             </Button>
           )}
         </div>

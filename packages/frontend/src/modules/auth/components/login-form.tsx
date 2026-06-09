@@ -54,7 +54,7 @@ export const LoginForm: React.FC<IProps> = ({ loading, onSubmit, loginType }) =>
         <PasswordInput
           {...register('password')}
           name="password"
-          label={t('AUTH_FORM_PASSWORD')}
+          label={t('COMMON_PASSWORD')}
           error={errors.password?.message}
           disabled={loading}
           className="mb-3 password-input"
@@ -62,7 +62,7 @@ export const LoginForm: React.FC<IProps> = ({ loading, onSubmit, loginType }) =>
         />
         <div className="mt-4">
           <Button disabled={isDisabled} loading={loading} type="submit" intent="primary" className="w-full">
-            {t('AUTH_LOGIN_SUBMIT')}
+            {t('COMMON_LOGIN')}
           </Button>
         </div>
         <div className="text-sm text-muted-foreground text-center mt-3">

@@ -16,6 +16,7 @@ import { EnvironmentConfig } from './elements/environment';
 import { EssentialConfig } from './elements/essential';
 import { useTranslation } from 'react-i18next';
 import toast from 'react-hot-toast';
+import i18next from 'i18next';
 import { deepClean } from '@/utils/objects';
 
 type Props = {
@@ -26,19 +27,8 @@ const cleanSchema = dynamicComposeSchema.omit({ schemaVersion: true }).transform
 
 export const MultiServiceForm = ({ onSubmit }: Props) => {
   const { t } = useTranslation();
-  const {
-    services,
-    updateFromJson,
-    activeService,
-    setActiveService,
-    addService,
-    removeService,
-    updateService,
-    error,
-    validate,
-    isDirty,
-    setIsDirty,
-  } = useMultiServiceStore();
+  const { services, updateFromJson, activeService, setActiveService, addService, removeService, updateService, validate, isDirty, setIsDirty } =
+    useMultiServiceStore();
   const [jsonEditorOpen, setJsonEditorOpen] = useState(false);
   const [json, setJson] = useState<{ value: string; error?: string }>({
     value: '',
@@ -60,12 +50,12 @@ export const MultiServiceForm = ({ onSubmit }: Props) => {
     { id: 'volumes', label: t('MULTI_SERVICE_TAB_VOLUMES'), icon: Network },
     {
       id: 'ports',
-      label: t('MULTI_SERVICE_TAB_PORTS'),
+      label: t('COMMON_PORTS'),
       icon: ArrowUpDown,
     },
     {
       id: 'advanced',
-      label: t('MULTI_SERVICE_TAB_ADVANCED'),
+      label: t('COMMON_ADVANCED'),
       icon: Settings,
     },
   ];
@@ -162,7 +152,8 @@ export const MultiServiceForm = ({ onSubmit }: Props) => {
     if (valid) {
       onSubmit?.(data);
     } else {
-      toast.error(t(error));
+      const latestError = useMultiServiceStore.getState().error;
+      toast.error(i18next.exists(latestError) ? t(latestError) : latestError);
     }
   };
 

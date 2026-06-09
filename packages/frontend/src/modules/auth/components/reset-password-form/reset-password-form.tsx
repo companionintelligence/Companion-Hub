@@ -18,14 +18,14 @@ export const ResetPasswordForm: React.FC<IProps> = ({ onSubmit, loading, onCance
   const { t } = useTranslation();
   const schema = z
     .object({
-      password: z.string().min(8, t('AUTH_FORM_ERROR_PASSWORD_LENGTH')),
+      password: z.string().min(8, t('COMMON_PASSWORD_MIN_LENGTH')),
       passwordConfirm: z.string().min(8, t('AUTH_FORM_ERROR_PASSWORD_CONFIRMATION_LENGTH')),
     })
     .superRefine((data, ctx) => {
       if (data.password !== data.passwordConfirm) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          message: t('AUTH_FORM_ERROR_PASSWORD_CONFIRMATION_MATCH'),
+          message: t('COMMON_PASSWORDS_DO_NOT_MATCH'),
           path: ['passwordConfirm'],
         });
       }
@@ -45,7 +45,7 @@ export const ResetPasswordForm: React.FC<IProps> = ({ onSubmit, loading, onCance
       <form onSubmit={handleSubmit(onSubmit)}>
         <Input
           {...register('password')}
-          label={t('AUTH_FORM_PASSWORD')}
+          label={t('COMMON_PASSWORD')}
           error={errors.password?.message}
           disabled={loading}
           type="password"

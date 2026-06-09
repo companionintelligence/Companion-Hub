@@ -26,7 +26,7 @@ export const RegisterForm: React.FC<IProps> = ({ onSubmit, loading }) => {
       if (data.password !== data.passwordConfirm) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          message: t('AUTH_FORM_ERROR_PASSWORD_CONFIRMATION_MATCH'),
+          message: t('COMMON_PASSWORDS_DO_NOT_MATCH'),
           path: ['passwordConfirm'],
         });
       }
@@ -57,7 +57,7 @@ export const RegisterForm: React.FC<IProps> = ({ onSubmit, loading }) => {
         />
         <PasswordInput
           {...register('password')}
-          label={t('AUTH_FORM_PASSWORD')}
+          label={t('COMMON_PASSWORD')}
           error={errors.password?.message}
           disabled={loading}
           className="mb-3"
