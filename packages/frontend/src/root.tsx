@@ -170,8 +170,24 @@ export async function clientLoader({ request }: Route.ActionArgs) {
 
 export function Layout({ children }: { children: React.ReactNode }) {
   const { update, dismiss } = useUpdateChecker();
+  const [apiReady, setApiReady] = useState(() => !isTauriRelease);
   const [documentTitle, setDocumentTitle] = useState(() => (i18next.isInitialized ? i18next.t('APP_NAME') : 'Companion Hub'));
   const [documentLang, setDocumentLang] = useState(() => i18next.resolvedLanguage || i18next.language || 'en');
+
+  useEffect(() => {
+    if (!isTauriRelease) return;
+
+    let cancelled = false;
+    void tauriBaseUrlReady.then(() => {
+      if (!cancelled) {
+        setApiReady(true);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     const syncDocumentTitle = () => {
@@ -282,18 +298,26 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <Links />
       </head>
       <body>
-        <ThemeProvider defaultTheme="dark">
-          <I18nProvider>
-            <Titlebar />
-            {update && <UpdateBanner update={update} onDismiss={dismiss} />}
-            <HubStatus>
-              <main id="root">
-                {children}
-                <ScrollRestoration />
-              </main>
-            </HubStatus>
-          </I18nProvider>
-        </ThemeProvider>
+        {apiReady ? (
+          <ThemeProvider defaultTheme="dark">
+            <I18nProvider>
+              <Titlebar />
+              {update && <UpdateBanner update={update} onDismiss={dismiss} />}
+              <HubStatus>
+                <main id="root">
+                  {children}
+                  <ScrollRestoration />
+                </main>
+              </HubStatus>
+            </I18nProvider>
+          </ThemeProvider>
+        ) : (
+          <ThemeProvider defaultTheme="dark">
+            <main id="root" className="flex min-h-screen items-center justify-center px-6 text-sm text-muted-foreground">
+              Connecting to local API...
+            </main>
+          </ThemeProvider>
+        )}
         <Scripts />
       </body>
     </html>

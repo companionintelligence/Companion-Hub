@@ -31,6 +31,13 @@ const MODALITY_TAG: Record<string, string> = {
   'image-gen': 'COMMON_IMAGE',
 };
 
+const MODALITY_FALLBACK_TAG: Record<string, string> = {
+  tts: 'Speech',
+  stt: 'Transcription',
+  embedding: 'Embedding',
+  'image-gen': 'Image',
+};
+
 /**
  * Capability pills for a model — what it can do, to help users pick the right local AI:
  * Reasoning / Vision / Tools / Audio (from catalog capability metadata) for LLMs, and a single
@@ -41,7 +48,8 @@ type TranslateFn = (key: string, options?: Record<string, unknown>) => string;
 export function modelTags(model: CuratedModel, t?: TranslateFn): string[] {
   if (model.modality && model.modality !== 'llm') {
     const key = MODALITY_TAG[model.modality];
-    return [t ? t(key ?? 'COMMON_MODEL') : (key ?? 'Model')];
+    const fallback = MODALITY_FALLBACK_TAG[model.modality] ?? 'Model';
+    return [t ? t(key ?? 'COMMON_MODEL') : fallback];
   }
   const caps = model.metadata?.capabilities;
   const tags: string[] = [];
