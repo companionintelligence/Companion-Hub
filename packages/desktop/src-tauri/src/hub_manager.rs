@@ -5716,14 +5716,16 @@ else
     # Debian, Ubuntu, Raspberry Pi OS, Fedora, CentOS, Rocky Linux, and others.
     # Docker's official convenience script handles all of these.
 
-    # Ensure a downloader is available; install curl if neither curl nor wget is present.
+    # Ensure a downloader is available; install curl if neither curl nor wget is
+    # present. ca-certificates rides along: apt treats it as a Recommends, so
+    # --no-install-recommends curl alone cannot do HTTPS (curl error 77).
     if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
         if command -v apt-get >/dev/null 2>&1; then
-            apt-get install -y --no-install-recommends curl
+            apt-get install -y --no-install-recommends curl ca-certificates
         elif command -v dnf >/dev/null 2>&1; then
-            dnf install -y curl
+            dnf install -y curl ca-certificates
         elif command -v yum >/dev/null 2>&1; then
-            yum install -y curl
+            yum install -y curl ca-certificates
         else
             printf 'Error: curl/wget not found and could not be installed automatically.\n' >&2
             printf 'Install curl first, then retry.\n' >&2
