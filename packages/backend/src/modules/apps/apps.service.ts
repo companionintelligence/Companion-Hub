@@ -211,33 +211,33 @@ export class AppsService {
 
       const host = resolveBrowserHost(userSettings.internalIp);
       appUrl = `http://${host}:${app.port}${urlSuffix}`;
-      return { available: true, appUrl, stage: 'ready' };
-    }
-    // Cloudflare/Tailscale: use public domain
-    const resolvedDomain = app.publicDomain?.trim() || userSettings.domain;
-    if (!organizationSlug || !resolvedDomain) {
-      return { available: false, appUrl, stage: 'error' };
-    }
+    } else {
+      // Cloudflare/Tailscale: use public domain
+      const resolvedDomain = app.publicDomain?.trim() || userSettings.domain;
+      if (!organizationSlug || !resolvedDomain) {
+        return { available: false, appUrl, stage: 'error' };
+      }
 
-    // Always include deviceSlug for correct subdomain construction
-    if (!org?.hubSubdomain) {
-      return {
-        available: false,
-        appUrl: undefined,
-        stage: 'error',
-        errorCode: 'NO_DEVICE_REGISTRATION',
-        detail: 'Device not registered with an organization.',
-        resolvable: false,
-      };
-    }
+      // Always include deviceSlug for correct subdomain construction
+      if (!org?.hubSubdomain) {
+        return {
+          available: false,
+          appUrl: undefined,
+          stage: 'error',
+          errorCode: 'NO_DEVICE_REGISTRATION',
+          detail: 'Device not registered with an organization.',
+          resolvable: false,
+        };
+      }
 
-    const identity = buildPublicWebIdentity({
-      appSubdomain: baseSubdomain || `${app.appName}-${app.appStoreSlug}`,
-      hubSubdomain: org.hubSubdomain,
-      orgSlug: organizationSlug,
-      publicDomainRoot: resolvedDomain,
-    });
-    appUrl = `${identity.publicUrl}${urlSuffix}`;
+      const identity = buildPublicWebIdentity({
+        appSubdomain: baseSubdomain || `${app.appName}-${app.appStoreSlug}`,
+        hubSubdomain: org.hubSubdomain,
+        orgSlug: organizationSlug,
+        publicDomainRoot: resolvedDomain,
+      });
+      appUrl = `${identity.publicUrl}${urlSuffix}`;
+    }
 
     // Helper to determine stage from error code
     const propagatingCodes = new Set(['DNS_NOT_FOUND', 'CF_TUNNEL_NOT_FOUND', 'CF_UPSTREAM_ERROR', 'CF_ORIGIN_DOWN']);

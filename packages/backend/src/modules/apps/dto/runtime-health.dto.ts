@@ -1,0 +1,40 @@
+import { createZodDto } from '@/common/zod-dto';
+import { z } from 'zod';
+
+const containerRuntimeStatsSchema = z.object({
+  containerId: z.string(),
+  name: z.string(),
+  state: z.string(),
+  status: z.string(),
+  health: z.string().nullable(),
+  cpuPercent: z.number(),
+  memoryUsageBytes: z.number(),
+  memoryLimitBytes: z.number(),
+});
+
+const appRuntimeHealthSchema = z.object({
+  appUrn: z.string(),
+  appName: z.string(),
+  status: z.string(),
+  cpuPercent: z.number(),
+  memoryUsageBytes: z.number(),
+  memoryLimitBytes: z.number(),
+  highCpu: z.boolean(),
+  sustainedHighCpu: z.boolean(),
+  responsive: z.boolean(),
+  degraded: z.boolean(),
+  forceStopEligible: z.boolean(),
+  reason: z.string().nullable(),
+  cpuLimit: z.string().nullable(),
+  usesDefaultCpuLimit: z.boolean(),
+  sampledAt: z.string(),
+  containers: z.array(containerRuntimeStatsSchema),
+});
+
+const appRuntimeMonitorSchema = z.object({
+  sampledAt: z.string(),
+  apps: z.array(appRuntimeHealthSchema),
+});
+
+export class AppRuntimeHealthDto extends createZodDto(appRuntimeHealthSchema) {}
+export class AppRuntimeMonitorDto extends createZodDto(appRuntimeMonitorSchema) {}
