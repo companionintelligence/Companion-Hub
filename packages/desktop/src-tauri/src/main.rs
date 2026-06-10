@@ -134,6 +134,14 @@ async fn install_ollama_command() -> Result<hub_manager::OllamaInstallResult, St
     hub_manager::install_ollama()
 }
 
+/// Install a licensing-free Docker engine (Colima on macOS, Engine-in-WSL2 on
+/// Windows, the standard Engine on Linux).
+#[tauri::command]
+async fn install_docker_engine_alternative_command() -> Result<hub_manager::DockerInstallResult, String>
+{
+    hub_manager::install_docker_engine_alternative()
+}
+
 /// Get the current Hub status (Docker availability, container state, health).
 #[tauri::command]
 async fn get_hub_status_command() -> hub_manager::HubStatus {
@@ -278,6 +286,7 @@ pub fn run() {
             is_user_stopped_command,
             install_docker_command,
             install_ollama_command,
+            install_docker_engine_alternative_command,
             consume_pending_pairing_code,
             consume_pending_portal_auth,
             check_desktop_update_command,

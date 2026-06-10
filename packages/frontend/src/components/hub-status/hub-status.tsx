@@ -160,6 +160,8 @@ export function getDockerDesktopGuideContent(platform: DockerDesktopGuidePlatfor
 
 interface DockerDesktopGuideProps extends DockerDesktopGuideContent {
   footer?: ReactNode;
+  /** Rendered between the Desktop card and the access panel (licensing-free engine option). */
+  alternative?: ReactNode;
 }
 
 function SetupStepsColumn({ title, steps }: { title: string; steps: string[] }) {
@@ -186,6 +188,7 @@ function DockerDesktopGuide({
   notInstalledTitle,
   notInstalledSteps,
   footer,
+  alternative,
 }: DockerDesktopGuideProps) {
   const { t } = useTranslation();
   const isMac = platformLabel === 'Mac';
@@ -255,8 +258,95 @@ function DockerDesktopGuide({
         </div>
       </SetupCard>
 
+      {alternative}
+
       <DockerAccessStatusPanel />
     </div>
+  );
+}
+
+/**
+ * Licensing-free engine alternative for macOS (Colima) and Windows (Docker
+ * Engine in WSL2). Docker Desktop needs a paid subscription for orgs with
+ * >250 employees or >$10M revenue; these run the open-source Engine instead.
+ * Desktop-app only — hidden in web clients, which cannot trigger installs.
+ */
+function EngineAlternativePanel({ platform }: { platform: 'windows' | 'macos' }) {
+  const { t } = useTranslation();
+  const [installState, setInstallState] = useState<LinuxInstallState>('idle');
+  const [errorMessage, setErrorMessage] = useState<string>('');
+
+  const handleInstall = useCallback(async () => {
+    const invoke = getTauriInvoke();
+    if (!invoke) return;
+    setInstallState('installing');
+    setErrorMessage('');
+    try {
+      const result = (await invoke('install_docker_engine_alternative_command')) as {
+        state: 'completed' | 'needs_restart';
+        detail: string | null;
+      };
+      setInstallState(result.state === 'needs_restart' ? 'needs_restart' : 'completed');
+    } catch (err) {
+      setErrorMessage(getErrorMessage(err));
+      setInstallState('error');
+    }
+  }, []);
+
+  if (!getTauriInvoke()) return null;
+
+  const installLabel = platform === 'macos' ? t('HUB_STATUS_DOCKER_ALT_INSTALL_MAC') : t('HUB_STATUS_DOCKER_ALT_INSTALL_WINDOWS');
+  const description = platform === 'macos' ? t('HUB_STATUS_DOCKER_ALT_DESC_MAC') : t('HUB_STATUS_DOCKER_ALT_DESC_WINDOWS');
+
+  return (
+    <SetupCard>
+      <div className="space-y-4">
+        <div className="space-y-1">
+          <h3 className="text-sm font-semibold text-foreground">{t('HUB_STATUS_DOCKER_ALT_TITLE')}</h3>
+          <p className="text-xs text-muted-foreground">{description}</p>
+        </div>
+
+        {installState === 'idle' && (
+          <button
+            type="button"
+            onClick={handleInstall}
+            className="inline-flex w-full items-center justify-center gap-2 rounded-md border border-border px-6 py-3 text-sm font-medium text-foreground hover:bg-muted"
+          >
+            {installLabel}
+          </button>
+        )}
+
+        {installState === 'installing' && (
+          <div className="flex items-center justify-center gap-2 rounded-md border border-border px-6 py-3 text-sm text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+            {t('HUB_STATUS_DOCKER_ALT_INSTALLING')}
+          </div>
+        )}
+
+        {(installState === 'completed' || installState === 'needs_restart') && (
+          <div className="flex items-start gap-3 rounded-md border border-green-500/30 bg-green-500/10 px-4 py-3 text-sm text-green-700 dark:text-green-400">
+            <CheckCircle className="h-4 w-4 shrink-0 mt-0.5" aria-hidden />
+            <span>{installState === 'needs_restart' ? t('HUB_STATUS_DOCKER_ALT_NEEDS_RESTART') : t('HUB_STATUS_DOCKER_ALT_SUCCESS')}</span>
+          </div>
+        )}
+
+        {installState === 'error' && (
+          <div className="space-y-3">
+            <div className="flex items-start gap-3 rounded-md border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+              <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" aria-hidden />
+              <span>{errorMessage || t('HUB_STATUS_DOCKER_ALT_ERROR')}</span>
+            </div>
+            <button
+              type="button"
+              onClick={handleInstall}
+              className="inline-flex w-full items-center justify-center gap-2 rounded-md border border-border px-6 py-3 text-sm font-medium text-foreground hover:bg-muted"
+            >
+              {installLabel}
+            </button>
+          </div>
+        )}
+      </div>
+    </SetupCard>
   );
 }
 
@@ -373,12 +463,24 @@ function DockerInstallGuide() {
 
   if (platform === 'windows') {
     const guide = getDockerDesktopGuideContent('windows', false);
-    return <DockerDesktopGuide {...guide} footer={guide.hint ? <p className="text-xs text-muted-foreground/70">{guide.hint}</p> : undefined} />;
+    return (
+      <DockerDesktopGuide
+        {...guide}
+        footer={guide.hint ? <p className="text-xs text-muted-foreground/70">{guide.hint}</p> : undefined}
+        alternative={<EngineAlternativePanel platform="windows" />}
+      />
+    );
   }
 
   if (platform === 'macos') {
     const guide = getDockerDesktopGuideContent('macos', isAppleSilicon());
-    return <DockerDesktopGuide {...guide} footer={guide.hint ? <p className="text-xs text-muted-foreground/70">{guide.hint}</p> : undefined} />;
+    return (
+      <DockerDesktopGuide
+        {...guide}
+        footer={guide.hint ? <p className="text-xs text-muted-foreground/70">{guide.hint}</p> : undefined}
+        alternative={<EngineAlternativePanel platform="macos" />}
+      />
+    );
   }
 
   return <LinuxDockerGuide />;
