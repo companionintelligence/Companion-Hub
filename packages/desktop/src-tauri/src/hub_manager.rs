@@ -6156,6 +6156,393 @@ pub fn install_ollama_linux() -> Result<OllamaInstallResult, String> {
     }
 }
 
+/// Install a licensing-free Docker engine. Docker Desktop requires a paid
+/// subscription for organizations with >250 employees or >$10M revenue; these
+/// paths run the open-source Docker Engine instead:
+///   - macOS: Colima (Engine in a lightweight vz VM). Homebrew when present,
+///     otherwise verified binaries (colima + lima + docker CLI) into /usr/local.
+///   - Windows: Docker Engine inside WSL2 (Ubuntu), TCP-exposed on
+///     127.0.0.1:2375 with a docker context — no Docker Desktop involved.
+///   - Linux: the standard Engine install (already licensing-free).
+pub fn install_docker_engine_alternative() -> Result<DockerInstallResult, String> {
+    #[cfg(target_os = "linux")]
+    {
+        return install_docker_linux().map(|detail| DockerInstallResult {
+            state: DockerInstallState::NeedsRestart,
+            detail: Some(detail),
+        });
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        return install_colima_macos();
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        return install_docker_wsl2_windows();
+    }
+
+    #[allow(unreachable_code)]
+    Err("No licensing-free engine path is available on this platform.".to_string())
+}
+
+/// Elevated phase of the no-Homebrew Colima install: place colima, lima, and
+/// the docker CLI under /usr/local. Checksums are verified for colima (per-asset
+/// .sha256sum) and lima (release SHA256SUMS); Docker's static CLI publishes no
+/// checksums, so it relies on TLS like the get.docker.com path.
+#[cfg(any(test, target_os = "macos"))]
+fn colima_macos_binary_install_script() -> &'static str {
+    r#"#!/bin/bash
+set -euo pipefail
+workdir="$(mktemp -d)"
+cleanup() {
+  rm -rf "$workdir"
+}
+trap cleanup EXIT
+cd "$workdir"
+
+ARCH="$(uname -m)"   # arm64 | x86_64
+case "$ARCH" in
+  arm64) DOCKER_ARCH_DIR="aarch64" ;;
+  x86_64) DOCKER_ARCH_DIR="x86_64" ;;
+  *) echo "Unsupported architecture: $ARCH" >&2; exit 1 ;;
+esac
+
+# colima: version-less asset names, so latest/download is stable; verify sha256.
+curl -fsSL -o colima "https://github.com/abiosoft/colima/releases/latest/download/colima-Darwin-${ARCH}"
+curl -fsSL -o colima.sha256sum "https://github.com/abiosoft/colima/releases/latest/download/colima-Darwin-${ARCH}.sha256sum"
+# The published file references the asset name; check against our local name.
+expected="$(awk '{print $1}' colima.sha256sum)"
+echo "${expected}  colima" | shasum -a 256 -c -
+install -m 0755 colima /usr/local/bin/colima
+
+# lima: asset names embed the version; resolve the tag from the GitHub API.
+LIMA_TAG="$(curl -fsSL https://api.github.com/repos/lima-vm/lima/releases/latest | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)"
+test -n "$LIMA_TAG"
+LIMA_VERSION="${LIMA_TAG#v}"
+curl -fsSL -o lima.tar.gz "https://github.com/lima-vm/lima/releases/download/${LIMA_TAG}/lima-${LIMA_VERSION}-Darwin-${ARCH}.tar.gz"
+curl -fsSL -o lima-SHA256SUMS "https://github.com/lima-vm/lima/releases/download/${LIMA_TAG}/SHA256SUMS"
+grep "lima-${LIMA_VERSION}-Darwin-${ARCH}.tar.gz" lima-SHA256SUMS | awk '{print $1}' | { read -r sum; echo "${sum}  lima.tar.gz" | shasum -a 256 -c -; }
+# Extract the whole tarball to one prefix: limactl resolves ../share/lima
+# (guest agents, templates) relative to its own binary.
+tar -xzf lima.tar.gz -C /usr/local
+
+# docker CLI (static, client-only): no latest pointer — scrape the index.
+DOCKER_TGZ="$(curl -fsSL "https://download.docker.com/mac/static/stable/${DOCKER_ARCH_DIR}/" | grep -o 'docker-[0-9][0-9.]*\.tgz' | sort -uV | tail -1)"
+test -n "$DOCKER_TGZ"
+curl -fsSL -o docker.tgz "https://download.docker.com/mac/static/stable/${DOCKER_ARCH_DIR}/${DOCKER_TGZ}"
+tar -xzf docker.tgz
+install -m 0755 docker/docker /usr/local/bin/docker
+"#
+}
+
+/// User phase of the Colima install (never root — brew refuses it, and the VM
+/// must belong to the user). Installs via Homebrew when available; otherwise
+/// assumes the binary phase already ran, registers a LaunchAgent for autostart,
+/// and waits until `docker info` answers (first start downloads a ~350 MB VM
+/// image, so the ceiling is generous).
+#[cfg(any(test, target_os = "macos"))]
+fn colima_macos_start_script() -> &'static str {
+    r#"#!/bin/bash
+set -euo pipefail
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+BREW=""
+for candidate in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+  if [ -x "$candidate" ]; then BREW="$candidate"; break; fi
+done
+
+if [ -n "$BREW" ]; then
+  "$BREW" install colima docker
+  "$BREW" services start colima
+else
+  # Binary install path: autostart via a per-user LaunchAgent.
+  mkdir -p "$HOME/Library/LaunchAgents"
+  cat > "$HOME/Library/LaunchAgents/com.companionhub.colima.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.companionhub.colima</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/colima</string>
+    <string>start</string>
+    <string>--foreground</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict><key>PATH</key><string>/usr/local/bin:/usr/bin:/bin</string></dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+</dict>
+</plist>
+PLIST
+  launchctl unload "$HOME/Library/LaunchAgents/com.companionhub.colima.plist" 2>/dev/null || true
+  launchctl load "$HOME/Library/LaunchAgents/com.companionhub.colima.plist"
+fi
+
+# First start downloads the VM image (~350 MB); wait until the engine answers.
+for _ in $(seq 1 120); do
+  if docker info >/dev/null 2>&1; then exit 0; fi
+  sleep 5
+done
+echo "Timed out waiting for the Colima engine to come up." >&2
+exit 1
+"#
+}
+
+#[cfg(target_os = "macos")]
+fn install_colima_macos() -> Result<DockerInstallResult, String> {
+    use std::io::Write as IoWrite;
+    use tempfile::NamedTempFile;
+
+    let brew_present = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]
+        .iter()
+        .any(|p| Path::new(p).exists());
+
+    // Without Homebrew the binaries must be placed under /usr/local first —
+    // the only step that needs admin rights.
+    if !brew_present {
+        let mut script = NamedTempFile::new()
+            .map_err(|e| format!("Failed to create temporary installer script: {}", e))?;
+        script
+            .write_all(colima_macos_binary_install_script().as_bytes())
+            .map_err(|e| format!("Failed to write Colima installer script: {}", e))?;
+        script
+            .as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o700))
+            .map_err(|e| format!("Failed to set installer script permissions: {}", e))?;
+
+        let applescript = format!(
+            "do shell script quoted form of POSIX path of \"{}\" with administrator privileges",
+            script.path().to_string_lossy().replace('"', "\\\"")
+        );
+        let output = Command::new("osascript")
+            .args(["-e", &applescript])
+            .output()
+            .map_err(|e| format!("Failed to launch elevated Colima installer: {}", e))?;
+        if !output.status.success() {
+            let combined = format_command_output(
+                &String::from_utf8_lossy(&output.stdout),
+                &String::from_utf8_lossy(&output.stderr),
+            );
+            let combined_lower = combined.to_lowercase();
+            if combined_lower.contains("cancel") && combined_lower.contains("user") {
+                return Err("Authorization was cancelled or denied.".to_string());
+            }
+            return Err(format!("Colima binary installation failed: {}", combined));
+        }
+    }
+
+    // Brew install, autostart registration, colima start, and the readiness
+    // wait all run as the user — never root.
+    let mut start_script = NamedTempFile::new()
+        .map_err(|e| format!("Failed to create temporary start script: {}", e))?;
+    start_script
+        .write_all(colima_macos_start_script().as_bytes())
+        .map_err(|e| format!("Failed to write Colima start script: {}", e))?;
+    start_script
+        .as_file()
+        .set_permissions(std::fs::Permissions::from_mode(0o700))
+        .map_err(|e| format!("Failed to set start script permissions: {}", e))?;
+
+    let output = Command::new("bash")
+        .arg(start_script.path())
+        .output()
+        .map_err(|e| format!("Failed to run Colima start script: {}", e))?;
+
+    if output.status.success() {
+        Ok(DockerInstallResult {
+            state: DockerInstallState::Completed,
+            detail: Some(
+                "Colima installed and the Docker Engine is running (context \"colima\").".to_string(),
+            ),
+        })
+    } else {
+        let combined = format_command_output(
+            &String::from_utf8_lossy(&output.stdout),
+            &String::from_utf8_lossy(&output.stderr),
+        );
+        if combined.is_empty() {
+            Err("Colima installation failed.".to_string())
+        } else {
+            Err(format!("Colima installation failed: {}", combined))
+        }
+    }
+}
+
+/// Windows: Docker Engine inside WSL2, no Docker Desktop.
+///
+/// Exit code contract matches the Docker Desktop installer: 100 = WSL was just
+/// enabled and Windows must reboot (NeedsRestart); 0 = engine reachable.
+///
+/// Design notes (all verified against MS Learn / Docker docs):
+///   - `wsl --install -d Ubuntu --no-launch` registers Ubuntu without the
+///     interactive first-run user creation; `wsl -u root` works without it.
+///   - Ubuntu's docker-ce systemd unit uses `-H fd://`, which conflicts with a
+///     daemon.json `hosts` key — TCP exposure needs a systemd drop-in instead.
+///   - WSL2 localhost forwarding makes tcp://127.0.0.1:2375 reachable from
+///     Windows, but only while the distro runs — and systemd services do NOT
+///     keep the VM alive, hence the hidden `sleep infinity` keepalive in the
+///     user's Startup folder.
+///   - docker.exe goes where find_docker_binary() already looks, and a docker
+///     context (stored in ~/.docker, read at runtime) points it at the TCP
+///     endpoint — no env vars, so the running Hub needs no restart.
+#[cfg(any(test, target_os = "windows"))]
+fn wsl2_engine_windows_install_script() -> String {
+    let linux_setup = r#"set -e
+export DEBIAN_FRONTEND=noninteractive
+if ! command -v dockerd >/dev/null 2>&1; then
+  curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
+  sh /tmp/get-docker.sh
+  rm -f /tmp/get-docker.sh
+fi
+printf '[boot]\nsystemd=true\n' > /etc/wsl.conf
+mkdir -p /etc/systemd/system/docker.service.d
+printf '[Service]\nExecStart=\nExecStart=/usr/bin/dockerd -H fd:// -H tcp://127.0.0.1:2375\n' > /etc/systemd/system/docker.service.d/companionhub-tcp.conf
+systemctl enable docker 2>/dev/null || true"#;
+
+    format!(
+        r#"$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+$env:WSL_UTF8 = '1'
+
+# Phase 1: WSL itself (admin + reboot when absent).
+& wsl.exe --status | Out-Null
+if ($LASTEXITCODE -ne 0) {{
+  & wsl.exe --install --no-distribution
+  exit 100
+}}
+
+# Phase 2: Ubuntu distro, registered without the interactive first-run.
+$distros = (& wsl.exe -l -q) | ForEach-Object {{ $_.Trim() }}
+if (-not ($distros -contains 'Ubuntu')) {{
+  & wsl.exe --install -d Ubuntu --no-launch
+  if ($LASTEXITCODE -ne 0) {{ throw "Ubuntu installation failed with exit code $LASTEXITCODE" }}
+}}
+
+# Phase 3: Docker Engine + systemd TCP drop-in inside the distro (as root).
+$setup = @'
+{linux_setup}
+'@ -replace "`r`n", "`n"
+$setup | & wsl.exe -d Ubuntu -u root -- sh
+if ($LASTEXITCODE -ne 0) {{ throw "Docker Engine setup inside WSL failed with exit code $LASTEXITCODE" }}
+
+# Restart the distro so wsl.conf + the drop-in take effect.
+& wsl.exe --shutdown
+& wsl.exe -d Ubuntu -u root -- true
+
+# Phase 4: static docker CLI where the Hub already looks for it.
+$dockerBin = Join-Path $Env:ProgramFiles 'Docker\Docker\resources\bin'
+if (-not (Test-Path (Join-Path $dockerBin 'docker.exe'))) {{
+  $index = (Invoke-WebRequest -UseBasicParsing -Uri 'https://download.docker.com/win/static/stable/x86_64/').Content
+  $zips = [regex]::Matches($index, 'docker-[0-9][0-9.]*\.zip') | ForEach-Object {{ $_.Value }} | Sort-Object {{ [version]($_ -replace 'docker-|\.zip', '') }}
+  $latest = $zips[-1]
+  if (-not $latest) {{ throw 'Could not determine the latest static docker CLI version.' }}
+  $zipPath = Join-Path $Env:TEMP $latest
+  Invoke-WebRequest -UseBasicParsing -Uri "https://download.docker.com/win/static/stable/x86_64/$latest" -OutFile $zipPath
+  try {{
+    $extract = Join-Path $Env:TEMP 'companionhub-docker-cli'
+    Remove-Item $extract -Recurse -Force -ErrorAction SilentlyContinue
+    Expand-Archive -Path $zipPath -DestinationPath $extract
+    New-Item -ItemType Directory -Force -Path $dockerBin | Out-Null
+    Copy-Item (Join-Path $extract 'docker\docker.exe') (Join-Path $dockerBin 'docker.exe') -Force
+    Remove-Item $extract -Recurse -Force -ErrorAction SilentlyContinue
+  }} finally {{
+    Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+  }}
+}}
+
+# Phase 5: route the CLI at the WSL engine via a context (read from ~/.docker
+# at runtime — no env vars, no Hub restart needed).
+$dockerExe = Join-Path $dockerBin 'docker.exe'
+& $dockerExe context inspect wsl-engine 2>$null | Out-Null
+if ($LASTEXITCODE -ne 0) {{
+  & $dockerExe context create wsl-engine --docker host=tcp://127.0.0.1:2375 | Out-Null
+}}
+& $dockerExe context use wsl-engine | Out-Null
+
+# Phase 6: keepalive at logon — systemd services do not keep the WSL VM alive.
+$startup = [Environment]::GetFolderPath('Startup')
+$vbs = Join-Path $startup 'CompanionHub-WSL-Docker.vbs'
+Set-Content -Path $vbs -Value 'CreateObject("Wscript.Shell").Run "wsl.exe -d Ubuntu -u root -- sleep infinity", 0, False'
+
+# Keepalive for this session too, then wait for the engine.
+Start-Process -WindowStyle Hidden -FilePath 'wsl.exe' -ArgumentList '-d','Ubuntu','-u','root','--','sleep','infinity'
+for ($i = 0; $i -lt 60; $i++) {{
+  & $dockerExe info 2>$null | Out-Null
+  if ($LASTEXITCODE -eq 0) {{ exit 0 }}
+  Start-Sleep -Seconds 5
+}}
+throw 'Timed out waiting for the Docker Engine inside WSL2 to come up.'
+"#,
+        linux_setup = linux_setup,
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn install_docker_wsl2_windows() -> Result<DockerInstallResult, String> {
+    use std::io::Write as IoWrite;
+
+    // PowerShell -File refuses scripts without a .ps1 extension.
+    let mut script = tempfile::Builder::new()
+        .suffix(".ps1")
+        .tempfile()
+        .map_err(|e| format!("Failed to create temporary installer script: {}", e))?;
+    script
+        .write_all(wsl2_engine_windows_install_script().as_bytes())
+        .map_err(|e| format!("Failed to write WSL2 engine installer script: {}", e))?;
+
+    let launch_command = format!(
+        "$process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File','{}'); exit $process.ExitCode",
+        escape_powershell_single_quoted(&script.path().to_string_lossy()),
+    );
+
+    let mut command = Command::new("powershell.exe");
+    command.creation_flags(CREATE_NO_WINDOW);
+    let output = command
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &launch_command,
+        ])
+        .output()
+        .map_err(|e| format!("Failed to launch elevated WSL2 engine installer: {}", e))?;
+
+    let combined = format_command_output(
+        &String::from_utf8_lossy(&output.stdout),
+        &String::from_utf8_lossy(&output.stderr),
+    );
+    let combined_lower = combined.to_lowercase();
+
+    match output.status.code() {
+        Some(0) => Ok(DockerInstallResult {
+            state: DockerInstallState::Completed,
+            detail: Some(
+                "Docker Engine is running inside WSL2 (context \"wsl-engine\").".to_string(),
+            ),
+        }),
+        Some(100) => Ok(DockerInstallResult {
+            state: DockerInstallState::NeedsRestart,
+            detail: Some(
+                "WSL was installed or enabled. Restart Windows, then reopen Companion Hub to continue Docker setup."
+                    .to_string(),
+            ),
+        }),
+        _ if combined_lower.contains("cancel") && combined_lower.contains("user") => {
+            Err("Authorization was cancelled or denied.".to_string())
+        }
+        _ if combined.is_empty() => Err(format!(
+            "WSL2 Docker Engine installation failed with exit code {:?}.",
+            output.status.code()
+        )),
+        _ => Err(format!("WSL2 Docker Engine installation failed: {}", combined)),
+    }
+}
+
 fn truncate_command_output(output: &str) -> String {
     let trimmed = output.trim();
     if trimmed.is_empty() {
@@ -6199,6 +6586,10 @@ mod tests {
     use super::ollama_macos_install_script;
     #[cfg(any(test, target_os = "windows"))]
     use super::ollama_windows_install_script;
+    #[cfg(any(test, target_os = "macos"))]
+    use super::{colima_macos_binary_install_script, colima_macos_start_script};
+    #[cfg(any(test, target_os = "windows"))]
+    use super::wsl2_engine_windows_install_script;
     use super::{
         append_desktop_log_for, classify_docker_access_result, clear_traefik_recreate_required,
         clear_tunnel_token, desktop_log_path_for, docker_context_host_from_inspect_output,
@@ -6679,6 +7070,56 @@ mod tests {
         assert!(script.contains("ditto"));
         assert!(script.contains("/Applications/Ollama.app"));
         assert!(script.contains("ln -sf /Applications/Ollama.app/Contents/Resources/ollama /usr/local/bin/ollama"));
+    }
+
+    #[test]
+    fn colima_binary_install_script_verifies_checksums_and_layout() {
+        let script = colima_macos_binary_install_script();
+
+        // colima sha256 + lima SHA256SUMS verification are non-negotiable.
+        assert!(script.contains("shasum -a 256 -c"));
+        assert!(script.contains("colima.sha256sum"));
+        assert!(script.contains("SHA256SUMS"));
+        // The lima tarball must be extracted whole — limactl resolves
+        // ../share/lima relative to its own binary.
+        assert!(script.contains("tar -xzf lima.tar.gz -C /usr/local"));
+        assert!(script.contains("releases/latest/download/colima-Darwin-"));
+        assert!(script.contains("download.docker.com/mac/static/stable"));
+    }
+
+    #[test]
+    fn colima_start_script_never_runs_brew_as_root_and_waits_for_engine() {
+        let script = colima_macos_start_script();
+
+        // brew refuses root; this script must not contain any elevation.
+        assert!(!script.contains("sudo"));
+        assert!(!script.contains("osascript"));
+        assert!(script.contains(r#""$BREW" install colima docker"#));
+        assert!(script.contains(r#""$BREW" services start colima"#));
+        assert!(script.contains("LaunchAgents/com.companionhub.colima.plist"));
+        // Success must mean a working engine, not just installed binaries.
+        assert!(script.contains("docker info"));
+    }
+
+    #[test]
+    fn wsl2_engine_script_keeps_desktop_contract_and_avoids_daemon_json_hosts() {
+        let script = wsl2_engine_windows_install_script();
+
+        // Exit-code contract shared with the Docker Desktop installer.
+        assert!(script.contains("exit 100"));
+        assert!(script.contains("--no-distribution"));
+        assert!(script.contains("--install -d Ubuntu --no-launch"));
+        // TCP exposure must be a systemd drop-in, not daemon.json "hosts"
+        // (which conflicts with Ubuntu's -H fd:// unit).
+        assert!(script.contains("docker.service.d"));
+        assert!(script.contains("-H fd:// -H tcp://127.0.0.1:2375"));
+        assert!(!script.contains("\"hosts\""));
+        // UTF-16 output guard for wsl -l parsing.
+        assert!(script.contains("WSL_UTF8"));
+        // Context routing (no env vars) + logon keepalive.
+        assert!(script.contains("context create wsl-engine"));
+        assert!(script.contains("sleep infinity"));
+        assert!(script.contains("docker.exe"));
     }
 
     #[test]
