@@ -1,11 +1,14 @@
+import { CacheService } from '@/core/cache/cache.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
+import { UserRepository } from '@/modules/user/user.repository';
 import { Test } from '@nestjs/testing';
 import type { Request, Response } from 'express';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { AuthController } from '../auth.controller';
 import { AuthService } from '../auth.service';
+import { SessionManager } from '../session.manager';
 
 describe('AuthController', () => {
   let authController: AuthController;
@@ -20,6 +23,9 @@ describe('AuthController', () => {
         { provide: AuthService, useValue: mock<AuthService>() },
         { provide: LoggerService, useValue: mock<LoggerService>() },
         { provide: ConfigurationService, useValue: mock<ConfigurationService>() },
+        { provide: CacheService, useValue: mock<CacheService>() },
+        { provide: UserRepository, useValue: mock<UserRepository>() },
+        { provide: SessionManager, useValue: mock<SessionManager>() },
       ],
     }).compile();
 

@@ -103,11 +103,20 @@ export default () => {
     return <TotpForm loading={verifyTotp.isPending} onSubmit={(totpCode) => verifyTotp.mutate({ body: { totpCode, totpSessionId } })} />;
   }
 
+  const portalSsoHref = (() => {
+    const url = new URL('/api/auth/portal/start', window.location.origin);
+    if (redirect_url) {
+      url.searchParams.set('redirect_url', redirect_url);
+    }
+    return url.toString();
+  })();
+
   return (
     <LoginForm
       onSubmit={(values) => login.mutate({ body: { password: values.password, username: values.email } })}
       loading={login.isPending}
       loginType={loginType}
+      portalSsoHref={portalSsoHref}
     />
   );
 };
