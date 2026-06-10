@@ -4,6 +4,7 @@ import { getHubStateDirs, isRelatedVolume, parseNames, runHubCleanup } from '../
 describe('hub-cleanup-lib', () => {
   it('matches known Hub volume naming patterns', () => {
     expect(isRelatedVolume('ci_hub_pgdata')).toBe(true);
+    expect(isRelatedVolume('ci_hub_app_data')).toBe(true);
     expect(isRelatedVolume('hub_tailscale_state')).toBe(true);
     expect(isRelatedVolume('ci-os-hub_test_data')).toBe(true);
     expect(isRelatedVolume('runtipi_media')).toBe(true);

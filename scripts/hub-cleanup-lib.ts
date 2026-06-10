@@ -87,6 +87,7 @@ export function isRelatedVolume(volumeName: string): boolean {
     volumeName.includes('runtipi') ||
     volumeName.includes('runtipi_') ||
     volumeName.includes('ci_hub_pgdata') ||
+    volumeName.includes('ci_hub_app_data') ||
     volumeName.includes('hub_tailscale_state') ||
     volumeName.startsWith('e2e-') ||
     volumeName.startsWith('test-e2e-') ||
