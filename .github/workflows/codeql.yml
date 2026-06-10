@@ -23,6 +23,8 @@ jobs:
       fail-fast: false
       matrix:
         language:
+          - python
+          - ruby
           - javascript-typescript
 
     steps:
