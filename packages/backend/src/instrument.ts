@@ -17,7 +17,7 @@ if (dsn) {
     enabled: true,
     tracesSampleRate: 0,
     profilesSampleRate: 0,
-    sendDefaultPii: false,
+    sendDefaultPii: true,
     integrations: (defaults) => defaults.filter((integration) => !MANUALLY_HANDLED_INTEGRATIONS.has(integration.name)),
     beforeSend: scrubEvent,
   });
