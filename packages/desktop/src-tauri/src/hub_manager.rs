@@ -5697,8 +5697,10 @@ elif is_distro suse || is_distro opensuse-leap || is_distro opensuse-tumbleweed 
     zypper --non-interactive install docker docker-compose
     enable_and_start_docker
 
-elif is_distro rhel; then
-    # get.docker.com does not support RHEL; use the official Docker dnf repo directly.
+elif [ "$DISTRO_ID" = "rhel" ]; then
+    # Only true RHEL (ID=rhel): get.docker.com does not support it; use the Docker dnf repo.
+    # Rocky Linux, AlmaLinux, CentOS (all have ID_LIKE containing "rhel") are handled by
+    # get.docker.com below -- do NOT use is_distro here or they fall into this branch.
     dnf install -y dnf-plugins-core
     # dnf 5 (RHEL 9+) syntax vs dnf 4 (RHEL 8) syntax
     if ! dnf config-manager addrepo \
