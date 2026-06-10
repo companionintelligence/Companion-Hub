@@ -73,8 +73,10 @@ function defaultExecCommand(command: string, cwd = process.cwd()): ExecResult {
 
 export function isWithinPath(targetPath: string, basePath: string, platform: NodeJS.Platform = process.platform): boolean {
   const pathLib = platform === 'win32' ? path.win32 : path.posix;
-  const normalizedTarget = pathLib.normalize(targetPath);
-  const normalizedBase = pathLib.normalize(basePath);
+  // Strip trailing separators so normalize('/home/user/') + sep never produces '//'
+  const stripTrailing = (p: string) => p.replace(new RegExp(`${pathLib.sep.replace('\\', '\\\\')}+$`), '');
+  const normalizedTarget = stripTrailing(pathLib.normalize(targetPath));
+  const normalizedBase = stripTrailing(pathLib.normalize(basePath));
   const comparableTarget = platform === 'win32' ? normalizedTarget.toLowerCase() : normalizedTarget;
   const comparableBase = platform === 'win32' ? normalizedBase.toLowerCase() : normalizedBase;
   return comparableTarget === comparableBase || comparableTarget.startsWith(comparableBase + pathLib.sep);

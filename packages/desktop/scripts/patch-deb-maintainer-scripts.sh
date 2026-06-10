@@ -22,15 +22,17 @@ fi
 
 find "$DESKTOP_DIR/src-tauri/target" -path '*/bundle/deb/*.deb' -type f 2>/dev/null | sort | while IFS= read -r deb_path; do
   [ -n "$deb_path" ] || continue
-  temp_dir=$(mktemp -d)
-  rebuilt_path="$deb_path.rebuilt"
+  (
+    temp_dir=$(mktemp -d)
+    trap 'rm -rf "$temp_dir"' EXIT
+    rebuilt_path="$deb_path.rebuilt"
 
-  echo "[deb-patch][INFO] Patching maintainer scripts into $deb_path"
-  dpkg-deb -R "$deb_path" "$temp_dir"
-  install -Dm755 "$POSTRM_SOURCE" "$temp_dir/DEBIAN/postrm"
-  dpkg-deb --build "$temp_dir" "$rebuilt_path" >/dev/null
-  mv "$rebuilt_path" "$deb_path"
-  rm -rf "$temp_dir"
+    echo "[deb-patch][INFO] Patching maintainer scripts into $deb_path"
+    dpkg-deb -R "$deb_path" "$temp_dir"
+    install -Dm755 "$POSTRM_SOURCE" "$temp_dir/DEBIAN/postrm"
+    dpkg-deb --build "$temp_dir" "$rebuilt_path" >/dev/null
+    mv "$rebuilt_path" "$deb_path"
+  )
 done
 
 if ! find "$DESKTOP_DIR/src-tauri/target" -path '*/bundle/deb/*.deb' -type f 2>/dev/null | grep -q .; then

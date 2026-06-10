@@ -1,7 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { getHubStateDirs, isRelatedVolume, parseNames, runHubCleanup } from '../hub-cleanup-lib';
+import { getHubStateDirs, isRelatedVolume, isWithinPath, parseNames, runHubCleanup } from '../hub-cleanup-lib';
 
 describe('hub-cleanup-lib', () => {
+  it('isWithinPath handles trailing separators on basePath and targetPath', () => {
+    // basePath with trailing slash must not produce a // double-separator mismatch
+    expect(isWithinPath('/home/user/work', '/home/user/', 'linux')).toBe(true);
+    expect(isWithinPath('/home/user/', '/home/user/', 'linux')).toBe(true);
+    expect(isWithinPath('/home/user', '/home/user/', 'linux')).toBe(true);
+    expect(isWithinPath('/home/user/work', '/home/user', 'linux')).toBe(true);
+    // unrelated path must still return false
+    expect(isWithinPath('/tmp/other', '/home/user/', 'linux')).toBe(false);
+  });
+
   it('matches known Hub volume naming patterns', () => {
     expect(isRelatedVolume('ci_hub_pgdata')).toBe(true);
     expect(isRelatedVolume('ci_hub_app_data')).toBe(true);
