@@ -263,6 +263,7 @@ export function runHubCleanup(options?: CleanupOptions): CleanupSummary {
     'docker ps -a --filter network=ci-os-hub_network --format "{{.Names}}"',
     'docker ps -a --filter label=com.docker.compose.project=ci-os-hub --format "{{.Names}}"',
     'docker ps -a --filter label=com.docker.compose.project=ci-hub --format "{{.Names}}"',
+    'docker ps -a --filter label=com.docker.compose.project=runtipi --format "{{.Names}}"',
     'docker ps -a --filter "name=e2e-" --format "{{.Names}}"',
   ];
 
