@@ -305,7 +305,7 @@ export class TraefikConfigService {
       const yamlContent = yaml.stringify(validConfig, { indent: 2 });
 
       this.logger.debug(`Writing Traefik config to ${configPath}`);
-      await this.filesystem.writeTextFile(configPath, yamlContent);
+      await writeHealableTextFile(configPath, yamlContent.endsWith('\n') ? yamlContent : `${yamlContent}\n`, 0o644);
 
       // Verify the file was written correctly
       const writtenContent = await this.filesystem.readTextFile(configPath);

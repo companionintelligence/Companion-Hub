@@ -2,7 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type Dockerode from 'dockerode';
 import type { z } from 'zod';
-import { DOCKERODE } from '../docker/docker.module';
+import { DOCKERODE } from '../docker/constants';
 import type { appEventSchema } from '../queue/entities/app-events';
 import { BackupAppCommand } from './commands/backup-app-command';
 import { GenerateAppEnvCommand } from './commands/generate-env-command';

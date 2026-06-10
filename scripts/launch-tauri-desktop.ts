@@ -54,9 +54,20 @@ function launchTauriDesktop(mode: LaunchMode): number {
     args.push('--config', 'src-tauri/tauri.stack-dev.json');
   }
 
+  const tauriEnv = {
+    ...buildTauriProcessEnv(guiEnv),
+    ...(mode === 'stack-dev'
+      ? {
+          CI_HUB_STACK_DEV: '1',
+          CI_HUB_STACK_DEV_COMPOSE_PATH: path.join(repoRoot, 'docker-compose.prod.yml'),
+          CI_HUB_STACK_DEV_ENV_PATH: path.join(repoRoot, '.env.dev'),
+        }
+      : {}),
+  };
+
   const result = spawnSync('cargo', args, {
     cwd: desktopDir,
-    env: buildTauriProcessEnv(guiEnv),
+    env: tauriEnv,
     stdio: 'inherit',
   });
 

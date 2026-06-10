@@ -3,7 +3,7 @@ import { SSEService } from '@/core/sse/sse.service';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
 import type Dockerode from 'dockerode';
-import { DOCKERODE } from '../docker/docker.module';
+import { DOCKERODE } from '../docker/constants';
 import { AppsRepository } from '../apps/apps.repository';
 import type { AppStatus } from '@/core/database/drizzle/types';
 import { SystemEventsQueue } from '../queue/entities/system-events';

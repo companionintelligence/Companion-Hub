@@ -16,8 +16,57 @@ use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_store::StoreExt;
 
 const DETACHED_FLAG: &str = "--detached";
+const STACK_DEV_ENV: &str = "CI_HUB_STACK_DEV";
+const STACK_DEV_COMPOSE_PATH_ENV: &str = "CI_HUB_STACK_DEV_COMPOSE_PATH";
+const STACK_DEV_ENV_PATH_ENV: &str = "CI_HUB_STACK_DEV_ENV_PATH";
 
 struct PendingPairingCode(Mutex<Option<String>>);
+
+fn stack_dev_mode_enabled() -> bool {
+    std::env::var(STACK_DEV_ENV)
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn non_empty_path_env(var_name: &str) -> Option<PathBuf> {
+    std::env::var(var_name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+fn stack_dev_override_paths() -> Result<Option<(PathBuf, PathBuf)>, String> {
+    if !stack_dev_mode_enabled() {
+        return Ok(None);
+    }
+
+    let compose_path = non_empty_path_env(STACK_DEV_COMPOSE_PATH_ENV)
+        .ok_or_else(|| format!("{} is not set.", STACK_DEV_COMPOSE_PATH_ENV))?;
+    let env_path = non_empty_path_env(STACK_DEV_ENV_PATH_ENV)
+        .ok_or_else(|| format!("{} is not set.", STACK_DEV_ENV_PATH_ENV))?;
+
+    if !compose_path.exists() {
+        return Err(format!(
+            "stack-dev compose file does not exist: {}",
+            compose_path.display()
+        ));
+    }
+    if !env_path.exists() {
+        return Err(format!(
+            "stack-dev env file does not exist: {}",
+            env_path.display()
+        ));
+    }
+
+    Ok(Some((compose_path, env_path)))
+}
 
 /// Check if the Hub backend is reachable at the given URL.
 #[tauri::command]
@@ -276,8 +325,14 @@ pub fn run() {
                 &data_dir,
                 hub_manager::PersistedLaunchMode::Desktop,
             );
-            let compose_path = initialization.compose_path.clone();
-            let env_path = initialization.env_path.clone();
+            let mut compose_path = initialization.compose_path.clone();
+            let mut env_path = initialization.env_path.clone();
+            if let Some((stack_dev_compose, stack_dev_env)) = stack_dev_override_paths()
+                .map_err(|error| format!("Invalid stack-dev launch configuration: {}", error))?
+            {
+                compose_path = stack_dev_compose;
+                env_path = stack_dev_env;
+            }
             error_reporting::init_from_env(
                 &env_path,
                 option_env!("CI_HUB_BUILD_VERSION").unwrap_or("0.0.0"),
@@ -301,6 +356,19 @@ pub fn run() {
                 compose_path: compose_path.clone(),
                 env_path: env_path.clone(),
             });
+
+            if stack_dev_mode_enabled() {
+                let _ = hub_manager::append_desktop_log_for(
+                    &data_dir,
+                    "setup",
+                    &format!(
+                        "stack-dev mode active: attaching to externally managed stack (compose={} env={}) and skipping reconciliation.",
+                        compose_path.display(),
+                        env_path.display()
+                    ),
+                );
+                return Ok(());
+            }
 
             // Hash-based reconciliation: start/restart when containers are missing,
             // configuration changed, or the Traefik runtime preflight changed mounted
@@ -482,10 +550,7 @@ fn run_detached_mode() -> Result<String, String> {
         error
     })?;
     let data_dir = initialization.data_dir.clone();
-    hub_manager::persist_launch_mode(
-        &data_dir,
-        hub_manager::PersistedLaunchMode::Detached,
-    );
+    hub_manager::persist_launch_mode(&data_dir, hub_manager::PersistedLaunchMode::Detached);
     let compose_path = initialization.compose_path.clone();
     let env_path = initialization.env_path.clone();
     // Headless mode skips run(), so initialize crash reporting here too —
@@ -602,8 +667,11 @@ fn extract_pairing_code(url: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        deep_link_urls_from_payload, extract_pairing_code, launch_mode_from_args, LaunchMode,
+        deep_link_urls_from_payload, extract_pairing_code, launch_mode_from_args,
+        stack_dev_mode_enabled, stack_dev_override_paths, LaunchMode, STACK_DEV_COMPOSE_PATH_ENV,
+        STACK_DEV_ENV, STACK_DEV_ENV_PATH_ENV,
     };
+    use std::path::PathBuf;
 
     #[test]
     fn extract_pairing_code_from_query_param() {
@@ -648,6 +716,58 @@ mod tests {
             launch_mode_from_args(&["--detached".to_string()]),
             LaunchMode::Detached
         );
+    }
+
+    #[test]
+    fn stack_dev_mode_disabled_by_default() {
+        let original = std::env::var_os(STACK_DEV_ENV);
+        unsafe {
+            std::env::remove_var(STACK_DEV_ENV);
+        }
+
+        assert!(!stack_dev_mode_enabled());
+
+        if let Some(value) = original {
+            unsafe {
+                std::env::set_var(STACK_DEV_ENV, value);
+            }
+        }
+    }
+
+    #[test]
+    fn stack_dev_override_paths_require_existing_files() {
+        let original_mode = std::env::var_os(STACK_DEV_ENV);
+        let original_compose = std::env::var_os(STACK_DEV_COMPOSE_PATH_ENV);
+        let original_env = std::env::var_os(STACK_DEV_ENV_PATH_ENV);
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let compose_path = tempdir.path().join("docker-compose.prod.yml");
+        let env_path = tempdir.path().join(".env.dev");
+        std::fs::write(&compose_path, "services: {}\n").expect("compose");
+        std::fs::write(&env_path, "API_PORT=5002\n").expect("env");
+
+        unsafe {
+            std::env::set_var(STACK_DEV_ENV, "1");
+            std::env::set_var(STACK_DEV_COMPOSE_PATH_ENV, &compose_path);
+            std::env::set_var(STACK_DEV_ENV_PATH_ENV, &env_path);
+        }
+
+        assert_eq!(
+            stack_dev_override_paths().expect("paths"),
+            Some((PathBuf::from(&compose_path), PathBuf::from(&env_path)))
+        );
+
+        match original_mode {
+            Some(value) => unsafe { std::env::set_var(STACK_DEV_ENV, value) },
+            None => unsafe { std::env::remove_var(STACK_DEV_ENV) },
+        }
+        match original_compose {
+            Some(value) => unsafe { std::env::set_var(STACK_DEV_COMPOSE_PATH_ENV, value) },
+            None => unsafe { std::env::remove_var(STACK_DEV_COMPOSE_PATH_ENV) },
+        }
+        match original_env {
+            Some(value) => unsafe { std::env::set_var(STACK_DEV_ENV_PATH_ENV, value) },
+            None => unsafe { std::env::remove_var(STACK_DEV_ENV_PATH_ENV) },
+        }
     }
 }
 

@@ -8,7 +8,7 @@ import type { RuntimeKind } from '@ci-hub/common/types';
 import si from 'systeminformation';
 import Dockerode from 'dockerode';
 import { Inject } from '@nestjs/common';
-import { DOCKERODE } from '@/modules/docker/docker.module';
+import { DOCKERODE } from '@/modules/docker/constants';
 import net from 'node:net';
 import os from 'node:os';
 

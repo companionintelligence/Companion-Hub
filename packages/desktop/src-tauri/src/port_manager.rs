@@ -48,6 +48,10 @@ fn is_port_available_or_ours(port: u16, our_ports: &HashSet<u16>) -> bool {
     is_port_available(port) || our_ports.contains(&port)
 }
 
+fn can_assign_port(port: u16, our_ports: &HashSet<u16>, assigned_ports: &HashSet<u16>) -> bool {
+    !assigned_ports.contains(&port) && is_port_available_or_ours(port, our_ports)
+}
+
 /// Query Docker for host ports currently bound by our *running* managed
 /// containers.  Only running/restarting containers are genuinely holding
 /// their ports; stopped containers may leave ghost port registrations on
@@ -119,9 +123,14 @@ fn get_our_container_ports() -> HashSet<u16> {
     ports
 }
 
-/// Find the next available port starting from `start`, treating our own ports as available.
-fn find_available_port(start: u16, our_ports: &HashSet<u16>) -> Option<u16> {
-    (start..=start.saturating_add(100)).find(|&p| is_port_available_or_ours(p, our_ports))
+/// Find the next available port starting from `start`, treating our own ports as
+/// available but never reusing a host port already assigned in this resolution pass.
+fn find_available_port(
+    start: u16,
+    our_ports: &HashSet<u16>,
+    assigned_ports: &HashSet<u16>,
+) -> Option<u16> {
+    (start..=start.saturating_add(100)).find(|&p| can_assign_port(p, our_ports, assigned_ports))
 }
 
 /// Result of port resolution.
@@ -139,45 +148,52 @@ pub struct PortResolution {
 pub fn resolve_ports() -> Result<PortResolution, String> {
     let our_ports = get_our_container_ports();
     let mut env_vars: HashMap<String, u16> = HashMap::new();
+    let mut assigned_ports: HashSet<u16> = HashSet::new();
     let warnings = Vec::new();
     let mut info = Vec::new();
 
     // Fixed ports — reassign to a free host port when blocked by a non-Hub process.
     for &(port, var) in FIXED_PORTS {
-        if is_port_available_or_ours(port, &our_ports) {
+        if can_assign_port(port, &our_ports, &assigned_ports) {
             env_vars.insert(var.to_string(), port);
+            assigned_ports.insert(port);
         } else {
             let fallback_start = fixed_port_fallback_start(port);
-            let new_port = find_available_port(fallback_start, &our_ports).ok_or_else(|| {
-                format!(
-                    "Cannot find available host port near {} for {} (default {} is occupied)",
-                    fallback_start, var, port
-                )
-            })?;
+            let new_port = find_available_port(fallback_start, &our_ports, &assigned_ports)
+                .ok_or_else(|| {
+                    format!(
+                        "Cannot find available host port near {} for {} (default {} is occupied)",
+                        fallback_start, var, port
+                    )
+                })?;
             info.push(format!(
                 "Port {} ({}) occupied by another process — using host port {} (Public Web via Cloudflare is unaffected)",
                 port, var, new_port
             ));
             env_vars.insert(var.to_string(), new_port);
+            assigned_ports.insert(new_port);
         }
     }
 
     // Dynamic ports — auto-resolve
     for &(default_port, var) in DYNAMIC_PORTS {
-        if is_port_available_or_ours(default_port, &our_ports) {
+        if can_assign_port(default_port, &our_ports, &assigned_ports) {
             env_vars.insert(var.to_string(), default_port);
+            assigned_ports.insert(default_port);
         } else {
-            let new_port = find_available_port(default_port + 1, &our_ports).ok_or_else(|| {
-                format!(
-                    "Cannot find available port near {} for {}",
-                    default_port, var
-                )
-            })?;
+            let new_port = find_available_port(default_port + 1, &our_ports, &assigned_ports)
+                .ok_or_else(|| {
+                    format!(
+                        "Cannot find available port near {} for {}",
+                        default_port, var
+                    )
+                })?;
             info.push(format!(
                 "Port {} ({}) occupied — using {} instead",
                 default_port, var, new_port
             ));
             env_vars.insert(var.to_string(), new_port);
+            assigned_ports.insert(new_port);
         }
     }
 
@@ -253,6 +269,7 @@ pub fn refresh_ports_if_needed(env_path: &Path) -> Result<PortResolution, String
     // real conflicts.
     let our_ports = get_our_container_ports();
     let mut env_vars: HashMap<String, u16> = HashMap::new();
+    let mut assigned_ports: HashSet<u16> = HashSet::new();
     let warnings = Vec::new();
     let mut info = Vec::new();
     let mut changed = false;
@@ -265,9 +282,10 @@ pub fn refresh_ports_if_needed(env_path: &Path) -> Result<PortResolution, String
             .and_then(|v| v.trim().parse().ok())
             .unwrap_or(default_port);
 
-        if is_port_available_or_ours(current, &our_ports) {
+        if can_assign_port(current, &our_ports, &assigned_ports) {
             env_vars.insert(var.to_string(), current);
-        } else if is_port_available_or_ours(default_port, &our_ports) {
+            assigned_ports.insert(current);
+        } else if can_assign_port(default_port, &our_ports, &assigned_ports) {
             if current != default_port {
                 info.push(format!(
                     "Port {} ({}) now free — restored default host port {}",
@@ -276,14 +294,16 @@ pub fn refresh_ports_if_needed(env_path: &Path) -> Result<PortResolution, String
                 changed = true;
             }
             env_vars.insert(var.to_string(), default_port);
+            assigned_ports.insert(default_port);
         } else {
             let fallback_start = fixed_port_fallback_start(default_port);
-            let new_port = find_available_port(fallback_start, &our_ports).ok_or_else(|| {
-                format!(
-                    "Cannot find available host port near {} for {} ({} is occupied)",
-                    fallback_start, var, default_port
-                )
-            })?;
+            let new_port = find_available_port(fallback_start, &our_ports, &assigned_ports)
+                .ok_or_else(|| {
+                    format!(
+                        "Cannot find available host port near {} for {} ({} is occupied)",
+                        fallback_start, var, default_port
+                    )
+                })?;
             info.push(format!(
                 "Port {} ({}) occupied — using host port {} instead",
                 if current == default_port {
@@ -295,6 +315,7 @@ pub fn refresh_ports_if_needed(env_path: &Path) -> Result<PortResolution, String
                 new_port
             ));
             env_vars.insert(var.to_string(), new_port);
+            assigned_ports.insert(new_port);
             changed = true;
         }
     }
@@ -308,21 +329,24 @@ pub fn refresh_ports_if_needed(env_path: &Path) -> Result<PortResolution, String
             .and_then(|v| v.trim().parse().ok())
             .unwrap_or(default_port);
 
-        if is_port_available_or_ours(current, &our_ports) {
+        if can_assign_port(current, &our_ports, &assigned_ports) {
             env_vars.insert(var.to_string(), current);
+            assigned_ports.insert(current);
         } else {
             // Need to find a new port
-            let new_port = find_available_port(default_port, &our_ports).ok_or_else(|| {
-                format!(
-                    "Cannot find available port near {} for {}",
-                    default_port, var
-                )
-            })?;
+            let new_port = find_available_port(default_port, &our_ports, &assigned_ports)
+                .ok_or_else(|| {
+                    format!(
+                        "Cannot find available port near {} for {}",
+                        default_port, var
+                    )
+                })?;
             info.push(format!(
                 "Port {} ({}) now occupied — reassigned to {}",
                 current, var, new_port
             ));
             env_vars.insert(var.to_string(), new_port);
+            assigned_ports.insert(new_port);
             changed = true;
         }
     }
@@ -402,5 +426,19 @@ mod tests {
     fn fixed_port_fallback_avoids_dashboard_port() {
         assert_eq!(fixed_port_fallback_start(80), 8880);
         assert_eq!(fixed_port_fallback_start(443), 8443);
+    }
+
+    #[test]
+    fn avoids_reusing_ports_already_assigned_in_same_resolution_pass() {
+        let our_ports = HashSet::new();
+        let mut assigned_ports = HashSet::from([5002]);
+
+        let port = find_available_port(5002, &our_ports, &assigned_ports);
+
+        let next_port = port.expect("port");
+        assert_ne!(next_port, 5002);
+        assigned_ports.insert(next_port);
+        assert!(!can_assign_port(5002, &our_ports, &assigned_ports));
+        assert!(!can_assign_port(next_port, &our_ports, &assigned_ports));
     }
 }

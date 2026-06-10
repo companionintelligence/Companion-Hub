@@ -1,15 +1,25 @@
 import { Module } from '@nestjs/common';
-import { AppsModule } from '../apps/apps.module';
-import { DockerModule } from '../docker/docker.module';
+import Dockerode from 'dockerode';
+import { AppsRepository } from '../apps/apps.repository';
+import { DOCKERODE } from '../docker/constants';
 import { SubnetManagerService } from './subnet-manager.service';
 import { PortManagerService } from './port-manager.service';
 import { PortAllocationRepository } from './port-allocation.repository';
 import { PortController } from './port.controller';
 
 @Module({
-  imports: [AppsModule, DockerModule],
   controllers: [PortController],
-  providers: [SubnetManagerService, PortManagerService, PortAllocationRepository],
+  providers: [
+    AppsRepository,
+    SubnetManagerService,
+    PortManagerService,
+    PortAllocationRepository,
+    {
+      provide: DOCKERODE,
+      useFactory: (): Dockerode => new Dockerode(),
+      inject: [],
+    },
+  ],
   exports: [SubnetManagerService, PortManagerService, PortAllocationRepository],
 })
 export class NetworkModule {}

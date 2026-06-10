@@ -118,7 +118,7 @@ const DOCKER_DESKTOP_MACOS_INTEL_URL: &str = "https://desktop.docker.com/mac/mai
 #[cfg(target_os = "macos")]
 const DOCKER_DESKTOP_MACOS_ARM_URL: &str = "https://desktop.docker.com/mac/main/arm64/Docker.dmg";
 
-pub fn docker_command() -> Command {
+fn base_docker_command() -> Command {
     let docker_path = find_docker_binary();
     let mut cmd = Command::new(docker_path);
     // Ensure common binary paths are in PATH for subprocesses (e.g. docker compose)
@@ -136,6 +136,14 @@ pub fn docker_command() -> Command {
     }
     #[cfg(target_os = "windows")]
     cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd
+}
+
+pub fn docker_command() -> Command {
+    let mut cmd = base_docker_command();
+    if let Some(docker_host) = preferred_docker_host() {
+        cmd.env("DOCKER_HOST", docker_host);
+    }
     cmd
 }
 
@@ -1831,6 +1839,18 @@ fn user_stopped_marker_path(data_dir: &Path) -> PathBuf {
     data_dir.join(USER_STOPPED_MARKER_FILENAME)
 }
 
+fn stack_dev_mode_enabled() -> bool {
+    std::env::var("CI_HUB_STACK_DEV")
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
 /// Record that the user intentionally stopped the Hub.
 /// Called from `stop_hub()` so the next app launch skips auto-start.
 pub fn mark_user_stopped(data_dir: &Path) {
@@ -2365,8 +2385,7 @@ fn host_docker_gid() -> u32 {
         .unwrap_or(973)
 }
 
-fn docker_socket_path_from_docker_host() -> Option<PathBuf> {
-    let docker_host = std::env::var("DOCKER_HOST").ok()?;
+fn docker_socket_path_from_docker_host(docker_host: &str) -> Option<PathBuf> {
     let socket_path = docker_host.strip_prefix("unix://")?.trim();
     if socket_path.is_empty() {
         return None;
@@ -2374,24 +2393,169 @@ fn docker_socket_path_from_docker_host() -> Option<PathBuf> {
     Some(PathBuf::from(socket_path))
 }
 
+fn resolved_host_docker_dir(host_docker_dir: Option<&Path>) -> Option<PathBuf> {
+    match host_docker_dir {
+        Some(docker_dir) => Some(docker_dir.to_path_buf()),
+        None => dirs::home_dir().map(|home| home.join(".docker")),
+    }
+}
+
+fn current_docker_context_name(host_docker_dir: Option<&Path>) -> Option<String> {
+    let docker_dir = resolved_host_docker_dir(host_docker_dir)?;
+    let raw = std::fs::read_to_string(docker_dir.join("config.json")).ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let context_name = parsed.get("currentContext")?.as_str()?.trim();
+    if context_name.is_empty() || context_name == "default" {
+        return None;
+    }
+    Some(context_name.to_string())
+}
+
+fn docker_context_host_from_inspect_output(raw: &str) -> Option<String> {
+    let parsed: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let host = parsed
+        .as_array()?
+        .first()?
+        .get("Endpoints")?
+        .get("docker")?
+        .get("Host")?
+        .as_str()?
+        .trim();
+    if host.is_empty() {
+        return None;
+    }
+    Some(host.to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn docker_context_host(context_name: &str) -> Option<String> {
+    let output = base_docker_command()
+        .args(["context", "inspect", context_name])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    docker_context_host_from_inspect_output(&String::from_utf8_lossy(&output.stdout))
+}
+
+#[cfg(target_os = "linux")]
+fn linux_docker_host_for_context_or_local_sockets<F>(
+    context_host: Option<&str>,
+    has_nondefault_context: bool,
+    candidates: &[PathBuf],
+    mut is_reachable: F,
+) -> Option<String>
+where
+    F: FnMut(&Path) -> bool,
+{
+    if has_nondefault_context {
+        return context_host.map(|host| host.to_string());
+    }
+
+    select_reachable_linux_docker_socket_path(candidates, |candidate| is_reachable(candidate))
+        .map(|socket_path| format!("unix://{}", socket_path.display()))
+}
+
+fn preferred_docker_host() -> Option<String> {
+    if let Ok(docker_host) = std::env::var("DOCKER_HOST") {
+        let trimmed = docker_host.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        return active_linux_docker_host(None);
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_docker_socket_candidates() -> Vec<PathBuf> {
+    let mut candidates = vec![PathBuf::from("/var/run/docker.sock")];
+    if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
+        candidates.push(PathBuf::from(runtime_dir).join("docker.sock"));
+    }
+    let uid = unsafe { libc::getuid() };
+    candidates.push(PathBuf::from(format!("/run/user/{uid}/docker.sock")));
+    if let Some(home) = dirs::home_dir() {
+        candidates.push(home.join(".docker").join("run").join("docker.sock"));
+    }
+
+    let mut deduped = Vec::new();
+    for candidate in candidates {
+        if !deduped.iter().any(|existing| existing == &candidate) {
+            deduped.push(candidate);
+        }
+    }
+    deduped
+}
+
+#[cfg(target_os = "linux")]
+fn select_reachable_linux_docker_socket_path<F>(
+    candidates: &[PathBuf],
+    mut is_reachable: F,
+) -> Option<PathBuf>
+where
+    F: FnMut(&Path) -> bool,
+{
+    candidates
+        .iter()
+        .find(|candidate| is_reachable(candidate))
+        .cloned()
+}
+
+#[cfg(target_os = "linux")]
+fn probe_linux_docker_socket(socket_path: &Path) -> bool {
+    if !socket_path.exists() {
+        return false;
+    }
+
+    let docker_host = format!("unix://{}", socket_path.display());
+    base_docker_command()
+        .env("DOCKER_HOST", docker_host)
+        .args(["info", "--format", "{{.ServerVersion}}"])
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "linux")]
+fn active_linux_docker_host(host_docker_dir: Option<&Path>) -> Option<String> {
+    // Respect a configured non-default Docker context even if it is currently
+    // unavailable so the desktop app matches the user's CLI behavior. Only fall
+    // back to local Engine sockets when there is no explicit context override.
+    let context_name = current_docker_context_name(host_docker_dir);
+    let context_host = context_name.as_deref().and_then(docker_context_host);
+
+    linux_docker_host_for_context_or_local_sockets(
+        context_host.as_deref(),
+        context_name.is_some(),
+        &linux_docker_socket_candidates(),
+        probe_linux_docker_socket,
+    )
+}
+
 fn host_docker_socket_path() -> PathBuf {
-    if let Some(socket_path) = docker_socket_path_from_docker_host() {
+    if let Some(socket_path) = preferred_docker_host()
+        .as_deref()
+        .and_then(docker_socket_path_from_docker_host)
+    {
         return socket_path;
     }
 
     #[cfg(target_os = "linux")]
     {
-        let mut candidates = Vec::new();
-        if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-            candidates.push(PathBuf::from(runtime_dir).join("docker.sock"));
-        }
-        let uid = unsafe { libc::getuid() };
-        candidates.push(PathBuf::from(format!("/run/user/{uid}/docker.sock")));
-        if let Some(home) = dirs::home_dir() {
-            candidates.push(home.join(".docker").join("run").join("docker.sock"));
-        }
-
-        if let Some(existing) = candidates.into_iter().find(|candidate| candidate.exists()) {
+        if let Some(existing) = linux_docker_socket_candidates()
+            .into_iter()
+            .find(|candidate| candidate.exists())
+        {
             return existing;
         }
     }
@@ -3724,7 +3888,9 @@ fn start_database_first(
 /// A `Drop` guard ensures the flag is cleared even if the inner logic panics.
 pub fn start_hub(compose_path: &Path, env_path: &Path, data_dir: &Path) -> Result<String, String> {
     // Clear the user-stopped marker: the user has explicitly requested a start.
-    clear_user_stopped(data_dir);
+    if !stack_dev_mode_enabled() {
+        clear_user_stopped(data_dir);
+    }
 
     // Prevent concurrent start attempts.
     if START_IN_PROGRESS
@@ -3882,8 +4048,7 @@ fn start_hub_inner(
     let config_hash = compute_config_hash(compose_path, env_path);
     let hash_path = data_dir.join(".config-hash");
     let saved_hash = std::fs::read_to_string(&hash_path).ok();
-    let should_refresh_stack =
-        env_changed || saved_hash.as_deref() != Some(config_hash.as_str());
+    let should_refresh_stack = env_changed || saved_hash.as_deref() != Some(config_hash.as_str());
     if should_refresh_stack {
         let _ = append_desktop_log_for(
             data_dir,
@@ -4182,7 +4347,11 @@ pub fn pull_stack_images(
     env_path: &Path,
     data_dir: &Path,
 ) -> Result<(), String> {
-    let _ = append_desktop_log_for(data_dir, "hub.start", "Pulling stack images before startup…");
+    let _ = append_desktop_log_for(
+        data_dir,
+        "hub.start",
+        "Pulling stack images before startup…",
+    );
     let output = docker_command()
         .env("ENV_FILE", env_path)
         .args([
@@ -4267,12 +4436,19 @@ pub fn stop_hub(compose_path: &Path, env_path: &Path) -> Result<String, String> 
     let data_dir = get_hub_data_dir();
     // Record that the user intentionally stopped the Hub so the next launch
     // does not auto-restart it.
-    mark_user_stopped(&data_dir);
+    if !stack_dev_mode_enabled() {
+        mark_user_stopped(&data_dir);
+    }
     let _ = append_desktop_log_for(
         &data_dir,
         "hub.stop",
         &format!(
-            "Requested stop via docker compose down (user-stopped marker set)\ncompose={}\nenv={}",
+            "Requested stop via docker compose down{}\ncompose={}\nenv={}",
+            if stack_dev_mode_enabled() {
+                " (stack-dev mode: user-stopped marker unchanged)"
+            } else {
+                " (user-stopped marker set)"
+            },
             compose_path.display(),
             env_path.display()
         ),
@@ -5583,20 +5759,26 @@ mod tests {
     use super::docker_desktop_windows_install_script;
     use super::{
         append_desktop_log_for, classify_docker_access_result, clear_traefik_recreate_required,
-        clear_tunnel_token, desktop_log_path_for, format_command_output,
-        generate_container_docker_config, host_container_uid_gid, host_docker_socket_path,
-        is_container_name_conflict, is_host_port_bind_conflict, is_oci_runtime_error,
-        is_traefik_recreate_required, logs_open_target_for, managed_app_container_ps_args,
-        mark_traefik_recreate_required, merge_compose_profiles, parse_container_ids,
-        parse_docker_socket_uid_gid, prepare_traefik_runtime_state, private_vpn_enabled_from_map,
-        seeded_traefik_config_contents, should_defer_docker_bind_mount_probe,
-        startup_service_definitions, truncate_command_output, tunnel_dir_for,
-        tunnel_token_path_for, DockerAccessState, MAX_COMMAND_OUTPUT_CHARS, TRAEFIK_ACME_FILE,
-        TRAEFIK_CONFIG_FILE, TRAEFIK_DYNAMIC_CONFIG_SEED, TRAEFIK_DYNAMIC_FILE, TRAEFIK_TLS_DIR,
+        clear_tunnel_token, desktop_log_path_for, docker_context_host_from_inspect_output,
+        format_command_output, generate_container_docker_config, host_container_uid_gid,
+        host_docker_socket_path, is_container_name_conflict, is_host_port_bind_conflict,
+        is_oci_runtime_error, is_traefik_recreate_required, logs_open_target_for,
+        managed_app_container_ps_args, mark_traefik_recreate_required, merge_compose_profiles,
+        parse_container_ids, parse_docker_socket_uid_gid, prepare_traefik_runtime_state,
+        private_vpn_enabled_from_map, seeded_traefik_config_contents,
+        should_defer_docker_bind_mount_probe, startup_service_definitions, truncate_command_output,
+        tunnel_dir_for, tunnel_token_path_for, DockerAccessState, MAX_COMMAND_OUTPUT_CHARS,
+        TRAEFIK_ACME_FILE, TRAEFIK_CONFIG_FILE, TRAEFIK_DYNAMIC_CONFIG_SEED, TRAEFIK_DYNAMIC_FILE,
+        TRAEFIK_TLS_DIR,
+    };
+    #[cfg(target_os = "linux")]
+    use super::{
+        current_docker_context_name, linux_docker_host_for_context_or_local_sockets,
+        select_reachable_linux_docker_socket_path,
     };
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     use std::os::unix::fs::PermissionsExt;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn classifies_daemon_unavailable_before_permission_denied() {
@@ -5678,6 +5860,113 @@ mod tests {
                 std::env::remove_var("DOCKER_HOST");
             }
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn prefers_reachable_linux_engine_socket_over_desktop_candidates() {
+        let candidates = vec![
+            PathBuf::from("/var/run/docker.sock"),
+            PathBuf::from("/run/user/1000/docker.sock"),
+            PathBuf::from("/home/test/.docker/run/docker.sock"),
+        ];
+        let reachable = candidates[0].clone();
+
+        let selected = select_reachable_linux_docker_socket_path(&candidates, |candidate| {
+            candidate == reachable.as_path()
+        });
+
+        assert_eq!(selected, Some(reachable));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn falls_back_to_reachable_linux_desktop_socket_when_engine_isnt_ready() {
+        let candidates = vec![
+            PathBuf::from("/var/run/docker.sock"),
+            PathBuf::from("/run/user/1000/docker.sock"),
+            PathBuf::from("/home/test/.docker/run/docker.sock"),
+        ];
+        let reachable = candidates[1].clone();
+
+        let selected = select_reachable_linux_docker_socket_path(&candidates, |candidate| {
+            candidate == reachable.as_path()
+        });
+
+        assert_eq!(selected, Some(reachable));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn reads_current_docker_context_from_config_fixture() {
+        let fixture = r#"{ "currentContext": "desktop-linux" }"#;
+        let (_tmp_home, docker_dir) = write_docker_config_fixture(fixture);
+
+        assert_eq!(
+            current_docker_context_name(Some(&docker_dir)),
+            Some("desktop-linux".to_string())
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn ignores_default_docker_context_name() {
+        let fixture = r#"{ "currentContext": "default" }"#;
+        let (_tmp_home, docker_dir) = write_docker_config_fixture(fixture);
+
+        assert_eq!(current_docker_context_name(Some(&docker_dir)), None);
+    }
+
+    #[test]
+    fn parses_docker_context_host_from_inspect_output() {
+        let inspect_output = r#"[{
+            "Name": "desktop-linux",
+            "Endpoints": {
+                "docker": {
+                    "Host": "unix:///home/test/.docker/desktop/docker.sock"
+                }
+            }
+        }]"#;
+
+        assert_eq!(
+            docker_context_host_from_inspect_output(inspect_output),
+            Some("unix:///home/test/.docker/desktop/docker.sock".to_string())
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn prefers_reachable_linux_context_host_before_socket_fallbacks() {
+        let context_host = "unix:///home/test/.docker/desktop/docker.sock";
+        let candidates = vec![
+            PathBuf::from("/var/run/docker.sock"),
+            PathBuf::from("/run/user/1000/docker.sock"),
+        ];
+
+        let selected = linux_docker_host_for_context_or_local_sockets(
+            Some(context_host),
+            true,
+            &candidates,
+            |_candidate| false,
+        );
+
+        assert_eq!(selected, Some(context_host.to_string()));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn does_not_fall_back_when_nondefault_context_is_configured_but_unreachable() {
+        let candidates = vec![
+            PathBuf::from("/var/run/docker.sock"),
+            PathBuf::from("/run/user/1000/docker.sock"),
+        ];
+
+        let selected =
+            linux_docker_host_for_context_or_local_sockets(None, true, &candidates, |candidate| {
+                candidate == Path::new("/var/run/docker.sock")
+            });
+
+        assert_eq!(selected, None);
     }
 
     #[test]

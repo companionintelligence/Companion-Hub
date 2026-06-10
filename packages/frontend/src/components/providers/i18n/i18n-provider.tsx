@@ -4,6 +4,7 @@ import HttpBackend from 'i18next-http-backend';
 import { type PropsWithChildren, useEffect, useState } from 'react';
 import { I18nextProvider, initReactI18next } from 'react-i18next';
 import { client } from '@/api-client/client.gen';
+import en from '../../../../../backend/src/modules/i18n/translations/en.json';
 
 const isTauriRelease = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window && !window.location.origin.startsWith('http://localhost:');
 
@@ -34,6 +35,14 @@ function initI18n() {
     .use(initReactI18next)
     .init({
       debug: false,
+      resources: {
+        en: {
+          translation: en,
+        },
+        'en-US': {
+          translation: en,
+        },
+      },
       react: {
         useSuspense: true,
       },

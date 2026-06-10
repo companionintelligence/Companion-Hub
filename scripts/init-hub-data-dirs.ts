@@ -9,7 +9,13 @@ import { execSync } from 'node:child_process';
 import { existsSync, mkdirSync, rmSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { parseEnvFile, upsertEnvVar } from './cihub-cli';
-import { ensureHubBindMountsWritable, likelyDockerDesktop, logBindMountHeal, resolveHostDockerSocketPath } from './heal-hub-bind-mounts';
+import {
+  ensureHubBindMountsWritable,
+  isDockerAvailable,
+  likelyDockerDesktop,
+  logBindMountHeal,
+  resolveHostDockerSocketPath,
+} from './heal-hub-bind-mounts';
 
 function resolveRootFolderHost(): string {
   const envFile = process.env.ENV_FILE || '.env.dev';
@@ -111,8 +117,13 @@ function main(): void {
   const envFile = process.env.ENV_FILE || '.env.dev';
   const root = resolveRootFolderHost();
   const envFilePath = path.isAbsolute(envFile) ? envFile : path.join(cwd, envFile);
+  const dockerAvailable = isDockerAvailable();
 
-  const identity = ensureHubBindMountsWritable(root, { envFile: envFilePath });
+  if (!dockerAvailable) {
+    console.warn('init-hub-data-dirs: Docker is not available; skipping Docker-based bind-mount verification until Docker starts.');
+  }
+
+  const identity = ensureHubBindMountsWritable(root, { envFile: envFilePath, skipDockerHeal: !dockerAvailable });
   logBindMountHeal(
     root,
     `init-hub-data-dirs: bind mounts ready under ${root} (container ${identity.uid}:${identity.gid}, source=${identity.source})`,
