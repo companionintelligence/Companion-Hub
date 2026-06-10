@@ -256,6 +256,7 @@
   "SELECTED_FILE": "Selected file",
   "APP_SETTINGS_GENERAL_TITLE": "General",
   "APP_STATUS_INSTALL_FAILED": "Install failed",
+  "APP_STATUS_INSTALLING": "Installing",
   "APP_STATUS_MISSING": "Missing",
   "APP_STATUS_RESETTING": "Resetting",
   "APP_STATUS_STARTING": "Starting",
