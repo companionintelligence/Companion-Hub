@@ -79,10 +79,7 @@ export const InstallForm: React.FC<IProps> = ({
   const { t } = useTranslation();
   const { userSettings, isProduction, user, cloudflareAvailable, tailscaleAvailable } = useAppContext();
   const { guestDashboard, localDomain, maxBackups: globalMaxBackups, ciHubOrganizationSlug, ciHubDeviceSlug, domain } = userSettings;
-  const globalCpuLimit =
-    typeof (userSettings as Record<string, unknown>).defaultAppCpuLimit === 'string'
-      ? ((userSettings as Record<string, unknown>).defaultAppCpuLimit as string)
-      : '';
+  const globalCpuLimit = userSettings.defaultAppCpuLimit ?? '';
   const isAdvancedMode = user.advancedMode;
 
   const orgSlug = ciHubOrganizationSlug ? ciHubOrganizationSlug.toLowerCase().replace(/\s+/g, '-') : undefined;

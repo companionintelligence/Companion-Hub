@@ -145,10 +145,9 @@ export class DockerService {
     const results = await Promise.all(
       containers.map((container) =>
         (async () => {
-          const inspect = await this.docker.getContainer(container.Id).inspect();
-          const stats = inspect.State?.Running
-            ? ((await this.docker.getContainer(container.Id).stats({ stream: false })) as DockerStatsSnapshot)
-            : null;
+          const dockerContainer = this.docker.getContainer(container.Id);
+          const inspect = await dockerContainer.inspect();
+          const stats = inspect.State?.Running ? ((await dockerContainer.stats({ stream: false })) as DockerStatsSnapshot) : null;
 
           const usage = stats?.memory_stats?.usage ?? 0;
           const cache = stats?.memory_stats?.stats?.cache ?? 0;
