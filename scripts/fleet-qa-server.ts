@@ -68,6 +68,13 @@ const BUILTIN_FLEET: FleetNode[] = [
   { name: 'core-17', ip: '100.67.181.7', batch: 7 },
   { name: 'beta-1', ip: '100.124.211.75', batch: 8 },
   { name: 'beta-ms-a2', ip: '100.119.230.14', batch: 9 },
+  // beta-red: recovered 2026-06-09 — x86_64, Docker (mirror→core-1:5050), CI-Hub+CI-Marketplace@dev,
+  //   chromium-1208, Node 18 + tsx, git-auth OK, 31G RAM. (core-9 is offline on an expired TS key.)
+  { name: 'beta-red', ip: '100.86.79.25', batch: 10 },
+  // fzzy: provisioned 2026-06-09 — x86_64, 122G RAM, Docker 29 (no passwordless sudo → no registry
+  //   mirror; uses an authed ~/.docker/config.json instead), nvm Node 22 + global tsx, CI-Marketplace
+  //   @dev synced. No CI-Hub checkout needed (qa-stream is pure-builtin + tsx).
+  { name: 'fzzy', ip: '100.114.164.27', batch: 11 },
 ];
 
 const FLEET: FleetNode[] = process.env.FLEET_CONFIG_JSON ? JSON.parse(process.env.FLEET_CONFIG_JSON) : BUILTIN_FLEET;
