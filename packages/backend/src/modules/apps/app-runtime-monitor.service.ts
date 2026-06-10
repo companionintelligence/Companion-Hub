@@ -10,11 +10,18 @@ const HIGH_CPU_THRESHOLD_PERCENT = 90;
 const HIGH_CPU_SAMPLE_COUNT = 3;
 const MONITOR_INTERVAL_MS = 60_000;
 const STOPPING_GRACE_MS = 30_000;
+const AVAILABILITY_PROBE_CACHE_TTL_MS = 60_000;
 
 type RuntimeSample = {
   sampledAtMs: number;
   cpuPercent: number;
   responsive: boolean;
+};
+
+type AvailabilityProbeCacheEntry = {
+  sampledAtMs: number;
+  responsive: boolean;
+  reason: string | null;
 };
 
 export type AppRuntimeHealth = {
@@ -39,7 +46,9 @@ export type AppRuntimeHealth = {
 @Injectable()
 export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy {
   private readonly samples = new Map<string, RuntimeSample[]>();
+  private readonly availabilityProbeCache = new Map<string, AvailabilityProbeCacheEntry>();
   private intervalHandle: NodeJS.Timeout | null = null;
+  private summaryInFlight = false;
 
   constructor(
     private readonly logger: LoggerService,
@@ -51,7 +60,14 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy {
 
   onModuleInit() {
     this.intervalHandle = setInterval(() => {
-      void this.logRuntimeSummary();
+      if (this.summaryInFlight) {
+        return;
+      }
+
+      this.summaryInFlight = true;
+      void this.logRuntimeSummary().finally(() => {
+        this.summaryInFlight = false;
+      });
     }, MONITOR_INTERVAL_MS);
   }
 
@@ -85,6 +101,36 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy {
     return next;
   }
 
+  private getCachedAvailabilityProbe(appUrn: string): AvailabilityProbeCacheEntry | null {
+    const cached = this.availabilityProbeCache.get(appUrn);
+    if (!cached) {
+      return null;
+    }
+
+    if (Date.now() - cached.sampledAtMs > AVAILABILITY_PROBE_CACHE_TTL_MS) {
+      this.availabilityProbeCache.delete(appUrn);
+      return null;
+    }
+
+    return cached;
+  }
+
+  private async getAvailabilityForSuspiciousApp(appUrn: AppUrn): Promise<AvailabilityProbeCacheEntry> {
+    const cached = this.getCachedAvailabilityProbe(appUrn);
+    if (cached) {
+      return cached;
+    }
+
+    const availability = await this.appsService.checkAppAvailability(appUrn);
+    const nextEntry: AvailabilityProbeCacheEntry = {
+      sampledAtMs: Date.now(),
+      responsive: availability.available,
+      reason: availability.available ? null : availability.detail || availability.errorCode || 'App availability probe failed',
+    };
+    this.availabilityProbeCache.set(appUrn, nextEntry);
+    return nextEntry;
+  }
+
   private async collectAppRuntimeHealth(appUrn: AppUrn): Promise<AppRuntimeHealth> {
     const app = await this.appsRepository.getAppByUrn(appUrn);
     if (!app) {
@@ -102,10 +148,13 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy {
     let responsive = true;
     let reason: string | null = null;
 
-    if (app.status === 'running' || app.status === 'restarting') {
-      const availability = await this.appsService.checkAppAvailability(appUrn);
-      responsive = availability.available;
-      reason = availability.available ? null : availability.detail || availability.errorCode || 'App availability probe failed';
+    const shouldProbeAvailability =
+      (app.status === 'running' || app.status === 'restarting') && (highCpu || healthUnhealthy || app.status === 'restarting');
+
+    if (shouldProbeAvailability) {
+      const availability = await this.getAvailabilityForSuspiciousApp(appUrn);
+      responsive = availability.responsive;
+      reason = availability.reason;
     } else if (app.status === 'stopping' && containers.some((container) => container.state === 'running')) {
       const updatedAtMs = app.updatedAt ? Date.parse(app.updatedAt) : 0;
       const stopTimedOut = updatedAtMs > 0 && Date.now() - updatedAtMs >= STOPPING_GRACE_MS;
