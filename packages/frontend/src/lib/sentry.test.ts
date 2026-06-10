@@ -6,16 +6,19 @@ type MutableImportMetaEnv = {
 
 const testEnv = import.meta.env as MutableImportMetaEnv;
 
-const { apiFetch, captureException, init, setTag, setExtra, withScope } = vi.hoisted(() => ({
+const { apiFetch, captureException, captureMessage, init, setLevel, setTag, setExtra, withScope } = vi.hoisted(() => ({
   apiFetch: vi.fn(),
   captureException: vi.fn(),
+  captureMessage: vi.fn(),
   init: vi.fn(),
+  setLevel: vi.fn(),
   setTag: vi.fn(),
   setExtra: vi.fn(),
   withScope: vi.fn(),
 }));
 
 vi.mock('@sentry/react', () => ({
+  captureMessage,
   captureException,
   init,
   setTag,
@@ -37,8 +40,8 @@ describe('frontend sentry', () => {
     vi.resetModules();
     vi.clearAllMocks();
     sessionStorage.clear();
-    withScope.mockImplementation((callback: (scope: { setTag: typeof setTag; setExtra: typeof setExtra }) => void) => {
-      callback({ setTag, setExtra });
+    withScope.mockImplementation((callback: (scope: { setTag: typeof setTag; setExtra: typeof setExtra; setLevel: typeof setLevel }) => void) => {
+      callback({ setTag, setExtra, setLevel });
     });
     testEnv.CI_HUB_ENVIRONMENT = 'development';
     testEnv.VITE_SENTRY_DSN = 'https://frontend@example.ingest.sentry.io/123456';
@@ -91,5 +94,15 @@ describe('frontend sentry', () => {
 
     expect(setTag).toHaveBeenCalledWith('device_id', 'device-xyz');
     expect(sessionStorage.getItem('ci-hub-sentry-device-id')).toBe('device-xyz');
+  });
+
+  it('deduplicates warning captures within the debounce window', async () => {
+    const { captureHubWarning } = await import('./sentry');
+
+    captureHubWarning('startup fallback warning', { source: 'test' }, { dedupeKey: 'startup-warning' });
+    captureHubWarning('startup fallback warning', { source: 'test' }, { dedupeKey: 'startup-warning' });
+
+    expect(captureMessage).toHaveBeenCalledTimes(1);
+    expect(captureMessage).toHaveBeenCalledWith('startup fallback warning', 'warning');
   });
 });

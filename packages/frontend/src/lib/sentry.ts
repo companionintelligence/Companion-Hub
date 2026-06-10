@@ -3,8 +3,10 @@ import { apiFetch } from './api-fetch';
 
 let sentryInitialized = false;
 let deviceIdRequest: Promise<void> | null = null;
+const warningDebounce = new Map<string, number>();
 
 const SENTRY_DEVICE_ID_STORAGE_KEY = 'ci-hub-sentry-device-id';
+const WARNING_DEBOUNCE_MS = 60_000;
 
 function isTauri(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
@@ -129,6 +131,40 @@ export function captureHubException(error: unknown, context?: Record<string, unk
       }
     }
     Sentry.captureException(error);
+  });
+}
+
+export function captureHubWarning(message: string, context?: Record<string, unknown>, options?: { dedupeKey?: string; debounceMs?: number }): void {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  initHubSentry();
+  if (!sentryInitialized) {
+    return;
+  }
+  void ensureHubSentryDeviceId();
+
+  const dedupeKey = options?.dedupeKey ?? message;
+  const debounceMs = options?.debounceMs ?? WARNING_DEBOUNCE_MS;
+  const now = Date.now();
+  const lastSent = warningDebounce.get(dedupeKey);
+  if (lastSent !== undefined && now - lastSent < debounceMs) {
+    return;
+  }
+  warningDebounce.set(dedupeKey, now);
+
+  Sentry.withScope((scope) => {
+    scope.setTag('component', getComponentTag());
+    scope.setLevel('warning');
+    if (context) {
+      for (const [key, value] of Object.entries(context)) {
+        if (value !== undefined) {
+          scope.setExtra(key, value);
+        }
+      }
+    }
+    Sentry.captureMessage(message, 'warning');
   });
 }
 

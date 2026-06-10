@@ -1,7 +1,12 @@
 use std::path::Path;
 use std::sync::OnceLock;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 static SENTRY_GUARD: OnceLock<sentry::ClientInitGuard> = OnceLock::new();
+static CAPTURED_LOG_EVENTS: OnceLock<Mutex<std::collections::HashMap<String, Instant>>> =
+    OnceLock::new();
+const LOG_EVENT_DEBOUNCE_WINDOW: Duration = Duration::from_secs(300);
 
 fn read_env_value(env_path: &Path, key: &str) -> Option<String> {
     let content = std::fs::read_to_string(env_path).ok()?;
@@ -118,16 +123,56 @@ fn is_failure_message(message: &str) -> bool {
         || lower.contains("auto-start failed")
 }
 
+fn is_warning_message(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("warning")
+        || lower.contains("warn:")
+        || lower.contains("falling back")
+        || lower.contains("fallback")
+        || lower.contains("non-fatal")
+        || lower.contains("retrying")
+        || lower.contains("degraded")
+        || lower.contains("stuck")
+        || lower.contains("could not")
+}
+
+fn classify_log_level(message: &str) -> sentry::Level {
+    if is_failure_message(message) {
+        sentry::Level::Error
+    } else if is_warning_message(message) {
+        sentry::Level::Warning
+    } else {
+        sentry::Level::Info
+    }
+}
+
+fn should_capture_log_event(operation: &str, message: &str) -> bool {
+    let cache = CAPTURED_LOG_EVENTS.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
+    let key = format!(
+        "{}:{}",
+        operation.trim().to_ascii_lowercase(),
+        message.trim().to_ascii_lowercase()
+    );
+    let now = Instant::now();
+
+    let mut events = cache.lock().expect("captured log events mutex poisoned");
+    events.retain(|_, timestamp| now.duration_since(*timestamp) < LOG_EVENT_DEBOUNCE_WINDOW);
+
+    match events.get(&key) {
+        Some(previous) if now.duration_since(*previous) < LOG_EVENT_DEBOUNCE_WINDOW => false,
+        _ => {
+            events.insert(key, now);
+            true
+        }
+    }
+}
+
 pub fn record_log_event(operation: &str, message: &str) {
     if SENTRY_GUARD.get().is_none() {
         return;
     }
 
-    let level = if is_failure_message(message) {
-        sentry::Level::Error
-    } else {
-        sentry::Level::Info
-    };
+    let level = classify_log_level(message);
 
     sentry::add_breadcrumb(sentry::Breadcrumb {
         category: Some(operation.to_string()),
@@ -136,11 +181,8 @@ pub fn record_log_event(operation: &str, message: &str) {
         ..Default::default()
     });
 
-    if is_failure_message(message) {
-        sentry::capture_message(
-            &format!("{operation}: {}", truncate(message, 2000)),
-            sentry::Level::Error,
-        );
+    if level != sentry::Level::Info && should_capture_log_event(operation, message) {
+        sentry::capture_message(&format!("{operation}: {}", truncate(message, 2000)), level);
     }
 }
 
@@ -180,7 +222,7 @@ fn truncate(value: &str, max_len: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_dsn, read_device_id, read_first_env_value};
+    use super::{classify_log_level, parse_dsn, read_device_id, read_first_env_value};
 
     #[test]
     fn rejects_malformed_dsn_without_panicking() {
@@ -220,5 +262,19 @@ mod tests {
 
         let value = read_device_id(&env_path);
         assert_eq!(value.as_deref(), Some("device-123"));
+    }
+
+    #[test]
+    fn classifies_recoverable_messages_as_warning() {
+        assert_eq!(
+            classify_log_level("Pre-start cleanup warning (non-fatal): test"),
+            sentry::Level::Warning
+        );
+        assert_eq!(
+            classify_log_level("Tailscale Services failed, falling back to path-based"),
+            sentry::Level::Error
+        );
+        assert_eq!(classify_log_level("warning: could not chmod file"), sentry::Level::Warning);
+        assert_eq!(classify_log_level("startup complete"), sentry::Level::Info);
     }
 }

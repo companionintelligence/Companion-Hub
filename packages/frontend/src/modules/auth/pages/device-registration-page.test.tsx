@@ -3,7 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RegistrationStatus } from '@/lib/registration-status';
 import DeviceRegistrationPage from './device-registration-page';
 
-const { navigate, apiFetch, setHubSentryDeviceId, toast } = vi.hoisted(() => ({
+const { captureHubWarning, navigate, apiFetch, setHubSentryDeviceId, toast } = vi.hoisted(() => ({
+  captureHubWarning: vi.fn(),
   navigate: vi.fn(),
   apiFetch: vi.fn(),
   setHubSentryDeviceId: vi.fn(),
@@ -26,6 +27,7 @@ vi.mock('@/lib/api-fetch', () => ({
 }));
 
 vi.mock('@/lib/sentry', () => ({
+  captureHubWarning,
   setHubSentryDeviceId,
 }));
 
