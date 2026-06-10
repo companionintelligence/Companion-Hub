@@ -24,7 +24,7 @@ function Remove-IfExists {
     param([string]$PathToDelete)
     if (Test-Path $PathToDelete) {
         try {
-            Remove-Item -Path $PathToDelete -Recurse -Force
+            Remove-Item -Path $PathToDelete -Recurse -Force -ErrorAction Stop
             Write-CleanupLog 'INFO' "Removed $PathToDelete"
         }
         catch {
@@ -93,7 +93,7 @@ foreach ($name in $stateNames) {
 $registryPath = 'HKLM:\SOFTWARE\Classes\cihub'
 if (Test-Path $registryPath) {
     try {
-        Remove-Item -Path $registryPath -Recurse -Force
+        Remove-Item -Path $registryPath -Recurse -Force -ErrorAction Stop
         Write-CleanupLog 'INFO' 'Removed cihub protocol registry key'
     }
     catch {

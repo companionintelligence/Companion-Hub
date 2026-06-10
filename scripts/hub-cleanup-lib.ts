@@ -295,7 +295,7 @@ export function runHubCleanup(options?: CleanupOptions): CleanupSummary {
   runCommand('docker compose --project-name runtipi -f docker-compose.prod.yml down -v', commandContext);
   runCommand('docker compose --project-name ci-hub -f docker-compose.local.yml down -v', commandContext);
 
-  if (exists('/tmp/.buildx-cache')) {
+  if (platform !== 'win32' && exists('/tmp/.buildx-cache')) {
     runCommand('rm -rf /tmp/.buildx-cache', commandContext);
   }
 
