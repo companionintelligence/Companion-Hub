@@ -33,6 +33,7 @@ export class AppLifecycleCommand {
     const logger = this.moduleRef.get(LoggerService, { strict: false });
     const subnetManager = this.moduleRef.get(SubnetManagerService, { strict: false });
     const configService = this.moduleRef.get(ConfigurationService, { strict: false });
+    const fullConfig = configService.getConfig();
 
     const pruned = await this.docker
       .pruneContainers({ filters: { label: [`ci-os-hub.appurn=${appUrn}`] } })
@@ -58,11 +59,11 @@ export class AppLifecycleCommand {
       const envUtils = new EnvUtils();
       const envMap = envUtils.envStringToMap(appEnv.content || '');
 
-      const domain = envMap.get('DOMAIN') || configService.get('userSettings').domain || configService.get('domain');
-      const localDomain = envMap.get('LOCAL_DOMAIN') || configService.get('userSettings').localDomain || configService.get('localDomain');
+      const domain = envMap.get('DOMAIN') || fullConfig.userSettings?.domain || fullConfig.domain;
+      const localDomain = envMap.get('LOCAL_DOMAIN') || fullConfig.userSettings?.localDomain || fullConfig.localDomain;
       const defaultCpuLimit =
-        typeof (configService.get('userSettings') as Record<string, unknown>).defaultAppCpuLimit === 'string'
-          ? ((configService.get('userSettings') as Record<string, unknown>).defaultAppCpuLimit as string).trim() || undefined
+        typeof (fullConfig.userSettings as Record<string, unknown> | undefined)?.defaultAppCpuLimit === 'string'
+          ? ((fullConfig.userSettings as Record<string, unknown>).defaultAppCpuLimit as string).trim() || undefined
           : undefined;
 
       const effectiveExposureMode = form.exposureMode || (form.exposedLocal ? 'cloudflare' : 'local');
@@ -74,7 +75,7 @@ export class AppLifecycleCommand {
         const publicDomainRoot = resolvePublicDomainRoot({
           selectedPublicDomain: typeof form.publicDomain === 'string' ? form.publicDomain : undefined,
           envDomain: envMap.get('DOMAIN'),
-          configDomain: configService.get('domain'),
+          configDomain: fullConfig.domain,
         });
         const identity = buildPublicWebIdentity({
           appSubdomain: form.localSubdomain || `${appName}-${appStoreId}`,
