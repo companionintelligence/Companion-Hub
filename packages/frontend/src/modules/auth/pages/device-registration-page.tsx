@@ -17,6 +17,7 @@ import {
   REGISTRATION_PROVISIONING_HINT,
 } from '@/components/hub-status/hub-status-tooltips';
 import { normalizePairingCode, resolvePendingPairingCode, stashPendingPairingCode } from '@/lib/deep-link-pair';
+import { setHubSentryDeviceId } from '@/lib/sentry';
 import { useTranslation } from 'react-i18next';
 
 const DEFAULT_PORTAL_URL = (
@@ -108,6 +109,7 @@ export default function DeviceRegistrationPage() {
 
       const deviceData = (await deviceRes.json()) as { device_id?: string; ci_cloud_url?: string };
       setDeviceId(deviceData.device_id ?? null);
+      setHubSentryDeviceId(deviceData.device_id);
       const base = deviceData.ci_cloud_url?.trim();
       if (base) {
         setPortalBaseUrl(base.replace(/\/+$/, ''));

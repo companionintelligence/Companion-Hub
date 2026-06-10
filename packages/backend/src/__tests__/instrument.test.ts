@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const init = vi.fn();
+const setTag = vi.fn();
 
 vi.mock('@sentry/nestjs', () => ({
   init,
+  setTag,
 }));
 
 describe('backend instrument', () => {
@@ -12,6 +14,7 @@ describe('backend instrument', () => {
   beforeEach(() => {
     vi.resetModules();
     init.mockReset();
+    setTag.mockReset();
     process.env = { ...originalEnv };
     delete process.env.SENTRY_DSN;
     delete process.env.SENTRY_ENV;
@@ -38,7 +41,7 @@ describe('backend instrument', () => {
         dsn: 'https://examplePublicKey@o0.ingest.sentry.io/0',
         environment: 'production',
         release: '4.7.0',
-        sendDefaultPii: false,
+        sendDefaultPii: true,
       }),
     );
   });

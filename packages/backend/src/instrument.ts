@@ -2,6 +2,7 @@ import * as Sentry from '@sentry/nestjs';
 import { scrubEvent } from './core/error-reporting/sentry-scrubber';
 
 const dsn = process.env.SENTRY_DSN?.trim();
+const deviceId = process.env.DEVICE_ID?.trim();
 
 // The backend owns its own process-level uncaughtException/unhandledRejection
 // handlers (see main.ts) which log, capture, flush, and control exit. Drop
@@ -21,4 +22,8 @@ if (dsn) {
     integrations: (defaults) => defaults.filter((integration) => !MANUALLY_HANDLED_INTEGRATIONS.has(integration.name)),
     beforeSend: scrubEvent,
   });
+
+  if (deviceId) {
+    Sentry.setTag('device_id', deviceId);
+  }
 }

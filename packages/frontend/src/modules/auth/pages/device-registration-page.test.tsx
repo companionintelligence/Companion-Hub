@@ -3,9 +3,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RegistrationStatus } from '@/lib/registration-status';
 import DeviceRegistrationPage from './device-registration-page';
 
-const { navigate, apiFetch, toast } = vi.hoisted(() => ({
+const { navigate, apiFetch, setHubSentryDeviceId, toast } = vi.hoisted(() => ({
   navigate: vi.fn(),
   apiFetch: vi.fn(),
+  setHubSentryDeviceId: vi.fn(),
   toast: {
     success: vi.fn(),
     error: vi.fn(),
@@ -22,6 +23,10 @@ vi.mock('react-router', async () => {
 
 vi.mock('@/lib/api-fetch', () => ({
   apiFetch,
+}));
+
+vi.mock('@/lib/sentry', () => ({
+  setHubSentryDeviceId,
 }));
 
 vi.mock('react-hot-toast', () => ({
@@ -84,6 +89,7 @@ describe('DeviceRegistrationPage', () => {
       screen.getByText('In your Companion Account, click Add Device, name your Hub, then paste the pairing code here to finish registration.'),
     ).toBeInTheDocument();
     expect(screen.getByText('device-123')).toBeInTheDocument();
+    expect(setHubSentryDeviceId).toHaveBeenCalledWith('device-123');
     expect(screen.getByLabelText('Enter Pairing Code:')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Login to Companion Account' })).toHaveAttribute('href', 'https://portal.example.com');
     expect(navigate).not.toHaveBeenCalled();

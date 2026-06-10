@@ -40,6 +40,10 @@ fn read_first_env_value(env_path: &Path, keys: &[&str]) -> Option<String> {
     None
 }
 
+fn read_device_id(env_path: &Path) -> Option<String> {
+    read_first_env_value(env_path, &["DEVICE_ID"])
+}
+
 pub fn init_from_env(env_path: &Path, release: &str) {
     if SENTRY_GUARD.get().is_some() {
         return;
@@ -84,6 +88,11 @@ pub fn init_from_env(env_path: &Path, release: &str) {
     });
 
     if guard.is_enabled() {
+        if let Some(device_id) = read_device_id(env_path) {
+            sentry::configure_scope(|scope| {
+                scope.set_tag("device_id", device_id.clone());
+            });
+        }
         let _ = SENTRY_GUARD.set(guard);
     }
 }
@@ -171,7 +180,7 @@ fn truncate(value: &str, max_len: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_dsn, read_first_env_value};
+    use super::{parse_dsn, read_device_id, read_first_env_value};
 
     #[test]
     fn rejects_malformed_dsn_without_panicking() {
@@ -201,5 +210,15 @@ mod tests {
 
         let value = read_first_env_value(&env_path, &["SENTRY_DESKTOP_DSN", "SENTRY_DSN"]);
         assert_eq!(value.as_deref(), Some("https://desktop@example.invalid/2"));
+    }
+
+    #[test]
+    fn reads_device_id_from_env_file() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let env_path = tempdir.path().join("hub.env");
+        std::fs::write(&env_path, "DEVICE_ID=device-123\n").expect("write env");
+
+        let value = read_device_id(&env_path);
+        assert_eq!(value.as_deref(), Some("device-123"));
     }
 }
