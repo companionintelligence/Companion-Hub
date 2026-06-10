@@ -5335,10 +5335,12 @@ exit 0
 #[cfg(target_os = "windows")]
 fn install_docker_windows() -> Result<DockerInstallResult, String> {
     use std::io::Write as IoWrite;
-    use tempfile::NamedTempFile;
 
     let username = resolve_current_username_windows()?;
-    let mut script = NamedTempFile::new()
+    // PowerShell -File refuses scripts without a .ps1 extension.
+    let mut script = tempfile::Builder::new()
+        .suffix(".ps1")
+        .tempfile()
         .map_err(|e| format!("Failed to create temporary installer script: {}", e))?;
     script
         .write_all(
