@@ -836,6 +836,37 @@ describe('AppLifecycleService', () => {
       expect(sseIdx).toBeGreaterThan(dbIdx);
     });
 
+    it('forceStopApp error restores the previous app status', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ ...fakeApp, status: 'restarting' } as any);
+      appRuntimeMonitor.getAppRuntimeHealth.mockResolvedValue({
+        appUrn,
+        appName: 'myapp',
+        status: 'restarting',
+        cpuPercent: 99,
+        memoryUsageBytes: 0,
+        memoryLimitBytes: 0,
+        highCpu: true,
+        sustainedHighCpu: true,
+        responsive: false,
+        degraded: true,
+        forceStopEligible: true,
+        reason: 'App unresponsive',
+        cpuLimit: null,
+        usesDefaultCpuLimit: false,
+        sampledAt: new Date().toISOString(),
+        containers: [],
+      } as any);
+      dockerService.forceStopApp.mockRejectedValue(new Error('boom'));
+
+      await expect(service.forceStopApp({ appUrn })).rejects.toThrow();
+
+      expect(appsRepository.updateAppById).toHaveBeenLastCalledWith(42, { status: 'restarting' });
+      expect(sseService.emit).toHaveBeenCalledWith(
+        'app',
+        expect.objectContaining({ event: 'stop_error', appUrn, appStatus: 'restarting', error: 'boom' }),
+      );
+    });
+
     // ── restartApp ───────────────────────────────────────────────────────
     it('restartApp success: DB committed before SSE', async () => {
       await service.restartApp({ appUrn });

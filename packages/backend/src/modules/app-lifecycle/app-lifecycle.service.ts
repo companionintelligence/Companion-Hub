@@ -525,8 +525,8 @@ export class AppLifecycleService implements OnApplicationBootstrap {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.error(`Failed to force-stop app ${appUrn}: ${message}`);
-      await this.appRepository.updateAppById(app.id, { status: 'running' });
-      this.sseService.emit('app', { event: 'stop_error', appUrn, appStatus: 'running', error: message });
+      await this.appRepository.updateAppById(app.id, { status: app.status });
+      this.sseService.emit('app', { event: 'stop_error', appUrn, appStatus: app.status, error: message });
       this.agentNotifyService?.notify('stop_error', { appUrn }, 'high');
       this.reportAppFailure(appUrn, 'stop', message);
       throw new TranslatableError('APP_ACTION_FAILED_TO_RESOLVE', { error: message }, HttpStatus.INTERNAL_SERVER_ERROR);
