@@ -32,7 +32,7 @@ export type CleanupOptions = {
   platform?: NodeJS.Platform;
   dryRun?: boolean;
   logger?: CleanupLogger;
-  execCommand?: (command: string) => ExecResult;
+  execCommand?: (command: string, cwd?: string) => ExecResult;
   exists?: (targetPath: string) => boolean;
   removeDir?: (targetPath: string) => void;
 };
@@ -54,9 +54,10 @@ function defaultLogger(): CleanupLogger {
   };
 }
 
-function defaultExecCommand(command: string): ExecResult {
+function defaultExecCommand(command: string, cwd = process.cwd()): ExecResult {
   try {
     const stdout = execSync(command, {
+      cwd,
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'pipe'],
     }).trim();
@@ -74,7 +75,9 @@ export function isWithinPath(targetPath: string, basePath: string, platform: Nod
   const pathLib = platform === 'win32' ? path.win32 : path.posix;
   const normalizedTarget = pathLib.normalize(targetPath);
   const normalizedBase = pathLib.normalize(basePath);
-  return normalizedTarget === normalizedBase || normalizedTarget.startsWith(normalizedBase + pathLib.sep);
+  const comparableTarget = platform === 'win32' ? normalizedTarget.toLowerCase() : normalizedTarget;
+  const comparableBase = platform === 'win32' ? normalizedBase.toLowerCase() : normalizedBase;
+  return comparableTarget === comparableBase || comparableTarget.startsWith(comparableBase + pathLib.sep);
 }
 
 export function isRelatedVolume(volumeName: string): boolean {
@@ -84,6 +87,7 @@ export function isRelatedVolume(volumeName: string): boolean {
     volumeName.includes('runtipi') ||
     volumeName.includes('runtipi_') ||
     volumeName.includes('ci_hub_pgdata') ||
+    volumeName.includes('hub_tailscale_state') ||
     volumeName.startsWith('e2e-') ||
     volumeName.startsWith('test-e2e-') ||
     /^[a-z]+_[a-z]+-.*_data$/.test(volumeName)
@@ -146,7 +150,7 @@ export function getHubStateDirs(input?: { cwd?: string; homeDir?: string; platfo
 }
 
 function isSafeDeletionTarget(targetPath: string, cwd: string, homeDir: string, platform: NodeJS.Platform): boolean {
-  return isWithinPath(targetPath, homeDir, platform) || isWithinPath(targetPath, cwd, platform);
+  return isWithinPath(targetPath, homeDir, platform) || (isWithinPath(cwd, homeDir, platform) && isWithinPath(targetPath, cwd, platform));
 }
 
 function runCommand(
@@ -154,7 +158,8 @@ function runCommand(
   options: {
     dryRun: boolean;
     logger: CleanupLogger;
-    execCommand: (cmd: string) => ExecResult;
+    cwd: string;
+    execCommand: (cmd: string, cwd?: string) => ExecResult;
     summary: CleanupSummary;
   },
 ): string {
@@ -164,7 +169,7 @@ function runCommand(
     return '';
   }
 
-  const result = options.execCommand(command);
+  const result = options.execCommand(command, options.cwd);
   if (!result.ok) {
     options.summary.failedCommands += 1;
     options.logger.warn(`Command failed: ${command}`);
@@ -245,6 +250,7 @@ export function runHubCleanup(options?: CleanupOptions): CleanupSummary {
   const commandContext = {
     dryRun,
     logger,
+    cwd,
     execCommand,
     summary,
   };

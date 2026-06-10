@@ -34,7 +34,12 @@ if ($installed.Count -eq 1) {
 # Run comprehensive uninstall cleanup (best effort).
 $cleanupScript = Join-Path $toolsDir 'scripts\uninstall-cleanup.ps1'
 if (Test-Path $cleanupScript) {
-    & $cleanupScript
+    try {
+        & $cleanupScript
+    }
+    catch {
+        Write-Warning "Extended cleanup failed: $($_.Exception.Message)"
+    }
 } else {
     Write-Warning 'Cleanup script not found; skipping extended cleanup.'
 }

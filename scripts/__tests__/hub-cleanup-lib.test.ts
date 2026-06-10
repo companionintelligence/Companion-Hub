@@ -4,6 +4,7 @@ import { getHubStateDirs, isRelatedVolume, parseNames, runHubCleanup } from '../
 describe('hub-cleanup-lib', () => {
   it('matches known Hub volume naming patterns', () => {
     expect(isRelatedVolume('ci_hub_pgdata')).toBe(true);
+    expect(isRelatedVolume('hub_tailscale_state')).toBe(true);
     expect(isRelatedVolume('ci-os-hub_test_data')).toBe(true);
     expect(isRelatedVolume('runtipi_media')).toBe(true);
     expect(isRelatedVolume('postgres_data')).toBe(false);
@@ -66,6 +67,7 @@ describe('hub-cleanup-lib', () => {
       expect(dirs.some((dir) => dir.path.includes('AppData\\Roaming\\Companion Hub'))).toBe(true);
       expect(dirs.some((dir) => dir.path.includes('AppData\\Local\\companion-hub'))).toBe(true);
       expect(dirs.some((dir) => dir.path === 'C:\\repo\\.config')).toBe(true);
+      expect(dirs.some((dir) => dir.path.includes('AppData\\Roaming\\computer.ci.app.hub'))).toBe(true);
     } finally {
       if (prevAppData === undefined) {
         delete process.env.APPDATA;
@@ -143,7 +145,56 @@ describe('hub-cleanup-lib', () => {
     }
   });
 
-  it('completes with no directory failures when all targets are within safe bounds', () => {
+  it('completes with no directory failures when cwd is within the user home', () => {
+    const prevDataHome = process.env.XDG_DATA_HOME;
+    const prevConfigHome = process.env.XDG_CONFIG_HOME;
+    const prevCacheHome = process.env.XDG_CACHE_HOME;
+    process.env.XDG_DATA_HOME = '/home/dev/.local/share';
+    process.env.XDG_CONFIG_HOME = '/home/dev/.config';
+    process.env.XDG_CACHE_HOME = '/home/dev/.cache';
+
+    const errors: string[] = [];
+
+    try {
+      const summary = runHubCleanup({
+        cwd: '/home/dev/repo',
+        homeDir: '/home/dev',
+        platform: 'linux',
+        dryRun: false,
+        execCommand: () => ({ ok: true, stdout: '' }),
+        exists: () => true,
+        removeDir: () => {},
+        logger: {
+          info: () => {},
+          warn: () => {},
+          error: (message) => {
+            errors.push(message);
+          },
+        },
+      });
+
+      expect(summary.failedDirs).toBe(0);
+      expect(errors).toEqual([]);
+    } finally {
+      if (prevDataHome === undefined) {
+        delete process.env.XDG_DATA_HOME;
+      } else {
+        process.env.XDG_DATA_HOME = prevDataHome;
+      }
+      if (prevConfigHome === undefined) {
+        delete process.env.XDG_CONFIG_HOME;
+      } else {
+        process.env.XDG_CONFIG_HOME = prevConfigHome;
+      }
+      if (prevCacheHome === undefined) {
+        delete process.env.XDG_CACHE_HOME;
+      } else {
+        process.env.XDG_CACHE_HOME = prevCacheHome;
+      }
+    }
+  });
+
+  it('blocks repo-local deletions when cwd is outside the user home', () => {
     const prevDataHome = process.env.XDG_DATA_HOME;
     const prevConfigHome = process.env.XDG_CONFIG_HOME;
     const prevCacheHome = process.env.XDG_CACHE_HOME;
@@ -171,8 +222,8 @@ describe('hub-cleanup-lib', () => {
         },
       });
 
-      expect(summary.failedDirs).toBe(0);
-      expect(errors).toEqual([]);
+      expect(summary.failedDirs).toBeGreaterThan(0);
+      expect(errors.some((message) => message.includes('Blocked unsafe path'))).toBe(true);
     } finally {
       if (prevDataHome === undefined) {
         delete process.env.XDG_DATA_HOME;

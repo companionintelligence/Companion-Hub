@@ -56,8 +56,12 @@ test.describe
 
     test('app status reports missing after uninstall', async ({ request }) => {
       await login(request);
-      const status = await getAppStatus(request);
-      expect(status).toBe('not_found');
+      await expect
+        .poll(async () => getAppStatus(request), {
+          timeout: 30_000,
+          intervals: [1000, 2000, 3000],
+        })
+        .toBe('not_found');
     });
 
     test('re-install app for subsequent specs', async ({ request }) => {

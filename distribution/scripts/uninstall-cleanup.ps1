@@ -35,6 +35,9 @@ function Remove-IfExists {
 
 function Get-ContainerNamesByFilter {
     param([string]$Filter)
+    if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
+        return @()
+    }
     try {
         return docker ps -a --filter $Filter --format '{{.Names}}' 2>$null
     }
@@ -43,35 +46,39 @@ function Get-ContainerNamesByFilter {
     }
 }
 
-$containerNames = @()
-$containerNames += Get-ContainerNamesByFilter 'label=com.docker.compose.project=ci-os-hub'
-$containerNames += Get-ContainerNamesByFilter 'label=com.docker.compose.project=ci-hub'
-$containerNames += Get-ContainerNamesByFilter 'label=com.docker.compose.project=runtipi'
-$containerNames += Get-ContainerNamesByFilter 'network=ci_os_hub_network'
-$containerNames += Get-ContainerNamesByFilter 'network=ci-os-hub_network'
+if (Get-Command docker -ErrorAction SilentlyContinue) {
+    $containerNames = @()
+    $containerNames += Get-ContainerNamesByFilter 'label=com.docker.compose.project=ci-os-hub'
+    $containerNames += Get-ContainerNamesByFilter 'label=com.docker.compose.project=ci-hub'
+    $containerNames += Get-ContainerNamesByFilter 'label=com.docker.compose.project=runtipi'
+    $containerNames += Get-ContainerNamesByFilter 'network=ci_os_hub_network'
+    $containerNames += Get-ContainerNamesByFilter 'network=ci-os-hub_network'
 
-$containerNames = $containerNames | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
-foreach ($name in $containerNames) {
-    Invoke-CleanupCommand "docker rm -f $name"
-}
-
-$networks = @('ci_os_hub_network', 'ci-os-hub_network')
-foreach ($network in $networks) {
-    Invoke-CleanupCommand "docker network rm $network"
-}
-
-$volumes = @()
-try {
-    $volumes = docker volume ls --format '{{.Name}}' 2>$null
-}
-catch {
-    Write-CleanupLog 'WARN' 'Unable to enumerate Docker volumes'
-}
-
-foreach ($volume in $volumes) {
-    if ($volume -match 'ci_os_hub|ci-os-hub|runtipi|ci_hub_pgdata|^e2e-|^test-e2e-') {
-        Invoke-CleanupCommand "docker volume rm $volume"
+    $containerNames = $containerNames | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
+    foreach ($name in $containerNames) {
+        Invoke-CleanupCommand "docker rm -f $name"
     }
+
+    $networks = @('ci_os_hub_network', 'ci-os-hub_network')
+    foreach ($network in $networks) {
+        Invoke-CleanupCommand "docker network rm $network"
+    }
+
+    $volumes = @()
+    try {
+        $volumes = docker volume ls --format '{{.Name}}' 2>$null
+    }
+    catch {
+        Write-CleanupLog 'WARN' 'Unable to enumerate Docker volumes'
+    }
+
+    foreach ($volume in $volumes) {
+        if ($volume -match 'ci_os_hub|ci-os-hub|runtipi|ci_hub_pgdata|hub_tailscale_state|^e2e-|^test-e2e-') {
+            Invoke-CleanupCommand "docker volume rm $volume"
+        }
+    }
+} else {
+    Write-CleanupLog 'INFO' 'Docker is not available; skipping Docker cleanup'
 }
 
 $appData = [Environment]::GetFolderPath('ApplicationData')
