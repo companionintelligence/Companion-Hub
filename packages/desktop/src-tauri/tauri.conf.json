@@ -21,7 +21,8 @@
         "desktopTemplate": "deep-link.desktop"
       },
       "rpm": {
-        "desktopTemplate": "deep-link.desktop"
+        "desktopTemplate": "deep-link.desktop",
+        "postRemoveScript": "linux/rpm/postun"
       }
     },
     "macOS": {

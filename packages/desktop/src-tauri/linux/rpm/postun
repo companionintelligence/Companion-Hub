@@ -1,0 +1,66 @@
+#!/bin/sh
+set -eu
+
+log() {
+  level="$1"
+  shift
+  printf '[cleanup][%s] %s\n' "$level" "$*"
+}
+
+list_home_dirs() {
+  getent passwd | awk -F: '($3 == 0 || $3 >= 1000) && $6 ~ /^\// { print $6 }' | awk '!seen[$0]++'
+}
+
+cleanup_user_home() {
+  home_dir="$1"
+  [ -d "$home_dir" ] || return 0
+
+  xdg_data_home="$home_dir/.local/share"
+  xdg_config_home="$home_dir/.config"
+  xdg_cache_home="$home_dir/.cache"
+
+  for name in "Companion Hub" "companion-hub" "ci-hub" "CI-Hub" "computer.ci.app.hub"; do
+    rm -rf "$xdg_data_home/$name" >/dev/null 2>&1 || true
+    rm -rf "$xdg_config_home/$name" >/dev/null 2>&1 || true
+    rm -rf "$xdg_cache_home/$name" >/dev/null 2>&1 || true
+  done
+}
+
+cleanup_docker() {
+  command -v docker >/dev/null 2>&1 || return 0
+
+  {
+    docker ps -a --filter "label=com.docker.compose.project=ci-os-hub" --format '{{.Names}}' 2>/dev/null
+    docker ps -a --filter "label=com.docker.compose.project=ci-hub" --format '{{.Names}}' 2>/dev/null
+    docker ps -a --filter "label=com.docker.compose.project=runtipi" --format '{{.Names}}' 2>/dev/null
+    docker ps -a --filter "network=ci_os_hub_network" --format '{{.Names}}' 2>/dev/null
+    docker ps -a --filter "network=ci-os-hub_network" --format '{{.Names}}' 2>/dev/null
+  } | awk 'NF && !seen[$0]++' | while IFS= read -r name; do
+    docker rm -f "$name" >/dev/null 2>&1 || true
+  done
+
+  docker volume ls --format '{{.Name}}' 2>/dev/null | while IFS= read -r volume; do
+    case "$volume" in
+      *ci_os_hub*|*ci-os-hub*|*runtipi*|*ci_hub_pgdata*|*ci_hub_app_data*|*hub_tailscale_state*|e2e-*|test-e2e-*)
+        docker volume rm "$volume" >/dev/null 2>&1 || true
+        ;;
+    esac
+  done
+
+  docker network rm ci_os_hub_network >/dev/null 2>&1 || true
+  docker network rm ci-os-hub_network >/dev/null 2>&1 || true
+}
+
+# RPM postun receives the number of package instances left after transaction.
+# Run destructive cleanup only on final erase (0), not on upgrade (>0).
+if [ "${1:-0}" != "0" ]; then
+  log INFO "Skipping uninstall cleanup during rpm lifecycle transition: $1"
+  exit 0
+fi
+
+log INFO 'Running Companion Hub RPM postun cleanup (best effort)'
+cleanup_docker
+list_home_dirs | while IFS= read -r home_dir; do
+  cleanup_user_home "$home_dir"
+done
+log INFO 'Companion Hub RPM postun cleanup complete'
