@@ -44,7 +44,7 @@ export const LoginForm: React.FC<IProps> = ({ loading, onSubmit, loginType, port
 
       {portalSsoHref ? (
         <div className="mb-4">
-          <Button asChild intent="secondary" className="w-full">
+          <Button asChild variant="outline" className="h-10 w-full text-sm font-semibold">
             <a href={portalSsoHref}>Sign in with Portal</a>
           </Button>
           <div className="text-xs text-muted-foreground text-center mt-2">Uses your Companion Account (CI Portal).</div>
