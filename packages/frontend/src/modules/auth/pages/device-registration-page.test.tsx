@@ -80,7 +80,9 @@ describe('DeviceRegistrationPage', () => {
     render(<DeviceRegistrationPage />);
 
     expect(await screen.findByRole('heading', { name: 'Step 2: Connect this device' })).toBeInTheDocument();
-    expect(screen.getByText('Enter the code and use the Current Device ID to complete registration.')).toBeInTheDocument();
+    expect(
+      screen.getByText('In your Companion Account, click Add Device, name your Hub, then paste the pairing code here to finish registration.'),
+    ).toBeInTheDocument();
     expect(screen.getByText('device-123')).toBeInTheDocument();
     expect(screen.getByLabelText('Enter Pairing Code:')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Login to Companion Account' })).toHaveAttribute('href', 'https://portal.example.com');
