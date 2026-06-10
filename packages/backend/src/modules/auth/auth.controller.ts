@@ -224,7 +224,7 @@ export class AuthController {
       throw new UnauthorizedException('Portal token exchange failed');
     }
 
-    const accessToken = (tokenRes.data as any)?.access_token as string | undefined;
+    const accessToken = (tokenRes.data as { access_token?: string } | undefined)?.access_token;
     if (!accessToken) {
       this.logger.warn('Portal token exchange missing access_token', { data: tokenRes.data });
       throw new UnauthorizedException('Portal token exchange missing access token');
@@ -242,7 +242,7 @@ export class AuthController {
       throw new UnauthorizedException('Portal userinfo request failed');
     }
 
-    const email = (userinfoRes.data as any)?.email as string | undefined;
+    const email = (userinfoRes.data as { email?: string } | undefined)?.email;
     if (!email) {
       this.logger.warn('Portal userinfo missing email', { data: userinfoRes.data });
       throw new UnauthorizedException('Portal userinfo missing email');
