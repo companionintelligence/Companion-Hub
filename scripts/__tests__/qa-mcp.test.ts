@@ -2,7 +2,16 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { type McpConfig, SAFE_PROBES, buildDockerArgs, discoverMcpApps, missingHostSoftware, resolveEnv, scoreHandshake } from '../qa-mcp';
+import {
+  BACKING_SERVICES,
+  type McpConfig,
+  SAFE_PROBES,
+  buildDockerArgs,
+  discoverMcpApps,
+  missingHostSoftware,
+  resolveEnv,
+  scoreHandshake,
+} from '../qa-mcp';
 
 // Importing the module at all proves the CLI IIFE is guarded — an unguarded `process.exit` in the
 // module body would abort the test process before any assertion runs.
@@ -67,6 +76,39 @@ describe('buildDockerArgs', () => {
     expect(dockerArgs).toContain(`${scratch}:/qa`);
     expect(dockerArgs).toContain('-e');
     expect(needsSecret).toBe('API_TOKEN'); // required + secret + only the placeholder → flagged
+  });
+
+  it('joins a backing network and overrides a connection-string env into both -e and the substituted arg', () => {
+    const mcp: McpConfig = {
+      transport: 'stdio',
+      command: 'npx',
+      args: ['-y', 'server-postgres', '${POSTGRES_URL}'],
+      env: [{ key: 'POSTGRES_URL', required: true, secret: true }],
+    };
+    const compose = { services: [{ image: 'node:22-alpine', command: ['npx', '-y', 'server-postgres', '${POSTGRES_URL}'], isMain: true }] };
+    const dsn = 'postgres://qa:qa@qa-backing-db:5432/qa';
+    const { dockerArgs, env } = buildDockerArgs('postgres-mcp', mcp, compose, scratch, {}, 'qa-stream-postgres-mcp', {
+      network: 'qa-mcp-net-postgres-mcp',
+      envOverride: { POSTGRES_URL: dsn },
+    });
+    expect(dockerArgs).toContain('--network');
+    expect(dockerArgs).toContain('qa-mcp-net-postgres-mcp');
+    expect(env.POSTGRES_URL).toBe(dsn); // override beats the dummy URL
+    expect(dockerArgs).toContain(dsn); // and flows into the substituted ${POSTGRES_URL} command arg
+    expect(dockerArgs.some((a) => a.includes('127.0.0.1'))).toBe(false); // the dummy URL is gone
+  });
+
+  it('without backing opts: no --network, dummy URL stands (clean handshake fallback)', () => {
+    const mcp: McpConfig = {
+      transport: 'stdio',
+      command: 'npx',
+      args: ['-y', 'server-postgres', '${POSTGRES_URL}'],
+      env: [{ key: 'POSTGRES_URL', required: true, secret: true }],
+    };
+    const compose = { services: [{ image: 'node:22-alpine', command: ['npx', '-y', 'server-postgres', '${POSTGRES_URL}'], isMain: true }] };
+    const { dockerArgs } = buildDockerArgs('postgres-mcp', mcp, compose, scratch, {}, 'qa-stream-postgres-mcp');
+    expect(dockerArgs).not.toContain('--network');
+    expect(dockerArgs.some((a) => a.includes('127.0.0.1:5432'))).toBe(true); // dummyUrl for POSTGRES_URL
   });
 
   it('reuses a `command: "docker"` app\'s own `docker run` argv, injecting -i/--rm/--name', () => {
@@ -173,6 +215,20 @@ describe('SAFE_PROBES', () => {
   it('does NOT probe apps whose every tool requires credentials (no clean no-cred verdict)', () => {
     // reddit-mcp: get_trending_subreddits → tool-error without Reddit API creds; handshake is its ceiling.
     expect(SAFE_PROBES['reddit-mcp']).toBeUndefined();
+  });
+});
+
+describe('BACKING_SERVICES', () => {
+  it('describes the postgres sidecar with a valid injected DSN and a matching exec probe', () => {
+    const pg = BACKING_SERVICES['postgres-mcp'];
+    expect(pg.image).toBe('postgres:16-alpine');
+    expect(pg.inject.key).toBe('POSTGRES_URL');
+    const dsn = pg.inject.url(pg.alias, pg.port);
+    expect(dsn).toBe('postgres://qa:qa@qa-backing-db:5432/qa');
+    expect(() => new URL(dsn)).not.toThrow();
+    expect(pg.ready[0]).toBe('pg_isready');
+    // the probe that exercises the sidecar
+    expect(SAFE_PROBES['postgres-mcp']).toEqual({ tool: 'query', args: { sql: 'SELECT 1' } });
   });
 });
 

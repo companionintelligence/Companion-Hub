@@ -123,6 +123,7 @@ The curated set, each **verified `→ok` against the live container** (2026-06-1
 |-------------|-------------|------|
 | **offline, read-only, no-cred** | `filesystem-mcp` (`list_directory`), `chess-mcp` (`new_game`), `brewers-almanack-mcp` (`search_styles`), `git-mcp` (`git_status` on the boot-`git init`'d scratch repo), `sqlite-mcp` (`list_tables`), `n8n-mcp` (`tools_documentation`) | every sweep |
 | **network-touching** (`net:true`) | `fetch-mcp` (`fetch`), `youtube-transcript-mcp` (`get_video_info`), `lego-oracle-mcp` (`browse_themes`) | only with `QA_MCP_PROBE_NET=1` |
+| **backing-service** (`BACKING_SERVICES`) | `postgres-mcp` (`query "SELECT 1"` against a `postgres:16-alpine` sidecar) | every sweep, self-gates to backing-up |
 | **no probe — every tool needs creds** | `reddit-mcp` (all tools hit the authed Reddit API → only `tool-error` without keys), plus the secret/host-gated apps below | handshake is the ceiling |
 
 > The probe args are chosen against each tool's **real** `inputSchema.required` (read live, not
@@ -233,11 +234,11 @@ coverage signal.
 ### Depth: handshake vs execution
 
 `pass` means *boots + advertises the right tools*. Proving a tool **executes** is the exec probe —
-and that's where coverage was thin (only `chess` + `filesystem` ran a tool at baseline). After the
-probe expansion above, **9 apps are execution-proven** (6 offline every sweep + 3 net-gated). The
-remaining 10 `pass` apps are **handshake-only by necessity** — every one of their tools needs a real
-credential or external host that headless can't supply, so a no-cred `tools/call` only yields
-`tool-error`, never a clean `ok`:
+and that's where coverage was thin (only `chess` + `filesystem` ran a tool at baseline). Now **10
+apps are execution-proven**: 6 offline every sweep, 3 net-gated (`QA_MCP_PROBE_NET=1`), and
+`postgres` against a hermetic backing-service sidecar. The remaining 9 `pass` apps are
+**handshake-only by necessity** — every one of their tools needs a real credential or external host
+that headless can't supply, so a no-cred `tools/call` only yields `tool-error`, never a clean `ok`:
 
 | Handshake-only `pass` | What a deeper probe would require |
 |-----------------------|-----------------------------------|
@@ -246,11 +247,11 @@ credential or external host that headless can't supply, so a no-cred `tools/call
 | `reddit` | Reddit API credentials |
 | `playwright` | `browser_install` first (downloads Chromium ~150 MB) then a `browser_navigate` |
 | `excalidraw` | a connected Excalidraw canvas server |
-| **`postgres`** | **a live Postgres — the cleanest headless win (see roadmap: backing-service fixtures)** |
 
-This is the honest ceiling: 9 execution-proven, 10 handshake-proven (cred/host-bound), 6 legitimately
-skipped. `postgres` is the one handshake-only app a hermetic **backing-service fixture** could lift
-to execution-proven without real credentials.
+This is the honest ceiling: **10 execution-proven, 9 handshake-proven** (cred/host-bound), 6
+legitimately skipped. The backing-service pattern (`BACKING_SERVICES`) is the lever for the rest — any
+app whose only gap is a missing DB/cache can be lifted to execution-proven by adding one map entry,
+no real credentials needed.
 
 ## Roadmap
 
@@ -264,10 +265,13 @@ to execution-proven without real credentials.
 - **✅ Seeded-state + network exec probes:** `SAFE_PROBES` now covers git (status on the
   boot-`git init`'d scratch repo), sqlite (`list_tables`), n8n (`tools_documentation`), and
   net-gated `fetch`/`youtube`/`lego` — all verified `→ok`. Execution-proven apps: 2 → **9**.
-- **⏳ Backing-service fixtures (next):** stand up a hermetic sidecar on a throwaway docker network
-  for the one handshake-only app a real service would unlock — point `POSTGRES_URL` at a
-  `postgres:16-alpine` and probe `query "SELECT 1"`. Same pattern later covers any DB/cache-backed
-  MCP server, no real credentials needed. Turns `postgres-mcp` from handshake-only → execution-proven.
+- **✅ Backing-service fixtures:** `BACKING_SERVICES` brings up a hermetic sidecar on a throwaway
+  docker network, joins the app to it, and rewrites the app's connection-string env to the sidecar's
+  alias — so a dummy-URL handshake becomes a real connection. `postgres-mcp` boots against a
+  `postgres:16-alpine` and its `query "SELECT 1"` probe returns `→ok` (verified). The probe self-gates
+  to backing-up only (a node with `QA_MCP_BACKING=0` or a sidecar that fails to start falls back to the
+  clean dummy-URL handshake, no false warn). The same map entry pattern extends to any DB/cache-backed
+  MCP server. **Execution-proven: 2 → 10.**
 - **⏳ Wire catalog apps through the bridge** (the Layer-2 gap above) — add `agents.mcp` blocks +
   teach the installer to run a top-level-`.mcp` server.
 - **⏳ SSE / streamable-HTTP transport** support in qa-mcp (for future local SSE servers + miro

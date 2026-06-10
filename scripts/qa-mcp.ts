@@ -27,7 +27,8 @@
  *
  * Env: QA_MCP_TIMEOUT_MS (default 90000) · QA_MCP_SECRETS_JSON ({"KEY":"value"}) ·
  *      QA_MCP_PROBE (default 1; set 0 to disable the exec probe) · QA_MCP_PROBE_NET (default 0;
- *      set 1 to allow network-touching probes).
+ *      set 1 to allow network-touching probes) · QA_MCP_BACKING (default 1; set 0 to skip the
+ *      backing-service sidecar and fall back to the dummy-URL handshake).
  */
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs';
@@ -94,6 +95,7 @@ export const SAFE_PROBES: Record<string, { tool: string; args: Record<string, un
   'git-mcp': { tool: 'git_status', args: { repo_path: '/qa' } }, // status of the scratch repo git init'd at boot
   'sqlite-mcp': { tool: 'list_tables', args: {} }, // lists user tables in the freshly-opened db (empty is fine)
   'n8n-mcp': { tool: 'tools_documentation', args: {} }, // bundled node docs, no n8n instance needed
+  'postgres-mcp': { tool: 'query', args: { sql: 'SELECT 1' } }, // executes against the BACKING_SERVICES sidecar
   // ── network-touching execution proofs — only with QA_MCP_PROBE_NET=1 ──
   'fetch-mcp': { tool: 'fetch', args: { url: 'https://example.com/' }, net: true },
   'youtube-transcript-mcp': { tool: 'get_video_info', args: { url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' }, net: true },
@@ -102,6 +104,72 @@ export const SAFE_PROBES: Record<string, { tool: string; args: Record<string, un
   'lego-oracle-mcp': { tool: 'browse_themes', args: {}, net: true }, // API-backed catalog
   'smartest-tv-mcp': { tool: 'list_devices', args: {} }, // local discovery (app skips headless anyway)
 };
+
+/** A hermetic backing service — a throwaway sidecar (DB/cache) brought up on a private docker
+ *  network so an app whose tools need a live backend can be EXECUTION-tested without real
+ *  credentials or an external service. Keyed by appId. The app container joins the same network;
+ *  `inject` rewrites the app's connection-string env to the sidecar's `alias`, so the dummy-URL the
+ *  handshake used becomes a real, reachable DSN at `tools/call` time. Gate off with QA_MCP_BACKING=0. */
+export interface BackingService {
+  image: string;
+  env: Record<string, string>;
+  port: number;
+  alias: string;
+  inject: { key: string; url: (alias: string, port: number) => string };
+  ready: string[]; // `docker exec <sidecar> …` argv that exits 0 once the service accepts connections
+}
+export const BACKING_SERVICES: Record<string, BackingService> = {
+  'postgres-mcp': {
+    image: 'postgres:16-alpine',
+    env: { POSTGRES_USER: 'qa', POSTGRES_PASSWORD: 'qa', POSTGRES_DB: 'qa' },
+    port: 5432,
+    alias: 'qa-backing-db',
+    inject: { key: 'POSTGRES_URL', url: (a, p) => `postgres://qa:qa@${a}:${p}/qa` },
+    ready: ['pg_isready', '-U', 'qa', '-d', 'qa'],
+  },
+};
+
+const BACKING_READY_TRIES = Number(process.env.QA_MCP_BACKING_READY_TRIES) || 30; // ~30s at 1s/poll
+
+interface BackingHandle {
+  network: string;
+  envOverride: Record<string, string>;
+  cleanup: () => void;
+}
+
+/** Bring up a backing sidecar on a fresh network and wait until it accepts connections. Returns the
+ *  network + env override to feed buildDockerArgs, or null if it never came up (caller falls back to
+ *  the dummy-URL handshake). Idempotent cleanup tears down both the sidecar and the network. */
+async function startBacking(appId: string, spec: BackingService): Promise<BackingHandle | null> {
+  const sidecar = `qa-backing-${appId}`;
+  const network = `qa-mcp-net-${appId}`;
+  const cleanup = () => {
+    spawnSync('docker', ['rm', '-f', sidecar], { stdio: 'ignore', timeout: 30_000 });
+    spawnSync('docker', ['network', 'rm', network], { stdio: 'ignore', timeout: 30_000 });
+  };
+  cleanup(); // clear any leak from a prior crashed run before (re)creating
+  if (spawnSync('docker', ['network', 'create', network], { stdio: 'ignore', timeout: 30_000 }).status !== 0) {
+    return null;
+  }
+  const envFlags = Object.entries(spec.env).flatMap(([k, v]) => ['-e', `${k}=${v}`]);
+  const run = spawnSync(
+    'docker',
+    ['run', '-d', '--rm', '--name', sidecar, '--network', network, '--network-alias', spec.alias, ...envFlags, spec.image],
+    { stdio: 'ignore', timeout: 60_000 },
+  );
+  if (run.status !== 0) {
+    cleanup();
+    return null;
+  }
+  for (let i = 0; i < BACKING_READY_TRIES; i++) {
+    if (spawnSync('docker', ['exec', sidecar, ...spec.ready], { stdio: 'ignore', timeout: 10_000 }).status === 0) {
+      return { network, envOverride: { [spec.inject.key]: spec.inject.url(spec.alias, spec.port) }, cleanup };
+    }
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  cleanup();
+  return null;
+}
 
 /** A syntactically-valid dummy connection URL keyed by the env name's scheme, so a server that
  *  parses its `*_URL` at startup (e.g. server-postgres does `new URL(POSTGRES_URL)`) gets past the
@@ -128,6 +196,14 @@ export function resolveEnv(e: McpEnv, scratch: string, secrets: Record<string, s
   return {};
 }
 
+export interface BuildOpts {
+  /** Join this docker network so a backing-service sidecar's `--network-alias` resolves by name. */
+  network?: string;
+  /** Override resolved env values (e.g. point POSTGRES_URL at a backing sidecar). Applied BEFORE
+   *  `${VAR}` substitution, so an override flows into both the `-e` flags and arg substitution. */
+  envOverride?: Record<string, string>;
+}
+
 /** Build the `docker run -i …` argv for a stdio MCP app from its config + compose. */
 export function buildDockerArgs(
   appId: string,
@@ -136,9 +212,9 @@ export function buildDockerArgs(
   scratch: string,
   secrets: Record<string, string>,
   containerName = `qa-mcp-${appId}`,
+  opts: BuildOpts = {},
 ): { dockerArgs: string[]; env: Record<string, string>; needsSecret: string | null } {
   const env: Record<string, string> = {};
-  const envFlags: string[] = [];
   const mounts: string[] = [];
   let needsSecret: string | null = null;
 
@@ -148,14 +224,16 @@ export function buildDockerArgs(
     if (r.value === undefined) continue;
     if (e.required && e.secret && r.value === PLACEHOLDER) needsSecret = e.key; // flag — may still boot
     env[e.key] = r.value;
-    envFlags.push('-e', `${e.key}=${r.value}`);
     if (r.mount) mounts.push('-v', `${r.mount}:${r.value}`);
   }
+  Object.assign(env, opts.envOverride ?? {}); // backing-service / explicit overrides win
+  const envFlags = Object.entries(env).flatMap(([k, v]) => ['-e', `${k}=${v}`]);
+  const netFlags = opts.network ? ['--network', opts.network] : [];
   const subst = (s: string) => s.replace(/\$\{([A-Z0-9_]+)\}/g, (_, k) => env[k] ?? '');
 
   // `command: "docker"` apps already encode a full `docker run …` invocation — reuse it, just
-  // inject our --name and ensure -i/--rm are present. Env values flow via the spawn env, which the
-  // manifest's `-e KEY` passthrough flags pick up.
+  // inject our --name (+ network) and ensure -i/--rm are present. Env values flow via the spawn env,
+  // which the manifest's `-e KEY` passthrough flags pick up.
   if (mcp.command === 'docker') {
     const a = (mcp.args ?? []).map(subst);
     const runIdx = a.indexOf('run');
@@ -164,13 +242,13 @@ export function buildDockerArgs(
     const ensure: string[] = [];
     if (!tail.includes('-i')) ensure.push('-i');
     if (!tail.includes('--rm')) ensure.push('--rm');
-    return { dockerArgs: [...head, ...ensure, '--name', containerName, ...tail], env, needsSecret };
+    return { dockerArgs: [...head, ...ensure, ...netFlags, '--name', containerName, ...tail], env, needsSecret };
   }
   // Otherwise wrap the compose main service's image + command in our own `docker run -i`.
   const main = compose.services?.find((s) => s.isMain) ?? compose.services?.[0];
   const image = main?.image ?? 'alpine:3.20';
   const cmd = (Array.isArray(main?.command) ? main?.command : mcp.args ? [mcp.command ?? '', ...mcp.args] : []) ?? [];
-  const dockerArgs = ['run', '-i', '--rm', '--name', containerName, ...envFlags, ...mounts, image, ...cmd.map(subst)];
+  const dockerArgs = ['run', '-i', '--rm', ...netFlags, '--name', containerName, ...envFlags, ...mounts, image, ...cmd.map(subst)];
   return { dockerArgs, env, needsSecret };
 }
 
@@ -387,6 +465,7 @@ export async function qaMcpApp(appId: string, options: QaMcpOptions = {}): Promi
   result.appId = appId;
   result.mcp = true;
   const scratch = join(tmpdir(), `qa-mcp-${appId}`);
+  let backing: BackingHandle | null = null;
 
   try {
     const cfgPath = join(APP_STORE_DIR, appId, 'config.json');
@@ -413,20 +492,34 @@ export async function qaMcpApp(appId: string, options: QaMcpOptions = {}): Promi
     const compose = existsSync(composePath) ? (JSON.parse(readFileSync(composePath, 'utf-8')) as { services?: ComposeService[] }) : {};
 
     mkdirSync(scratch, { recursive: true });
-    const { dockerArgs, env, needsSecret } = buildDockerArgs(appId, mcp, compose, scratch, secrets, containerName);
+
+    // Bring up a hermetic backing service (e.g. a Postgres sidecar) if this app needs one to run its
+    // tools — this turns a dummy-URL handshake into a real, execution-testable connection.
+    let buildOpts: BuildOpts = {};
+    const backingSpec = BACKING_SERVICES[appId];
+    if (backingSpec && process.env.QA_MCP_BACKING !== '0') {
+      emit({ event: 'app_phase', appId, phase: 'starting', message: `backing service: ${backingSpec.image} → ${backingSpec.alias}`, ts: Date.now() });
+      backing = await startBacking(appId, backingSpec);
+      if (backing) buildOpts = { network: backing.network, envOverride: backing.envOverride };
+      else result.notes = 'backing service failed to start — fell back to dummy-URL handshake';
+    }
+    const { dockerArgs, env, needsSecret } = buildDockerArgs(appId, mcp, compose, scratch, secrets, containerName, buildOpts);
     const declared = (mcp.manifest?.tools ?? []).map((t) => t.name ?? '').filter(Boolean);
     const hostSoftware = missingHostSoftware(mcp);
 
     const probeSpec = pickProbe(appId);
+    // A backing-dependent probe (e.g. postgres `query`) only runs when its sidecar actually came up —
+    // otherwise the tool hits the unreachable dummy URL and would false-downgrade pass→warn.
+    const probeActive = probeEnabled && Boolean(probeSpec) && (!backingSpec || backing !== null);
     emit({
       event: 'app_phase',
       appId,
       phase: 'starting',
-      message: `mcp smoke: docker ${dockerArgs.slice(0, 4).join(' ')} … (${declared.length} tools declared${probeEnabled && probeSpec ? `, probe ${probeSpec.tool}` : ''})`,
+      message: `mcp smoke: docker ${dockerArgs.slice(0, 4).join(' ')} … (${declared.length} tools declared${probeActive ? `, probe ${probeSpec?.tool}` : ''})`,
       ts: Date.now(),
     });
 
-    const hs = await runSmoke(dockerArgs, env, probeEnabled ? probeSpec : null);
+    const hs = await runSmoke(dockerArgs, env, probeActive ? probeSpec : null);
     const liveNames = hs.tools.map((t) => t.name);
     result.tools = liveNames;
     result.declaredTools = declared.length;
@@ -498,6 +591,12 @@ export async function qaMcpApp(appId: string, options: QaMcpOptions = {}): Promi
     }
     try {
       rmSync(scratch, { recursive: true, force: true });
+    } catch {
+      /* best effort */
+    }
+    // Tear the backing sidecar + its network down AFTER the app container (which was on that network).
+    try {
+      backing?.cleanup();
     } catch {
       /* best effort */
     }
