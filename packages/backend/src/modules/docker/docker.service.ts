@@ -142,30 +142,41 @@ export class DockerService {
       filters: { label: [`com.docker.compose.project=${projectName}`] },
     });
 
-    return Promise.all(
-      containers.map(async (container) => {
-        const inspect = await this.docker.getContainer(container.Id).inspect();
-        const stats = inspect.State?.Running
-          ? ((await this.docker.getContainer(container.Id).stats({ stream: false })) as DockerStatsSnapshot)
-          : null;
+    const results = await Promise.all(
+      containers.map((container) =>
+        (async () => {
+          const inspect = await this.docker.getContainer(container.Id).inspect();
+          const stats = inspect.State?.Running
+            ? ((await this.docker.getContainer(container.Id).stats({ stream: false })) as DockerStatsSnapshot)
+            : null;
 
-        const usage = stats?.memory_stats?.usage ?? 0;
-        const cache = stats?.memory_stats?.stats?.cache ?? 0;
-        return {
-          containerId: container.Id,
-          name: container.Names?.[0]?.replace(/^\//, '') || container.Id.slice(0, 12),
-          state: container.State,
-          status: container.Status,
-          health: inspect.State?.Health?.Status ?? null,
-          cpuPercent: Number(this.calculateCpuPercent((stats ?? {}) as DockerStatsSnapshot).toFixed(2)),
-          memoryUsageBytes: Math.max(usage - cache, 0),
-          memoryLimitBytes: stats?.memory_stats?.limit ?? 0,
-        };
-      }),
+          const usage = stats?.memory_stats?.usage ?? 0;
+          const cache = stats?.memory_stats?.stats?.cache ?? 0;
+          return {
+            containerId: container.Id,
+            name: container.Names?.[0]?.replace(/^\//, '') || container.Id.slice(0, 12),
+            state: container.State,
+            status: container.Status,
+            health: inspect.State?.Health?.Status ?? null,
+            cpuPercent: Number(this.calculateCpuPercent((stats ?? {}) as DockerStatsSnapshot).toFixed(2)),
+            memoryUsageBytes: Math.max(usage - cache, 0),
+            memoryLimitBytes: stats?.memory_stats?.limit ?? 0,
+          };
+        })().catch((error) => {
+          if (this.isResourceMissingError(error)) {
+            this.logger.warn(`Skipping runtime stats for disappearing container ${container.Id} (${appUrn}): ${error}`);
+            return null;
+          }
+
+          throw error;
+        }),
+      ),
     );
+
+    return results.filter((result): result is AppContainerRuntimeStats => result !== null);
   }
 
-  public async forceStopApp(appUrn: AppUrn, graceSeconds = 5): Promise<{ stopped: string[]; killed: string[] }> {
+  public async forceStopApp(appUrn: AppUrn, graceSeconds = 10): Promise<{ stopped: string[]; killed: string[] }> {
     const projectName = this.getComposeProjectName(appUrn);
     const containers = await this.docker.listContainers({
       all: true,
