@@ -1,7 +1,6 @@
 import { Alert, AlertDescription, AlertHeading, AlertIcon } from '@/components/ui/Alert/Alert';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/Table/Table';
-import type { AppRuntimeMonitorSnapshot } from '@/lib/app-runtime-monitor';
 import { fetchAppRuntimeMonitor, formatCpuLimitLabel } from '@/lib/app-runtime-monitor';
 import { useQuery } from '@tanstack/react-query';
 import { AlertTriangle, Activity } from 'lucide-react';
