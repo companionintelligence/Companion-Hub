@@ -11,6 +11,7 @@ mod updater;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Listener, Manager};
 use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_store::StoreExt;
@@ -21,6 +22,13 @@ const STACK_DEV_COMPOSE_PATH_ENV: &str = "CI_HUB_STACK_DEV_COMPOSE_PATH";
 const STACK_DEV_ENV_PATH_ENV: &str = "CI_HUB_STACK_DEV_ENV_PATH";
 
 struct PendingPairingCode(Mutex<Option<String>>);
+struct PendingPortalAuth(Mutex<Option<DesktopPortalAuthPayload>>);
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct DesktopPortalAuthPayload {
+    token: String,
+}
 
 fn stack_dev_mode_enabled() -> bool {
     std::env::var(STACK_DEV_ENV)
@@ -162,6 +170,13 @@ fn consume_pending_pairing_code(state: tauri::State<'_, PendingPairingCode>) -> 
 }
 
 #[tauri::command]
+fn consume_pending_portal_auth(
+    state: tauri::State<'_, PendingPortalAuth>,
+) -> Option<DesktopPortalAuthPayload> {
+    state.0.lock().ok()?.take()
+}
+
+#[tauri::command]
 async fn check_desktop_update_command() -> Result<updater::DesktopUpdateInfo, String> {
     let current = option_env!("CI_HUB_BUILD_VERSION")
         .unwrap_or(env!("CARGO_PKG_VERSION"))
@@ -219,6 +234,7 @@ async fn trigger_host_update_command() -> Result<String, String> {
 pub fn run() {
     let builder = tauri::Builder::default()
         .manage(PendingPairingCode(Mutex::new(None)))
+        .manage(PendingPortalAuth(Mutex::new(None)))
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             focus_main_window(app);
             for arg in &args {
@@ -243,6 +259,7 @@ pub fn run() {
             is_user_stopped_command,
             install_docker_command,
             consume_pending_pairing_code,
+            consume_pending_portal_auth,
             check_desktop_update_command,
             perform_desktop_update_command,
             get_update_progress_command,
@@ -608,10 +625,25 @@ fn queue_pairing_code(app: &tauri::AppHandle, code: &str) {
     let _ = app.emit("deep-link-pair", code);
 }
 
+fn queue_portal_auth(app: &tauri::AppHandle, payload: DesktopPortalAuthPayload) {
+    if let Some(state) = app.try_state::<PendingPortalAuth>() {
+        if let Ok(mut pending) = state.0.lock() {
+            *pending = Some(payload.clone());
+        }
+    }
+    let _ = app.emit("deep-link-auth", payload);
+}
+
 fn handle_deep_link_url(app: &tauri::AppHandle, url: &str) {
     if let Some(code) = extract_pairing_code(url) {
         focus_main_window(app);
         queue_pairing_code(app, &code);
+        return;
+    }
+
+    if let Some(payload) = extract_portal_auth(url) {
+        focus_main_window(app);
+        queue_portal_auth(app, payload);
     }
 }
 
@@ -664,10 +696,32 @@ fn extract_pairing_code(url: &str) -> Option<String> {
     None
 }
 
+fn extract_portal_auth(url: &str) -> Option<DesktopPortalAuthPayload> {
+    let trimmed = url.trim();
+    if !trimmed.starts_with("cihub://auth") {
+        return None;
+    }
+
+    let query = trimmed.split('?').nth(1)?;
+    for param in query.split('&') {
+        if let Some(token) = param.strip_prefix("token=") {
+            let token = token.trim();
+            if !token.is_empty() {
+                return Some(DesktopPortalAuthPayload {
+                    token: token.to_string(),
+                });
+            }
+        }
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        deep_link_urls_from_payload, extract_pairing_code, launch_mode_from_args,
+        deep_link_urls_from_payload, extract_pairing_code, extract_portal_auth,
+        launch_mode_from_args,
         stack_dev_mode_enabled, stack_dev_override_paths, LaunchMode, STACK_DEV_COMPOSE_PATH_ENV,
         STACK_DEV_ENV, STACK_DEV_ENV_PATH_ENV,
     };
@@ -687,6 +741,21 @@ mod tests {
             extract_pairing_code("cihub://pair/abc123"),
             Some("ABC123".to_string())
         );
+    }
+
+    #[test]
+    fn extract_portal_auth_token_from_query_param() {
+        assert_eq!(
+            extract_portal_auth("cihub://auth?token=desktop-token"),
+            Some(super::DesktopPortalAuthPayload {
+                token: "desktop-token".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn ignore_non_auth_deep_links_for_portal_auth() {
+        assert_eq!(extract_portal_auth("cihub://pair?code=abc123"), None);
     }
 
     #[test]

@@ -61,10 +61,16 @@ const checkResetPasswordRequestSchema = z.object({
   isRequestPending: z.boolean(),
 });
 
+const portalDesktopExchangeResponseSchema = z.object({
+  sessionId: z.string(),
+  redirectPath: z.string(),
+});
+
 // Login
 export class LoginBody extends createZodDto(credentialsSchema) {}
 export class VerifyTotpBody extends createZodDto(verifyTotpSchema) {}
 export class LoginDto extends createZodDto(loginResponseSchema) {}
+export class PortalDesktopExchangeDto extends createZodDto(portalDesktopExchangeResponseSchema) {}
 
 // Register
 export class RegisterBody extends createZodDto(credentialsSchema) {}
