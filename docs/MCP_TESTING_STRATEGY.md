@@ -86,7 +86,7 @@ for the catalog and Layer 2 guards the bridge itself.
 
 | Transport | Count | How qa-mcp tests it |
 |-----------|------:|---------------------|
-| **stdio** | 23 | `docker run -i --rm [--env …] <image> <command + args>`; write newline-delimited JSON-RPC to **stdin**, read responses from **stdout**. (`config.json .mcp.command === "docker"` apps like `github-mcp` already encode their own `docker run` invocation — use it verbatim.) |
+| **stdio** | 24 | `docker run -i --rm [--env …] <image> <command + args>`; write newline-delimited JSON-RPC to **stdin**, read responses from **stdout**. (`config.json .mcp.command === "docker"` apps like `github-mcp` already encode their own `docker run` invocation — use it verbatim.) |
 | **SSE / streamable-HTTP** | (future) | start the container, `POST` the JSON-RPC to the `/sse` (or message) endpoint, read the event stream. None of today's local apps use it; the Hub bridge handles SSE for remote servers. |
 | **remote http** | 1 (`miro-mcp`) | hosted/remote endpoint — `skip(remote)` in Layer 1; covered only in Layer 2 with a real token. |
 
@@ -111,12 +111,25 @@ message per line, UTF-8, no `Content-Length` headers). Send `initialize\n`, then
 ```
 
 **Implemented:** after a successful handshake, qa-mcp optionally calls **one curated read-only
-tool** (`SAFE_PROBES` in `qa-mcp.ts` — e.g. `filesystem-mcp → list_directory {path:'/qa'}`,
-`chess-mcp → new_game`) to prove tools actually *execute*, not just advertise. The probe
-**self-guards** against the live tool's real `inputSchema.required`, so a wrong-args entry is
+tool** (`SAFE_PROBES` in `qa-mcp.ts`) to prove tools actually *execute*, not just advertise. The
+probe **self-guards** against the live tool's real `inputSchema.required`, so a wrong-args entry is
 skipped, never failed — and only an advertised-yet-broken tool (`method not found` / internal
 error) downgrades `pass→warn`. Disable with `QA_MCP_PROBE=0`; allow network probes with
 `QA_MCP_PROBE_NET=1`.
+
+The curated set, each **verified `→ok` against the live container** (2026-06-10):
+
+| Probe class | Apps (tool) | Runs |
+|-------------|-------------|------|
+| **offline, read-only, no-cred** | `filesystem-mcp` (`list_directory`), `chess-mcp` (`new_game`), `brewers-almanack-mcp` (`search_styles`), `git-mcp` (`git_status` on the boot-`git init`'d scratch repo), `sqlite-mcp` (`list_tables`), `n8n-mcp` (`tools_documentation`) | every sweep |
+| **network-touching** (`net:true`) | `fetch-mcp` (`fetch`), `youtube-transcript-mcp` (`get_video_info`), `lego-oracle-mcp` (`browse_themes`) | only with `QA_MCP_PROBE_NET=1` |
+| **backing-service** (`BACKING_SERVICES`) | `postgres-mcp` (`query "SELECT 1"` against a `postgres:16-alpine` sidecar) | every sweep, self-gates to backing-up |
+| **no probe — every tool needs creds** | `reddit-mcp` (all tools hit the authed Reddit API → only `tool-error` without keys), plus the secret/host-gated apps below | handshake is the ceiling |
+
+> The probe args are chosen against each tool's **real** `inputSchema.required` (read live, not
+> from the stripped manifest schema). Regression guard: the previous `brewers-almanack-mcp` probe
+> named `lookup_style`, **which the server doesn't expose** — so it silently self-skipped and
+> proved nothing. The unit tests now pin every probe's tool + args.
 
 ## Credentials — the coverage unlock
 
@@ -194,17 +207,51 @@ non-empty tool set, and `<appUrn>__<tool>` namespacing on any bridged tool. A do
 key is a clean **`skip`**, so it never breaks a fleet run. See the gap note above for why catalog
 apps don't yet appear here.
 
-## Inventory (24 apps)
+## Measured baseline (2026-06-10, 25 apps)
 
-| App | Transport | Needs real secret to *boot*? |
-|-----|-----------|------------------------------|
-| fetch-mcp, playwright-mcp, chess-mcp, blender-mcp, excalidraw-mcp, lego-oracle-mcp, smartest-tv-mcp, unity-mcp, unity-mcp-ivanmurzak, unreal-engine-mcp, youtube-transcript-mcp, brewers-almanack-mcp, n8n-mcp | stdio | No → full smoke |
-| filesystem-mcp, git-mcp, sqlite-mcp | stdio | No, but need a synthesized path arg |
-| github-mcp, notion-mcp, obsidian-mcp, doordash-mcp, steam-mcp, postgres-mcp, onlyoffice-docspace-mcp | stdio | Maybe — placeholder first, `skip(needs-secret)` only if it refuses to boot |
-| miro-mcp | remote http | `skip(remote)` (Layer 2 only, with token) |
+Full live sweep on merged `dev` (`APP_STORE_DIR=../CI-Marketplace/apps tsx scripts/qa-mcp.ts --all`
+— `--all` auto-discovers every `.mcp` app, so a newly-added MCP server is never silently missed):
+**19 pass · 6 skip · 0
+fail/warn/error/timeout.** Every testable MCP container boots, completes the handshake, and its
+live `tools/list` is a superset of its declared manifest — i.e. **no manifest drift remains in the
+catalog** (the `github-mcp` refresh was the last). Re-run it after any catalog bump; it's the
+coverage signal.
 
-So **~17 apps get a full no-credential smoke today**, 3 more with a synthesized path, and the
-remaining secret-gated ones get at least a boot+advertise attempt before any `skip`.
+**19 pass** — boots + handshake + manifest ⊇ declared:
+`brewers-almanack` · `chess` · `doordash` · `excalidraw` · `fetch` · `filesystem` · `git` ·
+`github` (67 tools) · `lego-oracle` · `n8n` · `notion` (22) · `obsidian` · `onlyoffice` (23) ·
+`playwright` (25) · `postgres` · `reddit` · `sqlite` · `unreal-engine` (35) · `youtube-transcript`.
+
+**6 skip** — un-testable headless, correctly classified (not failures):
+
+| App | Why skipped |
+|-----|-------------|
+| `blender-mcp`, `unity-mcp`, `unity-mcp-ivanmurzak` | needs a running Blender / Unity Editor on the host (`requires.host_software`) |
+| `smartest-tv-mcp` | needs a real smart TV / Home Assistant on the LAN |
+| `steam-mcp` | `STEAM_API_KEY` is validated **at boot** (server exits without it) → `needs-secret` |
+| `miro-mcp` | `transport: http` — remote/Portal-configured endpoint; Layer-1 is stdio-only |
+
+### Depth: handshake vs execution
+
+`pass` means *boots + advertises the right tools*. Proving a tool **executes** is the exec probe —
+and that's where coverage was thin (only `chess` + `filesystem` ran a tool at baseline). Now **10
+apps are execution-proven**: 6 offline every sweep, 3 net-gated (`QA_MCP_PROBE_NET=1`), and
+`postgres` against a hermetic backing-service sidecar. The remaining 9 `pass` apps are
+**handshake-only by necessity** — every one of their tools needs a real credential or external host
+that headless can't supply, so a no-cred `tools/call` only yields `tool-error`, never a clean `ok`:
+
+| Handshake-only `pass` | What a deeper probe would require |
+|-----------------------|-----------------------------------|
+| `github`, `notion`, `onlyoffice`, `doordash` | a real API token / tenant |
+| `obsidian`, `unreal-engine` | a running Obsidian (REST plugin) / Unreal bridge on the host |
+| `reddit` | Reddit API credentials |
+| `playwright` | `browser_install` first (downloads Chromium ~150 MB) then a `browser_navigate` |
+| `excalidraw` | a connected Excalidraw canvas server |
+
+This is the honest ceiling: **10 execution-proven, 9 handshake-proven** (cred/host-bound), 6
+legitimately skipped. The backing-service pattern (`BACKING_SERVICES`) is the lever for the rest — any
+app whose only gap is a missing DB/cache can be lifted to execution-proven by adding one map entry,
+no real credentials needed.
 
 ## Roadmap
 
@@ -215,9 +262,19 @@ remaining secret-gated ones get at least a boot+advertise attempt before any `sk
 - **⏳ Wire catalog apps through the bridge (the gap above):** add an `agents.mcp` block to MCP apps
   and teach the installer/bridge to run a top-level-`.mcp` server — only then does Layer 2 reach the
   catalog and become the true source of truth.
-- **⏳ Seeded-state + network probes:** extend `SAFE_PROBES` to git/sqlite (seed a scratch repo/db)
-  and network tools (`fetch`, gated by `QA_MCP_PROBE_NET`).
+- **✅ Seeded-state + network exec probes:** `SAFE_PROBES` now covers git (status on the
+  boot-`git init`'d scratch repo), sqlite (`list_tables`), n8n (`tools_documentation`), and
+  net-gated `fetch`/`youtube`/`lego` — all verified `→ok`. Execution-proven apps: 2 → **9**.
+- **✅ Backing-service fixtures:** `BACKING_SERVICES` brings up a hermetic sidecar on a throwaway
+  docker network, joins the app to it, and rewrites the app's connection-string env to the sidecar's
+  alias — so a dummy-URL handshake becomes a real connection. `postgres-mcp` boots against a
+  `postgres:16-alpine` and its `query "SELECT 1"` probe returns `→ok` (verified). The probe self-gates
+  to backing-up only (a node with `QA_MCP_BACKING=0` or a sidecar that fails to start falls back to the
+  clean dummy-URL handshake, no false warn). The same map entry pattern extends to any DB/cache-backed
+  MCP server. **Execution-proven: 2 → 10.**
+- **⏳ Wire catalog apps through the bridge** (the Layer-2 gap above) — add `agents.mcp` blocks +
+  teach the installer to run a top-level-`.mcp` server.
 - **⏳ SSE / streamable-HTTP transport** support in qa-mcp (for future local SSE servers + miro
   with a token).
-- **⏳ Catalog-manifest sync:** when Layer 1 finds drift, open a marketplace PR updating
-  `.mcp.manifest.tools` (the same diagnose→fix→PR fan-out the web-app triage uses).
+- **✅ Catalog-manifest sync:** Layer 1 drives marketplace PRs updating `.mcp.manifest.tools` when it
+  finds drift (e.g. the `github-mcp` refresh). The 2026-06-10 sweep finds **zero** remaining drift.
