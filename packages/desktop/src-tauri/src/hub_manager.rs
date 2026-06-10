@@ -1839,6 +1839,18 @@ fn user_stopped_marker_path(data_dir: &Path) -> PathBuf {
     data_dir.join(USER_STOPPED_MARKER_FILENAME)
 }
 
+fn stack_dev_mode_enabled() -> bool {
+    std::env::var("CI_HUB_STACK_DEV")
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
 /// Record that the user intentionally stopped the Hub.
 /// Called from `stop_hub()` so the next app launch skips auto-start.
 pub fn mark_user_stopped(data_dir: &Path) {
@@ -2428,19 +2440,21 @@ fn docker_context_host(context_name: &str) -> Option<String> {
 }
 
 #[cfg(target_os = "linux")]
-fn reachable_linux_docker_host_from_context_host<F>(
+fn linux_docker_host_for_context_or_local_sockets<F>(
     context_host: Option<&str>,
+    has_nondefault_context: bool,
+    candidates: &[PathBuf],
     mut is_reachable: F,
 ) -> Option<String>
 where
     F: FnMut(&Path) -> bool,
 {
-    let context_host = context_host?;
-    let socket_path = docker_socket_path_from_docker_host(context_host)?;
-    if !is_reachable(&socket_path) {
-        return None;
+    if has_nondefault_context {
+        return context_host.map(|host| host.to_string());
     }
-    Some(context_host.to_string())
+
+    select_reachable_linux_docker_socket_path(candidates, |candidate| is_reachable(candidate))
+        .map(|socket_path| format!("unix://{}", socket_path.display()))
 }
 
 fn preferred_docker_host() -> Option<String> {
@@ -2514,27 +2528,18 @@ fn probe_linux_docker_socket(socket_path: &Path) -> bool {
 
 #[cfg(target_os = "linux")]
 fn active_linux_docker_host(host_docker_dir: Option<&Path>) -> Option<String> {
-    // GUI-launched apps often miss shell-only Docker env/config. Prefer a
-    // reachable current Docker context first so the desktop app and the user's
-    // CLI target the same daemon. Fall back to plain Docker Engine sockets so
-    // Linux installs work without Docker Desktop.
-    if let Some(context_host) = current_docker_context_name(host_docker_dir)
-        .as_deref()
-        .and_then(docker_context_host)
-    {
-        if let Some(host) = reachable_linux_docker_host_from_context_host(
-            Some(context_host.as_str()),
-            probe_linux_docker_socket,
-        ) {
-            return Some(host);
-        }
-    }
+    // Respect a configured non-default Docker context even if it is currently
+    // unavailable so the desktop app matches the user's CLI behavior. Only fall
+    // back to local Engine sockets when there is no explicit context override.
+    let context_name = current_docker_context_name(host_docker_dir);
+    let context_host = context_name.as_deref().and_then(docker_context_host);
 
-    select_reachable_linux_docker_socket_path(
+    linux_docker_host_for_context_or_local_sockets(
+        context_host.as_deref(),
+        context_name.is_some(),
         &linux_docker_socket_candidates(),
         probe_linux_docker_socket,
     )
-    .map(|socket_path| format!("unix://{}", socket_path.display()))
 }
 
 fn host_docker_socket_path() -> PathBuf {
@@ -3883,7 +3888,9 @@ fn start_database_first(
 /// A `Drop` guard ensures the flag is cleared even if the inner logic panics.
 pub fn start_hub(compose_path: &Path, env_path: &Path, data_dir: &Path) -> Result<String, String> {
     // Clear the user-stopped marker: the user has explicitly requested a start.
-    clear_user_stopped(data_dir);
+    if !stack_dev_mode_enabled() {
+        clear_user_stopped(data_dir);
+    }
 
     // Prevent concurrent start attempts.
     if START_IN_PROGRESS
@@ -4429,12 +4436,19 @@ pub fn stop_hub(compose_path: &Path, env_path: &Path) -> Result<String, String> 
     let data_dir = get_hub_data_dir();
     // Record that the user intentionally stopped the Hub so the next launch
     // does not auto-restart it.
-    mark_user_stopped(&data_dir);
+    if !stack_dev_mode_enabled() {
+        mark_user_stopped(&data_dir);
+    }
     let _ = append_desktop_log_for(
         &data_dir,
         "hub.stop",
         &format!(
-            "Requested stop via docker compose down (user-stopped marker set)\ncompose={}\nenv={}",
+            "Requested stop via docker compose down{}\ncompose={}\nenv={}",
+            if stack_dev_mode_enabled() {
+                " (stack-dev mode: user-stopped marker unchanged)"
+            } else {
+                " (user-stopped marker set)"
+            },
             compose_path.display(),
             env_path.display()
         ),
@@ -5759,7 +5773,7 @@ mod tests {
     };
     #[cfg(target_os = "linux")]
     use super::{
-        current_docker_context_name, reachable_linux_docker_host_from_context_host,
+        current_docker_context_name, linux_docker_host_for_context_or_local_sockets,
         select_reachable_linux_docker_socket_path,
     };
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -5924,13 +5938,35 @@ mod tests {
     #[test]
     fn prefers_reachable_linux_context_host_before_socket_fallbacks() {
         let context_host = "unix:///home/test/.docker/desktop/docker.sock";
+        let candidates = vec![
+            PathBuf::from("/var/run/docker.sock"),
+            PathBuf::from("/run/user/1000/docker.sock"),
+        ];
 
-        let selected =
-            reachable_linux_docker_host_from_context_host(Some(context_host), |candidate| {
-                candidate == Path::new("/home/test/.docker/desktop/docker.sock")
-            });
+        let selected = linux_docker_host_for_context_or_local_sockets(
+            Some(context_host),
+            true,
+            &candidates,
+            |_candidate| false,
+        );
 
         assert_eq!(selected, Some(context_host.to_string()));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn does_not_fall_back_when_nondefault_context_is_configured_but_unreachable() {
+        let candidates = vec![
+            PathBuf::from("/var/run/docker.sock"),
+            PathBuf::from("/run/user/1000/docker.sock"),
+        ];
+
+        let selected =
+            linux_docker_host_for_context_or_local_sockets(None, true, &candidates, |candidate| {
+                candidate == Path::new("/var/run/docker.sock")
+            });
+
+        assert_eq!(selected, None);
     }
 
     #[test]

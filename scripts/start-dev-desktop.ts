@@ -17,13 +17,17 @@ function runStep(command: string, args: string[]): { ok: boolean; code: number }
 
 function main(): number {
   const stackStart = runStep('pnpm', ['run', 'start:dev:detached']);
-  if (stackStart.ok) {
-    const waitForHub = runStep('pnpm', ['run', 'wait:hub']);
-    if (!waitForHub.ok) {
-      console.warn('start-dev-desktop: Hub API did not become healthy in time. Launching desktop anyway.');
-    }
-  } else {
-    console.warn('start-dev-desktop: Hub stack did not start. Launching desktop anyway so it can show Docker/setup guidance.');
+  if (!stackStart.ok) {
+    console.warn('start-dev-desktop: Hub stack did not start. Not launching Tauri because stack-dev mode requires a healthy Hub on localhost:5002.');
+    return stackStart.code || 1;
+  }
+
+  const waitForHub = runStep('pnpm', ['run', 'wait:hub']);
+  if (!waitForHub.ok) {
+    console.warn(
+      'start-dev-desktop: Hub API did not become healthy in time. Not launching Tauri because stack-dev mode would open a blank localhost page.',
+    );
+    return waitForHub.code || 1;
   }
 
   const desktop = runStep('pnpm', ['exec', 'tsx', 'scripts/launch-tauri-desktop.ts', '--stack-dev']);
