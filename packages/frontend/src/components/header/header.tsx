@@ -1,5 +1,5 @@
 import { Link, NavLink, useNavigate } from 'react-router';
-import { LogOut, Home, Settings, Store, Menu, LogIn, Sun, Moon } from 'lucide-react';
+import { LogOut, Home, Settings, Store, Menu, LogIn, Sun, Moon, Activity } from 'lucide-react';
 import { clsx } from 'clsx';
 import { useTranslation } from 'react-i18next';
 import { Button, buttonVariants } from '@/components/ui/Button';
@@ -85,6 +85,10 @@ export const Header = (props: HeaderProps) => {
             <Store className="mr-2 size-4" />
             {t('COMMON_APP_STORE')}
           </NavLink>
+          <NavLink to="/resource-monitor" className={getNavLinkClass}>
+            <Activity className="mr-2 size-4" />
+            {t('RESOURCE_MONITOR_NAV')}
+          </NavLink>
         </nav>
       )}
 
@@ -156,6 +160,12 @@ export const Header = (props: HeaderProps) => {
                   <Link to="/settings" className="w-full cursor-pointer flex items-center">
                     <Settings className="mr-2 size-4" />
                     {t('COMMON_SETTINGS', 'Settings')}
+                  </Link>
+                </DropdownMenuItem>
+                <DropdownMenuItem asChild>
+                  <Link to="/resource-monitor" className="w-full cursor-pointer flex items-center">
+                    <Activity className="mr-2 size-4" />
+                    {t('RESOURCE_MONITOR_NAV')}
                   </Link>
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />

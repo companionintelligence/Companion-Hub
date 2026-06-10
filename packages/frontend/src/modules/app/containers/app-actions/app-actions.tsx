@@ -32,6 +32,7 @@ import { InstallDialog } from '../../components/dialogs/install-dialog/install-d
 import { ResetDialog } from '../../components/dialogs/reset-dialog/reset-dialog';
 import { RestartDialog } from '../../components/dialogs/restart-dialog/restart-dialog';
 import { StopDialog } from '../../components/dialogs/stop-dialog/stop-dialog';
+import { ForceStopDialog } from '../../components/dialogs/force-stop-dialog/force-stop-dialog';
 import { UninstallDialog } from '../../components/dialogs/uninstall-dialog/uninstall-dialog';
 import { UpdateSettingsDialog } from '../../components/dialogs/update-settings-dialog/update-settings-dialog';
 import { useAppStatus } from '../../helpers/use-app-status';
@@ -40,6 +41,7 @@ import { DropdownMenuSeparator } from '@/components/ui/DropdownMenu/DropdownMenu
 import { useLocation, useNavigate } from 'react-router';
 import type { AppUrn } from '@ci-hub/common/types';
 import { openExternal } from '@/lib/helpers/open-external';
+import type { AppRuntimeHealth } from '@/lib/app-runtime-monitor';
 
 const openExternalUrl = (url: string) => openExternal(url);
 
@@ -49,6 +51,7 @@ interface IProps {
   metadata: AppMetadata;
   localDomain?: string;
   sslPort?: number;
+  runtimeHealth?: AppRuntimeHealth;
 }
 
 interface BtnProps extends ButtonProps {
@@ -93,9 +96,10 @@ const GRACE_POLL_MS = 3_000;
 const NORMAL_POLL_MS = 10_000;
 const MAX_POLL_MS = 5 * 60_000;
 
-export const AppActions = ({ app, info, metadata }: IProps) => {
+export const AppActions = ({ app, info, metadata, runtimeHealth }: IProps) => {
   const installDisclosure = useDisclosure();
   const stopDisclosure = useDisclosure();
+  const forceStopDisclosure = useDisclosure();
   const restartDisclosure = useDisclosure();
   const updateSettingsDisclosure = useDisclosure();
   const uninstallDisclosure = useDisclosure();
@@ -226,6 +230,12 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
     <DropdownMenuItem onClick={resetAppDisclosure.open} key="reset" className="text-destructive focus:text-destructive">
       <Eraser className="mr-2" size={16} />
       {t('APP_INSTALL_FORM_RESET')}
+    </DropdownMenuItem>
+  );
+  const ForceStopListItem = (
+    <DropdownMenuItem onClick={forceStopDisclosure.open} key="force-stop" className="text-destructive focus:text-destructive">
+      <AlertTriangle className="mr-2" size={16} />
+      {t('APP_FORCE_STOP_ACTION')}
     </DropdownMenuItem>
   );
 
@@ -602,6 +612,7 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
     <>
       <InstallDialog isOpen={installDisclosure.isOpen} onClose={installDisclosure.close} info={info} />
       <StopDialog isOpen={stopDisclosure.isOpen} onClose={stopDisclosure.close} info={info} />
+      <ForceStopDialog isOpen={forceStopDisclosure.isOpen} onClose={forceStopDisclosure.close} info={info} />
       <RestartDialog isOpen={restartDisclosure.isOpen} onClose={restartDisclosure.close} info={info} />
       <UninstallDialog isOpen={uninstallDisclosure.isOpen} onClose={uninstallDisclosure.close} info={info} />
       <ResetDialog isOpen={resetAppDisclosure.isOpen} onClose={resetAppDisclosure.close} info={info} />
@@ -632,6 +643,8 @@ export const AppActions = ({ app, info, metadata }: IProps) => {
             </DropdownMenuTrigger>
             <DropdownMenuContent>
               <DropdownMenuGroup>{listItems}</DropdownMenuGroup>
+              {runtimeHealth?.forceStopEligible ? <DropdownMenuSeparator /> : null}
+              {runtimeHealth?.forceStopEligible ? <DropdownMenuGroup>{[ForceStopListItem]}</DropdownMenuGroup> : null}
               {listItemsDestructive.length > 0 ? <DropdownMenuSeparator /> : null}
               <DropdownMenuGroup>{listItemsDestructive}</DropdownMenuGroup>
             </DropdownMenuContent>
