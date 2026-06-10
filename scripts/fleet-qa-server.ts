@@ -1065,8 +1065,10 @@ body {
 header {
   position: sticky; top: 0; z-index: 100;
   background: var(--surface); border-bottom: 1px solid var(--border);
-  display: flex; align-items: center; gap: 16px; padding: 10px 20px;
+  display: flex; align-items: center; gap: 10px 14px; padding: 8px 20px; flex-wrap: wrap;
 }
+.hdr-controls { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; flex: 1; min-width: 0; }
+.hdr-right { display: flex; align-items: center; gap: 10px; margin-left: auto; }
 .logo { display: flex; align-items: center; gap: 9px; }
 .logo .mark {
   display: inline-flex; align-items: center; justify-content: center;
@@ -1083,34 +1085,38 @@ header {
 }
 .conn { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
 .conn.live { background: var(--pass); box-shadow: 0 0 6px var(--pass); animation: pulse 2s infinite; }
-.elapsed { color: var(--text2); font-size: 12px; margin-left: auto; }
+.elapsed { color: var(--text2); font-size: 12px; white-space: nowrap; }
 
-/* ── Summary bar ── */
+/* ── Summary bar: stat chips double as status FILTERS — click to filter the grid ── */
 .summary {
-  display: flex; gap: 12px; padding: 12px 20px;
+  display: flex; gap: 10px; padding: 10px 20px; align-items: center;
   border-bottom: 1px solid var(--border); flex-wrap: wrap;
 }
-.stat { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 8px 16px; display: flex; flex-direction: column; align-items: center; min-width: 80px; }
-.stat-n { font-size: 22px; font-weight: 700; line-height: 1; }
-.stat-l { font-size: 11px; color: var(--text2); margin-top: 2px; text-transform: uppercase; letter-spacing: .5px; }
-.stat.pass .stat-n { color: var(--pass); }
-.stat.warn .stat-n { color: var(--warn); }
-.stat.fail .stat-n { color: var(--fail); }
-.stat.error .stat-n { color: var(--error); }
-.stat.timeout .stat-n { color: var(--timeout); }
-.stat.skip .stat-n { color: var(--skip); }
-.stat.running .stat-n { color: var(--accent); }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  padding: 5px 12px; display: flex; align-items: baseline; gap: 6px; cursor: pointer;
+  font: inherit; color: var(--text); transition: border-color .15s, background .15s; user-select: none;
+}
+.chip:hover { border-color: var(--border2); background: var(--surface2); }
+.chip-n { font-size: 17px; font-weight: 700; line-height: 1; }
+.chip-l { font-size: 10px; color: var(--text2); text-transform: uppercase; letter-spacing: .5px; }
+.chip.pass .chip-n { color: var(--pass); }
+.chip.warn .chip-n { color: var(--warn); }
+.chip.fail .chip-n { color: var(--fail); }
+.chip.error .chip-n { color: var(--error); }
+.chip.timeout .chip-n { color: var(--timeout); }
+.chip.skip .chip-n { color: var(--skip); }
+.chip.running .chip-n { color: var(--accent); }
+.chip.on { border-color: var(--accent); background: var(--accent-dim); box-shadow: 0 0 0 1px var(--accent-dim); }
+.chip.on .chip-l { color: var(--accent-bright); }
+.shown-note { font-size: 11px; color: var(--text2); white-space: nowrap; }
 .progress-outer { flex: 1; min-width: 200px; display: flex; flex-direction: column; justify-content: center; gap: 4px; }
 .progress-bar { height: 8px; background: var(--surface2); border-radius: 4px; overflow: hidden; }
 .progress-fill { height: 100%; background: linear-gradient(90deg, var(--grad-a), var(--accent-bright)); border-radius: 4px; transition: width .4s; }
 .progress-label { font-size: 11px; color: var(--text2); }
 
-/* ── Controls ── */
-.controls {
-  display: flex; gap: 8px; padding: 10px 20px; align-items: center;
-  border-bottom: 1px solid var(--border); flex-wrap: wrap;
-}
+/* ── Controls (inline in the header) ── */
 .btn {
   padding: 6px 14px; border-radius: 6px; border: 1px solid var(--border);
   background: var(--surface2); color: var(--text); font-size: 12px; cursor: pointer;
@@ -1138,13 +1144,19 @@ header {
 .node-badge.offline { opacity: .4; }
 
 /* ── Grid ── */
-.grid-header { padding: 8px 20px; display: flex; align-items: center; gap: 8px; }
-.grid-header h2 { font-size: 13px; font-weight: 600; }
 .filter-input {
-  margin-left: auto; padding: 4px 10px; border-radius: 6px;
+  margin-left: auto; padding: 6px 12px; border-radius: 6px;
   border: 1px solid var(--border); background: var(--surface2);
-  color: var(--text); font-size: 12px; width: 160px;
+  color: var(--text); font-size: 12px; width: 190px;
 }
+.filter-input:focus { outline: none; border-color: var(--accent); }
+/* time/size mini bar graphs (cards + drawer) */
+.bar-row { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+.bar-ico { font-size: 9px; color: var(--text2); text-transform: uppercase; letter-spacing: .4px; width: 26px; flex-shrink: 0; }
+.bar-track { flex: 1; height: 5px; background: var(--surface2); border-radius: 3px; overflow: hidden; }
+.bar-fill { height: 100%; border-radius: 3px; background: linear-gradient(90deg, var(--grad-a), var(--accent-bright)); }
+.bar-fill.mem { background: linear-gradient(90deg, #7a5cff, var(--timeout)); }
+.bar-val { font-size: 10px; color: var(--text2); min-width: 52px; text-align: right; flex-shrink: 0; font-variant-numeric: tabular-nums; }
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
@@ -1209,12 +1221,19 @@ header {
 
 /* ── Detail Drawer ── */
 .drawer {
-  position: fixed; top: 0; right: 0; width: 400px; height: 100vh;
+  position: fixed; top: 0; right: 0; width: 560px; max-width: 94vw; height: 100vh;
   background: var(--surface); border-left: 1px solid var(--border);
   transform: translateX(100%); transition: transform .25s; z-index: 200;
   display: flex; flex-direction: column; overflow: hidden;
+  box-shadow: -18px 0 48px -24px #000c;
 }
 .drawer.open { transform: translateX(0); }
+/* click-away scrim: covers the page while the drawer is open; clicking it closes the drawer */
+.drawer-backdrop {
+  position: fixed; inset: 0; background: #020805a8; z-index: 150;
+  opacity: 0; pointer-events: none; transition: opacity .2s;
+}
+.drawer-backdrop.open { opacity: 1; pointer-events: auto; }
 .drawer-header {
   padding: 14px 16px; border-bottom: 1px solid var(--border);
   display: flex; align-items: center; gap: 8px;
@@ -1223,12 +1242,20 @@ header {
 .drawer-close { cursor: pointer; color: var(--text2); font-size: 18px; padding: 2px 6px; }
 .drawer-close:hover { color: var(--text); }
 .drawer-body { flex: 1; overflow-y: auto; padding: 14px 16px; }
-.screenshot-img { width: 100%; border-radius: 6px; border: 1px solid var(--border); margin-bottom: 12px; }
-.meta-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 16px; margin-bottom: 12px; }
-.meta-item { display: flex; flex-direction: column; }
+.screenshot-img { width: 100%; border-radius: 8px; border: 1px solid var(--border2); margin-bottom: 12px; cursor: zoom-in; display: block; }
+.meta-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px 14px; margin-bottom: 12px; }
+.meta-item { display: flex; flex-direction: column; min-width: 0; }
+.meta-item.wide { grid-column: 1 / -1; }
 .meta-key { font-size: 10px; color: var(--text2); text-transform: uppercase; letter-spacing: .5px; }
-.meta-val { font-size: 13px; font-weight: 600; }
-.logs { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px; max-height: 200px; overflow-y: auto; }
+.meta-val { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.drawer-score { font-size: 12px; font-weight: 700; padding: 2px 10px; border-radius: 5px; text-transform: uppercase; letter-spacing: .5px; }
+.drawer-score.pass { color: var(--pass); background: var(--pass-dim); }
+.drawer-score.warn { color: var(--warn); background: var(--warn-dim); }
+.drawer-score.fail { color: var(--fail); background: var(--fail-dim); }
+.drawer-score.error { color: var(--error); background: var(--error-dim); }
+.drawer-score.timeout { color: var(--timeout); background: var(--timeout-dim); }
+.drawer-score.skip { color: var(--skip); background: var(--skip-dim); }
+.logs { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px; max-height: 320px; overflow-y: auto; }
 .log-line { font-size: 11px; color: var(--text2); font-family: monospace; white-space: pre-wrap; line-height: 1.6; }
 .section-label { font-size: 11px; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 6px; }
 
@@ -1240,58 +1267,49 @@ header {
 <body>
 <header>
   <div class="logo"><span class="mark">CI</span><span class="name">Hub</span><span class="sub">Fleet&nbsp;QA</span></div>
-  <div class="conn" id="conn"></div>
-  <div id="elapsed" class="elapsed">Not running</div>
+  <div class="hdr-controls">
+    <button class="btn active" id="mode-quick" onclick="setMode('quick')">Quick</button>
+    <button class="btn" id="mode-full" onclick="setMode('full')">Full (${CATALOG.length})</button>
+    <div class="mode-sep"></div>
+    <div class="node-sel" id="node-sel"></div>
+    <div class="mode-sep"></div>
+    <button class="btn" id="btn-preflight" onclick="preflight()">Preflight</button>
+    <button class="btn primary" id="btn-start" onclick="startRun()">&#9654; Start</button>
+    <button class="btn danger" id="btn-stop" onclick="stopRun()" disabled>&#9632; Stop</button>
+    <button class="btn" onclick="resetRun()">&#8635; Reset</button>
+  </div>
+  <div class="hdr-right">
+    <div class="conn" id="conn"></div>
+    <div id="elapsed" class="elapsed">Not running</div>
+  </div>
 </header>
 
 <div class="summary">
-  <div class="stat"><span class="stat-n" id="s-total">0</span><span class="stat-l">Total</span></div>
-  <div class="stat running"><span class="stat-n" id="s-running">0</span><span class="stat-l">Running</span></div>
-  <div class="stat pass"><span class="stat-n" id="s-pass">0</span><span class="stat-l">Pass</span></div>
-  <div class="stat warn"><span class="stat-n" id="s-warn">0</span><span class="stat-l">Warn</span></div>
-  <div class="stat fail"><span class="stat-n" id="s-fail">0</span><span class="stat-l">Fail</span></div>
-  <div class="stat error"><span class="stat-n" id="s-error">0</span><span class="stat-l">Error</span></div>
-  <div class="stat timeout"><span class="stat-n" id="s-timeout">0</span><span class="stat-l">Timeout</span></div>
-  <div class="stat skip"><span class="stat-n" id="s-skip">0</span><span class="stat-l">Skip</span></div>
+  <div class="chips" id="chips">
+    <button class="chip on" id="chip-total" onclick="setStatFilter('')" title="Show all apps"><span class="chip-n" id="s-total">0</span><span class="chip-l">Total</span></button>
+    <button class="chip running" id="chip-running" onclick="setStatFilter('running')" title="Filter: in-flight"><span class="chip-n" id="s-running">0</span><span class="chip-l">Running</span></button>
+    <button class="chip pass" id="chip-pass" onclick="setStatFilter('pass')" title="Filter: pass"><span class="chip-n" id="s-pass">0</span><span class="chip-l">Pass</span></button>
+    <button class="chip warn" id="chip-warn" onclick="setStatFilter('warn')" title="Filter: warn"><span class="chip-n" id="s-warn">0</span><span class="chip-l">Warn</span></button>
+    <button class="chip fail" id="chip-fail" onclick="setStatFilter('fail')" title="Filter: fail"><span class="chip-n" id="s-fail">0</span><span class="chip-l">Fail</span></button>
+    <button class="chip error" id="chip-error" onclick="setStatFilter('error')" title="Filter: error"><span class="chip-n" id="s-error">0</span><span class="chip-l">Error</span></button>
+    <button class="chip timeout" id="chip-timeout" onclick="setStatFilter('timeout')" title="Filter: timeout"><span class="chip-n" id="s-timeout">0</span><span class="chip-l">Timeout</span></button>
+    <button class="chip skip" id="chip-skip" onclick="setStatFilter('skip')" title="Filter: skip"><span class="chip-n" id="s-skip">0</span><span class="chip-l">Skip</span></button>
+  </div>
   <div class="progress-outer">
     <div class="progress-bar"><div class="progress-fill" id="progress-fill" style="width:0%"></div></div>
     <div class="progress-label" id="progress-label">0 / 0 apps tested</div>
   </div>
+  <span class="shown-note" id="shown-note"></span>
+  <input class="filter-input" id="filter-text" placeholder="Search apps..." oninput="applyFilters()">
 </div>
 
-<div class="controls">
-  <button class="btn active" id="mode-quick" onclick="setMode('quick')">Quick (high-priority)</button>
-  <button class="btn" id="mode-full" onclick="setMode('full')">Full (${CATALOG.length} apps)</button>
-  <div class="mode-sep"></div>
-  <div class="node-sel" id="node-sel"></div>
-  <div class="mode-sep"></div>
-  <button class="btn" id="btn-preflight" onclick="preflight()">Preflight</button>
-  <button class="btn primary" id="btn-start" onclick="startRun()">&#9654; Start</button>
-  <button class="btn danger" id="btn-stop" onclick="stopRun()" disabled>&#9632; Stop</button>
-  <button class="btn" onclick="resetRun()">&#8635; Reset</button>
-</div>
-
-<div class="grid-header">
-  <h2 id="grid-label">App Catalog</h2>
-  <select class="filter-input" id="filter-status" onchange="applyFilters()">
-    <option value="">All statuses</option>
-    <option value="running">Running</option>
-    <option value="pass">Pass</option>
-    <option value="warn">Warn</option>
-    <option value="fail">Fail</option>
-    <option value="error">Error</option>
-    <option value="timeout">Timeout</option>
-    <option value="skip">Skip</option>
-    <option value="queued">Queued</option>
-    <option value="idle">Idle</option>
-  </select>
-  <input class="filter-input" id="filter-text" placeholder="Search apps..." oninput="applyFilters()" style="margin-left:8px">
-</div>
 <div class="grid" id="grid"></div>
 
+<div class="drawer-backdrop" id="drawer-backdrop" onclick="closeDrawer()"></div>
 <div class="drawer" id="drawer">
   <div class="drawer-header">
     <span class="drawer-title" id="drawer-title">App Details</span>
+    <span class="drawer-score" id="drawer-score" style="display:none"></span>
     <span class="drawer-close" onclick="closeDrawer()">&times;</span>
   </div>
   <div class="drawer-body" id="drawer-body"></div>
@@ -1303,6 +1321,25 @@ var selectedNodes = new Set();
 var currentMode = 'quick';
 var drawerApp = null;
 var elapsedTimer = null;
+var statFilter = '';                      // active stat-chip filter ('' = all)
+var maxima = { maxStart: 1, maxMem: 1 };  // run-wide maxima for the time/size bar graphs
+
+// Stat chips double as filters: click toggles; clicking the active chip (or Total) clears.
+function setStatFilter(f) {
+  statFilter = (statFilter === f) ? '' : f;
+  document.querySelectorAll('.chip').forEach(function(c) { c.classList.remove('on'); });
+  var el = document.getElementById('chip-' + (statFilter || 'total'));
+  if (el) el.classList.add('on');
+  applyFilters();
+}
+
+// One horizontal mini bar: label | track | value. pct is relative to the run-wide max.
+function barRow(lab, txt, val, max, cls) {
+  var pct = Math.max(3, Math.min(100, Math.round((val / Math.max(1, max)) * 100)));
+  return '<div class="bar-row"><span class="bar-ico">' + lab + '</span>'
+    + '<div class="bar-track"><div class="bar-fill ' + (cls || '') + '" style="width:' + pct + '%"></div></div>'
+    + '<span class="bar-val">' + txt + '</span></div>';
+}
 
 function setMode(m) {
   currentMode = m;
@@ -1389,7 +1426,7 @@ function buildGrid(catalog) {
     card.innerHTML = cardHtml(app, state.apps[app.id] || { id: app.id, name: app.name, status: 'idle', categories: app.categories || [], phase: '', message: '', result: null });
     grid.appendChild(card);
   });
-  document.getElementById('grid-label').textContent = 'App Catalog (' + catalog.length + ' apps)';
+  applyFilters();
 }
 
 function cardHtml(app, s) {
@@ -1399,13 +1436,18 @@ function cardHtml(app, s) {
     return '<span class="cat-tag">' + c + '</span>';
   }).join('');
   var phase = s ? (s.message || s.phase || '') : '';
+  // Expanded result data: boot time + RAM as bar graphs (relative to the run-wide max),
+  // plus a compact footer with pull time and HTTP status.
+  var bars = '';
   var meta = '';
   if (s && s.result) {
     var r = s.result;
+    if (r.startupMs > 0) bars += barRow('boot', fmtMs(r.startupMs), r.startupMs, maxima.maxStart, '');
+    if (r.memMb > 0) bars += barRow('ram', r.memMb + 'MB', r.memMb, maxima.maxMem, 'mem');
     var parts = [];
-    if (r.startupMs > 0) parts.push(fmtMs(r.startupMs));
-    if (r.memMb > 0) parts.push(r.memMb + 'MB');
+    if (r.pullMs > 0) parts.push('pull ' + fmtMs(r.pullMs));
     if (r.httpStatus) parts.push('HTTP ' + r.httpStatus);
+    if (r.imageMb > 0) parts.push(Math.round(r.imageMb) + 'MB img');
     meta = parts.join(' &middot; ');
   }
   var scoreHtml = '';
@@ -1425,6 +1467,7 @@ function cardHtml(app, s) {
     + '</div>'
     + '<div class="card-cats">' + cats + '</div>'
     + (phase ? '<div class="card-phase">' + phase + '</div>' : '')
+    + bars
     + (meta ? '<div class="card-meta">' + meta + '</div>' : '')
     + scoreHtml;
 }
@@ -1461,10 +1504,19 @@ function updateSummary(fleet) {
   var pct = total > 0 ? (done / total * 100).toFixed(1) : 0;
   document.getElementById('progress-fill').style.width = pct + '%';
   document.getElementById('progress-label').textContent = done + ' / ' + total + ' tested' + (skip ? ' (' + skip + ' skipped)' : '');
+  // Refresh run-wide maxima for the card/drawer bar graphs.
+  var mS = 1, mM = 1;
+  apps.forEach(function(a) {
+    var r = a.result;
+    if (r) {
+      if (r.startupMs > mS) mS = r.startupMs;
+      if (r.memMb > mM) mM = r.memMb;
+    }
+  });
+  maxima = { maxStart: mS, maxMem: mM };
 }
 
 function applyFilters() {
-  var statusFilter = document.getElementById('filter-status').value;
   var textFilter = document.getElementById('filter-text').value.toLowerCase();
   var cards = document.querySelectorAll('.card');
   var visible = 0;
@@ -1474,59 +1526,97 @@ function applyFilters() {
     var status = s ? s.status : 'idle';
     var name = (s ? s.name : appId).toLowerCase();
     var cats = (s ? s.categories : []).join(' ').toLowerCase();
-    var showStatus = !statusFilter || status === statusFilter
-      || (statusFilter === 'running' && ['pulling','starting','http','screenshot','benchmark'].includes(status));
+    var showStatus = !statFilter || status === statFilter
+      || (statFilter === 'running' && ['pulling','starting','http','screenshot','benchmark','queued'].includes(status));
     var showText = !textFilter || name.includes(textFilter) || appId.includes(textFilter) || cats.includes(textFilter);
     card.style.display = (showStatus && showText) ? '' : 'none';
     if (showStatus && showText) visible++;
   });
-  document.getElementById('grid-label').textContent = 'App Catalog (' + visible + ' of ' + state.catalog.length + ')';
+  var note = document.getElementById('shown-note');
+  note.textContent = (statFilter || textFilter) ? (visible + ' of ' + state.catalog.length + ' shown') : '';
 }
 
 function openDrawer(appId) {
   drawerApp = appId;
   renderDrawer(appId);
   document.getElementById('drawer').classList.add('open');
+  document.getElementById('drawer-backdrop').classList.add('open');
 }
 
 function closeDrawer() {
   drawerApp = null;
   document.getElementById('drawer').classList.remove('open');
+  document.getElementById('drawer-backdrop').classList.remove('open');
 }
+
+// Esc also closes the drawer (in addition to the click-away backdrop and the × button).
+document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeDrawer(); });
 
 function renderDrawer(appId) {
   var s = state.apps[appId];
   var app = state.catalog.find(function(a) { return a.id === appId; }) || { id: appId, name: appId };
   document.getElementById('drawer-title').textContent = (s ? s.name : appId);
+  var scoreEl = document.getElementById('drawer-score');
+  var SCORES = ['pass','warn','fail','error','timeout','skip'];
+  if (s && SCORES.includes(s.status)) {
+    scoreEl.textContent = s.status;
+    scoreEl.className = 'drawer-score ' + s.status;
+    scoreEl.style.display = '';
+  } else {
+    scoreEl.style.display = 'none';
+  }
   var body = document.getElementById('drawer-body');
   var html = '';
-  // Screenshot
+  // Screenshot — full drawer width; click opens the raw capture in a new tab.
   var ssFile = (s && s.node ? s.node + '_' : '') + appId + '.png';
   var ssBust = (s && s.endTs) ? ('?t=' + s.endTs) : '';
-  html += '<img class="screenshot-img" src="/screenshots/' + ssFile + ssBust + '" onerror="this.hidden=true">';
-  // Meta grid
+  var ssUrl = '/screenshots/' + ssFile + ssBust;
+  html += '<img class="screenshot-img" src="' + ssUrl + '" onerror="this.hidden=true" onclick="window.open(this.src, \\'_blank\\')" title="Open full-size capture">';
   var r = s && s.result ? s.result : {};
-  html += '<div class="section-label">Metrics</div>';
+  // Time + size bar graphs (relative to the run-wide maxima, like the cards).
+  var bars = '';
+  if (r.pullMs > 0) bars += barRow('pull', fmtMs(r.pullMs), r.pullMs, Math.max(maxima.maxStart, r.pullMs), '');
+  if (r.startupMs > 0) bars += barRow('boot', fmtMs(r.startupMs), r.startupMs, maxima.maxStart, '');
+  if (r.memMb > 0) bars += barRow('ram', r.memMb + ' MB', r.memMb, maxima.maxMem, 'mem');
+  if (r.memPeakMb > 0) bars += barRow('peak', r.memPeakMb + ' MB', r.memPeakMb, maxima.maxMem, 'mem');
+  if (bars) {
+    html += '<div class="section-label">Timing &amp; Footprint</div>';
+    html += '<div style="margin-bottom:12px">' + bars + '</div>';
+  }
+  // Expanded meta grid.
+  html += '<div class="section-label">Details</div>';
   html += '<div class="meta-grid">';
+  var backendVal = r.backendHealthy === true ? 'healthy' : r.backendHealthy === false ? 'DEGRADED' : '—';
   var metaItems = [
     ['Status', (s && s.status) || 'idle'],
     ['Node', (s && s.node) || '—'],
-    ['Startup', fmtMs(r.startupMs)],
-    ['Pull', fmtMs(r.pullMs)],
     ['HTTP', r.httpStatus ? 'HTTP ' + r.httpStatus : '—'],
-    ['Memory', r.memMb > 0 ? r.memMb + ' MB' : '—'],
-    ['Peak RAM', r.memPeakMb > 0 ? r.memPeakMb + ' MB' : '—'],
+    ['Ready via', r.readyVia || '—'],
+    ['Backend', backendVal],
+    ['Attempts', r.attempts ? (r.attempts + (r.retried ? ' (retried)' : '')) : '—'],
+    ['Fail kind', r.failKind || '—'],
     ['CPU', r.cpuPct > 0 ? r.cpuPct + '%' : '—'],
-    ['Image', r.imageMb > 0 ? r.imageMb + ' MB' : '—'],
+    ['Image size', r.imageMb > 0 ? Math.round(r.imageMb) + ' MB' : '—'],
+    ['Port', r.port || app.port || '—'],
+    ['Categories', ((s && s.categories) || app.categories || []).join(', ') || '—'],
+    ['Finished', (s && s.endTs) ? new Date(s.endTs).toLocaleTimeString() : '—'],
   ];
   metaItems.forEach(function(item) {
     html += '<div class="meta-item"><span class="meta-key">' + item[0] + '</span><span class="meta-val">' + item[1] + '</span></div>';
   });
+  if (r.image || app.image) {
+    html += '<div class="meta-item wide"><span class="meta-key">Image</span><span class="meta-val">' + (r.image || app.image) + '</span></div>';
+  }
   html += '</div>';
   // Notes
   if (r.notes || (s && s.message)) {
     html += '<div class="section-label" style="margin-top:10px">Notes</div>';
     html += '<div class="log-line" style="background:var(--bg);padding:8px;border-radius:6px;margin-bottom:10px">' + (r.notes || s.message) + '</div>';
+  }
+  // Backend service errors (captured when a stack is degraded)
+  if (r.backendErrors) {
+    html += '<div class="section-label">Backend Errors</div>';
+    html += '<div class="log-line" style="background:var(--bg);padding:8px;border-radius:6px;margin-bottom:10px">' + r.backendErrors + '</div>';
   }
   // Logs
   if (s && s.logs && s.logs.length > 0) {
