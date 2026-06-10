@@ -37,6 +37,7 @@ export default [
 
     // Settings route
     ...prefix('settings', [index('./modules/settings/pages/settings-page.tsx', { id: 'settings' })]),
+    route('resource-monitor', './modules/system/pages/resource-monitor-page.tsx', { id: 'resource-monitor' }),
   ]),
   route('*', './routes/not-found.tsx'),
 ] satisfies RouteConfig;

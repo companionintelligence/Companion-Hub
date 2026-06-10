@@ -403,6 +403,31 @@ describe('DockerService', () => {
     });
   });
 
+  describe('getAppRuntimeStats', () => {
+    it('should skip containers that disappear between list and inspect', async () => {
+      dockerode.listContainers.mockResolvedValue([{ Id: 'gone', Names: ['/gone'], State: 'running', Status: 'Up' }] as any);
+      dockerode.getContainer.mockReturnValue({
+        inspect: vi.fn().mockRejectedValue(new Error('404 no such container')),
+      } as any);
+
+      await expect(service.getAppRuntimeStats('test:store' as any)).resolves.toEqual([]);
+      expect(loggerService.warn).toHaveBeenCalled();
+    });
+  });
+
+  describe('forceStopApp', () => {
+    it('should default to a 10 second graceful stop before escalation', async () => {
+      dockerode.listContainers.mockResolvedValue([{ Id: 'abc', Names: ['/svc'], State: 'running', Status: 'Up' }] as any);
+      const stop = vi.fn().mockResolvedValue(undefined);
+      const kill = vi.fn().mockResolvedValue(undefined);
+      dockerode.getContainer.mockReturnValue({ stop, kill } as any);
+
+      await expect(service.forceStopApp('test:store' as any)).resolves.toEqual({ stopped: ['svc'], killed: [] });
+      expect(stop).toHaveBeenCalledWith({ t: 10 });
+      expect(kill).not.toHaveBeenCalled();
+    });
+  });
+
   describe('removeAppImages', () => {
     it('should remove snapshot and labeled images with dedupe', async () => {
       dockerode.listImages.mockResolvedValue([{ Id: 'sha256:b' }, { Id: 'sha256:c' }] as any);

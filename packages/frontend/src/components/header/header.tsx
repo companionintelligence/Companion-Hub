@@ -1,5 +1,5 @@
 import { Link, NavLink, useNavigate } from 'react-router';
-import { LogOut, Home, Settings, Store, Menu, LogIn, Sun, Moon } from 'lucide-react';
+import { LogOut, Home, Settings, Store, Menu, LogIn, Sun, Moon, Activity } from 'lucide-react';
 import { clsx } from 'clsx';
 import { useTranslation } from 'react-i18next';
 import { Button, buttonVariants } from '@/components/ui/Button';
@@ -45,9 +45,13 @@ export const Header = (props: HeaderProps) => {
     logout.mutate({});
   };
 
+  const navButtonBase =
+    'cursor-pointer text-foreground/80 hover:bg-primary/12 hover:text-primary dark:text-foreground dark:hover:bg-accent dark:hover:text-accent-foreground';
+  const navButtonActive = 'bg-primary/12 text-primary shadow-sm dark:bg-accent dark:text-accent-foreground dark:shadow-none';
+
   // Common NavLink classes logic
   const getNavLinkClass = ({ isActive }: { isActive: boolean }) =>
-    clsx(buttonVariants({ variant: 'ghost', size: 'sm' }), 'cursor-pointer', isActive ? 'bg-accent text-accent-foreground btn-active' : '');
+    clsx(buttonVariants({ variant: 'ghost', size: 'sm' }), navButtonBase, isActive ? clsx(navButtonActive, 'btn-active') : '');
 
   return (
     <header
@@ -81,6 +85,10 @@ export const Header = (props: HeaderProps) => {
             <Store className="mr-2 size-4" />
             {t('COMMON_APP_STORE')}
           </NavLink>
+          <NavLink to="/resource-monitor" className={getNavLinkClass}>
+            <Activity className="mr-2 size-4" />
+            {t('RESOURCE_MONITOR_NAV')}
+          </NavLink>
         </nav>
       )}
 
@@ -102,14 +110,20 @@ export const Header = (props: HeaderProps) => {
               to="/settings"
               title={t('COMMON_SETTINGS', 'Settings')}
               className={({ isActive }) =>
-                clsx(buttonVariants({ variant: 'ghost', size: 'icon' }), isActive ? 'bg-accent text-accent-foreground btn-active' : '')
+                clsx(buttonVariants({ variant: 'ghost', size: 'icon' }), navButtonBase, isActive ? clsx(navButtonActive, 'btn-active') : '')
               }
             >
               <Settings className="size-4" />
               <span className="sr-only">{t('COMMON_SETTINGS', 'Settings')}</span>
             </NavLink>
 
-            <Button variant="ghost" size="icon" title={t('HEADER_LOGOUT', 'Logout')} onClick={handleLogout}>
+            <Button
+              variant="ghost"
+              size="icon"
+              title={t('HEADER_LOGOUT', 'Logout')}
+              onClick={handleLogout}
+              className="text-foreground/80 hover:bg-primary/12 hover:text-primary dark:text-foreground dark:hover:bg-accent dark:hover:text-accent-foreground"
+            >
               <LogOut className="size-4" />
               <span className="sr-only">{t('HEADER_LOGOUT', 'Logout')}</span>
             </Button>
@@ -146,6 +160,12 @@ export const Header = (props: HeaderProps) => {
                   <Link to="/settings" className="w-full cursor-pointer flex items-center">
                     <Settings className="mr-2 size-4" />
                     {t('COMMON_SETTINGS', 'Settings')}
+                  </Link>
+                </DropdownMenuItem>
+                <DropdownMenuItem asChild>
+                  <Link to="/resource-monitor" className="w-full cursor-pointer flex items-center">
+                    <Activity className="mr-2 size-4" />
+                    {t('RESOURCE_MONITOR_NAV')}
                   </Link>
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />

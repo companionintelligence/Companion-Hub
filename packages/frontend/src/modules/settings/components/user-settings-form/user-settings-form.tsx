@@ -43,6 +43,7 @@ const settingsSchema = z.object({
   guestDashboard: z.boolean().optional(),
   allowAutoThemes: z.boolean().optional(),
   allowErrorMonitoring: z.boolean().optional(),
+  defaultAppCpuLimit: z.string().optional(),
   timeZone: z.string().optional(),
   advancedSettings: z.boolean().optional(),
   internalIp: z.ipv4().optional(),
@@ -66,6 +67,7 @@ export type SettingsFormValues = {
   guestDashboard?: boolean;
   allowAutoThemes?: boolean;
   allowErrorMonitoring?: boolean;
+  defaultAppCpuLimit?: string;
   timeZone?: string;
   advancedSettings?: boolean;
   internalIp?: string;
@@ -263,6 +265,20 @@ export const UserSettingsForm = (props: IProps) => {
                   />
                 )}
               />
+            </div>
+            <div className="mb-3">
+              <Input
+                type="number"
+                step="0.1"
+                min="0.1"
+                {...register('defaultAppCpuLimit', {
+                  setValueAs: (value) => (value === '' || value === null ? undefined : String(value)),
+                })}
+                label={t('SETTINGS_GENERAL_DEFAULT_APP_CPU_LIMIT')}
+                error={errors.defaultAppCpuLimit?.message}
+                placeholder="1.0"
+              />
+              <span className="text-sm text-muted-foreground">{t('SETTINGS_GENERAL_DEFAULT_APP_CPU_LIMIT_HINT')}</span>
             </div>
             <div className="mb-3">
               <Controller

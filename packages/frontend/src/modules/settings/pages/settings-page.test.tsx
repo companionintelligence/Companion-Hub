@@ -63,6 +63,9 @@ describe('SettingsPage', () => {
 
     expect(await screen.findByText('User settings')).toBeInTheDocument();
 
+    const tabsList = screen.getByRole('tablist');
+    expect(tabsList.parentElement).toHaveClass('flex', 'justify-center');
+
     const scrollContainer = screen.getByTestId('settings-scroll-container');
     const innerWrapper = scrollContainer.firstElementChild as HTMLElement;
 

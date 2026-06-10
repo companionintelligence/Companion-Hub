@@ -70,7 +70,7 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
   // Transition logic
   const getDepth = (path: string) => {
     if (path === '/home') return 0;
-    if (path.startsWith('/apps') || path.startsWith('/store') || path.startsWith('/settings')) {
+    if (path.startsWith('/apps') || path.startsWith('/store') || path.startsWith('/settings') || path.startsWith('/resource-monitor')) {
       const parts = path.split('/').filter(Boolean);
       if (parts.length > 1 && (parts[0] === 'apps' || parts[0] === 'app-store')) return 2;
       return 1;
@@ -83,6 +83,7 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
   // and swipe during navigation within the same section.
   const getAnimationKey = (path: string) => {
     if (path.startsWith('/store')) return '/store';
+    if (path.startsWith('/resource-monitor')) return '/resource-monitor';
     return path;
   };
 

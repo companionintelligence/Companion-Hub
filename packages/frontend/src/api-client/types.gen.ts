@@ -58,6 +58,7 @@ export type AppContextDto = {
         allowErrorMonitoring: boolean;
         appDataPath: string;
         appsRepoUrl: string;
+        defaultAppCpuLimit?: string;
         demoMode: boolean;
         disablePasswordReset: boolean;
         dnsIp: string;
@@ -98,6 +99,7 @@ export type UserSettingsBody = {
     allowErrorMonitoring?: boolean;
     appDataPath?: string;
     appsRepoUrl?: string;
+    defaultAppCpuLimit?: string;
     demoMode?: boolean;
     disablePasswordReset?: boolean;
     dnsIp?: string;

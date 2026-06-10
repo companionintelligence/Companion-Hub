@@ -35,6 +35,7 @@ import {
   GetTotpUriDto,
   LoginBody,
   LoginDto,
+  PortalDesktopExchangeDto,
   RegisterBody,
   RegisterDto,
   ResetPasswordBody,
@@ -43,6 +44,13 @@ import {
   VerifyTotpBody,
 } from './dto/auth.dto';
 import { ApiResponse } from '@nestjs/swagger';
+import {
+  buildPortalDesktopDeepLink,
+  type PortalDesktopExchange,
+  type PortalSsoState,
+  resolveSameOriginRedirectUrl,
+  toDesktopRedirectPath,
+} from './portal-sso';
 
 @Controller('auth')
 export class AuthController {
@@ -131,11 +139,11 @@ export class AuthController {
   /**
    * Start Portal OIDC (PKCE) login flow.
    *
-   * NOTE: Portal currently only allows redirect URIs to localhost/private IPs or the cihub:// scheme.
-   * This works well for local/dev and can be extended later for registered Hub subdomains.
+   * Desktop opens Portal in the system browser, then returns to the Tauri app via cihub://.
+   * Browser-based Hub logins continue to return directly to the Hub origin that initiated the flow.
    */
   @Get('/portal/start')
-  async startPortalLogin(@Req() req: Request, @Res() res: Response, @Query('redirect_url') redirectUrl?: string) {
+  async startPortalLogin(@Req() req: Request, @Res() res: Response, @Query('redirect_url') redirectUrl?: string, @Query('desktop') desktop?: string) {
     const proto = (req.headers['x-forwarded-proto'] as string | undefined) || req.protocol || 'http';
     const host = (req.headers['x-forwarded-host'] as string | undefined) || req.get('host');
 
@@ -154,10 +162,12 @@ export class AuthController {
     const state = crypto.randomUUID();
     const codeVerifier = crypto.randomBytes(32).toString('base64url');
     const codeChallenge = crypto.createHash('sha256').update(codeVerifier).digest('base64url');
+    const isDesktop = desktop === '1' || desktop === 'true';
 
     // Persist PKCE verifier + redirect target for the callback.
     // 10 min is plenty and avoids stale entries.
-    this.cache.set(`portal_sso:${state}`, JSON.stringify({ codeVerifier, redirectUrl: redirectUrl || null, hubOrigin }), 10 * 60);
+    const portalState: PortalSsoState = { codeVerifier, redirectUrl: redirectUrl || null, hubOrigin, desktop: isDesktop };
+    this.cache.set(`portal_sso:${state}`, JSON.stringify(portalState), 10 * 60);
 
     const authorizeUrl = new URL('/api/auth/oauth2/authorize', portalBaseUrl);
     authorizeUrl.searchParams.set('client_id', 'ci-hub');
@@ -192,12 +202,14 @@ export class AuthController {
     let codeVerifier: string;
     let redirectUrl: string | null;
     let hubOrigin: string;
+    let desktop = false;
 
     try {
-      const parsed = JSON.parse(cached) as { codeVerifier: string; redirectUrl: string | null; hubOrigin: string };
+      const parsed = JSON.parse(cached) as PortalSsoState;
       codeVerifier = parsed.codeVerifier;
       redirectUrl = parsed.redirectUrl;
       hubOrigin = parsed.hubOrigin;
+      desktop = parsed.desktop;
     } catch {
       throw new BadRequestException('Malformed Portal SSO state');
     }
@@ -262,20 +274,46 @@ export class AuthController {
     const sessionId = await this.sessionManager.createSession(operator.id);
     await this.setSessionCookie(res, sessionId, req);
 
+    if (desktop) {
+      const desktopToken = crypto.randomUUID();
+      const exchangePayload: PortalDesktopExchange = {
+        sessionId,
+        redirectPath: toDesktopRedirectPath(redirectUrl, hubOrigin),
+      };
+      this.cache.set(`portal_sso_desktop:${desktopToken}`, JSON.stringify(exchangePayload), 60);
+      return res.redirect(buildPortalDesktopDeepLink(desktopToken));
+    }
+
     // Redirect back to the requested URL if it's same-origin; otherwise go home.
-    try {
-      if (redirectUrl) {
-        const candidate = new URL(redirectUrl);
-        const origin = new URL(hubOrigin);
-        if (candidate.origin === origin.origin) {
-          return res.redirect(candidate.toString());
-        }
-      }
-    } catch {
-      // ignore
+    const safeRedirect = resolveSameOriginRedirectUrl(redirectUrl, hubOrigin);
+    if (safeRedirect) {
+      return res.redirect(safeRedirect);
     }
 
     return res.redirect('/home');
+  }
+
+  @Get('/portal/desktop-exchange')
+  @ApiResponse({ type: PortalDesktopExchangeDto })
+  async exchangePortalDesktopLogin(@Query('token') token?: string) {
+    if (!token) {
+      throw new BadRequestException('Missing desktop exchange token');
+    }
+
+    const cacheKey = `portal_sso_desktop:${token}`;
+    const cached = this.cache.get(cacheKey);
+    this.cache.del(cacheKey);
+
+    if (!cached) {
+      throw new BadRequestException('Invalid or expired desktop exchange token');
+    }
+
+    try {
+      const parsed = JSON.parse(cached) as PortalDesktopExchange;
+      return PortalDesktopExchangeDto.parse(parsed, { reportOnly: true });
+    } catch {
+      throw new BadRequestException('Malformed desktop exchange payload');
+    }
   }
 
   @Patch('/username')

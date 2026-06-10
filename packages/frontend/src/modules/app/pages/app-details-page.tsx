@@ -8,10 +8,12 @@ import { AppActions } from '../containers/app-actions/app-actions';
 import { AppDetailsTabs } from '../containers/app-details-tabs/app-details-tabs';
 import type { Route } from './+types/app-details-page';
 import { PageLoadingSpinner } from '@/components/ui/LoadingSpinner/loading-spinner';
+import { fetchAppRuntimeHealth } from '@/lib/app-runtime-monitor';
 import { getMarketplaceAppImageUrl } from '@/lib/marketplace-image-url';
 import { Star } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { getCategoryLabel } from '../helpers/category-label';
+import { AppRuntimeDegradedBanner } from '../components/app-runtime-degraded-banner';
 
 export async function clientLoader({ params }: Route.ClientLoaderArgs) {
   const { storeId } = params;
@@ -43,6 +45,13 @@ export default () => {
     retry: false,
   });
 
+  const runtimeHealth = useQuery({
+    queryKey: ['app-runtime-health', appUrn],
+    queryFn: () => fetchAppRuntimeHealth(appUrn),
+    refetchInterval: 15_000,
+    enabled: Boolean(getApp.data?.app),
+  });
+
   const { userSettings } = useAppContext();
 
   if (getApp.isLoading || !getApp.data) {
@@ -56,6 +65,7 @@ export default () => {
 
   return (
     <div className="max-w-5xl mx-auto space-y-6 sm:space-y-8 pb-20">
+      <AppRuntimeDegradedBanner runtimeHealth={runtimeHealth.data} />
       {/* Header Section - Portal style */}
       <div className="flex flex-row gap-5 sm:gap-8 items-start">
         {/* Logo */}
@@ -104,7 +114,14 @@ export default () => {
 
           {/* Actions & Status */}
           <div className="flex items-center gap-3 flex-wrap">
-            <AppActions app={app} metadata={metadata} info={info} localDomain={userSettings.localDomain} sslPort={userSettings.sslPort} />
+            <AppActions
+              app={app}
+              metadata={metadata}
+              info={info}
+              localDomain={userSettings.localDomain}
+              sslPort={userSettings.sslPort}
+              runtimeHealth={runtimeHealth.data}
+            />
             <div className="transform scale-90 origin-left">
               <AppStatus status={app?.status ?? 'missing'} />
             </div>

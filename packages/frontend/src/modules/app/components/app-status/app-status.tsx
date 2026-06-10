@@ -5,8 +5,13 @@ import { useTranslation } from 'react-i18next';
 
 export const AppStatus: React.FC<{ lite?: boolean; status: AppStatusType }> = ({ status, lite }) => {
   const { t } = useTranslation();
+  const statusKey = `APP_STATUS_${status.toUpperCase()}`;
+  const fallbackLabel = status
+    .split('_')
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
 
-  const formattedStatus = t(`APP_STATUS_${status.toUpperCase()}`);
+  const formattedStatus = t(statusKey, fallbackLabel);
 
   if (status === 'missing') return null;
 

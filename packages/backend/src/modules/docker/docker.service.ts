@@ -11,6 +11,40 @@ import { AppFilesManager } from '../apps/app-files-manager';
 import { AppsService } from '../apps/apps.service';
 import { DOCKERODE } from './constants';
 
+interface DockerCpuStatsSnapshot {
+  cpu_usage?: {
+    total_usage?: number;
+    percpu_usage?: number[];
+  };
+  system_cpu_usage?: number;
+  online_cpus?: number;
+}
+
+interface DockerMemoryStatsSnapshot {
+  usage?: number;
+  limit?: number;
+  stats?: {
+    cache?: number;
+  };
+}
+
+interface DockerStatsSnapshot {
+  cpu_stats?: DockerCpuStatsSnapshot;
+  precpu_stats?: DockerCpuStatsSnapshot;
+  memory_stats?: DockerMemoryStatsSnapshot;
+}
+
+export interface AppContainerRuntimeStats {
+  containerId: string;
+  name: string;
+  state: string;
+  status: string;
+  health: string | null;
+  cpuPercent: number;
+  memoryUsageBytes: number;
+  memoryLimitBytes: number;
+}
+
 @Injectable()
 export class DockerService {
   constructor(
@@ -30,6 +64,18 @@ export class DockerService {
    */
   private getComposeProjectName(appUrn: AppUrn): string {
     return appUrn.replace(':', '_');
+  }
+
+  private calculateCpuPercent(stats: DockerStatsSnapshot): number {
+    const cpuDelta = (stats.cpu_stats?.cpu_usage?.total_usage ?? 0) - (stats.precpu_stats?.cpu_usage?.total_usage ?? 0);
+    const systemDelta = (stats.cpu_stats?.system_cpu_usage ?? 0) - (stats.precpu_stats?.system_cpu_usage ?? 0);
+    const onlineCpus = stats.cpu_stats?.online_cpus ?? stats.cpu_stats?.cpu_usage?.percpu_usage?.length ?? stats.precpu_stats?.online_cpus ?? 1;
+
+    if (cpuDelta <= 0 || systemDelta <= 0 || onlineCpus <= 0) {
+      return 0;
+    }
+
+    return (cpuDelta / systemDelta) * onlineCpus * 100;
   }
 
   /**
@@ -87,6 +133,79 @@ export class DockerService {
       this.logger.warn(`Failed to snapshot image IDs for ${appUrn}: ${error}`);
       return [];
     }
+  }
+
+  public async getAppRuntimeStats(appUrn: AppUrn): Promise<AppContainerRuntimeStats[]> {
+    const projectName = this.getComposeProjectName(appUrn);
+    const containers = await this.docker.listContainers({
+      all: true,
+      filters: { label: [`com.docker.compose.project=${projectName}`] },
+    });
+
+    const results = await Promise.all(
+      containers.map((container) =>
+        (async () => {
+          const dockerContainer = this.docker.getContainer(container.Id);
+          const inspect = await dockerContainer.inspect();
+          const stats = inspect.State?.Running ? ((await dockerContainer.stats({ stream: false })) as DockerStatsSnapshot) : null;
+
+          const usage = stats?.memory_stats?.usage ?? 0;
+          const cache = stats?.memory_stats?.stats?.cache ?? 0;
+          return {
+            containerId: container.Id,
+            name: container.Names?.[0]?.replace(/^\//, '') || container.Id.slice(0, 12),
+            state: container.State,
+            status: container.Status,
+            health: inspect.State?.Health?.Status ?? null,
+            cpuPercent: Number(this.calculateCpuPercent((stats ?? {}) as DockerStatsSnapshot).toFixed(2)),
+            memoryUsageBytes: Math.max(usage - cache, 0),
+            memoryLimitBytes: stats?.memory_stats?.limit ?? 0,
+          };
+        })().catch((error) => {
+          if (this.isResourceMissingError(error)) {
+            this.logger.warn(`Skipping runtime stats for disappearing container ${container.Id} (${appUrn}): ${error}`);
+            return null;
+          }
+
+          throw error;
+        }),
+      ),
+    );
+
+    return results.filter((result): result is AppContainerRuntimeStats => result !== null);
+  }
+
+  public async forceStopApp(appUrn: AppUrn, graceSeconds = 10): Promise<{ stopped: string[]; killed: string[] }> {
+    const projectName = this.getComposeProjectName(appUrn);
+    const containers = await this.docker.listContainers({
+      all: true,
+      filters: { label: [`com.docker.compose.project=${projectName}`] },
+    });
+
+    const stopped: string[] = [];
+    const killed: string[] = [];
+
+    for (const container of containers) {
+      const dockerContainer = this.docker.getContainer(container.Id);
+      const name = container.Names?.[0]?.replace(/^\//, '') || container.Id.slice(0, 12);
+
+      if (container.State !== 'running') {
+        continue;
+      }
+
+      try {
+        await dockerContainer.stop({ t: graceSeconds });
+        stopped.push(name);
+      } catch (error) {
+        this.logger.warn(`Graceful stop failed for ${name} (${appUrn}), escalating to kill: ${error}`);
+        await dockerContainer.kill().catch((killError) => {
+          throw new Error(`Failed to kill container ${name}: ${killError instanceof Error ? killError.message : String(killError)}`);
+        });
+        killed.push(name);
+      }
+    }
+
+    return { stopped, killed };
   }
 
   /**

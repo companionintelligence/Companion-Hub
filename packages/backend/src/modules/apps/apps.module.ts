@@ -1,5 +1,6 @@
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { Module, forwardRef } from '@nestjs/common';
+import { DockerModule } from '../docker/docker.module';
 import { EnvModule } from '../env/env.module';
 import { InferenceModule } from '../inference/inference.module';
 import { MarketplaceModule } from '../marketplace/marketplace.module';
@@ -7,6 +8,7 @@ import { QueueModule } from '../queue/queue.module';
 import { PortAllocationRepository } from '../network/port-allocation.repository';
 import { AppFilesManager } from './app-files-manager';
 import { AppHelpers } from './app.helpers';
+import { AppRuntimeMonitorService } from './app-runtime-monitor.service';
 import { AppsController } from './apps.controller';
 import { AppsRepository } from './apps.repository';
 import { AppsService } from './apps.service';
@@ -14,9 +16,25 @@ import { InstallPipelineTracker } from './install-pipeline.tracker';
 import { RegistrationModule } from '../registration/registration.module';
 
 @Module({
-  imports: [QueueModule, EnvModule, forwardRef(() => InferenceModule), MarketplaceModule, forwardRef(() => RegistrationModule)],
+  imports: [
+    QueueModule,
+    EnvModule,
+    forwardRef(() => DockerModule),
+    forwardRef(() => InferenceModule),
+    MarketplaceModule,
+    forwardRef(() => RegistrationModule),
+  ],
   controllers: [AppsController],
-  providers: [AppFilesManager, AppsRepository, AppHelpers, AppsService, ConfigurationService, PortAllocationRepository, InstallPipelineTracker],
-  exports: [AppsRepository, AppFilesManager, AppHelpers, AppsService, InstallPipelineTracker],
+  providers: [
+    AppFilesManager,
+    AppsRepository,
+    AppHelpers,
+    AppsService,
+    AppRuntimeMonitorService,
+    ConfigurationService,
+    PortAllocationRepository,
+    InstallPipelineTracker,
+  ],
+  exports: [AppsRepository, AppFilesManager, AppHelpers, AppsService, AppRuntimeMonitorService, InstallPipelineTracker],
 })
 export class AppsModule {}
