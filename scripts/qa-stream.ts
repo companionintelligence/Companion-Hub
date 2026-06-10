@@ -738,10 +738,13 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
               '--hide-scrollbars',
               `--screenshot=${screenshotPath}`,
               '--window-size=1280,800',
-              '--virtual-time-budget=4000',
+              // 12s virtual-time (was 4s): the recurring false-warn set (plex, jellyfin, element,
+              // libreoffice, …) are heavy SPAs that don't finish their first paint in 4s — they were
+              // healthy (http 200, backend ok) but scored warn for a missing PNG. 12s flips them to pass.
+              '--virtual-time-budget=12000',
               `http://localhost:${hostPort}${uiPath}`,
             ],
-            { timeout: 30_000, killSignal: 'SIGKILL', stdio: 'pipe' },
+            { timeout: 45_000, killSignal: 'SIGKILL', stdio: 'pipe' },
           );
           result.hasScreenshot = ss.status === 0 && existsSync(screenshotPath);
         }
