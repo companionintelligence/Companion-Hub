@@ -8,7 +8,7 @@
 import { test, expect } from '@playwright/test';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
-import { APP_ID, login, installApp, uninstallApp, waitForRunning, countContainers, cleanupContainers, getAppStatus } from './helpers';
+import { APP_ID, APP_URN, BASE_URL, login, installApp, uninstallApp, waitForRunning, countContainers, cleanupContainers } from './helpers';
 
 const execAsync = promisify(exec);
 
@@ -57,10 +57,19 @@ test.describe
     test('app status reports missing after uninstall', async ({ request }) => {
       await login(request);
       await expect
-        .poll(async () => getAppStatus(request), {
-          timeout: 30_000,
-          intervals: [1000, 2000, 3000],
-        })
+        .poll(
+          async () => {
+            const res = await request.get(`${BASE_URL}/api/apps/${APP_URN}`);
+            if (res.status() === 404) return 'not_found';
+            expect(res.ok(), `Unexpected app status response after uninstall: ${res.status()} ${await res.text()}`).toBeTruthy();
+            const data = await res.json();
+            return data.status || data.app?.status || 'unknown';
+          },
+          {
+            timeout: 30_000,
+            intervals: [1000, 2000, 3000],
+          },
+        )
         .toBe('not_found');
     });
 

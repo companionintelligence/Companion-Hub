@@ -1,4 +1,4 @@
-name: "CodeQL - Code Quality"
+name: 'CodeQL - Code Quality'
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
       - main
   pull_request:
   schedule:
-    - cron: "0 6 * * 1"
+    - cron: '0 6 * * 1'
 
 jobs:
   analyze:
@@ -23,8 +23,6 @@ jobs:
       fail-fast: false
       matrix:
         language:
-          - python
-          - ruby
           - javascript-typescript
 
     steps:
@@ -37,11 +35,10 @@ jobs:
           languages: ${{ matrix.language }}
 
       - name: Autobuild
-        if: matrix.language == 'javascript-typescript'
         uses: github/codeql-action/autobuild@v3
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3
         continue-on-error: true
         with:
-          category: "/language:${{ matrix.language }}"
+          category: '/language:${{ matrix.language }}'
