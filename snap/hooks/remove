@@ -1,0 +1,39 @@
+#!/bin/sh
+set -eu
+
+echo '[cleanup][INFO] Running snap remove hook for Companion Hub' >&2
+
+if command -v docker >/dev/null 2>&1; then
+  {
+    docker ps -a --filter "label=com.docker.compose.project=ci-os-hub" --format '{{.Names}}' 2>/dev/null
+    docker ps -a --filter "label=com.docker.compose.project=ci-hub" --format '{{.Names}}' 2>/dev/null
+    docker ps -a --filter "label=com.docker.compose.project=runtipi" --format '{{.Names}}' 2>/dev/null
+    docker ps -a --filter "network=ci_os_hub_network" --format '{{.Names}}' 2>/dev/null
+    docker ps -a --filter "network=ci-os-hub_network" --format '{{.Names}}' 2>/dev/null
+  } | awk 'NF && !seen[$0]++' | while IFS= read -r name; do
+    docker rm -f "$name" >/dev/null 2>&1 || true
+  done
+
+  docker volume ls --format '{{.Name}}' 2>/dev/null | while IFS= read -r volume; do
+    case "$volume" in
+      *ci_os_hub*|*ci-os-hub*|*runtipi*|*ci_hub_pgdata*|e2e-*|test-e2e-*)
+        docker volume rm "$volume" >/dev/null 2>&1 || true
+        ;;
+    esac
+  done
+fi
+
+HOME_DIR="${HOME:-}"
+if [ -n "$HOME_DIR" ]; then
+  XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME_DIR/.local/share}"
+  XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME_DIR/.config}"
+  XDG_CACHE_HOME="${XDG_CACHE_HOME:-$HOME_DIR/.cache}"
+
+  for name in "Companion Hub" "companion-hub" "ci-hub" "CI-Hub" "computer.ci.app.hub"; do
+    rm -rf "$XDG_DATA_HOME/$name" >/dev/null 2>&1 || true
+    rm -rf "$XDG_CONFIG_HOME/$name" >/dev/null 2>&1 || true
+    rm -rf "$XDG_CACHE_HOME/$name" >/dev/null 2>&1 || true
+  done
+fi
+
+echo '[cleanup][INFO] Snap remove hook completed' >&2

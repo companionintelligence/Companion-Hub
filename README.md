@@ -107,7 +107,7 @@ Set at minimum:
 pnpm start:prod
 ```
 
-Open **http://localhost:5002**. Register your device with CI Cloud on first run, then install apps from the store.
+Open **<http://localhost:5002>**. Register your device with CI Cloud on first run, then install apps from the store.
 
 ---
 
@@ -146,8 +146,8 @@ cp .env.example .env.local
 pnpm dev
 ```
 
-- **Frontend:** http://localhost:5173
-- **Backend API:** http://localhost:3000
+- **Frontend:** <http://localhost:5173>
+- **Backend API:** <http://localhost:3000>
 
 Infrastructure (PostgreSQL, RabbitMQ) runs in Docker; backend and frontend run locally with hot reload.
 
@@ -177,6 +177,23 @@ Infrastructure (PostgreSQL, RabbitMQ) runs in Docker; backend and frontend run l
 | `pnpm test:e2e` | Playwright end-to-end tests |
 | `pnpm run cleanup` | Tear down containers, remove `.internal/` data |
 | `pnpm dev:desktop` | Launch Tauri desktop app in dev mode |
+
+### Uninstall Cleanup Behavior
+
+Companion Hub uninstall is designed to remove runtime state by default, including:
+
+- Docker resources for Hub stacks (containers, selected volumes, and networks)
+- Hub state under user data/config/cache directories
+- Registry/deep-link entries where package managers support it
+
+Developer cleanup remains available via:
+
+```bash
+pnpm run hub -- purge --yes
+pnpm run cleanup
+```
+
+Warning: cleanup can remove persistent Hub data and Docker volumes (for example, database state).
 
 Environments: `local` (default), `dev`, `staging`, `prod`.
 

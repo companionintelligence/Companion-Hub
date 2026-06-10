@@ -41,6 +41,7 @@ import { eq } from 'drizzle-orm';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock } from 'vitest-mock-extended';
 import waitFor from 'wait-for-expect';
+import { extractAppUrn } from '@/common/helpers/app-helpers';
 import type { FsMock } from '../__mocks__/fs';
 import { createAppInStore } from '../utils/create-app-in-store';
 import { type TestDatabase, cleanTestData, createTestDatabase } from '../utils/create-test-database';
@@ -370,6 +371,68 @@ describe('App lifecycle', () => {
       expect(app2?.status).toBe('running');
       expect(app3?.status).toBe('running');
       expect(cleanTree((fs as unknown as FsMock).tree())).toMatchSnapshot();
+    });
+  });
+
+  describe('uninstall app', () => {
+    it('should preserve app-data when deleteAllData is false', async () => {
+      // arrange
+      const appInfo = await createAppInStore('test', { id: 'preserve-data' });
+      const { appStoreId, appName } = extractAppUrn(appInfo.urn);
+
+      await appLifecycleService.installApp({ appUrn: appInfo.urn, form: {} });
+      await waitFor(async () => {
+        const app = await appsRepository.getAppByUrn(appInfo.urn);
+        expect(app?.status).toBe('running');
+      });
+
+      await fs.promises.mkdir(`${APP_DATA_DIR}/${appStoreId}/${appName}/data`, { recursive: true });
+      await fs.promises.writeFile(`${APP_DATA_DIR}/${appStoreId}/${appName}/data/preserved.txt`, 'keep-me');
+
+      // act
+      await appLifecycleService.uninstallApp({ appUrn: appInfo.urn, deleteAllData: false });
+
+      // assert
+      await waitFor(async () => {
+        const app = await appsRepository.getAppByUrn(appInfo.urn);
+        expect(app).toBeUndefined();
+      });
+
+      const appDataStillExists = await fs.promises
+        .access(`${APP_DATA_DIR}/${appStoreId}/${appName}/data/preserved.txt`)
+        .then(() => true)
+        .catch(() => false);
+      expect(appDataStillExists).toBe(true);
+    });
+
+    it('should remove app-data when deleteAllData is true', async () => {
+      // arrange
+      const appInfo = await createAppInStore('test', { id: 'delete-data' });
+      const { appStoreId, appName } = extractAppUrn(appInfo.urn);
+
+      await appLifecycleService.installApp({ appUrn: appInfo.urn, form: {} });
+      await waitFor(async () => {
+        const app = await appsRepository.getAppByUrn(appInfo.urn);
+        expect(app?.status).toBe('running');
+      });
+
+      await fs.promises.mkdir(`${APP_DATA_DIR}/${appStoreId}/${appName}/data`, { recursive: true });
+      await fs.promises.writeFile(`${APP_DATA_DIR}/${appStoreId}/${appName}/data/delete-me.txt`, 'remove-me');
+
+      // act
+      await appLifecycleService.uninstallApp({ appUrn: appInfo.urn, deleteAllData: true });
+
+      // assert
+      await waitFor(async () => {
+        const app = await appsRepository.getAppByUrn(appInfo.urn);
+        expect(app).toBeUndefined();
+      });
+
+      const appDataStillExists = await fs.promises
+        .access(`${APP_DATA_DIR}/${appStoreId}/${appName}/data/delete-me.txt`)
+        .then(() => true)
+        .catch(() => false);
+      expect(appDataStillExists).toBe(false);
     });
   });
 

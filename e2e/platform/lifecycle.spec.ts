@@ -8,7 +8,7 @@
 import { test, expect } from '@playwright/test';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
-import { APP_ID, login, installApp, uninstallApp, waitForRunning, countContainers, cleanupContainers } from './helpers';
+import { APP_ID, login, installApp, uninstallApp, waitForRunning, countContainers, cleanupContainers, getAppStatus } from './helpers';
 
 const execAsync = promisify(exec);
 
@@ -52,6 +52,12 @@ test.describe
       const { stdout } = await execAsync(`docker ps -a --filter "name=${APP_ID}" --format "{{.Names}}"`);
       const remaining = stdout.trim().split('\n').filter(Boolean);
       expect(remaining).toHaveLength(0);
+    });
+
+    test('app status reports missing after uninstall', async ({ request }) => {
+      await login(request);
+      const status = await getAppStatus(request);
+      expect(status).toBe('not_found');
     });
 
     test('re-install app for subsequent specs', async ({ request }) => {
