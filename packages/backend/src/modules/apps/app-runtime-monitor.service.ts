@@ -2,6 +2,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
+import type { App } from '@/core/database/drizzle/types';
 import { AppsRepository } from './apps.repository';
 import { AppsService } from './apps.service';
 import { DockerService, type AppContainerRuntimeStats } from '../docker/docker.service';
@@ -80,9 +81,7 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy {
 
   async getRuntimeMonitorSnapshot(): Promise<{ sampledAt: string; apps: AppRuntimeHealth[] }> {
     const apps = await this.appsRepository.getApps();
-    const snapshots = await Promise.all(
-      apps.filter((app) => app.status !== 'missing').map((app) => this.collectAppRuntimeHealth(`${app.appName}:${app.appStoreSlug}` as AppUrn)),
-    );
+    const snapshots = await Promise.all(apps.filter((app) => app.status !== 'missing').map((app) => this.collectAppRuntimeHealthForApp(app)));
 
     return {
       sampledAt: new Date().toISOString(),
@@ -91,7 +90,12 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy {
   }
 
   async getAppRuntimeHealth(appUrn: AppUrn): Promise<AppRuntimeHealth> {
-    return this.collectAppRuntimeHealth(appUrn);
+    const app = await this.appsRepository.getAppByUrn(appUrn);
+    if (!app) {
+      throw new Error(`App ${appUrn} not found`);
+    }
+
+    return this.collectAppRuntimeHealthForApp(app);
   }
 
   private rememberSample(appUrn: string, sample: RuntimeSample) {
@@ -131,11 +135,8 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy {
     return nextEntry;
   }
 
-  private async collectAppRuntimeHealth(appUrn: AppUrn): Promise<AppRuntimeHealth> {
-    const app = await this.appsRepository.getAppByUrn(appUrn);
-    if (!app) {
-      throw new Error(`App ${appUrn} not found`);
-    }
+  private async collectAppRuntimeHealthForApp(app: App): Promise<AppRuntimeHealth> {
+    const appUrn = `${app.appName}:${app.appStoreSlug}` as AppUrn;
 
     const sampledAt = new Date().toISOString();
     const containers = await this.dockerService.getAppRuntimeStats(appUrn);
