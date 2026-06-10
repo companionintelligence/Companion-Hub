@@ -12,7 +12,8 @@
  * Used two ways:
  *   • Imported by qa-stream.ts — `qaMcpApp(appId, { emit, phase, containerName, result })` runs the
  *     smoke for one `no_gui` + `.mcp` app and RETURNS the result record (the caller emits app_result).
- *   • Standalone CLI — `APP_STORE_DIR=../CI-Marketplace/apps tsx scripts/qa-mcp.ts <app-id...>`.
+ *   • Standalone CLI — `APP_STORE_DIR=../CI-Marketplace/apps tsx scripts/qa-mcp.ts <app-id...>`,
+ *     or `… qa-mcp.ts --all` to sweep every `.mcp` app discovered in the catalog.
  *
  * Scores with the SAME vocabulary as qa-stream so results flow through the same dashboard/triage:
  *   pass    initialize OK + tools/list non-empty + ⊇ declared manifest tools
@@ -29,7 +30,7 @@
  *      set 1 to allow network-touching probes).
  */
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -86,10 +87,20 @@ function defaultEmit(o: Record<string, unknown>) {
  * read-only, no-credential tools only.
  */
 export const SAFE_PROBES: Record<string, { tool: string; args: Record<string, unknown>; net?: boolean }> = {
+  // ── offline, read-only, no-credential — run in the default sweep ──
   'filesystem-mcp': { tool: 'list_directory', args: { path: '/qa' } }, // scratch mounted at /qa via ALLOWED_PATH
   'chess-mcp': { tool: 'new_game', args: {} }, // pure in-memory, returns a board
-  'brewers-almanack-mcp': { tool: 'lookup_style', args: {} }, // bundled reference data
-  'smartest-tv-mcp': { tool: 'list_devices', args: {} }, // local discovery, returns an (empty) list
+  'brewers-almanack-mcp': { tool: 'search_styles', args: { query: 'IPA' } }, // bundled reference data
+  'git-mcp': { tool: 'git_status', args: { repo_path: '/qa' } }, // status of the scratch repo git init'd at boot
+  'sqlite-mcp': { tool: 'list_tables', args: {} }, // lists user tables in the freshly-opened db (empty is fine)
+  'n8n-mcp': { tool: 'tools_documentation', args: {} }, // bundled node docs, no n8n instance needed
+  // ── network-touching execution proofs — only with QA_MCP_PROBE_NET=1 ──
+  'fetch-mcp': { tool: 'fetch', args: { url: 'https://example.com/' }, net: true },
+  'youtube-transcript-mcp': { tool: 'get_video_info', args: { url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' }, net: true },
+  // reddit-mcp deliberately has NO probe: every reddit tool requires Reddit API creds, so the only
+  // verdict a no-cred call yields is tool-error — handshake + manifest assertion is its real ceiling.
+  'lego-oracle-mcp': { tool: 'browse_themes', args: {}, net: true }, // API-backed catalog
+  'smartest-tv-mcp': { tool: 'list_devices', args: {} }, // local discovery (app skips headless anyway)
 };
 
 /** A syntactically-valid dummy connection URL keyed by the env name's scheme, so a server that
@@ -516,6 +527,31 @@ function applyProbeVerdict(result: Record<string, unknown>, probe: ProbeResult |
   }
 }
 
+/** Every app under APP_STORE_DIR whose config.json declares an `.mcp` block, sorted. Powers the
+ *  `--all` sweep so re-testing the whole catalog after a marketplace bump is one command, not a
+ *  hand-maintained app list that silently misses newly-added MCP servers. */
+export function discoverMcpApps(storeDir = APP_STORE_DIR): string[] {
+  let entries: string[];
+  try {
+    entries = readdirSync(storeDir, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name);
+  } catch {
+    return [];
+  }
+  return entries
+    .filter((app) => {
+      const cfg = join(storeDir, app, 'config.json');
+      if (!existsSync(cfg)) return false;
+      try {
+        return Boolean((JSON.parse(readFileSync(cfg, 'utf-8')) as { mcp?: unknown }).mcp);
+      } catch {
+        return false;
+      }
+    })
+    .sort();
+}
+
 // ── CLI ──────────────────────────────────────────────────────────────────────
 // Guard so importing this module (qa-stream's dynamic import) does NOT run argv parsing.
 const isMain = (() => {
@@ -528,9 +564,14 @@ const isMain = (() => {
 
 if (isMain) {
   void (async () => {
-    const appIds = process.argv.slice(2);
+    const argv = process.argv.slice(2);
+    const appIds = argv.includes('--all') ? discoverMcpApps() : argv;
     if (appIds.length === 0) {
-      process.stderr.write('Usage: qa-mcp.ts <app-id> [app-id...]\n');
+      process.stderr.write(
+        argv.includes('--all')
+          ? `No MCP apps found under ${APP_STORE_DIR}\n`
+          : 'Usage: qa-mcp.ts <app-id> [app-id...]  |  qa-mcp.ts --all  (every .mcp app in the catalog)\n',
+      );
       process.exit(1);
     }
     defaultEmit({ event: 'batch_start', apps: appIds, kind: 'mcp', ts: Date.now() });
