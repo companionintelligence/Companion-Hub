@@ -5270,7 +5270,8 @@ pub fn install_docker() -> Result<DockerInstallResult, String> {
     #[cfg(target_os = "linux")]
     {
         return install_docker_linux().map(|detail| DockerInstallResult {
-            state: DockerInstallState::Completed,
+            // Linux always needs a logout/login for docker group membership to take effect.
+            state: DockerInstallState::NeedsRestart,
             detail: Some(detail),
         });
     }
@@ -5608,8 +5609,19 @@ fn launch_docker_desktop_macos() -> Result<(), String> {
         .map_err(|e| format!("Failed to launch Docker Desktop: {}", e))
 }
 
-/// Install Docker Engine on Linux using the official convenience script.
-/// Uses pkexec for privilege escalation (GUI polkit prompt).
+/// Install Docker Engine on Linux.
+///
+/// Detects the distro from /etc/os-release and picks the right package manager:
+///   - Arch-based (Arch, Manjaro, EndeavourOS, Garuda): pacman
+///   - Alpine: apk + OpenRC
+///   - SUSE-based (openSUSE Leap/Tumbleweed, SLES): zypper
+///   - RHEL: official Docker dnf repo (get.docker.com doesn't support RHEL)
+///   - Everything else (Debian, Ubuntu, Raspberry Pi OS, Fedora, CentOS, Rocky, etc.):
+///     Docker's official get.docker.com convenience script; auto-installs curl/wget
+///     if neither is present.
+///
+/// Adds the current user to the docker group and enables the Docker service via
+/// systemd or OpenRC as available. Uses pkexec (polkit) for the GUI privilege prompt.
 #[cfg(target_os = "linux")]
 pub fn install_docker_linux() -> Result<String, String> {
     use std::io::Write as IoWrite;
@@ -5625,18 +5637,110 @@ pub fn install_docker_linux() -> Result<String, String> {
     wrapper_script
         .write_all(
             br#"#!/bin/bash
-set -euo pipefail
+# Docker auto-installer for Companion Hub. Runs as root via pkexec.
+# Arg 1: username to add to the docker group.
+set -e
 export DEBIAN_FRONTEND=noninteractive
-installer_script="$(mktemp)"
-cleanup() {
-  rm -f "$installer_script"
+USERNAME="$1"
+
+# -- Distro detection ---------------------------------------------------------
+DISTRO_ID="unknown"
+DISTRO_LIKE=""
+if [ -f /etc/os-release ]; then
+    DISTRO_ID="$(. /etc/os-release && printf '%s' "${ID:-unknown}")"
+    DISTRO_LIKE="$(. /etc/os-release && printf '%s' "${ID_LIKE:-}")"
+fi
+
+# True if ID equals $1 OR ID_LIKE contains $1 as a whitespace-delimited word.
+is_distro() {
+    [ "$DISTRO_ID" = "$1" ] && return 0
+    case " $DISTRO_LIKE " in *" $1 "*) return 0;; esac
+    return 1
 }
-trap cleanup EXIT
-curl -fsSL https://get.docker.com -o "$installer_script"
-sh "$installer_script"
-usermod -aG docker "$1"
-systemctl enable docker
-systemctl start docker
+
+# -- Init-system: enable + start docker --------------------------------------
+enable_and_start_docker() {
+    if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+        systemctl enable docker
+        systemctl start docker
+    elif command -v rc-update >/dev/null 2>&1; then
+        rc-update add docker boot || true
+        rc-service docker start || true
+    elif command -v service >/dev/null 2>&1; then
+        service docker start || true
+    fi
+}
+
+# -- Download helper: curl then wget ------------------------------------------
+download_to() {
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL "$1" -o "$2"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO "$2" "$1"
+    else
+        return 1
+    fi
+}
+
+# -- Per-distro install -------------------------------------------------------
+
+if is_distro arch || is_distro manjaro || is_distro endeavouros || is_distro garuda; then
+    pacman -Sy --noconfirm docker docker-compose
+    enable_and_start_docker
+
+elif is_distro alpine; then
+    apk add --no-cache docker docker-cli-compose
+    rc-update add docker boot 2>/dev/null || true
+    rc-service docker start 2>/dev/null || true
+
+elif is_distro suse || is_distro opensuse-leap || is_distro opensuse-tumbleweed || is_distro sles; then
+    zypper --non-interactive install docker docker-compose
+    enable_and_start_docker
+
+elif is_distro rhel; then
+    # get.docker.com does not support RHEL; use the official Docker dnf repo directly.
+    dnf install -y dnf-plugins-core
+    # dnf 5 (RHEL 9+) syntax vs dnf 4 (RHEL 8) syntax
+    if ! dnf config-manager addrepo \
+            --from-repofile https://download.docker.com/linux/rhel/docker-ce.repo 2>/dev/null; then
+        dnf config-manager --add-repo \
+            https://download.docker.com/linux/rhel/docker-ce.repo
+    fi
+    dnf install -y docker-ce docker-ce-cli containerd.io \
+        docker-buildx-plugin docker-compose-plugin
+    enable_and_start_docker
+
+else
+    # Debian, Ubuntu, Raspberry Pi OS, Fedora, CentOS, Rocky Linux, and others.
+    # Docker's official convenience script handles all of these.
+
+    # Ensure a downloader is available; install curl if neither curl nor wget is present.
+    if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+        if command -v apt-get >/dev/null 2>&1; then
+            apt-get install -y --no-install-recommends curl
+        elif command -v dnf >/dev/null 2>&1; then
+            dnf install -y curl
+        elif command -v yum >/dev/null 2>&1; then
+            yum install -y curl
+        else
+            printf 'Error: curl/wget not found and could not be installed automatically.\n' >&2
+            printf 'Install curl first, then retry.\n' >&2
+            exit 1
+        fi
+    fi
+
+    installer_script="$(mktemp)"
+    trap 'rm -f "$installer_script"' EXIT
+    download_to https://get.docker.com "$installer_script" \
+        || { printf 'Error: failed to download Docker installer from get.docker.com\n' >&2; exit 1; }
+    sh "$installer_script"
+    enable_and_start_docker
+fi
+
+# -- Add user to the docker group (common to all distros) --------------------
+if getent group docker >/dev/null 2>&1; then
+    usermod -aG docker "$USERNAME"
+fi
 "#,
         )
         .map_err(|e| format!("Failed to write install script: {}", e))?;
