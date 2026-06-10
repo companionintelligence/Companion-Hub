@@ -12,7 +12,7 @@ import {
   STARTUP_PROGRESS_HINT,
   STARTUP_SERVICE_HINTS,
 } from './hub-status-tooltips';
-import { Container, Download } from 'lucide-react';
+import { Container, Download, Loader2, CheckCircle, AlertCircle } from 'lucide-react';
 import i18next from 'i18next';
 import { useTranslation } from 'react-i18next';
 
@@ -260,8 +260,26 @@ function DockerDesktopGuide({
   );
 }
 
+type LinuxInstallState = 'idle' | 'installing' | 'completed' | 'needs_restart' | 'error';
+
 function LinuxDockerGuide() {
   const { t } = useTranslation();
+  const [installState, setInstallState] = useState<LinuxInstallState>('idle');
+  const [errorMessage, setErrorMessage] = useState<string>('');
+
+  const handleAutoInstall = useCallback(async () => {
+    const invoke = getTauriInvoke();
+    if (!invoke) return;
+    setInstallState('installing');
+    setErrorMessage('');
+    try {
+      const result = (await invoke('install_docker_command')) as { state: 'completed' | 'needs_restart'; detail: string | null };
+      setInstallState(result.state === 'needs_restart' ? 'needs_restart' : 'completed');
+    } catch (err) {
+      setErrorMessage(getErrorMessage(err));
+      setInstallState('error');
+    }
+  }, []);
 
   return (
     <div className="space-y-6 w-full max-w-2xl">
@@ -278,6 +296,53 @@ function LinuxDockerGuide() {
             </div>
             <Container className="h-10 w-10 shrink-0 text-primary" aria-hidden />
           </div>
+
+          {installState === 'idle' && (
+            <button
+              type="button"
+              onClick={handleAutoInstall}
+              className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+            >
+              {t('HUB_STATUS_LINUX_AUTO_INSTALL_DOCKER')}
+            </button>
+          )}
+
+          {installState === 'installing' && (
+            <div className="flex items-center justify-center gap-2 rounded-md border border-border px-6 py-3 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+              {t('HUB_STATUS_LINUX_INSTALLING')}
+            </div>
+          )}
+
+          {(installState === 'completed' || installState === 'needs_restart') && (
+            <div className="flex items-start gap-3 rounded-md border border-green-500/30 bg-green-500/10 px-4 py-3 text-sm text-green-700 dark:text-green-400">
+              <CheckCircle className="h-4 w-4 shrink-0 mt-0.5" aria-hidden />
+              <span>{installState === 'needs_restart' ? t('HUB_STATUS_LINUX_INSTALL_NEEDS_RESTART') : t('HUB_STATUS_LINUX_INSTALL_SUCCESS')}</span>
+            </div>
+          )}
+
+          {installState === 'error' && (
+            <div className="space-y-3">
+              <div className="flex items-start gap-3 rounded-md border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+                <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" aria-hidden />
+                <span>{errorMessage || t('HUB_STATUS_LINUX_INSTALL_ERROR')}</span>
+              </div>
+              <button
+                type="button"
+                onClick={handleAutoInstall}
+                className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+              >
+                {t('HUB_STATUS_LINUX_AUTO_INSTALL_DOCKER')}
+              </button>
+            </div>
+          )}
+
+          <div className="relative flex items-center gap-3">
+            <div className="flex-1 border-t border-border" />
+            <span className="text-xs text-muted-foreground">{t('HUB_STATUS_LINUX_OR_INSTALL_MANUALLY')}</span>
+            <div className="flex-1 border-t border-border" />
+          </div>
+
           <ol className="text-left list-decimal list-inside space-y-1 text-sm text-muted-foreground">
             <li>{t('HUB_STATUS_LINUX_STEP_INSTALL_ENGINE')}</li>
             <li>{t('HUB_STATUS_LINUX_STEP_ADD_USER_GROUP')}</li>
@@ -292,7 +357,7 @@ function LinuxDockerGuide() {
             href="https://docs.docker.com/engine/install/"
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+            className="inline-flex w-full items-center justify-center gap-2 rounded-md border border-border px-6 py-3 text-sm font-medium text-muted-foreground hover:bg-muted"
           >
             {t('HUB_STATUS_VIEW_DOCKER_INSTALL_GUIDE')}
           </a>

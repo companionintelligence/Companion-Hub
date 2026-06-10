@@ -746,6 +746,12 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
               // libreoffice, …) are heavy SPAs that don't finish their first paint in 4s — they were
               // healthy (http 200, backend ok) but scored warn for a missing PNG. 12s flips them to pass.
               '--virtual-time-budget=12000',
+              // HARD capture deadline: apps holding persistent websocket/GCM connections never go
+              // network-idle, so the virtual-time budget never completes and chromium hangs until the
+              // 45s spawnSync SIGKILL → no PNG (diagnosed via the self-explaining `signal=SIGKILL`
+              // notes: jellyfin/element/plex/docmost/woodpecker all do this). `--timeout` forces the
+              // screenshot of whatever has rendered after 20s real time, ending the hang class.
+              '--timeout=20000',
               `http://localhost:${hostPort}${uiPath}`,
             ],
             { timeout: 45_000, killSignal: 'SIGKILL', stdio: 'pipe' },
