@@ -70,13 +70,11 @@ if command -v docker >/dev/null 2>&1; then
       run_cmd "docker rm -f $name" || true
     done
   fi
-fi
 
-for network in ci_os_hub_network ci-os-hub_network; do
-  run_cmd "docker network rm $network" || true
-done
+  for network in ci_os_hub_network ci-os-hub_network; do
+    run_cmd "docker network rm $network" || true
+  done
 
-if command -v docker >/dev/null 2>&1; then
   docker volume ls --format '{{.Name}}' 2>/dev/null | while IFS= read -r volume; do
     case "$volume" in
       *ci_os_hub*|*ci-os-hub*|*runtipi*|*ci_hub_pgdata*|*ci_hub_app_data*|*hub_tailscale_state*|e2e-*|test-e2e-*)

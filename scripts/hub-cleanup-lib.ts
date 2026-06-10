@@ -93,7 +93,7 @@ export function isRelatedVolume(volumeName: string): boolean {
     volumeName.includes('hub_tailscale_state') ||
     volumeName.startsWith('e2e-') ||
     volumeName.startsWith('test-e2e-') ||
-    /^[a-z]+_[a-z]+-.*_data$/.test(volumeName)
+    /^(ci_os_hub|ci-os-hub|ci_hub|ci-hub|runtipi)[-_].*_data$/.test(volumeName)
   );
 }
 
@@ -260,11 +260,11 @@ export function runHubCleanup(options?: CleanupOptions): CleanupSummary {
 
   const containerNames = new Set<string>();
   const containerCommands = [
-    "docker ps -a --filter network=ci_os_hub_network --format '{{.Names}}'",
-    "docker ps -a --filter network=ci-os-hub_network --format '{{.Names}}'",
-    "docker ps -a --filter label=com.docker.compose.project=ci-os-hub --format '{{.Names}}'",
-    "docker ps -a --filter label=com.docker.compose.project=ci-hub --format '{{.Names}}'",
-    "docker ps -a --filter 'name=e2e-' --format '{{.Names}}'",
+    'docker ps -a --filter network=ci_os_hub_network --format "{{.Names}}"',
+    'docker ps -a --filter network=ci-os-hub_network --format "{{.Names}}"',
+    'docker ps -a --filter label=com.docker.compose.project=ci-os-hub --format "{{.Names}}"',
+    'docker ps -a --filter label=com.docker.compose.project=ci-hub --format "{{.Names}}"',
+    'docker ps -a --filter "name=e2e-" --format "{{.Names}}"',
   ];
 
   for (const command of containerCommands) {
@@ -278,7 +278,7 @@ export function runHubCleanup(options?: CleanupOptions): CleanupSummary {
     runCommand(`docker rm -f ${name}`, commandContext);
   }
 
-  const volumeOutput = runCommand("docker volume ls --format '{{.Name}}'", commandContext);
+  const volumeOutput = runCommand('docker volume ls --format "{{.Name}}"', commandContext);
   for (const volumeName of parseNames(volumeOutput).filter(isRelatedVolume)) {
     runCommand(`docker volume rm ${volumeName}`, commandContext);
   }
@@ -286,7 +286,7 @@ export function runHubCleanup(options?: CleanupOptions): CleanupSummary {
   runCommand('docker network rm ci_os_hub_network', commandContext);
   runCommand('docker network rm ci-os-hub_network', commandContext);
 
-  const networkOutput = runCommand("docker network ls --format '{{.Name}}'", commandContext);
+  const networkOutput = runCommand('docker network ls --format "{{.Name}}"', commandContext);
   for (const networkName of parseNames(networkOutput).filter((name) => name.includes('e2e'))) {
     runCommand(`docker network rm ${networkName}`, commandContext);
   }
