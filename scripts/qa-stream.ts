@@ -726,8 +726,12 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
       phase(appId, 'screenshot', 'Taking screenshot');
       const chromeBin = resolveChromiumBinary();
       if (chromeBin) {
+        // Let a just-became-ready app settle before shooting: heavy SPAs serve their first request
+        // mid-bootstrap, and a request that hangs >45s gets the chromium SIGKILLed → no PNG → false warn.
+        await new Promise((r) => setTimeout(r, 4000));
         // Retry once: headless chromium occasionally races the app's first paint, or hiccups, and
         // writes no PNG — which made a healthy app score a false `warn`. A single retry recovers most.
+        let ssDiag = '';
         for (let attempt = 0; attempt < 2 && !result.hasScreenshot; attempt++) {
           const ss = spawnSync(
             chromeBin,
@@ -747,9 +751,19 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
             { timeout: 45_000, killSignal: 'SIGKILL', stdio: 'pipe' },
           );
           result.hasScreenshot = ss.status === 0 && existsSync(screenshotPath);
+          if (!result.hasScreenshot) {
+            // Self-explaining failures: a missing PNG used to leave NO trace of why (exit code,
+            // SIGKILL-on-hang, chromium crash) — record it so a warn verdict carries its own diagnosis.
+            const errTail = (ss.stderr?.toString() ?? '').replace(/\s+/g, ' ').trim().slice(-160);
+            ssDiag = `screenshot failed: exit=${ss.status ?? 'null'}${ss.signal ? ` signal=${ss.signal}` : ''}${errTail ? ` | ${errTail}` : ''}`;
+          }
+        }
+        if (!result.hasScreenshot && ssDiag) {
+          result.notes = result.notes ? `${result.notes} | ${ssDiag}` : ssDiag;
         }
       } else {
         result.hasScreenshot = false;
+        result.notes = result.notes ? `${result.notes} | no chromium on node` : 'no chromium on node';
       }
     }
 
