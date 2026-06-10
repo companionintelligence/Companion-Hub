@@ -55,9 +55,13 @@ function isPortAvailableOrOurs(port: number, ourPorts: Set<number>): boolean {
   return isPortAvailable(port) || ourPorts.has(port);
 }
 
-function findAvailablePort(start: number, ourPorts: Set<number>): number | undefined {
+function canAssignPort(port: number, ourPorts: Set<number>, assignedPorts: Set<number>): boolean {
+  return !assignedPorts.has(port) && isPortAvailableOrOurs(port, ourPorts);
+}
+
+function findAvailablePort(start: number, ourPorts: Set<number>, assignedPorts: Set<number>): number | undefined {
   for (let port = start; port <= start + 100; port += 1) {
-    if (isPortAvailableOrOurs(port, ourPorts)) return port;
+    if (canAssignPort(port, ourPorts, assignedPorts)) return port;
   }
   return undefined;
 }
@@ -121,23 +125,26 @@ export function resolveHubPorts(envFilePath: string): PortHealResult {
   const existing = readFileSync(envFilePath, 'utf-8');
   const parsed = parseEnvFile(envFilePath);
   const ourPorts = getOurRunningContainerPorts();
+  const assignedPorts = new Set<number>();
   const assignments: Record<string, number> = {};
   const info: string[] = [];
 
   for (const { defaultPort, var: varName, fallbackStart } of FIXED_PORTS) {
     const current = Number(parsed[varName] || defaultPort);
-    if (isPortAvailableOrOurs(current, ourPorts)) {
+    if (canAssignPort(current, ourPorts, assignedPorts)) {
       assignments[varName] = current;
+      assignedPorts.add(current);
       continue;
     }
-    if (isPortAvailableOrOurs(defaultPort, ourPorts)) {
+    if (canAssignPort(defaultPort, ourPorts, assignedPorts)) {
       if (current !== defaultPort) {
         info.push(`Port ${current} (${varName}) now free — restored default host port ${defaultPort}.`);
       }
       assignments[varName] = defaultPort;
+      assignedPorts.add(defaultPort);
       continue;
     }
-    const reassigned = findAvailablePort(fallbackStart, ourPorts);
+    const reassigned = findAvailablePort(fallbackStart, ourPorts, assignedPorts);
     if (reassigned === undefined) {
       throw new Error(`Cannot find available host port near ${fallbackStart} for ${varName} (${defaultPort} is occupied).`);
     }
@@ -145,20 +152,23 @@ export function resolveHubPorts(envFilePath: string): PortHealResult {
       `Port ${current === defaultPort ? defaultPort : current} (${varName}) occupied — using host port ${reassigned} (Public Web via Cloudflare is unaffected).`,
     );
     assignments[varName] = reassigned;
+    assignedPorts.add(reassigned);
   }
 
   for (const { defaultPort, var: varName } of DYNAMIC_PORTS) {
     const current = Number(parsed[varName] || defaultPort);
-    if (isPortAvailableOrOurs(current, ourPorts)) {
+    if (canAssignPort(current, ourPorts, assignedPorts)) {
       assignments[varName] = current;
+      assignedPorts.add(current);
       continue;
     }
-    const reassigned = findAvailablePort(defaultPort, ourPorts);
+    const reassigned = findAvailablePort(defaultPort, ourPorts, assignedPorts);
     if (reassigned === undefined) {
       throw new Error(`Cannot find available host port near ${defaultPort} for ${varName}.`);
     }
     info.push(`Port ${current} (${varName}) occupied — reassigned to ${reassigned}.`);
     assignments[varName] = reassigned;
+    assignedPorts.add(reassigned);
   }
 
   const changed = [...FIXED_PORTS, ...DYNAMIC_PORTS].some(({ var: varName, defaultPort }) => {
