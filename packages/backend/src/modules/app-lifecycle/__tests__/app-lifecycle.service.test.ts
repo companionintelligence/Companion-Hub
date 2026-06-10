@@ -867,6 +867,32 @@ describe('AppLifecycleService', () => {
       );
     });
 
+    it('forceStopApp acquires the app mutex before running docker operations', async () => {
+      appRuntimeMonitor.getAppRuntimeHealth.mockResolvedValue({
+        appUrn,
+        appName: 'myapp',
+        status: 'running',
+        cpuPercent: 99,
+        memoryUsageBytes: 0,
+        memoryLimitBytes: 0,
+        highCpu: true,
+        sustainedHighCpu: true,
+        responsive: false,
+        degraded: true,
+        forceStopEligible: true,
+        reason: 'App unresponsive',
+        cpuLimit: null,
+        usesDefaultCpuLimit: false,
+        sampledAt: new Date().toISOString(),
+        containers: [],
+      } as any);
+
+      await service.forceStopApp({ appUrn });
+
+      expect(mutex.acquire).toHaveBeenCalledWith(appUrn);
+      expect(mutex.acquire).not.toHaveBeenCalledWith('__install-pipeline__');
+    });
+
     // ── restartApp ───────────────────────────────────────────────────────
     it('restartApp success: DB committed before SSE', async () => {
       await service.restartApp({ appUrn });

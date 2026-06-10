@@ -508,28 +508,33 @@ export class AppLifecycleService implements OnApplicationBootstrap {
       throw new TranslatableError('APP_FORCE_STOP_NOT_AVAILABLE', {}, HttpStatus.CONFLICT);
     }
 
-    await this.appRepository.updateAppById(app.id, { status: 'stopping' });
-    this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'stopping' });
-
+    const release = await this.mutex.acquire(appUrn);
     const requestId = crypto.randomUUID();
 
     try {
-      const result = await this.dockerService.forceStopApp(appUrn);
-      await this.appRepository.updateAppById(app.id, { status: 'stopped' });
-      this.sseService.emit('app', { event: 'stop_success', appUrn, appStatus: 'stopped' });
-      this.logger.warn(`App ${appUrn} force-stopped successfully`, result);
+      await this.appRepository.updateAppById(app.id, { status: 'stopping' });
+      this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'stopping' });
 
-      if (app.exposedLocal) {
-        await this.syncExposure();
+      try {
+        const result = await this.dockerService.forceStopApp(appUrn);
+        await this.appRepository.updateAppById(app.id, { status: 'stopped' });
+        this.sseService.emit('app', { event: 'stop_success', appUrn, appStatus: 'stopped' });
+        this.logger.warn(`App ${appUrn} force-stopped successfully`, result);
+
+        if (app.exposedLocal) {
+          await this.syncExposure();
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.error(`Failed to force-stop app ${appUrn}: ${message}`);
+        await this.appRepository.updateAppById(app.id, { status: app.status });
+        this.sseService.emit('app', { event: 'stop_error', appUrn, appStatus: app.status, error: message });
+        this.agentNotifyService?.notify('stop_error', { appUrn }, 'high');
+        this.reportAppFailure(appUrn, 'stop', message);
+        throw new TranslatableError('APP_ACTION_FAILED_TO_RESOLVE', { error: message }, HttpStatus.INTERNAL_SERVER_ERROR);
       }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.logger.error(`Failed to force-stop app ${appUrn}: ${message}`);
-      await this.appRepository.updateAppById(app.id, { status: app.status });
-      this.sseService.emit('app', { event: 'stop_error', appUrn, appStatus: app.status, error: message });
-      this.agentNotifyService?.notify('stop_error', { appUrn }, 'high');
-      this.reportAppFailure(appUrn, 'stop', message);
-      throw new TranslatableError('APP_ACTION_FAILED_TO_RESOLVE', { error: message }, HttpStatus.INTERNAL_SERVER_ERROR);
+    } finally {
+      release();
     }
 
     return { requestId };
