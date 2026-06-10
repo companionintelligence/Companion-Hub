@@ -1150,11 +1150,12 @@ header {
   color: var(--text); font-size: 12px; width: 190px;
 }
 .filter-input:focus { outline: none; border-color: var(--accent); }
-/* time/size mini bar graphs (cards + drawer) */
+/* time/size mini bar graphs (cards + drawer) — 4px in cards, slightly taller in the drawer */
 .bar-row { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
 .bar-ico { font-size: 9px; color: var(--text2); text-transform: uppercase; letter-spacing: .4px; width: 26px; flex-shrink: 0; }
-.bar-track { flex: 1; height: 5px; background: var(--surface2); border-radius: 3px; overflow: hidden; }
-.bar-fill { height: 100%; border-radius: 3px; background: linear-gradient(90deg, var(--grad-a), var(--accent-bright)); }
+.bar-track { flex: 1; height: 4px; background: var(--surface2); border-radius: 3px; overflow: hidden; }
+.drawer .bar-track { height: 6px; }
+.bar-fill { height: 100%; border-radius: 3px; background: linear-gradient(90deg, var(--grad-a), var(--accent-bright)); transition: width .3s; }
 .bar-fill.mem { background: linear-gradient(90deg, #7a5cff, var(--timeout)); }
 .bar-val { font-size: 10px; color: var(--text2); min-width: 52px; text-align: right; flex-shrink: 0; font-variant-numeric: tabular-nums; }
 .grid {
@@ -1210,7 +1211,7 @@ header {
 .cat-tag { font-size: 10px; color: var(--text2); background: var(--surface2); padding: 1px 5px; border-radius: 3px; }
 .mcp-badge { font-size: 9px; font-weight: 700; letter-spacing: .04em; color: var(--accent-bright, var(--accent)); border: 1px solid var(--accent); padding: 0 4px; border-radius: 3px; flex-shrink: 0; }
 .card-phase { font-size: 11px; color: var(--text2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.card-meta { display: flex; gap: 8px; font-size: 11px; color: var(--text2); margin-top: 4px; }
+.card-meta { display: flex; gap: 4px 8px; flex-wrap: wrap; font-size: 11px; color: var(--text2); margin-top: 4px; }
 .card-score { font-size: 11px; font-weight: 600; }
 .card-score.pass { color: var(--pass); }
 .card-score.warn { color: var(--warn); }
@@ -1437,7 +1438,7 @@ function cardHtml(app, s) {
   }).join('');
   var phase = s ? (s.message || s.phase || '') : '';
   // Expanded result data: boot time + RAM as bar graphs (relative to the run-wide max),
-  // plus a compact footer with pull time and HTTP status.
+  // plus a compact footer with pull time, readiness signal, attempts and HTTP status.
   var bars = '';
   var meta = '';
   if (s && s.result) {
@@ -1446,7 +1447,9 @@ function cardHtml(app, s) {
     if (r.memMb > 0) bars += barRow('ram', r.memMb + 'MB', r.memMb, maxima.maxMem, 'mem');
     var parts = [];
     if (r.pullMs > 0) parts.push('pull ' + fmtMs(r.pullMs));
+    if (r.readyVia) parts.push('via ' + r.readyVia);
     if (r.httpStatus) parts.push('HTTP ' + r.httpStatus);
+    if (r.attempts > 1 || r.retried) parts.push((r.attempts || 2) + ' tries');
     if (r.imageMb > 0) parts.push(Math.round(r.imageMb) + 'MB img');
     meta = parts.join(' &middot; ');
   }
@@ -1478,7 +1481,6 @@ function updateCard(appId) {
   var s = state.apps[appId];
   if (!s) return;
   var app = state.catalog.find(function(a) { return a.id === appId; }) || { id: appId, name: appId, categories: [] };
-  var wasHidden = card.style.display === 'none';
   card.className = 'card ' + s.status;
   card.innerHTML = cardHtml(app, s);
   card.onclick = function() { openDrawer(appId); };
@@ -1504,16 +1506,30 @@ function updateSummary(fleet) {
   var pct = total > 0 ? (done / total * 100).toFixed(1) : 0;
   document.getElementById('progress-fill').style.width = pct + '%';
   document.getElementById('progress-label').textContent = done + ' / ' + total + ' tested' + (skip ? ' (' + skip + ' skipped)' : '');
-  // Refresh run-wide maxima for the card/drawer bar graphs.
-  var mS = 1, mM = 1;
+  // Refresh run-wide maxima for the card/drawer bar graphs (outlier-damped).
+  var starts = [], mems = [];
   apps.forEach(function(a) {
     var r = a.result;
     if (r) {
-      if (r.startupMs > mS) mS = r.startupMs;
-      if (r.memMb > mM) mM = r.memMb;
+      if (r.startupMs > 0) starts.push(r.startupMs);
+      if (r.memMb > 0) mems.push(r.memMb);
     }
   });
-  maxima = { maxStart: mS, maxMem: mM };
+  maxima = { maxStart: scaleMax(starts), maxMem: scaleMax(mems) };
+}
+
+// Bar-graph scale: the run-wide max, except a single extreme outlier doesn't get to
+// flatten every other bar — with enough samples we scale to ~p95 and let the outlier
+// clamp at 100% (barRow caps pct anyway).
+function scaleMax(vals) {
+  if (vals.length === 0) return 1;
+  vals.sort(function(a, b) { return a - b; });
+  var hi = vals[vals.length - 1];
+  if (vals.length >= 5) {
+    var p95 = vals[Math.floor((vals.length - 1) * 0.95)];
+    if (p95 > 0 && hi > p95 * 1.5) return p95;
+  }
+  return hi;
 }
 
 function applyFilters() {
@@ -1573,41 +1589,45 @@ function renderDrawer(appId) {
   var ssUrl = '/screenshots/' + ssFile + ssBust;
   html += '<img class="screenshot-img" src="' + ssUrl + '" onerror="this.hidden=true" onclick="window.open(this.src, \\'_blank\\')" title="Open full-size capture">';
   var r = s && s.result ? s.result : {};
-  // Time + size bar graphs (relative to the run-wide maxima, like the cards).
+  function metaGrid(items) {
+    var g = '<div class="meta-grid">';
+    items.forEach(function(item) {
+      g += '<div class="meta-item' + (item[2] ? ' wide' : '') + '"><span class="meta-key">' + item[0] + '</span><span class="meta-val">' + item[1] + '</span></div>';
+    });
+    return g + '</div>';
+  }
+  // ── Status — score + readiness/health signals
+  var backendVal = r.backendHealthy === true ? 'healthy' : r.backendHealthy === false ? 'DEGRADED' : '—';
+  html += '<div class="section-label">Status</div>';
+  html += metaGrid([
+    ['Status', (s && s.status) || 'idle'],
+    ['Node', (s && s.node) || '—'],
+    ['Fail kind', r.failKind || '—'],
+    ['Ready via', r.readyVia || '—'],
+    ['HTTP', r.httpStatus ? 'HTTP ' + r.httpStatus : '—'],
+    ['Backend', backendVal],
+    ['Attempts', r.attempts ? (r.attempts + (r.retried ? ' (retried)' : '')) : '—'],
+    ['Finished', (s && s.endTs) ? new Date(s.endTs).toLocaleTimeString() : '—'],
+  ]);
+  // ── Performance — same bar-graph treatment as the cards, scaled to the run-wide maxima.
   var bars = '';
   if (r.pullMs > 0) bars += barRow('pull', fmtMs(r.pullMs), r.pullMs, Math.max(maxima.maxStart, r.pullMs), '');
   if (r.startupMs > 0) bars += barRow('boot', fmtMs(r.startupMs), r.startupMs, maxima.maxStart, '');
   if (r.memMb > 0) bars += barRow('ram', r.memMb + ' MB', r.memMb, maxima.maxMem, 'mem');
   if (r.memPeakMb > 0) bars += barRow('peak', r.memPeakMb + ' MB', r.memPeakMb, maxima.maxMem, 'mem');
+  if (r.cpuPct > 0) bars += barRow('cpu', r.cpuPct + '%', r.cpuPct, 100, '');
   if (bars) {
-    html += '<div class="section-label">Timing &amp; Footprint</div>';
+    html += '<div class="section-label" style="margin-top:12px">Performance</div>';
     html += '<div style="margin-bottom:12px">' + bars + '</div>';
   }
-  // Expanded meta grid.
-  html += '<div class="section-label">Details</div>';
-  html += '<div class="meta-grid">';
-  var backendVal = r.backendHealthy === true ? 'healthy' : r.backendHealthy === false ? 'DEGRADED' : '—';
-  var metaItems = [
-    ['Status', (s && s.status) || 'idle'],
-    ['Node', (s && s.node) || '—'],
-    ['HTTP', r.httpStatus ? 'HTTP ' + r.httpStatus : '—'],
-    ['Ready via', r.readyVia || '—'],
-    ['Backend', backendVal],
-    ['Attempts', r.attempts ? (r.attempts + (r.retried ? ' (retried)' : '')) : '—'],
-    ['Fail kind', r.failKind || '—'],
-    ['CPU', r.cpuPct > 0 ? r.cpuPct + '%' : '—'],
+  // ── Container — image / port / catalog identity
+  html += '<div class="section-label" style="margin-top:12px">Container</div>';
+  html += metaGrid([
     ['Image size', r.imageMb > 0 ? Math.round(r.imageMb) + ' MB' : '—'],
     ['Port', r.port || app.port || '—'],
     ['Categories', ((s && s.categories) || app.categories || []).join(', ') || '—'],
-    ['Finished', (s && s.endTs) ? new Date(s.endTs).toLocaleTimeString() : '—'],
-  ];
-  metaItems.forEach(function(item) {
-    html += '<div class="meta-item"><span class="meta-key">' + item[0] + '</span><span class="meta-val">' + item[1] + '</span></div>';
-  });
-  if (r.image || app.image) {
-    html += '<div class="meta-item wide"><span class="meta-key">Image</span><span class="meta-val">' + (r.image || app.image) + '</span></div>';
-  }
-  html += '</div>';
+    ['Image', (r.image || app.image) || '—', true],
+  ]);
   // Notes
   if (r.notes || (s && s.message)) {
     html += '<div class="section-label" style="margin-top:10px">Notes</div>';
