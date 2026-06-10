@@ -87,6 +87,13 @@ async function generateTestCatalog(): Promise<AppTestSpec[]> {
     const config = await loadAppConfig(appId);
     if (!config) continue;
 
+    // Skip delisted apps: `available: false` means the catalog has pulled the app (e.g. a broken
+    // upstream image) — QA'ing it just re-reports a known-bad verdict every run.
+    if ((config as { available?: boolean }).available === false) {
+      console.log(`Skipping ${appId}: available=false (delisted)`);
+      continue;
+    }
+
     // Skip if doesn't support amd64
     if (config.supported_architectures && !config.supported_architectures.includes('amd64')) {
       console.log(`Skipping ${appId}: no amd64 support`);
