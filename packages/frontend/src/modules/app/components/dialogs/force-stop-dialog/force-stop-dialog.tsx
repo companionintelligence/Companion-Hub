@@ -1,6 +1,6 @@
 import { Button } from '@/components/ui/Button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
-import { apiFetch } from '@/lib/api-fetch';
+import { client } from '@/api-client/client.gen';
 import { useAppStatus } from '@/modules/app/helpers/use-app-status';
 import type { AppInfo } from '@/types/app.types';
 import type { TranslatableError } from '@/types/error.types';
@@ -20,18 +20,9 @@ export const ForceStopDialog: React.FC<IProps> = ({ info, isOpen, onClose }) => 
   const { setOptimisticStatus } = useAppStatus();
 
   const forceStopMutation = useMutation({
-    mutationFn: async () => {
-      const response = await apiFetch(`/api/app-lifecycle/${encodeURIComponent(info.urn)}/force-stop`, {
-        method: 'POST',
-      });
-      if (!response.ok) {
-        const payload = (await response.json().catch(() => null)) as TranslatableError | null;
-        throw new Error(payload?.message || `HTTP ${response.status}`);
-      }
-      return response.json();
-    },
-    onError: (error: Error) => {
-      toast.error(t(error.message));
+    mutationFn: () => client.post({ url: `/api/app-lifecycle/${encodeURIComponent(info.urn)}/force-stop` }),
+    onError: (error: TranslatableError) => {
+      toast.error(t(error.message, error.intlParams));
     },
     onMutate: () => {
       setOptimisticStatus('stopping', info.urn);
