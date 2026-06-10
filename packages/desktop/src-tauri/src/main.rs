@@ -128,6 +128,12 @@ async fn install_docker_command() -> Result<hub_manager::DockerInstallResult, St
     hub_manager::install_docker()
 }
 
+/// Install Ollama using the platform-native bootstrap flow.
+#[tauri::command]
+async fn install_ollama_command() -> Result<hub_manager::OllamaInstallResult, String> {
+    hub_manager::install_ollama()
+}
+
 /// Get the current Hub status (Docker availability, container state, health).
 #[tauri::command]
 async fn get_hub_status_command() -> hub_manager::HubStatus {
@@ -271,6 +277,7 @@ pub fn run() {
             save_download_command,
             is_user_stopped_command,
             install_docker_command,
+            install_ollama_command,
             consume_pending_pairing_code,
             consume_pending_portal_auth,
             check_desktop_update_command,
