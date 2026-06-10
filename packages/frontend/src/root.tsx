@@ -345,7 +345,7 @@ export default function App({ loaderData }: Route.ComponentProps) {
   return (
     <Providers>
       <Outlet />
-      <Toaster />
+      <Toaster position="bottom-center" />
     </Providers>
   );
 }
