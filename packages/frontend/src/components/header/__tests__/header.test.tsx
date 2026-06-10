@@ -38,9 +38,9 @@ global.ResizeObserver = class ResizeObserver {
   disconnect() {}
 };
 
-function renderHeader(isLoggedIn = true) {
+function renderHeader(isLoggedIn = true, initialEntry = '/dashboard') {
   return render(
-    <MemoryRouter initialEntries={['/dashboard']}>
+    <MemoryRouter initialEntries={[initialEntry]}>
       <Header isLoggedIn={isLoggedIn} />
     </MemoryRouter>,
   );
@@ -64,5 +64,11 @@ describe('Header', () => {
     renderHeader(false);
 
     expect(screen.queryByRole('link', { name: /COMMON_APP_STORE|App Store|Store/i })).not.toBeInTheDocument();
+  });
+
+  it('uses the stronger active styling for the selected settings button', () => {
+    renderHeader(true, '/settings');
+
+    expect(screen.getByRole('link', { name: /COMMON_SETTINGS|Settings/i })).toHaveClass('bg-primary/12', 'text-primary', 'btn-active');
   });
 });
