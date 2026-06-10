@@ -33,7 +33,11 @@ export class AppLifecycleCommand {
     const logger = this.moduleRef.get(LoggerService, { strict: false });
     const subnetManager = this.moduleRef.get(SubnetManagerService, { strict: false });
     const configService = this.moduleRef.get(ConfigurationService, { strict: false });
-    const fullConfig = configService.getConfig();
+    const fullConfig = (typeof configService.getConfig === 'function' ? configService.getConfig() : null) || {
+      domain: configService.get('domain'),
+      localDomain: configService.get('localDomain'),
+      userSettings: configService.get('userSettings'),
+    };
 
     const pruned = await this.docker
       .pruneContainers({ filters: { label: [`ci-os-hub.appurn=${appUrn}`] } })
