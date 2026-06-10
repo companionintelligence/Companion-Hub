@@ -110,8 +110,10 @@ nix-prefetch-url https://github.com/companionintelligence/CI-Hub/releases/downlo
 Companion Hub now ships best-effort uninstall cleanup hooks/scripts for maintained channels:
 
 - Windows: Chocolatey + Scoop uninstaller scripts
-- Linux: AUR `post_remove` install hook + Snap `hooks/remove`
+- Linux: Debian `postrm`, AUR `post_remove`, and Snap `hooks/remove`
 - Shared script artifacts: `distribution/scripts/uninstall-cleanup.sh` and `distribution/scripts/uninstall-cleanup.ps1`
+
+Linux desktop `.deb` bundles receive the `postrm` maintainer script in a post-build repack step via `packages/desktop/scripts/patch-deb-maintainer-scripts.sh`.
 
 Cleanup removes Hub-related state in user config/cache/data directories and attempts Docker cleanup for CI-Hub resources.
 

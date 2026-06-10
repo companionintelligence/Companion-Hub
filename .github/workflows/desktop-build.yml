@@ -122,6 +122,13 @@ jobs:
           fi
           npx --yes @tauri-apps/cli@2 build "${args[@]}"
 
+      - name: Patch Linux deb maintainer scripts
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          cd packages/desktop
+          sh scripts/patch-deb-maintainer-scripts.sh
+
       - name: List artifacts
         shell: bash
         run: |

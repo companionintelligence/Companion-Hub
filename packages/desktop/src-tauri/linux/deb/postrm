@@ -1,7 +1,11 @@
 #!/bin/sh
 set -eu
 
-echo '[cleanup][INFO] Running snap remove hook for Companion Hub' >&2
+log() {
+  level="$1"
+  shift
+  printf '[cleanup][%s] %s\n' "$level" "$*"
+}
 
 list_home_dirs() {
   getent passwd | awk -F: '($3 == 0 || $3 >= 1000) && $6 ~ /^\// { print $6 }' | awk '!seen[$0]++'
@@ -22,7 +26,9 @@ cleanup_user_home() {
   done
 }
 
-if command -v docker >/dev/null 2>&1; then
+cleanup_docker() {
+  command -v docker >/dev/null 2>&1 || return 0
+
   {
     docker ps -a --filter "label=com.docker.compose.project=ci-os-hub" --format '{{.Names}}' 2>/dev/null
     docker ps -a --filter "label=com.docker.compose.project=ci-hub" --format '{{.Names}}' 2>/dev/null
@@ -40,10 +46,21 @@ if command -v docker >/dev/null 2>&1; then
         ;;
     esac
   done
-fi
 
+  docker network rm ci_os_hub_network >/dev/null 2>&1 || true
+  docker network rm ci-os-hub_network >/dev/null 2>&1 || true
+}
+
+case "${1:-remove}" in
+  upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
+    log INFO "Skipping uninstall cleanup during package lifecycle: $1"
+    exit 0
+    ;;
+esac
+
+log INFO 'Running Companion Hub Debian postrm cleanup (best effort)'
+cleanup_docker
 list_home_dirs | while IFS= read -r home_dir; do
   cleanup_user_home "$home_dir"
 done
-
-echo '[cleanup][INFO] Snap remove hook completed' >&2
+log INFO 'Companion Hub Debian postrm cleanup complete'

@@ -173,6 +173,8 @@ Or from repo root:
 pnpm run build:desktop
 ```
 
+On Linux, the desktop build patches generated `.deb` bundles with a Debian `postrm` maintainer script so uninstall can remove Hub runtime state and related Docker resources.
+
 **Important:** The frontend must be built first — the release build embeds static files from `packages/frontend/dist/client`:
 ```bash
 # From repo root

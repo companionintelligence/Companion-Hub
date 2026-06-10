@@ -24,15 +24,27 @@ remove_dir_if_exists() {
   fi
 }
 
-HOME_DIR="${HOME:-}"
-if [ -z "$HOME_DIR" ]; then
-  log WARN "HOME is not set; skipping user directory cleanup"
-  exit 0
-fi
+list_home_dirs() {
+  getent passwd | awk -F: '($3 == 0 || $3 >= 1000) && $6 ~ /^\// { print $6 }' | awk '!seen[$0]++'
+}
 
-XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME_DIR/.local/share}"
-XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME_DIR/.config}"
-XDG_CACHE_HOME="${XDG_CACHE_HOME:-$HOME_DIR/.cache}"
+cleanup_user_home() {
+  home_dir="$1"
+  [ -d "$home_dir" ] || return 0
+
+  xdg_data_home="$home_dir/.local/share"
+  xdg_config_home="$home_dir/.config"
+  xdg_cache_home="$home_dir/.cache"
+
+  for name in "Companion Hub" "companion-hub" "ci-hub" "CI-Hub" "computer.ci.app.hub"; do
+    remove_dir_if_exists "$xdg_data_home/$name"
+    remove_dir_if_exists "$xdg_config_home/$name"
+    remove_dir_if_exists "$xdg_cache_home/$name"
+  done
+
+  remove_dir_if_exists "$home_dir/.local/share/applications/companion-hub.desktop"
+  remove_dir_if_exists "$home_dir/.cache/companion-hub"
+}
 
 if command -v docker >/dev/null 2>&1; then
   collect_names() {
@@ -70,13 +82,8 @@ if command -v docker >/dev/null 2>&1; then
   done
 fi
 
-for name in "Companion Hub" "companion-hub" "ci-hub" "CI-Hub" "computer.ci.app.hub"; do
-  remove_dir_if_exists "$XDG_DATA_HOME/$name"
-  remove_dir_if_exists "$XDG_CONFIG_HOME/$name"
-  remove_dir_if_exists "$XDG_CACHE_HOME/$name"
+list_home_dirs | while IFS= read -r home_dir; do
+  cleanup_user_home "$home_dir"
 done
-
-remove_dir_if_exists "$HOME_DIR/.local/share/applications/companion-hub.desktop"
-remove_dir_if_exists "$HOME_DIR/.cache/companion-hub"
 
 log INFO "uninstall cleanup finished"

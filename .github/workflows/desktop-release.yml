@@ -224,6 +224,7 @@ jobs:
         run: |
           cd packages/desktop
           npx --yes @tauri-apps/cli@2 build --target ${{ matrix.target }} -c '{"bundle":{"createUpdaterArtifacts":false}}'
+
       - name: Build Tauri app
         if: env.BUILD_ENABLED && (runner.os != 'macOS' || env.APPLE_SIGNING_CONFIGURED != 'true')
         env:
@@ -262,6 +263,7 @@ jobs:
           if [[ "${{ runner.os }}" == "Linux" ]]; then
             # deb/rpm bundle offline; build them once, then retry the flaky AppImage.
             npx --yes @tauri-apps/cli@2 build "${base_args[@]}" -b deb,rpm
+            sh scripts/patch-deb-maintainer-scripts.sh
             retry_build "${base_args[@]}" -b appimage
           else
             retry_build "${base_args[@]}"
