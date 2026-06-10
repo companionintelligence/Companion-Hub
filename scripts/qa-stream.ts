@@ -315,6 +315,7 @@ interface DockerService {
 
 interface ComposeJson {
   services?: DockerService[];
+  qaReadyTimeoutMs?: number; // optional QA hint: raise the readiness ceiling for a legit-slow app
 }
 
 /**
@@ -343,6 +344,7 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
   let cmdSuffix = ''; // single-service manifest `command`, appended after the image in `docker run`
   let services: DockerService[] = [];
   let isMulti = false;
+  let composeReadyTimeoutMs: number | undefined; // per-app readiness-ceiling override from the manifest
   let statsName = containerName; // container to `docker stats` (overridden for compose path)
   let composeProject = '';
   let composeYml = '';
@@ -402,6 +404,7 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
       const compose: ComposeJson = JSON.parse(readFileSync(composeJsonPath, 'utf-8'));
       services = compose.services ?? [];
       isMulti = services.length > 1;
+      composeReadyTimeoutMs = compose.qaReadyTimeoutMs;
       const main = compose.services?.find((s) => s.isMain) ?? compose.services?.[0];
       result.image = main?.image ?? `${appId}:latest`;
       if (main?.internalPort) result.port = main.internalPort;
@@ -503,11 +506,17 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
     }
 
     const mainImg = String(result.image ?? '');
-    // Skip private CI images (require GHCR auth not available on fleet nodes).
+    // Private CI images: GHCR auth is now wired on the fleet nodes, so ATTEMPT the published ones and
+    // only skip the ones that were never published (404). A blanket skip hid our own working apps; and
+    // letting a 404 fall through to the normal pull would mislabel a never-published image as a broken
+    // pull `error` instead of a clean skip.
     if (mainImg.startsWith('ghcr.io/companionintelligence/')) {
-      result.score = 'skip' as Score;
-      result.notes = 'private GHCR image — requires auth not available on fleet nodes';
-      return result;
+      if (!execQuiet(`docker manifest inspect ${shQuote(mainImg)}`, 30_000).ok) {
+        result.score = 'skip' as Score;
+        result.notes = 'private CI image not published to GHCR (404) — needs its build/publish workflow';
+        return result;
+      }
+      // else: published + authed → fall through to the normal pull/start/readiness path
     }
     // Skip VM images (dockurr/macos, dockurr/windows) — require KVM/nested virt.
     if (mainImg.startsWith('dockurr/')) {
@@ -631,7 +640,11 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
     // affects the success ceiling — the fail-fast exit/restart-loop signals below are unchanged,
     // so a genuinely dead app still bails immediately rather than burning the longer ceiling.
     const readyScale = QA_CONCURRENCY > 1 ? Math.min(2, 1 + (QA_CONCURRENCY - 1) * 0.5) : 1;
-    const maxWaitMs = Number(process.env.QA_READY_TIMEOUT_MS) || Math.round((isMulti ? 600_000 : 300_000) * readyScale);
+    // Per-app override: a legit-slow app (gitlab/nextcloud/coolify/…) declares `qaReadyTimeoutMs` in
+    // its config.json to raise the readiness ceiling, so a long-but-healthy first boot isn't a false
+    // `timeout`. The fail-fast exit/restart-loop signals still bail a genuinely dead app immediately.
+    const perAppCeil = Number(composeReadyTimeoutMs) || Number((config as Record<string, unknown>).qaReadyTimeoutMs) || 0;
+    const maxWaitMs = Number(process.env.QA_READY_TIMEOUT_MS) || perAppCeil || Math.round((isMulti ? 600_000 : 300_000) * readyScale);
     const readyStart = Date.now();
     let httpStatus = 0;
     let ready = false;
@@ -713,21 +726,25 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
       phase(appId, 'screenshot', 'Taking screenshot');
       const chromeBin = resolveChromiumBinary();
       if (chromeBin) {
-        const ss = spawnSync(
-          chromeBin,
-          [
-            '--headless=new',
-            '--no-sandbox',
-            '--disable-gpu',
-            '--hide-scrollbars',
-            `--screenshot=${screenshotPath}`,
-            '--window-size=1280,800',
-            '--virtual-time-budget=4000',
-            `http://localhost:${hostPort}${uiPath}`,
-          ],
-          { timeout: 30_000, killSignal: 'SIGKILL', stdio: 'pipe' },
-        );
-        result.hasScreenshot = ss.status === 0 && existsSync(screenshotPath);
+        // Retry once: headless chromium occasionally races the app's first paint, or hiccups, and
+        // writes no PNG — which made a healthy app score a false `warn`. A single retry recovers most.
+        for (let attempt = 0; attempt < 2 && !result.hasScreenshot; attempt++) {
+          const ss = spawnSync(
+            chromeBin,
+            [
+              '--headless=new',
+              '--no-sandbox',
+              '--disable-gpu',
+              '--hide-scrollbars',
+              `--screenshot=${screenshotPath}`,
+              '--window-size=1280,800',
+              '--virtual-time-budget=4000',
+              `http://localhost:${hostPort}${uiPath}`,
+            ],
+            { timeout: 30_000, killSignal: 'SIGKILL', stdio: 'pipe' },
+          );
+          result.hasScreenshot = ss.status === 0 && existsSync(screenshotPath);
+        }
       } else {
         result.hasScreenshot = false;
       }
@@ -1029,7 +1046,12 @@ function valueForVar(name: string, cache: Map<string, string>, scratchBase: stri
   return v;
 }
 
-const yamlStr = (s: string): string => `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+// Double-quoted YAML scalar. MUST escape control chars too: a literal newline inside a double-quoted
+// scalar is FOLDED to a space by YAML, so a multi-line string `command`/`entrypoint`/`healthcheck`
+// (e.g. a heredoc, or `sh -c "...\n...\n..."`) silently collapses onto one line and breaks at runtime.
+// Emitting `\n`/`\r`/`\t` escapes keeps the value byte-exact through `docker compose`.
+const yamlStr = (s: string): string =>
+  `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t')}"`;
 
 /**
  * Remove a scratch tree completely, including stateful-service data dirs that Postgres/redis

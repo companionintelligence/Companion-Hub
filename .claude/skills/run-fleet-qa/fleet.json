@@ -8,5 +8,7 @@
   { "name": "core-14", "ip": "100.101.186.74", "batch": 6 },
   { "name": "core-17", "ip": "100.67.181.7", "batch": 7 },
   { "name": "beta-1", "ip": "100.124.211.75", "batch": 8 },
-  { "name": "beta-ms-a2", "ip": "100.119.230.14", "batch": 9 }
+  { "name": "beta-ms-a2", "ip": "100.119.230.14", "batch": 9 },
+  { "name": "beta-red", "ip": "100.86.79.25", "batch": 10 },
+  { "name": "fzzy", "ip": "100.114.164.27", "batch": 11 }
 ]
