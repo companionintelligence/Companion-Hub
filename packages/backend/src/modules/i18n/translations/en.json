@@ -352,6 +352,8 @@
   "AUTH_FORM_PASSWORD_CONFIRMATION_PLACEHOLDER": "Confirm your password",
   "AUTH_FORM_PASSWORD_PLACEHOLDER": "Enter your password",
   "AUTH_LOGIN_TITLE": "Login to {{type}}",
+  "AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON": "Sign in using your Companion Account",
+  "AUTH_LOGIN_COMPANION_ACCOUNT_HINT": "Uses your Companion Account.",
   "AUTH_LOGIN_LOCAL_ADMIN_ACCOUNT": "your local admin account",
   "AUTH_REGISTER_NOTE": "Note: this is a local administrator account, separate from your Companion Hub account.",
   "AUTH_REGISTER_SUBMIT": "Create Local Admin User",

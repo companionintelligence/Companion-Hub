@@ -5,7 +5,7 @@ import { LoginForm } from './login-form';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
-    t: (key: string) => key,
+    t: (key: string, fallbackOrOptions?: string | Record<string, unknown>) => (typeof fallbackOrOptions === 'string' ? fallbackOrOptions : key),
   }),
 }));
 
@@ -38,6 +38,7 @@ describe('LoginForm', () => {
       </MemoryRouter>,
     );
 
-    expect(screen.getByRole('link', { name: 'Sign in with Portal' })).toHaveClass('h-10', 'w-full', 'font-semibold');
+    expect(screen.getByRole('link', { name: 'Sign in using your Companion Account' })).toHaveClass('h-10', 'w-full', 'font-semibold');
+    expect(screen.getByText('Uses your Companion Account.')).toBeInTheDocument();
   });
 });
