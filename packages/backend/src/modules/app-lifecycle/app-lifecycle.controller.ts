@@ -31,6 +31,13 @@ export class AppLifecycleController {
     return LifecycleRequestDto.parse(res, { reportOnly: true });
   }
 
+  @Post(':urn/force-stop')
+  @ApiResponse({ type: LifecycleRequestDto })
+  async forceStopApp(@Param('urn') urn: string) {
+    const res = await this.appLifecycleService.forceStopApp({ appUrn: castAppUrn(urn) });
+    return LifecycleRequestDto.parse(res, { reportOnly: true });
+  }
+
   @Post(':urn/restart')
   @ApiResponse({ type: LifecycleRequestDto })
   async restartApp(@Param('urn') urn: string) {

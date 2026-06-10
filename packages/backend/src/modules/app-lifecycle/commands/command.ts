@@ -60,6 +60,10 @@ export class AppLifecycleCommand {
 
       const domain = envMap.get('DOMAIN') || configService.get('userSettings').domain || configService.get('domain');
       const localDomain = envMap.get('LOCAL_DOMAIN') || configService.get('userSettings').localDomain || configService.get('localDomain');
+      const defaultCpuLimit =
+        typeof (configService.get('userSettings') as Record<string, unknown>).defaultAppCpuLimit === 'string'
+          ? ((configService.get('userSettings') as Record<string, unknown>).defaultAppCpuLimit as string).trim() || undefined
+          : undefined;
 
       const effectiveExposureMode = form.exposureMode || (form.exposedLocal ? 'cloudflare' : 'local');
       let publicWebHostname: string | undefined;
@@ -93,6 +97,7 @@ export class AppLifecycleCommand {
         localDomain,
         appEnv.path,
         publicWebHostname,
+        defaultCpuLimit,
       );
 
       await appFilesManager.writeDockerComposeYml(appUrn, composeFile);

@@ -20,6 +20,7 @@ const queueAppFormSchema = z
     skipEnv: z.boolean().default(false),
     skipPull: z.boolean().default(false),
     skipRun: z.boolean().default(false),
+    cpuLimit: z.string().trim().optional(),
     // Explicit fields for public domain selection — previously passed through catchall as unknown.
     // These must be typed explicitly so generateEnvFile and triggerCloudflareSync receive them correctly.
     // Validation mirrors appFormSchema in app-lifecycle.dto.ts for consistency.

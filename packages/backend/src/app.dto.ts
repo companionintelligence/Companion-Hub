@@ -12,6 +12,7 @@ export const settingsSchema = z.object({
   allowErrorMonitoring: z.boolean(),
   appDataPath: z.string().trim(),
   appsRepoUrl: z.string().url().optional(),
+  defaultAppCpuLimit: z.string().trim().optional(),
   demoMode: z.boolean(),
   disablePasswordReset: z.boolean(),
   dnsIp: z.string().ipv4(),

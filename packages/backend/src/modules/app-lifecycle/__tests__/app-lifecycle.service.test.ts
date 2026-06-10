@@ -8,6 +8,7 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import { ImageSizeService } from '@/modules/marketplace/image-size.service';
 import { AppsService } from '@/modules/apps/apps.service';
+import { AppRuntimeMonitorService } from '@/modules/apps/app-runtime-monitor.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { SSEService } from '@/core/sse/sse.service';
 import { BackupManager } from '@/modules/backups/backup.manager';
@@ -16,6 +17,7 @@ import { RegistrationService } from '@/modules/registration/registration.service
 import { ReposHelpers } from '@/modules/app-stores/repos.helpers';
 import { AppStoreService } from '@/modules/app-stores/app-store.service';
 import { InstallPipelineTracker } from '@/modules/apps/install-pipeline.tracker';
+import { DockerService } from '@/modules/docker/docker.service';
 import { APP_ASYNC_MUTEX } from '@/utils/mutex/mutex.module';
 import { mock, MockProxy } from 'vitest-mock-extended';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -30,6 +32,8 @@ describe('AppLifecycleService', () => {
   let marketplaceService: MockProxy<MarketplaceService>;
   let imageSizeService: MockProxy<ImageSizeService>;
   let appsService: MockProxy<AppsService>;
+  let appRuntimeMonitor: MockProxy<AppRuntimeMonitorService>;
+  let dockerService: MockProxy<DockerService>;
   let appFilesManager: MockProxy<AppFilesManager>;
   let sseService: MockProxy<SSEService>;
   let backupManager: MockProxy<BackupManager>;
@@ -49,6 +53,8 @@ describe('AppLifecycleService', () => {
     marketplaceService = mock<MarketplaceService>();
     imageSizeService = mock<ImageSizeService>();
     appsService = mock<AppsService>();
+    appRuntimeMonitor = mock<AppRuntimeMonitorService>();
+    dockerService = mock<DockerService>();
     appFilesManager = mock<AppFilesManager>();
     sseService = mock<SSEService>();
     backupManager = mock<BackupManager>();
@@ -75,7 +81,9 @@ describe('AppLifecycleService', () => {
         { provide: MarketplaceService, useValue: marketplaceService },
         { provide: ImageSizeService, useValue: imageSizeService },
         { provide: AppsService, useValue: appsService },
+        { provide: AppRuntimeMonitorService, useValue: appRuntimeMonitor },
         { provide: AppFilesManager, useValue: appFilesManager },
+        { provide: DockerService, useValue: dockerService },
         { provide: SSEService, useValue: sseService },
         { provide: BackupManager, useValue: backupManager },
         { provide: CloudflareClientService, useValue: cloudflareClientService },
@@ -88,6 +96,24 @@ describe('AppLifecycleService', () => {
     }).compile();
 
     configService.getConfig.mockReturnValue({ isProduction: false, userSettings: { localDomain: 'lan' } } as any);
+    appRuntimeMonitor.getAppRuntimeHealth.mockResolvedValue({
+      appUrn: 'test-app',
+      appName: 'test-app',
+      status: 'running',
+      cpuPercent: 0,
+      memoryUsageBytes: 0,
+      memoryLimitBytes: 0,
+      highCpu: false,
+      sustainedHighCpu: false,
+      responsive: true,
+      degraded: false,
+      forceStopEligible: false,
+      reason: null,
+      cpuLimit: null,
+      usesDefaultCpuLimit: false,
+      sampledAt: new Date().toISOString(),
+      containers: [],
+    } as any);
 
     service = module.get<AppLifecycleService>(AppLifecycleService);
   });

@@ -47,6 +47,7 @@ export type FormValues = {
   isVisibleOnGuestDashboard?: boolean;
   enableAuth: boolean;
   maxBackups?: number;
+  cpuLimit?: string;
   [key: string]: unknown;
 };
 
@@ -78,6 +79,10 @@ export const InstallForm: React.FC<IProps> = ({
   const { t } = useTranslation();
   const { userSettings, isProduction, user, cloudflareAvailable, tailscaleAvailable } = useAppContext();
   const { guestDashboard, localDomain, maxBackups: globalMaxBackups, ciHubOrganizationSlug, ciHubDeviceSlug, domain } = userSettings;
+  const globalCpuLimit =
+    typeof (userSettings as Record<string, unknown>).defaultAppCpuLimit === 'string'
+      ? ((userSettings as Record<string, unknown>).defaultAppCpuLimit as string)
+      : '';
   const isAdvancedMode = user.advancedMode;
 
   const orgSlug = ciHubOrganizationSlug ? ciHubOrganizationSlug.toLowerCase().replace(/\s+/g, '-') : undefined;
@@ -680,6 +685,22 @@ export const InstallForm: React.FC<IProps> = ({
                 placeholder={globalMaxBackups === 0 ? undefined : globalMaxBackups.toString()}
               />
               <span className="text-sm text-muted-foreground">{t('APP_INSTALL_FORM_MAX_BACKUPS_HINT', { value: globalMaxBackups })}</span>
+            </div>
+          )}
+          {isAdvancedMode && (
+            <div className="mb-3">
+              <Input
+                type="number"
+                step="0.1"
+                min="0.1"
+                {...register('cpuLimit', {
+                  setValueAs: (value) => (value === '' || value === null ? undefined : String(value)),
+                })}
+                label={t('APP_INSTALL_FORM_CPU_LIMIT')}
+                error={errors.cpuLimit?.message}
+                placeholder={globalCpuLimit || '1.0'}
+              />
+              <span className="text-sm text-muted-foreground">{t('APP_INSTALL_FORM_CPU_LIMIT_HINT')}</span>
             </div>
           )}
         </ConfigSection>

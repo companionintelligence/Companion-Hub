@@ -9,6 +9,7 @@ import type { AppUrn } from '@ci-hub/common/types';
 import { buildPublicWebIdentity } from '@ci-hub/common/types';
 import validator from 'validator';
 import { AppFilesManager } from '../apps/app-files-manager';
+import { AppRuntimeMonitorService } from '../apps/app-runtime-monitor.service';
 import { AppsRepository } from '../apps/apps.repository';
 import { AppsService } from '../apps/apps.service';
 import { InstallPipelineTracker } from '../apps/install-pipeline.tracker';
@@ -30,6 +31,7 @@ import type { z } from 'zod';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
 import { ErrorReportingService, type AppFailurePhase } from '@/core/error-reporting/error-reporting.service';
 import { publishesHostPort } from '../apps/app-exposure.helpers';
+import { DockerService } from '../docker/docker.service';
 
 type AppFormForSubdomain = Pick<z.infer<typeof appFormSchema>, 'exposedLocal' | 'exposureMode' | 'localSubdomain'>;
 type ParsedAppForm = z.infer<typeof appFormSchema>;
@@ -63,7 +65,9 @@ export class AppLifecycleService implements OnApplicationBootstrap {
     private readonly marketplaceService: MarketplaceService,
     private readonly imageSizeService: ImageSizeService,
     private readonly appsService: AppsService,
+    private readonly appRuntimeMonitor: AppRuntimeMonitorService,
     private readonly appFilesManager: AppFilesManager,
+    private readonly dockerService: DockerService,
     private readonly sseService: SSEService,
     private readonly backupManager: BackupManager,
     private readonly cloudflareClientService: CloudflareClientService,
@@ -487,6 +491,46 @@ export class AppLifecycleService implements OnApplicationBootstrap {
         }
       })
       .catch((err) => this.logLifecycleHandlerError('stop', appUrn, err));
+
+    return { requestId };
+  }
+
+  public async forceStopApp(params: { appUrn: AppUrn }) {
+    const { appUrn } = params;
+    const app = await this.appRepository.getAppByUrn(appUrn);
+
+    if (!app) {
+      throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn }, HttpStatus.NOT_FOUND);
+    }
+
+    const runtimeHealth = await this.appRuntimeMonitor.getAppRuntimeHealth(appUrn);
+    if (!runtimeHealth.forceStopEligible) {
+      throw new TranslatableError('APP_FORCE_STOP_NOT_AVAILABLE', {}, HttpStatus.CONFLICT);
+    }
+
+    await this.appRepository.updateAppById(app.id, { status: 'stopping' });
+    this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'stopping' });
+
+    const requestId = crypto.randomUUID();
+
+    try {
+      const result = await this.dockerService.forceStopApp(appUrn);
+      await this.appRepository.updateAppById(app.id, { status: 'stopped' });
+      this.sseService.emit('app', { event: 'stop_success', appUrn, appStatus: 'stopped' });
+      this.logger.warn(`App ${appUrn} force-stopped successfully`, result);
+
+      if (app.exposedLocal) {
+        await this.syncExposure();
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error(`Failed to force-stop app ${appUrn}: ${message}`);
+      await this.appRepository.updateAppById(app.id, { status: 'running' });
+      this.sseService.emit('app', { event: 'stop_error', appUrn, appStatus: 'running', error: message });
+      this.agentNotifyService?.notify('stop_error', { appUrn }, 'high');
+      this.reportAppFailure(appUrn, 'stop', message);
+      throw new TranslatableError('APP_ACTION_FAILED_TO_RESOLVE', { error: message }, HttpStatus.INTERNAL_SERVER_ERROR);
+    }
 
     return { requestId };
   }

@@ -23,6 +23,7 @@ export const appFormSchema = z
       .refine((value) => isFQDN(value), { message: 'Invalid public domain' })
       .optional(),
     maxBackups: z.number().min(0).max(100).optional(),
+    cpuLimit: z.string().trim().optional(),
     skipEnv: z.boolean().default(false),
     skipPull: z.boolean().default(false),
     skipRun: z.boolean().default(false),
