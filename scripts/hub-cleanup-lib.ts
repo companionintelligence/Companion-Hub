@@ -86,14 +86,13 @@ export function isRelatedVolume(volumeName: string): boolean {
   return (
     volumeName.includes('ci_os_hub') ||
     volumeName.includes('ci-os-hub') ||
-    volumeName.includes('runtipi') ||
-    volumeName.includes('runtipi_') ||
+    volumeName.startsWith('runtipi_') ||
     volumeName.includes('ci_hub_pgdata') ||
     volumeName.includes('ci_hub_app_data') ||
     volumeName.includes('hub_tailscale_state') ||
     volumeName.startsWith('e2e-') ||
     volumeName.startsWith('test-e2e-') ||
-    /^(ci_os_hub|ci-os-hub|ci_hub|ci-hub|runtipi)[-_].*_data$/.test(volumeName)
+    /^(ci_os_hub|ci-os-hub|ci_hub|ci-hub)[-_].*_data$/.test(volumeName)
   );
 }
 

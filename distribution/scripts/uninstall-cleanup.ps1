@@ -73,7 +73,7 @@ if (Get-Command docker -ErrorAction SilentlyContinue) {
     }
 
     foreach ($volume in $volumes) {
-        if ($volume -match 'ci_os_hub|ci-os-hub|runtipi|ci_hub_pgdata|ci_hub_app_data|hub_tailscale_state|^e2e-|^test-e2e-') {
+        if ($volume -match 'ci_os_hub|ci-os-hub|^runtipi_|ci_hub_pgdata|ci_hub_app_data|hub_tailscale_state|^e2e-|^test-e2e-') {
             Invoke-CleanupCommand "docker volume rm $volume"
         }
     }

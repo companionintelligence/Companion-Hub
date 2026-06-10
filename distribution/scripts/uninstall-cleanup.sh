@@ -77,7 +77,7 @@ if command -v docker >/dev/null 2>&1; then
 
   docker volume ls --format '{{.Name}}' 2>/dev/null | while IFS= read -r volume; do
     case "$volume" in
-      *ci_os_hub*|*ci-os-hub*|*runtipi*|*ci_hub_pgdata*|*ci_hub_app_data*|*hub_tailscale_state*|e2e-*|test-e2e-*)
+      *ci_os_hub*|*ci-os-hub*|runtipi_*|*ci_hub_pgdata*|*ci_hub_app_data*|*hub_tailscale_state*|e2e-*|test-e2e-*)
         run_cmd "docker volume rm $volume" || true
         ;;
     esac
