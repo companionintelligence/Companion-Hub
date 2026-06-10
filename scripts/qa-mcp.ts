@@ -21,7 +21,8 @@
  *   fail    launched but never completed initialize / JSON-RPC error / crashed mid-handshake
  *   error   infra — image pull/run failed, command not found            (failKind: pull|run)
  *   timeout no handshake response within the deadline                   (failKind: timeout)
- *   skip    needs a real secret to boot · remote http · not an MCP app
+ *   skip    needs a real secret to boot · needs host software (Blender, Unity, a TV, …) ·
+ *           remote http · not an MCP app
  *
  * Env: QA_MCP_TIMEOUT_MS (default 90000) · QA_MCP_SECRETS_JSON ({"KEY":"value"}) ·
  *      QA_MCP_PROBE (default 1; set 0 to disable the exec probe) · QA_MCP_PROBE_NET (default 0;
@@ -58,6 +59,7 @@ export interface McpConfig {
   command?: string;
   args?: string[];
   env?: McpEnv[];
+  requires?: { host_software?: string[] };
   manifest?: { tools?: { name?: string }[] };
 }
 export interface ComposeService {
@@ -159,6 +161,21 @@ export function buildDockerArgs(
   const cmd = (Array.isArray(main?.command) ? main?.command : mcp.args ? [mcp.command ?? '', ...mcp.args] : []) ?? [];
   const dockerArgs = ['run', '-i', '--rm', '--name', containerName, ...envFlags, ...mounts, image, ...cmd.map(subst)];
   return { dockerArgs, env, needsSecret };
+}
+
+/** Host-software entries the headless fleet satisfies by itself — language runtimes the container
+ *  image already ships. Anything else (a running Blender, a Unity editor, a TV on the LAN, …) is
+ *  real host software the smoke can never stand up. */
+const FLEET_RUNTIMES = ['node', 'npm', 'uv', 'python', 'docker'];
+
+/** The declared `mcp.requires.host_software` entries the fleet CANNOT provide (case-insensitive
+ *  substring check against FLEET_RUNTIMES). Non-empty means a boot failure or an empty tool list
+ *  is the missing host software talking, not an app bug — score skip, not fail/error/warn. */
+export function missingHostSoftware(mcp: McpConfig): string[] {
+  return (mcp.requires?.host_software ?? []).filter((entry) => {
+    const lower = entry.toLowerCase();
+    return !FLEET_RUNTIMES.some((runtime) => lower.includes(runtime));
+  });
 }
 
 /** Pure scoring of a SUCCESSFUL handshake: assert the live tool set against the declared manifest.
@@ -387,6 +404,7 @@ export async function qaMcpApp(appId: string, options: QaMcpOptions = {}): Promi
     mkdirSync(scratch, { recursive: true });
     const { dockerArgs, env, needsSecret } = buildDockerArgs(appId, mcp, compose, scratch, secrets, containerName);
     const declared = (mcp.manifest?.tools ?? []).map((t) => t.name ?? '').filter(Boolean);
+    const hostSoftware = missingHostSoftware(mcp);
 
     const probeSpec = pickProbe(appId);
     emit({
@@ -405,9 +423,19 @@ export async function qaMcpApp(appId: string, options: QaMcpOptions = {}): Promi
 
     if (!hs.ok) {
       const err = `${hs.reason} ${hs.stderr}`.toLowerCase();
-      if (needsSecret && new RegExp(`${needsSecret.toLowerCase()}|token|unauthorized|api[_ ]?key|credential|required`).test(err)) {
+      // The placeholder echoing back in the boot error means the server VALIDATED the credential
+      // at startup (e.g. steam-mcp resolves STEAM_ID against the live Steam API) — needs-secret.
+      if (
+        needsSecret &&
+        (err.includes(PLACEHOLDER) || new RegExp(`${needsSecret.toLowerCase()}|token|unauthorized|api[_ ]?key|credential|required`).test(err))
+      ) {
         result.score = 'skip';
         result.notes = `needs-secret: ${needsSecret} required to boot — ${hs.reason}`;
+      } else if (hostSoftware.length > 0) {
+        // The app declares host software the headless fleet can never provide (a running Blender,
+        // a Unity editor, a TV to pair) — the boot failure is that absence, not an app bug.
+        result.score = 'skip';
+        result.notes = `needs host software: ${hostSoftware.join(', ')} — ${hs.reason}`;
       } else if (/no such image|manifest unknown|not found|pull access denied|error response from daemon/.test(err)) {
         result.score = 'error';
         result.failKind = 'pull';
@@ -427,6 +455,15 @@ export async function qaMcpApp(appId: string, options: QaMcpOptions = {}): Promi
         result.failKind = 'handshake';
         result.notes = `${hs.reason}${hs.stderr ? ` | ${hs.stderr.replace(/\s+/g, ' ').slice(0, 200)}` : ''}`;
       }
+      return result;
+    }
+
+    // Handshake succeeded but the server advertises NOTHING and declares host software the fleet
+    // lacks (e.g. unity-mcp-ivanmurzak lists 0 tools until a Unity editor connects) — skip. A
+    // server that boots AND lists tools still scores normally below, so a real pass stays possible.
+    if (hostSoftware.length > 0 && liveNames.length === 0) {
+      result.score = 'skip';
+      result.notes = `needs host software: ${hostSoftware.join(', ')} — handshake OK but tools/list is empty`;
       return result;
     }
 

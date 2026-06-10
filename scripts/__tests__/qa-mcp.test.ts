@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { type McpConfig, SAFE_PROBES, buildDockerArgs, resolveEnv, scoreHandshake } from '../qa-mcp';
+import { type McpConfig, SAFE_PROBES, buildDockerArgs, missingHostSoftware, resolveEnv, scoreHandshake } from '../qa-mcp';
 
 // Importing the module at all proves the CLI IIFE is guarded — an unguarded `process.exit` in the
 // module body would abort the test process before any assertion runs.
@@ -107,6 +107,30 @@ describe('scoreHandshake', () => {
   it('passes a server with no declared manifest as long as it advertises something', () => {
     const r = scoreHandshake([], ['x', 'y']);
     expect(r.score).toBe('pass');
+  });
+});
+
+describe('missingHostSoftware', () => {
+  it('filters out runtimes the fleet container already provides (case-insensitive substring)', () => {
+    const mcp: McpConfig = {
+      requires: { host_software: ['Node.js 18 or newer', 'uv (pip install uv)', 'Python 3.11 or newer', 'Docker', 'npm'] },
+    };
+    expect(missingHostSoftware(mcp)).toEqual([]);
+  });
+
+  it('surfaces real host software the headless fleet can never provide', () => {
+    expect(missingHostSoftware({ requires: { host_software: ['blender>=3.0', 'uv (pip install uv)'] } })).toEqual(['blender>=3.0']);
+    expect(missingHostSoftware({ requires: { host_software: ['Unity Editor 2022.3 LTS or newer', 'uv (pip install uv)'] } })).toEqual([
+      'Unity Editor 2022.3 LTS or newer',
+    ]);
+    expect(missingHostSoftware({ requires: { host_software: ['A supported smart TV or Home Assistant integration'] } })).toEqual([
+      'A supported smart TV or Home Assistant integration',
+    ]);
+  });
+
+  it('returns empty for an app with no requires block at all', () => {
+    expect(missingHostSoftware({})).toEqual([]);
+    expect(missingHostSoftware({ requires: {} })).toEqual([]);
   });
 });
 
