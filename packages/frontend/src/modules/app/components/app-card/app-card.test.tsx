@@ -57,4 +57,14 @@ describe('AppCard', () => {
     expect(screen.getByText('T')).toBeInTheDocument();
     expect(screen.queryByRole('img', { name: 'Test App' })).not.toBeInTheDocument();
   });
+
+  it('applies light-mode elevation styles to the card surface', () => {
+    const { container } = render(
+      <MemoryRouter>
+        <AppCard app={appFixture} />
+      </MemoryRouter>,
+    );
+
+    expect(container.querySelector('a > div')).toHaveClass('shadow-sm', 'hover:shadow-xl', 'shadow-slate-300/70');
+  });
 });

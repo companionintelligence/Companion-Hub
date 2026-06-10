@@ -1,3 +1,11 @@
+async function saveFileInTauri(filename: string, bytes: Uint8Array) {
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<string>('save_download_command', {
+    filename,
+    contents: Array.from(bytes),
+  });
+}
+
 export function getFilenameFromContentDisposition(header: string | null, fallbackFilename: string) {
   if (!header) {
     return fallbackFilename;
@@ -17,8 +25,15 @@ export function getFilenameFromContentDisposition(header: string | null, fallbac
 }
 
 export async function downloadResponseAsFile(response: Response, fallbackFilename: string) {
-  const blob = await response.blob();
   const filename = getFilenameFromContentDisposition(response.headers.get('Content-Disposition'), fallbackFilename);
+  const blob = await response.blob();
+
+  if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
+    const buffer = await blob.arrayBuffer();
+    await saveFileInTauri(filename, new Uint8Array(buffer));
+    return;
+  }
+
   const objectUrl = URL.createObjectURL(blob);
   const link = document.createElement('a');
 

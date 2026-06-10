@@ -157,6 +157,18 @@ async fn open_logs_dir_command(app: tauri::AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+async fn save_download_command(filename: String, contents: Vec<u8>) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        let target = unique_download_path(&filename)?;
+        std::fs::write(&target, contents)
+            .map_err(|error| format!("Failed to write download {}: {error}", target.display()))?;
+        Ok(target.to_string_lossy().to_string())
+    })
+    .await
+    .map_err(|error| format!("Save download task failed: {error}"))?
+}
+
 /// Returns `true` if the user intentionally stopped the Hub on last use.
 #[tauri::command]
 async fn is_user_stopped_command() -> bool {
@@ -256,6 +268,7 @@ pub fn run() {
             get_startup_progress_command,
             read_desktop_logs_command,
             open_logs_dir_command,
+            save_download_command,
             is_user_stopped_command,
             install_docker_command,
             consume_pending_pairing_code,
@@ -616,6 +629,65 @@ fn focus_main_window(app: &tauri::AppHandle) {
     }
 }
 
+fn sanitize_download_filename(filename: &str) -> String {
+    let trimmed = filename.trim();
+    let mut sanitized = trimmed
+        .chars()
+        .map(|ch| match ch {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            _ => ch,
+        })
+        .collect::<String>()
+        .trim_matches('.')
+        .trim()
+        .to_string();
+
+    if sanitized.is_empty() {
+        sanitized = "download.bin".to_string();
+    }
+
+    sanitized
+}
+
+fn preferred_download_dir() -> PathBuf {
+    dirs::download_dir()
+        .or_else(dirs::desktop_dir)
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(std::env::temp_dir)
+}
+
+fn unique_download_path(filename: &str) -> Result<PathBuf, String> {
+    let dir = preferred_download_dir();
+    std::fs::create_dir_all(&dir)
+        .map_err(|error| format!("Failed to create download directory {}: {error}", dir.display()))?;
+
+    let sanitized = sanitize_download_filename(filename);
+    let path = PathBuf::from(&sanitized);
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("download");
+    let extension = path.extension().and_then(|value| value.to_str()).unwrap_or("");
+
+    for index in 0..10_000 {
+        let candidate_name = if index == 0 {
+            sanitized.clone()
+        } else if extension.is_empty() {
+            format!("{stem}-{index}")
+        } else {
+            format!("{stem}-{index}.{extension}")
+        };
+
+        let candidate = dir.join(candidate_name);
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+
+    Err("Failed to allocate a unique download filename".to_string())
+}
+
 fn queue_pairing_code(app: &tauri::AppHandle, code: &str) {
     if let Some(state) = app.try_state::<PendingPairingCode>() {
         if let Ok(mut pending) = state.0.lock() {
@@ -722,6 +794,7 @@ mod tests {
     use super::{
         deep_link_urls_from_payload, extract_pairing_code, extract_portal_auth,
         launch_mode_from_args,
+        sanitize_download_filename,
         stack_dev_mode_enabled, stack_dev_override_paths, LaunchMode, STACK_DEV_COMPOSE_PATH_ENV,
         STACK_DEV_ENV, STACK_DEV_ENV_PATH_ENV,
     };
@@ -756,6 +829,14 @@ mod tests {
     #[test]
     fn ignore_non_auth_deep_links_for_portal_auth() {
         assert_eq!(extract_portal_auth("cihub://pair?code=abc123"), None);
+    }
+
+    #[test]
+    fn sanitize_download_filename_removes_path_separators() {
+        assert_eq!(
+            sanitize_download_filename("../ci:hub\\logs?.log"),
+            "_ci_hub_logs_.log".to_string()
+        );
     }
 
     #[test]
