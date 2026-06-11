@@ -257,6 +257,15 @@ export function runHubCleanup(options?: CleanupOptions): CleanupSummary {
     summary,
   };
 
+  // Collect the unique image IDs used by a compose project (pulled or built). Must be
+  // called before the project's containers are removed — refs can't be recovered after.
+  const snapshotProjectImages = (project: string): string[] => {
+    const containerIds = parseNames(runCommand(`docker ps -a --filter label=com.docker.compose.project=${project} -q`, commandContext));
+    const fromContainers = containerIds.flatMap((id) => parseNames(runCommand(`docker inspect --format "{{.Image}}" ${id}`, commandContext)));
+    const labeled = parseNames(runCommand(`docker images --filter label=com.docker.compose.project=${project} -q`, commandContext));
+    return [...new Set([...fromContainers, ...labeled])];
+  };
+
   const containerNames = new Set<string>();
   const containerCommands = [
     'docker ps -a --filter network=ci_os_hub_network --format "{{.Names}}"',
@@ -274,6 +283,64 @@ export function runHubCleanup(options?: CleanupOptions): CleanupSummary {
     }
   }
 
+  // Snapshot Hub stack image IDs before any containers are removed.
+  const hubImages = [...new Set(['ci-os-hub', 'ci-hub', 'runtipi'].flatMap(snapshotProjectImages))];
+
+  // Marketplace apps installed by Hub run as their own compose projects (<app>_<store>),
+  // separate from the Hub stack. Hub stamps every managed app container with the
+  // `ci-os-hub.managed=true` label (store-agnostic). Tear these down BEFORE the shared Hub
+  // networks below: main app services attach to `ci-os-hub_network`, so removing it while an
+  // app container is still attached would fail.
+  //
+  // `{{.Labels}}` returns a comma-joined `key=value` list; parsing it here avoids a quoted
+  // Go-template arg (`'{{.Label "..."}}'`), which cmd.exe mishandles on Windows.
+  const managedLabelLines = parseNames(runCommand('docker ps -a --filter label=ci-os-hub.managed=true --format "{{.Labels}}"', commandContext));
+  const projectLabelPrefix = 'com.docker.compose.project=';
+  // The Hub's own compose services in docker-compose.*.yml also carry `ci-os-hub.managed=true`,
+  // so exclude the Hub stack projects here — they're handled by the dedicated Hub teardown
+  // (which is also where Hub images are snapshotted), keeping that the single source of truth.
+  const hubProjects = new Set(['ci-os-hub', 'ci-hub', 'runtipi']);
+  const managedProjects = new Set<string>();
+  for (const line of managedLabelLines) {
+    for (const pair of line.split(',')) {
+      const trimmed = pair.trim();
+      if (!trimmed.startsWith(projectLabelPrefix)) {
+        continue;
+      }
+      const project = trimmed.slice(projectLabelPrefix.length);
+      // Defense-in-depth: only act on values matching Docker's compose-project charset
+      // before interpolating them into a shell command string.
+      if (!hubProjects.has(project) && /^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(project)) {
+        managedProjects.add(project);
+      }
+    }
+  }
+
+  const sharedNetworks = new Set(['bridge', 'host', 'none', 'ci_os_hub_network', 'ci-os-hub_network']);
+  for (const project of managedProjects) {
+    const projectImages = snapshotProjectImages(project);
+
+    const projectContainers = runCommand(`docker ps -a --filter label=com.docker.compose.project=${project} --format "{{.ID}}"`, commandContext);
+    for (const containerId of parseNames(projectContainers)) {
+      runCommand(`docker rm -f ${containerId}`, commandContext);
+    }
+
+    const projectNetworks = runCommand(`docker network ls --filter label=com.docker.compose.project=${project} --format "{{.Name}}"`, commandContext);
+    for (const networkName of parseNames(projectNetworks).filter((name) => !sharedNetworks.has(name))) {
+      runCommand(`docker network rm ${networkName}`, commandContext);
+    }
+
+    const projectVolumes = runCommand(`docker volume ls --filter label=com.docker.compose.project=${project} --format "{{.Name}}"`, commandContext);
+    for (const volumeName of parseNames(projectVolumes)) {
+      runCommand(`docker volume rm ${volumeName}`, commandContext);
+    }
+
+    for (const imageId of projectImages) {
+      runCommand(`docker image rm -f ${imageId}`, commandContext);
+    }
+  }
+
+  // Hub stack teardown — safe to remove the shared networks now that app containers are gone.
   for (const name of containerNames) {
     runCommand(`docker rm -f ${name}`, commandContext);
   }
@@ -289,6 +356,10 @@ export function runHubCleanup(options?: CleanupOptions): CleanupSummary {
   const networkOutput = runCommand('docker network ls --format "{{.Name}}"', commandContext);
   for (const networkName of parseNames(networkOutput).filter((name) => name.includes('e2e'))) {
     runCommand(`docker network rm ${networkName}`, commandContext);
+  }
+
+  for (const imageId of hubImages) {
+    runCommand(`docker image rm -f ${imageId}`, commandContext);
   }
 
   runCommand('docker compose --project-name ci-os-hub -f docker-compose.prod.yml down -v', commandContext);
