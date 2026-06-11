@@ -177,7 +177,12 @@ describe('hub-cleanup-lib', () => {
         execCommand: (command) => {
           commands.push(command);
           if (command.includes('label=ci-os-hub.managed=true')) {
-            return { ok: true, stdout: 'ci-hermes_ci-marketplace\nfoo_ci-marketplace' };
+            // `--format "{{.Labels}}"` returns a comma-joined key=value list per container.
+            return {
+              ok: true,
+              stdout:
+                'ci-os-hub.managed=true,com.docker.compose.project=ci-hermes_ci-marketplace,foo=bar\ncom.docker.compose.project=foo_ci-marketplace,ci-os-hub.managed=true',
+            };
           }
           // Image snapshot: container IDs for the app project (note the `-q` form).
           if (command.includes('docker ps -a --filter label=com.docker.compose.project=ci-hermes_ci-marketplace -q')) {

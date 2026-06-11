@@ -49,6 +49,7 @@ post_remove() {
             --format '{{.Label "com.docker.compose.project"}}' 2>/dev/null | awk 'NF && !seen[$0]++' |
             while IFS= read -r project; do
                 [ -n "$project" ] || continue
+                case "$project" in *[!A-Za-z0-9_.-]*) continue ;; esac
                 project_images="$(snapshot_project_images "$project")"
                 docker ps -a --filter "label=com.docker.compose.project=$project" --format '{{.ID}}' 2>/dev/null |
                     while IFS= read -r cid; do [ -n "$cid" ] && docker rm -f "$cid" >/dev/null 2>&1 || true; done

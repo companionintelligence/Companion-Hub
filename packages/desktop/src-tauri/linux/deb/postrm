@@ -89,6 +89,9 @@ cleanup_marketplace_apps() {
 
   echo "$managed_projects" | while IFS= read -r project; do
     [ -n "$project" ] || continue
+    # Defense-in-depth: skip anything outside Docker's compose-project charset before
+    # interpolating it into command strings.
+    case "$project" in *[!A-Za-z0-9_.-]*) continue ;; esac
 
     project_images="$(snapshot_project_images "$project")"
 
