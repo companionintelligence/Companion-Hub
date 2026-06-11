@@ -1,5 +1,5 @@
 import React from 'react';
-import {Img, interpolate, staticFile, useCurrentFrame} from 'remotion';
+import {Img, interpolate, staticFile} from 'remotion';
 import {color} from '../brand/theme';
 
 /**
