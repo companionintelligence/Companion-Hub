@@ -1,5 +1,6 @@
 import type { UserContextDto } from '@/api-client';
 import { userContextOptions, userContextQueryKey } from '@/api-client/@tanstack/react-query.gen';
+import { captureHubWarning } from '@/lib/sentry';
 import { useQueryClient, useQuery } from '@tanstack/react-query';
 import { createContext, useContext } from 'react';
 
@@ -44,6 +45,13 @@ export const UserContextProvider: React.FC<{ children: React.ReactNode }> = ({ c
     // During desktop startup races, backend endpoints can briefly fail before
     // becoming ready. Keep defaults instead of crashing the entire UI.
     console.warn('userContext unavailable during startup, using defaults:', error);
+    captureHubWarning(
+      'userContext unavailable during startup; using defaults',
+      {
+        error: error instanceof Error ? error.message : String(error),
+      },
+      { dedupeKey: 'user-context-startup-unavailable' },
+    );
   }
 
   const refreshUserContext = async () => {

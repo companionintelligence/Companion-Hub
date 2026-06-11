@@ -2411,6 +2411,8 @@ fn docker_socket_path_from_docker_host(docker_host: &str) -> Option<PathBuf> {
     Some(PathBuf::from(socket_path))
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 fn resolved_host_docker_dir(host_docker_dir: Option<&Path>) -> Option<PathBuf> {
     match host_docker_dir {
         Some(docker_dir) => Some(docker_dir.to_path_buf()),
@@ -2418,6 +2420,8 @@ fn resolved_host_docker_dir(host_docker_dir: Option<&Path>) -> Option<PathBuf> {
     }
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 fn current_docker_context_name(host_docker_dir: Option<&Path>) -> Option<String> {
     let docker_dir = resolved_host_docker_dir(host_docker_dir)?;
     let raw = std::fs::read_to_string(docker_dir.join("config.json")).ok()?;
@@ -2429,6 +2433,7 @@ fn current_docker_context_name(host_docker_dir: Option<&Path>) -> Option<String>
     Some(context_name.to_string())
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn docker_context_host_from_inspect_output(raw: &str) -> Option<String> {
     let parsed: serde_json::Value = serde_json::from_str(raw).ok()?;
     let host = parsed
@@ -6613,7 +6618,9 @@ mod tests {
     };
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     use std::os::unix::fs::PermissionsExt;
-    use std::path::{Path, PathBuf};
+    #[cfg(target_os = "linux")]
+    use std::path::Path;
+    use std::path::PathBuf;
 
     #[test]
     fn classifies_daemon_unavailable_before_permission_denied() {

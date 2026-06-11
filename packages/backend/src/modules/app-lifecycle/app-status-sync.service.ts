@@ -39,8 +39,14 @@ export class AppStatusSyncService {
     @Optional() private readonly errorReportingService?: ErrorReportingService,
   ) {
     if (this.configuration.get('userSettings').eventsTimeout > 5) {
+      const eventsTimeout = this.configuration.get('userSettings').eventsTimeout;
       this.logger.warn(
-        `You have set a high events timeout of ${this.configuration.get('userSettings').eventsTimeout} minutes. Consider lowering if app status syncs are not occurring as expected.`,
+        `You have set a high events timeout of ${eventsTimeout} minutes. Consider lowering if app status syncs are not occurring as expected.`,
+      );
+      this.errorReportingService?.captureWarning(
+        'App status sync configured with a high events timeout',
+        { eventsTimeoutMinutes: eventsTimeout },
+        { debounceKey: 'app-status-sync:high-events-timeout', debounceMs: 60 * 60_000 },
       );
     }
 
@@ -95,7 +101,13 @@ export class AppStatusSyncService {
             skippedCount++;
             continue;
           }
-          this.logger.warn(`App ${appUrn} stuck in '${app.status}' for ${Math.round(timeSinceUpdate / 60000)} minutes`);
+          const minutesStuck = Math.round(timeSinceUpdate / 60000);
+          this.logger.warn(`App ${appUrn} stuck in '${app.status}' for ${minutesStuck} minutes`);
+          this.errorReportingService?.captureWarning(
+            `App ${appUrn} stuck in '${app.status}'`,
+            { appUrn, status: app.status, minutesStuck },
+            { debounceKey: `app-status-sync:stuck:${appUrn}:${app.status}`, debounceMs: 30 * 60_000 },
+          );
         }
 
         const dockerStatus = dockerStatusMap.get(appUrn);
@@ -114,6 +126,11 @@ export class AppStatusSyncService {
           newStatus = 'stopped';
           if (dockerStatus.running > 0) {
             this.logger.warn(`App ${appUrn} has mixed container states: ${dockerStatus.running}/${dockerStatus.total} running`);
+            this.errorReportingService?.captureWarning(
+              `App ${appUrn} has mixed container states`,
+              { appUrn, runningContainers: dockerStatus.running, totalContainers: dockerStatus.total },
+              { debounceKey: `app-status-sync:mixed:${appUrn}`, debounceMs: 30 * 60_000 },
+            );
           }
         }
 
