@@ -122,6 +122,13 @@ intentional ([#566](https://github.com/companionintelligence/CI-Hub/issues/566))
 no `remove`-vs-`purge` distinction and no confirmation prompt. Users must back up before
 uninstalling.
 
+**Installed marketplace apps are torn down too** ([#745](https://github.com/companionintelligence/CI-Hub/issues/745)).
+Each app Hub installs runs as its own Compose project (`<app>_<store>`) rather than as part
+of the Hub stack, so the uninstallers discover them via the `ci-os-hub.managed=true` label
+that Hub stamps on every managed app container (store-agnostic) and remove each app's
+containers, networks, and volumes. Without this, app containers such as
+`ci-hermes_ci-marketplace-…` keep running after Hub is gone.
+
 Upgrades never trigger this purge: the deb `postrm` skips the `upgrade` lifecycle, the rpm
 `postun` skips when an instance remains, and AUR/snap run cleanup only on true removal.
 Scoop is the exception — because `scoop update` also runs the uninstaller, the Scoop

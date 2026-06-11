@@ -55,6 +55,28 @@ if command -v docker >/dev/null 2>&1; then
     docker ps -a "$@" --format '{{.Names}}' 2>/dev/null || true
   }
 
+  # Marketplace apps run as their own compose projects (<app>_<store>), separate
+  # from the Hub stack. Hub stamps every managed app container with
+  # `ci-os-hub.managed=true` (store-agnostic). Discover the project set from those
+  # containers, then remove each project's containers, networks (except the shared
+  # Hub network), and volumes.
+  docker ps -a --filter "label=ci-os-hub.managed=true" \
+    --format '{{.Label "com.docker.compose.project"}}' 2>/dev/null | awk 'NF && !seen[$0]++' |
+    while IFS= read -r project; do
+      [ -n "$project" ] || continue
+      docker ps -a --filter "label=com.docker.compose.project=$project" --format '{{.ID}}' 2>/dev/null |
+        while IFS= read -r cid; do [ -n "$cid" ] && run_cmd "docker rm -f $cid" || true; done
+      docker network ls --filter "label=com.docker.compose.project=$project" --format '{{.Name}}' 2>/dev/null |
+        while IFS= read -r net; do
+          case "$net" in
+            ''|bridge|host|none|ci_os_hub_network|ci-os-hub_network) ;;
+            *) run_cmd "docker network rm $net" || true ;;
+          esac
+        done
+      docker volume ls --filter "label=com.docker.compose.project=$project" --format '{{.Name}}' 2>/dev/null |
+        while IFS= read -r vol; do [ -n "$vol" ] && run_cmd "docker volume rm $vol" || true; done
+    done
+
   all_containers="$(
     {
       collect_names --filter "label=com.docker.compose.project=ci-os-hub"

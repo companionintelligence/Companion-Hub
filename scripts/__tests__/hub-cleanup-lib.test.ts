@@ -159,6 +159,60 @@ describe('hub-cleanup-lib', () => {
     }
   });
 
+  it('tears down marketplace app projects discovered via the ci-os-hub.managed label', () => {
+    const prevDataHome = process.env.XDG_DATA_HOME;
+    const prevConfigHome = process.env.XDG_CONFIG_HOME;
+    const prevCacheHome = process.env.XDG_CACHE_HOME;
+    process.env.XDG_DATA_HOME = '/home/dev/.local/share';
+    process.env.XDG_CONFIG_HOME = '/home/dev/.config';
+    process.env.XDG_CACHE_HOME = '/home/dev/.cache';
+
+    const commands: string[] = [];
+
+    try {
+      runHubCleanup({
+        cwd: '/home/dev/ci-hub',
+        homeDir: '/home/dev',
+        platform: 'linux',
+        execCommand: (command) => {
+          commands.push(command);
+          if (command.includes('label=ci-os-hub.managed=true')) {
+            return { ok: true, stdout: 'ci-hermes_ci-marketplace\nfoo_ci-marketplace' };
+          }
+          if (command.includes('label=com.docker.compose.project=ci-hermes_ci-marketplace --format "{{.ID}}"')) {
+            return { ok: true, stdout: 'abc123' };
+          }
+          if (command.includes('docker network ls --filter label=com.docker.compose.project=ci-hermes_ci-marketplace')) {
+            // Includes the shared hub network to prove the app loop skips it.
+            return { ok: true, stdout: 'ci-hermes_ci-marketplace_network\nci-os-hub_network' };
+          }
+          if (command.includes('docker volume ls --filter label=com.docker.compose.project=ci-hermes_ci-marketplace')) {
+            return { ok: true, stdout: 'ci-hermes_ci-marketplace_data' };
+          }
+          return { ok: true, stdout: '' };
+        },
+        exists: () => false,
+        removeDir: () => {},
+        logger: { info: () => {}, warn: () => {}, error: () => {} },
+      });
+
+      // Discovered app projects via the managed label and iterated each one.
+      expect(commands.some((command) => command.includes('label=ci-os-hub.managed=true'))).toBe(true);
+      expect(commands.some((command) => command.includes('label=com.docker.compose.project=foo_ci-marketplace'))).toBe(true);
+      // Removed the app's container (by id), its own network, and its volume.
+      expect(commands).toContain('docker rm -f abc123');
+      expect(commands).toContain('docker network rm ci-hermes_ci-marketplace_network');
+      expect(commands).toContain('docker volume rm ci-hermes_ci-marketplace_data');
+    } finally {
+      if (prevDataHome === undefined) delete process.env.XDG_DATA_HOME;
+      else process.env.XDG_DATA_HOME = prevDataHome;
+      if (prevConfigHome === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = prevConfigHome;
+      if (prevCacheHome === undefined) delete process.env.XDG_CACHE_HOME;
+      else process.env.XDG_CACHE_HOME = prevCacheHome;
+    }
+  });
+
   it('completes with no directory failures when cwd is within the user home', () => {
     const prevDataHome = process.env.XDG_DATA_HOME;
     const prevConfigHome = process.env.XDG_CONFIG_HOME;

@@ -25,6 +25,26 @@ post_remove() {
     echo '[cleanup][INFO] Running Companion Hub post-remove cleanup (best effort)'
 
     if command -v docker >/dev/null 2>&1; then
+        # Marketplace apps run as their own compose projects (<app>_<store>); Hub stamps
+        # every managed app container with `ci-os-hub.managed=true` (store-agnostic).
+        # Tear down each managed project's containers, networks, and volumes.
+        docker ps -a --filter "label=ci-os-hub.managed=true" \
+            --format '{{.Label "com.docker.compose.project"}}' 2>/dev/null | awk 'NF && !seen[$0]++' |
+            while IFS= read -r project; do
+                [ -n "$project" ] || continue
+                docker ps -a --filter "label=com.docker.compose.project=$project" --format '{{.ID}}' 2>/dev/null |
+                    while IFS= read -r cid; do [ -n "$cid" ] && docker rm -f "$cid" >/dev/null 2>&1 || true; done
+                docker network ls --filter "label=com.docker.compose.project=$project" --format '{{.Name}}' 2>/dev/null |
+                    while IFS= read -r net; do
+                        case "$net" in
+                            ''|bridge|host|none|ci_os_hub_network|ci-os-hub_network) ;;
+                            *) docker network rm "$net" >/dev/null 2>&1 || true ;;
+                        esac
+                    done
+                docker volume ls --filter "label=com.docker.compose.project=$project" --format '{{.Name}}' 2>/dev/null |
+                    while IFS= read -r vol; do [ -n "$vol" ] && docker volume rm "$vol" >/dev/null 2>&1 || true; done
+            done
+
         {
             docker ps -a --filter "label=com.docker.compose.project=ci-os-hub" --format '{{.Names}}' 2>/dev/null
             docker ps -a --filter "label=com.docker.compose.project=ci-hub" --format '{{.Names}}' 2>/dev/null

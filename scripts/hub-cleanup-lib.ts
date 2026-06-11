@@ -291,6 +291,32 @@ export function runHubCleanup(options?: CleanupOptions): CleanupSummary {
     runCommand(`docker network rm ${networkName}`, commandContext);
   }
 
+  // Marketplace apps installed by Hub run as their own compose projects (<app>_<store>),
+  // separate from the Hub stack. Hub stamps every managed app container with the
+  // `ci-os-hub.managed=true` label (store-agnostic), so discover the project set from those
+  // containers, then remove each project's containers, networks, and volumes.
+  const managedProjectsOutput = runCommand(
+    `docker ps -a --filter label=ci-os-hub.managed=true --format '{{.Label "com.docker.compose.project"}}'`,
+    commandContext,
+  );
+  const sharedNetworks = new Set(['bridge', 'host', 'none', 'ci_os_hub_network', 'ci-os-hub_network']);
+  for (const project of new Set(parseNames(managedProjectsOutput))) {
+    const projectContainers = runCommand(`docker ps -a --filter label=com.docker.compose.project=${project} --format "{{.ID}}"`, commandContext);
+    for (const containerId of parseNames(projectContainers)) {
+      runCommand(`docker rm -f ${containerId}`, commandContext);
+    }
+
+    const projectNetworks = runCommand(`docker network ls --filter label=com.docker.compose.project=${project} --format "{{.Name}}"`, commandContext);
+    for (const networkName of parseNames(projectNetworks).filter((name) => !sharedNetworks.has(name))) {
+      runCommand(`docker network rm ${networkName}`, commandContext);
+    }
+
+    const projectVolumes = runCommand(`docker volume ls --filter label=com.docker.compose.project=${project} --format "{{.Name}}"`, commandContext);
+    for (const volumeName of parseNames(projectVolumes)) {
+      runCommand(`docker volume rm ${volumeName}`, commandContext);
+    }
+  }
+
   runCommand('docker compose --project-name ci-os-hub -f docker-compose.prod.yml down -v', commandContext);
   runCommand('docker compose --project-name ci-hub -f docker-compose.prod.yml down -v', commandContext);
   runCommand('docker compose --project-name runtipi -f docker-compose.prod.yml down -v', commandContext);

@@ -50,6 +50,42 @@ cleanup_docker() {
   docker network rm ci-os-hub_network >/dev/null 2>&1 || true
 }
 
+# Marketplace apps installed by Hub run as their own compose projects
+# (<app>_<store>), not part of the Hub stack, so the teardown above misses them.
+# Hub stamps every managed app container with `ci-os-hub.managed=true`
+# (see packages/backend/.../builders/compose.builder.ts), which is store-agnostic.
+# Discover the project set from those containers, then remove each project's
+# containers, networks (except the shared Hub network), and volumes.
+cleanup_marketplace_apps() {
+  command -v docker >/dev/null 2>&1 || return 0
+
+  managed_projects="$(docker ps -a --filter "label=ci-os-hub.managed=true" \
+    --format '{{.Label "com.docker.compose.project"}}' 2>/dev/null | awk 'NF && !seen[$0]++')"
+  [ -n "$managed_projects" ] || return 0
+
+  echo "$managed_projects" | while IFS= read -r project; do
+    [ -n "$project" ] || continue
+
+    docker ps -a --filter "label=com.docker.compose.project=$project" --format '{{.ID}}' 2>/dev/null |
+      while IFS= read -r cid; do
+        [ -n "$cid" ] && docker rm -f "$cid" >/dev/null 2>&1 || true
+      done
+
+    docker network ls --filter "label=com.docker.compose.project=$project" --format '{{.Name}}' 2>/dev/null |
+      while IFS= read -r net; do
+        case "$net" in
+          ''|bridge|host|none|ci_os_hub_network|ci-os-hub_network) ;;
+          *) docker network rm "$net" >/dev/null 2>&1 || true ;;
+        esac
+      done
+
+    docker volume ls --filter "label=com.docker.compose.project=$project" --format '{{.Name}}' 2>/dev/null |
+      while IFS= read -r vol; do
+        [ -n "$vol" ] && docker volume rm "$vol" >/dev/null 2>&1 || true
+      done
+  done
+}
+
 # RPM postun receives the number of package instances left after transaction.
 # Run destructive cleanup only on final erase (0), not on upgrade (>0).
 if [ "${1:-0}" != "0" ]; then
@@ -58,6 +94,7 @@ if [ "${1:-0}" != "0" ]; then
 fi
 
 log INFO 'Running Companion Hub RPM postun cleanup (best effort)'
+cleanup_marketplace_apps
 cleanup_docker
 list_home_dirs | while IFS= read -r home_dir; do
   cleanup_user_home "$home_dir"

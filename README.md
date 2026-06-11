@@ -191,6 +191,7 @@ Infrastructure (PostgreSQL, RabbitMQ) runs in Docker; backend and frontend run l
 A Companion Hub uninstall removes, by default:
 
 - Docker resources for Hub stacks — containers, **data volumes** (DB/app/tailscale state), and networks
+- **All installed marketplace apps** — every app Hub installed runs as its own Compose project (`<app>_<store>`, tagged `ci-os-hub.managed=true`); uninstall tears down each app's containers, networks, and volumes too
 - Hub state under user data/config/cache directories
 - Registry/deep-link entries where package managers support it
 
