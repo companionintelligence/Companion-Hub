@@ -6417,21 +6417,23 @@ if ($LASTEXITCODE -ne 0) {{
 
 # Phase 2: Ubuntu distro, registered without the interactive first-run.
 $distros = (& wsl.exe -l -q) | ForEach-Object {{ $_.Trim() }}
-if (-not ($distros -contains 'Ubuntu')) {{
+$distro = $distros | Where-Object {{ $_ -eq 'Ubuntu' -or $_ -match '^Ubuntu-' }} | Select-Object -First 1
+if (-not $distro) {{
   & wsl.exe --install -d Ubuntu --no-launch
   if ($LASTEXITCODE -ne 0) {{ throw "Ubuntu installation failed with exit code $LASTEXITCODE" }}
+  $distro = 'Ubuntu'
 }}
 
 # Phase 3: Docker Engine + systemd TCP drop-in inside the distro (as root).
 $setup = @'
 {linux_setup}
 '@ -replace "`r`n", "`n"
-$setup | & wsl.exe -d Ubuntu -u root -- sh
+$setup | & wsl.exe -d $distro -u root -- sh
 if ($LASTEXITCODE -ne 0) {{ throw "Docker Engine setup inside WSL failed with exit code $LASTEXITCODE" }}
 
 # Restart the distro so wsl.conf + the drop-in take effect.
 & wsl.exe --shutdown
-& wsl.exe -d Ubuntu -u root -- true
+& wsl.exe -d $distro -u root -- true
 
 # Phase 4: static docker CLI where the Hub already looks for it.
 $dockerBin = Join-Path $Env:ProgramFiles 'Docker\Docker\resources\bin'
@@ -6466,10 +6468,10 @@ if ($LASTEXITCODE -ne 0) {{
 # Phase 6: keepalive at logon — systemd services do not keep the WSL VM alive.
 $startup = [Environment]::GetFolderPath('Startup')
 $vbs = Join-Path $startup 'CompanionHub-WSL-Docker.vbs'
-Set-Content -Path $vbs -Value 'CreateObject("Wscript.Shell").Run "wsl.exe -d Ubuntu -u root -- sleep infinity", 0, False'
+Set-Content -Path $vbs -Value "CreateObject(""Wscript.Shell"").Run ""wsl.exe -d $distro -u root -- sleep infinity"", 0, False"
 
 # Keepalive for this session too, then wait for the engine.
-Start-Process -WindowStyle Hidden -FilePath 'wsl.exe' -ArgumentList '-d','Ubuntu','-u','root','--','sleep','infinity'
+Start-Process -WindowStyle Hidden -FilePath 'wsl.exe' -ArgumentList '-d',$distro,'-u','root','--','sleep','infinity'
 for ($i = 0; $i -lt 60; $i++) {{
   & $dockerExe info 2>$null | Out-Null
   if ($LASTEXITCODE -eq 0) {{ exit 0 }}
@@ -6495,7 +6497,7 @@ fn install_docker_wsl2_windows() -> Result<DockerInstallResult, String> {
         .map_err(|e| format!("Failed to write WSL2 engine installer script: {}", e))?;
 
     let launch_command = format!(
-        "$process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File','{}'); exit $process.ExitCode",
+        "$ErrorActionPreference = 'Stop'; $process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File','{}'); exit $process.ExitCode",
         escape_powershell_single_quoted(&script.path().to_string_lossy()),
     );
 
