@@ -178,10 +178,12 @@ describe('hub-cleanup-lib', () => {
           commands.push(command);
           if (command.includes('label=ci-os-hub.managed=true')) {
             // `--format "{{.Labels}}"` returns a comma-joined key=value list per container.
+            // Includes a Hub-stack project (ci-os-hub) — which also carries this label in
+            // docker-compose.prod.yml — to prove the app loop excludes it.
             return {
               ok: true,
               stdout:
-                'ci-os-hub.managed=true,com.docker.compose.project=ci-hermes_ci-marketplace,foo=bar\ncom.docker.compose.project=foo_ci-marketplace,ci-os-hub.managed=true',
+                'ci-os-hub.managed=true,com.docker.compose.project=ci-hermes_ci-marketplace,foo=bar\ncom.docker.compose.project=foo_ci-marketplace,ci-os-hub.managed=true\nci-os-hub.managed=true,com.docker.compose.project=ci-os-hub',
             };
           }
           // Image snapshot: container IDs for the app project (note the `-q` form).
@@ -216,6 +218,8 @@ describe('hub-cleanup-lib', () => {
       expect(commands).toContain('docker network rm ci-hermes_ci-marketplace_network');
       expect(commands).toContain('docker volume rm ci-hermes_ci-marketplace_data');
       expect(commands).toContain('docker image rm -f sha256:appimage');
+      // The Hub-stack project is excluded from the marketplace loop (handled by Hub teardown).
+      expect(commands).not.toContain('docker ps -a --filter label=com.docker.compose.project=ci-os-hub --format "{{.ID}}"');
     } finally {
       if (prevDataHome === undefined) delete process.env.XDG_DATA_HOME;
       else process.env.XDG_DATA_HOME = prevDataHome;

@@ -50,6 +50,9 @@ post_remove() {
             while IFS= read -r project; do
                 [ -n "$project" ] || continue
                 case "$project" in *[!A-Za-z0-9_.-]*) continue ;; esac
+                # Hub's own services also carry ci-os-hub.managed=true; the dedicated Hub
+                # teardown below is the single source of truth for the Hub stack, so skip it here.
+                case "$project" in ci-os-hub|ci-hub) continue ;; esac
                 project_images="$(snapshot_project_images "$project")"
                 docker ps -a --filter "label=com.docker.compose.project=$project" --format '{{.ID}}' 2>/dev/null |
                     while IFS= read -r cid; do [ -n "$cid" ] && docker rm -f "$cid" >/dev/null 2>&1 || true; done

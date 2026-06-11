@@ -83,6 +83,9 @@ function Remove-MarketplaceApps {
         # Defense-in-depth: only act on values matching Docker's compose-project charset
         # before interpolating them into Docker arguments.
         if ($project -notmatch '^[A-Za-z0-9][A-Za-z0-9_.-]*$') { continue }
+        # The Hub's own compose services also carry ci-os-hub.managed=true; the dedicated
+        # Hub-stack cleanup below is the single source of truth, so skip it here.
+        if ($project -in @('ci-os-hub', 'ci-hub')) { continue }
 
         $projectImages = Get-ProjectImageIds $project
 

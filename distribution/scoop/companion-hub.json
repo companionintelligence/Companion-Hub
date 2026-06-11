@@ -25,6 +25,7 @@
       "  $managedProjects = docker ps -a --filter 'label=ci-os-hub.managed=true' --format '{{.Label \"com.docker.compose.project\"}}' 2>$null | Where-Object { $_ -and $_.Trim().Length -gt 0 } | Select-Object -Unique",
       "  foreach ($project in $managedProjects) {",
       "    if ($project -notmatch '^[A-Za-z0-9][A-Za-z0-9_.-]*$') { continue }",
+      "    if ($project -in @('ci-os-hub','ci-hub')) { continue }  # Hub stack handled below",
       "    foreach ($cid in (docker ps -a --filter \"label=com.docker.compose.project=$project\" --format '{{.ID}}' 2>$null)) { if ($cid) { docker rm -f $cid 2>$null | Out-Null } }",
       "    foreach ($net in (docker network ls --filter \"label=com.docker.compose.project=$project\" --format '{{.Name}}' 2>$null)) { if ($net -and $net -notin @('bridge','host','none','ci_os_hub_network','ci-os-hub_network')) { docker network rm $net 2>$null | Out-Null } }",
       "  }",

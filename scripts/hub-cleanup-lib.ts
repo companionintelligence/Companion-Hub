@@ -296,6 +296,10 @@ export function runHubCleanup(options?: CleanupOptions): CleanupSummary {
   // Go-template arg (`'{{.Label "..."}}'`), which cmd.exe mishandles on Windows.
   const managedLabelLines = parseNames(runCommand('docker ps -a --filter label=ci-os-hub.managed=true --format "{{.Labels}}"', commandContext));
   const projectLabelPrefix = 'com.docker.compose.project=';
+  // The Hub's own compose services in docker-compose.*.yml also carry `ci-os-hub.managed=true`,
+  // so exclude the Hub stack projects here — they're handled by the dedicated Hub teardown
+  // (which is also where Hub images are snapshotted), keeping that the single source of truth.
+  const hubProjects = new Set(['ci-os-hub', 'ci-hub', 'runtipi']);
   const managedProjects = new Set<string>();
   for (const line of managedLabelLines) {
     for (const pair of line.split(',')) {
@@ -306,7 +310,7 @@ export function runHubCleanup(options?: CleanupOptions): CleanupSummary {
       const project = trimmed.slice(projectLabelPrefix.length);
       // Defense-in-depth: only act on values matching Docker's compose-project charset
       // before interpolating them into a shell command string.
-      if (/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(project)) {
+      if (!hubProjects.has(project) && /^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(project)) {
         managedProjects.add(project);
       }
     }

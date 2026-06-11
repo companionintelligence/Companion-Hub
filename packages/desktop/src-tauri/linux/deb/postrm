@@ -92,6 +92,9 @@ cleanup_marketplace_apps() {
     # Defense-in-depth: skip anything outside Docker's compose-project charset before
     # interpolating it into command strings.
     case "$project" in *[!A-Za-z0-9_.-]*) continue ;; esac
+    # The Hub's own compose services also carry ci-os-hub.managed=true; the dedicated
+    # cleanup_docker below is the single source of truth for the Hub stack, so skip it here.
+    case "$project" in ci-os-hub|ci-hub) continue ;; esac
 
     project_images="$(snapshot_project_images "$project")"
 

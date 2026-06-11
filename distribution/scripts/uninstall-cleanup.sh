@@ -82,6 +82,9 @@ if command -v docker >/dev/null 2>&1; then
     while IFS= read -r project; do
       [ -n "$project" ] || continue
       case "$project" in *[!A-Za-z0-9_.-]*) continue ;; esac
+      # Hub's own services also carry ci-os-hub.managed=true; the dedicated Hub-stack
+      # cleanup below is the single source of truth, so skip it here.
+      case "$project" in ci-os-hub|ci-hub) continue ;; esac
       project_images="$(snapshot_project_images "$project")"
       docker ps -a --filter "label=com.docker.compose.project=$project" --format '{{.ID}}' 2>/dev/null |
         while IFS= read -r cid; do [ -n "$cid" ] && run_cmd "docker rm -f $cid" || true; done
