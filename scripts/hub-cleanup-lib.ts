@@ -257,6 +257,15 @@ export function runHubCleanup(options?: CleanupOptions): CleanupSummary {
     summary,
   };
 
+  // Collect the unique image IDs used by a compose project (pulled or built). Must be
+  // called before the project's containers are removed — refs can't be recovered after.
+  const snapshotProjectImages = (project: string): string[] => {
+    const containerIds = parseNames(runCommand(`docker ps -a --filter label=com.docker.compose.project=${project} -q`, commandContext));
+    const fromContainers = containerIds.flatMap((id) => parseNames(runCommand(`docker inspect --format '{{.Image}}' ${id}`, commandContext)));
+    const labeled = parseNames(runCommand(`docker images --filter label=com.docker.compose.project=${project} -q`, commandContext));
+    return [...new Set([...fromContainers, ...labeled])];
+  };
+
   const containerNames = new Set<string>();
   const containerCommands = [
     'docker ps -a --filter network=ci_os_hub_network --format "{{.Names}}"',
@@ -273,6 +282,9 @@ export function runHubCleanup(options?: CleanupOptions): CleanupSummary {
       containerNames.add(name);
     }
   }
+
+  // Snapshot Hub stack image IDs before the containers are removed.
+  const hubImages = [...new Set(['ci-os-hub', 'ci-hub', 'runtipi'].flatMap(snapshotProjectImages))];
 
   for (const name of containerNames) {
     runCommand(`docker rm -f ${name}`, commandContext);
@@ -291,6 +303,10 @@ export function runHubCleanup(options?: CleanupOptions): CleanupSummary {
     runCommand(`docker network rm ${networkName}`, commandContext);
   }
 
+  for (const imageId of hubImages) {
+    runCommand(`docker image rm -f ${imageId}`, commandContext);
+  }
+
   // Marketplace apps installed by Hub run as their own compose projects (<app>_<store>),
   // separate from the Hub stack. Hub stamps every managed app container with the
   // `ci-os-hub.managed=true` label (store-agnostic), so discover the project set from those
@@ -301,6 +317,8 @@ export function runHubCleanup(options?: CleanupOptions): CleanupSummary {
   );
   const sharedNetworks = new Set(['bridge', 'host', 'none', 'ci_os_hub_network', 'ci-os-hub_network']);
   for (const project of new Set(parseNames(managedProjectsOutput))) {
+    const projectImages = snapshotProjectImages(project);
+
     const projectContainers = runCommand(`docker ps -a --filter label=com.docker.compose.project=${project} --format "{{.ID}}"`, commandContext);
     for (const containerId of parseNames(projectContainers)) {
       runCommand(`docker rm -f ${containerId}`, commandContext);
@@ -314,6 +332,10 @@ export function runHubCleanup(options?: CleanupOptions): CleanupSummary {
     const projectVolumes = runCommand(`docker volume ls --filter label=com.docker.compose.project=${project} --format "{{.Name}}"`, commandContext);
     for (const volumeName of parseNames(projectVolumes)) {
       runCommand(`docker volume rm ${volumeName}`, commandContext);
+    }
+
+    for (const imageId of projectImages) {
+      runCommand(`docker image rm -f ${imageId}`, commandContext);
     }
   }
 

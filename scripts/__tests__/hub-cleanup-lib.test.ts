@@ -179,6 +179,13 @@ describe('hub-cleanup-lib', () => {
           if (command.includes('label=ci-os-hub.managed=true')) {
             return { ok: true, stdout: 'ci-hermes_ci-marketplace\nfoo_ci-marketplace' };
           }
+          // Image snapshot: container IDs for the app project (note the `-q` form).
+          if (command.includes('docker ps -a --filter label=com.docker.compose.project=ci-hermes_ci-marketplace -q')) {
+            return { ok: true, stdout: 'cid-hermes' };
+          }
+          if (command.includes(`docker inspect --format '{{.Image}}' cid-hermes`)) {
+            return { ok: true, stdout: 'sha256:appimage' };
+          }
           if (command.includes('label=com.docker.compose.project=ci-hermes_ci-marketplace --format "{{.ID}}"')) {
             return { ok: true, stdout: 'abc123' };
           }
@@ -199,10 +206,11 @@ describe('hub-cleanup-lib', () => {
       // Discovered app projects via the managed label and iterated each one.
       expect(commands.some((command) => command.includes('label=ci-os-hub.managed=true'))).toBe(true);
       expect(commands.some((command) => command.includes('label=com.docker.compose.project=foo_ci-marketplace'))).toBe(true);
-      // Removed the app's container (by id), its own network, and its volume.
+      // Removed the app's container (by id), its own network, its volume, and its image.
       expect(commands).toContain('docker rm -f abc123');
       expect(commands).toContain('docker network rm ci-hermes_ci-marketplace_network');
       expect(commands).toContain('docker volume rm ci-hermes_ci-marketplace_data');
+      expect(commands).toContain('docker image rm -f sha256:appimage');
     } finally {
       if (prevDataHome === undefined) delete process.env.XDG_DATA_HOME;
       else process.env.XDG_DATA_HOME = prevDataHome;

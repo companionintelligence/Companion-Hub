@@ -46,10 +46,25 @@ function Get-ContainerNamesByFilter {
     }
 }
 
+# Collect the unique image IDs used by a compose project (pulled or built). Must be
+# called before the project's containers are removed — refs can't be recovered after.
+function Get-ProjectImageIds {
+    param([string]$Project)
+    if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { return @() }
+    $ids = @()
+    try {
+        $containerIds = docker ps -a --filter "label=com.docker.compose.project=$Project" -q 2>$null
+        foreach ($cid in $containerIds) { if ($cid) { $ids += docker inspect --format '{{.Image}}' $cid 2>$null } }
+        $ids += docker images --filter "label=com.docker.compose.project=$Project" -q 2>$null
+    }
+    catch { }
+    return $ids | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
+}
+
 # Marketplace apps run as their own compose projects (<app>_<store>), separate from
 # the Hub stack. Hub stamps every managed app container with `ci-os-hub.managed=true`
 # (store-agnostic). Discover the project set from those containers, then remove each
-# project's containers, networks (except the shared Hub network), and volumes.
+# project's containers, networks (except the shared Hub network), volumes, and images.
 function Remove-MarketplaceApps {
     if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { return }
 
@@ -66,6 +81,8 @@ function Remove-MarketplaceApps {
     foreach ($project in $managedProjects) {
         if ([string]::IsNullOrWhiteSpace($project)) { continue }
 
+        $projectImages = Get-ProjectImageIds $project
+
         $containerIds = docker ps -a --filter "label=com.docker.compose.project=$project" --format '{{.ID}}' 2>$null
         foreach ($cid in $containerIds) { if ($cid) { Invoke-CleanupCommand "docker rm -f $cid" } }
 
@@ -78,11 +95,16 @@ function Remove-MarketplaceApps {
 
         $appVolumes = docker volume ls --filter "label=com.docker.compose.project=$project" --format '{{.Name}}' 2>$null
         foreach ($vol in $appVolumes) { if ($vol) { Invoke-CleanupCommand "docker volume rm $vol" } }
+
+        foreach ($img in $projectImages) { if ($img) { Invoke-CleanupCommand "docker image rm -f $img" } }
     }
 }
 
 if (Get-Command docker -ErrorAction SilentlyContinue) {
     Remove-MarketplaceApps
+
+    $hubImages = @(Get-ProjectImageIds 'ci-os-hub') + @(Get-ProjectImageIds 'ci-hub') |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
 
     $containerNames = @()
     $containerNames += Get-ContainerNamesByFilter 'label=com.docker.compose.project=ci-os-hub'
@@ -113,6 +135,8 @@ if (Get-Command docker -ErrorAction SilentlyContinue) {
             Invoke-CleanupCommand "docker volume rm $volume"
         }
     }
+
+    foreach ($img in $hubImages) { if ($img) { Invoke-CleanupCommand "docker image rm -f $img" } }
 } else {
     Write-CleanupLog 'INFO' 'Docker is not available; skipping Docker cleanup'
 }

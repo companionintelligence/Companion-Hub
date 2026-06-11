@@ -190,17 +190,20 @@ Infrastructure (PostgreSQL, RabbitMQ) runs in Docker; backend and frontend run l
 
 A Companion Hub uninstall removes, by default:
 
-- Docker resources for Hub stacks — containers, **data volumes** (DB/app/tailscale state), and networks
-- **All installed marketplace apps** — every app Hub installed runs as its own Compose project (`<app>_<store>`, tagged `ci-os-hub.managed=true`); uninstall tears down each app's containers, networks, and volumes too
+- Docker resources for Hub stacks — containers, **data volumes** (DB/app/tailscale state), networks, **and pulled/built images**
+- **All installed marketplace apps** — every app Hub installed runs as its own Compose project (`<app>_<store>`, tagged `ci-os-hub.managed=true`); uninstall tears down each app's containers, networks, volumes, **and images** too
 - Hub state under user data/config/cache directories
 - Registry/deep-link entries where package managers support it
+
+Image removal is best-effort: an image still referenced by another (non-Hub) container is skipped, so a base image shared with an unrelated workload is left alone.
 
 **Updates never purge data.** In-place upgrades (the in-app updater, `apt`/`dnf`
 upgrades, `scoop update`, etc.) preserve all volumes and state — only a deliberate
 uninstall purges. The Scoop channel is a special case: because Scoop runs its
 uninstaller during `scoop update` too, the Scoop uninstaller intentionally removes
-only containers/networks and leaves data intact. For a full purge of a Scoop install,
-run `distribution/scripts/uninstall-cleanup.ps1` manually after `scoop uninstall`.
+only containers/networks and leaves data **and images** intact (re-pulling images on
+every update would be needlessly slow). For a full purge of a Scoop install, run
+`distribution/scripts/uninstall-cleanup.ps1` manually after `scoop uninstall`.
 
 Developer cleanup remains available via:
 

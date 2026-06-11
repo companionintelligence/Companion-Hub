@@ -26,8 +26,30 @@ cleanup_user_home() {
   done
 }
 
+# Echo the unique image IDs used by a compose project: the images its containers
+# run (pulled or built) plus any compose-labeled built images. MUST be called
+# before the containers are removed — image refs can't be recovered afterwards.
+snapshot_project_images() {
+  project="$1"
+  {
+    docker ps -a --filter "label=com.docker.compose.project=$project" -q 2>/dev/null |
+      while IFS= read -r cid; do [ -n "$cid" ] && docker inspect --format '{{.Image}}' "$cid" 2>/dev/null; done
+    docker images --filter "label=com.docker.compose.project=$project" -q 2>/dev/null
+  } | awk 'NF && !seen[$0]++'
+}
+
+# Best-effort force-remove image IDs read from stdin. Images still referenced by
+# a surviving (non-Hub) container fail removal and are skipped.
+remove_images() {
+  while IFS= read -r img; do
+    [ -n "$img" ] && docker image rm -f "$img" >/dev/null 2>&1 || true
+  done
+}
+
 cleanup_docker() {
   command -v docker >/dev/null 2>&1 || return 0
+
+  hub_images="$({ snapshot_project_images "ci-os-hub"; snapshot_project_images "ci-hub"; } | awk 'NF && !seen[$0]++')"
 
   {
     docker ps -a --filter "label=com.docker.compose.project=ci-os-hub" --format '{{.Names}}' 2>/dev/null
@@ -48,6 +70,8 @@ cleanup_docker() {
 
   docker network rm ci_os_hub_network >/dev/null 2>&1 || true
   docker network rm ci-os-hub_network >/dev/null 2>&1 || true
+
+  printf '%s\n' "$hub_images" | remove_images
 }
 
 # Marketplace apps installed by Hub run as their own compose projects
@@ -66,6 +90,8 @@ cleanup_marketplace_apps() {
   echo "$managed_projects" | while IFS= read -r project; do
     [ -n "$project" ] || continue
 
+    project_images="$(snapshot_project_images "$project")"
+
     docker ps -a --filter "label=com.docker.compose.project=$project" --format '{{.ID}}' 2>/dev/null |
       while IFS= read -r cid; do
         [ -n "$cid" ] && docker rm -f "$cid" >/dev/null 2>&1 || true
@@ -83,6 +109,8 @@ cleanup_marketplace_apps() {
       while IFS= read -r vol; do
         [ -n "$vol" ] && docker volume rm "$vol" >/dev/null 2>&1 || true
       done
+
+    printf '%s\n' "$project_images" | remove_images
   done
 }
 

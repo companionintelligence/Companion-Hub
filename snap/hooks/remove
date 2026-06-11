@@ -26,14 +26,32 @@ cleanup_user_home() {
   done
 }
 
+# Echo the unique image IDs used by a compose project (pulled or built), so disk
+# can be reclaimed after teardown. MUST be called before the containers are removed.
+snapshot_project_images() {
+  project="$1"
+  {
+    docker ps -a --filter "label=com.docker.compose.project=$project" -q 2>/dev/null |
+      while IFS= read -r cid; do [ -n "$cid" ] && docker inspect --format '{{.Image}}' "$cid" 2>/dev/null; done
+    docker images --filter "label=com.docker.compose.project=$project" -q 2>/dev/null
+  } | awk 'NF && !seen[$0]++'
+}
+
+remove_images() {
+  while IFS= read -r img; do
+    [ -n "$img" ] && docker image rm -f "$img" >/dev/null 2>&1 || true
+  done
+}
+
 if command -v docker >/dev/null 2>&1; then
   # Marketplace apps run as their own compose projects (<app>_<store>); Hub stamps
   # every managed app container with `ci-os-hub.managed=true` (store-agnostic).
-  # Tear down each managed project's containers, networks, and volumes.
+  # Tear down each managed project's containers, networks, volumes, and images.
   docker ps -a --filter "label=ci-os-hub.managed=true" \
     --format '{{.Label "com.docker.compose.project"}}' 2>/dev/null | awk 'NF && !seen[$0]++' |
     while IFS= read -r project; do
       [ -n "$project" ] || continue
+      project_images="$(snapshot_project_images "$project")"
       docker ps -a --filter "label=com.docker.compose.project=$project" --format '{{.ID}}' 2>/dev/null |
         while IFS= read -r cid; do [ -n "$cid" ] && docker rm -f "$cid" >/dev/null 2>&1 || true; done
       docker network ls --filter "label=com.docker.compose.project=$project" --format '{{.Name}}' 2>/dev/null |
@@ -45,7 +63,10 @@ if command -v docker >/dev/null 2>&1; then
         done
       docker volume ls --filter "label=com.docker.compose.project=$project" --format '{{.Name}}' 2>/dev/null |
         while IFS= read -r vol; do [ -n "$vol" ] && docker volume rm "$vol" >/dev/null 2>&1 || true; done
+      printf '%s\n' "$project_images" | remove_images
     done
+
+  hub_images="$({ snapshot_project_images "ci-os-hub"; snapshot_project_images "ci-hub"; } | awk 'NF && !seen[$0]++')"
 
   {
     docker ps -a --filter "label=com.docker.compose.project=ci-os-hub" --format '{{.Names}}' 2>/dev/null
@@ -65,6 +86,8 @@ if command -v docker >/dev/null 2>&1; then
         ;;
     esac
   done
+
+  printf '%s\n' "$hub_images" | remove_images
 fi
 
 list_home_dirs | while IFS= read -r home_dir; do
