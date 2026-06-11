@@ -136,7 +136,7 @@ jobs:
           if [ "${{ inputs.environment }}" = "production" ]; then
             echo "CI_CLOUD_URL=https://hub.ci.computer" >> $GITHUB_ENV
             echo "CI_HUB_CLOUD_URL=https://hub.ci.computer" >> $GITHUB_ENV
-            echo "CI_HUB_DOMAIN=companionintelligence.org" >> $GITHUB_ENV
+            echo "CI_HUB_DOMAIN=companionintelligence.com" >> $GITHUB_ENV
           else
             echo "CI_CLOUD_URL=https://hub.companionintelligence.com" >> $GITHUB_ENV
             echo "CI_HUB_CLOUD_URL=https://hub.companionintelligence.com" >> $GITHUB_ENV

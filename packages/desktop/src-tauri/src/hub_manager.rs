@@ -60,7 +60,12 @@ fn lock_recovering<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 const MAX_COMMAND_OUTPUT_CHARS: usize = 50_000;
 const DESKTOP_LOG_FILENAME: &str = "desktop.log";
 const DEFAULT_DEV_PUBLIC_DOMAIN: &str = "companionintelligence.com";
-const DEFAULT_PROD_PUBLIC_DOMAIN: &str = "companionintelligence.org";
+// Production public domain. Must be a Cloudflare-provisioned zone (CI-Portal only
+// provisions DNS/tunnel ingress for companionintelligence.com / companionintel.com /
+// ci.computer — NOT .org, which is the Squarespace marketing site). Image selection is
+// decoupled from this via default_hub_image(), so changing the domain does not change
+// which Hub image tag is pulled.
+const DEFAULT_PROD_PUBLIC_DOMAIN: &str = "companionintelligence.com";
 const DEFAULT_DEV_CI_CLOUD_URL: &str = "https://hub.companionintelligence.com";
 const DEFAULT_PROD_CI_CLOUD_URL: &str = "https://hub.ci.computer";
 #[cfg(target_os = "windows")]
@@ -107,6 +112,18 @@ pub(crate) fn default_ci_cloud_url() -> &'static str {
     match option_env!("CI_HUB_ENVIRONMENT") {
         Some("production") => DEFAULT_PROD_CI_CLOUD_URL,
         _ => DEFAULT_DEV_CI_CLOUD_URL,
+    }
+}
+
+/// Hub container image tag for this build. Keyed on the build-time environment
+/// (CI_HUB_ENVIRONMENT) rather than the public domain, so the public domain can be a
+/// Cloudflare-provisioned zone (e.g. companionintelligence.com) without affecting which
+/// image tag is pulled. Production → :latest, staging → :staging, otherwise → :dev.
+pub(crate) fn default_hub_image() -> &'static str {
+    match option_env!("CI_HUB_ENVIRONMENT") {
+        Some("production") => "ghcr.io/companionintelligence/ci-hub:latest",
+        Some("staging") => "ghcr.io/companionintelligence/ci-hub:staging",
+        _ => "ghcr.io/companionintelligence/ci-hub:dev",
     }
 }
 
@@ -1558,14 +1575,10 @@ fn list_local_images() -> std::collections::HashSet<String> {
 
 fn required_startup_images() -> Vec<String> {
     let env = parse_env_file(&hub_env_path());
-    let domain = env
-        .get("DOMAIN")
-        .map(String::as_str)
-        .unwrap_or(default_public_domain());
     let hub_image = env
         .get("CI_HUB_IMAGE")
         .cloned()
-        .unwrap_or_else(|| image_for_domain(domain).to_string());
+        .unwrap_or_else(|| default_hub_image().to_string());
 
     let mut out = vec![
         hub_image,
@@ -2491,6 +2504,10 @@ const HUB_BIND_MOUNT_DIRS: &[&str] = &[
     "app-data",
     "user-config",
     "backups",
+    // Bind-mounted at compose `${ROOT_FOLDER_HOST}/tunnel:/app/tunnel`. Must be pre-created as
+    // the host user; otherwise Docker auto-creates it root-owned and the Hub container
+    // (UID 1000) cannot write the Cloudflare tunnel token/certs (EACCES).
+    "tunnel",
 ];
 
 /// Files prior root-owned Hub containers commonly leave on bind mounts (block EACCES on rewrite).
@@ -4794,7 +4811,7 @@ fn has_cloudflare_tunnel_token(existing: &std::collections::HashMap<String, Stri
     let Some(root) = get_non_empty_env_value(existing, "ROOT_FOLDER_HOST") else {
         return false;
     };
-    let token_path = PathBuf::from(root).join("..").join("tunnel").join("token");
+    let token_path = PathBuf::from(root).join("tunnel").join("token");
     std::fs::metadata(&token_path)
         .map(|m| m.is_file() && m.len() > 0)
         .unwrap_or(false)
@@ -4894,7 +4911,7 @@ fn render_runtime_env_content(
     let cloud_url = option_env!("CI_HUB_CLOUD_URL").unwrap_or(default_ci_cloud_url());
     let hub_version = option_env!("CI_HUB_BUILD_VERSION").unwrap_or("4.7.0");
     // Always recompute from the current binary so upgrades pick up the new stack image tag.
-    let hub_image = image_for_domain(domain).to_string();
+    let hub_image = default_hub_image().to_string();
     let docker_platform = if cfg!(target_arch = "aarch64") {
         "linux/arm64"
     } else {
@@ -4987,17 +5004,6 @@ fn generate_hex(bytes: usize) -> String {
     (0..bytes)
         .map(|_| format!("{:02x}", rand::random::<u8>()))
         .collect()
-}
-
-/// Determine the Hub container image tag from the domain.
-pub fn image_for_domain(domain: &str) -> &'static str {
-    match domain {
-        "ci.computer" | "companionintelligence.org" => {
-            "ghcr.io/companionintelligence/ci-hub:latest"
-        }
-        "companionintel.com" => "ghcr.io/companionintelligence/ci-hub:staging",
-        _ => "ghcr.io/companionintelligence/ci-hub:dev",
-    }
 }
 
 /// Compute the data directory path string, handling Windows Docker Desktop paths.

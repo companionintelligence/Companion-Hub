@@ -74,8 +74,10 @@ services:
       - ${ROOT_FOLDER_HOST:-.internal}/app-data:/app-data
       # Data directories — bind mounts from host (require ROOT_FOLDER_HOST)
       - ${ROOT_FOLDER_HOST:-.internal}/media:/data/media
-      # Allow Hub to configure Tunnel
-      - ./tunnel:/app/tunnel
+      # Allow Hub to configure Tunnel. Explicit ${ROOT_FOLDER_HOST}/tunnel (not relative
+      # ./tunnel) so the mount is independent of the compose project directory and matches
+      # the other host bind mounts above.
+      - ${ROOT_FOLDER_HOST:-.internal}/tunnel:/app/tunnel
       - ${ROOT_FOLDER_HOST:-.internal}/state:/data/state
       - ${ROOT_FOLDER_HOST:-.internal}/repos:/data/repos
       - ${ROOT_FOLDER_HOST:-.internal}/apps:/data/apps
@@ -123,7 +125,7 @@ services:
       INTERNAL_IP: ${INTERNAL_IP:-0.0.0.0}
       CI_HUB_VERSION: ${CI_HUB_VERSION:-4.7.0}
       CI_CLOUD_URL: ${CI_CLOUD_URL:-https://hub.ci.computer}
-      DOMAIN: ${DOMAIN:-companionintelligence.org}
+      DOMAIN: ${DOMAIN:-companionintelligence.com}
       JWT_SECRET: ${JWT_SECRET}
       # Inference backend URLs — default to host machine via host.docker.internal.
       # Override via OLLAMA_URL / VLLM_URL / LEMONADE_URL env vars if the backends
@@ -166,7 +168,7 @@ services:
     labels:
       ci-os-hub.managed: true
 
-  # Cloudflare tunnel — opt-in. Requires a token file at ./tunnel/token.
+  # Cloudflare tunnel — opt-in. Requires a token file at ${ROOT_FOLDER_HOST}/tunnel/token.
   # Enable with: docker compose --profile cloudflare up -d cloudflared
   cloudflared:
     image: cloudflare/cloudflared:2026.2.0
@@ -175,7 +177,7 @@ services:
     restart: unless-stopped
     command: tunnel run --token-file /home/nonroot/.cloudflared/token
     volumes:
-      - ./tunnel:/home/nonroot/.cloudflared:ro
+      - ${ROOT_FOLDER_HOST:-.internal}/tunnel:/home/nonroot/.cloudflared:ro
     networks:
       - ci_os_hub_network
     extra_hosts:
