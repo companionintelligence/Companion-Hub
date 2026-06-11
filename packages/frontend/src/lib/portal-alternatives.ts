@@ -1,5 +1,6 @@
 import type { AltAlternative, AltEntry, AltProprietary, AltsCategory } from '@/modules/onboarding/helpers/types';
 import { apiFetch } from '@/lib/api-fetch';
+import { captureHubWarning } from '@/lib/sentry';
 
 /**
  * Public CI Cloud catalog (no trailing slash). Used when the Hub image predates `GET /api/store/alternatives`.
@@ -92,6 +93,14 @@ export async function fetchPortalAlternatives(): Promise<AltsCategory> {
   /** Desktop releases pull `ghcr.io/.../ci-hub:*` by default; older tags have no proxy route. */
   if (res.status === 404) {
     console.warn('[alternatives] Hub returned 404 for /api/store/alternatives (older image or missing route); trying CI Cloud directly.');
+    captureHubWarning(
+      'Hub alternatives endpoint missing; falling back to CI Cloud catalog',
+      {
+        status: res.status,
+        endpoint: '/api/store/alternatives',
+      },
+      { dedupeKey: 'portal-alternatives-hub-404-fallback' },
+    );
     try {
       return await fetchAlternativesFromCiCloud();
     } catch (e) {

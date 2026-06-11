@@ -1199,7 +1199,7 @@
   "SYSTEM_INSPECTOR_RUNNING": "running",
   "SYSTEM_INSPECTOR_STOPPED": "stopped",
   "SYSTEM_INSPECTOR_CPU_MODEL": "CPU Model",
-  "RESOURCE_MONITOR_NAV": "Resource Monitor",
+  "RESOURCE_MONITOR_NAV": "Resources",
   "RESOURCE_MONITOR_TITLE": "Resource Monitor",
   "RESOURCE_MONITOR_SUBTITLE": "Track per-app CPU, memory, responsiveness, and CPU caps.",
   "RESOURCE_MONITOR_CHART_TITLE": "CPU usage by app",

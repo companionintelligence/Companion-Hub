@@ -2529,6 +2529,8 @@ fn docker_socket_path_from_docker_host(docker_host: &str) -> Option<PathBuf> {
     Some(PathBuf::from(socket_path))
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 fn resolved_host_docker_dir(host_docker_dir: Option<&Path>) -> Option<PathBuf> {
     match host_docker_dir {
         Some(docker_dir) => Some(docker_dir.to_path_buf()),
@@ -2536,6 +2538,8 @@ fn resolved_host_docker_dir(host_docker_dir: Option<&Path>) -> Option<PathBuf> {
     }
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 fn current_docker_context_name(host_docker_dir: Option<&Path>) -> Option<String> {
     let docker_dir = resolved_host_docker_dir(host_docker_dir)?;
     let raw = std::fs::read_to_string(docker_dir.join("config.json")).ok()?;
@@ -2547,6 +2551,7 @@ fn current_docker_context_name(host_docker_dir: Option<&Path>) -> Option<String>
     Some(context_name.to_string())
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn docker_context_host_from_inspect_output(raw: &str) -> Option<String> {
     let parsed: serde_json::Value = serde_json::from_str(raw).ok()?;
     let host = parsed
@@ -6535,21 +6540,23 @@ if ($LASTEXITCODE -ne 0) {{
 
 # Phase 2: Ubuntu distro, registered without the interactive first-run.
 $distros = (& wsl.exe -l -q) | ForEach-Object {{ $_.Trim() }}
-if (-not ($distros -contains 'Ubuntu')) {{
+$distro = $distros | Where-Object {{ $_ -eq 'Ubuntu' -or $_ -match '^Ubuntu-' }} | Select-Object -First 1
+if (-not $distro) {{
   & wsl.exe --install -d Ubuntu --no-launch
   if ($LASTEXITCODE -ne 0) {{ throw "Ubuntu installation failed with exit code $LASTEXITCODE" }}
+  $distro = 'Ubuntu'
 }}
 
 # Phase 3: Docker Engine + systemd TCP drop-in inside the distro (as root).
 $setup = @'
 {linux_setup}
 '@ -replace "`r`n", "`n"
-$setup | & wsl.exe -d Ubuntu -u root -- sh
+$setup | & wsl.exe -d $distro -u root -- sh
 if ($LASTEXITCODE -ne 0) {{ throw "Docker Engine setup inside WSL failed with exit code $LASTEXITCODE" }}
 
 # Restart the distro so wsl.conf + the drop-in take effect.
 & wsl.exe --shutdown
-& wsl.exe -d Ubuntu -u root -- true
+& wsl.exe -d $distro -u root -- true
 
 # Phase 4: static docker CLI where the Hub already looks for it.
 $dockerBin = Join-Path $Env:ProgramFiles 'Docker\Docker\resources\bin'
@@ -6584,10 +6591,10 @@ if ($LASTEXITCODE -ne 0) {{
 # Phase 6: keepalive at logon — systemd services do not keep the WSL VM alive.
 $startup = [Environment]::GetFolderPath('Startup')
 $vbs = Join-Path $startup 'CompanionHub-WSL-Docker.vbs'
-Set-Content -Path $vbs -Value 'CreateObject("Wscript.Shell").Run "wsl.exe -d Ubuntu -u root -- sleep infinity", 0, False'
+Set-Content -Path $vbs -Value "CreateObject(""Wscript.Shell"").Run ""wsl.exe -d $distro -u root -- sleep infinity"", 0, False"
 
 # Keepalive for this session too, then wait for the engine.
-Start-Process -WindowStyle Hidden -FilePath 'wsl.exe' -ArgumentList '-d','Ubuntu','-u','root','--','sleep','infinity'
+Start-Process -WindowStyle Hidden -FilePath 'wsl.exe' -ArgumentList '-d',$distro,'-u','root','--','sleep','infinity'
 for ($i = 0; $i -lt 60; $i++) {{
   & $dockerExe info 2>$null | Out-Null
   if ($LASTEXITCODE -eq 0) {{ exit 0 }}
@@ -6613,7 +6620,7 @@ fn install_docker_wsl2_windows() -> Result<DockerInstallResult, String> {
         .map_err(|e| format!("Failed to write WSL2 engine installer script: {}", e))?;
 
     let launch_command = format!(
-        "$process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File','{}'); exit $process.ExitCode",
+        "$ErrorActionPreference = 'Stop'; $process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File','{}'); exit $process.ExitCode",
         escape_powershell_single_quoted(&script.path().to_string_lossy()),
     );
 
@@ -6729,7 +6736,9 @@ mod tests {
     };
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     use std::os::unix::fs::PermissionsExt;
-    use std::path::{Path, PathBuf};
+    #[cfg(target_os = "linux")]
+    use std::path::Path;
+    use std::path::PathBuf;
 
     #[test]
     fn classifies_daemon_unavailable_before_permission_denied() {
