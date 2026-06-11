@@ -80,6 +80,9 @@ function Remove-MarketplaceApps {
 
     foreach ($project in $managedProjects) {
         if ([string]::IsNullOrWhiteSpace($project)) { continue }
+        # Defense-in-depth: only act on values matching Docker's compose-project charset
+        # before interpolating them into Docker arguments.
+        if ($project -notmatch '^[A-Za-z0-9][A-Za-z0-9_.-]*$') { continue }
 
         $projectImages = Get-ProjectImageIds $project
 

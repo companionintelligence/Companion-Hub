@@ -261,7 +261,7 @@ export function runHubCleanup(options?: CleanupOptions): CleanupSummary {
   // called before the project's containers are removed — refs can't be recovered after.
   const snapshotProjectImages = (project: string): string[] => {
     const containerIds = parseNames(runCommand(`docker ps -a --filter label=com.docker.compose.project=${project} -q`, commandContext));
-    const fromContainers = containerIds.flatMap((id) => parseNames(runCommand(`docker inspect --format '{{.Image}}' ${id}`, commandContext)));
+    const fromContainers = containerIds.flatMap((id) => parseNames(runCommand(`docker inspect --format "{{.Image}}" ${id}`, commandContext)));
     const labeled = parseNames(runCommand(`docker images --filter label=com.docker.compose.project=${project} -q`, commandContext));
     return [...new Set([...fromContainers, ...labeled])];
   };

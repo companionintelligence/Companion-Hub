@@ -188,7 +188,7 @@ describe('hub-cleanup-lib', () => {
           if (command.includes('docker ps -a --filter label=com.docker.compose.project=ci-hermes_ci-marketplace -q')) {
             return { ok: true, stdout: 'cid-hermes' };
           }
-          if (command.includes(`docker inspect --format '{{.Image}}' cid-hermes`)) {
+          if (command.includes(`docker inspect --format "{{.Image}}" cid-hermes`)) {
             return { ok: true, stdout: 'sha256:appimage' };
           }
           if (command.includes('label=com.docker.compose.project=ci-hermes_ci-marketplace --format "{{.ID}}"')) {
