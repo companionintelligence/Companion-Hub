@@ -159,6 +159,77 @@ describe('hub-cleanup-lib', () => {
     }
   });
 
+  it('tears down marketplace app projects discovered via the ci-os-hub.managed label', () => {
+    const prevDataHome = process.env.XDG_DATA_HOME;
+    const prevConfigHome = process.env.XDG_CONFIG_HOME;
+    const prevCacheHome = process.env.XDG_CACHE_HOME;
+    process.env.XDG_DATA_HOME = '/home/dev/.local/share';
+    process.env.XDG_CONFIG_HOME = '/home/dev/.config';
+    process.env.XDG_CACHE_HOME = '/home/dev/.cache';
+
+    const commands: string[] = [];
+
+    try {
+      runHubCleanup({
+        cwd: '/home/dev/ci-hub',
+        homeDir: '/home/dev',
+        platform: 'linux',
+        execCommand: (command) => {
+          commands.push(command);
+          if (command.includes('label=ci-os-hub.managed=true')) {
+            // `--format "{{.Labels}}"` returns a comma-joined key=value list per container.
+            // Includes a Hub-stack project (ci-os-hub) — which also carries this label in
+            // docker-compose.prod.yml — to prove the app loop excludes it.
+            return {
+              ok: true,
+              stdout:
+                'ci-os-hub.managed=true,com.docker.compose.project=ci-hermes_ci-marketplace,foo=bar\ncom.docker.compose.project=foo_ci-marketplace,ci-os-hub.managed=true\nci-os-hub.managed=true,com.docker.compose.project=ci-os-hub',
+            };
+          }
+          // Image snapshot: container IDs for the app project (note the `-q` form).
+          if (command.includes('docker ps -a --filter label=com.docker.compose.project=ci-hermes_ci-marketplace -q')) {
+            return { ok: true, stdout: 'cid-hermes' };
+          }
+          if (command.includes(`docker inspect --format "{{.Image}}" cid-hermes`)) {
+            return { ok: true, stdout: 'sha256:appimage' };
+          }
+          if (command.includes('label=com.docker.compose.project=ci-hermes_ci-marketplace --format "{{.ID}}"')) {
+            return { ok: true, stdout: 'abc123' };
+          }
+          if (command.includes('docker network ls --filter label=com.docker.compose.project=ci-hermes_ci-marketplace')) {
+            // Includes the shared hub network to prove the app loop skips it.
+            return { ok: true, stdout: 'ci-hermes_ci-marketplace_network\nci-os-hub_network' };
+          }
+          if (command.includes('docker volume ls --filter label=com.docker.compose.project=ci-hermes_ci-marketplace')) {
+            return { ok: true, stdout: 'ci-hermes_ci-marketplace_data' };
+          }
+          return { ok: true, stdout: '' };
+        },
+        exists: () => false,
+        removeDir: () => {},
+        logger: { info: () => {}, warn: () => {}, error: () => {} },
+      });
+
+      // Discovered app projects via the managed label and iterated each one.
+      expect(commands.some((command) => command.includes('label=ci-os-hub.managed=true'))).toBe(true);
+      expect(commands.some((command) => command.includes('label=com.docker.compose.project=foo_ci-marketplace'))).toBe(true);
+      // Removed the app's container (by id), its own network, its volume, and its image.
+      expect(commands).toContain('docker rm -f abc123');
+      expect(commands).toContain('docker network rm ci-hermes_ci-marketplace_network');
+      expect(commands).toContain('docker volume rm ci-hermes_ci-marketplace_data');
+      expect(commands).toContain('docker image rm -f sha256:appimage');
+      // The Hub-stack project is excluded from the marketplace loop (handled by Hub teardown).
+      expect(commands).not.toContain('docker ps -a --filter label=com.docker.compose.project=ci-os-hub --format "{{.ID}}"');
+    } finally {
+      if (prevDataHome === undefined) delete process.env.XDG_DATA_HOME;
+      else process.env.XDG_DATA_HOME = prevDataHome;
+      if (prevConfigHome === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = prevConfigHome;
+      if (prevCacheHome === undefined) delete process.env.XDG_CACHE_HOME;
+      else process.env.XDG_CACHE_HOME = prevCacheHome;
+    }
+  });
+
   it('completes with no directory failures when cwd is within the user home', () => {
     const prevDataHome = process.env.XDG_DATA_HOME;
     const prevConfigHome = process.env.XDG_CONFIG_HOME;

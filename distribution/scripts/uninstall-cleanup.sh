@@ -55,6 +55,53 @@ if command -v docker >/dev/null 2>&1; then
     docker ps -a "$@" --format '{{.Names}}' 2>/dev/null || true
   }
 
+  # Echo unique image IDs used by a compose project (pulled or built); call before
+  # removing the project's containers so disk can be reclaimed afterwards.
+  snapshot_project_images() {
+    project="$1"
+    {
+      docker ps -a --filter "label=com.docker.compose.project=$project" -q 2>/dev/null |
+        while IFS= read -r cid; do [ -n "$cid" ] && docker inspect --format '{{.Image}}' "$cid" 2>/dev/null; done
+      docker images --filter "label=com.docker.compose.project=$project" -q 2>/dev/null
+    } | awk 'NF && !seen[$0]++'
+  }
+
+  remove_images() {
+    while IFS= read -r img; do
+      [ -n "$img" ] && run_cmd "docker image rm -f $img" || true
+    done
+  }
+
+  # Marketplace apps run as their own compose projects (<app>_<store>), separate
+  # from the Hub stack. Hub stamps every managed app container with
+  # `ci-os-hub.managed=true` (store-agnostic). Discover the project set from those
+  # containers, then remove each project's containers, networks (except the shared
+  # Hub network), volumes, and images.
+  docker ps -a --filter "label=ci-os-hub.managed=true" \
+    --format '{{.Label "com.docker.compose.project"}}' 2>/dev/null | awk 'NF && !seen[$0]++' |
+    while IFS= read -r project; do
+      [ -n "$project" ] || continue
+      case "$project" in *[!A-Za-z0-9_.-]*) continue ;; esac
+      # Hub's own services also carry ci-os-hub.managed=true; the dedicated Hub-stack
+      # cleanup below is the single source of truth, so skip it here.
+      case "$project" in ci-os-hub|ci-hub) continue ;; esac
+      project_images="$(snapshot_project_images "$project")"
+      docker ps -a --filter "label=com.docker.compose.project=$project" --format '{{.ID}}' 2>/dev/null |
+        while IFS= read -r cid; do [ -n "$cid" ] && run_cmd "docker rm -f $cid" || true; done
+      docker network ls --filter "label=com.docker.compose.project=$project" --format '{{.Name}}' 2>/dev/null |
+        while IFS= read -r net; do
+          case "$net" in
+            ''|bridge|host|none|ci_os_hub_network|ci-os-hub_network) ;;
+            *) run_cmd "docker network rm $net" || true ;;
+          esac
+        done
+      docker volume ls --filter "label=com.docker.compose.project=$project" --format '{{.Name}}' 2>/dev/null |
+        while IFS= read -r vol; do [ -n "$vol" ] && run_cmd "docker volume rm $vol" || true; done
+      printf '%s\n' "$project_images" | remove_images
+    done
+
+  hub_images="$({ snapshot_project_images "ci-os-hub"; snapshot_project_images "ci-hub"; } | awk 'NF && !seen[$0]++')"
+
   all_containers="$(
     {
       collect_names --filter "label=com.docker.compose.project=ci-os-hub"
@@ -81,6 +128,8 @@ if command -v docker >/dev/null 2>&1; then
         ;;
     esac
   done
+
+  printf '%s\n' "$hub_images" | remove_images
 fi
 
 list_home_dirs | while IFS= read -r home_dir; do
