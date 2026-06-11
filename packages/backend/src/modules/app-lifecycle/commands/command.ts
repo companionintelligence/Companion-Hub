@@ -7,6 +7,7 @@ import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { DockerComposeBuilder } from '@/modules/docker/builders/compose.builder';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import { RegistrationService } from '@/modules/registration/registration.service';
+import { ResourceAllocatorService } from '@/modules/system/resource-allocator.service';
 import { SubnetManagerService } from '@/modules/network/subnet-manager.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import type { ModuleRef } from '@nestjs/core';
@@ -65,10 +66,21 @@ export class AppLifecycleCommand {
 
       const domain = envMap.get('DOMAIN') || fullConfig.userSettings?.domain || fullConfig.domain;
       const localDomain = envMap.get('LOCAL_DOMAIN') || fullConfig.userSettings?.localDomain || fullConfig.localDomain;
-      const defaultCpuLimit =
-        typeof (fullConfig.userSettings as Record<string, unknown> | undefined)?.defaultAppCpuLimit === 'string'
-          ? ((fullConfig.userSettings as Record<string, unknown>).defaultAppCpuLimit as string).trim() || undefined
-          : undefined;
+      let defaultCpuLimit: string | undefined;
+      let defaultMemoryLimit: string | undefined;
+      try {
+        const resourceAllocator = this.moduleRef.get(ResourceAllocatorService, { strict: false });
+        const appDefaults = await resourceAllocator.getEffectiveAppDefaults();
+        defaultCpuLimit = appDefaults.cpuLimit;
+        defaultMemoryLimit = appDefaults.memoryLimit;
+      } catch (resourceError) {
+        // Fall back to the user-configured CPU limit if the allocator is unavailable
+        logger.warn(`Resource allocator unavailable, skipping auto resource limits: ${resourceError}`);
+        defaultCpuLimit =
+          typeof (fullConfig.userSettings as Record<string, unknown> | undefined)?.defaultAppCpuLimit === 'string'
+            ? ((fullConfig.userSettings as Record<string, unknown>).defaultAppCpuLimit as string).trim() || undefined
+            : undefined;
+      }
 
       const effectiveExposureMode = form.exposureMode || (form.exposedLocal ? 'cloudflare' : 'local');
       let publicWebHostname: string | undefined;
@@ -103,6 +115,7 @@ export class AppLifecycleCommand {
         appEnv.path,
         publicWebHostname,
         defaultCpuLimit,
+        defaultMemoryLimit,
       );
 
       await appFilesManager.writeDockerComposeYml(appUrn, composeFile);
