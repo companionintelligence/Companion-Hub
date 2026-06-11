@@ -107,7 +107,7 @@ Set at minimum:
 pnpm start:prod
 ```
 
-Open **http://localhost:5002**. Register your device with CI Cloud on first run, then install apps from the store.
+Open **<http://localhost:5002>**. Register your device with CI Cloud on first run, then install apps from the store.
 
 ---
 
@@ -146,8 +146,8 @@ cp .env.example .env.local
 pnpm dev
 ```
 
-- **Frontend:** http://localhost:5173
-- **Backend API:** http://localhost:3000
+- **Frontend:** <http://localhost:5173>
+- **Backend API:** <http://localhost:3000>
 
 Infrastructure (PostgreSQL, RabbitMQ) runs in Docker; backend and frontend run locally with hot reload.
 
@@ -177,6 +177,38 @@ Infrastructure (PostgreSQL, RabbitMQ) runs in Docker; backend and frontend run l
 | `pnpm test:e2e` | Playwright end-to-end tests |
 | `pnpm run cleanup` | Tear down containers, remove `.internal/` data |
 | `pnpm dev:desktop` | Launch Tauri desktop app in dev mode |
+
+### Uninstall Cleanup Behavior
+
+> **Uninstall is a full purge.** Unlike most package managers, where `remove` keeps
+> your data and only `purge` deletes it, uninstalling Companion Hub through **any**
+> channel (`apt remove`, `dnf remove`, `pacman -R`, `choco uninstall`, `snap remove`,
+> AUR removal, etc.) **permanently deletes all Hub data** — including the Postgres
+> database (`ci_hub_pgdata`), app data (`ci_hub_app_data`), and Tailscale state
+> (`hub_tailscale_state`). This is intentional ([#566](https://github.com/companionintelligence/CI-Hub/issues/566)).
+> **Back up anything you need before uninstalling — there is no undo and no prompt.**
+
+A Companion Hub uninstall removes, by default:
+
+- Docker resources for Hub stacks — containers, **data volumes** (DB/app/tailscale state), and networks
+- Hub state under user data/config/cache directories
+- Registry/deep-link entries where package managers support it
+
+**Updates never purge data.** In-place upgrades (the in-app updater, `apt`/`dnf`
+upgrades, `scoop update`, etc.) preserve all volumes and state — only a deliberate
+uninstall purges. The Scoop channel is a special case: because Scoop runs its
+uninstaller during `scoop update` too, the Scoop uninstaller intentionally removes
+only containers/networks and leaves data intact. For a full purge of a Scoop install,
+run `distribution/scripts/uninstall-cleanup.ps1` manually after `scoop uninstall`.
+
+Developer cleanup remains available via:
+
+```bash
+pnpm run hub -- purge --yes
+pnpm run cleanup
+```
+
+Warning: cleanup can remove persistent Hub data and Docker volumes (for example, database state).
 
 Environments: `local` (default), `dev`, `staging`, `prod`.
 

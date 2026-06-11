@@ -50,11 +50,13 @@ sudo apt-get install -y \
 ```
 
 For building `.rpm` packages (optional):
+
 ```bash
 sudo apt-get install -y rpm
 ```
 
 For running `.AppImage` bundles:
+
 ```bash
 sudo apt-get install -y libfuse2
 ```
@@ -62,27 +64,33 @@ sudo apt-get install -y libfuse2
 ### Windows
 
 1. **Visual Studio Build Tools 2022** with the **"Desktop development with C++"** workload:
+
    ```powershell
    winget install Microsoft.VisualStudio.2022.BuildTools --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
    ```
+
    > A restart may be required after installation.
 
 2. **WebView2 Runtime** — ships with Windows 11. On Windows 10, it auto-installs or can be downloaded from [developer.microsoft.com/webview2](https://developer.microsoft.com/en-us/microsoft-edge/webview2/).
 
 3. **Rust** (if not already installed):
+
    ```powershell
    winget install Rustlang.Rustup
    ```
 
 4. **Bun**:
+
    ```powershell
    winget install Oven-sh.Bun
    ```
 
 **Important:** When building from a terminal (CMD/PowerShell), you must first load the VS build environment:
+
 ```cmd
 call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat" x64
 ```
+
 Or open the **"x64 Native Tools Command Prompt for VS 2022"** from the Start menu which does this automatically.
 
 ## Headless launch
@@ -114,12 +122,14 @@ pnpm run --filter=@ci-hub/common build
 The Tauri dev mode connects to the Vite frontend dev server at `http://localhost:9091`, which proxies API calls to the backend at `http://localhost:3000`.
 
 **Option A — Docker (recommended for first setup):**
+
 ```bash
 # From repo root — starts Postgres, RabbitMQ, backend, and frontend
 docker compose -f docker-compose.local.yml up -d
 ```
 
 **Option B — Native dev mode:**
+
 ```bash
 # Start Postgres + RabbitMQ in Docker
 docker compose -f docker-compose.local.yml up -d ci-hub-db ci-os-hub-queue
@@ -147,11 +157,13 @@ Compose profiles: `private-vpn` (Tailscale) always; `cloudflare` (`cloudflared`)
 **Classic Vite + native backend dev UI:**
 
 From the repo root:
+
 ```bash
 pnpm run dev:desktop
 ```
 
 Or from this directory:
+
 ```bash
 cargo tauri dev
 ```
@@ -169,11 +181,15 @@ cargo tauri build
 ```
 
 Or from repo root:
+
 ```bash
 pnpm run build:desktop
 ```
 
+On Linux, the desktop build patches generated `.deb` bundles with a Debian `postrm` maintainer script so uninstall can remove Hub runtime state and related Docker resources.
+
 **Important:** The frontend must be built first — the release build embeds static files from `packages/frontend/dist/client`:
+
 ```bash
 # From repo root
 pnpm run --filter=@ci-hub/common build
@@ -193,6 +209,7 @@ Typical sizes: `.deb`/`.rpm`/`.msi` ≈ 7 MB, `.dmg` ≈ 6.5 MB, `.AppImage` ≈
 ### Cross-compilation
 
 macOS ARM64 runners can cross-compile for Intel:
+
 ```bash
 rustup target add x86_64-apple-darwin
 cargo tauri build --target x86_64-apple-darwin
@@ -204,9 +221,11 @@ Cross-compiling between Linux/Windows/macOS is not supported by Tauri — use th
 
 - Always run builds from a terminal with the VS build environment loaded
 - If you see `error: no such command: tauri`, install the Tauri CLI:
+
   ```cmd
   cargo install tauri-cli --version "^2" --locked
   ```
+
 - If Docker pulls fail from SSH sessions, the Docker Desktop credential helper may need to be cleared — see [Docker docs on credential stores](https://docs.docker.com/reference/cli/docker/login/#credential-stores)
 
 ## Architecture

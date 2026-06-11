@@ -1,6 +1,7 @@
 $ErrorActionPreference = 'Stop'
 
 $packageName = 'companion-hub'
+$toolsDir = "$(Split-Path -parent $MyInvocation.MyCommand.Definition)"
 
 # Uninstall the MSI package
 $softwareName = 'Companion Hub*'
@@ -30,8 +31,15 @@ if ($installed.Count -eq 1) {
     Write-Warning "Multiple '$packageName' installs found; uninstall manually."
 }
 
-# Remove deep-link registry keys
-$registryPath = 'HKLM:\SOFTWARE\Classes\cihub'
-if (Test-Path $registryPath) {
-    Remove-Item -Path $registryPath -Recurse -Force
+# Run comprehensive uninstall cleanup (best effort).
+$cleanupScript = Join-Path $toolsDir 'scripts\uninstall-cleanup.ps1'
+if (Test-Path $cleanupScript) {
+    try {
+        & $cleanupScript
+    }
+    catch {
+        Write-Warning "Extended cleanup failed: $($_.Exception.Message)"
+    }
+} else {
+    Write-Warning 'Cleanup script not found; skipping extended cleanup.'
 }

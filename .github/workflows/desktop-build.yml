@@ -6,10 +6,10 @@ on:
     branches:
       - dev
     paths:
-      - "packages/desktop/**"
-      - "packages/frontend/**"
-      - "packages/common/**"
-      - ".github/workflows/desktop-build.yml"
+      - 'packages/desktop/**'
+      - 'packages/frontend/**'
+      - 'packages/common/**'
+      - '.github/workflows/desktop-build.yml'
 
 concurrency:
   group: desktop-${{ github.ref }}
@@ -91,7 +91,7 @@ jobs:
       - name: Install Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: "22"
+          node-version: '22'
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -121,6 +121,13 @@ jobs:
             args+=(-b deb,rpm,appimage)
           fi
           npx --yes @tauri-apps/cli@2 build "${args[@]}"
+
+      - name: Patch Linux deb maintainer scripts
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          cd packages/desktop
+          sh scripts/patch-deb-maintainer-scripts.sh
 
       - name: List artifacts
         shell: bash

@@ -36,5 +36,6 @@ a unified interface for the companion intelligence ecosystem.
   </metadata>
   <files>
     <file src="tools\**" target="tools" />
+    <file src="..\scripts\uninstall-cleanup.ps1" target="tools\scripts" />
   </files>
 </package>
