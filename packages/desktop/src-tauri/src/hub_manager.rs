@@ -2507,6 +2507,11 @@ const HUB_BIND_MOUNT_DIRS: &[&str] = &[
     // Bind-mounted at compose `${ROOT_FOLDER_HOST}/tunnel:/app/tunnel`. Must be pre-created as
     // the host user; otherwise Docker auto-creates it root-owned and the Hub container
     // (UID 1000) cannot write the Cloudflare tunnel token/certs (EACCES).
+    // NOTE: this path is desktop-specific. Here ROOT_FOLDER_HOST is the top-level data dir,
+    // so the tunnel lives at ROOT_FOLDER_HOST/tunnel. The repo-root compose and
+    // scripts/heal-hub-bind-mounts.ts instead use the sibling ROOT_FOLDER_HOST/../tunnel
+    // because there ROOT_FOLDER_HOST is the .internal subdir. Both resolve to <hub-dir>/tunnel;
+    // do not "align" them — the base differs by stack.
     "tunnel",
 ];
 
