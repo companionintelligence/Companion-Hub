@@ -3,26 +3,26 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag (e.g. v0.1.0)"
+        description: 'Release tag (e.g. v0.1.0)'
         required: true
         type: string
       prerelease:
-        description: "Mark as pre-release"
+        description: 'Mark as pre-release'
         required: false
         default: true
         type: boolean
       environment:
-        description: "Target environment"
+        description: 'Target environment'
         required: false
-        default: "dev"
+        default: 'dev'
         type: choice
         options:
           - dev
           - production
       platforms:
-        description: "Platforms to build"
+        description: 'Platforms to build'
         required: false
-        default: "all"
+        default: 'all'
         type: choice
         options:
           - all
@@ -125,7 +125,7 @@ jobs:
         if: env.BUILD_ENABLED
         uses: actions/setup-node@v6
         with:
-          node-version: "22"
+          node-version: '22'
       - name: Install dependencies
         if: env.BUILD_ENABLED
         run: pnpm install --frozen-lockfile
@@ -214,7 +214,7 @@ jobs:
         if: env.BUILD_ENABLED && runner.os == 'macOS' && env.APPLE_SIGNING_CONFIGURED
         env:
           # CI sets CI=true; tauri-bundler would skip DMG background/layout without this (tauri#592).
-          TAURI_BUNDLER_DMG_IGNORE_CI: "true"
+          TAURI_BUNDLER_DMG_IGNORE_CI: 'true'
           # macOS signing — Tauri reads these automatically (only meaningful on macOS)
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -224,6 +224,7 @@ jobs:
         run: |
           cd packages/desktop
           npx --yes @tauri-apps/cli@2 build --target ${{ matrix.target }} -c '{"bundle":{"createUpdaterArtifacts":false}}'
+
       - name: Build Tauri app
         if: env.BUILD_ENABLED && (runner.os != 'macOS' || env.APPLE_SIGNING_CONFIGURED != 'true')
         env:
@@ -262,6 +263,7 @@ jobs:
           if [[ "${{ runner.os }}" == "Linux" ]]; then
             # deb/rpm bundle offline; build them once, then retry the flaky AppImage.
             npx --yes @tauri-apps/cli@2 build "${base_args[@]}" -b deb,rpm
+            sh scripts/patch-deb-maintainer-scripts.sh
             retry_build "${base_args[@]}" -b appimage
           else
             retry_build "${base_args[@]}"
