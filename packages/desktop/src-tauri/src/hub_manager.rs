@@ -5589,7 +5589,6 @@ fn resolve_current_username_windows() -> Result<String, String> {
     }
 }
 
-#[cfg(target_os = "windows")]
 fn escape_powershell_single_quoted(value: &str) -> String {
     value.replace('\'', "''")
 }
